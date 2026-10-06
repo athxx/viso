@@ -91,6 +91,9 @@ impl Program {
         if let Some(rate) = self.tick_rate {
             module = module.with_tick_rate(rate)?;
         }
+        if let Some((determinism, delivery)) = self.game_profile {
+            module = module.with_game_profile(determinism, delivery);
+        }
         if !self.migrators.is_empty() {
             module = module.with_migrators(self.migrators.clone())?;
         }

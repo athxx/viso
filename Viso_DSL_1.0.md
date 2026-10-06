@@ -5828,6 +5828,10 @@ render_interpolation_policy
 - `@after(A, B)` / `@before(C)` 声明偏序，参数必须是 System 名，否则报 `E2001`；
 - 编译器在 Package 内做稳定拓扑排序：无约束的 System 保持声明顺序（模块图顺序，再源码顺序）；顺序成环报 `E9101`；
 - 一个 Tick 按该顺序运行全部 `FixedUpdate`，再把排队到该 Tick 的碰撞事件逐个投递给全部 `CollisionListener`；一帧先运行它欠下的全部 Tick，再按顺序运行全部 `FrameUpdate`；
+
+`physics_order`（当前实现）：一个 Tick 依次是全部 `FixedUpdate` → 提交 → 全部 `PrePhysics.pre_physics(frame: FixedFrame)` → 提交 → Physics Step → 新开始的接触投递给 `CollisionListener` → 提交 → 全部 `PostPhysics.post_physics(frame: FixedFrame)` → 提交；每个阶段内按 `system_order`。`PrePhysics` 看到本 Tick `FixedUpdate` 已提交的命令（如施力前的玩法决策），`PostPhysics` 看到 Step 之后的 World（如掉出世界的回收、回合判定）；两者都是 Simulation Hook，与 `FixedUpdate` 共享 Tick 预算，预算耗尽跳过其后全部阶段。Physics Step 内 Body 按分配顺序处理。
+
+`collision_delivery_order`：`[game] collision_delivery` 取 `event_major`（默认，一个接触交给全部 Listener 再到下一个接触）或 `listener_major`（一个 Listener 看完全部接触再到下一个 Listener）；档位与 `[game] determinism` 一起写入 Module（`Module::collision_delivery`、`Module::determinism`），因此属于 Build Hash。
 - 每次 Hook 调用是独立事务：Fault 丢弃该调用的状态写入并被记录，下一个 System 照常运行；
 - 一个 Tick 的全部 Hook 共享一份 Instruction/Native Call Budget，一帧的 `FrameUpdate` 共享另一份；Tick 预算耗尽报 `E9102` 并跳过该 Tick 余下的 Hook，Tick 仍然计数。
 
@@ -5943,6 +5947,8 @@ cross_platform   所有 Tier-1 目标上 Snapshot Hash 逐字节一致；联机�
 - 归约与迭代顺序固定；并行浮点归约按固定分块顺序合并；
 - Physics 等 Native World 在 Schema 中声明自己满足哪一档，不满足时报 `E9104`。
 
+当前实现（Physics 集成契约，`viso_behavior::game::Physics`）：World 拥有 Entity、命令与接触事件，引擎拥有运动。引擎实现 `name`、`determinism`（所达档位）、`step(bodies: &mut StepBodies, dt, contacts)`（按 `StepBodies` 的槽位读写位置、速度、`on_floor`，用 `take_push` 取走本 Tick 提交的 `walk`/`jump`，并按 `order()` 中的位置追加重叠的 Body 对）、`statics_changed`（Block 变化或 Body 被替换）、`save`/`load`（引擎在 Step 之间保存的状态）与 `fork`（同类同设置的新引擎）；World 对接触对规范化、排序、去重并与上一 Tick 的接触集求差，只投递新开始的接触。内置引擎 `Kinematic` 是该契约的一个实现（`cross_platform`，状态全部由 Body 推导，保存为空）。宿主用 `Scheduler::with_physics(vm, seed, engine)` 安装其他引擎：引擎档位低于 Module 的 `determinism` 时返回 `GameError::Physics`（`E9104`），Logic Reload 与 World Rebuild 换入档位更高的 Build 时同样拒绝并保持原游戏；World Rebuild 的影子游戏使用 `fork` 出的新引擎。
+
 ### 106.6 Tick 计时器与冷却
 
 ```viso
@@ -5981,6 +5987,7 @@ GameSnapshot {
     tick
     rng_state  // 注入的 Seeded RNG 状态
     world      // Native World 通过 Schema 声明的 snapshot/restore：GameWorld 的全部槽位、空闲表、分配顺序与接触集
+    physics    // Physics 引擎的 save 状态；引擎不能保存时缺省，Snapshot 为 degraded
     systems    // 每个 System 的 Simulation State，按 Stable ID 排序
 }
 ```
@@ -5991,7 +5998,7 @@ GameSnapshot {
 - 截断或非 Snapshot 的数据解码报错，不 Panic；
 - `restore(snapshot(s))` 后继续运行，与不中断运行逐 Tick 一致；
 - 用途：Input Tape 回放、联机回滚、存档、时间回溯调试、热重载前后对比；
-- Native World 未声明 snapshot 能力时，这些功能在诊断中明确降级，不静默失效。
+- Native World 未声明 snapshot 能力时，这些功能在诊断中明确降级，不静默失效。当前实现：引擎 `save` 返回 `None` 时 Snapshot 不含 `physics`（`GameSnapshot::degraded()` 为真，编码保留该标记，Blob 标记为 `GSN3`）；Restore 一个 degraded Snapshot 或引擎状态载入失败时，引擎以 `fork` 重新开始于恢复的 Body 之上，并在 `Restored::degraded` 中报告，此后的 Tick 可能与不中断运行不同。
 
 ### 106.8 持久化状态
 
@@ -6137,9 +6144,9 @@ then per-system sequence
 
 - 读取（`is_alive`、`position`、`velocity`、`on_floor`、`has_tag`、`query`、`entities`）是非 `deterministic` 的 `fn`（Read），看到的是已提交的 World Revision，本 Tick 尚未提交的命令不可见；`position`/`velocity` 读取不存活的 Entity 是 Native 错误；
 - 写入（`spawn`、`walk`、`jump`、`teleport`、`remove`）是 `action`，按发出它的 System 记入 Command Buffer；Hook Fault 时与其状态写入一起丢弃；在 Simulation Hook 之外（如 `FrameUpdate`）写入是 Native 错误（`E7106`）；
-- 提交点：启动事务成功后（首个 Tick 前）、一个 Tick 的全部 `FixedUpdate` 之后、该 Tick 的 `CollisionListener` 之后；每个提交点按 `(system_order, sequence)` 合并，同一 System 的命令保持发出顺序，因此结果只取决于 System 顺序；
+- 提交点：启动事务成功后（首个 Tick 前）、一个 Tick 的全部 `FixedUpdate` 之后、全部 `PrePhysics` 之后、该 Tick 的 `CollisionListener` 之后、全部 `PostPhysics` 之后（§106 `physics_order`）；每个提交点按 `(system_order, sequence)` 合并，同一 System 的命令保持发出顺序，因此结果只取决于 System 顺序；
 - `walk(id, x, z)` 与 `jump(id, speed)` 累加，被下一次 Physics Step 消耗；`teleport(id, to)` 最后一个获胜，使 Body 静止，本 Tick 不插值；`remove(id)` 结束 Entity，合并顺序中其后针对它的命令被跳过并计数；`spawn(desc)` 立即返回 `EntityId`，Body 自提交起存在；
-- Physics Step 在两个提交点之间：Character 的水平速度为本 Tick 的 `walk`，`jump` 加到竖直速度，重力 `9.81 m/s²` 向下；逐轴（先竖直）对 Block 求解，向下被挡设置 `on_floor`；Step 之后报告新开始的接触（Character 与 Sensor、Character 与 Character），每对中先分配者在前、按分配顺序排列，作为该 Tick 的 `CollisionEvent`（`first`、`second`、`other_of(id)`）投递，排在宿主排队的接触之后；
+- Physics Step 在 `PrePhysics` 与 `CollisionListener` 的提交点之间，由 World 的 Physics 引擎执行（§106.5）；内置引擎中 Character 的水平速度为本 Tick 的 `walk`，`jump` 加到竖直速度，重力 `9.81 m/s²` 向下；逐轴（先竖直）对 Block 求解，向下被挡设置 `on_floor`；Step 之后报告新开始的接触（Character 与 Sensor、Character 与 Character），每对中先分配者在前、按分配顺序排列，作为该 Tick 的 `CollisionEvent`（`first`、`second`、`other_of(id)`）投递，排在宿主排队的接触之后；
 - `SpawnDesc` 是值类型：`player()`、`character(size)`、`block(size)`、`sensor(size)`、`prefab(prefab)`（§105.2），`.at(pos)`、`.tag(tag)`、`.model(model)`；
 - 全部运算为单精度 IEEE、无 FMA，Schema 声明 `cross_platform`；邻近查找用均匀网格 Broadphase（格宽取不小于最宽 Character 的 2 的幂，Block 网格只在 Block 变化时重建），结果与按分配顺序逐对测试逐位一致，开销由 `game_world` Benchmark 跟踪。
 
@@ -8648,7 +8655,7 @@ RecordPatternField
 | E9101  | Game System Order 循环                                  |
 | E9102  | Fixed Tick 预算超限                                     |
 | E9103  | Simulation 域访问 Local 状态或 Presentation 返回值，或 `@local` 误用（§106.4） |
-| E9104  | Simulation 域使用非确定性来源（§106.4、§106.5）          |
+| E9104  | Simulation 域使用非确定性来源，或 Physics 引擎档位低于 Game 的 `determinism`（§106.4、§106.5） |
 | E9105  | Simulation 状态类型未实现 Snapshot（§106.4）             |
 | E9106  | `@persist` 键重复、类型不可持久化、缺少 Capability、不在 `state` 上，或持久化状态的 Component 不是视图自身的实例（§106.8） |
 | E9107  | 输入动作缺少目标平台的手柄/触屏路径（警告，§106.3）      |

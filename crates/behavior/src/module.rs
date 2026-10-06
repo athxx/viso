@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::game::InputSchema;
 use crate::i18n::Catalog;
-use crate::native::NativeId;
+use crate::native::{Determinism, NativeId};
 use crate::op::Op;
 use crate::retype::ValueSchema;
 use crate::value::Value;
@@ -320,6 +320,8 @@ pub struct Module {
     pub(crate) natives: Box<[NativeImport]>,
     pub(crate) input: Option<Box<InputSchema>>,
     pub(crate) tick_rate: u32,
+    pub(crate) determinism: Determinism,
+    pub(crate) collision_delivery: CollisionDelivery,
     pub(crate) migrators: Box<[Migrator]>,
     pub(crate) capabilities: Box<[Box<str>]>,
     pub(crate) themes: Box<[(Box<str>, u32)]>,
@@ -328,6 +330,29 @@ pub struct Module {
 
 /// The tick rate of a module that declares none, 60 Hz.
 pub const DEFAULT_TICK_RATE: u32 = 60;
+
+/// The order a tick hands the contacts that began to its
+/// `CollisionListener`s (`[game] collision_delivery`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CollisionDelivery {
+    /// Each contact in turn to every listener in system order: one event is
+    /// seen by all before the next.
+    #[default]
+    EventMajor,
+    /// Each listener in system order sees every contact before the next
+    /// listener runs.
+    ListenerMajor,
+}
+
+impl CollisionDelivery {
+    /// Its manifest name.
+    pub fn name(self) -> &'static str {
+        match self {
+            CollisionDelivery::EventMajor => "event_major",
+            CollisionDelivery::ListenerMajor => "listener_major",
+        }
+    }
+}
 
 /// Why a module failed verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,6 +392,8 @@ impl Module {
             natives: natives.into(),
             input: None,
             tick_rate: DEFAULT_TICK_RATE,
+            determinism: Determinism::SameBinary,
+            collision_delivery: CollisionDelivery::EventMajor,
             migrators: Box::new([]),
             capabilities: Box::new([]),
             themes: Box::new([]),
@@ -625,6 +652,19 @@ impl Module {
         Ok(self)
     }
 
+    /// The module with its Simulation domain held to `determinism` and its
+    /// contacts delivered in `delivery` order: what a physics engine
+    /// stepping its games must reproduce, and how listeners see contacts.
+    pub fn with_game_profile(
+        mut self,
+        determinism: Determinism,
+        delivery: CollisionDelivery,
+    ) -> Module {
+        self.determinism = determinism;
+        self.collision_delivery = delivery;
+        self
+    }
+
     /// The module with `migrators` as the `@migrate` functions a persisted
     /// value of an older type converts by.
     ///
@@ -774,6 +814,17 @@ impl Module {
     /// tick timers were converted with.
     pub fn tick_rate(&self) -> u32 {
         self.tick_rate
+    }
+
+    /// The determinism tier its Simulation domain was checked against
+    /// (`[game] determinism`).
+    pub fn determinism(&self) -> Determinism {
+        self.determinism
+    }
+
+    /// The order its ticks deliver contacts in (`[game] collision_delivery`).
+    pub fn collision_delivery(&self) -> CollisionDelivery {
+        self.collision_delivery
     }
 
     /// Every chunk.

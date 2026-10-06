@@ -19,10 +19,11 @@ use crate::game::{
 };
 use crate::i18n::Catalog;
 use crate::module::{
-    Chunk, ChunkKind, Code, Component, ComponentEffect, EffectRun, Migrator, Module, NativeImport,
-    PersistSlot, ResourceLoad, SnapshotSlot, Span, StableId, System, VerifyError,
+    Chunk, ChunkKind, Code, CollisionDelivery, Component, ComponentEffect, EffectRun, Migrator,
+    Module, NativeImport, PersistSlot, ResourceLoad, SnapshotSlot, Span, StableId, System,
+    VerifyError,
 };
-use crate::native::NativeId;
+use crate::native::{Determinism, NativeId};
 use crate::op::{Arith, ArithOp, DisplayKind, Num, Op};
 use crate::retype::ValueSchema;
 use crate::value::{Aggregate, Value};
@@ -86,6 +87,15 @@ impl Module {
             write_input(&mut enc, input);
         }
         enc.write_varint(u64::from(self.tick_rate()));
+        enc.write_u8(match self.determinism() {
+            Determinism::None => 0,
+            Determinism::SameBinary => 1,
+            Determinism::CrossPlatform => 2,
+        });
+        enc.write_u8(match self.collision_delivery() {
+            CollisionDelivery::EventMajor => 0,
+            CollisionDelivery::ListenerMajor => 1,
+        });
         write_list(&mut enc, self.migrators(), |enc, m| {
             enc.write_str(&m.from);
             m.param.encode(enc);
@@ -144,6 +154,19 @@ impl Module {
             None
         };
         let tick_rate = read_u32_varint(&mut dec)?;
+        let offset = dec.position();
+        let determinism = match dec.read_u8()? {
+            0 => Determinism::None,
+            1 => Determinism::SameBinary,
+            2 => Determinism::CrossPlatform,
+            _ => return Err(DecodeError::Malformed { offset }.into()),
+        };
+        let offset = dec.position();
+        let delivery = match dec.read_u8()? {
+            0 => CollisionDelivery::EventMajor,
+            1 => CollisionDelivery::ListenerMajor,
+            _ => return Err(DecodeError::Malformed { offset }.into()),
+        };
         let migrators = read_list(&mut dec, |dec| {
             Ok(Migrator {
                 from: dec.read_str()?.into(),
@@ -164,6 +187,7 @@ impl Module {
         dec.finish()?;
         let module = Module::new(chunks, components, systems, natives)
             .and_then(|m| m.with_tick_rate(tick_rate))
+            .map(|m| m.with_game_profile(determinism, delivery))
             .and_then(|m| m.with_migrators(migrators))
             .and_then(|m| m.with_themes(themes))
             .and_then(|m| m.with_catalog(catalog))
@@ -1253,6 +1277,8 @@ mod tests {
             natives: module.natives().to_vec().into(),
             input: None,
             tick_rate: module.tick_rate(),
+            determinism: module.determinism(),
+            collision_delivery: module.collision_delivery(),
             migrators: Box::new([]),
             capabilities: Box::new([]),
             themes: Box::new([]),

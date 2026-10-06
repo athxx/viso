@@ -204,6 +204,9 @@ pub fn lower(
     behavior.borrow_mut().tick_rate(profile.tick_rate);
     behavior
         .borrow_mut()
+        .game_profile(profile.determinism, profile.collision_delivery);
+    behavior
+        .borrow_mut()
         .capabilities(profile.capabilities.iter().map(str::to_owned).collect());
     behavior
         .borrow_mut()

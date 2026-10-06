@@ -20,17 +20,10 @@
 //! with the next generation, so a stale id never names a new entity. Queries
 //! list entities in allocation (commit) order.
 //!
-//! The physics step moves characters: their horizontal velocity is the tick's
-//! `walk`, `jump` adds to their vertical velocity, gravity pulls them down,
-//! and blocks stop them axis by axis, a block below setting `on_floor`. Each
-//! step reports the contacts that began, between a character and a sensor or
-//! another character, earlier allocation first. All of it is single-precision
-//! IEEE arithmetic without fused operations, reproducible on every target.
-//!
-//! A uniform grid ([`super::grid`]) finds each body's neighbours: the blocks
-//! a character's sweep may meet, regridded only when a block moves, and the
-//! sensors and characters it may touch, regridded every step. The outcome is
-//! bit for bit that of testing every pair in allocation order.
+//! The physics step is the world's [`Physics`] engine's, [`Kinematic`]
+//! unless the host installed another: behaviors steer first, the engine
+//! moves the bodies, and the world reports the contacts that began, between
+//! a character and a sensor or another character, earlier allocation first.
 //!
 //! The committed state is shared with snapshots and copied only when a commit
 //! or step changes it.
@@ -39,10 +32,10 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::rc::Rc;
 
-use super::grid::{Bounds, Grid, bounds};
 use super::input::schema_enum;
 use super::kit::Model;
 use super::kit::steer::{self, Control};
+use super::physics::{Kinematic, Physics, PhysicsError, StepBodies};
 use crate::native::{
     Determinism, NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy, Vec3F32,
 };
@@ -515,7 +508,7 @@ pub struct Extracted {
 }
 
 /// A game world, behind a `viso::game::GameWorld` handle.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GameWorld {
     bodies: RefCell<Rc<Bodies>>,
     commands: RefCell<Vec<(usize, Command)>>,
@@ -525,86 +518,14 @@ pub struct GameWorld {
     /// The system whose hook is running, while one may write.
     writer: Cell<Option<usize>>,
     skipped: Cell<u64>,
-    broadphase: RefCell<Broadphase>,
+    /// The engine stepping the bodies.
+    physics: RefCell<Box<dyn Physics>>,
+    contacts: RefCell<ContactScratch>,
 }
 
-/// What the step keeps between ticks to find a body's neighbours: derived
-/// from the bodies, never snapshotted, rebuilt when stale.
-#[derive(Debug, Default)]
-struct Broadphase {
-    /// The cell size the grids are built at.
-    cell: f32,
-    /// The blocks, valid while `fresh`.
-    blocks: Grid,
-    fresh: bool,
-    /// The sensors and characters, regridded every step.
-    movers: Grid,
-    /// Each live slot's place in allocation order.
-    rank: Vec<u32>,
-    /// Scratch: a query's slots, then their ranks.
-    found: Vec<u32>,
-    /// Each mover's lowest cell.
-    low: Vec<[i32; 3]>,
-    /// Scratch: each contact's identity and place in allocation order, and
-    /// whether it began.
-    sorted: Vec<((EntityId, EntityId), u32)>,
-    new: Vec<bool>,
-    /// Scratch: a step's contacts by allocation order.
-    pairs: Vec<(u32, u32)>,
-}
-
-impl Broadphase {
-    /// Ranks the live slots and, when the blocks moved or the cell size
-    /// changed, regrids the blocks. The cell is the smallest power of two
-    /// as wide as the widest character, so a character covers at most two
-    /// cells an axis.
-    fn prepare(&mut self, b: &Bodies, order: &[u32]) {
-        self.rank.resize(b.slots(), 0);
-        let mut widest: f32 = 0.0;
-        for (i, &slot) in order.iter().enumerate() {
-            let slot = slot as usize;
-            self.rank[slot] = i as u32;
-            if b.kind[slot] == BodyKind::Character {
-                widest = b.half[slot].iter().fold(widest, |w, &h| w.max(2.0 * h));
-            }
-        }
-        let cell = if widest.is_finite() {
-            widest.clamp(0.25, 4096.0).log2().ceil().exp2()
-        } else {
-            4096.0
-        };
-        if self.fresh && self.cell == cell {
-            return;
-        }
-        self.cell = cell;
-        self.blocks.clear(cell);
-        for &slot in order {
-            let s = slot as usize;
-            if b.kind[s] == BodyKind::Block {
-                self.blocks.insert(slot, bounds(b.pos[s], b.half[s]));
-            }
-        }
-        self.blocks.finish();
-        self.fresh = true;
-    }
-
-    /// The ranks of the blocks near `region`, every block when the region is
-    /// too large to query, ascending and once each, into `found`.
-    fn blocks_near(&mut self, b: &Bodies, order: &[u32], region: Bounds) {
-        self.found.clear();
-        if self.blocks.query(region, &mut self.found) {
-            for slot in &mut self.found {
-                *slot = self.rank[*slot as usize];
-            }
-        } else {
-            let all = order
-                .iter()
-                .enumerate()
-                .filter(|&(_, &s)| b.kind[s as usize] == BodyKind::Block);
-            self.found.extend(all.map(|(i, _)| i as u32));
-        }
-        self.found.sort_unstable();
-        self.found.dedup();
+impl Default for GameWorld {
+    fn default() -> GameWorld {
+        GameWorld::with_physics(0, Box::new(Kinematic::default()))
     }
 }
 
@@ -636,12 +557,41 @@ impl NativeObject for GameWorld {
 }
 
 impl GameWorld {
-    /// An empty world drawing random numbers from `seed`.
+    /// An empty world drawing random numbers from `seed`, stepped by the
+    /// built-in [`Kinematic`] engine.
     pub fn new(seed: u64) -> GameWorld {
+        GameWorld::with_physics(seed, Box::new(Kinematic::default()))
+    }
+
+    /// An empty world drawing random numbers from `seed`, stepped by
+    /// `physics`.
+    pub fn with_physics(seed: u64, physics: Box<dyn Physics>) -> GameWorld {
         GameWorld {
+            bodies: RefCell::default(),
+            commands: RefCell::default(),
+            reserved: Cell::new(0),
             rng: Cell::new(seed),
-            ..GameWorld::default()
+            writer: Cell::new(None),
+            skipped: Cell::new(0),
+            physics: RefCell::new(physics),
+            contacts: RefCell::default(),
         }
+    }
+
+    /// The engine's name and tier.
+    pub fn physics(&self) -> (String, Determinism) {
+        let physics = self.physics.borrow();
+        (physics.name().to_owned(), physics.determinism())
+    }
+
+    /// A fresh engine of the kind stepping this world.
+    pub(super) fn fork_physics(&self) -> Box<dyn Physics> {
+        self.physics.borrow().fork()
+    }
+
+    /// What the engine keeps between steps, `None` when it cannot save it.
+    pub(super) fn save_physics(&self) -> Option<std::rc::Rc<[u8]>> {
+        self.physics.borrow().save().map(Into::into)
     }
 
     /// Whether `id` names a live entity.
@@ -740,18 +690,41 @@ impl GameWorld {
     /// Runs `f` on the committed state, as a test checks it.
     #[cfg(test)]
     pub(super) fn with_bodies<R>(&self, f: impl FnOnce(&mut Bodies) -> R) -> R {
-        self.broadphase.borrow_mut().fresh = false;
+        self.physics.borrow_mut().statics_changed();
         f(Rc::make_mut(&mut self.bodies.borrow_mut()))
     }
 
-    /// Replaces the committed state and the random state, dropping any
-    /// buffered command.
-    pub(super) fn restore(&self, bodies: Rc<Bodies>, rng: u64) {
-        self.broadphase.borrow_mut().fresh = false;
+    /// Replaces the committed state, the random state and what the engine
+    /// keeps, dropping any buffered command; without the engine's state (a
+    /// snapshot of an engine that cannot save, or a fresh world) the engine
+    /// starts afresh over the restored bodies.
+    ///
+    /// # Errors
+    ///
+    /// The engine's state did not load: the engine starts afresh.
+    pub(super) fn restore(
+        &self,
+        bodies: Rc<Bodies>,
+        rng: u64,
+        physics: Option<&[u8]>,
+    ) -> Result<(), PhysicsError> {
+        let loaded = {
+            let mut engine = self.physics.borrow_mut();
+            let loaded = match physics {
+                Some(state) => engine.load(state),
+                None => Ok(()),
+            };
+            if physics.is_none() || loaded.is_err() {
+                *engine = engine.fork();
+            }
+            engine.statics_changed();
+            loaded
+        };
         *self.bodies.borrow_mut() = bodies;
         self.rng.set(rng);
         self.commands.borrow_mut().clear();
         self.reserved.set(0);
+        loaded
     }
 
     /// Puts each character with a counterpart in `old` where that one was:
@@ -993,163 +966,83 @@ impl GameWorld {
         }
         self.skipped.set(self.skipped.get() + skipped);
         if blocks_moved {
-            self.broadphase.borrow_mut().fresh = false;
+            self.physics.borrow_mut().statics_changed();
         }
     }
 
-    /// Steps the bodies `dt` seconds and appends the contacts that began to
-    /// `began`, earlier allocation first in each pair and pairs in allocation
-    /// order.
-    ///
-    /// A character meets only the blocks the grid finds near its sweep along
-    /// an axis, in allocation order; should a block push it out of that sweep,
-    /// every later block is tested, so the outcome is that of testing every
-    /// block in allocation order.
+    /// Steps the bodies `dt` seconds with the world's physics and appends
+    /// the contacts that began to `began`, earlier allocation first in each
+    /// pair and pairs in allocation order. Behaviors steer the characters
+    /// first; then the physics moves the bodies and reports what overlaps;
+    /// then each mover faces its motion.
     pub(super) fn step(&self, dt: f32, began: &mut Vec<(EntityId, EntityId)>) {
         let mut bodies = self.bodies.borrow_mut();
         if bodies.order.is_empty() {
             return;
         }
         let b = Rc::make_mut(&mut bodies);
-        let bp = &mut *self.broadphase.borrow_mut();
         let order = std::mem::take(&mut b.order);
         steer::steer(b, &order, dt, &self.rng);
-        bp.prepare(b, &order);
-        for &slot in &order {
-            let slot = slot as usize;
-            if b.kind[slot] != BodyKind::Character {
-                continue;
-            }
-            let push = std::mem::take(&mut b.push[slot]);
-            let vel = &mut b.vel[slot];
-            vel[0] = push[0];
-            vel[2] = push[2];
-            vel[1] += push[1] - GRAVITY * dt;
-            b.floor[slot] = false;
-            let vel = b.vel[slot];
-            if vel == [0.0; 3] {
-                continue;
-            }
-            // One query covers the whole sweep: each axis moves within its
-            // own range unless a block pushes it out, after which the axes
-            // left test every block.
-            let (half, from) = (b.half[slot], b.pos[slot]);
-            let to: [f32; 3] = std::array::from_fn(|i| from[i] + vel[i] * dt);
-            let (start, end) = (bounds(from, half), bounds(to, half));
-            let region = (
-                std::array::from_fn(|i| start.0[i].min(end.0[i])),
-                std::array::from_fn(|i| start.1[i].max(end.1[i])),
-            );
-            bp.blocks_near(b, &order, region);
-            let mut swept = true;
-            for axis in [1, 0, 2] {
-                let speed = vel[axis];
-                if speed == 0.0 {
-                    continue;
-                }
-                b.pos[slot][axis] += speed * dt;
-                let (low, high) = (from[axis].min(to[axis]), from[axis].max(to[axis]));
-                let mut rest = 0;
-                if swept {
-                    rest = order.len();
-                    for &rank in &bp.found {
-                        let other = order[rank as usize] as usize;
-                        if b.overlap(slot, other, axis) {
-                            b.resolve(slot, other, axis, speed);
-                            if !(low..=high).contains(&b.pos[slot][axis]) {
-                                swept = false;
-                                rest = rank as usize + 1;
-                                break;
-                            }
-                        }
-                    }
-                }
-                for &other in &order[rest..] {
-                    let other = other as usize;
-                    if b.kind[other] == BodyKind::Block && b.overlap(slot, other, axis) {
-                        b.resolve(slot, other, axis, speed);
-                    }
-                }
-            }
-        }
+        let scratch = &mut *self.contacts.borrow_mut();
+        scratch.pairs.clear();
+        self.physics.borrow_mut().step(
+            &mut StepBodies { b, order: &order },
+            dt,
+            &mut scratch.pairs,
+        );
         steer::settle(b, &order);
-        bp.movers.clear(bp.cell);
-        bp.low.resize(b.slots(), [0; 3]);
-        for &slot in &order {
-            let s = slot as usize;
-            if b.kind[s] != BodyKind::Block {
-                let bounds = bounds(b.pos[s], b.half[s]);
-                bp.low[s] = bp.movers.cell(bounds.0);
-                bp.movers.insert(slot, bounds);
-            }
+        scratch.began(b, &order, began);
+        b.order = order;
+    }
+}
+
+/// Scratch for finding the contacts of a step that began.
+#[derive(Debug, Default)]
+struct ContactScratch {
+    /// The overlapping pairs by allocation order.
+    pairs: Vec<(u32, u32)>,
+    /// Each contact's identity and place in `pairs`.
+    sorted: Vec<((EntityId, EntityId), u32)>,
+    /// Whether each of `pairs` began.
+    new: Vec<bool>,
+}
+
+impl ContactScratch {
+    /// Orders `pairs`, appends the ones the last step's contacts lack to
+    /// `began` and makes them `b`'s contacts.
+    fn began(&mut self, b: &mut Bodies, order: &[u32], began: &mut Vec<(EntityId, EntityId)>) {
+        for pair in &mut self.pairs {
+            *pair = (pair.0.min(pair.1), pair.0.max(pair.1));
         }
-        bp.movers.finish();
-        bp.pairs.clear();
-        let kinds = |a: usize, o: usize| {
-            matches!(
-                (b.kind[a], b.kind[o]),
-                (BodyKind::Character, BodyKind::Character | BodyKind::Sensor)
-                    | (BodyKind::Sensor, BodyKind::Character)
-            )
-        };
-        let rank = |slot: usize| bp.rank[slot];
-        let ordered = |a: u32, o: u32| (a.min(o), a.max(o));
-        for (cell, run) in bp.movers.cells() {
-            for (i, &(_, a)) in run.iter().enumerate() {
-                let a = a as usize;
-                for &(_, o) in &run[i + 1..] {
-                    let o = o as usize;
-                    if !kinds(a, o) {
-                        continue;
-                    }
-                    // Counted in the cell of the overlap's lowest corner only.
-                    let (la, lo) = (bp.low[a], bp.low[o]);
-                    if (0..3).all(|k| la[k].max(lo[k]) == cell[k]) && b.touch(a, o) {
-                        bp.pairs.push(ordered(rank(a), rank(o)));
-                    }
-                }
-            }
-        }
-        let wide = bp.movers.wide();
-        for (i, &w) in wide.iter().enumerate() {
-            let w = w as usize;
-            for &o in &order {
-                let o = o as usize;
-                let counted = wide[..=i].contains(&(o as u32));
-                if !counted && kinds(w, o) && b.touch(w, o) {
-                    bp.pairs.push(ordered(rank(w), rank(o)));
-                }
-            }
-        }
-        bp.pairs.sort_unstable();
+        self.pairs.sort_unstable();
+        self.pairs.dedup();
         // The contacts by identity, merged with the last step's to mark the
         // ones that began, which are reported in allocation order.
         let id = |r: u32| b.id(order[r as usize] as usize);
-        bp.sorted.clear();
-        bp.sorted.extend(
-            bp.pairs
+        self.sorted.clear();
+        self.sorted.extend(
+            self.pairs
                 .iter()
                 .zip(0..)
                 .map(|(&(i, j), n)| ((id(i), id(j)), n)),
         );
-        bp.sorted.sort_unstable_by_key(|e| e.0);
-        bp.new.clear();
-        bp.new.resize(bp.pairs.len(), false);
+        self.sorted.sort_unstable_by_key(|e| e.0);
+        self.new.clear();
+        self.new.resize(self.pairs.len(), false);
         let mut last = b.contacts.iter().peekable();
-        for &(pair, n) in &bp.sorted {
+        for &(pair, n) in &self.sorted {
             while last.next_if(|&&old| old < pair).is_some() {}
-            bp.new[n as usize] = last.next_if(|&&old| old == pair).is_none();
+            self.new[n as usize] = last.next_if(|&&old| old == pair).is_none();
         }
         began.extend(
-            bp.pairs
+            self.pairs
                 .iter()
-                .zip(&bp.new)
+                .zip(&self.new)
                 .filter(|&(_, &new)| new)
                 .map(|(&(i, j), _)| (id(i), id(j))),
         );
         b.contacts.clear();
-        b.contacts.extend(bp.sorted.iter().map(|&(pair, _)| pair));
-        b.order = order;
+        b.contacts.extend(self.sorted.iter().map(|&(pair, _)| pair));
     }
 }
 

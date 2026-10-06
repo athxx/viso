@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use viso_behavior::game::{
-    BodyKind, EntityId, Extracted, GameSnapshot, Key, Rebuild, Scheduler, SystemFault,
+    BodyKind, EntityId, Extracted, GameError, GameSnapshot, Key, Rebuild, Scheduler, SystemFault,
 };
 use viso_behavior::native::{NativeValue, Natives, Vec3F32};
 use viso_behavior::{Budget, Module, Value, Vm};
@@ -913,9 +913,11 @@ fn a_rebuild_whose_smoke_tick_faults_keeps_the_last_good_game() {
             "ticks += 1; let xs = [1]; ticks = xs[ticks];"
         )
     );
-    let fault = game
-        .rebuild(linked(module(&broken)), Rebuild::KeepCharacters)
-        .expect_err("the smoke tick faults");
+    let Err(GameError::Fault(fault)) =
+        game.rebuild(linked(module(&broken)), Rebuild::KeepCharacters)
+    else {
+        panic!("the smoke tick faults")
+    };
     assert_eq!((fault.tick, fault.code), (0, "E7104"));
     assert_eq!(game.snapshot(), before);
     assert!(game.faults().is_empty());
@@ -929,12 +931,13 @@ fn a_rebuild_whose_smoke_tick_faults_keeps_the_last_good_game() {
     let fault = game
         .rebuild_world(Rebuild::Fresh)
         .map(|_| ())
+        .map_err(GameError::from)
         .and_then(|()| {
             game.reload(linked(module(&broken))).map(|_| ())?;
-            game.rebuild_world(Rebuild::Fresh).map(|_| ())
+            Ok(game.rebuild_world(Rebuild::Fresh).map(|_| ())?)
         })
         .expect_err("the reloaded build's smoke tick faults");
-    assert_eq!(fault.code, "E7104");
+    assert_eq!(fault.code(), "E7104");
 }
 
 #[test]

@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 
-use viso_dsl::hir::{CapabilitySet, Determinism, InputDevices, TargetProfile};
+use viso_dsl::hir::{CapabilitySet, CollisionDelivery, Determinism, InputDevices, TargetProfile};
 use viso_dsl::i18n::{CatalogIssue, Messages};
 use viso_dsl::package::{LoadedPackage, PackageManifest, load_package};
 use viso_dsl::{Diagnostic, TextRange, TextSize};
@@ -200,6 +200,14 @@ pub(super) fn profile(project: &Project) -> TargetProfile {
             .game
             .tick_rate
             .map_or(TargetProfile::default().tick_rate, |rate| rate.value),
+        collision_delivery: match project.manifest.game.collision_delivery.map(|d| d.value) {
+            Some(viso_project::CollisionDelivery::ListenerMajor) => {
+                CollisionDelivery::ListenerMajor
+            }
+            Some(viso_project::CollisionDelivery::EventMajor) | None => {
+                CollisionDelivery::EventMajor
+            }
+        },
         release: false,
         capabilities: {
             let mut granted = CapabilitySet::new();

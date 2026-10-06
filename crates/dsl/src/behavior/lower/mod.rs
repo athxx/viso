@@ -462,6 +462,16 @@ impl ProgramBuilder {
             .map(|i| FuncId(i as u32))
     }
 
+    /// Sets the determinism tier the Simulation domain was checked against
+    /// and the order contacts are delivered in.
+    pub(crate) fn game_profile(
+        &mut self,
+        determinism: viso_behavior::native::Determinism,
+        delivery: viso_behavior::CollisionDelivery,
+    ) {
+        self.program.game_profile = Some((determinism, delivery));
+    }
+
     /// Sets the ticks a second of the systems' fixed step.
     pub(crate) fn tick_rate(&mut self, tick_rate: u32) {
         self.program.tick_rate = Some(tick_rate);

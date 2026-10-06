@@ -10,14 +10,15 @@ use super::history::{History, ReplayError, Replayed};
 use super::input::{Action, InputLatch};
 use super::kit::{Kit, Stage};
 use super::persist::{PERSIST_CAPABILITY, Persist, PersistReport, Persistence, Stored};
+use super::physics::{Kinematic, Physics, PhysicsTier};
 use super::quick::{QUICK_FIXED, QUICK_START, QuickFrame, QuickStart};
 use super::snapshot::{GameSnapshot, Restored, SystemState, fnv};
 use super::tape::{InputTape, Playback, Recorder, TapeError};
 use super::world::Bodies;
 use super::{
-    COLLISION, Clock, CollisionEvent, EntityId, FIXED_UPDATE, FRAME_UPDATE, FixedFrame, GameStart,
-    GameWorld, InputSchema, InputSnapshot, Key, PadButton, PadStick, RenderFrame, STARTUP,
-    TouchButton,
+    COLLISION, Clock, CollisionDelivery, CollisionEvent, EntityId, FIXED_UPDATE, FRAME_UPDATE,
+    FixedFrame, GameStart, GameWorld, InputSchema, InputSnapshot, Key, POST_PHYSICS, PRE_PHYSICS,
+    PadButton, PadStick, RenderFrame, STARTUP, TouchButton,
 };
 use crate::native::{NativeObject, NativeValue, Obj, Services};
 use crate::{Budget, Deferred, Fault, FaultKind, Instance, Module, Value, Vm};
@@ -48,6 +49,48 @@ pub struct SystemFault {
     pub code: &'static str,
     /// The fault.
     pub fault: Fault,
+}
+
+/// Why a game did not start, reload or rebuild.
+#[derive(Debug, Clone)]
+pub enum GameError {
+    /// A system faulted creating its instance or starting the game.
+    Fault(SystemFault),
+    /// The physics engine does not reach the module's determinism tier.
+    Physics(PhysicsTier),
+}
+
+impl GameError {
+    /// The stable diagnostic code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            GameError::Fault(fault) => fault.code,
+            GameError::Physics(tier) => tier.code(),
+        }
+    }
+}
+
+impl std::fmt::Display for GameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GameError::Fault(fault) => write!(f, "{}: {}", fault.code, fault.fault),
+            GameError::Physics(tier) => write!(f, "{}: {tier}", tier.code()),
+        }
+    }
+}
+
+impl std::error::Error for GameError {}
+
+impl From<SystemFault> for GameError {
+    fn from(fault: SystemFault) -> GameError {
+        GameError::Fault(fault)
+    }
+}
+
+impl From<PhysicsTier> for GameError {
+    fn from(tier: PhysicsTier) -> GameError {
+        GameError::Physics(tier)
+    }
 }
 
 /// The identity of a Presentation command a Simulation hook issued.
@@ -96,11 +139,14 @@ enum Phase {
 ///
 /// The systems share one [`GameWorld`], which their Simulation hooks reach as
 /// `frame.world`, `cx.world` or `event.world` and write through commands. One
-/// tick freezes the input, runs every `FixedUpdate`, commits their commands,
-/// steps the world, delivers the contacts that began (after those the host
-/// queued) to every `CollisionListener` and commits theirs; the start's
-/// commands commit before the first tick. A `FrameUpdate` reads the world
-/// and cannot write it.
+/// tick freezes the input, runs every `FixedUpdate` and commits their
+/// commands, runs every `PrePhysics` and commits theirs, steps the world with
+/// its [`Physics`] engine, delivers the contacts that began (after those the
+/// host queued) to every `CollisionListener` in the module's
+/// [`CollisionDelivery`] order and commits theirs, then runs every
+/// `PostPhysics`, which sees the stepped world, and commits theirs; the
+/// start's commands commit before the first tick. A `FrameUpdate` reads the
+/// world and cannot write it.
 ///
 /// The host reports device input between frames ([`key`](Self::key),
 /// [`pad`](Self::pad), [`stick`](Self::stick), [`touch`](Self::touch)); each
@@ -176,7 +222,28 @@ impl Scheduler {
     ///
     /// As [`Scheduler::new`].
     pub fn with_seed(vm: Vm, seed: u64) -> Result<Scheduler, SystemFault> {
-        let mut scheduler = Scheduler::assemble(vm, seed)?;
+        Scheduler::start(vm, seed, Box::new(Kinematic::default()))
+    }
+
+    /// [`Scheduler::with_seed`] with the world stepped by `physics` instead of
+    /// the built-in [`Kinematic`] engine.
+    ///
+    /// # Errors
+    ///
+    /// [`GameError::Physics`] (`E9104`) when the engine's determinism tier is
+    /// below the module's (`[game] determinism`); otherwise as
+    /// [`Scheduler::new`].
+    pub fn with_physics(
+        vm: Vm,
+        seed: u64,
+        physics: Box<dyn Physics>,
+    ) -> Result<Scheduler, GameError> {
+        PhysicsTier::check(&*physics, vm.module().determinism())?;
+        Ok(Scheduler::start(vm, seed, physics)?)
+    }
+
+    fn start(vm: Vm, seed: u64, physics: Box<dyn Physics>) -> Result<Scheduler, SystemFault> {
+        let mut scheduler = Scheduler::assemble(vm, seed, physics)?;
         scheduler.load_persisted();
         if let Err(fault) = scheduler.run_start() {
             // A game that never started stores nothing.
@@ -188,13 +255,17 @@ impl Scheduler {
     }
 
     /// A scheduler over `vm` with fresh instances and an empty world seeded
-    /// with `seed`, before its start.
-    fn assemble(mut vm: Vm, seed: u64) -> Result<Scheduler, SystemFault> {
+    /// with `seed` and stepped by `physics`, before its start.
+    fn assemble(
+        mut vm: Vm,
+        seed: u64,
+        physics: Box<dyn Physics>,
+    ) -> Result<Scheduler, SystemFault> {
         let module = vm.module().clone();
         let clock = Clock::at_rate(module.tick_rate());
         let instances = instantiate(&mut vm, clock.tick())?;
         let schema = input_schema(&module);
-        let world = Obj::new(GameWorld::new(seed));
+        let world = Obj::new(GameWorld::with_physics(seed, physics));
         let stage = Rc::default();
         let persist = vm
             .services_mut()
@@ -255,9 +326,11 @@ impl Scheduler {
             );
         }
         let (bodies, rng) = (self.world.bodies(), self.world.rng());
+        let physics = self.world.save_physics();
         let (tick, delivered) = (self.clock.tick(), self.delivered);
         let collisions = mem::take(&mut self.collisions);
-        self.world.restore(Rc::default(), self.seed);
+        // A fresh world: the engine starts afresh too.
+        let _ = self.world.restore(Rc::default(), self.seed, None);
         self.clock.rewind(0);
         self.delivered = 0;
         match self.prove_start(&bodies, keep) {
@@ -269,7 +342,7 @@ impl Scheduler {
             }
             Err(fault) => {
                 self.instances = instances;
-                self.world.restore(bodies, rng);
+                let _ = self.world.restore(bodies, rng, physics.as_deref());
                 self.clock.rewind(tick);
                 self.delivered = delivered;
                 self.collisions = collisions;
@@ -286,10 +359,15 @@ impl Scheduler {
     ///
     /// # Errors
     ///
-    /// As [`rebuild_world`](Self::rebuild_world): this game, its build among
-    /// it, is left as it was.
-    pub fn rebuild(&mut self, vm: Vm, keep: Rebuild) -> Result<u32, SystemFault> {
-        let mut shadow = Scheduler::assemble(vm, self.seed)?;
+    /// As [`rebuild_world`](Self::rebuild_world), and
+    /// [`GameError::Physics`] when this game's physics engine does not reach
+    /// the new build's determinism tier: this game, its build among it, is
+    /// left as it was. The shadow steps with a fresh engine of this game's
+    /// kind.
+    pub fn rebuild(&mut self, vm: Vm, keep: Rebuild) -> Result<u32, GameError> {
+        let physics = self.world.fork_physics();
+        PhysicsTier::check(&*physics, vm.module().determinism())?;
+        let mut shadow = Scheduler::assemble(vm, self.seed, physics)?;
         // The shadow stores nothing until it replaces this game.
         let incoming = shadow.persist.take();
         if incoming.is_some() || self.persist.is_some() {
@@ -354,7 +432,11 @@ impl Scheduler {
         self.persist = persist;
         let fault = self.faults.drain(faults..).next();
         self.restore_states(&started);
-        self.world.restore(started.world.clone(), started.rng);
+        let _ = self.world.restore(
+            started.world.clone(),
+            started.rng,
+            started.physics.as_deref(),
+        );
         self.clock.rewind(started.tick);
         self.commands = held;
         self.input = input;
@@ -375,9 +457,11 @@ impl Scheduler {
     ///
     /// # Errors
     ///
-    /// The fault of a system whose instance could not be created: the game is
-    /// left as it was.
-    pub fn reload(&mut self, mut vm: Vm) -> Result<Restored, SystemFault> {
+    /// The fault of a system whose instance could not be created, or
+    /// [`GameError::Physics`] when the physics engine does not reach the new
+    /// build's determinism tier: the game is left as it was.
+    pub fn reload(&mut self, mut vm: Vm) -> Result<Restored, GameError> {
+        PhysicsTier::check(&*self.world.fork_physics(), vm.module().determinism())?;
         let snapshot = self.snapshot();
         let mut instances = instantiate(&mut vm, self.clock.tick())?;
         let module = vm.module().clone();
@@ -788,6 +872,7 @@ impl Scheduler {
             tick: self.clock.tick(),
             rng: self.world.rng(),
             world: self.world.bodies(),
+            physics: self.world.save_physics(),
             systems: systems.into(),
         }
     }
@@ -799,10 +884,17 @@ impl Scheduler {
     /// computeds reading them recompute and `@local` states keep theirs.
     /// Commands of ticks already delivered are not delivered again when they
     /// rerun. A snapshot of another build restores the states it shares with
-    /// this one.
+    /// this one. A degraded snapshot, or engine state that does not load,
+    /// starts the physics engine afresh over the restored bodies and says so
+    /// in [`Restored::degraded`].
     pub fn restore(&mut self, snapshot: &GameSnapshot) -> Restored {
-        let restored = self.restore_states(snapshot);
-        self.world.restore(snapshot.world.clone(), snapshot.rng);
+        let mut restored = self.restore_states(snapshot);
+        let loaded = self.world.restore(
+            snapshot.world.clone(),
+            snapshot.rng,
+            snapshot.physics.as_deref(),
+        );
+        restored.degraded = snapshot.physics.is_none() || loaded.is_err();
         self.rewind_to(snapshot.tick);
         restored
     }
@@ -984,22 +1076,18 @@ impl Scheduler {
             }
         }
         self.world.commit();
+        if running && !self.hooks.pre.is_empty() {
+            running = self.run_phase(Around::Pre, &mut left);
+            self.world.commit();
+        }
         self.world
             .step(self.clock.fixed_dt() as f32, &mut self.delivering);
         if running && !self.hooks.collision.is_empty() {
-            'events: for e in 0..self.delivering.len() {
-                let (first, second) = self.delivering[e];
-                let event = object::<CollisionEvent>(&self.cx.collision_event);
-                event.tick.set(tick);
-                event.first.set(first);
-                event.second.set(second);
-                for i in 0..self.hooks.collision.len() {
-                    let arg = self.cx.collision_event.clone();
-                    if !self.run_hook(self.hooks.collision[i], arg, &mut left, Phase::Tick) {
-                        break 'events;
-                    }
-                }
-            }
+            running = self.deliver_collisions(tick, &mut left);
+            self.world.commit();
+        }
+        if running && !self.hooks.post.is_empty() {
+            self.run_phase(Around::Post, &mut left);
             self.world.commit();
         }
         self.vm.defer_presentation(false);
@@ -1007,6 +1095,56 @@ impl Scheduler {
         self.deliver_commands(tick);
         self.clock.finish_tick();
         self.write_persisted(false);
+    }
+
+    /// Runs the `PrePhysics` or `PostPhysics` hooks in system order; false
+    /// when the tick's budget ran out.
+    fn run_phase(&mut self, around: Around, left: &mut Budget) -> bool {
+        let count = match around {
+            Around::Pre => self.hooks.pre.len(),
+            Around::Post => self.hooks.post.len(),
+        };
+        for i in 0..count {
+            let hook = match around {
+                Around::Pre => self.hooks.pre[i],
+                Around::Post => self.hooks.post[i],
+            };
+            let arg = self.cx.fixed_frame.clone();
+            if !self.run_hook(hook, arg, left, Phase::Tick) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Hands each contact of the tick to every `CollisionListener`, in the
+    /// module's [`CollisionDelivery`] order; false when the tick's budget ran
+    /// out.
+    fn deliver_collisions(&mut self, tick: u64, left: &mut Budget) -> bool {
+        let (events, listeners) = (self.delivering.len(), self.hooks.collision.len());
+        let major = self.vm.module().collision_delivery();
+        let (outer, inner) = match major {
+            CollisionDelivery::EventMajor => (events, listeners),
+            CollisionDelivery::ListenerMajor => (listeners, events),
+        };
+        for o in 0..outer {
+            for i in 0..inner {
+                let (e, l) = match major {
+                    CollisionDelivery::EventMajor => (o, i),
+                    CollisionDelivery::ListenerMajor => (i, o),
+                };
+                let (first, second) = self.delivering[e];
+                let event = object::<CollisionEvent>(&self.cx.collision_event);
+                event.tick.set(tick);
+                event.first.set(first);
+                event.second.set(second);
+                let arg = self.cx.collision_event.clone();
+                if !self.run_hook(self.hooks.collision[l], arg, left, Phase::Tick) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// Loads every `@persist` state from the store before the start: a
@@ -1193,10 +1331,19 @@ impl Scheduler {
     }
 }
 
+/// The physics phase a tick runs hooks around the step in.
+#[derive(Debug, Clone, Copy)]
+enum Around {
+    Pre,
+    Post,
+}
+
 /// A module's hooks by phase, each in system order.
 struct Hooks {
     start: Box<[Hook]>,
     fixed: Box<[Hook]>,
+    pre: Box<[Hook]>,
+    post: Box<[Hook]>,
     frame: Box<[Hook]>,
     collision: Box<[Hook]>,
     /// The `AudioListener` hooks, run each frame for each audio event.
@@ -1208,6 +1355,7 @@ impl Hooks {
         let (mut start, mut fixed) = (Vec::new(), Vec::new());
         let (mut frame, mut collision) = (Vec::new(), Vec::new());
         let mut listen = Vec::new();
+        let (mut pre, mut post) = (Vec::new(), Vec::new());
         for (index, system) in module.systems().iter().enumerate() {
             let bind = |hooks: &mut Vec<Hook>, id, quick| {
                 if let Some(chunk) = system.hook(id) {
@@ -1222,6 +1370,8 @@ impl Hooks {
             bind(&mut start, QUICK_START, true);
             bind(&mut fixed, FIXED_UPDATE, false);
             bind(&mut fixed, QUICK_FIXED, true);
+            bind(&mut pre, PRE_PHYSICS, false);
+            bind(&mut post, POST_PHYSICS, false);
             bind(&mut frame, FRAME_UPDATE, false);
             bind(&mut collision, COLLISION, false);
             bind(&mut listen, AUDIO_EVENT, false);
@@ -1229,6 +1379,8 @@ impl Hooks {
         Hooks {
             start: start.into(),
             fixed: fixed.into(),
+            pre: pre.into(),
+            post: post.into(),
             frame: frame.into(),
             collision: collision.into(),
             listen: listen.into(),

@@ -50,6 +50,9 @@ pub struct TargetProfile {
     /// The ticks a second of the fixed step (`[game] tick_rate`), at least 1:
     /// tick timers convert their durations with it.
     pub tick_rate: u32,
+    /// The order a tick delivers contacts to its `CollisionListener`s
+    /// (`[game] collision_delivery`).
+    pub collision_delivery: viso_behavior::CollisionDelivery,
     /// A release build, which removes debug draw.
     pub release: bool,
     /// The capabilities the package is granted (`[package] capabilities`).
@@ -71,6 +74,7 @@ impl Default for TargetProfile {
             devices: InputDevices::default(),
             determinism: Determinism::SameBinary,
             tick_rate: viso_behavior::DEFAULT_TICK_RATE,
+            collision_delivery: viso_behavior::CollisionDelivery::EventMajor,
             release: false,
             capabilities: CapabilitySet::new(),
             a11y_strict: false,

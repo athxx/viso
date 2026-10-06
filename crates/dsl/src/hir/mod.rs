@@ -54,4 +54,5 @@ pub use nodes::{
 };
 pub use reads::{DerivedReads, ReadEnv, SourceSet, WithDerived, collect_reads};
 pub use ty::{ConstArg, PackageTypes, Ty, TypeError, WidenError};
+pub use viso_behavior::CollisionDelivery;
 pub use viso_behavior::native::Determinism;
