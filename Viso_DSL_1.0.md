@@ -1574,6 +1574,7 @@ component_member     = { attribute },
 - `input`、`event` 和 `slot` 构成公开 UI 接口；
 - `state`、`computed`、内部 Action 和节点默认是私有实现；
 - Trait 可以要求 Component 实现 Action 或 Fn；
+- 成员 `const` 是只在所属 Component 内可见的常量，规则同顶层 `const`（§32）；
 - 同一 Component 内的成员名称不能在同一 Namespace 冲突；成员只在所属 Component（System 同理）内可见，不同 Component 可声明同名成员；成员遮蔽同名 Module 声明，局部 Binding 又遮蔽成员；
 - Value Namespace、Type Namespace 和 Event Namespace 分离，但 Formatter 应避免同名造成阅读混乱。
 
@@ -2284,6 +2285,8 @@ part_replace        = "replace", "part", identifier,
 - `override` 与 `replace` 是不同 AST Node，不存在隐式合并；
 - Runtime Hot Reload 使用 Part Stable ID 迁移状态。
 
+当前实现：`part name: T { .. }` 是带局部名 `name` 的节点，同一 View 中重复的 Part 名报 `E2002`；Component 与 Template 都可暴露 Part。`override part`/`replace part` 写在放置该 Component 的节点体或 Template 的 `use` 体中，名字须是其 Part（否则 `E3501`），写在 Widget 节点上或 View 顶层报 `E2103`。`override part` 的绑定与 Handler 属于调用方（读调用方的 State，在调用方的执行域中求值），按 Part 的节点类型检查（`E3101`、`E3102` 等）；它取代 Part 自身对同一 Property（`:` 或 `bind`）的绑定与同一 Event 的 Handler，其余保留。可覆盖的是 Widget Part 的全部 Property 与 Event；Part 是用户 Component 时其 Input 不经 `override` 覆盖（`E3711`），可用 `replace`。`replace part` 的 View Block 属于调用方，必须恰好挂载一个节点（否则 `E3502`）。Part 位于定义方 `for`/`match` 之内时，调用方的 `override`/`replace` 无法在其中求值（`E3711`）。
+
 ---
 
 ## 58. Template
@@ -2344,6 +2347,8 @@ use TitledCard("Profile") {
 - Template 展开后保留 Source Origin，诊断可同时指向定义与调用点；
 - Template 递归必须有可证明的有限展开，否则编译错误；
 - 实现可以延迟 Template 实例化，但语义等价于 Typed IR 展开。
+
+当前实现：Template 是没有 State 的 Component，参数是它的 Input，与 Component 实例一样在编译期内联进放置它的 View（§40.1），每个 `use` 一个实例，实例身份为 `Template名#序号`。成员只能是 `slot`、`const`、`fn` 与 `view`，其他成员或缺少 `view` 报 `E3601`。`use` 的实参按位置或 `name: value` 给出参数，每个参数至多给一次（`E3102`），未知参数名报 `E3101`，多余实参与缺少无默认值的参数报 `E2103`，实参按参数类型检查；`use` 体只含 `fill`、`override part`、`replace part`（其他项 `E3601`）。Template 只能以 `use` 放置：写成节点 `T { .. }`，或 `use` 一个 Component，报 `E2103`。经 `use` 直接或间接放置自身所在的 Template 报 `E3601`：参数是运行期值，无法在编译期终止展开。展开后的节点保留定义处的 Source Origin，其实例记录调用处（`use` 或节点）的 Source Origin；挂载失败（`E3711`）的诊断同时指向两处。其他文件声明的 Template 尚不内联（`E3711`）。
 
 在 Template 定义内部，调用方 Slot 通过标准 `SlotOutlet` Component 放入结构。`SlotOutlet` 只有一个 Property `slot`，其值是当前 Template/Component 声明的 Slot 名；它就地展开调用方为该 Slot 提供的节点，未提供时展开为 Slot 默认值（`None`/`empty` 为零个节点）。`SlotOutlet` 只能出现在声明该 Slot 的 Template/Component 的 View 中，每个 Slot 至多一个 `SlotOutlet`。`fill` 只允许出现在 Template/Component 的调用方，不能用于定义 Slot Outlet。缺少 `slot`、其值不是单个标识符、或不是当前 Component 声明的 Slot 报 `E3501`；同一 Slot 的第二个 `SlotOutlet`，或位于 `for` 内（会把调用方节点放置多次）的 `SlotOutlet` 报 `E3502`。
 
@@ -8599,7 +8604,7 @@ RecordPatternField
 | E3402  | Key Expression 不稳定                                   |
 | E3501  | 未知 Slot/Part                                          |
 | E3502  | Slot Cardinality 冲突                                   |
-| E3601  | Template 无限递归                                       |
+| E3601  | Template 无限递归，或 Template / `use` 体含不允许的项      |
 | E3701  | `@bindable` 配对错误（§U2.2）                           |
 | E3702  | 父节点提供的 Property 用于错误或无法静态确定的父节点（§U3.8） |
 | E3703  | `transition` 用于不可动画 Property 或类型不符（§U6.1）  |

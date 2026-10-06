@@ -55,6 +55,8 @@ use super::view::{
     HandlerSink, InputFlows, InputProp, PercentFlow, ViewEnv, check_input_bases,
     check_percent_flow, check_view,
 };
+pub(crate) use templates::PartInfo;
+use templates::parts_of;
 
 mod audio;
 mod effects;
@@ -66,6 +68,7 @@ mod styles;
 mod system;
 mod tags;
 mod tasks;
+mod templates;
 mod themes;
 mod traits;
 
@@ -302,6 +305,7 @@ fn collect_migrators(
         let component = match decl {
             Some(Item::Component(c)) => Some(c),
             Some(Item::System(s)) => Some(s.as_component()),
+            Some(Item::Template(t)) => Some(t.as_component()),
             _ => None,
         };
         if let Some(c) = component {
@@ -406,6 +410,13 @@ fn lower_module(
     let styles_cyclic = styles::cyclic(&book);
     let _ = env.styles.set(book);
     let book = env.styles.get().expect("set above");
+    templates::check_recursion(
+        cu,
+        refs,
+        &env.decls.templates,
+        &|c| env.scope.components.get(&c.syntax().text_range()).copied(),
+        diagnostics,
+    );
 
     for item in cu.items() {
         let decl = match item {
@@ -434,6 +445,14 @@ fn lower_module(
                 let component =
                     lower_component_item(&c, refs, env, diagnostics, cap, &mut flows, &mut percent);
                 styles::check_members(&c, env, diagnostics);
+                components.push(component);
+            }
+            Item::Template(t) => {
+                let c = t.as_component();
+                env.focus_component(&c);
+                templates::check_members(&t, diagnostics);
+                let component =
+                    lower_component_item(&c, refs, env, diagnostics, cap, &mut flows, &mut percent);
                 components.push(component);
             }
             Item::System(s) => {
@@ -551,6 +570,7 @@ fn lower_component_item(
 ) -> HirComponent {
     env.focus_component(decl);
     check_bindable(decl, env, diagnostics);
+    templates::check_parts(decl, diagnostics);
     let schema = lower_component(decl, refs, env, diagnostics, percent);
     env.record_inferred(&schema);
     check_schema_ownership(&schema, env, diagnostics);
@@ -578,11 +598,26 @@ fn lower_component_item(
         ));
         check_body(refs, BodyContext::View, env, block.syntax(), diagnostics);
     }
+    for param in decl.template_params() {
+        if let Some(default) = param.default() {
+            check_body(
+                refs,
+                BodyContext::Initializer,
+                env,
+                default.syntax(),
+                diagnostics,
+            );
+        }
+    }
     for member in decl.members() {
         let (context, body) = match &member {
             Member::Computed(d) => (BodyContext::Computed, d.body()),
             Member::State(d) => (BodyContext::Initializer, d.initializer()),
             Member::Input(d) => (BodyContext::Initializer, d.default()),
+            Member::Const(c) => {
+                check_const(c, refs, env, diagnostics, percent);
+                continue;
+            }
             _ => continue,
         };
         if let Some(body) = body {
@@ -997,13 +1032,17 @@ fn lower_member_values(
             .find(|(n, _)| n.as_str() == name)
             .map(|(_, meta)| meta)
     };
-    for member in decl.members() {
-        let (kind, name, value) = match &member {
-            Member::State(d) => (FunctionKind::StateInit, d.name(), d.initializer()),
-            Member::Computed(d) => (FunctionKind::Computed, d.name(), d.body()),
-            Member::Input(d) => (FunctionKind::InputDefault, d.name(), d.default()),
-            _ => continue,
-        };
+    let params = decl
+        .template_params()
+        .into_iter()
+        .map(|p| (FunctionKind::InputDefault, p.name(), p.default()));
+    let members = decl.members().filter_map(|member| match &member {
+        Member::State(d) => Some((FunctionKind::StateInit, d.name(), d.initializer())),
+        Member::Computed(d) => Some((FunctionKind::Computed, d.name(), d.body())),
+        Member::Input(d) => Some((FunctionKind::InputDefault, d.name(), d.default())),
+        _ => None,
+    });
+    for (kind, name, value) in params.chain(members) {
         let name = name_of(name);
         let (Some(value), Some(meta)) = (value, settled(&name)) else {
             continue;
@@ -1273,6 +1312,11 @@ struct Declarations {
     selectors: HashMap<SymbolId, Vec<String>>,
     /// Every system, which `@after`/`@before` may name.
     systems: HashSet<SymbolId>,
+    /// Every template, placed by `use` rather than as a node.
+    templates: HashSet<SymbolId>,
+    /// The parts each component and template exposes, by name, with the
+    /// node each one is.
+    parts: HashMap<SymbolId, Vec<PartInfo>>,
     /// Every enum deriving `InputAction`.
     input_derives: HashSet<SymbolId>,
     /// Every `InputMap` constant, in module order; the first is the package's.
@@ -1480,6 +1524,14 @@ impl ViewEnv for ModuleEnv<'_> {
 
     fn component_slots(&self, component: SymbolId) -> Option<&[HirSlot]> {
         self.decls.slots.get(&component).map(Vec::as_slice)
+    }
+
+    fn component_parts(&self, component: SymbolId) -> &[PartInfo] {
+        self.decls.parts.get(&component).map_or(&[], Vec::as_slice)
+    }
+
+    fn is_template(&self, component: SymbolId) -> bool {
+        self.decls.templates.contains(&component)
     }
 
     fn standard_type(&self, name: &str) -> Option<SymbolId> {
@@ -1703,10 +1755,11 @@ impl ModuleScope {
             };
             let system = match &decl {
                 Item::System(s) => Some(s.as_component()),
+                Item::Template(t) => Some(t.as_component()),
                 _ => None,
             };
             match &decl {
-                Item::Component(_) | Item::System(_) => {
+                Item::Component(_) | Item::System(_) | Item::Template(_) => {
                     // Record this component's symbol keyed by its declaration span, so the env
                     // can focus on whichever component it is currently lowering (a module may
                     // declare several), and its members from its own member table. A system
@@ -1720,9 +1773,16 @@ impl ModuleScope {
                         continue;
                     };
                     scope.components.insert(c.syntax().text_range(), sym);
-                    if system.is_some() {
-                        decls.systems.insert(sym);
+                    match &decl {
+                        Item::System(_) => {
+                            decls.systems.insert(sym);
+                        }
+                        Item::Template(_) => {
+                            decls.templates.insert(sym);
+                        }
+                        _ => {}
                     }
+                    decls.parts.insert(sym, parts_of(c));
                     scope.place(decls, sym);
                     decls.types.names.insert(sym, name_of(c.name()));
                     let Some(members) = table.members(sym) else {
@@ -1735,6 +1795,9 @@ impl ModuleScope {
                     decls
                         .slots
                         .insert(sym, super::component::slots_of(c, &mut Vec::new()));
+                    for param in c.template_params() {
+                        scope.record_param(decls, sym, &param, members, interner);
+                    }
                     for member in c.members() {
                         scope.record_member(decls, sym, &member, members, interner);
                     }
@@ -1916,6 +1979,23 @@ impl ModuleScope {
                 }
                 return;
             }
+            Member::Const(d) => {
+                let sym = decl_symbol(table, interner, d.name(), Namespace::Value);
+                if let Some(sym) = sym {
+                    self.declared.insert(d.syntax().text_range(), sym);
+                    self.own(owner, name_of(d.name()), sym);
+                    decls.facts.insert(
+                        sym,
+                        MemberFacts {
+                            ty: self.annotation_of(d.syntax()),
+                            effect: None,
+                            is_reactive_source: false,
+                            kind: SymbolKind::Const,
+                        },
+                    );
+                }
+                return;
+            }
             Member::Slot(_) | Member::View(_) | Member::Effect(_) | Member::Native(_) => return,
         };
 
@@ -1946,6 +2026,30 @@ impl ModuleScope {
                 effect: None,
                 is_reactive_source: kind != SymbolKind::Event,
                 kind,
+            },
+        );
+    }
+
+    /// Records a parameter of the template `owner`: one of its inputs.
+    fn record_param(
+        &mut self,
+        decls: &mut Declarations,
+        owner: SymbolId,
+        param: &Param,
+        table: &SymbolTable,
+        interner: &mut NameInterner,
+    ) {
+        let Some(sym) = decl_symbol(table, interner, param.name(), Namespace::Value) else {
+            return;
+        };
+        self.own(owner, name_of(param.name()), sym);
+        decls.facts.insert(
+            sym,
+            MemberFacts {
+                ty: self.annotation_of(param.syntax()),
+                effect: None,
+                is_reactive_source: true,
+                kind: SymbolKind::Input,
             },
         );
     }
@@ -2019,7 +2123,22 @@ impl ModuleScope {
         table: &SymbolTable,
         interner: &mut NameInterner,
     ) -> Vec<InputProp> {
-        let mut inputs = Vec::new();
+        let mut inputs: Vec<InputProp> = decl
+            .template_params()
+            .into_iter()
+            .filter_map(|param| {
+                let name = param.name()?;
+                Some(InputProp {
+                    name: name.text().trim_start_matches("r#").to_string(),
+                    ty: self.annotation_of(param.syntax()),
+                    two_way: false,
+                    styleable: false,
+                    declared_at: name.text_range(),
+                    symbol: decl_symbol(table, interner, Some(name), Namespace::Value),
+                    has_default: param.default().is_some(),
+                })
+            })
+            .collect();
         let mut bindable = false;
         let mut styleable = false;
         for child in decl.syntax().children() {
@@ -2042,6 +2161,8 @@ impl ModuleScope {
                                 Some(name.clone()),
                                 Namespace::Value,
                             ),
+                            has_default: InputDecl::cast(child.clone())
+                                .is_some_and(|d| d.default().is_some()),
                         });
                     }
                     bindable = false;

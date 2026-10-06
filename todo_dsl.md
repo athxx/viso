@@ -1135,14 +1135,15 @@ timers (§104–§111).
   - [x] `bind … using C`: `C: TwoWayConverter<Model, View>`
         (`to_view` / `to_model`), lowered on both directions; `E3711` gone
         for converters.
-- [ ] `template` / `part` (`E3601`).
-  - [ ] `part` nodes in views and components; `override part` (bindings and
+- [x] `template` / `part` (`E3601`).
+  - [x] `part` nodes in views and components; `override part` (bindings and
         handlers) and `replace part` (a view block) at use sites.
-  - [ ] `template` declarations (params, slots, consts, fns, view) and
+  - [x] `template` declarations (params, slots, consts, fns, view) and
         `use T(args) { .. };`, expanded at compile time into the UI IR with
         Source Origins of both definition and call site.
-  - [ ] Recursion proven finite or `E3601`; no state, effect, task or
+  - [x] Recursion proven finite or `E3601`; no state, effect, task or
         resource in a template.
+  - [x] Member `const` in components and templates.
 - [ ] Multi-system game profile and physics integration contract.
   - [ ] `PrePhysics` / `PostPhysics` phases around the physics step; the
         profile's `physics_order` and `collision_delivery_order`.

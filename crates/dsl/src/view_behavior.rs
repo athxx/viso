@@ -256,12 +256,12 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     let mut controls = Vec::with_capacity(nodes.len());
     for (key, kind, node) in nodes {
         let mut control = Control::new(kind);
-        for (property, at) in &node.control_reads {
+        for (property, at, instance) in &node.control_reads {
             let Some(input) = kind.input(property) else {
                 continue;
             };
             let site = Site {
-                instance: node.instance,
+                instance: *instance,
                 at: *at,
                 part: 0,
             };

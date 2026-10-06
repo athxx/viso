@@ -7,10 +7,6 @@
 //! The green tree stays the single source of truth — the same tree a formatter, an
 //! LSP, or a rename refactor walks — so projecting the AST costs nothing beyond a
 //! kind tag comparison.
-//!
-//! Only the Core surface parsed in commits 1–2 gets wrappers here; Advanced items
-//! parse to [`SyntaxKind::AdvancedItem`] and are reachable as raw syntax but carry
-//! no typed view yet.
 
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
@@ -335,9 +331,130 @@ ast_node!(
     AssocTypeDecl = AssocTypeDecl
 );
 ast_node!(
-    /// An Advanced-tier declaration parsed to a placeholder (no resolution yet).
-    AdvancedItem = AdvancedItem
+    /// `template IDENT GenericParams? ( ParamList ) WhereClause? { Member* }` (§58).
+    TemplateDecl = TemplateDecl
 );
+ast_node!(
+    /// `part IDENT : ComponentType NodeBody` — a node a template or component
+    /// exposes to its callers (§57).
+    PartNode = PartNode
+);
+ast_node!(
+    /// `use TypePath ( ArgumentList ) NodeBody? ;` — a template use (§58).
+    TemplateUse = TemplateUse
+);
+ast_node!(
+    /// `override part IDENT { PartOverrideItem* }` (§57).
+    PartOverride = PartOverride
+);
+ast_node!(
+    /// `replace part IDENT ViewBlock` (§57).
+    PartReplace = PartReplace
+);
+
+impl TemplateDecl {
+    /// The template's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// Its parameters, in order.
+    pub fn params(&self) -> Vec<Param> {
+        support::child::<ParamList>(&self.syntax)
+            .map(|l| l.params().collect())
+            .unwrap_or_default()
+    }
+
+    /// The template as a component: the same node, whose parameters are its
+    /// inputs and whose members lower like a component's. Lowering rejects
+    /// any member but `slot`, `const`, `fn` and `view`.
+    pub fn as_component(&self) -> ComponentDecl {
+        ComponentDecl {
+            syntax: self.syntax.clone(),
+        }
+    }
+}
+
+impl PartNode {
+    /// The part's name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// The part's node type.
+    pub fn ty(&self) -> Option<TypePath> {
+        support::child(&self.syntax)
+    }
+
+    /// The part's body.
+    pub fn body(&self) -> Option<NodeBody> {
+        support::child(&self.syntax)
+    }
+}
+
+impl TemplateUse {
+    /// The template the use names.
+    pub fn ty(&self) -> Option<TypePath> {
+        support::child(&self.syntax)
+    }
+
+    /// Its arguments in order: each value, with the label a named one has.
+    pub fn args(&self) -> Vec<(Option<SyntaxToken>, Expr)> {
+        self.syntax
+            .children()
+            .into_iter()
+            .filter(|c| c.kind() == SyntaxKind::ArgumentList)
+            .flat_map(|list| list.children())
+            .filter(|a| a.kind() == SyntaxKind::Argument)
+            .filter_map(|arg| {
+                let value = arg.children().into_iter().find_map(Expr::cast)?;
+                let label = arg
+                    .children_with_tokens()
+                    .into_iter()
+                    .filter_map(|e| e.as_token().cloned())
+                    .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent));
+                Some((label, value))
+            })
+            .collect()
+    }
+
+    /// Its argument list, if written.
+    pub fn arg_list(&self) -> Option<SyntaxNode> {
+        self.syntax
+            .children()
+            .into_iter()
+            .find(|c| c.kind() == SyntaxKind::ArgumentList)
+    }
+
+    /// Its body: the `fill`, `override part` and `replace part` clauses.
+    pub fn body(&self) -> Option<NodeBody> {
+        support::child(&self.syntax)
+    }
+}
+
+impl PartOverride {
+    /// The name of the part it overrides.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// Its bindings and handlers, in order.
+    pub fn members(&self) -> impl Iterator<Item = ViewItem> {
+        support::children(&self.syntax)
+    }
+}
+
+impl PartReplace {
+    /// The name of the part it replaces.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// What replaces the part.
+    pub fn body(&self) -> Option<ViewBlock> {
+        support::child(&self.syntax)
+    }
+}
 
 impl ImportDecl {
     /// The imported module path.
@@ -407,6 +524,19 @@ impl ComponentDecl {
     /// The component's `view` declaration, if it has one.
     pub fn view(&self) -> Option<ViewDecl> {
         support::child(&self.syntax)
+    }
+
+    /// Whether this is a template seen as a component
+    /// ([`TemplateDecl::as_component`]).
+    pub fn is_template(&self) -> bool {
+        self.syntax.kind() == SyntaxKind::TemplateDecl
+    }
+
+    /// A template's parameters, its inputs; none for a component.
+    pub fn template_params(&self) -> Vec<Param> {
+        TemplateDecl::cast(self.syntax.clone())
+            .map(|t| t.params())
+            .unwrap_or_default()
     }
 }
 
@@ -1391,6 +1521,11 @@ impl Param {
     pub fn ty(&self) -> Option<TypePath> {
         support::child(&self.syntax)
     }
+
+    /// The `= value` default, if written.
+    pub fn default(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
 }
 
 impl ReturnType {
@@ -2057,7 +2192,7 @@ pub enum Item {
     Native(NativeDecl),
     Trait(TraitDecl),
     Impl(ImplDecl),
-    Advanced(AdvancedItem),
+    Template(TemplateDecl),
 }
 
 impl AstNode for Item {
@@ -2080,7 +2215,7 @@ impl AstNode for Item {
                 | SyntaxKind::NativeDecl
                 | SyntaxKind::TraitDecl
                 | SyntaxKind::ImplDecl
-                | SyntaxKind::AdvancedItem
+                | SyntaxKind::TemplateDecl
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
@@ -2101,7 +2236,7 @@ impl AstNode for Item {
             SyntaxKind::NativeDecl => Item::Native(NativeDecl { syntax: node }),
             SyntaxKind::TraitDecl => Item::Trait(TraitDecl { syntax: node }),
             SyntaxKind::ImplDecl => Item::Impl(ImplDecl { syntax: node }),
-            SyntaxKind::AdvancedItem => Item::Advanced(AdvancedItem { syntax: node }),
+            SyntaxKind::TemplateDecl => Item::Template(TemplateDecl { syntax: node }),
             _ => return None,
         };
         Some(item)
@@ -2124,7 +2259,7 @@ impl AstNode for Item {
             Item::Native(n) => n.syntax(),
             Item::Trait(n) => n.syntax(),
             Item::Impl(n) => n.syntax(),
-            Item::Advanced(n) => n.syntax(),
+            Item::Template(n) => n.syntax(),
         }
     }
 }
@@ -2144,6 +2279,7 @@ pub enum Member {
     Resource(ResourceDecl),
     View(ViewDecl),
     Native(NativeDecl),
+    Const(ConstDecl),
 }
 
 impl AstNode for Member {
@@ -2162,6 +2298,7 @@ impl AstNode for Member {
                 | SyntaxKind::ResourceDecl
                 | SyntaxKind::ViewDecl
                 | SyntaxKind::NativeDecl
+                | SyntaxKind::ConstDecl
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
@@ -2178,6 +2315,7 @@ impl AstNode for Member {
             SyntaxKind::ResourceDecl => Member::Resource(ResourceDecl { syntax: node }),
             SyntaxKind::ViewDecl => Member::View(ViewDecl { syntax: node }),
             SyntaxKind::NativeDecl => Member::Native(NativeDecl { syntax: node }),
+            SyntaxKind::ConstDecl => Member::Const(ConstDecl { syntax: node }),
             _ => return None,
         };
         Some(member)
@@ -2196,6 +2334,7 @@ impl AstNode for Member {
             Member::Resource(n) => n.syntax(),
             Member::View(n) => n.syntax(),
             Member::Native(n) => n.syntax(),
+            Member::Const(n) => n.syntax(),
         }
     }
 }
@@ -2213,6 +2352,10 @@ pub enum ViewItem {
     For(ViewFor),
     Match(ViewMatch),
     Fill(FillClause),
+    Part(PartNode),
+    Use(TemplateUse),
+    Override(PartOverride),
+    Replace(PartReplace),
 }
 
 impl AstNode for ViewItem {
@@ -2228,6 +2371,10 @@ impl AstNode for ViewItem {
                 | SyntaxKind::ViewFor
                 | SyntaxKind::ViewMatch
                 | SyntaxKind::FillClause
+                | SyntaxKind::PartNode
+                | SyntaxKind::TemplateUse
+                | SyntaxKind::PartOverride
+                | SyntaxKind::PartReplace
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
@@ -2241,6 +2388,10 @@ impl AstNode for ViewItem {
             SyntaxKind::ViewFor => ViewItem::For(ViewFor { syntax: node }),
             SyntaxKind::ViewMatch => ViewItem::Match(ViewMatch { syntax: node }),
             SyntaxKind::FillClause => ViewItem::Fill(FillClause { syntax: node }),
+            SyntaxKind::PartNode => ViewItem::Part(PartNode { syntax: node }),
+            SyntaxKind::TemplateUse => ViewItem::Use(TemplateUse { syntax: node }),
+            SyntaxKind::PartOverride => ViewItem::Override(PartOverride { syntax: node }),
+            SyntaxKind::PartReplace => ViewItem::Replace(PartReplace { syntax: node }),
             _ => return None,
         };
         Some(item)
@@ -2256,6 +2407,10 @@ impl AstNode for ViewItem {
             ViewItem::For(n) => n.syntax(),
             ViewItem::Match(n) => n.syntax(),
             ViewItem::Fill(n) => n.syntax(),
+            ViewItem::Part(n) => n.syntax(),
+            ViewItem::Use(n) => n.syntax(),
+            ViewItem::Override(n) => n.syntax(),
+            ViewItem::Replace(n) => n.syntax(),
         }
     }
 }

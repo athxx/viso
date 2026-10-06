@@ -41,16 +41,16 @@ use viso_view::ControlKind;
 use super::access;
 use super::generic::Converter;
 use super::infer::{InferCx, MatchCheck, TypeEnv};
-use super::lower::TargetProfile;
+use super::lower::{PartInfo, TargetProfile};
 use super::nodes::HirSlot;
 use super::percent::{Carry, PercentFacts, PercentSources};
 use super::style::{self, Own, PartValue, StyleBook, StyleUse};
 use super::ty::Ty;
 use super::widget::{self, ChildProps, PropLookup, WidgetSchema, value_ty};
 use crate::ast::{
-    AssignablePath, AstNode, ElseBranch, EventHandler, Expr, FillClause, NodeBody, PathExpr,
-    PropertyBinding, PropertyPath, TwoWayBinding, TypePath, ViewBlock, ViewFor, ViewIf, ViewItem,
-    ViewMatch,
+    AssignablePath, AstNode, ElseBranch, EventHandler, Expr, FillClause, NodeBody, PartOverride,
+    PartReplace, PathExpr, PropertyBinding, PropertyPath, TemplateUse, TwoWayBinding, TypePath,
+    ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
 };
 use crate::behavior::lower::{
     Def, ProgramBuilder, RegionEntry, lower_handler, lower_region_entry, lower_write_back,
@@ -74,6 +74,8 @@ pub(crate) struct InputProp {
     pub(crate) declared_at: TextRange,
     /// The input's member symbol, which references to it in its component resolve to.
     pub(crate) symbol: Option<SymbolId>,
+    /// Whether it has a default, so a template's `use` may leave it out.
+    pub(crate) has_default: bool,
 }
 
 /// An input of a component: the component and the input's index among its inputs.
@@ -113,6 +115,12 @@ pub(crate) trait ViewEnv: TypeEnv {
 
     /// The slots of the component `component`.
     fn component_slots(&self, component: SymbolId) -> Option<&[HirSlot]>;
+
+    /// The parts the view of the component or template `component` exposes.
+    fn component_parts(&self, component: SymbolId) -> &[PartInfo];
+
+    /// Whether `component` is a template, placed by `use`.
+    fn is_template(&self, component: SymbolId) -> bool;
 
     /// The prelude type named `name`.
     fn standard_type(&self, name: &str) -> Option<SymbolId>;
@@ -524,6 +532,10 @@ impl<'a> ViewWalk<'a> {
             match item {
                 ViewItem::Named(node) => self.node(node.ty(), node.body(), scope.inner),
                 ViewItem::Anonymous(node) => self.node(node.ty(), node.body(), scope.inner),
+                ViewItem::Part(part) => self.node(part.ty(), part.body(), scope.inner),
+                ViewItem::Use(template) => self.template_use(&template, scope.inner),
+                ViewItem::Override(o) => self.part_override(&o, scope.owner),
+                ViewItem::Replace(r) => self.part_replace(&r, scope.owner),
                 ViewItem::Property(binding) => self.property(&binding, scope, &mut bound),
                 ViewItem::TwoWayBinding(binding) => self.two_way(&binding, scope, &mut bound),
                 ViewItem::Handler(handler) => self.handler(&handler, scope.owner),
@@ -550,6 +562,19 @@ impl<'a> ViewWalk<'a> {
     fn node(&mut self, ty: Option<TypePath>, body: Option<NodeBody>, parent: Parent<'_>) {
         let at = ty.as_ref().map(|ty| ty.syntax().text_range());
         let owner = ty.and_then(|ty| self.owner_of(&ty));
+        if let (Some(owner), Some(at)) = (&owner, at)
+            && owner.component.is_some_and(|c| self.env.is_template(c))
+        {
+            self.diagnostics.push(Diagnostic::error(
+                "E2103",
+                at,
+                format!(
+                    "`{0}` is a template, which `use {0}(..);` places, not a node",
+                    owner.name
+                ),
+            ));
+            return;
+        }
         if let (Some(owner), Some(at)) = (&owner, at) {
             if owner.is_outlet() {
                 self.outlet(body.as_ref(), at);
@@ -959,11 +984,15 @@ impl<'a> ViewWalk<'a> {
                     .map(|arm| self.block_count(arm.body()))
                     .reduce(Count::or)
                     .unwrap_or(Count::NONE),
+                ViewItem::Part(part) => self.node_count(part.ty(), part.body()),
+                ViewItem::Use(_) => Count::ONE,
                 ViewItem::For(_) => Count::ANY,
                 ViewItem::Property(_)
                 | ViewItem::Handler(_)
                 | ViewItem::TwoWayBinding(_)
-                | ViewItem::Fill(_) => Count::NONE,
+                | ViewItem::Fill(_)
+                | ViewItem::Override(_)
+                | ViewItem::Replace(_) => Count::NONE,
             };
             sum.then(one)
         })
@@ -1101,6 +1130,267 @@ impl<'a> ViewWalk<'a> {
                 self.outlets.insert(name, at);
             }
         }
+    }
+
+    /// `use T(args) { .. };` whose parent is `parent`: `T` is a template, each
+    /// argument gives one of its parameters a value of its type (each lowered
+    /// as the argument entry the template reads), every parameter without a
+    /// default is given, and the body holds only `fill`, `override part` and
+    /// `replace part`.
+    fn template_use(&mut self, u: &TemplateUse, parent: Parent<'_>) {
+        let args = u.args();
+        let owner = u.ty().and_then(|ty| {
+            let owner = self.owner_of(&ty)?;
+            if owner.component.is_some_and(|c| self.env.is_template(c)) {
+                return Some(owner);
+            }
+            self.diagnostics.push(Diagnostic::error(
+                "E2103",
+                ty.syntax().text_range(),
+                format!(
+                    "`{0}` is no template; `use` places a template, and `{0} {{ .. }}` a node",
+                    owner.name
+                ),
+            ));
+            None
+        });
+        let Some(owner) = owner else {
+            for (_, value) in &args {
+                let _ = self.cx.infer_expr(value, None);
+            }
+            return;
+        };
+        let component = owner.component.expect("a template");
+        let at = u.syntax().text_range();
+        let mut given: Vec<Option<TextRange>> = vec![None; owner.inputs.len()];
+        let mut next = 0;
+        for (label, value) in &args {
+            let errors = self.error_count();
+            let range = value.syntax().text_range();
+            let index = match label {
+                Some(label) => {
+                    let text = label.text();
+                    let name = text.trim_start_matches("r#");
+                    let found = owner.inputs.iter().position(|i| i.name == name);
+                    if found.is_none() {
+                        let candidates = owner.inputs.iter().map(|i| Candidate {
+                            name: &i.name,
+                            declared_at: self.env.declaration_site(component, i.declared_at),
+                        });
+                        let suggestions = nearest(name, candidates);
+                        let mut diagnostic = Diagnostic::error(
+                            "E3101",
+                            label.text_range(),
+                            format!("`{}` has no parameter `{name}`", owner.name),
+                        );
+                        attach(&mut diagnostic, label.text_range(), &suggestions);
+                        self.diagnostics.push(diagnostic);
+                    }
+                    found
+                }
+                None if next < owner.inputs.len() => {
+                    next += 1;
+                    Some(next - 1)
+                }
+                None => {
+                    self.diagnostics.push(Diagnostic::error(
+                        "E2103",
+                        range,
+                        format!(
+                            "`{}` takes {} arguments, and this is one more",
+                            owner.name,
+                            owner.inputs.len()
+                        ),
+                    ));
+                    None
+                }
+            };
+            let Some(index) = index else {
+                let _ = self.cx.infer_expr(value, None);
+                continue;
+            };
+            let input = &owner.inputs[index];
+            if let Some(first) = given[index] {
+                let mut diagnostic = Diagnostic::error(
+                    "E3102",
+                    range,
+                    format!("the parameter `{}` is already given", input.name),
+                );
+                diagnostic
+                    .related
+                    .push(Related::new(first, "first given here"));
+                self.diagnostics.push(diagnostic);
+            }
+            given[index] = Some(range);
+            let _ = match &input.ty {
+                want if want.has_unknown() => self.cx.infer_expr(value, None),
+                want if is_text(want) => self.cx.infer_text_value(value, want),
+                want => self.cx.infer_promoted(value, want),
+            };
+            // The inlined template reads its parameter through this argument.
+            self.region_entry(errors, "arg", range, &RegionEntry::Value(value));
+            let carry = self.cx.carry(value.syntax());
+            if carry.spelled.is_some() || !carry.names.is_empty() {
+                self.flow.sinks.push(Sink {
+                    carry,
+                    at: range,
+                    to: SinkTo::Input((component, index)),
+                });
+            }
+        }
+        let missing: Vec<String> = owner
+            .inputs
+            .iter()
+            .zip(&given)
+            .filter(|(input, given)| given.is_none() && !input.has_default)
+            .map(|(input, _)| format!("`{}`", input.name))
+            .collect();
+        if !missing.is_empty() {
+            let range = u.arg_list().map_or(at, |l| l.text_range());
+            self.diagnostics.push(Diagnostic::error(
+                "E2103",
+                range,
+                format!(
+                    "`{}` needs {}, which has no default",
+                    owner.name,
+                    missing.join(", ")
+                ),
+            ));
+        }
+        let body = u.body();
+        let members: Vec<ViewItem> = body.iter().flat_map(|b| b.members()).collect();
+        let mut stray = false;
+        for member in &members {
+            if !matches!(
+                member,
+                ViewItem::Fill(_) | ViewItem::Override(_) | ViewItem::Replace(_)
+            ) {
+                stray = true;
+                self.diagnostics.push(Diagnostic::error(
+                    "E3601",
+                    member.syntax().text_range(),
+                    "a `use` body holds only `fill`, `override part` and `replace part`;                      the template's parameters take its values",
+                ));
+            }
+        }
+        if !stray {
+            let type_at = u.ty().map_or(at, |t| t.syntax().text_range());
+            self.slots(&owner, body.as_ref(), type_at);
+        }
+        let scope = Scope {
+            owner: Some(&owner),
+            outer: parent,
+            inner: Parent::Unknown,
+        };
+        let clauses = members.into_iter().filter(|m| {
+            matches!(
+                m,
+                ViewItem::Fill(_) | ViewItem::Override(_) | ViewItem::Replace(_)
+            )
+        });
+        self.items(clauses, scope);
+    }
+
+    /// The part `name` of the component or template `owner` places, which an
+    /// `override part`/`replace part` (`what`) names: a node of another type
+    /// exposes none (`E2103`), an unknown name is `E3501`.
+    fn part_of(
+        &mut self,
+        name: Option<SyntaxToken>,
+        owner: Option<&Owner<'a>>,
+        what: &str,
+    ) -> Option<PartInfo> {
+        let name = name?;
+        let text = name.text();
+        let text = text.trim_start_matches("r#");
+        let range = name.text_range();
+        let Some((owner, component)) = owner.and_then(|o| Some((o, o.component?))) else {
+            let message = match owner {
+                Some(owner) => format!(
+                    "`{what} part` names a part of the component or template a node                      places, and `{}` is a widget, which has none",
+                    owner.name
+                ),
+                None => format!(
+                    "`{what} part` names a part of the component or template whose node                      or `use` it is in"
+                ),
+            };
+            self.diagnostics
+                .push(Diagnostic::error("E2103", range, message));
+            return None;
+        };
+        let parts = self.env.component_parts(component);
+        if let Some(part) = parts.iter().find(|p| p.name == text) {
+            return Some(part.clone());
+        }
+        let candidates = parts.iter().map(|p| Candidate {
+            name: &p.name,
+            declared_at: self.env.declaration_site(component, p.at),
+        });
+        let suggestions = nearest(text, candidates);
+        let mut diagnostic = Diagnostic::error(
+            "E3501",
+            range,
+            format!("`{}` has no part `{text}`", owner.name),
+        );
+        attach(&mut diagnostic, range, &suggestions);
+        self.diagnostics.push(diagnostic);
+        None
+    }
+
+    /// `override part name { .. }` in the body of a node or `use` of `owner`:
+    /// its bindings and handlers are the caller's, checked against the part's
+    /// node type.
+    fn part_override(&mut self, o: &PartOverride, owner: Option<&Owner<'a>>) {
+        let part = self.part_of(o.name(), owner, "override");
+        let part_owner = part.and_then(|p| self.part_owner(&p.ty));
+        let scope = Scope {
+            owner: part_owner.as_ref(),
+            outer: Parent::Unknown,
+            inner: Parent::Unknown,
+        };
+        self.items(o.members(), scope);
+    }
+
+    /// `replace part name { .. }` in the body of a node or `use` of `owner`:
+    /// the caller's structure, one node in the part's place.
+    fn part_replace(&mut self, r: &PartReplace, owner: Option<&Owner<'a>>) {
+        let part = self.part_of(r.name(), owner, "replace");
+        let Some(block) = r.body() else {
+            return;
+        };
+        let count = self.block_count(Some(block.clone()));
+        if let Some(part) = part
+            && count != Count::ONE
+        {
+            self.diagnostics.push(Diagnostic::error(
+                "E3502",
+                block.syntax().text_range(),
+                format!(
+                    "the part `{}` is one node, so what replaces it mounts one node, not {}",
+                    part.name,
+                    count.describe()
+                ),
+            ));
+        }
+        let scope = Scope {
+            owner: None,
+            outer: Parent::Unknown,
+            inner: Parent::Unknown,
+        };
+        self.items(block.items(), scope);
+    }
+
+    /// The schema of a part's node type `ty`, written in its declaring view:
+    /// a component of the module, else a registered widget. A type this view
+    /// cannot see is not checked; the declaring view reports a bad one.
+    fn part_owner(&mut self, ty: &TypePath) -> Option<Owner<'a>> {
+        let head = ty.segments().next()?;
+        if !self.symbols.contains_key(&head.text_range())
+            && widget::widget(self.env.widgets(), &head.text()).is_none()
+        {
+            return None;
+        }
+        self.owner_of(ty)
     }
 
     /// `on event(payload) { body }`: the payload pattern binds the event's payload
@@ -1772,6 +2062,8 @@ fn is_structure(item: &ViewItem) -> bool {
         item,
         ViewItem::Named(_)
             | ViewItem::Anonymous(_)
+            | ViewItem::Part(_)
+            | ViewItem::Use(_)
             | ViewItem::If(_)
             | ViewItem::For(_)
             | ViewItem::Match(_)

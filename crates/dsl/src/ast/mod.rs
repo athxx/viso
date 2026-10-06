@@ -7,28 +7,24 @@
 //! and its accessors ([`support`]) filter that node's direct children. The green
 //! tree stays the single source of truth a formatter, LSP, goto-definition, or
 //! rename all navigate, so the AST costs only a kind-tag comparison to project.
-//!
-//! Only the Core authoring surface parsed in Slice L gets typed wrappers; Advanced
-//! declarations parse to [`SyntaxKind::AdvancedItem`](crate::syntax::SyntaxKind::AdvancedItem)
-//! and are reachable as raw syntax, resolved when their consumer lands.
 
 mod nodes;
 mod support;
 
 pub use nodes::{
-    ActionDecl, AdvancedItem, AnonymousNode, AssignablePath, AssocItem, AssocTypeDecl, AstNode,
-    BinaryExpr, Block, CallExpr, CapabilityClause, CastExpr, CleanupClause, ClosureExpr,
-    CompilationUnit, ComponentDecl, ComponentEntry, ComputedDecl, ConstDecl, EffectBody,
-    EffectDecl, EffectDeps, EffectRun, ElseBranch, EnumDecl, EnumVariant, EventDecl, EventHandler,
-    ExportDecl, Expr, FieldExpr, FillClause, FnDecl, IfExpr, ImplDecl, ImportDecl, ImportItem,
-    IndexExpr, InputDecl, Item, ListExpr, LiteralExpr, MatchExpr, Member, ModulePath, NamedNode,
-    NativeDecl, NativeDeclKind, NodeBody, NodeMember, Param, ParamList, ParenExpr, PathExpr,
-    Pattern, PropertyBinding, PropertyPath, RangeExpr, RecordDecl, RecordExpr, RecordField,
-    RenameClause, ResourceDecl, ResourceItem, ReturnType, ShaderDecl, ShaderEntry, ShaderFn,
-    ShaderInstance, ShaderMember, ShaderSampler, ShaderStage, ShaderTexture, ShaderUniform,
-    ShaderVarying, SlotDecl, StartCancelled, StartError, StartHandlers, StartPolicy, StartSlot,
-    StartStmt, StartSuccess, StateDecl, StyleDecl, StyleWhen, SystemDecl, SystemOrder, TaskDecl,
-    ThemeDecl, ThemeItem, TraitDecl, TryExpr, TupleExpr, TwoWayBinding, TypeAliasDecl, TypePath,
-    UnaryExpr, ViewBlock, ViewDecl, ViewFor, ViewFragment, ViewIf, ViewItem, ViewMatch,
-    ViewMatchArm, decl_attributes,
+    ActionDecl, AnonymousNode, AssignablePath, AssocItem, AssocTypeDecl, AstNode, BinaryExpr,
+    Block, CallExpr, CapabilityClause, CastExpr, CleanupClause, ClosureExpr, CompilationUnit,
+    ComponentDecl, ComponentEntry, ComputedDecl, ConstDecl, EffectBody, EffectDecl, EffectDeps,
+    EffectRun, ElseBranch, EnumDecl, EnumVariant, EventDecl, EventHandler, ExportDecl, Expr,
+    FieldExpr, FillClause, FnDecl, IfExpr, ImplDecl, ImportDecl, ImportItem, IndexExpr, InputDecl,
+    Item, ListExpr, LiteralExpr, MatchExpr, Member, ModulePath, NamedNode, NativeDecl,
+    NativeDeclKind, NodeBody, NodeMember, Param, ParamList, ParenExpr, PartNode, PartOverride,
+    PartReplace, PathExpr, Pattern, PropertyBinding, PropertyPath, RangeExpr, RecordDecl,
+    RecordExpr, RecordField, RenameClause, ResourceDecl, ResourceItem, ReturnType, ShaderDecl,
+    ShaderEntry, ShaderFn, ShaderInstance, ShaderMember, ShaderSampler, ShaderStage, ShaderTexture,
+    ShaderUniform, ShaderVarying, SlotDecl, StartCancelled, StartError, StartHandlers, StartPolicy,
+    StartSlot, StartStmt, StartSuccess, StateDecl, StyleDecl, StyleWhen, SystemDecl, SystemOrder,
+    TaskDecl, TemplateDecl, TemplateUse, ThemeDecl, ThemeItem, TraitDecl, TryExpr, TupleExpr,
+    TwoWayBinding, TypeAliasDecl, TypePath, UnaryExpr, ViewBlock, ViewDecl, ViewFor, ViewFragment,
+    ViewIf, ViewItem, ViewMatch, ViewMatchArm, decl_attributes,
 };

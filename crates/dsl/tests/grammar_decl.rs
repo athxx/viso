@@ -184,7 +184,6 @@ fn a_shader_declares_bindings_functions_and_entry_points() {
     ] {
         assert_eq!(count(&root, kind), n, "{kind:?}");
     }
-    assert_eq!(count(&root, SyntaxKind::AdvancedItem), 0);
 
     use viso_dsl::ast::{AstNode, ShaderDecl, ShaderMember, ShaderStage};
     let decl = ShaderDecl::cast(shader).expect("typed view");
@@ -235,7 +234,6 @@ fn traits_and_impls_parse_to_typed_declarations() {
         parse(&tokenize(src), src).errors
     );
     assert_eq!(root.text(), src, "lossless");
-    assert_eq!(count(&root, SyntaxKind::AdvancedItem), 0);
     let shape = TraitDecl::cast(first(&root, SyntaxKind::TraitDecl).unwrap()).unwrap();
     assert_eq!(shape.supertraits().count(), 2);
     let members: Vec<AssocItem> = shape.members().collect();

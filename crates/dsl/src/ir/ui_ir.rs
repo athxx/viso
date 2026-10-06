@@ -48,6 +48,9 @@ impl UiTree {
 pub struct UiInstance {
     /// The component.
     pub component: SymbolId,
+    /// The node or `use` that places it, in its parent's view: the call
+    /// site of every node its view mounts.
+    pub origin: TextRange,
     /// The instance whose view names the node.
     pub parent: u32,
     /// A name stable across edits that keep the path of named nodes and
@@ -104,9 +107,10 @@ pub struct UiNode {
     pub handlers: Vec<UiHandler>,
     /// The value each property of a view-driven native node reads its current
     /// value or range from (`checked`, `value`, `selected`, `min`, `max`,
-    /// `step`, a label's `text`), by property name and the span of the expression or
-    /// `bind` source, where its entry is registered.
-    pub control_reads: Vec<(String, TextRange)>,
+    /// `step`, a label's `text`), by property name, the span of the expression or
+    /// `bind` source, and the instance whose layout site registers its entry: the
+    /// node's own, or a caller's for an `override part` binding.
+    pub control_reads: Vec<(String, TextRange, u32)>,
     /// The look the node's styles give it, beyond what it binds itself.
     pub styled: Option<UiStyled>,
     /// The node's children, in source order.
