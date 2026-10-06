@@ -24,6 +24,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod actions;
 pub mod engine;
 pub mod format;
 pub mod index;

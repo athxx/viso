@@ -1170,7 +1170,7 @@ timers (§104–§111).
         hash; Presentation commands never redelivered.
   - [x] Two in-process peers over a lossy, delayed link converge.
 - [ ] AI structured edit; cross-backend validation.
-  - [ ] Structured edits by Syntax ID and Symbol ID (`AddImport`,
+  - [x] Structured edits by Syntax ID and Symbol ID (`AddImport`,
         `CreateComponent`, `AddInput`, `AddState`, `AddAction`, `InsertNode`,
         `SetPropertyBinding`, `AttachEventHandler`, `WrapInKeyedFor`,
         `ConvertTaskToResource`, `AddTraitImpl`) producing checked text

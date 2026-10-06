@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use viso_dsl::diag::{Diagnostic, Severity};
 
+use crate::actions;
 use crate::engine;
 use crate::position::{self, LspPosition, LspRange};
 use crate::rpc::Json;
@@ -107,6 +108,33 @@ impl Server {
                 },
                 false,
             ),
+            "textDocument/codeAction" => (
+                Outbound {
+                    reply: Some(response(id, self.code_action(params))),
+                    notifications: Vec::new(),
+                },
+                false,
+            ),
+            "viso/syntaxId" => (
+                Outbound {
+                    reply: Some(response(id, self.syntax_id(params))),
+                    notifications: Vec::new(),
+                },
+                false,
+            ),
+            "viso/structuredEdit" => {
+                let reply = match self.structured_edit(params) {
+                    Ok(result) => response(id, result),
+                    Err(message) => error_response(id.unwrap_or(Json::Null), -32602, &message),
+                };
+                (
+                    Outbound {
+                        reply: Some(reply),
+                        notifications: Vec::new(),
+                    },
+                    false,
+                )
+            }
             // An unknown *request* (has an id) gets a MethodNotFound error; an unknown
             // notification is silently ignored, per the JSON-RPC spec.
             _ => {
@@ -278,6 +306,112 @@ impl Server {
         Json::Arr(vec![text_edit_json(full, &formatted)])
     }
 
+    /// `textDocument/codeAction`: the diagnostics' fixes and the structured
+    /// edits the range determines, each a `CodeAction` with its edit.
+    fn code_action(&self, params: Option<&Json>) -> Json {
+        let Some((uri, doc, edit_doc)) = self.edit_doc(params) else {
+            return Json::Arr(Vec::new());
+        };
+        let Some(range) = params
+            .and_then(|p| p.get("range"))
+            .and_then(|r| Some((r.get("start")?, r.get("end")?)))
+            .and_then(|(start, end)| {
+                let at = |p: &Json| {
+                    Some(position::from_lsp_position(
+                        &doc.source,
+                        LspPosition {
+                            line: p.get("line")?.as_u32()?,
+                            character: p.get("character")?.as_u32()?,
+                        },
+                    ))
+                };
+                Some(viso_dsl::TextRange::new(at(start)?, at(end)?))
+            })
+        else {
+            return Json::Arr(Vec::new());
+        };
+        let actions = actions::code_actions(&edit_doc, range)
+            .into_iter()
+            .map(|a| {
+                let edits = a
+                    .edits
+                    .iter()
+                    .map(|(range, text)| {
+                        text_edit_json(position::to_lsp_range(&doc.line_index, *range), text)
+                    })
+                    .collect();
+                let mut m = BTreeMap::new();
+                m.insert("title".to_string(), Json::Str(a.title));
+                m.insert("kind".to_string(), Json::Str(a.kind.to_string()));
+                m.insert("edit".to_string(), workspace_edit(&uri, edits));
+                if a.preferred {
+                    m.insert("isPreferred".to_string(), Json::Bool(true));
+                }
+                if let Some(d) = &a.fixes {
+                    let range = position::to_lsp_range(&doc.line_index, d.primary);
+                    m.insert(
+                        "diagnostics".to_string(),
+                        Json::Arr(vec![diagnostic_json(range, d)]),
+                    );
+                }
+                Json::Obj(m)
+            })
+            .collect();
+        Json::Arr(actions)
+    }
+
+    /// `viso/syntaxId`: the Symbol ID and Syntax ID at a position.
+    fn syntax_id(&self, params: Option<&Json>) -> Json {
+        let (Some((_, offset)), Some((_, _, edit_doc))) =
+            (self.locate(params), self.edit_doc(params))
+        else {
+            return Json::Null;
+        };
+        actions::addresses(&edit_doc, offset)
+    }
+
+    /// `viso/structuredEdit`: `{textDocument, edit}` to `{edit: WorkspaceEdit,
+    /// created}`, or the reason the edit was refused.
+    fn structured_edit(&self, params: Option<&Json>) -> Result<Json, String> {
+        let (uri, doc, edit_doc) = self.edit_doc(params).ok_or("the document is not open")?;
+        let edit = params
+            .and_then(|p| p.get("edit"))
+            .ok_or("the request carries an `edit`")?;
+        let edit = actions::parse_edit(edit)?;
+        let applied = edit_doc.apply(&edit).map_err(|e| e.to_string())?;
+        let edits = applied
+            .edits
+            .iter()
+            .map(|e| {
+                text_edit_json(
+                    position::to_lsp_range(&doc.line_index, e.range),
+                    &e.replacement,
+                )
+            })
+            .collect();
+        Ok(Json::object([
+            ("edit", workspace_edit(&uri, edits)),
+            ("created", actions::created_json(applied.created.as_ref())),
+        ]))
+    }
+
+    /// The open document a request names, and its structured-edit view.
+    fn edit_doc(
+        &self,
+        params: Option<&Json>,
+    ) -> Option<(
+        String,
+        &crate::source_map::OpenDoc,
+        viso_dsl::edit::Document,
+    )> {
+        let uri = params?.get("textDocument")?.get("uri")?.as_str()?;
+        let &id = self.id_of.get(uri)?;
+        let doc = self.docs.get(id)?;
+        let origin = actions::origin(&module_path_of(uri));
+        let edit_doc = viso_dsl::edit::Document::new(doc.source.clone(), &origin);
+        Some((uri.to_string(), doc, edit_doc))
+    }
+
     // --- shared helpers -----------------------------------------------------
 
     /// Resolves a `textDocument`/`position` request to `(FileId, byte offset)`.
@@ -325,6 +459,7 @@ fn initialize_result() -> Json {
     caps.insert("referencesProvider".to_string(), Json::Bool(true));
     caps.insert("renameProvider".to_string(), Json::Bool(true));
     caps.insert("documentFormattingProvider".to_string(), Json::Bool(true));
+    caps.insert("codeActionProvider".to_string(), Json::Bool(true));
     let mut result = BTreeMap::new();
     result.insert("capabilities".to_string(), Json::Obj(caps));
     Json::Obj(result)
@@ -388,6 +523,13 @@ fn location_json(uri: &str, range: LspRange) -> Json {
     m.insert("uri".to_string(), Json::Str(uri.to_string()));
     m.insert("range".to_string(), range_json(range));
     Json::Obj(m)
+}
+
+/// A `WorkspaceEdit` changing one document: `{ changes: { <uri>: [TextEdit] } }`.
+fn workspace_edit(uri: &str, edits: Vec<Json>) -> Json {
+    let mut per_uri = BTreeMap::new();
+    per_uri.insert(uri.to_string(), Json::Arr(edits));
+    Json::object([("changes", Json::Obj(per_uri))])
 }
 
 /// A protocol `TextEdit` (range + newText).
@@ -497,6 +639,148 @@ mod tests {
             .clone();
         assert_eq!(caps.get("definitionProvider"), Some(&Json::Bool(true)));
         assert_eq!(caps.get("renameProvider"), Some(&Json::Bool(true)));
+        assert_eq!(caps.get("codeActionProvider"), Some(&Json::Bool(true)));
+    }
+
+    fn range_params(uri: &str, line: u32, character: u32) -> Json {
+        json::parse(&format!(
+            r#"{{"textDocument":{{"uri":"{uri}"}},"range":{{"start":{{"line":{line},"character":{character}}},"end":{{"line":{line},"character":{character}}}}}}}"#
+        ))
+        .unwrap()
+    }
+
+    fn result(out: Outbound) -> Json {
+        out.reply.unwrap().get("result").cloned().unwrap()
+    }
+
+    const LOADER: &str = "import viso::time;\n\
+        export component C {\n\
+        \x20   state id = 1;\n\
+        \x20   computed d = idd + 1;\n\
+        \x20   task load_user(id: I64) -> Result<I64, String> {\n\
+        \x20       await time::sleep(1s);\n\
+        \x20       Ok(id)\n\
+        \x20   }\n\
+        \x20   view {\n\
+        \x20       Column {\n\
+        \x20           Text {}\n\
+        \x20       }\n\
+        \x20   }\n\
+        }\n";
+
+    #[test]
+    fn code_actions_carry_the_diagnostic_fixes_and_the_structured_edits() {
+        let mut s = Server::new();
+        let uri = "file:///loader.vs";
+        s.handle(&open(uri, LOADER));
+
+        // On the misspelt `idd`: the nearest-name fix, tied to its diagnostic.
+        let (out, _) = s.handle(&req(
+            5,
+            "textDocument/codeAction",
+            range_params(uri, 3, "    computed d = i".len() as u32),
+        ));
+        let actions = result(out);
+        let actions = actions.as_arr().unwrap();
+        let fix = actions
+            .iter()
+            .find(|a| a.get("kind").and_then(Json::as_str) == Some("quickfix"))
+            .expect("a quick fix");
+        let edits = fix
+            .get("edit")
+            .and_then(|e| e.get("changes"))
+            .and_then(|c| c.get(uri))
+            .and_then(Json::as_arr)
+            .unwrap();
+        assert_eq!(edits[0].get("newText").and_then(Json::as_str), Some("id"));
+        let diagnostic = &fix.get("diagnostics").and_then(Json::as_arr).unwrap()[0];
+        assert_eq!(diagnostic.get("code").and_then(Json::as_str), Some("E2001"));
+
+        // In the task: converting it to a resource loading by its parameter.
+        let (out, _) = s.handle(&req(
+            6,
+            "textDocument/codeAction",
+            range_params(uri, 4, "    task lo".len() as u32),
+        ));
+        let actions = result(out);
+        let convert = actions
+            .as_arr()
+            .unwrap()
+            .iter()
+            .find(|a| a.get("kind").and_then(Json::as_str) == Some("refactor.rewrite"))
+            .expect("the conversion");
+        assert_eq!(
+            convert.get("title").and_then(Json::as_str),
+            Some("Convert task `load_user` to resource `user`")
+        );
+        let edits = convert
+            .get("edit")
+            .and_then(|e| e.get("changes"))
+            .and_then(|c| c.get(uri))
+            .and_then(Json::as_arr)
+            .unwrap();
+        assert!(
+            edits[0]
+                .get("newText")
+                .and_then(Json::as_str)
+                .unwrap()
+                .contains("resource user: Resource<I64, String> {\n        load = load_user(id);\n        key = id;\n    }")
+        );
+    }
+
+    #[test]
+    fn a_structured_edit_addresses_a_node_by_its_syntax_id() {
+        let mut s = Server::new();
+        let uri = "file:///loader.vs";
+        s.handle(&open(uri, LOADER));
+        let (out, _) = s.handle(&req(7, "viso/syntaxId", pos_params(uri, 10, 13)));
+        let ids = result(out);
+        let syntax = ids
+            .get("syntax")
+            .and_then(Json::as_str)
+            .unwrap()
+            .to_string();
+        assert!(syntax.ends_with("/AnonymousNode.0"), "{syntax}");
+        assert!(ids.get("symbol").and_then(Json::as_str).is_some());
+
+        let edit = |value: &str| {
+            json::parse(&format!(
+                r#"{{"textDocument":{{"uri":"{uri}"}},"edit":{{"kind":"SetPropertyBinding","node":"{syntax}","property":"text","value":{}}}}}"#,
+                Json::Str(value.to_string())
+            ))
+            .unwrap()
+        };
+        let (out, _) = s.handle(&req(8, "viso/structuredEdit", edit("\"hi\"")));
+        let applied = result(out);
+        let edits = applied
+            .get("edit")
+            .and_then(|e| e.get("changes"))
+            .and_then(|c| c.get(uri))
+            .and_then(Json::as_arr)
+            .unwrap();
+        assert_eq!(
+            edits[0].get("newText").and_then(Json::as_str),
+            Some("\n                text: \"hi\";\n            ")
+        );
+        assert!(
+            applied
+                .get("created")
+                .and_then(|c| c.get("syntax"))
+                .and_then(Json::as_str)
+                .is_some_and(|s| s.ends_with("/PropertyBinding.0"))
+        );
+
+        // An edit adding an error is refused with it.
+        let (out, _) = s.handle(&req(9, "viso/structuredEdit", edit("missing")));
+        let error = out.reply.unwrap().get("error").cloned().unwrap();
+        assert_eq!(error.get("code").and_then(Json::as_i64), Some(-32602));
+        assert!(
+            error
+                .get("message")
+                .and_then(Json::as_str)
+                .unwrap()
+                .contains("E2001")
+        );
     }
 
     #[test]
