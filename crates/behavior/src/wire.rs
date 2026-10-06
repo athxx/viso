@@ -548,6 +548,21 @@ const VALUE_AGG: u8 = 5;
 /// The deepest constant nesting a decoder follows.
 const MAX_VALUE_DEPTH: u32 = 64;
 
+/// `v`, with every NaN the one quiet NaN: x86 and Arm produce NaNs of
+/// different signs and payloads, which a canonical blob does not keep.
+pub(crate) fn canonical_f64(v: f64) -> f64 {
+    if v.is_nan() { f64::NAN } else { v }
+}
+
+/// The bits of `v`, with every NaN the one quiet NaN (see [`canonical_f64`]).
+pub(crate) fn canonical_f32_bits(v: f32) -> u32 {
+    if v.is_nan() {
+        f32::NAN.to_bits()
+    } else {
+        v.to_bits()
+    }
+}
+
 pub(crate) fn write_value(enc: &mut Encoder, value: &Value) {
     match value {
         Value::Nil | Value::Closure(_) | Value::Handle(_) => enc.write_u8(VALUE_NIL),
@@ -557,7 +572,7 @@ pub(crate) fn write_value(enc: &mut Encoder, value: &Value) {
         }
         Value::Float(f) => {
             enc.write_u8(VALUE_FLOAT);
-            enc.write_f64(*f);
+            enc.write_f64(canonical_f64(*f));
         }
         Value::Str(s) => {
             enc.write_u8(VALUE_STR);
@@ -1129,6 +1144,24 @@ mod tests {
         .with_capabilities(["storage.persist", "network.http"])
         .with_themes(vec![("Dark".into(), 3)])
         .unwrap()
+    }
+
+    #[test]
+    fn every_nan_encodes_alike() {
+        let encode = |v: f64| {
+            let mut enc = Encoder::new();
+            write_value(&mut enc, &Value::Float(v));
+            enc.into_bytes()
+        };
+        let x86 = f64::from_bits(0xfff8_0000_0000_0000);
+        let payload = f64::from_bits(0x7ff8_0000_0000_beef);
+        assert_eq!(encode(x86), encode(f64::NAN));
+        assert_eq!(encode(payload), encode(f64::NAN));
+        assert_ne!(encode(-0.0), encode(0.0), "signed zeros stay distinct");
+        assert_eq!(
+            canonical_f32_bits(f32::from_bits(0xffc0_0001)),
+            f32::NAN.to_bits()
+        );
     }
 
     #[test]

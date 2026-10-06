@@ -12,9 +12,7 @@
 
 use std::cell::Cell;
 
-use crate::native::{
-    Determinism, NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy,
-};
+use crate::native::{NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy};
 use crate::value::Value;
 
 use super::tape::TapeChange;
@@ -470,14 +468,14 @@ impl InputLatch {
         );
         let (sx, sy) = self.sticks[source.stick as usize];
         let dead = self.bindings.dead_zone;
-        let length = sx.hypot(sy);
+        let length = libm::hypot(sx, sy);
         let scale = if length <= dead {
             0.0
         } else {
             ((length - dead) / (1.0 - dead)).min(1.0) / length
         };
         let (x, y) = (kx + sx * scale, ky + sy * scale);
-        let length = x.hypot(y);
+        let length = libm::hypot(x, y);
         if length > 1.0 {
             (x / length, y / length)
         } else {
@@ -668,19 +666,17 @@ pub(super) static MOVE_AXES_METHODS: [NativeFunction; 4] = [
         .realtime_safe()
         .property(),
     crate::native!(fn "length" |_cx, this: Obj<MoveAxes>| -> f64 {
-        Ok(this.x.get().hypot(this.y.get()))
+        Ok(libm::hypot(this.x.get(), this.y.get()))
     })
     .deterministic()
     .realtime_safe(),
-    // The host `sin`/`cos` reproduce on one build and target only.
     crate::native!(fn "relative_to" |_cx, this: Obj<MoveAxes>, yaw: f64| -> Obj<MoveAxes> {
-        let (sin, cos) = yaw.sin_cos();
+        let (sin, cos) = libm::sincos(yaw);
         let (x, y) = (this.x.get(), this.y.get());
         Ok(Obj::new(MoveAxes {
             x: Cell::new(x * cos - y * sin),
             y: Cell::new(x * sin + y * cos),
         }))
     })
-    .deterministic()
-    .reproducible(Determinism::SameBinary),
+    .deterministic(),
 ];

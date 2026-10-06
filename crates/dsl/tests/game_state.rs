@@ -39,6 +39,10 @@ static FX: NativeLibrary = NativeLibrary {
         })
         .debug_draw(),
         viso_behavior::native!(fn "camera" |_cx| -> f64 { Ok(1.0) }).presentation(),
+        // The host `sin` reproduces on one build and target only.
+        viso_behavior::native!(fn "wobble" |_cx, x: f64| -> f64 { Ok(x.sin()) })
+            .deterministic()
+            .reproducible(viso_behavior::native::Determinism::SameBinary),
     ],
     types: &[],
     traits: &[],
@@ -183,10 +187,11 @@ fn the_simulation_reaches_no_non_deterministic_source() {
 fn host_floating_point_meets_same_binary_but_not_cross_platform() {
     let source = r#"
 import viso::game::{FixedUpdate, FixedFrame};
+import app::fx;
 system Walker implements FixedUpdate {
     state x = 0.0;
     action fixed_update(frame: FixedFrame) {
-        x = frame.input.move_axes().relative_to(1.5).x;
+        x = fx::wobble(frame.input.move_axes().relative_to(1.5).x);
     }
 }
 "#;
@@ -195,7 +200,15 @@ system Walker implements FixedUpdate {
         determinism: Determinism::CrossPlatform,
         ..TargetProfile::default()
     };
-    assert_eq!(codes_with(source, strict), ["E9104"]);
+    assert_eq!(codes_with(source, strict.clone()), ["E9104"]);
+    let software = source
+        .replace("fx::wobble(", "math::sin(")
+        .replace("import app::fx;", "import viso::math;");
+    assert_eq!(
+        codes_with(&software, strict),
+        Vec::<String>::new(),
+        "`viso::math` and the input's lengths and turns are `cross_platform`"
+    );
 }
 
 #[test]

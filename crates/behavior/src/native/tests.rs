@@ -333,3 +333,65 @@ fn a_widget_declared_twice_differently_conflicts() {
     assert_eq!(error.code(), "E6101");
     assert_eq!(error.path, "other::Row");
 }
+
+/// `viso::math`'s results, bit for bit. The software implementations use IEEE
+/// basic operations only, so these bits are every Tier-1 target's; a change
+/// here breaks `cross_platform` replays and rollback across versions.
+const MATH_BITS: &[(&str, &[f64], u64)] = &[
+    ("sin", &[0.5], 0x3fdeaee8744b05f0),
+    ("sin", &[1e6], 0xbfd6664b2568d867),
+    ("sin", &[-3.0], 0xbfc210386db6d55b),
+    ("cos", &[0.5], 0x3fec1528065b7d50),
+    ("cos", &[1e6], 0x3fedf9df9906d32c),
+    ("cos", &[2.5], 0xbfe9a2f7ef858b7d),
+    ("tan", &[1.2], 0x400493c43acb164d),
+    ("tan", &[-0.7], 0xbfeaf406c2fc78ae),
+    ("atan", &[0.3], 0x3fd2a73a661eaf06),
+    ("atan", &[-40.0], 0xbff8bb9a63718f45),
+    ("atan2", &[1.0, -2.0], 0x40056c6e7397f5ae),
+    ("atan2", &[-0.25, 0.75], 0xbfd4978fa3269ee1),
+    ("exp", &[1.7], 0x4015e552770df8a6),
+    ("exp", &[-20.5], 0x3e157a3afeed00ab),
+    ("log", &[2.5], 0x3fed5240f0e0e078),
+    ("log", &[1e-9], 0xc034b927f32bffb8),
+    ("pow", &[1.5, 2.7], 0x4007e859efb1238c),
+    ("pow", &[10.0, -3.3], 0x3f406c4363887513),
+    ("hypot", &[3.0, 4.0], 0x4014000000000000),
+    ("hypot", &[1e300, 1e300], 0x7e40e4d50f99b211),
+    ("hypot", &[0.1, 0.2], 0x3fcc9f25c5bfedd9),
+];
+
+#[test]
+fn math_transcendentals_are_pinned_bit_for_bit() {
+    let natives = Natives::standard();
+    let mut services = Services::default();
+    let mut cx = NativeCx::new(&mut services);
+    for &(name, args, bits) in MATH_BITS {
+        let entry = natives
+            .function(&format!("viso::math::{name}"))
+            .expect("registered");
+        assert_eq!(entry.function.determinism, Determinism::CrossPlatform);
+        let values: Vec<Value> = args.iter().map(|&x| Value::Float(x)).collect();
+        let Ok(Value::Float(r)) = (entry.function.call)(&mut cx, &values) else {
+            panic!("{name}{args:?}")
+        };
+        assert_eq!(r.to_bits(), bits, "{name}{args:?} = {r}");
+        // Within one unit in the last place of the host's.
+        let host = match (name, args) {
+            ("sin", [x]) => x.sin(),
+            ("cos", [x]) => x.cos(),
+            ("tan", [x]) => x.tan(),
+            ("atan", [x]) => x.atan(),
+            ("atan2", [y, x]) => y.atan2(*x),
+            ("exp", [x]) => x.exp(),
+            ("log", [x]) => x.ln(),
+            ("pow", [x, y]) => x.powf(*y),
+            ("hypot", [x, y]) => x.hypot(*y),
+            _ => unreachable!(),
+        };
+        assert!(
+            (r.to_bits() as i64 - host.to_bits() as i64).abs() <= 1,
+            "{name}{args:?}: {r} against the host's {host}"
+        );
+    }
+}

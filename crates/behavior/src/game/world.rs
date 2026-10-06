@@ -47,7 +47,7 @@ use crate::native::{
     Determinism, NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy, Vec3F32,
 };
 use crate::value::{Aggregate, Value};
-use crate::wire::{malformed, read_list, read_u32_varint, write_list};
+use crate::wire::{canonical_f32_bits, malformed, read_list, read_u32_varint, write_list};
 use viso_ende::{DecodeError, Decoder, Encoder};
 
 /// Gravity, in metres per second squared.
@@ -392,8 +392,8 @@ impl Bodies {
     /// Writes the bodies canonically: slot by slot, floats by their bits.
     pub(super) fn encode(&self, enc: &mut Encoder) {
         let f = |enc: &mut Encoder, v: &[f32; 3]| {
-            for c in v {
-                enc.write_u32(c.to_bits());
+            for &c in v {
+                enc.write_u32(canonical_f32_bits(c));
             }
         };
         enc.write_varint(self.slots() as u64);
@@ -410,7 +410,7 @@ impl Bodies {
             enc.write_bool(self.floor[slot]);
             enc.write_u8(self.model[slot] as u8);
             for c in self.facing[slot] {
-                enc.write_u32(c.to_bits());
+                enc.write_u32(canonical_f32_bits(c));
             }
             self.control[slot].encode(enc);
         }

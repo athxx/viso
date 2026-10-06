@@ -1103,14 +1103,15 @@ timers (§104–§111).
   - [x] Checked against the registry at compile time when the schema has the
         library (`E6101` on a signature mismatch or a missing path), at link
         otherwise; a declared `type` names a native handle type.
-- [ ] `cross_platform` float determinism (§106.5).
-  - [ ] `viso::math` `sin` `cos` `tan` `atan` `atan2` `exp` `log` `pow`
-        `hypot`: software implementations from IEEE basic operations only,
-        `cross_platform`, bit-identical across targets (pinned results).
-  - [ ] Host-libm users declare `same_binary` (`MoveAxes.length` and input
-        normalization use the deterministic `hypot`).
-  - [ ] No FMA contraction or reassociation in the VM's float paths (a test
-        pins `a * b + c` rounding twice); fixed reduction order documented.
+- [x] `cross_platform` float determinism (§106.5).
+  - [x] `viso::math` `sin` `cos` `tan` `atan` `atan2` `exp` `log` `pow`
+        `hypot`: software implementations from IEEE basic operations only
+        (`libm`, no `arch`), `cross_platform`, pinned bit for bit.
+  - [x] Simulation natives on host libm moved off it: `MoveAxes.length`,
+        `relative_to` and input normalization are `cross_platform` now.
+  - [x] No FMA contraction or reassociation in the VM's float paths (a test
+        pins `a * b - c` rounding twice and left-to-right sums); every NaN
+        snapshots as one quiet NaN; evaluation order documented.
 - [ ] User traits, impls, general generics, const generics, `dyn` (`E2201`,
       `E2202`); `bind … using C` checks `C: TwoWayConverter<Model, View>`.
   - [ ] Generic parameters in scope (records, enums, aliases, fns, actions,
