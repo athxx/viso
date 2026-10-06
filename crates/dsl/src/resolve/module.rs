@@ -93,7 +93,7 @@ impl SourceUnit {
     }
 
     /// The typed compilation-unit view over this unit's parse, if the root casts.
-    fn compilation_unit(&self) -> Option<CompilationUnit> {
+    pub(super) fn compilation_unit(&self) -> Option<CompilationUnit> {
         CompilationUnit::cast(SyntaxNode::new_root(self.parse.root.clone()))
     }
 }
@@ -192,12 +192,13 @@ pub struct GraphModule {
     /// The units this module imports, as indices into the graph (unresolved imports
     /// are dropped after emitting [`ResolveErrorKind::UnresolvedModule`]).
     pub imports: Vec<ModuleIndex>,
-    /// The local names this module's imports bind to registered natives.
+    /// The local names this module's imports and `native` declarations bind
+    /// to natives.
     pub natives: Vec<NativeBinding>,
 }
 
 /// A local name an `import` binds to a registered native library, function or
-/// handle type.
+/// handle type, or a `native` declaration to the native it declares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeBinding {
     /// The local name: the item, the last path segment, or the rename.
@@ -205,6 +206,8 @@ pub struct NativeBinding {
     /// The full native path it names, such as `viso::text` or
     /// `viso::time::Stopwatch`.
     pub path: String,
+    /// The component or system whose members see it; `None` for the module.
+    pub owner: Option<String>,
 }
 
 /// The deterministic import graph over a set of [`SourceUnit`]s.
@@ -230,17 +233,21 @@ impl ModuleGraph {
     /// the resulting edge set reported as [`ResolveErrorKind::CyclicImport`].
     /// Imports resolve against the standard native libraries too.
     pub fn build(units: &[SourceUnit], interner: &NameInterner) -> Self {
-        Self::build_with(units, interner, Natives::standard())
+        Self::build_with(units, interner, Natives::standard(), "")
     }
 
     /// As [`ModuleGraph::build`], with imports of the libraries, functions and
     /// handle types `natives` registers binding their local names (an item a
     /// registered library does not declare is
-    /// [`E2001`](ResolveErrorKind::UnresolvedImport)).
+    /// [`E2001`](ResolveErrorKind::UnresolvedImport)), and the `native`
+    /// declarations of package `package` checked against `natives` and, where
+    /// it lacks their library, added to the registry the graph resolves
+    /// against.
     pub fn build_with(
         units: &[SourceUnit],
         interner: &NameInterner,
         natives: Arc<Natives>,
+        package: &str,
     ) -> Self {
         let mut errors = Vec::new();
         let mut owners = Vec::new();
@@ -320,6 +327,16 @@ impl ModuleGraph {
             });
         }
 
+        let imports: Vec<Vec<NativeBinding>> = modules.iter().map(|m| m.natives.clone()).collect();
+        let declared = super::native_decl::declare(&kept, &imports, interner, &natives, package);
+        for (module, bindings) in modules.iter_mut().zip(declared.bindings) {
+            module.natives.extend(bindings);
+        }
+        for (index, error) in declared.errors {
+            errors.push(error);
+            owners.push(Some(ModuleIndex(index as u32)));
+        }
+        let natives = declared.natives.map_or(natives, Arc::new);
         let graph = Self {
             modules,
             errors,
@@ -455,6 +472,7 @@ fn native_import(
             bound.push(NativeBinding {
                 local: renamed(import.rename(), last),
                 path: target.to_owned(),
+                owner: None,
             });
         }
         for item in items {
@@ -470,6 +488,7 @@ fn native_import(
                 bound.push(NativeBinding {
                     local: renamed(item.rename(), &text),
                     path,
+                    owner: None,
                 });
                 continue;
             }
@@ -501,6 +520,7 @@ fn native_import(
         bound.push(NativeBinding {
             local: renamed(import.rename(), last),
             path: target.to_owned(),
+            owner: None,
         });
     }
     item && items.is_empty()

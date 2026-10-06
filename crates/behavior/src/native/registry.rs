@@ -126,7 +126,7 @@ enum Item {
 /// A set of native libraries, one version per library path, with every
 /// function, method, handle type, enum variant and trait addressable by path
 /// and by [`NativeId`], and every widget by its type name.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Natives {
     libraries: Vec<&'static NativeLibrary>,
     functions: Vec<NativeEntry>,

@@ -316,7 +316,7 @@ pub(crate) fn lower_component(
             Member::View(view) => {
                 schema.view = Some(view.syntax().text_range());
             }
-            Member::Slot(_) | Member::Effect(_) => {}
+            Member::Slot(_) | Member::Effect(_) | Member::Native(_) => {}
         }
     }
 

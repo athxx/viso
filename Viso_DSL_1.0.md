@@ -1872,6 +1872,14 @@ Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条
 - Native 返回错误或 Panic 为 `E7106` Runtime Fault 并回滚当前 Transaction；Native 已产生的外部副作用（如写剪贴板）不回滚；
 - `viso schema` 以 §139 对象输出 Native Library、函数与 Handle 类型的 Schema。
 
+### 47.2 手写 Native 声明
+
+- 声明的路径是所在模块的路径：Package `app` 的模块 `util` 中 `native fn hash(..)` 声明 `app::util::hash`，写在 `component Board` 或 `system Board` 内则为 `app::util::Board::hash`，只在该 Component/System 的成员中可见；顶层声明在本模块可见，其他模块以完整 Native 路径 `import app::util::{hash};`；
+- 返回类型省略即 `()`；参数与返回类型必须是 Schema 类型：`Bool`、`I64`、`F32`、`F64`、`Duration`、`String`、`()`、`List<T>`、`Option<T>`、已注册的 Native 类型或同处声明的 `native type`；参数不带默认值；声明不带泛型参数、`where` 子句，`native type` 不带 Trait Bound（Native Schema 无泛型与 Trait 实现），违者 `E6101`；`requires { a::b }` 声明 Capability `a.b`；
+- 编译所用 Registry 已注册声明所在的 Library 时立即检查：路径未注册、`fn`/`action`/`task` 分类或签名哈希不同（参数名不计入签名）、`requires` 与 Schema 的 Capability 集合不同均为 `E6101`，调用使用已注册的 Schema；
+- 未注册该 Library 时，声明本身即其 Schema：调用按声明的类型、Effect 分类与 Capability 检查并 Lower 为该路径的 Native Import（`native fn` 为 Read，不确定、UI 线程）；运行前 `link` 到实现它的 Rust Library，路径缺失或签名不同为 `E6101`；
+- 同一作用域内重名（含与 `fn`/`action`/`task`/`const` 或成员重名）为 `E2002`。
+
 ---
 
 # 第七部分：完整语法——View、节点、Template、Style 与 Theme
@@ -8591,7 +8599,7 @@ RecordPatternField
 | E5101  | Hot Reload 状态重置：活值不可转换为新类型，或 `@migrate` 函数执行失败（警告） |
 | E5102  | Hot Reload Stable ID 冲突（拒绝 reload）                |
 | E5103  | Game Hot Reload 层级：编译器按 Stable ID Diff 选择的重载层与各项改动（提示，§110） |
-| E6101  | Native Schema 版本冲突                                  |
+| E6101  | Native Schema 版本冲突；手写 Native 声明与 Registry 不符或使用非 Schema 类型（§47.2） |
 | E6102  | Native Ownership/Thread Domain 违规                     |
 | E6103  | Capability Denied（运行时）                             |
 | E7101  | 执行预算超限                                            |

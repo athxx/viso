@@ -600,9 +600,14 @@ pub enum SyntaxKind {
     /// `vertex|fragment|compute ( ParamList ) ReturnType Block` in a shader.
     ShaderEntry,
 
+    /// `native (fn|action|task) IDENT GenericParams? ( ParamList ) ReturnType?
+    /// WhereClause? CapabilityClause? ;` or `native type IDENT GenericParams?
+    /// (: TraitBounds)? WhereClause? ;` (§47).
+    NativeDecl,
+
     // Advanced (parsed, not resolved this slice).
-    /// A declaration in the Advanced tier (`trait`/`impl`/`template`/`style`/
-    /// `theme`/`native`) parsed to a placeholder wrapper: its interior is
+    /// A declaration in the Advanced tier (`trait`/`impl`/`template`) parsed
+    /// to a placeholder wrapper: its interior is
     /// grouped losslessly but it gets no name resolution yet.
     AdvancedItem,
 }

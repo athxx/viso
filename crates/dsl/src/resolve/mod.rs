@@ -14,6 +14,7 @@
 
 mod module;
 mod name;
+mod native_decl;
 pub(crate) mod prelude;
 mod resolver;
 mod scope;

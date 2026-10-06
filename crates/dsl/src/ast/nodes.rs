@@ -318,6 +318,11 @@ ast_node!(
     ShaderEntry = ShaderEntry
 );
 ast_node!(
+    /// `native (fn|action|task|type) IDENT … ;` — a handwritten native
+    /// declaration (§47).
+    NativeDecl = NativeDecl
+);
+ast_node!(
     /// An Advanced-tier declaration parsed to a placeholder (no resolution yet).
     AdvancedItem = AdvancedItem
 );
@@ -950,6 +955,67 @@ callable_accessors!(FnDecl);
 callable_accessors!(ActionDecl);
 callable_accessors!(TaskDecl);
 callable_accessors!(ShaderFn);
+
+/// What a [`NativeDecl`] declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeDeclKind {
+    Fn,
+    Action,
+    Task,
+    Type,
+}
+
+impl NativeDecl {
+    /// What it declares, by the keyword after `native`.
+    pub fn kind(&self) -> Option<NativeDeclKind> {
+        self.syntax
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .find_map(|t| match t.kind() {
+                SyntaxKind::FnKw => Some(NativeDeclKind::Fn),
+                SyntaxKind::ActionKw => Some(NativeDeclKind::Action),
+                SyntaxKind::TaskKw => Some(NativeDeclKind::Task),
+                SyntaxKind::TypeKw => Some(NativeDeclKind::Type),
+                _ => None,
+            })
+    }
+
+    /// The declared name.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// Its generic parameter list, if declared.
+    pub fn generic_params(&self) -> Option<SyntaxNode> {
+        self.syntax
+            .children()
+            .into_iter()
+            .find(|n| n.kind() == SyntaxKind::GenericParams)
+    }
+
+    /// The parameter list of a callable.
+    pub fn param_list(&self) -> Option<ParamList> {
+        support::child(&self.syntax)
+    }
+
+    /// The parameters of a callable, in order.
+    pub fn params(&self) -> Vec<Param> {
+        self.param_list()
+            .map(|l| l.params().collect())
+            .unwrap_or_default()
+    }
+
+    /// The `-> Type` return type, if declared.
+    pub fn return_type(&self) -> Option<ReturnType> {
+        support::child(&self.syntax)
+    }
+
+    /// The `requires { ... }` capability clause, if declared.
+    pub fn capability_clause(&self) -> Option<CapabilityClause> {
+        support::child(&self.syntax)
+    }
+}
 
 impl ShaderDecl {
     /// The shader's name.
@@ -1802,6 +1868,7 @@ pub enum Item {
     Shader(ShaderDecl),
     Theme(ThemeDecl),
     Style(StyleDecl),
+    Native(NativeDecl),
     Advanced(AdvancedItem),
 }
 
@@ -1822,6 +1889,7 @@ impl AstNode for Item {
                 | SyntaxKind::ShaderDecl
                 | SyntaxKind::ThemeDecl
                 | SyntaxKind::StyleDecl
+                | SyntaxKind::NativeDecl
                 | SyntaxKind::AdvancedItem
         )
     }
@@ -1840,6 +1908,7 @@ impl AstNode for Item {
             SyntaxKind::ShaderDecl => Item::Shader(ShaderDecl { syntax: node }),
             SyntaxKind::ThemeDecl => Item::Theme(ThemeDecl { syntax: node }),
             SyntaxKind::StyleDecl => Item::Style(StyleDecl { syntax: node }),
+            SyntaxKind::NativeDecl => Item::Native(NativeDecl { syntax: node }),
             SyntaxKind::AdvancedItem => Item::Advanced(AdvancedItem { syntax: node }),
             _ => return None,
         };
@@ -1860,6 +1929,7 @@ impl AstNode for Item {
             Item::Shader(n) => n.syntax(),
             Item::Theme(n) => n.syntax(),
             Item::Style(n) => n.syntax(),
+            Item::Native(n) => n.syntax(),
             Item::Advanced(n) => n.syntax(),
         }
     }
@@ -1879,6 +1949,7 @@ pub enum Member {
     Effect(EffectDecl),
     Resource(ResourceDecl),
     View(ViewDecl),
+    Native(NativeDecl),
 }
 
 impl AstNode for Member {
@@ -1896,6 +1967,7 @@ impl AstNode for Member {
                 | SyntaxKind::EffectDecl
                 | SyntaxKind::ResourceDecl
                 | SyntaxKind::ViewDecl
+                | SyntaxKind::NativeDecl
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
@@ -1911,6 +1983,7 @@ impl AstNode for Member {
             SyntaxKind::EffectDecl => Member::Effect(EffectDecl { syntax: node }),
             SyntaxKind::ResourceDecl => Member::Resource(ResourceDecl { syntax: node }),
             SyntaxKind::ViewDecl => Member::View(ViewDecl { syntax: node }),
+            SyntaxKind::NativeDecl => Member::Native(NativeDecl { syntax: node }),
             _ => return None,
         };
         Some(member)
@@ -1928,6 +2001,7 @@ impl AstNode for Member {
             Member::Effect(n) => n.syntax(),
             Member::Resource(n) => n.syntax(),
             Member::View(n) => n.syntax(),
+            Member::Native(n) => n.syntax(),
         }
     }
 }

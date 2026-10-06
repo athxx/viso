@@ -8,8 +8,7 @@
 //!
 //! Only the Core, the Shader Profile's `shader`, and a few Standard forms get
 //! dedicated node kinds and later resolution. Advanced declarations
-//! (`trait`/`impl`/`template`/`style`/`theme`/`native`, and the Standard
-//! `effect`/`resource`) are parsed just enough
+//! (`trait`/`impl`/`template`) are parsed just enough
 //! to consume their body — their brace group is skipped as a balanced run — and
 //! wrapped in a single [`SyntaxKind::AdvancedItem`] so they neither break the tree
 //! nor gate the slice. Their resolution lands when their consumer does.
@@ -145,7 +144,8 @@ fn decl_core(p: &mut Parser) {
         SyntaxKind::TaskKw => fn_like_decl(p, SyntaxKind::TaskDecl),
         SyntaxKind::ShaderKw => shader_decl(p),
         // Standard/Advanced declarations parsed but not resolved this slice.
-        SyntaxKind::TraitKw | SyntaxKind::ImplKw | SyntaxKind::NativeKw => advanced_decl(p, None),
+        SyntaxKind::NativeKw => native_decl(p),
+        SyntaxKind::TraitKw | SyntaxKind::ImplKw => advanced_decl(p, None),
         SyntaxKind::Ident if p.nth_is_ident(1) => match p.nth_contextual(0) {
             Some(SyntaxKind::ThemeKw) => theme_decl(p),
             Some(SyntaxKind::StyleKw) => style_decl(p),
@@ -236,7 +236,7 @@ pub(super) fn member(p: &mut Parser) {
         SyntaxKind::FnKw => fn_like_decl(p, SyntaxKind::FnDecl),
         SyntaxKind::ActionKw => fn_like_decl(p, SyntaxKind::ActionDecl),
         SyntaxKind::TaskKw => fn_like_decl(p, SyntaxKind::TaskDecl),
-        SyntaxKind::NativeKw => advanced_decl(p, None),
+        SyntaxKind::NativeKw => native_decl(p),
         _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
     }
 }
@@ -701,6 +701,45 @@ fn fn_like_decl(p: &mut Parser, kind: SyntaxKind) {
     capability_clause(p);
     super::stmt::block(p);
     m.complete(p, kind);
+}
+
+/// `"native" ("fn" | "action" | "task") IDENT GenericParams? "(" ParameterList
+/// ")" ReturnType WhereClause? CapabilityClause? ";"` or `"native" "type" IDENT
+/// GenericParams? (":" TraitBounds)? WhereClause? ";"` — a handwritten native
+/// declaration (§47): a signature the native schema implements, without a body.
+fn native_decl(p: &mut Parser) {
+    let m = p.start();
+    p.bump_any(); // `native`
+    match p.current() {
+        SyntaxKind::FnKw | SyntaxKind::ActionKw | SyntaxKind::TaskKw => {
+            p.bump_any();
+            name(p);
+            generic_params(p);
+            param_list(p);
+            return_type(p);
+            where_clause(p);
+            capability_clause(p);
+        }
+        SyntaxKind::TypeKw => {
+            p.bump_any();
+            name(p);
+            generic_params(p);
+            if p.eat(SyntaxKind::Colon) {
+                super::types::trait_bounds(p);
+            }
+            where_clause(p);
+        }
+        _ => p.error(ParseErrorKind::UnexpectedTokens),
+    }
+    if p.at(SyntaxKind::LBrace) {
+        // A body is not part of a native declaration; it is consumed whole so
+        // the error stays on it.
+        p.error(ParseErrorKind::UnexpectedTokens);
+        skip_braced_group(p);
+    } else {
+        p.expect(SyntaxKind::Semi);
+    }
+    m.complete(p, SyntaxKind::NativeDecl);
 }
 
 /// `"(" (Parameter ("," Parameter)* ","?)? ")"` — a callable's parameter list.

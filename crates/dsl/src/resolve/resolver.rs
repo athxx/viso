@@ -125,8 +125,11 @@ struct ImportEnv {
     /// uses raise nothing more.
     unresolved: std::collections::HashSet<NameId>,
     /// Local name → the full path of the native library, function or type it
-    /// imports.
+    /// imports or the module declares.
     natives: std::collections::HashMap<NameId, String>,
+    /// `(owner, local name)` → the full path of the native a component's or
+    /// system's member declaration declares.
+    member_natives: std::collections::HashMap<(NameId, NameId), String>,
 }
 
 /// One import binding: a local name mapped to the exported symbol it names.
@@ -188,6 +191,7 @@ pub fn resolve(
             prelude: &prelude.module.table,
             members: &members,
             owner: None,
+            owner_name: None,
             node: None,
             decls: &all_decls[i],
             imports: &imports,
@@ -239,6 +243,7 @@ pub(super) fn resolve_standalone(
         prelude: &empty,
         members: &members,
         owner: None,
+        owner_name: None,
         node: None,
         decls: &decls,
         imports: &imports,
@@ -453,7 +458,8 @@ fn member_identity(
         Member::Action(d) => (d.name()?, SymbolKind::Action, Namespace::Value),
         Member::Task(d) => (d.name()?, SymbolKind::Task, Namespace::Value),
         Member::Resource(d) => (d.name()?, SymbolKind::Resource, Namespace::Value),
-        Member::Slot(_) | Member::View(_) | Member::Effect(_) => return None,
+        // A native declaration binds a native path, not a module symbol.
+        Member::Slot(_) | Member::View(_) | Member::Effect(_) | Member::Native(_) => return None,
     };
     Some(triple)
 }
@@ -477,7 +483,7 @@ fn decl_identity(item: &Item) -> Option<(crate::syntax::SyntaxToken, SymbolKind,
         // a node's `styles` list names.
         Item::Theme(d) => (d.name()?, SymbolKind::Const, Namespace::Value),
         Item::Style(d) => (d.name()?, SymbolKind::Style, Namespace::Value),
-        Item::Export(_) | Item::Advanced(_) => return None,
+        Item::Export(_) | Item::Native(_) | Item::Advanced(_) => return None,
     };
     Some(triple)
 }
@@ -512,8 +518,17 @@ fn build_import_env(
 ) -> ImportEnv {
     let mut env = ImportEnv::default();
     for binding in natives {
-        env.natives
-            .insert(interner.intern(&binding.local), binding.path.clone());
+        let local = interner.intern(&binding.local);
+        match &binding.owner {
+            Some(owner) => {
+                let owner = interner.intern(owner);
+                env.member_natives
+                    .insert((owner, local), binding.path.clone());
+            }
+            None => {
+                env.natives.insert(local, binding.path.clone());
+            }
+        }
     }
     let Some(cu) = cu else {
         return env;
@@ -698,6 +713,8 @@ struct ModulePass<'a> {
     members: &'a MemberTables<'a>,
     /// The component or system whose body is being resolved.
     owner: Option<SymbolId>,
+    /// Its name.
+    owner_name: Option<NameId>,
     /// The component the innermost enclosing view node instantiates, whose events its
     /// handlers name.
     node: Option<SymbolId>,
@@ -721,7 +738,7 @@ struct ModulePass<'a> {
     in_view: bool,
 }
 
-impl ModulePass<'_> {
+impl<'a> ModulePass<'a> {
     /// Resolves a whole compilation unit's declarations.
     fn resolve_unit(&mut self, cu: &CompilationUnit) {
         for item in cu.items() {
@@ -760,6 +777,7 @@ impl ModulePass<'_> {
                     }
                 }
                 Item::Style(s) => self.resolve_style(&s),
+                Item::Native(n) => self.resolve_callable(n.params(), n.return_type(), None),
                 _ => {}
             }
         }
@@ -835,7 +853,7 @@ impl ModulePass<'_> {
             self.resolve_type_head(bound, false);
             return;
         }
-        let Some(base) = self.imports.natives.get(&name) else {
+        let Some(base) = self.native_base(name) else {
             self.resolve_type_head(bound, false);
             return;
         };
@@ -886,17 +904,29 @@ impl ModulePass<'_> {
         name: Option<crate::syntax::SyntaxToken>,
         members: impl Iterator<Item = Member>,
     ) {
+        let owner_name = name.as_ref().map(|name| self.interner.intern(&name.text()));
         let owner = name.and_then(|name| {
             let name = self.interner.intern(&name.text());
             self.table.get(name, Namespace::Type).map(|s| s.id)
         });
         let outer = std::mem::replace(&mut self.owner, owner);
+        let outer_name = std::mem::replace(&mut self.owner_name, owner_name);
         self.scopes.push();
         for member in members {
             self.resolve_member(member);
         }
         self.scopes.pop();
         self.owner = outer;
+        self.owner_name = outer_name;
+    }
+
+    /// The native path `name` binds to: a native the enclosing component or
+    /// system declares, then one the module imports or declares.
+    fn native_base(&self, name: NameId) -> Option<&'a String> {
+        let imports: &'a ImportEnv = self.imports;
+        self.owner_name
+            .and_then(|owner| imports.member_natives.get(&(owner, name)))
+            .or_else(|| imports.natives.get(&name))
     }
 
     /// Looks `name` up among the members of `owner`.
@@ -966,6 +996,7 @@ impl ModulePass<'_> {
                 }
             }
             Member::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
+            Member::Native(n) => self.resolve_callable(n.params(), n.return_type(), None),
             Member::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
             Member::Task(t) => self.resolve_callable(t.params(), t.return_type(), t.body()),
             Member::Effect(e) => {
@@ -1449,7 +1480,7 @@ impl ModulePass<'_> {
             return;
         }
         let name = self.interner.intern(&head.text());
-        if let Some(base) = self.imports.natives.get(&name) {
+        if let Some(base) = self.native_base(name) {
             let rest: Vec<_> = path.segments().skip(1).collect();
             self.resolve_native(&head, base, &rest, false);
             return;
@@ -1631,7 +1662,7 @@ impl ModulePass<'_> {
             });
             return;
         }
-        if let Some(base) = self.imports.natives.get(&name) {
+        if let Some(base) = self.native_base(name) {
             let rest: Vec<_> = ty.segments().skip(1).collect();
             self.resolve_native(&head, base, &rest, true);
             return;
@@ -1788,6 +1819,7 @@ pub fn resolve_fragment(
         prelude: &prelude,
         members: &members,
         owner: None,
+        owner_name: None,
         node: None,
         decls: &[],
         imports: &imports,
