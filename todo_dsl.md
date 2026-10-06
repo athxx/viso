@@ -1042,8 +1042,10 @@ timers (§104–§111).
     - [ ] Web audio output (an AudioWorklet over a shared-memory wasm build).
     - [ ] A logic reload swaps the audio host on the running device without
           a gap (hand-off through a lock-free slot).
-  - [ ] The VM's call path is shown allocation-free once warm (allocation
-        count test on the audio hook).
+  - [x] The VM's call path is shown allocation-free once warm (allocation
+        count test on the audio hook): 1000 warm 256-frame stereo blocks with
+        commands, both hooks and events make no heap allocation or free
+        (`game_audio_alloc.rs`, a counting global allocator).
 - [ ] Dev snapshot ring and rewind-and-replay after a logic reload (§110.4).
   - [x] The dev scheduler keeps a ring of snapshots (default the last 10 s) and
         records the input tape continuously (`keep_history`, a snapshot every
