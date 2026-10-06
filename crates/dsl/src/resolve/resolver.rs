@@ -66,7 +66,7 @@ impl Resolution {
     /// nominal type or a native handle type. A local names no type.
     pub fn nominal(self) -> Option<Ty> {
         match self {
-            Resolution::Symbol(id) => Some(Ty::Named(id)),
+            Resolution::Symbol(id) => Some(Ty::named(id)),
             Resolution::Native(id) => Some(Ty::Native(id)),
             Resolution::Local(_) | Resolution::Env | Resolution::Theme => None,
         }
@@ -192,6 +192,8 @@ pub fn resolve(
             members: &members,
             owner: None,
             owner_name: None,
+            type_scopes: Vec::new(),
+            decl_at: std::collections::HashMap::new(),
             node: None,
             decls: &all_decls[i],
             imports: &imports,
@@ -205,6 +207,7 @@ pub fn resolve(
             defer_unresolved_types: false,
             in_view: false,
         };
+        pass.decl_at = all_decls[i].iter().map(|d| (d.name_range, d.id)).collect();
         if let Some(cu) = &cu {
             pass.resolve_unit(cu);
         }
@@ -244,6 +247,8 @@ pub(super) fn resolve_standalone(
         members: &members,
         owner: None,
         owner_name: None,
+        type_scopes: Vec::new(),
+        decl_at: std::collections::HashMap::new(),
         node: None,
         decls: &decls,
         imports: &imports,
@@ -255,6 +260,7 @@ pub(super) fn resolve_standalone(
         defer_unresolved_types: false,
         in_view: false,
     };
+    pass.decl_at = decls.iter().map(|d| (d.name_range, d.id)).collect();
     pass.resolve_unit(cu);
     let ModulePass { refs, errors, .. } = pass;
     drop(members);
@@ -335,8 +341,210 @@ fn build_symbol_table(
         if let Item::Component(_) | Item::System(_) = decl {
             define_members(&decl, id, &text, package, module_text, interner, &mut out);
         }
+        if let Item::Trait(t) = &decl {
+            define_trait_members(t, id, &text, package, module_text, interner, &mut out);
+        }
+    }
+    let mint = |kind: SymbolKind, path: &str| {
+        fingerprint(SymbolIdentity {
+            package,
+            module_path: module_text,
+            kind,
+            decl_path: path,
+        })
+    };
+    for item in cu.items() {
+        let decl = match item {
+            Item::Export(e) => match e.declaration() {
+                Some(inner) => inner,
+                None => continue,
+            },
+            other => other,
+        };
+        mint_unnamed(&decl, &mint, &mut out);
     }
     out.into_parts()
+}
+
+/// The `::`-free text identifying an impl among its module's: `impl Target` or
+/// `impl Trait for Target`, without whitespace.
+pub(crate) fn impl_path(decl: &crate::ast::ImplDecl) -> String {
+    let squash = |n: &SyntaxNode| -> String {
+        n.text()
+            .to_string()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    let target = decl.target().map(|t| squash(&t)).unwrap_or_default();
+    match decl.trait_path() {
+        Some(t) => format!("impl {} for {target}", squash(t.syntax())),
+        None => format!("impl {target}"),
+    }
+}
+
+/// The name tokens of the generic parameters `node` declares, in order.
+pub(crate) fn generic_param_names(node: &SyntaxNode) -> Vec<crate::syntax::SyntaxToken> {
+    use crate::syntax::SyntaxKind;
+    node.children()
+        .into_iter()
+        .filter(|c| c.kind() == SyntaxKind::GenericParams)
+        .flat_map(|g| g.children())
+        .filter(|g| g.kind() == SyntaxKind::GenericParam)
+        .filter_map(|g| ident_tokens(&g).into_iter().next())
+        .collect()
+}
+
+/// The first token of `kind` directly under `node`.
+fn keyword(
+    node: &SyntaxNode,
+    kind: crate::syntax::SyntaxKind,
+) -> Option<crate::syntax::SyntaxToken> {
+    node.children_with_tokens()
+        .into_iter()
+        .filter_map(|e| e.as_token().cloned())
+        .find(|t| t.kind() == kind)
+}
+
+/// Mints the symbols a declaration has that no table names: its generic
+/// parameters, a trait's and an impl's `Self`, and an impl's members, each
+/// declared at its name (`Self` at the `trait`/`impl` keyword).
+fn mint_unnamed(
+    decl: &Item,
+    mint: &dyn Fn(SymbolKind, &str) -> SymbolId,
+    out: &mut SymbolTableBuild,
+) {
+    use crate::syntax::SyntaxKind;
+    let generics = |path: &str, node: &SyntaxNode, out: &mut SymbolTableBuild| {
+        for name in generic_param_names(node) {
+            let id = mint(SymbolKind::TypeParam, &format!("{path}::<{}>", name.text()));
+            out.mint(id, &name);
+        }
+    };
+    let callables =
+        |node: &SyntaxNode| -> Vec<(crate::syntax::SyntaxToken, SyntaxNode, SymbolKind)> {
+            node.children()
+                .into_iter()
+                .filter_map(|m| {
+                    let kind = match m.kind() {
+                        SyntaxKind::FnDecl => SymbolKind::Function,
+                        SyntaxKind::ActionDecl => SymbolKind::Action,
+                        SyntaxKind::TaskDecl => SymbolKind::Task,
+                        SyntaxKind::ConstDecl => SymbolKind::Const,
+                        SyntaxKind::AssocTypeDecl => SymbolKind::AssocType,
+                        _ => return None,
+                    };
+                    Some((ident_tokens(&m).into_iter().next()?, m, kind))
+                })
+                .collect()
+        };
+    let syntax = decl.syntax();
+    match decl {
+        Item::Impl(i) => {
+            let path = impl_path(i);
+            generics(&path, syntax, out);
+            if let Some(kw) = keyword(syntax, SyntaxKind::ImplKw) {
+                out.mint(mint(SymbolKind::TypeParam, &format!("{path}::Self")), &kw);
+            }
+            let mut seen: std::collections::HashMap<String, TextRange> =
+                std::collections::HashMap::new();
+            for (name, member, kind) in callables(syntax) {
+                let text = name.text().to_string();
+                let member_path = format!("{path}::{text}");
+                if let Some(first) = seen.insert(text.clone(), name.text_range()) {
+                    let mut error = ResolveErrorKind::DuplicateName
+                        .to_diagnostic(Some(name.text_range()), &text);
+                    error
+                        .related
+                        .push(Related::new(first, format!("`{text}` is declared here")));
+                    out.errors.push(error);
+                    continue;
+                }
+                out.mint(mint(kind, &member_path), &name);
+                generics(&member_path, &member, out);
+            }
+        }
+        Item::Trait(t) => {
+            let Some(name) = t.name() else {
+                return;
+            };
+            let path = name.text().to_string();
+            generics(&path, syntax, out);
+            if let Some(kw) = keyword(syntax, SyntaxKind::TraitKw) {
+                out.mint(mint(SymbolKind::TypeParam, &format!("{path}::Self")), &kw);
+            }
+            for (member_name, member, _) in callables(syntax) {
+                generics(&format!("{path}::{}", member_name.text()), &member, out);
+            }
+        }
+        Item::Component(_) | Item::System(_) => {
+            let Some(name) = ident_tokens(syntax).into_iter().next() else {
+                return;
+            };
+            let path = name.text().to_string();
+            generics(&path, syntax, out);
+            for child in syntax.children() {
+                if matches!(
+                    child.kind(),
+                    SyntaxKind::FnDecl | SyntaxKind::ActionDecl | SyntaxKind::TaskDecl
+                ) && let Some(member) = ident_tokens(&child).into_iter().next()
+                {
+                    generics(&format!("{path}::{}", member.text()), &child, out);
+                }
+            }
+        }
+        Item::Record(_)
+        | Item::Enum(_)
+        | Item::TypeAlias(_)
+        | Item::Fn(_)
+        | Item::Action(_)
+        | Item::Task(_) => {
+            if let Some(name) = ident_tokens(syntax).into_iter().next() {
+                generics(&name.text(), syntax, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Defines a trait's members into its member table, each fingerprinted under
+/// the trait's name: its callables, associated consts and associated types.
+fn define_trait_members(
+    decl: &crate::ast::TraitDecl,
+    owner_id: SymbolId,
+    owner: &str,
+    package: &str,
+    module_text: &str,
+    interner: &mut NameInterner,
+    out: &mut SymbolTableBuild,
+) {
+    use crate::ast::AssocItem;
+    out.table.members_mut(owner_id);
+    for member in decl.members() {
+        let Some(name_tok) = member.name() else {
+            continue;
+        };
+        let (kind, ns) = match member {
+            AssocItem::Fn(_) => (SymbolKind::Function, Namespace::Value),
+            AssocItem::Action(_) => (SymbolKind::Action, Namespace::Value),
+            AssocItem::Task(_) => (SymbolKind::Task, Namespace::Value),
+            AssocItem::Const(_) => (SymbolKind::Const, Namespace::Value),
+            AssocItem::Type(_) => (SymbolKind::AssocType, Namespace::Type),
+        };
+        let name = interner.intern(&name_tok.text());
+        let decl_path = format!("{owner}::{}", name_tok.text());
+        let id = fingerprint(SymbolIdentity {
+            package,
+            module_path: module_text,
+            kind,
+            decl_path: &decl_path,
+        });
+        let symbol = ModuleSymbol {
+            id,
+            exported: false,
+        };
+        out.define(Some(owner_id), name, ns, symbol, &name_tok);
+    }
 }
 
 /// The in-progress output of [`build_symbol_table`]: the module symbol table, the
@@ -397,6 +605,16 @@ impl SymbolTableBuild {
             ));
         }
         self.errors.push(error);
+    }
+
+    /// Records `id`, declared at `name_tok`, without naming it in any table.
+    fn mint(&mut self, id: SymbolId, name_tok: &crate::syntax::SyntaxToken) {
+        self.decls.push(SymbolDecl {
+            id,
+            name_range: name_tok.text_range(),
+            export_at: None,
+        });
+        self.spellings.push(name_tok.text().to_string());
     }
 
     fn into_parts(self) -> (SymbolTable, Vec<SymbolDecl>, Vec<Diagnostic>) {
@@ -483,7 +701,8 @@ fn decl_identity(item: &Item) -> Option<(crate::syntax::SyntaxToken, SymbolKind,
         // a node's `styles` list names.
         Item::Theme(d) => (d.name()?, SymbolKind::Const, Namespace::Value),
         Item::Style(d) => (d.name()?, SymbolKind::Style, Namespace::Value),
-        Item::Export(_) | Item::Native(_) | Item::Advanced(_) => return None,
+        Item::Trait(d) => (d.name()?, SymbolKind::Trait, Namespace::Type),
+        Item::Export(_) | Item::Native(_) | Item::Impl(_) | Item::Advanced(_) => return None,
     };
     Some(triple)
 }
@@ -686,7 +905,7 @@ fn type_or_module_path_text(node: &SyntaxNode) -> String {
 }
 
 /// The identifier tokens directly under `node`, in order.
-fn ident_tokens(node: &SyntaxNode) -> Vec<crate::syntax::SyntaxToken> {
+pub(crate) fn ident_tokens(node: &SyntaxNode) -> Vec<crate::syntax::SyntaxToken> {
     use crate::syntax::SyntaxKind;
     node.children_with_tokens()
         .into_iter()
@@ -715,6 +934,10 @@ struct ModulePass<'a> {
     owner: Option<SymbolId>,
     /// Its name.
     owner_name: Option<NameId>,
+    /// The generic parameters (and `Self`) in scope, innermost last.
+    type_scopes: Vec<Vec<(NameId, SymbolId, bool)>>,
+    /// The symbol declared at each name span, for the unnamed ones.
+    decl_at: std::collections::HashMap<TextRange, SymbolId>,
     /// The component the innermost enclosing view node instantiates, whose events its
     /// handlers name.
     node: Option<SymbolId>,
@@ -749,12 +972,16 @@ impl<'a> ModulePass<'a> {
                 },
                 other => other,
             };
+            let scoped = !matches!(decl, Item::Trait(_) | Item::Impl(_))
+                && self.push_generics(decl.syntax(), None);
             match decl {
                 Item::Component(c) => self.resolve_component(&c),
                 Item::System(s) => self.resolve_system(&s),
                 Item::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
                 Item::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
                 Item::Task(t) => self.resolve_callable(t.params(), t.return_type(), t.body()),
+                Item::Trait(t) => self.resolve_trait(&t),
+                Item::Impl(i) => self.resolve_impl(&i),
                 Item::Record(r)
                     if crate::ast::decl_attributes(r.syntax())
                         .iter()
@@ -780,6 +1007,143 @@ impl<'a> ModulePass<'a> {
                 Item::Native(n) => self.resolve_callable(n.params(), n.return_type(), None),
                 _ => {}
             }
+            if scoped {
+                self.type_scopes.pop();
+            }
+        }
+    }
+
+    /// Opens a scope of the generic parameters `node` declares (and `Self`,
+    /// declared at its `self_kw` keyword), resolving their bounds and defaults
+    /// and its `where` clause in it. Returns whether a scope was opened.
+    fn push_generics(
+        &mut self,
+        node: &SyntaxNode,
+        self_kw: Option<crate::syntax::SyntaxKind>,
+    ) -> bool {
+        use crate::syntax::SyntaxKind;
+        let mut scope = Vec::new();
+        if let Some(kw) = self_kw.and_then(|k| keyword(node, k))
+            && let Some(&symbol) = self.decl_at.get(&kw.text_range())
+        {
+            scope.push((self.interner.intern("Self"), symbol, false));
+        }
+        for name in generic_param_names(node) {
+            if let Some(&symbol) = self.decl_at.get(&name.text_range()) {
+                let is_const = keyword(&name.parent(), SyntaxKind::ConstKw).is_some();
+                scope.push((self.interner.intern(&name.text()), symbol, is_const));
+                self.refs.push(ResolvedRef {
+                    range: name.text_range(),
+                    to: Resolution::Symbol(symbol),
+                });
+            }
+        }
+        let clauses: Vec<SyntaxNode> = node
+            .children()
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    c.kind(),
+                    SyntaxKind::GenericParams | SyntaxKind::WhereClause
+                )
+            })
+            .collect();
+        if scope.is_empty() && clauses.is_empty() {
+            return false;
+        }
+        self.type_scopes.push(scope);
+        for clause in clauses {
+            self.resolve_bounds_in(&clause);
+        }
+        true
+    }
+
+    /// Resolves the types and trait bounds under a generic parameter list or a
+    /// `where` clause: a path after a `:` is a bound, any other a type.
+    fn resolve_bounds_in(&mut self, clause: &SyntaxNode) {
+        use crate::syntax::SyntaxKind;
+        let mut items: Vec<SyntaxNode> = vec![clause.clone()];
+        if clause.kind() == SyntaxKind::GenericParams {
+            items = clause.children();
+        }
+        for item in items {
+            let mut after_colon = false;
+            for element in item.children_with_tokens() {
+                match element.kind() {
+                    SyntaxKind::Colon => after_colon = true,
+                    SyntaxKind::Eq | SyntaxKind::Comma => after_colon = false,
+                    SyntaxKind::TypePath => {
+                        if let Some(path) = element.as_node().cloned().and_then(TypePath::cast) {
+                            if after_colon {
+                                self.resolve_bound(&path);
+                            } else {
+                                self.resolve_type_path(&path);
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(node) = element.as_node() {
+                            self.resolve_body(node);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolves a trait: its supertraits and members, with `Self` and its
+    /// generic parameters in scope.
+    fn resolve_trait(&mut self, decl: &crate::ast::TraitDecl) {
+        let scoped = self.push_generics(decl.syntax(), Some(crate::syntax::SyntaxKind::TraitKw));
+        for bound in decl.supertraits() {
+            self.resolve_bound(&bound);
+        }
+        for member in decl.members() {
+            self.resolve_assoc(&member);
+        }
+        if scoped {
+            self.type_scopes.pop();
+        }
+    }
+
+    /// Resolves an impl: its trait, its target and its members, with `Self` and
+    /// its generic parameters in scope.
+    fn resolve_impl(&mut self, decl: &crate::ast::ImplDecl) {
+        let scoped = self.push_generics(decl.syntax(), Some(crate::syntax::SyntaxKind::ImplKw));
+        if let Some(path) = decl.trait_path() {
+            self.resolve_bound(&path);
+        }
+        if let Some(target) = decl.target() {
+            self.resolve_body(&target);
+        }
+        for member in decl.members() {
+            self.resolve_assoc(&member);
+        }
+        if scoped {
+            self.type_scopes.pop();
+        }
+    }
+
+    /// Resolves one member of a trait or an impl.
+    fn resolve_assoc(&mut self, member: &crate::ast::AssocItem) {
+        use crate::ast::AssocItem;
+        let scoped = self.push_generics(member.syntax(), None);
+        match member {
+            AssocItem::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
+            AssocItem::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
+            AssocItem::Task(t) => self.resolve_callable(t.params(), t.return_type(), t.body()),
+            AssocItem::Type(t) => {
+                for bound in t.bounds() {
+                    self.resolve_bound(&bound);
+                }
+                if let Some(value) = t.value() {
+                    self.resolve_body(&value);
+                }
+            }
+            AssocItem::Const(c) => self.resolve_body(c.syntax()),
+        }
+        if scoped {
+            self.type_scopes.pop();
         }
     }
 
@@ -995,10 +1359,28 @@ impl<'a> ModulePass<'a> {
                     self.resolve_expr(&def);
                 }
             }
-            Member::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
+            Member::Fn(f) => {
+                let scoped = self.push_generics(f.syntax(), None);
+                self.resolve_callable(f.params(), f.return_type(), f.body());
+                if scoped {
+                    self.type_scopes.pop();
+                }
+            }
             Member::Native(n) => self.resolve_callable(n.params(), n.return_type(), None),
-            Member::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
-            Member::Task(t) => self.resolve_callable(t.params(), t.return_type(), t.body()),
+            Member::Action(a) => {
+                let scoped = self.push_generics(a.syntax(), None);
+                self.resolve_callable(a.params(), a.return_type(), a.body());
+                if scoped {
+                    self.type_scopes.pop();
+                }
+            }
+            Member::Task(t) => {
+                let scoped = self.push_generics(t.syntax(), None);
+                self.resolve_callable(t.params(), t.return_type(), t.body());
+                if scoped {
+                    self.type_scopes.pop();
+                }
+            }
             Member::Effect(e) => {
                 if let Some(deps) = e.deps() {
                     for dep in deps.exprs() {
@@ -1044,6 +1426,14 @@ impl<'a> ModulePass<'a> {
         }
         self.scopes.push();
         for p in params {
+            if let Some(tok) = p.self_token() {
+                let name = self.interner.intern("self");
+                let slot = self.scopes.bind(name);
+                self.refs.push(ResolvedRef {
+                    range: tok.text_range(),
+                    to: Resolution::Local(slot),
+                });
+            }
             if let Some(tok) = p.name() {
                 let name = self.interner.intern(&tok.text());
                 let slot = self.scopes.bind(name);
@@ -1084,6 +1474,11 @@ impl<'a> ModulePass<'a> {
                     self.resolve_type_path(&ty);
                 }
             }
+            SyntaxKind::DynType => {
+                for bound in node.children().into_iter().filter_map(TypePath::cast) {
+                    self.resolve_bound(&bound);
+                }
+            }
             SyntaxKind::Pattern => self.resolve_pattern_types(node),
             SyntaxKind::EmitStmt => self.resolve_emit(node),
             SyntaxKind::RecordExpr => {
@@ -1106,6 +1501,8 @@ impl<'a> ModulePass<'a> {
                 self.resolve_children(node);
                 self.scopes.pop();
             }
+            // Resolved with the scope of the parameters they declare.
+            SyntaxKind::GenericParams | SyntaxKind::WhereClause => {}
             // A `start` handler's payload pattern binds for its block.
             SyntaxKind::StartSuccess | SyntaxKind::StartError => {
                 self.scopes.push();
@@ -1469,11 +1866,20 @@ impl<'a> ModulePass<'a> {
             return;
         };
         use crate::syntax::SyntaxKind;
-        // `self`/`Self` heads are not module symbols; leave them unresolved.
-        if matches!(
-            head.kind(),
-            SyntaxKind::SelfValueKw | SyntaxKind::SelfTypeKw
-        ) {
+        // `self` is a method's receiver; `Self::..` names the impl's or the
+        // trait's type. Neither is a module symbol.
+        if head.kind() == SyntaxKind::SelfValueKw {
+            let name = self.interner.intern("self");
+            if let Some(slot) = self.scopes.lookup(name) {
+                self.refs.push(ResolvedRef {
+                    range: head.text_range(),
+                    to: Resolution::Local(slot),
+                });
+            }
+            return;
+        }
+        if head.kind() == SyntaxKind::SelfTypeKw {
+            self.resolve_type_token(&head);
             return;
         }
         if self.resolve_value_token(&head) {
@@ -1572,8 +1978,18 @@ impl<'a> ModulePass<'a> {
     /// Returns whether it resolved.
     fn resolve_value_token(&mut self, head: &crate::syntax::SyntaxToken) -> bool {
         let name = self.interner.intern(&head.text());
+        let const_param = || {
+            self.type_scopes.iter().rev().find_map(|scope| {
+                scope
+                    .iter()
+                    .find(|(n, _, is_const)| *n == name && *is_const)
+                    .map(|(_, s, _)| *s)
+            })
+        };
         let to = if let Some(slot) = self.scopes.lookup(name) {
             Resolution::Local(slot)
+        } else if let Some(symbol) = const_param() {
+            Resolution::Symbol(symbol)
         } else if let Some(symbol) = self.member(self.owner, name, Namespace::Value) {
             Resolution::Symbol(symbol)
         } else if let Some(sym) = self.table.get(name, Namespace::Value) {
@@ -1644,7 +2060,9 @@ impl<'a> ModulePass<'a> {
                                 self.resolve_type_head(&arg, defer_unresolved);
                             }
                         }
-                        SyntaxKind::TupleType => self.resolve_body(&arg),
+                        SyntaxKind::TupleType
+                        | SyntaxKind::DynType
+                        | SyntaxKind::ConstGenericArg => self.resolve_body(&arg),
                         _ => {}
                     }
                 }
@@ -1684,9 +2102,16 @@ impl<'a> ModulePass<'a> {
     /// The type `name` names: this module's declaration, then a type import, then the
     /// prelude's.
     fn type_symbol(&self, name: NameId) -> Option<SymbolId> {
-        self.table
-            .get(name, Namespace::Type)
-            .map(|s| s.id)
+        self.type_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| {
+                scope
+                    .iter()
+                    .find(|(n, _, is_const)| *n == name && !is_const)
+                    .map(|(_, s, _)| *s)
+            })
+            .or_else(|| self.table.get(name, Namespace::Type).map(|s| s.id))
             .or_else(|| {
                 self.imports
                     .bindings
@@ -1820,6 +2245,8 @@ pub fn resolve_fragment(
         members: &members,
         owner: None,
         owner_name: None,
+        type_scopes: Vec::new(),
+        decl_at: std::collections::HashMap::new(),
         node: None,
         decls: &[],
         imports: &imports,

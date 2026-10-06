@@ -295,8 +295,12 @@ pub(crate) fn displayable(env: &dyn TypeEnv, ty: &Ty) -> bool {
         | Ty::InferFloat
         | Ty::Never
         | Ty::Unknown => true,
-        Ty::Named(id) => env.record_fields(*id).is_none() && env.enum_variants(*id).is_none(),
-        Ty::Bytes
+        Ty::Named(id, ..) => env.record_fields(*id).is_none() && env.enum_variants(*id).is_none(),
+        Ty::Param(_)
+        | Ty::Assoc(..)
+        | Ty::Dyn(..)
+        | Ty::Const(_)
+        | Ty::Bytes
         | Ty::Unit
         | Ty::Color
         | Ty::MixedLength

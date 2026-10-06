@@ -48,7 +48,7 @@ pub(super) fn collect(
 /// The type of the package's audio commands or events: its first deriving
 /// enum, or `()`.
 pub(super) fn message_type(derived: &[AudioDecl]) -> Ty {
-    derived.first().map_or(Ty::Unit, |d| Ty::Named(d.symbol))
+    derived.first().map_or(Ty::Unit, |d| Ty::named(d.symbol))
 }
 
 /// Checks the `derive` of `symbol` at `at`: only the package's first enum
@@ -153,7 +153,7 @@ fn tokens(ty: &Ty, env: &ModuleEnv<'_>, depth: u32) -> Option<usize> {
         Ty::Tuple(tys) => tys
             .iter()
             .try_fold(1, |n, ty| Some(n + tokens(ty, env, depth + 1)?)),
-        Ty::Named(symbol) => {
+        Ty::Named(symbol, ..) => {
             if let Some(fields) = env.record_fields(*symbol) {
                 return fields
                     .iter()

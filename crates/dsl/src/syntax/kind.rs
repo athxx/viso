@@ -419,6 +419,8 @@ pub enum SyntaxKind {
     TupleType,
     /// An array or slice type `"[" Type (";" Expr)? "]"` (A.3).
     ArrayType,
+    /// A trait-object type `"dyn" TypePath` (A.3).
+    DynType,
 
     // View.
     /// `view ViewBlock` (A.8).
@@ -604,6 +606,14 @@ pub enum SyntaxKind {
     /// WhereClause? CapabilityClause? ;` or `native type IDENT GenericParams?
     /// (: TraitBounds)? WhereClause? ;` (§47).
     NativeDecl,
+    /// `trait IDENT GenericParams? (: TraitBounds)? WhereClause? { TraitMember* }`
+    /// (§30).
+    TraitDecl,
+    /// `impl GenericParams? Type (for Type)? WhereClause? { ImplMember* }` (§31).
+    ImplDecl,
+    /// `type IDENT (: TraitBounds)? ;` in a trait, `type IDENT = Type ;` in an
+    /// impl (§30, §31).
+    AssocTypeDecl,
 
     // Advanced (parsed, not resolved this slice).
     /// A declaration in the Advanced tier (`trait`/`impl`/`template`) parsed
@@ -613,6 +623,15 @@ pub enum SyntaxKind {
 }
 
 impl SyntaxKind {
+    /// Whether this kind is a type node.
+    #[inline]
+    pub fn is_type(self) -> bool {
+        matches!(
+            self,
+            Self::TypePath | Self::TupleType | Self::ArrayType | Self::DynType
+        )
+    }
+
     /// Whether this kind is trivia (whitespace or any comment). Trivia are kept
     /// in the flat token stream and the green tree but are skipped by the parser
     /// when matching grammar.

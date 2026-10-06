@@ -62,7 +62,7 @@ impl TypeRef {
         let symbol = segments
             .first()
             .and_then(|head| match nominal.get(&head.text_range()) {
-                Some(HostTy::Named(symbol)) => Some(*symbol),
+                Some(HostTy::Named(symbol, ..)) => Some(*symbol),
                 _ => None,
             });
         let args = node

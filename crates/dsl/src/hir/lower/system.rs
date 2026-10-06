@@ -220,7 +220,7 @@ pub(super) fn node(
             };
             let at = name.text_range();
             let target = match env.scope.nominal.get(&at) {
-                Some(Ty::Named(id)) => Some(*id),
+                Some(Ty::Named(id, ..)) => Some(*id),
                 // The resolver reported the unresolved name.
                 None => continue,
                 Some(_) => None,

@@ -39,6 +39,7 @@ use viso_behavior::native::{Natives, SlotCardinality, WidgetNode};
 use viso_view::ControlKind;
 
 use super::access;
+use super::generic::Converter;
 use super::infer::{InferCx, MatchCheck, TypeEnv};
 use super::lower::TargetProfile;
 use super::nodes::HirSlot;
@@ -641,7 +642,7 @@ impl<'a> ViewWalk<'a> {
                     self.entry_at(false, "style", site, &entry, value.syntax().text_range());
                 }
                 PartValue::Own(Own::Lens(source)) => {
-                    let entry = RegionEntry::Lens(source);
+                    let entry = RegionEntry::Lens(source, None);
                     self.entry_at(false, "style", site, &entry, source.syntax().text_range());
                 }
             }
@@ -1158,7 +1159,7 @@ impl<'a> ViewWalk<'a> {
     fn event_payload(&mut self, event: &SyntaxToken, owner: Option<&Owner<'a>>) -> Ty {
         if let Some(id) = self.symbols.get(&event.text_range()).copied() {
             return match self.env.record_fields(id) {
-                Some(_) => Ty::Named(id),
+                Some(_) => Ty::named(id),
                 None => Ty::Unknown,
             };
         }
@@ -1172,7 +1173,7 @@ impl<'a> ViewWalk<'a> {
                 Some(payload) => self
                     .env
                     .standard_type(payload)
-                    .map_or(Ty::Unknown, Ty::Named),
+                    .map_or(Ty::Unknown, Ty::named),
                 None => Ty::Unit,
             };
         }
@@ -1258,7 +1259,7 @@ impl<'a> ViewWalk<'a> {
         if let (Some(path), Some(_), Some(want)) = (
             &transition,
             &declared,
-            self.env.standard_type("Transition").map(Ty::Named),
+            self.env.standard_type("Transition").map(Ty::named),
         ) && !have.has_unknown()
             && have != want
         {
@@ -1314,20 +1315,29 @@ impl<'a> ViewWalk<'a> {
             binding.source(),
             binding.using_ty(),
         ) {
-            self.write_back(errors, binding, &lens, true);
+            self.write_back(errors, binding, &lens, true, None);
         }
-        if let (Some(owner), true, Some(lens), None) = (
-            scope.owner,
-            declared.two_way,
-            binding.source(),
-            binding.using_ty(),
-        ) && owner.component.is_none()
+        // `using C` converts through `C: TwoWayConverter<Model, View>`.
+        let converter = match (binding.using_ty(), &declared.ty, &source) {
+            (Some(using), Some(view), Some(model)) => {
+                let converter = self.cx.converter(&using, model, view);
+                if converter.is_none() {
+                    // Reported; the binding is not mounted.
+                    return;
+                }
+                converter
+            }
+            _ => None,
+        };
+        if let (Some(owner), true, Some(lens)) = (scope.owner, declared.two_way, binding.source())
+            && owner.component.is_none()
             && let [name] = path_segments(&path).as_slice()
             && owner.schema.native().write_back(name).is_some()
         {
             // The native widget's change event writes the source; a control
             // reads the source as its current value.
-            self.write_back(errors, binding, &lens, owner.reads_control(&path));
+            let reads = owner.reads_control(&path);
+            self.write_back(errors, binding, &lens, reads, converter.as_ref());
         }
         if let (Some(want), Some(have), None) = (&declared.ty, &source, binding.using_ty())
             && !want.has_unknown()
@@ -1690,10 +1700,12 @@ impl<'a> ViewWalk<'a> {
         binding: &TwoWayBinding,
         source: &AssignablePath,
         reads: bool,
+        converter: Option<&Converter>,
     ) {
         if reads {
             let at = source.syntax().text_range();
-            self.region_entry(errors, "arg", at, &RegionEntry::Lens(source));
+            let entry = RegionEntry::Lens(source, converter.map(|c| &c.to_view));
+            self.region_entry(errors, "arg", at, &entry);
         }
         let Some(sink) = &self.sink else {
             return;
@@ -1711,7 +1723,8 @@ impl<'a> ViewWalk<'a> {
             let params = 1 + self.regions.len() as u32;
             unsupported_with(&mut b, def, params, "has type errors", at)
         } else {
-            lower_write_back(&mut b, &self.cx, def, &self.regions, source, at)
+            let to_model = converter.map(|c| &c.to_model);
+            lower_write_back(&mut b, &self.cx, def, &self.regions, source, to_model, at)
         };
         b.handler(at, func);
     }
@@ -1813,7 +1826,7 @@ fn holds_length(ty: Option<&Ty>) -> bool {
     match ty {
         None => true,
         Some(ty) => match ty {
-            Ty::Dp | Ty::Px | Ty::Sp | Ty::Em | Ty::MixedLength | Ty::Named(_) | Ty::Unknown => {
+            Ty::Dp | Ty::Px | Ty::Sp | Ty::Em | Ty::MixedLength | Ty::Named(..) | Ty::Unknown => {
                 true
             }
             Ty::Option(inner) | Ty::List(inner) => holds_length(Some(inner)),

@@ -173,6 +173,13 @@ pub trait EffectEnv {
         let _ = call;
         None
     }
+
+    /// The effect class of the user callable the call at `call` reaches
+    /// through a method, an associated path or an instantiation.
+    fn user_call(&self, call: TextRange) -> Option<EffectClass> {
+        let _ = call;
+        None
+    }
 }
 
 /// The effect-checking context for one body walk: the resolved-reference index, the
@@ -508,6 +515,9 @@ impl<'a> EffectCx<'a> {
     /// environment. `None` when the callee is not a simple resolved path or the
     /// environment does not classify it.
     fn callee_effect(&self, node: &SyntaxNode) -> Option<EffectClass> {
+        if let Some(class) = self.env.user_call(node.text_range()) {
+            return Some(class);
+        }
         let call = CallExpr::cast(node.clone())?;
         let callee = call.callee()?;
         let callee_node = callee.syntax();

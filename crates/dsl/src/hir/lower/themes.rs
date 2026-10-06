@@ -101,7 +101,7 @@ pub(super) fn lower(
             ([_], Some(Resolution::Symbol(id))) => Some(id),
             _ => None,
         };
-        let theme = Ty::Named(record);
+        let theme = Ty::named(record);
         match found {
             Some(id) if cx.resolution_ty(&Resolution::Symbol(id)) == theme => Some(id),
             Some(_) => {

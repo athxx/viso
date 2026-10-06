@@ -28,6 +28,7 @@
 pub(crate) mod body;
 mod carry;
 pub(crate) mod format;
+mod generic;
 mod lens;
 mod native;
 pub(crate) mod pattern;
@@ -189,6 +190,31 @@ pub trait TypeEnv {
         }
     }
 
+    /// The package's traits, impls and generic declarations.
+    fn traits(&self) -> Option<&crate::hir::generic::TraitTable> {
+        None
+    }
+
+    /// Whether the trait `t` is in scope.
+    fn trait_visible(&self, t: SymbolId) -> bool {
+        let _ = t;
+        true
+    }
+
+    /// The type the name at `at` names in a type position, as the module
+    /// sees it (a generic parameter, an impl's `Self`), when it differs from
+    /// the resolver's binding.
+    fn nominal(&self, at: TextRange) -> Option<Ty> {
+        let _ = at;
+        None
+    }
+
+    /// Notes that the call (or trait-object conversion) at `call` reaches the
+    /// user callable `symbol`, for the effect and capability checks.
+    fn record_call(&self, call: TextRange, symbol: SymbolId) {
+        let _ = (call, symbol);
+    }
+
     /// Notes that the call at `call` is bound to the native function `id`.
     fn record_native(&self, call: TextRange, id: NativeId) {
         let _ = (call, id);
@@ -251,6 +277,15 @@ pub struct InferCx<'a> {
     ticks: HashMap<TextRange, i64>,
     /// Every checked `tr` call, keyed by the call's span.
     tr_calls: HashMap<TextRange, translate::TrCall>,
+    /// What each call of a user callable through a method, an associated
+    /// path or a generic instantiation reaches, keyed by the call's span (an
+    /// associated const path's, for one).
+    targets: HashMap<TextRange, crate::hir::generic::CallTarget>,
+    /// Each value converted to a trait object, keyed like `types`.
+    coercions: HashMap<(TextRange, SyntaxKind), crate::hir::generic::Coercion>,
+    /// The argument of each generic parameter of the instantiation being
+    /// typed; empty for a body typed once.
+    subst: crate::hir::generic::Subst,
 }
 
 impl<'a> InferCx<'a> {
@@ -274,7 +309,21 @@ impl<'a> InferCx<'a> {
             native_calls: HashMap::new(),
             ticks: HashMap::new(),
             tr_calls: HashMap::new(),
+            targets: HashMap::new(),
+            coercions: HashMap::new(),
+            subst: Vec::new(),
         }
+    }
+
+    /// What the call (or associated path) at `range` reaches, when typing
+    /// resolved it through a method, an associated path or an instantiation.
+    pub(crate) fn call_target(&self, range: TextRange) -> Option<&crate::hir::generic::CallTarget> {
+        self.targets.get(&range)
+    }
+
+    /// The trait-object conversion of `node`'s value, when it has one.
+    pub(crate) fn coercion(&self, node: &SyntaxNode) -> Option<&crate::hir::generic::Coercion> {
+        self.coercions.get(&(node.text_range(), node.kind()))
     }
 
     /// The type inference gave `expr`, when the walk reached it.
@@ -319,6 +368,10 @@ impl<'a> InferCx<'a> {
     /// checked here (the caller checks against its own expectation, if any).
     pub fn infer_expr(&mut self, expr: &Expr, expected: Option<&Ty>) -> Ty {
         let node = expr.syntax();
+        if let Some(target @ Ty::Dyn(..)) = expected {
+            let produced = self.infer_expr(expr, None);
+            return self.coerce(produced, target, node);
+        }
         let ty = match node.kind() {
             SyntaxKind::LiteralExpr => self.infer_literal(node, expected),
             SyntaxKind::PathExpr => {
@@ -494,10 +547,21 @@ impl<'a> InferCx<'a> {
         };
         match self.refs.get(&head.text_range()).copied() {
             Some(Resolution::Symbol(id)) if segments.len() >= 2 => {
-                match self.env.enum_variants(id) {
-                    Some(_) => self.variant_value(id, &segments[1]),
+                let variants = self.env.enum_variants(id);
+                let is_variant =
+                    variants.is_some_and(|vs| vs.iter().any(|v| v.name == segments[1].text()));
+                if is_variant {
+                    let ty = self.variant_value(id, &segments[1]);
+                    return self.generic_variant_value(id, ty, expected, node);
+                }
+                match self.assoc_value(head, &segments[1], node) {
+                    Some(ty) => ty,
+                    None if variants.is_some() => self.variant_value(id, &segments[1]),
                     None => Ty::Unknown,
                 }
+            }
+            Some(Resolution::Symbol(id)) if self.const_param_ty(id).is_some() => {
+                self.const_param_ty(id).unwrap_or(Ty::Unknown)
             }
             Some(Resolution::Native(id)) => match self.native_variant(id) {
                 Some(variant) => self.check_against(Ty::Native(variant.ty), expected, node),
@@ -580,6 +644,16 @@ impl<'a> InferCx<'a> {
             }
         }
 
+        if let Some(Resolution::Symbol(id)) = head
+            && segments.len() == 2
+            && !self
+                .env
+                .enum_variants(id)
+                .is_some_and(|vs| vs.iter().any(|v| v.name == segments[1].text()))
+            && let Some(ty) = self.assoc_call(&segments[0], &segments[1], &args, expected, node)
+        {
+            return ty;
+        }
         let sig = match (head, segments.len()) {
             (Some(Resolution::Local(slot)), 1) => match self.locals.get(&slot).cloned() {
                 Some(Ty::Fn(params, ret)) => {
@@ -590,11 +664,31 @@ impl<'a> InferCx<'a> {
                 }
                 _ => None,
             },
+            (Some(Resolution::Symbol(id)), n)
+                if n >= 2
+                    && self
+                        .env
+                        .enum_variants(id)
+                        .is_some_and(|vs| vs.iter().any(|v| v.name == segments[1].text())) =>
+            {
+                return match self.variant_value(id, &segments[1]) {
+                    Ty::Fn(params, ret) => {
+                        self.variant_call(id, (params, *ret), &args, expected, node)
+                    }
+                    _ => {
+                        self.infer_args_alone(&args);
+                        Ty::Unknown
+                    }
+                };
+            }
             (Some(Resolution::Symbol(id)), n) if n >= 2 && self.env.enum_variants(id).is_some() => {
                 match self.variant_value(id, &segments[1]) {
                     Ty::Fn(params, ret) => Some((params, *ret)),
                     _ => None,
                 }
+            }
+            (Some(Resolution::Symbol(id)), 1) if self.is_generic(id) => {
+                return self.generic_call(id, &args, expected, node);
             }
             (Some(Resolution::Native(id)), _) if translate::is_tr(id) => {
                 let at = callee
@@ -622,16 +716,23 @@ impl<'a> InferCx<'a> {
                     match callee.syntax().kind() {
                         SyntaxKind::PathExpr => {}
                         SyntaxKind::FieldExpr => {
-                            if let Some(recv) = first_child_expr(callee.syntax())
-                                && let Ty::Native(ty) = self.infer_expr(&recv, None)
-                            {
-                                return self.native_method_call(
-                                    ty,
-                                    callee.syntax(),
-                                    &args,
-                                    expected,
-                                    node,
-                                );
+                            if let Some(recv) = first_child_expr(callee.syntax()) {
+                                return match self.infer_expr(&recv, None) {
+                                    Ty::Native(ty) => self.native_method_call(
+                                        ty,
+                                        callee.syntax(),
+                                        &args,
+                                        expected,
+                                        node,
+                                    ),
+                                    recv => self.method_call(
+                                        callee.syntax(),
+                                        recv,
+                                        &args,
+                                        expected,
+                                        node,
+                                    ),
+                                };
                             }
                         }
                         SyntaxKind::OptionalFieldExpr => {
@@ -847,6 +948,9 @@ impl<'a> InferCx<'a> {
             (lty, rty)
         };
 
+        if matches!(op, Some(SyntaxKind::EqEq | SyntaxKind::Neq)) {
+            self.check_comparable(&lty, node.text_range());
+        }
         if relational || logical {
             if relational && (lty.is_dimensional() || rty.is_dimensional()) {
                 self.check_dimension_comparison(&lty, &rty, node);
@@ -1144,9 +1248,13 @@ impl<'a> InferCx<'a> {
     /// types by the symbols the resolver bound their heads to.
     fn annotation_ty(&mut self, node: &SyntaxNode, range: TextRange) -> Ty {
         let refs = &self.refs;
-        let nominal = |at: TextRange| refs.get(&at).and_then(|r| r.nominal());
+        let env = self.env;
+        let nominal = |at: TextRange| {
+            env.nominal(at)
+                .or_else(|| refs.get(&at).and_then(|r| r.nominal()))
+        };
         match Ty::from_annotation(node, &nominal) {
-            Ok(ty) => ty,
+            Ok(ty) => self.settle(&ty),
             Err(err) => {
                 self.diagnostics
                     .push(Diagnostic::error(err.code(), range, err.message()));
@@ -1251,8 +1359,24 @@ fn spell(
 ) -> String {
     let one = |t: &Ty| spell(t, named, native);
     let list = |tys: &[Ty]| tys.iter().map(one).collect::<Vec<_>>().join(", ");
+    let args = |tys: &[Ty]| {
+        if tys.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", list(tys))
+        }
+    };
     match ty {
-        Ty::Named(id) => named(*id),
+        Ty::Named(id, xs) => format!("{}{}", named(*id), args(xs)),
+        Ty::Param(id) => named(*id),
+        Ty::Dyn(id, xs) => format!("dyn {}{}", named(*id), args(xs)),
+        Ty::Assoc(base, name) => format!("{}::{name}", one(base)),
+        Ty::Const(c) => match c {
+            super::ty::ConstArg::Int(v) => v.to_string(),
+            super::ty::ConstArg::Bool(v) => v.to_string(),
+            super::ty::ConstArg::Char(v) => format!("{v:?}"),
+            super::ty::ConstArg::Variant(id, index) => format!("{}#{index}", named(*id)),
+        },
         Ty::Native(id) => native(*id),
         Ty::Tuple(tys) => format!("({})", list(tys)),
         Ty::Fn(params, ret) => format!("fn({}) -> {}", list(params), one(ret)),
@@ -1273,6 +1397,14 @@ pub(super) fn compatible(a: &Ty, b: &Ty) -> bool {
         (Ty::Unknown, _) | (_, Ty::Unknown) => true,
         (Ty::Tuple(xs), Ty::Tuple(ys)) => {
             xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| compatible(x, y))
+        }
+        // A nominal type spelled without its arguments (a pattern's, a
+        // variant's) agrees with any arguments.
+        (Ty::Named(a, xs), Ty::Named(b, ys)) | (Ty::Dyn(a, xs), Ty::Dyn(b, ys)) => {
+            a == b
+                && (xs.is_empty()
+                    || ys.is_empty()
+                    || xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| compatible(x, y)))
         }
         (Ty::Fn(xp, xr), Ty::Fn(yp, yr)) => {
             xp.len() == yp.len()
@@ -1299,6 +1431,10 @@ fn merge(a: &Ty, b: &Ty) -> Ty {
         (Ty::Unknown, _) => b.clone(),
         (Ty::Tuple(xs), Ty::Tuple(ys)) => {
             Ty::Tuple(xs.iter().zip(ys).map(|(x, y)| merge(x, y)).collect())
+        }
+        (Ty::Named(id, xs), Ty::Named(_, ys)) if xs.is_empty() => Ty::Named(*id, ys.clone()),
+        (Ty::Named(id, xs), Ty::Named(_, ys)) if xs.len() == ys.len() => {
+            Ty::Named(*id, xs.iter().zip(ys).map(|(x, y)| merge(x, y)).collect())
         }
         (Ty::Fn(xp, xr), Ty::Fn(yp, yr)) => Ty::Fn(
             xp.iter().zip(yp).map(|(x, y)| merge(x, y)).collect(),
@@ -1622,7 +1758,11 @@ pub(crate) fn ty_name(ty: &Ty) -> &'static str {
         Ty::Duration => "Duration",
         Ty::Angle => "Angle",
         Ty::Frequency => "Frequency",
-        Ty::Named(_) => "<named>",
+        Ty::Named(..) => "<named>",
+        Ty::Param(_) => "<param>",
+        Ty::Assoc(..) => "<associated>",
+        Ty::Dyn(..) => "<dyn>",
+        Ty::Const(_) => "<const>",
         Ty::Native(_) => "<native>",
         Ty::Tuple(_) => "<tuple>",
         Ty::Fn(_, _) => "<fn>",

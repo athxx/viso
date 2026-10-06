@@ -67,6 +67,7 @@ mod system;
 mod tags;
 mod tasks;
 mod themes;
+mod traits;
 
 pub use input::InputDevices;
 pub use shader::CheckedShader;
@@ -149,6 +150,7 @@ pub fn lower(
         &prelude.module.table,
         &prelude.module.refs,
         None,
+        &prelude.module.decls,
         interner,
         &mut decls,
     );
@@ -174,12 +176,15 @@ pub fn lower(
                 &resolved_module.table,
                 &resolved_module.refs,
                 Some(i),
+                &resolved_module.decls,
                 interner,
                 &mut decls,
             );
             Some((cu, scope))
         })
         .collect();
+    traits::standard(&mut decls);
+    traits::normalize_declarations(&mut decls);
     decls.input_action = Some(input::action_type(&decls));
     decls.tag_type = Some(tags::tag_type(&decls));
     decls.audio_command = Some(audio::message_type(&decls.audio_commands));
@@ -204,16 +209,25 @@ pub fn lower(
     let mut migrators = Vec::new();
     let mut systems = Vec::new();
     let mut shaders = Vec::new();
+    let envs: Vec<Option<ModuleEnv<'_>>> = modules
+        .iter()
+        .enumerate()
+        .map(|(i, module)| {
+            let (_, scope) = module.as_ref()?;
+            Some(ModuleEnv::new(&decls, scope, i, &behavior, graph.natives()))
+        })
+        .collect();
     for (i, module) in modules.iter().enumerate() {
         let mut module_diagnostics = Vec::new();
         let mut flows = InputFlows::default();
-        if let (Some((cu, scope)), Some(resolved_module)) = (module, resolved.get(i)) {
-            let env = ModuleEnv::new(&decls, scope, i, &behavior, graph.natives());
+        if let (Some((cu, _)), Some(resolved_module), Some(env)) =
+            (module, resolved.get(i), envs[i].as_ref())
+        {
             cap.module = i;
             flows = lower_module(
                 cu,
                 &resolved_module.refs,
-                &env,
+                env,
                 &mut components,
                 &mut callables,
                 &mut module_diagnostics,
@@ -222,11 +236,14 @@ pub fn lower(
                 &mut domains,
                 &mut shaders,
             );
-            collect_migrators(cu, &env, &mut module_diagnostics, &mut migrators);
+            collect_migrators(cu, env, &mut module_diagnostics, &mut migrators);
         }
         per_module.push(module_diagnostics);
         input_flows.push(flows);
     }
+    traits::lower_instances(&decls, &envs, resolved, &behavior, &mut per_module);
+    drop(envs);
+    traits::check_overlap(&decls, &mut per_module);
     lower_prelude_defaults(&prelude, &prelude_scope, &decls, &behavior, graph.natives());
     cap.finish(&mut components, &mut per_module);
     check_input_bases(&input_flows, &mut per_module);
@@ -458,6 +475,8 @@ fn lower_module(
                 let symbol = env.scope.declared.get(&s.syntax().text_range()).copied();
                 shaders.push(shader::check(&s, symbol, env, diagnostics));
             }
+            Item::Trait(t) => traits::check_trait(&t, refs, env, diagnostics, cap, &mut percent),
+            Item::Impl(i) => traits::check_impl(&i, refs, env, diagnostics, cap, &mut percent),
             Item::Fn(f) => {
                 let callable = Callable {
                     name: name_of(f.name()),
@@ -670,6 +689,7 @@ fn check_component_callables(
 }
 
 /// A `fn`/`action`/`task` declaration, a component's or the module's.
+#[derive(Clone)]
 struct Callable {
     /// Its name in the Behavior IR (`Component.member` for a component member).
     name: String,
@@ -695,6 +715,10 @@ fn check_callable(
     percent: &mut PercentSources,
 ) {
     let body = &callable.body;
+    // A generic callable is typed once here and lowered per instantiation.
+    let generic = callable
+        .symbol
+        .is_some_and(|s| env.decls.traits.generics_of(s).is_some());
     let def = Def {
         name: callable.name.clone(),
         kind: callable.kind,
@@ -702,7 +726,15 @@ fn check_callable(
         module: env.module,
         into: None,
     };
-    check_signature(refs, env, callable, diagnostics, percent, Some(def));
+    check_signature(
+        refs,
+        env,
+        callable,
+        diagnostics,
+        percent,
+        (!generic).then_some(def),
+        &[],
+    );
     if let Some(block) = body {
         check_body(refs, callable.context, env, block.syntax(), diagnostics);
     }
@@ -710,10 +742,13 @@ fn check_callable(
         .clause
         .as_ref()
         .map(|c| (capability_set_of(c), c.syntax().text_range()));
-    let calls = body
+    let mut calls = body
         .as_ref()
         .map(|b| callee_symbols(refs, b.syntax()))
         .unwrap_or_default();
+    if let Some(b) = body {
+        calls.extend(env.user_calls_in(b.syntax().text_range()));
+    }
     let direct = body
         .as_ref()
         .map(|b| env.native_capabilities(b.syntax().text_range()))
@@ -744,12 +779,18 @@ fn check_signature(
     diagnostics: &mut Vec<Diagnostic>,
     percent: &mut PercentSources,
     def: Option<Def>,
+    subst: &[(SymbolId, Ty)],
 ) {
     let Some(body) = &callable.body else {
         return;
     };
+    let mut cx = InferCx::new(refs, env);
+    cx.instantiate(subst.to_vec());
     let returns_value = callable.ret.is_some();
-    let ret = callable.ret.as_ref().map(|r| env.annotation_of(r.syntax()));
+    let ret = callable
+        .ret
+        .as_ref()
+        .map(|r| cx.settle(&env.annotation_of(r.syntax())));
     if let (Some(ty), Some(at)) = (&ret, &callable.ret) {
         check_stored(
             ty,
@@ -759,21 +800,29 @@ fn check_signature(
             diagnostics,
         );
     }
-    let mut cx = InferCx::new(refs, env);
     for param in callable.params.iter().filter(|p| {
         p.syntax()
             .children_with_tokens()
             .into_iter()
             .any(|e| e.as_token().is_some_and(|t| t.kind() == SyntaxKind::MutKw))
     }) {
-        if let Some(name) = param.name() {
+        if let Some(name) = param.name().or_else(|| param.self_token()) {
             cx.mark_mutable(name.text_range());
         }
     }
+    let signature = callable.symbol.and_then(|s| env.decls.signatures.get(&s));
     let params: Vec<(TextRange, Ty)> = callable
         .params
         .iter()
-        .filter_map(|p| Some((p.name()?.text_range(), env.annotation_of(p.syntax()))))
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let at = p.name().or_else(|| p.self_token())?.text_range();
+            let ty = match (p.self_token(), signature) {
+                (Some(_), Some((tys, _))) => tys.get(i).cloned().unwrap_or(Ty::Unknown),
+                _ => env.annotation_of(p.syntax()),
+            };
+            Some((at, cx.settle(&ty)))
+        })
         .collect();
     cx.check_callable(&params, ret.as_ref(), body);
     if let Some(def) = def {
@@ -1256,6 +1305,10 @@ struct Declarations {
     module_paths: Vec<String>,
     /// Every `@shader_value` record.
     shader_values: HashMap<SymbolId, shader::ShaderValueDecl>,
+    /// Every trait, impl, generic declaration and alias.
+    traits: super::generic::TraitTable,
+    /// The body of every generic callable, which each instantiation lowers.
+    bodies: HashMap<SymbolId, traits::GenericBody>,
 }
 
 /// What one module adds to the package [`Declarations`]: its owners' member names, its
@@ -1275,6 +1328,12 @@ struct ModuleScope {
     declared: HashMap<TextRange, SymbolId>,
     /// The module's graph index, or `None` for the prelude.
     home: Option<usize>,
+    /// The symbol declared at each name span.
+    decl_at: traits::DeclAt,
+    /// What each impl's `Self` stands for: its target.
+    self_types: HashMap<SymbolId, Ty>,
+    /// Every symbol a name in the module resolves to.
+    referenced: HashSet<SymbolId>,
 }
 
 /// The concrete [`MemberEnv`]/[`TypeEnv`]/[`ViewEnv`]/[`ReadEnv`]/[`EffectEnv`] for one
@@ -1300,6 +1359,10 @@ struct ModuleEnv<'p> {
     native_calls: RefCell<HashMap<TextRange, NativeId>>,
     /// The styles the module declares, set before its views are walked.
     styles: OnceCell<StyleBook>,
+    /// Each call (or trait-object conversion) typing bound to a user callable
+    /// through a method, an associated path or an instantiation, by the
+    /// call's span.
+    user_calls: RefCell<Vec<(TextRange, SymbolId)>>,
 }
 
 impl TypeEnv for ModuleEnv<'_> {
@@ -1312,8 +1375,8 @@ impl TypeEnv for ModuleEnv<'_> {
                 .map(|f| f.ty.clone())
                 .filter(|ty| *ty != Ty::Unknown)
                 .or_else(|| self.inferred.borrow().get(id).cloned()),
-            Resolution::Env => Some(Ty::Named(environment())),
-            Resolution::Theme => Some(Ty::Named(theme_record())),
+            Resolution::Env => Some(Ty::named(environment())),
+            Resolution::Theme => Some(Ty::named(theme_record())),
             Resolution::Local(_) | Resolution::Native(_) => None,
         }
     }
@@ -1341,6 +1404,29 @@ impl TypeEnv for ModuleEnv<'_> {
 
     fn record_native(&self, call: TextRange, id: NativeId) {
         self.native_calls.borrow_mut().insert(call, id);
+    }
+
+    fn traits(&self) -> Option<&super::generic::TraitTable> {
+        Some(&self.decls.traits)
+    }
+
+    fn trait_visible(&self, t: SymbolId) -> bool {
+        match self.decls.traits.traits.get(&t) {
+            Some(info) => {
+                info.home.is_none()
+                    || info.home == Some(self.module)
+                    || self.scope.referenced.contains(&t)
+            }
+            None => false,
+        }
+    }
+
+    fn nominal(&self, at: TextRange) -> Option<Ty> {
+        self.scope.nominal.get(&at).cloned()
+    }
+
+    fn record_call(&self, call: TextRange, symbol: SymbolId) {
+        self.user_calls.borrow_mut().push((call, symbol));
     }
 
     fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
@@ -1456,6 +1542,11 @@ impl EffectEnv for ModuleEnv<'_> {
         matches!(to, Resolution::Symbol(id)
             if self.decls.facts.get(id).is_some_and(|f| f.kind == SymbolKind::State))
     }
+
+    fn user_call(&self, call: TextRange) -> Option<EffectClass> {
+        let symbol = self.user_call(call)?;
+        self.decls.facts.get(&symbol).and_then(|f| f.effect)
+    }
 }
 
 impl MemberEnv for ModuleEnv<'_> {
@@ -1490,6 +1581,7 @@ impl<'p> ModuleEnv<'p> {
             natives,
             native_calls: RefCell::default(),
             styles: OnceCell::new(),
+            user_calls: RefCell::default(),
         }
     }
 
@@ -1510,7 +1602,28 @@ impl<'p> ModuleEnv<'p> {
 
     /// The type annotated on `node`, through this module's bindings.
     fn annotation_of(&self, node: &SyntaxNode) -> Ty {
-        self.scope.annotation_of(node)
+        self.decls.traits.normalize(&self.scope.annotation_of(node))
+    }
+
+    /// The user callables the calls within `body` reach through methods,
+    /// associated paths and instantiations.
+    fn user_calls_in(&self, body: TextRange) -> Vec<SymbolId> {
+        self.user_calls
+            .borrow()
+            .iter()
+            .filter(|(at, _)| body.contains_range(*at))
+            .map(|(_, s)| *s)
+            .collect()
+    }
+
+    /// The user callable the call at `call` reaches through a method, an
+    /// associated path or an instantiation.
+    fn user_call(&self, call: TextRange) -> Option<SymbolId> {
+        self.user_calls
+            .borrow()
+            .iter()
+            .find(|(at, _)| *at == call)
+            .map(|(_, s)| *s)
     }
 
     /// Points the environment at the component about to be lowered (keyed by its declaration's
@@ -1556,6 +1669,7 @@ impl ModuleScope {
         table: &SymbolTable,
         refs: &[ResolvedRef],
         home: Option<usize>,
+        symbols: &[crate::resolve::SymbolDecl],
         interner: &mut NameInterner,
         decls: &mut Declarations,
     ) -> ModuleScope {
@@ -1565,8 +1679,19 @@ impl ModuleScope {
                 .iter()
                 .filter_map(|r| Some((r.range, r.to.nominal()?)))
                 .collect(),
+            decl_at: symbols.iter().map(|d| (d.name_range, d.id)).collect(),
+            referenced: refs
+                .iter()
+                .filter_map(|r| match r.to {
+                    Resolution::Symbol(id) => Some(id),
+                    _ => None,
+                })
+                .collect(),
             ..ModuleScope::default()
         };
+        let decl_at = std::mem::take(&mut scope.decl_at);
+        traits::prepare(cu, &decl_at, &mut scope);
+        scope.decl_at = decl_at;
 
         for item in cu.items() {
             let decl = match item {
@@ -1683,7 +1808,7 @@ impl ModuleScope {
                         decls.facts.insert(
                             sym,
                             MemberFacts {
-                                ty: Ty::Named(theme_record()),
+                                ty: Ty::named(theme_record()),
                                 effect: None,
                                 is_reactive_source: false,
                                 kind: SymbolKind::Const,
@@ -1694,7 +1819,7 @@ impl ModuleScope {
                 Item::Fn(f) => {
                     let (params, ret) = (f.params(), f.return_type());
                     let sym = decl_symbol(table, interner, f.name(), Namespace::Value).map(|sym| {
-                        scope.record_callable(decls, sym, &params, ret, EffectClass::Read)
+                        scope.record_callable(decls, sym, &params, ret, EffectClass::Read, None)
                     });
                     scope
                         .declared
@@ -1703,7 +1828,7 @@ impl ModuleScope {
                 Item::Action(a) => {
                     let (params, ret) = (a.params(), a.return_type());
                     let sym = decl_symbol(table, interner, a.name(), Namespace::Value).map(|sym| {
-                        scope.record_callable(decls, sym, &params, ret, EffectClass::Action)
+                        scope.record_callable(decls, sym, &params, ret, EffectClass::Action, None)
                     });
                     scope
                         .declared
@@ -1712,7 +1837,7 @@ impl ModuleScope {
                 Item::Task(t) => {
                     let (params, ret) = (t.params(), t.return_type());
                     let sym = decl_symbol(table, interner, t.name(), Namespace::Value).map(|sym| {
-                        scope.record_callable(decls, sym, &params, ret, EffectClass::Task)
+                        scope.record_callable(decls, sym, &params, ret, EffectClass::Task, None)
                     });
                     scope
                         .declared
@@ -1721,6 +1846,7 @@ impl ModuleScope {
                 _ => {}
             }
         }
+        traits::collect(cu, table, &scope.decl_at, &scope, interner, decls);
         scope
     }
 
@@ -1762,8 +1888,9 @@ impl ModuleScope {
             Member::Event(d) => (d.name(), Namespace::Event, Ty::Unknown, SymbolKind::Event),
             Member::Fn(d) => {
                 let (params, ret) = (d.params(), d.return_type());
-                let sym = decl_symbol(table, interner, d.name(), Namespace::Value)
-                    .map(|sym| self.record_callable(decls, sym, &params, ret, EffectClass::Read));
+                let sym = decl_symbol(table, interner, d.name(), Namespace::Value).map(|sym| {
+                    self.record_callable(decls, sym, &params, ret, EffectClass::Read, None)
+                });
                 if let Some(sym) = sym {
                     self.own(owner, name_of(d.name()), sym);
                 }
@@ -1771,8 +1898,9 @@ impl ModuleScope {
             }
             Member::Action(d) => {
                 let (params, ret) = (d.params(), d.return_type());
-                let sym = decl_symbol(table, interner, d.name(), Namespace::Value)
-                    .map(|sym| self.record_callable(decls, sym, &params, ret, EffectClass::Action));
+                let sym = decl_symbol(table, interner, d.name(), Namespace::Value).map(|sym| {
+                    self.record_callable(decls, sym, &params, ret, EffectClass::Action, None)
+                });
                 if let Some(sym) = sym {
                     self.own(owner, name_of(d.name()), sym);
                 }
@@ -1780,8 +1908,9 @@ impl ModuleScope {
             }
             Member::Task(d) => {
                 let (params, ret) = (d.params(), d.return_type());
-                let sym = decl_symbol(table, interner, d.name(), Namespace::Value)
-                    .map(|sym| self.record_callable(decls, sym, &params, ret, EffectClass::Task));
+                let sym = decl_symbol(table, interner, d.name(), Namespace::Value).map(|sym| {
+                    self.record_callable(decls, sym, &params, ret, EffectClass::Task, None)
+                });
                 if let Some(sym) = sym {
                     self.own(owner, name_of(d.name()), sym);
                 }
@@ -1857,11 +1986,9 @@ impl ModuleScope {
         params: &[Param],
         ret: Option<ReturnType>,
         effect: EffectClass,
+        self_ty: Option<&Ty>,
     ) -> SymbolId {
-        let params: Vec<Ty> = params
-            .iter()
-            .map(|p| self.annotation_of(p.syntax()))
-            .collect();
+        let params: Vec<Ty> = params.iter().map(|p| self.param_ty(p, self_ty)).collect();
         let ret = ret.map_or(Ty::Unit, |r| self.annotation_of(r.syntax()));
         let ty = match effect {
             EffectClass::Read => Ty::Fn(params.clone(), Box::new(ret.clone())),
@@ -1984,6 +2111,16 @@ impl ModuleScope {
         })
     }
 
+    /// A parameter's type: its annotation, or `self_ty` for an unannotated
+    /// `self`.
+    fn param_ty(&self, param: &Param, self_ty: Option<&Ty>) -> Ty {
+        let ty = self.annotation_of(param.syntax());
+        match (param.self_token(), self_ty) {
+            (Some(_), Some(self_ty)) if ty == Ty::Unknown => self_ty.clone(),
+            _ => ty,
+        }
+    }
+
     /// The type annotated on `node` (its first type child), `Unknown` when absent.
     fn annotation_of(&self, node: &SyntaxNode) -> Ty {
         node.children()
@@ -2002,7 +2139,7 @@ impl ModuleScope {
 
 /// Whether `node` is a type annotation node.
 fn is_type_node(node: &SyntaxNode) -> bool {
-    matches!(node.kind(), SyntaxKind::TypePath | SyntaxKind::TupleType)
+    node.kind().is_type()
 }
 
 /// Whether an attribute is `@bindable(..)`.

@@ -109,7 +109,7 @@ pub(super) fn collect_map(
 /// `InputAction`, or `InputAction` itself.
 fn is_action_type(ty: &Ty, decls: &Declarations) -> bool {
     match ty {
-        Ty::Named(e) => decls.input_derives.contains(e),
+        Ty::Named(e, ..) => decls.input_derives.contains(e),
         Ty::Native(id) => *id == default_action(),
         _ => false,
     }
@@ -277,7 +277,7 @@ pub(super) fn lower_map(
         return;
     }
     let (name, actions): (String, Vec<String>) = match action {
-        Ty::Named(e) => (
+        Ty::Named(e, ..) => (
             env.type_name(*e).unwrap_or_default().to_owned(),
             env.enum_variants(*e)
                 .unwrap_or_default()

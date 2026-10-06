@@ -29,8 +29,107 @@ impl Lowerer<'_, '_> {
             if let Some(ty) = l.cx.type_of(e) {
                 l.check_repr(ty)?;
             }
-            l.expr_here(e)
+            let value = l.expr_here(e)?;
+            match l.cx.coercion(e.syntax()).cloned() {
+                Some(coercion) => l.make_object(value, &coercion),
+                None => Ok(value),
+            }
         })
+    }
+
+    /// `value` as a trait object: the value and the vtable of its type's
+    /// methods for the trait.
+    fn make_object(&mut self, value: Reg, coercion: &crate::hir::generic::Coercion) -> Lower<Reg> {
+        let methods: Vec<FuncId> = coercion
+            .methods
+            .iter()
+            .map(|m| self.b.instance(m.symbol, &m.args, "method"))
+            .collect();
+        let vtable_fn = self.b.vtable(&methods);
+        let vtable = self.reg();
+        self.emit(Inst::Call {
+            dst: vtable,
+            func: vtable_fn,
+            args: Vec::new(),
+        });
+        let dst = self.reg();
+        self.emit(Inst::Make {
+            dst,
+            tag: 0,
+            fields: vec![value, vtable],
+        });
+        Ok(dst)
+    }
+
+    /// A call of a user callable typing resolved through a method, an
+    /// associated path or an instantiation: the receiver first, then the
+    /// arguments; through a trait object's vtable for a call on one.
+    fn user_call(
+        &mut self,
+        call: &CallExpr,
+        target: &crate::hir::generic::CallTarget,
+    ) -> Lower<Reg> {
+        let args = emit_args(call.syntax());
+        if args.iter().any(|(label, _)| label.is_some()) {
+            return self.bail("named call arguments are not supported yet");
+        }
+        let mut exprs = Vec::with_capacity(args.len() + 1);
+        if target.receiver {
+            let Some(receiver) = call
+                .callee()
+                .and_then(|c| FieldExpr::cast(c.syntax().clone()))
+                .and_then(|f| f.receiver())
+            else {
+                return self.bail("a method call without a receiver");
+            };
+            exprs.push(receiver);
+        }
+        exprs.extend(args.into_iter().map(|(_, e)| e));
+        let regs = self.operands(&exprs)?;
+        let dst = self.reg();
+        if let Some(slot) = target.slot {
+            let Some((&object, rest)) = regs.split_first() else {
+                return self.bail("a trait-object call without a receiver");
+            };
+            let (data, vtable, method) = (self.reg(), self.reg(), self.reg());
+            self.emit(Inst::Field {
+                dst: data,
+                src: object,
+                index: 0,
+            });
+            self.emit(Inst::Field {
+                dst: vtable,
+                src: object,
+                index: 1,
+            });
+            self.emit(Inst::Field {
+                dst: method,
+                src: vtable,
+                index: slot,
+            });
+            let mut all = vec![data];
+            all.extend_from_slice(rest);
+            self.emit(Inst::CallValue {
+                dst,
+                callee: method,
+                args: all,
+            });
+            return Ok(dst);
+        }
+        if target.args.iter().any(|a| a.has_param() || a.has_unknown()) {
+            return self.bail("a call with an undetermined type argument");
+        }
+        let name = call
+            .callee()
+            .map(|c| c.syntax().text().to_string())
+            .unwrap_or_default();
+        let func = self.b.instance(target.symbol, &target.args, &name);
+        self.emit(Inst::Call {
+            dst,
+            func,
+            args: regs,
+        });
+        Ok(dst)
     }
 
     fn expr_here(&mut self, e: &Expr) -> Lower<Reg> {
@@ -192,8 +291,36 @@ impl Lowerer<'_, '_> {
         let Some(head) = segments.first() else {
             return self.bail("an empty path");
         };
+        if let Some(target) = self.cx.call_target(node.text_range()) {
+            let symbol = target.symbol;
+            let name = segments
+                .last()
+                .map(|t| t.text().to_string())
+                .unwrap_or_default();
+            return self.symbol_value(symbol, &name);
+        }
         match self.cx.resolution_at(head.text_range()) {
             Some(Resolution::Local(slot)) if segments.len() == 1 => self.local(slot),
+            Some(Resolution::Symbol(id))
+                if segments.len() == 1 && self.cx.instance_arg(id).is_some() =>
+            {
+                let value = match self.cx.instance_arg(id) {
+                    Some(Ty::Const(c)) => c.clone(),
+                    _ => return self.bail("a type parameter used as a value"),
+                };
+                let value = match value {
+                    crate::hir::ConstArg::Int(v) => Const::Int(v),
+                    crate::hir::ConstArg::Bool(v) => Const::Bool(v),
+                    crate::hir::ConstArg::Char(v) => Const::Char(v),
+                    crate::hir::ConstArg::Variant(owner, name) => {
+                        match self.variant(owner, &name) {
+                            Some((index, _)) => Const::Tag(index),
+                            None => return self.bail("a const argument naming no variant"),
+                        }
+                    }
+                };
+                Ok(self.constant(value))
+            }
             Some(Resolution::Symbol(id)) if segments.len() >= 2 => {
                 let Some((index, variant)) = self.variant(id, &segments[1].text()) else {
                     return self.bail("this path names no enum variant");
@@ -308,7 +435,7 @@ impl Lowerer<'_, '_> {
     /// The field index `name` reads on a value of type `recv`.
     pub(super) fn field_index(&self, recv: &Ty, name: &str) -> Lower<u32> {
         let index = match recv {
-            Ty::Named(id) => self
+            Ty::Named(id, ..) => self
                 .env
                 .record_fields(*id)
                 .and_then(|fields| fields.iter().position(|f| f.name == name)),
@@ -528,6 +655,9 @@ impl Lowerer<'_, '_> {
         if let Some(tr) = self.cx.tr_call(node.text_range()) {
             return self.translate(node, &tr.clone());
         }
+        if let Some(target) = self.cx.call_target(node.text_range()).cloned() {
+            return self.user_call(&call, &target);
+        }
         let Some(callee) = call.callee() else {
             return self.bail("a call without a callee");
         };
@@ -605,12 +735,8 @@ impl Lowerer<'_, '_> {
                 self.emit(Inst::Call { dst, func, args });
                 Ok(dst)
             }
-            _ if matches!(
-                callee.syntax().kind(),
-                SyntaxKind::FieldExpr | SyntaxKind::OptionalFieldExpr
-            ) =>
-            {
-                self.bail("method calls are not supported yet")
+            _ if callee.syntax().kind() == SyntaxKind::OptionalFieldExpr => {
+                self.bail("a method call through `?.` is not supported yet")
             }
             _ => {
                 if !matches!(self.ty(&callee)?, Ty::Fn(..)) {

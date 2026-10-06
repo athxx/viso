@@ -44,7 +44,7 @@ pub(super) fn tag_type(decls: &Declarations) -> Ty {
         .tag_derives
         .first()
         .map_or(Ty::Native(NativeId::of(GameTag::PATH)), |t| {
-            Ty::Named(t.symbol)
+            Ty::named(t.symbol)
         })
 }
 

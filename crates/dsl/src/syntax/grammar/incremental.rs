@@ -61,6 +61,8 @@ const TOP_LEVEL_UNITS: &[SyntaxKind] = &[
     SyntaxKind::TaskDecl,
     SyntaxKind::ShaderDecl,
     SyntaxKind::NativeDecl,
+    SyntaxKind::TraitDecl,
+    SyntaxKind::ImplDecl,
     SyntaxKind::AdvancedItem,
 ];
 
@@ -458,6 +460,7 @@ mod tests {
         "component C { state a = 1 state b = 2; event e(x: I64); }\nsystem Tick { fn run() { } }\n",
         "// lead\ncomponent C { /* c */ state s = \"a}b\"; @inline fn h() { } }\n",
         "native fn f(a: I64) -> I64;\nnative type T;\ncomponent C { native action g() requires { x::y }; }\n",
+        "trait Shape: Eq { type Unit: Clone; const N: I64; fn area(self) -> F64; }\nimpl<T> Shape for Box<T> where T: Eq { type Unit = I64; const N: I64 = 1; fn area(self) -> F64 { 1.0 } }\nimpl P { fn new(mut self, x: I64) -> Self { self } }\n",
     ];
 
     const INSERTS: &[&str] = &["x", " ", "{", "}", ";", "\"", "1", "(", "//", "<", "\n"];

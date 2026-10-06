@@ -984,7 +984,7 @@ fn keep_defaults(ty: &Ty, env: &ModuleEnv<'_>, seen: &mut HashSet<SymbolId>) {
             keep_defaults(a, env, seen);
             keep_defaults(b, env, seen);
         }
-        Ty::Named(id) if seen.insert(*id) => {
+        Ty::Named(id, ..) if seen.insert(*id) => {
             if let Some(fields) = env.record_fields(*id) {
                 let record = env.type_name(*id).unwrap_or_default().to_owned();
                 for (index, field) in fields.iter().enumerate() {
@@ -1036,7 +1036,7 @@ fn probe_shape(ty: &Ty, env: &ModuleEnv<'_>, open: &mut Vec<SymbolId>) -> ProbeS
         }
         Ty::List(item) => ProbeShape::List(Box::new(probe_shape(item, env, open))),
         Ty::Option(item) => ProbeShape::Option(Box::new(probe_shape(item, env, open))),
-        Ty::Named(id) if !open.contains(id) => {
+        Ty::Named(id, ..) if !open.contains(id) => {
             open.push(*id);
             let shape = if let Some(record) = env.record_fields(*id) {
                 ProbeShape::Record(fields(record, open))
@@ -1121,7 +1121,7 @@ fn schema_text(ty: &Ty, env: &ModuleEnv<'_>, open: &mut Vec<SymbolId>, out: &mut
         }
     };
     match ty {
-        Ty::Named(id) => {
+        Ty::Named(id, ..) => {
             let _ = write!(out, "{:x}{:x}", id.hi, id.lo);
             if open.contains(id) {
                 return;
@@ -1211,7 +1211,7 @@ fn not_snapshot(ty: &Ty, env: &ModuleEnv<'_>, seen: &mut HashSet<SymbolId>) -> O
             not_snapshot(t, env, seen)
         }
         Ty::Result(a, b) => not_snapshot(a, env, seen).or_else(|| not_snapshot(b, env, seen)),
-        Ty::Named(id) => {
+        Ty::Named(id, ..) => {
             if !seen.insert(*id) {
                 return None;
             }

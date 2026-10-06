@@ -115,7 +115,7 @@ impl Lowerer<'_, '_> {
         dst: Option<Reg>,
         ends: &mut Vec<usize>,
     ) -> Lower<bool> {
-        let Ty::Named(owner) = ty else {
+        let Ty::Named(owner, ..) = ty else {
             return Ok(false);
         };
         let Some(count) = self.env.enum_variants(*owner).map(<[_]>::len) else {
@@ -224,7 +224,7 @@ impl Lowerer<'_, '_> {
             let range = arm.at;
             self.at(range, |l| {
                 let mut fails = Vec::new();
-                if matches!(ty, Ty::Named(_)) {
+                if matches!(ty, Ty::Named(..)) {
                     l.bind_variant(&unwrap(&arm.pattern), src, &mut fails)?;
                 }
                 if !fails.is_empty() {
@@ -603,7 +603,7 @@ impl Lowerer<'_, '_> {
             (Ctor::Single(_), Ty::Tuple(tys)) => {
                 (tys.iter().map(|t| (t.clone(), true)).collect(), Vec::new())
             }
-            (Ctor::Single(_), Ty::Named(id)) => match self.env.record_fields(*id) {
+            (Ctor::Single(_), Ty::Named(id, ..)) => match self.env.record_fields(*id) {
                 Some(fields) => record_fields(fields),
                 None => return self.bail("this pattern names no record"),
             },

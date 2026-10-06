@@ -29,6 +29,7 @@ mod access;
 mod capability;
 mod component;
 mod effect;
+pub(crate) mod generic;
 pub(crate) mod infer;
 mod lower;
 mod nodes;
@@ -52,5 +53,5 @@ pub use nodes::{
     HirInput, HirMeta, HirSlot, HirState, OwnershipMode,
 };
 pub use reads::{DerivedReads, ReadEnv, SourceSet, WithDerived, collect_reads};
-pub use ty::{PackageTypes, Ty, TypeError, WidenError};
+pub use ty::{ConstArg, PackageTypes, Ty, TypeError, WidenError};
 pub use viso_behavior::native::Determinism;

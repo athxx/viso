@@ -1101,9 +1101,9 @@ trait_decl         = "trait", identifier,
                      "{", { trait_member }, "}" ;
 
 trait_member       = { attribute },
-                     ( function_signature, ";"
-                     | action_signature, ";"
-                     | task_signature, ";"
+                     ( function_signature, ( ";" | block )
+                     | action_signature, ( ";" | block )
+                     | task_signature, ( ";" | block )
                      | associated_type_decl
                      | associated_const_decl ) ;
 
@@ -1152,6 +1152,10 @@ associated_const_impl = "const", identifier, ":", type,
 
 `impl Trait for Type` 是 Trait 实现；`impl Type` 是 Inherent Impl。
 
+Trait 中带 Block 的 Callable 是默认实现：Impl 未给出同名成员时使用它，其中的 `Self` 是实现类型。首个参数可以是 `self`（类型为 `Self`，可写 `mut self` 或 `self: Type`）；带 `self` 的成员是 Method，以 `x.f(..)` 调用，不带 `self` 的是 Associated Function，以 `Type::f(..)` 或 `Trait::f(x)` 调用。
+
+当前实现：Trait 缺少必需成员、Impl 成员不属于该 Trait、签名与 Trait 声明不一致、Bound 不是 Trait 时报 `E2201`；同一 Trait 对同一类型有两个可能重叠的 Impl 报 `E2202`。
+
 ---
 
 ## 32. Type Alias 和 Const
@@ -1176,7 +1180,10 @@ const_decl         = "const", identifier, ":", type,
 ## 33. Parameter、返回类型与 Capability
 
 ```ebnf
-parameter_list      = [ parameter, { ",", parameter }, [ "," ] ] ;
+parameter_list      = [ ( self_parameter | parameter ),
+                        { ",", parameter }, [ "," ] ] ;
+
+self_parameter      = [ "mut" ], "self", [ ":", type ] ;
 
 parameter           = [ "mut" ], identifier, ":", type,
                       [ "=", default_expression ] ;
@@ -2039,7 +2046,16 @@ Slider {
 - 右侧必须是可赋值的 State Lens：以当前 Component 的 `state` 为根，经 `.label`/`[index]` 到达其字段或元素；
 - 右侧不能是 Input、Computed、Const、局部绑定、Resource Payload 临时值或普通函数返回值，否则 `E3107`；
 - 无 Converter 时两边类型必须相同（`E2103`），不做 §U1.3 的值提升或数值加宽；
-- Converter 必须实现 `TwoWayConverter<Model, View>`；
+- Converter 必须实现 `TwoWayConverter<Model, View>`（否则 `E2201`）：
+
+```viso
+trait TwoWayConverter<Model, View> {
+    fn to_view(model: Model) -> View;
+    fn to_model(view: View) -> Option<Model>;
+}
+```
+
+  读取时 Property 取 `to_view(model)`；写回时 `to_model(view)` 返回 `None` 则拒绝本次写回，State 保持不变；
 - 更新必须带 Origin Token，禁止形成回声循环；
 - 同一 Property 不能同时使用 `:` 单向绑定和 `bind`；
 - `<=>` 在语言其他位置非法。
@@ -3254,6 +3270,7 @@ where
 规范：
 
 - Generic 默认采用静态单态化或共享 Typed Bytecode，由 Backend 选择；
+- 当前实现：Generic Callable 的体以不透明参数类型检查一次，再按每组实参单态化；实参由显式 `::<..>`、期望类型或参数推断，无法推断报 `E2103`；实例化链深度超过 32、实例总数超过 4096 或实参类型超过 256 个节点（无界递归实例化）报 `E2203`；Generic Component 在各使用处共享一次 Lower；
 - 两种实现必须保持可观察语义一致；
 - Generic 参数默认 Invariant；
 - Viso 1.0 不提供用户自定义 Variance Annotation；
@@ -3296,6 +3313,10 @@ T: Clone + Eq + StableKey
 2. 显式导入且满足的 Trait Member；
 3. Auto Trait；
 4. 若仍有多个候选则歧义错误，不采用“最后导入者获胜”。
+
+当前实现：未满足的 Bound 报 `E2201`，同一层多个候选报 `E2202`。Generic 参数的 Method 经其 Bound 及 Super Trait 解析；`Trait::f(x)` 在 `Self` 确定后解析到对应 Impl 成员。Auto Trait 由 Prelude 提供：`Clone`（所有类型）、`Eq`（函数类型与 `dyn` 以外）、`Hash`（满足 `Eq` 且不含浮点）；对无 `Eq` Bound 的 Generic 参数使用 `==`/`!=` 报 `E2201`。
+
+`dyn Trait` 的值携带按方法列表排序的 Vtable，调用经 Vtable 槽分派，无字符串查找。具体类型只在期望类型为 `dyn Trait` 处擦除，未实现该 Trait 报 `E2201`；Vtable 中的 Method 不得有自身的类型参数，签名中除 Receiver 外不得出现 `Self`，否则该 Trait 不能用作 `dyn`（`E2201`）。
 
 ---
 
@@ -6665,7 +6686,7 @@ Converter Error 必须有 Schema 策略：拒绝更新、显示 Validation State
 
 目标为 Component Input（U2.2）的 `bind value <=> x;` Lower 为 `value: x;` 加 `on changed(event) { x = event.value; }`：Input 实参读取 `x`，`@bindable` 配对 Event 的首个参数写回 `x` 的 Lens；这类 `bind` 不接受 `using`（`E3711`）。
 
-目标为内置 Widget 双向 Property 的 `bind checked <=> on;` 同样 Lower 为读取 `on` 的 Property 条目加写回 Handler：控件的内建响应读取该条目得到当前值，投递 Property 配对的 Event（主 Property 为 `changed`，其余为 `<name>_changed`）；写回 Handler 取 Payload 首个字段写入 `on` 的 Lens，在作者声明的同名 Handler 之前运行。Converter 尚未挂载，带 `using` 的内置 Widget `bind` 报 `E3711`。
+目标为内置 Widget 双向 Property 的 `bind checked <=> on;` 同样 Lower 为读取 `on` 的 Property 条目加写回 Handler：控件的内建响应读取该条目得到当前值，投递 Property 配对的 Event（主 Property 为 `changed`，其余为 `<name>_changed`）；写回 Handler 取 Payload 首个字段写入 `on` 的 Lens，在作者声明的同名 Handler 之前运行。带 `using C` 时条目读取 `C::to_view(on)`，写回 Handler 写入 `C::to_model(value)`，其结果为 `None` 时不写入（§51）。
 
 ---
 
@@ -7721,9 +7742,9 @@ TraitDecl
 
 TraitMember
     ::= Attribute*
-        ( FunctionSignature ";"
-        | ActionSignature ";"
-        | TaskSignature ";"
+        ( FunctionSignature ( ";" | Block )
+        | ActionSignature ( ";" | Block )
+        | TaskSignature ( ";" | Block )
         | AssociatedTypeDecl
         | AssociatedConstDecl )
 
@@ -7768,7 +7789,10 @@ ConstDecl
 
 ```ebnf
 ParameterList
-    ::= ( Parameter ( "," Parameter )* ","? )?
+    ::= ( ( SelfParam | Parameter ) ( "," Parameter )* ","? )?
+
+SelfParam
+    ::= "mut"? "self" ( ":" Type )?
 
 Parameter
     ::= "mut"? IDENT ":" Type ( "=" DefaultExpression )?
@@ -8544,6 +8568,7 @@ RecordPatternField
 | E2112  | `@const` Native 或 Tick 时长参数在编译期拒绝其实参（§32、§106.6） |
 | E2201  | Trait Bound 未满足                                      |
 | E2202  | Trait Impl 重叠或歧义                                   |
+| E2203  | Generic 实例化无界：深度、实例数或实参类型规模超限        |
 | E2301  | 非穷尽 Match                                            |
 | E2302  | 不可达 Pattern                                          |
 | E2303  | `let`/`for`/Closure 参数使用 Refutable Pattern（§70.1） |
@@ -8585,7 +8610,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 或 `@styleable` 误用（§U2.3）               |
-| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或 `bind` 带尚未挂载的 `using` Converter，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
 | E4101  | 非 Task 主体（Action、Event、Effect 等）中使用 Await    |
 | E4102  | Task 跨挂起访问可变 State（编译期；绕过检查时为运行时故障） |

@@ -2110,7 +2110,7 @@ impl<'s, 'e, 'p> Body<'s, 'e, 'p> {
             Ty::VertexOutput
         } else {
             let symbol = match self.sh.env.scope.nominal.get(&head.text_range()) {
-                Some(HostTy::Named(symbol)) => Some(*symbol),
+                Some(HostTy::Named(symbol, ..)) => Some(*symbol),
                 _ => None,
             };
             match symbol {

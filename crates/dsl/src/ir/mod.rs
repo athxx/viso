@@ -442,13 +442,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     else {
                         continue;
                     };
-                    if bind.using_ty().is_some() {
-                        self.unmounted.push((
-                            bind.syntax().text_range(),
-                            "a `bind … using` converter is not mounted yet; bind a property of the source's type".to_string(),
-                        ));
-                        continue;
-                    }
                     let Some(event) = widget.write_back(&name) else {
                         continue;
                     };
