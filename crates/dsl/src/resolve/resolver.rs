@@ -206,6 +206,7 @@ pub fn resolve(
             // user type is a real error here.
             defer_unresolved_types: false,
             in_view: false,
+            owner_slots: Vec::new(),
         };
         pass.decl_at = all_decls[i].iter().map(|d| (d.name_range, d.id)).collect();
         if let Some(cu) = &cu {
@@ -259,6 +260,7 @@ pub(super) fn resolve_standalone(
         scopes: ScopeStack::new(),
         defer_unresolved_types: false,
         in_view: false,
+        owner_slots: Vec::new(),
     };
     pass.decl_at = decls.iter().map(|d| (d.name_range, d.id)).collect();
     pass.resolve_unit(cu);
@@ -746,6 +748,10 @@ fn keyword_start(node: &SyntaxNode) -> TextSize {
 
 /// Builds a module's import environment: local name to the exported symbol it names.
 ///
+/// The value names the language provides without a declaration: the `Option`
+/// and `Result` constructors and the `format`/`untracked` intrinsics.
+const BUILTIN_VALUES: &[&str] = &["Some", "None", "Ok", "Err", "format", "untracked"];
+
 /// An item naming a declaration its module does not export is `E2001`, pointing at
 /// the declaration and offering to export it; it still binds, so its uses type as
 /// the declaration. An item naming nothing is `E2001` with the nearest exported
@@ -983,6 +989,9 @@ struct ModulePass<'a> {
     defer_unresolved_types: bool,
     /// Whether the walk is inside a view, the execution domain `env` is bound in.
     in_view: bool,
+    /// The slots of the enclosing component or template, which a view's
+    /// `SlotOutlet` names by value though no symbol declares them.
+    owner_slots: Vec<String>,
 }
 
 impl<'a> ModulePass<'a> {
@@ -1312,8 +1321,17 @@ impl<'a> ModulePass<'a> {
             let name = self.interner.intern(&name.text());
             self.table.get(name, Namespace::Type).map(|s| s.id)
         });
+        let members: Vec<Member> = members.collect();
+        let slots = members
+            .iter()
+            .filter_map(|m| match m {
+                Member::Slot(slot) => slot.name().map(|n| n.text().to_string()),
+                _ => None,
+            })
+            .collect();
         let outer = std::mem::replace(&mut self.owner, owner);
         let outer_name = std::mem::replace(&mut self.owner_name, owner_name);
+        let outer_slots = std::mem::replace(&mut self.owner_slots, slots);
         self.scopes.push();
         for member in members {
             self.resolve_member(member);
@@ -1321,6 +1339,7 @@ impl<'a> ModulePass<'a> {
         self.scopes.pop();
         self.owner = outer;
         self.owner_name = outer_name;
+        self.owner_slots = outer_slots;
     }
 
     /// The native path `name` binds to: a native the enclosing component or
@@ -1988,7 +2007,45 @@ impl<'a> ModulePass<'a> {
         // value resolves in the type namespace.
         if path.segments().nth(1).is_some() {
             self.resolve_type_token(&head);
+            return;
         }
+        let text = head.text();
+        let builtin = BUILTIN_VALUES.contains(&text.as_str()) || self.owner_slots.contains(&text);
+        if !builtin && !self.defer_unresolved_types && !self.imports.unresolved.contains(&name) {
+            self.unresolved_value(&head);
+        }
+    }
+
+    /// Reports a value name nothing declares (`E2001`), with the nearest names
+    /// of the enclosing component and the module as fixes.
+    fn unresolved_value(&mut self, head: &crate::syntax::SyntaxToken) {
+        let text = head.text();
+        let at = head.text_range();
+        let mut diagnostic =
+            Diagnostic::error("E2001", at, format!("no value named `{text}` is in scope"));
+        let declared_at = |id| {
+            self.decls
+                .iter()
+                .find(|d| d.id == id)
+                .map(|d| (None, d.name_range))
+        };
+        let owner = self
+            .owner
+            .and_then(|o| self.members.get(&o))
+            .into_iter()
+            .flat_map(|t| t.names(Namespace::Value));
+        let candidates: Vec<suggest::Candidate<'_>> = owner
+            .chain(self.table.names(Namespace::Value))
+            .filter_map(|(name, symbol)| {
+                Some(suggest::Candidate {
+                    name: self.interner.text(name)?,
+                    declared_at: declared_at(symbol.id),
+                })
+            })
+            .collect();
+        let suggestions = suggest::nearest(&text, candidates);
+        suggest::attach(&mut diagnostic, at, &suggestions);
+        self.errors.push(diagnostic);
     }
 
     /// Resolves the path `head::rest..` whose head imports the native `base`:
@@ -2351,6 +2408,7 @@ pub fn resolve_fragment(
         // A fragment's node types are native/schema-provided (no imports, no unit),
         // so an unresolved PascalCase name defers instead of raising E2001.
         defer_unresolved_types: true,
+        owner_slots: Vec::new(),
         // A fragment is a view.
         in_view: true,
     };
@@ -2513,6 +2571,30 @@ mod tests {
         assert_eq!(errors, ["E2001"]);
         let fix = &mods[0].errors[0].fixes[0].edits[0];
         assert_eq!(fix.replacement, "Point");
+    }
+
+    #[test]
+    fn an_unresolved_value_is_e2001_with_the_nearest_names() {
+        let mut interner = NameInterner::new();
+        let src = "component A { state count = 0; slot body: Slot<Node>; \
+                   action go() { count = cont + 1; let x = Some(format(\"{count}\")); } \
+                   view { SlotOutlet { slot: body; } } }";
+        let app = unit(&mut interner, &["app"], src);
+        let mods = resolve_all(vec![app], &mut interner);
+        let errors: Vec<_> = mods
+            .iter()
+            .flat_map(|m| m.errors.iter())
+            .filter(|d| d.code == "E2001")
+            .collect();
+        // Builtins and the component's slots are no unresolved names.
+        assert_eq!(errors.len(), 1, "{errors:#?}");
+        assert!(errors[0].message.contains("`cont`"), "{errors:#?}");
+        let replacements: Vec<_> = errors[0]
+            .fixes
+            .iter()
+            .map(|f| f.edits[0].replacement.as_str())
+            .collect();
+        assert_eq!(replacements, ["count"]);
     }
 
     #[test]
