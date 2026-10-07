@@ -1211,15 +1211,15 @@ timers (§104–§111).
         every stored place.
   - [x] Computed cycle path contents; MixedLength multiply and assignment.
   - [x] Percent through `const`; `font_size` em on the same node.
-- [ ] §154 runtime acceptance.
-  - [ ] Paint-only DSL write lays nothing out.
-  - [ ] DSL capture handlers run before the target.
-  - [ ] Keyed reorder keeps focus; task cancelled on key change.
-  - [ ] Preserved branch eviction.
-  - [ ] Stale resource load finishing after the newer one is dropped.
-  - [ ] Native panic and budget fault in a handler roll back and the view
+- [x] §154 runtime acceptance.
+  - [x] Paint-only DSL write lays nothing out.
+  - [x] DSL capture handlers run before the target.
+  - [x] Keyed reorder keeps focus; task cancelled on key change.
+  - [x] Preserved branch eviction.
+  - [x] Stale resource load finishing after the newer one is dropped.
+  - [x] Native panic and budget fault in a handler roll back and the view
         keeps running.
-  - [ ] Environment changes touch only dependents (same-class resize,
+  - [x] Environment changes touch only dependents (same-class resize,
         breakpoint crossing, safe area/keyboard, text scale incl. semantics).
 - [x] §155 game acceptance.
   - [x] A logic reload whose smoke tick faults keeps the last good.

@@ -468,9 +468,16 @@ impl Emit<'_> {
             return quote! {};
         }
         let handle_ident = node_handle_ident(key);
-        let routes = routes.iter().map(|(route, index)| {
-            let variant = Ident::new(route.variant(), Span::call_site());
-            quote! { (::viso_view::EventRoute::#variant, #index) }
+        let routes = routes.iter().map(|route| {
+            let variant = Ident::new(route.event.variant(), Span::call_site());
+            let (handler, capture) = (route.handler, route.capture);
+            quote! {
+                ::viso_view::Route {
+                    event: ::viso_view::EventRoute::#variant,
+                    handler: #handler,
+                    capture: #capture,
+                }
+            }
         });
         let control = match control {
             Some(control) => {

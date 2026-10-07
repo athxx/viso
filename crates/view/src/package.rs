@@ -18,7 +18,6 @@ use crate::control::Control;
 use crate::effects::mount_effects;
 use crate::host::{HostError, ViewHost};
 use crate::regions::{ViewRegions, mount_regions};
-use crate::route::EventRoute;
 use crate::scope::Scope;
 use crate::values::mount_values;
 
@@ -86,10 +85,8 @@ pub struct ViewState {
 pub struct ViewHandler {
     /// The pre-order index of the node in [`ViewPackage::ui`].
     pub node: u32,
-    /// The event it runs on.
-    pub route: EventRoute,
-    /// Its index in the component's handler table.
-    pub handler: u32,
+    /// The event it runs on, its handler and its phase.
+    pub route: Route,
 }
 
 /// A loaded view: its root and the host its handlers dispatch into.
@@ -225,7 +222,7 @@ pub fn instantiate_view_with(
         routes.clear();
         if group_node == Some(node) {
             let group = groups.next().unwrap_or_default();
-            routes.extend(group.iter().map(|h| (h.route, h.handler)));
+            routes.extend(group.iter().map(|h| h.route));
         }
         let control = controls
             .next_if(|c| c.node == node)
@@ -314,8 +311,7 @@ impl Encode for ViewPackage {
         enc.write_varint(self.handlers.len() as u64);
         for handler in &self.handlers {
             enc.write_varint(u64::from(handler.node));
-            enc.write_u8(handler.route as u8);
-            enc.write_varint(u64::from(handler.handler));
+            handler.route.encode(enc);
         }
         enc.write_varint(self.controls.len() as u64);
         for control in &self.controls {
@@ -372,15 +368,8 @@ impl Decode for ViewPackage {
         let mut handlers = Vec::with_capacity(bounded_capacity(count));
         for _ in 0..count {
             let node = read_u32(dec)?;
-            let offset = dec.position();
-            let route =
-                EventRoute::from_u8(dec.read_u8()?).ok_or(DecodeError::Malformed { offset })?;
-            let handler = read_u32(dec)?;
-            handlers.push(ViewHandler {
-                node,
-                route,
-                handler,
-            });
+            let route = Route::decode(dec)?;
+            handlers.push(ViewHandler { node, route });
         }
         let count = dec.read_varint()?;
         let mut controls = Vec::with_capacity(bounded_capacity(count));
@@ -435,8 +424,11 @@ mod tests {
             }],
             handlers: vec![ViewHandler {
                 node: 1,
-                route: EventRoute::Click,
-                handler: 0,
+                route: Route {
+                    event: crate::EventRoute::Click,
+                    handler: 0,
+                    capture: true,
+                },
             }],
             controls: Vec::new(),
             regions: ViewRegions::default(),

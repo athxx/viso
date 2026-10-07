@@ -2107,8 +2107,8 @@ Canvas {
 - Handler 中允许同步 State 修改、`emit`、Action Call 和 `start`；
 - Handler 中禁止直接 `await`；
 - Event 取消使用 Typed API：`event.stop_propagation()`、`event.stop_immediate_propagation()` 与 `event.prevent_default()`，语义见 §90。
-- Handler 在 `component!`、`view!`、Hot Reload 与 Release Package 中以同一张 Handler 表挂载：每个 Handler 是所在 Component 的一个 Behavior Chunk，节点只登记 `(Event 路由, Handler 下标)`，State 写入在 Transaction 结束时回写 UI State Cell；
-- 一次输入样本对每个节点只运行一次 Handler：未写 `capture` 的 Handler 在 Target 与 Bubble 段运行，祖先节点上的 Handler 不因 Capture 段再运行一次；
+- Handler 在 `component!`、`view!`、Hot Reload 与 Release Package 中以同一张 Handler 表挂载：每个 Handler 是所在 Component 的一个 Behavior Chunk，节点只登记 `(Event 路由, Handler 下标, 是否 capture)`，State 写入在 Transaction 结束时回写 UI State Cell；
+- 一次输入样本对每个节点只运行一次 Handler：未写 `capture` 的 Handler 在 Target 与 Bubble 段运行，祖先节点上的 Handler 不因 Capture 段再运行一次；写 `capture` 的 Handler 在 Capture 段（自根向 Target，先于 Target 上的 Handler）与 Target 段运行，不在 Bubble 段运行；控件的内建响应仍只在其自身节点投递；
 - 内置控件（`Toggle`/`CheckBox`、`Slider`、`Tabs`/`RadioGroup`、`TextInput`）的内建响应随同一张 Handler 表挂载：控件从 Handler 表中的纯表达式条目读取当前值与范围（`checked`、`value`、`min`、`max`、`step`、`selected`），据样本算出新值后投递 Schema 声明的 `changed`、`selected_changed` 或 `submitted`；
 - 节点显示的反应式属性值同样是 Handler 表中的纯表达式条目：`Text`/`Button` 的 `text`、`TextInput` 的 `value`、控件的 `checked`、`value`、`selected`、`min`、`max`，以及任一原生节点外观的 `background`（填充色，`None` 为无填充）与 `opacity`（节点及其子树作为一层合成，按节点自身盒合成，`0` 不绘制；只标记 `PAINT`），及二者的 `transition.background`、`transition.opacity`（只在所移动的值变化时求值，不是依赖，见 §U6.1）。节点挂载时求值一次；之后只有其条目（沿调用传递）所读 State 在该帧变化时才重新求值，与节点当前显示值相等的结果不投递；`Text`/`Button` 的值成为节点文本，`TextInput` 的值播种其编辑缓冲（缓冲已持有相同文本时不重置光标，播种不算编辑、不投递 `changed`）；控件的值与范围成为节点的语义状态：`Toggle`/`CheckBox` 的 `checked`，`Slider` 的 `value` 与 `min`..`max` 范围，`Tabs`/`RadioGroup` 第 `selected` 个子节点为选中、其余未选中；未声明 `value` 的 `TextInput` 不被播种，重新挂载不覆盖用户已输入的文本；`for` 与条件区域内的节点在其片段挂载时求值，之后按同一规则随其所读 State 与所绑定条目重新求值；`component!`、`view!`、Hot Reload 提交与 Release Package 以同一规则投递，保持树结构的 Hot Reload 替换视图原有的求值挂钩而不累加；条目求值 Fault 保留节点原值并记录在宿主上；
 - `ui!` Fragment 没有 Component State，不能声明 Handler；Runtime 尚未投递的标准事件（如 `long_press`、`scroll`、`focus`）或 Behavior 无法 Lower 的 Handler 体报 `E3711`；Hot Reload 中出现 `E3711` 时保留 Last-good Handler；
@@ -2174,7 +2174,7 @@ if logged_in preserve "user-panel" {
 - String 在当前 Component 的 Conditional Namespace 中必须唯一，重复使用报 `E3301`（附带首次使用位置）；
 - 不写 `preserve` 时，离开分支会销毁其 Node、State、Effect、Task 和 Resource Scope；
 - 写 `preserve` 时，离开分支会把分支实例移入受限缓存，回到该分支时原 Node 身份（`NodeId`）复用；
-- 缓存容量和逐出策略由 Runtime Profile 控制；默认 Profile 每个分支缓存最近一个实例；
+- 缓存容量和逐出策略由 Runtime Profile 控制；默认 Profile 每个分支缓存最近一个实例；视图的 Preserve Budget（`ViewHost::set_preserve_budget`）限定同时切走保留的分支数（含嵌套），一次切换后超出时按离开先后逐出最早离开的分支；平台内存警告（`LowMemory`）逐出视图全部保留分支；被逐出的分支释放其 Node、State、Effect、Task，再次进入时重新挂载（新 `NodeId`，局部状态从初值开始）；Hot Reload 保留 Budget；
 - `preserve` 不得用于无限动态值；动态集合必须使用 Keyed List；
 - Branch 条件必须是 Bool；
 - 各分支输出必须满足所在 Slot 的 Cardinality。
@@ -7468,6 +7468,8 @@ parse(format(parse(valid_x))) AST-equivalent
 - SafeArea / KeyboardInset 改变只失效声明依赖者；
 - TextScale 改变触发必要 Measure/Layout/Semantics；
 - Adaptive branch preserve 保留声明可迁移的 focus/scroll/text state。
+
+当前实现：`crates/dsl/tests/runtime_acceptance.rs` 从源码经挂载后的视图检查 `capture` Handler 先于 Target、Bubble 在后（Hot Reload 与 Release Package）、Paint-only 写入不产生 Measure/Layout、Keyed Reorder 保留焦点与行内 Task 且 Key 变化取消被移除行的 Task、旧 Key 的加载晚于新 Key 完成时被丢弃、Handler 中 Native Panic 与指令 Budget 超限回滚写入且视图继续运行、环境变化只弄脏读取该字段的子树（同类 Resize 不 Patch、跨 Breakpoint、Keyboard/SafeArea、TextScale 的 `sp` 长度重新 Measure/Layout 并以新盒发布语义）、Preserve 分支保留原节点、Preserve Budget 按离开先后逐出、内存警告逐出全部保留分支；其余条目由 `view_handlers.rs`、`view_regions.rs`、`view_tasks.rs`、`view_effects.rs`、`hot_reload.rs`、`state_retype.rs`、`view_capability.rs`、`behavior_vm.rs` 与 `adaptive_runtime.rs` 覆盖。语义树的盒随 LAYOUT 重新发布（门面的无障碍桥在 SEMANTICS、LAYOUT、TRANSFORM 任一弄脏时重新派生）。
 
 ---
 

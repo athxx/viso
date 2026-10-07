@@ -52,7 +52,6 @@ use crate::attach::{Route, attach_node};
 use crate::control::Control;
 use crate::effects::mount_effect;
 use crate::host::ViewHost;
-use crate::route::EventRoute;
 use crate::scope::{LocalEnv, Locals, Scope};
 use crate::values::{Shown, control_cells};
 
@@ -329,11 +328,18 @@ pub fn mount_regions(
         deps.push(pulse);
         pulse
     });
+    let preserves = arms().any(|arm| arm.preserve);
+    let trim = preserves.then(|| {
+        let trim = cx.store.memory_trim_cell(cx.states);
+        deps.push(trim);
+        trim
+    });
     let mounted = Mounted {
         regions,
         cells: resolved,
         env,
         pulse,
+        trim,
         host: Rc::clone(host),
         groups,
         scratch: Vec::new(),
@@ -439,16 +445,23 @@ struct Mount {
 
 enum Content {
     /// An `if` or a `match`: the scrutinee (`Nil` for an `if`), the chosen arm
-    /// and its nodes, and the kept nodes of each `preserve` arm with the focus
-    /// they took with them.
+    /// and its nodes, and the kept nodes of each `preserve` arm switched away.
     Arms {
         subject: Value,
         active: Option<usize>,
         live: Option<Frag>,
-        kept: Vec<Option<(Frag, ParkedFocus)>>,
+        kept: Vec<Option<Kept>>,
     },
     /// A `for`: its items in order.
     List(Vec<Item>),
+}
+
+/// A `preserve` arm switched away: its detached nodes, the focus they took
+/// with them, and when it was left, for the view's preserve budget.
+struct Kept {
+    frag: Frag,
+    focus: ParkedFocus,
+    stamp: u64,
 }
 
 struct Item {
@@ -522,6 +535,9 @@ pub(crate) struct Mounted {
     /// The cell raised with every write of a state a mount of region content
     /// keeps, `None` for regions that mount no component instance.
     pulse: Option<StateId>,
+    /// The store's memory-trim cell, which frees every kept branch when it
+    /// changes; `None` for regions without a `preserve` arm.
+    trim: Option<StateId>,
     /// Shared with the view's node handlers: the hook runs after the flush and
     /// a handler from a dispatched event, both on the cold path and neither
     /// inside the other, so the borrow is never re-entered.
@@ -534,6 +550,16 @@ impl Mounted {
     /// Appends every node the regions show to `out`: the content of each
     /// chosen arm and of each `for` item, nested regions included; an arm
     /// switched away and kept is not shown.
+    /// How many preserved branches the regions keep switched away, nested
+    /// ones included.
+    pub(crate) fn kept_count(&self) -> usize {
+        let mut stamps = Vec::new();
+        for group in &self.groups {
+            kept_stamps(&group.slots, &mut stamps);
+        }
+        stamps.len()
+    }
+
     pub(crate) fn census(&self, store: &NodeStore, out: &mut Vec<RegionNode>) {
         let mut path = Vec::new();
         for slot in self.groups.iter().flat_map(|group| &group.slots) {
@@ -549,6 +575,7 @@ impl Mounted {
             cells,
             env,
             pulse,
+            trim,
             host,
             groups,
             scratch,
@@ -566,6 +593,13 @@ impl Mounted {
         };
         for group in groups.iter_mut() {
             patch.slots(&mut group.slots, &Scope::EMPTY, group.parent, None, false);
+        }
+        let limit = match trim {
+            Some(trim) if changed.contains(trim) => Some(0),
+            _ => host.borrow().preserve_budget(),
+        };
+        if let Some(limit) = limit {
+            patch.evict(groups, limit);
         }
         if patch.freed {
             let arena = patch.cx.store.arena();
@@ -754,8 +788,13 @@ impl Patch<'_, '_> {
         if next != *active {
             if let (Some(old), Some(was)) = (live.take(), *active) {
                 if template.arms[was].preserve {
-                    let taken = self.detach(&old, parent);
-                    kept[was] = Some((old, taken));
+                    let focus = self.detach(&old, parent);
+                    let stamp = self.host.borrow_mut().park_stamp();
+                    kept[was] = Some(Kept {
+                        frag: old,
+                        focus,
+                        stamp,
+                    });
                 } else {
                     self.free(old);
                 }
@@ -763,8 +802,8 @@ impl Patch<'_, '_> {
             *active = next;
             if let Some(arm) = next {
                 let frag = match kept[arm].take() {
-                    Some((frag, taken)) => {
-                        parked = taken;
+                    Some(Kept { frag, focus, .. }) => {
+                        parked = focus;
                         frag
                     }
                     None => self.build(region, arm as u32, scope, subject, parent),
@@ -1202,6 +1241,65 @@ impl Patch<'_, '_> {
         }
     }
 
+    /// Frees the least recently left of the preserved branches under
+    /// `groups` until at most `limit` stay kept.
+    fn evict(&mut self, groups: &mut [Group], limit: usize) {
+        let mut stamps = Vec::new();
+        for group in groups.iter() {
+            kept_stamps(&group.slots, &mut stamps);
+        }
+        if stamps.len() <= limit {
+            return;
+        }
+        stamps.sort_unstable();
+        // The oldest kept stamp that survives; every older one goes.
+        let survives = stamps
+            .get(stamps.len() - limit)
+            .copied()
+            .unwrap_or(u64::MAX);
+        for group in groups.iter_mut() {
+            self.evict_slots(&mut group.slots, survives);
+        }
+    }
+
+    /// Frees every kept branch under `slots` left before `survives`.
+    fn evict_slots(&mut self, slots: &mut [Slot], survives: u64) {
+        for slot in slots {
+            let Slot::Region(mount) = slot else {
+                continue;
+            };
+            match &mut mount.content {
+                Content::Arms { live, kept, .. } => {
+                    if let Some(frag) = live {
+                        self.evict_frag(frag, survives);
+                    }
+                    for entry in kept.iter_mut() {
+                        match entry.take() {
+                            Some(old) if old.stamp < survives => self.free(old.frag),
+                            Some(mut young) => {
+                                self.evict_frag(&mut young.frag, survives);
+                                *entry = Some(young);
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                Content::List(items) => {
+                    for item in items {
+                        self.evict_frag(&mut item.frag, survives);
+                    }
+                }
+            }
+        }
+    }
+
+    fn evict_frag(&mut self, frag: &mut Frag, survives: u64) {
+        self.evict_slots(&mut frag.roots, survives);
+        for group in &mut frag.groups {
+            self.evict_slots(&mut group.slots, survives);
+        }
+    }
+
     /// Frees `frag`'s nodes and instance states, and those its nested regions
     /// keep.
     fn free(&mut self, frag: Frag) {
@@ -1228,7 +1326,7 @@ impl Patch<'_, '_> {
             }
             Slot::Region(mount) => match mount.content {
                 Content::Arms { live, kept, .. } => {
-                    let kept = kept.into_iter().flatten().map(|(frag, _)| frag);
+                    let kept = kept.into_iter().flatten().map(|kept| kept.frag);
                     for frag in live.into_iter().chain(kept) {
                         self.free(frag);
                     }
@@ -1249,7 +1347,39 @@ struct Arms<'m> {
     template: &'m RegionTemplate,
     active: &'m mut Option<usize>,
     live: &'m mut Option<Frag>,
-    kept: &'m mut Vec<Option<(Frag, ParkedFocus)>>,
+    kept: &'m mut Vec<Option<Kept>>,
+}
+
+/// Appends the stamp of every kept branch under `slots`, nested ones
+/// included.
+fn kept_stamps(slots: &[Slot], out: &mut Vec<u64>) {
+    fn frag_stamps(frag: &Frag, out: &mut Vec<u64>) {
+        kept_stamps(&frag.roots, out);
+        for group in &frag.groups {
+            kept_stamps(&group.slots, out);
+        }
+    }
+    for slot in slots {
+        let Slot::Region(mount) = slot else {
+            continue;
+        };
+        match &mount.content {
+            Content::Arms { live, kept, .. } => {
+                if let Some(frag) = live {
+                    frag_stamps(frag, out);
+                }
+                for kept in kept.iter().flatten() {
+                    out.push(kept.stamp);
+                    frag_stamps(&kept.frag, out);
+                }
+            }
+            Content::List(items) => {
+                for item in items {
+                    frag_stamps(&item.frag, out);
+                }
+            }
+        }
+    }
 }
 
 /// The revision cell of `env` slot `slot` in `env`, sorted by slot.
@@ -1539,9 +1669,8 @@ impl Encode for ViewRegions {
                                 enc.write_u8(class);
                             }
                             enc.write_varint(routes.len() as u64);
-                            for &(route, handler) in routes {
-                                enc.write_u8(route as u8);
-                                enc.write_varint(u64::from(handler));
+                            for route in routes {
+                                route.encode(enc);
                             }
                             enc.write_bool(control.is_some());
                             if let Some(control) = control {
@@ -1664,10 +1793,7 @@ impl Decode for ViewRegions {
                             let count = dec.read_varint()?;
                             let mut routes = Vec::with_capacity(bounded(count));
                             for _ in 0..count {
-                                let offset = dec.position();
-                                let route = EventRoute::from_u8(dec.read_u8()?)
-                                    .ok_or(DecodeError::Malformed { offset })?;
-                                routes.push((route, read_u32(dec)?));
+                                routes.push(Route::decode(dec)?);
                             }
                             let control = if dec.read_bool()? {
                                 Some(Control::decode(dec)?)
@@ -1864,7 +1990,11 @@ mod tests {
                             ItemTemplate::Node {
                                 node: node(AotNodeKind::Flex, 1),
                                 edges: vec![(CellRef::Shared(0), 4), (CellRef::Local(6), 1)],
-                                routes: vec![(EventRoute::Click, 1)],
+                                routes: vec![Route {
+                                    event: crate::EventRoute::Click,
+                                    handler: 1,
+                                    capture: true,
+                                }],
                                 control: None,
                             },
                             ItemTemplate::Region(1),

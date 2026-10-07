@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use viso_ende::{DecodeError, Decoder, Encoder};
 use viso_ui::{BuildCx, DispatchPhase, EventCx, Handle, NodeId, NodeStore};
 
 use crate::control::Control;
@@ -10,9 +11,58 @@ use crate::host::ViewHost;
 use crate::route::EventRoute;
 use crate::scope::Scope;
 
-/// One handler a node declares: the event it runs on and its index in the
-/// view's handler table.
-pub type Route = (EventRoute, u32);
+/// One handler a node declares: the event it runs on, its index in the view's
+/// handler table, and whether it is an `on capture` handler.
+///
+/// A capture handler runs as the sample walks down to its target — on the
+/// node's ancestors' capture leg, and on the target itself; any other handler
+/// runs on the target and as the sample bubbles back up (§52).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Route {
+    /// The event it runs on.
+    pub event: EventRoute,
+    /// Its index in the component's handler table.
+    pub handler: u32,
+    /// Whether it runs on the capture leg instead of the bubble leg.
+    pub capture: bool,
+}
+
+/// The tag bit marking a capture route; event discriminants stay below it.
+const CAPTURE: u8 = 0x80;
+
+impl Route {
+    /// Writes the route: its event's discriminant with the high bit set for a
+    /// capture handler, then its handler index. A route written before
+    /// capture handlers existed reads back as a bubble one.
+    pub(crate) fn encode(self, enc: &mut Encoder) {
+        enc.write_u8(self.event as u8 | if self.capture { CAPTURE } else { 0 });
+        enc.write_varint(u64::from(self.handler));
+    }
+
+    /// Reads a route [`Route::encode`] wrote.
+    pub(crate) fn decode(dec: &mut Decoder<'_>) -> Result<Route, DecodeError> {
+        let offset = dec.position();
+        let tag = dec.read_u8()?;
+        let event = EventRoute::from_u8(tag & !CAPTURE).ok_or(DecodeError::Malformed { offset })?;
+        let offset = dec.position();
+        let handler =
+            u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
+        Ok(Route {
+            event,
+            handler,
+            capture: tag & CAPTURE != 0,
+        })
+    }
+
+    /// Whether it runs in dispatch phase `phase`.
+    pub fn runs_in(self, phase: DispatchPhase) -> bool {
+        match phase {
+            DispatchPhase::Capture => self.capture,
+            DispatchPhase::Target => true,
+            DispatchPhase::Bubble => !self.capture,
+        }
+    }
+}
 
 /// Installs `routes` and the built-in response of `control` on the node `node`
 /// names, dispatching into `host` in `scope`,
@@ -72,7 +122,7 @@ fn split(routes: &[Route], control: Option<&Control>) -> (Option<Vec<Route>>, Op
         let picked: Vec<Route> = routes
             .iter()
             .copied()
-            .filter(|(route, _)| route.is_control() || route.is_key() == key)
+            .filter(|route| route.event.is_control() || route.event.is_key() == key)
             .collect();
         (control.is_some() || !picked.is_empty()).then_some(picked)
     };
@@ -103,17 +153,18 @@ fn handler(
         let change = control
             .as_ref()
             .and_then(|control| control.drive(&mut host, &scope, cx));
-        let bubbles = cx.phase() != DispatchPhase::Capture;
-        for &(route, index) in &routes {
+        let phase = cx.phase();
+        for &route in &routes {
             let payload = match &change {
-                Some((changed, value)) if *changed == route => value.clone(),
-                _ if !bubbles => continue,
-                _ => match route.payload(cx) {
+                // A control reports its change once, on its own node.
+                Some((changed, value)) if *changed == route.event => value.clone(),
+                _ if !route.runs_in(phase) => continue,
+                _ => match route.event.payload(cx) {
                     Some(payload) => payload,
                     None => continue,
                 },
             };
-            host.dispatch(index, payload, &scope, cx);
+            host.dispatch(route.handler, payload, &scope, cx);
         }
     }
 }

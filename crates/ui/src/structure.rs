@@ -16,7 +16,7 @@
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
 use crate::reactive::EffectStore;
-use crate::state::{StateId, StateStore};
+use crate::state::{StateId, StateStore, StateValue};
 
 /// The stores a structure hook edits.
 pub struct StructureCx<'a> {
@@ -52,12 +52,16 @@ pub(crate) struct StructureHooks {
     hooks: Vec<StructureHook>,
     /// The id the next hook takes.
     next: u32,
+    /// The memory-trim revision cell, once a hook asked for it.
+    trim: Option<StateId>,
 }
 
 impl StructureHooks {
-    /// Drops every hook; ids already handed out stay retired.
+    /// Drops every hook and forgets the trim cell; ids already handed out
+    /// stay retired.
     pub(crate) fn clear(&mut self) {
         self.hooks.clear();
+        self.trim = None;
     }
 }
 
@@ -102,6 +106,32 @@ impl NodeStore {
     /// The number of registered structure hooks.
     pub fn structure_hook_count(&self) -> usize {
         self.structure_hooks().hooks.len()
+    }
+
+    /// The revision cell raised when the app is asked to give memory back,
+    /// allocated in `states` on first ask. A hook keeping content it can
+    /// rebuild — a preserved branch switched away — depends on it and drops
+    /// that content when it changes.
+    pub fn memory_trim_cell(&mut self, states: &mut StateStore) -> StateId {
+        if let Some(cell) = self.structure_hooks().trim {
+            return cell;
+        }
+        let cell = states.alloc(StateValue::Int(0));
+        self.structure_hooks_mut().trim = Some(cell);
+        cell
+    }
+
+    /// Raises the memory-trim cell so the next settle runs the hooks that
+    /// depend on it, and returns whether any hook ever asked for it.
+    pub fn request_memory_trim(&mut self, states: &mut StateStore) -> bool {
+        let Some(cell) = self.structure_hooks().trim else {
+            return false;
+        };
+        let revision = match states.get(cell) {
+            Some(StateValue::Int(n)) => n.wrapping_add(1),
+            _ => 0,
+        };
+        states.set(cell, StateValue::Int(revision))
     }
 }
 
