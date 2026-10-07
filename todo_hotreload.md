@@ -1,2 +1,493 @@
+# Viso Hot Reload — H0 → H1 → H2 → H3 → H4 → H5 → H6 → H7 → H8
 
+Construction order follows `Viso_Hot_Reload.md` Part XXII (§65–§70): H0 closes the
+dev-only build contract, H1 is Phase A on the target architecture (host watches and
+compiles, the app receives typed patches), H2 is Phase B, H3–H5 are Phase C, H6 is
+Phase D, H7 is Phase E, H8 is Phase F. H9 (acceptance, §61–§64, §71) grows with every
+phase. A later phase never becomes a prerequisite of an earlier phase's vertical slice.
+Work one verifiable sub-unit at a time; a semantic or protocol change updates
+`Viso_Hot_Reload.md` (and `Viso_CLI.md` where the CLI surface moves) in the same change,
+and an architecture decision (host/runtime split, wire protocol, warm restart) updates
+ADR-0015 or adds an ADR. A perf claim needs a release measurement; otherwise it is
+labeled a hypothesis.
 
+Landing points follow the dependency rules:
+
+- `viso-dsl` is the only compiler and runs **on the host only** (the dev session in
+  `viso run`); it produces patches (§56) and never handles a connection.
+- The runtime dev layer (§55, §57) — handshake, patch decode/validate, staging, commit,
+  scoped reset, snapshot hooks, ACK/NACK — lives in `viso-view::dev` (UI/behavior
+  domain) with thin domain hooks in `viso-behavior` (game), `viso-shader`/`viso-render`
+  (pipelines) and the facade (frame boundary, transport, overlay), all behind the
+  `hot-reload` feature. `runtime` never depends on `dsl`.
+- The host dev session (§4, §54) is a module tree in `tools/cli/src/dev/`; it moves to
+  a shared tooling crate only when Studio needs it.
+
+Reference read first (memory rule): makepad `platform/src/live_reload.rs`,
+`libs/live_reload_core`, `libs/filesystem_watcher`, `platform/studio/src/studio.rs`,
+`platform/src/draw_shader.rs`, `tools/cargo_makepad/src/wasm/compile.rs`. Take: the
+source-keyed shader cache (unchanged shaders reuse their pipeline), per-tick coalescing
+of the latest content per file, one dispatch point for every incoming dev message.
+Avoid: parse-only validation that commits runtime-invalid edits, `redraw_all` after a
+reload, one bad file aborting other files' valid edits, positional block matching,
+unbounded shader growth across a long session, mobile reaching the host over LAN.
+
+Gate for every section: `cargo xtask check-deps` · `cargo fmt --all -- --check` ·
+`cargo clippy --workspace --all-targets -- -D warnings` ·
+`cargo clippy -p viso --all-targets --features hot-reload -- -D warnings` ·
+`cargo test --workspace` · `cargo test -p viso --features hot-reload` ·
+`cargo xtask check-targets`.
+
+Not touched by this plan while the font work runs in another process: the text/font
+crates. §23 (font patch) is listed in H4 and waits for that work.
+
+---
+
+## H0 — Dev-only build contract (§1, §1.1, §1.2, §58–§60, §64)
+
+Goal: a release or shipping binary has no dev code at all — not disabled, absent —
+and the dev build is exercised in CI.
+
+### H0.1 — What exists
+
+- [x] `hot-reload` cargo feature on `viso` and `viso-view`; the facade's session,
+      overlay, wakeup, frame-boundary reload and close are `cfg`-gated, so the
+      release frame has no hot-reload branch.
+- [x] `view!` mount registration expands to nothing without the feature; no `.vs`
+      source text reaches the binary.
+- [x] `Viso.toml` rejects `hot_reload` under `[profile.release]`/`[profile.shipping]`
+      (`ConfigCode::HotReloadInRelease`), warns under dev; `ProfileConfig` has no
+      such field.
+
+### H0.2 — Close the build graph
+
+- [x] `viso-dsl` becomes a dev-only dependency of the facade: optional, enabled only by
+      `hot-reload` (`dep:viso-dsl`), a dev-dependency for the facade's DSL tests; dropped
+      from the facade entirely once H1.4 moves compilation to the host. A default build
+      links no compiler (only the `ui!`/`view!` proc-macro uses it, on the host).
+- [x] The wire codec (`viso-dsl::hotreload::event`) stays put until H1.2: it is built on
+      `viso-dsl`'s `Diagnostic`, and the optional dependency already keeps it out of the
+      release graph. H1.2 replaces it with `viso-view::dev::wire` and deletes it.
+- [x] Build-time guard: `crates/viso/build.rs` fails the build when `hot-reload` meets
+      `VISO_PROFILE=release|shipping`. It keys on the Viso artifact profile, not Cargo's
+      `PROFILE` (an optimized dev build — the `edit_to_pixels` measurement — is still a
+      dev artifact). `viso run` builds with `VISO_PROFILE=dev`; the future
+      `viso build/package` must set the artifact's profile (H0.3 tests the guard).
+- [x] `RedrawReason::HotReload` kept: an architecture-listed reason (§12), one bit,
+      never set by a release artifact, so `runtime` pays nothing for it.
+
+### H0.3 — CI and release absence (§64)
+
+- [ ] CI job building and testing `viso` with `--features hot-reload` (today the
+      feature-gated tests never run in CI), on macOS, Linux and Windows.
+- [ ] Release-absence test (`xtask check-release-absence`): build the counter example
+      in release, then assert
+  - [ ] no symbol or string from the dev layer (`DevLink`, `PatchBundle`,
+        `VISO_DEV_RUNTIME`, `VISO_DEV_TOKEN`, the overlay text) in the binary;
+  - [ ] no `viso_dsl` symbol at all;
+  - [ ] launched with `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN` set, it opens no socket and
+        never reads the variables (run under a loopback listener that must see no
+        connection).
+- [ ] Guard test in CI: `VISO_PROFILE=shipping cargo build --features viso/hot-reload`
+      fails with the guard's message; `VISO_PROFILE=dev` builds.
+- [ ] Release frame-loop parity: the release frame-loop benchmark with and without the
+      feature compiled in a dev build differs only by the dev path (measured, §1.2).
+- [ ] Spec: §1/§58 record that the `hot-reload` feature is the `viso_dev_runtime`
+      boundary and name the guard and the absence test (feature and guard recorded in
+      §58 with H0.2; the absence test lands with it).
+
+### Done
+
+- [ ] A release build of an app with `view!` files contains no dev transport, patch
+      engine, snapshot endpoint or compiler, proven by the absence test in CI.
+
+---
+
+## H1 — Phase A on the target architecture: host compiles, app applies (§2–§11, §33–§37, §65)
+
+Goal: `viso run` watches and compiles on the host, sends a typed, bounded, revisioned
+patch, and the app commits it at a frame boundary or NACKs and keeps last-good. The
+app parses no `.vs` source (anti-pattern B.2).
+
+### H1.1 — What exists (in-app compile, the reduced design)
+
+- [x] Pure stages `plan` → `diff` → `migrate` and an infallible `commit` at
+      `FlushStateTransactions`; last-good kept on any failure (`dsl/src/hotreload/`).
+- [x] `view!` mount records: file, source, origin, root, state cells by `SymbolId`
+      key, behavior host, static `NodeKey`s (`view/src/mounts.rs`).
+- [x] App-side session: adopt a window's mounts after its build, stage on wakeup,
+      commit at the frame boundary, drop mounts of closed windows, one compile per
+      edit committed to every mount (`viso/src/hot_reload/mod.rs`).
+- [x] Watcher: kqueue / inotify / `ReadDirectoryChangesW` over each file's directory
+      with a poll fallback; quiet windows 5 ms / 0 / 5 ms; content-hash dedupe;
+      read once at tracking start (`viso/src/hot_reload/watch/`).
+- [x] Per-file last-good candidate and revision; `ReloadEvent` with stage, outcome,
+      counts and diagnostics; in-app failure overlay (§37.1).
+- [x] `viso run` (host desktop): dev build with `viso/hot-reload`, loopback listener,
+      `VISO_DEV_RUNTIME` + 128-bit `VISO_DEV_TOKEN`, ende frames ≤ 4 MiB, hello with
+      protocol version, events relayed as human lines or `--json` `dev` events.
+- [x] Release edit-to-pixels on macOS: median 6.6 ms (detect 5.8 ms, pipeline 0.8 ms).
+
+### H1.2 — Protocol (§33–§37, §46)
+
+- [ ] `viso-view::dev::wire`: one ende-binary message family with stable tags and a
+      `DEV_PROTOCOL_VERSION` bump; bounded decode (every count and length capped,
+      depth capped), frame cap kept at 4 MiB, malformed input a typed error.
+  - [ ] `HostHello { protocol_version, dev_session_id, project_fingerprint,
+        expected_build_id, token }` and `RuntimeHello { protocol_version,
+        runtime_session_id, build_id, current_revision, schema_fingerprint,
+        capabilities, target_profile }` (§34, §4.1).
+  - [ ] A protocol or build mismatch is rejected with a reason and the CLI asks for a
+        rebuild; no version guessing.
+  - [ ] Handshake binds project fingerprint, build id and session; unknown session or
+        wrong token dropped (§46 gap).
+  - [ ] `PatchBundle { dev_session, target_runtime, base_revision, next_revision,
+        build_id, modules, ui, systems, shaders, resources, state_plan }` (§35); no
+        field-name strings, canonical ID encoding.
+  - [ ] `PatchAck { revision, applied_domains, scoped_resets, timings }` and
+        `PatchNack { base_revision, candidate_revision, stage, diagnostic_codes,
+        last_good_revision }` (§37); `ReloadEvent` becomes the host-side report built
+        from them (source spans resolved on the host, no source sent by the app).
+  - [ ] Replaces `viso-dsl::hotreload::event`, which is deleted (the app no longer
+        decodes `viso-dsl` diagnostics).
+  - [ ] Revision rule: apply only when `base_revision == current_revision`, else
+        `NACK_REVISION_MISMATCH`; the host regenerates from the runtime's revision
+        (§36).
+- [ ] Bidirectional link: host → app patches and requests, app → host hello, ACK/NACK,
+      logs; the app's link thread never blocks the UI loop (bounded queues, drop
+      policy reported).
+- [ ] Unit tests (§61): round-trip of every message, each bound exceeded, truncated
+      and corrupted frames, revision ordering, mismatched protocol/build/session.
+
+### H1.3 — Host dev session (`tools/cli/src/dev/`, §4, §6, §7)
+
+- [ ] `DevSession` owning `DevSessionId`, `BuildId`, `ProjectFingerprint`, the
+      session lock (`LockKind::DevSession`), the watcher, the compiler and the
+      connection manager for the lifetime of `viso run`.
+- [ ] Project watcher on the host: the watch backends move from the facade into the
+      host session (shared code, not two copies), recursive over the watch scope
+      (§6) with the default excludes (`target/`, `dist/`, `.git/`, editor temp dirs,
+      generated caches); canonical path resolution; content hash.
+- [ ] Change coalescer: a save batch (several files within the quiet window, e.g. an
+      AI writing related files) forms one candidate revision (§40); window value
+      from a measured human-save and AI-edit workload (§7.1), recorded in the spec.
+- [ ] Incremental compile: keep the project's source graph and reparse the edited
+      file incrementally (`syntax/reparse.rs`, `grammar/incremental.rs`), re-resolve
+      and re-check only the affected module set; whole-package compile so `.vs`
+      imports across files reload (today: single-file `compile_file_for`).
+- [ ] Mount inventory from the app: on connect the runtime reports each mount (file
+      id, module identity, revision, `SymbolId` keys, static `NodeKey`s) instead of
+      the host trusting embedded source; the host compiles last-good from the
+      project files at the runtime's build.
+- [ ] Every stage reports its §51 name: `watch`, `parse`, `resolve`, `typecheck`,
+      `capability`, `patch-plan`, `state-compat`, `transport`, `runtime-stage`,
+      `runtime-commit`.
+
+### H1.4 — Typed semantic patch (§9–§12)
+
+- [ ] Host computes the patch from last-good IR vs candidate IR per mount: the
+      structural diff and migration plan already in `hotreload/{diff,migrate,compat}`
+      become the patch planner's output, serialized as `UiPatch` (property /
+      binding / handler / structural with kept `NodeKey` pairs), `ModulePatch`
+      (verified behavior bytecode in the existing wire form) and `StatePlan`
+      (slot pairs and `Retyping`s, `@migrate` entries).
+- [ ] Runtime apply engine in `viso-view::dev`: decode → link `SymbolId` → runtime
+      ids (cold map only at link time, §11) → stage → commit at the frame boundary;
+      `commit.rs` moves out of `viso-dsl` into it, unchanged in behavior; no source
+      parse in the app.
+- [ ] Property patch carries the changed edges only: dirty marks exactly the changed
+      property's `DirtyClass` on its node (today every bound edge of the view is
+      rebound and marked) — a colour edit is one `PAINT` (§12, §49).
+- [ ] The in-app compile path and in-app watcher are removed (no permanent dual
+      implementation); `view!` mount records keep only identities, not source text.
+- [ ] `--no-hot-reload`: dev artifact, session up, patches not applied (§2.1).
+- [ ] Integration tests (§62 UI, Invalid `.vs`): launch a dev app under a test host,
+      change one property, assert same process, the exact dirty mask, state/focus/
+      scroll kept; send an invalid source, assert revision N still running and no
+      node changed; send an out-of-order patch, assert `NACK_REVISION_MISMATCH`.
+- [ ] Re-measure edit-to-pixels (release) with the host round trip; split detect /
+      compile / encode / transport / stage+commit / repaint (§48).
+
+### H1.5 — Diagnostics and output (§51–§53)
+
+- [ ] `ReloadStage` covers all §51 stages; NACK and host-side failures map to them.
+- [ ] Human line per §53 (`✓ .vs patch r41 -> r42   37 ms   1 node paint-dirty`,
+      `✗ … kept r42 CODE`); the app reports dirty counts by class in the ACK.
+- [ ] `--json` dev events carry runtime session, revisions, patch class, stage, codes,
+      timings and dirty counts; no field contents that could be secrets (§47).
+- [ ] Overlay stays app-side, driven by the NACK diagnostics the host sends.
+- [ ] `Viso_CLI.md` §36 and `Viso_Hot_Reload.md` §1.3/§1.4/§37.1/§46/§48 rewritten for
+      the host/app split; ADR-0015 updated.
+
+### Done
+
+- [ ] Editing a label, a handler body and a state type in a running desktop app each
+      arrive as a typed patch from `viso run` and apply without losing unrelated state;
+      a broken edit leaves the last-good UI; the app links no compiler.
+
+---
+
+## H2 — Phase B: structural and state patches (§12–§15, §66)
+
+Goal: inserts, removals and reorders keep identity and state; incompatible state
+resets only its own scope.
+
+### H2.1 — What exists
+
+- [x] Structural diff aligning each parent's children by type, node name and kind; a
+      region aligns only with one of the same form and arm count.
+- [x] Commit scoped to the view's subtree: rebuild in place under the same parent and
+      sibling position; only the view's static edges and region hooks replaced.
+- [x] Focus, scroll (restored after first layout), text edit buffer and selection, and
+      in-flight transitions migrate by `NodeKey`; region-mounted nodes by item key
+      path; lost focus/scroll reported.
+- [x] State migration by `SymbolId` for UI cells and VM slots through one plan;
+      conversion matrix, record extension with defaults, surviving enum variant,
+      `@migrate(from:)`, `E5101` reset notice, `E5102` collision rejection.
+- [x] Tasks cancelled with the old code; effects cleaned up and remounted; resources
+      keep state and reload.
+
+### H2.2 — Remaining
+
+- [ ] Structural patch as node-level `InsertNode` / `RemoveNode` / `MoveNode` on the
+      kept tree instead of freeing and rebuilding the view's root: kept nodes stay
+      the same `NodeId`s, so nothing needs carrying for them (§12 structural insert).
+- [ ] `PATCH_WITH_SCOPED_RESET` scoped to the narrowest owner: a reset state resets
+      its component instance, a lost identity resets its subtree; the ACK lists each
+      scoped reset with its owner `SymbolId` (§8).
+- [ ] State identity across renames: an explicit `@stable("id")` on a state or
+      component keeps its `SymbolId` across a rename (DSL §88), tested; a plain
+      rename still resets.
+- [ ] Active tab and navigation state contracts (§15): `Tabs` selection and the
+      navigation stack marked migratable in the widget schema, carried by `NodeKey`.
+- [ ] Composition (IME) state carried with the edit buffer when compatible (§15).
+- [ ] Component instances inlined from another file reload when that file changes
+      (cross-file dependents found from the module graph).
+- [ ] Unit tests (§61): scoped reset planning, SymbolId preservation across
+      reorder/insert, compatibility matrix rows.
+- [ ] Integration: insert before a focused, scrolled, edited node in a running app;
+      assert same `NodeId`, focus, offset, selection; reorder keyed siblings.
+
+### Done
+
+- [ ] Inserting, removing and reordering nodes in a running app keeps every unrelated
+      node's identity and state; an incompatible state change resets only its owner.
+
+---
+
+## H3 — Phase C: game systems (§16–§18, §67)
+
+Goal: a game `.vs` edit swaps logic at a fixed-tick boundary with the world kept.
+
+### H3.1 — What exists
+
+- [x] `hotreload::game::classify`: Unchanged / Presentation / Logic / Logic with state
+      migration / World Rebuild from the stable-id diff, `E5103` with the deciding
+      change.
+- [x] `Scheduler::reload` at a tick boundary keeping world, rng, tick, clock, timers
+      and held input, carrying Simulation and `@local` states by stable id and
+      schema; smoke tick on a copy; `rebuild` in a shadow game with
+      `Rebuild::KeepCharacters`.
+- [x] `hotreload::game::swap` applying a tier, last-good kept on any failure.
+
+### H3.2 — Remaining
+
+- [ ] Game host wiring: the host classifies the candidate and sends `SystemPatch`
+      (bytecode + tier + state plan); the runtime stages it and commits after the
+      current tick completes, never mid-tick (§16, B.4).
+- [ ] Integration test (§62 Game): run tick N, stage a patch during N, assert old code
+      completes N, new code starts N+1, world and entity ids identical.
+- [ ] Replay timeline: a live patch is recorded as `PatchRevision applied at TickId`
+      with the system code revision and any state resets; replay re-applies it at the
+      same tick; deterministic-replay mode refuses live patches with a stage
+      `runtime-stage` NACK (§18).
+- [ ] Audio host swap on a logic reload without a gap (lock-free slot hand-off; with
+      the D5 audio item).
+- [ ] `viso game peek` / `viso game record` over the dev channel against the running
+      session (CLI §22.3).
+
+### Done
+
+- [ ] Editing a system's movement speed in a running game changes it at the next tick
+      with the world, entities and score kept; a broken edit keeps the last good.
+
+---
+
+## H4 — Phase C: assets and fonts (§22–§23, §67)
+
+Goal: an asset change swaps one resource revision and dirties only its dependents.
+
+- [ ] Watch `assets/**` (and asset entries named by `Viso.toml`) on the host.
+- [ ] `ResourcePatch`: content hash → decode/build candidate on the host (images,
+      SVG) → `ResourceRevision++` → logical `ResourceId` remapped on the runtime only
+      after the new payload is ready (§22); old payload retired after the frame that
+      stopped using it.
+- [ ] Precise dependents: only nodes and paint ranges referencing the resource get
+      `PAINT` (or `MEASURE` when intrinsic size changed); no global cache clear.
+- [ ] A failing decode is a `resource-build` NACK, the old resource stays.
+- [ ] Tests: image edit repaints only its nodes; size change remeasures its node; a
+      corrupt file keeps the old image.
+- [ ] Font patch (§23): `FontFaceRevision` bump from a dev font file change, reflowing
+      only paragraphs using the face — **waits for the font work in progress**; it
+      reuses `text/src/progressive.rs::FontRevision`, no change to font code from
+      this plan until then.
+
+### Done
+
+- [ ] Replacing an image in `assets/` updates it in the running app with only its
+      dependents dirty; a corrupt image keeps the last good.
+
+---
+
+## H5 — Phase C: shaders (§19–§21, §67)
+
+Goal: a shader edit compiles in the background, swaps at a GPU-safe frame boundary,
+and a failure keeps the drawn pipeline.
+
+### H5.1 — What exists
+
+- [x] `ProgramReload`: worker-thread compile, newest submission wins, `poll()` between
+      frames returns a swap with instance/uniform re-encode, failure keeps the live
+      pipeline (`shader/src/program/reload.rs`); backend rejection keeps the pipeline
+      on Metal (`viso/tests/shader_reload.rs`).
+- [x] Fence-based deferred destruction primitive (`gpu/src/retire.rs`).
+
+### H5.2 — Remaining
+
+- [ ] Host compiles shader candidates (`.vs` shader declarations, and external shader
+      files in the watch scope) through Shader IR to every backend the runtime's
+      target uses and validates them; `ShaderPatch` carries the backend code and the
+      interface (§19, §43 target-specific validation).
+- [ ] Runtime creates the candidate pipeline off the frame, swaps it at the GPU-safe
+      frame boundary, and hands the old pipeline/resources to the retire queue so
+      in-flight frames finish with them (§21).
+- [ ] Interface change: dependent material/render schemas validated and their
+      bindings/instance buffers rebuilt before a scoped commit; an incompatible
+      host-side GPU ABI is a `gpu-validate` NACK, not a crash (§20).
+- [ ] Source-keyed pipeline cache: an edit that leaves generated code unchanged reuses
+      the existing pipeline; a bounded cache evicts pipelines no revision references
+      (makepad leaks here).
+- [ ] Cross-domain candidate: a save touching a view and its shader commits both or
+      NACKs both (§40).
+- [ ] Tests (§62 Shader): valid pipeline, invalid candidate → old pipeline drawn;
+      interface change re-encodes instances; retired pipeline destroyed only after
+      its fence; pipeline count stays bounded over 1000 edits.
+
+### Done
+
+- [ ] Editing a shader in a running app swaps it at a frame boundary; a syntax error
+      never blanks the screen.
+
+---
+
+## H6 — Phase D: Rust warm restart and DevSnapshot (§24–§32, §68)
+
+Goal: a Rust edit rebuilds while the old app keeps running, then the app restarts with
+its compatible state restored.
+
+### H6.1 — Build coordinator
+
+- [ ] Host watches Rust sources in the active workspace dependency closure and build
+      scripts/config that affect the artifact (§6), from `cargo metadata`.
+- [ ] `RustBuildService`: incremental `cargo build` of the dev artifact in the
+      background; the old app is never stopped before success (§25, B.5); a failed
+      build reports diagnostics (`warm-restart` stage) and keeps the old app.
+- [ ] A `.vs`-only change never triggers a Rust build (B.3); a Rust change that only
+      touches `ui!`/`component!` still needs the build.
+- [ ] Coalesce: edits during a build restart the build; the newest successful build
+      wins.
+
+### H6.2 — DevSnapshot (§29–§32)
+
+- [ ] `DevSnapshot { snapshot_version, source_build, app_schema, component_state,
+      system_state, ui_ephemeral, app_extensions }` in ende binary, typed by
+      `SymbolId` + schema fingerprint; never pointers, handles, fds, sockets, task
+      stacks or platform objects (§30).
+- [ ] Capture: every mounted view's state cells and VM slots, focus identity, scroll
+      offsets, text editing logical state, navigation/tab state, window geometry,
+      game snapshots when the Game Profile exposes them (`game/snapshot.rs`), and app
+      `DevStateExtension`s registered explicitly.
+- [ ] Restore through the same compatibility matrix and `@migrate` as a patch;
+      incompatible entries reset with `E5101`; a restore failure is a
+      `snapshot-restore` NACK and the app starts fresh.
+- [ ] Storage: host memory, current session only; opt-in disk cache under the
+      ignored dev cache with sensitive-field exclusion; never printed in logs or JSON
+      (§32, §47).
+
+### H6.3 — Desktop warm restart (§26)
+
+- [ ] Sequence: build success → request snapshot → stop old process → launch new →
+      handshake → restore → resume; window geometry restored from the snapshot.
+- [ ] `WARM_RESTART_REQUIRED` class reported by the host when native schema, Rust
+      types used by the runtime, platform bindings or link-time features change (§8).
+- [ ] Integration test (§62 Rust): app with state, edit Rust, assert old app runs
+      until the build succeeds, warm restart, assert state restored; a failing build
+      leaves the old app running.
+- [ ] Measurements: Rust incremental build time, snapshot time, relaunch time,
+      restore time (§48).
+
+### Done
+
+- [ ] Editing Rust code in a running desktop app rebuilds in the background, then
+      restarts it with its counters, text fields, focus and window geometry back.
+
+---
+
+## H7 — Phase E: Android emulator, iOS simulator, web (§5, §27, §28, §63, §69)
+
+Goal: the same patches reach emulator, simulator and browser; only transport and deploy
+differ.
+
+- [ ] `viso run ios` / `viso run android` / `viso run web-*` targets and `--device`
+      in the CLI (`Viso_CLI.md` §3, §2).
+- [ ] Android emulator: profile → adb serial mapping, `adb reverse` for the dev port
+      (no LAN exposure), dev APK build/install/launch, warm restart delays stopping
+      the old process until the candidate is built (§27).
+- [ ] iOS simulator: `simctl` install/launch, host-reachable loopback transport, no
+      signing or provisioning (§28).
+- [ ] Web: dev server with a WebSocket dev channel bound to loopback (LAN opt-in),
+      the web dev runtime only in the dev build, patches applied in the browser;
+      Rust/wasm change rebuilds and restores from a snapshot.
+- [ ] The app never watches files on mobile/web (the in-app watcher is already gone
+      after H1).
+- [ ] CI: Android fake + emulator job and iOS simulator job covering boot, install,
+      connect, hot patch, Rust warm restart, reconnect (§63).
+
+### Done
+
+- [ ] A `.vs` edit patches a running Android emulator, iOS simulator and browser app;
+      a Rust edit restarts each with state restored.
+
+---
+
+## H8 — Phase F: multiple runtimes (§43–§44, §52, §70)
+
+Goal: one source graph serves several running runtimes with per-runtime revisions.
+
+- [ ] Connection manager holding several runtimes; shared parse/module graph/type
+      check, target-specific shader validation, capabilities and resources.
+- [ ] Per-runtime revision and status; a target whose shader fails stays on its last
+      good while others advance (§44).
+- [ ] Status surface for Studio (§52): running/candidate/last-good revision, target,
+      patch class, scoped resets, compile time, transport bytes, commit time, Rust
+      rebuild state, connection state — as a stable JSON stream.
+
+### Done
+
+- [ ] Desktop and web runtimes of one project receive one edit; a target-specific
+      failure leaves only that runtime on its last good, shown per runtime.
+
+---
+
+## H9 — Acceptance (§61–§64, §71)
+
+- [ ] §61 unit suite: semantic diff, SymbolId preservation, compatibility matrix,
+      revision ordering, PatchBundle bounds, ACK/NACK, scoped reset planning,
+      snapshot schema.
+- [ ] §62 integration suite under a test host driving a real dev app: UI, invalid
+      `.vs`, shader, game, Rust.
+- [ ] §63 simulator/emulator suite.
+- [ ] §64 release absence suite in CI.
+- [ ] Fuzz: random and mutated dev frames never panic the runtime decoder and never
+      change last-good.
+- [ ] §71 Definition of Done checklist test, one test per item.
