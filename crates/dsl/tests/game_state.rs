@@ -183,6 +183,48 @@ fn the_simulation_reaches_no_non_deterministic_source() {
     assert_eq!(errors, ["E9104", "E9104"]);
 }
 
+/// The Simulation domain's E9104 messages for `body` in place of the
+/// fixed hook's label line, with the import it needs.
+fn simulation_reasons(body: &str) -> Vec<String> {
+    let source = format!(
+        "import viso::time;\n{}",
+        LAYERS.replace("let label = text::upper(\"tick\");", body)
+    );
+    compile(&source, TargetProfile::default())
+        .errors()
+        .filter(|d| d.code == "E9104")
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+#[test]
+fn the_simulation_reads_no_environment_and_awaits_no_task() {
+    let reasons = simulation_reasons("let w = env.size_class;");
+    assert_eq!(
+        reasons,
+        ["the Simulation domain does not read the adaptive environment"]
+    );
+    let reasons = simulation_reasons("await time::sleep(1s);");
+    assert!(
+        reasons
+            .iter()
+            .any(|m| m == "the Simulation domain does not `await`"),
+        "{reasons:?}"
+    );
+    assert!(
+        reasons
+            .iter()
+            .any(|m| m.contains("`sleep` is a native task")),
+        "{reasons:?}"
+    );
+    // A native task named without `await` is still one.
+    let reasons = simulation_reasons("let x = time::sleep(1s);");
+    assert_eq!(
+        reasons,
+        ["`sleep` is a native task, which the Simulation domain does not await"]
+    );
+}
+
 #[test]
 fn host_floating_point_meets_same_binary_but_not_cross_platform() {
     let source = r#"
