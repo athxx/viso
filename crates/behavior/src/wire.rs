@@ -734,6 +734,10 @@ mod opcode {
     pub const UNREACHABLE: u8 = 46;
     pub const START: u8 = 47;
     pub const TRANSLATE: u8 = 48;
+    pub const PUSH: u8 = 49;
+    pub const INSERT: u8 = 50;
+    pub const REMOVE: u8 = 51;
+    pub const TRUNCATE: u8 = 52;
 }
 
 fn write_op(enc: &mut Encoder, op: &Op) {
@@ -838,6 +842,10 @@ fn write_op(enc: &mut Encoder, op: &Op) {
             enc.write_u32(ext);
         }
         Op::Len { dst, src } => regs(enc, LEN, &[dst, src]),
+        Op::Push { list, item } => regs(enc, PUSH, &[list, item]),
+        Op::Insert { list, index, item } => regs(enc, INSERT, &[list, index, item]),
+        Op::Remove { dst, list, index } => regs(enc, REMOVE, &[dst, list, index]),
+        Op::Truncate { list, len } => regs(enc, TRUNCATE, &[list, len]),
         Op::Tag { dst, src } => regs(enc, TAG, &[dst, src]),
         Op::IsNil { dst, src } => regs(enc, IS_NIL, &[dst, src]),
         Op::Jump { target } => {
@@ -1004,6 +1012,24 @@ fn read_op(dec: &mut Decoder<'_>) -> Result<Op, DecodeError> {
         LEN => Op::Len {
             dst: r(dec)?,
             src: r(dec)?,
+        },
+        PUSH => Op::Push {
+            list: r(dec)?,
+            item: r(dec)?,
+        },
+        INSERT => Op::Insert {
+            list: r(dec)?,
+            index: r(dec)?,
+            item: r(dec)?,
+        },
+        REMOVE => Op::Remove {
+            dst: r(dec)?,
+            list: r(dec)?,
+            index: r(dec)?,
+        },
+        TRUNCATE => Op::Truncate {
+            list: r(dec)?,
+            len: r(dec)?,
         },
         TAG => Op::Tag {
             dst: r(dec)?,

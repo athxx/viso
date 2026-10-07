@@ -622,10 +622,23 @@ fn regs(inst: &mut Inst, f: &impl Fn(Reg) -> Reg) {
             *locale = f(*locale);
             all(args);
         }
-        Inst::Index { dst, list, index } => {
+        Inst::Index { dst, list, index } | Inst::Remove { dst, list, index } => {
             *dst = f(*dst);
             *list = f(*list);
             *index = f(*index);
+        }
+        Inst::Push { list, item } => {
+            *list = f(*list);
+            *item = f(*item);
+        }
+        Inst::Insert { list, index, item } => {
+            *list = f(*list);
+            *index = f(*index);
+            *item = f(*item);
+        }
+        Inst::Truncate { list, len } => {
+            *list = f(*list);
+            *len = f(*len);
         }
         Inst::SetPath { root, path, src } => {
             *root = f(*root);

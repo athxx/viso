@@ -1,13 +1,14 @@
 //! Blocks and statements: bindings, assignments, control flow, `emit` and
 //! `start`.
 
-use super::super::ir::{Const, Inst, Num, PathStep, Reg};
+use super::super::ir::{BinaryOp, Const, Inst, Num, PathStep, Reg};
 use super::{LoopCx, Lower, Lowerer, Place};
 use viso_behavior::TaskPolicy;
 
-use crate::ast::{AssignablePath, AstNode, Expr, StartStmt};
+use crate::ast::{AssignablePath, AstNode, CallExpr, Expr, StartStmt};
 use crate::hir::Ty;
 use crate::hir::infer::body::{child_of, emit_args, is_name};
+use crate::hir::infer::list::{LIST_METHODS, edits_receiver};
 use crate::hir::infer::{child_exprs, first_child_expr, is_assign_op};
 use crate::resolve::{LocalSlot, Resolution};
 use crate::syntax::{SyntaxKind, SyntaxNode};
@@ -368,6 +369,20 @@ impl Lowerer<'_, '_> {
             .filter_map(|e| e.as_token().cloned())
             .map(|t| t.kind())
             .find(|k| is_assign_op(*k));
+        let (root, path) = self.target(target)?;
+        let mut src = self.expr(value)?;
+        if let Some(op) = op.and_then(compound_op) {
+            let (lt, rt) = (self.ty(target)?, self.ty(value)?);
+            let current = self.read(&root, &path);
+            src = self.operate(op, current, &lt, src, &rt)?;
+        }
+        self.write(root, path, src);
+        Ok(())
+    }
+
+    /// The root of the place `target` and the path to it, its indices
+    /// evaluated in order.
+    fn target(&mut self, target: &Expr) -> Lower<(Root, Vec<PathStep>)> {
         let (root, steps) = self.place(target)?;
         let mut path = Vec::with_capacity(steps.len());
         for step in steps {
@@ -383,14 +398,229 @@ impl Lowerer<'_, '_> {
                 }
             });
         }
-        let mut src = self.expr(value)?;
-        if let Some(op) = op.and_then(compound_op) {
-            let (lt, rt) = (self.ty(target)?, self.ty(value)?);
-            let current = self.read(&root, &path);
-            src = self.operate(op, current, &lt, src, &rt)?;
+        Ok((root, path))
+    }
+
+    /// `recv.name(args)` on a list, `None` when `name` is no list method. A
+    /// method editing the list evaluates the place, then the arguments, then
+    /// reads the list, edits it and writes it back.
+    pub(super) fn list_call(&mut self, call: &CallExpr) -> Lower<Option<Reg>> {
+        let Some(field) = call
+            .callee()
+            .and_then(|c| crate::ast::FieldExpr::cast(c.syntax().clone()))
+        else {
+            return Ok(None);
+        };
+        let (Some(recv), Some(name)) = (field.receiver(), field.field()) else {
+            return Ok(None);
+        };
+        let name = name.text();
+        if !LIST_METHODS.contains(&name.as_str())
+            || !matches!(self.cx.type_of(&recv), Some(Ty::List(_)))
+        {
+            return Ok(None);
         }
-        self.write(root, path, src);
-        Ok(())
+        let args: Vec<Expr> = emit_args(call.syntax())
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect();
+        if !edits_receiver(&name) {
+            let list = self.expr(&recv)?;
+            let args = self.operands(&args)?;
+            return self.list_read(&name, list, &args).map(Some);
+        }
+        let (root, path) = self.target(&recv)?;
+        let args = self.operands(&args)?;
+        let mut list = self.read(&root, &path);
+        let result = match (name.as_str(), args.as_slice()) {
+            ("push", &[item]) => {
+                self.emit(Inst::Push { list, item });
+                self.unit()
+            }
+            ("insert", &[index, item]) => {
+                self.emit(Inst::Insert { list, index, item });
+                self.unit()
+            }
+            ("remove", &[index]) => {
+                let dst = self.reg();
+                self.emit(Inst::Remove { dst, list, index });
+                dst
+            }
+            ("pop", []) => {
+                let len = self.reg();
+                self.emit(Inst::Len {
+                    dst: len,
+                    src: list,
+                });
+                let zero = self.constant(Const::Int(0));
+                let dst = self.constant(Const::Nil);
+                let empty = self.reg();
+                self.emit(Inst::Binary {
+                    dst: empty,
+                    op: BinaryOp::Eq,
+                    lhs: len,
+                    rhs: zero,
+                });
+                let skip = self.jump_if(empty, true);
+                let one = self.constant(Const::Int(1));
+                let last = self.reg();
+                self.emit(Inst::Binary {
+                    dst: last,
+                    op: BinaryOp::Sub(Num::I64),
+                    lhs: len,
+                    rhs: one,
+                });
+                self.emit(Inst::Remove {
+                    dst,
+                    list,
+                    index: last,
+                });
+                self.patch_here(&[skip]);
+                dst
+            }
+            ("clear", []) => {
+                let zero = self.constant(Const::Int(0));
+                self.emit(Inst::Truncate { list, len: zero });
+                self.unit()
+            }
+            ("retain", &[keep]) => {
+                let kept = self.reg();
+                self.emit(Inst::List {
+                    dst: kept,
+                    items: Vec::new(),
+                });
+                self.each(list, |this, item| {
+                    let yes = this.reg();
+                    this.emit(Inst::CallValue {
+                        dst: yes,
+                        callee: keep,
+                        args: vec![item],
+                    });
+                    let skip = this.jump_if(yes, false);
+                    this.emit(Inst::Push { list: kept, item });
+                    this.patch_here(&[skip]);
+                });
+                list = kept;
+                self.unit()
+            }
+            _ => return self.bail(format!("`{name}` with these arguments")),
+        };
+        self.write(root, path, list);
+        Ok(Some(result))
+    }
+
+    /// A list method that only reads `list`.
+    fn list_read(&mut self, name: &str, list: Reg, args: &[Reg]) -> Lower<Reg> {
+        let len = self.reg();
+        self.emit(Inst::Len {
+            dst: len,
+            src: list,
+        });
+        Ok(match (name, args) {
+            ("len", []) => len,
+            ("is_empty", []) => {
+                let zero = self.constant(Const::Int(0));
+                let dst = self.reg();
+                self.emit(Inst::Binary {
+                    dst,
+                    op: BinaryOp::Eq,
+                    lhs: len,
+                    rhs: zero,
+                });
+                dst
+            }
+            ("get", &[index]) => self.element(list, len, index),
+            ("first", []) => {
+                let index = self.constant(Const::Int(0));
+                self.element(list, len, index)
+            }
+            ("last", []) => {
+                let one = self.constant(Const::Int(1));
+                let index = self.reg();
+                self.emit(Inst::Binary {
+                    dst: index,
+                    op: BinaryOp::Sub(Num::I64),
+                    lhs: len,
+                    rhs: one,
+                });
+                self.element(list, len, index)
+            }
+            ("contains", &[wanted]) => {
+                let found = self.constant(Const::Bool(false));
+                self.each(list, |this, item| {
+                    let same = this.reg();
+                    this.emit(Inst::Binary {
+                        dst: same,
+                        op: BinaryOp::Eq,
+                        lhs: item,
+                        rhs: wanted,
+                    });
+                    let skip = this.jump_if(same, false);
+                    let yes = this.constant(Const::Bool(true));
+                    this.emit(Inst::Move {
+                        dst: found,
+                        src: yes,
+                    });
+                    this.patch_here(&[skip]);
+                });
+                found
+            }
+            _ => return self.bail(format!("`{name}` with these arguments")),
+        })
+    }
+
+    /// `Some(list[index])` when `index` lies in `0..len`, else `None`.
+    fn element(&mut self, list: Reg, len: Reg, index: Reg) -> Reg {
+        let dst = self.constant(Const::Nil);
+        let zero = self.constant(Const::Int(0));
+        let below = self.reg();
+        self.emit(Inst::Binary {
+            dst: below,
+            op: BinaryOp::Lt(Num::I64),
+            lhs: index,
+            rhs: zero,
+        });
+        let low = self.jump_if(below, true);
+        let inside = self.reg();
+        self.emit(Inst::Binary {
+            dst: inside,
+            op: BinaryOp::Lt(Num::I64),
+            lhs: index,
+            rhs: len,
+        });
+        let high = self.jump_if(inside, false);
+        self.emit(Inst::Index { dst, list, index });
+        self.patch_here(&[low, high]);
+        dst
+    }
+
+    /// Runs `body` with each element of `list` in turn, in a fresh register.
+    fn each(&mut self, list: Reg, mut body: impl FnMut(&mut Self, Reg)) {
+        let len = self.reg();
+        self.emit(Inst::Len {
+            dst: len,
+            src: list,
+        });
+        let i = self.constant(Const::Int(0));
+        let top = self.here();
+        let more = self.reg();
+        self.emit(Inst::Binary {
+            dst: more,
+            op: BinaryOp::Lt(Num::I64),
+            lhs: i,
+            rhs: len,
+        });
+        let exit = self.jump_if(more, false);
+        let item = self.reg();
+        self.emit(Inst::Index {
+            dst: item,
+            list,
+            index: i,
+        });
+        body(self, item);
+        self.increment(i, Num::I64);
+        self.emit(Inst::Jump { target: top });
+        self.patch_here(&[exit]);
     }
 
     /// The root and steps of an assignment target.

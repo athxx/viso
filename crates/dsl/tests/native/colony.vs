@@ -161,6 +161,25 @@ export system Ledger implements PostPhysics {
         if tick % 10 == 0 {
             history = [sum, ticks, total(history)];
         }
+        let mut log = [tick % 6];
+        log.push(tick % 4);
+        log.insert(0, sum % 9);
+        if log.contains(2) && !log.is_empty() {
+            log.remove(1);
+        }
+        log.retain(|x| x != 3);
+        match log.pop() {
+            Option::Some(v) => { sum = sum + v; },
+            Option::None => {},
+        }
+        match log.get(tick % 3) {
+            Option::Some(v) => { sum = sum + v; },
+            Option::None => {},
+        }
+        history.push(log.len());
+        if history.len() > 8 {
+            history.clear();
+        }
         for id in frame.world.entities() {
             if frame.world.position(id).y < -10.0f32 {
                 frame.world.remove(id);

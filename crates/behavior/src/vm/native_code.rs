@@ -378,6 +378,77 @@ pub fn len(v: &Value) -> Step<Value> {
     Ok(Value::Int(items.len() as i64))
 }
 
+/// The elements of the list `list` to edit in place, copied first when
+/// another value shares them.
+fn items_mut<'v>(vm: &mut Vm, list: &'v mut Value) -> Step<&'v mut Vec<Value>> {
+    let bytes = list.heap_bytes();
+    let Value::List(items) = list else {
+        return Err(FaultKind::Internal);
+    };
+    if Rc::strong_count(items) > 1 {
+        vm.charge(bytes)?;
+    }
+    Ok(Rc::make_mut(items))
+}
+
+/// The bytes one more list element takes.
+const SLOT_BYTES: u64 = mem::size_of::<Value>() as u64;
+
+/// The position `index` holds, if it lies within `0..=len` (`0..len` without
+/// `end`); else the out-of-bounds fault.
+fn position(vm: &mut Vm, index: &Value, len: usize, end: bool) -> Step<usize> {
+    let i = int(index)?;
+    match usize::try_from(i)
+        .ok()
+        .filter(|&i| i < len || (end && i == len))
+    {
+        Some(i) => Ok(i),
+        None => vm.trap(
+            FaultKind::IndexOutOfBounds,
+            format!("index {i} is out of bounds of a list of {len}"),
+        ),
+    }
+}
+
+/// Appends `item` to the list `list`.
+pub fn push(vm: &mut Vm, list: &mut Value, item: Value) -> Step<()> {
+    vm.charge(SLOT_BYTES)?;
+    items_mut(vm, list)?.push(item);
+    Ok(())
+}
+
+/// Inserts `item` before position `index` of the list `list`.
+pub fn insert(vm: &mut Vm, list: &mut Value, index: &Value, item: Value) -> Step<()> {
+    let len = list_len(list)?;
+    let at = position(vm, index, len, true)?;
+    vm.charge(SLOT_BYTES)?;
+    items_mut(vm, list)?.insert(at, item);
+    Ok(())
+}
+
+/// Removes and returns the element at `index` of the list `list`.
+pub fn remove(vm: &mut Vm, list: &mut Value, index: &Value) -> Step<Value> {
+    let len = list_len(list)?;
+    let at = position(vm, index, len, false)?;
+    Ok(items_mut(vm, list)?.remove(at))
+}
+
+/// Shortens the list `list` to `len` elements; a negative length empties it.
+pub fn truncate(vm: &mut Vm, list: &mut Value, len: &Value) -> Step<()> {
+    let keep = usize::try_from(int(len)?).unwrap_or(0);
+    if keep < list_len(list)? {
+        items_mut(vm, list)?.truncate(keep);
+    }
+    Ok(())
+}
+
+fn list_len(list: &Value) -> Step<usize> {
+    match list {
+        Value::List(items) => Ok(items.len()),
+        _ => Err(FaultKind::Internal),
+    }
+}
+
 /// The variant tag of `v`.
 #[inline]
 pub fn tag(v: &Value) -> Step<Value> {

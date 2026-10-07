@@ -1028,7 +1028,17 @@ impl Verifier<'_> {
             | Op::Tag { dst, src }
             | Op::IsNil { dst, src }
             | Op::Display { dst, src, .. }
-            | Op::Field { dst, src, .. } => self.regs(&[dst, src]),
+            | Op::Field { dst, src, .. }
+            | Op::Push {
+                list: dst,
+                item: src,
+            }
+            | Op::Truncate {
+                list: dst,
+                len: src,
+            } => self.regs(&[dst, src]),
+            Op::Insert { list, index, item } => self.regs(&[list, index, item]),
+            Op::Remove { dst, list, index } => self.regs(&[dst, list, index]),
             Op::DisplayDim { dst, src, suffix } => {
                 self.regs(&[dst, src])?;
                 self.constant(u32::from(suffix))?;

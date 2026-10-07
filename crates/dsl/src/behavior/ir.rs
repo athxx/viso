@@ -272,6 +272,14 @@ pub enum Inst {
     },
     /// `dst = len(src)` of a list, as `I64`.
     Len { dst: Reg, src: Reg },
+    /// Appends `item` to the list in `list`, in place (copy on write).
+    Push { list: Reg, item: Reg },
+    /// Inserts `item` before position `index` of the list in `list`, in place.
+    Insert { list: Reg, index: Reg, item: Reg },
+    /// `dst` = the element at `index` of the list in `list`, removed in place.
+    Remove { dst: Reg, list: Reg, index: Reg },
+    /// Shortens the list in `list` to `len` elements, in place.
+    Truncate { list: Reg, len: Reg },
     /// `dst` = the enum variant tag of `src`.
     Tag { dst: Reg, src: Reg },
     /// `dst = src == None`.

@@ -494,6 +494,28 @@ fn lower_op(out: &mut String, module: &Module, c: u32, code: &Code, i: usize) {
                 ))
             ));
         }
+        Op::Push { list, item } => line(format!(
+            "{{ let item = {}.clone(); {}; }}",
+            r(item),
+            t(&format!("rt::push(vm, &mut {}, item)", r(list)))
+        )),
+        Op::Insert { list, index, item } => line(format!(
+            "{{ let index = {}.clone(); let item = {}.clone(); {}; }}",
+            r(index),
+            r(item),
+            t(&format!("rt::insert(vm, &mut {}, &index, item)", r(list)))
+        )),
+        Op::Remove { dst, list, index } => line(format!(
+            "{{ let index = {}.clone(); {} = {}; }}",
+            r(index),
+            r(dst),
+            t(&format!("rt::remove(vm, &mut {}, &index)", r(list)))
+        )),
+        Op::Truncate { list, len } => line(format!(
+            "{{ let len = {}.clone(); {}; }}",
+            r(len),
+            t(&format!("rt::truncate(vm, &mut {}, &len)", r(list)))
+        )),
         Op::Len { dst, src } => line(format!(
             "{} = {};",
             r(dst),

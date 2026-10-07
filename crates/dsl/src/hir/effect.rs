@@ -180,6 +180,13 @@ pub trait EffectEnv {
         let _ = call;
         None
     }
+
+    /// Whether the call at `call` is a list method editing its receiver in
+    /// place, which writes the receiver as an assignment does.
+    fn writes_list(&self, call: TextRange) -> bool {
+        let _ = call;
+        false
+    }
 }
 
 /// The effect-checking context for one body walk: the resolved-reference index, the
@@ -239,6 +246,16 @@ impl<'a> EffectCx<'a> {
     /// descending into every child expression.
     fn walk(&mut self, node: &SyntaxNode) {
         match node.kind() {
+            SyntaxKind::CallExpr if self.env.writes_list(node.text_range()) => {
+                if let Some(receiver) = node
+                    .children()
+                    .into_iter()
+                    .next()
+                    .and_then(|callee| callee.children().into_iter().next())
+                {
+                    self.check_target(&receiver, node.text_range());
+                }
+            }
             SyntaxKind::CallExpr => self.check_call(node),
             SyntaxKind::AssignStmt => self.check_write(node),
             SyntaxKind::EmitStmt => self.check_emit(node),
@@ -372,12 +389,17 @@ impl<'a> EffectCx<'a> {
     /// Reports an assignment whose target's root is a `state` in a body that does not
     /// mutate.
     fn check_write(&mut self, node: &SyntaxNode) {
+        if let Some(target) = node.children().into_iter().next() {
+            self.check_target(&target, node.text_range());
+        }
+    }
+
+    /// Reports a write of the place `target`, by the statement or call at
+    /// `at`, in a body that may not write it.
+    fn check_target(&mut self, target: &SyntaxNode, at: TextRange) {
         if self.context.mutates() {
             return;
         }
-        let Some(target) = node.children().into_iter().next() else {
-            return;
-        };
         let head = target
             .descendants_with_tokens()
             .into_iter()
@@ -397,12 +419,12 @@ impl<'a> EffectCx<'a> {
         if self.context == BodyContext::Effect {
             self.diagnostics.push(Diagnostic::error(
                 "E2501",
-                node.text_range(),
+                at,
                 format!("an effect body writes state only inside `transaction {{ }}`: {what}"),
             ));
             return;
         }
-        self.report_mutation(node.text_range(), &what);
+        self.report_mutation(at, &what);
     }
 
     /// Reports an `emit` in a body that does not mutate.

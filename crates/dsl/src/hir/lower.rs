@@ -1459,6 +1459,9 @@ struct ModuleEnv<'p> {
     /// through a method, an associated path or an instantiation, by the
     /// call's span.
     user_calls: RefCell<Vec<(TextRange, SymbolId)>>,
+    /// Each call typing found to be a list method editing its receiver in
+    /// place, by the call's span.
+    list_writes: RefCell<HashSet<TextRange>>,
 }
 
 impl TypeEnv for ModuleEnv<'_> {
@@ -1500,6 +1503,10 @@ impl TypeEnv for ModuleEnv<'_> {
 
     fn record_native(&self, call: TextRange, id: NativeId) {
         self.native_calls.borrow_mut().insert(call, id);
+    }
+
+    fn record_list_write(&self, call: TextRange) {
+        self.list_writes.borrow_mut().insert(call);
     }
 
     fn traits(&self) -> Option<&super::generic::TraitTable> {
@@ -1621,6 +1628,10 @@ impl ReadEnv for ModuleEnv<'_> {
 }
 
 impl EffectEnv for ModuleEnv<'_> {
+    fn writes_list(&self, call: TextRange) -> bool {
+        self.list_writes.borrow().contains(&call)
+    }
+
     fn callee_effect(&self, to: &Resolution) -> Option<EffectClass> {
         match to {
             Resolution::Symbol(id) => self.decls.facts.get(id).and_then(|f| f.effect),
@@ -1686,6 +1697,7 @@ impl<'p> ModuleEnv<'p> {
             native_calls: RefCell::default(),
             styles: OnceCell::new(),
             user_calls: RefCell::default(),
+            list_writes: RefCell::default(),
         }
     }
 

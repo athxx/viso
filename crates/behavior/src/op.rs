@@ -296,6 +296,17 @@ pub enum Op {
     SetPath { root: u16, ext: u32 },
     /// `dst = len(src)` of a list.
     Len { dst: u16, src: u16 },
+    /// Appends `item` to the list in `list`, in place (copy on write).
+    Push { list: u16, item: u16 },
+    /// Inserts `item` before position `index` of the list in `list`, in place;
+    /// `index` may be the length, and faults beyond it.
+    Insert { list: u16, index: u16, item: u16 },
+    /// `dst` = the element at `index` of the list in `list`, removed in place;
+    /// faults out of bounds.
+    Remove { dst: u16, list: u16, index: u16 },
+    /// Shortens the list in `list` to `len` elements in place; a list no
+    /// longer than `len` stays as it is.
+    Truncate { list: u16, len: u16 },
     /// `dst` = the enum variant tag of `src`.
     Tag { dst: u16, src: u16 },
     /// `dst = src is Nil`.

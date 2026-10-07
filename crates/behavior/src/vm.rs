@@ -1261,6 +1261,30 @@ impl Vm {
                     self.set_path(code, base, root, ext as usize)?;
                     continue;
                 }
+                Op::Push { list, item } => {
+                    let item = self.stack[base + usize::from(item)].clone();
+                    self.edit_list(base, list, |vm, list| native_code::push(vm, list, item))?;
+                    continue;
+                }
+                Op::Insert { list, index, item } => {
+                    let index = self.stack[base + usize::from(index)].clone();
+                    let item = self.stack[base + usize::from(item)].clone();
+                    self.edit_list(base, list, |vm, list| {
+                        native_code::insert(vm, list, &index, item)
+                    })?;
+                    continue;
+                }
+                Op::Remove { dst, list, index } => {
+                    let index = self.stack[base + usize::from(index)].clone();
+                    let removed = self
+                        .edit_list(base, list, |vm, list| native_code::remove(vm, list, &index))?;
+                    (dst, removed)
+                }
+                Op::Truncate { list, len } => {
+                    let len = self.stack[base + usize::from(len)].clone();
+                    self.edit_list(base, list, |vm, list| native_code::truncate(vm, list, &len))?;
+                    continue;
+                }
                 Op::IsNil { dst, src } => (
                     dst,
                     Value::bool(self.stack[base + usize::from(src)].is_nil()),
@@ -1644,6 +1668,21 @@ impl Vm {
         cur.pc = 0;
         self.stack.resize(cur.base + regs, Value::Nil);
         Ok(())
+    }
+
+    /// Runs `edit` on the list in register `list`, taken out of the register
+    /// so an unshared list is edited without a copy.
+    fn edit_list<T>(
+        &mut self,
+        base: usize,
+        list: u16,
+        edit: impl FnOnce(&mut Vm, &mut Value) -> Step<T>,
+    ) -> Step<T> {
+        let at = base + usize::from(list);
+        let mut value = mem::take(&mut self.stack[at]);
+        let result = edit(self, &mut value);
+        self.stack[at] = value;
+        result
     }
 
     /// Runs the [`Op::SetPath`] whose operands start at `ext[at]`.

@@ -388,6 +388,24 @@ impl Emitter {
                 dst: reg(*dst),
                 src: reg(*src),
             },
+            Inst::Push { list, item } => Op::Push {
+                list: reg(*list),
+                item: reg(*item),
+            },
+            Inst::Insert { list, index, item } => Op::Insert {
+                list: reg(*list),
+                index: reg(*index),
+                item: reg(*item),
+            },
+            Inst::Remove { dst, list, index } => Op::Remove {
+                dst: reg(*dst),
+                list: reg(*list),
+                index: reg(*index),
+            },
+            Inst::Truncate { list, len } => Op::Truncate {
+                list: reg(*list),
+                len: reg(*len),
+            },
             Inst::Tag { dst, src } => Op::Tag {
                 dst: reg(*dst),
                 src: reg(*src),

@@ -853,7 +853,7 @@ mod tests {
     fn formatting_returns_a_full_document_edit() {
         let mut s = Server::new();
         let uri = "file:///c.vs";
-        s.handle(&open(uri, "component C{state count=0;}"));
+        s.handle(&open(uri, "component C{\nstate count=0;}"));
         let params = json::parse(&format!(r#"{{"textDocument":{{"uri":"{uri}"}}}}"#)).unwrap();
         let (out, _) = s.handle(&req(4, "textDocument/formatting", params));
         let edits = out

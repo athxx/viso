@@ -30,6 +30,7 @@ mod carry;
 pub(crate) mod format;
 mod generic;
 mod lens;
+pub(crate) mod list;
 mod native;
 pub(crate) mod pattern;
 mod record;
@@ -44,7 +45,7 @@ pub(crate) use pattern::MatchCheck;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{AstNode, CallExpr, CastExpr, Expr, PathExpr, TypePath};
-use crate::diag::Diagnostic;
+use crate::diag::{Applicability, Diagnostic, Fix, TextEdit};
 use crate::hir::ty::{PackageTypes, Ty, TypeError, WidenError};
 use crate::resolve::{LocalSlot, Resolution, ResolvedRef, SymbolId, SymbolKind};
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
@@ -218,6 +219,12 @@ pub trait TypeEnv {
     /// Notes that the call at `call` is bound to the native function `id`.
     fn record_native(&self, call: TextRange, id: NativeId) {
         let _ = (call, id);
+    }
+
+    /// Notes that the call at `call` is a list method editing its receiver in
+    /// place, which the effect check treats as an assignment to it.
+    fn record_list_write(&self, call: TextRange) {
+        let _ = call;
     }
 
     /// Where the declaration at `range` inside `owner` (one of its fields, variants,
@@ -976,13 +983,27 @@ impl<'a> InferCx<'a> {
         }
 
         let result = unify_numeric(&lty, &rty).unwrap_or_else(|| {
-            // A non-widenable numeric mix is an illegal implicit conversion.
+            // A non-widenable numeric mix is an illegal implicit conversion,
+            // fixed by casting the integer operand to the float type, or else
+            // the right one to the left's. Its result is no type to check
+            // further.
             if is_numeric_ty(&lty) && is_numeric_ty(&rty) && lty != rty {
-                self.diagnostics.push(Diagnostic::error(
+                let (operand, to) = if is_integer_ty(&lty) && is_float_ty(&rty) {
+                    (lhs.as_ref(), &rty)
+                } else {
+                    (rhs.as_ref(), &lty)
+                };
+                let to = self.describe(to);
+                let mut diagnostic = Diagnostic::error(
                     "E2102",
                     node.text_range(),
                     "operands have incompatible numeric types; an explicit cast is required",
-                ));
+                );
+                if let Some(operand) = operand {
+                    diagnostic.fixes.push(cast_fix(operand.syntax(), &to));
+                }
+                self.diagnostics.push(diagnostic);
+                return Ty::Unknown;
             }
             if lty == Ty::Unknown {
                 rty.clone()
@@ -1309,10 +1330,10 @@ impl<'a> InferCx<'a> {
                     let message = format!(
                         "illegal implicit conversion from `{actual}` to `{expected}`; an explicit cast is required"
                     );
-                    self.diagnostics.push(
-                        Diagnostic::error("E2102", node.text_range(), message)
-                            .expecting([expected], actual),
-                    );
+                    let mut diagnostic = Diagnostic::error("E2102", node.text_range(), message);
+                    diagnostic.fixes.push(cast_fix(node, &expected));
+                    self.diagnostics
+                        .push(diagnostic.expecting([expected], actual));
                     target.clone()
                 }
             }
@@ -1489,6 +1510,38 @@ pub(crate) fn builtin_variant(segments: &[SyntaxToken]) -> Option<&'static str> 
 /// Whether `ty` is one of the integer scalar types.
 /// The integer scalar types, as source spells them.
 pub(crate) const INTEGER_TYPES: [&str; 8] = ["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"];
+
+/// A `maybe-incorrect` fix casting the expression `node` to the type spelled
+/// `target`, parenthesized unless `as` already binds to all of it.
+fn cast_fix(node: &SyntaxNode, target: &str) -> Fix {
+    let range = node.text_range();
+    let operand = matches!(
+        node.kind(),
+        SyntaxKind::LiteralExpr
+            | SyntaxKind::PathExpr
+            | SyntaxKind::CallExpr
+            | SyntaxKind::IndexExpr
+            | SyntaxKind::FieldExpr
+            | SyntaxKind::ParenExpr
+            | SyntaxKind::TupleExpr
+            | SyntaxKind::ListExpr
+            | SyntaxKind::BlockExpr
+    );
+    let end = TextRange::empty(range.end());
+    let edits = if operand {
+        vec![TextEdit::new(end, format!(" as {target}"))]
+    } else {
+        vec![
+            TextEdit::new(TextRange::empty(range.start()), "("),
+            TextEdit::new(end, format!(") as {target}")),
+        ]
+    };
+    Fix {
+        title: format!("cast to `{target}`"),
+        applicability: Applicability::MaybeIncorrect,
+        edits,
+    }
+}
 
 pub(crate) fn is_integer_ty(ty: &Ty) -> bool {
     matches!(
