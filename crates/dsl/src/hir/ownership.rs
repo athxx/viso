@@ -1,7 +1,8 @@
 //! Native handle ownership: a [`Borrowed`](Ownership::Borrowed) handle is valid
 //! only for the call that receives it, so it may be a parameter or a local but
 //! no place that outlives the call — a `state`, `input`, `computed`, event
-//! payload, record field or `const`, nor a returned value — may hold it
+//! parameter, record field, enum variant payload or `const`, nor a returned
+//! value — may hold it
 //! (`E6102`).
 
 use viso_behavior::native::{NativeTypeEntry, Natives, Ownership};

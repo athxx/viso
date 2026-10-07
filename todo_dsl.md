@@ -1201,16 +1201,16 @@ timers (§104–§111).
   - [x] Recovery after unclosed string/comment inside a component.
   - [x] Fuzz: formatter never panics on random input; parse(format(x))
         equal to parse(x) as trees; random edits keep incremental = full.
-- [ ] §153 type acceptance.
-  - [ ] Widening ladders from source (signed, unsigned, float, length) and
+- [x] §153 type acceptance.
+  - [x] Widening ladders from source (signed, unsigned, float, length) and
         the forbidden conversions as diagnostics.
-  - [ ] `Float` in declarations; StableKey derivation for records, enums,
+  - [x] `Float` in declarations; StableKey derivation for records, enums,
         tuples, `Option`, float members rejected.
-  - [ ] Closure parameters and return from the expected function type.
-  - [ ] Capability propagation from source (E2601); native ownership in
+  - [x] Closure parameters and return from the expected function type.
+  - [x] Capability propagation from source (E2601); native ownership in
         every stored place.
-  - [ ] Computed cycle path contents; MixedLength multiply and assignment.
-  - [ ] Percent through `const`; `font_size` em on the same node.
+  - [x] Computed cycle path contents; MixedLength multiply and assignment.
+  - [x] Percent through `const`; `font_size` em on the same node.
 - [ ] §154 runtime acceptance.
   - [ ] Paint-only DSL write lays nothing out.
   - [ ] DSL capture handlers run before the target.

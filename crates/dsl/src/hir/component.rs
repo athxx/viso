@@ -544,9 +544,14 @@ fn report_cycle(
         "E2105",
         computeds[entry].span,
         format!(
-            "`computed` members form a dependency cycle of length {}; a `computed` cannot \
+            "`computed` members form a dependency cycle: {}; a `computed` cannot \
              transitively depend on itself",
-            cycle.len()
+            cycle
+                .iter()
+                .chain(std::iter::once(&entry))
+                .map(|&m| format!("`{}`", computeds[m].node.name))
+                .collect::<Vec<_>>()
+                .join(" -> ")
         ),
     );
     // The full cycle path, in traversal order, closing back to the entry.
@@ -585,12 +590,10 @@ fn resolve_annotation(
 ) -> Ty {
     match Ty::from_annotation(path.syntax(), &|at| nominal.get(&at).cloned()) {
         Ok(ty) => ty,
-        Err(err) => {
-            let code: &'static str = match err {
-                TypeError::FloatRemoved => "E2101",
-                TypeError::UnknownType => "E2103",
-            };
-            diagnostics.push(Diagnostic::error(code, span, err.message()));
+        // The resolver reports `Float` where it is written.
+        Err(TypeError::FloatRemoved) => Ty::Unknown,
+        Err(err @ TypeError::UnknownType) => {
+            diagnostics.push(Diagnostic::error("E2103", span, err.message()));
             Ty::Unknown
         }
     }

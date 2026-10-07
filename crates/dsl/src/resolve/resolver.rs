@@ -1477,7 +1477,27 @@ impl<'a> ModulePass<'a> {
                     self.resolve_expr(&value);
                 }
             }
-            Member::Event(_) | Member::Slot(_) => {}
+            // An event's parameter types name types like any other.
+            Member::Event(e) => {
+                use crate::syntax::SyntaxKind;
+                for param in e.syntax().children() {
+                    if param.kind() != SyntaxKind::EventParam {
+                        continue;
+                    }
+                    for ty in param.children() {
+                        match ty.kind() {
+                            SyntaxKind::TypePath => {
+                                if let Some(path) = TypePath::cast(ty) {
+                                    self.resolve_type_path(&path);
+                                }
+                            }
+                            k if k.is_type() => self.resolve_body(&ty),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Member::Slot(_) => {}
         }
     }
 
@@ -2218,6 +2238,21 @@ impl<'a> ModulePass<'a> {
                 }
             }
         }
+        // A function type (`Fn(A) -> R`) holds its parameter and result
+        // types directly.
+        for child in ty.syntax().children() {
+            match child.kind() {
+                SyntaxKind::TypePath => {
+                    if let Some(inner) = TypePath::cast(child) {
+                        self.resolve_type_head(&inner, defer_unresolved);
+                    }
+                }
+                SyntaxKind::TupleType | SyntaxKind::ArrayType | SyntaxKind::DynType => {
+                    self.resolve_body(&child)
+                }
+                _ => {}
+            }
+        }
         let Some(head) = ty.segments().next() else {
             return;
         };
@@ -2233,6 +2268,17 @@ impl<'a> ModulePass<'a> {
         if let Some(base) = self.native_base(name) {
             let rest: Vec<_> = ty.segments().skip(1).collect();
             self.resolve_native(&head, base, &rest, true);
+            return;
+        }
+        // `Float` is no type: the one diagnostic for it, wherever a type is
+        // written, is raised here.
+        if text == "Float" {
+            let err = crate::hir::TypeError::FloatRemoved;
+            self.errors.push(Diagnostic::error(
+                err.code(),
+                head.text_range(),
+                err.message(),
+            ));
             return;
         }
         // Built-in/native types (Int, Text, Color, ...) are provided by schema, not

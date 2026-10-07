@@ -1897,7 +1897,18 @@ impl<'a> ViewWalk<'a> {
                 .check_irrefutable(pattern.syntax(), "a `for` pattern");
         }
         if let Some(key) = view_for.key() {
-            let _ = self.cx.infer_expr(&key, None);
+            let ty = self.cx.infer_expr(&key, None);
+            if let Err(why) = super::stable_key::stable_key(self.cx.env(), &ty) {
+                let message = format!(
+                    "a `for` key is `StableKey`, but `{}` is not: {why}",
+                    self.cx.describe(&ty)
+                );
+                self.diagnostics.push(Diagnostic::error(
+                    "E2701",
+                    key.syntax().text_range(),
+                    message,
+                ));
+            }
         }
         let pattern = view_for.pattern().map(|p| p.syntax().clone());
         if let Some(iterable) = view_for.iterable() {

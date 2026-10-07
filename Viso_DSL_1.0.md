@@ -364,7 +364,7 @@ decimal_digits  = decimal_digit,
 - 正负号始终是 Unary Operator，不属于 Numeric Token；
 - 十六进制浮点、`.5` 和 `1.` 不属于 Viso 1.0；必须写 `0.5` 和 `1.0`；这使 `1..2` 永远词法化为 Integer + Range；
 - 数值后缀必须紧邻数字，后缀前不得有空白；
-- 语言中不存在 `Float` 类型；
+- 语言中不存在 `Float` 类型；任何书写类型的位置（参数、返回值、字段、Variant Payload、`let`、`const`、成员、泛型实参、Function Type、`as`）写 `Float` 都由名字解析报一次 `E2101`，不再级联类型不匹配；
 - 无后缀浮点是“未定型浮点常量”；
 - Host 域无上下文时默认 `F64`；
 - Shader 域无上下文时默认 `F32`；
@@ -2929,6 +2929,7 @@ start scheduler.after(250ms, move || {
 
 - 参数 Pattern 必须是 Irrefutable Pattern（§70.1）；
 - 参数类型可以由期望的 Function Type 推断；
+- 当前实现：`Fn(..) -> R` 与 `FnMut(..) -> R` 降为函数类型，未标注的参数与返回类型取自期望类型；参数个数不符报一个 `E2103`（不再逐个报 `E2401`）；`ActionFn`/`TaskFn` 尚未降为类型（按未知类型处理）；
 - 没有期望类型且参数未标注时是错误；
 - 返回类型可由 Tail Expression 推断；
 - Closure Capture Set 由 HIR 计算并写入 Schema；
@@ -7441,6 +7442,8 @@ parse(format(parse(valid_x))) AST-equivalent
 - 节点不接受的 Event、`emit` 未知 Event 或实参与参数不符报 `E3202`；Handler Payload 字段按 Event 参数类型或标准 Payload Record（U7.1）参与推断；
 - `font_size` 中的 `em`/`%` 以父节点字号为基准，其他 Property 以本节点字号为基准。
 
+当前实现：`crates/dsl/tests/type_acceptance.rs` 从源码经完整前端检查拓宽阶梯与禁止转换（`E2102`/`E2103`/`E2106`）、`Float`（`E2101`）、StableKey（`E2701`）、Closure 期望类型、Capability 传播（`E2601`）、Computed 环路径（`E2105`）、`MixedLength`（`E2106`/`E2107`）与 Percent 流（`E3104`）；`crates/dsl/tests/behavior_vm.rs` 检查借用 Native Handle 不能存入 `state`、`input`、`computed`、Event 参数、Record 字段、Enum Variant Payload、`const` 与返回值（`E6102`）；`crates/dsl/tests/length_basis.rs` 在布局后检查 `font_size` 与其他 Property 的 `em`/`%` 基准。
+
 ---
 
 ## 154. 运行时验收
@@ -8603,7 +8606,7 @@ RecordPatternField
 | E2102  | 非法隐式数值转换                                        |
 | E2103  | 类型不匹配                                              |
 | E2104  | State Initializer 前向引用                              |
-| E2105  | Computed 循环依赖                                       |
+| E2105  | Computed 循环依赖（消息列出路径，如 `a` -> `b` -> `a`） |
 | E2106  | MixedLength 不能在布局前定型为具体单位                  |
 | E2107  | 非法量纲运算（MixedLength 比较/乘除、Percent 加标量等） |
 | E2108  | `format` 模板与实参不匹配（§17）                        |
@@ -8621,7 +8624,7 @@ RecordPatternField
 | E2501  | Effect Kind 调用违规                                    |
 | E2502  | View/Computed 中存在副作用                              |
 | E2601  | 缺少 Capability                                         |
-| E2701  | 类型不能实现 StableKey（当前检查 Resource 的 `key`，§38） |
+| E2701  | 类型不能实现 StableKey（Resource 的 `key` 与 View `for` 的 `key`；消息指出违规成员，如 `K.b`） |
 | E2702  | 重复 Runtime Key                                        |
 | E2801  | Control Head 中的 Record Expression 必须加括号          |
 | E2802  | 非结合操作符链式使用（§63.1）                           |
