@@ -2274,11 +2274,15 @@ impl<'a> ModulePass<'a> {
         // written, is raised here.
         if text == "Float" {
             let err = crate::hir::TypeError::FloatRemoved;
-            self.errors.push(Diagnostic::error(
-                err.code(),
-                head.text_range(),
-                err.message(),
-            ));
+            let mut diagnostic = Diagnostic::error(err.code(), head.text_range(), err.message());
+            for width in ["F64", "F32"] {
+                diagnostic.fixes.push(Fix {
+                    title: format!("use `{width}`"),
+                    applicability: Applicability::MaybeIncorrect,
+                    edits: vec![TextEdit::new(head.text_range(), width)],
+                });
+            }
+            self.errors.push(diagnostic);
             return;
         }
         // Built-in/native types (Int, Text, Color, ...) are provided by schema, not

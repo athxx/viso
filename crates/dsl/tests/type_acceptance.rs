@@ -144,6 +144,14 @@ fn float_is_no_type_wherever_one_is_written() {
     ] {
         one(site, "E2101", &["`Float`", "`F32` or `F64`"]);
     }
+    let src = "fn f(x: Float) { }\ncomponent Host { view { Text {} } }\n";
+    let document = Document::new(src, &origin());
+    let replacements: Vec<&str> = document.diagnostics()[0]
+        .fixes
+        .iter()
+        .map(|fix| fix.edits[0].replacement.as_str())
+        .collect();
+    assert_eq!(replacements, ["F64", "F32"]);
 }
 
 /// A component keying a resource load by `key`, whose type is `ty`.

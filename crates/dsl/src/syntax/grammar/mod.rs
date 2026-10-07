@@ -383,6 +383,17 @@ impl<'t, 's> Parser<'t, 's> {
         }
     }
 
+    /// The end of the last significant token consumed.
+    fn consumed_end(&self) -> TextSize {
+        if self.split > 0 {
+            return self.offset();
+        }
+        self.pos
+            .checked_sub(1)
+            .and_then(|i| self.significant.get(i))
+            .map_or(TextSize::ZERO, |&i| self.tokens[i].range.end())
+    }
+
     /// Consumes the current significant token into the tree.
     fn bump_any(&mut self) {
         let kind = (self.split > 0).then(|| self.current());

@@ -19,7 +19,9 @@
 //! its `Type { ... }` directly, and a named one as `node name: Type { ... }`.
 
 use super::super::kind::SyntaxKind;
+use super::super::span::TextRange;
 use super::{ParseErrorKind, Parser, attributes, label, name};
+use crate::diag::{Applicability, Fix, TextEdit};
 
 /// `"view" ViewBlock` — the `view { ... }` member of a component.
 pub(super) fn view_decl(p: &mut Parser) {
@@ -287,10 +289,27 @@ fn event_handler(p: &mut Parser) {
         p.expect(SyntaxKind::RParen);
     }
     if p.at(SyntaxKind::FatArrow) {
-        // `on click => expr` — the old arrow form is rejected in favor of a block.
+        // `on click => expr` — the old arrow form is rejected in favor of a
+        // block, into which the fix wraps the statement.
+        let arrow = p.offset();
+        let index = p.errors.len();
         p.error(ParseErrorKind::HandlerNotArrow);
         p.bump_any(); // `=>`
+        let body = p.offset();
         super::stmt::statement(p);
+        let end = p.consumed_end();
+        if end > body
+            && let Some(diagnostic) = p.errors.get_mut(index)
+        {
+            diagnostic.fixes.push(Fix {
+                title: "wrap the handler in a block".to_string(),
+                applicability: Applicability::MachineApplicable,
+                edits: vec![
+                    TextEdit::new(TextRange::new(arrow, body), "{ "),
+                    TextEdit::new(TextRange::empty(end), " }"),
+                ],
+            });
+        }
     } else {
         super::stmt::block(p);
     }

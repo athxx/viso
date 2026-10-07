@@ -1237,5 +1237,9 @@ timers (§104–§111).
   - [x] Formatter keeps one-line blocks, blank lines, statement breaks and
         trailing comments; every sample formats to itself.
   - [ ] Timed sessions with people (completion rate, confusion points).
-- [ ] §157 AI generation loop: diagnostics with fixes, tape-verified behavior.
+- [x] §157 AI generation loop: diagnostics with fixes, tape-verified behavior.
+  - [x] `E3201` wraps the arrow body in a block; `E2101` offers `F64`/`F32`.
+  - [x] First-fix repair loop over a frozen set of generated mistakes,
+        each verified by an event trace or a game tape; loop metrics.
+  - [ ] Real-model prompt sets and generation runs (CLI/external eval).
 - [ ] §158 Definition of Done.
