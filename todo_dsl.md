@@ -1226,6 +1226,16 @@ timers (§104–§111).
   - [x] Simulation reading `env`, `await` or a native task is E9104.
   - [x] A tape replays the same after an InputMap reload.
   - [x] A shader the backend rejects keeps the drawn pipeline.
-- [ ] §156 human usability samples compile and format stably.
+- [x] §156 human usability samples compile and format stably.
+  - [x] Eleven reference samples, zero diagnostics, behavior checked
+        (counter, todo push + keys, size class, adaptive scope, quick game
+        vs split system on one tape, diagnostic fix, reload keeps focus).
+  - [x] `List<T>` methods (len/get/first/last/contains/push/insert/
+        remove/pop/clear/retain) through typeck, effects, VM and AOT.
+  - [x] `E2102` carries an `as T` fix without cascading; suggestions rank
+        by OSA distance (transpositions cost one).
+  - [x] Formatter keeps one-line blocks, blank lines, statement breaks and
+        trailing comments; every sample formats to itself.
+  - [ ] Timed sessions with people (completion rate, confusion points).
 - [ ] §157 AI generation loop: diagnostics with fixes, tape-verified behavior.
 - [ ] §158 Definition of Done.

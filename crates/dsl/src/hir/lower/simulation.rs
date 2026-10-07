@@ -726,9 +726,10 @@ impl Domains {
                         op: BinaryOp::Concat,
                         ..
                     } => "builds a `String`, which allocates",
-                    Inst::SetPath { .. } => {
+                    Inst::SetPath { .. } | Inst::Remove { .. } | Inst::Truncate { .. } => {
                         "writes into a record or list in place, which copies it while it is shared"
                     }
+                    Inst::Push { .. } | Inst::Insert { .. } => "grows a list, which allocates",
                     Inst::Start { .. } => "starts a task",
                     Inst::Emit { .. } => {
                         "emits an event; the audio thread passes data only through a bounded \

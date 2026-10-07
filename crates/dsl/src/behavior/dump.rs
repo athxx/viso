@@ -139,6 +139,22 @@ fn write_inst(out: &mut String, inst: &Inst) -> fmt::Result {
             write!(out, " = {}", reg(*src))
         }
         Inst::Len { dst, src } => write!(out, "{} = len {}", reg(*dst), reg(*src)),
+        Inst::Push { list, item } => write!(out, "push {} {}", reg(*list), reg(*item)),
+        Inst::Insert { list, index, item } => {
+            write!(out, "insert {}[{}] {}", reg(*list), reg(*index), reg(*item))
+        }
+        Inst::Remove { dst, list, index } => {
+            write!(
+                out,
+                "{} = remove {}[{}]",
+                reg(*dst),
+                reg(*list),
+                reg(*index)
+            )
+        }
+        Inst::Truncate { list, len } => {
+            write!(out, "truncate {} {}", reg(*list), reg(*len))
+        }
         Inst::Tag { dst, src } => write!(out, "{} = tag {}", reg(*dst), reg(*src)),
         Inst::IsNil { dst, src } => write!(out, "{} = is_nil {}", reg(*dst), reg(*src)),
         Inst::Jump { target } => write!(out, "jump @{target}"),

@@ -658,6 +658,9 @@ impl Lowerer<'_, '_> {
         if let Some(target) = self.cx.call_target(node.text_range()).cloned() {
             return self.user_call(&call, &target);
         }
+        if let Some(value) = self.list_call(&call)? {
+            return Ok(value);
+        }
         let Some(callee) = call.callee() else {
             return self.bail("a call without a callee");
         };

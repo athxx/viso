@@ -19,20 +19,31 @@ pub(crate) struct Candidate<'a> {
     pub(crate) declared_at: Option<(Option<&'a str>, TextRange)>,
 }
 
-/// The Levenshtein distance between `a` and `b`, over Unicode scalar values.
+/// The optimal string alignment distance between `a` and `b`, over Unicode
+/// scalar values: insertions, deletions, substitutions and transpositions of
+/// two adjacent characters each count as one edit, so the common typing slip
+/// `cuont` is one edit from `count`.
 pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut diagonal = row[0];
-        row[0] = i + 1;
-        for (j, &cb) in b.iter().enumerate() {
-            let substitution = diagonal + usize::from(ca != cb);
-            diagonal = row[j + 1];
-            row[j + 1] = substitution.min(row[j] + 1).min(diagonal + 1);
+    // Three rows: two back, one back, and the one being filled.
+    let mut before: Vec<usize> = vec![0; b.len() + 1];
+    let mut prior: Vec<usize> = (0..=b.len()).collect();
+    let mut row: Vec<usize> = vec![0; b.len() + 1];
+    for i in 1..=a.len() {
+        row[0] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (prior[j - 1] + cost).min(prior[j] + 1).min(row[j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(before[j - 2] + 1);
+            }
+            row[j] = best;
         }
+        std::mem::swap(&mut before, &mut prior);
+        std::mem::swap(&mut prior, &mut row);
     }
-    row[b.len()]
+    prior[b.len()]
 }
 
 /// The candidates close enough to `target` to be a plausible misspelling, closest
@@ -101,7 +112,14 @@ mod tests {
     fn edit_distance_counts_single_character_edits() {
         assert_eq!(edit_distance("Badge", "Badge"), 0);
         assert_eq!(edit_distance("Badg", "Badge"), 1);
-        assert_eq!(edit_distance("Bagde", "Badge"), 2);
+        assert_eq!(edit_distance("Bagde", "Badge"), 1, "a transposition");
+        assert_eq!(edit_distance("cuont", "count"), 1);
+        assert_eq!(edit_distance("ab", "ba"), 1);
+        assert_eq!(
+            edit_distance("abc", "ca"),
+            3,
+            "no edit of a transposed pair"
+        );
         assert_eq!(edit_distance("", "abc"), 3);
         assert_eq!(edit_distance("café", "cafe"), 1);
     }

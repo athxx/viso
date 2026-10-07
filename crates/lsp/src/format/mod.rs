@@ -1,29 +1,35 @@
 //! The `.vs` source formatter: a normalizing re-layout driven by the lossless
 //! CST token stream.
 //!
-//! The formatter does **not** consult the grammar. It walks the parse tree's flat
-//! leaf-token stream in source order (the same stream the lexer produced, with
-//! `Whitespace` trivia dropped and comments kept), then re-emits it under a fixed
-//! set of layout rules keyed only on token kinds and brace depth:
+//! The formatter walks the parse tree's leaf tokens in source order, comments
+//! kept, and re-emits them under layout rules keyed on token kinds, the node
+//! each token sits in, and where the author broke lines:
 //!
-//! - Indentation is a level per enclosing `{ }`: `{` opens a level (its body is
-//!   indented one deeper), `}` closes it and dedents to the enclosing level.
-//! - A statement/binding terminator `;` ends the current line; a block open `{`
-//!   ends the line after it; a block close `}` starts on its own line.
-//! - Property/type binding punctuation is tightened per DSL style
-//!   (architecture section 21.5.2): no space before `:` `;` `,`, one space after.
-//! - Generic angle brackets hug their contents and the name before them
-//!   (`List<List<I64>>`); these are the only tokens told apart by their parent
-//!   node, since `<` and `>` are also comparison operators.
-//! - Surplus blank lines are folded (a run of blank lines collapses to at most
-//!   one), and comments are preserved in place — a line comment ends its line, a
-//!   block comment is spaced like an ordinary token.
+//! - A `{ }` the author wrote on one line stays on one line when it fits in
+//!   [`MAX_WIDTH`] columns (`Text { text: label; }`); any other block opens a
+//!   line after `{`, indents its body one level, and closes on its own line.
+//!   An empty block is `{}`. An import's item braces hug their items
+//!   (`import a::{B, C};`).
+//! - A `;` ends its line in an expanded block; so does a `,` at an expanded
+//!   block's own level (match arms, record fields written one per line).
+//! - A `}` keeps a following `,` `;` `)` `]` `.` `?` or `else` on its line.
+//! - A line break the author put inside a statement is kept (folded to one),
+//!   the continuation indented one level deeper per open `(`/`[`.
+//! - Blank lines between items and statements are kept, a run folded to one;
+//!   none is kept after `{` or before `}`.
+//! - A comment on the line of the code before it stays there; a line comment
+//!   ends its line.
+//! - Spacing: one space between tokens, except that `:` `;` `,` `.` `::` `?`
+//!   `)` `]` hug what precedes them; `(` and `[` hug a name or a closing
+//!   bracket before them (a call, an index); a prefix `-`/`!`, `.`, `::`, `@`
+//!   and `(`/`[` hug what follows; ranges hug both bounds; closure pipes hug
+//!   their parameters; generic angle brackets hug their contents and the name
+//!   before them (`List<List<I64>>`).
 //!
-//! Because the rules depend only on token kinds, the output is stable:
-//! `format(format(x)) == format(x)` (the idempotency anchor the tests assert),
-//! and re-parsing the formatted text yields the same non-trivia token stream
-//! (the round-trip anchor — the formatter never changes a semantic token, only
-//! trivia and layout).
+//! The output depends only on the tokens, their nodes and the line breaks, all
+//! of which the output reproduces, so `format(format(x)) == format(x)`, and
+//! re-parsing the formatted text yields the same significant tokens: the
+//! formatter only ever changes whitespace.
 //!
 //! Cold-path tooling (architecture section 7.2): one format pass per editor
 //! request, over a small document — `String` building throughout is the right
@@ -36,12 +42,72 @@ use viso_dsl::{LexError, SyntaxKind, tokenize};
 /// One indentation level: four spaces.
 const INDENT: &str = "    ";
 
+/// The widest a line holding a block kept on one line may be.
+pub const MAX_WIDTH: usize = 100;
+
+/// One significant or comment token of the source.
+#[derive(Debug, Clone)]
+struct Tok {
+    kind: SyntaxKind,
+    text: String,
+    /// The kind of the node the token sits in.
+    parent: SyntaxKind,
+    /// The line breaks in the whitespace before it.
+    breaks: usize,
+    /// It is a generic list's `<` or `>`.
+    angle: bool,
+    /// It is a closure's opening `|`.
+    open_pipe: bool,
+    /// It ends an attribute (`@after(Movement)`), whose line break starts a
+    /// new item rather than continuing one.
+    ends_attribute: bool,
+    /// Its line must end after it: a string or char left open runs to the
+    /// end of its line.
+    ends_line: bool,
+}
+
+impl Tok {
+    fn is(&self, kind: SyntaxKind) -> bool {
+        self.kind == kind
+    }
+
+    fn is_line_comment(&self) -> bool {
+        matches!(
+            self.kind,
+            SyntaxKind::LineComment | SyntaxKind::DocComment | SyntaxKind::ModuleDocComment
+        )
+    }
+
+    /// A prefix operator, which hugs its operand.
+    fn is_prefix(&self) -> bool {
+        matches!(self.kind, SyntaxKind::Minus | SyntaxKind::Bang)
+            && matches!(
+                self.parent,
+                SyntaxKind::UnaryExpr | SyntaxKind::LiteralExpr | SyntaxKind::LiteralPattern
+            )
+    }
+
+    /// A range operator, which hugs its bounds.
+    fn is_range(&self) -> bool {
+        matches!(self.kind, SyntaxKind::DotDot | SyntaxKind::DotDotEq)
+            && matches!(
+                self.parent,
+                SyntaxKind::RangeExpr | SyntaxKind::RangePattern
+            )
+    }
+
+    /// An import's item braces, which hug their items.
+    fn hugs_inside(&self) -> bool {
+        self.parent == SyntaxKind::ImportDecl
+    }
+}
+
 /// Formats `.vs` source text, returning the normalized layout.
 ///
 /// The text is tokenized and parsed (to obtain the lossless token stream in
-/// source order), then re-emitted under the layout rules described on this
-/// module. Semantic tokens are preserved exactly; only whitespace and the
-/// placement of comments change.
+/// source order with each token's node), then re-emitted under the layout
+/// rules described on this module. Significant tokens are preserved exactly;
+/// only whitespace changes.
 pub fn format(source: &str) -> String {
     let lexed = tokenize(source);
     let parsed = parse(&lexed, source);
@@ -63,10 +129,6 @@ pub fn format(source: &str) -> String {
                 )
             )
         });
-    let root = SyntaxNode::new_root(parsed.root.clone());
-
-    // A string or char left open runs to the end of its line, so its line
-    // must end after it, or the next line would join its text.
     let open_lines: Vec<u32> = lexed
         .iter()
         .filter(|t| {
@@ -78,43 +140,66 @@ pub fn format(source: &str) -> String {
         .map(|t| t.range.start().to_u32())
         .collect();
 
-    // The flat leaf-token stream in source order, whitespace dropped, comments
-    // kept. Each entry is (kind, text, whether it is a generic angle bracket,
-    // whether its line must end after it).
-    let tokens: Vec<(SyntaxKind, String, bool, bool)> = root
-        .descendants_with_tokens()
-        .into_iter()
-        .filter_map(|el| {
-            el.as_token().map(|t| {
-                (
-                    t.kind(),
-                    t.text(),
-                    is_generic_angle(t.kind(), t.parent().kind()),
-                    open_lines
-                        .binary_search(&t.text_range().start().to_u32())
-                        .is_ok(),
-                )
-            })
-        })
-        .filter(|(kind, ..)| *kind != SyntaxKind::Whitespace)
-        .collect();
-
-    let mut printer = Printer::new();
-    for i in 0..tokens.len() {
-        let (kind, text, angle, ends_line) = &tokens[i];
-        let prev = i.checked_sub(1usize).map(|j| Prev {
-            kind: tokens[j].0,
-            angle: tokens[j].2,
-            // Generic closers may touch: the parser splits a `>>` it closes on.
-            joins: !(tokens[j].2 && *angle) && joins(&tokens[j].1, tokens[j].0, text, *kind),
+    let root = SyntaxNode::new_root(parsed.root.clone());
+    let mut tokens: Vec<Tok> = Vec::new();
+    let mut breaks = 0;
+    let mut in_params = false;
+    for el in root.descendants_with_tokens() {
+        let Some(t) = el.as_token() else {
+            continue;
+        };
+        let kind = t.kind();
+        if kind == SyntaxKind::Whitespace {
+            breaks += t.text().matches('\n').count();
+            continue;
+        }
+        if kind == SyntaxKind::Eof {
+            continue;
+        }
+        let parent = t.parent().kind();
+        let open_pipe = kind == SyntaxKind::Pipe && parent == SyntaxKind::ClosureParams && {
+            in_params = !in_params;
+            in_params
+        };
+        tokens.push(Tok {
+            kind,
+            text: t.text(),
+            parent,
+            breaks: std::mem::take(&mut breaks),
+            angle: is_generic_angle(kind, parent),
+            open_pipe,
+            ends_attribute: t.parent().ancestors().any(|node| {
+                node.kind() == SyntaxKind::Attribute
+                    && node.text_range().end() == t.text_range().end()
+            }),
+            ends_line: open_lines
+                .binary_search(&t.text_range().start().to_u32())
+                .is_ok(),
         });
-        let next = tokens.get(i + 1).map(|(k, ..)| *k);
-        printer.emit(*kind, text, *angle, prev, next);
-        if *ends_line {
-            printer.pending_newline = true;
+    }
+
+    let closes = matching_braces(&tokens);
+    let mut printer = Printer::new(&tokens, &closes);
+    printer.run();
+    printer.finish(open_end)
+}
+
+/// The index of the `}` closing each `{`, by the `{`'s index.
+fn matching_braces(tokens: &[Tok]) -> Vec<Option<usize>> {
+    let mut closes = vec![None; tokens.len()];
+    let mut open = Vec::new();
+    for (i, t) in tokens.iter().enumerate() {
+        match t.kind {
+            SyntaxKind::LBrace => open.push(i),
+            SyntaxKind::RBrace => {
+                if let Some(at) = open.pop() {
+                    closes[at] = Some(i);
+                }
+            }
+            _ => {}
         }
     }
-    printer.finish(open_end)
+    closes
 }
 
 /// Whether `before` and `after` written with nothing between them would lex
@@ -136,182 +221,290 @@ fn is_generic_angle(kind: SyntaxKind, parent: SyntaxKind) -> bool {
         && matches!(parent, SyntaxKind::GenericParams | SyntaxKind::GenericArgs)
 }
 
-/// The token before the one being emitted.
-#[derive(Clone, Copy)]
-struct Prev {
-    kind: SyntaxKind,
-    /// It is a generic angle bracket.
-    angle: bool,
-    /// It and the token being emitted would lex as other tokens if adjacent.
-    joins: bool,
+/// Whether one space separates `prev` and `next` on a line.
+fn spaced(prev: &Tok, next: &Tok) -> bool {
+    use SyntaxKind as K;
+    // Generic closers may touch: the parser splits a `>>` it closes on.
+    if !(prev.angle && next.angle) && joins(&prev.text, prev.kind, &next.text, next.kind) {
+        return true;
+    }
+    // A generic `<` hugs its name and its first argument; a generic `>` hugs
+    // its last argument.
+    if next.angle || (prev.angle && prev.is(K::Lt)) {
+        return false;
+    }
+    if prev.is(K::LBrace) {
+        return !next.is(K::RBrace) && !prev.hugs_inside();
+    }
+    if next.is(K::RBrace) {
+        return !next.hugs_inside();
+    }
+    match next.kind {
+        K::Colon
+        | K::Semi
+        | K::Comma
+        | K::Dot
+        | K::ColonColon
+        | K::QuestionDot
+        | K::RParen
+        | K::RBracket => return false,
+        K::Question if next.parent == K::TryExpr => return false,
+        K::LParen | K::LBracket => {
+            return !(matches!(
+                prev.kind,
+                K::Ident
+                    | K::RawIdent
+                    | K::RParen
+                    | K::RBracket
+                    | K::Question
+                    | K::LParen
+                    | K::LBracket
+            ) || prev.angle);
+        }
+        K::Pipe if !next.open_pipe && next.parent == K::ClosureParams => {
+            return prev.open_pipe;
+        }
+        _ => {}
+    }
+    if next.is_range() || prev.is_range() || prev.is_prefix() || prev.open_pipe {
+        return false;
+    }
+    !matches!(
+        prev.kind,
+        K::LParen | K::LBracket | K::Dot | K::ColonColon | K::QuestionDot | K::At
+    )
 }
 
-/// Accumulates formatted output, tracking indentation depth and pending
-/// line/blank-line breaks so the layout rules can be expressed per token.
-struct Printer {
+/// An expanded block being printed.
+struct Frame {
+    /// The open brackets when it opened: a `,` with no more open ends a line.
+    groups: usize,
+    /// The index of its `}`, if it has one.
+    close: Option<usize>,
+}
+
+/// Accumulates formatted output, tracking indentation and owed breaks.
+struct Printer<'t> {
+    tokens: &'t [Tok],
+    closes: &'t [Option<usize>],
     out: String,
-    depth: usize,
-    /// Whether the current output position is at the start of a fresh line (so the
-    /// next visible token must first be indented).
-    at_line_start: bool,
-    /// A newline is owed before the next token (a statement/block boundary).
+    /// Expanded blocks open around the next token.
+    frames: Vec<Frame>,
+    /// Open `(`, `[` and generic `<`.
+    groups: usize,
+    /// The next token starts a line.
     pending_newline: bool,
-    /// A blank line is owed before the next token (folded surplus blank lines).
-    pending_blank: bool,
+    /// The index of the last token written.
+    last: Option<usize>,
 }
 
-impl Printer {
-    fn new() -> Self {
+impl<'t> Printer<'t> {
+    fn new(tokens: &'t [Tok], closes: &'t [Option<usize>]) -> Self {
         Printer {
+            tokens,
+            closes,
             out: String::new(),
-            depth: 0,
-            at_line_start: true,
+            frames: Vec::new(),
+            groups: 0,
             pending_newline: false,
-            pending_blank: false,
+            last: None,
         }
     }
 
-    /// Emits one token, applying spacing relative to `prev` (the previous
-    /// non-whitespace token, if any) and `next` (the following kind, used only to
-    /// keep an empty `{}` block inline). `angle` marks a generic angle bracket.
-    fn emit(
-        &mut self,
-        kind: SyntaxKind,
-        text: &str,
-        angle: bool,
-        prev: Option<Prev>,
-        next: Option<SyntaxKind>,
-    ) {
-        let prev_angle = prev.is_some_and(|p| p.angle);
-        let prev_joins = prev.is_some_and(|p| p.joins);
-        let prev = prev.map(|p| p.kind);
-        if kind == SyntaxKind::RBrace {
-            // Close brace dedents. It starts its own line *unless* the block is empty
-            // (the immediately preceding token was its own `{`), in which case the
-            // pending newline from that `{` is cancelled to keep `{}` inline.
-            self.depth = self.depth.saturating_sub(1);
-            if prev == Some(SyntaxKind::LBrace) {
-                self.pending_newline = false;
-            } else {
-                self.newline();
-            }
+    fn run(&mut self) {
+        let mut i = 0;
+        while i < self.tokens.len() {
+            i = self.token(i);
+        }
+    }
+
+    /// The column the output is at.
+    fn column(&self) -> usize {
+        let line = self.out.rsplit('\n').next().unwrap_or("");
+        line.chars().count()
+    }
+
+    /// Emits token `i`, or the one-line block it opens, and returns the index
+    /// of the next token to emit.
+    fn token(&mut self, i: usize) -> usize {
+        let tokens = self.tokens;
+        let t = &tokens[i];
+        let prev = self.last.map(|j| &tokens[j]);
+        self.place(i, t, prev);
+
+        if t.is(SyntaxKind::LBrace)
+            && let Some(close) = self.closes[i]
+            && let Some(flat) = self.flat(i, close)
+            && self.column() + flat.chars().count() <= MAX_WIDTH
+        {
+            self.out.push_str(&flat);
+            self.last = Some(close);
+            self.after_close();
+            return close + 1;
         }
 
-        self.flush_breaks();
-
-        if !self.at_line_start {
-            if self.wants_space_before(kind, angle, prev, prev_angle) || prev_joins {
-                self.out.push(' ');
-            }
-        } else {
-            self.push_indent();
-        }
-
-        self.out.push_str(text);
-        self.at_line_start = false;
-
-        match kind {
-            SyntaxKind::LBrace if next == Some(SyntaxKind::RBrace) => {
-                // Empty block: still open a depth level (the matching `}` closes it),
-                // but do not break — the `}` follows immediately.
-                self.depth += 1;
-            }
+        self.out.push_str(&t.text);
+        self.last = Some(i);
+        match t.kind {
             SyntaxKind::LBrace => {
-                self.depth += 1;
+                self.frames.push(Frame {
+                    groups: self.groups,
+                    close: self.closes[i],
+                });
                 self.pending_newline = true;
             }
-            SyntaxKind::RBrace | SyntaxKind::Semi => {
-                // A block close and a statement/binding terminator both end their
-                // line, so the next token starts a new one.
-                self.pending_newline = true;
+            SyntaxKind::RBrace => self.after_close(),
+            SyntaxKind::LParen | SyntaxKind::LBracket => self.groups += 1,
+            SyntaxKind::Lt if t.angle => self.groups += 1,
+            SyntaxKind::Gt if t.angle => self.groups = self.groups.saturating_sub(1),
+            SyntaxKind::RParen | SyntaxKind::RBracket => {
+                self.groups = self.groups.saturating_sub(1);
             }
-            SyntaxKind::LineComment | SyntaxKind::DocComment | SyntaxKind::ModuleDocComment => {
-                // A line comment runs to end of line; the next token must break.
+            SyntaxKind::Semi => self.pending_newline = true,
+            SyntaxKind::Comma
+                if self
+                    .frames
+                    .last()
+                    .is_some_and(|frame| frame.groups == self.groups) =>
+            {
                 self.pending_newline = true;
             }
             _ => {}
         }
+        if t.is_line_comment() || t.ends_line {
+            self.pending_newline = true;
+        }
+        i + 1
     }
 
-    /// Whether a space is required between `prev` and the token about to be emitted.
-    ///
-    /// The default is one space (token separation); the exceptions tighten the DSL
-    /// binding/call punctuation and generic angle brackets.
-    fn wants_space_before(
-        &self,
-        kind: SyntaxKind,
-        angle: bool,
-        prev: Option<SyntaxKind>,
-        prev_angle: bool,
-    ) -> bool {
-        let Some(prev) = prev else {
-            return false;
-        };
-        // A generic `<` hugs its name and its first argument; a generic `>` hugs
-        // its last argument.
-        if angle || (prev_angle && prev == SyntaxKind::Lt) {
-            return false;
-        }
-        // No space *before* these: they hug the preceding token.
-        if matches!(
-            kind,
-            SyntaxKind::Colon
-                | SyntaxKind::Semi
-                | SyntaxKind::Comma
-                | SyntaxKind::LParen
-                | SyntaxKind::RParen
-                | SyntaxKind::LBracket
-                | SyntaxKind::RBracket
-                | SyntaxKind::Dot
-                | SyntaxKind::ColonColon
-        ) {
-            // `(` after a name is a call/param list (hug); `(` after a keyword or
-            // operator wants a space handled by the after-rules below, but hugging is
-            // the safe DSL default here.
-            return false;
-        }
-        // No space *after* these: the preceding token hugs the next.
-        if matches!(
-            prev,
-            SyntaxKind::LParen
-                | SyntaxKind::LBracket
-                | SyntaxKind::LBrace
-                | SyntaxKind::Dot
-                | SyntaxKind::ColonColon
-                | SyntaxKind::At
-        ) {
-            return false;
-        }
-        true
-    }
-
-    /// Requests a newline before the next token (unless one is already pending).
-    fn newline(&mut self) {
+    /// After a block closes: the next token starts a line, unless it keeps to
+    /// the close's.
+    fn after_close(&mut self) {
         self.pending_newline = true;
     }
 
-    /// Writes any owed newline / blank line, then leaves the printer at a fresh line
-    /// start (so the caller pushes indentation before the token).
-    fn flush_breaks(&mut self) {
-        if self.pending_newline || self.pending_blank {
-            // Only emit a break if we have already written something; leading breaks
-            // would produce a blank first line.
-            if !self.out.is_empty() {
-                self.out.push('\n');
-                if self.pending_blank {
-                    self.out.push('\n');
-                }
+    /// Breaks the line before `t` or spaces it from `prev`, and indents it.
+    fn place(&mut self, i: usize, t: &Tok, prev: Option<&Tok>) {
+        let Some(prev) = prev else {
+            return;
+        };
+        if t.is(SyntaxKind::RBrace) && self.closes_frame(i) {
+            self.frames.pop();
+            if !prev.is(SyntaxKind::LBrace) {
+                self.line(t, prev, 0);
+                return;
             }
-            self.at_line_start = true;
+            // `{` `}` with nothing between, expanded only by a line break.
+            self.pending_newline = false;
+            return;
         }
-        self.pending_newline = false;
-        self.pending_blank = false;
+        // A token that keeps to the line of the `}` before it.
+        if prev.is(SyntaxKind::RBrace)
+            && !self.ends_line_after(prev)
+            && matches!(
+                t.kind,
+                SyntaxKind::Comma
+                    | SyntaxKind::Semi
+                    | SyntaxKind::RParen
+                    | SyntaxKind::RBracket
+                    | SyntaxKind::Dot
+                    | SyntaxKind::Question
+                    | SyntaxKind::QuestionDot
+                    | SyntaxKind::ElseKw
+            )
+        {
+            self.pending_newline = false;
+            if spaced(prev, t) {
+                self.out.push(' ');
+            }
+            return;
+        }
+        // A comment written after code on its line stays there.
+        if t.breaks == 0
+            && matches!(
+                t.kind,
+                SyntaxKind::LineComment | SyntaxKind::DocComment | SyntaxKind::BlockComment
+            )
+            && !self.ends_line_after(prev)
+        {
+            self.pending_newline = false;
+        }
+        if self.pending_newline {
+            self.line(t, prev, 0);
+            return;
+        }
+        let hugs = matches!(
+            t.kind,
+            SyntaxKind::Comma | SyntaxKind::Semi | SyntaxKind::Colon
+        );
+        if t.breaks > 0 && prev.ends_attribute {
+            self.line(t, prev, 0);
+            return;
+        }
+        if t.breaks > 0 && !hugs {
+            let closing = matches!(t.kind, SyntaxKind::RParen | SyntaxKind::RBracket);
+            let open = self.open_groups();
+            let extra = if closing {
+                open.saturating_sub(1)
+            } else {
+                open.max(1)
+            };
+            self.line(t, prev, extra);
+            return;
+        }
+        if spaced(prev, t) {
+            self.out.push(' ');
+        }
     }
 
-    fn push_indent(&mut self) {
-        for _ in 0..self.depth {
+    /// Whether the line must end after `prev` whatever follows.
+    fn ends_line_after(&self, prev: &Tok) -> bool {
+        prev.is_line_comment() || prev.ends_line
+    }
+
+    /// Whether the `}` at `i` closes the innermost expanded block.
+    fn closes_frame(&self, i: usize) -> bool {
+        self.frames
+            .last()
+            .is_some_and(|frame| frame.close == Some(i))
+    }
+
+    /// The brackets open within the innermost expanded block.
+    fn open_groups(&self) -> usize {
+        let base = self.frames.last().map_or(0, |frame| frame.groups);
+        self.groups.saturating_sub(base)
+    }
+
+    /// Starts `t` on a fresh line indented `extra` levels past its block,
+    /// after a blank line where the author left one.
+    fn line(&mut self, t: &Tok, prev: &Tok, extra: usize) {
+        self.pending_newline = false;
+        self.out.push('\n');
+        if t.breaks >= 2 && !prev.is(SyntaxKind::LBrace) && !t.is(SyntaxKind::RBrace) {
+            self.out.push('\n');
+        }
+        for _ in 0..self.frames.len() + extra {
             self.out.push_str(INDENT);
         }
+    }
+
+    /// Tokens `open..=close`, a block, on one line, if the author wrote them
+    /// on one and nothing in them must end a line.
+    fn flat(&self, open: usize, close: usize) -> Option<String> {
+        let span = &self.tokens[open..=close];
+        if span[1..].iter().any(|t| t.breaks > 0)
+            || span.iter().any(|t| t.is_line_comment() || t.ends_line)
+        {
+            return None;
+        }
+        let mut out = String::new();
+        for (k, t) in span.iter().enumerate() {
+            if k > 0 && spaced(&span[k - 1], t) {
+                out.push(' ');
+            }
+            out.push_str(&t.text);
+        }
+        Some(out)
     }
 
     /// Finishes the document: the output ends with exactly one trailing newline
@@ -320,8 +513,6 @@ impl Printer {
         if open_end {
             return self.out;
         }
-        // Drop any trailing whitespace/newlines we may have accumulated, then add a
-        // single terminating newline if there is any content.
         while self.out.ends_with('\n') || self.out.ends_with(' ') {
             self.out.pop();
         }
@@ -375,31 +566,44 @@ mod tests {
 
     #[test]
     fn format_indents_blocks_and_terminates_bindings() {
-        let src = "component C{state count=0;}";
-        let formatted = format(src);
-        let expected = "component C {\n    state count = 0;\n}\n";
-        assert_eq!(formatted, expected);
+        assert_eq!(
+            format("component C{\nstate count=0;}"),
+            "component C {\n    state count = 0;\n}\n"
+        );
+        // A block written on one line stays on one line.
+        assert_eq!(
+            format("component C{state count=0;}"),
+            "component C { state count = 0; }\n"
+        );
+    }
+
+    #[test]
+    fn a_long_one_line_block_expands() {
+        let long = format!("Text {{ text: \"{}\"; }}", "x".repeat(MAX_WIDTH));
+        assert_eq!(
+            format(&long),
+            format!("Text {{\n    text: \"{}\";\n}}\n", "x".repeat(MAX_WIDTH))
+        );
     }
 
     #[test]
     fn format_preserves_comments() {
-        let src = "component C {\n// a leading note\nstate count = 0;\n}\n";
+        let src = "component C {\n// a leading note\nstate count = 0; // a trailing note\n}\n";
         let formatted = format(src);
-        assert!(
-            formatted.contains("// a leading note"),
-            "line comment must survive formatting:\n{formatted}"
+        assert_eq!(
+            formatted,
+            "component C {\n    // a leading note\n    state count = 0; // a trailing note\n}\n"
         );
-        // And it is still idempotent with the comment present.
         assert_eq!(format(&formatted), formatted);
     }
 
     #[test]
     fn format_folds_surplus_blank_lines() {
-        let src = "component A {}\n\n\n\ncomponent B {}\n";
-        let formatted = format(src);
-        assert!(
-            !formatted.contains("\n\n\n"),
-            "runs of blank lines must fold to at most one:\n{formatted:?}"
+        let src =
+            "component A {}\n\n\n\ncomponent B {\n\n    state a = 1;\n\n\n    state b = 2;\n\n}\n";
+        assert_eq!(
+            format(src),
+            "component A {}\n\ncomponent B {\n    state a = 1;\n\n    state b = 2;\n}\n"
         );
     }
 
@@ -418,8 +622,44 @@ mod tests {
             "type M = List<List<I64>>;\n"
         );
         assert_eq!(
-            format("fn f < T > (x: Map<String,T>) -> Bool { return a<b; }"),
+            format("fn f < T > (x: Map<String,T>) -> Bool {\n return a<b; }"),
             "fn f<T>(x: Map<String, T>) -> Bool {\n    return a < b;\n}\n"
+        );
+    }
+
+    #[test]
+    fn closing_braces_keep_what_follows_them() {
+        assert_eq!(
+            format("fn f() {\nif a {\nx;\n}\nelse {\ny;\n}\n}"),
+            "fn f() {\n    if a {\n        x;\n    } else {\n        y;\n    }\n}\n"
+        );
+        assert_eq!(
+            format("fn f() {\nmatch x {\n1 => {\na;\n}\n, _ => {\nb;\n}\n,\n}\n}"),
+            "fn f() {\n    match x {\n        1 => {\n            a;\n        },\n        _ => {\n            b;\n        },\n    }\n}\n"
+        );
+    }
+
+    #[test]
+    fn operators_brackets_and_imports_space_as_written_in_the_spec() {
+        assert_eq!(
+            format("import viso::game::{ A,B };"),
+            "import viso::game::{A, B};\n"
+        );
+        assert_eq!(
+            format("fn f() { let xs = [1]; let y = -x + !b; let r = 0..n; let g = |a, b| a; }"),
+            "fn f() { let xs = [1]; let y = -x + !b; let r = 0..n; let g = |a, b| a; }\n"
+        );
+        assert_eq!(
+            format("fn f() { g (x)[0]; h(( a )); }"),
+            "fn f() { g(x)[0]; h((a)); }\n"
+        );
+    }
+
+    #[test]
+    fn a_line_break_inside_a_statement_is_kept() {
+        assert_eq!(
+            format("fn f() {\nlet x = call(a,\nb);\nlet y = a\n+ b;\n}"),
+            "fn f() {\n    let x = call(a,\n        b);\n    let y = a\n        + b;\n}\n"
         );
     }
 

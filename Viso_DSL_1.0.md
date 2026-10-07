@@ -1019,6 +1019,29 @@ Resource<T, E>
 NodeRef<T>
 ```
 
+`List<T>` 的内建方法（Receiver 为 `List<T>` 的方法调用，不经 Native Schema）：
+
+| 方法 | 类型 | 语义 |
+| ---- | ---- | ---- |
+| `len()` | `I64` | 元素个数 |
+| `is_empty()` | `Bool` | `len() == 0` |
+| `get(i: I64)` | `Option<T>` | 越界为 `None` |
+| `first()` / `last()` | `Option<T>` | 空为 `None` |
+| `contains(x: T)` | `Bool` | `T` 必须可比较 |
+| `push(x: T)` | `()` | 追加到末尾 |
+| `insert(i: I64, x: T)` | `()` | 插入到 `i`，`i` 越界为 Runtime Fault |
+| `remove(i: I64)` | `T` | 移除并返回第 `i` 个，越界为 Runtime Fault |
+| `pop()` | `Option<T>` | 移除并返回最后一个，空为 `None` |
+| `clear()` | `()` | 清空 |
+| `retain(keep: Fn(T) -> Bool)` | `()` | 只保留 `keep` 为真的元素，保持顺序 |
+
+规则：
+
+- `push`/`insert`/`remove`/`pop`/`clear`/`retain` 修改 Receiver：Receiver 必须是可写位置（`state`、`let mut` 局部或其字段/下标路径），按普通赋值检查：不可写目标报 `E2110`，`fn` 中写 `state` 报 `E2501`，`computed` 中写报 `E2502`；修改 `state` 列表与 `todos = new_list` 一样按该 State 失效；
+- 未知方法报 `E2001` 并给出最近方法名 Fix；实参个数或类型不符报 `E2103`；
+- 列表按值语义：修改只影响被写的位置，不影响此前读出的副本；写入在原存储上进行，只有存储被共享时才复制一次；
+- Audio Realtime 中 `push`/`insert` 会分配，报 `E9108`（§108.3），`remove`/`pop`/`clear` 原地进行。
+
 ---
 
 ## 28. Record
@@ -7138,6 +7161,11 @@ viso test game <scenario> --frames=<n> --seed=<seed> --json
 - 不把编译器 Stack Trace 放进用户 Message；
 - AI 可以只按 Error Code 查询长期说明。
 
+Fix 生成规则（当前实现）：
+
+- 未知名字、方法、字段、Variant（`E2001`/`E3101` 等）的候选按 Optimal String Alignment 距离（插入、删除、替换、相邻交换各计 1，`cuont → count` 为 1）排序，只给阈值内最近者；
+- 非法隐式数值转换 `E2102` 带一个 `maybe-incorrect` Fix：在源操作数后追加 `as T`（非原子表达式加括号）；二元运算两侧数值类型不同，转换整数一侧到浮点类型，否则转换右侧到左侧类型，结果按未知类型继续检查，不产生级联诊断。
+
 ---
 
 ## 139. Schema 查询
@@ -7208,6 +7236,18 @@ Formatter 必须规范：
 - 注释尽量保持最近语义节点。
 
 Parser 接受的所有合法程序经 Formatter 后必须再次 Parse 为等价 AST。
+
+当前实现（`crates/lsp/src/format`）只改空白，输出只取决于 Token、所在节点与作者的换行，因而幂等：
+
+- 作者写在一行的 `{ }`，整行不超过 100 列时保持一行（`Text { text: label; }`），否则展开：`{` 后换行、Body 缩进一级、`}` 独占一行；空 Block 为 `{}`；Import 的 `{A, B}` 紧贴内容；
+- 展开 Block 中 `;` 结束一行，Block 自身层级（不在 `(` `[` `<` 内）的 `,` 也结束一行；
+- `}` 后的 `,` `;` `)` `]` `.` `?` 与 `else` 留在同一行；
+- 语句内作者的换行保留（多个折为一个），续行按未闭合的 `(` `[` `<` 层数再缩进；Attribute 后的换行开始新的一项；
+- 声明与语句之间的空行保留，连续空行折为一行，`{` 之后与 `}` 之前不留空行；
+- 与前面代码同一行的注释留在该行，行注释结束一行；
+- `(`/`[` 紧贴前面的名字或闭括号（调用、下标），前缀 `-`/`!`、区间 `..`/`..=`、Closure 的 `|` 与泛型 `<>` 紧贴操作数。
+
+`crates/lsp/tests/format_fuzz.rs` 对随机与变异源码检查 Token 不变与幂等。
 
 ---
 
@@ -7527,6 +7567,8 @@ parse(format(parse(valid_x))) AST-equivalent
 ```
 
 若 `node`/匿名节点、Action/Task、State/Computed 或 Preserve/Key 的混淆率持续偏高，应先改文档和诊断，不轻易新增第二套语法捷径。
+
+当前实现：十一个任务各有一份按本文档写成的参考解 `crates/dsl/tests/usability/NN-*.vs`。`crates/dsl/tests/usability_samples.rs` 检查全部零诊断，并验证行为：Counter 点击计数、Todo 用 `push` 添加并按 Key 渲染、`SizeClass` 三档布局、`AdaptiveScope` 侧栏不随 Window 宽度变化、Quick Game 与拆出的 FixedUpdate System 对同一输入 Tape 状态一致、`count * scale` 的 `E2102` 应用 Fix 后零诊断、Hot Reload 后输入焦点保留；`crates/lsp/tests/usability_format.rs` 检查每份格式化后不变。人工计时与混淆率记录需真人参与，不在自动化范围内。
 
 ---
 

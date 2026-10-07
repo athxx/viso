@@ -247,6 +247,13 @@ impl InferCx<'_> {
                 self.infer_args_alone(args);
                 Ty::Unknown
             }
+            Lookup::None if let Ty::List(elem) = &recv => {
+                let Some(receiver) = FieldExpr::cast(callee.clone()).and_then(|f| f.receiver())
+                else {
+                    return Ty::Unknown;
+                };
+                self.list_method(&name, &receiver, elem, args, expected, node)
+            }
             Lookup::None => {
                 // A field holding a function is called as one.
                 if let Some(Ty::Fn(params, ret)) = self.member_ty(&recv, &name, None) {
