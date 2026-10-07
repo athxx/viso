@@ -367,6 +367,9 @@ impl<'a> InferCx<'a> {
     /// `expected` is `None`, numeric literals take the host default and no conversion is
     /// checked here (the caller checks against its own expectation, if any).
     pub fn infer_expr(&mut self, expr: &Expr, expected: Option<&Ty>) -> Ty {
+        // An expectation that failed to lower was reported where it is written;
+        // the value is then checked against nothing.
+        let expected = expected.filter(|t| **t != Ty::Unknown);
         let node = expr.syntax();
         if let Some(target @ Ty::Dyn(..)) = expected {
             let produced = self.infer_expr(expr, None);
@@ -1255,12 +1258,12 @@ impl<'a> InferCx<'a> {
         };
         match Ty::from_annotation(node, &nominal) {
             Ok(ty) => self.settle(&ty),
-            Err(err) => {
+            // The resolver reports `Float` where it is written.
+            Err(TypeError::FloatRemoved) => Ty::Unknown,
+            Err(err @ TypeError::UnknownType) => {
                 self.diagnostics
                     .push(Diagnostic::error(err.code(), range, err.message()));
-                match err {
-                    TypeError::FloatRemoved | TypeError::UnknownType => Ty::Unknown,
-                }
+                Ty::Unknown
             }
         }
     }
@@ -1278,6 +1281,10 @@ impl<'a> InferCx<'a> {
         };
         if produced == Ty::Never {
             return target.clone();
+        }
+        // A type that failed to lower was reported where it is written.
+        if *target == Ty::Unknown {
+            return produced;
         }
         if compatible(&produced, target) {
             return merge(target, &produced);
@@ -1379,7 +1386,7 @@ fn spell(
         },
         Ty::Native(id) => native(*id),
         Ty::Tuple(tys) => format!("({})", list(tys)),
-        Ty::Fn(params, ret) => format!("fn({}) -> {}", list(params), one(ret)),
+        Ty::Fn(params, ret) => format!("Fn({}) -> {}", list(params), one(ret)),
         Ty::List(t) => format!("List<{}>", one(t)),
         Ty::Option(t) => format!("Option<{}>", one(t)),
         Ty::Result(t, e) => format!("Result<{}, {}>", one(t), one(e)),
@@ -2091,10 +2098,10 @@ mod tests {
     // --- annotations --------------------------------------------------------
 
     #[test]
-    fn float_annotation_on_cast_is_e2101() {
+    fn float_annotation_on_cast_is_unknown_and_left_to_the_resolver() {
         let (ty, diags) = infer_bare("1 as Float");
         assert_eq!(ty, Ty::Unknown);
-        assert_eq!(codes(&diags), ["E2101"]);
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]

@@ -248,6 +248,32 @@ impl Ty {
                     Ty::Tuple(elems)
                 })
             }
+            SyntaxKind::TypePath if function_type_word(node).is_some() => {
+                // `Fn(A, B) -> R`: the types before the arrow are the
+                // parameters, the one after it the result.
+                let word = function_type_word(node);
+                if !matches!(word.as_deref(), Some("Fn" | "FnMut")) {
+                    return Ok(Ty::Unknown);
+                }
+                let mut params = Vec::new();
+                let mut ret = None;
+                let mut after_arrow = false;
+                for el in node.children_with_tokens() {
+                    if el.as_token().is_some_and(|t| t.kind() == SyntaxKind::Arrow) {
+                        after_arrow = true;
+                    } else if let Some(child) = el.as_node()
+                        && child.kind().is_type()
+                    {
+                        let ty = Ty::from_annotation(child, nominal)?;
+                        if after_arrow {
+                            ret = Some(ty);
+                        } else {
+                            params.push(ty);
+                        }
+                    }
+                }
+                Ok(Ty::Fn(params, Box::new(ret.unwrap_or(Ty::Unknown))))
+            }
             SyntaxKind::TypePath => {
                 let Some(path) = TypePath::cast(node.clone()) else {
                     return Ok(Ty::Unknown);
@@ -623,6 +649,21 @@ fn widen_rank(ty: &Ty) -> Option<WidenPos> {
         _ => return None,
     };
     Some(WidenPos { family, rank })
+}
+
+/// The callable word (`Fn`, `FnMut`, `ActionFn`, `TaskFn`) heading a function
+/// type node, which the parser shapes as a `TypePath` whose word is followed
+/// directly by `(`.
+fn function_type_word(node: &SyntaxNode) -> Option<String> {
+    let mut tokens = node
+        .children_with_tokens()
+        .into_iter()
+        .filter_map(|el| el.as_token().cloned())
+        .filter(|t| !t.kind().is_trivia());
+    let word = tokens.next().filter(|t| t.kind() == SyntaxKind::Ident)?;
+    let open = tokens.next().filter(|t| t.kind() == SyntaxKind::LParen)?;
+    let _ = open;
+    Some(word.text())
 }
 
 #[cfg(test)]

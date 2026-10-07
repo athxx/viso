@@ -675,6 +675,45 @@ fn a_borrowed_native_handle_cannot_be_stored() {
     assert_eq!(native_errors(local, custom()), Vec::<String>::new());
 }
 
+#[test]
+fn no_place_that_outlives_a_call_holds_a_borrowed_handle() {
+    let view = "view { Text { text: \"a\"; } }";
+    let lease = "device::Lease";
+    for (decls, members) in [
+        (
+            String::new(),
+            format!("state held: Option<{lease}> = None;"),
+        ),
+        (String::new(), format!("input held: {lease};")),
+        (String::new(), format!("computed held: List<{lease}> = [];")),
+        (String::new(), format!("event got(l: {lease});")),
+        (format!("record R {{ l: {lease}; }}"), String::new()),
+        (
+            format!("record R {{ l: Option<({lease}, I64)>; }}"),
+            String::new(),
+        ),
+        (format!("enum E {{ Held({lease}); }}"), String::new()),
+        (
+            format!("enum E {{ Held {{ l: {lease}; }}; }}"),
+            String::new(),
+        ),
+        (
+            format!("fn keep() -> {lease} {{ device::lease() }}"),
+            String::new(),
+        ),
+        (format!("const L: Option<{lease}> = None;"), String::new()),
+    ] {
+        let src = format!("import app::device;\n{decls}\ncomponent A {{ {members} {view} }}");
+        assert_eq!(native_errors(&src, custom()), ["E6102"], "{src}");
+    }
+    // A parameter and a local live only for the call.
+    let fine = format!(
+        "import app::device;\nfn use_it(l: {lease}) -> I64 {{ 1 }}\n\
+         component A {{ action go() {{ let l = device::lease(); let n = use_it(l); }} {view} }}"
+    );
+    assert_eq!(native_errors(&fine, custom()), Vec::<String>::new());
+}
+
 const MEMO: &str = r#"
 component M {
     state a = 1;

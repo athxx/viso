@@ -15,10 +15,10 @@ use crate::behavior::ir::FunctionKind;
 use crate::behavior::lower::{Def, lower_resource_load, lower_value, unsupported};
 use crate::diag::Diagnostic;
 use crate::hir::effect::BodyContext;
-use crate::hir::infer::{InferCx, TypeEnv, VariantPayload, call_args, child_exprs, const_seconds};
+use crate::hir::infer::{InferCx, call_args, child_exprs, const_seconds};
 use crate::hir::nodes::ComponentSchema;
 use crate::hir::ty::Ty;
-use crate::resolve::{Resolution, ResolvedRef, SymbolId};
+use crate::resolve::{Resolution, ResolvedRef};
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
 use super::tasks::calls_task;
@@ -110,12 +110,12 @@ fn lower_resource(
     if let Some(key) = &key {
         let ty = cx.infer_expr(key, None);
         check_body(refs, BodyContext::Computed, env, key.syntax(), diagnostics);
-        if let Err(why) = stable_key(env, &ty, &mut BTreeSet::new()) {
+        if let Err(why) = crate::hir::stable_key::stable_key(env, &ty) {
             diagnostics.push(Diagnostic::error(
                 "E2701",
                 key.syntax().text_range(),
                 format!(
-                    "a resource key is `StableKey`, but `{}` {why}",
+                    "a resource key is `StableKey`, but `{}` is not: {why}",
                     cx.describe(&ty)
                 ),
             ));
@@ -299,62 +299,4 @@ fn segments(path: &SyntaxNode) -> Vec<String> {
     PathExpr::cast(path.clone())
         .map(|p| p.segments().map(|s| s.text().to_string()).collect())
         .unwrap_or_default()
-}
-
-/// Whether values of `ty` are `StableKey` (§80.1): the integers, `Bool`,
-/// `Char` and `String`; a tuple, record, `Option` or enum of such values. The
-/// reason it is not, otherwise. `visiting` holds the declarations being
-/// checked, which a recursive one refers back to.
-fn stable_key(
-    env: &ModuleEnv<'_>,
-    ty: &Ty,
-    visiting: &mut BTreeSet<SymbolId>,
-) -> Result<(), &'static str> {
-    match ty {
-        Ty::Bool
-        | Ty::I8
-        | Ty::I16
-        | Ty::I32
-        | Ty::I64
-        | Ty::U8
-        | Ty::U16
-        | Ty::U32
-        | Ty::U64
-        | Ty::Char
-        | Ty::String
-        | Ty::Unit
-        | Ty::InferInt
-        | Ty::Unknown
-        | Ty::Never => Ok(()),
-        Ty::F32 | Ty::F64 | Ty::InferFloat => {
-            Err("is a float, whose equality is not an identity (`NaN`, `-0.0`)")
-        }
-        Ty::Tuple(items) => items.iter().try_for_each(|t| stable_key(env, t, visiting)),
-        Ty::Option(t) => stable_key(env, t, visiting),
-        Ty::Named(id, ..) => {
-            if !visiting.insert(*id) {
-                return Ok(());
-            }
-            let fields: Vec<Ty> = if let Some(fields) = env.record_fields(*id) {
-                fields.iter().map(|f| f.ty.clone()).collect()
-            } else if let Some(variants) = env.enum_variants(*id) {
-                variants
-                    .iter()
-                    .flat_map(|v| match &v.payload {
-                        VariantPayload::Unit => Vec::new(),
-                        VariantPayload::Tuple(tys) => tys.clone(),
-                        VariantPayload::Record(fields) => {
-                            fields.iter().map(|f| f.ty.clone()).collect()
-                        }
-                    })
-                    .collect()
-            } else {
-                return Err("is no record or enum the package declares");
-            };
-            let result = fields.iter().try_for_each(|t| stable_key(env, t, visiting));
-            visiting.remove(id);
-            result
-        }
-        _ => Err("is no integer, `Bool`, `Char`, `String`, or tuple, record or enum of them"),
-    }
 }

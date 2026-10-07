@@ -580,6 +580,23 @@ impl InferCx<'_> {
                     .collect()
             })
             .unwrap_or_default();
+        // A closure of another arity than the function type it meets is that
+        // mismatch alone; its parameters are not also reported untyped.
+        let mut opaque = opaque;
+        if let Some(want) = expected_params
+            && want.len() != params.len()
+        {
+            let message = format!(
+                "a closure of {} parameter{} where `{}` takes {}",
+                params.len(),
+                if params.len() == 1 { "" } else { "s" },
+                self.describe(expected.unwrap_or(&Ty::Unknown)),
+                want.len()
+            );
+            self.diagnostics
+                .push(Diagnostic::error("E2103", node.text_range(), message));
+            opaque = true;
+        }
         let expected_params = expected_params.filter(|ps| ps.len() == params.len());
         let mut param_tys = Vec::with_capacity(params.len());
         for (i, param) in params.iter().enumerate() {

@@ -25,8 +25,8 @@ use std::collections::{HashMap, HashSet};
 use viso_behavior::native::{NativeId, NativeKind, Natives, ThreadDomain};
 
 use crate::ast::{
-    AstNode, Block, CompilationUnit, ComponentDecl, ConstDecl, EnumVariant, InputDecl, Item,
-    Member, Param, RecordDecl, RecordField, ReturnType, TypePath,
+    AstNode, Block, CompilationUnit, ComponentDecl, ConstDecl, EnumDecl, EnumVariant, InputDecl,
+    Item, Member, Param, RecordDecl, RecordField, ReturnType, TypePath,
 };
 use crate::behavior::Program;
 use crate::behavior::ir::FunctionKind;
@@ -477,7 +477,10 @@ fn lower_module(
                 check_const(&c, refs, env, diagnostics, &mut percent);
                 input::lower_map(&c, refs, env, diagnostics);
             }
-            Item::Enum(e) => input::check_derives(&e, env, diagnostics),
+            Item::Enum(e) => {
+                input::check_derives(&e, env, diagnostics);
+                check_variant_payloads(&e, env, diagnostics);
+            }
             Item::Record(r) => match env.scope.declared.get(&r.syntax().text_range()) {
                 Some(sym) if env.decls.shader_values.contains_key(sym) => {
                     for field in r.fields() {
@@ -576,7 +579,7 @@ fn lower_component_item(
     templates::check_parts(decl, diagnostics);
     let schema = lower_component(decl, refs, env, diagnostics, percent);
     env.record_inferred(&schema);
-    check_schema_ownership(&schema, env, diagnostics);
+    check_schema_ownership(decl, &schema, env, diagnostics);
     env.behavior.borrow_mut().component(&schema);
     lower_member_values(decl, refs, env, &schema, diagnostics);
     let source_origin = decl.syntax().text_range();
@@ -641,6 +644,7 @@ fn lower_component_item(
 /// Reports each `state`, `input`, `computed` and event payload of a component
 /// that holds a borrowed native handle (`E6102`).
 fn check_schema_ownership(
+    decl: &ComponentDecl,
     schema: &ComponentSchema,
     env: &ModuleEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -650,8 +654,7 @@ fn check_schema_ownership(
         .iter()
         .map(|s| ("a `state`", &s.meta))
         .chain(schema.inputs.iter().map(|i| ("an `input`", &i.meta)))
-        .chain(schema.computeds.iter().map(|c| ("a `computed`", &c.meta)))
-        .chain(schema.events.iter().map(|e| ("an event payload", &e.meta)));
+        .chain(schema.computeds.iter().map(|c| ("a `computed`", &c.meta)));
     for (place, meta) in places {
         check_stored(
             &meta.inferred_type,
@@ -660,6 +663,24 @@ fn check_schema_ownership(
             meta.source_origin,
             diagnostics,
         );
+    }
+    // An event's payload is its parameters.
+    for member in decl.members() {
+        let Member::Event(event) = member else {
+            continue;
+        };
+        for param in event.syntax().children() {
+            if param.kind() != SyntaxKind::EventParam {
+                continue;
+            }
+            check_stored(
+                &env.annotation_of(&param),
+                env.natives,
+                "an event payload",
+                param.text_range(),
+                diagnostics,
+            );
+        }
     }
 }
 
@@ -922,6 +943,34 @@ fn check_const(
     lower_checked(env, &cx, def, &value, 0);
     percent.extend(cx.take_percent_defs());
     diagnostics.extend(cx.into_diagnostics());
+}
+
+/// Reports `E6102` for an enum variant whose payload holds a borrowed native
+/// handle: a variant value outlives the call that builds it.
+fn check_variant_payloads(decl: &EnumDecl, env: &ModuleEnv<'_>, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(&symbol) = env.scope.declared.get(&decl.syntax().text_range()) else {
+        return;
+    };
+    let Some(infos) = env.enum_variants(symbol) else {
+        return;
+    };
+    let named = decl.variants().filter(|v| v.name().is_some());
+    for (variant, info) in named.zip(infos) {
+        let payload: Vec<&Ty> = match &info.payload {
+            VariantPayload::Unit => Vec::new(),
+            VariantPayload::Tuple(tys) => tys.iter().collect(),
+            VariantPayload::Record(fields) => fields.iter().map(|f| &f.ty).collect(),
+        };
+        for ty in payload {
+            check_stored(
+                ty,
+                env.natives,
+                "an enum variant payload",
+                variant.syntax().text_range(),
+                diagnostics,
+            );
+        }
+    }
 }
 
 /// Types each record field default `wanted` names by index against its field type; a

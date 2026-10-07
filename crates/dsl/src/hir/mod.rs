@@ -36,6 +36,7 @@ mod nodes;
 mod ownership;
 mod percent;
 mod reads;
+mod stable_key;
 pub(crate) mod start;
 pub(crate) mod style;
 mod ty;
