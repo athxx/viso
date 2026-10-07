@@ -32,6 +32,14 @@
 //! - **Swapchains** are FIFO, recreated lazily (on resize, out-of-date or
 //!   suboptimal) at the next `begin_frame`, with one render-finished semaphore
 //!   per image.
+//! - **User programs** ([`VulkanBackend::install_program`]) are SPIR-V laid
+//!   out as the shader program ABI the WGSL emitter declares: set 0 holds the
+//!   uniform block (binding 0) and the instances as a read-only storage buffer
+//!   (binding 1), set 1 the textures then the samplers. Each program has its
+//!   own pipeline layout; its descriptor sets are written per draw from the
+//!   bind group and the instance buffer, out of descriptor pools the frame slot
+//!   rewinds when it is reopened. Like the built-ins, a program's SPIR-V
+//!   flips clip-space y in its vertex stage.
 
 use core::ffi::{CStr, c_char, c_void};
 use std::ffi::CString;
@@ -65,6 +73,16 @@ const SETS_PER_POOL: u32 = 256;
 const BINDING_TEX: u32 = 0;
 const BINDING_DST_TEX: u32 = 1;
 const BINDING_SAMPLER: u32 = 2;
+/// Where a Vulkan loader lives on macOS when it is not on the default search
+/// path; empty elsewhere.
+const MACOS_LOADERS: &[&str] = if cfg!(target_os = "macos") {
+    &[
+        "/opt/homebrew/lib/libvulkan.1.dylib",
+        "/usr/local/lib/libvulkan.1.dylib",
+    ]
+} else {
+    &[]
+};
 /// The validation layer enabled by [`VulkanBackend::try_new_with`].
 const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
 
@@ -93,12 +111,49 @@ struct VulkanTexture {
 /// A registered pipeline.
 struct VulkanPipeline {
     pipeline: vk::Pipeline,
+    /// A user program's own layout; `None` for the built-ins, which share one.
+    program: Option<ProgramLayout>,
 }
 
-/// A bind group: one descriptor set and the pool it came from.
+/// The pipeline layout of one user program: set 0 the uniform block and the
+/// instance storage buffer, set 1 its textures then its samplers.
+struct ProgramLayout {
+    layout: vk::PipelineLayout,
+    sets: [vk::DescriptorSetLayout; 2],
+    textures: u32,
+    samplers: u32,
+}
+
+/// A user shader program for [`VulkanBackend::install_program`]: one SPIR-V
+/// module holding both entries, laid out as the shader program ABI.
+pub struct VulkanProgramDesc<'a> {
+    pub label: &'a str,
+    /// SPIR-V words as little-endian bytes.
+    pub spirv: &'a [u8],
+    pub vertex_entry: &'a str,
+    pub fragment_entry: &'a str,
+    pub color_format: TextureFormat,
+    pub blend: BlendMode,
+    /// The textures the program declares, bound at set 1 from binding 0.
+    pub textures: u32,
+    /// The samplers it declares, bound at set 1 after the textures.
+    pub samplers: u32,
+}
+
+/// A bind group: one descriptor set of the shared layout, the pool it came
+/// from, and the bindings themselves, which a program's per-draw sets read.
 struct VulkanBindGroup {
     set: vk::DescriptorSet,
     pool: vk::DescriptorPool,
+    bindings: Vec<Binding>,
+}
+
+/// What the pass being recorded has bound: the pipeline and the
+/// shared-layout bind group.
+#[derive(Default)]
+struct Bound {
+    pipeline: Option<PipelineId>,
+    group: Option<BindGroupId>,
 }
 
 /// One swapchain image with its view and framebuffer.
@@ -162,6 +217,11 @@ struct FrameSlot {
     /// The oldest epoch the last submission's commands were recorded in.
     epoch: Epoch,
     staging: Staging,
+    /// The pools the slot's program draws allocate their descriptor sets
+    /// from, rewound when the slot is reopened; `program_pool` is the one in
+    /// use.
+    program_pools: Vec<vk::DescriptorPool>,
+    program_pool: usize,
 }
 
 /// The frame between `begin_frame` and `present`.
@@ -216,6 +276,9 @@ pub struct VulkanBackend {
     retire_queue: RetireQueue,
     current_epoch: Epoch,
     reclaim_scratch: Vec<Retired>,
+    /// The device's `minStorageBufferOffsetAlignment`: a program's instance
+    /// offset is a multiple of it.
+    storage_align: u64,
 }
 
 impl Default for VulkanBackend {
@@ -273,7 +336,14 @@ impl VulkanBackend {
     pub fn try_new_with(validation: bool) -> Option<Self> {
         // SAFETY: loading the system Vulkan loader runs its initialisers, which
         // is the documented way to reach Vulkan; nothing else is loaded.
-        let entry = unsafe { ash::Entry::load() }.ok()?;
+        let entry = unsafe { ash::Entry::load() }.ok().or_else(|| {
+            // On macOS the loader that reaches MoltenVK is installed outside
+            // the default library search path (Homebrew, the Vulkan SDK).
+            MACOS_LOADERS.iter().find_map(|path| {
+                // SAFETY: as above, a Vulkan loader at a fixed location.
+                unsafe { ash::Entry::load_from(path) }.ok()
+            })
+        })?;
 
         // SAFETY: `entry` is a loaded Vulkan entry; enumeration has no
         // preconditions.
@@ -310,7 +380,7 @@ impl VulkanBackend {
             enabled.push(khr::portability_enumeration::NAME.as_ptr());
             flags |= vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
         }
-        let validation = validation && has_ext(ext::debug_utils::NAME);
+        let mut validation = validation && has_ext(ext::debug_utils::NAME);
         if validation {
             enabled.push(ext::debug_utils::NAME.as_ptr());
         }
@@ -330,16 +400,29 @@ impl VulkanBackend {
             .application_name(c"viso")
             .engine_name(c"viso")
             .api_version(api_version);
-        let mut info = vk::InstanceCreateInfo::default()
-            .flags(flags)
-            .application_info(&app)
-            .enabled_extension_names(&enabled);
-        if validation {
-            info = info.enabled_layer_names(&layer_names);
-        }
-        // SAFETY: every extension and layer name was enumerated as available and
-        // is a 'static NUL-terminated string; `info` borrows live locals.
-        let instance = unsafe { entry.create_instance(&info, None) }.ok()?;
+        let create = |enabled: &[*const c_char], layers: &[*const c_char]| {
+            let info = vk::InstanceCreateInfo::default()
+                .flags(flags)
+                .application_info(&app)
+                .enabled_extension_names(enabled)
+                .enabled_layer_names(layers);
+            // SAFETY: every extension and layer name was enumerated as
+            // available and is a 'static NUL-terminated string; `info` borrows
+            // live locals.
+            unsafe { entry.create_instance(&info, None) }.ok()
+        };
+        let instance = if validation {
+            // A layer that is listed but whose library does not load (a
+            // manifest off the library search path) fails the whole instance:
+            // run without it.
+            create(&enabled, &layer_names).or_else(|| {
+                validation = false;
+                enabled.retain(|&name| name != ext::debug_utils::NAME.as_ptr());
+                create(&enabled, &[])
+            })
+        } else {
+            create(&enabled, &[])
+        }?;
 
         let validation_errors = Box::new(AtomicU32::new(0));
         let debug = validation.then(|| {
@@ -455,6 +538,7 @@ impl VulkanBackend {
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
             reclaim_scratch: Vec::new(),
+            storage_align: limits.min_storage_buffer_offset_alignment.max(1),
         })
     }
 
@@ -722,6 +806,12 @@ impl VulkanBackend {
             self.device
                 .reset_command_pool(slot.pool, vk::CommandPoolResetFlags::empty())
                 .expect("reset a frame command pool");
+            for &pool in &slot.program_pools {
+                self.device
+                    .reset_descriptor_pool(pool, vk::DescriptorPoolResetFlags::empty())
+                    .expect("reset a program descriptor pool");
+            }
+            slot.program_pool = 0;
             self.device
                 .begin_command_buffer(slot.upload, &begin)
                 .expect("begin the upload command buffer");
@@ -820,7 +910,7 @@ impl VulkanBackend {
                     }
                     ResourceKind::Pipeline => {
                         if let Some(p) = self.pipelines.remove(entry.id) {
-                            self.device.destroy_pipeline(p.pipeline, None);
+                            destroy_pipeline(&self.device, p);
                         }
                     }
                     ResourceKind::BindGroup => {
@@ -907,6 +997,360 @@ impl VulkanBackend {
             .expect("failed to create a Vulkan descriptor pool");
         self.descriptor_pools.push(pool);
         self.allocate_set()
+    }
+
+    /// A triangle-list graphics pipeline over `module`'s two entries, drawing
+    /// into `color_format` with `blend` through `layout`.
+    ///
+    /// # Safety
+    ///
+    /// `module` and `layout` are live objects of this device, and the entries
+    /// read only what `layout` and `vertex_input` declare.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn graphics_pipeline(
+        &mut self,
+        module: vk::ShaderModule,
+        vertex_entry: &str,
+        fragment_entry: &str,
+        vertex_input: &vk::PipelineVertexInputStateCreateInfo<'_>,
+        color_format: TextureFormat,
+        blend: BlendMode,
+        layout: vk::PipelineLayout,
+    ) -> Result<vk::Pipeline, vk::Result> {
+        let vertex_entry = CString::new(vertex_entry).expect("entry name");
+        let fragment_entry = CString::new(fragment_entry).expect("entry name");
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(module)
+                .name(&vertex_entry),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(module)
+                .name(&fragment_entry),
+        ];
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let blend_attachment = [match blend {
+            BlendMode::Replace => vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA),
+            BlendMode::PremultipliedOver => vk::PipelineColorBlendAttachmentState::default()
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::ONE)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .alpha_blend_op(vk::BlendOp::ADD)
+                .color_write_mask(vk::ColorComponentFlags::RGBA),
+        }];
+        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachment);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let render_pass = self.render_pass(vk_format(color_format), true);
+        let info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&stages)
+            .vertex_input_state(vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport)
+            .rasterization_state(&raster)
+            .multisample_state(&multisample)
+            .color_blend_state(&blend)
+            .dynamic_state(&dynamic)
+            .layout(layout)
+            .render_pass(render_pass)
+            .subpass(0);
+        // SAFETY: every state block borrows live locals; the caller vouches for
+        // the module and the layout.
+        unsafe {
+            self.device
+                .create_graphics_pipelines(self.pipeline_cache, &[info], None)
+                .map(|p| p[0])
+                .map_err(|(_, e)| e)
+        }
+    }
+
+    /// Installs a user program: SPIR-V laid out as the shader program ABI
+    /// (see the module docs). Draw it with its uniform block bound as a
+    /// [`Binding::Uniform`] buffer, its textures and samplers in the bind
+    /// group in declaration order, and its instances as the instance buffer
+    /// at an offset that is a multiple of the device's storage-buffer offset
+    /// alignment.
+    ///
+    /// # Errors
+    ///
+    /// Malformed SPIR-V, or the driver's refusal of the module or pipeline.
+    pub fn install_program(&mut self, desc: &VulkanProgramDesc<'_>) -> Result<PipelineId, String> {
+        let label = desc.label;
+        let words = ash::util::read_spv(&mut Cursor::new(desc.spirv))
+            .map_err(|e| format!("{label}: malformed SPIR-V: {e}"))?;
+        let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
+        let buffers = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(stages),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(stages),
+        ];
+        let images: Vec<vk::DescriptorSetLayoutBinding<'_>> = (0..desc.textures)
+            .map(|i| (i, vk::DescriptorType::SAMPLED_IMAGE))
+            .chain((0..desc.samplers).map(|i| (desc.textures + i, vk::DescriptorType::SAMPLER)))
+            .map(|(binding, ty)| {
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(binding)
+                    .descriptor_type(ty)
+                    .descriptor_count(1)
+                    .stage_flags(stages)
+            })
+            .collect();
+        // SAFETY: plain object creation on a live device; every object made
+        // here is destroyed on each failure path, or owned by the pipeline.
+        unsafe {
+            let module = self
+                .device
+                .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&words), None)
+                .map_err(|e| format!("{label}: the shader module was refused: {e}"))?;
+            let set_layout = |bindings: &[vk::DescriptorSetLayoutBinding<'_>]| {
+                self.device
+                    .create_descriptor_set_layout(
+                        &vk::DescriptorSetLayoutCreateInfo::default().bindings(bindings),
+                        None,
+                    )
+                    .expect("failed to create a program descriptor set layout")
+            };
+            let sets = [set_layout(&buffers), set_layout(&images)];
+            let layout = self
+                .device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&sets),
+                    None,
+                )
+                .expect("failed to create a program pipeline layout");
+            let result = self.graphics_pipeline(
+                module,
+                desc.vertex_entry,
+                desc.fragment_entry,
+                &vk::PipelineVertexInputStateCreateInfo::default(),
+                desc.color_format,
+                desc.blend,
+                layout,
+            );
+            self.device.destroy_shader_module(module, None);
+            let pipeline = match result {
+                Ok(pipeline) => pipeline,
+                Err(e) => {
+                    self.device.destroy_pipeline_layout(layout, None);
+                    for set in sets {
+                        self.device.destroy_descriptor_set_layout(set, None);
+                    }
+                    return Err(format!("{label}: the pipeline was refused: {e}"));
+                }
+            };
+            Ok(self
+                .pipelines
+                .insert(VulkanPipeline {
+                    pipeline,
+                    program: Some(ProgramLayout {
+                        layout,
+                        sets,
+                        textures: desc.textures,
+                        samplers: desc.samplers,
+                    }),
+                })
+                .into())
+        }
+    }
+
+    /// The descriptor sets of a program draw, written from its bind group and
+    /// instance buffer; `None` for a built-in pipeline.
+    fn program_sets(
+        &mut self,
+        c: &DrawCommand,
+    ) -> Option<(vk::PipelineLayout, [vk::DescriptorSet; 2])> {
+        let p = self
+            .pipelines
+            .get(c.pipeline.into())
+            .expect("pipeline handle does not resolve");
+        let program = p.program.as_ref()?;
+        let (layout, layouts, textures, samplers) = (
+            program.layout,
+            program.sets,
+            program.textures,
+            program.samplers,
+        );
+        assert!(
+            c.uniforms.as_bytes().is_empty(),
+            "a Vulkan program reads its uniforms from a `Binding::Uniform` buffer"
+        );
+        assert!(
+            (c.instance_offset as u64).is_multiple_of(self.storage_align),
+            "a program's instance offset {} is not a multiple of the storage alignment {}",
+            c.instance_offset,
+            self.storage_align
+        );
+        let bindings = c.bind_group.map_or_else(Vec::new, |bg| {
+            self.bind_groups
+                .get(bg.into())
+                .expect("bind group handle does not resolve")
+                .bindings
+                .clone()
+        });
+        let sets = self.allocate_program_sets(&layouts);
+        let uniform = bindings.iter().find_map(|b| match b {
+            Binding::Uniform(id) => Some(*id),
+            _ => None,
+        });
+        let views: Vec<vk::ImageView> = bindings
+            .iter()
+            .filter_map(|b| match b {
+                Binding::Texture(id) => Some(self.texture(*id).view),
+                _ => None,
+            })
+            .collect();
+        let sampler_states: Vec<vk::Sampler> = bindings
+            .iter()
+            .filter_map(|b| match b {
+                Binding::Sampler(id) => Some(
+                    *self
+                        .samplers
+                        .get((*id).into())
+                        .expect("sampler handle does not resolve"),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            views.len() >= textures as usize && sampler_states.len() >= samplers as usize,
+            "the bind group binds {} textures and {} samplers; the program declares {textures} and {samplers}",
+            views.len(),
+            sampler_states.len()
+        );
+        let uniform_info = uniform.map(|id| {
+            [vk::DescriptorBufferInfo::default()
+                .buffer(self.buffer(id).buffer)
+                .range(vk::WHOLE_SIZE)]
+        });
+        let instance = self.buffer(c.instance_buffer);
+        let instance_info = [vk::DescriptorBufferInfo::default()
+            .buffer(instance.buffer)
+            .offset(c.instance_offset as u64)
+            .range(vk::WHOLE_SIZE)];
+        let image_infos: Vec<[vk::DescriptorImageInfo; 1]> = views[..textures as usize]
+            .iter()
+            .map(|&view| {
+                [vk::DescriptorImageInfo::default()
+                    .image_view(view)
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)]
+            })
+            .collect();
+        let sampler_infos: Vec<[vk::DescriptorImageInfo; 1]> = sampler_states[..samplers as usize]
+            .iter()
+            .map(|&s| [vk::DescriptorImageInfo::default().sampler(s)])
+            .collect();
+        let mut writes = Vec::with_capacity(2 + image_infos.len() + sampler_infos.len());
+        if let Some(info) = &uniform_info {
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(sets[0])
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(info),
+            );
+        }
+        writes.push(
+            vk::WriteDescriptorSet::default()
+                .dst_set(sets[0])
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&instance_info),
+        );
+        for (i, info) in image_infos.iter().enumerate() {
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(sets[1])
+                    .dst_binding(i as u32)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .image_info(info),
+            );
+        }
+        for (i, info) in sampler_infos.iter().enumerate() {
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(sets[1])
+                    .dst_binding(textures + i as u32)
+                    .descriptor_type(vk::DescriptorType::SAMPLER)
+                    .image_info(info),
+            );
+        }
+        // SAFETY: the sets were just allocated with the program's layouts and
+        // are not yet in use; every write targets a binding of the matching
+        // type with live buffers, views and samplers.
+        unsafe { self.device.update_descriptor_sets(&writes, &[]) };
+        Some((layout, sets))
+    }
+
+    /// Two sets of `layouts` from the current slot's program pools, opening
+    /// a new pool when the ones it has are full.
+    fn allocate_program_sets(
+        &mut self,
+        layouts: &[vk::DescriptorSetLayout; 2],
+    ) -> [vk::DescriptorSet; 2] {
+        loop {
+            let slot = &mut self.slots[self.slot];
+            if let Some(&pool) = slot.program_pools.get(slot.program_pool) {
+                let info = vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(pool)
+                    .set_layouts(layouts);
+                // SAFETY: `pool` and the layouts are live objects of this device.
+                match unsafe { self.device.allocate_descriptor_sets(&info) } {
+                    Ok(sets) => return [sets[0], sets[1]],
+                    Err(_) => {
+                        slot.program_pool += 1;
+                        continue;
+                    }
+                }
+            }
+            let sizes = [
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_count: SETS_PER_POOL,
+                },
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::STORAGE_BUFFER,
+                    descriptor_count: SETS_PER_POOL,
+                },
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::SAMPLED_IMAGE,
+                    descriptor_count: SETS_PER_POOL * 2,
+                },
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::SAMPLER,
+                    descriptor_count: SETS_PER_POOL,
+                },
+            ];
+            let info = vk::DescriptorPoolCreateInfo::default()
+                .max_sets(SETS_PER_POOL * 2)
+                .pool_sizes(&sizes);
+            // SAFETY: `info` describes a plain pool on a live device.
+            let pool = unsafe { self.device.create_descriptor_pool(&info, None) }
+                .expect("failed to create a program descriptor pool");
+            slot.program_pools.push(pool);
+        }
     }
 
     /// Rebuild `id`'s swapchain at its requested size. Returns `false` when the
@@ -1187,10 +1631,10 @@ impl VulkanBackend {
                 .cmd_begin_render_pass(cmd, &begin, vk::SubpassContents::INLINE);
             self.device.cmd_set_viewport(cmd, 0, &[viewport]);
         }
-        let mut bound_pipeline = None;
-        let mut bound_group = None;
+        let mut bound = Bound::default();
         for c in commands {
-            self.record_command(cmd, c, extent, &mut bound_pipeline, &mut bound_group);
+            let program = self.program_sets(c);
+            self.record_command(cmd, c, extent, program, &mut bound);
         }
         // SAFETY: the render pass begun above is ended in the same command
         // buffer; a texture target returns to its resting layout.
@@ -1209,14 +1653,15 @@ impl VulkanBackend {
         }
     }
 
-    /// Record one draw inside the open render pass.
+    /// Record one draw inside the open render pass; `program` carries a
+    /// program draw's layout and descriptor sets.
     fn record_command(
         &self,
         cmd: vk::CommandBuffer,
         c: &DrawCommand,
         extent: vk::Extent2D,
-        bound_pipeline: &mut Option<PipelineId>,
-        bound_group: &mut Option<BindGroupId>,
+        program: Option<(vk::PipelineLayout, [vk::DescriptorSet; 2])>,
+        bound: &mut Bound,
     ) {
         let (sx, sy, sw, sh) = match c.scissor {
             Some((x, y, w, h)) => {
@@ -1242,17 +1687,34 @@ impl VulkanBackend {
         // renderer guarantees the instance/index ranges lie inside their buffers.
         unsafe {
             self.device.cmd_set_scissor(cmd, 0, &[scissor]);
-            if *bound_pipeline != Some(c.pipeline) {
+            if bound.pipeline != Some(c.pipeline) {
                 let p = self
                     .pipelines
                     .get(c.pipeline.into())
                     .expect("pipeline handle does not resolve");
                 self.device
                     .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, p.pipeline);
-                *bound_pipeline = Some(c.pipeline);
+                bound.pipeline = Some(c.pipeline);
+            }
+            if let Some((layout, sets)) = program {
+                self.device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    layout,
+                    0,
+                    &sets,
+                    &[],
+                );
+                // The program's sets displace the shared layout's.
+                bound.group = None;
+                let Geometry::Generated { count } = c.geometry else {
+                    panic!("a program draws generated quads");
+                };
+                self.device.cmd_draw(cmd, 6, count, 0, 0);
+                return;
             }
             if let Some(bg) = c.bind_group
-                && *bound_group != Some(bg)
+                && bound.group != Some(bg)
             {
                 let g = self
                     .bind_groups
@@ -1266,7 +1728,7 @@ impl VulkanBackend {
                     &[g.set],
                     &[],
                 );
-                *bound_group = Some(bg);
+                bound.group = Some(bg);
             }
             let uniforms = c.uniforms.as_bytes();
             if !uniforms.is_empty() {
@@ -1329,6 +1791,7 @@ impl GpuBackend for VulkanBackend {
             vk::BufferUsageFlags::VERTEX_BUFFER
                 | vk::BufferUsageFlags::INDEX_BUFFER
                 | vk::BufferUsageFlags::UNIFORM_BUFFER
+                | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_SRC
                 | vk::BufferUsageFlags::TRANSFER_DST,
         );
@@ -1496,19 +1959,6 @@ impl GpuBackend for VulkanBackend {
         // the artifacts were frozen).
         let module = unsafe { self.device.create_shader_module(&module_info, None) }
             .expect("failed to create a Vulkan shader module");
-        let vertex_entry = CString::new(desc.vertex_entry).expect("entry name");
-        let fragment_entry = CString::new(desc.fragment_entry).expect("entry name");
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(module)
-                .name(&vertex_entry),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(module)
-                .name(&fragment_entry),
-        ];
-
         let input_rate = match desc.builtin {
             BuiltinShader::Path | BuiltinShader::Mesh => vk::VertexInputRate::VERTEX,
             _ => vk::VertexInputRate::INSTANCE,
@@ -1536,61 +1986,29 @@ impl GpuBackend for VulkanBackend {
                 .vertex_binding_descriptions(&bindings)
                 .vertex_attribute_descriptions(&attributes)
         };
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport = vk::PipelineViewportStateCreateInfo::default()
-            .viewport_count(1)
-            .scissor_count(1);
-        let raster = vk::PipelineRasterizationStateCreateInfo::default()
-            .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let blend_attachment = [match desc.blend {
-            BlendMode::Replace => vk::PipelineColorBlendAttachmentState::default()
-                .color_write_mask(vk::ColorComponentFlags::RGBA),
-            BlendMode::PremultipliedOver => vk::PipelineColorBlendAttachmentState::default()
-                .blend_enable(true)
-                .src_color_blend_factor(vk::BlendFactor::ONE)
-                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .color_blend_op(vk::BlendOp::ADD)
-                .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .alpha_blend_op(vk::BlendOp::ADD)
-                .color_write_mask(vk::ColorComponentFlags::RGBA),
-        }];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachment);
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-        let render_pass = self.render_pass(vk_format(desc.color_format), true);
-        let info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport)
-            .rasterization_state(&raster)
-            .multisample_state(&multisample)
-            .color_blend_state(&blend)
-            .dynamic_state(&dynamic)
-            .layout(self.pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0);
-        // SAFETY: every state block borrows live locals; the module's entry
-        // points read the attributes, push constants and set-0 bindings the
-        // shared layout declares. The module is no longer needed once the
-        // pipeline exists.
+        let pipeline_layout = self.pipeline_layout;
+        // SAFETY: the module's entry points read the attributes, push constants
+        // and set-0 bindings the shared layout declares.
         let pipeline = unsafe {
-            let result = self
-                .device
-                .create_graphics_pipelines(self.pipeline_cache, &[info], None);
+            let result = self.graphics_pipeline(
+                module,
+                desc.vertex_entry,
+                desc.fragment_entry,
+                &vertex_input,
+                desc.color_format,
+                desc.blend,
+                pipeline_layout,
+            );
             self.device.destroy_shader_module(module, None);
-            result
-                .map_err(|(_, e)| e)
-                .expect("failed to create a Vulkan pipeline")[0]
+            result.expect("failed to create a Vulkan pipeline")
         };
-        Ok(self.pipelines.insert(VulkanPipeline { pipeline }).into())
+        Ok(self
+            .pipelines
+            .insert(VulkanPipeline {
+                pipeline,
+                program: None,
+            })
+            .into())
     }
 
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
@@ -1659,7 +2077,11 @@ impl GpuBackend for VulkanBackend {
         // targets a binding of the matching type with live views and samplers.
         unsafe { self.device.update_descriptor_sets(&writes, &[]) };
         self.bind_groups
-            .insert(VulkanBindGroup { set, pool })
+            .insert(VulkanBindGroup {
+                set,
+                pool,
+                bindings: desc.bindings.clone(),
+            })
             .into()
     }
 
@@ -2086,7 +2508,7 @@ impl Drop for VulkanBackend {
                 self.device.destroy_sampler(s, None);
             }
             for p in self.pipelines.drain() {
-                self.device.destroy_pipeline(p.pipeline, None);
+                destroy_pipeline(&self.device, p);
             }
             self.bind_groups.drain().for_each(drop);
             for s in self.surfaces.drain() {
@@ -2111,6 +2533,9 @@ impl Drop for VulkanBackend {
                 for chunk in slot.staging.chunks.drain(..) {
                     self.device.destroy_buffer(chunk.buffer, None);
                     self.device.free_memory(chunk.memory, None);
+                }
+                for pool in slot.program_pools.drain(..) {
+                    self.device.destroy_descriptor_pool(pool, None);
                 }
                 self.device.destroy_command_pool(slot.pool, None);
                 self.device.destroy_fence(slot.fence, None);
@@ -2253,6 +2678,27 @@ fn create_frame_slot(device: &ash::Device, queue_family: u32) -> FrameSlot {
             submitted: false,
             epoch: Epoch::START,
             staging: Staging::default(),
+            program_pools: Vec::new(),
+            program_pool: 0,
+        }
+    }
+}
+
+/// Destroy a pipeline and, for a program, the layout it owns.
+///
+/// # Safety
+///
+/// Nothing pending or recorded may use the pipeline.
+unsafe fn destroy_pipeline(device: &ash::Device, p: VulkanPipeline) {
+    // SAFETY: the caller guarantees the pipeline is unused; its layout and set
+    // layouts belong to it alone.
+    unsafe {
+        device.destroy_pipeline(p.pipeline, None);
+        if let Some(program) = p.program {
+            device.destroy_pipeline_layout(program.layout, None);
+            for set in program.sets {
+                device.destroy_descriptor_set_layout(set, None);
+            }
         }
     }
 }

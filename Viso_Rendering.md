@@ -1572,7 +1572,7 @@ Compute Lane 只有在测得 crossover 点后才启用默认 heuristic。测试 
 | 测试 | 现有载体 |
 |---|---|
 | pixel golden（byte-identical，`BLESS=1` 重新 bake） | `render/tests/golden.rs`、`metal_golden.rs`、`metal_naga_golden.rs` |
-| cross-backend image diff | `d3d12_backend.rs`、`vulkan_backend.rs`、`webgpu_backend.rs`、headless |
+| cross-backend image diff | `d3d12_backend.rs`、`vulkan_backend.rs`、`webgpu_backend.rs`、headless；DSL Shader Program：`viso/tests/shader_golden.rs`（CPU Reference、Metal、Vulkan） |
 | premultiplied alpha / sRGB-linear | `color_domain.rs`、math `color.rs` tests |
 | blend | `blend_contract.rs` |
 | gradient edge、stroke join/cap、path fill-rule、clip nesting | golden scenes（按阶段补齐） |

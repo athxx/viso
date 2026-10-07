@@ -1169,13 +1169,13 @@ timers (§104–§111).
         input delay, prediction, confirmation, desync detection by snapshot
         hash; Presentation commands never redelivered.
   - [x] Two in-process peers over a lossy, delayed link converge.
-- [ ] AI structured edit; cross-backend validation.
+- [x] AI structured edit; cross-backend validation.
   - [x] Structured edits by Syntax ID and Symbol ID (`AddImport`,
         `CreateComponent`, `AddInput`, `AddState`, `AddAction`, `InsertNode`,
         `SetPropertyBinding`, `AttachEventHandler`, `WrapInKeyedFor`,
         `ConvertTaskToResource`, `AddTraitImpl`) producing checked text
         edits; LSP code actions for them and for diagnostic fixes.
-  - [ ] Cross-backend validation: a DSL shader through the safe ABI on two
+  - [x] Cross-backend validation: a DSL shader through the safe ABI on two
         backends compared against the CPU reference.
 
 ---

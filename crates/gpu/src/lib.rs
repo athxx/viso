@@ -41,7 +41,7 @@ pub use headless::HeadlessRaster;
 #[cfg(target_vendor = "apple")]
 pub use metal::{MetalBackend, MetalCompiler, MetalProgram, ProgramDesc};
 #[cfg(any(feature = "vulkan", target_os = "linux", target_os = "android"))]
-pub use vulkan::VulkanBackend;
+pub use vulkan::{VulkanBackend, VulkanProgramDesc};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use webgpu::WebGpuBackend;
 
