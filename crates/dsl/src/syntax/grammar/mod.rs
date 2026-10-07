@@ -75,6 +75,14 @@ pub enum Entry {
     ComponentEntry,
     /// A single bare expression fragment (not a source form): `Expr EOF`.
     Expr,
+    /// Component members without their component (not a source form):
+    /// `ComponentMember* EOF`.
+    ComponentMembers,
+    /// The inside of a node body (not a source form): `NodeMember* EOF`.
+    NodeMembers,
+    /// The inside of a block (not a source form): `Statement* TailExpression?
+    /// EOF`.
+    BlockBody,
 }
 
 /// Parses `tokens` over `source` using the given [`Entry`] production.
@@ -222,7 +230,23 @@ struct Parser<'t, 's> {
     lookahead: Cell<usize>,
     /// Every completed reparse unit, in completion order.
     units: Vec<UnitRecord>,
+    /// How many depth-guarded constructs are open around the cursor.
+    depth: u32,
+    /// Whether [`ParseErrorKind::TooDeep`] was already reported: one budget
+    /// diagnostic per parse, however many constructs it cut.
+    too_deep: bool,
+    /// The significant tokens past [`MAX_TOKENS`], held back from the cursor
+    /// until the entry production has run.
+    overflow: Vec<usize>,
 }
+
+/// The nesting budget: expressions, types, patterns, blocks and view bodies
+/// open around one point. Every recursive production passes a guard, so the
+/// parser's stack — and every later pass over the tree — stays bounded.
+pub const MAX_DEPTH: u32 = 256;
+
+/// The token budget: significant tokens one source is parsed into.
+pub const MAX_TOKENS: usize = 1 << 20;
 
 /// What [`incremental`] reparse needs to know about one completed unit node,
 /// in significant-token indices of the parser that produced it.
@@ -241,12 +265,17 @@ struct UnitRecord {
 
 impl<'t, 's> Parser<'t, 's> {
     fn new(tokens: &'t [Token], source: &'s str) -> Parser<'t, 's> {
-        let significant = tokens
+        let mut significant: Vec<usize> = tokens
             .iter()
             .enumerate()
             .filter(|(_, t)| !t.kind.is_trivia() && t.kind != SyntaxKind::Eof)
             .map(|(i, _)| i)
             .collect();
+        let overflow = if significant.len() > MAX_TOKENS {
+            significant.split_off(MAX_TOKENS)
+        } else {
+            Vec::new()
+        };
         Parser {
             tokens,
             source,
@@ -257,6 +286,9 @@ impl<'t, 's> Parser<'t, 's> {
             errors: Vec::new(),
             lookahead: Cell::new(0),
             units: Vec::new(),
+            depth: 0,
+            too_deep: false,
+            overflow,
         }
     }
 
@@ -545,6 +577,70 @@ impl<'t, 's> Parser<'t, 's> {
         m.complete(self, SyntaxKind::ErrorNode);
     }
 
+    // --- Budgets -----------------------------------------------------------
+
+    /// Opens one depth-guarded level. Past [`MAX_DEPTH`] it opens nothing:
+    /// the construct at the cursor is consumed as one balanced error node and
+    /// `None` returned, so recursion stops here.
+    fn enter(&mut self) -> Option<CompletedMarker> {
+        if self.depth < MAX_DEPTH {
+            self.depth += 1;
+            return None;
+        }
+        let m = self.start();
+        if !self.too_deep {
+            self.too_deep = true;
+            self.error(ParseErrorKind::TooDeep);
+        }
+        // One token, or a whole delimited group; a closer belongs to an
+        // enclosing construct and is left to it.
+        let mut open = 0u32;
+        while !self.at_end() {
+            match self.current() {
+                SyntaxKind::LParen | SyntaxKind::LBracket | SyntaxKind::LBrace => open += 1,
+                SyntaxKind::RParen | SyntaxKind::RBracket | SyntaxKind::RBrace => {
+                    if open == 0 {
+                        break;
+                    }
+                    open -= 1;
+                }
+                _ => {}
+            }
+            self.bump_any();
+            if open == 0 {
+                break;
+            }
+        }
+        Some(m.complete(self, SyntaxKind::ErrorNode))
+    }
+
+    /// Closes a level [`Parser::enter`] opened.
+    fn leave(&mut self) {
+        self.depth -= 1;
+    }
+
+    /// Spends one level on wrapping a finished node, as a left-folding chain
+    /// (`a + b + c`, `a.b.c`) does: the tree deepens though no production
+    /// recursed. Past [`MAX_DEPTH`] it reports the budget and returns
+    /// `false`; the caller then collects the rest of its chain flat. The
+    /// caller gives its levels back with [`Parser::unfold`].
+    fn fold(&mut self) -> bool {
+        if self.depth < MAX_DEPTH {
+            self.depth += 1;
+            return true;
+        }
+        if !self.too_deep {
+            self.too_deep = true;
+            self.error(ParseErrorKind::TooDeep);
+        }
+        false
+    }
+
+    /// Gives back the levels `folds` calls to [`Parser::fold`] spent.
+    fn unfold(&mut self, folds: u32) {
+        self.depth -= folds;
+    }
+
     // --- Entry -------------------------------------------------------------
 
     /// Parses the chosen entry production, wrapping the whole input in its root
@@ -568,7 +664,29 @@ impl<'t, 's> Parser<'t, 's> {
                 self.expr_fragment();
                 SyntaxKind::ExprStmt
             }
+            Entry::ComponentMembers => {
+                self.items_until_end(decl::member);
+                SyntaxKind::MemberFragment
+            }
+            Entry::NodeMembers => {
+                self.items_until_end(view::node_member);
+                SyntaxKind::NodeMemberFragment
+            }
+            Entry::BlockBody => {
+                self.items_until_end(stmt::statement);
+                SyntaxKind::BlockFragment
+            }
         };
+        if !self.overflow.is_empty() {
+            let rest = std::mem::take(&mut self.overflow);
+            self.significant.extend(rest);
+            let e = self.start();
+            self.error(ParseErrorKind::TooManyTokens);
+            while !self.at_end() {
+                self.bump_any();
+            }
+            e.complete(self, SyntaxKind::ErrorNode);
+        }
         m.complete(self, root_kind);
     }
 
@@ -588,6 +706,16 @@ impl<'t, 's> Parser<'t, 's> {
     /// component declaration.
     fn component_entry(&mut self) {
         decl::component_entry(self);
+    }
+
+    /// A braceless list: `item` repeated to the end of input, a stray closer
+    /// reported and skipped so recovery always reaches the end.
+    fn items_until_end(&mut self, item: fn(&mut Parser)) {
+        while !self.at_end() {
+            let before = self.cursor();
+            item(self);
+            self.ensure_progress(before);
+        }
     }
 
     /// A single bare expression fragment. Any tokens past the expression are wrapped

@@ -156,7 +156,7 @@ label               = identifier_token | strict_keyword ;
 - 标识符按 Unicode NFC 规范化后进入符号表；
 - 两个源码拼写若 NFC 后相同，视为同一标识符；
 - 同一命名空间内两个声明 NFC 后相同而源码拼写不同时报告 `E1101`（相关位置指向先前声明）；拼写完全相同则是普通重复声明 `E2002`；
-- 编译器应警告 Unicode Confusable；
+- 编译器应警告 Unicode Confusable：按 UTS #39 Mixed-Script 检测的 Highly Restrictive 级别，忽略 Common/Inherited 字符后，Identifier 各字符的 Script_Extensions（汉字按 Augmented Script Set 可与假名、谚文或注音同用）没有共同 Script，且也不是“拉丁字母加日文、韩文或注音汉字之一”时报告 `E1102` 警告；`café`、`名前かな`、`ユーザーID` 不报告，`pаy`（西里尔 `а`）报告；
 - `normal_identifier` 不得等于严格关键字（§12.1、§12.2）；拼写等于上下文关键字（§12.3）的单词仍词法化为 `identifier_token`；
 - 正文 EBNF 的 `identifier` 与合并 EBNF 的 `IDENT` 均表示 `identifier_token`，在 Binding/声明位置即 `binding_identifier`；Label 位置使用 `label`（附录 A 为 `Label`），见 §12.5；Raw Identifier 解码后仍是普通符号名；
 - Raw Identifier 只用于在 Binding/声明位置使用严格关键字拼写，例如引用名为 `type` 的外部 Schema 符号时写 `r#type`；Label 位置与上下文关键字都不需要 `r#`；
@@ -2479,7 +2479,8 @@ tail_expression      = expression ;
 - 返回类型为 `Unit` 的 Callable 可以省略 Tail Expression；
 - 同时出现显式 `return` 和 Tail Expression 是合法的，但控制流必须通过类型检查；
 - 在 Block Item 起始位置，未加括号的 `if` 和 `match` 总是由 Statement Parser 接管；
-- 因此未加括号的 `if`/`match` 不会被当成 Tail Expression；要把它们作为 Tail Value，必须加括号或使用显式 `return`；
+- 因此未加括号的 `if`/`match` 不会被当成 Tail Expression 的开头：`if a { 1 } else { 2 } - 1` 是一个 `IfStatement` 加一个独立的 Tail `- 1`，`match x { _ => v }.f()` 中的 `.f()` 是 `E1403`；要以它们开头组成更大的 Tail Expression，必须加括号或使用显式 `return`；
+- Block 需要值时，最后一项若是未加括号、无分号的 `IfStatement`/`MatchStatement`，它提供 Block 的值，各分支的 Tail 统一为该类型（`if` 须有 `else`）；
 - 这一规则只解决 CST 分类，不改变 `if_expression`/`match_expression` 在赋值、参数和返回值位置的能力。
 
 ```viso
@@ -4373,8 +4374,11 @@ export component Stepper {
         }
     }
 }
+```
 
-// 调用方
+调用方：
+
+```viso
 Stepper { bind value <=> settings.retry_count; }
 ```
 
@@ -4452,7 +4456,7 @@ export style SelectedChip for Chip {
 ### U3.2 Sizing
 
 ```viso
-export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0; } fit; min_content; max_content; }
+export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0; }; fit; min_content; max_content; }
 ```
 
 按 U1.3，`width: 100% - 32dp;` 提升为 `Sizing::fixed(...)`。
@@ -5850,8 +5854,8 @@ paused:     Bool      暂停时不累加；FrameUpdate 照常运行
 
 ```viso
 export enum TickOverrun {
-    DropTime,
-    SlowMotion,
+    DropTime;
+    SlowMotion;
 }
 ```
 
@@ -6378,7 +6382,8 @@ CST 要求：
 - 保留所有 Token、注释和空白；
 - 允许 `ErrorNode` 和 `MissingToken`；
 - Parser 遇到错误后同步到 `;`、`,`、`}` 或声明关键字；
-- 结构性语法错误使用 `E1401`–`E1405`（附录 C），不使用临时前缀码；
+- 结构性语法错误使用 `E1401`–`E1407`（附录 C），不使用临时前缀码；
+- Parser 有两项预算：表达式、类型、Pattern、Block 与 View Body 的嵌套不超过 256 层，超出处的最内层构造整体（一个 Token 或一个定界组）保留为 `ErrorNode` 并报一次 `E1406`；一个源文本至多 2^20 个有效 Token，其后的全部 Token 保留为一个 `ErrorNode` 并报 `E1407`。因此 Parser 与之后遍历语法树的各遍栈深有界，CST 仍逐字节无损；预算附近的编辑总是全量重解析；
 - 一次编辑尽可能报告多个独立错误；
 - Incremental Reparse 只替换受影响 Green Tree；
 - Formatter 基于 CST/AST，不以正则重写源码；
@@ -7395,6 +7400,8 @@ AddTraitImpl
 - ` ```viso ` 块中注释之外不得出现 `...` 等占位符；
 - 可解析但有类型或语义错误的示例（例如标注 `E2103` 的块）仍使用 ` ```viso `，其诊断由类型验收（§153）覆盖；
 - 非 Viso 语法片段（Trait Bound 片段、IR 转储、Schema 摘要）使用 ` ```text `。
+
+当前实现：`crates/dsl/tests/doc_examples.rs` 按上述规则检查两份文档的全部代码块，`ComponentMember*`、`NodeMember*` 与 Block Body 是 Parser 的片段入口（`Entry::ComponentMembers`/`NodeMembers`/`BlockBody`，不是源码形式）；`crates/dsl/tests/parser_acceptance.rs` 覆盖 §152 的其余条目，其中随机编辑序列逐步比较增量重解析与全量 Parse 的 Token、树与诊断；`crates/lsp/tests/format_fuzz.rs` 用固定种子的随机与变异源码检查 Formatter 不 Panic、保留有效 Token，并对每个可作为 `CompilationUnit` 解析的文档示例检查格式化后树形不变且幂等。Formatter 在两个 Token 紧贴会被词法化为其他 Token 时（如 `:` `:`）插入空格，未闭合字符串之后必换行，最后一个 Token 未闭合时不修剪也不追加换行。
 
 Fuzz：
 
@@ -8584,6 +8591,8 @@ RecordPatternField
 | E1403  | 无法开始任何声明/语句的 Token（已归入 `ErrorNode`）     |
 | E1404  | 缺少文法要求的 Token（以 `MissingToken` 占位）          |
 | E1405  | 此处需要 Expression                                     |
+| E1406  | 嵌套超过 Parser 深度预算（256 层）                      |
+| E1407  | 源文本超过 Parser Token 预算（2^20 个有效 Token）       |
 | E2001  | 未解析符号                                              |
 | E2002  | Import 歧义                                             |
 | E2003  | 值初始化循环（含 Theme 的 Base/Item 依赖环，§60）       |

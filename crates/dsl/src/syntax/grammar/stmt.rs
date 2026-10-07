@@ -23,6 +23,9 @@ use super::{ParseErrorKind, Parser};
 
 /// A `{ Statement* TailExpr? }` block used as a function/closure/control body.
 pub(super) fn block(p: &mut Parser) {
+    if p.enter().is_some() {
+        return;
+    }
     let m = p.start();
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
@@ -32,6 +35,7 @@ pub(super) fn block(p: &mut Parser) {
     }
     p.expect(SyntaxKind::RBrace);
     m.complete(p, SyntaxKind::Block);
+    p.leave();
 }
 
 /// Parses one statement (or the block's trailing tail expression). Dispatches on
@@ -290,7 +294,10 @@ fn if_stmt(p: &mut Parser) {
     block(p);
     if p.eat(SyntaxKind::ElseKw) {
         if p.at(SyntaxKind::IfKw) {
-            if_stmt(p);
+            if p.enter().is_none() {
+                if_stmt(p);
+                p.leave();
+            }
         } else {
             block(p);
         }

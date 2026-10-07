@@ -70,6 +70,16 @@ fn range_pattern(p: &mut Parser) -> Option<CompletedMarker> {
 /// start one. A token that cannot start a pattern and is not a separator is
 /// consumed into an error node so recovery makes progress.
 fn primary_pattern(p: &mut Parser) -> Option<CompletedMarker> {
+    if let Some(cut) = p.enter() {
+        return Some(cut);
+    }
+    let pattern = primary_pattern_in(p);
+    p.leave();
+    pattern
+}
+
+/// [`primary_pattern`] one level in.
+fn primary_pattern_in(p: &mut Parser) -> Option<CompletedMarker> {
     use SyntaxKind::*;
     match p.current() {
         Ident if p.token_text(0) == "_" => {

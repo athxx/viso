@@ -284,6 +284,11 @@ impl IncrementalParse {
             return None;
         }
 
+        // Near the token budget the cut point moves with the edit; only a full
+        // parse places it.
+        if self.tokens.len() + lexed.len() > super::MAX_TOKENS + (after - first) {
+            return None;
+        }
         let mut tokens = Vec::with_capacity(first + lexed.len() + self.tokens.len() - after);
         tokens.extend_from_slice(&self.tokens[..first]);
         tokens.extend_from_slice(&lexed);

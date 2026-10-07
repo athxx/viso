@@ -624,6 +624,16 @@ pub enum SyntaxKind {
     /// `template IDENT GenericParams? ParamList WhereClause? "{" TemplateMember+
     /// "}"` (§58).
     TemplateDecl,
+
+    /// The component-member fragment entry: `ComponentMember* EOF` — members
+    /// written without their component, as documentation and tooling quote them.
+    MemberFragment,
+    /// The node-member fragment entry: `NodeMember* EOF` — the inside of a node
+    /// body without its braces.
+    NodeMemberFragment,
+    /// The block-body fragment entry: `Statement* TailExpression? EOF` — a block
+    /// without its braces.
+    BlockFragment,
 }
 
 impl SyntaxKind {

@@ -158,7 +158,9 @@ impl LexError {
             LexError::UnterminatedChar => "unterminated character literal",
             LexError::MalformedChar => "character literal must contain exactly one character",
             LexError::InvalidEscape => "unknown character escape",
-            LexError::InvalidByteEscape => "`\\x` escape needs exactly two hex digits",
+            LexError::InvalidByteEscape => {
+                "`\\x` escape needs exactly two hex digits, at most `7F`; use `\\u{...}` beyond ASCII"
+            }
             LexError::InvalidUnicodeEscape => "malformed `\\u{...}` unicode escape",
             LexError::InvalidColor => {
                 "color literal must be `#RGB`, `#RGBA`, `#RRGGBB`, or `#RRGGBBAA`"
