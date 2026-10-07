@@ -103,11 +103,26 @@ fn event_handler_uses_a_block_not_an_arrow() {
         ParseErrorKind::HandlerNotArrow
     ));
 
-    // `on click => expr` — the old arrow form is rejected (E3201).
-    assert!(unit_has_error(
-        &view_of("Button { on click => doit(); }"),
-        ParseErrorKind::HandlerNotArrow
-    ));
+    // `on click => expr` — the old arrow form is rejected (E3201), with a fix
+    // wrapping the statement in a block.
+    let src = view_of("Button { on click => doit(); }");
+    let parsed = parse(&tokenize(&src), &src);
+    let error = parsed
+        .errors
+        .iter()
+        .find(|e| e.code == ParseErrorKind::HandlerNotArrow.code())
+        .expect("E3201");
+    let mut fixed = src.clone();
+    let mut edits = error.fixes[0].edits.clone();
+    edits.sort_by_key(|e| std::cmp::Reverse(e.range.start()));
+    for edit in edits {
+        fixed.replace_range(
+            std::ops::Range::<usize>::from(edit.range),
+            &edit.replacement,
+        );
+    }
+    assert_eq!(fixed, view_of("Button { on click { doit(); } }"));
+    assert!(parse(&tokenize(&fixed), &fixed).errors.is_empty());
 }
 
 #[test]

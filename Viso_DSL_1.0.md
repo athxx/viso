@@ -7163,6 +7163,7 @@ viso test game <scenario> --frames=<n> --seed=<seed> --json
 
 Fix 生成规则（当前实现）：
 
+- `child`（`E3001`）删除该词，事件箭头（`E3201`）把 `=> stmt` 包成 `{ stmt }`，均为 `machine-applicable`；`Float`（`E2101`）给出 `F64`、`F32` 两个 `maybe-incorrect` 替换，`F64` 在前；
 - 未知名字、方法、字段、Variant（`E2001`/`E3101` 等）的候选按 Optimal String Alignment 距离（插入、删除、替换、相邻交换各计 1，`cuont → count` 为 1）排序，只给阈值内最近者；
 - 非法隐式数值转换 `E2102` 带一个 `maybe-incorrect` Fix：在源操作数后追加 `as T`（非原子表达式加括号）；二元运算两侧数值类型不同，转换整数一侧到浮点类型，否则转换右侧到左侧类型，结果按未知类型继续检查，不产生级联诊断。
 
@@ -7602,6 +7603,8 @@ Snapshot 语义正确率
 ```
 
 AI 成功不能只看“能编译”；还需 Snapshot、Event Trace 或 Game Tape 验证行为。
+
+当前实现：`crates/dsl/tests/ai_repair.rs` 实现修复闭环本身——编译、取第一个 Error 的第一个 Fix 应用、再编译，直到无 Error（至多 8 轮），不接受任何其他输入；冻结集为生成代码最常见的错误：`child`、事件箭头、`Float`、拼错的 Property/Event/方法/Action/Variant、`text` 绑数字、混合数值类型、对非 Option 用 `?.`。每例断言修复所经的诊断码序列，修复后以 Event Trace（点击后的 State 与 Text）或 Game Tape（摇杆输入后的 System State）验证行为，并统计 First-pass Parse/Type-check Rate、平均修复轮次与 Diagnostic-guided Repair Rate（必须为 100%）。真实模型的 Prompt 集与生成运行属于 CLI/外部评测，不在本测试内。
 
 ---
 
@@ -8597,7 +8600,7 @@ RecordPatternField
 | ---: | ---------------------------------- | --------------------------------------------------------------------- | --------------------------- |
 |    1 | `child` 与裸节点混用               | 删除 `child`；裸 `Type {}` 是匿名节点，`node id: Type {}` 是具名节点  | `E3001`，可自动删除 `child` |
 |    2 | `on click => ...` 与 Block Handler | Handler 只能写 `on click { ... }` 或 `on click(event) { ... }`        | `E3201`，可包成 Block       |
-|    3 | `Float`、F64、Shader F32           | 删除 `Float`；Host 和 Shader 都使用 F32/F64 明确宽度，Shader 禁止 F64 | `E2101` / `E8102`           |
+|    3 | `Float`、F64、Shader F32           | 删除 `Float`；Host 和 Shader 都使用 F32/F64 明确宽度，Shader 禁止 F64 | `E2101`（换成 `F64`/`F32`） / `E8102` |
 |    4 | Resource 子句漂移                  | 只允许 Resource Config Block；Policy 只允许 Typed List                | `E4301` / `E4302`           |
 |    5 | `sp`、`min` 等单位未闭合           | 后缀全集固定为 dp/px/sp/em/%/ns/us/ms/s/min/deg/rad/turn/hz/khz       | `E1204` 未知单位            |
 |    6 | State 前向引用                     | 一律禁止；Computed 可建立无环前向依赖图                               | `E2104` 指向声明与引用      |
