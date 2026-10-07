@@ -1,17 +1,20 @@
-//! `.vs` shaders drawn twice from the same encoded buffers: by the reference
-//! interpreter's rasterizer on the CPU and by Metal. The two images agree
-//! within a small per-channel tolerance.
+//! `.vs` shaders drawn from the same encoded buffers by the reference
+//! interpreter's rasterizer on the CPU, by Metal from the MSL, and — with the
+//! `vulkan` feature, on MoltenVK — by Vulkan from the SPIR-V of the WGSL. Every
+//! GPU image agrees with the reference, and Vulkan with Metal, within a small
+//! per-channel tolerance.
 
 #![cfg(target_os = "macos")]
 
 use viso_dsl::frontend::{Origin, compile_file};
 use viso_gpu::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, DrawCommand, DrawList,
-    FilterMode, Geometry, GpuBackend, InlineUniforms, LoadOp, MetalBackend, ProgramDesc,
-    RenderPass, RenderTarget, SamplerDesc, TextureDesc, TextureFormat,
+    FilterMode, Geometry, GpuBackend, InlineUniforms, LoadOp, MetalBackend, PipelineId,
+    ProgramDesc, RenderPass, RenderTarget, SamplerDesc, TextureDesc, TextureFormat, TextureId,
 };
 use viso_shader::program::{
-    Bindings, FRAGMENT_ENTRY, Program, Raster, Target, TextureData, VERTEX_ENTRY, Value, emit,
+    Bindings, FRAGMENT_ENTRY, Program, Raster, ShaderInterface, Target, TextureData, VERTEX_ENTRY,
+    Value, emit,
 };
 
 const W: u32 = 64;
@@ -47,15 +50,34 @@ struct Scene<'a> {
     texture: bool,
 }
 
-/// Renders `scene` on Metal and on the CPU; both BGRA8, top-left.
-fn render(scene: &Scene<'_>) -> (Vec<u8>, Vec<u8>) {
+/// The pictures of one scene: the CPU reference's, Metal's, and Vulkan's
+/// when a Vulkan device exists; all BGRA8, top-left.
+struct Pictures {
+    cpu: Vec<u8>,
+    metal: Vec<u8>,
+    vulkan: Option<Vec<u8>>,
+}
+
+/// What every backend draws from: the program, its interface, and the
+/// encoded uniform and instance bytes.
+struct Encoded {
+    program: Program,
+    interface: ShaderInterface,
+    uniforms: Vec<u8>,
+    instances: Vec<u8>,
+    count: u32,
+    texture: bool,
+}
+
+/// Renders `scene` on the CPU and on every GPU backend from the same bytes.
+fn render(scene: &Scene<'_>) -> Pictures {
     let p = program(scene.source);
     let interface = p.interface();
-    let uniform_bytes = interface
+    let uniforms = interface
         .uniforms
         .encode(&p.uniforms, &scene.uniforms)
         .expect("uniforms encode");
-    let instance_bytes: Vec<u8> = scene
+    let instances: Vec<u8> = scene
         .instances
         .iter()
         .flat_map(|row| {
@@ -65,13 +87,30 @@ fn render(scene: &Scene<'_>) -> (Vec<u8>, Vec<u8>) {
                 .expect("instance encodes")
         })
         .collect();
+    let encoded = Encoded {
+        program: p,
+        interface,
+        uniforms,
+        instances,
+        count: scene.instances.len() as u32,
+        texture: scene.texture,
+    };
+    Pictures {
+        cpu: cpu(&encoded),
+        metal: metal(&encoded),
+        vulkan: vulkan(&encoded),
+    }
+}
 
-    // The CPU reads what the GPU reads: the same bytes, decoded.
-    let uniforms = interface.uniforms.decode(&p, &p.uniforms, &uniform_bytes);
-    let stride = interface.instance.size as usize;
-    let instances: Vec<Vec<Value>> = instance_bytes
+/// The CPU reads what the GPU reads: the same bytes, decoded.
+fn cpu(e: &Encoded) -> Vec<u8> {
+    let p = &e.program;
+    let uniforms = e.interface.uniforms.decode(p, &p.uniforms, &e.uniforms);
+    let stride = e.interface.instance.size as usize;
+    let instances: Vec<Vec<Value>> = e
+        .instances
         .chunks_exact(stride)
-        .map(|row| interface.instance.decode(&p, &p.instance, row))
+        .map(|row| e.interface.instance.decode(p, &p.instance, row))
         .collect();
     let texels: Vec<[f32; 4]> = pattern()
         .as_chunks::<4>()
@@ -84,21 +123,26 @@ fn render(scene: &Scene<'_>) -> (Vec<u8>, Vec<u8>) {
         height: 4,
         texels,
     }];
-    let sampler = SamplerDesc {
-        filter: FilterMode::Nearest,
-        address: AddressMode::ClampToEdge,
-    };
-    let samplers = [sampler];
+    let samplers = [SAMPLER];
     let bindings = Bindings {
         uniforms: &uniforms,
-        textures: if scene.texture { &textures } else { &[] },
-        samplers: if scene.texture { &samplers } else { &[] },
+        textures: if e.texture { &textures } else { &[] },
+        samplers: if e.texture { &samplers } else { &[] },
     };
     let mut raster = Raster::new(W, H, CLEAR);
-    raster.draw(&p, &bindings, &instances, BlendMode::PremultipliedOver);
+    raster.draw(p, &bindings, &instances, BlendMode::PremultipliedOver);
+    raster.to_bgra8()
+}
 
+const SAMPLER: SamplerDesc = SamplerDesc {
+    filter: FilterMode::Nearest,
+    address: AddressMode::ClampToEdge,
+};
+
+fn metal(e: &Encoded) -> Vec<u8> {
+    let p = &e.program;
     let mut gpu = MetalBackend::new();
-    let msl = emit(&p, &interface, Target::Msl);
+    let msl = emit(p, &e.interface, Target::Msl);
     let compiled = gpu
         .compiler()
         .compile(&ProgramDesc {
@@ -108,11 +152,81 @@ fn render(scene: &Scene<'_>) -> (Vec<u8>, Vec<u8>) {
             fragment_entry: FRAGMENT_ENTRY,
             color_format: TextureFormat::Bgra8Unorm,
             blend: BlendMode::PremultipliedOver,
-            vertex_textures: interface.vertex_textures,
+            vertex_textures: e.interface.vertex_textures,
         })
         .unwrap_or_else(|log| panic!("{log}\n{msl}"));
     let pipeline = gpu.install_program(&compiled);
-    let buffer = |gpu: &mut MetalBackend, bytes: &[u8], usage| {
+    let target = draw(&mut gpu, pipeline, e);
+    gpu.read_texture(target)
+}
+
+/// The program on Vulkan from the SPIR-V naga writes for its WGSL, or `None`
+/// without a Vulkan device (or without the `vulkan` feature).
+#[cfg(feature = "vulkan")]
+fn vulkan(e: &Encoded) -> Option<Vec<u8>> {
+    use viso_gpu::{VulkanBackend, VulkanProgramDesc};
+    let Some(mut gpu) = VulkanBackend::try_new_with(true) else {
+        eprintln!("no Vulkan device; Vulkan skipped");
+        return None;
+    };
+    let p = &e.program;
+    let wgsl = emit(p, &e.interface, Target::Wgsl);
+    let module = naga::front::wgsl::parse_str(&wgsl).unwrap_or_else(|err| panic!("{err}\n{wgsl}"));
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .unwrap_or_else(|err| panic!("{err:?}\n{wgsl}"));
+    let options = naga::back::spv::Options {
+        lang_version: (1, 0),
+        // Clip-space y flips in the vertex stage, as in the built-ins.
+        flags: naga::back::spv::WriterFlags::ADJUST_COORDINATE_SPACE,
+        // Every loop of a program is bounded by construction.
+        force_loop_bounding: false,
+        ..Default::default()
+    };
+    let words = naga::back::spv::write_vec(&module, &info, &options, None).expect("SPIR-V");
+    let spirv: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let pipeline = gpu
+        .install_program(&VulkanProgramDesc {
+            label: &p.name,
+            spirv: &spirv,
+            vertex_entry: VERTEX_ENTRY,
+            fragment_entry: FRAGMENT_ENTRY,
+            color_format: TextureFormat::Bgra8Unorm,
+            blend: BlendMode::PremultipliedOver,
+            textures: e.interface.textures.len() as u32,
+            samplers: e.interface.samplers.len() as u32,
+        })
+        .unwrap_or_else(|log| panic!("{log}"));
+    let target = draw(&mut gpu, pipeline, e);
+    let picture = gpu.read_texture(target);
+    assert_eq!(
+        gpu.validation_errors(),
+        0,
+        "the validation layer reported errors"
+    );
+    eprintln!(
+        "Vulkan validation layer {}",
+        if gpu.validation_enabled() {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    Some(picture)
+}
+
+#[cfg(not(feature = "vulkan"))]
+fn vulkan(_: &Encoded) -> Option<Vec<u8>> {
+    None
+}
+
+/// Uploads `e`'s bytes to `gpu` and draws them with `pipeline` into a fresh
+/// target, which it returns.
+fn draw<B: GpuBackend>(gpu: &mut B, pipeline: PipelineId, e: &Encoded) -> TextureId {
+    let mut buffer = |bytes: &[u8], usage| {
         let id = gpu.create_buffer(&BufferDesc {
             size: bytes.len().max(16),
             usage,
@@ -121,10 +235,10 @@ fn render(scene: &Scene<'_>) -> (Vec<u8>, Vec<u8>) {
         gpu.write_buffer(id, 0, bytes);
         id
     };
-    let uniform_buffer = buffer(&mut gpu, &uniform_bytes, BufferUsage::UNIFORM);
-    let instance_buffer = buffer(&mut gpu, &instance_bytes, BufferUsage::INSTANCE);
+    let uniform_buffer = buffer(&e.uniforms, BufferUsage::UNIFORM);
+    let instance_buffer = buffer(&e.instances, BufferUsage::INSTANCE);
     let mut binds = vec![Binding::Uniform(uniform_buffer)];
-    if scene.texture {
+    if e.texture {
         let texture = gpu.create_texture(&TextureDesc {
             width: 4,
             height: 4,
@@ -134,7 +248,7 @@ fn render(scene: &Scene<'_>) -> (Vec<u8>, Vec<u8>) {
         });
         gpu.write_texture(texture, 0, 0, 4, 4, &pattern());
         binds.push(Binding::Texture(texture));
-        binds.push(Binding::Sampler(gpu.create_sampler(&sampler)));
+        binds.push(Binding::Sampler(gpu.create_sampler(&SAMPLER)));
     }
     let bind_group = gpu.create_bind_group(&BindGroupDesc {
         label: "golden",
@@ -150,9 +264,7 @@ fn render(scene: &Scene<'_>) -> (Vec<u8>, Vec<u8>) {
     let commands = [DrawCommand {
         pipeline,
         bind_group: Some(bind_group),
-        geometry: Geometry::Generated {
-            count: scene.instances.len() as u32,
-        },
+        geometry: Geometry::Generated { count: e.count },
         instance_buffer,
         instance_offset: 0,
         uniforms: InlineUniforms::new(&[]),
@@ -168,7 +280,16 @@ fn render(scene: &Scene<'_>) -> (Vec<u8>, Vec<u8>) {
         commands: &commands,
         passes: &passes,
     });
-    (gpu.read_texture(target), raster.to_bgra8())
+    target
+}
+
+/// Each GPU picture against the CPU reference, and Vulkan against Metal.
+fn compare_all(name: &str, pictures: &Pictures) {
+    compare(&format!("{name} Metal"), &pictures.metal, &pictures.cpu);
+    if let Some(vulkan) = &pictures.vulkan {
+        compare(&format!("{name} Vulkan"), vulkan, &pictures.cpu);
+        compare(&format!("{name} Vulkan/Metal"), vulkan, &pictures.metal);
+    }
 }
 
 /// The largest per-channel difference and the first pixel over tolerance.
@@ -274,8 +395,7 @@ export shader RoundedRect {
         ],
         texture: false,
     };
-    let (gpu, cpu) = render(&scene);
-    compare("RoundedRect", &gpu, &cpu);
+    compare_all("RoundedRect", &render(&scene));
 }
 
 #[test]
@@ -371,6 +491,5 @@ shader Fancy {
         ],
         texture: true,
     };
-    let (gpu, cpu) = render(&scene);
-    compare("Fancy", &gpu, &cpu);
+    compare_all("Fancy", &render(&scene));
 }
