@@ -249,6 +249,12 @@ struct RegionCells {
     /// The length at which [`locals`](Self::locals) next drops its dead
     /// entries.
     prune: usize,
+    /// How many preserved branches the view keeps switched away at once;
+    /// `None` keeps the most recent instance of each.
+    preserve_budget: Option<usize>,
+    /// The order preserved branches were switched away in: the stamp the
+    /// next one takes.
+    parked: u64,
 }
 
 impl ViewHost {
@@ -668,6 +674,37 @@ impl ViewHost {
         self.regions.mounted = true;
         self.regions.hooks.push(hook);
         self.regions.mounts.push(Rc::downgrade(mounted));
+    }
+
+    /// Bounds how many preserved branches the view keeps switched away: once
+    /// a switch leaves more, the least recently left are freed, and each
+    /// mounts afresh when shown again. `None`, the default, keeps the most
+    /// recent instance of every preserved branch. A hot reload keeps the
+    /// bound.
+    pub fn set_preserve_budget(&mut self, budget: Option<usize>) {
+        self.regions.preserve_budget = budget;
+    }
+
+    /// The bound [`set_preserve_budget`](Self::set_preserve_budget) set.
+    pub fn preserve_budget(&self) -> Option<usize> {
+        self.regions.preserve_budget
+    }
+
+    /// How many preserved branches the view keeps switched away now, nested
+    /// ones included.
+    pub fn kept_branches(&self) -> usize {
+        self.regions
+            .mounts
+            .iter()
+            .filter_map(Weak::upgrade)
+            .map(|mounted| mounted.borrow().kept_count())
+            .sum()
+    }
+
+    /// The stamp of the preserved branch being switched away now.
+    pub(crate) fn park_stamp(&mut self) -> u64 {
+        self.regions.parked += 1;
+        self.regions.parked
     }
 
     /// Whether regions are mounted under the view's nodes, which only a

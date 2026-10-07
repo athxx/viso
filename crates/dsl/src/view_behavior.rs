@@ -191,7 +191,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     let Some(component) = &compiled.component else {
         let mut errors: Vec<MountError> = sites
             .iter()
-            .map(|(_, _, _, site)| {
+            .map(|(_, _, _, _, site)| {
                 MountError::new(
                     Some(site.at),
                     "a `ui!` fragment has no component state for a handler to run \
@@ -221,7 +221,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         )]);
     };
     let mut routes: Vec<(NodeKey, Vec<Route>)> = Vec::new();
-    for (node, kind, event, site) in sites {
+    for (node, kind, event, capture, site) in sites {
         let at = site.at;
         let route = EventRoute::of(event).or_else(|| kind.route(event));
         let Some(route) = route else {
@@ -248,9 +248,14 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             ));
             continue;
         }
+        let route = Route {
+            event: route,
+            handler: index,
+            capture,
+        };
         match routes.last_mut() {
-            Some((last, list)) if *last == node => list.push((route, index)),
-            _ => routes.push((node, vec![(route, index)])),
+            Some((last, list)) if *last == node => list.push(route),
+            _ => routes.push((node, vec![route])),
         }
     }
     let mut controls = Vec::with_capacity(nodes.len());
@@ -438,7 +443,7 @@ struct Walk<'a> {
     /// The next node key.
     key: u32,
     /// Each handler: its node, the node's control kind, its event and its site.
-    sites: Vec<(NodeKey, ControlKind, &'a str, Site)>,
+    sites: Vec<(NodeKey, ControlKind, &'a str, bool, Site)>,
     /// Each view-driven native node: a control, or a label showing a text.
     nodes: Vec<(NodeKey, ControlKind, &'a UiNode)>,
     /// Each component instance's root node, the first of its view's nodes.
@@ -485,6 +490,7 @@ impl<'a> Walk<'a> {
                 own,
                 kind,
                 event,
+                handler.capture,
                 Site {
                     instance: handler.instance,
                     at: handler.origin,

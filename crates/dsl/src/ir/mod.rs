@@ -499,6 +499,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     event: h.event().map(|t| t.text()).unwrap_or_default(),
                     origin: h.syntax().text_range(),
                     instance,
+                    capture: is_capture(&h),
                 }),
                 ViewItem::TwoWayBinding(bind) => {
                     let (Some(name), Some(source)) = (single_segment(bind.target()), bind.source())
@@ -517,6 +518,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             event: event.name.to_string(),
                             origin: bind.syntax().text_range(),
                             instance,
+                            capture: false,
                         },
                     );
                     write_backs += 1;
@@ -944,6 +946,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             event: h.event().map(|t| t.text()).unwrap_or_default(),
                             origin: h.syntax().text_range(),
                             instance: parent,
+                            capture: is_capture(h),
                         });
                     }
                 }
@@ -1220,4 +1223,10 @@ impl Lowering<'_, '_> {
     fn block_items(&mut self, block: ViewBlock) -> Vec<UiItem> {
         self.items(block.items())
     }
+}
+/// Whether `handler` is written `on capture`.
+fn is_capture(handler: &crate::ast::EventHandler) -> bool {
+    handler
+        .phase()
+        .is_some_and(|t| t.kind() == crate::SyntaxKind::CaptureKw)
 }

@@ -119,13 +119,7 @@ pub fn emit_view_package(plan: &CandidatePlan) -> ViewPackage {
     let handlers = view
         .nodes()
         .filter_map(|(key, routes)| Some((statics.ordinal(key)?, routes)))
-        .flat_map(|(node, routes)| {
-            routes.iter().map(move |&(route, handler)| ViewHandler {
-                node,
-                route,
-                handler,
-            })
-        })
+        .flat_map(|(node, routes)| routes.iter().map(move |&route| ViewHandler { node, route }))
         .collect();
     let controls = view
         .controls()

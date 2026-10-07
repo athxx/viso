@@ -88,7 +88,7 @@ fn copies(host: &ViewHost) -> Value {
 fn handlers(view: &ViewBehavior) -> [u32; 2] {
     let entries: Vec<u32> = view
         .nodes()
-        .flat_map(|(_, routes)| routes.iter().map(|&(_, entry)| entry))
+        .flat_map(|(_, routes)| routes.iter().map(|route| route.handler))
         .collect();
     entries.try_into().expect("two handlers")
 }

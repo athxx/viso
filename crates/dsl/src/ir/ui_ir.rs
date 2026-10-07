@@ -364,6 +364,8 @@ pub struct UiHandler {
     /// The component instance whose view the handler belongs to: `0` for the
     /// view's own component, else an index into [`UiTree::instances`] plus one.
     pub instance: u32,
+    /// Whether it is an `on capture` handler, run as the sample walks down.
+    pub capture: bool,
 }
 
 /// A conditional region. Each branch carries the condition's span (for the

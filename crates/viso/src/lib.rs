@@ -1812,9 +1812,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     cx.request_redraw(ws.window);
                 }
             }
-            // Give back the GPU memory the next frame can rebuild on demand.
+            // Give back the GPU memory the next frame can rebuild on demand,
+            // and the preserved branches switched away: the next settle frees
+            // them, and each mounts afresh when shown again.
             viso_runtime::Lifecycle::LowMemory => {
                 for ws in &mut self.windows {
+                    ws.store.request_memory_trim(&mut ws.states);
                     ws.trim_memory();
                     cx.request_redraw(ws.window);
                 }

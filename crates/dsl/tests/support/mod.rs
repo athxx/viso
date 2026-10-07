@@ -13,14 +13,18 @@ use std::time::Duration;
 
 use viso_behavior::native::Timers;
 use viso_dsl::aot::build_view_package;
-use viso_dsl::frontend::{Origin, compile_file};
+use viso_dsl::frontend::{Compiled, Origin, compile_file, compile_file_for};
+use viso_dsl::hir::{CapabilitySet, TargetProfile};
 use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
+use viso_dsl::schema::Natives;
 use viso_dsl::view_behavior::view_behavior;
+use viso_ui::adaptive::Environment;
 use viso_ui::context::UpdateCx;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
-    BindingTable, ComputedStore, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent,
-    PointerPhase, PointerRouter, Rect, SemanticProjector, StateStore, TextEdits, settle_states,
+    BindingTable, ComputedStore, EffectStore, LengthEnv, NodeId, NodeStore, PointerButtons,
+    PointerEvent, PointerPhase, PointerRouter, Rect, SemanticProjector, StateStore, TextEdits,
+    settle_states,
 };
 use viso_view::{Value, ViewHost, load_view};
 
@@ -31,6 +35,14 @@ pub fn origin() -> Origin {
         language: None,
     }
 }
+
+/// The surface every frame lays the view out into.
+pub const SURFACE: Rect = Rect {
+    x: 0.0,
+    y: 0.0,
+    w: 400.0,
+    h: 100.0,
+};
 
 /// A sleep the test fires.
 #[derive(Default)]
@@ -117,7 +129,24 @@ pub struct Rt {
 impl Rt {
     /// `source` mounted by a hot reload into a host with the test clock.
     pub fn mount(source: &str) -> Self {
-        let compiled = compile_file(source, &origin());
+        Rt::mount_compiled(source, compile_file(source, &origin()))
+    }
+
+    /// `source` mounted for a package granted `capabilities`.
+    pub fn mount_granted(source: &str, capabilities: &[&str]) -> Self {
+        let mut granted = CapabilitySet::new();
+        for &capability in capabilities {
+            granted.insert(capability);
+        }
+        let profile = TargetProfile {
+            capabilities: granted,
+            ..TargetProfile::default()
+        };
+        let compiled = compile_file_for(source, &origin(), Natives::standard(), profile);
+        Rt::mount_compiled(source, compiled)
+    }
+
+    fn mount_compiled(source: &str, compiled: Compiled) -> Self {
         let errors: Vec<_> = compiled.errors().collect();
         assert!(errors.is_empty(), "{errors:#?}");
         let view = view_behavior(&compiled)
@@ -177,6 +206,14 @@ impl Rt {
 
     /// One frame: the due tasks' continuations, the settle and the layout.
     pub fn frame(&mut self) {
+        self.settle();
+        if let Some(root) = self.root {
+            self.store.layout(root, SURFACE, &mut Vec::new());
+        }
+    }
+
+    /// The due tasks' continuations and the settle, without the layout.
+    pub fn settle(&mut self) {
         let mut continuations = Vec::new();
         if self.store.tasks_woken() {
             self.store.poll_tasks(&mut continuations);
@@ -199,15 +236,42 @@ impl Rt {
             &mut changed,
         )
         .expect("settles");
-        if let Some(root) = self.root {
-            let surface = Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 400.0,
-                h: 100.0,
-            };
-            self.store.layout(root, surface, &mut Vec::new());
+    }
+
+    /// Changes the environment as the platform reports it — the text scale
+    /// also moves the `sp` lengths — settles it against the last layout,
+    /// then settles the states, without a layout.
+    pub fn update_env(&mut self, change: impl FnOnce(&mut Environment)) {
+        self.states.update_env(change);
+        let scale = self.states.env().environment().text_scale;
+        let lengths = self.store.length_env();
+        if lengths.text_scale != scale {
+            self.store.set_length_env(LengthEnv {
+                text_scale: scale,
+                ..lengths
+            });
         }
+        self.states.settle_env(&self.store);
+        self.settle();
+    }
+
+    /// Every node under the root, the root included, in pre-order.
+    pub fn descendants(&self) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut stack: Vec<NodeId> = self.root.into_iter().collect();
+        while let Some(node) = stack.pop() {
+            out.push(node);
+            stack.extend(self.children(node).into_iter().rev());
+        }
+        out
+    }
+
+    /// The incremental layout of what the settle left dirty: how many nodes
+    /// it measured and placed.
+    pub fn relayout(&mut self) -> (u32, u32) {
+        let root = self.root.expect("mounted");
+        self.store
+            .relayout_dirty(root, SURFACE, &mut Vec::new(), &mut Vec::new())
     }
 
     /// Rings the pending sleeps, then runs a frame.
@@ -252,6 +316,24 @@ impl Rt {
                 &mut chain,
             );
         }
+    }
+
+    /// The children of `node`, in order.
+    pub fn children(&self, node: NodeId) -> Vec<NodeId> {
+        let arena = self.store.arena();
+        let mut out = Vec::new();
+        let mut child = arena.links(node).and_then(|l| l.first_child);
+        while let Some(c) = child {
+            out.push(c);
+            child = arena.links(c).and_then(|l| l.next_sibling);
+        }
+        out
+    }
+
+    /// The children of the root's `index`th child.
+    pub fn region(&self, index: usize) -> Vec<NodeId> {
+        let root = self.root.expect("mounted");
+        self.children(self.children(root)[index])
     }
 
     pub fn int(&self, name: &str) -> Option<i64> {
