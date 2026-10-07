@@ -1678,6 +1678,12 @@ cfg(viso_dev_runtime)
 release/shipping compile graph does not include dev apply/transport code
 ```
 
+已实现的边界：
+
+- 内部 flag 是 facade 的 Cargo feature `viso/hot-reload`；`viso-dsl`（in-app 编译器）是 facade 的 optional 依赖，只由该 feature 引入，未开 feature 的 artifact 不链接编译器、watcher 与 dev channel（`ui!`/`view!` 的 proc-macro 在 host 编译期使用 `viso-dsl`，不进入 artifact）；
+- facade 的 build script 是 build-time gate：`hot-reload` 与 `VISO_PROFILE=release|shipping` 同时出现时构建失败。gate 看 Viso artifact profile 而不是 Cargo profile——`--release` 优化过的 Dev artifact（如 `edit_to_pixels` 测量）仍是 Dev artifact；
+- `viso run` 是唯一打开该 feature 的 CLI 路径，并以 `VISO_PROFILE=dev` 构建；构建 release/shipping artifact 的 CLI 命令必须设置对应的 `VISO_PROFILE`。
+
 ---
 
 ## 59. Profile semantics

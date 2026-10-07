@@ -203,6 +203,9 @@ fn build(global: &Global, manifest: &Path, out: &mut Output) -> Result<PathBuf, 
         .arg("--manifest-path")
         .arg(manifest)
         .args(["--features", "viso/hot-reload"])
+        // The facade's build script refuses `hot-reload` in a release or
+        // shipping artifact; this one is a dev artifact.
+        .env("VISO_PROFILE", Profile::Dev.as_str())
         .arg("--message-format=json-render-diagnostics")
         .stdout(Stdio::piped());
     if global.quiet {

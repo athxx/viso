@@ -18,7 +18,9 @@ viso-view = { workspace = true }
 # A game's audio systems on the device (`viso::audio`).
 viso-behavior = { workspace = true }
 viso-widgets = { workspace = true }
-viso-dsl = { workspace = true }
+# The compiler the in-app development session recompiles `.vs` edits with;
+# only a dev artifact (`hot-reload`) links it, so a release app never does.
+viso-dsl = { workspace = true, optional = true }
 viso-services = { workspace = true }
 viso-render = { workspace = true }
 viso-svg = { workspace = true }
@@ -64,6 +66,7 @@ mobile = []
 # watched and each edit committed as one hot reload transaction.
 hot-reload = [
     "viso-view/hot-reload",
+    "dep:viso-dsl",
     # The watcher's `ReadDirectoryChangesW` file events on Windows.
     "windows/Win32_Security",
     "windows/Win32_Storage_FileSystem",
@@ -78,6 +81,8 @@ inspector = ["viso-text/inspector"]
 vulkan = ["viso-gpu/vulkan"]
 
 [dev-dependencies]
+# The DSL tests compile `.vs` sources themselves, with or without `hot-reload`.
+viso-dsl = { workspace = true }
 # The CoreText provider's sfnt-reassembly tests parse their output to prove the
 # reassembled directory is valid, and the system-font smoke tests shape through
 # the resolved face. Only used in tests, so they stay dev-dependencies.
