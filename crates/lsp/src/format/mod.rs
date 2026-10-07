@@ -31,7 +31,7 @@
 
 use viso_dsl::syntax::SyntaxNode;
 use viso_dsl::syntax::grammar::parse;
-use viso_dsl::{SyntaxKind, tokenize};
+use viso_dsl::{LexError, SyntaxKind, tokenize};
 
 /// One indentation level: four spaces.
 const INDENT: &str = "    ";
@@ -43,12 +43,45 @@ const INDENT: &str = "    ";
 /// module. Semantic tokens are preserved exactly; only whitespace and the
 /// placement of comments change.
 pub fn format(source: &str) -> String {
-    let parsed = parse(&tokenize(source), source);
+    let lexed = tokenize(source);
+    let parsed = parse(&lexed, source);
+    // A token left open as the last one runs to the end of the source (a raw
+    // string or block comment) or of its line (a string or char): trimming
+    // after it would cut its text, a final newline would join it.
+    let open_end = lexed
+        .iter()
+        .rev()
+        .find(|t| t.kind != SyntaxKind::Eof)
+        .is_some_and(|t| {
+            matches!(
+                t.error,
+                Some(
+                    LexError::UnterminatedRawString
+                        | LexError::UnterminatedBlockComment
+                        | LexError::UnterminatedString
+                        | LexError::UnterminatedChar
+                )
+            )
+        });
     let root = SyntaxNode::new_root(parsed.root.clone());
 
+    // A string or char left open runs to the end of its line, so its line
+    // must end after it, or the next line would join its text.
+    let open_lines: Vec<u32> = lexed
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.error,
+                Some(LexError::UnterminatedString | LexError::UnterminatedChar)
+            )
+        })
+        .map(|t| t.range.start().to_u32())
+        .collect();
+
     // The flat leaf-token stream in source order, whitespace dropped, comments
-    // kept. Each entry is (kind, text, whether it is a generic angle bracket).
-    let tokens: Vec<(SyntaxKind, String, bool)> = root
+    // kept. Each entry is (kind, text, whether it is a generic angle bracket,
+    // whether its line must end after it).
+    let tokens: Vec<(SyntaxKind, String, bool, bool)> = root
         .descendants_with_tokens()
         .into_iter()
         .filter_map(|el| {
@@ -57,23 +90,44 @@ pub fn format(source: &str) -> String {
                     t.kind(),
                     t.text(),
                     is_generic_angle(t.kind(), t.parent().kind()),
+                    open_lines
+                        .binary_search(&t.text_range().start().to_u32())
+                        .is_ok(),
                 )
             })
         })
-        .filter(|(kind, _, _)| *kind != SyntaxKind::Whitespace)
+        .filter(|(kind, ..)| *kind != SyntaxKind::Whitespace)
         .collect();
 
     let mut printer = Printer::new();
     for i in 0..tokens.len() {
-        let (kind, text, angle) = &tokens[i];
+        let (kind, text, angle, ends_line) = &tokens[i];
         let prev = i.checked_sub(1usize).map(|j| Prev {
             kind: tokens[j].0,
             angle: tokens[j].2,
+            // Generic closers may touch: the parser splits a `>>` it closes on.
+            joins: !(tokens[j].2 && *angle) && joins(&tokens[j].1, tokens[j].0, text, *kind),
         });
-        let next = tokens.get(i + 1).map(|(k, _, _)| *k);
+        let next = tokens.get(i + 1).map(|(k, ..)| *k);
         printer.emit(*kind, text, *angle, prev, next);
+        if *ends_line {
+            printer.pending_newline = true;
+        }
     }
-    printer.finish()
+    printer.finish(open_end)
+}
+
+/// Whether `before` and `after` written with nothing between them would lex
+/// as other tokens (`:` `:` as `::`, `/` `/` as a comment), so a space must
+/// keep them apart.
+fn joins(before: &str, before_kind: SyntaxKind, after: &str, after_kind: SyntaxKind) -> bool {
+    let both = format!("{before}{after}");
+    let kinds: Vec<SyntaxKind> = tokenize(&both)
+        .iter()
+        .map(|t| t.kind)
+        .filter(|&k| k != SyntaxKind::Eof)
+        .collect();
+    kinds != [before_kind, after_kind]
 }
 
 /// Whether a token of `kind` under a `parent` node is a generic list's `<` or `>`.
@@ -88,6 +142,8 @@ struct Prev {
     kind: SyntaxKind,
     /// It is a generic angle bracket.
     angle: bool,
+    /// It and the token being emitted would lex as other tokens if adjacent.
+    joins: bool,
 }
 
 /// Accumulates formatted output, tracking indentation depth and pending
@@ -127,6 +183,7 @@ impl Printer {
         next: Option<SyntaxKind>,
     ) {
         let prev_angle = prev.is_some_and(|p| p.angle);
+        let prev_joins = prev.is_some_and(|p| p.joins);
         let prev = prev.map(|p| p.kind);
         if kind == SyntaxKind::RBrace {
             // Close brace dedents. It starts its own line *unless* the block is empty
@@ -143,7 +200,7 @@ impl Printer {
         self.flush_breaks();
 
         if !self.at_line_start {
-            if self.wants_space_before(kind, angle, prev, prev_angle) {
+            if self.wants_space_before(kind, angle, prev, prev_angle) || prev_joins {
                 self.out.push(' ');
             }
         } else {
@@ -259,7 +316,10 @@ impl Printer {
 
     /// Finishes the document: the output ends with exactly one trailing newline
     /// (and none if the document is empty).
-    fn finish(mut self) -> String {
+    fn finish(mut self, open_end: bool) -> String {
+        if open_end {
+            return self.out;
+        }
         // Drop any trailing whitespace/newlines we may have accumulated, then add a
         // single terminating newline if there is any content.
         while self.out.ends_with('\n') || self.out.ends_with(' ') {

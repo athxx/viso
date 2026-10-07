@@ -189,11 +189,38 @@ fn expr_bp(p: &mut Parser, min_bp: u8, r: Restrictions) -> Option<CompletedMarke
     // The non-associative level the previous fold used, so a second operator at
     // that level is reported as a chain.
     let mut non_assoc: Option<u8> = None;
+    // Levels the folds below spent, and the flat error node a chain past the
+    // depth budget continues in.
+    let mut folds = 0;
+    let mut cut = None;
 
     loop {
+        let cast = p.at(SyntaxKind::AsKw) && bp::CAST >= min_bp;
+        let binary = binary_op(p.current()).filter(|&(level, _)| level >= min_bp);
+        if !cast && binary.is_none() {
+            break;
+        }
+        if cut.is_none() {
+            if p.fold() {
+                folds += 1;
+            } else {
+                cut = Some(p.start_at(lhs));
+            }
+        }
+        if cut.is_some() {
+            p.bump_any(); // the operator
+            if cast {
+                super::types::type_(p);
+            } else if at_expr_start(p) && p.enter().is_none() {
+                expr_bp(p, u8::MAX, r);
+                p.leave();
+            }
+            continue;
+        }
+
         // The `as` cast binds tighter than any binary operator but looser than a
         // unary prefix, so it is folded here at the top of the climb.
-        if p.at(SyntaxKind::AsKw) && bp::CAST >= min_bp {
+        if cast {
             let m = p.start_at(lhs);
             p.bump_any(); // `as`
             super::types::type_(p);
@@ -201,12 +228,9 @@ fn expr_bp(p: &mut Parser, min_bp: u8, r: Restrictions) -> Option<CompletedMarke
             continue;
         }
 
-        let Some((level, assoc)) = binary_op(p.current()) else {
+        let Some((level, assoc)) = binary else {
             break;
         };
-        if level < min_bp {
-            break;
-        }
 
         let is_range = level == bp::RANGE;
         if non_assoc == Some(level) {
@@ -227,7 +251,10 @@ fn expr_bp(p: &mut Parser, min_bp: u8, r: Restrictions) -> Option<CompletedMarke
         };
         // In a control-flow head a `{` opens the body, never the right operand.
         if at_expr_start(p) && !(r.no_record && p.at(SyntaxKind::LBrace)) {
-            expr_bp(p, next_min, r);
+            if p.enter().is_none() {
+                expr_bp(p, next_min, r);
+                p.leave();
+            }
         } else {
             p.error(ParseErrorKind::ExpectedExpr);
         }
@@ -239,6 +266,10 @@ fn expr_bp(p: &mut Parser, min_bp: u8, r: Restrictions) -> Option<CompletedMarke
         lhs = m.complete(p, kind);
         non_assoc = (assoc == Assoc::None).then_some(level);
     }
+    p.unfold(folds);
+    if let Some(m) = cut {
+        lhs = m.complete(p, SyntaxKind::ErrorNode);
+    }
     Some(lhs)
 }
 
@@ -246,6 +277,16 @@ fn expr_bp(p: &mut Parser, min_bp: u8, r: Restrictions) -> Option<CompletedMarke
 /// postfix expression. A range with no start (`..hi`) is diagnosed and parsed
 /// as a range so the operand still lands in the tree.
 fn unary_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
+    if let Some(cut) = p.enter() {
+        return Some(cut);
+    }
+    let e = unary_operand(p, r);
+    p.leave();
+    e
+}
+
+/// [`unary_expr`] one level in.
+fn unary_operand(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
     use SyntaxKind::*;
     match p.current() {
         Minus | Plus | Bang | Tilde | AwaitKw => {
@@ -272,7 +313,27 @@ fn unary_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
 /// wraps the current expression as its first child.
 fn postfix_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
     let mut lhs = primary_expr(p, r)?;
+    let mut folds = 0;
     loop {
+        let suffix = matches!(
+            p.current(),
+            SyntaxKind::LParen
+                | SyntaxKind::LBracket
+                | SyntaxKind::Dot
+                | SyntaxKind::QuestionDot
+                | SyntaxKind::Question
+        ) || (p.at(SyntaxKind::ColonColon) && p.nth(1) == SyntaxKind::Lt)
+            || (p.at(SyntaxKind::Lt)
+                && p.kind_of(lhs) == SyntaxKind::PathExpr
+                && at_bare_generics(p, r));
+        if !suffix {
+            break;
+        }
+        if !p.fold() {
+            lhs = cut_suffixes(p, lhs);
+            break;
+        }
+        folds += 1;
         // `name<T>(..)` without the turbofish (E2004): recognized only when the
         // `<...>` run reads as type arguments and a call, path or record follows,
         // so `a < b` stays a comparison.
@@ -317,7 +378,33 @@ fn postfix_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
             _ => break,
         };
     }
+    p.unfold(folds);
     Some(lhs)
+}
+
+/// The rest of a postfix chain past the depth budget, as one flat error node
+/// around `lhs`: each delimited suffix is skipped whole.
+fn cut_suffixes(p: &mut Parser, lhs: CompletedMarker) -> CompletedMarker {
+    let m = p.start_at(lhs);
+    let mut open = 0u32;
+    loop {
+        match p.current() {
+            SyntaxKind::LParen | SyntaxKind::LBracket => open += 1,
+            SyntaxKind::RParen | SyntaxKind::RBracket if open > 0 => open -= 1,
+            SyntaxKind::Dot | SyntaxKind::QuestionDot if open == 0 => {
+                p.bump_any();
+                if p.nth_is_ident(0) || p.current().is_keyword() {
+                    p.bump_any();
+                }
+                continue;
+            }
+            SyntaxKind::Question if open == 0 => {}
+            _ if open > 0 && !p.at_end() => {}
+            _ => break,
+        }
+        p.bump_any();
+    }
+    m.complete(p, SyntaxKind::ErrorNode)
 }
 
 /// Folds a generic-argument list (with or without its turbofish `::`) onto
@@ -650,7 +737,10 @@ fn if_expr(p: &mut Parser) -> CompletedMarker {
     super::stmt::block(p);
     if p.eat(SyntaxKind::ElseKw) {
         if p.at(SyntaxKind::IfKw) {
-            if_expr(p);
+            if p.enter().is_none() {
+                if_expr(p);
+                p.leave();
+            }
         } else {
             super::stmt::block(p);
         }

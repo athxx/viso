@@ -41,6 +41,9 @@ pub(super) fn view_fragment_items(p: &mut Parser) {
 
 /// `"{" ViewStructureItem* "}"` — a view block or the body of a `fill` clause.
 fn view_block(p: &mut Parser) {
+    if p.enter().is_some() {
+        return;
+    }
     let m = p.start();
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
@@ -50,6 +53,7 @@ fn view_block(p: &mut Parser) {
     }
     p.expect(SyntaxKind::RBrace);
     m.complete(p, SyntaxKind::ViewBlock);
+    p.leave();
 }
 
 /// One structure item at the top of a view block: a node, a control-flow form, or
@@ -110,6 +114,9 @@ fn component_type(p: &mut Parser) {
 
 /// `"{" NodeMember* "}"` — the body of any node.
 fn node_body(p: &mut Parser) {
+    if p.enter().is_some() {
+        return;
+    }
     let m = p.start();
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
@@ -119,13 +126,14 @@ fn node_body(p: &mut Parser) {
     }
     p.expect(SyntaxKind::RBrace);
     m.complete(p, SyntaxKind::NodeBody);
+    p.leave();
 }
 
 /// One member of a node body: a property binding, a two-way binding, an event
 /// handler, a `fill` clause, a nested node, a control-flow form, or a part
 /// override/replacement. Dispatch is on the leading keyword; anything else is
 /// tried as a property binding (`PropertyPath : Expr ;`).
-fn node_member(p: &mut Parser) {
+pub(super) fn node_member(p: &mut Parser) {
     attributes(p);
     match view_keyword(p) {
         Some(SyntaxKind::OnKw) => return event_handler(p),
@@ -320,7 +328,10 @@ fn view_if(p: &mut Parser) {
     view_block(p);
     if p.eat(SyntaxKind::ElseKw) {
         if p.at(SyntaxKind::IfKw) {
-            view_if(p);
+            if p.enter().is_none() {
+                view_if(p);
+                p.leave();
+            }
         } else {
             view_block(p);
         }

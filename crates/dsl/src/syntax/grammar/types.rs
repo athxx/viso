@@ -14,6 +14,14 @@ use super::{ParseErrorKind, Parser};
 /// Parses a type. Wraps the specific shape in the node kind that matches it so a
 /// later AST cast can distinguish a tuple type from a path without re-lexing.
 pub(super) fn type_(p: &mut Parser) {
+    if p.enter().is_none() {
+        type_in(p);
+        p.leave();
+    }
+}
+
+/// [`type_`] one level in.
+fn type_in(p: &mut Parser) {
     match p.current() {
         SyntaxKind::LParen => tuple_or_paren_type(p),
         SyntaxKind::LBracket => array_or_slice_type(p),

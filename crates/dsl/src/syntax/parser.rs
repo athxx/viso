@@ -72,11 +72,17 @@ pub enum ParseErrorKind {
     /// A const generic argument was written without its `const` marker
     /// (`Matrix<F32, 4>` instead of `Matrix<F32, const 4>`, §26).
     ConstArgWithoutConst,
+    /// Constructs nested deeper than the parser's depth budget; the innermost
+    /// construct past the budget is kept as an error node, unparsed.
+    TooDeep,
+    /// The source has more significant tokens than the parser's token budget;
+    /// everything past the budget is kept as one error node, unparsed.
+    TooManyTokens,
 }
 
 impl ParseErrorKind {
     /// The stable Appendix C code for this error. Structural errors are
-    /// `E1401`–`E1405`; both non-associative chains share `E2802` (§63.1).
+    /// `E1401`–`E1407`; both non-associative chains share `E2802` (§63.1).
     pub const fn code(self) -> &'static str {
         match self {
             ParseErrorKind::UnclosedDelimiter => "E1401",
@@ -94,6 +100,8 @@ impl ParseErrorKind {
             ParseErrorKind::GenericWithoutTurbofish | ParseErrorKind::ConstArgWithoutConst => {
                 "E2004"
             }
+            ParseErrorKind::TooDeep => "E1406",
+            ParseErrorKind::TooManyTokens => "E1407",
         }
     }
 
@@ -133,6 +141,12 @@ impl ParseErrorKind {
             }
             ParseErrorKind::ConstArgWithoutConst => {
                 "a const generic argument must be marked `const`: `<const 4>`"
+            }
+            ParseErrorKind::TooDeep => {
+                "nested too deeply to parse; split the construct with `let`, a function or a component"
+            }
+            ParseErrorKind::TooManyTokens => {
+                "the source is too large to parse; split it into several modules"
             }
         }
     }

@@ -481,20 +481,24 @@ impl<'s> Lexer<'s> {
         }
     }
 
-    /// A `\xNN` escape: exactly two hex digits must follow the already-consumed
-    /// `\x`.
+    /// A `\xNN` escape: exactly two hex digits, at most `7F`, must follow the
+    /// already-consumed `\x`; other characters take `\u{...}`.
     fn byte_escape(&mut self) -> Option<LexError> {
         let mut ok = true;
+        let mut value = 0;
         for _ in 0..2 {
             match self.peek_byte() {
-                Some(b) if b.is_ascii_hexdigit() => self.bump_ascii(),
+                Some(b) if b.is_ascii_hexdigit() => {
+                    value = value * 16 + hex_value(b);
+                    self.bump_ascii();
+                }
                 _ => {
                     ok = false;
                     break;
                 }
             }
         }
-        if ok {
+        if ok && value <= 0x7F {
             None
         } else {
             Some(LexError::InvalidByteEscape)
@@ -620,8 +624,9 @@ impl<'s> Lexer<'s> {
             return self.radix_integer(start, radix);
         }
 
-        // Decimal integer part.
-        let sep_err_int = self.bump_decimal_digits();
+        // Decimal integer part. A misplaced separator anywhere in the body —
+        // integer, fraction or exponent — is the token's first error.
+        let mut sep_err_int = self.bump_decimal_digits();
 
         // A `.` may start a fraction — but only if followed by a digit. `1.` and
         // `1..2` do NOT make a float: `.` alone / `..` are operators, so `1..2`
@@ -632,7 +637,8 @@ impl<'s> Lexer<'s> {
         {
             is_float = true;
             self.bump_ascii(); // '.'
-            self.bump_decimal_digits();
+            let fraction = self.bump_decimal_digits();
+            sep_err_int = sep_err_int.or(fraction);
         }
 
         // An exponent `e`/`E` with optional sign makes it a float.
@@ -650,7 +656,8 @@ impl<'s> Lexer<'s> {
                 if sign {
                     self.bump_ascii();
                 }
-                self.bump_decimal_digits();
+                let digits = self.bump_decimal_digits();
+                sep_err_int = sep_err_int.or(digits);
             }
         }
 
@@ -944,19 +951,60 @@ fn is_ident_continue(ch: char) -> bool {
     CodePointSetData::new::<XidContinue>().contains(ch)
 }
 
-/// A cheap confusable-identifier heuristic: flag an identifier that mixes ASCII
-/// letters with non-ASCII letters, a common homoglyph attack shape. This is a
-/// warning-level placeholder; the real Unicode confusable analysis runs at
-/// symbol-table entry in the next slice.
+/// Whether an identifier mixes scripts, the shape of a homoglyph spoof
+/// (`pаypal` with a Cyrillic `а`): UTS #39 mixed-script detection at the
+/// Highly Restrictive level. Each character's Script_Extensions, Common and
+/// Inherited ignored, is widened to its augmented set (Han writes Japanese,
+/// Korean and Bopomofo text alongside kana, hangul and bopomofo); the
+/// identifier is clean when all its characters still share a script, or when
+/// its non-Latin characters do so as one of those three CJK writing systems.
+/// `café`, `名前かな` and `ユーザーID` are clean; ASCII-only identifiers never
+/// reach the lookup.
 fn is_confusable(text: &str) -> bool {
-    let mut has_ascii_alpha = false;
-    let mut has_non_ascii_alpha = false;
-    for ch in text.chars() {
-        if ch.is_ascii_alphabetic() {
-            has_ascii_alpha = true;
-        } else if !ch.is_ascii() && ch.is_alphabetic() {
-            has_non_ascii_alpha = true;
-        }
+    use icu_properties::props::Script;
+    use icu_properties::script::ScriptWithExtensions;
+
+    if text.is_ascii() {
+        return false;
     }
-    has_ascii_alpha && has_non_ascii_alpha
+    // The augmented scripts UTS #39 adds, as markers beside the real ones.
+    const JAPANESE: u8 = 1;
+    const KOREAN: u8 = 2;
+    const BOPOMOFO_HAN: u8 = 4;
+    let scripts = ScriptWithExtensions::new();
+    let mut latin = false;
+    let mut shared: Option<(Vec<Script>, u8)> = None;
+    for ch in text.chars() {
+        let set = scripts.get_script_extensions_val(ch);
+        if set.contains(&Script::Common) || set.contains(&Script::Inherited) {
+            continue;
+        }
+        if set.contains(&Script::Latin) {
+            latin = true;
+            continue;
+        }
+        let mut augmented = 0;
+        for script in set.iter() {
+            augmented |= match script {
+                Script::Han => JAPANESE | KOREAN | BOPOMOFO_HAN,
+                Script::Hiragana | Script::Katakana => JAPANESE,
+                Script::Hangul => KOREAN,
+                Script::Bopomofo => BOPOMOFO_HAN,
+                _ => 0,
+            };
+        }
+        let (real, marks) = match shared.take() {
+            None => (set.iter().collect(), augmented),
+            Some((mut real, marks)) => {
+                real.retain(|s| set.contains(s));
+                (real, marks & augmented)
+            }
+        };
+        if real.is_empty() && marks == 0 {
+            return true;
+        }
+        shared = Some((real, marks));
+    }
+    // Latin beside another script is clean only beside a CJK one.
+    latin && shared.is_some_and(|(_, marks)| marks == 0)
 }
