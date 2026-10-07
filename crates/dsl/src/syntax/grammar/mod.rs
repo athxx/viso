@@ -987,7 +987,12 @@ fn attributes(p: &mut Parser) {
     while p.at(SyntaxKind::At) {
         let m = p.start();
         p.bump_any(); // `@`
-        expr::path_only(p);
+        // The name is labels (`@const` names a keyword), at least one.
+        if at_label(p) {
+            expr::path_only(p);
+        } else {
+            p.error(ParseErrorKind::MissingToken);
+        }
         if p.at(SyntaxKind::LParen) {
             expr::arg_list(p);
         }

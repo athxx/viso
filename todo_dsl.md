@@ -1242,4 +1242,16 @@ timers (§104–§111).
   - [x] First-fix repair loop over a frozen set of generated mistakes,
         each verified by an event trace or a game tape; loop metrics.
   - [ ] Real-model prompt sets and generation runs (CLI/external eval).
-- [ ] §158 Definition of Done.
+- [x] §158 Definition of Done.
+  - [x] Every Appendix A production has one positive and one negative parser
+        row, read from the spec; fixed the parser where it accepted an empty
+        `where`/`requires`, `type T = ;`, an `@` without a name, and a tail
+        expression in a block-body fragment.
+  - [x] Keyword lists checked word by word against §12; `empty` became a
+        contextual keyword kind.
+  - [x] Precedence/associativity golden trees locked to the §64 table.
+  - [x] Directed diagnostics, state forward reference (no inference
+        cascade), preserve/key separation, a running reactive keyed component
+        with last-good reload, fixed-tick system, front-end fuzz, wire
+        verifier, stale handles.
+  - [ ] Shader on two backends runs on macOS only (Metal + CPU reference).

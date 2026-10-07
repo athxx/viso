@@ -185,6 +185,12 @@ impl Rt {
     }
 
     pub fn reload(&mut self, source: &str) {
+        self.try_reload(source).expect("reloads");
+    }
+
+    /// A hot reload of `source`; on a rejected source the view keeps its last
+    /// good version and the diagnostics come back.
+    pub fn try_reload(&mut self, source: &str) -> Result<(), Vec<viso_dsl::Diagnostic>> {
         let mut live = LiveRuntime {
             store: &mut self.store,
             states: &mut self.states,
@@ -198,10 +204,11 @@ impl Rt {
             nodes: &mut self.nodes,
             view: &mut self.view,
         };
-        let done = hot_reload_view(&mut live, &self.last_good, source, &origin()).expect("reloads");
+        let done = hot_reload_view(&mut live, &self.last_good, source, &origin())?;
         self.root = live.root;
         self.last_good = done.candidate;
         self.frame();
+        Ok(())
     }
 
     /// One frame: the due tasks' continuations, the settle and the layout.

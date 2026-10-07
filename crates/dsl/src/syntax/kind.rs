@@ -129,6 +129,7 @@ pub enum SyntaxKind {
     LoadKw,
     PolicyKw,
     ScopeKw,
+    EmptyKw,
 
     // --- Shader keywords (spec section 12.4) ---
     ShaderKw,
@@ -764,6 +765,7 @@ impl SyntaxKind {
                 | Self::LoadKw
                 | Self::PolicyKw
                 | Self::ScopeKw
+                | Self::EmptyKw
                 | Self::VertexKw
                 | Self::FragmentKw
                 | Self::ComputeKw
@@ -826,6 +828,7 @@ impl SyntaxKind {
             "load" => Self::LoadKw,
             "policy" => Self::PolicyKw,
             "scope" => Self::ScopeKw,
+            "empty" => Self::EmptyKw,
             "vertex" => Self::VertexKw,
             "fragment" => Self::FragmentKw,
             "compute" => Self::ComputeKw,

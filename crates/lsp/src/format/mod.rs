@@ -204,15 +204,19 @@ fn matching_braces(tokens: &[Tok]) -> Vec<Option<usize>> {
 
 /// Whether `before` and `after` written with nothing between them would lex
 /// as other tokens (`:` `:` as `::`, `/` `/` as a comment), so a space must
-/// keep them apart.
-fn joins(before: &str, before_kind: SyntaxKind, after: &str, after_kind: SyntaxKind) -> bool {
-    let both = format!("{before}{after}");
-    let kinds: Vec<SyntaxKind> = tokenize(&both)
-        .iter()
-        .map(|t| t.kind)
-        .filter(|&k| k != SyntaxKind::Eof)
-        .collect();
-    kinds != [before_kind, after_kind]
+/// keep them apart. Compared as the lexer sees each alone, since the parser
+/// retags a contextual keyword the lexer reads as a name.
+fn joins(before: &str, after: &str) -> bool {
+    let lexed = |text: &str| -> Vec<SyntaxKind> {
+        tokenize(text)
+            .iter()
+            .map(|t| t.kind)
+            .filter(|&k| k != SyntaxKind::Eof)
+            .collect()
+    };
+    let mut apart = lexed(before);
+    apart.extend(lexed(after));
+    lexed(&format!("{before}{after}")) != apart
 }
 
 /// Whether a token of `kind` under a `parent` node is a generic list's `<` or `>`.
@@ -225,7 +229,7 @@ fn is_generic_angle(kind: SyntaxKind, parent: SyntaxKind) -> bool {
 fn spaced(prev: &Tok, next: &Tok) -> bool {
     use SyntaxKind as K;
     // Generic closers may touch: the parser splits a `>>` it closes on.
-    if !(prev.angle && next.angle) && joins(&prev.text, prev.kind, &next.text, next.kind) {
+    if !(prev.angle && next.angle) && joins(&prev.text, &next.text) {
         return true;
     }
     // A generic `<` hugs its name and its first argument; a generic `>` hugs
