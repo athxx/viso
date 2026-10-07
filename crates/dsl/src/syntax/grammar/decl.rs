@@ -557,8 +557,10 @@ fn slot_decl(p: &mut Parser) {
     super::types::type_(p);
     if p.eat(SyntaxKind::Eq) {
         // The default is `None` or the `empty` context word; consume either.
-        if p.at(SyntaxKind::NoneKw) || (p.at(SyntaxKind::Ident) && p.token_text(0) == "empty") {
+        if p.at(SyntaxKind::NoneKw) {
             p.bump_any();
+        } else if p.at_contextual(SyntaxKind::EmptyKw) {
+            p.bump_as(SyntaxKind::EmptyKw);
         } else {
             p.error(ParseErrorKind::MissingToken);
         }
@@ -666,9 +668,7 @@ fn type_alias_decl(p: &mut Parser) {
     if !p.eat(SyntaxKind::Eq) {
         p.error(ParseErrorKind::MissingToken);
     }
-    if !p.at(SyntaxKind::Semi) {
-        super::types::type_(p);
-    }
+    super::types::type_(p);
     p.expect(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::TypeAliasDecl);
 }
@@ -878,9 +878,10 @@ fn capability_clause(p: &mut Parser) {
         let m = p.start();
         p.bump_as(SyntaxKind::RequiresKw);
         p.expect(SyntaxKind::LBrace);
-        while !p.at(SyntaxKind::RBrace) && !p.at_end() {
+        // At least one path; a trailing comma may end the list.
+        loop {
             super::types::type_(p);
-            if !p.eat(SyntaxKind::Comma) {
+            if !p.eat(SyntaxKind::Comma) || p.at(SyntaxKind::RBrace) {
                 break;
             }
         }
@@ -940,11 +941,12 @@ fn where_clause(p: &mut Parser) {
     if p.at(SyntaxKind::WhereKw) {
         let m = p.start();
         p.bump_any(); // `where`
-        while super::types::at_type_start(p) {
+        // At least one predicate; a trailing comma may end the list.
+        loop {
             super::types::type_(p);
             p.expect(SyntaxKind::Colon);
             super::types::trait_bounds(p);
-            if !p.eat(SyntaxKind::Comma) {
+            if !p.eat(SyntaxKind::Comma) || !super::types::at_type_start(p) {
                 break;
             }
         }

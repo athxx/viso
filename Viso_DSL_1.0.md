@@ -835,7 +835,7 @@ import app::model::User as AppUser;
 ## 24. Attribute
 
 ```ebnf
-attribute         = "@", path, [ "(", [ attribute_args ], ")" ] ;
+attribute         = "@", label, { "::", label }, [ "(", [ attribute_args ], ")" ] ;
 attribute_args    = attribute_arg, { ",", attribute_arg }, [ "," ] ;
 attribute_arg     = expression
                   | label, ":", expression ;
@@ -2448,9 +2448,10 @@ theme_decl          = "theme", identifier,
                       [ ":", type_path ],
                       "{", { theme_item }, "}" ;
 
-theme_item          = const_decl
-                    | identifier, "=", expression, ";" ;
+theme_item          = identifier, "=", expression, ";" ;
 ```
+
+Theme Item 只给出 `Theme` 字段的值；Theme 用到的命名常量写成模块级 `const`（Item 表达式可以读取），不在 Theme 内另设 `const` 作用域。
 
 ```viso
 export theme AppTheme {
@@ -7627,6 +7628,8 @@ Viso DSL 1.0 的首个可交付实现必须满足：
 - 至少一个 Shader 通过安全 ABI 在两个 Backend 运行；
 - 无已知 Parser Panic、VM 越界、Handle UAF 或 GPU Layout 依赖字段顺序的问题。
 
+当前实现：`crates/dsl/tests/definition_of_done.rs` 逐条检查。`crates/dsl/tests/ebnf_golden.rs` 从附录 A 读出全部 Production，要求每个恰有一行正例与反例（反例的诊断码固定，含 Lexer 码），增删 Production 而不改表即失败；与 Component 共用成员集的 Body（Template、System、`use` 体）与 Style 选择器的形状在解析之后以针对性诊断限制（`E3601`、`E2103`）。关键字清单逐词对照 §12.1–§12.3，Lexer/Parser 的关键字种类数等于两表之和；优先级以 Golden Tree 锁定每对相邻级别与每级结合性，并对照 §64 表格原文。运行项在 Headless 宿主中挂载同一个 Component：Action 写入经 Computed 到达 Text 无需 Render 调用，Keyed 重排移动同一批节点，被拒绝的热重载保留上一版本与 State，删除的行其 NodeId 不再解析；System 在 8 Hz 下按经过时间运行整数 Tick。Shader 一项由 `crates/viso/tests/shader_golden.rs` 覆盖：CPU 参考光栅器与 Metal（`vulkan` Feature 下另有 MoltenVK 上的 Vulkan）在容差内一致。
+
 ---
 
 # 附录 A：规范性合并 EBNF
@@ -7708,7 +7711,7 @@ DeclCore
      |  NativeDecl
 
 Attribute
-    ::= "@" Path ( "(" AttributeArgs? ")" )?
+    ::= "@" Label ( "::" Label )* ( "(" AttributeArgs? ")" )?
 
 AttributeArgs
     ::= AttributeArg ( "," AttributeArg )* ","?
@@ -8201,8 +8204,7 @@ ThemeDecl
         "{" ThemeItem* "}"
 
 ThemeItem
-    ::= ConstDecl
-     |  IDENT "=" Expression ";"
+    ::= IDENT "=" Expression ";"
 ```
 
 ---

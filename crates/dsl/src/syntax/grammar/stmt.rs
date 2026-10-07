@@ -105,7 +105,7 @@ fn expr_or_assign_stmt(p: &mut Parser) {
         m.complete(p, SyntaxKind::AssignStmt);
     } else {
         // The block's last expression may omit its `;`: it is the tail value.
-        if !p.at(SyntaxKind::RBrace) {
+        if !p.at(SyntaxKind::RBrace) && !p.at_end() {
             p.expect(SyntaxKind::Semi);
         }
         m.complete(p, SyntaxKind::ExprStmt);

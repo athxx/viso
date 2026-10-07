@@ -172,15 +172,9 @@ pub(crate) fn lower_component(
                 };
 
                 // A private state that omitted its type must infer a single concrete type;
-                // an undetermined result is a compile error (spec state section).
-                if !type_was_annotated && is_undetermined(&ty) {
-                    diagnostics.push(Diagnostic::error(
-                        "E2103",
-                        span,
-                        "cannot uniquely infer the type of this `state`; add an explicit type \
-                         annotation",
-                    ));
-                }
+                // an undetermined result is a compile error (spec state section), unless
+                // it reads a later state, which the ordering pass reports instead.
+                let untyped = !type_was_annotated && is_undetermined(&ty);
 
                 let mut meta = decl_meta(
                     symbol,
@@ -194,6 +188,7 @@ pub(crate) fn lower_component(
                     symbol,
                     reads,
                     span,
+                    untyped,
                     node: HirState {
                         name: member_name,
                         type_was_annotated,
@@ -327,6 +322,7 @@ pub(crate) fn lower_component(
                     symbol,
                     reads: BTreeSet::new(),
                     span,
+                    untyped: false,
                     node: HirState {
                         name: member_name,
                         type_was_annotated: true,
@@ -387,6 +383,8 @@ struct StateEntry {
     symbol: Option<SymbolId>,
     reads: BTreeSet<SymbolId>,
     span: TextRange,
+    /// Its type was omitted and could not be inferred.
+    untyped: bool,
     node: HirState,
 }
 
@@ -400,7 +398,9 @@ struct ComputedEntry {
 
 /// Checks that every `state` initializer reads only *source-earlier* state. A read of a
 /// state declared later in source is `E2104` (a forward reference); the check ignores reads
-/// of non-state sources (inputs/computeds), which have no ordering constraint here.
+/// of non-state sources (inputs/computeds), which have no ordering constraint here. A
+/// state whose omitted type could not be inferred is `E2103`, unless a forward read is
+/// why: that one error is the `E2104`.
 fn check_state_order(states: &[StateEntry], diagnostics: &mut Vec<Diagnostic>) {
     // The set of state symbols already declared as we scan forward.
     let mut seen: BTreeSet<SymbolId> = BTreeSet::new();
@@ -408,6 +408,17 @@ fn check_state_order(states: &[StateEntry], diagnostics: &mut Vec<Diagnostic>) {
     let all: BTreeSet<SymbolId> = states.iter().filter_map(|s| s.symbol).collect();
 
     for state in states {
+        let forward = state
+            .reads
+            .iter()
+            .any(|read| all.contains(read) && !seen.contains(read));
+        if state.untyped && !forward {
+            diagnostics.push(Diagnostic::error(
+                "E2103",
+                state.span,
+                "cannot uniquely infer the type of this `state`; add an explicit type annotation",
+            ));
+        }
         for &read in &state.reads {
             if all.contains(&read) && !seen.contains(&read) {
                 // The read resolves to a state that has not been declared yet.

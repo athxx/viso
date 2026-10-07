@@ -1025,7 +1025,7 @@ impl SlotDecl {
             .into_iter()
             .filter_map(|e| e.as_token().cloned())
             .skip_while(|t| t.kind() != SyntaxKind::Eq)
-            .find(|t| matches!(t.kind(), SyntaxKind::NoneKw | SyntaxKind::Ident))
+            .find(|t| matches!(t.kind(), SyntaxKind::NoneKw | SyntaxKind::EmptyKw))
     }
 }
 
