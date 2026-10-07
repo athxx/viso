@@ -217,6 +217,51 @@ fn a_fixed_seed_and_input_tape_replay() {
 }
 
 #[test]
+fn a_tape_replays_the_same_across_an_input_map_reload() {
+    // A tape records actions, not keys: rebinding the key a recorded
+    // action came from changes nothing about its replay.
+    let mapped = |key: &str| {
+        program(&format!(
+            "{QUICK}\nimport viso::game::{{InputMap, Key}};\n\
+             export const INPUT: InputMap<InputAction> = InputMap::new().key(Key::{key}, InputAction::jump);\n"
+        ))
+    };
+    let (space, w) = (mapped("Space"), mapped("W"));
+    assert_eq!(classify(&space, &w).tier, ReloadTier::Logic);
+    let mut live = game_with(&space, 1);
+    live.record();
+    for at in [10, 90] {
+        live.step((at - live.clock().tick()) as u32);
+        live.key(Key::Space, true);
+        live.step(2);
+        live.key(Key::Space, false);
+    }
+    live.step((140 - live.clock().tick()) as u32);
+    let recorded = live.stop_recording().expect("recording");
+    assert_eq!(state(&live, "Tiny", "jumps"), Value::Int(2));
+
+    let mut straight = game_with(&space, 1);
+    straight.play(recorded.clone()).expect("plays");
+    straight.step(140);
+    let mut rebound = game_with(&space, 1);
+    rebound.play(recorded).expect("plays");
+    rebound.step(50);
+    let swapped = swap(
+        &mut rebound,
+        &space,
+        &w,
+        &Natives::standard(),
+        &[],
+        Rebuild::KeepCharacters,
+    )
+    .expect("reloads");
+    assert_eq!(swapped.reload.tier, ReloadTier::Logic);
+    rebound.step(90);
+    assert_eq!(simulation(&rebound), simulation(&straight));
+    assert_eq!(simulation(&straight), simulation(&live));
+}
+
+#[test]
 fn the_tick_rate_does_not_follow_the_display() {
     // Two seconds of frames at any refresh rate run 120 ticks, give or
     // take the one the frame boundary splits, and every tick computes the
@@ -370,10 +415,29 @@ fn a_faulting_or_broken_version_does_not_replace_the_last_good() {
     .expect_err("its start faults");
     assert!(matches!(error, SwapError::Fault(_)), "{error}");
     assert_eq!((game.build(), game.snapshot().hash()), (build, hash));
+    // Its tick faults: a logic reload's smoke tick throws it away.
+    let faulting = program(&QUICK.replace("random_range(0, 100)", "random_range(3, 3)"));
+    assert_eq!(classify(&last_good, &faulting).tier, ReloadTier::Logic);
+    let error = swap(
+        &mut game,
+        &last_good,
+        &faulting,
+        &Natives::standard(),
+        &[],
+        Rebuild::KeepCharacters,
+    )
+    .expect_err("its tick faults");
+    assert!(matches!(error, SwapError::Fault(_)), "{error}");
+    assert_eq!((game.build(), game.snapshot().hash()), (build, hash));
+    assert!(game.faults().is_empty(), "{:?}", game.faults());
     // A version that does not compile never reaches the game.
     assert!(!codes(&QUICK.replace("jumps += 1;", "jumps += true;")).is_empty());
     game.step(1);
     assert_eq!(game.clock().tick(), 21);
+    assert!(
+        game.faults().is_empty(),
+        "the last good keeps running clean"
+    );
 }
 
 #[test]

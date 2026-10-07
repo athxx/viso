@@ -1183,9 +1183,49 @@ timers (§104–§111).
 ## D9 — Acceptance suites (grows with every phase)
 
 - [ ] §152 parser acceptance.
+  - [ ] Doc examples (§152.1): every ```viso block of the spec and the
+        rationale accepted by one entry (CompilationUnit, ComponentMember*,
+        NodeMember*, block body, Expression), ```viso-invalid rejected by all,
+        no `...` placeholder outside comments; Part III blocks tokenize.
+  - [ ] Depth and token budgets: deep nesting never overflows, a budget
+        diagnostic past the limit.
+  - [ ] Block-item `if`/`match` vs tail classification pinned.
+  - [ ] Negatives: `=>` outside match, `<=>` outside bind, `=` vs `:` in
+        view/style/record, record head in `while`/`for`/`match`/view heads,
+        generic record constructor without turbofish, closure `||` vs or.
+  - [ ] Lexer boundaries: `100%-8dp`, `1em`, `1e5`, raw-string 255 hashes,
+        separators beside suffix/exponent, escape limits.
+  - [ ] Keywords: strict keywords as labels (named args, record literal and
+        pattern fields), E1301 in parameter/closure/shorthand/decl names;
+        confusable check keeps single-script names (`café`) clean.
+  - [ ] Recovery after unclosed string/comment inside a component.
+  - [ ] Fuzz: formatter never panics on random input; parse(format(x))
+        equal to parse(x) as trees; random edits keep incremental = full.
 - [ ] §153 type acceptance.
+  - [ ] Widening ladders from source (signed, unsigned, float, length) and
+        the forbidden conversions as diagnostics.
+  - [ ] `Float` in declarations; StableKey derivation for records, enums,
+        tuples, `Option`, float members rejected.
+  - [ ] Closure parameters and return from the expected function type.
+  - [ ] Capability propagation from source (E2601); native ownership in
+        every stored place.
+  - [ ] Computed cycle path contents; MixedLength multiply and assignment.
+  - [ ] Percent through `const`; `font_size` em on the same node.
 - [ ] §154 runtime acceptance.
-- [ ] §155 game acceptance.
+  - [ ] Paint-only DSL write lays nothing out.
+  - [ ] DSL capture handlers run before the target.
+  - [ ] Keyed reorder keeps focus; task cancelled on key change.
+  - [ ] Preserved branch eviction.
+  - [ ] Stale resource load finishing after the newer one is dropped.
+  - [ ] Native panic and budget fault in a handler roll back and the view
+        keeps running.
+  - [ ] Environment changes touch only dependents (same-class resize,
+        breakpoint crossing, safe area/keyboard, text scale incl. semantics).
+- [x] §155 game acceptance.
+  - [x] A logic reload whose smoke tick faults keeps the last good.
+  - [x] Simulation reading `env`, `await` or a native task is E9104.
+  - [x] A tape replays the same after an InputMap reload.
+  - [x] A shader the backend rejects keeps the drawn pipeline.
 - [ ] §156 human usability samples compile and format stably.
 - [ ] §157 AI generation loop: diagnostics with fixes, tape-verified behavior.
 - [ ] §158 Definition of Done.

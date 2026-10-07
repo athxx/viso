@@ -421,6 +421,13 @@ impl Scheduler {
             Rebuild::Fresh => 0,
             Rebuild::KeepCharacters => self.world.carry_characters(old),
         };
+        self.smoke_tick().map_or(Ok(carried), Err)
+    }
+
+    /// Runs one tick on a copy of the game whose state, world, clock, input
+    /// and commands are then put back, its Presentation commands dropped and
+    /// its tapes and store untouched: the fault it raised, if any.
+    fn smoke_tick(&mut self) -> Option<SystemFault> {
         let started = self.snapshot();
         let held = mem::take(&mut self.commands);
         let input = self.input.clone();
@@ -447,11 +454,12 @@ impl Scheduler {
         self.collisions = collisions;
         self.delivered = delivered;
         self.replayed_commands = replayed;
-        fault.map_or(Ok(carried), Err)
+        fault
     }
 
     /// Reloads the logic: `vm`'s build runs from the next tick on, over the
-    /// same world, random state, clock and input. Every Simulation state it
+    /// same world, random state, clock and input, once one smoke tick of it
+    /// on a copy of the game ran clean. Every Simulation state it
     /// shares with this one by stable identity and schema keeps its value, and
     /// so does every `@local` state whose value holds no closure (a closure
     /// names code of the old build); the rest take their initializers. The
@@ -461,19 +469,22 @@ impl Scheduler {
     ///
     /// # Errors
     ///
-    /// The fault of a system whose instance could not be created, or
-    /// [`GameError::Physics`] when the physics engine does not reach the new
-    /// build's determinism tier: the game is left as it was.
+    /// The fault of a system whose instance could not be created or of the
+    /// smoke tick, or [`GameError::Physics`] when the physics engine does not
+    /// reach the new build's determinism tier: the game, its build among it,
+    /// is left as it was.
     pub fn reload(&mut self, mut vm: Vm) -> Result<Restored, GameError> {
         PhysicsTier::check(&*self.world.fork_physics(), vm.module().determinism())?;
         let snapshot = self.snapshot();
         let mut instances = instantiate(&mut vm, self.clock.tick())?;
         let module = vm.module().clone();
         let locals = carry_locals(self.vm.module(), &self.instances, &module, &mut instances);
-        if let Some(persist) = vm.services_mut().remove::<Persist>() {
-            self.persist = Some(Persistence::new(persist, u64::from(module.tick_rate())));
-        }
-        if self.persist.is_some() {
+        let incoming = vm
+            .services_mut()
+            .remove::<Persist>()
+            .map(|persist| Persistence::new(persist, u64::from(module.tick_rate())));
+        let reports = self.persist_reports.len();
+        if incoming.is_some() || self.persist.is_some() {
             carry_persisted(
                 (self.vm.module(), &self.instances),
                 &mut vm,
@@ -482,40 +493,62 @@ impl Scheduler {
             );
         }
         let schema = input_schema(&module);
-        if module.tick_rate() != self.vm.module().tick_rate() {
+        let rate_changed = module.tick_rate() != self.vm.module().tick_rate();
+        // The candidate's logic takes this one's place for its smoke tick;
+        // this one's is put back if it faults.
+        let clock = self.clock.clone();
+        let input = self.input.clone();
+        if rate_changed {
             self.clock.set_rate(module.tick_rate());
-            // The past ran at another rate, so it does not replay.
-            if let Some(history) = &mut self.history {
-                history.restart(Recorder::new(
-                    self.seed,
-                    module.tick_rate(),
-                    &input_schema(&module).actions,
-                ));
-            }
         }
-        self.cx = Contexts::new(
-            &self.world,
-            &self.stage,
-            schema.actions.len(),
-            self.clock.fixed_dt(),
+        let cx = mem::replace(
+            &mut self.cx,
+            Contexts::new(
+                &self.world,
+                &self.stage,
+                schema.actions.len(),
+                self.clock.fixed_dt(),
+            ),
         );
         self.set_players(self.players);
         self.input.remap(&schema);
-        self.hooks = Hooks::of(&module);
-        self.build = fnv(&module.encode());
-        self.budget = vm.budget();
-        self.sequences = vec![0; module.systems().len()].into();
-        self.instances = instances;
-        let audio = self.vm.services_mut().remove::<AudioLink>();
-        self.vm = vm;
-        if let Some(link) = audio {
+        let hooks = mem::replace(&mut self.hooks, Hooks::of(&module));
+        let build = mem::replace(&mut self.build, fnv(&module.encode()));
+        let budget = mem::replace(&mut self.budget, vm.budget());
+        let sequences = mem::replace(&mut self.sequences, vec![0; module.systems().len()].into());
+        let old_instances = mem::replace(&mut self.instances, instances);
+        let mut old_vm = mem::replace(&mut self.vm, vm);
+        let restored = self.restore_states(&snapshot);
+        if let Some(fault) = self.smoke_tick() {
+            self.vm = old_vm;
+            self.instances = old_instances;
+            self.sequences = sequences;
+            self.budget = budget;
+            self.build = build;
+            self.hooks = hooks;
+            self.cx = cx;
+            self.set_players(self.players);
+            self.input = input;
+            self.clock = clock;
+            self.persist_reports.truncate(reports);
+            return Err(GameError::Fault(fault));
+        }
+        if let Some(persistence) = incoming {
+            self.persist = Some(persistence);
+        }
+        if rate_changed && let Some(history) = &mut self.history {
+            // The past ran at another rate, so it does not replay.
+            history.restart(Recorder::new(
+                self.seed,
+                module.tick_rate(),
+                &schema.actions,
+            ));
+        }
+        if let Some(link) = old_vm.services_mut().remove::<AudioLink>() {
             self.vm.services_mut().insert(link);
         }
         self.rebind_tapes();
-        Ok(Restored {
-            locals,
-            ..self.restore_states(&snapshot)
-        })
+        Ok(Restored { locals, ..restored })
     }
 
     /// Runs every start hook in system order on one shared budget, then

@@ -6246,7 +6246,7 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 
 比较对象是 Last-good 与 Candidate 的 Behavior IR：函数按声明的 Stable ID 配对，逐条比较指令；调用比较被调函数的身份，闭包比较其函数体，Native 调用比较路径与签名，状态读写比较所读写状态的名字而不是槽位，因此移动代码、改注释或在别处增删声明都不触发重载。一个 Hook 可达（经调用与闭包）的任一函数改变，即按该 Hook 的阶段定层：Start Hook 为 World Rebuild，`FixedUpdate` 与 `CollisionListener` 为 Logic-only，`FrameUpdate` 为 Presentation-only。Hook 绑定的增删与改绑同样按其阶段定层；新增或删除的 System 按它的 Hook 与状态定层；System 执行顺序或 Tick Rate 变化为 Logic-only。所有改动中最高的一层即本次重载层，以提示诊断 `E5103` 报告：主 Span 是决定层级的第一个改动，其余改动列为 Related。Shader 改动走 §110.3 自己的管线，不在这一比较之内。
 
-`hotreload::game::swap` 把 Candidate 按其层级应用到运行中的游戏：无改动不切换；Presentation-only 与 Logic-only（含 State Migration）在帧之间 `reload`；World Rebuild 走 §110.2 的 Shadow 重建；Candidate 不能校验、链接，或其实例、Start、Smoke Tick 故障时返回错误，运行中的游戏不变。
+`hotreload::game::swap` 把 Candidate 按其层级应用到运行中的游戏：无改动不切换；Presentation-only 与 Logic-only（含 State Migration）在帧之间 `reload`——新 Build 接管状态后先在副本上跑一个 Smoke Tick（命令丢弃，状态、World、时钟与输入随后还原），故障则放回原 Build、实例、Hook 与时钟并返回该故障；World Rebuild 走 §110.2 的 Shadow 重建；Candidate 不能校验、链接，或其实例、Start、Smoke Tick 故障时返回错误，运行中的游戏不变。
 
 ### 110.1 Logic-only Reload
 

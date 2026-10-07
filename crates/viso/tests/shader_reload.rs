@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 
 use viso_dsl::frontend::{Origin, compile_file};
 use viso_gpu::{
-    BlendMode, BufferDesc, BufferUsage, GpuBackend, MetalBackend, MetalCompiler, MetalProgram,
-    ProgramDesc, TextureFormat,
+    BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, DrawCommand, DrawList, Geometry,
+    GpuBackend, InlineUniforms, LoadOp, MetalBackend, MetalCompiler, MetalProgram, PipelineId,
+    ProgramDesc, RenderPass, RenderTarget, TextureDesc, TextureFormat,
 };
 use viso_shader::program::{
     FRAGMENT_ENTRY, Program, ProgramError, ProgramReload, ReloadError, ReloadEvent,
@@ -183,4 +184,125 @@ fn an_edit_compiles_off_thread_and_swaps_with_its_instance_buffer() {
     assert_eq!(second[1..], rows[1]);
     assert_eq!(second[0], Value::floats(&[0.0; 4]));
     let _ = (pipeline, buffer);
+}
+
+/// Draws two dots with `pipeline` from the live layout's encoding of the
+/// same rows, returning the BGRA8 picture.
+fn draw_dots(
+    backend: &mut MetalBackend,
+    pipeline: PipelineId,
+    reload: &ProgramReload<String, MetalProgram>,
+) -> Vec<u8> {
+    let live = reload.live();
+    let uniforms = live
+        .interface
+        .uniforms
+        .encode(&live.program.uniforms, &[Value::floats(&[64.0, 64.0])])
+        .expect("uniforms encode");
+    let mut instances = Vec::new();
+    for row in [
+        [Value::floats(&[4.0, 4.0]), Value::floats(&[24.0, 20.0])],
+        [Value::floats(&[30.0, 28.0]), Value::floats(&[28.0, 30.0])],
+    ] {
+        instances.extend(
+            live.interface
+                .instance
+                .encode(&live.program.instance, &row)
+                .expect("encodes"),
+        );
+    }
+    let buffer = |backend: &mut MetalBackend, bytes: &[u8], usage| {
+        let id = backend.create_buffer(&BufferDesc {
+            size: bytes.len().max(16),
+            usage,
+            label: "dots",
+        });
+        backend.write_buffer(id, 0, bytes);
+        id
+    };
+    let uniform_buffer = buffer(backend, &uniforms, BufferUsage::UNIFORM);
+    let instance_buffer = buffer(backend, &instances, BufferUsage::INSTANCE);
+    let bind_group = backend.create_bind_group(&BindGroupDesc {
+        label: "dots",
+        bindings: vec![Binding::Uniform(uniform_buffer)],
+    });
+    let target = backend.create_texture(&TextureDesc {
+        width: 64,
+        height: 64,
+        format: TextureFormat::Bgra8Unorm,
+        render_target: true,
+        label: "dots-target",
+    });
+    let commands = [DrawCommand {
+        pipeline,
+        bind_group: Some(bind_group),
+        geometry: Geometry::Generated { count: 2 },
+        instance_buffer,
+        instance_offset: 0,
+        uniforms: InlineUniforms::new(&[]),
+        scissor: None,
+    }];
+    let passes = [RenderPass {
+        target: RenderTarget::Texture(target),
+        load: LoadOp::Clear([0.0, 0.0, 0.0, 1.0]),
+        first_command: 0,
+        command_count: 1,
+    }];
+    backend.encode(&DrawList {
+        commands: &commands,
+        passes: &passes,
+    });
+    backend.read_texture(target)
+}
+
+#[test]
+fn a_backend_rejection_keeps_the_pipeline_that_draws() {
+    let mut backend = MetalBackend::new();
+    // The worker's compiler is Metal's; a shader named `Rejected` reaches it
+    // with a line Metal cannot compile, standing for any source the front
+    // end accepts and the backend does not.
+    let metal = backend.compiler();
+    let compile = move |p: &Program, interface: &ShaderInterface| {
+        let mut msl = emit(p, interface, Target::Msl);
+        if &*p.name == "Rejected" {
+            msl.push_str("\nthis is not metal;\n");
+        }
+        metal.compile(&ProgramDesc {
+            label: &p.name,
+            msl: &msl,
+            vertex_entry: VERTEX_ENTRY,
+            fragment_entry: FRAGMENT_ENTRY,
+            color_format: TextureFormat::Bgra8Unorm,
+            blend: BlendMode::PremultipliedOver,
+            vertex_textures: interface.vertex_textures,
+        })
+    };
+    let first = source(
+        "instance pos: Vec2F32; instance size: Vec2F32;",
+        "Vec4F32(1.0, 0.5, 0.25, 1.0)",
+    );
+    let mut reload =
+        ProgramReload::new(first.clone(), |s: &String| lower(s), compile).expect("builds");
+    let pipeline = backend.install_program(&reload.live().pipeline);
+    let before = draw_dots(&mut backend, pipeline, &reload);
+    let lit = before
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[..3] != [0, 0, 0])
+        .count();
+    assert!(lit > 400, "the dots are drawn: {lit} pixels");
+
+    reload.submit(first.replace("shader Dot", "shader Rejected"));
+    let ReloadEvent::Failed(ReloadError::Backend(log)) = wait(&mut reload) else {
+        panic!("a backend failure");
+    };
+    assert!(!log.is_empty(), "Metal's log comes back");
+    assert_eq!(
+        &*reload.live().program.name,
+        "Dot",
+        "the live program stays"
+    );
+    let after = draw_dots(&mut backend, pipeline, &reload);
+    assert_eq!(after, before, "the kept pipeline draws as before");
 }
