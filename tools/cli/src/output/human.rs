@@ -23,7 +23,7 @@ use std::fmt::{self, Write as _};
 use std::io::Write as _;
 use std::ops::Range;
 
-use viso_dsl::hotreload::event::{ReloadEvent, ReloadOutcome};
+use crate::dev::report::{Outcome, ReloadEvent};
 
 use super::{Location, Report, Source};
 
@@ -39,19 +39,19 @@ pub(super) fn dev(file: &str, event: &ReloadEvent) -> String {
     let ms = event.elapsed_us as f64 / 1000.0;
     let revision = event.candidate_revision;
     match event.outcome {
-        ReloadOutcome::Rejected => format!(
+        Outcome::Rejected => format!(
             "hot reload: {file} revision {revision} rejected at {}; keeping revision {} ({ms:.1} ms)",
             event.stage.as_str(),
             event.last_good_revision
         ),
         outcome => format!(
             "hot reload: {file} revision {revision} {} to {} mount(s) in {ms:.1} ms",
-            if outcome == ReloadOutcome::ScopedReset {
+            if outcome == Outcome::ScopedReset {
                 "applied with a scoped reset"
             } else {
                 "applied"
             },
-            event.mounts
+            event.counts.mounts
         ),
     }
 }

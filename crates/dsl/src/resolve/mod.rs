@@ -31,4 +31,5 @@ pub use resolver::{
 };
 pub(crate) use resolver::{generic_param_names, ident_tokens};
 pub use scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
+pub(crate) use symbol::digest;
 pub use symbol::{FINGERPRINT_VERSION, SymbolId, SymbolIdentity, SymbolKind, fingerprint};

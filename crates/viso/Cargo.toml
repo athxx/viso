@@ -18,8 +18,9 @@ viso-view = { workspace = true }
 # A game's audio systems on the device (`viso::audio`).
 viso-behavior = { workspace = true }
 viso-widgets = { workspace = true }
-# The compiler the in-app development session recompiles `.vs` edits with;
-# only a dev artifact (`hot-reload`) links it, so a release app never does.
+# The view planner the development session turns the host's accepted `.vs`
+# sources into commits with; only a dev artifact (`hot-reload`) links it, so a
+# release app never does.
 viso-dsl = { workspace = true, optional = true }
 viso-services = { workspace = true }
 viso-render = { workspace = true }
@@ -52,27 +53,15 @@ windows-core = "0.62"
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))'.dependencies]
 libc = "0.2"
 
-# The hot reload watcher's kqueue (macOS, iOS, FreeBSD) and inotify (Linux,
-# Android) file events.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 [features]
 default = []
 # Kept small and stable on purpose — no giant feature cartesian product
 # (§5). Backends resolve from the target, not from user feature combos.
 mobile = []
-# The development session: every `view!` mount is recorded, its `.vs` file
-# watched and each edit committed as one hot reload transaction.
-hot-reload = [
-    "viso-view/hot-reload",
-    "dep:viso-dsl",
-    # The watcher's `ReadDirectoryChangesW` file events on Windows.
-    "windows/Win32_Security",
-    "windows/Win32_Storage_FileSystem",
-    "windows/Win32_System_IO",
-    "windows/Win32_System_Threading",
-]
+# The development session: every `view!` mount is recorded and reported to
+# `viso run`, and each edit the host accepts commits as one hot reload
+# transaction.
+hot-reload = ["viso-view/hot-reload", "dep:viso-dsl"]
 # Text runtime explanations — every fallback walk, cache miss and eviction —
 # for the Inspector; compiled out otherwise.
 inspector = ["viso-text/inspector"]

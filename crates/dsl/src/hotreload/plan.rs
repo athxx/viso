@@ -155,6 +155,23 @@ pub fn plan_view_for(
     ))
 }
 
+/// [`plan_view_for`] over `parse`, a current parse of `source` with the
+/// compilation-unit entry.
+pub fn plan_view_parsed(
+    source: &str,
+    parse: crate::syntax::Parse,
+    origin: &Origin,
+    profile: TargetProfile,
+) -> Result<CandidatePlan, Vec<Diagnostic>> {
+    candidate(crate::frontend::compile_parsed_for(
+        source,
+        parse,
+        origin,
+        crate::schema::Natives::standard(),
+        profile,
+    ))
+}
+
 /// The candidate for a compiled source: its fatal diagnostics, including every
 /// handler that does not mount and every identity two sources share, or its
 /// plan.

@@ -1,9 +1,10 @@
-//! kqueue: each watched file's directory and the file itself, as vnodes.
+//! kqueue: each watched directory and each watched file in it, as vnodes.
 //!
-//! The directory reports a rename or a create into it (an editor's atomic
-//! save); the file reports a write, a truncate, its deletion or its rename.
-//! After an event the files of that directory whose path now names another
-//! file are opened again, so a save that replaced the file keeps reporting.
+//! A directory reports an entry created, renamed or removed in it (an
+//! editor's atomic save, a new file or directory); a file reports a write, a
+//! truncate, its deletion or its rename. After an event the files of that
+//! directory whose path now names another file are opened again, so a save
+//! that replaced the file keeps reporting.
 
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -128,36 +129,40 @@ impl Events {
         Some((events, Wake(queue)))
     }
 
-    /// Watches `path`, returning the group its events report under, `None`
-    /// when its directory cannot be watched.
+    /// Watches the entries of directory `dir`, returning the group its events
+    /// report under, `None` when it cannot be watched.
+    pub(super) fn add_dir(&mut self, dir: &Path) -> Option<u32> {
+        if let Some(group) = self.dirs.iter().position(|d| d.path == dir) {
+            return u32::try_from(group).ok();
+        }
+        let vnode = open(dir)?;
+        let group = self.dirs.len();
+        let watch = change(
+            vnode.as_raw_fd() as usize,
+            libc::EVFILT_VNODE,
+            libc::EV_ADD | libc::EV_CLEAR,
+            libc::NOTE_WRITE,
+            group,
+        );
+        if !register(&self.queue, &watch) {
+            return None;
+        }
+        self.dirs.push(Dir {
+            path: dir.to_owned(),
+            _vnode: vnode,
+            files: Vec::new(),
+        });
+        u32::try_from(group).ok()
+    }
+
+    /// Watches `path`, returning the group its events report under (its
+    /// directory's), `None` when its directory cannot be watched.
     pub(super) fn add(&mut self, path: &Path) -> Option<u32> {
         let dir = match path.parent() {
             Some(dir) if !dir.as_os_str().is_empty() => dir,
             _ => Path::new("."),
         };
-        let group = match self.dirs.iter().position(|d| d.path == dir) {
-            Some(group) => group,
-            None => {
-                let vnode = open(dir)?;
-                let group = self.dirs.len();
-                let watch = change(
-                    vnode.as_raw_fd() as usize,
-                    libc::EVFILT_VNODE,
-                    libc::EV_ADD | libc::EV_CLEAR,
-                    libc::NOTE_WRITE,
-                    group,
-                );
-                if !register(&self.queue, &watch) {
-                    return None;
-                }
-                self.dirs.push(Dir {
-                    path: dir.to_owned(),
-                    _vnode: vnode,
-                    files: Vec::new(),
-                });
-                group
-            }
-        };
+        let group = self.add_dir(dir)? as usize;
         let mut file = File {
             path: path.to_owned(),
             vnode: None,

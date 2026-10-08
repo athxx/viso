@@ -10,8 +10,9 @@
 //! host answers [`HostHello`] or [`Reject`]; both keep their version-first
 //! layout in every protocol version, so a peer of another version is refused
 //! with a reason instead of being decoded by guesswork. After the handshake the
-//! host sends [`PatchBundle`]s and the runtime answers each with a
-//! [`PatchAck`] or a [`PatchNack`].
+//! runtime reports its [`MountEntry`] inventory as views mount, the host sends
+//! [`PatchBundle`]s and the failures of rejected edits, and the runtime answers
+//! each patch with a [`PatchAck`] or a [`PatchNack`].
 //!
 //! Decoding is bounded: every string and count has a cap checked before it is
 //! read, and no message nests, so the depth is fixed. Malformed input is a
@@ -23,8 +24,9 @@ use std::io::{self, Read, Write};
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
 /// The dev channel protocol version. Version 2 is the runtime-first handshake
-/// with session, build and revision binding.
-pub const DEV_PROTOCOL_VERSION: u16 = 2;
+/// with session, build and revision binding; version 3 adds the mount
+/// inventory, the host's verdict on rejected edits and the `ui` section.
+pub const DEV_PROTOCOL_VERSION: u16 = 3;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -56,6 +58,39 @@ pub const MAX_LOG: usize = 16 << 10;
 
 /// The most sections a patch carries.
 pub const MAX_SECTIONS: usize = 4096;
+
+/// The most files an inventory message or a patch names.
+pub const MAX_FILES: usize = 4096;
+
+/// The longest path a message carries.
+pub const MAX_PATH: usize = 4096;
+
+/// The longest name (package, module segment, language, capability, locale).
+pub const MAX_NAME: usize = 256;
+
+/// The most module segments, and the most capabilities, an entry carries.
+pub const MAX_SEGMENTS: usize = 64;
+pub const MAX_CAPABILITIES: usize = 256;
+
+/// The most catalog directories a patch carries, and files per directory.
+pub const MAX_CATALOGS: usize = 64;
+pub const MAX_CATALOG_FILES: usize = 256;
+
+/// The most lines a failure carries, and the longest line.
+pub const MAX_LINES: usize = 16;
+pub const MAX_LINE: usize = 1024;
+
+/// The most notices an ACK carries.
+pub const MAX_NOTICES: usize = 64;
+
+/// The stable 64-bit FNV-1a hash of a source text, which both sides compute
+/// the same whatever their toolchain: how the host learns which version of a
+/// file the runtime runs without the runtime sending it.
+pub fn source_hash(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
 
 /// A 128-bit identity, written as its two halves.
 macro_rules! id128 {
@@ -165,11 +200,11 @@ pub struct Domains(u32);
 impl Domains {
     pub const NONE: Domains = Domains(0);
 
-    pub fn with(self, domain: Domain) -> Self {
+    pub const fn with(self, domain: Domain) -> Self {
         Domains(self.0 | 1 << domain as u8)
     }
 
-    pub fn contains(self, domain: Domain) -> bool {
+    pub const fn contains(self, domain: Domain) -> bool {
         self.0 & 1 << domain as u8 != 0
     }
 
@@ -303,6 +338,9 @@ pub enum Reject {
     Build,
     /// The runtime names another session.
     Session,
+    /// The runtime was compiled against another compiler schema than the
+    /// host compiles patches with.
+    Schema,
 }
 
 impl fmt::Display for Reject {
@@ -316,6 +354,10 @@ impl fmt::Display for Reject {
                 f.write_str("the app is not the build `viso run` compiles for; rebuild it")
             }
             Reject::Session => f.write_str("the app belongs to another `viso run` session"),
+            Reject::Schema => f.write_str(
+                "the app was compiled against another Viso compiler than `viso run`; \
+                 rebuild it with the same Viso version",
+            ),
         }
     }
 }
@@ -336,12 +378,123 @@ pub struct PatchBundle {
 /// that applies it; until then its tag is reserved and decodes as
 /// [`WireError::UnsupportedDomain`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PatchSection {}
+pub enum PatchSection {
+    /// The `ui` domain: the views and catalogs the host compiled and
+    /// validated, which the runtime commits. Version 3 carries them as the
+    /// accepted source text, which the runtime's view planner turns into the
+    /// commit; the typed UI patch replaces it.
+    Ui(UiSources),
+}
 
 impl PatchSection {
     pub fn domain(&self) -> Domain {
-        match *self {}
+        match self {
+            PatchSection::Ui(_) => Domain::Ui,
+        }
     }
+}
+
+/// A file of the runtime's inventory, by the id the runtime gave it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct FileId(pub u32);
+
+/// The `ui` section of version 3.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UiSources {
+    /// Each edited view and the source the host accepted for it.
+    pub views: Vec<ViewSource>,
+    /// The catalogs the views check against, for each catalog directory the
+    /// runtime has not been sent or whose files changed.
+    pub catalogs: Vec<CatalogSource>,
+}
+
+/// A view's accepted source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewSource {
+    pub file: FileId,
+    pub source: String,
+}
+
+/// The message catalogs of one directory, whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogSource {
+    /// The directory, as the mount entries name it.
+    pub dir: String,
+    pub files: Vec<CatalogText>,
+}
+
+/// A catalog file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogText {
+    pub path: String,
+    pub text: String,
+}
+
+/// A mounted `.vs` file, as the runtime reports it once its first mount is
+/// adopted: what the host needs to compile the file's edits exactly as the
+/// build compiled it, and which version of it the runtime runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountEntry {
+    /// The id patches and failures name the file by.
+    pub file: FileId,
+    /// The canonical path the build read it from.
+    pub path: String,
+    /// The module identity it compiles under.
+    pub package: String,
+    pub module: Vec<String>,
+    pub language: Option<String>,
+    /// Its package's catalogs: the source locale and the directory.
+    pub catalog: Option<(String, String)>,
+    /// The capabilities the build checked it against.
+    pub capabilities: Vec<String>,
+    /// [`source_hash`] of the source the runtime runs.
+    pub source_hash: u64,
+}
+
+/// What committing a patch's view to its mounts kept and lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileCommit {
+    pub file: FileId,
+    pub counts: CommitCounts,
+}
+
+/// What a commit kept and lost, over every mount of a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CommitCounts {
+    /// Mounts the view was committed to.
+    pub mounts: u32,
+    /// State cells that kept their live value.
+    pub migrated: u32,
+    /// State cells set from an initializer.
+    pub reset: u32,
+    /// Mounts whose focused node did not survive.
+    pub focus_lost: u32,
+    /// Scroll offsets that could not be restored.
+    pub scroll_lost: u32,
+    /// Mounts whose recompiled behavior did not mount.
+    pub handlers_lost: u32,
+}
+
+impl CommitCounts {
+    /// What the commit reset: states, focus, scroll or handlers (§8).
+    pub fn scoped_resets(&self) -> u32 {
+        self.reset
+            .saturating_add(self.focus_lost)
+            .saturating_add(self.scroll_lost)
+            .saturating_add(self.handlers_lost)
+    }
+}
+
+/// A notice the commit raised (a reset state), its span into the source the
+/// patch carried for `file`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub file: FileId,
+    /// A diagnostic code, `E` and four digits.
+    pub code: String,
+    pub start: u32,
+    pub end: u32,
+    pub message: String,
 }
 
 /// How long the runtime's part of a patch took.
@@ -361,9 +514,21 @@ pub struct PatchAck {
     /// The revision the runtime now matches.
     pub revision: Revision,
     pub applied_domains: Domains,
-    /// States reset to their initializer, focus or scroll lost.
-    pub scoped_resets: u32,
+    /// What the commit kept and lost, for each view the patch carried; their
+    /// scoped resets are [`PatchAck::scoped_resets`].
+    pub files: Vec<FileCommit>,
+    /// At most [`MAX_NOTICES`].
+    pub notices: Vec<Notice>,
     pub timings: PatchTimings,
+}
+
+impl PatchAck {
+    /// What the commit reset, over every view (§37).
+    pub fn scoped_resets(&self) -> u32 {
+        self.files
+            .iter()
+            .fold(0, |sum, f| sum.saturating_add(f.counts.scoped_resets()))
+    }
 }
 
 /// A patch refused; the runtime keeps `last_good_revision` (§37).
@@ -390,6 +555,8 @@ pub const NACK_REVISION_ORDER: &str = "NACK_REVISION_ORDER";
 pub const NACK_UNSUPPORTED_DOMAIN: &str = "NACK_UNSUPPORTED_DOMAIN";
 /// The patch frame did not decode.
 pub const NACK_MALFORMED: &str = "NACK_MALFORMED";
+/// The patch names a file the runtime did not report.
+pub const NACK_UNKNOWN_FILE: &str = "NACK_UNKNOWN_FILE";
 
 /// A log line's level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,6 +582,13 @@ pub enum HostMessage {
     Hello(HostHello),
     Reject(Reject),
     Patch(Box<PatchBundle>),
+    /// The host's verdict on the latest edit of `file` it did not send: the
+    /// lines to show over the last-good UI, or none once an edit is accepted
+    /// or reverted.
+    Failure {
+        file: FileId,
+        lines: Vec<String>,
+    },
 }
 
 /// What the runtime sends.
@@ -431,9 +605,8 @@ pub enum RuntimeMessage {
     Dropped {
         count: u32,
     },
-    /// A reload the app compiled itself, as `viso_dsl`'s report codec writes
-    /// it. Removed with the in-app compiler.
-    InAppReload(Vec<u8>),
+    /// Files mounted since the last inventory message.
+    Mounts(Vec<MountEntry>),
 }
 
 /// Why a frame or message was refused.
@@ -577,6 +750,8 @@ pub struct HostExpect<'a> {
     pub token: &'a str,
     pub dev_session: DevSessionId,
     pub build_id: BuildId,
+    /// The compiler schema the host compiles patches with.
+    pub schema: SchemaFingerprint,
 }
 
 /// The host's verdict on a runtime's hello: `Ok` to accept, `Err(Some)` to
@@ -591,6 +766,9 @@ pub fn accept_runtime(hello: &RuntimeHello, expect: &HostExpect<'_>) -> Result<(
     }
     if hello.build_id != expect.build_id {
         return Err(Some(Reject::Build));
+    }
+    if hello.schema_fingerprint != expect.schema {
+        return Err(Some(Reject::Schema));
     }
     Ok(())
 }
@@ -678,17 +856,20 @@ impl RuntimeIdentity {
 const HOST_HELLO: u8 = 0;
 const HOST_REJECT: u8 = 1;
 const HOST_PATCH: u8 = 2;
+const HOST_FAILURE: u8 = 3;
 
 const RUNTIME_HELLO: u8 = 0;
 const RUNTIME_ACK: u8 = 1;
 const RUNTIME_NACK: u8 = 2;
 const RUNTIME_LOG: u8 = 3;
 const RUNTIME_DROPPED: u8 = 4;
-const RUNTIME_IN_APP_RELOAD: u8 = 5;
+// 5 was version 2's in-app reload report.
+const RUNTIME_MOUNTS: u8 = 6;
 
 const REJECT_PROTOCOL: u8 = 0;
 const REJECT_BUILD: u8 = 1;
 const REJECT_SESSION: u8 = 2;
+const REJECT_SCHEMA: u8 = 3;
 
 /// The version preamble of a hello and a reject: the stream tag, then the dev
 /// protocol version, a layout every version keeps.
@@ -768,6 +949,122 @@ fn read_u32(dec: &mut Decoder<'_>) -> Result<u32, WireError> {
     u32::try_from(value).map_err(|_| malformed(dec))
 }
 
+fn read_file(dec: &mut Decoder<'_>) -> Result<FileId, WireError> {
+    Ok(FileId(read_u32(dec)?))
+}
+
+/// A list of at most `max` items, each read by `item`.
+fn read_list<T>(
+    dec: &mut Decoder<'_>,
+    max: usize,
+    what: &'static str,
+    mut item: impl FnMut(&mut Decoder<'_>) -> Result<T, WireError>,
+) -> Result<Vec<T>, WireError> {
+    let count = read_count(dec, max, what)?;
+    let mut items = Vec::with_capacity(count);
+    for _ in 0..count {
+        items.push(item(dec)?);
+    }
+    Ok(items)
+}
+
+fn write_strings(enc: &mut Encoder, strings: &[String]) {
+    enc.write_varint(strings.len() as u64);
+    for string in strings {
+        write_string(enc, string);
+    }
+}
+
+fn write_ui(enc: &mut Encoder, ui: &UiSources) {
+    enc.write_varint(ui.views.len() as u64);
+    for view in &ui.views {
+        enc.write_varint(u64::from(view.file.0));
+        write_string(enc, &view.source);
+    }
+    enc.write_varint(ui.catalogs.len() as u64);
+    for catalog in &ui.catalogs {
+        write_string(enc, &catalog.dir);
+        enc.write_varint(catalog.files.len() as u64);
+        for file in &catalog.files {
+            write_string(enc, &file.path);
+            write_string(enc, &file.text);
+        }
+    }
+}
+
+fn read_ui(dec: &mut Decoder<'_>) -> Result<UiSources, WireError> {
+    let views = read_list(dec, MAX_FILES, "patched views", |dec| {
+        Ok(ViewSource {
+            file: read_file(dec)?,
+            source: read_string(dec, MAX_FRAME, "view source")?,
+        })
+    })?;
+    let catalogs = read_list(dec, MAX_CATALOGS, "catalog directories", |dec| {
+        Ok(CatalogSource {
+            dir: read_string(dec, MAX_PATH, "catalog directory")?,
+            files: read_list(dec, MAX_CATALOG_FILES, "catalog files", |dec| {
+                Ok(CatalogText {
+                    path: read_string(dec, MAX_PATH, "catalog path")?,
+                    text: read_string(dec, MAX_FRAME, "catalog text")?,
+                })
+            })?,
+        })
+    })?;
+    Ok(UiSources { views, catalogs })
+}
+
+fn write_mount(enc: &mut Encoder, entry: &MountEntry) {
+    enc.write_varint(u64::from(entry.file.0));
+    write_string(enc, &entry.path);
+    write_string(enc, &entry.package);
+    write_strings(enc, &entry.module);
+    match &entry.language {
+        Some(language) => {
+            enc.write_u8(1);
+            write_string(enc, language);
+        }
+        None => enc.write_u8(0),
+    }
+    match &entry.catalog {
+        Some((source, dir)) => {
+            enc.write_u8(1);
+            write_string(enc, source);
+            write_string(enc, dir);
+        }
+        None => enc.write_u8(0),
+    }
+    write_strings(enc, &entry.capabilities);
+    enc.write_u64(entry.source_hash);
+}
+
+/// An optional value: a presence byte, then the value.
+fn read_option<T>(
+    dec: &mut Decoder<'_>,
+    value: impl FnOnce(&mut Decoder<'_>) -> Result<T, WireError>,
+) -> Result<Option<T>, WireError> {
+    match dec.read_u8()? {
+        0 => Ok(None),
+        1 => value(dec).map(Some),
+        _ => Err(malformed(dec)),
+    }
+}
+
+fn read_mount(dec: &mut Decoder<'_>) -> Result<MountEntry, WireError> {
+    let name = |dec: &mut Decoder<'_>| read_string(dec, MAX_NAME, "name");
+    Ok(MountEntry {
+        file: read_file(dec)?,
+        path: read_string(dec, MAX_PATH, "file path")?,
+        package: name(dec)?,
+        module: read_list(dec, MAX_SEGMENTS, "module segments", name)?,
+        language: read_option(dec, name)?,
+        catalog: read_option(dec, |dec| {
+            Ok((name(dec)?, read_string(dec, MAX_PATH, "catalog directory")?))
+        })?,
+        capabilities: read_list(dec, MAX_CAPABILITIES, "capabilities", name)?,
+        source_hash: dec.read_u64()?,
+    })
+}
+
 impl Message for HostMessage {
     fn write(&self, enc: &mut Encoder) {
         match self {
@@ -790,6 +1087,7 @@ impl Message for HostMessage {
                     }
                     Reject::Build => enc.write_u8(REJECT_BUILD),
                     Reject::Session => enc.write_u8(REJECT_SESSION),
+                    Reject::Schema => enc.write_u8(REJECT_SCHEMA),
                 }
             }
             HostMessage::Patch(patch) => {
@@ -800,10 +1098,17 @@ impl Message for HostMessage {
                 write_revision(enc, patch.next_revision);
                 patch.build_id.encode(enc);
                 enc.write_varint(patch.sections.len() as u64);
-                // No domain's payload is defined yet, so there is none to write.
-                if let Some(section) = patch.sections.first() {
-                    match *section {}
+                for section in &patch.sections {
+                    enc.write_u8(section.domain() as u8);
+                    match section {
+                        PatchSection::Ui(ui) => write_ui(enc, ui),
+                    }
                 }
+            }
+            HostMessage::Failure { file, lines } => {
+                enc.write_u8(HOST_FAILURE);
+                enc.write_varint(u64::from(file.0));
+                write_strings(enc, lines);
             }
         }
     }
@@ -831,6 +1136,7 @@ impl Message for HostMessage {
                     },
                     REJECT_BUILD => Reject::Build,
                     REJECT_SESSION => Reject::Session,
+                    REJECT_SCHEMA => Reject::Schema,
                     _ => return Err(malformed(dec)),
                 };
                 Ok(HostMessage::Reject(reject))
@@ -842,11 +1148,19 @@ impl Message for HostMessage {
                 let next_revision = read_revision(dec)?;
                 let build_id = BuildId::decode(dec)?;
                 let count = read_count(dec, MAX_SECTIONS, "patch sections")?;
-                if count > 0 {
+                let mut sections = Vec::with_capacity(count.min(Domain::ALL.len()));
+                let mut last: Option<u8> = None;
+                for _ in 0..count {
                     let tag = dec.read_u8()?;
-                    return Err(match Domain::from_tag(tag) {
-                        Some(domain) => WireError::UnsupportedDomain(domain),
-                        None => malformed(dec),
+                    // At most one section per domain, in tag order.
+                    if last.is_some_and(|last| tag <= last) {
+                        return Err(malformed(dec));
+                    }
+                    last = Some(tag);
+                    sections.push(match Domain::from_tag(tag) {
+                        Some(Domain::Ui) => PatchSection::Ui(read_ui(dec)?),
+                        Some(domain) => return Err(WireError::UnsupportedDomain(domain)),
+                        None => return Err(malformed(dec)),
                     });
                 }
                 Ok(HostMessage::Patch(Box::new(PatchBundle {
@@ -855,9 +1169,15 @@ impl Message for HostMessage {
                     base_revision,
                     next_revision,
                     build_id,
-                    sections: Vec::new(),
+                    sections,
                 })))
             }
+            HOST_FAILURE => Ok(HostMessage::Failure {
+                file: read_file(dec)?,
+                lines: read_list(dec, MAX_LINES, "failure lines", |dec| {
+                    read_string(dec, MAX_LINE, "failure line")
+                })?,
+            }),
             _ => Err(malformed(dec)),
         }
     }
@@ -883,7 +1203,29 @@ impl Message for RuntimeMessage {
                 enc.write_u8(RUNTIME_ACK);
                 write_revision(enc, ack.revision);
                 enc.write_varint(u64::from(ack.applied_domains.0));
-                enc.write_varint(u64::from(ack.scoped_resets));
+                enc.write_varint(ack.files.len() as u64);
+                for commit in &ack.files {
+                    enc.write_varint(u64::from(commit.file.0));
+                    let c = &commit.counts;
+                    for count in [
+                        c.mounts,
+                        c.migrated,
+                        c.reset,
+                        c.focus_lost,
+                        c.scroll_lost,
+                        c.handlers_lost,
+                    ] {
+                        enc.write_varint(u64::from(count));
+                    }
+                }
+                enc.write_varint(ack.notices.len() as u64);
+                for notice in &ack.notices {
+                    enc.write_varint(u64::from(notice.file.0));
+                    write_string(enc, &notice.code);
+                    enc.write_varint(u64::from(notice.start));
+                    enc.write_varint(u64::from(notice.end));
+                    write_string(enc, &notice.message);
+                }
                 enc.write_varint(ack.timings.decode_us);
                 enc.write_varint(ack.timings.stage_us);
                 enc.write_varint(ack.timings.commit_us);
@@ -908,9 +1250,12 @@ impl Message for RuntimeMessage {
                 enc.write_u8(RUNTIME_DROPPED);
                 enc.write_varint(u64::from(*count));
             }
-            RuntimeMessage::InAppReload(report) => {
-                enc.write_u8(RUNTIME_IN_APP_RELOAD);
-                enc.write_bytes(report);
+            RuntimeMessage::Mounts(entries) => {
+                enc.write_u8(RUNTIME_MOUNTS);
+                enc.write_varint(entries.len() as u64);
+                for entry in entries {
+                    write_mount(enc, entry);
+                }
             }
         }
     }
@@ -948,7 +1293,28 @@ impl Message for RuntimeMessage {
             RUNTIME_ACK => Ok(RuntimeMessage::Ack(PatchAck {
                 revision: read_revision(dec)?,
                 applied_domains: read_domains(dec)?,
-                scoped_resets: read_u32(dec)?,
+                files: read_list(dec, MAX_FILES, "committed files", |dec| {
+                    Ok(FileCommit {
+                        file: read_file(dec)?,
+                        counts: CommitCounts {
+                            mounts: read_u32(dec)?,
+                            migrated: read_u32(dec)?,
+                            reset: read_u32(dec)?,
+                            focus_lost: read_u32(dec)?,
+                            scroll_lost: read_u32(dec)?,
+                            handlers_lost: read_u32(dec)?,
+                        },
+                    })
+                })?,
+                notices: read_list(dec, MAX_NOTICES, "notices", |dec| {
+                    Ok(Notice {
+                        file: read_file(dec)?,
+                        code: read_string(dec, MAX_CODE, "diagnostic code")?,
+                        start: read_u32(dec)?,
+                        end: read_u32(dec)?,
+                        message: read_string(dec, MAX_LOG, "notice")?,
+                    })
+                })?,
                 timings: PatchTimings {
                     decode_us: dec.read_varint()?,
                     stage_us: dec.read_varint()?,
@@ -989,7 +1355,12 @@ impl Message for RuntimeMessage {
             RUNTIME_DROPPED => Ok(RuntimeMessage::Dropped {
                 count: read_u32(dec)?,
             }),
-            RUNTIME_IN_APP_RELOAD => Ok(RuntimeMessage::InAppReload(dec.read_bytes()?.to_vec())),
+            RUNTIME_MOUNTS => Ok(RuntimeMessage::Mounts(read_list(
+                dec,
+                MAX_FILES,
+                "mount entries",
+                read_mount,
+            )?)),
             _ => Err(malformed(dec)),
         }
     }
@@ -1049,8 +1420,59 @@ mod tests {
             HostMessage::Reject(Reject::Protocol { host: 2 }),
             HostMessage::Reject(Reject::Build),
             HostMessage::Reject(Reject::Session),
+            HostMessage::Reject(Reject::Schema),
             HostMessage::Patch(Box::new(patch(3, 4))),
+            HostMessage::Patch(Box::new(PatchBundle {
+                sections: vec![PatchSection::Ui(ui())],
+                ..patch(3, 4)
+            })),
+            HostMessage::Failure {
+                file: FileId(2),
+                lines: vec![
+                    "view.vs:1:2: E1405 expected an expression".into(),
+                    "ü".into(),
+                ],
+            },
+            HostMessage::Failure {
+                file: FileId(2),
+                lines: Vec::new(),
+            },
         ]
+    }
+
+    fn ui() -> UiSources {
+        UiSources {
+            views: vec![
+                ViewSource {
+                    file: FileId(0),
+                    source: "Text { }".into(),
+                },
+                ViewSource {
+                    file: FileId(u32::MAX),
+                    source: String::new(),
+                },
+            ],
+            catalogs: vec![CatalogSource {
+                dir: "/app/i18n".into(),
+                files: vec![CatalogText {
+                    path: "/app/i18n/fr.toml".into(),
+                    text: "titre = \"Titre\"".into(),
+                }],
+            }],
+        }
+    }
+
+    fn mount(file: u32) -> MountEntry {
+        MountEntry {
+            file: FileId(file),
+            path: "/app/src/view.vs".into(),
+            package: "app".into(),
+            module: vec!["src".into(), "view".into()],
+            language: Some("1.0".into()),
+            catalog: Some(("fr".into(), "/app/i18n".into())),
+            capabilities: vec!["clipboard.write".into()],
+            source_hash: source_hash("Text { }"),
+        }
     }
 
     fn runtime_messages() -> Vec<RuntimeMessage> {
@@ -1059,7 +1481,30 @@ mod tests {
             RuntimeMessage::Ack(PatchAck {
                 revision: Revision(4),
                 applied_domains: Domains::NONE.with(Domain::Ui),
-                scoped_resets: 2,
+                files: vec![
+                    FileCommit {
+                        file: FileId(1),
+                        counts: CommitCounts {
+                            mounts: 2,
+                            migrated: 3,
+                            reset: 1,
+                            focus_lost: 1,
+                            scroll_lost: 0,
+                            handlers_lost: u32::MAX,
+                        },
+                    },
+                    FileCommit {
+                        file: FileId(3),
+                        counts: CommitCounts::default(),
+                    },
+                ],
+                notices: vec![Notice {
+                    file: FileId(1),
+                    code: "E5101".into(),
+                    start: 4,
+                    end: 9,
+                    message: "`count` was reset".into(),
+                }],
                 timings: PatchTimings {
                     decode_us: 1,
                     stage_us: 20,
@@ -1078,7 +1523,16 @@ mod tests {
                 line: "ü".repeat(10),
             },
             RuntimeMessage::Dropped { count: u32::MAX },
-            RuntimeMessage::InAppReload(vec![1, 2, 3]),
+            RuntimeMessage::Mounts(vec![
+                mount(0),
+                MountEntry {
+                    language: None,
+                    catalog: None,
+                    module: Vec::new(),
+                    capabilities: Vec::new(),
+                    ..mount(7)
+                },
+            ]),
         ]
     }
 
@@ -1206,7 +1660,10 @@ mod tests {
             Err(FrameError::Wire(WireError::FrameTooLarge { .. }))
         ));
         assert!(buf.capacity() < MAX_FRAME, "the body was not allocated");
-        let huge = RuntimeMessage::InAppReload(vec![0; MAX_FRAME]);
+        let huge = RuntimeMessage::Log {
+            level: LogLevel::Info,
+            line: "x".repeat(MAX_FRAME),
+        };
         stream.clear();
         assert!(write_frame(&mut stream, &huge).is_err());
         assert!(stream.is_empty(), "nothing was written");
@@ -1277,22 +1734,24 @@ mod tests {
 
     #[test]
     fn another_protocol_version_is_named_not_guessed() {
-        // A runtime of version 3 with a layout this build does not know.
+        // A runtime of the next version, with a layout this build does not
+        // know.
+        let next = DEV_PROTOCOL_VERSION + 1;
         let mut body = vec![RUNTIME_HELLO];
         let mut enc = Encoder::new();
         ProtocolTag::current().encode(&mut enc);
-        enc.write_u16(3);
+        enc.write_u16(next);
         enc.write_raw(&[0xEE; 7]);
         body.extend_from_slice(enc.as_bytes());
         assert_eq!(
             RuntimeMessage::from_frame(&body),
-            Err(WireError::Version { peer: 3 })
+            Err(WireError::Version { peer: next })
         );
         // A host of another version is named the same way.
         body[0] = HOST_HELLO;
         assert_eq!(
             HostMessage::from_frame(&body),
-            Err(WireError::Version { peer: 3 })
+            Err(WireError::Version { peer: next })
         );
         // A reject reads whatever version the host speaks.
         let reject = body_with(&HostMessage::Reject(Reject::Build), |body| {
@@ -1323,6 +1782,86 @@ mod tests {
         assert_eq!(nack.last_good_revision, Revision(3));
         let nack = identity().undecodable(WireError::NotDevStream);
         assert_eq!(nack.diagnostic_codes, [NACK_MALFORMED]);
+    }
+
+    #[test]
+    fn a_domain_appears_once_in_tag_order() {
+        let twice = HostMessage::Patch(Box::new(PatchBundle {
+            sections: vec![PatchSection::Ui(ui()), PatchSection::Ui(ui())],
+            ..patch(3, 4)
+        }));
+        assert!(matches!(
+            HostMessage::from_frame(&encode(&twice)),
+            Err(WireError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn inventory_and_ui_bounds_are_checked() {
+        let long = |what: &'static str, message: RuntimeMessage| {
+            assert_eq!(
+                RuntimeMessage::from_frame(&encode(&message)),
+                Err(WireError::Bound { what })
+            );
+        };
+        long(
+            "file path",
+            RuntimeMessage::Mounts(vec![MountEntry {
+                path: "p".repeat(MAX_PATH + 1),
+                ..mount(0)
+            }]),
+        );
+        long(
+            "module segments",
+            RuntimeMessage::Mounts(vec![MountEntry {
+                module: vec!["m".into(); MAX_SEGMENTS + 1],
+                ..mount(0)
+            }]),
+        );
+        long(
+            "name",
+            RuntimeMessage::Mounts(vec![MountEntry {
+                capabilities: vec!["c".repeat(MAX_NAME + 1)],
+                ..mount(0)
+            }]),
+        );
+        let failure = HostMessage::Failure {
+            file: FileId(0),
+            lines: vec![String::new(); MAX_LINES + 1],
+        };
+        assert_eq!(
+            HostMessage::from_frame(&encode(&failure)),
+            Err(WireError::Bound {
+                what: "failure lines"
+            })
+        );
+        let catalogs = HostMessage::Patch(Box::new(PatchBundle {
+            sections: vec![PatchSection::Ui(UiSources {
+                views: Vec::new(),
+                catalogs: vec![
+                    CatalogSource {
+                        dir: String::new(),
+                        files: Vec::new(),
+                    };
+                    MAX_CATALOGS + 1
+                ],
+            })],
+            ..patch(3, 4)
+        }));
+        assert_eq!(
+            HostMessage::from_frame(&encode(&catalogs)),
+            Err(WireError::Bound {
+                what: "catalog directories"
+            })
+        );
+    }
+
+    #[test]
+    fn the_source_hash_is_stable() {
+        // FNV-1a 64 reference values: the hash may never change.
+        assert_eq!(source_hash(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(source_hash("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_ne!(source_hash("ab"), source_hash("ba"));
     }
 
     #[test]
@@ -1381,6 +1920,7 @@ mod tests {
             token: &hello.token,
             dev_session: hello.dev_session,
             build_id: hello.build_id,
+            schema: hello.schema_fingerprint,
         };
         assert_eq!(accept_runtime(&hello, &expect), Ok(()));
         let wrong_token = RuntimeHello {
@@ -1408,6 +1948,14 @@ mod tests {
         assert_eq!(
             accept_runtime(&other_build, &expect),
             Err(Some(Reject::Build))
+        );
+        let other_schema = RuntimeHello {
+            schema_fingerprint: SchemaFingerprint(1),
+            ..hello.clone()
+        };
+        assert_eq!(
+            accept_runtime(&other_schema, &expect),
+            Err(Some(Reject::Schema))
         );
 
         let host = HostHello {

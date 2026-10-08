@@ -301,6 +301,21 @@ pub fn compile_file_for(
     compile_unit(source, parse, origin, natives, profile)
 }
 
+/// [`compile_file_for`] over `parse`, a parse of `source` with the
+/// compilation-unit entry kept current across edits
+/// ([`IncrementalParse`](crate::syntax::IncrementalParse)):
+/// a dev session reparses only the edited unit, and the rest of the pipeline
+/// runs as for a fresh parse.
+pub fn compile_parsed_for(
+    source: &str,
+    parse: Parse,
+    origin: &Origin,
+    natives: Arc<Natives>,
+    profile: TargetProfile,
+) -> Compiled {
+    compile_unit(source, parse, origin, natives, profile)
+}
+
 /// The module frontend over one parsed unit: resolve, lower to typed HIR, pick the
 /// component that is mounted, and lower its view.
 fn compile_unit(

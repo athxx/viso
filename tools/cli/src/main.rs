@@ -7,6 +7,7 @@
 
 mod args;
 mod command;
+mod dev;
 mod output;
 
 use std::process::ExitCode;

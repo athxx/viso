@@ -1,5 +1,5 @@
-//! `ReadDirectoryChangesW`: each watched file's directory, read
-//! asynchronously so one wait covers every directory and the wake event.
+//! `ReadDirectoryChangesW`: each watched directory, read asynchronously so
+//! one wait covers every directory and the wake event.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,8 +8,9 @@ use std::time::Duration;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY,
-    FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadDirectoryChangesW,
+    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
+    FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    ReadDirectoryChangesW,
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::{
@@ -77,6 +78,7 @@ impl Dir {
                 std::mem::size_of_val(&*self.buffer) as u32,
                 false,
                 FILE_NOTIFY_CHANGE_FILE_NAME
+                    | FILE_NOTIFY_CHANGE_DIR_NAME
                     | FILE_NOTIFY_CHANGE_LAST_WRITE
                     | FILE_NOTIFY_CHANGE_SIZE,
                 None,
@@ -126,13 +128,19 @@ impl Events {
         Some((events, Wake(wake)))
     }
 
-    /// Watches `path`, returning the group its events report under, `None`
-    /// when its directory cannot be watched.
+    /// Watches `path`, returning the group its events report under (its
+    /// directory's), `None` when its directory cannot be watched.
     pub(super) fn add(&mut self, path: &Path) -> Option<u32> {
         let dir = match path.parent() {
             Some(dir) if !dir.as_os_str().is_empty() => dir,
             _ => Path::new("."),
         };
+        self.add_dir(dir)
+    }
+
+    /// Watches the entries of directory `dir`, returning the group its events
+    /// report under, `None` when it cannot be watched.
+    pub(super) fn add_dir(&mut self, dir: &Path) -> Option<u32> {
         if let Some(group) = self.dirs.iter().position(|d| d.path == dir) {
             return u32::try_from(group).ok();
         }
