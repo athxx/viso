@@ -205,6 +205,16 @@ pub fn fingerprint(identity: SymbolIdentity<'_>) -> SymbolId {
     hash.finish()
 }
 
+/// The FNV-1a-128 digest of `chunks`, each length-prefixed: a stable content
+/// fingerprint for identities that are not declarations (a compiler schema).
+pub(crate) fn digest<'a>(chunks: impl IntoIterator<Item = &'a [u8]>) -> u128 {
+    let mut hash = Fnv1a128::new();
+    for chunk in chunks {
+        hash.write_chunk(chunk);
+    }
+    hash.state()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

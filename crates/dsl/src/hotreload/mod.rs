@@ -22,7 +22,6 @@
 pub mod commit;
 pub mod compat;
 pub mod diff;
-pub mod event;
 pub mod game;
 pub mod migrate;
 pub mod plan;
@@ -33,11 +32,40 @@ pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatc
 pub use migrate::{
     MigrationPlan, NodeMigration, Retype, SlotMigration, StateAction, StateMigration, migrate,
 };
-pub use plan::{CandidatePlan, MigrateFn, plan, plan_view, plan_view_for};
+pub use plan::{CandidatePlan, MigrateFn, plan, plan_view, plan_view_for, plan_view_parsed};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
 use crate::resolve::SymbolId;
+
+/// The layout of what a candidate plan carries to the runtime that commits it;
+/// bumped whenever a plan of this compiler would not commit as an older one's
+/// does.
+const PLAN_FORMAT: u32 = 1;
+
+/// The fingerprint of the schema a candidate is compiled against: this
+/// compiler's version and plan layout, and the content of every standard native
+/// library (their functions, types, traits and widgets). A `view!` expansion
+/// embeds it in the mount record, so a dev session compiles patches only for a
+/// runtime built against the schema it compiles with (`Viso_Hot_Reload.md`
+/// §4.1). Cold: computed once per process.
+pub fn schema_fingerprint() -> u128 {
+    static FINGERPRINT: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    *FINGERPRINT.get_or_init(|| {
+        let natives = crate::schema::Natives::standard();
+        let libraries: Vec<String> = natives
+            .libraries()
+            .iter()
+            .map(|library| format!("{library:?}"))
+            .collect();
+        let format = PLAN_FORMAT.to_le_bytes();
+        let head = [env!("CARGO_PKG_VERSION").as_bytes(), &format[..]];
+        crate::resolve::digest(
+            head.into_iter()
+                .chain(libraries.iter().map(String::as_bytes)),
+        )
+    })
+}
 
 /// The result of a successful hot reload transaction: what the commit did to the
 /// live runtime, plus the compiled candidate that is now the last-good template.

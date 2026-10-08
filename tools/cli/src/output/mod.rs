@@ -12,12 +12,12 @@ use std::ops::Range;
 use std::path::Path;
 
 use viso_dsl::diag::Fix;
-use viso_dsl::hotreload::event::ReloadEvent;
 use viso_dsl::{Diagnostic, LineIndex, Severity, TextSize};
 use viso_ende::JsonWriter;
 use viso_project::ConfigDiagnostic;
 
 use crate::args::Global;
+use crate::dev::report::ReloadEvent;
 
 /// A file diagnostics can point into: where it is, how to name it, and its text.
 pub struct Source<'a> {
@@ -55,6 +55,11 @@ impl<'a> Source<'a> {
 
     /// This source as the file of the module `module` (`::`-joined, `""` for the
     /// root module), so diagnostics of other files can point into it.
+    /// The name diagnostics use for the file.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn of_module(mut self, module: String) -> Self {
         self.module = Some(module);
         self
@@ -292,10 +297,10 @@ impl Output {
     /// Reports a hot reload attempt of `file` in the dev session `session` of
     /// the build `build_id`: a `dev` event, or one line on stderr. Its
     /// diagnostics are reported on their own.
-    pub fn dev(&mut self, file: &Source<'_>, session: &str, build_id: &str, event: &ReloadEvent) {
+    pub fn dev(&mut self, file: &str, session: &str, build_id: &str, event: &ReloadEvent) {
         match &mut self.form {
-            Form::Json(stream) => stream.dev(&file.name, session, build_id, event),
-            Form::Human => eprintln!("{}", human::dev(&file.name, event)),
+            Form::Json(stream) => stream.dev(file, session, build_id, event),
+            Form::Human => eprintln!("{}", human::dev(file, event)),
         }
     }
 

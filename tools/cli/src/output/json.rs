@@ -11,7 +11,7 @@ use std::io::Write as _;
 use std::ops::Range;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use viso_dsl::hotreload::event::ReloadEvent;
+use crate::dev::report::ReloadEvent;
 use viso_ende::JsonWriter;
 
 use super::{Location, Report, Source};
@@ -196,9 +196,9 @@ fn dev(w: &mut JsonWriter, file: &str, session: &str, build_id: &str, event: &Re
     w.name("file");
     w.string(file);
     w.name("base_revision");
-    w.uint(u64::from(event.base_revision));
+    w.uint(event.base_revision);
     w.name("candidate_revision");
-    w.uint(u64::from(event.candidate_revision));
+    w.uint(event.candidate_revision);
     w.name("patch_class");
     match event.outcome.patch_class() {
         Some(class) => w.string(class),
@@ -215,16 +215,17 @@ fn dev(w: &mut JsonWriter, file: &str, session: &str, build_id: &str, event: &Re
     }
     w.end_array();
     w.name("last_good_revision");
-    w.uint(u64::from(event.last_good_revision));
+    w.uint(event.last_good_revision);
     w.name("elapsed_ms");
     w.number(event.elapsed_us as f64 / 1000.0);
+    let c = &event.counts;
     for (name, count) in [
-        ("mounts", event.mounts),
-        ("migrated", event.migrated),
-        ("reset", event.reset),
-        ("focus_lost", event.focus_lost),
-        ("scroll_lost", event.scroll_lost),
-        ("handlers_lost", event.handlers_lost),
+        ("mounts", c.mounts),
+        ("migrated", c.migrated),
+        ("reset", c.reset),
+        ("focus_lost", c.focus_lost),
+        ("scroll_lost", c.scroll_lost),
+        ("handlers_lost", c.handlers_lost),
     ] {
         w.name(name);
         w.uint(u64::from(count));
@@ -450,26 +451,16 @@ mod tests {
 
     #[test]
     fn a_rejected_reload_is_a_dev_payload_with_its_stage_and_codes() {
-        use viso_dsl::hotreload::event::{ReloadOutcome, ReloadStage};
+        use crate::dev::report::Outcome;
         let event = ReloadEvent {
-            file: "/p/src/view.vs".into(),
-            source: "state count = ;".into(),
             base_revision: 2,
             candidate_revision: 3,
             last_good_revision: 2,
-            outcome: ReloadOutcome::Rejected,
-            stage: ReloadStage::Parse,
+            outcome: Outcome::Rejected,
+            stage: viso_view::dev::wire::Stage::Parse,
             elapsed_us: 1500,
-            mounts: 0,
-            migrated: 0,
-            reset: 0,
-            focus_lost: 0,
-            scroll_lost: 0,
-            handlers_lost: 0,
-            diagnostics: vec![
-                Diagnostic::error("E1001", range(14, 14), "expected an expression"),
-                Diagnostic::error("E1001", range(15, 15), "expected an expression"),
-            ],
+            counts: Default::default(),
+            codes: vec!["E1001".into(), "E1001".into()],
         };
         let mut w = JsonWriter::new();
         dev(&mut w, "src/view.vs", "s1", "b1", &event);

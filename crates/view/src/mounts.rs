@@ -3,8 +3,8 @@
 //!
 //! Under the `hot-reload` feature a `view!` expansion records, once its tree is
 //! built, everything a reload needs to reach the mount: the `.vs` file and the
-//! source it was compiled from, the module identity it compiles under, the
-//! mounted root, the state cells it allocated and the behavior host it
+//! source it was compiled from, the module identity, catalogs, grants and
+//! compiler schema it compiles under, the mounted root, the state cells it allocated and the behavior host it
 //! dispatches into. The records queue on the UI thread until the session
 //! [takes](take_mounts) them. Without the feature `__record_mount!` expands to
 //! nothing, so a release binary carries neither the records nor the source
@@ -33,6 +33,11 @@ pub struct MountRecord {
     /// The package's message catalogs, its source locale and the directory
     /// holding them, when it has any.
     pub catalog: Option<(&'static str, &'static str)>,
+    /// The capabilities the package grants, which the build checked the file
+    /// against.
+    pub capabilities: &'static [&'static str],
+    /// The fingerprint of the compiler schema the build compiled the file with.
+    pub schema: u128,
     /// The mounted view's root.
     pub root: NodeId,
     /// Each source the view reads, by its durable key, and the cell holding it.
@@ -85,6 +90,8 @@ macro_rules! __record_mount {
         module: [$($module:expr),* $(,)?],
         language: $language:expr,
         catalog: $catalog:expr,
+        capabilities: $capabilities:expr,
+        schema: $schema:expr,
         cells: [$($cell:expr),* $(,)?],
         host: $host:expr,
         nodes: $nodes:expr $(,)?
@@ -96,6 +103,8 @@ macro_rules! __record_mount {
             module: &[$($module),*],
             language: $language,
             catalog: $catalog,
+            capabilities: $capabilities,
+            schema: $schema,
             root: $root,
             cells: ::std::vec![$($cell),*],
             host: $host,

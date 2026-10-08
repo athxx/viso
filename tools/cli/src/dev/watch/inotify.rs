@@ -1,9 +1,11 @@
-//! inotify: each watched file's directory, for the writes that complete a
-//! save.
+//! inotify: each watched directory, for the writes that complete a save and
+//! the directories that appear in it.
 //!
 //! A directory reports a file in it closed after writing (an in-place save)
 //! or renamed into it (an atomic save); both mean the content is complete,
-//! so a file is read as soon as its event arrives.
+//! so a file is read as soon as its event arrives. A directory created in it
+//! reports too, so it is scanned; a file's creation does not, as its content
+//! is complete only once it is closed.
 
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -17,7 +19,7 @@ use std::time::Duration;
 pub(super) const QUIET: Duration = Duration::ZERO;
 
 /// The directory events a watch reports.
-const CHANGES: u32 = libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO;
+const CHANGES: u32 = libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO | libc::IN_CREATE;
 
 /// The inotify instance and the directories watched on it.
 pub(super) struct Events {
@@ -55,13 +57,19 @@ impl Events {
         Some((events, Wake(wake)))
     }
 
-    /// Watches `path`, returning the group its events report under, `None`
-    /// when its directory cannot be watched.
+    /// Watches `path`, returning the group its events report under (its
+    /// directory's), `None` when its directory cannot be watched.
     pub(super) fn add(&mut self, path: &Path) -> Option<u32> {
         let dir = match path.parent() {
             Some(dir) if !dir.as_os_str().is_empty() => dir,
             _ => Path::new("."),
         };
+        self.add_dir(dir)
+    }
+
+    /// Watches the entries of directory `dir`, returning the group its events
+    /// report under, `None` when it cannot be watched.
+    pub(super) fn add_dir(&mut self, dir: &Path) -> Option<u32> {
         let group = match self.dirs.iter().position(|(d, _)| d == dir) {
             Some(group) => group,
             None => {
@@ -142,6 +150,10 @@ impl Events {
                     std::ptr::read_unaligned(bytes.add(at).cast::<libc::inotify_event>())
                 };
                 at += header + event.len as usize;
+                // A file created is not yet written; its close reports it.
+                if event.mask & libc::IN_CREATE != 0 && event.mask & libc::IN_ISDIR == 0 {
+                    continue;
+                }
                 let groups = if event.mask & libc::IN_Q_OVERFLOW != 0 {
                     0..self.dirs.len()
                 } else {

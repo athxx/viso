@@ -127,6 +127,15 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             }
             None => quote! { ::core::option::Option::None },
         };
+        // What the dev session compiles the file's edits with: the grants the
+        // build checked it against, and the schema the build compiled it with.
+        let granted = profile.target.capabilities.iter();
+        let schema = Literal::u128_suffixed(viso_dsl::hotreload::schema_fingerprint());
+        let build = quote! {
+            catalog: #catalog,
+            capabilities: &[#(#granted),*],
+            schema: #schema,
+        };
         let compiled =
             frontend::compile_file_for(&text, &origin, Natives::standard(), profile.target);
         let report = Report::File {
@@ -137,7 +146,7 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         report.check(&compiled)?;
         let Mounted {
             allocations, root, ..
-        } = mount(&compiled, &report, Some((dependency, &origin, catalog)))?;
+        } = mount(&compiled, &report, Some((dependency, &origin, build)))?;
         Ok(quote! {
             {
                 const _: &str = ::core::include_str!(#dependency);
@@ -295,8 +304,8 @@ fn mount<'a>(
     if let Some(behavior) = &behavior {
         allocations.extend(host_tokens(behavior, &idents, &tracked));
     }
-    let record = record.map(|(file, origin, catalog)| {
-        record_tokens(file, origin, catalog, &idents, behavior.is_some())
+    let record = record.map(|(file, origin, build)| {
+        record_tokens(file, origin, build, &idents, behavior.is_some())
     });
     let root = emit_view(
         &compiled.tree,
@@ -345,12 +354,13 @@ fn host_tokens(
 }
 
 /// The fields of a `view!` mount record the expansion knows before the tree is
-/// built: the file and its source, the module identity, every state cell by its
-/// durable key, and the behavior host.
+/// built: the file and its source, the module identity, the build's catalogs,
+/// grants and schema (`build`), every state cell by its durable key, and the
+/// behavior host.
 fn record_tokens(
     file: &str,
     origin: &Origin,
-    catalog: TokenStream,
+    build: TokenStream,
     idents: &HashMap<SymbolId, Ident>,
     behavior: bool,
 ) -> TokenStream {
@@ -377,7 +387,7 @@ fn record_tokens(
         package: #package,
         module: [#(#module),*],
         language: #language,
-        catalog: #catalog,
+        #build
         cells: [#(#cells),*],
         host: #host,
     }

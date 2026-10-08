@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use viso_platform::LoopWaker;
 use viso_view::dev::wire::{
     BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV, DEV_TOKEN_ENV,
-    DevSessionId, Domains, FrameError, HostMessage, Message, PatchBundle, Reject, Revision,
+    DevSessionId, Domains, FileId, FrameError, HostMessage, Message, PatchBundle, Reject, Revision,
     RuntimeHello, RuntimeIdentity, RuntimeMessage, RuntimeSessionId, RuntimeTarget,
     SchemaFingerprint, WireError, accept_host, read_body, read_frame, write_frame,
 };
@@ -43,6 +43,8 @@ pub(crate) enum Incoming {
     Connected(RuntimeIdentity),
     /// A patch, and how long its frame took to decode.
     Patch(Box<PatchBundle>, Duration),
+    /// The host's verdict on a rejected edit, or its clearing.
+    Failure { file: FileId, lines: Vec<String> },
     /// A host frame that did not decode.
     Undecodable(WireError),
 }
@@ -58,9 +60,14 @@ pub(crate) struct DevLink {
 }
 
 impl DevLink {
-    /// The link `viso run` asked for through the environment, if any; `wake`
+    /// The link `viso run` asked for through the environment, if any, for a
+    /// runtime compiled against `schema` that applies `capabilities`; `wake`
     /// kicks the loop when a host frame arrives.
-    pub(crate) fn from_env(wake: LoopWaker) -> Option<Self> {
+    pub(crate) fn from_env(
+        wake: LoopWaker,
+        schema: SchemaFingerprint,
+        capabilities: Domains,
+    ) -> Option<Self> {
         let var = |name| std::env::var(name).ok();
         let addr: SocketAddr = var(DEV_RUNTIME_ENV)?.parse().ok()?;
         if !addr.ip().is_loopback() {
@@ -73,10 +80,8 @@ impl DevLink {
             runtime_session: RuntimeSessionId(random_u128()),
             build_id: BuildId::from_hex(&var(DEV_BUILD_ENV)?)?,
             current_revision: Revision::LAUNCH,
-            // Reported with the mount inventory.
-            schema_fingerprint: SchemaFingerprint(0),
-            // No domain's patch is applied yet.
-            capabilities: Domains::NONE,
+            schema_fingerprint: schema,
+            capabilities,
             target: RuntimeTarget::DesktopHost,
         };
         Some(Self::connect(addr, hello, wake))
@@ -215,6 +220,7 @@ fn read_all(mut stream: TcpStream, deliver: &SyncSender<Incoming>, wake: &LoopWa
         let started = Instant::now();
         let incoming = match HostMessage::from_frame(&buf) {
             Ok(HostMessage::Patch(patch)) => Incoming::Patch(patch, started.elapsed()),
+            Ok(HostMessage::Failure { file, lines }) => Incoming::Failure { file, lines },
             Ok(HostMessage::Hello(_) | HostMessage::Reject(_)) => return,
             Err(error) => Incoming::Undecodable(error),
         };
@@ -272,7 +278,7 @@ pub(crate) mod fake {
             build_id: BUILD,
             current_revision: Revision::LAUNCH,
             schema_fingerprint: SchemaFingerprint(0),
-            capabilities: Domains::NONE,
+            capabilities: super::super::APPLIES,
             target: RuntimeTarget::DesktopHost,
         }
     }

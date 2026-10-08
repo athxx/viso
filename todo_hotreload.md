@@ -199,33 +199,68 @@ app parses no `.vs` source (anti-pattern B.2).
 
 ### H1.3 — Host dev session (`tools/cli/src/dev/`, §4, §6, §7)
 
-- [ ] `DevSession` owning `DevSessionId`, `BuildId`, `ProjectFingerprint`, the
-      session lock (`LockKind::DevSession`), the watcher, the compiler and the
-      connection manager for the lifetime of `viso run`.
-- [ ] Project watcher on the host: the watch backends move from the facade into the
-      host session (shared code, not two copies), recursive over the watch scope
-      (§6) with the default excludes (`target/`, `dist/`, `.git/`, editor temp dirs,
-      generated caches); canonical path resolution; content hash.
-- [ ] Change coalescer: a save batch (several files within the quiet window, e.g. an
-      AI writing related files) forms one candidate revision (§40); window value
-      from a measured human-save and AI-edit workload (§7.1), recorded in the spec.
-- [ ] Incremental compile: keep the project's source graph and reparse the edited
-      file incrementally (`syntax/reparse.rs`, `grammar/incremental.rs`), re-resolve
-      and re-check only the affected module set; whole-package compile so `.vs`
-      imports across files reload (today: single-file `compile_file_for`).
-- [ ] Mount inventory from the app: on connect the runtime reports each mount (file
-      id, module identity, revision, `SymbolId` keys, static `NodeKey`s) instead of
-      the host trusting embedded source; the host compiles last-good from the
-      project files at the runtime's build.
-- [ ] The runtime's `schema_fingerprint` (0 until now) is computed with the inventory
-      and the host refuses a runtime whose schema it cannot patch.
-- [ ] `ReloadEvent` and its codec in `viso-dsl` and `RuntimeMessage::InAppReload` are
-      deleted once the host compiles: the host builds its report from its own
-      compile and the ACK/NACK (source spans resolved on the host, no source sent by
-      the app).
-- [ ] Every stage reports its §51 name: `watch`, `parse`, `resolve`, `typecheck`,
-      `capability`, `patch-plan`, `state-compat`, `transport`, `runtime-stage`,
-      `runtime-commit`.
+- [x] `DevSession` owning the session identity (`DevSessionId`, `BuildId`,
+      `ProjectFingerprint`, schema), the session lock (`LockKind::DevSession`, taken
+      before the build), the watcher, the source graph and compiler, and the runtime
+      connection for the lifetime of `viso run` (`dev/mod.rs`); connection threads in
+      `dev/link.rs` with a writer thread per runtime, so the session never blocks on
+      a slow app.
+- [x] Project watcher on the host (`dev/watch/`): the kqueue / inotify /
+      `ReadDirectoryChangesW` backends moved out of the facade (one copy, the app no
+      longer watches anything), started before the build; recursive over the scope
+      (`*.vs`, `i18n/*.toml`, root `Viso.toml`; shader/asset/Rust sources join with
+      their domains), a directory event rescans it so new files and directories
+      join; excludes root `target/` `dist/`, hidden dirs, `CACHEDIR.TAG` dirs,
+      `node_modules/`, editor temporaries; canonical root; stable FNV-1a
+      `source_hash` dedupe. `Viso.toml` edits warn (restart to apply).
+- [x] Change coalescer: quiet 5 ms after the latest change, at most 50 ms after the
+      first. Measured (`multi_file_save_spread`, release, kqueue): 16 files written
+      back to back arrive within 0.95 ms (max), a single save first arrives at
+      ~6 ms; recorded in §7.1. One patch in flight; edits saved meanwhile form the
+      next batch.
+- [x] Incremental compile: one `IncrementalParse` per file, the edit from the
+      common prefix/suffix, fed to the new `compile_parsed_for` /
+      `plan_view_parsed`; measured on a 36 KB file: full parse 1.71 ms, incremental
+      0.048 ms (always in place), whole host compile 23 ms — resolve/typecheck stay
+      whole-file (semantic incrementality is later work, recorded in §4). Only the
+      edited files recompile; a catalog change rechecks its package's views.
+      Cross-file `.vs` imports: not applicable while `view!` compiles each file
+      alone (no affected set beyond the file); revisit when the build compiles
+      packages.
+- [x] Mount inventory: `RuntimeMessage::Mounts([MountEntry{file, path, module
+      identity, catalog, capabilities, source_hash}])` once per newly mounted file;
+      the host compiles with exactly the build's profile (the mount's grants and
+      catalogs — the app's own reload used to drop the grants), and knows which
+      version the runtime runs by hash, so an edit saved during the build is the
+      first patch and the app sends no source. Keys (`SymbolId`s, `NodeKey`s) are
+      not sent: the host derives them from the same compile (needed from H1.4).
+- [x] `schema_fingerprint`: `viso_dsl::hotreload::schema_fingerprint()` (compiler
+      version, plan format, standard native library signatures), embedded by `view!`
+      in the mount record; a mismatch is `Reject::Schema`.
+- [x] Protocol 3: `ui` section as the transitional `UiSources` (host-accepted view
+      sources + the catalogs the runtime lacks); `HostMessage::Failure{file, lines}`
+      (empty clears); ACK per-file `CommitCounts` and span'd notices;
+      `NACK_UNKNOWN_FILE`. The app plans every view of a patch before committing
+      any (NACK, nothing changed, on any failure).
+- [x] `ReloadEvent` and its codec left `viso-dsl` and `RuntimeMessage::InAppReload`
+      is gone: the host builds each file's report from its compile and the ACK/NACK
+      (`dev/report.rs`), diagnostics resolved on the host; one `dev` event per file
+      of a candidate revision (rejected candidates consume a revision number).
+- [x] §51 stage names on every `dev` event: host failures by code range (`parse` …
+      `shader-compile`), NACK stages (`transport`, `runtime-stage`), commits
+      `runtime-commit`; `watch` and `patch-plan` have no failing path yet.
+- [x] Without `viso run` the app has no session: its mounts are dropped (§2). The
+      facade lost its watcher, `libc` and the Windows file-system features.
+- [x] Tests: wire (inventory, `ui`, failure, schema reject, bounds, once-per-domain);
+      app session against a fake host (inventory, commit with counts, handler edit,
+      host failure shown/cleared, plan failure NACKed then next applies, unknown
+      file, state retype, without `viso run`) — deterministic, 0.04 s instead of
+      watcher-timed; host session (running content not sent, edit during build,
+      one in flight, rejected/reverted, NACK not resent, closed runtime); watcher
+      (start delivery, atomic save, created files/dirs, excludes); sources
+      (incremental parse equals fresh, catalog recheck).
+- [x] Measured app side of the round trip (`patch_to_pixels`, release): transport
+      0.029 ms, plan + commit + repaint 1.27 ms median (§48).
 
 ### H1.4 — Typed semantic patch (§9–§12)
 
@@ -242,8 +277,9 @@ app parses no `.vs` source (anti-pattern B.2).
 - [ ] Property patch carries the changed edges only: dirty marks exactly the changed
       property's `DirtyClass` on its node (today every bound edge of the view is
       rebound and marked) — a colour edit is one `PAINT` (§12, §49).
-- [ ] The in-app compile path and in-app watcher are removed (no permanent dual
-      implementation); `view!` mount records keep only identities, not source text.
+- [ ] The in-app compile path is removed (the in-app watcher went in H1.3; no
+      permanent dual implementation); `view!` mount records keep only identities,
+      not source text.
 - [ ] `--no-hot-reload`: dev artifact, session up, patches not applied (§2.1).
 - [ ] Integration tests (§62 UI, Invalid `.vs`): launch a dev app under a test host,
       change one property, assert same process, the exact dirty mask, state/focus/
