@@ -1147,6 +1147,13 @@ request restart/rebuild
 
 不能 decoder 猜版本。
 
+已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 2`）：
+
+- runtime 连接并先说话：`RuntimeHello { protocol_version, token, dev_session, runtime_session, build_id, current_revision, schema_fingerprint, capabilities, target }`。连接方用 session token 证明自己是本 session 启动的 app，所以 token 在 `RuntimeHello` 里而不在 `HostHello` 里——host 不向尚未证明身份的连接发送任何东西；
+- host 回 `HostHello { protocol_version, dev_session, runtime_session, project_fingerprint, expected_build_id }`（接受，`runtime_session` 原样回显）或 `Reject { Protocol{host} | Build | Session }`；token 不符的连接不回应直接关闭（不给猜 token 的 oracle）。runtime 也检查 `HostHello`：protocol、session、runtime session 与 build 任一不符即断开；
+- hello 与 reject 的前缀在所有 protocol version 中保持不变（stream `ProtocolTag`，再是 dev protocol version），解码在读到别的 version 时立即以该 version 号停止，不去解读其后布局可能不同的字段；
+- build id 由 CLI 经 `VISO_DEV_BUILD` 交给所启动的 app，app 原样报告，host 用它拒绝不是其当前编译目标的 artifact（Rust rebuild 之后仍连着的旧 app）；`schema_fingerprint` 随 mount inventory（H1.3）报告，此前为 0；`capabilities` 是 runtime 能 apply 的 domain 集合，host 不发送其外的 domain。
+
 ---
 
 ## 35. PatchBundle
@@ -1177,6 +1184,8 @@ struct PatchBundle {
 - no field-name strings in shared-schema binary hot protocol；
 - protocol version negotiation at connection/build boundary。
 
+已实现的 wire 形状：`PatchBundle { dev_session, target_runtime, base_revision, next_revision, build_id, sections }`，`sections` 每个 domain 至多一段、按 tag 排序，整个 bundle 一起 commit 或都不 commit（§39）。domain tag 稳定：`ui=0 module=1 state=2 system=3 shader=4 resource=5`；每个 domain 的 payload 由 apply 它的阶段定义（UI/module/state 在 H1.4），此前该 tag 保留，解码为 `UnsupportedDomain`。ID 是定宽 128-bit（两个 u64 LE），revision 是 varint；所有字符串与计数在读之前检查上限（token 64 B、NACK code 至多 64 个且每个 32 B、log 16 KiB、section 4096），且不超过剩余字节；消息不嵌套，深度固定。帧上限 4 MiB，超限的帧在读 body 之前拒绝。
+
 ---
 
 ## 36. Revision rules
@@ -1198,6 +1207,8 @@ NACK_REVISION_MISMATCH
 Host 重新生成从 runtime revision 到 candidate revision 的 patch，或要求 warm restart。
 
 禁止 blind apply out-of-order patch。
+
+已实现：runtime 在 stage 之前按序检查（`RuntimeIdentity::check`）——session 与 runtime session（否则 `NACK_UNKNOWN_SESSION`）、build（`NACK_BUILD_MISMATCH`）、`base_revision == current_revision`（`NACK_REVISION_MISMATCH`）、`next_revision > base_revision`（`NACK_REVISION_ORDER`，host 可以跳号）、只含 runtime 声明的 domain（`NACK_UNSUPPORTED_DOMAIN`）。已 stage 未 commit 的 patch 之后到达的 patch 以前者的 `next_revision` 为基准检查，可以串联；同一 frame boundary 按 revision 顺序逐个 commit、逐个 ACK。launch 时 revision 为 1。
 
 ---
 
@@ -1228,12 +1239,14 @@ PatchNack {
 
 NACK 后 running app 保持 last-good revision。
 
+已实现：`PatchAck { revision, applied_domains, scoped_resets, timings{decode_us, stage_us, commit_us} }`、`PatchNack { base_revision, candidate_revision, stage, diagnostic_codes, last_good_revision }`，`stage` 取 §51 的全部 stage。NACK code 是稳定字符串：上面 §36 的五个，加上 host frame 无法解码时的 `NACK_MALFORMED`（帧长度保住了帧边界，channel 不断开；超过帧上限的帧则读不到边界，连接结束）。runtime 端的 link 不阻塞 UI loop：入站 frame 经有界队列交给 loop 并唤醒它（队列满时阻塞的是 reader 线程），出站消息 `try_send` 进有界队列，满了就丢弃并计数，计数在有空位时以 `Dropped{count}` 发出。
+
 ### 37.1 当前实现：`.vs` reload event
 
 `.vs` 的每次 candidate 产出一条 `ReloadEvent`（`viso_dsl::hotreload::event`），把 ACK 与 NACK 合为一种形状：`file, base_revision, candidate_revision, last_good_revision, outcome(applied|scoped_reset|rejected), stage, elapsed, mounts, migrated, reset, focus_lost, scroll_lost, handlers_lost, diagnostics[]`（诊断带 span 与 candidate 源文本，接收方据此给出行列）。
 
 - `candidate_revision` 每个 candidate 递增，成功即成为 `last_good_revision`；rejected 时 `stage` 是 §51 中的失败 stage（`parse`、`resolve`、`typecheck`、`capability`、`state-compat`、`shader-compile`），成功时为 `runtime-commit`；
-- 由 `viso run` 启动时（§46 transport），event 经 dev channel 发回 CLI，CLI 输出 `diagnostic` + `dev`（`Viso_CLI.md` §36.4）；否则 app 自己在 stderr 打印诊断；
+- 由 `viso run` 启动时（§46 transport），event 作为 in-app reload report（`RuntimeMessage::InAppReload`，payload 是 `ReloadEvent` 的 ende 编码）经 dev channel 发回 CLI，CLI 输出 `diagnostic` + `dev`（`Viso_CLI.md` §36.4）；否则 app 自己在 stderr 打印诊断。host 编译、app 只 apply patch（H1.3/H1.4）之后，这条 report 连同 `ReloadEvent` 一起删除，由 ACK/NACK 取代；
 - rejected 时，每个 mount 该文件的 window 在 last-good UI 之上画一块 overlay，列出错误（至多 8 条，余数汇总）；下一个成功的 candidate 移除它。overlay 是 window store 中的 detached subtree，不在 semantics tree、不接受输入；release 不编译它。
 
 ---
@@ -1429,7 +1442,7 @@ control inspector
 - malformed Ende payload bounded decode；
 - Release artifact 根本没有此 endpoint。
 
-当前实现：`viso run` 在 `127.0.0.1` 临时端口监听，经 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN` 交给 app；app 拒绝非 loopback 地址；首帧须是带 128-bit session token 与 protocol version 的 hello，否则丢弃连接；帧长上限 4 MiB。handshake 尚未绑定 project/build。
+当前实现：`viso run` 在 `127.0.0.1` 临时端口监听，经 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD` 交给 app；app 拒绝非 loopback 地址；handshake（§34）绑定 token、dev session、runtime session 与 build，host 的 `HostHello` 带 project fingerprint；每个 patch 再按 session、launch 与 build 检查（§36）；所有解码有界（§35），帧长上限 4 MiB。
 
 ---
 
@@ -1830,9 +1843,9 @@ no hot-reload runtime configuration key
 
 已实现的是 `cargo xtask check-release-absence [-p <package>] [--no-launch]`（CI 在 macOS 上带 launch、在 Linux 上 `--no-launch` 运行；默认 package 是挂载 `view!` 的 `viso-example-i18n`）：
 
-- 同一组 marker（dev channel 的 env 名 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`、dev link 的线程名与类型名、失败 overlay 的文案、`viso_dsl` 符号）先在 `--release --features viso/hot-reload`、`VISO_PROFILE=dev` 的对照 artifact 中必须全部出现——marker 失效时在这里失败，而不是让 release 扫描空过；release artifact（`VISO_PROFILE=release`、无 feature）中必须一个都不出现。符号从可执行文件本身读取，所以扫描只在符号留在其中的平台（macOS、Linux）上运行；
+- 同一组 marker（dev channel 的 env 名 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD`、patch 检查的 NACK code、dev link 的线程名与类型名、失败 overlay 的文案、`viso_dsl` 符号）先在 `--release --features viso/hot-reload`、`VISO_PROFILE=dev` 的对照 artifact 中必须全部出现——marker 失效时在这里失败，而不是让 release 扫描空过；release artifact（`VISO_PROFILE=release`、无 feature）中必须一个都不出现。符号从可执行文件本身读取，所以扫描只在符号留在其中的平台（macOS、Linux）上运行；
 - 同一构建在 `VISO_PROFILE=shipping` 下必须被 facade build script 拒绝（§58）；
-- launch：两个 artifact 都以指向 loopback listener 的 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN` 启动；对照 artifact 必须连上，release artifact 必须持续运行对照连接耗时的 3 倍（至少 5 秒）且从不连接，提前退出也算失败；
+- launch：两个 artifact 都以 dev channel 的全部环境变量（`VISO_DEV_RUNTIME` 指向 loopback listener，以及 token、session、build）启动；对照 artifact 必须连上，release artifact 必须持续运行对照连接耗时的 3 倍（至少 5 秒）且从不连接，提前退出也算失败；
 - 尚未覆盖：PatchBundle、DevSnapshot endpoint 等尚不存在的 dev 层，它们落地时各自把 marker 加入列表。
 
 ---

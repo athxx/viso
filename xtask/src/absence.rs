@@ -18,10 +18,11 @@
 //! 3. the release artifact (`VISO_PROFILE=release`, no feature) must contain
 //!    none.
 //!
-//! Then, unless `--no-launch`, both binaries are launched with
-//! `VISO_DEV_RUNTIME` pointing at a loopback listener: the dev artifact must
-//! connect (the control, which needs a machine that can open a window), the
-//! release artifact must stay up three times as long and never connect.
+//! Then, unless `--no-launch`, both binaries are launched with the dev
+//! channel's environment, `VISO_DEV_RUNTIME` pointing at a loopback
+//! listener: the dev artifact must connect (the control, which needs a
+//! machine that can open a window), the release artifact must stay up three
+//! times as long and never connect.
 //!
 //! Symbols are read from the executable itself, so the scan needs a platform
 //! that keeps them there (macOS, Linux); a Windows executable keeps them in
@@ -39,6 +40,10 @@ const MARKERS: &[&str] = &[
     // The dev channel's environment, read only by the dev link.
     "VISO_DEV_RUNTIME",
     "VISO_DEV_TOKEN",
+    "VISO_DEV_SESSION",
+    "VISO_DEV_BUILD",
+    // The runtime's patch check.
+    "NACK_REVISION_MISMATCH",
     // The dev link's thread and type.
     "viso-dev-link",
     "DevLink",
@@ -231,6 +236,8 @@ fn launch(binary: &Path, dir: &Path, wait: Wait) -> Result<Duration, String> {
         .current_dir(dir)
         .env("VISO_DEV_RUNTIME", addr.to_string())
         .env("VISO_DEV_TOKEN", "00000000000000000000000000000000")
+        .env("VISO_DEV_SESSION", "00000000000000000000000000000001")
+        .env("VISO_DEV_BUILD", "00000000000000000000000000000002")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

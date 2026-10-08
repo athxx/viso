@@ -2513,6 +2513,7 @@ dependencies = [
  "viso-dsl",
  "viso-ende",
  "viso-project",
+ "viso-view",
 ]
 
 [[package]]

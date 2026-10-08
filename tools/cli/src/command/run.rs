@@ -19,10 +19,14 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use viso_dsl::hotreload::event::{
-    DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_TOKEN_ENV, DevMessage, ReloadEvent, read_frame,
-};
+use viso_dsl::hotreload::event::ReloadEvent;
 use viso_project::{ArtifactKind, Overrides, Profile, ProjectFingerprint, Target, Toolchain};
+use viso_view::dev::wire::{
+    self, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV, DEV_TOKEN_ENV,
+    DevSessionId, FrameError, HostExpect, HostHello, HostMessage,
+    ProjectFingerprint as WireProject, Reject, RuntimeMessage, WireError, accept_runtime,
+    read_frame, write_frame,
+};
 
 use super::check::{config_in_its_file, failure_code};
 use super::{
@@ -52,7 +56,16 @@ enum Incoming {
     /// A reload attempt the app reported.
     Reload(Box<ReloadEvent>),
     /// A dev connection that was dropped, and why.
-    Refused(&'static str),
+    Refused(String),
+}
+
+/// What a dev connection must present, and what the host answers it with.
+#[derive(Clone)]
+struct Session {
+    token: String,
+    dev_session: DevSessionId,
+    build_id: wire::BuildId,
+    project: WireProject,
 }
 
 pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
@@ -112,7 +125,8 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
             return diagnostic.code.exit_code();
         }
     };
-    let build_id = resolved.config.build_id(fingerprint, &toolchain()).to_hex();
+    let build = resolved.config.build_id(fingerprint, &toolchain());
+    let build_id = build.to_hex();
 
     let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
@@ -140,6 +154,13 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     };
     let token = random_hex();
     let session = random_hex();
+    let wide = |hash: viso_project::Hash128| (u128::from(hash.hi) << 64) | u128::from(hash.lo);
+    let dev = Session {
+        token: token.clone(),
+        dev_session: DevSessionId::from_hex(&session).expect("32 hex digits"),
+        build_id: wire::BuildId(wide(build.hash())),
+        project: WireProject(wide(fingerprint.hash())),
+    };
 
     out.progress(
         "launch",
@@ -150,7 +171,9 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         .args(&args.app_args)
         .current_dir(&root)
         .env(DEV_RUNTIME_ENV, address.to_string())
-        .env(DEV_TOKEN_ENV, &token);
+        .env(DEV_TOKEN_ENV, &token)
+        .env(DEV_SESSION_ENV, &session)
+        .env(DEV_BUILD_ENV, &build_id);
     if global.json {
         launch.stdout(Stdio::piped()).stderr(Stdio::piped());
     }
@@ -169,7 +192,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     let (tx, rx) = mpsc::channel();
     let mut threads = pipe_logs(&mut child, &tx);
     let status = loop {
-        accept(&listener, &token, &tx, &mut threads);
+        accept(&listener, &dev, &tx, &mut threads);
         match rx.recv_timeout(POLL) {
             Ok(message) => relay(out, &root, &session, &build_id, message),
             Err(RecvTimeoutError::Timeout) => {}
@@ -184,7 +207,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     };
     // The app is gone: a connection it opened is waiting in the listener's
     // backlog or being read to its end, and its pipes are at their end.
-    accept(&listener, &token, &tx, &mut threads);
+    accept(&listener, &dev, &tx, &mut threads);
     drop(tx);
     for thread in threads {
         let _ = thread.join();
@@ -441,20 +464,22 @@ fn hex_unit(chars: &mut std::str::Chars<'_>) -> Option<u16> {
 /// thread.
 fn accept(
     listener: &TcpListener,
-    token: &str,
+    session: &Session,
     tx: &Sender<Incoming>,
     threads: &mut Vec<JoinHandle<()>>,
 ) {
     while let Ok((stream, _)) = listener.accept() {
-        let token = token.to_string();
+        let session = session.clone();
         let tx = tx.clone();
-        threads.push(thread::spawn(move || read_dev(stream, &token, &tx)));
+        threads.push(thread::spawn(move || read_dev(stream, &session, &tx)));
     }
 }
 
-/// Reads one dev connection: a hello with the session's token and protocol
-/// version, then reload events until the app closes it.
-fn read_dev(mut stream: TcpStream, token: &str, tx: &Sender<Incoming>) {
+/// Reads one dev connection: the runtime's hello, checked against the
+/// session — a wrong token is dropped unanswered, another protocol, session or
+/// build is refused with the reason — then what the app reports until it
+/// closes the connection.
+fn read_dev(mut stream: TcpStream, session: &Session, tx: &Sender<Incoming>) {
     // A connection that never says hello must not hold the session open
     // after the app exits.
     if stream.set_nonblocking(false).is_err()
@@ -462,55 +487,105 @@ fn read_dev(mut stream: TcpStream, token: &str, tx: &Sender<Incoming>) {
     {
         return;
     }
+    let refuse = |reason: String| {
+        let _ = tx.send(Incoming::Refused(reason));
+    };
+    let no_token = || refuse("a dev connection did not present the session token".into());
     let mut buf = Vec::new();
-    match read_frame(&mut stream, &mut buf) {
-        Ok(Some(DevMessage::Hello {
-            protocol_version,
-            token: offered,
-        })) if same_token(&offered, token) => {
-            if protocol_version != DEV_PROTOCOL_VERSION {
-                let _ = tx.send(Incoming::Refused(
-                    "the app speaks another dev protocol version",
-                ));
-                return;
-            }
-            if stream.set_read_timeout(None).is_err() {
-                return;
-            }
-        }
+    let hello = match read_frame::<RuntimeMessage>(&mut stream, &mut buf) {
+        Ok(Some(RuntimeMessage::Hello(hello))) => hello,
         Ok(None) => return,
-        _ => {
-            let _ = tx.send(Incoming::Refused(
-                "a dev connection did not present the session token",
+        Err(FrameError::Wire(WireError::Version { peer })) => {
+            let reject = Reject::Protocol {
+                host: DEV_PROTOCOL_VERSION,
+            };
+            let _ = write_frame(&mut stream, &HostMessage::Reject(reject));
+            return refuse(format!(
+                "the app speaks dev protocol version {peer}, `viso run` \
+                 {DEV_PROTOCOL_VERSION}; rebuild it"
             ));
+        }
+        _ => return no_token(),
+    };
+    let expect = HostExpect {
+        token: &session.token,
+        dev_session: session.dev_session,
+        build_id: session.build_id,
+    };
+    match accept_runtime(&hello, &expect) {
+        Ok(()) => {}
+        Err(None) => return no_token(),
+        Err(Some(reject)) => {
+            let _ = write_frame(&mut stream, &HostMessage::Reject(reject));
+            return refuse(reject.to_string());
+        }
+    }
+    let accepted = HostMessage::Hello(HostHello {
+        protocol_version: DEV_PROTOCOL_VERSION,
+        dev_session: session.dev_session,
+        runtime_session: hello.runtime_session,
+        project_fingerprint: session.project,
+        expected_build_id: session.build_id,
+    });
+    if write_frame(&mut stream, &accepted).is_err() || stream.set_read_timeout(None).is_err() {
+        return;
+    }
+    let connected = Incoming::Log {
+        level: "info",
+        source: "tool",
+        line: format!(
+            "dev runtime connected at r{} ({})",
+            hello.current_revision.0,
+            hello.target.as_str()
+        ),
+    };
+    if tx.send(connected).is_err() {
+        return;
+    }
+    loop {
+        let incoming = match read_frame::<RuntimeMessage>(&mut stream, &mut buf) {
+            Ok(Some(RuntimeMessage::InAppReload(report))) => {
+                match ReloadEvent::from_bytes(&report) {
+                    Ok(event) => Incoming::Reload(Box::new(event)),
+                    Err(_) => return refuse("the app sent a malformed reload report".into()),
+                }
+            }
+            Ok(Some(RuntimeMessage::Log { level, line })) => Incoming::Log {
+                level: level.as_str(),
+                source: "app",
+                line,
+            },
+            Ok(Some(RuntimeMessage::Dropped { count })) => Incoming::Log {
+                level: "warn",
+                source: "tool",
+                line: format!("the app dropped {count} dev messages: `viso run` read too slowly"),
+            },
+            Ok(Some(RuntimeMessage::Ack(ack))) => Incoming::Log {
+                level: "info",
+                source: "tool",
+                line: format!("patch applied: the app is at r{}", ack.revision.0),
+            },
+            Ok(Some(RuntimeMessage::Nack(nack))) => Incoming::Log {
+                level: "warn",
+                source: "tool",
+                line: format!(
+                    "patch r{} -> r{} refused at {}: {}; the app kept r{}",
+                    nack.base_revision.0,
+                    nack.candidate_revision.0,
+                    nack.stage.as_str(),
+                    nack.diagnostic_codes.join(", "),
+                    nack.last_good_revision.0
+                ),
+            },
+            Ok(None) | Err(FrameError::Io(_)) => return,
+            Ok(Some(RuntimeMessage::Hello(_))) | Err(FrameError::Wire(_)) => {
+                return refuse("the app sent a malformed dev frame".into());
+            }
+        };
+        if tx.send(incoming).is_err() {
             return;
         }
     }
-    loop {
-        match read_frame(&mut stream, &mut buf) {
-            Ok(Some(DevMessage::Reload(event))) => {
-                if tx.send(Incoming::Reload(event)).is_err() {
-                    return;
-                }
-            }
-            Ok(None) => return,
-            Ok(Some(DevMessage::Hello { .. })) | Err(_) => {
-                let _ = tx.send(Incoming::Refused("the app sent a malformed dev frame"));
-                return;
-            }
-        }
-    }
-}
-
-/// Whether `offered` is `token`, comparing every byte whatever the first
-/// mismatch.
-fn same_token(offered: &str, token: &str) -> bool {
-    offered.len() == token.len()
-        && offered
-            .bytes()
-            .zip(token.bytes())
-            .fold(0, |diff, (a, b)| diff | (a ^ b))
-            == 0
 }
 
 /// Reports one message of the running session.
@@ -528,7 +603,7 @@ fn relay(out: &mut Output, root: &Path, session: &str, build_id: &str, message: 
             }
             out.dev(&file, session, build_id, &event);
         }
-        Incoming::Refused(reason) => out.log("warn", "tool", reason),
+        Incoming::Refused(reason) => out.log("warn", "tool", &reason),
         Incoming::Executable(_) => {}
     }
 }
@@ -572,7 +647,11 @@ fn relative<'a>(root: &Path, path: &'a Path) -> &'a Path {
 mod tests {
     use std::io::Write as _;
 
-    use viso_dsl::hotreload::event::{ReloadOutcome, ReloadStage, write_frame};
+    use viso_dsl::hotreload::event::{ReloadOutcome, ReloadStage};
+    use viso_view::dev::wire::{
+        BuildId, Domains, LogLevel, Revision, RuntimeHello, RuntimeSessionId, RuntimeTarget,
+        SchemaFingerprint, same_token,
+    };
 
     use super::*;
 
@@ -615,47 +694,153 @@ mod tests {
         }
     }
 
-    /// The messages a connection that writes `messages` yields.
-    fn read(messages: &[DevMessage]) -> Vec<Incoming> {
+    fn session() -> Session {
+        Session {
+            token: "token".into(),
+            dev_session: DevSessionId(11),
+            build_id: BuildId(22),
+            project: WireProject(33),
+        }
+    }
+
+    fn hello() -> RuntimeHello {
+        RuntimeHello {
+            protocol_version: DEV_PROTOCOL_VERSION,
+            token: "token".into(),
+            dev_session: DevSessionId(11),
+            runtime_session: RuntimeSessionId(44),
+            build_id: BuildId(22),
+            current_revision: Revision::LAUNCH,
+            schema_fingerprint: SchemaFingerprint(0),
+            capabilities: Domains::NONE,
+            target: RuntimeTarget::DesktopHost,
+        }
+    }
+
+    /// What the host answers a connection that sends `first`, then `rest`
+    /// once it is answered, and the messages the session yields.
+    fn connect(first: &[u8], rest: &[RuntimeMessage]) -> (Option<HostMessage>, Vec<Incoming>) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let mut app = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        for message in messages {
-            write_frame(&mut app, message).unwrap();
-        }
-        app.flush().unwrap();
-        drop(app);
         let (stream, _) = listener.accept().unwrap();
         let (tx, rx) = mpsc::channel();
-        read_dev(stream, "token", &tx);
-        drop(tx);
-        rx.into_iter().collect()
-    }
-
-    fn hello(token: &str, protocol_version: u16) -> DevMessage {
-        DevMessage::Hello {
-            protocol_version,
-            token: token.into(),
+        let host = thread::spawn(move || read_dev(stream, &session(), &tx));
+        app.write_all(&(first.len() as u32).to_le_bytes()).unwrap();
+        app.write_all(first).unwrap();
+        let mut buf = Vec::new();
+        let answer = read_frame::<HostMessage>(&mut app, &mut buf).ok().flatten();
+        for message in rest {
+            write_frame(&mut app, message).unwrap();
         }
+        drop(app);
+        host.join().unwrap();
+        (answer, rx.into_iter().collect())
+    }
+
+    fn hello_frame(hello: RuntimeHello) -> Vec<u8> {
+        wire::encode(&RuntimeMessage::Hello(hello))
     }
 
     #[test]
-    fn a_connection_with_the_token_relays_its_events() {
-        let reload = DevMessage::Reload(Box::new(event()));
-        let got = read(&[hello("token", DEV_PROTOCOL_VERSION), reload]);
-        assert!(matches!(&got[..], [Incoming::Reload(e)] if **e == event()));
+    fn an_accepted_app_is_answered_and_its_reports_relayed() {
+        let reports = [
+            RuntimeMessage::InAppReload(event().to_bytes()),
+            RuntimeMessage::Log {
+                level: LogLevel::Error,
+                line: "boom".into(),
+            },
+            RuntimeMessage::Dropped { count: 3 },
+        ];
+        let (answer, got) = connect(&hello_frame(hello()), &reports);
+        assert_eq!(
+            answer,
+            Some(HostMessage::Hello(HostHello {
+                protocol_version: DEV_PROTOCOL_VERSION,
+                dev_session: DevSessionId(11),
+                runtime_session: RuntimeSessionId(44),
+                project_fingerprint: WireProject(33),
+                expected_build_id: BuildId(22),
+            }))
+        );
+        assert!(
+            matches!(
+                &got[..],
+                [
+                    Incoming::Log { level: "info", source: "tool", line: connected },
+                    Incoming::Reload(e),
+                    Incoming::Log { level: "error", source: "app", line },
+                    Incoming::Log { level: "warn", source: "tool", .. },
+                ] if **e == event() && line == "boom" && connected.contains("r1")
+            ),
+            "{}",
+            got.len()
+        );
     }
 
     #[test]
-    fn a_connection_without_the_token_is_dropped() {
-        let reload = DevMessage::Reload(Box::new(event()));
-        for messages in [
-            vec![hello("tokem", DEV_PROTOCOL_VERSION), reload.clone()],
-            vec![hello("token", DEV_PROTOCOL_VERSION + 1), reload.clone()],
-            vec![reload],
+    fn a_wrong_token_is_dropped_unanswered() {
+        for first in [
+            hello_frame(RuntimeHello {
+                token: "tokem".into(),
+                ..hello()
+            }),
+            wire::encode(&RuntimeMessage::Dropped { count: 1 }),
+            vec![0xFF; 3],
         ] {
-            let got = read(&messages);
-            assert!(matches!(&got[..], [Incoming::Refused(_)]), "{messages:?}");
+            let (answer, got) = connect(&first, &[RuntimeMessage::Dropped { count: 1 }]);
+            assert_eq!(answer, None);
+            assert!(matches!(&got[..], [Incoming::Refused(_)]));
         }
+    }
+
+    #[test]
+    fn another_protocol_session_or_build_is_refused_with_the_reason() {
+        let mut other_version = hello_frame(hello());
+        other_version[5..7].copy_from_slice(&(DEV_PROTOCOL_VERSION + 1).to_le_bytes());
+        let cases = [
+            (
+                other_version,
+                Reject::Protocol {
+                    host: DEV_PROTOCOL_VERSION,
+                },
+            ),
+            (
+                hello_frame(RuntimeHello {
+                    dev_session: DevSessionId(1),
+                    ..hello()
+                }),
+                Reject::Session,
+            ),
+            (
+                hello_frame(RuntimeHello {
+                    build_id: BuildId(1),
+                    ..hello()
+                }),
+                Reject::Build,
+            ),
+        ];
+        for (first, reject) in cases {
+            let (answer, got) = connect(&first, &[]);
+            assert_eq!(answer, Some(HostMessage::Reject(reject)));
+            assert!(
+                matches!(&got[..], [Incoming::Refused(reason)] if reason.contains("rebuild") || reject == Reject::Session)
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_report_ends_the_connection() {
+        let (_, got) = connect(
+            &hello_frame(hello()),
+            &[
+                RuntimeMessage::InAppReload(vec![1, 2]),
+                RuntimeMessage::Dropped { count: 1 },
+            ],
+        );
+        assert!(matches!(
+            &got[..],
+            [Incoming::Log { .. }, Incoming::Refused(_)]
+        ));
     }
 
     #[test]
