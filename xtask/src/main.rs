@@ -10,6 +10,7 @@
 //! name-to-path convention that holds for most crates is worse than no convention:
 //! the one crate it does not cover is silently skipped rather than checked.
 
+mod absence;
 mod bundle;
 mod targets;
 
@@ -273,9 +274,10 @@ fn main() -> ExitCode {
         "check-deps" => check_deps(),
         "bundle" => bundle::bundle(&args[1..]),
         "check-targets" => targets::check_targets(&args[1..]),
+        "check-release-absence" => absence::check_release_absence(&args[1..]),
         other => {
             eprintln!(
-                "unknown xtask: {other:?}\nusage: cargo xtask check-deps | check-targets | bundle"
+                "unknown xtask: {other:?}\nusage: cargo xtask check-deps | check-targets | check-release-absence | bundle"
             );
             ExitCode::FAILURE
         }

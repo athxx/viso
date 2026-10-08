@@ -78,28 +78,38 @@ and the dev build is exercised in CI.
 
 ### H0.3 — CI and release absence (§64)
 
-- [ ] CI job building and testing `viso` with `--features hot-reload` (today the
-      feature-gated tests never run in CI), on macOS, Linux and Windows.
-- [ ] Release-absence test (`xtask check-release-absence`): build the counter example
-      in release, then assert
-  - [ ] no symbol or string from the dev layer (`DevLink`, `PatchBundle`,
-        `VISO_DEV_RUNTIME`, `VISO_DEV_TOKEN`, the overlay text) in the binary;
-  - [ ] no `viso_dsl` symbol at all;
-  - [ ] launched with `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN` set, it opens no socket and
-        never reads the variables (run under a loopback listener that must see no
-        connection).
-- [ ] Guard test in CI: `VISO_PROFILE=shipping cargo build --features viso/hot-reload`
-      fails with the guard's message; `VISO_PROFILE=dev` builds.
-- [ ] Release frame-loop parity: the release frame-loop benchmark with and without the
-      feature compiled in a dev build differs only by the dev path (measured, §1.2).
-- [ ] Spec: §1/§58 record that the `hot-reload` feature is the `viso_dev_runtime`
-      boundary and name the guard and the absence test (feature and guard recorded in
-      §58 with H0.2; the absence test lands with it).
+- [x] CI job building and testing `viso` with `--features hot-reload` (today the
+      feature-gated tests never run in CI), on macOS, Linux and Windows
+      (`.github/workflows/ci.yml` `hot-reload`: clippy + tests).
+- [x] Release-absence test (`cargo xtask check-release-absence [-p] [--no-launch]`,
+      `xtask/src/absence.rs`): builds the `view!` app `viso-example-i18n` in release,
+      then asserts
+  - [x] no symbol or string from the dev layer (`VISO_DEV_RUNTIME`, `VISO_DEV_TOKEN`,
+        the `viso-dev-link` thread, `DevLink`, the overlay text) in the binary — each
+        marker first required in a `hot-reload` control build, so a stale marker fails
+        instead of passing vacuously;
+  - [x] no `viso_dsl` symbol at all (symbols are read from the executable: macOS and
+        Linux; a Windows executable keeps them in its PDB);
+  - [x] launched with `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN` set and a loopback listener,
+        the control connects (166 ms here) and the release binary runs 3× that (≥ 5 s)
+        without connecting; an early exit fails. The variable names are absent from
+        the binary, so it cannot read them.
+  - [x] CI: macOS with launch, Linux `--no-launch` (`release-absence` job).
+- [x] Guard test: the same xtask builds with `VISO_PROFILE=shipping` and requires the
+      guard's refusal; the control build is the `VISO_PROFILE=dev` case.
+- [x] Release frame-loop parity (`benches/frame_loop.rs`, a `view!` app toggling an `if`
+      branch every frame, release, Apple Silicon): 3.83 µs/frame without the feature,
+      3.78 µs/frame with it (session idle) — within noise; startup +32 µs (adopt +
+      watcher). Recorded in §1.2.
+- [x] Spec: §58 names the feature, the guard and the absence test; §64 records what the
+      test checks and what it does not cover yet; §1.2 records the parity measurement.
 
 ### Done
 
-- [ ] A release build of an app with `view!` files contains no dev transport, patch
-      engine, snapshot endpoint or compiler, proven by the absence test in CI.
+- [x] A release build of an app with `view!` files contains no dev transport, patch
+      engine, snapshot endpoint or compiler, proven by the absence test in CI. Passes
+      locally on macOS (launch included); the patch engine and snapshot endpoint do
+      not exist yet, and each adds its marker when it lands (H1.2, H6.2).
 
 ---
 
@@ -148,6 +158,8 @@ app parses no `.vs` source (anti-pattern B.2).
         `PatchNack { base_revision, candidate_revision, stage, diagnostic_codes,
         last_good_revision }` (§37); `ReloadEvent` becomes the host-side report built
         from them (source spans resolved on the host, no source sent by the app).
+  - [ ] `PatchBundle` and the apply engine's types join the release-absence markers
+        (`xtask/src/absence.rs`), present in the control build.
   - [ ] Replaces `viso-dsl::hotreload::event`, which is deleted (the app no longer
         decodes `viso-dsl` diagnostics).
   - [ ] Revision rule: apply only when `base_revision == current_revision`, else
@@ -403,6 +415,8 @@ its compatible state restored.
       system_state, ui_ephemeral, app_extensions }` in ende binary, typed by
       `SymbolId` + schema fingerprint; never pointers, handles, fds, sockets, task
       stacks or platform objects (§30).
+- [ ] `DevSnapshot` and its endpoint join the release-absence markers
+      (`xtask/src/absence.rs`).
 - [ ] Capture: every mounted view's state cells and VM slots, focus identity, scroll
       offsets, text editing logical state, navigation/tab state, window geometry,
       game snapshots when the Game Profile exposes them (`game/snapshot.rs`), and app

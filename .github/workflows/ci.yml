@@ -28,3 +28,46 @@ jobs:
         run: cargo test --workspace
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
+
+  # The `hot-reload` feature's own code and tests, which the default build
+  # never compiles, on every desktop host the dev session supports.
+  hot-reload:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install system fonts
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji
+      - name: Clippy (hot-reload)
+        run: cargo clippy -p viso --all-targets --features hot-reload -- -D warnings
+      - name: Test (hot-reload)
+        run: cargo test -p viso --features hot-reload
+
+  # A release artifact carries no dev layer, and a release or shipping build
+  # refuses `hot-reload` (hot reload §1, §58, §64). The scan reads symbols from
+  # the executable, so it runs where they stay in it; macOS also launches both
+  # artifacts against a loopback listener.
+  release-absence:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: ""
+          - os: ubuntu-latest
+            args: "--no-launch"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Release absence
+        run: cargo xtask check-release-absence ${{ matrix.args }}
