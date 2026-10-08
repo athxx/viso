@@ -109,6 +109,12 @@ criterion = "0.7"
 name = "window_frame"
 harness = false
 
+# The frame loop of a mounted `view!`, run with and without `hot-reload`: the
+# two differ only by the dev path (hot reload §1.2).
+[[bench]]
+name = "frame_loop"
+harness = false
+
 # The wired text runtime under the §26 matrix and the per-tier commit budgets.
 [[bench]]
 name = "text_runtime"

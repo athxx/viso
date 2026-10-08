@@ -133,7 +133,9 @@ Release frame loop 不得出现：
 if hot_reload_enabled { ... }
 ```
 
-作为每帧固定路径。
+作为每帧固定路径。dev 层整体由 `#[cfg(feature = "hot-reload")]` 编入或去除，release 帧循环里没有它的分支。
+
+测量（`cargo bench -p viso --bench frame_loop`，挂载 `view!` 的 app，每帧切换一个 `if` 分支，release、Apple Silicon）：不开 feature 每帧 3.83 µs，开 feature（session 空闲）每帧 3.78 µs，差在噪声内；开 feature 的启动多约 32 µs（session 接管挂载并启动 watcher）。
 
 Release 不保留：
 
@@ -1683,6 +1685,7 @@ release/shipping compile graph does not include dev apply/transport code
 - 内部 flag 是 facade 的 Cargo feature `viso/hot-reload`；`viso-dsl`（in-app 编译器）是 facade 的 optional 依赖，只由该 feature 引入，未开 feature 的 artifact 不链接编译器、watcher 与 dev channel（`ui!`/`view!` 的 proc-macro 在 host 编译期使用 `viso-dsl`，不进入 artifact）；
 - facade 的 build script 是 build-time gate：`hot-reload` 与 `VISO_PROFILE=release|shipping` 同时出现时构建失败。gate 看 Viso artifact profile 而不是 Cargo profile——`--release` 优化过的 Dev artifact（如 `edit_to_pixels` 测量）仍是 Dev artifact；
 - `viso run` 是唯一打开该 feature 的 CLI 路径，并以 `VISO_PROFILE=dev` 构建；构建 release/shipping artifact 的 CLI 命令必须设置对应的 `VISO_PROFILE`。
+- 两者由 §64 的 `cargo xtask check-release-absence` 在 CI 中验证。
 
 ---
 
@@ -1824,6 +1827,13 @@ no hot-reload runtime configuration key
 ```
 
 这是安全与体积测试，不只是功能测试。
+
+已实现的是 `cargo xtask check-release-absence [-p <package>] [--no-launch]`（CI 在 macOS 上带 launch、在 Linux 上 `--no-launch` 运行；默认 package 是挂载 `view!` 的 `viso-example-i18n`）：
+
+- 同一组 marker（dev channel 的 env 名 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`、dev link 的线程名与类型名、失败 overlay 的文案、`viso_dsl` 符号）先在 `--release --features viso/hot-reload`、`VISO_PROFILE=dev` 的对照 artifact 中必须全部出现——marker 失效时在这里失败，而不是让 release 扫描空过；release artifact（`VISO_PROFILE=release`、无 feature）中必须一个都不出现。符号从可执行文件本身读取，所以扫描只在符号留在其中的平台（macOS、Linux）上运行；
+- 同一构建在 `VISO_PROFILE=shipping` 下必须被 facade build script 拒绝（§58）；
+- launch：两个 artifact 都以指向 loopback listener 的 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN` 启动；对照 artifact 必须连上，release artifact 必须持续运行对照连接耗时的 3 倍（至少 5 秒）且从不连接，提前退出也算失败；
+- 尚未覆盖：PatchBundle、DevSnapshot endpoint 等尚不存在的 dev 层，它们落地时各自把 marker 加入列表。
 
 ---
 
