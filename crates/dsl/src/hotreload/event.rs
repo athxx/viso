@@ -1,40 +1,24 @@
-//! The record of one hot reload attempt and the dev channel that carries it
-//! from the running app to `viso run` (Viso_Hot_Reload.md sections 33, 34, 37
-//! and 51; Viso_CLI.md section 36.4).
+//! The record of one hot reload attempt the app compiled itself
+//! (Viso_Hot_Reload.md sections 37.1 and 51; Viso_CLI.md section 36.4).
 //!
 //! Every staged edit of a `.vs` file yields one [`ReloadEvent`], applied or
 //! rejected: its revisions, outcome, the stage it ended at, how long it took,
 //! what the commit kept and lost, and its diagnostics with the candidate
 //! source their spans index into. The app shows it in-app and, when launched by
-//! `viso run`, sends it over the dev channel; the CLI renders it as a `dev`
-//! event and `diagnostic` events.
+//! `viso run`, sends its bytes ([`ReloadEvent::to_bytes`]) as the dev channel's
+//! in-app reload report (`viso_view::dev::wire`); the CLI renders it as a `dev`
+//! event and `diagnostic` events. It goes when the host compiles and the app
+//! only applies patches.
 //!
-//! The channel is `viso-ende` binary: length-prefixed frames, the first a
-//! [`DevMessage::Hello`] binding the connection to the session by its token and
-//! protocol version, every later one a [`DevMessage::Reload`]. Decoding is
-//! bounded: a frame over [`MAX_FRAME`] bytes, a count larger than the bytes
-//! left, or a malformed value is rejected without allocating for it.
+//! Decoding is bounded: a count larger than the bytes left or a malformed value
+//! is rejected without allocating for it.
 
-use std::io::{self, Read, Write};
 use std::sync::{Mutex, OnceLock};
 
-use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
+use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder};
 
 use crate::diag::{Applicability, Diagnostic, Fix, Related, Severity, TextEdit};
 use crate::syntax::{TextRange, TextSize};
-
-/// The dev channel protocol version; a hello of another version is refused.
-pub const DEV_PROTOCOL_VERSION: u16 = 1;
-
-/// The environment variable `viso run` passes the dev channel's loopback
-/// address in.
-pub const DEV_RUNTIME_ENV: &str = "VISO_DEV_RUNTIME";
-
-/// The environment variable `viso run` passes the session token in.
-pub const DEV_TOKEN_ENV: &str = "VISO_DEV_TOKEN";
-
-/// The largest frame either side writes or reads.
-pub const MAX_FRAME: usize = 4 << 20;
 
 /// How a reload attempt ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,102 +149,17 @@ impl ReloadEvent {
     }
 }
 
-/// One frame of the dev channel.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DevMessage {
-    /// The first frame of a connection: the app's protocol version and the
-    /// session token it was launched with.
-    Hello {
-        protocol_version: u16,
-        token: String,
-    },
-    /// A reload attempt.
-    Reload(Box<ReloadEvent>),
-}
-
-const HELLO: u8 = 0;
-const RELOAD: u8 = 1;
-
-/// Writes `message` to `out` as one frame: its length as four little-endian
-/// bytes, then its encoding.
-pub fn write_frame(out: &mut impl Write, message: &DevMessage) -> io::Result<()> {
-    let mut enc = Encoder::new();
-    enc.write_raw(&[0; 4]);
-    message.encode(&mut enc);
-    let mut frame = enc.into_bytes();
-    let len = frame.len() - 4;
-    if len > MAX_FRAME {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "dev frame too large",
-        ));
+impl ReloadEvent {
+    /// The report's bytes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut enc = Encoder::new();
+        self.encode(&mut enc);
+        enc.into_bytes()
     }
-    frame[..4].copy_from_slice(&(len as u32).to_le_bytes());
-    out.write_all(&frame)
-}
 
-/// Reads the next frame from `input` into `buf` and decodes it; `None` at the
-/// end of the stream between frames.
-pub fn read_frame(input: &mut impl Read, buf: &mut Vec<u8>) -> io::Result<Option<DevMessage>> {
-    let mut len = [0; 4];
-    match input.read_exact(&mut len) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error),
-    }
-    let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_FRAME {
-        return Err(invalid("dev frame too large"));
-    }
-    buf.clear();
-    buf.resize(len, 0);
-    input.read_exact(buf)?;
-    DevMessage::decode_from_slice(buf)
-        .map(Some)
-        .map_err(|_| invalid("malformed dev frame"))
-}
-
-fn invalid(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
-}
-
-impl Encode for DevMessage {
-    fn encode(&self, enc: &mut Encoder) {
-        match self {
-            DevMessage::Hello {
-                protocol_version,
-                token,
-            } => {
-                enc.write_u8(HELLO);
-                ProtocolTag::current().encode(enc);
-                enc.write_u16(*protocol_version);
-                enc.write_str(token);
-            }
-            DevMessage::Reload(event) => {
-                enc.write_u8(RELOAD);
-                event.encode(enc);
-            }
-        }
-    }
-}
-
-impl Decode for DevMessage {
-    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        let at = dec.position();
-        match dec.read_u8()? {
-            HELLO => {
-                let tag = ProtocolTag::decode(dec)?;
-                if !tag.is_compatible() {
-                    return Err(DecodeError::Malformed { offset: at });
-                }
-                Ok(DevMessage::Hello {
-                    protocol_version: dec.read_u16()?,
-                    token: dec.read_str()?.to_owned(),
-                })
-            }
-            RELOAD => Ok(DevMessage::Reload(Box::new(ReloadEvent::decode(dec)?))),
-            _ => Err(DecodeError::Malformed { offset: at }),
-        }
+    /// The report `bytes` spell, all of them.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::decode_from_slice(bytes)
     }
 }
 
@@ -585,20 +484,9 @@ mod tests {
     }
 
     #[test]
-    fn a_reload_event_round_trips_through_a_frame() {
-        let mut wire = Vec::new();
-        let hello = DevMessage::Hello {
-            protocol_version: DEV_PROTOCOL_VERSION,
-            token: "secret".into(),
-        };
-        let reload = DevMessage::Reload(Box::new(event()));
-        write_frame(&mut wire, &hello).unwrap();
-        write_frame(&mut wire, &reload).unwrap();
-        let mut input = &wire[..];
-        let mut buf = Vec::new();
-        assert_eq!(read_frame(&mut input, &mut buf).unwrap(), Some(hello));
-        assert_eq!(read_frame(&mut input, &mut buf).unwrap(), Some(reload));
-        assert_eq!(read_frame(&mut input, &mut buf).unwrap(), None);
+    fn a_reload_event_round_trips() {
+        let bytes = event().to_bytes();
+        assert_eq!(ReloadEvent::from_bytes(&bytes), Ok(event()));
     }
 
     #[test]
@@ -614,30 +502,24 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_or_oversized_frame_is_refused() {
-        let mut wire = Vec::new();
-        write_frame(&mut wire, &DevMessage::Reload(Box::new(event()))).unwrap();
-        let mut buf = Vec::new();
+    fn a_malformed_report_is_refused() {
+        let bytes = event().to_bytes();
 
         // A count no remaining bytes could hold.
-        let mut corrupt = wire.clone();
+        let mut corrupt = bytes.clone();
         let at = corrupt.len() - 1;
         corrupt[at] = 0xff;
-        assert!(read_frame(&mut &corrupt[..], &mut buf).is_err());
-
-        let mut huge = wire.clone();
-        huge[..4].copy_from_slice(&(MAX_FRAME as u32 + 1).to_le_bytes());
-        let error = read_frame(&mut &huge[..], &mut buf).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(ReloadEvent::from_bytes(&corrupt).is_err());
 
         // A code outside appendix C's shape.
         let mut bad = event();
         bad.diagnostics[0].code = "HOT_RELOAD_FAILED";
-        let mut wire = Vec::new();
-        write_frame(&mut wire, &DevMessage::Reload(Box::new(bad))).unwrap();
-        assert!(read_frame(&mut &wire[..], &mut buf).is_err());
+        assert!(ReloadEvent::from_bytes(&bad.to_bytes()).is_err());
 
-        // A truncated stream mid-frame.
-        assert!(read_frame(&mut &wire[..wire.len() - 1], &mut buf).is_err());
+        // Truncated, or with bytes after it.
+        assert!(ReloadEvent::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+        let mut long = bytes.clone();
+        long.push(0);
+        assert!(ReloadEvent::from_bytes(&long).is_err());
     }
 }

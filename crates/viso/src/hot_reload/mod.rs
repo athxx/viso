@@ -21,7 +21,7 @@ mod watch;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use viso_dsl::frontend::Origin;
 use viso_dsl::hir::TargetProfile;
@@ -34,10 +34,13 @@ use viso_platform::{LoopWaker, WindowId};
 use viso_runtime::RuntimeCx;
 use viso_ui::NodeId;
 use viso_ui::state::{StateId, StateKey};
+use viso_view::dev::wire::{
+    Domains, PatchAck, PatchBundle, PatchTimings, RuntimeIdentity, RuntimeMessage,
+};
 use viso_view::{MountRecord, ViewHost, take_mounts};
 
 use crate::WindowState;
-use link::DevLink;
+use link::{DevLink, Incoming};
 use watch::{Watcher, content_hash};
 
 /// The hot reload session of an app: its mounted views, their files and the
@@ -48,6 +51,11 @@ pub(crate) struct HotReloadSession {
     /// The dev channel to `viso run`, opened with the watcher when the
     /// environment names one.
     link: Option<DevLink>,
+    /// Who the host accepted this launch as, and the revision it matches.
+    identity: Option<RuntimeIdentity>,
+    /// Patches checked against the runtime and waiting for the frame
+    /// boundary, in revision order.
+    patches: Vec<StagedPatch>,
     files: Vec<ViewFile>,
     catalogs: Vec<CatalogDir>,
     views: Vec<LiveView>,
@@ -55,6 +63,13 @@ pub(crate) struct HotReloadSession {
     records: Vec<MountRecord>,
     /// Scratch a commit frees subtrees with.
     scratch: Vec<NodeId>,
+}
+
+/// A patch the runtime accepted, to commit at the next frame boundary.
+struct StagedPatch {
+    bundle: Box<PatchBundle>,
+    decode: Duration,
+    stage: Duration,
 }
 
 /// The watcher index of the catalog files of directory `n` is `CATALOG | n`.
@@ -138,10 +153,14 @@ impl HotReloadSession {
         if self.records.is_empty() {
             return;
         }
-        if self.watcher.is_none() {
-            self.link = DevLink::from_env();
-        }
-        let watcher = self.watcher.get_or_insert_with(|| Watcher::spawn(waker()));
+        let watcher = match &mut self.watcher {
+            Some(watcher) => watcher,
+            None => {
+                let waker = waker();
+                self.link = DevLink::from_env(waker.clone());
+                self.watcher.insert(Watcher::spawn(waker))
+            }
+        };
         for record in self.records.drain(..) {
             let file = match self.files.iter().position(|file| file.path == record.file) {
                 Some(file) => file,
@@ -210,18 +229,91 @@ impl HotReloadSession {
         }
     }
 
-    /// Stages the edits the watcher delivered and requests a frame for each
-    /// window that mounts an edited file.
+    /// Stages the edits the watcher and the patches the dev channel
+    /// delivered, and requests a frame for each window that mounts an edited
+    /// file, or for every window with a mount when a patch is staged.
     pub(crate) fn wakeup(&mut self, cx: &mut RuntimeCx<'_>) {
-        if !self.stage() {
+        let patched = self.receive();
+        if !self.stage() && !patched {
             return;
         }
         let mut asked: Vec<WindowId> = Vec::new();
         for view in &self.views {
-            if self.files[view.file].staged.is_some() && !asked.contains(&view.window) {
+            let edited = patched || self.files[view.file].staged.is_some();
+            if edited && !asked.contains(&view.window) {
                 asked.push(view.window);
                 cx.request_redraw(view.window);
             }
+        }
+    }
+
+    /// Takes what the dev channel delivered: the host's acceptance, and
+    /// patches, each checked against the revision the runtime will match
+    /// before it is staged and NACKed when it fails (§36). Returns whether a
+    /// patch was staged.
+    fn receive(&mut self) -> bool {
+        let Some(link) = &mut self.link else {
+            return false;
+        };
+        let mut staged = false;
+        while let Some(incoming) = link.poll() {
+            match incoming {
+                Incoming::Connected(identity) => self.identity = Some(identity),
+                Incoming::Patch(bundle, decode) => {
+                    let Some(identity) = &self.identity else {
+                        continue;
+                    };
+                    let started = Instant::now();
+                    // A patch may chain onto one staged before it.
+                    let mut expected = identity.clone();
+                    if let Some(last) = self.patches.last() {
+                        expected.current_revision = last.bundle.next_revision;
+                    }
+                    match expected.check(&bundle) {
+                        Ok(()) => {
+                            self.patches.push(StagedPatch {
+                                bundle,
+                                decode,
+                                stage: started.elapsed(),
+                            });
+                            staged = true;
+                        }
+                        Err(mut nack) => {
+                            nack.last_good_revision = identity.current_revision;
+                            link.send(RuntimeMessage::Nack(nack));
+                        }
+                    }
+                }
+                Incoming::Undecodable(error) => {
+                    if let Some(identity) = &self.identity {
+                        link.send(RuntimeMessage::Nack(identity.undecodable(error)));
+                    }
+                }
+            }
+        }
+        staged
+    }
+
+    /// Commits the staged patches in revision order and ACKs each. No
+    /// domain's sections are applied yet, so a patch only moves the revision.
+    fn commit_patches(&mut self) {
+        let (Some(link), Some(identity)) = (&mut self.link, &mut self.identity) else {
+            return;
+        };
+        for staged in self.patches.drain(..) {
+            let started = Instant::now();
+            identity.current_revision = staged.bundle.next_revision;
+            let micros = |d: Duration| u64::try_from(d.as_micros()).unwrap_or(u64::MAX);
+            link.send(RuntimeMessage::Ack(PatchAck {
+                revision: identity.current_revision,
+                applied_domains: Domains::NONE,
+                scoped_resets: 0,
+                timings: PatchTimings {
+                    decode_us: micros(staged.decode),
+                    stage_us: micros(staged.stage),
+                    commit_us: micros(started.elapsed()),
+                },
+            }));
         }
     }
 
@@ -272,6 +364,7 @@ impl HotReloadSession {
     pub(crate) fn reload(&mut self, windows: &mut [WindowState]) {
         take_mounts(&mut self.records);
         self.records.clear();
+        self.commit_patches();
         if self.files.iter().all(|file| file.staged.is_none()) {
             return;
         }
@@ -366,7 +459,7 @@ impl HotReloadSession {
             match link {
                 Some(link) => {
                     event.source = source;
-                    link.send(event);
+                    link.send(RuntimeMessage::InAppReload(event.to_bytes()));
                 }
                 None => report(file.path, &source, &event.diagnostics),
             }
@@ -820,5 +913,142 @@ mod tests {
         session.adopt(|| LoopWaker::new(|| {}), &mut ws);
         session.close(ws.window);
         assert!(session.views.is_empty());
+    }
+
+    use viso_view::dev::wire::{HostMessage, Revision};
+
+    /// A session linked to a fake host that accepted it.
+    fn linked() -> (HotReloadSession, link::fake::Host) {
+        let mut host = link::fake::Host::bind();
+        let link = DevLink::connect(host.addr(), link::fake::hello(), LoopWaker::new(|| {}));
+        host.accept();
+        host.welcome();
+        let mut session = HotReloadSession {
+            link: Some(link),
+            ..HotReloadSession::default()
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while session.identity.is_none() {
+            session.receive();
+            assert!(Instant::now() < deadline, "not connected");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        (session, host)
+    }
+
+    /// Sends `patches` and receives until the session staged them all.
+    fn stage_all(
+        session: &mut HotReloadSession,
+        host: &mut link::fake::Host,
+        patches: &[HostMessage],
+    ) {
+        let want = session.patches.len() + patches.len();
+        for patch in patches {
+            host.send(patch);
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while session.patches.len() < want {
+            session.receive();
+            assert!(Instant::now() < deadline, "not staged");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn patches_commit_in_revision_order_at_the_frame_boundary() {
+        let (mut session, mut host) = linked();
+        let sent = [host.patch(1, 2), host.patch(2, 3)];
+        stage_all(&mut session, &mut host, &sent);
+        assert_eq!(session.patches.len(), 2, "chained onto the staged one");
+        assert_eq!(
+            session.identity.as_ref().unwrap().current_revision,
+            Revision::LAUNCH,
+            "nothing commits before the frame boundary"
+        );
+        session.reload(&mut []);
+        for revision in [2, 3] {
+            match host.read() {
+                Some(RuntimeMessage::Ack(ack)) => {
+                    assert_eq!(ack.revision, Revision(revision));
+                    assert_eq!(ack.applied_domains, Domains::NONE);
+                }
+                other => panic!("not an ACK: {other:?}"),
+            }
+        }
+        assert_eq!(
+            session.identity.as_ref().unwrap().current_revision,
+            Revision(3)
+        );
+    }
+
+    #[test]
+    fn an_out_of_order_or_foreign_patch_is_nacked_and_last_good_kept() {
+        use viso_view::dev::wire::{
+            NACK_BUILD_MISMATCH, NACK_MALFORMED, NACK_REVISION_MISMATCH, NACK_UNKNOWN_SESSION,
+            Stage,
+        };
+        let (mut session, mut host) = linked();
+        let foreign = |edit: fn(&mut PatchBundle)| {
+            let HostMessage::Patch(mut patch) = host.patch(1, 2) else {
+                unreachable!()
+            };
+            edit(&mut patch);
+            HostMessage::Patch(patch)
+        };
+        let cases = [
+            (
+                host.patch(2, 3),
+                Stage::RuntimeStage,
+                NACK_REVISION_MISMATCH,
+            ),
+            (
+                foreign(|p| p.target_runtime.0 ^= 1),
+                Stage::Transport,
+                NACK_UNKNOWN_SESSION,
+            ),
+            (
+                foreign(|p| p.build_id.0 ^= 1),
+                Stage::Transport,
+                NACK_BUILD_MISMATCH,
+            ),
+        ];
+        for (patch, stage, code) in cases {
+            host.send(&patch);
+            match answer(&mut session, &mut host) {
+                RuntimeMessage::Nack(nack) => {
+                    assert_eq!(
+                        (nack.stage, nack.diagnostic_codes[0].as_str()),
+                        (stage, code)
+                    );
+                    assert_eq!(nack.last_good_revision, Revision::LAUNCH);
+                }
+                other => panic!("not a NACK: {other:?}"),
+            }
+        }
+        // A frame that does not decode is NACKed, and the next patch applies.
+        host.send_raw(&[0xEE]);
+        assert!(matches!(
+            answer(&mut session, &mut host),
+            RuntimeMessage::Nack(n) if n.diagnostic_codes == [NACK_MALFORMED]
+        ));
+        assert!(session.patches.is_empty());
+        let patch = host.patch(1, 2);
+        stage_all(&mut session, &mut host, &[patch]);
+        session.reload(&mut []);
+        assert!(matches!(host.read(), Some(RuntimeMessage::Ack(a)) if a.revision == Revision(2)));
+    }
+
+    /// Receives until the session answered the host, and the answer.
+    fn answer(session: &mut HotReloadSession, host: &mut link::fake::Host) -> RuntimeMessage {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stream = host.stream.as_ref().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        while !matches!(stream.peek(&mut [0]), Ok(1)) {
+            session.receive();
+            assert!(Instant::now() < deadline, "no answer");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        stream.set_nonblocking(false).unwrap();
+        host.read().expect("an answer")
     }
 }

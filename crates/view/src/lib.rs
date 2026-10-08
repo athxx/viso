@@ -23,6 +23,8 @@
 
 mod attach;
 mod control;
+#[cfg(feature = "hot-reload")]
+pub mod dev;
 mod effects;
 mod env;
 mod host;

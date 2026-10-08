@@ -201,8 +201,9 @@ impl Watcher {
     }
 
     /// Starts watching `path` as file `file`, whose content the running build
-    /// holds hashes to `hash`. It is read at once, so an edit made between the
-    /// build and the launch still arrives.
+    /// holds hashes to `hash`. It is read once it has settled, so an edit made
+    /// between the build and the launch still arrives, and one in flight
+    /// arrives whole.
     pub(crate) fn watch(&self, file: usize, path: PathBuf, hash: u64) {
         if let Some(files) = &self.files {
             let _ = files.send(Watched {
@@ -252,7 +253,11 @@ fn run(
             match watch.try_recv() {
                 Ok(mut file) => {
                     file.group = events.as_mut().and_then(|events| events.add(&file.path));
-                    file.due = file.group.map(|_| Instant::now());
+                    // The first read waits out a settle window like any
+                    // other: a save in flight at tracking start would
+                    // otherwise be read half written. Its events push the
+                    // read back until it is quiet.
+                    file.due = file.group.map(|_| Instant::now() + SETTLE);
                     files.push(file);
                 }
                 Err(TryRecvError::Empty) => break,

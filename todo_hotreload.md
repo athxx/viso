@@ -140,36 +140,62 @@ app parses no `.vs` source (anti-pattern B.2).
 
 ### H1.2 — Protocol (§33–§37, §46)
 
-- [ ] `viso-view::dev::wire`: one ende-binary message family with stable tags and a
-      `DEV_PROTOCOL_VERSION` bump; bounded decode (every count and length capped,
-      depth capped), frame cap kept at 4 MiB, malformed input a typed error.
-  - [ ] `HostHello { protocol_version, dev_session_id, project_fingerprint,
-        expected_build_id, token }` and `RuntimeHello { protocol_version,
-        runtime_session_id, build_id, current_revision, schema_fingerprint,
-        capabilities, target_profile }` (§34, §4.1).
-  - [ ] A protocol or build mismatch is rejected with a reason and the CLI asks for a
-        rebuild; no version guessing.
-  - [ ] Handshake binds project fingerprint, build id and session; unknown session or
-        wrong token dropped (§46 gap).
-  - [ ] `PatchBundle { dev_session, target_runtime, base_revision, next_revision,
-        build_id, modules, ui, systems, shaders, resources, state_plan }` (§35); no
-        field-name strings, canonical ID encoding.
-  - [ ] `PatchAck { revision, applied_domains, scoped_resets, timings }` and
+- [x] `viso-view::dev::wire` (behind `viso-view/hot-reload`): one ende-binary message
+      family per direction (`HostMessage`, `RuntimeMessage`) with stable tags and
+      `DEV_PROTOCOL_VERSION` 2; bounded decode (token 64 B, ≤ 64 NACK codes of ≤ 32 B,
+      log 16 KiB, ≤ 4096 sections, every count also ≤ the bytes left; no nesting, so
+      fixed depth), frame cap 4 MiB refused before the body is read, malformed input a
+      typed `WireError`.
+  - [x] Runtime speaks first: `RuntimeHello { protocol_version, token, dev_session,
+        runtime_session, build_id, current_revision, schema_fingerprint,
+        capabilities, target }`; the host answers `HostHello { protocol_version,
+        dev_session, runtime_session, project_fingerprint, expected_build_id }` or
+        `Reject`. The token moved from the host's hello to the runtime's: the
+        connecting side proves itself, and the host sends nothing to an unproven
+        connection (§34).
+  - [x] A protocol, session or build mismatch is a `Reject` with its reason and the CLI
+        asks for a rebuild; a hello and a reject keep their version-first prefix in
+        every version, so another version is named, never guessed.
+  - [x] Handshake binds token, dev session, runtime session and build (the CLI passes
+        `VISO_DEV_SESSION` and `VISO_DEV_BUILD`); the host's hello carries the project
+        fingerprint; a wrong token is dropped unanswered (§46 gap closed).
+  - [x] `PatchBundle { dev_session, target_runtime, base_revision, next_revision,
+        build_id, sections }` (§35): at most one section per domain in tag order,
+        stable domain tags (`ui module state system shader resource`), fixed-width
+        128-bit ids, no field-name strings. Each domain's payload lands with the
+        phase that applies it (H1.4 ui/module/state); until then its tag decodes as
+        `UnsupportedDomain` and is NACKed.
+  - [x] `PatchAck { revision, applied_domains, scoped_resets, timings }` and
         `PatchNack { base_revision, candidate_revision, stage, diagnostic_codes,
-        last_good_revision }` (§37); `ReloadEvent` becomes the host-side report built
-        from them (source spans resolved on the host, no source sent by the app).
-  - [ ] `PatchBundle` and the apply engine's types join the release-absence markers
-        (`xtask/src/absence.rs`), present in the control build.
-  - [ ] Replaces `viso-dsl::hotreload::event`, which is deleted (the app no longer
-        decodes `viso-dsl` diagnostics).
-  - [ ] Revision rule: apply only when `base_revision == current_revision`, else
-        `NACK_REVISION_MISMATCH`; the host regenerates from the runtime's revision
-        (§36).
-- [ ] Bidirectional link: host → app patches and requests, app → host hello, ACK/NACK,
-      logs; the app's link thread never blocks the UI loop (bounded queues, drop
-      policy reported).
-- [ ] Unit tests (§61): round-trip of every message, each bound exceeded, truncated
-      and corrupted frames, revision ordering, mismatched protocol/build/session.
+        last_good_revision }` (§37), every §51 stage on the wire; NACK codes
+        `NACK_UNKNOWN_SESSION`, `NACK_BUILD_MISMATCH`, `NACK_REVISION_MISMATCH`,
+        `NACK_REVISION_ORDER`, `NACK_UNSUPPORTED_DOMAIN`, `NACK_MALFORMED`.
+  - [x] Release-absence markers: the new env names and `NACK_REVISION_MISMATCH`
+        (present in the control build).
+  - [x] Revision rule (`RuntimeIdentity::check`, before staging): session, launch,
+        build, `base == current` else `NACK_REVISION_MISMATCH`, `next > base` else
+        `NACK_REVISION_ORDER`, advertised domains only; a patch arriving behind a
+        staged one chains on its `next_revision`; staged patches commit at the frame
+        boundary in order, each ACKed (§36).
+  - [x] The in-app compile result travels as `RuntimeMessage::InAppReload` (the
+        `ReloadEvent` ende bytes, `viso-dsl` keeping only that codec) until the host
+        compiles; the frame codec, hello and env names left `viso-dsl`.
+- [x] Bidirectional link (`viso/src/hot_reload/link.rs`): the link thread connects,
+      shakes hands, starts a reader, then writes; host frames reach the loop through a
+      bounded queue that wakes it (a full queue stalls the reader, never the loop);
+      the loop only `try_send`s into a bounded outgoing queue, and drops are counted and
+      sent as `Dropped{count}`. An undecodable frame is NACKed and the channel stays in
+      step. The CLI answers the handshake and relays reports, logs, drops, ACKs and
+      NACKs.
+- [x] Unit tests (§61): every message round-trips (all stages and targets), each bound
+      exceeded, a frame over the cap refused unread, truncation at every byte,
+      corruption of every byte never panics, another version named, a reserved
+      domain named, revision ordering, mismatched token/protocol/session/build on
+      both sides (wire, CLI over loopback, facade link and session against a fake
+      host: chained commits, NACKs keep last-good, a malformed frame then a good patch).
+- [x] Watcher fix found while verifying: the first read at tracking start waited no
+      settle window and could read a save in flight half written (the session tests
+      failed 6/15 runs at HEAD); it now settles like any other read (0/30).
 
 ### H1.3 — Host dev session (`tools/cli/src/dev/`, §4, §6, §7)
 
@@ -191,6 +217,12 @@ app parses no `.vs` source (anti-pattern B.2).
       id, module identity, revision, `SymbolId` keys, static `NodeKey`s) instead of
       the host trusting embedded source; the host compiles last-good from the
       project files at the runtime's build.
+- [ ] The runtime's `schema_fingerprint` (0 until now) is computed with the inventory
+      and the host refuses a runtime whose schema it cannot patch.
+- [ ] `ReloadEvent` and its codec in `viso-dsl` and `RuntimeMessage::InAppReload` are
+      deleted once the host compiles: the host builds its report from its own
+      compile and the ACK/NACK (source spans resolved on the host, no source sent by
+      the app).
 - [ ] Every stage reports its §51 name: `watch`, `parse`, `resolve`, `typecheck`,
       `capability`, `patch-plan`, `state-compat`, `transport`, `runtime-stage`,
       `runtime-commit`.

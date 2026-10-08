@@ -12,6 +12,8 @@ repository.workspace = true
 # event stream is written with `viso-ende`'s writer, the one JSON emitter.
 [dependencies]
 viso-dsl = { workspace = true }
+# The dev channel's wire protocol, shared with the running app.
+viso-view = { workspace = true, features = ["hot-reload"] }
 viso-ende = { workspace = true }
 viso-project = { workspace = true }
 # A mature parser rather than a hand-rolled one (section 42): subcommands, global
