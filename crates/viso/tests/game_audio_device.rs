@@ -1,7 +1,14 @@
 //! A game's audio systems on the real default output device: the host
-//! renders blocks on the device's callback and the link reports them. Runs
-//! where the target has audio output and a device; elsewhere there is
-//! nothing to render to.
+//! renders blocks on the device's callback and the link reports them. Built
+//! for the targets with an audio backend, and runs where there is a device;
+//! elsewhere there is nothing to render to.
+
+#![cfg(any(
+    target_vendor = "apple",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "android"
+))]
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
