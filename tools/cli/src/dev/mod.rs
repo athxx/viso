@@ -240,6 +240,10 @@ impl DevSession {
                     );
                 };
                 let elapsed = elapsed_us(sent.started);
+                let runtime_session = self
+                    .runtime
+                    .as_ref()
+                    .map_or_else(String::new, |r| r.hello.runtime_session.to_hex());
                 for (at, text, candidate) in sent.views {
                     let view = &mut self.sources.views[at];
                     let Some(mount) = view.mount.as_mut() else {
@@ -280,7 +284,13 @@ impl DevSession {
                         counts,
                         codes,
                     };
-                    out.dev(source.name(), &self.session, &self.build, &event);
+                    out.dev(
+                        source.name(),
+                        &self.session,
+                        &runtime_session,
+                        &self.build,
+                        &event,
+                    );
                 }
             }
             RuntimeMessage::Nack(nack) => {
@@ -295,9 +305,13 @@ impl DevSession {
                         ),
                     );
                 };
-                if let Some(runtime) = &mut self.runtime {
-                    runtime.revision = nack.last_good_revision;
-                }
+                let runtime_session = match &mut self.runtime {
+                    Some(runtime) => {
+                        runtime.revision = nack.last_good_revision;
+                        runtime.hello.runtime_session.to_hex()
+                    }
+                    None => String::new(),
+                };
                 let elapsed = elapsed_us(sent.started);
                 for (at, text, _) in &sent.views {
                     let view = &mut self.sources.views[*at];
@@ -317,7 +331,7 @@ impl DevSession {
                         codes: nack.diagnostic_codes.clone(),
                     };
                     let name = Source::new(&view.path, &self.root, "").name().to_owned();
-                    out.dev(&name, &self.session, &self.build, &event);
+                    out.dev(&name, &self.session, &runtime_session, &self.build, &event);
                 }
             }
             RuntimeMessage::Log { level, line } => out.log(level.as_str(), "app", &line),
@@ -363,6 +377,7 @@ impl DevSession {
         if runtime.in_flight.is_some() {
             return;
         }
+        let runtime_session = runtime.hello.runtime_session.to_hex();
         // A rejected edit reverted to what the runtime runs: clear its failure.
         for view in &mut self.sources.views {
             let hash = view.hash();
@@ -413,7 +428,7 @@ impl DevSession {
                         codes: Vec::new(),
                     };
                     let name = Source::new(&view.path, &self.root, "").name().to_owned();
-                    out.dev(&name, &self.session, &self.build, &event);
+                    out.dev(&name, &self.session, &runtime_session, &self.build, &event);
                     continue;
                 }
                 Err(diagnostics) => diagnostics,
@@ -440,7 +455,13 @@ impl DevSession {
                 counts: CommitCounts::default(),
                 codes: diagnostics.iter().map(|d| d.code.to_owned()).collect(),
             };
-            out.dev(source.name(), &self.session, &self.build, &event);
+            out.dev(
+                source.name(),
+                &self.session,
+                &runtime_session,
+                &self.build,
+                &event,
+            );
         }
         if views.is_empty() {
             return;
