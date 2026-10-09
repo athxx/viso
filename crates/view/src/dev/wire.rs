@@ -25,12 +25,12 @@ use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
 pub use super::patch::{
     MAX_PLAN_ENTRIES, NodeCarry, NodeRef, RESET_NOTICE, ReloadPlan, RetypePlan, StateAction,
-    StatePlan, UiPatch, ViewPatch,
+    StatePlan, StructuralOp, UiPatch, ViewPatch,
 };
 use super::patch::{read_ui, write_ui};
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 5;
+pub const DEV_PROTOCOL_VERSION: u16 = 6;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -1462,10 +1462,40 @@ mod tests {
         use viso_behavior::native::MigratableState;
         use viso_behavior::retype::{Conversion, Retyping};
         use viso_ui::StateValue;
+        use viso_ui::aot::{AotNode, AotNodeKind, AotStyle};
         use viso_ui::state::StateKey;
+
+        let leaf = AotNode {
+            kind: AotNodeKind::Leaf,
+            style: AotStyle::default(),
+            child_count: 0,
+        };
 
         let plan = ReloadPlan {
             preserving: false,
+            structural: vec![
+                StructuralOp::Remove {
+                    node: NodeRef::Static(5),
+                },
+                StructuralOp::Replace {
+                    node: NodeRef::Static(1),
+                    start: 2,
+                    subtree: vec![leaf.clone()],
+                },
+                StructuralOp::Insert {
+                    parent: NodeRef::Static(0),
+                    before: Some(NodeRef::Static(1)),
+                    start: 3,
+                    subtree: vec![
+                        AotNode {
+                            kind: AotNodeKind::Flex,
+                            style: AotStyle::default(),
+                            child_count: 1,
+                        },
+                        leaf,
+                    ],
+                },
+            ],
             nodes: vec![
                 NodeCarry {
                     from: NodeRef::Static(0),

@@ -16,6 +16,7 @@ use viso_behavior::native::MigratableState;
 use viso_behavior::retype::Retyping;
 use viso_ende::{Decode, Decoder, Encode, Encoder};
 use viso_ui::StateValue;
+use viso_ui::aot::AotNode;
 use viso_ui::state::StateKey;
 
 use super::wire::{
@@ -25,7 +26,8 @@ use super::wire::{
 use crate::ViewPackage;
 use crate::package::{read_state_value, write_state_value};
 
-/// The most node carries or state plans one view's plan holds.
+/// The most node carries, state plans, structural ops or subtree nodes one
+/// view's plan holds.
 pub const MAX_PLAN_ENTRIES: usize = 1 << 16;
 
 /// The `ui` section of a patch: each view it reloads.
@@ -46,13 +48,21 @@ pub struct ViewPatch {
 }
 
 /// How the mounts of a file move to its candidate view.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ReloadPlan {
     /// Whether the candidate keeps every node of the last-good template in
     /// place: a mount without regions then restyles its nodes where they are
     /// instead of rebuilding.
     pub preserving: bool,
-    /// The kept nodes whose live state carries, when the mount rebuilds.
+    /// A region-free mount's structural edit as node-level operations on the
+    /// last-good tree, instead of freeing and rebuilding the whole view: a
+    /// node no operation names keeps its live [`NodeId`](viso_ui::NodeId), so
+    /// its state is never disturbed. Empty when `preserving`, or when a
+    /// region makes the whole-view rebuild the only path (`commit.rs`'s
+    /// `apply_structural` falls back to it whenever this is empty).
+    pub structural: Vec<StructuralOp>,
+    /// The kept nodes whose live state carries, and the position every other
+    /// kept node's unchanged identity moves to, when the mount rebuilds.
     pub nodes: Vec<NodeCarry>,
     /// Every state cell of either view, and what happens to it.
     pub states: Vec<StatePlan>,
@@ -90,6 +100,7 @@ impl ReloadPlan {
         }
         ReloadPlan {
             preserving: false,
+            structural: Vec::new(),
             nodes: Vec::new(),
             states,
         }
@@ -113,6 +124,35 @@ pub struct NodeCarry {
     pub to: NodeRef,
     /// The state its widget schema marks migratable.
     pub carries: MigratableState,
+}
+
+/// A node-level mutation of the last-good tree (`Viso_Hot_Reload.md` §12,
+/// §66): every [`NodeRef`] here names a node of the *last-good* tree, the one
+/// the runtime already holds live when it applies the plan, so each
+/// operation resolves independently of the order the runtime runs them in —
+/// a kept node's live id never moves until something names it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StructuralOp {
+    /// The candidate drops `node`: free its subtree.
+    Remove { node: NodeRef },
+    /// The candidate's node at `node`'s position changed type: free its
+    /// subtree and build `subtree` in its place, at the candidate's static
+    /// ordinals `start..start + subtree.len()`.
+    Replace {
+        node: NodeRef,
+        start: u32,
+        subtree: Vec<AotNode>,
+    },
+    /// The candidate adds a node `last_good` never had: build `subtree`, at
+    /// the candidate's static ordinals `start..start + subtree.len()`, and
+    /// attach it under `parent` immediately before `before` (or after every
+    /// other child, when `None`).
+    Insert {
+        parent: NodeRef,
+        before: Option<NodeRef>,
+        start: u32,
+        subtree: Vec<AotNode>,
+    },
 }
 
 /// What happens to a state cell.
@@ -188,6 +228,10 @@ pub(super) fn read_ui(dec: &mut Decoder<'_>) -> Result<UiPatch, WireError> {
 
 fn write_plan(enc: &mut Encoder, plan: &ReloadPlan) {
     enc.write_bool(plan.preserving);
+    enc.write_varint(plan.structural.len() as u64);
+    for op in &plan.structural {
+        write_structural_op(enc, op);
+    }
     enc.write_varint(plan.nodes.len() as u64);
     for carry in &plan.nodes {
         write_node(enc, carry.from);
@@ -226,6 +270,7 @@ fn write_plan(enc: &mut Encoder, plan: &ReloadPlan) {
 
 fn read_plan(dec: &mut Decoder<'_>) -> Result<ReloadPlan, WireError> {
     let preserving = dec.read_bool()?;
+    let structural = read_list(dec, MAX_PLAN_ENTRIES, "structural ops", read_structural_op)?;
     let nodes = read_list(dec, MAX_PLAN_ENTRIES, "node carries", |dec| {
         Ok(NodeCarry {
             from: read_node(dec)?,
@@ -258,6 +303,7 @@ fn read_plan(dec: &mut Decoder<'_>) -> Result<ReloadPlan, WireError> {
     })?;
     Ok(ReloadPlan {
         preserving,
+        structural,
         nodes,
         states,
     })
@@ -288,6 +334,90 @@ fn read_node(dec: &mut Decoder<'_>) -> Result<NodeRef, WireError> {
         },
         _ => return Err(malformed(dec)),
     })
+}
+
+fn write_structural_op(enc: &mut Encoder, op: &StructuralOp) {
+    match op {
+        StructuralOp::Remove { node } => {
+            enc.write_u8(0);
+            write_node(enc, *node);
+        }
+        StructuralOp::Replace {
+            node,
+            start,
+            subtree,
+        } => {
+            enc.write_u8(1);
+            write_node(enc, *node);
+            write_subtree(enc, *start, subtree);
+        }
+        StructuralOp::Insert {
+            parent,
+            before,
+            start,
+            subtree,
+        } => {
+            enc.write_u8(2);
+            write_node(enc, *parent);
+            match before {
+                Some(before) => {
+                    enc.write_u8(1);
+                    write_node(enc, *before);
+                }
+                None => enc.write_u8(0),
+            }
+            write_subtree(enc, *start, subtree);
+        }
+    }
+}
+
+fn read_structural_op(dec: &mut Decoder<'_>) -> Result<StructuralOp, WireError> {
+    Ok(match dec.read_u8()? {
+        0 => StructuralOp::Remove {
+            node: read_node(dec)?,
+        },
+        1 => {
+            let node = read_node(dec)?;
+            let (start, subtree) = read_subtree(dec)?;
+            StructuralOp::Replace {
+                node,
+                start,
+                subtree,
+            }
+        }
+        2 => {
+            let parent = read_node(dec)?;
+            let before = match dec.read_u8()? {
+                0 => None,
+                1 => Some(read_node(dec)?),
+                _ => return Err(malformed(dec)),
+            };
+            let (start, subtree) = read_subtree(dec)?;
+            StructuralOp::Insert {
+                parent,
+                before,
+                start,
+                subtree,
+            }
+        }
+        _ => return Err(malformed(dec)),
+    })
+}
+
+fn write_subtree(enc: &mut Encoder, start: u32, subtree: &[AotNode]) {
+    enc.write_varint(u64::from(start));
+    enc.write_varint(subtree.len() as u64);
+    for node in subtree {
+        node.encode(enc);
+    }
+}
+
+fn read_subtree(dec: &mut Decoder<'_>) -> Result<(u32, Vec<AotNode>), WireError> {
+    let start = read_u32(dec)?;
+    let subtree = read_list(dec, MAX_PLAN_ENTRIES, "subtree nodes", |dec| {
+        Ok(AotNode::decode(dec)?)
+    })?;
+    Ok((start, subtree))
 }
 
 fn write_retype(enc: &mut Encoder, retype: &RetypePlan) {

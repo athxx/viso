@@ -104,8 +104,9 @@ pub struct MigrationPlan {
     /// candidate slot. The VM values follow the same identity match as the UI
     /// cells, never the state names.
     pub slots: Vec<SlotMigration>,
-    /// The kept nodes whose widget schema marks live state migratable,
-    /// ascending by candidate key.
+    /// Every kept node, ascending by candidate key — its unchanged live
+    /// identity moves to its new static ordinal, and as far as its widget
+    /// schema marks live state migratable, that state too.
     pub nodes: Vec<NodeMigration>,
     /// Each converted or reset state's types and conversion, by the order the
     /// states were refined.
@@ -218,10 +219,13 @@ pub fn migrate(
         .collect();
     slots.sort_unstable_by_key(|slot| slot.to);
 
+    // Every kept node, not only a migratable one: the commit also uses this
+    // list to carry a kept node's unchanged live identity to its new static
+    // ordinal when a structural edit elsewhere moves it, not just to lift
+    // the state a widget schema marks migratable.
     let nodes = patch
         .keep
         .iter()
-        .filter(|kept| !kept.migratable.is_empty())
         .map(|kept| NodeMigration {
             from: kept.old,
             to: kept.new,
@@ -256,6 +260,7 @@ mod tests {
                     old: NodeKey(old),
                     new: NodeKey(new),
                     migratable,
+                    under_replace: false,
                 })
                 .collect(),
             ..Default::default()
@@ -321,9 +326,17 @@ mod tests {
         let scroll = focus.with(MigratableState::SCROLL);
         let patch = kept_patch(&[(0, 0, MigratableState::NONE), (1, 2, scroll), (2, 3, focus)]);
         let plan = migrate(&[], &[], &[], &[], &patch);
+        // Every kept node is here, including the one with nothing to carry —
+        // the commit's structural step also uses this list to move a kept
+        // node's unchanged identity to its new static ordinal.
         assert_eq!(
             plan.nodes,
             [
+                NodeMigration {
+                    from: NodeKey(0),
+                    to: NodeKey(0),
+                    carries: MigratableState::NONE,
+                },
                 NodeMigration {
                     from: NodeKey(1),
                     to: NodeKey(2),

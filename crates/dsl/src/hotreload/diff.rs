@@ -41,6 +41,11 @@ pub struct KeptNode {
     pub new: NodeKey,
     /// The live state its widget schema carries.
     pub migratable: MigratableState,
+    /// Whether an ancestor of this node is a [`ReplacedNode`]: its own
+    /// instance survives the reload, but the rebuild of that ancestor
+    /// recreates it regardless, so a structural commit does not address it
+    /// on its own — only `migratable` state carries across that rebuild.
+    pub under_replace: bool,
 }
 
 /// One node whose identity changed in place: the old instance is torn down and
@@ -57,16 +62,27 @@ pub struct ReplacedNode {
     pub new_type: String,
 }
 
-/// One node the candidate adds: built fresh, it carries no prior state.
+/// One node the candidate adds: built fresh, it carries no prior state. Only
+/// the root of a disjoint inserted subtree is named — a node under one is
+/// built as part of it, not addressed on its own — and only when its parent
+/// is a [`KeptNode`] (one nested under a [`ReplacedNode`] is already built as
+/// part of that replace).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertedNode {
     /// The node's key in the candidate.
     pub key: NodeKey,
     /// Its type.
     pub new_type: String,
+    /// The candidate key of its kept parent.
+    pub parent: NodeKey,
+    /// The candidate key of the next kept sibling it inserts before, `None`
+    /// to append after every other sibling.
+    pub before: Option<NodeKey>,
 }
 
-/// One node the candidate drops: its instance and state are freed.
+/// One node the candidate drops: its instance and state are freed. Only the
+/// root of a disjoint removed subtree is named, for the same reason as
+/// [`InsertedNode`], and only when its parent is a [`KeptNode`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemovedNode {
     /// The node's key in the last-good tree.
@@ -186,6 +202,26 @@ fn aligns(old: &Entry<'_>, new: &Entry<'_>) -> bool {
     }
 }
 
+/// The sibling list a run of unmatched entries sits in: the kept node whose
+/// children they are, so an insert/remove names a real anchor, or a replaced
+/// node's children (or the template's own root, which this walk never
+/// unmatches), whose whole subtree already rebuilds as one unit — so an
+/// insert/remove entry there is not worth a patch entry of its own, and a
+/// kept node there carries [`KeptNode::under_replace`].
+#[derive(Clone, Copy)]
+enum Parent {
+    /// The template's single root: never actually unmatched (see
+    /// [`StructuralPatch`]'s module docs), kept here only so the top call
+    /// needs no special case.
+    Root,
+    /// A kept node's children, named by the node's candidate key — the
+    /// lowering stage finds its live anchor from there.
+    Kept { new: NodeKey },
+    /// A replaced node's children: still diffed, for the migratable state its
+    /// own kept descendants carry, but never worth an insert/remove entry.
+    Replaced,
+}
+
 /// Compute the directed structural patch from the last-good template `old` to
 /// the candidate template `new`.
 ///
@@ -195,7 +231,7 @@ pub fn diff(old: &UiTree, new: &UiTree) -> StructuralPatch {
     let old = entries(&old.items, &mut 0);
     let new = entries(&new.items, &mut 0);
     let mut patch = StructuralPatch::default();
-    align(&old, &new, &mut patch);
+    align(&old, &new, Parent::Root, &mut patch);
     patch.keep.sort_unstable_by_key(|k| k.new);
     patch.replace.sort_unstable_by_key(|r| r.new);
     patch.insert.sort_unstable_by_key(|i| i.key);
@@ -205,7 +241,7 @@ pub fn diff(old: &UiTree, new: &UiTree) -> StructuralPatch {
 
 /// Align two sibling lists by the longest common subsequence of their
 /// entries, then settle each run of unmatched entries between two matches.
-fn align(old: &[Entry<'_>], new: &[Entry<'_>], patch: &mut StructuralPatch) {
+fn align(old: &[Entry<'_>], new: &[Entry<'_>], parent: Parent, patch: &mut StructuralPatch) {
     let width = new.len() + 1;
     // `lcs[i * width + j]` is the common subsequence length of `old[i..]` and
     // `new[j..]`.
@@ -223,8 +259,13 @@ fn align(old: &[Entry<'_>], new: &[Entry<'_>], patch: &mut StructuralPatch) {
     let (mut old_run, mut new_run) = (0, 0);
     while i < old.len() && j < new.len() {
         if aligns(&old[i], &new[j]) && lcs[i * width + j] == lcs[(i + 1) * width + j + 1] + 1 {
-            settle(&old[old_run..i], &new[new_run..j], patch);
-            matched(&old[i], &new[j], patch);
+            // The entry that ends this run is the anchor an insert in it goes
+            // before — only meaningful (and only ever a node) when `new[j]`
+            // is itself a kept node, which is exactly when this run's parent
+            // can name an anchor at all.
+            let next_kept = key_of(&new[j]);
+            settle(&old[old_run..i], &new[new_run..j], parent, next_kept, patch);
+            matched(&old[i], &new[j], parent, patch);
             i += 1;
             j += 1;
             (old_run, new_run) = (i, j);
@@ -234,12 +275,21 @@ fn align(old: &[Entry<'_>], new: &[Entry<'_>], patch: &mut StructuralPatch) {
             j += 1;
         }
     }
-    settle(&old[old_run..], &new[new_run..], patch);
+    settle(&old[old_run..], &new[new_run..], parent, None, patch);
+}
+
+/// The key of `entry`, `None` for a region (which has no key of its own).
+fn key_of(entry: &Entry<'_>) -> Option<NodeKey> {
+    match entry {
+        Entry::Node { key, .. } => Some(*key),
+        Entry::Region { .. } => None,
+    }
 }
 
 /// Two aligned entries: a kept node and its aligned children, or a region
-/// whose arms align pairwise.
-fn matched(old: &Entry<'_>, new: &Entry<'_>, patch: &mut StructuralPatch) {
+/// whose arms align pairwise under the same enclosing `parent` (a region adds
+/// no node boundary of its own).
+fn matched(old: &Entry<'_>, new: &Entry<'_>, parent: Parent, patch: &mut StructuralPatch) {
     match (old, new) {
         (
             Entry::Node {
@@ -257,12 +307,13 @@ fn matched(old: &Entry<'_>, new: &Entry<'_>, patch: &mut StructuralPatch) {
                 old: *from,
                 new: *to,
                 migratable: node.migratable,
+                under_replace: matches!(parent, Parent::Replaced),
             });
-            align(old_children, new_children, patch);
+            align(old_children, new_children, Parent::Kept { new: *to }, patch);
         }
         (Entry::Region { arms: old_arms, .. }, Entry::Region { arms: new_arms, .. }) => {
             for (old_arm, new_arm) in old_arms.iter().zip(new_arms) {
-                align(old_arm, new_arm, patch);
+                align(old_arm, new_arm, parent, patch);
             }
         }
         _ => unreachable!("only aligned entries match"),
@@ -271,8 +322,15 @@ fn matched(old: &Entry<'_>, new: &Entry<'_>, patch: &mut StructuralPatch) {
 
 /// A run of unmatched entries between two matches: its nodes pair up in order
 /// as replaces whose children still align, and what is left is removed or
-/// inserted whole.
-fn settle(old: &[Entry<'_>], new: &[Entry<'_>], patch: &mut StructuralPatch) {
+/// inserted whole — named in the patch only when `parent` is a kept node,
+/// since a run under a replaced node's children rebuilds with it regardless.
+fn settle(
+    old: &[Entry<'_>],
+    new: &[Entry<'_>],
+    parent: Parent,
+    next_kept: Option<NodeKey>,
+    patch: &mut StructuralPatch,
+) {
     let mut old_nodes = old.iter().filter(|e| matches!(e, Entry::Node { .. }));
     let mut new_nodes = new.iter().filter(|e| matches!(e, Entry::Node { .. }));
     let mut paired = 0;
@@ -295,9 +353,12 @@ fn settle(old: &[Entry<'_>], new: &[Entry<'_>], patch: &mut StructuralPatch) {
             old_type: was.type_name.clone(),
             new_type: now.type_name.clone(),
         });
-        align(old_children, new_children, patch);
+        align(old_children, new_children, Parent::Replaced, patch);
         paired += 1;
     }
+    let Parent::Kept { new: parent_new } = parent else {
+        return;
+    };
     let mut node_at = 0;
     for entry in old {
         if matches!(entry, Entry::Node { .. }) {
@@ -306,7 +367,7 @@ fn settle(old: &[Entry<'_>], new: &[Entry<'_>], patch: &mut StructuralPatch) {
                 continue;
             }
         }
-        each_node(entry, &mut |key, node| {
+        each_root(entry, &mut |key, node| {
             patch.remove.push(RemovedNode {
                 key,
                 old_type: node.type_name.clone(),
@@ -321,32 +382,28 @@ fn settle(old: &[Entry<'_>], new: &[Entry<'_>], patch: &mut StructuralPatch) {
                 continue;
             }
         }
-        each_node(entry, &mut |key, node| {
+        each_root(entry, &mut |key, node| {
             patch.insert.push(InsertedNode {
                 key,
                 new_type: node.type_name.clone(),
+                parent: parent_new,
+                before: next_kept,
             });
         });
     }
 }
 
-/// Every node of `entry`'s subtree, with its key.
-fn each_node<'a>(entry: &Entry<'a>, f: &mut impl FnMut(NodeKey, &'a UiNode)) {
+/// The root node(s) of `entry`'s subtree: itself, if it is a node — a node's
+/// whole subtree builds or frees as one unit, so this does not recurse into
+/// its children — or, recursing only through regions (which have no key of
+/// their own to report), the root of each of its arms' items.
+fn each_root<'a>(entry: &Entry<'a>, f: &mut impl FnMut(NodeKey, &'a UiNode)) {
     match entry {
-        Entry::Node {
-            key,
-            node,
-            children,
-        } => {
-            f(*key, node);
-            for child in children {
-                each_node(child, f);
-            }
-        }
+        Entry::Node { key, node, .. } => f(*key, node),
         Entry::Region { arms, .. } => {
             for arm in arms {
                 for item in arm {
-                    each_node(item, f);
+                    each_root(item, f);
                 }
             }
         }
@@ -466,7 +523,41 @@ mod tests {
         assert_eq!(kept(&patch), [(0, 0), (1, 2), (2, 3), (3, 4)]);
         assert_eq!(patch.insert.len(), 1);
         assert_eq!(patch.insert[0].key, NodeKey(1));
+        // Anchored at the Column (its kept parent), before the Scroll it
+        // precedes — the candidate key of the next kept sibling.
+        assert_eq!(patch.insert[0].parent, NodeKey(0));
+        assert_eq!(patch.insert[0].before, Some(NodeKey(2)));
         assert!(patch.replace.is_empty() && patch.remove.is_empty());
+    }
+
+    #[test]
+    fn an_appended_sibling_inserts_before_nothing() {
+        let a = tree_of("Row { Text { text: a; } }");
+        let b = tree_of("Row { Text { text: a; } Text { text: b; } }");
+        let patch = diff(&a, &b);
+        assert_eq!(patch.insert[0].parent, NodeKey(0));
+        assert_eq!(patch.insert[0].before, None, "appended after every sibling");
+    }
+
+    #[test]
+    fn a_node_under_a_replaced_ancestor_is_not_its_own_insert_or_remove() {
+        // The Row becomes a Column (a replace); its first child is dropped and
+        // a new one appended — but since the whole subtree rebuilds anyway,
+        // neither names its own patch entry.
+        let a = tree_of("Row { Text { text: a; } TextInput { } }");
+        let b = tree_of("Column { TextInput { } Button { } }");
+        let patch = diff(&a, &b);
+        assert_eq!(patch.replace.len(), 1, "the Row/Column boundary");
+        assert_eq!(
+            kept(&patch),
+            [(2, 1)],
+            "TextInput, carried under the replace"
+        );
+        assert!(patch.keep[0].under_replace);
+        assert!(
+            patch.insert.is_empty() && patch.remove.is_empty(),
+            "Text and Button are inside the replaced subtree, not named on their own"
+        );
     }
 
     #[test]
@@ -475,8 +566,11 @@ mod tests {
         let b = tree_of("Column { TextInput { } }");
         let patch = diff(&a, &b);
         assert_eq!(kept(&patch), [(0, 0), (4, 1)]);
+        // Only the Row — its own subtree frees as one unit, so its Texts are
+        // not named on their own.
         let removed: Vec<_> = patch.remove.iter().map(|r| r.key.0).collect();
-        assert_eq!(removed, [1, 2, 3]);
+        assert_eq!(removed, [1]);
+        assert_eq!(patch.remove[0].old_type, "Row");
     }
 
     #[test]

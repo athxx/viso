@@ -60,7 +60,7 @@ use viso_ui::{
 };
 
 use super::wire::{
-    DirtyCounts, NodeCarry, NodeRef, ReloadPlan, RetypePlan, StateAction, StatePlan,
+    DirtyCounts, NodeCarry, NodeRef, ReloadPlan, RetypePlan, StateAction, StatePlan, StructuralOp,
 };
 use crate::attach::{Route, attach_node};
 use crate::control::Control;
@@ -329,6 +329,9 @@ fn apply_structural(
         }
         return (nodes, None);
     }
+    if !regions && !plan.structural.is_empty() && rt.root.is_some() {
+        return apply_structural_ops(rt, package, plan);
+    }
     let carried = carry_out(rt, &plan.nodes);
     let regional = carry_out_regions(rt, &plan.nodes);
     let (focused, scrolled) = rt.root.map_or((false, 0), |root| census(rt, root));
@@ -376,6 +379,163 @@ fn apply_structural(
     );
     let pending = Pending {
         regional,
+        focused,
+        scrolled,
+        refocused,
+        restored,
+        moving,
+    };
+    (nodes, Some(pending))
+}
+
+/// Applies `plan.structural`'s node-level ops to the live tree instead of
+/// freeing and rebuilding the view's whole root: a node no op names keeps its
+/// live [`NodeId`], so only the subtree an op actually touches loses runtime
+/// state, and every untouched sibling — a `Tabs` instance, anything else
+/// around the edit — is never freed. Every op's [`NodeRef`] addresses the
+/// last-good tree, resolved against `old`, the pristine array this function
+/// takes and never mutates again: an insert's anchor is always a kept node,
+/// so its live id never moves mid-batch and the order these run in does not
+/// matter beyond each op's own left-to-right emission order. Only a
+/// region-free mount reaches here — `apply_structural` keeps the whole-root
+/// rebuild for a view with a region.
+fn apply_structural_ops(
+    rt: &mut LiveRuntime<'_>,
+    package: &ViewPackage,
+    plan: &ReloadPlan,
+) -> (Vec<Option<NodeId>>, Option<Pending>) {
+    let old = std::mem::take(rt.nodes);
+    let resolve = |node: NodeRef| match node {
+        NodeRef::Static(index) => old.get(index as usize).copied().flatten(),
+        NodeRef::Region { .. } => None,
+    };
+
+    // Every kept node's unchanged live identity moves to its new static
+    // ordinal — the same remap `migrate.rs` documents `plan.nodes` for, used
+    // here instead of a rebuild's full re-authoring.
+    let mut nodes = vec![None; package.ui.nodes.len()];
+    for carry in &plan.nodes {
+        if let (NodeRef::Static(from), NodeRef::Static(to)) = (carry.from, carry.to) {
+            nodes[to as usize] = old.get(from as usize).copied().flatten();
+        }
+    }
+
+    let (mut focused, mut scrolled) = (false, 0);
+    let (mut refocused, mut restored) = (false, 0);
+    let mut moving = Vec::new();
+
+    for op in &plan.structural {
+        match op {
+            StructuralOp::Remove { node } => {
+                let Some(live) = resolve(*node) else { continue };
+                let (f, s) = census(rt, live);
+                focused |= f;
+                scrolled += s;
+                rt.store.free_tree(live, rt.effects, rt.scratch);
+            }
+            StructuralOp::Replace {
+                node,
+                start,
+                subtree,
+            } => {
+                let Some(live) = resolve(*node) else { continue };
+                // The kept descendants a replace's subtree still carries
+                // (`KeptNode::under_replace`): lift their state before the
+                // old subtree is freed, by the candidate ordinal `plan.nodes`
+                // already resolved into this op's own range.
+                let end = *start + subtree.len() as u32;
+                let mut carried = Vec::new();
+                for carry in &plan.nodes {
+                    let NodeRef::Static(to) = carry.to else {
+                        continue;
+                    };
+                    if to < *start || to >= end {
+                        continue;
+                    }
+                    let NodeRef::Static(from) = carry.from else {
+                        continue;
+                    };
+                    if let Some(old_live) = old.get(from as usize).copied().flatten() {
+                        carried.extend(lift(rt, old_live, carry, None));
+                    }
+                }
+                let (f, s) = census(rt, live);
+                focused |= f;
+                scrolled += s;
+
+                let is_root = rt.root == Some(live);
+                let parent = rt.store.parent(live);
+                let before = rt.store.arena().links(live).and_then(|l| l.next_sibling);
+                rt.store.free_tree(live, rt.effects, rt.scratch);
+
+                let mut built = Vec::new();
+                let new_root = {
+                    let mut cx = BuildCx::with_reactive(
+                        rt.store,
+                        rt.states,
+                        rt.bindings,
+                        rt.lists,
+                        rt.text_edits,
+                        rt.projectors,
+                    );
+                    build_nodes(&mut cx, subtree, &mut built);
+                    cx.root()
+                };
+                if is_root {
+                    rt.root = new_root;
+                } else if let (Some(parent), Some(root)) = (parent, new_root) {
+                    rt.store.arena_insert_before(parent, root, before);
+                }
+                for (offset, id) in built.into_iter().enumerate() {
+                    nodes[*start as usize + offset] = id;
+                }
+                let (rf, rs) = carry_in(
+                    rt,
+                    carried,
+                    |to, _| match to {
+                        NodeRef::Static(index) => nodes.get(index as usize).copied().flatten(),
+                        NodeRef::Region { .. } => None,
+                    },
+                    &mut moving,
+                );
+                refocused |= rf;
+                restored += rs;
+            }
+            StructuralOp::Insert {
+                parent,
+                before,
+                start,
+                subtree,
+            } => {
+                let Some(parent) = resolve(*parent) else {
+                    continue;
+                };
+                let before = before.and_then(resolve);
+                let mut built = Vec::new();
+                let new_root = {
+                    let mut cx = BuildCx::with_reactive(
+                        rt.store,
+                        rt.states,
+                        rt.bindings,
+                        rt.lists,
+                        rt.text_edits,
+                        rt.projectors,
+                    );
+                    build_nodes(&mut cx, subtree, &mut built);
+                    cx.root()
+                };
+                if let Some(root) = new_root {
+                    rt.store.arena_insert_before(parent, root, before);
+                }
+                for (offset, id) in built.into_iter().enumerate() {
+                    nodes[*start as usize + offset] = id;
+                }
+            }
+        }
+    }
+
+    let pending = Pending {
+        regional: Vec::new(),
         focused,
         scrolled,
         refocused,
