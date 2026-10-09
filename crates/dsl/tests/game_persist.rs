@@ -5,12 +5,10 @@
 //! `E9111` at run time.
 
 use std::cell::Cell;
-use std::path::PathBuf;
-use std::process::Command;
 use std::rc::Rc;
 
 use viso_behavior::game::{
-    DirStore, MemoryStore, PERSIST_CAPABILITY, Persist, PersistStore, Rebuild, Scheduler,
+    MemoryStore, PERSIST_CAPABILITY, Persist, PersistStore, Rebuild, Scheduler,
 };
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Value, Vm};
@@ -353,38 +351,50 @@ fn persist_is_checked_at_compile_time() {
     );
 }
 
-/// The child half of the restart test: run the game in `dir` and let the
-/// process end.
-const CHILD: &str = "VISO_PERSIST_CHILD_DIR";
+/// A store on disk across a process restart; the web has neither.
+#[cfg(not(target_family = "wasm"))]
+mod restart {
+    use std::path::PathBuf;
+    use std::process::Command;
 
-#[test]
-fn a_persisted_state_survives_a_process_restart() {
-    if let Ok(dir) = std::env::var(CHILD) {
-        let mut game = start(PROGRESS, DirStore::open(dir).expect("store"));
-        game.step(30);
-        // Dropping the game at exit makes the last value durable.
+    use viso_behavior::game::DirStore;
+
+    use super::*;
+
+    /// The child half of the restart test: run the game in `dir` and let the
+    /// process end.
+    const CHILD: &str = "VISO_PERSIST_CHILD_DIR";
+
+    #[test]
+    fn a_persisted_state_survives_a_process_restart() {
+        if let Ok(dir) = std::env::var(CHILD) {
+            let mut game = start(PROGRESS, DirStore::open(dir).expect("store"));
+            game.step(30);
+            // Dropping the game at exit makes the last value durable.
+            drop(game);
+            return;
+        }
+        let dir: PathBuf =
+            std::env::temp_dir().join(format!("viso-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let status = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "restart::a_persisted_state_survives_a_process_restart",
+                "--test-threads=1",
+            ])
+            .env(CHILD, &dir)
+            .status()
+            .expect("the child runs");
+        assert!(status.success());
+        let lifted = PROGRESS
+            .replace("state best: I64 = 0;", "state best: F64 = 0.0;")
+            .replace("best += 1;", "best += 1.0;")
+            .replace("state seen: I64 = -1;", "state seen: F64 = -1.0;");
+        let mut game = start(&lifted, DirStore::open(&dir).expect("store"));
+        assert!(game.take_persist_reports().is_empty());
+        assert_eq!(state(&game, "seen"), Value::Float(30.0));
         drop(game);
-        return;
+        let _ = std::fs::remove_dir_all(&dir);
     }
-    let dir: PathBuf = std::env::temp_dir().join(format!("viso-persist-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let status = Command::new(std::env::current_exe().expect("test binary"))
-        .args([
-            "--exact",
-            "a_persisted_state_survives_a_process_restart",
-            "--test-threads=1",
-        ])
-        .env(CHILD, &dir)
-        .status()
-        .expect("the child runs");
-    assert!(status.success());
-    let lifted = PROGRESS
-        .replace("state best: I64 = 0;", "state best: F64 = 0.0;")
-        .replace("best += 1;", "best += 1.0;")
-        .replace("state seen: I64 = -1;", "state seen: F64 = -1.0;");
-    let mut game = start(&lifted, DirStore::open(&dir).expect("store"));
-    assert!(game.take_persist_reports().is_empty());
-    assert_eq!(state(&game, "seen"), Value::Float(30.0));
-    drop(game);
-    let _ = std::fs::remove_dir_all(&dir);
 }
