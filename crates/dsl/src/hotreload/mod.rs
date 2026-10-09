@@ -181,7 +181,8 @@ pub fn transact(
     last_good: &CandidatePlan,
     candidate: CandidatePlan,
 ) -> HotReload {
-    let plan = reload_plan(last_good, &candidate);
+    let package = emit_view_package(&candidate);
+    let plan = reload_plan(last_good, &candidate, &package);
     // A view without regions mounted outside the commit names its static
     // nodes by walking the last-good shape over the live tree.
     if rt.nodes.is_empty()
@@ -191,7 +192,7 @@ pub fn transact(
         *rt.nodes = static_nodes(rt.store, root, &static_shape(&last_good.tree));
     }
     let module = candidate.view.as_ref().map(|view| Rc::clone(&view.module));
-    let loaded = Candidate::verified(emit_view_package(&candidate), module);
+    let loaded = Candidate::verified(package, module);
     let report = commit(rt, &loaded, &plan).into();
     HotReload { report, candidate }
 }

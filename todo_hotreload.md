@@ -352,7 +352,7 @@ resets only its own scope.
 
 ### H2.2 — Remaining
 
-- [ ] Structural patch as node-level `InsertNode` / `RemoveNode` / `MoveNode` on the
+- [x] Structural patch as node-level `StructuralOp::{Remove,Replace,Insert}` on the
       kept tree instead of freeing and rebuilding the view's root: kept nodes stay
       the same `NodeId`s, so nothing needs carrying for them (§12 structural insert).
 - [ ] `PATCH_WITH_SCOPED_RESET` scoped to the narrowest owner: a reset state resets

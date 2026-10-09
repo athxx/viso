@@ -339,7 +339,76 @@ fn focus_and_scroll_follow_their_nodes_past_an_inserted_sibling() {
 }
 
 #[test]
-fn a_text_input_keeps_its_text_and_selection_across_a_rebuild() {
+fn an_inserted_sibling_keeps_every_other_node_s_live_identity() {
+    // A node-level op names only the inserted node; every other static node
+    // keeps the exact `NodeId` it already had, not a carried-over value on a
+    // fresh instance. The siblings are different types so the diff's
+    // structural alignment is unambiguous (AGENTS 21.8: an unnamed run of the
+    // *same* type aligns by position, not by which one a human would call
+    // "the same node" — a different test, not this one).
+    let (mut live, last_good) = mount("Column { Text { text: a; } Button { text: b; } }");
+    let [column, text, button] = preorder(&live.store, live.root)[..] else {
+        panic!("Column + Text + Button mounted");
+    };
+
+    let done = reload(
+        &mut live,
+        &last_good,
+        "Column { TextInput { } Text { text: a; } Button { text: b; } }",
+    );
+
+    let [column_after, _, text_after, button_after] = preorder(&live.store, live.root)[..] else {
+        panic!("Column + TextInput + Text + Button mounted");
+    };
+    assert_eq!(column_after, column, "the kept Column keeps its identity");
+    assert_eq!(
+        text_after, text,
+        "a node past the insert point keeps its identity"
+    );
+    assert_eq!(
+        button_after, button,
+        "a node past the insert point keeps its identity"
+    );
+    assert!(!done.report.focus_lost);
+    assert_eq!(done.report.scroll_lost, 0);
+}
+
+#[test]
+fn a_removed_sibling_keeps_the_rest_s_live_identity() {
+    let (mut live, last_good) =
+        mount("Column { Text { text: a; } Button { text: b; } TextInput { } }");
+    let [column, text, button, input] = preorder(&live.store, live.root)[..] else {
+        panic!("Column + Text + Button + TextInput mounted");
+    };
+
+    let done = reload(
+        &mut live,
+        &last_good,
+        "Column { Text { text: a; } TextInput { } }",
+    );
+
+    let [column_after, text_after, input_after] = preorder(&live.store, live.root)[..] else {
+        panic!("Column + Text + TextInput mounted");
+    };
+    assert_eq!(column_after, column, "the kept Column keeps its identity");
+    assert_eq!(
+        text_after, text,
+        "a node before the removed one keeps its identity"
+    );
+    assert_eq!(
+        input_after, input,
+        "a node after the removed one keeps its identity"
+    );
+    assert!(
+        !live.store.arena().is_live(button),
+        "the removed node's subtree is freed"
+    );
+    assert!(!done.report.focus_lost);
+    assert_eq!(done.report.scroll_lost, 0);
+}
+
+#[test]
+fn a_kept_text_input_keeps_its_identity_and_buffer_past_an_inserted_sibling() {
     let (mut live, last_good) = mount("Column { TextInput { width: 100dp; height: 20dp; } }");
     lay_out(&mut live);
     let [_, input] = preorder(&live.store, live.root)[..] else {
@@ -358,16 +427,18 @@ fn a_text_input_keeps_its_text_and_selection_across_a_rebuild() {
         "Column { Text { text: label; } TextInput { width: 100dp; height: 20dp; } }",
     );
     assert_eq!(done.report.scroll_lost, 0);
-    let [_, _, rebuilt] = preorder(&live.store, live.root)[..] else {
+    let [_, _, same] = preorder(&live.store, live.root)[..] else {
         panic!("Column + Text + TextInput mounted");
     };
-    assert_ne!(rebuilt, input, "the tree is rebuilt");
-    let carried = live.text_edits.get(rebuilt).expect("the buffer carries");
-    assert_eq!((&carried.text, carried.sel), (&buffer.text, buffer.sel));
-    assert!(
-        live.text_edits.get(input).is_none(),
-        "the old node holds none"
+    assert_eq!(
+        same, input,
+        "the inserted Text names its own op; the TextInput is untouched"
     );
+    let carried = live
+        .text_edits
+        .get(same)
+        .expect("the buffer is still there");
+    assert_eq!((&carried.text, carried.sel), (&buffer.text, buffer.sel));
 }
 
 /// The children of `parent`, in order.
@@ -426,15 +497,18 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
         live.root = rt.root;
     }
     let rebuilt = live.root.unwrap();
-    assert_ne!(rebuilt, view_root, "the view's root was rebuilt");
+    assert_eq!(
+        rebuilt, view_root,
+        "the Row is kept — only its Text/Button child is replaced"
+    );
     assert!(
-        !live.store.arena().is_live(view_root),
-        "the old root is freed"
+        live.store.arena().is_live(view_root),
+        "the kept root survives the structural edit"
     );
     assert_eq!(
         children(&live.store, outer_root),
         vec![first, rebuilt, last],
-        "the rebuilt view takes the old one's place among its siblings"
+        "the view's root stays in place among its siblings"
     );
     assert!(
         live.bindings
