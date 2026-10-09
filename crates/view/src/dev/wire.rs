@@ -30,7 +30,7 @@ pub use super::patch::{
 use super::patch::{read_ui, write_ui};
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 4;
+pub const DEV_PROTOCOL_VERSION: u16 = 5;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -439,6 +439,9 @@ pub struct CommitCounts {
     pub scroll_lost: u32,
     /// Mounts whose recompiled behavior did not mount.
     pub handlers_lost: u32,
+    /// How many nodes, over every mount, carry each dirty class once the
+    /// commit finished.
+    pub dirty: DirtyCounts,
 }
 
 impl CommitCounts {
@@ -448,6 +451,63 @@ impl CommitCounts {
             .saturating_add(self.focus_lost)
             .saturating_add(self.scroll_lost)
             .saturating_add(self.handlers_lost)
+    }
+}
+
+/// How many of a view's nodes carry each `DirtyClass` (`viso_ui::DirtyClass`,
+/// AGENTS §11), observed once a commit finished. A property patch that
+/// touches one node's one class reports a single `1` here and nothing else —
+/// the precise mask the commit targeted (§12), not every flag a node happens
+/// to carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DirtyCounts {
+    pub structure: u32,
+    pub style: u32,
+    pub measure: u32,
+    pub layout: u32,
+    pub transform: u32,
+    pub paint: u32,
+    pub hit_test: u32,
+    pub semantics: u32,
+}
+
+impl DirtyCounts {
+    /// Whether every class is at zero.
+    pub fn is_empty(&self) -> bool {
+        *self == DirtyCounts::default()
+    }
+
+    /// Both sets, class by class: a file's counts over every mount it
+    /// committed to.
+    pub fn merge(&self, other: &DirtyCounts) -> DirtyCounts {
+        DirtyCounts {
+            structure: self.structure.saturating_add(other.structure),
+            style: self.style.saturating_add(other.style),
+            measure: self.measure.saturating_add(other.measure),
+            layout: self.layout.saturating_add(other.layout),
+            transform: self.transform.saturating_add(other.transform),
+            paint: self.paint.saturating_add(other.paint),
+            hit_test: self.hit_test.saturating_add(other.hit_test),
+            semantics: self.semantics.saturating_add(other.semantics),
+        }
+    }
+
+    /// Each nonzero class, by name, in `viso_ui::DirtyClass`'s bit order —
+    /// the human line (§53) and the JSON event (§36.4) both name classes
+    /// this way.
+    pub fn nonzero(&self) -> impl Iterator<Item = (&'static str, u32)> {
+        [
+            ("structure", self.structure),
+            ("style", self.style),
+            ("measure", self.measure),
+            ("layout", self.layout),
+            ("transform", self.transform),
+            ("paint", self.paint),
+            ("hit-test", self.hit_test),
+            ("semantics", self.semantics),
+        ]
+        .into_iter()
+        .filter(|&(_, count)| count > 0)
     }
 }
 
@@ -1153,6 +1213,14 @@ impl Message for RuntimeMessage {
                         c.focus_lost,
                         c.scroll_lost,
                         c.handlers_lost,
+                        c.dirty.structure,
+                        c.dirty.style,
+                        c.dirty.measure,
+                        c.dirty.layout,
+                        c.dirty.transform,
+                        c.dirty.paint,
+                        c.dirty.hit_test,
+                        c.dirty.semantics,
                     ] {
                         enc.write_varint(u64::from(count));
                     }
@@ -1242,6 +1310,16 @@ impl Message for RuntimeMessage {
                             focus_lost: read_u32(dec)?,
                             scroll_lost: read_u32(dec)?,
                             handlers_lost: read_u32(dec)?,
+                            dirty: DirtyCounts {
+                                structure: read_u32(dec)?,
+                                style: read_u32(dec)?,
+                                measure: read_u32(dec)?,
+                                layout: read_u32(dec)?,
+                                transform: read_u32(dec)?,
+                                paint: read_u32(dec)?,
+                                hit_test: read_u32(dec)?,
+                                semantics: read_u32(dec)?,
+                            },
                         },
                     })
                 })?,
@@ -1507,6 +1585,16 @@ mod tests {
                             focus_lost: 1,
                             scroll_lost: 0,
                             handlers_lost: u32::MAX,
+                            dirty: DirtyCounts {
+                                structure: 0,
+                                style: 1,
+                                measure: 2,
+                                layout: 2,
+                                transform: 0,
+                                paint: u32::MAX,
+                                hit_test: 0,
+                                semantics: 1,
+                            },
                         },
                     },
                     FileCommit {

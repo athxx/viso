@@ -115,8 +115,17 @@ impl Stream {
     }
 
     /// Writes the `dev` event of a hot reload attempt of `file`.
-    pub(super) fn dev(&mut self, file: &str, session: &str, build_id: &str, event: &ReloadEvent) {
-        self.event("dev", |w| dev(w, file, session, build_id, event));
+    pub(super) fn dev(
+        &mut self,
+        file: &str,
+        session: &str,
+        runtime_session: &str,
+        build_id: &str,
+        event: &ReloadEvent,
+    ) {
+        self.event("dev", |w| {
+            dev(w, file, session, runtime_session, build_id, event)
+        });
     }
 
     /// Writes the closing `summary` event. `checked` is the package and file count
@@ -187,10 +196,19 @@ impl Stream {
 }
 
 /// The section 36.4 `dev` payload, then what the commit kept and lost.
-fn dev(w: &mut JsonWriter, file: &str, session: &str, build_id: &str, event: &ReloadEvent) {
+fn dev(
+    w: &mut JsonWriter,
+    file: &str,
+    session: &str,
+    runtime_session: &str,
+    build_id: &str,
+    event: &ReloadEvent,
+) {
     w.begin_object();
     w.name("dev_session_id");
     w.string(session);
+    w.name("runtime_session_id");
+    w.string(runtime_session);
     w.name("build_id");
     w.string(build_id);
     w.name("file");
@@ -230,6 +248,22 @@ fn dev(w: &mut JsonWriter, file: &str, session: &str, build_id: &str, event: &Re
         w.name(name);
         w.uint(u64::from(count));
     }
+    w.name("dirty");
+    w.begin_object();
+    for (name, count) in [
+        ("structure", c.dirty.structure),
+        ("style", c.dirty.style),
+        ("measure", c.dirty.measure),
+        ("layout", c.dirty.layout),
+        ("transform", c.dirty.transform),
+        ("paint", c.dirty.paint),
+        ("hit_test", c.dirty.hit_test),
+        ("semantics", c.dirty.semantics),
+    ] {
+        w.name(name);
+        w.uint(u64::from(count));
+    }
+    w.end_object();
     w.end_object();
 }
 
@@ -463,15 +497,18 @@ mod tests {
             codes: vec!["E1001".into(), "E1001".into()],
         };
         let mut w = JsonWriter::new();
-        dev(&mut w, "src/view.vs", "s1", "b1", &event);
+        dev(&mut w, "src/view.vs", "s1", "r1", "b1", &event);
         assert_eq!(
             w.into_string(),
             concat!(
-                r#"{"dev_session_id":"s1","build_id":"b1","file":"src/view.vs","#,
+                r#"{"dev_session_id":"s1","runtime_session_id":"r1","build_id":"b1","#,
+                r#""file":"src/view.vs","#,
                 r#""base_revision":2,"candidate_revision":3,"patch_class":null,"#,
                 r#""outcome":"rejected","stage":"parse","diagnostic_codes":["E1001"],"#,
                 r#""last_good_revision":2,"elapsed_ms":1.5,"mounts":0,"migrated":0,"#,
-                r#""reset":0,"focus_lost":0,"scroll_lost":0,"handlers_lost":0}"#,
+                r#""reset":0,"focus_lost":0,"scroll_lost":0,"handlers_lost":0,"#,
+                r#""dirty":{"structure":0,"style":0,"measure":0,"layout":0,"#,
+                r#""transform":0,"paint":0,"hit_test":0,"semantics":0}}"#,
             )
         );
     }

@@ -2348,7 +2348,7 @@ artifact_count
 `viso run`/`serve` 的每个 candidate revision 的每个文件输出一条 `dev`（一个 batch 的多个文件共用一个 candidate revision），字段取自 `Viso_Hot_Reload.md`（§4.1 identity、§8 patch class、§37 ACK/NACK、§51 stage）：
 
 ```text
-dev_session_id, build_id
+dev_session_id, runtime_session_id, build_id
 base_revision, candidate_revision
 patch_class     PATCH|PATCH_WITH_SCOPED_RESET|WARM_RESTART_REQUIRED
 outcome         applied|scoped_reset|warm_restarted|rejected|held
@@ -2358,7 +2358,7 @@ last_good_revision
 elapsed_ms
 ```
 
-`.vs` patch 另带：`file`（相对 project root）、`mounts`（该文件被提交到的 mount 数）以及 commit report 计数 `migrated, reset, focus_lost, scroll_lost, handlers_lost`（rejected 时全为 0）。`patch_class` 在 rejected 与 held 时为 `null`。每条 `dev` 之前先输出该 candidate 的 `diagnostic`。
+`.vs` patch 另带：`file`（相对 project root）、`mounts`（该文件被提交到的 mount 数）以及 commit report 计数 `migrated, reset, focus_lost, scroll_lost, handlers_lost`（rejected 时全为 0）、`dirty`（嵌套 object，§11 八个 dirty class 各一个 node 计数：`structure, style, measure, layout, transform, paint, hit_test, semantics`；rejected 时全为 0）。`runtime_session_id` 是已连接 runtime 的 `RuntimeSessionId`（§4.1）的十六进制，没有已连接 runtime 时为空字符串。`patch_class` 在 rejected 与 held 时为 `null`。每条 `dev` 之前先输出该 candidate 的 `diagnostic`。字段均为 revision/计数/stage 名/诊断码，不携带任何可能是密钥的内容（`Viso_Hot_Reload.md` §47）。
 
 ---
 

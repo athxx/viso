@@ -294,12 +294,20 @@ impl Output {
         }
     }
 
-    /// Reports a hot reload attempt of `file` in the dev session `session` of
-    /// the build `build_id`: a `dev` event, or one line on stderr. Its
-    /// diagnostics are reported on their own.
-    pub fn dev(&mut self, file: &str, session: &str, build_id: &str, event: &ReloadEvent) {
+    /// Reports a hot reload attempt of `file` in the dev session `session`,
+    /// the connected runtime `runtime_session`, of the build `build_id`: a
+    /// `dev` event, or one line on stderr. Its diagnostics are reported on
+    /// their own.
+    pub fn dev(
+        &mut self,
+        file: &str,
+        session: &str,
+        runtime_session: &str,
+        build_id: &str,
+        event: &ReloadEvent,
+    ) {
         match &mut self.form {
-            Form::Json(stream) => stream.dev(file, session, build_id, event),
+            Form::Json(stream) => stream.dev(file, session, runtime_session, build_id, event),
             Form::Human => eprintln!("{}", human::dev(file, event)),
         }
     }

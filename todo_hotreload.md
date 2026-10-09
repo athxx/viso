@@ -300,20 +300,33 @@ app parses no `.vs` source (anti-pattern B.2).
 
 ### H1.5 — Diagnostics and output (§51–§53)
 
-- [ ] `ReloadStage` covers all §51 stages; NACK and host-side failures map to them.
-- [ ] Human line per §53 (`✓ .vs patch r41 -> r42   37 ms   1 node paint-dirty`,
-      `✗ … kept r42 CODE`); the app reports dirty counts by class in the ACK.
-- [ ] `--json` dev events carry runtime session, revisions, patch class, stage, codes,
-      timings and dirty counts; no field contents that could be secrets (§47).
-- [ ] Overlay stays app-side, driven by the NACK diagnostics the host sends.
-- [ ] `Viso_CLI.md` §36 and `Viso_Hot_Reload.md` §1.3/§1.4/§37.1/§46/§48 rewritten for
-      the host/app split; ADR-0015 updated.
+- [x] `ReloadStage`(`viso_view::dev::wire::Stage`) already covers all 15 §51 stages;
+      `rejection_stage` maps a host diagnostic's code range to one, a runtime NACK or
+      commit carries its own stage directly — no gap to close.
+- [x] `DirtyCounts` (`viso-view::dev::wire`, protocol v5): 8 named class counts, computed
+      in `commit()` by scanning the view's static nodes against the live `NodeStore`
+      after the commit, summed into `CommitCounts.dirty` across every mount of a file.
+      Human line rewritten to §53's shape: `✓ {file} patch r{base} -> r{candidate}
+      {ms} ms   N node(s) {class}-dirty[, ...]` (omitted when nothing is dirty, e.g. a
+      text-only reshape), `✗ {file} candidate       kept r{last_good}   {CODES}`, a held
+      candidate as `… {file} candidate       compiled, not applied (--no-hot-reload)`.
+- [x] `--json` `dev` payload adds `runtime_session_id` (connected runtime's
+      `RuntimeSessionId` hex, empty without one) and a nested `dirty` object; every field
+      is a revision/count/stage name/diagnostic code, never user source or secrets (§47).
+- [x] Overlay (`viso::hot_reload::overlay`) is already app-side, a detached subtree driven
+      by the `Failure` the host sends on a NACK/rejection — no change needed.
+- [x] `Viso_CLI.md` §36.4 and `Viso_Hot_Reload.md` §37/§37.1 updated for `dirty` and
+      `runtime_session_id`; §1.3/§1.4/§46/§48 already described the host/app split
+      accurately. ADR-0015's 2026-10-09 amendment already covers the split; the dirty
+      counts are a diagnostics addition, not a new architectural decision.
 
 ### Done
 
-- [ ] Editing a label, a handler body and a state type in a running desktop app each
+- [x] Editing a label, a handler body and a state type in a running desktop app each
       arrive as a typed patch from `viso run` and apply without losing unrelated state;
-      a broken edit leaves the last-good UI; the app links no compiler.
+      a broken edit leaves the last-good UI; the app links no compiler. Proven by
+      `hot_reload::tests::a_label_a_handler_and_a_state_type_edit_each_apply_without_losing_state`
+      (two mounts, cross-checked against `check-release-absence`).
 
 ---
 

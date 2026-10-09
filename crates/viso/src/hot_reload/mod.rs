@@ -323,6 +323,7 @@ impl HotReloadSession {
                 counts.focus_lost += u32::from(report.focus_lost);
                 counts.scroll_lost += report.scroll_lost;
                 counts.handlers_lost += u32::from(report.handlers_lost);
+                counts.dirty = counts.dirty.merge(&report.dirty);
                 for notice in report.notices {
                     let notice = Notice {
                         file: FileId(view.file as u32),
@@ -589,6 +590,7 @@ mod tests {
     /// The host's side of one file: its edits compiled and planned the way
     /// `viso run` does, against the view the runtime last ACKed.
     struct Edits {
+        file: FileId,
         origin: Origin,
         profile: TargetProfile,
         last_good: CandidatePlan,
@@ -616,6 +618,7 @@ mod tests {
             let last_good =
                 plan_view_for(source, &origin, profile.clone()).expect("the build compiles");
             Edits {
+                file: entry.file,
                 origin,
                 profile,
                 last_good,
@@ -623,16 +626,16 @@ mod tests {
             }
         }
 
-        /// The `ui` section moving file 0 to `source`.
+        /// The `ui` section moving this file to `source`.
         fn section(&mut self, source: &str) -> PatchSection {
             let candidate = plan_view_for(source, &self.origin, self.profile.clone())
                 .expect("the edit compiles");
-            let view = view_patch(FileId(0), &self.last_good, &candidate);
+            let view = view_patch(self.file, &self.last_good, &candidate);
             self.sent = Some(candidate);
             PatchSection::Ui(UiPatch { views: vec![view] })
         }
 
-        /// A patch from `base` to `next` moving file 0 to `source`.
+        /// A patch from `base` to `next` moving this file to `source`.
         fn patch(&mut self, host: &Host, base: u64, next: u64, source: &str) -> HostMessage {
             let HostMessage::Patch(mut patch) = host.patch(base, next) else {
                 unreachable!()
@@ -679,20 +682,30 @@ mod tests {
         (session, host, edits)
     }
 
-    /// Sends `patch`, commits it at the next frame boundary of `ws` and
+    /// Sends `patch`, commits it at the next frame boundary of `windows` and
     /// returns the runtime's answer.
-    fn apply(
+    fn apply_on(
         session: &mut HotReloadSession,
         host: &mut Host,
-        ws: &mut WindowState,
+        windows: &mut [WindowState],
         patch: &HostMessage,
     ) -> RuntimeMessage {
         host.send(patch);
         if let Some(answer) = answer_or_staged(session, host) {
             return answer;
         }
-        session.reload(std::slice::from_mut(ws));
+        session.reload(windows);
         host.read().expect("an answer")
+    }
+
+    /// [`apply_on`] for the single window `ws`.
+    fn apply(
+        session: &mut HotReloadSession,
+        host: &mut Host,
+        ws: &mut WindowState,
+        patch: &HostMessage,
+    ) -> RuntimeMessage {
+        apply_on(session, host, std::slice::from_mut(ws), patch)
     }
 
     /// Receives until the session staged a patch (`None`) or answered the
@@ -716,17 +729,18 @@ mod tests {
         answered.then(|| host.read().expect("an answer"))
     }
 
-    /// Commits `source` as the next revision and returns the ACK.
-    fn accept(
+    /// Commits `source` as the next revision over `windows` and returns the
+    /// ACK.
+    fn accept_on(
         session: &mut HotReloadSession,
         host: &mut Host,
-        ws: &mut WindowState,
+        windows: &mut [WindowState],
         edits: &mut Edits,
         source: &str,
     ) -> PatchAck {
         let base = revision(session);
         let patch = edits.patch(host, base, base + 1, source);
-        match apply(session, host, ws, &patch) {
+        match apply_on(session, host, windows, &patch) {
             RuntimeMessage::Ack(ack) => {
                 edits.acked();
                 ack
@@ -735,18 +749,35 @@ mod tests {
         }
     }
 
+    /// [`accept_on`] for the single window `ws`.
+    fn accept(
+        session: &mut HotReloadSession,
+        host: &mut Host,
+        ws: &mut WindowState,
+        edits: &mut Edits,
+        source: &str,
+    ) -> PatchAck {
+        accept_on(session, host, std::slice::from_mut(ws), edits, source)
+    }
+
     fn revision(session: &HotReloadSession) -> u64 {
         session.identity.as_ref().unwrap().current_revision.0
     }
 
-    /// The live value of the counter's `count`.
-    fn count(ws: &WindowState, session: &HotReloadSession) -> Option<StateValue> {
-        let (_, id) = session.views[0]
-            .cells
-            .iter()
-            .copied()
-            .find(|&(_, id)| matches!(ws.states.get(id), Some(StateValue::Int(_))))?;
+    /// The live value of the counter's `count`, among the cells of view `at`.
+    fn count_at(ws: &WindowState, session: &HotReloadSession, at: usize) -> Option<StateValue> {
+        let (_, id) = session.views[at].cells.iter().copied().find(|&(_, id)| {
+            matches!(
+                ws.states.get(id),
+                Some(StateValue::Int(_) | StateValue::Float(_))
+            )
+        })?;
         ws.states.get(id)
+    }
+
+    /// [`count_at`] for the first view.
+    fn count(ws: &WindowState, session: &HotReloadSession) -> Option<StateValue> {
+        count_at(ws, session, 0)
     }
 
     #[test]
@@ -828,7 +859,7 @@ mod tests {
         ws.store.clear_dirty();
 
         let edited = COUNTER.replace("width: 120dp;", "width: 140dp;");
-        accept(&mut session, &mut host, &mut ws, &mut edits, &edited);
+        let ack = accept(&mut session, &mut host, &mut ws, &mut edits, &edited);
         assert_eq!(ws.root, Some(root), "the same process, the same tree");
         assert_eq!(subtree(&ws.store, root), nodes, "every node kept");
         let dirty = |ws: &WindowState| -> Vec<DirtyClass> {
@@ -842,6 +873,16 @@ mod tests {
                 DirtyClass::EMPTY
             ],
             "the column's size request moved, nothing else"
+        );
+        assert_eq!(
+            ack.files[0].counts.dirty,
+            viso_view::dev::wire::DirtyCounts {
+                measure: 1,
+                layout: 1,
+                paint: 1,
+                ..Default::default()
+            },
+            "the ACK names the same one node the live tree shows dirty"
         );
         assert_eq!(count(&ws, &session), Some(StateValue::Int(5)));
         assert_eq!(
@@ -862,8 +903,13 @@ mod tests {
         let mut requests = Vec::new();
         ws.store.take_text_requests(&mut requests);
         ws.store.clear_dirty();
-        accept(&mut session, &mut host, &mut ws, &mut edits, &labelled("B"));
+        let ack = accept(&mut session, &mut host, &mut ws, &mut edits, &labelled("B"));
         assert!(dirty(&ws).iter().all(|d| d.is_empty()), "{:?}", dirty(&ws));
+        assert!(
+            ack.files[0].counts.dirty.is_empty(),
+            "the text request carries the reshape, not a dirty mark: {:?}",
+            ack.files[0].counts.dirty
+        );
         requests.clear();
         ws.store.take_text_requests(&mut requests);
         let shaped: Vec<(NodeId, &str)> = requests
@@ -949,10 +995,15 @@ mod tests {
         ws.store.flush_state_transactions(&changed, &ws.bindings);
     }
 
-    /// The VM value of the logger's `log`.
-    fn log(session: &HotReloadSession) -> Option<String> {
-        let host = session.views[0].host.as_ref()?.borrow();
+    /// The VM value of the logger's `log`, for the view `at`.
+    fn log_at(session: &HotReloadSession, at: usize) -> Option<String> {
+        let host = session.views[at].host.as_ref()?.borrow();
         Some(host.state(host.state_slot("log")?)?.as_str()?.to_owned())
+    }
+
+    /// [`log_at`] for the first view.
+    fn log(session: &HotReloadSession) -> Option<String> {
+        log_at(session, 0)
     }
 
     #[test]
@@ -1065,13 +1116,18 @@ mod tests {
         assert!(session.files[0].current.is_none(), "nothing committed");
     }
 
-    /// The live values of the view's states.
-    fn values(ws: &WindowState, session: &HotReloadSession) -> Vec<StateValue> {
-        let cells = &session.views[0].cells;
+    /// The live values of view `at`'s states.
+    fn values_at(ws: &WindowState, session: &HotReloadSession, at: usize) -> Vec<StateValue> {
+        let cells = &session.views[at].cells;
         cells
             .iter()
             .filter_map(|&(_, id)| ws.states.get(id))
             .collect()
+    }
+
+    /// [`values_at`] for the first view.
+    fn values(ws: &WindowState, session: &HotReloadSession) -> Vec<StateValue> {
+        values_at(ws, session, 0)
     }
 
     #[test]
@@ -1100,6 +1156,143 @@ mod tests {
         let kept = values(&ws, &session);
         assert!(kept.contains(&StateValue::Float(5.0)), "{kept:?}");
         assert!(kept.contains(&StateValue::Bool(false)), "{kept:?}");
+    }
+
+    /// H1 "Done": a label, a handler body and a state's type each arrive as a
+    /// typed patch from a dev session and apply to a running mount without
+    /// losing the other mount's state; a broken edit in between leaves the
+    /// last-good UI running and the revision in place; the next edit applies
+    /// normally. The app links no compiler
+    /// (`cargo xtask check-release-absence`).
+    #[test]
+    fn a_label_a_handler_and_a_state_type_edit_each_apply_without_losing_state() {
+        let mut counter_ws = counter();
+        let (mut session, mut host, entries) = linked(Some(&mut counter_ws));
+        let mut counter_edits = Edits::new(&entries[0], COUNTER);
+
+        // Built, and adopted, only now: a window's pending mount is claimed
+        // whole by the next `adopt`, so building it before the counter's own
+        // adopt (above) would hand its record to the wrong window.
+        let mut logger_ws = WindowState::new(WindowId(2));
+        logger_ws.root = Some(build(&mut logger_ws, |cx| {
+            viso_ui_macros::view!("../../tests/fixtures/logger.vs")(cx).id()
+        }));
+        session.adopt(|| unreachable!("the link is open"), &mut logger_ws);
+        let logger_entries = match host.read() {
+            Some(RuntimeMessage::Mounts(mounts)) => mounts,
+            other => panic!("not an inventory: {other:?}"),
+        };
+        let mut logger_edits = Edits::new(&logger_entries[0], LOGGER);
+        let mut windows = vec![counter_ws, logger_ws];
+
+        // Unrelated state a label edit must not disturb.
+        let (_, cell) = session.views[0].cells[0];
+        windows[0].states.set(cell, StateValue::Int(5));
+
+        // 1. Label edit, on the counter's mount: a literal text added to it.
+        let labelled = COUNTER.replace(
+            "Text { visible: enabled; }",
+            "Text { visible: enabled; text: \"Saved\"; }",
+        );
+        accept_on(
+            &mut session,
+            &mut host,
+            &mut windows,
+            &mut counter_edits,
+            &labelled,
+        );
+        assert_eq!(count_at(&windows[0], &session, 0), Some(StateValue::Int(5)));
+
+        // 2. State type edit, on the same mount: `count` widens from Int to
+        //    Float, the label stays.
+        let retyped = labelled.replace("state count = 0;", "state count: F64 = 0.0;");
+        accept_on(
+            &mut session,
+            &mut host,
+            &mut windows,
+            &mut counter_edits,
+            &retyped,
+        );
+        assert_eq!(
+            count_at(&windows[0], &session, 0),
+            Some(StateValue::Float(5.0))
+        );
+
+        // 3. Handler body edit, on the logger's mount: the counter's edits
+        //    above left this mount, and its own unrelated `log`, untouched.
+        click(&mut windows[1]);
+        assert_eq!(count_at(&windows[1], &session, 1), Some(StateValue::Int(1)));
+        assert_eq!(log_at(&session, 1).as_deref(), Some("one"));
+        let edited = LOGGER.replace(
+            "on click { count += 1; log = \"one\"; }",
+            "on click { count += 10; }",
+        );
+        accept_on(
+            &mut session,
+            &mut host,
+            &mut windows,
+            &mut logger_edits,
+            &edited,
+        );
+        assert_eq!(
+            count_at(&windows[1], &session, 1),
+            Some(StateValue::Int(1)),
+            "unrelated state kept across the handler edit"
+        );
+        assert_eq!(log_at(&session, 1).as_deref(), Some("one"));
+        click(&mut windows[1]);
+        assert_eq!(
+            count_at(&windows[1], &session, 1),
+            Some(StateValue::Int(11))
+        );
+        assert_eq!(
+            log_at(&session, 1).as_deref(),
+            Some("one"),
+            "the dropped assignment no longer runs"
+        );
+
+        // 4. A broken edit NACKs: the app links no compiler, so a candidate
+        //    the host never should have sent is caught as an unloadable
+        //    view, not parsed — the running revision and every node of the
+        //    counter's mount stay exactly as they were.
+        let root = windows[0].root.unwrap();
+        let nodes = subtree(&windows[0].store, root);
+        let before = revision(&session);
+        let mut broken = counter_edits.patch(
+            &host,
+            before,
+            before + 1,
+            &retyped.replace("width: 120dp;", "width: 150dp;"),
+        );
+        let HostMessage::Patch(patch) = &mut broken else {
+            unreachable!()
+        };
+        let PatchSection::Ui(ui) = &mut patch.sections[0];
+        ui.views[0].package.behavior = vec![0xEE; 8];
+        match apply_on(&mut session, &mut host, &mut windows, &broken) {
+            RuntimeMessage::Nack(nack) => {
+                assert_eq!(nack.stage, Stage::RuntimeStage);
+                assert_eq!(nack.diagnostic_codes, [NACK_UNLOADABLE_VIEW]);
+            }
+            other => panic!("not a NACK: {other:?}"),
+        }
+        assert_eq!(
+            revision(&session),
+            before,
+            "the last-good revision keeps running"
+        );
+        assert_eq!(windows[0].root, Some(root));
+        assert_eq!(subtree(&windows[0].store, root), nodes, "no node changed");
+
+        // 5. The next edit on the counter's mount applies normally.
+        let ack = accept_on(
+            &mut session,
+            &mut host,
+            &mut windows,
+            &mut counter_edits,
+            &retyped.replace("width: 120dp;", "width: 150dp;"),
+        );
+        assert_eq!(ack.files[0].counts.mounts, 1);
     }
 
     #[test]

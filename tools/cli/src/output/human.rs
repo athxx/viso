@@ -34,29 +34,50 @@ pub(super) fn print(report: &Report<'_>) {
     let _ = std::io::stderr().lock().write_all(text.as_bytes());
 }
 
-/// The line a hot reload attempt of `file` prints.
+/// The line a hot reload attempt of `file` prints (`Viso_Hot_Reload.md` §53).
 pub(super) fn dev(file: &str, event: &ReloadEvent) -> String {
     let ms = event.elapsed_us as f64 / 1000.0;
-    let revision = event.candidate_revision;
     match event.outcome {
-        Outcome::Rejected => format!(
-            "hot reload: {file} revision {revision} rejected at {}; keeping revision {} ({ms:.1} ms)",
-            event.stage.as_str(),
-            event.last_good_revision
-        ),
-        Outcome::Held => format!(
-            "hot reload: {file} revision {revision} compiled, not applied (--no-hot-reload)"
-        ),
-        outcome => format!(
-            "hot reload: {file} revision {revision} {} to {} mount(s) in {ms:.1} ms",
+        Outcome::Rejected => {
+            let codes = event.codes().join(",");
+            format!(
+                "✗ {file} candidate       kept r{}   {codes}",
+                event.last_good_revision
+            )
+        }
+        Outcome::Held => {
+            format!("… {file} candidate       compiled, not applied (--no-hot-reload)")
+        }
+        outcome => {
+            let mut line = format!(
+                "✓ {file} patch r{} -> r{}   {ms:.0} ms",
+                event.base_revision, event.candidate_revision
+            );
+            let dirty = dirty_summary(&event.counts.dirty);
+            if !dirty.is_empty() {
+                line.push_str("   ");
+                line.push_str(&dirty);
+            }
             if outcome == Outcome::ScopedReset {
-                "applied with a scoped reset"
-            } else {
-                "applied"
-            },
-            event.counts.mounts
-        ),
+                line.push_str("   (scoped reset)");
+            }
+            line
+        }
     }
+}
+
+/// The dirty classes a commit left behind, as `"1 node paint-dirty, 3 nodes
+/// layout-dirty"`; empty when the commit marked no node (a text request's
+/// reshape, not a dirty mark).
+fn dirty_summary(dirty: &viso_view::dev::wire::DirtyCounts) -> String {
+    dirty
+        .nonzero()
+        .map(|(class, count)| {
+            let plural = if count == 1 { "" } else { "s" };
+            format!("{count} node{plural} {class}-dirty")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn render(report: &Report<'_>) -> String {
@@ -278,6 +299,70 @@ mod tests {
         assert_eq!(
             text,
             "error[CLI_USAGE]: unexpected argument\n = note: try `--help`\n"
+        );
+    }
+
+    fn reload_event(outcome: Outcome, stage: viso_view::dev::wire::Stage) -> ReloadEvent {
+        ReloadEvent {
+            base_revision: 41,
+            candidate_revision: 42,
+            last_good_revision: 41,
+            outcome,
+            stage,
+            elapsed_us: 37_000,
+            counts: Default::default(),
+            codes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_applied_patch_names_its_revisions_time_and_dirty_nodes() {
+        let mut event = reload_event(Outcome::Applied, viso_view::dev::wire::Stage::RuntimeCommit);
+        event.counts.dirty.paint = 1;
+        assert_eq!(
+            dev("view.vs", &event),
+            "✓ view.vs patch r41 -> r42   37 ms   1 node paint-dirty"
+        );
+    }
+
+    #[test]
+    fn a_scoped_reset_is_marked_after_the_dirty_nodes() {
+        let mut event = reload_event(
+            Outcome::ScopedReset,
+            viso_view::dev::wire::Stage::RuntimeCommit,
+        );
+        event.counts.dirty.layout = 3;
+        assert_eq!(
+            dev("view.vs", &event),
+            "✓ view.vs patch r41 -> r42   37 ms   3 nodes layout-dirty   (scoped reset)"
+        );
+    }
+
+    #[test]
+    fn a_reshape_with_no_dirty_node_has_no_trailing_segment() {
+        let event = reload_event(Outcome::Applied, viso_view::dev::wire::Stage::RuntimeCommit);
+        assert_eq!(dev("view.vs", &event), "✓ view.vs patch r41 -> r42   37 ms");
+    }
+
+    #[test]
+    fn a_rejected_candidate_keeps_the_last_good_revision_and_names_its_codes() {
+        let mut event = reload_event(
+            Outcome::Rejected,
+            viso_view::dev::wire::Stage::ShaderCompile,
+        );
+        event.codes = vec!["E_SHADER_TYPE".into()];
+        assert_eq!(
+            dev("view.vs", &event),
+            "✗ view.vs candidate       kept r41   E_SHADER_TYPE"
+        );
+    }
+
+    #[test]
+    fn a_held_candidate_is_compiled_but_not_applied() {
+        let event = reload_event(Outcome::Held, viso_view::dev::wire::Stage::Transport);
+        assert_eq!(
+            dev("view.vs", &event),
+            "… view.vs candidate       compiled, not applied (--no-hot-reload)"
         );
     }
 

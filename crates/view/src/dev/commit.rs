@@ -59,7 +59,9 @@ use viso_ui::{
     SemanticProjector, StateId, StateStore, StateValue, StructureCx, TextEdits, Vec2,
 };
 
-use super::wire::{NodeCarry, NodeRef, ReloadPlan, RetypePlan, StateAction, StatePlan};
+use super::wire::{
+    DirtyCounts, NodeCarry, NodeRef, ReloadPlan, RetypePlan, StateAction, StatePlan,
+};
 use crate::attach::{Route, attach_node};
 use crate::control::Control;
 use crate::effects::{mount_effects, release_effects};
@@ -129,6 +131,45 @@ pub struct CommitReport {
     /// Whether the view's handlers were dropped because the candidate's
     /// behavior did not link.
     pub handlers_lost: bool,
+    /// How many of the view's static nodes carry each [`DirtyClass`] once
+    /// the commit finished — what the next frame's layout and paint have to
+    /// redo, named for the diagnostic line (§53) and the ACK (§37).
+    pub dirty: DirtyCounts,
+}
+
+impl DirtyCounts {
+    /// `nodes`' counts, one node at a time.
+    fn of(store: &NodeStore, nodes: &[Option<NodeId>]) -> DirtyCounts {
+        let mut counts = DirtyCounts::default();
+        for &node in nodes.iter().flatten() {
+            let dirty = store.dirty(node);
+            if dirty.intersects(DirtyClass::STRUCTURE) {
+                counts.structure += 1;
+            }
+            if dirty.intersects(DirtyClass::STYLE) {
+                counts.style += 1;
+            }
+            if dirty.intersects(DirtyClass::MEASURE) {
+                counts.measure += 1;
+            }
+            if dirty.intersects(DirtyClass::LAYOUT) {
+                counts.layout += 1;
+            }
+            if dirty.intersects(DirtyClass::TRANSFORM) {
+                counts.transform += 1;
+            }
+            if dirty.intersects(DirtyClass::PAINT) {
+                counts.paint += 1;
+            }
+            if dirty.intersects(DirtyClass::HIT_TEST) {
+                counts.hit_test += 1;
+            }
+            if dirty.intersects(DirtyClass::SEMANTICS) {
+                counts.semantics += 1;
+            }
+        }
+        counts
+    }
 }
 
 /// A kept state the commit reset because its live value did not convert.
@@ -260,6 +301,7 @@ pub fn commit(rt: &mut LiveRuntime<'_>, candidate: &Candidate, plan: &ReloadPlan
         settle_carried(rt, pending, &mut report);
     }
 
+    report.dirty = DirtyCounts::of(rt.store, &nodes);
     *rt.nodes = nodes;
     report
 }
