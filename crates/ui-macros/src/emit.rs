@@ -131,12 +131,11 @@ pub fn emit_view(
             }
         });
         let mounted = record.take().map(|record| {
-            let keys = &ctx.static_keys;
             quote! {
                 ::viso_view::__record_mount! {
                     root: __viso_root.id(),
                     #record
-                    nodes: ::viso_view::__static_nodes(&[#(#keys),*], &__viso_ids),
+                    nodes: __viso_ids.to_vec(),
                 }
             }
         });

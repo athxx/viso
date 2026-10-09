@@ -29,7 +29,8 @@ component Lengths {
         let at = rt
             .nodes
             .iter()
-            .map(|&(_, id)| rt.store.bounds(id))
+            .flatten()
+            .map(|&id| rt.store.bounds(id))
             .find(|b| b.h == height)
             .unwrap_or_else(|| panic!("no node {height} high"));
         at.w

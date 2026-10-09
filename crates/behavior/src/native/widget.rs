@@ -247,6 +247,20 @@ impl MigratableState {
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+
+    /// The set as its bits, for a wire form.
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// The set of `bits`, `None` when a bit names no state.
+    pub const fn from_bits(bits: u8) -> Option<MigratableState> {
+        if bits & !0b1111 == 0 {
+            Some(MigratableState(bits))
+        } else {
+            None
+        }
+    }
 }
 
 /// A native widget: a node type a view instantiates by name.

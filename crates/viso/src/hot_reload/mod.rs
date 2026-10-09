@@ -1,20 +1,24 @@
 //! The development session behind the `hot-reload` feature: the app's side of
 //! `viso run`. Every `view!` a window mounts is adopted here and reported to
-//! the host as a [`MountEntry`]; the host watches and compiles the project,
-//! and each edit it accepts arrives as a patch that commits to the running
-//! windows as one hot reload transaction at the next frame boundary
-//! (`Viso_Hot_Reload.md` §3, §35–§37).
+//! the host as a [`MountEntry`]; the host watches, compiles and plans the
+//! project, and each edit it accepts arrives as a typed patch that commits to
+//! the running windows as one hot reload transaction at the next frame
+//! boundary (`Viso_Hot_Reload.md` §3, §9, §35–§37).
 //!
-//! The app watches no file and reads no project source. A patch's `ui`
-//! section carries the views and catalogs the host accepted; the session plans
-//! every view of the patch before it commits any, so a patch that does not
-//! plan changes nothing and is NACKed, and one that does commits each view to
-//! each of its mounts, moves the revision and is ACKed with what the commit
-//! kept and lost. An edit the host rejected arrives as a failure, shown over
-//! the last-good UI of each window mounting the file until the host clears it
-//! or a patch commits the file. Without `viso run` there is no session: the
-//! mounts are dropped. Without the feature this module is not compiled and a
-//! `view!` records nothing.
+//! The app watches no file, reads no project source and links no compiler. A
+//! patch's `ui` section carries, for each reloaded file, the candidate view in
+//! its release form and the plan that moves the file's mounts onto it. The
+//! session loads every view of a patch when it stages the patch — each
+//! behavior module decoded and verified once — so a patch that does not load
+//! changes nothing and is NACKed, and one that does commits each view to each
+//! of its mounts at the frame boundary, moves the revision and is ACKed with
+//! what the commit kept and lost. A file mounted again after a patch committed
+//! it (a window opened later) is rebuilt from the view the file now runs. An
+//! edit the host rejected arrives as a failure, shown over the last-good UI of
+//! each window mounting the file until the host clears it or a patch commits
+//! the file. Without `viso run` there is no session: the mounts are dropped.
+//! Without the feature this module is not compiled and a `view!` records
+//! nothing.
 
 mod link;
 pub(crate) mod overlay;
@@ -23,21 +27,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use viso_dsl::frontend::Origin;
-use viso_dsl::hir::{CapabilitySet, TargetProfile};
-use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, plan_view_for, static_nodes, transact};
-use viso_dsl::i18n::{CatalogFile, Messages};
-use viso_dsl::ir::binding_ir::NodeKey;
-use viso_dsl::{Diagnostic, Severity};
 use viso_platform::{LoopWaker, WindowId};
 use viso_runtime::RuntimeCx;
 use viso_ui::NodeId;
 use viso_ui::state::{StateId, StateKey};
+use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, static_nodes};
 use viso_view::dev::wire::{
-    CatalogSource, CommitCounts, Domain, Domains, FileCommit, FileId, MAX_CODE, MAX_CODES,
-    MAX_NOTICES, MountEntry, NACK_UNKNOWN_FILE, Notice, PatchAck, PatchBundle, PatchNack,
-    PatchSection, PatchTimings, RuntimeIdentity, RuntimeMessage, SchemaFingerprint, Stage,
-    UiSources, source_hash,
+    CommitCounts, Domain, Domains, FileCommit, FileId, MAX_NOTICES, MountEntry, NACK_UNKNOWN_FILE,
+    NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack, PatchSection, PatchTimings,
+    RESET_NOTICE, ReloadPlan, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint, Stage,
 };
 use viso_view::{MountRecord, ViewHost, take_mounts};
 
@@ -56,12 +54,10 @@ pub(crate) struct HotReloadSession {
     link: Option<DevLink>,
     /// Who the host accepted this launch as, and the revision it matches.
     identity: Option<RuntimeIdentity>,
-    /// Patches checked against the runtime and waiting for the frame
-    /// boundary, in revision order.
+    /// Patches loaded and waiting for the frame boundary, in revision order.
     patches: Vec<StagedPatch>,
     /// Indexed by [`FileId`].
     files: Vec<ViewFile>,
-    catalogs: Vec<CatalogDir>,
     views: Vec<LiveView>,
     /// Whether a file's failure changed since the overlays were shown.
     failures_changed: bool,
@@ -71,51 +67,35 @@ pub(crate) struct HotReloadSession {
     scratch: Vec<NodeId>,
 }
 
-/// A patch the runtime accepted, to commit at the next frame boundary.
+/// A patch the runtime loaded, to commit at the next frame boundary.
 struct StagedPatch {
-    bundle: Box<PatchBundle>,
+    base_revision: Revision,
+    next_revision: Revision,
+    domains: Domains,
+    views: Vec<StagedView>,
     decode: Duration,
     stage: Duration,
 }
 
-/// A package's message catalogs, as the host last sent them.
-struct CatalogDir {
-    source: &'static str,
-    dir: &'static str,
-    /// `None` until the host sends them, or when the directory holds none.
-    messages: Option<Rc<Messages>>,
+/// A view of a staged patch: its file, its loaded candidate and the plan
+/// that moves the file's mounts onto it.
+struct StagedView {
+    file: usize,
+    candidate: Rc<Candidate>,
+    plan: ReloadPlan,
 }
 
-/// A mounted `.vs` file and the candidate its mounts currently match.
+/// A mounted `.vs` file.
 struct ViewFile {
-    path: &'static str,
-    /// The source the running build embedded.
-    embedded: &'static str,
-    origin: Origin,
-    /// The grants the build checked the file against.
-    capabilities: &'static [&'static str],
-    /// The package's catalogs, by index into the session's.
-    catalog: Option<usize>,
-    /// The candidate the mounts match, compiled from `embedded` with the
-    /// first patch of the file.
-    last_good: Option<CandidatePlan>,
-    /// The overlay lines of the latest edit while it is rejected.
+    /// What the file was reported to the host as.
+    entry: MountEntry,
+    /// The static shape of the view the build mounts.
+    statics: &'static [u32],
+    /// The view the file's mounts run once a patch committed one; `None`
+    /// while they run the build's.
+    current: Option<Rc<Candidate>>,
+    /// The overlay lines of the latest edit while the host rejects it.
     failure: Option<Vec<String>>,
-}
-
-impl ViewFile {
-    /// The profile the build compiled the file with, its catalogs `messages`.
-    fn profile(&self, messages: Option<Rc<Messages>>) -> TargetProfile {
-        let mut capabilities = CapabilitySet::new();
-        for &capability in self.capabilities {
-            capabilities.insert(capability);
-        }
-        TargetProfile {
-            capabilities,
-            messages,
-            ..TargetProfile::default()
-        }
-    }
 }
 
 /// One mount of a file in a window.
@@ -123,9 +103,9 @@ struct LiveView {
     window: WindowId,
     file: usize,
     root: NodeId,
-    /// The live node of each static template slot, ascending by key; empty
-    /// until the first reload seeds it.
-    nodes: Vec<(NodeKey, NodeId)>,
+    /// The live node of each static node, by static index; empty until the
+    /// first commit names them for a view whose build recorded none.
+    nodes: Vec<Option<NodeId>>,
     host: Option<Rc<RefCell<ViewHost>>>,
     /// Each state cell by its durable key.
     cells: Vec<(StateKey, StateId)>,
@@ -134,7 +114,8 @@ struct LiveView {
 impl HotReloadSession {
     /// Adopts the views `ws`'s build just mounted, opening the dev channel
     /// `viso run` named with `waker` on the first, and reports the files not
-    /// mounted before.
+    /// mounted before. A mount of a file a patch already committed is
+    /// rebuilt from the view the file runs.
     pub(crate) fn adopt(&mut self, waker: impl FnOnce() -> LoopWaker, ws: &mut WindowState) {
         take_mounts(&mut self.records);
         if self.records.is_empty() {
@@ -151,55 +132,47 @@ impl HotReloadSession {
         };
         let mut mounted = Vec::new();
         for record in self.records.drain(..) {
-            let file = match self.files.iter().position(|file| file.path == record.file) {
+            let file = match self
+                .files
+                .iter()
+                .position(|file| file.entry.path == record.file)
+            {
                 Some(file) => file,
                 None => {
-                    let catalog = record.catalog.map(|(source, dir)| {
-                        self.catalogs
-                            .iter()
-                            .position(|c| c.dir == dir)
-                            .unwrap_or_else(|| {
-                                self.catalogs.push(CatalogDir {
-                                    source,
-                                    dir,
-                                    messages: None,
-                                });
-                                self.catalogs.len() - 1
-                            })
-                    });
-                    let file = ViewFile {
-                        path: record.file,
-                        embedded: record.source,
-                        origin: Origin {
-                            package: record.package.into(),
-                            module: record.module.iter().map(|&m| m.into()).collect(),
-                            language: record.language.map(Into::into),
-                        },
-                        capabilities: record.capabilities,
-                        catalog,
-                        last_good: None,
+                    let entry = entry(self.files.len(), &record);
+                    mounted.push(entry.clone());
+                    self.files.push(ViewFile {
+                        entry,
+                        statics: record.statics,
+                        current: None,
                         failure: None,
-                    };
-                    mounted.push(entry(self.files.len(), &file, record.catalog));
-                    self.files.push(file);
+                    });
                     self.files.len() - 1
                 }
             };
             for &(key, id) in &record.cells {
                 ws.states.bind_key(id, key);
             }
-            self.views.push(LiveView {
+            let mut view = LiveView {
                 window: ws.window,
                 file,
                 root: record.root,
-                nodes: record
-                    .nodes
-                    .iter()
-                    .map(|&(key, node)| (NodeKey(key), node))
-                    .collect(),
+                nodes: record.nodes,
                 host: record.host,
                 cells: record.cells,
-            });
+            };
+            if let Some(current) = &self.files[file].current {
+                let plan = ReloadPlan::fresh(&current.package);
+                commit_view(
+                    ws,
+                    &mut view,
+                    record.statics,
+                    current,
+                    &plan,
+                    &mut self.scratch,
+                );
+            }
+            self.views.push(view);
         }
         if !mounted.is_empty() {
             link.send(RuntimeMessage::Mounts(mounted));
@@ -222,9 +195,9 @@ impl HotReloadSession {
     }
 
     /// Takes what the dev channel delivered: the host's acceptance, patches,
-    /// each checked against the revision the runtime will match before it is
-    /// staged and NACKed when it fails (§36), and failures. Returns whether a
-    /// patch was staged or a failure changed.
+    /// each checked against the revision the runtime will match and loaded
+    /// before it is staged, and NACKed when either fails (§36, §38), and
+    /// failures. Returns whether a patch was staged or a failure changed.
     fn receive(&mut self) -> bool {
         let Some(link) = &mut self.link else {
             return false;
@@ -241,15 +214,16 @@ impl HotReloadSession {
                     // A patch may chain onto one staged before it.
                     let mut expected = identity.clone();
                     if let Some(last) = self.patches.last() {
-                        expected.current_revision = last.bundle.next_revision;
+                        expected.current_revision = last.next_revision;
                     }
-                    match expected.check(&bundle) {
-                        Ok(()) => {
-                            self.patches.push(StagedPatch {
-                                bundle,
-                                decode,
-                                stage: started.elapsed(),
-                            });
+                    let staged = expected
+                        .check(&bundle)
+                        .and_then(|()| stage(*bundle, &self.files));
+                    match staged {
+                        Ok(mut staged) => {
+                            staged.decode = decode;
+                            staged.stage = started.elapsed();
+                            self.patches.push(staged);
                             changed = true;
                         }
                         Err(mut nack) => {
@@ -299,7 +273,7 @@ impl HotReloadSession {
             });
         }
         for staged in std::mem::take(&mut self.patches) {
-            let answer = self.commit_patch(&staged, windows);
+            let answer = self.commit_patch(staged, windows);
             if let Some(link) = &mut self.link {
                 link.send(answer);
             }
@@ -309,70 +283,52 @@ impl HotReloadSession {
         }
     }
 
-    /// Commits one staged patch, or none of it: the ACK or NACK to send.
-    fn commit_patch(
-        &mut self,
-        staged: &StagedPatch,
-        windows: &mut [WindowState],
-    ) -> RuntimeMessage {
+    /// Commits one staged patch: each view to each mount of its file. The
+    /// ACK to send, or the NACK of a patch staged behind one that failed.
+    fn commit_patch(&mut self, staged: StagedPatch, windows: &mut [WindowState]) -> RuntimeMessage {
         let started = Instant::now();
-        let Some(identity) = &self.identity else {
+        let Some(identity) = &mut self.identity else {
             unreachable!("a patch is staged only once the host accepted the launch");
         };
-        // A patch staged behind one that failed no longer chains.
-        if let Err(nack) = identity.check(&staged.bundle) {
-            return RuntimeMessage::Nack(nack);
+        if identity.current_revision != staged.base_revision {
+            return RuntimeMessage::Nack(PatchNack {
+                base_revision: staged.base_revision,
+                candidate_revision: staged.next_revision,
+                stage: Stage::RuntimeStage,
+                diagnostic_codes: vec![viso_view::dev::wire::NACK_REVISION_MISMATCH.into()],
+                last_good_revision: identity.current_revision,
+            });
         }
-        let current = identity.current_revision;
-        let bundle = &staged.bundle;
-        let mut planned = Vec::new();
-        let mut catalogs = Vec::new();
-        for section in &bundle.sections {
-            match section {
-                PatchSection::Ui(ui) => {
-                    if let Err(nack) = self.plan_ui(ui, &mut planned, &mut catalogs) {
-                        // Nothing commits: the views planned so far keep
-                        // their last-good.
-                        for (index, last_good, _) in planned {
-                            self.files[index].last_good = Some(last_good);
-                        }
-                        return RuntimeMessage::Nack(PatchNack {
-                            base_revision: bundle.base_revision,
-                            candidate_revision: bundle.next_revision,
-                            last_good_revision: current,
-                            ..nack
-                        });
-                    }
-                }
-            }
-        }
-        // Everything planned: commit.
-        for (index, messages) in catalogs {
-            self.catalogs[index].messages = messages;
-        }
-        let mut files = Vec::with_capacity(planned.len());
+        identity.current_revision = staged.next_revision;
+        let mut files = Vec::with_capacity(staged.views.len());
         let mut notices = Vec::new();
-        for (file, last_good, candidate) in planned {
-            let mut candidate = candidate;
+        for view in staged.views {
             let mut counts = CommitCounts::default();
-            for view in self.views.iter_mut().filter(|view| view.file == file) {
-                let Some(ws) = windows.iter_mut().find(|ws| ws.window == view.window) else {
+            let statics = self.files[view.file].statics;
+            for live in self.views.iter_mut().filter(|live| live.file == view.file) {
+                let Some(ws) = windows.iter_mut().find(|ws| ws.window == live.window) else {
                     continue;
                 };
-                let report = commit_view(ws, view, &last_good, candidate, &mut self.scratch);
-                candidate = report.candidate;
+                let report = commit_view(
+                    ws,
+                    live,
+                    statics,
+                    &view.candidate,
+                    &view.plan,
+                    &mut self.scratch,
+                );
                 counts.mounts += 1;
                 counts.migrated += report.migrated;
                 counts.reset += report.reset;
-                counts.focus_lost += report.focus_lost;
+                counts.focus_lost += u32::from(report.focus_lost);
                 counts.scroll_lost += report.scroll_lost;
-                counts.handlers_lost += report.handlers_lost;
+                counts.handlers_lost += u32::from(report.handlers_lost);
                 for notice in report.notices {
                     let notice = Notice {
-                        file: FileId(file as u32),
-                        code: notice.code.to_owned(),
-                        start: notice.primary.start().to_u32(),
-                        end: notice.primary.end().to_u32(),
+                        file: FileId(view.file as u32),
+                        code: RESET_NOTICE.to_owned(),
+                        start: notice.start,
+                        end: notice.end,
                         message: notice.message,
                     };
                     if notices.len() < MAX_NOTICES && !notices.contains(&notice) {
@@ -381,25 +337,19 @@ impl HotReloadSession {
                 }
             }
             files.push(FileCommit {
-                file: FileId(file as u32),
+                file: FileId(view.file as u32),
                 counts,
             });
-            let file = &mut self.files[file];
-            file.last_good = Some(candidate);
+            let file = &mut self.files[view.file];
+            file.current = Some(view.candidate);
             if file.failure.take().is_some() {
                 self.failures_changed = true;
             }
         }
-        if let Some(identity) = &mut self.identity {
-            identity.current_revision = bundle.next_revision;
-        }
         let micros = |d: Duration| u64::try_from(d.as_micros()).unwrap_or(u64::MAX);
         RuntimeMessage::Ack(PatchAck {
-            revision: bundle.next_revision,
-            applied_domains: bundle
-                .sections
-                .iter()
-                .fold(Domains::NONE, |domains, s| domains.with(s.domain())),
+            revision: staged.next_revision,
+            applied_domains: staged.domains,
             files,
             notices,
             timings: PatchTimings {
@@ -409,121 +359,67 @@ impl HotReloadSession {
             },
         })
     }
+}
 
-    /// Plans every view of `ui` against its last-good candidate, compiling
-    /// the catalogs it carries first, without changing anything: each planned
-    /// view's last-good and candidate go to `planned` and the catalogs to
-    /// adopt to `catalogs`. A view or catalog that does not plan is the
-    /// NACK's stage and codes, and the caller puts the last-goods back.
-    #[allow(clippy::type_complexity)]
-    fn plan_ui(
-        &mut self,
-        ui: &UiSources,
-        planned: &mut Vec<(usize, CandidatePlan, CandidatePlan)>,
-        catalogs: &mut Vec<(usize, Option<Rc<Messages>>)>,
-    ) -> Result<(), PatchNack> {
-        let refuse = |codes: Vec<String>| PatchNack {
-            base_revision: Default::default(),
-            candidate_revision: Default::default(),
-            stage: Stage::RuntimeStage,
-            diagnostic_codes: codes,
-            last_good_revision: Default::default(),
-        };
-        // The catalogs as the views of this patch see them.
-        let mut seen: Vec<Option<Rc<Messages>>> =
-            self.catalogs.iter().map(|c| c.messages.clone()).collect();
-        for sent in &ui.catalogs {
-            let Some(index) = self.catalogs.iter().position(|c| c.dir == sent.dir) else {
-                continue;
-            };
-            let messages = compile_catalogs(self.catalogs[index].source, sent)
-                .map_err(|code| refuse(vec![code.to_owned()]))?;
-            seen[index] = messages.clone();
-            catalogs.push((index, messages));
-        }
-        for view in &ui.views {
-            let index = view.file.0 as usize;
-            let Some(file) = self.files.get_mut(index) else {
-                return Err(refuse(vec![NACK_UNKNOWN_FILE.to_owned()]));
-            };
-            let profile = file.profile(file.catalog.and_then(|c| seen[c].clone()));
-            let last_good = match file.last_good.take() {
-                Some(plan) => plan,
-                None => plan_view_for(file.embedded, &file.origin, profile.clone())
-                    .map_err(|diagnostics| refuse(codes(&diagnostics)))?,
-            };
-            match plan_view_for(&view.source, &file.origin, profile) {
-                Ok(candidate) => planned.push((index, last_good, candidate)),
-                Err(diagnostics) => {
-                    file.last_good = Some(last_good);
-                    file.failure = Some(overlay::failure_lines(
-                        file.path,
-                        &view.source,
-                        &diagnostics,
-                    ));
-                    self.failures_changed = true;
-                    return Err(refuse(codes(&diagnostics)));
+/// Loads every view of `bundle`, which the runtime checked against its
+/// revision: a view naming a file the runtime did not report, or whose
+/// behavior does not load, refuses the whole patch.
+fn stage(bundle: PatchBundle, files: &[ViewFile]) -> Result<StagedPatch, PatchNack> {
+    let refuse = |code: &str| PatchNack {
+        base_revision: bundle.base_revision,
+        candidate_revision: bundle.next_revision,
+        stage: Stage::RuntimeStage,
+        diagnostic_codes: vec![code.to_owned()],
+        last_good_revision: Revision::default(),
+    };
+    let domains = bundle
+        .sections
+        .iter()
+        .fold(Domains::NONE, |domains, s| domains.with(s.domain()));
+    let mut views = Vec::new();
+    for section in bundle.sections {
+        match section {
+            PatchSection::Ui(ui) => {
+                for view in ui.views {
+                    let file = view.file.0 as usize;
+                    if file >= files.len() {
+                        return Err(refuse(NACK_UNKNOWN_FILE));
+                    }
+                    let candidate =
+                        Candidate::load(view.package).map_err(|_| refuse(NACK_UNLOADABLE_VIEW))?;
+                    views.push(StagedView {
+                        file,
+                        candidate: Rc::new(candidate),
+                        plan: view.plan,
+                    });
                 }
             }
         }
-        Ok(())
     }
+    Ok(StagedPatch {
+        base_revision: bundle.base_revision,
+        next_revision: bundle.next_revision,
+        domains,
+        views,
+        decode: Duration::ZERO,
+        stage: Duration::ZERO,
+    })
 }
 
 /// The inventory entry of file `index`, as the build recorded it.
-fn entry(index: usize, file: &ViewFile, catalog: Option<(&str, &str)>) -> MountEntry {
+fn entry(index: usize, record: &MountRecord) -> MountEntry {
     MountEntry {
         file: FileId(index as u32),
-        path: file.path.into(),
-        package: file.origin.package.clone(),
-        module: file.origin.module.clone(),
-        language: file.origin.language.clone(),
-        catalog: catalog.map(|(source, dir)| (source.into(), dir.into())),
-        capabilities: file.capabilities.iter().map(|&c| c.into()).collect(),
-        source_hash: source_hash(file.embedded),
+        path: record.file.into(),
+        package: record.package.into(),
+        module: record.module.iter().map(|&m| m.into()).collect(),
+        language: record.language.map(Into::into),
+        catalog: record
+            .catalog
+            .map(|(source, dir)| (source.into(), dir.into())),
+        capabilities: record.capabilities.iter().map(|&c| c.into()).collect(),
+        source_hash: record.source_hash,
     }
-}
-
-/// The catalogs the host sent for one directory, compiled; the code of the
-/// first error when they have one.
-fn compile_catalogs(
-    source: &str,
-    sent: &CatalogSource,
-) -> Result<Option<Rc<Messages>>, &'static str> {
-    if sent.files.is_empty() {
-        return Ok(None);
-    }
-    let files: Vec<CatalogFile> = sent
-        .files
-        .iter()
-        .map(|file| CatalogFile {
-            locale: std::path::Path::new(&file.path)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default()
-                .to_owned(),
-            path: file.path.clone(),
-            text: file.text.clone(),
-        })
-        .collect();
-    let messages = Messages::compile(source, &files);
-    if messages.issues().iter().any(|issue| issue.error) {
-        return Err(viso_dsl::i18n::CatalogIssue::CODE);
-    }
-    Ok(Some(Rc::new(messages)))
-}
-
-/// The codes of the errors among `diagnostics`, each once, as a NACK carries
-/// them.
-fn codes(diagnostics: &[Diagnostic]) -> Vec<String> {
-    let mut codes: Vec<String> = Vec::new();
-    for diagnostic in diagnostics.iter().filter(|d| d.severity == Severity::Error) {
-        let code = &diagnostic.code[..diagnostic.code.len().min(MAX_CODE)];
-        if codes.len() < MAX_CODES && !codes.iter().any(|c| c == code) {
-            codes.push(code.to_owned());
-        }
-    }
-    codes
 }
 
 /// Shows over each window that mounts a file the failures of the files it
@@ -555,33 +451,24 @@ fn show_failures(
     }
 }
 
-/// What committing a candidate to one mount kept and lost, and the candidate
-/// for the file's next mount.
-struct ViewCommit {
-    candidate: CandidatePlan,
-    migrated: u32,
-    reset: u32,
-    focus_lost: u32,
-    scroll_lost: u32,
-    handlers_lost: u32,
-    notices: Vec<Diagnostic>,
-}
-
-/// Commits `candidate` to the mount `view` in `ws`.
+/// Commits `candidate` by `plan` to the mount `view` in `ws`; `statics` is
+/// the static shape of the build's view, which names the static nodes of a
+/// mount that recorded none.
 fn commit_view(
     ws: &mut WindowState,
     view: &mut LiveView,
-    last_good: &CandidatePlan,
-    candidate: CandidatePlan,
+    statics: &[u32],
+    candidate: &Candidate,
+    plan: &ReloadPlan,
     scratch: &mut Vec<NodeId>,
-) -> ViewCommit {
+) -> CommitReport {
     // The store maps a durable key to one cell; a file mounted twice points the
     // keys at the mount being committed.
     for &(key, id) in &view.cells {
         ws.states.bind_key(id, key);
     }
     if view.nodes.is_empty() {
-        view.nodes = static_nodes(&ws.store, view.root, &last_good.tree);
+        view.nodes = static_nodes(&ws.store, view.root, statics);
     }
     let old_root = view.root;
     let mut live = LiveRuntime {
@@ -597,7 +484,7 @@ fn commit_view(
         scratch,
         view: &mut view.host,
     };
-    let reload = transact(&mut live, last_good, candidate);
+    let report = commit(&mut live, candidate, plan);
     let root = live.root;
     if ws.root == Some(old_root) {
         ws.root = root;
@@ -605,38 +492,34 @@ fn commit_view(
     if let Some(root) = root {
         view.root = root;
     }
-    view.cells = reload
-        .candidate
-        .sources
+    // The view's states in declaration order, then the other sources.
+    let states = candidate.package.states.iter().map(|state| state.key);
+    let others = plan
+        .states
         .iter()
-        .filter_map(|symbol| {
-            let key = StateKey::from_parts(symbol.hi, symbol.lo);
-            Some((key, ws.states.id_for_key(key)?))
-        })
+        .map(|state| state.key)
+        .filter(|key| !candidate.package.states.iter().any(|s| s.key == *key));
+    view.cells = states
+        .chain(others)
+        .filter_map(|key| Some((key, ws.states.id_for_key(key)?)))
         .collect();
-    let report = reload.report;
-    ViewCommit {
-        candidate: reload.candidate,
-        migrated: report.migrated,
-        reset: report.reset,
-        focus_lost: u32::from(report.focus_lost),
-        scroll_lost: report.scroll_lost,
-        handlers_lost: u32::from(report.handlers_lost),
-        notices: report.notices,
-    }
+    report
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
+    use viso_dsl::frontend::Origin;
+    use viso_dsl::hir::{CapabilitySet, TargetProfile};
+    use viso_dsl::hotreload::{CandidatePlan, plan_view_for, view_patch};
     use viso_ui::{
-        BuildCx, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rect,
-        StateValue,
+        BuildCx, DirtyClass, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter,
+        Rect, StateValue,
     };
     use viso_view::dev::wire::{
         HostMessage, NACK_BUILD_MISMATCH, NACK_MALFORMED, NACK_REVISION_MISMATCH,
-        NACK_UNKNOWN_SESSION, Revision, ViewSource,
+        NACK_UNKNOWN_SESSION, UiPatch, source_hash,
     };
 
     use super::link::fake::{self, Host};
@@ -644,6 +527,7 @@ mod tests {
 
     const COUNTER: &str = include_str!("../../tests/fixtures/counter.vs");
     const LOGGER: &str = include_str!("../../tests/fixtures/logger.vs");
+    const SCROLLER: &str = include_str!("../../tests/fixtures/scroller.vs");
 
     fn children(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
@@ -655,26 +539,40 @@ mod tests {
         out
     }
 
+    /// Every node of the subtree at `root`, in pre-order.
+    fn subtree(store: &NodeStore, root: NodeId) -> Vec<NodeId> {
+        let mut out = vec![root];
+        for child in children(store, root) {
+            out.extend(subtree(store, child));
+        }
+        out
+    }
+
+    fn build(ws: &mut WindowState, mount: impl FnOnce(&mut BuildCx<'_>) -> NodeId) -> NodeId {
+        let mut cx = BuildCx::with_reactive(
+            &mut ws.store,
+            &mut ws.states,
+            &mut ws.bindings,
+            &mut ws.virtual_lists,
+            &mut ws.text_edits,
+            &mut ws.projectors,
+        );
+        mount(&mut cx)
+    }
+
+    fn mount_counter(cx: &mut BuildCx<'_>) -> NodeId {
+        viso_ui_macros::view!("../../tests/fixtures/counter.vs")(cx).id()
+    }
+
     /// A window that mounts the counter view.
     fn counter() -> WindowState {
-        mounted(|cx| viso_ui_macros::view!("../../tests/fixtures/counter.vs")(cx).id())
+        mounted(mount_counter)
     }
 
     /// A window whose build `mount`s one view, its mount recorded.
     fn mounted(mount: impl FnOnce(&mut BuildCx<'_>) -> NodeId) -> WindowState {
         let mut ws = WindowState::new(WindowId(1));
-        let root = {
-            let mut cx = BuildCx::with_reactive(
-                &mut ws.store,
-                &mut ws.states,
-                &mut ws.bindings,
-                &mut ws.virtual_lists,
-                &mut ws.text_edits,
-                &mut ws.projectors,
-            );
-            mount(&mut cx)
-        };
-        ws.root = Some(root);
+        ws.root = Some(build(&mut ws, mount));
         ws
     }
 
@@ -685,6 +583,67 @@ mod tests {
             session.receive();
             assert!(Instant::now() < deadline, "the session never got there");
             std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// The host's side of one file: its edits compiled and planned the way
+    /// `viso run` does, against the view the runtime last ACKed.
+    struct Edits {
+        origin: Origin,
+        profile: TargetProfile,
+        last_good: CandidatePlan,
+        /// The candidate of the patch in flight.
+        sent: Option<CandidatePlan>,
+    }
+
+    impl Edits {
+        /// The host's view of `entry`, which the build compiled from `source`.
+        fn new(entry: &MountEntry, source: &str) -> Edits {
+            let origin = Origin {
+                package: entry.package.clone(),
+                module: entry.module.clone(),
+                language: entry.language.clone(),
+            };
+            let mut capabilities = CapabilitySet::new();
+            for capability in &entry.capabilities {
+                capabilities.insert(capability);
+            }
+            let profile = TargetProfile {
+                capabilities,
+                ..TargetProfile::default()
+            };
+            assert_eq!(entry.source_hash, source_hash(source));
+            let last_good =
+                plan_view_for(source, &origin, profile.clone()).expect("the build compiles");
+            Edits {
+                origin,
+                profile,
+                last_good,
+                sent: None,
+            }
+        }
+
+        /// The `ui` section moving file 0 to `source`.
+        fn section(&mut self, source: &str) -> PatchSection {
+            let candidate = plan_view_for(source, &self.origin, self.profile.clone())
+                .expect("the edit compiles");
+            let view = view_patch(FileId(0), &self.last_good, &candidate);
+            self.sent = Some(candidate);
+            PatchSection::Ui(UiPatch { views: vec![view] })
+        }
+
+        /// A patch from `base` to `next` moving file 0 to `source`.
+        fn patch(&mut self, host: &Host, base: u64, next: u64, source: &str) -> HostMessage {
+            let HostMessage::Patch(mut patch) = host.patch(base, next) else {
+                unreachable!()
+            };
+            patch.sections = vec![self.section(source)];
+            HostMessage::Patch(patch)
+        }
+
+        /// The runtime ACKed the patch in flight.
+        fn acked(&mut self) {
+            self.last_good = self.sent.take().expect("a patch in flight");
         }
     }
 
@@ -712,19 +671,12 @@ mod tests {
         (session, host, entries)
     }
 
-    /// A `ui` patch from `base` to `next` setting file 0 to `source`.
-    fn ui_patch(host: &Host, base: u64, next: u64, source: &str) -> HostMessage {
-        let HostMessage::Patch(mut patch) = host.patch(base, next) else {
-            unreachable!()
-        };
-        patch.sections = vec![PatchSection::Ui(UiSources {
-            views: vec![ViewSource {
-                file: FileId(0),
-                source: source.into(),
-            }],
-            catalogs: Vec::new(),
-        })];
-        HostMessage::Patch(patch)
+    /// [`linked`] for `ws`, which mounts the file `source` builds, with the
+    /// host's view of the file.
+    fn session(ws: &mut WindowState, source: &str) -> (HotReloadSession, Host, Edits) {
+        let (session, host, entries) = linked(Some(ws));
+        let edits = Edits::new(&entries[0], source);
+        (session, host, edits)
     }
 
     /// Sends `patch`, commits it at the next frame boundary of `ws` and
@@ -735,11 +687,33 @@ mod tests {
         ws: &mut WindowState,
         patch: &HostMessage,
     ) -> RuntimeMessage {
-        let staged = session.patches.len() + 1;
         host.send(patch);
-        until(session, |s| s.patches.len() == staged);
+        if let Some(answer) = answer_or_staged(session, host) {
+            return answer;
+        }
         session.reload(std::slice::from_mut(ws));
         host.read().expect("an answer")
+    }
+
+    /// Receives until the session staged a patch (`None`) or answered the
+    /// host (the answer).
+    fn answer_or_staged(session: &mut HotReloadSession, host: &mut Host) -> Option<RuntimeMessage> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stream = host.stream.as_ref().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let answered = loop {
+            session.receive();
+            if !session.patches.is_empty() {
+                break false;
+            }
+            if matches!(stream.peek(&mut [0]), Ok(1)) {
+                break true;
+            }
+            assert!(Instant::now() < deadline, "no answer");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        stream.set_nonblocking(false).unwrap();
+        answered.then(|| host.read().expect("an answer"))
     }
 
     /// Commits `source` as the next revision and returns the ACK.
@@ -747,12 +721,16 @@ mod tests {
         session: &mut HotReloadSession,
         host: &mut Host,
         ws: &mut WindowState,
+        edits: &mut Edits,
         source: &str,
     ) -> PatchAck {
-        let base = session.identity.as_ref().unwrap().current_revision.0;
-        let patch = ui_patch(host, base, base + 1, source);
+        let base = revision(session);
+        let patch = edits.patch(host, base, base + 1, source);
         match apply(session, host, ws, &patch) {
-            RuntimeMessage::Ack(ack) => ack,
+            RuntimeMessage::Ack(ack) => {
+                edits.acked();
+                ack
+            }
             other => panic!("not an ACK: {other:?}"),
         }
     }
@@ -781,19 +759,9 @@ mod tests {
         assert_eq!(entry.file, FileId(0));
         assert!(entry.path.ends_with("counter.vs"), "{}", entry.path);
         assert_eq!(entry.source_hash, source_hash(COUNTER));
-        assert_eq!(entry.package, session.files[0].origin.package);
+        assert_eq!(session.files[0].statics, [2, 0, 0]);
         // A second mount of the same file is not reported again.
-        let root = {
-            let mut cx = BuildCx::with_reactive(
-                &mut ws.store,
-                &mut ws.states,
-                &mut ws.bindings,
-                &mut ws.virtual_lists,
-                &mut ws.text_edits,
-                &mut ws.projectors,
-            );
-            viso_ui_macros::view!("../../tests/fixtures/counter.vs")(&mut cx).id()
-        };
+        let root = build(&mut ws, mount_counter);
         assert!(ws.store.arena().is_live(root));
         session.adopt(|| unreachable!(), &mut ws);
         assert_eq!(session.views.len(), 2);
@@ -818,7 +786,7 @@ mod tests {
     #[test]
     fn an_accepted_edit_commits_to_the_mount_and_keeps_its_state() {
         let mut ws = counter();
-        let (mut session, mut host, _) = linked(Some(&mut ws));
+        let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
         let (_, cell) = session.views[0].cells[0];
         ws.states.set(cell, StateValue::Int(5));
         let column = ws.root.unwrap();
@@ -828,7 +796,7 @@ mod tests {
             "Text { visible: enabled; }",
             "Text { visible: enabled; }\n            Text { }",
         );
-        let ack = accept(&mut session, &mut host, &mut ws, &edited);
+        let ack = accept(&mut session, &mut host, &mut ws, &mut edits, &edited);
         assert_eq!(ack.revision, Revision(2));
         assert_eq!(ack.applied_domains, APPLIES);
         let [commit] = &ack.files[..] else {
@@ -841,6 +809,111 @@ mod tests {
         assert_eq!(root, session.views[0].root);
         assert_eq!(children(&ws.store, root).len(), 3);
         assert_eq!(count(&ws, &session), Some(StateValue::Int(5)));
+    }
+
+    #[test]
+    fn a_property_edit_dirties_exactly_its_property_on_its_node() {
+        let mut ws = counter();
+        ws.surface_size = (800, 600);
+        let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
+        let (_, cell) = session.views[0].cells[0];
+        ws.states.set(cell, StateValue::Int(5));
+        let mut changed = Vec::new();
+        ws.states.take_pending(&mut changed);
+        ws.store.flush_state_transactions(&changed, &ws.bindings);
+        ws.relayout_and_paint();
+        let root = ws.root.unwrap();
+        let nodes = subtree(&ws.store, root);
+        // What the frame's later passes (paint, semantics) leave is theirs.
+        ws.store.clear_dirty();
+
+        let edited = COUNTER.replace("width: 120dp;", "width: 140dp;");
+        accept(&mut session, &mut host, &mut ws, &mut edits, &edited);
+        assert_eq!(ws.root, Some(root), "the same process, the same tree");
+        assert_eq!(subtree(&ws.store, root), nodes, "every node kept");
+        let dirty = |ws: &WindowState| -> Vec<DirtyClass> {
+            nodes.iter().map(|&n| ws.store.dirty(n)).collect()
+        };
+        assert_eq!(
+            dirty(&ws),
+            [
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+                DirtyClass::EMPTY,
+                DirtyClass::EMPTY
+            ],
+            "the column's size request moved, nothing else"
+        );
+        assert_eq!(count(&ws, &session), Some(StateValue::Int(5)));
+        assert_eq!(
+            ws.store.size_request(root).map(|size| size.width),
+            Some(viso_ui::Length::Fixed(140.0))
+        );
+        ws.relayout_and_paint();
+
+        // A label edit touches its own text node.
+        let labelled = |label: &str| {
+            edited.replace(
+                "Text { visible: enabled; }",
+                &format!("Text {{ visible: enabled; text: \"{label}\"; }}"),
+            )
+        };
+        accept(&mut session, &mut host, &mut ws, &mut edits, &labelled("A"));
+        ws.relayout_and_paint();
+        let mut requests = Vec::new();
+        ws.store.take_text_requests(&mut requests);
+        ws.store.clear_dirty();
+        accept(&mut session, &mut host, &mut ws, &mut edits, &labelled("B"));
+        assert!(dirty(&ws).iter().all(|d| d.is_empty()), "{:?}", dirty(&ws));
+        requests.clear();
+        ws.store.take_text_requests(&mut requests);
+        let shaped: Vec<(NodeId, &str)> = requests
+            .iter()
+            .map(|(node, request)| (*node, request.text.as_str()))
+            .collect();
+        assert_eq!(shaped, [(nodes[2], "B")], "one label reshapes");
+        assert_eq!(subtree(&ws.store, root), nodes, "every node kept");
+    }
+
+    #[test]
+    fn a_property_edit_keeps_state_focus_and_scroll_offset() {
+        let mut ws =
+            mounted(|cx| viso_ui_macros::view!("../../tests/fixtures/scroller.vs")(cx).id());
+        let (mut session, mut host, mut edits) = session(&mut ws, SCROLLER);
+        let root = ws.root.unwrap();
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
+        ws.store.layout(root, surface, &mut Vec::new());
+        let nodes = subtree(&ws.store, root);
+        let [scroll, text] = nodes[..] else {
+            panic!("Scroll + Text: {nodes:?}");
+        };
+        let (_, cell) = session.views[0].cells[0];
+        ws.states.set(cell, StateValue::Int(7));
+        ws.store.set_focusable(text, true);
+        ws.store.set_focused(Some(text));
+        ws.store
+            .set_scroll(scroll, viso_ui::Vec2 { x: 0.0, y: 50.0 });
+        assert_eq!(ws.store.scroll(scroll).y, 50.0, "the container scrolls");
+        let process = std::process::id();
+
+        let edited = SCROLLER.replace("height: 400dp;", "height: 420dp;");
+        let ack = accept(&mut session, &mut host, &mut ws, &mut edits, &edited);
+        assert_eq!(ack.scoped_resets(), 0, "{:?}", ack.files);
+        assert_eq!(std::process::id(), process);
+        assert_eq!(subtree(&ws.store, root), nodes, "every node kept");
+        assert_eq!(count(&ws, &session), Some(StateValue::Int(7)));
+        assert_eq!(ws.store.focused(), Some(text));
+        assert_eq!(ws.store.scroll(scroll).y, 50.0);
+        ws.store.layout(root, surface, &mut Vec::new());
+        assert_eq!(
+            ws.store.scroll(scroll).y,
+            50.0,
+            "the offset survives the layout"
+        );
     }
 
     /// A primary click inside the logger's leaf, then the state flush.
@@ -885,7 +958,7 @@ mod tests {
     #[test]
     fn a_handler_body_edit_reloads_with_every_state_kept() {
         let mut ws = mounted(|cx| viso_ui_macros::view!("../../tests/fixtures/logger.vs")(cx).id());
-        let (mut session, mut host, _) = linked(Some(&mut ws));
+        let (mut session, mut host, mut edits) = session(&mut ws, LOGGER);
         click(&mut ws);
         assert_eq!(count(&ws, &session), Some(StateValue::Int(1)));
         assert_eq!(log(&session).as_deref(), Some("one"));
@@ -895,7 +968,8 @@ mod tests {
             "on click { count += 10; }",
         );
         assert_ne!(edited, LOGGER);
-        accept(&mut session, &mut host, &mut ws, &edited);
+        accept(&mut session, &mut host, &mut ws, &mut edits, &edited);
+
         assert_eq!(count(&ws, &session), Some(StateValue::Int(1)));
         assert_eq!(log(&session).as_deref(), Some("one"));
 
@@ -908,7 +982,8 @@ mod tests {
     fn a_host_rejection_is_shown_until_cleared_and_changes_nothing() {
         let mut ws = counter();
         let (mut session, mut host, _) = linked(Some(&mut ws));
-        let root = ws.root;
+        let root = ws.root.unwrap();
+        let nodes = subtree(&ws.store, root);
         host.send(&HostMessage::Failure {
             file: FileId(0),
             lines: vec!["counter.vs:3:19: E1405 expected an expression".into()],
@@ -916,7 +991,8 @@ mod tests {
         until(&mut session, |s| s.failures_changed);
         session.reload(std::slice::from_mut(&mut ws));
         assert!(ws.dev_overlay.is_some(), "the failure is shown");
-        assert_eq!((ws.root, revision(&session)), (root, 1));
+        assert_eq!((ws.root, revision(&session)), (Some(root), 1));
+        assert_eq!(subtree(&ws.store, root), nodes, "no node changed");
 
         host.send(&HostMessage::Failure {
             file: FileId(0),
@@ -928,20 +1004,25 @@ mod tests {
     }
 
     #[test]
-    fn a_patch_that_does_not_plan_is_nacked_and_the_next_one_applies() {
+    fn a_patch_that_does_not_load_is_nacked_and_the_next_one_applies() {
         let mut ws = counter();
-        let (mut session, mut host, _) = linked(Some(&mut ws));
+        let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
         let root = ws.root.unwrap();
-        let broken = ui_patch(
+        let mut broken = edits.patch(
             &host,
             1,
             2,
-            &COUNTER.replace("state count = 0;", "state count = ;"),
+            &COUNTER.replace("width: 120dp;", "width: 1dp;"),
         );
+        let HostMessage::Patch(patch) = &mut broken else {
+            unreachable!()
+        };
+        let PatchSection::Ui(ui) = &mut patch.sections[0];
+        ui.views[0].package.behavior = vec![0xEE; 8];
         match apply(&mut session, &mut host, &mut ws, &broken) {
             RuntimeMessage::Nack(nack) => {
                 assert_eq!(nack.stage, Stage::RuntimeStage);
-                assert!(nack.diagnostic_codes.iter().any(|c| c.starts_with("E1")));
+                assert_eq!(nack.diagnostic_codes, [NACK_UNLOADABLE_VIEW]);
                 assert_eq!(
                     (nack.candidate_revision, nack.last_good_revision),
                     (Revision(2), Revision(1))
@@ -952,46 +1033,36 @@ mod tests {
         assert_eq!(revision(&session), 1);
         assert_eq!(ws.root, Some(root));
         assert_eq!(children(&ws.store, root).len(), 2);
-        assert!(
-            session.files[0].last_good.is_some(),
-            "the last-good is kept"
-        );
-        assert!(ws.dev_overlay.is_some(), "the failure is shown");
+        assert!(session.files[0].current.is_none(), "the build's view runs");
 
         let ack = accept(
             &mut session,
             &mut host,
             &mut ws,
+            &mut edits,
             &COUNTER.replace("width: 120dp;", "width: 140dp;"),
         );
         assert_eq!(ack.revision, Revision(2));
-        assert!(
-            ws.dev_overlay.is_none(),
-            "a committed edit clears the failure"
-        );
     }
 
     #[test]
     fn a_patch_naming_an_unreported_file_changes_nothing() {
         let mut ws = counter();
-        let (mut session, mut host, _) = linked(Some(&mut ws));
-        let HostMessage::Patch(mut patch) = ui_patch(&host, 1, 2, COUNTER) else {
+        let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
+        let mut patch = edits.patch(&host, 1, 2, COUNTER);
+        let HostMessage::Patch(bundle) = &mut patch else {
             unreachable!()
         };
-        let PatchSection::Ui(ui) = &mut patch.sections[0];
-        ui.views.push(ViewSource {
-            file: FileId(9),
-            source: String::new(),
-        });
-        match apply(&mut session, &mut host, &mut ws, &HostMessage::Patch(patch)) {
+        let PatchSection::Ui(ui) = &mut bundle.sections[0];
+        let mut stray = ui.views[0].clone();
+        stray.file = FileId(9);
+        ui.views.push(stray);
+        match apply(&mut session, &mut host, &mut ws, &patch) {
             RuntimeMessage::Nack(nack) => assert_eq!(nack.diagnostic_codes, [NACK_UNKNOWN_FILE]),
             other => panic!("not a NACK: {other:?}"),
         }
         assert_eq!(revision(&session), 1);
-        assert!(
-            session.files[0].last_good.is_some(),
-            "the planned view is put back"
-        );
+        assert!(session.files[0].current.is_none(), "nothing committed");
     }
 
     /// The live values of the view's states.
@@ -1006,7 +1077,7 @@ mod tests {
     #[test]
     fn label_and_state_type_edits_keep_unrelated_state() {
         let mut ws = counter();
-        let (mut session, mut host, _) = linked(Some(&mut ws));
+        let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
         for &(_, id) in &session.views[0].cells {
             let edited = match ws.states.get(id) {
                 Some(StateValue::Int(_)) => StateValue::Int(5),
@@ -1019,22 +1090,50 @@ mod tests {
             "Text { visible: enabled; }",
             "Text { visible: enabled; text: \"Saved\"; }",
         );
-        accept(&mut session, &mut host, &mut ws, &labelled);
+        accept(&mut session, &mut host, &mut ws, &mut edits, &labelled);
         let kept = values(&ws, &session);
         assert!(kept.contains(&StateValue::Int(5)) && kept.contains(&StateValue::Bool(false)));
 
         let retyped = labelled.replace("state count = 0;", "state count: F64 = 0.0;");
-        let ack = accept(&mut session, &mut host, &mut ws, &retyped);
+        let ack = accept(&mut session, &mut host, &mut ws, &mut edits, &retyped);
         assert_eq!(ack.revision, Revision(3));
         let kept = values(&ws, &session);
         assert!(kept.contains(&StateValue::Float(5.0)), "{kept:?}");
         assert!(kept.contains(&StateValue::Bool(false)), "{kept:?}");
     }
 
-    /// Patch-to-pixels latency of a one-property edit over the loopback
-    /// channel, split into the transport (send to staged: encode, write,
-    /// read, decode, check) and the pipeline (plan, commit, relayout and
-    /// repaint, without a GPU upload). A release measurement:
+    #[test]
+    fn a_window_opened_after_a_patch_mounts_the_patched_view() {
+        let mut ws = counter();
+        let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
+        let edited = COUNTER.replace(
+            "Text { visible: enabled; }",
+            "Text { visible: enabled; }\n            Text { }",
+        );
+        accept(&mut session, &mut host, &mut ws, &mut edits, &edited);
+        let mut later = WindowState::new(WindowId(2));
+        later.root = Some(build(&mut later, mount_counter));
+        session.adopt(|| unreachable!(), &mut later);
+        let root = later.root.unwrap();
+        assert_eq!(session.views[1].root, root);
+        assert_eq!(children(&later.store, root).len(), 3, "the patched view");
+
+        // The next edit commits to both mounts from the same view.
+        let ack = accept(
+            &mut session,
+            &mut host,
+            &mut ws,
+            &mut edits,
+            &edited.replace("width: 120dp;", "width: 140dp;"),
+        );
+        assert_eq!(ack.files[0].counts.mounts, 1, "only the window passed in");
+    }
+
+    /// Edit-to-pixels latency of a one-property edit with the host round
+    /// trip, by phase: the host's compile, its plan (diff, migration, the
+    /// candidate's release form), the frame's encode, the transport (write,
+    /// read, decode, check, load and verify), the commit, and the relayout
+    /// and repaint (without a GPU upload). A release measurement:
     /// `cargo test --release -p viso --features hot-reload --lib -- --ignored
     /// patch_to_pixels --nocapture`.
     #[test]
@@ -1043,38 +1142,61 @@ mod tests {
         const EDITS: usize = 60;
         let mut ws = counter();
         ws.surface_size = (800, 600);
-        let (mut session, mut host, _) = linked(Some(&mut ws));
-        // A child's width, so the edit moves pixels (the root fills the
-        // surface). The first patch adds the property and is not sampled.
+        let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
+        // A child's width, so the edit moves its box. The first patch adds
+        // the property and is not sampled; the first frame lays out the tree.
         let source = |width: f32| {
             COUNTER.replace(
                 "Text { visible: enabled; }",
                 &format!("Text {{ visible: enabled; width: {width}dp; }}"),
             )
         };
-        accept(&mut session, &mut host, &mut ws, &source(30.0));
-        ws.relayout_and_paint();
-        let mut transport = Vec::with_capacity(EDITS);
-        let mut pipeline = Vec::with_capacity(EDITS);
+        accept(&mut session, &mut host, &mut ws, &mut edits, &source(30.0));
+        let root = ws.root.unwrap();
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
+        ws.store.layout(root, surface, &mut Vec::new());
+        let mut phases: [Vec<Duration>; 6] = Default::default();
+        let mut bytes = 0;
         for n in 0..EDITS {
             let width = if n % 2 == 0 { 40.0 } else { 30.0 };
             let base = revision(&session);
-            let patch = ui_patch(&host, base, base + 1, &source(width));
-            let sent = Instant::now();
-            host.send(&patch);
+            let started = Instant::now();
+            let candidate = plan_view_for(&source(width), &edits.origin, edits.profile.clone())
+                .expect("the edit compiles");
+            let compiled = Instant::now();
+            let view = view_patch(FileId(0), &edits.last_good, &candidate);
+            let planned = Instant::now();
+            let HostMessage::Patch(mut patch) = host.patch(base, base + 1) else {
+                unreachable!()
+            };
+            patch.sections = vec![PatchSection::Ui(UiPatch { views: vec![view] })];
+            let body = viso_view::dev::wire::encode(&HostMessage::Patch(patch));
+            let encoded = Instant::now();
+            host.send_raw(&body);
             while session.patches.is_empty() {
                 session.receive();
                 std::hint::spin_loop();
             }
             let staged = Instant::now();
             session.reload(std::slice::from_mut(&mut ws));
+            let committed = Instant::now();
             ws.relayout_and_paint();
             let painted = Instant::now();
             assert!(matches!(host.read(), Some(RuntimeMessage::Ack(_))));
-            let root = ws.root.unwrap();
+            edits.last_good = candidate;
             assert_eq!(ws.store.bounds(children(&ws.store, root)[1]).w, width);
-            transport.push(staged - sent);
-            pipeline.push(painted - staged);
+            let marks = [
+                started, compiled, planned, encoded, staged, committed, painted,
+            ];
+            for (phase, pair) in phases.iter_mut().zip(marks.windows(2)) {
+                phase.push(pair[1] - pair[0]);
+            }
+            bytes = body.len();
         }
         let summary = |name: &str, samples: &mut [Duration]| {
             samples.sort();
@@ -1087,14 +1209,22 @@ mod tests {
                 ms(samples[samples.len() - 1]),
             );
         };
-        let mut total: Vec<Duration> = transport
-            .iter()
-            .zip(&pipeline)
-            .map(|(t, p)| *t + *p)
+        let mut total: Vec<Duration> = (0..EDITS)
+            .map(|i| phases.iter().map(|phase| phase[i]).sum())
             .collect();
-        summary("transport", &mut transport);
-        summary("pipeline", &mut pipeline);
-        summary("patch-to-pixels", &mut total);
+        let names = [
+            "compile",
+            "plan",
+            "encode",
+            "transport",
+            "commit",
+            "repaint",
+        ];
+        for (name, phase) in names.iter().zip(&mut phases) {
+            summary(name, phase);
+        }
+        summary("compile-to-pixels", &mut total);
+        println!("patch frame: {bytes} bytes");
     }
 
     #[test]

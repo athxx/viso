@@ -14,7 +14,9 @@
 //! A node's value is a pure entry of the view's handler table. It is evaluated
 //! when the node mounts and again only when a cell it reads changes, and a value
 //! equal to the one the node shows delivers nothing, so a frame that changes
-//! nothing it reads never touches the node.
+//! nothing it reads never touches the node. A hot reload that mounts the
+//! values of a node again keeps what it shows: only a value the reload changed
+//! is delivered, as a first delivery.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -46,7 +48,9 @@ const COLOR: Rgba = Rgba {
 /// runs, whose entries run in the empty scope.
 ///
 /// Mounting again, as a hot reload does, replaces the hook the view's previous
-/// mount registered: a view keeps one.
+/// mount registered: a view keeps one. A node that mounted before with the
+/// same kind of control keeps what it shows, so only the values that changed
+/// are delivered.
 pub fn mount_values(
     cx: &mut StructureCx<'_>,
     host: &Rc<RefCell<ViewHost>>,
@@ -55,9 +59,20 @@ pub fn mount_values(
     let Ok(mut view) = host.try_borrow_mut() else {
         return;
     };
+    let prior = std::mem::take(&mut view.shown);
     let mut shown: Vec<Shown> = nodes
         .iter()
-        .map(|(node, control)| Shown::new(*node, control.clone(), Scope::EMPTY, &view, cx))
+        .map(|(node, control)| {
+            let mut shown = Shown::new(*node, control.clone(), Scope::EMPTY, &view, cx);
+            if let Some(before) = prior
+                .iter()
+                .find(|before| before.node == *node && before.control.kind == control.kind)
+            {
+                shown.shows = before.shows.clone();
+                shown.seeded = true;
+            }
+            shown
+        })
         .collect();
     for node in &mut shown {
         node.deliver(cx, &mut view);
@@ -65,25 +80,27 @@ pub fn mount_values(
     if let Some(prior) = view.replace_values_hook(None) {
         cx.store.remove_structure_hook(prior);
     }
-    shown.retain(|node| !node.deps.is_empty());
-    if shown.is_empty() {
-        return;
-    }
-    drop(view);
     let deps: Vec<StateId> = shown
         .iter()
         .flat_map(|node| node.deps.iter().copied())
         .collect();
+    view.shown = shown;
+    if deps.is_empty() {
+        return;
+    }
+    drop(view);
     let keep = Rc::clone(host);
     let hook = cx.store.add_structure_hook(deps, move |cx, changed| {
         let Ok(mut view) = keep.try_borrow_mut() else {
             return;
         };
+        let mut shown = std::mem::take(&mut view.shown);
         for node in &mut shown {
             if node.reads_any(changed) {
                 node.deliver(cx, &mut view);
             }
         }
+        view.shown = shown;
     });
     host.borrow_mut().replace_values_hook(Some(hook));
 }
@@ -155,6 +172,10 @@ pub(crate) struct Shown {
     /// The value, lower bound, upper bound, background and opacity it shows,
     /// `None` before the first delivery.
     shows: Option<[Value; SHOWN]>,
+    /// Whether [`shows`](Self::shows) is what the node showed before a hot
+    /// reload mounted it again: the next delivery skips the values equal to
+    /// it and delivers the others as a first delivery.
+    seeded: bool,
 }
 
 impl Shown {
@@ -176,6 +197,7 @@ impl Shown {
             scope: Scope::EMPTY,
             deps: Box::default(),
             shows: None,
+            seeded: false,
         };
         shown.rescope(scope, host);
         shown
@@ -232,6 +254,7 @@ impl Shown {
             }
         }
         let prior = self.shows.as_ref();
+        let first = prior.is_none() || std::mem::take(&mut self.seeded);
         if prior == Some(&shows) {
             return;
         }
@@ -248,7 +271,7 @@ impl Shown {
             (3, (shown_background, look.background_transition)),
             (4, (shown_opacity, look.opacity_transition)),
         ] {
-            let (Some(_), Some(transition), Some(_)) = (shown, transition, prior) else {
+            let (Some(_), Some(transition), false) = (shown, transition, first) else {
                 continue;
             };
             if !changed(at) {
@@ -272,7 +295,7 @@ impl Shown {
             }
             match (moves[at - 3], value) {
                 (Some(timing), value) => store.transition(self.node, value, timing),
-                (None, value) if prior.is_none() => store.present(self.node, value),
+                (None, value) if first => store.present(self.node, value),
                 (None, LookValue::Fill(fill)) => store.set_fill(self.node, fill),
                 (None, LookValue::Opacity(opacity)) => store.set_opacity(self.node, opacity),
             }

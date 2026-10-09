@@ -275,6 +275,47 @@ fn read_u32(dec: &mut Decoder<'_>) -> Result<u32, DecodeError> {
     u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })
 }
 
+/// Writes a cell value: a tag byte, then its payload.
+pub(crate) fn write_state_value(enc: &mut Encoder, value: StateValue) {
+    match value {
+        StateValue::Int(n) => {
+            enc.write_u8(0);
+            enc.write_i32(n);
+        }
+        StateValue::Float(x) => {
+            enc.write_u8(1);
+            enc.write_f32(x);
+        }
+        StateValue::Bool(b) => {
+            enc.write_u8(2);
+            enc.write_bool(b);
+        }
+        StateValue::Color(r, g, b, a) => {
+            enc.write_u8(3);
+            for channel in [r, g, b, a] {
+                enc.write_f32(channel);
+            }
+        }
+    }
+}
+
+/// Reads a cell value [`write_state_value`] wrote.
+pub(crate) fn read_state_value(dec: &mut Decoder<'_>) -> Result<StateValue, DecodeError> {
+    let offset = dec.position();
+    Ok(match dec.read_u8()? {
+        0 => StateValue::Int(dec.read_i32()?),
+        1 => StateValue::Float(dec.read_f32()?),
+        2 => StateValue::Bool(dec.read_bool()?),
+        3 => StateValue::Color(
+            dec.read_f32()?,
+            dec.read_f32()?,
+            dec.read_f32()?,
+            dec.read_f32()?,
+        ),
+        _ => return Err(DecodeError::Malformed { offset }),
+    })
+}
+
 impl Encode for ViewPackage {
     fn encode(&self, enc: &mut Encoder) {
         ProtocolTag::current().encode(enc);
@@ -287,26 +328,7 @@ impl Encode for ViewPackage {
             enc.write_u64(state.key.lo);
             enc.write_varint(state.slot.map_or(0, |slot| u64::from(slot) + 1));
             enc.write_bool(state.tracked);
-            match state.initial {
-                StateValue::Int(n) => {
-                    enc.write_u8(0);
-                    enc.write_i32(n);
-                }
-                StateValue::Float(x) => {
-                    enc.write_u8(1);
-                    enc.write_f32(x);
-                }
-                StateValue::Bool(b) => {
-                    enc.write_u8(2);
-                    enc.write_bool(b);
-                }
-                StateValue::Color(r, g, b, a) => {
-                    enc.write_u8(3);
-                    for channel in [r, g, b, a] {
-                        enc.write_f32(channel);
-                    }
-                }
-            }
+            write_state_value(enc, state.initial);
         }
         enc.write_varint(self.handlers.len() as u64);
         for handler in &self.handlers {
@@ -344,19 +366,7 @@ impl Decode for ViewPackage {
             let lo = dec.read_u64()?;
             let slot = read_u32(dec)?.checked_sub(1);
             let tracked = dec.read_bool()?;
-            let offset = dec.position();
-            let initial = match dec.read_u8()? {
-                0 => StateValue::Int(dec.read_i32()?),
-                1 => StateValue::Float(dec.read_f32()?),
-                2 => StateValue::Bool(dec.read_bool()?),
-                3 => StateValue::Color(
-                    dec.read_f32()?,
-                    dec.read_f32()?,
-                    dec.read_f32()?,
-                    dec.read_f32()?,
-                ),
-                _ => return Err(DecodeError::Malformed { offset }),
-            };
+            let initial = read_state_value(dec)?;
             states.push(ViewState {
                 key: StateKey::from_parts(hi, lo),
                 slot,

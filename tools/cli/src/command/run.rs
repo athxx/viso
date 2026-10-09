@@ -145,9 +145,13 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     let (tx, rx) = mpsc::channel();
     let watched = tx.clone();
     let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-    let mut dev = DevSession::start(canonical, &expect, lock, move |change| {
-        watched.send(Incoming::Change(change)).is_ok()
-    });
+    let mut dev = DevSession::start(
+        canonical,
+        &expect,
+        lock,
+        !args.no_hot_reload,
+        move |change| watched.send(Incoming::Change(change)).is_ok(),
+    );
 
     out.progress("build", "building the dev artifact");
     let exe = match build(global, &cargo_manifest, out) {

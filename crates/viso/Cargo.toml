@@ -21,7 +21,6 @@ viso-widgets = { workspace = true }
 # The view planner the development session turns the host's accepted `.vs`
 # sources into commits with; only a dev artifact (`hot-reload`) links it, so a
 # release app never does.
-viso-dsl = { workspace = true, optional = true }
 viso-services = { workspace = true }
 viso-render = { workspace = true }
 viso-svg = { workspace = true }
@@ -61,7 +60,7 @@ mobile = []
 # The development session: every `view!` mount is recorded and reported to
 # `viso run`, and each edit the host accepts commits as one hot reload
 # transaction.
-hot-reload = ["viso-view/hot-reload", "dep:viso-dsl"]
+hot-reload = ["viso-view/hot-reload"]
 # Text runtime explanations — every fallback walk, cache miss and eviction —
 # for the Inspector; compiled out otherwise.
 inspector = ["viso-text/inspector"]

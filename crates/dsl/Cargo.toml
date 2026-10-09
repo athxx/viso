@@ -17,7 +17,7 @@ viso-ende = { workspace = true }
 viso-behavior = { workspace = true }
 # Mounting a view's handlers: the route table and the host the macros, the
 # hot reload commit and the release package all dispatch through.
-viso-view = { workspace = true }
+viso-view = { workspace = true, features = ["hot-reload"] }
 # A `shader` declaration lowers into the shader program IR.
 viso-shader = { workspace = true }
 # XID_Start/XID_Continue for identifier lexing and NFC for symbol-table entry.

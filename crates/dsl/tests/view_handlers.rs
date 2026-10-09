@@ -70,7 +70,7 @@ struct Live {
     projectors: SemanticProjector,
     root: Option<NodeId>,
     scratch: Vec<NodeId>,
-    nodes: Vec<(viso_dsl::ir::binding_ir::NodeKey, NodeId)>,
+    nodes: Vec<Option<NodeId>>,
     view: Option<Rc<RefCell<ViewHost>>>,
     last_good: CandidatePlan,
 }

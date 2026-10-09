@@ -25,6 +25,8 @@ use viso_ende::{Decode, DecodeError};
 use crate::binding::BindingTable;
 use crate::component::{BuildCx, FlexStyle, Handle, LeafStyle, NodeStore, ScrollStyle};
 use crate::dirty::DirtyClass;
+use crate::grid::GridStyle;
+use crate::layout::Inset;
 use crate::layout::{Axis, Length, Size};
 use crate::node::NodeId;
 use crate::state::{StateKey, StateStore, StateValue};
@@ -89,8 +91,6 @@ pub fn instantiate_indexed(
     // pre-order index. The `BuildCx` borrows the state store, so binding is deferred
     // to phase two. The map is pre-sized and each slot is filled at its own index,
     // so a container's id lands before its children's regardless of author order.
-    node_ids.clear();
-    node_ids.resize(pkg.nodes.len(), None);
     // The AOT package has no editable-text node yet (the compiler does not lower a
     // `text_input`), so a throwaway registry satisfies the reactive-cx contract
     // without threading an edit registry through the public loader API.
@@ -108,10 +108,7 @@ pub fn instantiate_indexed(
             &mut text_edits,
             &mut projectors,
         );
-        let mut cursor = 0usize;
-        while cursor < pkg.nodes.len() {
-            build_node(&mut cx, &pkg.nodes, &mut cursor, node_ids);
-        }
+        build_nodes(&mut cx, &pkg.nodes, node_ids);
         cx.root()
     };
 
@@ -143,6 +140,77 @@ fn resolve_state(states: &mut StateStore, key: StateKey) -> crate::state::StateI
     let id = states.alloc(NEUTRAL_STATE);
     states.bind_key(id, key);
     id
+}
+
+/// Authors the pre-order node table `nodes` through `cx`, leaving each
+/// node's live [`NodeId`] in `node_ids` at its pre-order index.
+pub fn build_nodes(cx: &mut BuildCx<'_>, nodes: &[AotNode], node_ids: &mut Vec<Option<NodeId>>) {
+    node_ids.clear();
+    node_ids.resize(nodes.len(), None);
+    let mut cursor = 0usize;
+    while cursor < nodes.len() {
+        build_node(cx, nodes, &mut cursor, node_ids);
+    }
+}
+
+/// Re-applies packaged node `node`'s style to `live`, a node built from an
+/// earlier version of it that keeps its runtime state: the built size and
+/// gap, and the bound environment lengths. Only a request that moved is
+/// rewritten and dirtied. An axis bound to environment lengths keeps its
+/// folded value until its terms change, and the node is an adaptive scope or
+/// an avoiding region exactly when `node` is one.
+pub fn restyle_aot_node(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    node: &AotNode,
+    live: NodeId,
+) {
+    let style = &node.style;
+    let (mut size, gap) = match node.kind {
+        AotNodeKind::Flex => {
+            let built = flex_style(style);
+            (built.size, Some(built.gap))
+        }
+        AotNodeKind::Grid => {
+            let built = GridStyle::default();
+            (built.size, Some(built.column_gap))
+        }
+        AotNodeKind::Scroll => (scroll_style(style).size, None),
+        AotNodeKind::Leaf => (leaf_style(style).size, None),
+    };
+    let lengths = style.lengths.as_deref();
+    if let Some(current) = store.size_request(live) {
+        if lengths.is_some_and(|lengths| lengths.width.is_some()) {
+            size.width = current.width;
+        }
+        if lengths.is_some_and(|lengths| lengths.height.is_some()) {
+            size.height = current.height;
+        }
+    }
+    store.set_fixed_size(live, size);
+    if let Some(gap) = gap
+        && lengths.is_none_or(|lengths| lengths.gap.is_none())
+    {
+        store.set_gap(live, gap);
+    }
+    match lengths {
+        Some(lengths) => store.bind_lengths(live, *lengths),
+        None => store.unbind_lengths(live),
+    }
+    match style.scope {
+        Some(scope) => states.mark_adaptive_scope(live, scope.basis),
+        None => {
+            states.unmark_adaptive_scope(live);
+        }
+    }
+    match style.avoid {
+        Some(avoid) => states.mark_avoiding(live, avoid, Inset::default()),
+        None => {
+            if states.unmark_avoiding(live) {
+                store.set_padding(live, Inset::default());
+            }
+        }
+    }
 }
 
 /// Author one node and its subtree, advancing the shared pre-order `cursor` past the

@@ -258,6 +258,192 @@ impl Retyping {
     }
 }
 
+impl Retyping {
+    /// Writes the retyping to `enc`.
+    pub fn encode(&self, enc: &mut Encoder) {
+        write_conversion(enc, &self.root);
+        write_list(enc, &self.named, |enc, shape| match shape {
+            Shape::Record(fields) => {
+                enc.write_u8(0);
+                write_sources(enc, fields);
+            }
+            Shape::Enum(variants) => {
+                enc.write_u8(1);
+                write_list(enc, variants, |enc, variant| match variant {
+                    None => enc.write_u8(0),
+                    Some(map) => {
+                        enc.write_u8(1);
+                        enc.write_varint(u64::from(map.tag));
+                        enc.write_bool(map.unit);
+                        write_sources(enc, &map.fields);
+                    }
+                });
+            }
+        });
+    }
+
+    /// Reads a retyping [`encode`](Self::encode) wrote.
+    ///
+    /// # Errors
+    ///
+    /// A malformed retyping: truncated, nested too deep, or naming a shape
+    /// it lacks.
+    pub fn decode(dec: &mut Decoder<'_>) -> Result<Retyping, DecodeError> {
+        let root = read_conversion(dec, 0)?;
+        let named = read_list(dec, |dec| {
+            Ok(match dec.read_u8()? {
+                0 => Shape::Record(read_sources(dec)?),
+                1 => Shape::Enum(
+                    read_list(dec, |dec| {
+                        Ok(match dec.read_u8()? {
+                            0 => None,
+                            1 => Some(VariantMap {
+                                tag: read_u32_varint(dec)?,
+                                unit: dec.read_bool()?,
+                                fields: read_sources(dec)?,
+                            }),
+                            _ => return Err(malformed(dec)),
+                        })
+                    })?
+                    .into(),
+                ),
+                _ => return Err(malformed(dec)),
+            })
+        })?;
+        let retyping = Retyping { root, named };
+        if retyping.names_within() {
+            Ok(retyping)
+        } else {
+            Err(malformed(dec))
+        }
+    }
+
+    /// Whether every shape the retyping names is one of its own.
+    fn names_within(&self) -> bool {
+        let n = self.named.len() as u32;
+        let sources = |fields: &[FieldSource]| {
+            fields.iter().all(|field| match field {
+                FieldSource::Old(_, c) => converts_within(c, n),
+                FieldSource::Default(_) => true,
+            })
+        };
+        converts_within(&self.root, n)
+            && self.named.iter().all(|shape| match shape {
+                Shape::Record(fields) => sources(fields),
+                Shape::Enum(variants) => variants
+                    .iter()
+                    .flatten()
+                    .all(|variant| sources(&variant.fields)),
+            })
+    }
+}
+
+fn converts_within(conversion: &Conversion, n: u32) -> bool {
+    match conversion {
+        Conversion::Named(index) => *index < n,
+        Conversion::Option(c) | Conversion::List(c) => converts_within(c, n),
+        Conversion::Fields(cs) => cs.iter().all(|c| converts_within(c, n)),
+        Conversion::Result(a, b) | Conversion::Resource(a, b) => {
+            converts_within(a, n) && converts_within(b, n)
+        }
+        Conversion::Keep | Conversion::Int(_) | Conversion::ToFloat(_) => true,
+    }
+}
+
+fn write_conversion(enc: &mut Encoder, conversion: &Conversion) {
+    match conversion {
+        Conversion::Keep => enc.write_u8(0),
+        Conversion::Int(ty) => {
+            enc.write_u8(1);
+            enc.write_u8(ty.bits as u8);
+            enc.write_bool(ty.signed);
+        }
+        Conversion::ToFloat(single) => {
+            enc.write_u8(2);
+            enc.write_bool(*single);
+        }
+        Conversion::Option(c) => {
+            enc.write_u8(3);
+            write_conversion(enc, c);
+        }
+        Conversion::List(c) => {
+            enc.write_u8(4);
+            write_conversion(enc, c);
+        }
+        Conversion::Fields(cs) => {
+            enc.write_u8(5);
+            write_list(enc, cs, write_conversion);
+        }
+        Conversion::Result(a, b) => {
+            enc.write_u8(6);
+            write_conversion(enc, a);
+            write_conversion(enc, b);
+        }
+        Conversion::Resource(a, b) => {
+            enc.write_u8(7);
+            write_conversion(enc, a);
+            write_conversion(enc, b);
+        }
+        Conversion::Named(index) => {
+            enc.write_u8(8);
+            enc.write_varint(u64::from(*index));
+        }
+    }
+}
+
+fn read_conversion(dec: &mut Decoder<'_>, depth: u32) -> Result<Conversion, DecodeError> {
+    if depth > MAX_DEPTH {
+        return Err(malformed(dec));
+    }
+    let nested = |dec: &mut Decoder<'_>| read_conversion(dec, depth + 1).map(Box::new);
+    Ok(match dec.read_u8()? {
+        0 => Conversion::Keep,
+        1 => {
+            let bits = u32::from(dec.read_u8()?);
+            if ![8, 16, 32, 64].contains(&bits) {
+                return Err(malformed(dec));
+            }
+            Conversion::Int(IntType {
+                bits,
+                signed: dec.read_bool()?,
+            })
+        }
+        2 => Conversion::ToFloat(dec.read_bool()?),
+        3 => Conversion::Option(nested(dec)?),
+        4 => Conversion::List(nested(dec)?),
+        5 => Conversion::Fields(read_list(dec, |d| read_conversion(d, depth + 1))?.into()),
+        6 => Conversion::Result(nested(dec)?, nested(dec)?),
+        7 => Conversion::Resource(nested(dec)?, nested(dec)?),
+        8 => Conversion::Named(read_u32_varint(dec)?),
+        _ => return Err(malformed(dec)),
+    })
+}
+
+fn write_sources(enc: &mut Encoder, fields: &[FieldSource]) {
+    write_list(enc, fields, |enc, field| match field {
+        FieldSource::Old(index, c) => {
+            enc.write_u8(0);
+            enc.write_varint(u64::from(*index));
+            write_conversion(enc, c);
+        }
+        FieldSource::Default(chunk) => {
+            enc.write_u8(1);
+            enc.write_varint(u64::from(*chunk));
+        }
+    });
+}
+
+fn read_sources(dec: &mut Decoder<'_>) -> Result<Box<[FieldSource]>, DecodeError> {
+    Ok(read_list(dec, |dec| {
+        Ok(match dec.read_u8()? {
+            0 => FieldSource::Old(read_u32_varint(dec)?, read_conversion(dec, 1)?),
+            1 => FieldSource::Default(read_u32_varint(dec)?),
+            _ => return Err(malformed(dec)),
+        })
+    })?
+    .into())
+}
+
 fn aggregate(tag: u32, fields: Box<[Value]>) -> Value {
     Value::Agg(Rc::new(Aggregate { tag, fields }))
 }
@@ -922,5 +1108,37 @@ mod tests {
         dangling.encode(&mut enc);
         let bytes = enc.into_bytes();
         assert!(ValueSchema::decode(&mut Decoder::new(&bytes)).is_err());
+    }
+
+    #[test]
+    fn a_retyping_round_trips_and_a_corrupt_one_is_an_error() {
+        let old = record(vec![
+            field("best", U8, None),
+            field("tags", TypeDesc::List(Box::new(U8)), None),
+        ]);
+        let new = record(vec![
+            field("level", I32, Some(7)),
+            field("best", TypeDesc::F64, None),
+            field("tags", TypeDesc::List(Box::new(I32)), None),
+        ]);
+        let retyping = Retyping::between(&old, &new).expect("converts");
+        let mut enc = Encoder::new();
+        retyping.encode(&mut enc);
+        let bytes = enc.into_bytes();
+        assert_eq!(
+            Retyping::decode(&mut Decoder::new(&bytes)).expect("decodes"),
+            retyping
+        );
+        for cut in 0..bytes.len() {
+            assert!(Retyping::decode(&mut Decoder::new(&bytes[..cut])).is_err());
+        }
+        let dangling = Retyping {
+            root: Conversion::Option(Box::new(Conversion::Named(2))),
+            named: Vec::new(),
+        };
+        let mut enc = Encoder::new();
+        dangling.encode(&mut enc);
+        let bytes = enc.into_bytes();
+        assert!(Retyping::decode(&mut Decoder::new(&bytes)).is_err());
     }
 }

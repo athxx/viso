@@ -186,6 +186,15 @@ pub fn emit_package(plan: &CandidatePlan) -> AotPackage {
     AotPackage { nodes, edges }
 }
 
+/// The number of static children of each static node of `tree`, in the
+/// pre-order [`StaticNodes`] numbers them: the shape a runtime walks a mount
+/// of a view without regions by to name its static nodes.
+pub fn static_shape(tree: &UiTree) -> Vec<u32> {
+    let mut nodes = Vec::new();
+    emit_tree(tree, &mut nodes);
+    nodes.iter().map(|node| node.child_count).collect()
+}
+
 /// Author the whole tree into `nodes`, mirroring the commit's `build_tree`: each
 /// top-level item is walked in source order, and its pre-order position in `nodes` is
 /// its [`StaticNodes`] index.

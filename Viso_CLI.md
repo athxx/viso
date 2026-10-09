@@ -1133,14 +1133,15 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
 
 ### 13.10 当前实现子集
 
-已实现的是 desktop host 上 `.vs` 的 hot reload：host 监听与编译、app 只提交（patch 的 `ui` section 暂为 host 验证过的源码，typed patch 见 `Viso_Hot_Reload.md` §35）：
+已实现的是 desktop host 上 `.vs` 的 hot reload：host 监听、编译并对每个挂载所运行的 last-good 算出 typed patch，app 只提交、不含编译器（`Viso_Hot_Reload.md` §9、§35）：
 
 - CLI 先取 dev session lock（`.viso/locks/`，同一 project 已有 `viso run` 时以 `TargetUnavailable` 退出，exit 3），再在 build 之前启动 project watcher（`Viso_Hot_Reload.md` §4、§6、§7）；
 - project root 须是一个 Cargo package（root 下有 `Cargo.toml`，否则 `ENV_CARGO_MANIFEST`）；CLI 以 `VISO_PROFILE=dev cargo build --features viso/hot-reload --message-format=json-render-diagnostics` 构建 Dev artifact（facade 的 build script 拒绝 `hot-reload` 与 `VISO_PROFILE=release|shipping` 同时出现，见 `Viso_Hot_Reload.md` §58），构建须恰好产出一个可执行文件（否则 `ENV_NO_EXECUTABLE`）。`$CARGO` 覆盖 cargo 路径；
 - app 以 project root 为工作目录启动，`--` 之后的参数原样传入；
-- Dev Runtime transport 是 loopback TCP：CLI 绑定 `127.0.0.1` 的临时端口，经 `VISO_DEV_RUNTIME`（地址）、`VISO_DEV_TOKEN`（每 session 随机 128-bit token）、`VISO_DEV_SESSION`（dev session id）与 `VISO_DEV_BUILD`（所启动 artifact 的 build id）交给 app。app 只连 loopback 地址，先发 `RuntimeHello`（`Viso_Hot_Reload.md` §34）；token 不符、首帧不是 hello 或 5 秒内没有首帧的连接被丢弃且不回应，protocol version、session、build 或编译器 schema 不符的连接收到带原因的 `Reject`；两种情况都记一条 `log{level:"warn", source:"tool"}`（protocol/build/schema 不符时提示 rebuild）。接受时 CLI 回 `HostHello`；app 报告它挂载的文件（mount inventory），CLI 在 host 上编译每个 batch 的编辑，输出 `diagnostic` 与 `dev`，把编译通过的发成 patch、把被拒编辑的错误行发给 app 显示，app 回 ACK/NACK；app 的 log 与丢弃计数也经此 channel；帧为 u32 LE 长度 + ende 二进制 body，上限 4 MiB；
+- Dev Runtime transport 是 loopback TCP：CLI 绑定 `127.0.0.1` 的临时端口，经 `VISO_DEV_RUNTIME`（地址）、`VISO_DEV_TOKEN`（每 session 随机 128-bit token）、`VISO_DEV_SESSION`（dev session id）与 `VISO_DEV_BUILD`（所启动 artifact 的 build id）交给 app。app 只连 loopback 地址，先发 `RuntimeHello`（`Viso_Hot_Reload.md` §34）；token 不符、首帧不是 hello 或 5 秒内没有首帧的连接被丢弃且不回应，protocol version、session、build 或编译器 schema 不符的连接收到带原因的 `Reject`；两种情况都记一条 `log{level:"warn", source:"tool"}`（protocol/build/schema 不符时提示 rebuild）。接受时 CLI 回 `HostHello`；app 报告它挂载的文件（mount inventory），CLI 按所报 `source_hash` 找到 build 编译的版本并编译为 last-good，在 host 上编译每个 batch 的编辑，输出 `diagnostic` 与 `dev`，把编译通过的对 last-good 算出 typed patch 发送（ACK 后它成为新的 last-good）、把被拒编辑的错误行发给 app 显示，app 回 ACK/NACK；app 的 log 与丢弃计数也经此 channel；帧为 u32 LE 长度 + ende 二进制 body，上限 4 MiB；
 - `--json` 下 app 与 cargo 的 stdout/stderr 逐行成为 `log`（app stdout 为 `info`、app stderr 为 `warn`；cargo 行按前缀 `error`/`warning` 定级）；human mode 下它们直通终端，每次 reload 在 stderr 打一行摘要；
-- 尚未实现：mobile/web target、§13.7 options、`artifact` 事件、shader/asset/Rust 域、§13.8 Ctrl-C 流程与 130（Ctrl-C 现由终端直接结束进程组）。
+- `--no-hot-reload`：session 照常建立、watch、编译并报告诊断，但不向 app 发送 patch 与失败 overlay；编译通过的 candidate 输出 `dev{outcome:"held"}`；
+- 尚未实现：mobile/web target、§13.7 中 `--no-hot-reload` 之外的 options、`artifact` 事件、shader/asset/Rust 域、§13.8 Ctrl-C 流程与 130（Ctrl-C 现由终端直接结束进程组）。
 
 ---
 
@@ -2350,14 +2351,14 @@ artifact_count
 dev_session_id, build_id
 base_revision, candidate_revision
 patch_class     PATCH|PATCH_WITH_SCOPED_RESET|WARM_RESTART_REQUIRED
-outcome         applied|scoped_reset|warm_restarted|rejected
-stage           rejected 时为失败所在 §51 stage（watch, parse, ..., snapshot-restore）；提交成功时为 runtime-commit
+outcome         applied|scoped_reset|warm_restarted|rejected|held
+stage           rejected 时为失败所在 §51 stage（watch, parse, ..., snapshot-restore）；提交成功时为 runtime-commit；held（`--no-hot-reload` 下编译通过、未发送）时为 transport
 diagnostic_codes[]   去重，按首次出现排序
 last_good_revision
 elapsed_ms
 ```
 
-`.vs` patch 另带：`file`（相对 project root）、`mounts`（该文件被提交到的 mount 数）以及 commit report 计数 `migrated, reset, focus_lost, scroll_lost, handlers_lost`（rejected 时全为 0）。`patch_class` 在 rejected 时为 `null`。每条 `dev` 之前先输出该 candidate 的 `diagnostic`。
+`.vs` patch 另带：`file`（相对 project root）、`mounts`（该文件被提交到的 mount 数）以及 commit report 计数 `migrated, reset, focus_lost, scroll_lost, handlers_lost`（rejected 时全为 0）。`patch_class` 在 rejected 与 held 时为 `null`。每条 `dev` 之前先输出该 candidate 的 `diagnostic`。
 
 ---
 

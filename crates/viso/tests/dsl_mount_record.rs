@@ -1,7 +1,8 @@
-//! Under the `hot-reload` feature a `view!` mount records what the development
-//! session needs to reload it: the file, its source, the module identity, the
-//! root, every state cell by its durable key, the behavior host and, for a view
-//! with regions, the template key of each static node.
+//! Under the `hot-reload` feature a `view!` mount records the identities the
+//! development session needs to reload it: the file and the hash of its
+//! source, the module identity, the static shape, the root, every state cell
+//! by its durable key, the behavior host and, for a view with regions, the
+//! live node of each static node. It embeds no source text.
 #![cfg(feature = "hot-reload")]
 
 use viso::ui::{
@@ -45,7 +46,11 @@ fn a_view_records_its_mount() {
     };
     assert_eq!(record.root, root);
     assert!(record.file.ends_with("fixtures/counter.vs"));
-    assert_eq!(record.source, include_str!("fixtures/counter.vs"));
+    assert_eq!(
+        record.source_hash,
+        viso_view::dev::wire::source_hash(include_str!("fixtures/counter.vs"))
+    );
+    assert_eq!(record.statics, [2, 0, 0], "a column of two leaves");
     assert_eq!(record.package, "viso");
     assert_eq!(record.cells.len(), 2, "count and enabled");
     assert!(record.cells.iter().all(|&(_, id)| states.is_live(id)));
@@ -73,12 +78,12 @@ fn a_view_with_regions_records_its_static_nodes() {
         "the regions run on the view's behavior"
     );
     assert_eq!(record.nodes.len(), 9, "every node outside a region");
-    assert_eq!(record.nodes[0], (0, root));
-    assert!(record.nodes.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    assert_eq!(record.nodes[0], Some(root));
+    assert_eq!(record.statics.len(), 9);
     assert!(
         record
             .nodes
             .iter()
-            .all(|&(_, node)| store.arena().is_live(node))
+            .all(|node| node.is_some_and(|node| store.arena().is_live(node)))
     );
 }

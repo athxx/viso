@@ -1,13 +1,12 @@
 //! The failed-reload overlay: a panel drawn over a window's last-good UI while
-//! an edit of a file it mounts does not compile, listing the diagnostics, and
-//! removed by the next good reload.
+//! the host rejects an edit of a file it mounts, listing the lines the host
+//! sent, and removed by the next good reload.
 //!
 //! The panel is a detached subtree of the window's own store, so its text
 //! shapes with the window's runs and it costs nothing while hidden. It is laid
 //! out against the window surface and painted after the tree on every frame
 //! that repaints; it takes no input and is not in the semantics tree.
 
-use viso_dsl::{Diagnostic, LineIndex, Severity};
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, DirtyClass, FlexStyle, Inset, LeafStyle, Length, NodeId,
     NodeStore, Rect, Rgba, Size, TextRequest,
@@ -31,26 +30,6 @@ const FOREGROUND: Rgba = Rgba {
     a: 1.0,
 };
 const FONT_SIZE: f32 = 13.0;
-
-/// The panel line of each error of a rejected edit of `path`, at its line and
-/// column in `source`.
-pub(super) fn failure_lines(path: &str, source: &str, diagnostics: &[Diagnostic]) -> Vec<String> {
-    let lines = LineIndex::new(source);
-    diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| {
-            let at = lines.line_col_utf8(d.primary.start());
-            format!(
-                "{path}:{}:{}: {} {}",
-                at.line + 1,
-                at.column + 1,
-                d.code,
-                d.message
-            )
-        })
-        .collect()
-}
 
 /// Shows `lines` over `ws`, replacing a panel already shown, or removes the
 /// panel when `lines` is empty.
@@ -145,23 +124,7 @@ pub(crate) fn paint(ws: &mut WindowState, surface: Rect, painted: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use viso_dsl::{TextRange, TextSize};
-
     use super::*;
-
-    #[test]
-    fn a_failure_line_points_at_each_error() {
-        let source = "a\nstate count = ;";
-        let at = |start| TextRange::new(TextSize::new(start), TextSize::new(start));
-        let diagnostics = [
-            Diagnostic::error("E1001", at(16), "expected an expression"),
-            Diagnostic::warning("E5101", at(0), "not listed"),
-        ];
-        assert_eq!(
-            failure_lines("view.vs", source, &diagnostics),
-            ["view.vs:2:15: E1001 expected an expression"]
-        );
-    }
 
     #[test]
     fn the_panel_lists_at_most_its_cap() {

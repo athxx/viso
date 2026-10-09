@@ -264,29 +264,39 @@ app parses no `.vs` source (anti-pattern B.2).
 
 ### H1.4 — Typed semantic patch (§9–§12)
 
-- [ ] Host computes the patch from last-good IR vs candidate IR per mount: the
-      structural diff and migration plan already in `hotreload/{diff,migrate,compat}`
-      become the patch planner's output, serialized as `UiPatch` (property /
-      binding / handler / structural with kept `NodeKey` pairs), `ModulePatch`
-      (verified behavior bytecode in the existing wire form) and `StatePlan`
-      (slot pairs and `Retyping`s, `@migrate` entries).
-- [ ] Runtime apply engine in `viso-view::dev`: decode → link `SymbolId` → runtime
-      ids (cold map only at link time, §11) → stage → commit at the frame boundary;
-      `commit.rs` moves out of `viso-dsl` into it, unchanged in behavior; no source
-      parse in the app.
-- [ ] Property patch carries the changed edges only: dirty marks exactly the changed
-      property's `DirtyClass` on its node (today every bound edge of the view is
-      rebound and marked) — a colour edit is one `PAINT` (§12, §49).
-- [ ] The in-app compile path is removed (the in-app watcher went in H1.3; no
-      permanent dual implementation); `view!` mount records keep only identities,
-      not source text.
-- [ ] `--no-hot-reload`: dev artifact, session up, patches not applied (§2.1).
-- [ ] Integration tests (§62 UI, Invalid `.vs`): launch a dev app under a test host,
-      change one property, assert same process, the exact dirty mask, state/focus/
-      scroll kept; send an invalid source, assert revision N still running and no
-      node changed; send an out-of-order patch, assert `NACK_REVISION_MISMATCH`.
-- [ ] Re-measure edit-to-pixels (release) with the host round trip; split detect /
-      compile / encode / transport / stage+commit / repaint (§48).
+- [x] Host computes the patch from last-good IR vs candidate IR per mount:
+      `viso_dsl::hotreload::patch` lowers diff + migrate + retype to a typed
+      `ReloadPlan` (static node index / region-arm-item, `StateKey` + action + initial +
+      slots + `Retyping`, `@migrate` chunk) beside the candidate's release-form
+      `ViewPackage` (verified behavior bytecode, catalogs compiled in); wire v4
+      `UiPatch`. The host finds the build's version by `source_hash` among the versions
+      it read and compiles it as last-good; an ACK makes the candidate last-good; an
+      unknown last-good sends `ReloadPlan::fresh`.
+- [x] Runtime apply engine in `viso-view::dev::commit`: decode → load + verify the
+      module at stage (`NACK_UNLOADABLE_VIEW`) → commit at the frame boundary, keyed only
+      by static index and `StateKey`; `commit.rs` left `viso-dsl` (the in-process
+      `transact` drives the same engine); no source parse, no name lookup in the app.
+- [x] Property patch dirties exactly the changed property's `DirtyClass` on its node:
+      in-place restyle, rebind marks only newly bound edges, flush only cells whose
+      value changed, remount seeds the shown values (a width edit = that node's
+      `MEASURE|LAYOUT|PAINT`, a label edit = one reshape). `set_fixed_size` now marks
+      `MEASURE` so the parent re-places a resized child (it never moved before).
+- [x] The in-app compile path is removed: the facade no longer depends on `viso-dsl`;
+      mount records carry `source_hash` and the static shape, not source text;
+      `check-release-absence` asserts no `viso_dsl` symbol in the dev artifact.
+- [x] `--no-hot-reload`: dev artifact, session up, candidates compiled and reported,
+      nothing sent (`dev{outcome:"held"}`) (§2.1).
+- [x] Integration tests (§62 UI, Invalid `.vs`) against a fake host over the real dev
+      channel: one-property edit → same process/tree, exact dirty mask, state kept;
+      height edit → state, focus and scroll offset kept; host-rejected source →
+      revision 1 still running, no node changed; unloadable patch NACKed, next applies;
+      out-of-order patch → `NACK_REVISION_MISMATCH`; window opened after a patch mounts
+      the patched view. Host side: patch equals the planner's, chained last-good, fresh
+      plan for an unread build, held without hot reload.
+- [x] Re-measured edit-to-pixels (release, `patch_to_pixels`): compile 1.33 ms, plan
+      0.002, encode 0.001 (449 B), transport 0.074, commit 0.006, repaint 0.001 —
+      1.43 ms median from compile; app side 0.08 ms (was 1.27). Detect is §48's ~6 ms +
+      5 ms coalesce.
 
 ### H1.5 — Diagnostics and output (§51–§53)
 

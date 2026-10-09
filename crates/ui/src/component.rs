@@ -923,8 +923,9 @@ impl NodeStore {
         }
     }
 
-    /// Rewrite a node's own [`Size`] in place, marking it `LAYOUT | PAINT` so its
-    /// parent re-lays it out at the new extent. The same-class in-place `LayoutInput`
+    /// Rewrite a node's own [`Size`] in place, marking it `MEASURE | LAYOUT |
+    /// PAINT`: the size it requests changed, so its parent re-lays it out at the
+    /// new extent (MEASURE rises until an ancestor fixed on both axes). The same-class in-place `LayoutInput`
     /// size rewrite as [`set_flex_child_weight`](Self::set_flex_child_weight) and
     /// [`set_absolute_rows_extent`](Self::set_absolute_rows_extent), but general over
     /// both axes and any length kind — a reconcile step holding `&mut NodeStore` calls
@@ -940,7 +941,10 @@ impl NodeStore {
             return;
         }
         *slot = size;
-        self.mark_dirty(id, DirtyClass::LAYOUT | DirtyClass::PAINT);
+        self.mark_dirty(
+            id,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+        );
     }
 
     /// The size node `id` requests of its parent, or `None` for a stale handle.

@@ -198,6 +198,8 @@ pub struct ViewHost {
     /// The structure hook re-delivering the values the view's static nodes
     /// show, replaced when they mount again.
     values: Option<StructureHookId>,
+    /// The static nodes showing a value of the view, and what each shows.
+    pub(crate) shown: Vec<crate::values::Shown>,
     /// The slots holding `env` fields.
     env: Vec<EnvLink>,
     /// The environment anchor of each static component root that reads an
@@ -303,6 +305,7 @@ impl ViewHost {
             events: Vec::new(),
             regions: RegionCells::default(),
             values: None,
+            shown: Vec::new(),
             env: Vec::new(),
             anchors: Vec::new(),
             effect_owners: Vec::new(),
@@ -719,6 +722,7 @@ impl ViewHost {
         if let Some(hook) = self.values.take() {
             store.remove_structure_hook(hook);
         }
+        self.shown.clear();
     }
 
     /// Swaps in `hook` as the one re-delivering the static nodes' values and
@@ -1134,6 +1138,7 @@ impl ViewHost {
         next.events = std::mem::take(&mut self.events);
         next.regions = std::mem::take(&mut self.regions);
         next.values = self.values.take();
+        next.shown = std::mem::take(&mut self.shown);
         next.anchors = std::mem::take(&mut self.anchors);
         next.epoch = self.epoch + 1;
         next.this = Weak::clone(&self.this);

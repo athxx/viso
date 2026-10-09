@@ -131,13 +131,17 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         // build checked it against, and the schema the build compiled it with.
         let granted = profile.target.capabilities.iter();
         let schema = Literal::u128_suffixed(viso_dsl::hotreload::schema_fingerprint());
+        let hash = Literal::u64_suffixed(viso_dsl::hotreload::source_hash(&text));
+        let compiled =
+            frontend::compile_file_for(&text, &origin, Natives::standard(), profile.target.clone());
+        let statics = viso_dsl::aot::static_shape(&compiled.tree);
         let build = quote! {
             catalog: #catalog,
             capabilities: &[#(#granted),*],
             schema: #schema,
+            source_hash: #hash,
+            statics: &[#(#statics),*],
         };
-        let compiled =
-            frontend::compile_file_for(&text, &origin, Natives::standard(), profile.target);
         let report = Report::File {
             path: &path,
             index: LineIndex::new(&text),
@@ -354,9 +358,9 @@ fn host_tokens(
 }
 
 /// The fields of a `view!` mount record the expansion knows before the tree is
-/// built: the file and its source, the module identity, the build's catalogs,
-/// grants and schema (`build`), every state cell by its durable key, and the
-/// behavior host.
+/// built: the file, the module identity, the build's catalogs, grants and
+/// schema, and the source's hash and static shape (`build`), every state cell
+/// by its durable key, and the behavior host.
 fn record_tokens(
     file: &str,
     origin: &Origin,
@@ -383,7 +387,6 @@ fn record_tokens(
     };
     quote! {
         file: #file,
-        source: ::core::include_str!(#file),
         package: #package,
         module: [#(#module),*],
         language: #language,

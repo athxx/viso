@@ -1,47 +1,57 @@
-//! The hot reload transaction (architecture section 42; AGENTS 21.7).
+//! The hot reload transaction (architecture section 42; AGENTS 21.7;
+//! `Viso_Hot_Reload.md` §9–§13).
 //!
-//! Hot reload in Viso is a transaction, not a rebuild. A new fragment source is
-//! turned into a live UI change through an ordered pipeline whose stages before
-//! the commit are all pure functions of the new source and the prior compiled
-//! state:
+//! Hot reload in Viso is a transaction, not a rebuild. A new source is turned
+//! into a live UI change through an ordered pipeline whose stages before the
+//! commit are all pure functions of the new source and the prior compiled
+//! state, and run on the host:
 //!
 //! ```text
 //! compile candidate  (plan)     — recompile + validate, pure
 //!   → structural diff (diff)    — align old/new templates per parent, pure
 //!   → migration plan  (migrate) — match state by identity, node state by keep, pure
-//!   → atomic commit   (commit)  — the only stage that touches the live tree
+//!   → typed patch     (patch)   — the candidate's release form and the plan, by runtime names
+//!   → atomic commit             — the runtime's, the only stage that touches the live tree
 //! ```
 //!
 //! Because every fallible stage runs before the commit and produces only plain
 //! data, a failure short-circuits before anything mutates: the live tree is left
 //! at its last-good state with no snapshot to restore (the keep-last-good
-//! invariant — see ADR 0015). This mirrors the file-side validate-then-commit of
-//! the migration reference while going further: a full atomic transaction with
-//! explicit identity-keyed migration of state, focus, and scroll.
+//! invariant — see ADR 0015). The commit is `viso_view::dev::commit`, which a
+//! running app applies a patch with and an in-process host such as a test
+//! drives through [`transact`].
 
-pub mod commit;
 pub mod compat;
 pub mod diff;
 pub mod game;
 pub mod migrate;
+pub mod patch;
 pub mod plan;
 
-pub use commit::{HotReloadReport, LiveRuntime, commit, static_nodes};
 pub use compat::{Conversion, IntType, Retyping, retype};
 pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatch, diff};
 pub use migrate::{
     MigrationPlan, NodeMigration, Retype, SlotMigration, StateAction, StateMigration, migrate,
 };
+pub use patch::{reload_plan, view_patch};
 pub use plan::{CandidatePlan, MigrateFn, plan, plan_view, plan_view_for, plan_view_parsed};
+pub use viso_view::dev::commit::{Candidate, LiveRuntime, static_nodes};
+pub use viso_view::dev::wire::source_hash;
 
+use std::rc::Rc;
+
+use crate::aot::{emit_view_package, static_shape};
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
-use crate::resolve::SymbolId;
+use crate::syntax::{TextRange, TextSize};
+use crate::view_regions::has_regions;
+use viso_view::dev::commit::{CommitReport, commit};
+use viso_view::dev::wire::RESET_NOTICE;
 
 /// The layout of what a candidate plan carries to the runtime that commits it;
 /// bumped whenever a plan of this compiler would not commit as an older one's
 /// does.
-const PLAN_FORMAT: u32 = 1;
+const PLAN_FORMAT: u32 = 2;
 
 /// The fingerprint of the schema a candidate is compiled against: this
 /// compiler's version and plan layout, and the content of every standard native
@@ -65,6 +75,47 @@ pub fn schema_fingerprint() -> u128 {
                 .chain(libraries.iter().map(String::as_bytes)),
         )
     })
+}
+
+/// What a commit did to a mount: the runtime's [`CommitReport`] with each
+/// reset as the `E5101` warning the compiler reports it as.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HotReloadReport {
+    /// State cells that kept their live value, verbatim or converted.
+    pub migrated: u32,
+    /// State cells that started from their initializer.
+    pub reset: u32,
+    /// An `E5101` warning for each state whose live value was reset because
+    /// it does not convert into the state's new type.
+    pub notices: Vec<Diagnostic>,
+    /// Whether a focused node lost focus because it did not survive.
+    pub focus_lost: bool,
+    /// Scroll offsets whose node did not survive.
+    pub scroll_lost: u32,
+    /// Whether the view's handlers were dropped because its recompiled
+    /// behavior did not mount.
+    pub handlers_lost: bool,
+}
+
+impl From<CommitReport> for HotReloadReport {
+    fn from(report: CommitReport) -> Self {
+        HotReloadReport {
+            migrated: report.migrated,
+            reset: report.reset,
+            notices: report
+                .notices
+                .into_iter()
+                .map(|notice| {
+                    let at =
+                        TextRange::new(TextSize::from(notice.start), TextSize::from(notice.end));
+                    Diagnostic::warning(RESET_NOTICE, at, notice.message)
+                })
+                .collect(),
+            focus_lost: report.focus_lost,
+            scroll_lost: report.scroll_lost,
+            handlers_lost: report.handlers_lost,
+        }
+    }
 }
 
 /// The result of a successful hot reload transaction: what the commit did to the
@@ -120,41 +171,27 @@ pub fn hot_reload_view(
     Ok(transact(rt, last_good, candidate))
 }
 
-/// Stages 2-4 over a candidate already compiled by [`plan`] or [`plan_view`]:
-/// a session that mounts one file several times compiles the edit once and
-/// commits it to each mount in turn, threading the returned candidate through.
+/// The stages after compile over a candidate already compiled by [`plan`] or
+/// [`plan_view`], committed in process: the plan lowered to the typed patch a
+/// running app receives, then the runtime's commit. A session that mounts one
+/// file several times compiles the edit once and commits it to each mount in
+/// turn, threading the returned candidate through.
 pub fn transact(
     rt: &mut LiveRuntime<'_>,
     last_good: &CandidatePlan,
     candidate: CandidatePlan,
 ) -> HotReload {
-    // Stages 2-3 — pure planning over the two templates.
-    let patch = diff(&last_good.tree, &candidate.tree);
-    let mut migration = migrate(
-        &last_good.sources,
-        &candidate.sources,
-        behavior_slots(last_good),
-        behavior_slots(&candidate),
-        &patch,
-    );
-    retype(last_good, &candidate, &mut migration);
-
-    // A region-free view mounted outside the commit names its static nodes by
-    // walking the last-good template over the live tree.
+    let plan = reload_plan(last_good, &candidate);
+    // A view without regions mounted outside the commit names its static
+    // nodes by walking the last-good shape over the live tree.
     if rt.nodes.is_empty()
         && let Some(root) = rt.root
-        && !crate::view_regions::has_regions(&last_good.tree)
+        && !has_regions(&last_good.tree)
     {
-        *rt.nodes = static_nodes(rt.store, root, &last_good.tree);
+        *rt.nodes = static_nodes(rt.store, root, &static_shape(&last_good.tree));
     }
-
-    // Stage 4 — the only mutating stage. Infallible by construction.
-    let report = commit(rt, &last_good.tree, &candidate, &patch, &migration);
-
+    let module = candidate.view.as_ref().map(|view| Rc::clone(&view.module));
+    let loaded = Candidate::verified(emit_view_package(&candidate), module);
+    let report = commit(rt, &loaded, &plan).into();
     HotReload { report, candidate }
-}
-
-/// The behavior state slots of `plan`, by identity; empty without a behavior.
-fn behavior_slots(plan: &CandidatePlan) -> &[(SymbolId, u32)] {
-    plan.view.as_ref().map_or(&[], |view| &view.slots)
 }
