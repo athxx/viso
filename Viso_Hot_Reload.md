@@ -151,16 +151,17 @@ state-preservation bookkeeping that is only needed by Dev Runtime
 
 `hot-reload` feature 打开时，每个 `view!` 挂载在树建好后向 UI 线程的挂载队列登记一条记录：
 
-- `.vs` 文件路径与编译时的源码；
+- `.vs` 文件路径与编译时源码的 `source_hash`（§35），不含源码文本；
 - 编译所用的模块身份（package、module path、language 版本），以及 build 所用的 catalog 目录与 source locale、package 被授予的 capability、编译器 schema fingerprint（§34）；
+- 静态模板的形状（按先序每个静态节点的子节点数），无 region 的 view 据此在首个 patch 时按静态序号找回每个静态节点；
 - 挂载根节点；
 - 每个状态 cell 及其由 `SymbolId` 得出的持久 key；
 - behavior host（有 behavior 时）；
-- 含 region 的 view 还记录每个静态节点的模板 `NodeKey`，因为 region 内容与静态节点交错，单凭树无法还原。
+- 含 region 的 view 还记录每个静态节点（按静态序号），因为 region 内容与静态节点交错，单凭树无法还原。
 
 Dev session 在帧边界取走这些记录。
 
-feature 关闭时登记宏展开为空：二进制里既没有记录代码，也没有 `.vs` 源码文本。
+feature 关闭时登记宏展开为空：二进制里既没有记录代码，也没有 dev 元数据。feature 打开时 app 也不含 `.vs` 编译器：dev artifact 只链接 typed patch 的解码、校验与提交（§9）。
 
 ### 1.4 Dev session
 
@@ -168,7 +169,7 @@ app driver 在每个窗口同步构建完成后立即领取该窗口的挂载记
 
 - **连接与 inventory**：首个挂载时按 `viso run` 给的环境打开 dev channel（§46）；没有 `viso run`（环境里没有 dev channel）时不建 session，挂载记录直接丢弃。每个首次挂载的文件以一条 `MountEntry`（file id、canonical path、模块身份、catalog、capability、所运行源码的 `source_hash`）报给 host（§35）；同一文件再次挂载不重复报告。
 - **帧边界**：唤醒只把 patch 检查后暂存（§36）并为有挂载的窗口请求一帧；提交发生在下一帧 `FlushStateTransactions` 开头、窗口 flush 之前，因此一次 reload 的写入在同一帧结算并绘制。
-- **整 patch 原子**：一个 patch 的所有 view 先全部 plan（每个 view 对其 last-good candidate；last-good 在该文件首个 patch 时由嵌入源码惰性编译），任何一个 plan 失败则什么都不提交、NACK；全部成功后才依次提交到每个文件的每个挂载（同一文件挂载多次时，提交前先把持久 key 指回当前挂载的 cell），revision 前进并 ACK。
+- **整 patch 原子**：一个 patch 的所有 view 先全部 stage——解码并校验 candidate 的 behavior 模块、确认其挂载的 component 存在（失败 NACK `NACK_UNLOADABLE_VIEW`，stage `runtime-stage`），任何一个失败则什么都不提交；全部成功后才在帧边界依次按 host 给的 reload plan 提交到每个文件的每个挂载（同一文件挂载多次时，提交前先把持久 key 指回当前挂载的 cell），revision 前进并 ACK。文件被 patch 之后才出现的挂载（例如新开的窗口）由 build 的 view 建成，领取时立即以 fresh plan 重建为该文件当前的 candidate。
 - **失败显示**：host 拒绝的编辑以 `Failure` 送达，app 在挂载该文件的窗口 last-good UI 之上显示，直到 host 清除（编辑被撤回）或该文件的 patch 提交（§37.1）。
 
 ---
@@ -227,6 +228,8 @@ Dev artifact 仍然是 Dev artifact
 ```
 
 它不改变 Release/Shipping contract。
+
+当前实现：app 仍以 `hot-reload` feature 构建并连上 session、报告挂载；host 照常 watch、编译并报告每个 candidate 的诊断，但不向 app 发送 patch 或 failure overlay；编译通过的 candidate 的 `dev` event 为 `outcome: held`。
 
 ---
 
@@ -564,6 +567,21 @@ SystemPatch
 
 Runtime 不需要重新解析 `.vs` source。
 
+当前实现（`viso-view::dev::patch`）：`ui` section 的每个 view 是 `ViewPatch { file, package, plan }`——`package` 是 candidate 的 release 形态 `ViewPackage`（与 release build 嵌入的同一格式：保留树、绑定边、已校验 behavior 字节码、state/handler/control/region/env 表，catalog 已编译进去），`plan` 是 host 由 last-good 与 candidate 的 IR 算出的 `ReloadPlan`：
+
+```text
+ReloadPlan
+  preserving          candidate 是否原地保留 last-good 的每个节点
+  nodes[]             NodeCarry { from, to: NodeRef, carries: MigratableState }
+  states[]            StatePlan { key: StateKey, action: Keep|Convert|Reset|New,
+                                  initial, from_slot, slot, retype: RetypePlan? }
+NodeRef = Static(先序静态序号) | Region { region, arm, item }
+RetypePlan { conversion: Retyping?, migrator: (Retyping, chunk)?, held,
+             name, from, to, at }        # name/from/to/at 只用于 reset notice
+```
+
+Dropped 的 state 不进 plan。app 端提交引擎（`viso-view::dev::commit`）只按静态序号与 `StateKey` 工作，不做名字查找、不做模板 diff、不解析源码。host 不知道某挂载所运行版本的 IR 时（§1.3 的 `source_hash` 不是 session 读到过的版本）发送 `ReloadPlan::fresh`：重建全部节点、每个 cell 从初值开始。
+
 ---
 
 ## 10. Compile pipeline
@@ -611,6 +629,8 @@ SymbolId -> runtime typed ID
 ```
 
 在 patch linking 阶段查询；禁止把 stable 128-bit identity 放进每节点 frame hot storage。
+
+当前实现把这一步放在 host：plan 在 host 按 `NodeKey`/`SymbolId` 对齐后降为 runtime 名字——节点为静态序号或 region/arm/item，state 为持久 `StateKey`（`SymbolId` 的 runtime 孪生，cell 分配时已登记）——app 端无需 link 表。
 
 ---
 
@@ -667,14 +687,14 @@ InsertNode(parent, position, type, initial bindings)
 
 一次 commit 只触及被 reload 的 view 自己的子树：
 
-- 结构保持的 patch 按模板 `NodeKey` 原地复用该 view 的每个静态节点；
+- 结构保持且不含 region 的 patch 按静态序号原地复用该 view 的每个静态节点，只重设 size/gap/长度等声明值，只为原本未绑定的边标脏，只 flush 值变化的 cell；因此一个属性编辑只标脏该节点该属性的 `DirtyClass`（宽度编辑 = 该节点 `LAYOUT|PAINT`，文本编辑 = 该文本节点一次重新 shaping，其它节点不脏）；
 - 结构性 patch 释放该 view 的根并在**同一父节点、同一兄弟位置**重建新根（无父节点时成为新的独立根）；
 - rebind 只替换该 view 节点的静态边，其它节点的边保持不变；
 - 只移除该 view 自己注册的 region / value hook。
 
 同一窗口中 view 之外的内容（兄弟节点、其它 view、宿主 Rust UI）不受影响。
 
-结构性 patch 释放旧子树前，按 migration plan 取出每个被保留节点的可迁移状态（焦点、非零滚动偏移、编辑缓冲、进行中的转场，以 Widget Schema 标记为准，DSL §94.2），重建后按候选 `NodeKey` 装到新节点；进行中的转场等新视图投递值后再续上；Region 挂载的节点在新 Region 挂载后，按候选 `NodeKey` 与外层 `for` 的 Item Key 路径装到新挂载的节点。滚动偏移推迟到新节点首次布局后恢复。焦点原在该 view 内而未迁移时清除焦点并报告 `focus_lost`，未迁移的非零滚动偏移计入 `scroll_lost`。
+结构性 patch 释放旧子树前，按 migration plan 取出每个被保留节点的可迁移状态（焦点、非零滚动偏移、编辑缓冲、进行中的转场，以 Widget Schema 标记为准，DSL §94.2），重建后按 plan 的候选 `NodeRef` 装到新节点；进行中的转场等新视图投递值后再续上；Region 挂载的节点在新 Region 挂载后，按候选 region/arm/item 与外层 `for` 的 Item Key 路径装到新挂载的节点。滚动偏移推迟到新节点首次布局后恢复。焦点原在该 view 内而未迁移时清除焦点并报告 `focus_lost`，未迁移的非零滚动偏移计入 `scroll_lost`。
 
 ---
 
@@ -1175,7 +1195,7 @@ request restart/rebuild
 
 不能 decoder 猜版本。
 
-已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 3`；version 2 是 runtime 先说话、绑定 session/build/revision 的 handshake，version 3 加入 mount inventory、host 对被拒编辑的 `Failure` 与 `ui` section）：
+已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 4`；version 2 是 runtime 先说话、绑定 session/build/revision 的 handshake，version 3 加入 mount inventory、host 对被拒编辑的 `Failure` 与 `ui` section，version 4 把 `ui` section 换成 typed patch）：
 
 - runtime 连接并先说话：`RuntimeHello { protocol_version, token, dev_session, runtime_session, build_id, current_revision, schema_fingerprint, capabilities, target }`。连接方用 session token 证明自己是本 session 启动的 app，所以 token 在 `RuntimeHello` 里而不在 `HostHello` 里——host 不向尚未证明身份的连接发送任何东西；
 - host 回 `HostHello { protocol_version, dev_session, runtime_session, project_fingerprint, expected_build_id }`（接受，`runtime_session` 原样回显）或 `Reject { Protocol{host} | Build | Session | Schema }`；token 不符的连接不回应直接关闭（不给猜 token 的 oracle）。runtime 也检查 `HostHello`：protocol、session、runtime session 与 build 任一不符即断开；
@@ -1212,11 +1232,11 @@ struct PatchBundle {
 - no field-name strings in shared-schema binary hot protocol；
 - protocol version negotiation at connection/build boundary。
 
-已实现的 wire 形状：`PatchBundle { dev_session, target_runtime, base_revision, next_revision, build_id, sections }`，`sections` 每个 domain 至多一段、按 tag 排序，整个 bundle 一起 commit 或都不 commit（§39）。domain tag 稳定：`ui=0 module=1 state=2 system=3 shader=4 resource=5`；每个 domain 的 payload 由 apply 它的阶段定义，此前该 tag 保留，解码为 `UnsupportedDomain`；同一 domain 出现两次或乱序是 malformed。ID 是定宽 128-bit（两个 u64 LE），revision 是 varint；所有字符串与计数在读之前检查上限（token 64 B、NACK code 至多 64 个且每个 32 B、log 16 KiB、section 4096、文件 4096、路径 4 KiB、名字 256 B、module segment 64、capability 256、catalog 目录 64 且每个至多 256 个文件、failure 16 行且每行 1 KiB、notice 64），且不超过剩余字节；嵌套层数由消息结构固定（`ui` section → catalog → file），没有递归。帧上限 4 MiB，超限的帧在读 body 之前拒绝。
+已实现的 wire 形状：`PatchBundle { dev_session, target_runtime, base_revision, next_revision, build_id, sections }`，`sections` 每个 domain 至多一段、按 tag 排序，整个 bundle 一起 commit 或都不 commit（§39）。domain tag 稳定：`ui=0 module=1 state=2 system=3 shader=4 resource=5`；每个 domain 的 payload 由 apply 它的阶段定义，此前该 tag 保留，解码为 `UnsupportedDomain`；同一 domain 出现两次或乱序是 malformed。ID 是定宽 128-bit（两个 u64 LE），revision 是 varint；所有字符串与计数在读之前检查上限（token 64 B、NACK code 至多 64 个且每个 32 B、log 16 KiB、section 4096、文件 4096、路径 4 KiB、名字 256 B、module segment 64、capability 256、每个 view 的 node carry 与 state plan 各至多 65536、failure 16 行且每行 1 KiB、notice 64），且不超过剩余字节；嵌套层数由消息结构固定（`ui` section → view → package / plan），唯一递归的 `Retyping` 有深度上限。帧上限 4 MiB，超限的帧在读 body 之前拒绝。
 
-version 3 的 `ui` section 是过渡形状 `UiSources { views: [ViewSource{file, source}], catalogs: [CatalogSource{dir, files: [CatalogText{path, text}]}] }`：host 已在自己这边按 build 的 profile 编译并验证过的 view 源码，以及这些 view 检查所依赖、runtime 还没收到或已经改变的 catalog（host 记录每个 catalog 目录发给 runtime 的版本）。runtime 用同一 view planner 把它变成 commit；这仍让 app 链接 planner 并解析源码（违背 §9），由 H1.4 的 typed `UiPatch`/`ModulePatch`/`StatePlan` 取代。只有 host 接受的源码会被发送——被拒的编辑从不离开 host（§41）。
+`ui` section 是 `UiPatch { views: [ViewPatch{file, package, plan}] }`（§9）：candidate 的 release 形态与 host 算出的 reload plan。behavior 字节码在 stage 时由 runtime 的 verifier 重新校验，校验不过或缺少所挂载的 component 时 NACK `NACK_UNLOADABLE_VIEW`；catalog 已编译进 package，不再单独发送。只有 host 接受的编辑会被发送——被拒的编辑从不离开 host（§41）。app 不含 `.vs` 编译器（§1.3）。
 
-另外两条 version 3 消息：
+另外两条消息（version 3 起）：
 
 - `RuntimeMessage::Mounts([MountEntry{file, path, package, module, language, catalog, capabilities, source_hash}])`：每个首次挂载的文件一条，`file` 是 runtime 分配的 `FileId`，patch 与 failure 都用它指代文件；host 据此编译与 build 完全一致的 candidate，并按 `source_hash` 知道 runtime 运行的是哪个版本——app 不发源码；
 - `HostMessage::Failure { file, lines }`：host 拒绝某文件最新编辑时的 overlay 行（`path:line:col: CODE message`，至多 16 行）；`lines` 为空表示清除（编辑被撤回到 runtime 运行的版本）。它只是显示，不带 revision。
@@ -1274,15 +1294,15 @@ PatchNack {
 
 NACK 后 running app 保持 last-good revision。
 
-已实现：`PatchAck { revision, applied_domains, files: [FileCommit{file, counts}], notices, timings{decode_us, stage_us, commit_us} }`，`counts` 是每个 view 提交到其所有挂载时保留与丢失的计数（`mounts, migrated, reset, focus_lost, scroll_lost, handlers_lost`），`scoped_resets` 由它们求和；`notices` 是 commit 产生的提示（`E5101` 状态重置），span 指向该 patch 为该文件携带的源码，由 host 解析成行列。`PatchNack { base_revision, candidate_revision, stage, diagnostic_codes, last_good_revision }`，`stage` 取 §51 的全部 stage。NACK code 是稳定字符串：上面 §36 的五个，host frame 无法解码时的 `NACK_MALFORMED`（帧长度保住了帧边界，channel 不断开；超过帧上限的帧则读不到边界，连接结束），patch 指向 runtime 未报告的文件时的 `NACK_UNKNOWN_FILE`；runtime 自己 plan 失败时 stage 为 `runtime-stage`，codes 是诊断码。runtime 端的 link 不阻塞 UI loop：入站 frame 经有界队列交给 loop 并唤醒它（队列满时阻塞的是 reader 线程），出站消息 `try_send` 进有界队列，满了就丢弃并计数，计数在有空位时以 `Dropped{count}` 发出。
+已实现：`PatchAck { revision, applied_domains, files: [FileCommit{file, counts}], notices, timings{decode_us, stage_us, commit_us} }`，`counts` 是每个 view 提交到其所有挂载时保留与丢失的计数（`mounts, migrated, reset, focus_lost, scroll_lost, handlers_lost`），`scoped_resets` 由它们求和；`notices` 是 commit 产生的提示（`E5101` 状态重置），span 指向 host 为该文件编译的 candidate 源码（plan 带着 state 声明的范围），由 host 解析成行列。`PatchNack { base_revision, candidate_revision, stage, diagnostic_codes, last_good_revision }`，`stage` 取 §51 的全部 stage。NACK code 是稳定字符串：上面 §36 的五个，host frame 无法解码时的 `NACK_MALFORMED`（帧长度保住了帧边界，channel 不断开；超过帧上限的帧则读不到边界，连接结束），patch 指向 runtime 未报告的文件时的 `NACK_UNKNOWN_FILE`，candidate 无法加载时的 `NACK_UNLOADABLE_VIEW`（stage `runtime-stage`）。runtime 端的 link 不阻塞 UI loop：入站 frame 经有界队列交给 loop 并唤醒它（队列满时阻塞的是 reader 线程），出站消息 `try_send` 进有界队列，满了就丢弃并计数，计数在有空位时以 `Dropped{count}` 发出。
 
 ### 37.1 当前实现：`.vs` reload event
 
-host 为每个 candidate revision 的每个 `.vs` 文件构造一条 report（`tools/cli/src/dev/report.rs`），由它自己的编译与 runtime 的 ACK/NACK 组成：`base_revision, candidate_revision, last_good_revision, outcome(applied|scoped_reset|rejected), stage, elapsed, counts, codes`；诊断由 host 用它编译的源码给出行列，app 不发源码也不发诊断。
+host 为每个 candidate revision 的每个 `.vs` 文件构造一条 report（`tools/cli/src/dev/report.rs`），由它自己的编译与 runtime 的 ACK/NACK 组成：`base_revision, candidate_revision, last_good_revision, outcome(applied|scoped_reset|rejected|held), stage, elapsed, counts, codes`（`held`：`--no-hot-reload` 下编译通过、未发送，stage 为 `transport`）；诊断由 host 用它编译的源码给出行列，app 不发源码也不发诊断。
 
 - 一个 batch 是一个 candidate revision（被拒的 candidate 也消耗一个号，下一个 patch 跳号）；host 拒绝的文件 `stage` 是 §51 中的失败 stage（`parse`、`resolve`、`typecheck`、`capability`、`state-compat`、`shader-compile`），runtime NACK 的文件是 NACK 的 stage，提交的文件为 `runtime-commit`，计数来自 ACK；
 - `elapsed` 从 batch 开始编译算到 runtime 的回答（含编译、传输、等待帧边界与提交）；
-- host 拒绝时，app 收到 `Failure`，在挂载该文件的 window 的 last-good UI 之上画 overlay，列出错误（至多 8 条，余数汇总）；该文件的 patch 提交、或编辑被撤回（host 发空 `Failure`）时移除。runtime 自己 plan 失败时也显示。overlay 是 window store 中的 detached subtree，不在 semantics tree、不接受输入；release 不编译它。
+- host 拒绝时，app 收到 `Failure`，在挂载该文件的 window 的 last-good UI 之上画 overlay，列出错误（至多 8 条，余数汇总）；该文件的 patch 提交、或编辑被撤回（host 发空 `Failure`）时移除。overlay 是 window store 中的 detached subtree，不在 semantics tree、不接受输入；release 不编译它。
 
 ---
 
@@ -1523,15 +1543,19 @@ restore time
 
 - host 检测：写盘到 session 收到约 6.0 ms（几乎全是 kqueue 的 5 ms 静默窗口，§7.1），再加 5 ms coalesce 窗口；
 - host 编译：与文件大小成正比（36 KB 的文件 23 ms，其中解析 0.05 ms，§4）；
-- app 端：`viso` 的 `hot_reload::tests::patch_to_pixels`（`#[ignore]`，`cargo test --release -p viso --features hot-reload --lib -- --ignored patch_to_pixels --nocapture`）经 loopback 发 patch，测传输（host 写帧 → app 解码、检查、stage）与管线（plan + commit + relayout + repaint，不含 GPU upload/submit），60 次：
+- host 编译 + plan + 编码与 app 端：`viso` 的 `hot_reload::tests::patch_to_pixels`（`#[ignore]`，`cargo test --release -p viso --features hot-reload --lib -- --ignored patch_to_pixels --nocapture`）对 counter view 的单个宽度编辑走完整 host 往返（host 编译 → plan → 编码 → loopback 传输 → app 解码、检查、加载并校验 → 帧边界 commit → relayout + repaint，不含 GPU upload/submit），60 次：
 
 ```text
-transport        min 0.016 ms  median 0.029 ms  p95 0.040 ms
-pipeline         min 1.230 ms  median 1.268 ms  p95 1.370 ms
-patch-to-pixels  min 1.255 ms  median 1.296 ms  p95 1.403 ms
+compile            min 1.181 ms  median 1.334 ms  p95 2.541 ms
+plan               min 0.002 ms  median 0.002 ms  p95 0.006 ms   # diff + migration + release 形态
+encode             min 0.001 ms  median 0.001 ms  p95 0.003 ms   # patch 帧 449 B
+transport          min 0.045 ms  median 0.074 ms  p95 0.090 ms   # 写、读、解码、检查、加载与校验
+commit             min 0.005 ms  median 0.006 ms  p95 0.017 ms   # 原地 restyle，只标脏该节点
+repaint            min 0.001 ms  median 0.001 ms  p95 0.002 ms
+compile-to-pixels  min 1.265 ms  median 1.428 ms  p95 2.648 ms
 ```
 
-管线里 app 仍为该 patch 重新 plan 一次源码（§35 过渡形状）；完整 round trip（保存 → host → app → 像素）的端到端测量随 H1.4 的 typed patch 一起做。inotify 无静默窗口；Linux 与 Windows 的数值未在此测量。GPU 上传与呈现不在测量内。
+app 端（transport + commit + repaint）中位数约 0.08 ms；此前 app 为每个 patch 重新编译源码时为 1.27 ms。端到端（保存 → 像素）= 检测（约 6 ms + 5 ms coalesce）+ 上表。inotify 无静默窗口；Linux 与 Windows 的数值未在此测量。GPU 上传与呈现不在测量内。
 
 ---
 
@@ -1657,7 +1681,7 @@ tools/dev/
 
 也可以作为 shared tooling crate 的 module；不要为了图漂亮立即拆出十个 crate。
 
-已实现的布局是 `viso-cli` 里的一个 module，`tools/cli/src/dev/`：`mod.rs`（session、coalescer、candidate 与 patch 发送）、`watch/`（project watcher 与 scope，各平台后端）、`sources.rs`（source graph 与 host 编译）、`link.rs`（连接管理）、`report.rs`（`dev` event 的 report）。wire 协议在 `viso-view::dev::wire`，host 与 runtime 共用。
+已实现的布局是 `viso-cli` 里的一个 module，`tools/cli/src/dev/`：`mod.rs`（session、coalescer、candidate 与 patch 发送）、`watch/`（project watcher 与 scope，各平台后端）、`sources.rs`（source graph、每个挂载的 last-good 与 host 编译）、`link.rs`（连接管理）、`report.rs`（`dev` event 的 report）。patch planner 在 `viso-dsl::hotreload::patch`（diff + migration + retype 降为 `ReloadPlan`）。wire 协议在 `viso-view::dev::wire`，host 与 runtime 共用。
 
 ---
 
@@ -1675,6 +1699,8 @@ crates/runtime/src/dev/
 ```
 
 整个 `dev` module tree 必须通过 build configuration 从 Release/Shipping binary 中消失。
+
+已实现的布局：`viso-view::dev`（`hot-reload` feature）——`wire.rs`（协议）、`patch.rs`（typed UI patch 与其编码）、`commit.rs`（candidate 加载与提交引擎：原地 restyle 或重建、节点状态迁移、state 迁移与 retype、rebind、behavior 重挂）；facade 的 `viso::hot_reload`——`mod.rs`（session：inventory、stage、帧边界 commit、ACK/NACK）、`link.rs`（dev channel）、`overlay.rs`（失败 overlay）。
 
 ---
 
@@ -1734,7 +1760,7 @@ release/shipping compile graph does not include dev apply/transport code
 
 已实现的边界：
 
-- 内部 flag 是 facade 的 Cargo feature `viso/hot-reload`；`viso-dsl`（app 端 view planner，H1.4 移除）是 facade 的 optional 依赖，只由该 feature 引入，未开 feature 的 artifact 不链接编译器与 dev channel；app 端没有 watcher（§3），文件监听只在 `viso run` 里（`ui!`/`view!` 的 proc-macro 在 host 编译期使用 `viso-dsl`，不进入 artifact）；
+- 内部 flag 是 facade 的 Cargo feature `viso/hot-reload`，它只打开 `viso-view/hot-reload`（wire 协议、typed patch 的解码与提交引擎）与 facade 的 dev session；未开 feature 的 artifact 不链接 dev channel；任何 artifact 都不链接 `.vs` 编译器 `viso-dsl`——`ui!`/`view!` 的 proc-macro 在构建期使用它，dev artifact 应用的是 host 编译好的 patch（§9）；app 端没有 watcher（§3），文件监听只在 `viso run` 里；
 - facade 的 build script 是 build-time gate：`hot-reload` 与 `VISO_PROFILE=release|shipping` 同时出现时构建失败。gate 看 Viso artifact profile 而不是 Cargo profile——`--release` 优化过的 Dev artifact（如 `patch_to_pixels` 测量）仍是 Dev artifact；
 - `viso run` 是唯一打开该 feature 的 CLI 路径，并以 `VISO_PROFILE=dev` 构建；构建 release/shipping artifact 的 CLI 命令必须设置对应的 `VISO_PROFILE`。
 - 两者由 §64 的 `cargo xtask check-release-absence` 在 CI 中验证。
@@ -1882,7 +1908,7 @@ no hot-reload runtime configuration key
 
 已实现的是 `cargo xtask check-release-absence [-p <package>] [--no-launch]`（CI 在 macOS 上带 launch、在 Linux 上 `--no-launch` 运行；默认 package 是挂载 `view!` 的 `viso-example-i18n`）：
 
-- 同一组 marker（dev channel 的 env 名 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD`、patch 检查的 NACK code、dev link 的线程名与类型名、失败 overlay 的文案、`viso_dsl` 符号）先在 `--release --features viso/hot-reload`、`VISO_PROFILE=dev` 的对照 artifact 中必须全部出现——marker 失效时在这里失败，而不是让 release 扫描空过；release artifact（`VISO_PROFILE=release`、无 feature）中必须一个都不出现。符号从可执行文件本身读取，所以扫描只在符号留在其中的平台（macOS、Linux）上运行；
+- 同一组 marker（dev channel 的 env 名 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD`、patch 检查与 candidate stage 的 NACK code、dev link 的线程名与类型名、失败 overlay 的文案）先在 `--release --features viso/hot-reload`、`VISO_PROFILE=dev` 的对照 artifact 中必须全部出现——marker 失效时在这里失败，而不是让 release 扫描空过；release artifact（`VISO_PROFILE=release`、无 feature）中必须一个都不出现。`viso_dsl` 符号在两个 artifact 中都不得出现（§1.3：app 不含编译器）。符号从可执行文件本身读取，所以扫描只在符号留在其中的平台（macOS、Linux）上运行；
 - 同一构建在 `VISO_PROFILE=shipping` 下必须被 facade build script 拒绝（§58）；
 - launch：两个 artifact 都以 dev channel 的全部环境变量（`VISO_DEV_RUNTIME` 指向 loopback listener，以及 token、session、build）启动；对照 artifact 必须连上，release artifact 必须持续运行对照连接耗时的 3 倍（至少 5 秒）且从不连接，提前退出也算失败；
 - 尚未覆盖：PatchBundle、DevSnapshot endpoint 等尚不存在的 dev 层，它们落地时各自把 marker 加入列表。

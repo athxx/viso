@@ -12,7 +12,10 @@
 pub mod load;
 pub mod package;
 
-pub use load::{build_aot_node, instantiate, instantiate_indexed, load_from_bytes};
+pub use load::{
+    build_aot_node, build_nodes, instantiate, instantiate_indexed, load_from_bytes,
+    restyle_aot_node,
+};
 pub use package::{
     AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotScope, AotStyle,
 };

@@ -76,6 +76,10 @@ pub struct TestArgs {
 /// What `viso run` passes on (section 13.4).
 #[derive(Debug, Args)]
 pub struct RunArgs {
+    /// Keep the dev session up but apply no edit to the app: each is compiled
+    /// and reported, not sent.
+    #[arg(long)]
+    pub no_hot_reload: bool,
     /// Arguments for the app, after `--`.
     #[arg(last = true, value_name = "APP_ARGS")]
     pub app_args: Vec<OsString>,
@@ -167,8 +171,16 @@ mod tests {
             Cli::try_parse_from(["viso", "run", "--json", "--", "--open", "demo.vs"]).unwrap();
         assert!(cli.global.json);
         assert!(
-            matches!(&cli.command, Command::Run(RunArgs { app_args }) if app_args == &["--open", "demo.vs"])
+            matches!(&cli.command, Command::Run(RunArgs { app_args, no_hot_reload: false }) if app_args == &["--open", "demo.vs"])
         );
+        let cli = Cli::try_parse_from(["viso", "run", "--no-hot-reload"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Run(RunArgs {
+                no_hot_reload: true,
+                ..
+            })
+        ));
         assert!(Cli::try_parse_from(["viso", "run", "host"]).is_err());
         assert!(!wants_json(&["run", "--", "--json"]));
     }

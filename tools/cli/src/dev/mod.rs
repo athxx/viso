@@ -13,10 +13,18 @@
 //! using its new key) form one candidate. Each candidate view compiles on the
 //! host exactly as the build compiled it; a view that does not compile is
 //! reported with its diagnostics, its failure is sent to the app to show over
-//! the last-good UI, and it is not sent. The views that compile are sent as
-//! one patch, and the runtime's ACK or NACK closes the candidate. One patch
-//! is in flight at a time: what is saved meanwhile waits for the answer and
-//! goes as the next batch.
+//! the last-good UI, and it is not sent. Each view that compiles is planned
+//! against the compiled view its mounts run (§11): the patch carries the
+//! candidate in its release form and the typed plan that moves the mounts
+//! onto it, so the app applies it with no compiler present. The views that
+//! compile are sent as one patch, and the runtime's ACK or NACK closes the
+//! candidate; an ACK makes each candidate the last-good its next edit is
+//! planned against. One patch is in flight at a time: what is saved meanwhile
+//! waits for the answer and goes as the next batch.
+//!
+//! With `--no-hot-reload` (§2.1) the session still watches, compiles and
+//! reports each candidate, but sends the app nothing: a candidate that
+//! compiles is `held`.
 
 pub mod link;
 pub mod report;
@@ -28,10 +36,12 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use viso_dsl::Diagnostic;
+use viso_dsl::aot::emit_view_package;
+use viso_dsl::hotreload::{CandidatePlan, view_patch};
 use viso_project::LockGuard;
 use viso_view::dev::wire::{
-    CommitCounts, HostMessage, PatchBundle, PatchSection, Revision, RuntimeHello, RuntimeMessage,
-    Stage, UiSources, ViewSource, source_hash,
+    CommitCounts, HostMessage, PatchBundle, PatchSection, ReloadPlan, Revision, RuntimeHello,
+    RuntimeMessage, Stage, UiPatch, ViewPatch, source_hash,
 };
 
 pub use link::{Deliver, Expect, LinkEvent};
@@ -70,10 +80,8 @@ struct Runtime {
 struct InFlight {
     base: Revision,
     next: Revision,
-    /// Each view sent: its index, and the text sent.
-    views: Vec<(usize, String)>,
-    /// Each catalog sent and its revision.
-    catalogs: Vec<(usize, u64)>,
+    /// Each view sent: its index, the text sent and its compiled view.
+    views: Vec<(usize, String, CandidatePlan)>,
     started: Instant,
 }
 
@@ -95,15 +103,19 @@ pub struct DevSession {
     ready: bool,
     /// The revision the next candidate takes.
     next_revision: u64,
+    /// Whether candidates are sent to the app; not with `--no-hot-reload`.
+    apply: bool,
 }
 
 impl DevSession {
     /// Starts the session of the project rooted at `root`, a canonical path,
-    /// holding `lock`; the watcher hands each change to `deliver`.
+    /// holding `lock`; the watcher hands each change to `deliver`. `apply`
+    /// is whether candidates are sent to the app.
     pub fn start(
         root: PathBuf,
         expect: &Expect,
         lock: LockGuard,
+        apply: bool,
         deliver: impl FnMut(Change) -> bool + Send + 'static,
     ) -> Self {
         let watcher = Watcher::spawn(root.clone(), deliver);
@@ -119,6 +131,7 @@ impl DevSession {
             batch: None,
             ready: false,
             next_revision: Revision::LAUNCH.0 + 1,
+            apply,
         }
     }
 
@@ -206,8 +219,15 @@ impl DevSession {
     fn runtime_message(&mut self, message: RuntimeMessage, out: &mut Output) {
         match message {
             RuntimeMessage::Mounts(entries) => {
-                for entry in &entries {
-                    self.sources.mount(entry);
+                let mounted: Vec<usize> = entries
+                    .iter()
+                    .map(|entry| self.sources.mount(entry))
+                    .collect();
+                // Each mount's last-good compiles now, off the first edit's
+                // path; one that cannot is retried, and reported, then.
+                self.compile_catalogs(out);
+                for at in mounted {
+                    let _ = self.sources.baseline(at);
                 }
                 self.ready = true;
             }
@@ -220,22 +240,23 @@ impl DevSession {
                     );
                 };
                 let elapsed = elapsed_us(sent.started);
-                for (at, text) in &sent.views {
-                    let view = &mut self.sources.views[*at];
+                for (at, text, candidate) in sent.views {
+                    let view = &mut self.sources.views[at];
                     let Some(mount) = view.mount.as_mut() else {
                         continue;
                     };
-                    let hash = source_hash(text);
+                    let hash = source_hash(&text);
                     mount.running = hash;
                     mount.settled = Some(hash);
                     mount.failing = false;
+                    mount.last_good = Some(candidate);
                     let file = mount.file;
                     let counts = ack
                         .files
                         .iter()
                         .find(|commit| commit.file == file)
                         .map_or_else(CommitCounts::default, |commit| commit.counts);
-                    let source = Source::new(&view.path, &self.root, text);
+                    let source = Source::new(&view.path, &self.root, &text);
                     let mut codes = Vec::new();
                     for notice in ack.notices.iter().filter(|n| n.file == file) {
                         let Some(code) = intern_code(&notice.code) else {
@@ -261,9 +282,6 @@ impl DevSession {
                     };
                     out.dev(source.name(), &self.session, &self.build, &event);
                 }
-                for (catalog, revision) in sent.catalogs {
-                    self.sources.catalogs[catalog].sent = Some(revision);
-                }
             }
             RuntimeMessage::Nack(nack) => {
                 let Some(sent) = self.answered(nack.candidate_revision) else {
@@ -281,8 +299,10 @@ impl DevSession {
                     runtime.revision = nack.last_good_revision;
                 }
                 let elapsed = elapsed_us(sent.started);
-                for (at, text) in &sent.views {
+                for (at, text, _) in &sent.views {
                     let view = &mut self.sources.views[*at];
+                    // Its mounts still run their last-good: the next edit is
+                    // planned against it.
                     if let Some(mount) = view.mount.as_mut() {
                         mount.settled = Some(source_hash(text));
                     }
@@ -324,14 +344,19 @@ impl DevSession {
         Some(sent)
     }
 
-    /// Compiles the batch and sends what compiled.
-    fn flush(&mut self, out: &mut Output) {
+    /// Compiles the catalogs that changed, reporting each error.
+    fn compile_catalogs(&mut self, out: &mut Output) {
         for failed in self.sources.compile_catalogs() {
             for (file, diagnostic) in &failed.diagnostics {
                 let (path, text) = &failed.files[*file];
                 out.source(Some(&Source::new(path, &self.root, text)), &[], diagnostic);
             }
         }
+    }
+
+    /// Compiles the batch and sends what compiled.
+    fn flush(&mut self, out: &mut Output) {
+        self.compile_catalogs(out);
         let Some(runtime) = &mut self.runtime else {
             return;
         };
@@ -363,28 +388,48 @@ impl DevSession {
         self.next_revision += 1;
         let mut views = Vec::new();
         for at in candidates {
-            let compiled = self.sources.compile(at);
+            let Some(compiled) = self.sources.compile(at) else {
+                continue;
+            };
             let view = &mut self.sources.views[at];
             let (Some(text), Some(mount)) = (view.text.clone(), view.mount.as_mut()) else {
                 continue;
             };
             let diagnostics = match compiled {
-                Ok(()) => {
-                    views.push((at, text));
+                Ok(candidate) if self.apply => {
+                    views.push((at, text, candidate));
+                    continue;
+                }
+                Ok(_) => {
+                    mount.settled = Some(source_hash(&text));
+                    let event = ReloadEvent {
+                        base_revision: base.0,
+                        candidate_revision: next.0,
+                        last_good_revision: base.0,
+                        outcome: Outcome::Held,
+                        stage: Stage::Transport,
+                        elapsed_us: elapsed_us(started),
+                        counts: CommitCounts::default(),
+                        codes: Vec::new(),
+                    };
+                    let name = Source::new(&view.path, &self.root, "").name().to_owned();
+                    out.dev(&name, &self.session, &self.build, &event);
                     continue;
                 }
                 Err(diagnostics) => diagnostics,
             };
             mount.settled = Some(source_hash(&text));
-            mount.failing = true;
             let source = Source::new(&view.path, &self.root, &text);
             for diagnostic in &diagnostics {
                 out.source(Some(&source), &[], diagnostic);
             }
-            let _ = runtime.writer.send(HostMessage::Failure {
-                file: mount.file,
-                lines: failure_lines(source.name(), &text, &diagnostics),
-            });
+            if self.apply {
+                mount.failing = true;
+                let _ = runtime.writer.send(HostMessage::Failure {
+                    file: mount.file,
+                    lines: failure_lines(source.name(), &text, &diagnostics),
+                });
+            }
             let event = ReloadEvent {
                 base_revision: base.0,
                 candidate_revision: next.0,
@@ -400,26 +445,32 @@ impl DevSession {
         if views.is_empty() {
             return;
         }
-        let mut ui = UiSources::default();
-        let mut catalogs: Vec<(usize, u64)> = Vec::new();
-        for (at, text) in &views {
+        let mut ui = UiPatch::default();
+        for (at, _, candidate) in &views {
+            if let Err(reason) = self.sources.baseline(*at) {
+                let view = &self.sources.views[*at];
+                let name = Source::new(&view.path, &self.root, "").name().to_owned();
+                out.log(
+                    "warn",
+                    "tool",
+                    &format!("`{name}`: {reason}, so its mounts rebuild with fresh state"),
+                );
+            }
             let mount = self.sources.views[*at]
                 .mount
                 .as_ref()
                 .expect("a candidate is mounted");
-            ui.views.push(ViewSource {
-                file: mount.file,
-                source: text.clone(),
-            });
-            if let Some(c) = mount.catalog {
-                let catalog = &self.sources.catalogs[c];
-                if catalog.sent != Some(catalog.revision)
-                    && !catalogs.iter().any(|&(at, _)| at == c)
-                {
-                    ui.catalogs.push(catalog.wire());
-                    catalogs.push((c, catalog.revision));
+            ui.views.push(match &mount.last_good {
+                Some(last_good) => view_patch(mount.file, last_good, candidate),
+                None => {
+                    let package = emit_view_package(candidate);
+                    ViewPatch {
+                        file: mount.file,
+                        plan: ReloadPlan::fresh(&package),
+                        package,
+                    }
                 }
-            }
+            });
         }
         let patch = PatchBundle {
             dev_session: runtime.hello.dev_session,
@@ -440,7 +491,6 @@ impl DevSession {
             base,
             next,
             views,
-            catalogs,
             started,
         });
     }
@@ -475,6 +525,12 @@ mod tests {
 
     impl Fixture {
         fn new(name: &str) -> Self {
+            Fixture::with(name, true, VIEW)
+        }
+
+        /// A session, applying candidates or not, whose app runs `built`
+        /// while `view.vs` reads `VIEW`.
+        fn with(name: &str, apply: bool, built: &str) -> Self {
             let root = std::env::temp_dir().join(format!("viso-dev-{}-{name}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
@@ -494,7 +550,7 @@ mod tests {
                 project: ProjectFingerprint(3),
                 schema: SchemaFingerprint(4),
             };
-            let mut dev = DevSession::start(root.clone(), &expect, lock, |_| true);
+            let mut dev = DevSession::start(root.clone(), &expect, lock, apply, |_| true);
             let global = Global {
                 project: None,
                 quiet: true,
@@ -530,7 +586,7 @@ mod tests {
                 language: None,
                 catalog: None,
                 capabilities: Vec::new(),
-                source_hash: source_hash(VIEW),
+                source_hash: source_hash(built),
             }]));
             fixture
         }
@@ -573,18 +629,35 @@ mod tests {
         }
     }
 
-    /// The revisions of `message`, a patch, and the source it sets file 0 to.
-    fn patch(message: &HostMessage) -> (u64, u64, &str) {
+    /// `text` compiled as the build compiles `view.vs`.
+    fn compiled(text: &str) -> CandidatePlan {
+        let origin = viso_dsl::frontend::Origin {
+            package: "app".into(),
+            module: vec!["view".into()],
+            language: None,
+        };
+        viso_dsl::hotreload::plan_view_for(text, &origin, Default::default()).unwrap()
+    }
+
+    /// The revisions of `message`, a patch, and what it sets file 0 to.
+    fn patch(message: &HostMessage) -> (u64, u64, &ViewPatch) {
         let HostMessage::Patch(patch) = message else {
             panic!("not a patch: {message:?}");
         };
         let PatchSection::Ui(ui) = &patch.sections[0];
         assert_eq!(ui.views[0].file, FileId(0));
-        (
-            patch.base_revision.0,
-            patch.next_revision.0,
-            &ui.views[0].source,
-        )
+        (patch.base_revision.0, patch.next_revision.0, &ui.views[0])
+    }
+
+    /// Whether `message` is the patch from `base` to `next` moving file 0
+    /// from `last_good` to `text`.
+    fn patches(message: &HostMessage, (base, next): (u64, u64), last_good: &str, text: &str) {
+        let (b, n, view) = patch(message);
+        assert_eq!((b, n), (base, next));
+        assert_eq!(
+            *view,
+            view_patch(FileId(0), &compiled(last_good), &compiled(text))
+        );
     }
 
     #[test]
@@ -603,7 +676,8 @@ mod tests {
         // The runtime reports again, as after a relaunch: it runs the build.
         let sent = f.settle();
         assert_eq!(sent.len(), 1);
-        assert_eq!(patch(&sent[0]), (1, 2, edited.as_str()));
+        patches(&sent[0], (1, 2), VIEW, &edited);
+        assert!(patch(&sent[0]).2.plan.preserving);
     }
 
     #[test]
@@ -612,14 +686,14 @@ mod tests {
         let first = VIEW.replace("120dp", "140dp");
         f.save(&first);
         let sent = f.settle();
-        assert_eq!(patch(&sent[0]), (1, 2, first.as_str()));
+        patches(&sent[0], (1, 2), VIEW, &first);
 
         let second = VIEW.replace("120dp", "160dp");
         f.save(&second);
         assert!(f.settle().is_empty(), "waits for the answer");
         f.ack(2);
         let sent = f.settle();
-        assert_eq!(patch(&sent[0]), (2, 3, second.as_str()));
+        patches(&sent[0], (2, 3), &first, &second);
         f.ack(3);
         assert!(f.settle().is_empty());
     }
@@ -653,7 +727,7 @@ mod tests {
         let good = VIEW.replace("120dp", "150dp");
         f.save(&good);
         let sent = f.settle();
-        assert_eq!(patch(&sent[0]), (1, 3, good.as_str()));
+        patches(&sent[0], (1, 3), VIEW, &good);
     }
 
     #[test]
@@ -673,7 +747,27 @@ mod tests {
         let next = VIEW.replace("120dp", "180dp");
         f.save(&next);
         let sent = f.settle();
-        assert_eq!(patch(&sent[0]), (1, 3, next.as_str()));
+        patches(&sent[0], (1, 3), VIEW, &next);
+    }
+
+    #[test]
+    fn a_mount_whose_build_the_session_did_not_read_is_rebuilt_fresh() {
+        let mut f = Fixture::with("unread", true, "component Old { view { Text {} } }\n");
+        let sent = f.settle();
+        let (_, _, view) = patch(&sent[0]);
+        assert_eq!(view.package, emit_view_package(&compiled(VIEW)));
+        assert_eq!(view.plan, ReloadPlan::fresh(&view.package));
+    }
+
+    #[test]
+    fn without_hot_reload_a_candidate_is_compiled_and_held() {
+        let mut f = Fixture::with("held", false, VIEW);
+        let errors = f.out.errors();
+        f.save(&VIEW.replace("120dp", "125dp"));
+        assert!(f.settle().is_empty(), "nothing is sent");
+        f.save(&VIEW.replace("state count = 0;", "state count = ;"));
+        assert!(f.settle().is_empty(), "not even a failure");
+        assert!(f.out.errors() > errors, "the diagnostics are reported");
     }
 
     #[test]

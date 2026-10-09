@@ -46,7 +46,7 @@ pub use effects::{__mount_effects, mount_effects, release_effects};
 pub use env::{__link_env, env_value};
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
 #[cfg(feature = "hot-reload")]
-pub use mounts::{__mounted_view, __static_nodes, MountRecord, take_mounts};
+pub use mounts::{__mounted_view, MountRecord, take_mounts};
 pub use package::{
     LoadedView, ViewControl, ViewEnv, ViewHandler, ViewLoadError, ViewPackage, ViewState,
     instantiate_view, instantiate_view_with, load_view, load_view_with,

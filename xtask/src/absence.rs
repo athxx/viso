@@ -7,12 +7,13 @@
 //!
 //! The package (default `viso-example-i18n`, an app that mounts a `view!`) is
 //! built three ways, each checked against the same marker list — the dev
-//! layer's env names, its thread name, the failure overlay's text and the
-//! compiler's symbols:
+//! layer's env names, its thread name, its patch checks and the failure
+//! overlay's text:
 //!
 //! 1. a dev artifact (`--release --features viso/hot-reload`, `VISO_PROFILE=dev`)
 //!    must contain every marker, so a marker that stopped matching fails here
-//!    instead of passing the release scan vacuously;
+//!    instead of passing the release scan vacuously; and, since the host
+//!    compiles every patch, none of the `.vs` compiler's symbols;
 //! 2. the same build with `VISO_PROFILE=shipping` must be refused by the
 //!    facade's build script;
 //! 3. the release artifact (`VISO_PROFILE=release`, no feature) must contain
@@ -42,16 +43,19 @@ const MARKERS: &[&str] = &[
     "VISO_DEV_TOKEN",
     "VISO_DEV_SESSION",
     "VISO_DEV_BUILD",
-    // The runtime's patch check.
+    // The runtime's patch checks, and its stage of a candidate view.
     "NACK_REVISION_MISMATCH",
+    "NACK_UNLOADABLE_VIEW",
     // The dev link's thread and type.
     "viso-dev-link",
     "DevLink",
     // The failure overlay.
     "Hot reload failed",
-    // The compiler, which only a dev artifact links.
-    "viso_dsl",
 ];
+
+/// The `.vs` compiler, which no artifact links: `view!` expands at build
+/// time, and a dev artifact applies the patches the host compiled.
+const COMPILER: &[&str] = &["viso_dsl"];
 
 /// How long the dev artifact may take to come up and connect.
 const CONNECT_LIMIT: Duration = Duration::from_secs(60);
@@ -111,6 +115,15 @@ fn check(o: &Options) -> Result<(), String> {
         ));
     }
     println!("dev artifact: all {} markers present", MARKERS.len());
+    let linked = scan_for(&dev.executable, COMPILER)?
+        .into_iter()
+        .filter(|(_, found)| *found)
+        .map(|(m, _)| m)
+        .collect::<Vec<_>>();
+    if !linked.is_empty() {
+        return Err(format!("the dev artifact links the compiler: {linked:?}"));
+    }
+    println!("dev artifact: no compiler linked");
     let dev = keep(&dev.executable, "dev")?;
 
     match build(&o.package, "shipping", true) {
@@ -122,7 +135,7 @@ fn check(o: &Options) -> Result<(), String> {
     }
 
     let release = build(&o.package, "release", false)?;
-    let present = scan(&release.executable)?
+    let present = scan_for(&release.executable, &[MARKERS, COMPILER].concat())?
         .into_iter()
         .filter(|(_, found)| *found)
         .map(|(m, _)| m)
@@ -208,8 +221,13 @@ fn keep(binary: &Path, tag: &str) -> Result<PathBuf, String> {
 
 /// Each marker and whether `binary` contains it.
 fn scan(binary: &Path) -> Result<Vec<(&'static str, bool)>, String> {
+    scan_for(binary, MARKERS)
+}
+
+/// Each of `markers` and whether `binary` contains it.
+fn scan_for(binary: &Path, markers: &[&'static str]) -> Result<Vec<(&'static str, bool)>, String> {
     let bytes = std::fs::read(binary).map_err(|e| format!("{}: {e}", binary.display()))?;
-    Ok(MARKERS
+    Ok(markers
         .iter()
         .map(|m| (*m, contains(&bytes, m.as_bytes())))
         .collect())

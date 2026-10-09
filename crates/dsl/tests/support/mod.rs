@@ -120,7 +120,7 @@ pub struct Rt {
     pub projectors: SemanticProjector,
     pub root: Option<NodeId>,
     pub scratch: Vec<NodeId>,
-    pub nodes: Vec<(viso_dsl::ir::binding_ir::NodeKey, NodeId)>,
+    pub nodes: Vec<Option<NodeId>>,
     pub view: Option<Rc<RefCell<ViewHost>>>,
     pub last_good: CandidatePlan,
     pub clock: Clock,

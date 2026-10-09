@@ -113,6 +113,15 @@ impl RegionKeys {
             .ok()
             .map(|index| self.keys[index].1)
     }
+
+    /// The region, arm and arm item that mounts the node `key`, `None` for a
+    /// node no region mounts. Linear: a reload plans it once per kept node.
+    pub fn item(&self, key: NodeKey) -> Option<(u32, u32, u32)> {
+        self.keys
+            .iter()
+            .find(|&&(_, k)| k == key)
+            .map(|&(at, _)| at)
+    }
 }
 
 /// The [`Builder`] walk's counters alone: the next key and region index.

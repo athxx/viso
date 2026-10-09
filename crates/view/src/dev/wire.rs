@@ -15,18 +15,22 @@
 //! each patch with a [`PatchAck`] or a [`PatchNack`].
 //!
 //! Decoding is bounded: every string and count has a cap checked before it is
-//! read, and no message nests, so the depth is fixed. Malformed input is a
-//! typed [`WireError`], never a panic.
+//! read, and the only nesting, a state's retyping, has a fixed depth bound.
+//! Malformed input is a typed [`WireError`], never a panic.
 
 use std::fmt;
 use std::io::{self, Read, Write};
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
-/// The dev channel protocol version. Version 2 is the runtime-first handshake
-/// with session, build and revision binding; version 3 adds the mount
-/// inventory, the host's verdict on rejected edits and the `ui` section.
-pub const DEV_PROTOCOL_VERSION: u16 = 3;
+pub use super::patch::{
+    MAX_PLAN_ENTRIES, NodeCarry, NodeRef, RESET_NOTICE, ReloadPlan, RetypePlan, StateAction,
+    StatePlan, UiPatch, ViewPatch,
+};
+use super::patch::{read_ui, write_ui};
+
+/// The dev channel protocol version.
+pub const DEV_PROTOCOL_VERSION: u16 = 4;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -71,10 +75,6 @@ pub const MAX_NAME: usize = 256;
 /// The most module segments, and the most capabilities, an entry carries.
 pub const MAX_SEGMENTS: usize = 64;
 pub const MAX_CAPABILITIES: usize = 256;
-
-/// The most catalog directories a patch carries, and files per directory.
-pub const MAX_CATALOGS: usize = 64;
-pub const MAX_CATALOG_FILES: usize = 256;
 
 /// The most lines a failure carries, and the longest line.
 pub const MAX_LINES: usize = 16;
@@ -364,7 +364,7 @@ impl fmt::Display for Reject {
 
 /// One patch: a revision step of the running app (§35). Its sections, at most
 /// one per domain and in tag order, commit together or not at all.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PatchBundle {
     pub dev_session: DevSessionId,
     pub target_runtime: RuntimeSessionId,
@@ -377,13 +377,11 @@ pub struct PatchBundle {
 /// A domain's part of a patch. Each domain's payload arrives with the phase
 /// that applies it; until then its tag is reserved and decodes as
 /// [`WireError::UnsupportedDomain`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PatchSection {
-    /// The `ui` domain: the views and catalogs the host compiled and
-    /// validated, which the runtime commits. Version 3 carries them as the
-    /// accepted source text, which the runtime's view planner turns into the
-    /// commit; the typed UI patch replaces it.
-    Ui(UiSources),
+    /// The `ui` domain: each view the host compiled, validated and planned,
+    /// which the runtime commits.
+    Ui(UiPatch),
 }
 
 impl PatchSection {
@@ -397,38 +395,6 @@ impl PatchSection {
 /// A file of the runtime's inventory, by the id the runtime gave it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct FileId(pub u32);
-
-/// The `ui` section of version 3.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct UiSources {
-    /// Each edited view and the source the host accepted for it.
-    pub views: Vec<ViewSource>,
-    /// The catalogs the views check against, for each catalog directory the
-    /// runtime has not been sent or whose files changed.
-    pub catalogs: Vec<CatalogSource>,
-}
-
-/// A view's accepted source.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ViewSource {
-    pub file: FileId,
-    pub source: String,
-}
-
-/// The message catalogs of one directory, whole.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CatalogSource {
-    /// The directory, as the mount entries name it.
-    pub dir: String,
-    pub files: Vec<CatalogText>,
-}
-
-/// A catalog file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CatalogText {
-    pub path: String,
-    pub text: String,
-}
 
 /// A mounted `.vs` file, as the runtime reports it once its first mount is
 /// adopted: what the host needs to compile the file's edits exactly as the
@@ -557,6 +523,9 @@ pub const NACK_UNSUPPORTED_DOMAIN: &str = "NACK_UNSUPPORTED_DOMAIN";
 pub const NACK_MALFORMED: &str = "NACK_MALFORMED";
 /// The patch names a file the runtime did not report.
 pub const NACK_UNKNOWN_FILE: &str = "NACK_UNKNOWN_FILE";
+/// A view of the patch does not load: its behavior module does not decode,
+/// verify or hold the component the view mounts.
+pub const NACK_UNLOADABLE_VIEW: &str = "NACK_UNLOADABLE_VIEW";
 
 /// A log line's level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -577,7 +546,7 @@ impl LogLevel {
 }
 
 /// What the host sends.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HostMessage {
     Hello(HostHello),
     Reject(Reject),
@@ -892,14 +861,18 @@ fn read_version(dec: &mut Decoder<'_>) -> Result<u16, WireError> {
     Ok(version)
 }
 
-fn malformed(dec: &Decoder<'_>) -> WireError {
+pub(super) fn malformed(dec: &Decoder<'_>) -> WireError {
     WireError::Malformed(DecodeError::Malformed {
         offset: dec.position(),
     })
 }
 
 /// A string of at most `max` bytes, its length checked before it is read.
-fn read_string(dec: &mut Decoder<'_>, max: usize, what: &'static str) -> Result<String, WireError> {
+pub(super) fn read_string(
+    dec: &mut Decoder<'_>,
+    max: usize,
+    what: &'static str,
+) -> Result<String, WireError> {
     let at = dec.position();
     let len = dec.read_varint()?;
     if len > max as u64 {
@@ -911,13 +884,17 @@ fn read_string(dec: &mut Decoder<'_>, max: usize, what: &'static str) -> Result<
         .map_err(|_| WireError::Malformed(DecodeError::InvalidUtf8 { offset: at }))
 }
 
-fn write_string(enc: &mut Encoder, text: &str) {
+pub(super) fn write_string(enc: &mut Encoder, text: &str) {
     enc.write_varint(text.len() as u64);
     enc.write_raw(text.as_bytes());
 }
 
 /// A count of at most `max`, and never more than the bytes left.
-fn read_count(dec: &mut Decoder<'_>, max: usize, what: &'static str) -> Result<usize, WireError> {
+pub(super) fn read_count(
+    dec: &mut Decoder<'_>,
+    max: usize,
+    what: &'static str,
+) -> Result<usize, WireError> {
     let count = dec.read_varint()?;
     if count > max as u64 {
         return Err(WireError::Bound { what });
@@ -944,17 +921,17 @@ fn read_domains(dec: &mut Decoder<'_>) -> Result<Domains, WireError> {
     Ok(Domains(bits as u32))
 }
 
-fn read_u32(dec: &mut Decoder<'_>) -> Result<u32, WireError> {
+pub(super) fn read_u32(dec: &mut Decoder<'_>) -> Result<u32, WireError> {
     let value = dec.read_varint()?;
     u32::try_from(value).map_err(|_| malformed(dec))
 }
 
-fn read_file(dec: &mut Decoder<'_>) -> Result<FileId, WireError> {
+pub(super) fn read_file(dec: &mut Decoder<'_>) -> Result<FileId, WireError> {
     Ok(FileId(read_u32(dec)?))
 }
 
 /// A list of at most `max` items, each read by `item`.
-fn read_list<T>(
+pub(super) fn read_list<T>(
     dec: &mut Decoder<'_>,
     max: usize,
     what: &'static str,
@@ -973,44 +950,6 @@ fn write_strings(enc: &mut Encoder, strings: &[String]) {
     for string in strings {
         write_string(enc, string);
     }
-}
-
-fn write_ui(enc: &mut Encoder, ui: &UiSources) {
-    enc.write_varint(ui.views.len() as u64);
-    for view in &ui.views {
-        enc.write_varint(u64::from(view.file.0));
-        write_string(enc, &view.source);
-    }
-    enc.write_varint(ui.catalogs.len() as u64);
-    for catalog in &ui.catalogs {
-        write_string(enc, &catalog.dir);
-        enc.write_varint(catalog.files.len() as u64);
-        for file in &catalog.files {
-            write_string(enc, &file.path);
-            write_string(enc, &file.text);
-        }
-    }
-}
-
-fn read_ui(dec: &mut Decoder<'_>) -> Result<UiSources, WireError> {
-    let views = read_list(dec, MAX_FILES, "patched views", |dec| {
-        Ok(ViewSource {
-            file: read_file(dec)?,
-            source: read_string(dec, MAX_FRAME, "view source")?,
-        })
-    })?;
-    let catalogs = read_list(dec, MAX_CATALOGS, "catalog directories", |dec| {
-        Ok(CatalogSource {
-            dir: read_string(dec, MAX_PATH, "catalog directory")?,
-            files: read_list(dec, MAX_CATALOG_FILES, "catalog files", |dec| {
-                Ok(CatalogText {
-                    path: read_string(dec, MAX_PATH, "catalog path")?,
-                    text: read_string(dec, MAX_FRAME, "catalog text")?,
-                })
-            })?,
-        })
-    })?;
-    Ok(UiSources { views, catalogs })
 }
 
 fn write_mount(enc: &mut Encoder, entry: &MountEntry) {
@@ -1038,7 +977,7 @@ fn write_mount(enc: &mut Encoder, entry: &MountEntry) {
 }
 
 /// An optional value: a presence byte, then the value.
-fn read_option<T>(
+pub(super) fn read_option<T>(
     dec: &mut Decoder<'_>,
     value: impl FnOnce(&mut Decoder<'_>) -> Result<T, WireError>,
 ) -> Result<Option<T>, WireError> {
@@ -1369,6 +1308,7 @@ impl Message for RuntimeMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ViewPackage;
 
     fn runtime_hello() -> RuntimeHello {
         RuntimeHello {
@@ -1440,25 +1380,101 @@ mod tests {
         ]
     }
 
-    fn ui() -> UiSources {
-        UiSources {
-            views: vec![
-                ViewSource {
-                    file: FileId(0),
-                    source: "Text { }".into(),
+    fn ui() -> UiPatch {
+        use viso_behavior::native::MigratableState;
+        use viso_behavior::retype::{Conversion, Retyping};
+        use viso_ui::StateValue;
+        use viso_ui::state::StateKey;
+
+        let plan = ReloadPlan {
+            preserving: false,
+            nodes: vec![
+                NodeCarry {
+                    from: NodeRef::Static(0),
+                    to: NodeRef::Region {
+                        region: 1,
+                        arm: 2,
+                        item: u32::MAX,
+                    },
+                    carries: MigratableState::FOCUS.with(MigratableState::SCROLL),
                 },
-                ViewSource {
-                    file: FileId(u32::MAX),
-                    source: String::new(),
+                NodeCarry {
+                    from: NodeRef::Region {
+                        region: 0,
+                        arm: 0,
+                        item: 0,
+                    },
+                    to: NodeRef::Static(u32::MAX),
+                    carries: MigratableState::NONE,
                 },
             ],
-            catalogs: vec![CatalogSource {
-                dir: "/app/i18n".into(),
-                files: vec![CatalogText {
-                    path: "/app/i18n/fr.toml".into(),
-                    text: "titre = \"Titre\"".into(),
-                }],
-            }],
+            states: vec![
+                StatePlan {
+                    key: StateKey::from_parts(1, u64::MAX),
+                    action: StateAction::Keep,
+                    initial: Some(StateValue::Int(-3)),
+                    from_slot: Some(0),
+                    slot: Some(u32::MAX - 1),
+                    retype: None,
+                },
+                StatePlan {
+                    key: StateKey::from_parts(2, 3),
+                    action: StateAction::Convert,
+                    initial: Some(StateValue::Color(0.0, 0.5, 1.0, 1.0)),
+                    from_slot: None,
+                    slot: None,
+                    retype: Some(Box::new(RetypePlan {
+                        conversion: Some(Retyping {
+                            root: Conversion::List(Box::new(Conversion::ToFloat(true))),
+                            named: Vec::new(),
+                        }),
+                        migrator: Some((Retyping::keep(), 4)),
+                        held: true,
+                        name: "größe".into(),
+                        from: "List<i32>".into(),
+                        to: "List<f32>".into(),
+                        at: (10, 24),
+                    })),
+                },
+                StatePlan {
+                    key: StateKey::from_parts(4, 5),
+                    action: StateAction::Reset,
+                    initial: None,
+                    from_slot: Some(1),
+                    slot: Some(2),
+                    retype: Some(Box::new(RetypePlan {
+                        conversion: None,
+                        migrator: None,
+                        held: false,
+                        name: String::new(),
+                        from: String::new(),
+                        to: String::new(),
+                        at: (0, 0),
+                    })),
+                },
+                StatePlan {
+                    key: StateKey::from_parts(6, 7),
+                    action: StateAction::New,
+                    initial: Some(StateValue::Bool(true)),
+                    from_slot: None,
+                    slot: Some(3),
+                    retype: None,
+                },
+            ],
+        };
+        UiPatch {
+            views: vec![
+                ViewPatch {
+                    file: FileId(0),
+                    package: ViewPackage::default(),
+                    plan,
+                },
+                ViewPatch {
+                    file: FileId(u32::MAX),
+                    package: ViewPackage::default(),
+                    plan: ReloadPlan::default(),
+                },
+            ],
         }
     }
 
@@ -1835,25 +1851,47 @@ mod tests {
                 what: "failure lines"
             })
         );
-        let catalogs = HostMessage::Patch(Box::new(PatchBundle {
-            sections: vec![PatchSection::Ui(UiSources {
-                views: Vec::new(),
-                catalogs: vec![
-                    CatalogSource {
-                        dir: String::new(),
-                        files: Vec::new(),
-                    };
-                    MAX_CATALOGS + 1
-                ],
+        let carries = HostMessage::Patch(Box::new(PatchBundle {
+            sections: vec![PatchSection::Ui(UiPatch {
+                views: vec![ViewPatch {
+                    file: FileId(0),
+                    package: ViewPackage::default(),
+                    plan: ReloadPlan {
+                        nodes: vec![
+                            NodeCarry {
+                                from: NodeRef::Static(0),
+                                to: NodeRef::Static(0),
+                                carries: viso_behavior::native::MigratableState::NONE,
+                            };
+                            MAX_PLAN_ENTRIES + 1
+                        ],
+                        ..ReloadPlan::default()
+                    },
+                }],
             })],
             ..patch(3, 4)
         }));
         assert_eq!(
-            HostMessage::from_frame(&encode(&catalogs)),
+            HostMessage::from_frame(&encode(&carries)),
             Err(WireError::Bound {
-                what: "catalog directories"
+                what: "node carries"
             })
         );
+        // A state's declaration range that ends before it starts.
+        let mut ui = ui();
+        ui.views[0].plan.states[1]
+            .retype
+            .as_mut()
+            .expect("a retyped state")
+            .at = (5, 4);
+        let backwards = HostMessage::Patch(Box::new(PatchBundle {
+            sections: vec![PatchSection::Ui(ui)],
+            ..patch(3, 4)
+        }));
+        assert!(matches!(
+            HostMessage::from_frame(&encode(&backwards)),
+            Err(WireError::Malformed(_))
+        ));
     }
 
     #[test]

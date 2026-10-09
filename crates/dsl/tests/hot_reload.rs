@@ -43,7 +43,7 @@ struct Live {
     projectors: SemanticProjector,
     root: Option<NodeId>,
     scratch: Vec<NodeId>,
-    nodes: Vec<(viso_dsl::ir::binding_ir::NodeKey, NodeId)>,
+    nodes: Vec<Option<NodeId>>,
     view: Option<Rc<RefCell<ViewHost>>>,
 }
 
@@ -448,7 +448,7 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
         2,
         "the view's slots are its own two nodes"
     );
-    assert_eq!(live.nodes[0].1, rebuilt);
+    assert_eq!(live.nodes[0], Some(rebuilt));
 }
 
 /// Lay the live tree out in a 400×300 surface and return each node's width and

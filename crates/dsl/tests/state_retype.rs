@@ -11,7 +11,6 @@ use viso_behavior::Value;
 use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
 use viso_dsl::hotreload::{CandidatePlan, HotReloadReport, LiveRuntime, hot_reload_view};
-use viso_dsl::ir::binding_ir::NodeKey;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     BindingTable, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
@@ -49,7 +48,7 @@ struct Live {
     projectors: SemanticProjector,
     root: Option<NodeId>,
     scratch: Vec<NodeId>,
-    nodes: Vec<(NodeKey, NodeId)>,
+    nodes: Vec<Option<NodeId>>,
     view: Option<Rc<RefCell<ViewHost>>>,
     last_good: CandidatePlan,
 }

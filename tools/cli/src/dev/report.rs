@@ -19,6 +19,8 @@ pub enum Outcome {
     ScopedReset,
     /// Not committed; the runtime kept its last-good revision.
     Rejected,
+    /// Compiled, and not sent: the session runs with `--no-hot-reload`.
+    Held,
 }
 
 impl Outcome {
@@ -28,6 +30,7 @@ impl Outcome {
             Outcome::Applied => "applied",
             Outcome::ScopedReset => "scoped_reset",
             Outcome::Rejected => "rejected",
+            Outcome::Held => "held",
         }
     }
 
@@ -36,7 +39,7 @@ impl Outcome {
         match self {
             Outcome::Applied => Some("PATCH"),
             Outcome::ScopedReset => Some("PATCH_WITH_SCOPED_RESET"),
-            Outcome::Rejected => None,
+            Outcome::Rejected | Outcome::Held => None,
         }
     }
 
@@ -61,7 +64,8 @@ pub struct ReloadEvent {
     /// The revision the runtime matches after the candidate.
     pub last_good_revision: u64,
     pub outcome: Outcome,
-    /// Where a rejected candidate failed; `runtime-commit` for a committed one.
+    /// Where a rejected candidate failed; `runtime-commit` for a committed
+    /// one, `transport` for a held one.
     pub stage: Stage,
     /// From the batch's compile to the runtime's answer.
     pub elapsed_us: u64,

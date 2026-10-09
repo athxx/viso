@@ -1,7 +1,8 @@
-//! The host's source graph of a dev session (`Viso_Hot_Reload.md` §3, §10):
-//! every `.vs` file and message catalog of the watch scope as it is on disk,
-//! what the runtime reported of the files it mounts, and the compile of an
-//! edit exactly as the build compiled the file.
+//! The host's source graph of a dev session (`Viso_Hot_Reload.md` §3, §10,
+//! §11): every `.vs` file and message catalog of the watch scope as it is on
+//! disk, what the runtime reported of the files it mounts, the compiled view
+//! each mount runs, and the compile of an edit exactly as the build compiled
+//! the file.
 //!
 //! A `view!` compiles its file alone, against its package's catalogs and
 //! grants, so a file's candidate depends on its own text and its catalogs and
@@ -9,8 +10,11 @@
 //! the package when a catalog changed. Each file keeps an
 //! [`IncrementalParse`] of its latest text, so an edit reparses only the
 //! declaration it touched. Which version of a file the runtime runs is known
-//! by its [`source_hash`], so an edit saved while the app was building is
-//! simply a file whose text the runtime does not run yet.
+//! by its [`source_hash`]: the watcher read every version since before the
+//! build, so the session finds the one the build compiled and compiles it as
+//! the last-good the first edit is planned against. An edit saved while the
+//! app was building is simply a file whose text the runtime does not run
+//! yet.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,13 +22,15 @@ use std::rc::Rc;
 
 use viso_dsl::frontend::Origin;
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
-use viso_dsl::hotreload::plan_view_parsed;
+use viso_dsl::hotreload::{CandidatePlan, plan_view_for, plan_view_parsed};
 use viso_dsl::i18n::{CatalogFile, CatalogIssue, Messages};
 use viso_dsl::syntax::{Edit, Entry, IncrementalParse, TextRange, TextSize};
 use viso_dsl::{Diagnostic, LineIndex, Severity};
-use viso_view::dev::wire::{
-    CatalogSource, CatalogText, FileId, MAX_LINE, MAX_LINES, MountEntry, source_hash,
-};
+use viso_view::dev::wire::{FileId, MAX_LINE, MAX_LINES, MountEntry, source_hash};
+
+/// How many of a file's latest distinct versions the session keeps, to find
+/// the one a build compiled.
+const VERSIONS: usize = 8;
 
 /// A `.vs` file of the scope.
 pub(super) struct View {
@@ -33,11 +39,23 @@ pub(super) struct View {
     pub text: Option<String>,
     /// The text last compiled and its parse, kept current across edits.
     parse: Option<(String, IncrementalParse)>,
+    /// The latest distinct versions the watcher read, newest last.
+    versions: Vec<(u64, String)>,
     /// What the runtime reported, while it mounts the file.
     pub mount: Option<Mount>,
 }
 
 impl View {
+    fn new(path: PathBuf) -> View {
+        View {
+            path,
+            text: None,
+            parse: None,
+            versions: Vec::new(),
+            mount: None,
+        }
+    }
+
     /// The hash of its latest content.
     pub fn hash(&self) -> Option<u64> {
         self.text.as_deref().map(source_hash)
@@ -60,6 +78,10 @@ pub(super) struct Mount {
     pub checked: u64,
     /// Whether the runtime shows a failure for it.
     pub failing: bool,
+    /// The compiled view the runtime runs, which an edit is planned
+    /// against; `None` when the version the build compiled is unknown or
+    /// does not compile on the host.
+    pub last_good: Option<CandidatePlan>,
 }
 
 /// A package's message catalogs.
@@ -76,27 +98,8 @@ pub(super) struct Catalog {
     pub messages: Option<Rc<Messages>>,
     /// Counts each change that compiled; 0 before the first compile.
     pub revision: u64,
-    /// The revision the runtime was last sent.
-    pub sent: Option<u64>,
     /// Whether the files changed since the last compile.
     stale: bool,
-}
-
-impl Catalog {
-    /// The catalogs as the runtime is sent them.
-    pub fn wire(&self) -> CatalogSource {
-        CatalogSource {
-            dir: self.wire_dir.clone(),
-            files: self
-                .files
-                .iter()
-                .map(|(path, text)| CatalogText {
-                    path: path.display().to_string(),
-                    text: text.clone(),
-                })
-                .collect(),
-        }
-    }
 }
 
 /// A catalog compile that failed: each issue, with the file it is in.
@@ -123,15 +126,21 @@ impl Sources {
     /// Takes the latest content of `path`.
     pub fn change(&mut self, path: &Path, text: String) -> Changed {
         if path.extension().is_some_and(|ext| ext == "vs") {
-            match self.views.iter_mut().find(|view| view.path == path) {
-                Some(view) => view.text = Some(text),
-                None => self.views.push(View {
-                    path: path.to_owned(),
-                    text: Some(text),
-                    parse: None,
-                    mount: None,
-                }),
+            let at = match self.views.iter().position(|view| view.path == path) {
+                Some(at) => at,
+                None => {
+                    self.views.push(View::new(path.to_owned()));
+                    self.views.len() - 1
+                }
+            };
+            let view = &mut self.views[at];
+            let hash = source_hash(&text);
+            view.versions.retain(|&(seen, _)| seen != hash);
+            if view.versions.len() == VERSIONS {
+                view.versions.remove(0);
             }
+            view.versions.push((hash, text.clone()));
+            view.text = Some(text);
             return Changed::View;
         }
         let Some(dir) = path.parent().filter(|dir| {
@@ -159,7 +168,6 @@ impl Sources {
                     files: BTreeMap::new(),
                     messages: None,
                     revision: 0,
-                    sent: None,
                     stale: true,
                 });
                 self.catalogs.len() - 1
@@ -175,8 +183,8 @@ impl Sources {
         at
     }
 
-    /// Records a file the runtime mounts.
-    pub fn mount(&mut self, entry: &MountEntry) {
+    /// Records a file the runtime mounts, and returns its index.
+    pub fn mount(&mut self, entry: &MountEntry) -> usize {
         let catalog = entry.catalog.as_ref().map(|(locale, dir)| {
             let canonical = Path::new(dir)
                 .canonicalize()
@@ -197,16 +205,17 @@ impl Sources {
             settled: None,
             checked: 0,
             failing: false,
+            last_good: None,
         };
-        match self.views.iter_mut().find(|view| view.path == path) {
-            Some(view) => view.mount = Some(mount),
-            None => self.views.push(View {
-                path,
-                text: None,
-                parse: None,
-                mount: Some(mount),
-            }),
-        }
+        let at = match self.views.iter().position(|view| view.path == path) {
+            Some(at) => at,
+            None => {
+                self.views.push(View::new(path));
+                self.views.len() - 1
+            }
+        };
+        self.views[at].mount = Some(mount);
+        at
     }
 
     /// Forgets what the runtime reported.
@@ -214,9 +223,40 @@ impl Sources {
         for view in &mut self.views {
             view.mount = None;
         }
-        for catalog in &mut self.catalogs {
-            catalog.sent = None;
+    }
+
+    /// Compiles the version of view `at` its mount runs as the last-good its
+    /// edits are planned against, once. `Err` with the reason when that
+    /// version is not one the watcher read lately, or does not compile on the
+    /// host.
+    pub fn baseline(&mut self, at: usize) -> Result<(), String> {
+        let catalogs = &self.catalogs;
+        let view = &mut self.views[at];
+        let Some(mount) = view.mount.as_mut() else {
+            return Ok(());
+        };
+        if mount.last_good.is_some() {
+            return Ok(());
         }
+        let running = mount.running;
+        let Some((_, text)) = view
+            .versions
+            .iter()
+            .rev()
+            .find(|&&(hash, _)| hash == running)
+        else {
+            return Err("the version the app runs is not one the session read".into());
+        };
+        let profile = mount.profile(catalogs);
+        let plan = plan_view_for(text, &mount.origin, profile).map_err(|errors| {
+            let codes: Vec<&str> = errors.iter().map(|d| d.code).collect();
+            format!(
+                "the version the app runs does not compile on the host ({})",
+                codes.join(", ")
+            )
+        })?;
+        mount.last_good = Some(plan);
+        Ok(())
     }
 
     /// Compiles the catalogs that changed and that a mount names, each
@@ -311,13 +351,13 @@ impl Sources {
     }
 
     /// Compiles view `at`'s latest content as the build would, reparsing
-    /// only what changed since its last compile; its errors when it does not
-    /// plan.
-    pub fn compile(&mut self, at: usize) -> Result<(), Vec<Diagnostic>> {
+    /// only what changed since its last compile, into its candidate; its
+    /// errors when it does not plan.
+    pub fn compile(&mut self, at: usize) -> Option<Result<CandidatePlan, Vec<Diagnostic>>> {
         let catalogs = &self.catalogs;
         let view = &mut self.views[at];
         let (Some(text), Some(mount)) = (view.text.as_deref(), view.mount.as_mut()) else {
-            return Ok(());
+            return None;
         };
         let parse = match view.parse.take() {
             Some((old, mut parse)) if old != text => {
@@ -327,22 +367,27 @@ impl Sources {
             Some((_, parse)) => parse,
             None => IncrementalParse::new(text, Entry::CompilationUnit),
         };
-        let messages = mount
-            .catalog
-            .map(|c| (catalogs[c].revision, catalogs[c].messages.clone()));
+        let profile = mount.profile(catalogs);
+        let planned = plan_view_parsed(text, parse.parse().clone(), &mount.origin, profile);
+        mount.checked = mount.catalog.map_or(0, |c| catalogs[c].revision);
+        view.parse = Some((text.to_owned(), parse));
+        Some(planned)
+    }
+}
+
+impl Mount {
+    /// The profile the build compiled the file with: its grants, and its
+    /// package's catalogs as last compiled.
+    fn profile(&self, catalogs: &[Catalog]) -> TargetProfile {
         let mut capabilities = CapabilitySet::new();
-        for capability in &mount.capabilities {
+        for capability in &self.capabilities {
             capabilities.insert(capability.as_str());
         }
-        let profile = TargetProfile {
+        TargetProfile {
             capabilities,
-            messages: messages.as_ref().and_then(|(_, m)| m.clone()),
+            messages: self.catalog.and_then(|c| catalogs[c].messages.clone()),
             ..TargetProfile::default()
-        };
-        let planned = plan_view_parsed(text, parse.parse().clone(), &mount.origin, profile);
-        mount.checked = messages.map_or(0, |(revision, _)| revision);
-        view.parse = Some((text.to_owned(), parse));
-        planned.map(drop)
+        }
     }
 }
 
@@ -406,6 +451,7 @@ pub(super) fn failure_lines(name: &str, text: &str, diagnostics: &[Diagnostic]) 
 
 #[cfg(test)]
 mod tests {
+    use viso_dsl::aot::emit_view_package;
     use viso_dsl::syntax::parse_entry;
     use viso_dsl::syntax::tokenize;
 
@@ -434,6 +480,10 @@ mod tests {
 
     fn mounted(text: &str) -> Sources {
         let mut sources = Sources::default();
+        assert!(matches!(
+            sources.change(Path::new("/p/src/view.vs"), text.to_owned()),
+            Changed::View
+        ));
         let entry = MountEntry {
             file: FileId(0),
             path: "/p/src/view.vs".into(),
@@ -444,11 +494,7 @@ mod tests {
             capabilities: Vec::new(),
             source_hash: source_hash(text),
         };
-        sources.mount(&entry);
-        assert!(matches!(
-            sources.change(Path::new("/p/src/view.vs"), text.to_owned()),
-            Changed::View
-        ));
+        assert_eq!(sources.mount(&entry), 0);
         sources
     }
 
@@ -456,12 +502,12 @@ mod tests {
     fn an_edit_is_a_candidate_until_it_settles_and_reparses_incrementally() {
         let mut sources = mounted(VIEW);
         assert!(sources.candidates().is_empty(), "the runtime runs it");
-        assert_eq!(sources.compile(0), Ok(()));
+        assert!(sources.compile(0).unwrap().is_ok());
 
         let edited = VIEW.replace("120dp", "140dp");
         sources.change(Path::new("/p/src/view.vs"), edited.clone());
         assert_eq!(sources.candidates(), [0]);
-        assert_eq!(sources.compile(0), Ok(()));
+        assert!(sources.compile(0).unwrap().is_ok());
         let (text, parse) = sources.views[0].parse.as_ref().unwrap();
         assert_eq!(*text, edited);
         let fresh = parse_entry(&tokenize(&edited), &edited, Entry::CompilationUnit);
@@ -478,7 +524,7 @@ mod tests {
 
         let broken = VIEW.replace("state count = 0;", "state count = ;");
         sources.change(Path::new("/p/src/view.vs"), broken.clone());
-        let errors = sources.compile(0).unwrap_err();
+        let errors = sources.compile(0).unwrap().unwrap_err();
         assert!(
             errors.iter().any(|d| d.code.starts_with("E1")),
             "{errors:?}"
@@ -602,13 +648,60 @@ mod tests {
             [0],
             "a catalog change rechecks the view"
         );
-        let errors = sources.compile(0).unwrap_err();
+        let errors = sources.compile(0).unwrap().unwrap_err();
         assert!(
             !errors.is_empty(),
             "the view uses a key the catalogs dropped"
         );
-        let wire = sources.catalogs[0].wire();
-        assert_eq!(wire.files.len(), 1);
-        assert_eq!(wire.dir, i18n.display().to_string());
+    }
+
+    #[test]
+    fn the_last_good_is_the_version_the_build_compiled() {
+        // Saved before the build read it, then edited while it built.
+        let mut sources = Sources::default();
+        let path = Path::new("/p/src/view.vs");
+        sources.change(path, VIEW.to_owned());
+        let edited = VIEW.replace("120dp", "130dp");
+        sources.change(path, edited.clone());
+        let entry = |text: &str| MountEntry {
+            file: FileId(0),
+            path: "/p/src/view.vs".into(),
+            package: "app".into(),
+            module: vec!["view".into()],
+            language: None,
+            catalog: None,
+            capabilities: Vec::new(),
+            source_hash: source_hash(text),
+        };
+        let at = sources.mount(&entry(VIEW));
+        assert_eq!(sources.baseline(at), Ok(()));
+        let package = |text: &str| {
+            let origin = Origin {
+                package: "app".into(),
+                module: vec!["view".into()],
+                language: None,
+            };
+            emit_view_package(&plan_view_for(text, &origin, TargetProfile::default()).unwrap())
+        };
+        let last_good = sources.views[at].mount.as_ref().unwrap().last_good.as_ref();
+        let last_good = emit_view_package(last_good.unwrap());
+        assert_eq!(last_good, package(VIEW), "the built version compiled");
+        assert_ne!(last_good, package(&edited));
+        assert_eq!(sources.candidates(), [at], "the later edit is a candidate");
+
+        // An app built from a version the session never read.
+        let at = sources.mount(&entry(
+            "component Other { view { Text {} } }
+",
+        ));
+        assert!(sources.baseline(at).is_err());
+        assert!(
+            sources.views[at]
+                .mount
+                .as_ref()
+                .unwrap()
+                .last_good
+                .is_none()
+        );
     }
 }

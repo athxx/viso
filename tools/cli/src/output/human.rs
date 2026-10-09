@@ -44,6 +44,9 @@ pub(super) fn dev(file: &str, event: &ReloadEvent) -> String {
             event.stage.as_str(),
             event.last_good_revision
         ),
+        Outcome::Held => format!(
+            "hot reload: {file} revision {revision} compiled, not applied (--no-hot-reload)"
+        ),
         outcome => format!(
             "hot reload: {file} revision {revision} {} to {} mount(s) in {ms:.1} ms",
             if outcome == Outcome::ScopedReset {

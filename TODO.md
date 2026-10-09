@@ -277,7 +277,7 @@ frame-boundary commit and the last-good loop around them.
       leaves a running, interactive app at its last-good revision and shows the diagnostic;
       the next valid save recovers with no restart.
 - [ ] `viso run` wires it (§2, §13.5, §13.6): hot reload belongs to the dev build only;
-      `--no-hot-reload` (§2.1) produces a dev build with the session not started.
+      `--no-hot-reload` (§2.1) produces a dev build with the session up and no patch applied.
 - [ ] Release absence test (§64 HR / AGENTS 60): a release/shipping build contains no dev
       transport, no patch-apply entry point, no DevSnapshot endpoint, and the steady-state
       frame path has zero hot-reload branches (§1.2) — asserted, not asserted-by-review.

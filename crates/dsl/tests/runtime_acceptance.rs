@@ -14,7 +14,8 @@ use viso_ui::{DirtyClass, NodeId};
 fn any_dirty(rt: &Rt, class: DirtyClass) -> bool {
     rt.nodes
         .iter()
-        .any(|&(_, id)| rt.store.dirty(id).intersects(class))
+        .flatten()
+        .any(|&id| rt.store.dirty(id).intersects(class))
 }
 
 #[test]
