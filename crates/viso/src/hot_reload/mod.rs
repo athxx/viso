@@ -1308,6 +1308,168 @@ mod tests {
         assert_eq!(ack.files[0].counts.mounts, 1);
     }
 
+    /// `Counter`'s source with `states` and the `Column`'s `children`
+    /// substituted in, so an edit can retype a state or reshape the view
+    /// without fragile substring surgery on the fixture text.
+    fn counter_source(states: &str, children: &str) -> String {
+        format!(
+            "component Counter {{\n    {states}\n    view {{\n        Column {{\n            width: 120dp;\n            {children}\n        }}\n    }}\n}}"
+        )
+    }
+
+    const COUNTER_STATES: &str = "state count = 0;\n    state enabled = true;";
+    const COUNTER_CHILDREN: &str =
+        "Text { text: format(\"{}\", count); }\n            Text { visible: enabled; }";
+
+    #[test]
+    fn insert_remove_reorder_and_a_scoped_reset_each_apply_without_disturbing_the_rest() {
+        let mut counter_ws = counter();
+        let (mut session, mut host, entries) = linked(Some(&mut counter_ws));
+        let mut counter_edits = Edits::new(&entries[0], COUNTER);
+
+        let mut logger_ws = WindowState::new(WindowId(2));
+        logger_ws.root = Some(build(&mut logger_ws, |cx| {
+            viso_ui_macros::view!("../../tests/fixtures/logger.vs")(cx).id()
+        }));
+        session.adopt(|| unreachable!("the link is open"), &mut logger_ws);
+        match host.read() {
+            Some(RuntimeMessage::Mounts(_)) => {}
+            other => panic!("not an inventory: {other:?}"),
+        }
+        let mut windows = vec![counter_ws, logger_ws];
+
+        // A running value on each mount, so "untouched" below checks something.
+        let (_, cell) = session.views[0].cells[0];
+        windows[0].states.set(cell, StateValue::Int(5));
+        click(&mut windows[1]);
+        assert_eq!(count_at(&windows[1], &session, 1), Some(StateValue::Int(1)));
+
+        let root = windows[0].root.unwrap();
+        let before = subtree(&windows[0].store, root);
+        assert_eq!(before.len(), 3, "Column + two Texts");
+
+        // 1. Insert a sibling: both existing Texts keep their NodeId, and the
+        //    logger mount is not touched at all.
+        let inserted = counter_source(
+            COUNTER_STATES,
+            &format!("{COUNTER_CHILDREN}\n            Text {{ text: \"new\"; }}"),
+        );
+        accept_on(
+            &mut session,
+            &mut host,
+            &mut windows,
+            &mut counter_edits,
+            &inserted,
+        );
+        let after_insert = subtree(&windows[0].store, root);
+        assert_eq!(
+            after_insert[..3],
+            before[..],
+            "the two originals keep their NodeId"
+        );
+        assert_eq!(after_insert.len(), 4, "Column + three Texts");
+        assert_eq!(count_at(&windows[0], &session, 0), Some(StateValue::Int(5)));
+        assert_eq!(
+            count_at(&windows[1], &session, 1),
+            Some(StateValue::Int(1)),
+            "the logger mount is untouched"
+        );
+
+        // 2. Remove it again: the originals carry the very same NodeId they
+        //    were first mounted with.
+        accept_on(
+            &mut session,
+            &mut host,
+            &mut windows,
+            &mut counter_edits,
+            &counter_source(COUNTER_STATES, COUNTER_CHILDREN),
+        );
+        assert_eq!(
+            subtree(&windows[0].store, root),
+            before,
+            "back to the original three nodes, unchanged"
+        );
+
+        // 3. Name the two siblings in place (naming a previously-anonymous
+        //    node is its own identity-affecting edit, so it is a separate
+        //    step from the reorder this is building up to), then swap them
+        //    by name. A two-way swap has no single-node anchor an LCS diff
+        //    can order against, so — with no `Move` op in the current
+        //    `StructuralOp` set — one sibling keeps its identity across the
+        //    reorder and the other rebuilds fresh (`diff.rs`'s own
+        //    `swapped_siblings_keep_one_and_rebuild_the_other`); this checks
+        //    that invariant holds through the full session, not just inside
+        //    the diff.
+        accept_on(
+            &mut session,
+            &mut host,
+            &mut windows,
+            &mut counter_edits,
+            &counter_source(
+                COUNTER_STATES,
+                "node first: Text { text: format(\"{}\", count); }\n            node second: Text { visible: enabled; }",
+            ),
+        );
+        let [_, _, named_second] = subtree(&windows[0].store, root)[..] else {
+            panic!("Column + two Texts");
+        };
+        let named = counter_source(
+            COUNTER_STATES,
+            "node second: Text { visible: enabled; }\n            node first: Text { text: format(\"{}\", count); }",
+        );
+        accept_on(
+            &mut session,
+            &mut host,
+            &mut windows,
+            &mut counter_edits,
+            &named,
+        );
+        let [_, swapped_first, swapped_second] = subtree(&windows[0].store, root)[..] else {
+            panic!("Column + two Texts");
+        };
+        assert_eq!(
+            swapped_first, named_second,
+            "the sibling moved ahead keeps its identity"
+        );
+        assert_ne!(
+            swapped_second, swapped_first,
+            "the two swapped siblings are still two distinct live nodes"
+        );
+
+        // 4. An incompatible retype resets only its own state: `enabled`
+        //    becomes an `I64`, which a `Bool` does not convert into; `count`
+        //    is untouched, and the ACK names exactly the state that reset.
+        let retyped = counter_source(
+            "state count = 0;\n    state enabled: I64 = 0;",
+            "node second: Text { }\n            node first: Text { text: format(\"{}\", count); }",
+        );
+        let ack = accept_on(
+            &mut session,
+            &mut host,
+            &mut windows,
+            &mut counter_edits,
+            &retyped,
+        );
+        let enabled = counter_edits.last_good.symbol_for_name("enabled").unwrap();
+        let count = counter_edits.last_good.symbol_for_name("count").unwrap();
+        let enabled_key = StateKey::from_parts(enabled.hi, enabled.lo);
+        let count_key = StateKey::from_parts(count.hi, count.lo);
+        assert!(
+            ack.state_resets.iter().any(|r| r.owner == enabled_key),
+            "enabled's own reset is named: {:?}",
+            ack.state_resets
+        );
+        assert!(
+            !ack.state_resets.iter().any(|r| r.owner == count_key),
+            "count is not reported reset"
+        );
+        assert_eq!(
+            count_at(&windows[0], &session, 0),
+            Some(StateValue::Int(5)),
+            "count keeps its value across an unrelated state's reset"
+        );
+    }
+
     #[test]
     fn a_window_opened_after_a_patch_mounts_the_patched_view() {
         let mut ws = counter();

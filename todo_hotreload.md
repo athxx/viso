@@ -371,16 +371,33 @@ resets only its own scope.
       confirmed already correct as a side effect of the existing `SELECTION` carry
       (`Buffer` bundles composition with text/selection); regression test added.
 - [ ] Component instances inlined from another file reload when that file changes
-      (cross-file dependents found from the module graph).
-- [ ] Unit tests (§61): scoped reset planning, SymbolId preservation across
-      reorder/insert, compatibility matrix rows.
-- [ ] Integration: insert before a focused, scrolled, edited node in a running app;
-      assert same `NodeId`, focus, offset, selection; reorder keyed siblings.
+      (cross-file dependents found from the module graph). Deferred: needs real
+      multi-file module resolution in the hot-reload compile pipeline (`compile_unit`
+      builds a `ModuleGraph` from exactly one `SourceUnit`, `crates/dsl/src/frontend.rs`)
+      — an unrelated architectural capability from this slice's node-identity/patch
+      mechanics (AGENTS §40). A future slice's own item.
+- [x] Unit tests (§61): scoped reset planning (`commit.rs`'s `migrate_states` tests,
+      `state_retype.rs`), SymbolId preservation across reorder/insert (`diff.rs`'s
+      `a_node_under_a_replaced_ancestor_is_not_its_own_insert_or_remove`,
+      `a_replaced_container_keeps_its_children`,
+      `swapped_siblings_keep_one_and_rebuild_the_other`; `migrate.rs`'s
+      `a_kept_node_with_migratable_state_carries_it`), compatibility matrix rows
+      (`state_retype.rs`).
+- [x] Integration: insert before a focused, scrolled, edited node in a running app;
+      assert same `NodeId`, focus, offset, selection
+      (`focus_and_scroll_follow_their_nodes_past_an_inserted_sibling`,
+      `a_kept_text_input_keeps_its_identity_and_buffer_past_an_inserted_sibling`);
+      reorder keyed siblings (`diff.rs`, the Done test's own reorder step).
 
 ### Done
 
-- [ ] Inserting, removing and reordering nodes in a running app keeps every unrelated
+- [x] Inserting, removing and reordering nodes in a running app keeps every unrelated
       node's identity and state; an incompatible state change resets only its owner.
+      `insert_remove_reorder_and_a_scoped_reset_each_apply_without_disturbing_the_rest`
+      (`crates/viso/src/hot_reload/mod.rs`) is the composite acceptance test: a
+      two-mount session, insert/remove/rename/reorder on one mount, the other mount
+      and its unrelated state untouched throughout, and an incompatible retype
+      resets only its own `StateKey`.
 
 ---
 
