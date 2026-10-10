@@ -367,7 +367,9 @@ resets only its own scope.
       `Tabs` and the newly schema-registered `NavigationStack` marked migratable with
       it; `commit.rs` carries which immediate child had `hidden` clear across a
       Replace boundary, tested.
-- [ ] Composition (IME) state carried with the edit buffer when compatible (§15).
+- [x] Composition (IME) state carried with the edit buffer when compatible (§15):
+      confirmed already correct as a side effect of the existing `SELECTION` carry
+      (`Buffer` bundles composition with text/selection); regression test added.
 - [ ] Component instances inlined from another file reload when that file changes
       (cross-file dependents found from the module graph).
 - [ ] Unit tests (§61): scoped reset planning, SymbolId preservation across
