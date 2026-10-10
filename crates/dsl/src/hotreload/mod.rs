@@ -43,6 +43,7 @@ use std::rc::Rc;
 use crate::aot::{emit_view_package, static_shape};
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
+use crate::resolve::SymbolId;
 use crate::syntax::{TextRange, TextSize};
 use crate::view_regions::has_regions;
 use viso_view::dev::commit::{CommitReport, commit};
@@ -85,6 +86,11 @@ pub struct HotReloadReport {
     pub migrated: u32,
     /// State cells that started from their initializer.
     pub reset: u32,
+    /// Every [`reset`](Self::reset) state's own identity — the narrowest
+    /// scope `Viso_Hot_Reload.md` §8's `PATCH_WITH_SCOPED_RESET` names, the
+    /// compiler's bridge of the runtime `StateKey` back to the `SymbolId` it
+    /// already reasons in.
+    pub state_resets: Vec<SymbolId>,
     /// An `E5101` warning for each state whose live value was reset because
     /// it does not convert into the state's new type.
     pub notices: Vec<Diagnostic>,
@@ -102,6 +108,11 @@ impl From<CommitReport> for HotReloadReport {
         HotReloadReport {
             migrated: report.migrated,
             reset: report.reset,
+            state_resets: report
+                .state_resets
+                .iter()
+                .map(|reset| SymbolId::from_parts(reset.owner.hi, reset.owner.lo))
+                .collect(),
             notices: report
                 .notices
                 .into_iter()

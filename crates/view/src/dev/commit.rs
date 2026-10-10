@@ -60,7 +60,8 @@ use viso_ui::{
 };
 
 use super::wire::{
-    DirtyCounts, NodeCarry, NodeRef, ReloadPlan, RetypePlan, StateAction, StatePlan, StructuralOp,
+    DirtyCounts, NodeCarry, NodeRef, RESET_NOTICE, ReloadPlan, RetypePlan, StateAction, StatePlan,
+    StructuralOp,
 };
 use crate::attach::{Route, attach_node};
 use crate::control::Control;
@@ -121,6 +122,11 @@ pub struct CommitReport {
     /// State cells that started from their initializer: new states, and kept
     /// ones whose live value does not convert.
     pub reset: u32,
+    /// Every cell [`reset`](Self::reset) counts, by its own owning key — the
+    /// narrowest scope `Viso_Hot_Reload.md` §8's `PATCH_WITH_SCOPED_RESET`
+    /// names, so the ACK can say *which* state reset instead of only how
+    /// many did.
+    pub state_resets: Vec<ScopedReset>,
     /// The reset of each kept state whose live value did not convert.
     pub notices: Vec<ResetNotice>,
     /// Whether a focused node of the view lost focus because its node did
@@ -179,6 +185,15 @@ pub struct ResetNotice {
     pub start: u32,
     pub end: u32,
     pub message: String,
+}
+
+/// One state cell [`CommitReport::reset`] counts, narrowed to its own owning
+/// key: a state new this build, one whose live value did not convert, or one
+/// `migrate_state` found no live cell for despite being kept by identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScopedReset {
+    pub owner: StateKey,
+    pub code: &'static str,
 }
 
 /// The live runtime one mount's commit mutates, as a bundle of borrows so
@@ -775,6 +790,10 @@ fn migrate_states(
                     }
                     StateMigration::Reset => {
                         report.reset += 1;
+                        report.state_resets.push(ScopedReset {
+                            owner: key,
+                            code: RESET_NOTICE,
+                        });
                         changed.push(id);
                     }
                 }
@@ -795,6 +814,10 @@ fn migrate_states(
                 let initial = state.initial.unwrap_or(StateValue::Int(0));
                 let (id, _) = states.migrate_state(key, initial, |_, new| Some(new));
                 report.reset += 1;
+                report.state_resets.push(ScopedReset {
+                    owner: key,
+                    code: RESET_NOTICE,
+                });
                 changed.push(id);
                 id
             }
@@ -863,6 +886,10 @@ fn retype_state(
                 }),
             };
             report.reset += 1;
+            report.state_resets.push(ScopedReset {
+                owner: key,
+                code: RESET_NOTICE,
+            });
             if let Some(retype) = retype {
                 report.notices.push(reset_notice(retype, fault.as_ref()));
             }

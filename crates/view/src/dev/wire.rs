@@ -22,6 +22,7 @@ use std::fmt;
 use std::io::{self, Read, Write};
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
+use viso_ui::state::StateKey;
 
 pub use super::patch::{
     MAX_PLAN_ENTRIES, NodeCarry, NodeRef, RESET_NOTICE, ReloadPlan, RetypePlan, StateAction,
@@ -30,7 +31,7 @@ pub use super::patch::{
 use super::patch::{read_ui, write_ui};
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 6;
+pub const DEV_PROTOCOL_VERSION: u16 = 7;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -82,6 +83,9 @@ pub const MAX_LINE: usize = 1024;
 
 /// The most notices an ACK carries.
 pub const MAX_NOTICES: usize = 64;
+
+/// The most scoped resets an ACK carries.
+pub const MAX_SCOPED_RESETS: usize = 64;
 
 /// The stable 64-bit FNV-1a hash of a source text, which both sides compute
 /// the same whatever their toolchain: how the host learns which version of a
@@ -523,6 +527,18 @@ pub struct Notice {
     pub message: String,
 }
 
+/// One state cell a commit reset, by its own owning key: the narrowest scope
+/// `Viso_Hot_Reload.md` §8's `PATCH_WITH_SCOPED_RESET` names, so the ACK says
+/// *which* state reset, not only how many did ([`PatchAck::scoped_resets`]
+/// for the total count).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedReset {
+    pub file: FileId,
+    pub owner: StateKey,
+    /// A diagnostic code, `E` and four digits.
+    pub code: String,
+}
+
 /// How long the runtime's part of a patch took.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PatchTimings {
@@ -545,6 +561,9 @@ pub struct PatchAck {
     pub files: Vec<FileCommit>,
     /// At most [`MAX_NOTICES`].
     pub notices: Vec<Notice>,
+    /// Every state cell a commit reset, by its own owning key. At most
+    /// [`MAX_SCOPED_RESETS`]; [`PatchAck::scoped_resets`] is the total.
+    pub state_resets: Vec<ScopedReset>,
     pub timings: PatchTimings,
 }
 
@@ -1233,6 +1252,13 @@ impl Message for RuntimeMessage {
                     enc.write_varint(u64::from(notice.end));
                     write_string(enc, &notice.message);
                 }
+                enc.write_varint(ack.state_resets.len() as u64);
+                for reset in &ack.state_resets {
+                    enc.write_varint(u64::from(reset.file.0));
+                    enc.write_u64(reset.owner.hi);
+                    enc.write_u64(reset.owner.lo);
+                    write_string(enc, &reset.code);
+                }
                 enc.write_varint(ack.timings.decode_us);
                 enc.write_varint(ack.timings.stage_us);
                 enc.write_varint(ack.timings.commit_us);
@@ -1330,6 +1356,13 @@ impl Message for RuntimeMessage {
                         start: read_u32(dec)?,
                         end: read_u32(dec)?,
                         message: read_string(dec, MAX_LOG, "notice")?,
+                    })
+                })?,
+                state_resets: read_list(dec, MAX_SCOPED_RESETS, "scoped resets", |dec| {
+                    Ok(ScopedReset {
+                        file: read_file(dec)?,
+                        owner: StateKey::from_parts(dec.read_u64()?, dec.read_u64()?),
+                        code: read_string(dec, MAX_CODE, "diagnostic code")?,
                     })
                 })?,
                 timings: PatchTimings {
@@ -1638,6 +1671,11 @@ mod tests {
                     start: 4,
                     end: 9,
                     message: "`count` was reset".into(),
+                }],
+                state_resets: vec![ScopedReset {
+                    file: FileId(1),
+                    owner: StateKey::from_parts(5, 6),
+                    code: "E5101".into(),
                 }],
                 timings: PatchTimings {
                     decode_us: 1,
