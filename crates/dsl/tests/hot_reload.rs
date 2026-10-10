@@ -469,6 +469,54 @@ fn a_kept_text_input_keeps_its_identity_and_buffer_past_an_inserted_sibling() {
     assert_eq!((&carried.text, carried.sel), (&buffer.text, buffer.sel));
 }
 
+#[test]
+fn composition_state_survives_a_compatible_reload() {
+    // `Row` becomes `Column`: the container is the replace, and its unchanged
+    // `TextInput` child is kept-under-replace (diff.rs), so it is rebuilt and
+    // must carry through `NodeCarry` — `TextInput` is tagged
+    // `MigratableState::SELECTION`, which carries the whole `Buffer`,
+    // composition included, not just text/selection.
+    let (mut live, last_good) = mount("Row { TextInput { width: 100dp; height: 20dp; } }");
+    lay_out(&mut live);
+    let [_, input] = preorder(&live.store, live.root)[..] else {
+        panic!("Row + TextInput mounted");
+    };
+    let mut buffer = viso_ui::Buffer::with_text("a");
+    buffer.queue(viso_ui::EditIntent::Compose {
+        text: "zhong".into(),
+        caret: viso_ui::TextOffset(5),
+    });
+    live.text_edits.register(input, Box::new(buffer));
+    viso_ui::text_edit::reconcile(&mut live.store, &mut live.text_edits, None);
+    let before = live
+        .text_edits
+        .get(input)
+        .expect("the queued compose landed")
+        .clone();
+    assert!(before.has_composition(), "composing before the reload");
+
+    let done = reload(
+        &mut live,
+        &last_good,
+        "Column { TextInput { width: 100dp; height: 20dp; } }",
+    );
+    assert_eq!(done.report.scroll_lost, 0);
+    let [_, rebuilt] = preorder(&live.store, live.root)[..] else {
+        panic!("Column + TextInput mounted");
+    };
+    assert_ne!(
+        rebuilt, input,
+        "the container's type change rebuilds its child too"
+    );
+    let after = live
+        .text_edits
+        .get(rebuilt)
+        .expect("the buffer carried to the rebuilt node");
+    assert!(after.has_composition(), "the composition carried too");
+    assert_eq!(after.composition().range(), before.composition().range());
+    assert_eq!(after.text, before.text);
+}
+
 /// The children of `parent`, in order.
 fn children(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
     let mut out = Vec::new();
