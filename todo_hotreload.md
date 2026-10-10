@@ -359,9 +359,10 @@ resets only its own scope.
       resets (new, or kept but incompatible) is reported by its own `SymbolId`/
       `StateKey`, not only as a count — `CommitReport::state_resets`, bridged to
       `HotReloadReport::state_resets` and the ACK's `PatchAck::state_resets` (§8).
-- [ ] State identity across renames: an explicit `@stable("id")` on a state or
+- [x] State identity across renames: an explicit `@stable("id")` on a state or
       component keeps its `SymbolId` across a rename (DSL §88), tested; a plain
-      rename still resets.
+      rename still resets. Two decls of the same kind claiming the same
+      `@stable` id is `E5104`.
 - [ ] Active tab and navigation state contracts (§15): `Tabs` selection and the
       navigation stack marked migratable in the widget schema, carried by `NodeKey`.
 - [ ] Composition (IME) state carried with the edit buffer when compatible (§15).

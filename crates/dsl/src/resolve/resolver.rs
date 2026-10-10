@@ -326,11 +326,16 @@ fn build_symbol_table(
         };
         let name = interner.intern(&name_tok.text());
         let text = interner.text(name).unwrap_or_default().to_owned();
+        let stable = stable_id(decl.syntax());
+        if let Some(id) = &stable {
+            out.claim_stable_id(kind, id, name_tok.text_range());
+        }
+        let decl_path = stable.as_deref().unwrap_or(&text);
         let id = fingerprint(SymbolIdentity {
             package,
             module_path: module_text,
             kind,
-            decl_path: &text,
+            decl_path,
         });
         let symbol = ModuleSymbol { id, exported };
         out.define(None, name, ns, symbol, &name_tok);
@@ -366,6 +371,88 @@ fn build_symbol_table(
         mint_unnamed(&decl, &mint, &mut out);
     }
     out.into_parts()
+}
+
+/// Whether an attribute's path is the one-segment `name`.
+fn attribute_is(attr: &SyntaxNode, name: &str) -> bool {
+    use crate::syntax::SyntaxKind;
+    attr.children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::PathExpr)
+        .is_some_and(|p| p.text().to_string().trim() == name)
+}
+
+/// The string a `@stable("id")` attribute names: its one positional (unlabeled)
+/// argument, a plain string literal.
+fn stable_value(attr: &SyntaxNode) -> Option<String> {
+    use crate::syntax::SyntaxKind;
+    let list = attr
+        .children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::ArgumentList)?;
+    let args: Vec<SyntaxNode> = list
+        .children()
+        .into_iter()
+        .filter(|c| c.kind() == SyntaxKind::Argument)
+        .collect();
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    let labeled = arg
+        .children_with_tokens()
+        .into_iter()
+        .filter_map(|e| e.as_token().cloned())
+        .any(|t| !t.kind().is_trivia());
+    if labeled {
+        return None;
+    }
+    let values = arg.children();
+    let [value] = values.as_slice() else {
+        return None;
+    };
+    if value.kind() != SyntaxKind::LiteralExpr {
+        return None;
+    }
+    let token = value
+        .children_with_tokens()
+        .into_iter()
+        .filter_map(|e| e.as_token().cloned())
+        .find(|t| !t.kind().is_trivia())?;
+    if token.kind() != SyntaxKind::StringLiteral {
+        return None;
+    }
+    let text = token.text();
+    let body = text.strip_prefix('"')?.strip_suffix('"')?;
+    let id = crate::hir::infer::pattern::unescape(body)?;
+    (!id.is_empty()).then_some(id)
+}
+
+/// The id a `@stable("id")` attribute pins on `decl`: a contiguous run of
+/// `Attribute` siblings immediately before `decl`, or — when `decl` sits
+/// inside an `export` wrapper — immediately before that wrapper, matching
+/// where `@migrate`/`@persist` are accepted (DSL §25, §88).
+fn stable_id(decl: &SyntaxNode) -> Option<String> {
+    use crate::syntax::SyntaxKind;
+    fn scan(mut node: SyntaxNode) -> Option<String> {
+        let mut found = None;
+        while let Some(prev) = node.prev_sibling() {
+            if prev.kind() != SyntaxKind::Attribute {
+                break;
+            }
+            if attribute_is(&prev, "stable") {
+                found = stable_value(&prev);
+            }
+            node = prev;
+        }
+        found
+    }
+    if let Some(id) = scan(decl.clone()) {
+        return Some(id);
+    }
+    if decl.parent().map(|p| p.kind()) == Some(SyntaxKind::ExportDecl) {
+        return scan(decl.parent()?);
+    }
+    None
 }
 
 /// The `::`-free text identifying an impl among its module's: `impl Target` or
@@ -560,6 +647,10 @@ struct SymbolTableBuild {
     /// collision can tell a true duplicate from an NFC-equal respelling.
     spellings: Vec<String>,
     errors: Vec<Diagnostic>,
+    /// Every `@stable("id")` claimed so far in this module, by kind — two
+    /// different kinds never collide, since a kind-tagged `SymbolId` never
+    /// matches another kind's regardless of `decl_path` text.
+    stable_ids: Vec<(SymbolKind, String, TextRange)>,
 }
 
 impl SymbolTableBuild {
@@ -607,6 +698,29 @@ impl SymbolTableBuild {
             ));
         }
         self.errors.push(error);
+    }
+
+    /// Claims `id` as a `@stable("id")` pin of kind `kind`, reporting `E5104`
+    /// when an earlier declaration of the same kind in this module already
+    /// claimed it — the two would otherwise mint the identical `SymbolId`.
+    fn claim_stable_id(&mut self, kind: SymbolKind, id: &str, at: TextRange) {
+        if let Some((_, _, first)) = self
+            .stable_ids
+            .iter()
+            .find(|(k, claimed, _)| *k == kind && claimed == id)
+        {
+            let mut error = Diagnostic::error(
+                "E5104",
+                at,
+                format!("`@stable(\"{id}\")` is already claimed by another declaration"),
+            );
+            error
+                .related
+                .push(Related::new(*first, format!("`{id}` is claimed here")));
+            self.errors.push(error);
+            return;
+        }
+        self.stable_ids.push((kind, id.to_owned(), at));
     }
 
     /// Records `id`, declared at `name_tok`, without naming it in any table.
@@ -669,7 +783,11 @@ fn define_members(
         };
         let name = interner.intern(&name_tok.text());
         let member_text = interner.text(name).unwrap_or_default();
-        let decl_path = format!("{owner}::{member_text}");
+        let stable = stable_id(member.syntax());
+        if let Some(id) = &stable {
+            out.claim_stable_id(kind, id, name_tok.text_range());
+        }
+        let decl_path = stable.unwrap_or_else(|| format!("{owner}::{member_text}"));
         let id = fingerprint(SymbolIdentity {
             package,
             module_path: module_text,
@@ -3011,6 +3129,93 @@ mod tests {
                 .iter()
                 .any(|r| matches!(r.to, Resolution::Symbol(_))),
             "no free name resolves to a symbol"
+        );
+    }
+
+    /// A component `A`'s `old` state's `SymbolId`, from a module resolved from `src`.
+    fn state_symbol(src: &str, old: &str) -> SymbolId {
+        let mut interner = NameInterner::new();
+        let app = unit(&mut interner, &["app"], src);
+        let mods = resolve_all(vec![app], &mut interner);
+        let a = interner.intern("A");
+        let component = mods[0].table.get(a, Namespace::Type).expect("A").id;
+        let name = interner.intern(old);
+        mods[0]
+            .table
+            .members(component)
+            .expect("A's members")
+            .get(name, Namespace::Value)
+            .unwrap_or_else(|| panic!("`{old}` on A"))
+            .id
+    }
+
+    #[test]
+    fn a_stable_states_symbol_survives_a_rename() {
+        let before = state_symbol(
+            "component A { @stable(\"count\") state old = 0; view { } }",
+            "old",
+        );
+        let after = state_symbol(
+            "component A { @stable(\"count\") state fresh = 0; view { } }",
+            "fresh",
+        );
+        assert_eq!(
+            before, after,
+            "`@stable(\"count\")` pins the state's identity across the rename"
+        );
+    }
+
+    #[test]
+    fn a_plain_rename_still_resets_the_states_symbol() {
+        let before = state_symbol("component A { state old = 0; view { } }", "old");
+        let after = state_symbol("component A { state fresh = 0; view { } }", "fresh");
+        assert_ne!(
+            before, after,
+            "without `@stable`, a rename mints a new identity"
+        );
+    }
+
+    #[test]
+    fn a_stable_components_symbol_survives_a_rename() {
+        let mut interner = NameInterner::new();
+        let before_unit = unit(
+            &mut interner,
+            &["app"],
+            "@stable(\"root\") component Old { view { } }",
+        );
+        let before_mods = resolve_all(vec![before_unit], &mut interner);
+        let old = interner.intern("Old");
+        let before = before_mods[0].table.get(old, Namespace::Type).unwrap().id;
+
+        let after_unit = unit(
+            &mut interner,
+            &["app"],
+            "@stable(\"root\") component Fresh { view { } }",
+        );
+        let after_mods = resolve_all(vec![after_unit], &mut interner);
+        let fresh = interner.intern("Fresh");
+        let after = after_mods[0].table.get(fresh, Namespace::Type).unwrap().id;
+
+        assert_eq!(
+            before, after,
+            "`@stable(\"root\")` pins the component's identity across the rename"
+        );
+    }
+
+    #[test]
+    fn two_states_claiming_the_same_stable_id_is_e5104() {
+        let mut interner = NameInterner::new();
+        let app = unit(
+            &mut interner,
+            &["app"],
+            "component A { @stable(\"x\") state a = 0; @stable(\"x\") state b = 0; view { } }",
+        );
+        let mods = resolve_all(vec![app], &mut interner);
+        assert!(
+            mods.iter()
+                .flat_map(|m| m.errors.iter())
+                .any(|d| d.code == "E5104" && d.message.contains("\"x\"")),
+            "a second `@stable(\"x\")` claim is E5104"
         );
     }
 }

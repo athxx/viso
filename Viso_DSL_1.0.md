@@ -8722,6 +8722,7 @@ RecordPatternField
 | E5101  | Hot Reload 状态重置：活值不可转换为新类型，或 `@migrate` 函数执行失败（警告） |
 | E5102  | Hot Reload Stable ID 冲突（拒绝 reload）                |
 | E5103  | Game Hot Reload 层级：编译器按 Stable ID Diff 选择的重载层与各项改动（提示，§110） |
+| E5104  | 同模块内两个声明/成员的 `@stable("id")` 取值相同（kind 相同时会铸出同一 `SymbolId`）（§88） |
 | E6101  | Native Schema 版本冲突；手写 Native 声明与 Registry 不符或使用非 Schema 类型（§47.2） |
 | E6102  | Native Ownership/Thread Domain 违规                     |
 | E6103  | Capability Denied（运行时）                             |
