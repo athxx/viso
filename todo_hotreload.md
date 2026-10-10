@@ -363,8 +363,10 @@ resets only its own scope.
       component keeps its `SymbolId` across a rename (DSL §88), tested; a plain
       rename still resets. Two decls of the same kind claiming the same
       `@stable` id is `E5104`.
-- [ ] Active tab and navigation state contracts (§15): `Tabs` selection and the
-      navigation stack marked migratable in the widget schema, carried by `NodeKey`.
+- [x] Active tab and navigation state contracts (§15): `MigratableState::ACTIVE_CHILD`;
+      `Tabs` and the newly schema-registered `NavigationStack` marked migratable with
+      it; `commit.rs` carries which immediate child had `hidden` clear across a
+      Replace boundary, tested.
 - [ ] Composition (IME) state carried with the edit buffer when compatible (§15).
 - [ ] Component instances inlined from another file reload when that file changes
       (cross-file dependents found from the module graph).

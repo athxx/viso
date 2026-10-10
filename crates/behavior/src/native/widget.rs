@@ -232,6 +232,11 @@ impl MigratableState {
     pub const SELECTION: MigratableState = MigratableState(1 << 2);
     /// A look property's transition in flight.
     pub const ANIMATION: MigratableState = MigratableState(1 << 3);
+    /// Which immediate child subtree is showing: the one with its `hidden`
+    /// flag clear, among siblings a widget shows one of at a time (a `Tabs`
+    /// panel, a `NavigationStack` page). Selecting and paging never differ in
+    /// this respect, so one bit names both.
+    pub const ACTIVE_CHILD: MigratableState = MigratableState(1 << 4);
 
     /// Both sets.
     pub const fn with(self, other: MigratableState) -> MigratableState {
@@ -255,7 +260,7 @@ impl MigratableState {
 
     /// The set of `bits`, `None` when a bit names no state.
     pub const fn from_bits(bits: u8) -> Option<MigratableState> {
-        if bits & !0b1111 == 0 {
+        if bits & !0b1_1111 == 0 {
             Some(MigratableState(bits))
         } else {
             None

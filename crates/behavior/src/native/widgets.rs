@@ -159,6 +159,8 @@ const SLIDER: &[WidgetProperty] = &[
 
 const SELECTED: &[WidgetProperty] = &[two_way("selected", "U32")];
 
+const CURRENT: &[WidgetProperty] = &[two_way("current", "U32")];
+
 /// The constant width an `AdaptiveScope` classifies instead of the width its
 /// parent gives it.
 const ADAPTIVE_SCOPE: &[WidgetProperty] = &[prop("basis", "Option<MixedLength>")];
@@ -236,6 +238,7 @@ const TEXT_INPUT_EVENTS: &[WidgetEvent] = &[
     WidgetEvent::signal("submitted"),
 ];
 const SELECTED_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("selected_changed", "SelectionChanged")];
+const CURRENT_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("current_changed", "SelectionChanged")];
 const SCROLL_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("scroll_changed", "ScrollChanged")];
 const KEY_SHORTCUT_EVENTS: &[WidgetEvent] = &[WidgetEvent::signal("triggered")];
 
@@ -365,7 +368,25 @@ pub(super) static WIDGETS: NativeLibrary = NativeLibrary {
         layout("Tabs", ROW, &[SELECTED, LAYOUT, TRANSFORM, FOCUS])
             .events(&[SELECTED_EVENTS, STANDARD_EVENTS])
             .slots(CHILDREN)
+            .migratable(
+                MigratableState::FOCUS
+                    .with(MigratableState::ANIMATION)
+                    .with(MigratableState::ACTIVE_CHILD),
+            )
             .interactive(),
+        layout(
+            "NavigationStack",
+            FLEX_NODE,
+            &[CURRENT, LAYOUT, TRANSFORM, FOCUS],
+        )
+        .events(&[CURRENT_EVENTS, STANDARD_EVENTS])
+        .slots(CHILDREN)
+        .migratable(
+            MigratableState::FOCUS
+                .with(MigratableState::ANIMATION)
+                .with(MigratableState::ACTIVE_CHILD),
+        )
+        .interactive(),
         layout("RadioGroup", COLUMN, &[SELECTED, LAYOUT, TRANSFORM, FOCUS])
             .events(&[SELECTED_EVENTS, STANDARD_EVENTS])
             .slots(CHILDREN)

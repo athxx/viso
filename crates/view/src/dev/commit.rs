@@ -628,6 +628,42 @@ struct Carried {
     buffer: Option<Box<Buffer>>,
     /// Its look transitions in flight.
     moving: Vec<LookTransition>,
+    /// The ordinal, among its immediate children, of the one with its
+    /// `hidden` flag clear — a `Tabs`-like widget's selected panel or a
+    /// `NavigationStack`-like widget's top page.
+    active_child: Option<u32>,
+}
+
+/// The ordinal, among `parent`'s immediate children, of the one with its
+/// `hidden` flag clear, or `None` when zero or more than one is (no single
+/// active child to carry).
+fn active_child(store: &NodeStore, parent: NodeId) -> Option<u32> {
+    let mut index = 0u32;
+    let mut found = None;
+    let mut child = store.arena().links(parent).and_then(|l| l.first_child);
+    while let Some(id) = child {
+        if !store.hidden(id) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(index);
+        }
+        index += 1;
+        child = store.arena().links(id).and_then(|l| l.next_sibling);
+    }
+    found
+}
+
+/// Shows `node`'s immediate child at ordinal `index` and hides every other —
+/// the [`active_child`] carry's inverse, applied to the rebuilt node.
+fn restore_active_child(store: &mut NodeStore, node: NodeId, index: u32) {
+    let mut ordinal = 0u32;
+    let mut child = store.arena().links(node).and_then(|l| l.first_child);
+    while let Some(id) = child {
+        store.set_hidden(id, ordinal != index);
+        ordinal += 1;
+        child = store.arena().links(id).and_then(|l| l.next_sibling);
+    }
 }
 
 /// Lifts from the static nodes of the last-good view the state each of
@@ -695,11 +731,15 @@ fn lift(
             .then(|| rt.text_edits.take(old))
             .flatten(),
         moving,
+        active_child: carries(MigratableState::ACTIVE_CHILD)
+            .then(|| active_child(rt.store, old))
+            .flatten(),
     };
     let holds = carried.focus
         || carried.scroll.is_some()
         || carried.buffer.is_some()
-        || !carried.moving.is_empty();
+        || !carried.moving.is_empty()
+        || carried.active_child.is_some();
     holds.then_some(carried)
 }
 
@@ -749,6 +789,9 @@ fn carry_in(
         if let Some(buffer) = carried.buffer {
             rt.store.set_text_request(node, buffer.request());
             rt.text_edits.register(node, buffer);
+        }
+        if let Some(index) = carried.active_child {
+            restore_active_child(rt.store, node, index);
         }
         moving.extend(carried.moving.into_iter().map(|m| (node, m)));
     }
@@ -1134,4 +1177,58 @@ fn mount_behavior(
         }
     }
     *rt.view = host;
+}
+
+#[cfg(test)]
+mod active_child_tests {
+    use viso_ui::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+
+    use super::{active_child, restore_active_child};
+
+    /// A row of three leaves, for exercising the active-child carry.
+    fn three_children(store: &mut NodeStore) -> (viso_ui::NodeId, [viso_ui::NodeId; 3]) {
+        let mut kids = [None; 3];
+        let parent = {
+            let mut cx = BuildCx::new(store);
+            cx.flex(FlexStyle::default(), |cx| {
+                for kid in kids.iter_mut() {
+                    *kid = Some(cx.leaf(LeafStyle::default()).id());
+                }
+            })
+            .id()
+        };
+        (parent, kids.map(|k| k.expect("built")))
+    }
+
+    #[test]
+    fn the_one_unhidden_child_is_the_active_one() {
+        let mut store = NodeStore::new();
+        let (parent, kids) = three_children(&mut store);
+        store.set_hidden(kids[0], true);
+        store.set_hidden(kids[2], true);
+        assert_eq!(active_child(&store, parent), Some(1));
+    }
+
+    #[test]
+    fn no_active_child_when_none_or_several_show() {
+        let mut store = NodeStore::new();
+        let (parent, kids) = three_children(&mut store);
+        for kid in kids {
+            store.set_hidden(kid, true);
+        }
+        assert_eq!(active_child(&store, parent), None, "none showing");
+        store.set_hidden(kids[0], false);
+        store.set_hidden(kids[1], false);
+        assert_eq!(active_child(&store, parent), None, "two showing");
+    }
+
+    #[test]
+    fn restoring_shows_only_the_named_ordinal() {
+        let mut store = NodeStore::new();
+        let (parent, kids) = three_children(&mut store);
+        restore_active_child(&mut store, parent, 2);
+        assert!(store.hidden(kids[0]));
+        assert!(store.hidden(kids[1]));
+        assert!(!store.hidden(kids[2]));
+    }
 }
