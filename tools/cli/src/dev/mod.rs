@@ -645,6 +645,7 @@ mod tests {
                     },
                 }],
                 notices: Vec::new(),
+                state_resets: Vec::new(),
                 timings: PatchTimings::default(),
             }));
         }
