@@ -688,13 +688,13 @@ InsertNode(parent, position, type, initial bindings)
 一次 commit 只触及被 reload 的 view 自己的子树：
 
 - 结构保持且不含 region 的 patch 按静态序号原地复用该 view 的每个静态节点，只重设 size/gap/长度等声明值，只为原本未绑定的边标脏，只 flush 值变化的 cell；因此一个属性编辑只标脏该节点该属性的 `DirtyClass`（宽度编辑 = 该节点 `LAYOUT|PAINT`，文本编辑 = 该文本节点一次重新 shaping，其它节点不脏）；
-- 结构性 patch 释放该 view 的根并在**同一父节点、同一兄弟位置**重建新根（无父节点时成为新的独立根）；
+- 结构性 patch 按 `StructuralOp::{Remove,Replace,Insert}` 逐节点改动，不是释放该 view 的根重建：只有 op 具名的节点被释放/新建，未具名的每个节点原地保留它的 `NodeId`，不需要为它迁移任何状态；`Replace` 新建的子树仍按 migration plan 把被替换节点（及其因祖先被替换而一并重建的、本应保留的子节点）的可迁移状态装到新节点；
 - rebind 只替换该 view 节点的静态边，其它节点的边保持不变；
 - 只移除该 view 自己注册的 region / value hook。
 
 同一窗口中 view 之外的内容（兄弟节点、其它 view、宿主 Rust UI）不受影响。
 
-结构性 patch 释放旧子树前，按 migration plan 取出每个被保留节点的可迁移状态（焦点、非零滚动偏移、编辑缓冲、进行中的转场，以 Widget Schema 标记为准，DSL §94.2），重建后按 plan 的候选 `NodeRef` 装到新节点；进行中的转场等新视图投递值后再续上；Region 挂载的节点在新 Region 挂载后，按候选 region/arm/item 与外层 `for` 的 Item Key 路径装到新挂载的节点。滚动偏移推迟到新节点首次布局后恢复。焦点原在该 view 内而未迁移时清除焦点并报告 `focus_lost`，未迁移的非零滚动偏移计入 `scroll_lost`。
+结构性 patch 释放一个 `Replace` 节点的旧子树前，按 migration plan 取出它、及因它一并重建的每个本应保留的子节点的可迁移状态（焦点、非零滚动偏移、编辑缓冲、进行中的转场、`ACTIVE_CHILD` 标记的某个 Widget 的"哪个直接子节点在显示"，以 Widget Schema 标记为准，DSL §94.2），重建后按 plan 的候选 `NodeRef` 装到新节点；进行中的转场等新视图投递值后再续上；Region 挂载的节点在新 Region 挂载后，按候选 region/arm/item 与外层 `for` 的 Item Key 路径装到新挂载的节点。滚动偏移推迟到新节点首次布局后恢复。焦点原在该 view 内而未迁移时清除焦点并报告 `focus_lost`，未迁移的非零滚动偏移计入 `scroll_lost`。
 
 ---
 
@@ -776,7 +776,7 @@ animation progress when animation identity remains compatible
 
 每类状态必须有自己的 preservation contract。
 
-当前 contract：focus owner、scroll offset、text editing（文本、选区、composition）与进行中的 `transition.*`（DSL §94.2）随被保留节点迁移（见 Commit 作用域）。
+当前 contract：focus owner、scroll offset、text editing（文本、选区、composition）、进行中的 `transition.*`（DSL §94.2）与 active tab/navigation state（`MigratableState::ACTIVE_CHILD`：`Tabs`/`NavigationStack` 等 Widget 的"哪个直接子节点的 `hidden` 为否"）随被保留节点迁移（见 Commit 作用域）。
 
 不能用“dump UI object memory”实现。
 
