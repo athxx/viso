@@ -408,6 +408,34 @@ fn a_removed_sibling_keeps_the_rest_s_live_identity() {
 }
 
 #[test]
+fn a_new_states_scoped_reset_names_its_own_key_not_a_kept_sibling() {
+    let (mut live, last_good) = mount("Row { Text { text: label; } }");
+
+    let done = reload(
+        &mut live,
+        &last_good,
+        "Row { Text { text: label; } Text { text: extra; } }",
+    );
+
+    let extra = done
+        .candidate
+        .symbol_for_name("extra")
+        .expect("extra is a new source");
+    let label = done
+        .candidate
+        .symbol_for_name("label")
+        .expect("label is a kept source");
+    assert!(
+        done.report.state_resets.contains(&extra),
+        "the new state's own identity is the scoped reset's owner"
+    );
+    assert!(
+        !done.report.state_resets.contains(&label),
+        "a kept sibling is not reported as a scoped reset"
+    );
+}
+
+#[test]
 fn a_kept_text_input_keeps_its_identity_and_buffer_past_an_inserted_sibling() {
     let (mut live, last_good) = mount("Column { TextInput { width: 100dp; height: 20dp; } }");
     lay_out(&mut live);

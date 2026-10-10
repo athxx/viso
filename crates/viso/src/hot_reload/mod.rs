@@ -33,9 +33,10 @@ use viso_ui::NodeId;
 use viso_ui::state::{StateId, StateKey};
 use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, static_nodes};
 use viso_view::dev::wire::{
-    CommitCounts, Domain, Domains, FileCommit, FileId, MAX_NOTICES, MountEntry, NACK_UNKNOWN_FILE,
-    NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack, PatchSection, PatchTimings,
-    RESET_NOTICE, ReloadPlan, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint, Stage,
+    CommitCounts, Domain, Domains, FileCommit, FileId, MAX_NOTICES, MAX_SCOPED_RESETS, MountEntry,
+    NACK_UNKNOWN_FILE, NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack,
+    PatchSection, PatchTimings, RESET_NOTICE, ReloadPlan, Revision, RuntimeIdentity,
+    RuntimeMessage, SchemaFingerprint, ScopedReset, Stage,
 };
 use viso_view::{MountRecord, ViewHost, take_mounts};
 
@@ -302,6 +303,7 @@ impl HotReloadSession {
         identity.current_revision = staged.next_revision;
         let mut files = Vec::with_capacity(staged.views.len());
         let mut notices = Vec::new();
+        let mut state_resets = Vec::new();
         for view in staged.views {
             let mut counts = CommitCounts::default();
             let statics = self.files[view.file].statics;
@@ -336,6 +338,16 @@ impl HotReloadSession {
                         notices.push(notice);
                     }
                 }
+                for reset in report.state_resets {
+                    let reset = ScopedReset {
+                        file: FileId(view.file as u32),
+                        owner: reset.owner,
+                        code: reset.code.to_owned(),
+                    };
+                    if state_resets.len() < MAX_SCOPED_RESETS {
+                        state_resets.push(reset);
+                    }
+                }
             }
             files.push(FileCommit {
                 file: FileId(view.file as u32),
@@ -353,6 +365,7 @@ impl HotReloadSession {
             applied_domains: staged.domains,
             files,
             notices,
+            state_resets,
             timings: PatchTimings {
                 decode_us: micros(staged.decode),
                 stage_us: micros(staged.stage),

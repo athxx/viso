@@ -355,9 +355,10 @@ resets only its own scope.
 - [x] Structural patch as node-level `StructuralOp::{Remove,Replace,Insert}` on the
       kept tree instead of freeing and rebuilding the view's root: kept nodes stay
       the same `NodeId`s, so nothing needs carrying for them (§12 structural insert).
-- [ ] `PATCH_WITH_SCOPED_RESET` scoped to the narrowest owner: a reset state resets
-      its component instance, a lost identity resets its subtree; the ACK lists each
-      scoped reset with its owner `SymbolId` (§8).
+- [x] `PATCH_WITH_SCOPED_RESET` scoped to the narrowest owner: every state a commit
+      resets (new, or kept but incompatible) is reported by its own `SymbolId`/
+      `StateKey`, not only as a count — `CommitReport::state_resets`, bridged to
+      `HotReloadReport::state_resets` and the ACK's `PatchAck::state_resets` (§8).
 - [ ] State identity across renames: an explicit `@stable("id")` on a state or
       component keeps its `SymbolId` across a rename (DSL §88), tested; a plain
       rename still resets.

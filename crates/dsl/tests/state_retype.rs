@@ -213,6 +213,16 @@ fn an_unrelated_type_resets_and_other_states_are_kept() {
     assert_eq!(live.value("label"), Some(Value::bool(false)), "reset");
     assert_eq!(report.notices.len(), 1);
     assert!(report.notices[0].message.contains("`label`"));
+    let label = live.last_good.symbol_for_name("label").unwrap();
+    let count = live.last_good.symbol_for_name("count").unwrap();
+    assert!(
+        report.state_resets.contains(&label),
+        "the reset state's own identity is the scoped reset's owner"
+    );
+    assert!(
+        !report.state_resets.contains(&count),
+        "the kept state is not reported as a scoped reset"
+    );
 }
 
 #[test]
