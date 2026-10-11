@@ -11,7 +11,8 @@ use viso_dsl::frontend::{Origin, compile_file};
 use viso_gpu::{
     BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, DrawCommand, DrawList, Geometry,
     GpuBackend, InlineUniforms, LoadOp, MetalBackend, MetalCompiler, MetalProgram, PipelineId,
-    ProgramDesc, RenderPass, RenderTarget, TextureDesc, TextureFormat,
+    ProgramCode, ProgramCompiler, ProgramDesc, RenderPass, RenderTarget, TextureDesc,
+    TextureFormat,
 };
 use viso_shader::program::{
     FRAGMENT_ENTRY, Program, ProgramError, ProgramReload, ReloadError, ReloadEvent,
@@ -46,15 +47,15 @@ fn compiler(
     c: MetalCompiler,
 ) -> impl FnMut(&Program, &ShaderInterface) -> Result<MetalProgram, String> {
     move |p, interface| {
-        let msl = emit(p, interface, Target::Msl);
+        let msl = ProgramCode::Msl(emit(p, interface, Target::Msl));
         c.compile(&ProgramDesc {
             label: &p.name,
-            msl: &msl,
+            code: &msl,
             vertex_entry: VERTEX_ENTRY,
             fragment_entry: FRAGMENT_ENTRY,
             color_format: TextureFormat::Bgra8Unorm,
             blend: BlendMode::PremultipliedOver,
-            vertex_textures: interface.vertex_textures,
+            abi: interface.abi(),
         })
     }
 }
@@ -100,9 +101,13 @@ fn an_edit_compiles_off_thread_and_swaps_with_its_instance_buffer() {
         "instance pos: Vec2F32; instance size: Vec2F32;",
         "Vec4F32(1.0)",
     );
-    let mut reload = ProgramReload::new(first, |s: &String| lower(s), compiler(backend.compiler()))
-        .expect("builds");
-    let mut pipeline = backend.install_program(&reload.live().pipeline);
+    let (mut reload, compiled) = ProgramReload::new(
+        first,
+        |s: &String| lower(s),
+        compiler(backend.program_compiler()),
+    )
+    .expect("builds");
+    let mut pipeline = backend.install_program(compiled);
     let compiles = backend.library_compiles();
 
     // The host's instances, encoded through the live layout.
@@ -166,13 +171,12 @@ fn an_edit_compiles_off_thread_and_swaps_with_its_instance_buffer() {
     );
     let migration = swap.instance.expect("the instance layout changed");
     let moved = migration.reencode(&bytes);
-    let next = backend.install_program(&reload.live().pipeline);
+    let next = backend.install_program(swap.pipeline);
     let next_buffer = backend.create_buffer(&buffer_desc(moved.len()));
     backend.write_buffer(next_buffer, 0, &moved);
     backend.destroy_pipeline(pipeline);
     backend.destroy_buffer(buffer);
     (pipeline, buffer) = (next, next_buffer);
-    drop(swap.retired);
 
     let live = reload.live();
     let stride = live.interface.instance.size as usize;
@@ -261,7 +265,7 @@ fn a_backend_rejection_keeps_the_pipeline_that_draws() {
     // The worker's compiler is Metal's; a shader named `Rejected` reaches it
     // with a line Metal cannot compile, standing for any source the front
     // end accepts and the backend does not.
-    let metal = backend.compiler();
+    let metal = backend.program_compiler();
     let compile = move |p: &Program, interface: &ShaderInterface| {
         let mut msl = emit(p, interface, Target::Msl);
         if &*p.name == "Rejected" {
@@ -269,21 +273,21 @@ fn a_backend_rejection_keeps_the_pipeline_that_draws() {
         }
         metal.compile(&ProgramDesc {
             label: &p.name,
-            msl: &msl,
+            code: &ProgramCode::Msl(msl),
             vertex_entry: VERTEX_ENTRY,
             fragment_entry: FRAGMENT_ENTRY,
             color_format: TextureFormat::Bgra8Unorm,
             blend: BlendMode::PremultipliedOver,
-            vertex_textures: interface.vertex_textures,
+            abi: interface.abi(),
         })
     };
     let first = source(
         "instance pos: Vec2F32; instance size: Vec2F32;",
         "Vec4F32(1.0, 0.5, 0.25, 1.0)",
     );
-    let mut reload =
+    let (mut reload, compiled) =
         ProgramReload::new(first.clone(), |s: &String| lower(s), compile).expect("builds");
-    let pipeline = backend.install_program(&reload.live().pipeline);
+    let pipeline = backend.install_program(compiled);
     let before = draw_dots(&mut backend, pipeline, &reload);
     let lit = before
         .as_chunks::<4>()

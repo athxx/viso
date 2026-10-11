@@ -229,6 +229,16 @@ impl GpuBackend for NagaMetal {
         self.metal.create_bind_group(desc)
     }
 
+    type Compiler = <MetalBackend as GpuBackend>::Compiler;
+
+    fn program_compiler(&self) -> Self::Compiler {
+        self.metal.program_compiler()
+    }
+
+    fn install_program(&mut self, program: viso_gpu::ProgramOf<MetalBackend>) -> PipelineId {
+        self.metal.install_program(program)
+    }
+
     fn destroy_buffer(&mut self, id: BufferId) {
         self.metal.destroy_buffer(id);
     }

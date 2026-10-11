@@ -523,4 +523,10 @@ pub struct Caps {
     /// escalates on scene shape and measured cull cost, and this only says whether
     /// the GPU plan exists to be reached at all (§20, §7.2).
     pub indirect_draw: bool,
+    /// The alignment, in bytes, of a user program draw's instance offset
+    /// ([`crate::program`]): the program reads its instances from a storage
+    /// buffer bound at that offset, and a backend's storage binding has a
+    /// minimum offset alignment (Vulkan's and WebGPU's
+    /// `minStorageBufferOffsetAlignment`). A power of two, at least 4.
+    pub program_instance_align: u32,
 }

@@ -14,6 +14,7 @@
 use viso_handle::RawWindowHandle;
 
 use crate::instance::InstanceLayout;
+use crate::program::ProgramCompiler;
 use crate::resource::{
     BindGroupDesc, BufferDesc, Caps, PipelineDesc, SamplerDesc, TextureDesc, TextureFormat,
 };
@@ -234,6 +235,9 @@ pub struct DrawList<'a> {
     pub passes: &'a [RenderPass],
 }
 
+/// The program type a backend's compiler builds.
+pub type ProgramOf<B> = <<B as GpuBackend>::Compiler as ProgramCompiler>::Program;
+
 /// The single RHI trait. Cold-path methods create resources; the hot path is
 /// `write_buffer` + `encode` + `present`.
 pub trait GpuBackend {
@@ -258,6 +262,18 @@ pub trait GpuBackend {
 
     /// Create a bind group.
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId;
+
+    /// The compiler that builds this backend's user programs.
+    type Compiler: ProgramCompiler;
+
+    /// A compiler for user programs, usable from any thread (see
+    /// [`crate::program`]).
+    fn program_compiler(&self) -> Self::Compiler;
+
+    /// Installs a compiled user program as a pipeline. Retire it with
+    /// [`destroy_pipeline`](Self::destroy_pipeline) like any other: a frame in
+    /// flight keeps drawing with it until the fence passes.
+    fn install_program(&mut self, program: ProgramOf<Self>) -> PipelineId;
 
     /// Retire a buffer for deferred destruction.
     ///

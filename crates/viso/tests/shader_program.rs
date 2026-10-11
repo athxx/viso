@@ -7,7 +7,10 @@
 
 use std::process::Command;
 use viso_dsl::frontend::{Origin, compile_file};
-use viso_gpu::{BlendMode, MetalBackend, ProgramDesc, TextureFormat};
+use viso_gpu::{
+    BlendMode, GpuBackend, MetalBackend, ProgramAbi, ProgramCode, ProgramCompiler, ProgramDesc,
+    TextureFormat,
+};
 
 use viso_shader::program::{FRAGMENT_ENTRY, Program, ShaderInterface, Target, VERTEX_ENTRY, emit};
 
@@ -45,16 +48,17 @@ fn metal(p: &Program, interface: &ShaderInterface) {
         eprintln!("{msl}");
     }
     let backend = MetalBackend::new();
+    let code = ProgramCode::Msl(msl.clone());
     let desc = ProgramDesc {
         label: &p.name,
-        msl: &msl,
+        code: &code,
         vertex_entry: VERTEX_ENTRY,
         fragment_entry: FRAGMENT_ENTRY,
         color_format: TextureFormat::Bgra8Unorm,
         blend: BlendMode::PremultipliedOver,
-        vertex_textures: interface.vertex_textures,
+        abi: interface.abi(),
     };
-    if let Err(log) = backend.compiler().compile(&desc) {
+    if let Err(log) = backend.program_compiler().compile(&desc) {
         panic!("{log}\n--- MSL ---\n{msl}");
     }
 }
@@ -273,17 +277,19 @@ shader Displace {
 #[test]
 fn a_compile_error_reports_the_backend_log() {
     let backend = MetalBackend::new();
+    let code =
+        ProgramCode::Msl("vertex float4 viso_vertex() { return undefined_thing; }".to_owned());
     let desc = ProgramDesc {
         label: "broken",
-        msl: "vertex float4 viso_vertex() { return undefined_thing; }",
+        code: &code,
         vertex_entry: VERTEX_ENTRY,
         fragment_entry: FRAGMENT_ENTRY,
         color_format: TextureFormat::Bgra8Unorm,
         blend: BlendMode::Replace,
-        vertex_textures: false,
+        abi: ProgramAbi::default(),
     };
     let log = backend
-        .compiler()
+        .program_compiler()
         .compile(&desc)
         .err()
         .expect("a compile error");

@@ -21,7 +21,7 @@
 //! [`LAYOUT_VERSION`] enters [`ShaderInterface::layout_key`], so a change to
 //! these rules changes every pipeline cache key.
 
-use viso_gpu::{AttrFormat, InstanceLayout};
+use viso_gpu::{AttrFormat, InstanceLayout, ProgramAbi};
 
 use super::{Binding, ExprKind, Program, ProgramError, Scalar, Span, Stage, Ty};
 
@@ -328,6 +328,17 @@ pub fn attr_format(ty: Ty) -> Option<AttrFormat> {
 }
 
 impl ShaderInterface {
+    /// The interface as the GPU backends bind it.
+    pub fn abi(&self) -> ProgramAbi {
+        ProgramAbi {
+            instance_stride: self.instance.size,
+            uniform_size: self.uniforms.size,
+            textures: self.textures.len() as u32,
+            samplers: self.samplers.len() as u32,
+            vertex_textures: self.vertex_textures,
+        }
+    }
+
     /// A key that changes with the layout rules and with any descriptor:
     /// the pipeline cache key's layout part.
     pub fn layout_key(&self) -> u64 {

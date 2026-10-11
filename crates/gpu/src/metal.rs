@@ -48,6 +48,7 @@ use crate::backend::{
     RenderTarget,
 };
 use crate::instance::InstanceLayout;
+use crate::program::{ProgramCode, ProgramCompiler, ProgramDesc};
 use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
     PipelineDesc, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
@@ -92,24 +93,7 @@ struct MetalPipeline {
     vertex_textures: bool,
 }
 
-/// A user shader program for [`MetalCompiler::compile`]: MSL text with a
-/// `viso_vertex`-style vertex and fragment entry, the uniform block at
-/// `buffer(0)`, the instance array at `buffer(1)`, textures and samplers at
-/// their indices.
-#[derive(Debug, Clone, Copy)]
-pub struct ProgramDesc<'a> {
-    pub label: &'a str,
-    pub msl: &'a str,
-    pub vertex_entry: &'a str,
-    pub fragment_entry: &'a str,
-    pub color_format: TextureFormat,
-    pub blend: BlendMode,
-    /// Whether the vertex entry samples textures.
-    pub vertex_textures: bool,
-}
-
-/// A program compiled off the render thread, for
-/// [`MetalBackend::install_program`].
+/// A user program compiled off the render thread, ready to install.
 pub struct MetalProgram {
     state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     vertex_textures: bool,
@@ -122,23 +106,29 @@ pub struct MetalCompiler {
     library_compiles: Arc<AtomicU64>,
 }
 
-impl MetalCompiler {
-    /// The program `desc` describes, compiled with IEEE-preserving math, or
-    /// the Metal compiler's log.
-    ///
-    /// # Errors
-    ///
-    /// The compiler's or the pipeline builder's message.
-    pub fn compile(&self, desc: &ProgramDesc<'_>) -> Result<MetalProgram, String> {
+impl ProgramCompiler for MetalCompiler {
+    type Program = MetalProgram;
+
+    /// Compiles the program's MSL with IEEE-preserving math: programs are
+    /// compared against the reference interpreter, so the compiler may not
+    /// reassociate or flush.
+    fn compile(&self, desc: &ProgramDesc<'_>) -> Result<MetalProgram, String> {
+        desc.check_abi()?;
+        let ProgramCode::Msl(msl) = desc.code else {
+            return Err(format!(
+                "{}: Metal compiles MSL, not {:?}",
+                desc.label,
+                desc.code.lang()
+            ));
+        };
         let options = MTLCompileOptions::new();
-        // Programs are compared against the reference interpreter, so the
-        // compiler may not reassociate or flush; `mathMode`, its successor,
-        // needs a newer macOS than this backend supports.
+        // `mathMode`, the successor, needs a newer macOS than this backend
+        // supports.
         #[allow(deprecated)]
         options.setFastMathEnabled(false);
         let state = build_state(
             &self.device,
-            desc.msl,
+            msl,
             desc.vertex_entry,
             desc.fragment_entry,
             desc.color_format,
@@ -148,7 +138,7 @@ impl MetalCompiler {
         self.library_compiles.fetch_add(1, Ordering::Relaxed);
         Ok(MetalProgram {
             state,
-            vertex_textures: desc.vertex_textures,
+            vertex_textures: desc.abi.vertex_textures,
         })
     }
 }
@@ -283,6 +273,7 @@ impl MetalBackend {
                 // (§20.2). Atlas + bind-group batching is the path that exists.
                 bindless_texture_slots: 0,
                 indirect_draw: false,
+                program_instance_align: 4,
             },
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
@@ -290,27 +281,6 @@ impl MetalBackend {
             reclaim_scratch: Vec::new(),
             library_compiles: Arc::new(AtomicU64::new(0)),
         }
-    }
-
-    /// A compiler for user programs, usable from any thread.
-    pub fn compiler(&self) -> MetalCompiler {
-        MetalCompiler {
-            device: self.device.clone(),
-            library_compiles: Arc::clone(&self.library_compiles),
-        }
-    }
-
-    /// Installs a compiled program as a pipeline. Draw it with its uniform
-    /// block bound as a [`Binding::Uniform`] buffer (or inline uniforms) and
-    /// its instances as the instance buffer.
-    pub fn install_program(&mut self, program: &MetalProgram) -> PipelineId {
-        self.pipelines
-            .insert(MetalPipeline {
-                state: program.state.clone(),
-                builtin: BuiltinShader::Quad,
-                vertex_textures: program.vertex_textures,
-            })
-            .into()
     }
 
     /// Resolve a buffer handle, panicking on a stale/unknown one (an internal
@@ -485,6 +455,25 @@ unsafe fn configure_layer_geometry(
 
 impl GpuBackend for MetalBackend {
     const SHADER_LANG: ShaderLang = ShaderLang::Msl;
+
+    type Compiler = MetalCompiler;
+
+    fn program_compiler(&self) -> MetalCompiler {
+        MetalCompiler {
+            device: self.device.clone(),
+            library_compiles: Arc::clone(&self.library_compiles),
+        }
+    }
+
+    fn install_program(&mut self, program: MetalProgram) -> PipelineId {
+        self.pipelines
+            .insert(MetalPipeline {
+                state: program.state,
+                builtin: BuiltinShader::Quad,
+                vertex_textures: program.vertex_textures,
+            })
+            .into()
+    }
 
     fn create_buffer(&mut self, desc: &BufferDesc) -> BufferId {
         // Shared storage: CPU-visible, coherent on UMA — no `didModifyRange:`.

@@ -32,14 +32,16 @@
 //! - **Swapchains** are FIFO, recreated lazily (on resize, out-of-date or
 //!   suboptimal) at the next `begin_frame`, with one render-finished semaphore
 //!   per image.
-//! - **User programs** ([`VulkanBackend::install_program`]) are SPIR-V laid
-//!   out as the shader program ABI the WGSL emitter declares: set 0 holds the
-//!   uniform block (binding 0) and the instances as a read-only storage buffer
-//!   (binding 1), set 1 the textures then the samplers. Each program has its
-//!   own pipeline layout; its descriptor sets are written per draw from the
-//!   bind group and the instance buffer, out of descriptor pools the frame slot
-//!   rewinds when it is reopened. Like the built-ins, a program's SPIR-V
-//!   flips clip-space y in its vertex stage.
+//! - **User programs** ([`VulkanCompiler`]) are SPIR-V laid out as the shader
+//!   program ABI the WGSL emitter declares: set 0 holds the uniform block
+//!   (binding 0) and the instances as a read-only storage buffer (binding 1),
+//!   set 1 the textures then the samplers. Each program has its own pipeline
+//!   layout, built with its pipeline on any thread; its descriptor sets are
+//!   written per draw from the bind group and the instance buffer, out of
+//!   descriptor pools the frame slot rewinds when it is reopened. A draw's
+//!   inline uniforms are staged into the slot's upload arena and bound as the
+//!   uniform block. Like the built-ins, a program's SPIR-V flips clip-space y
+//!   in its vertex stage.
 
 use core::ffi::{CStr, c_char, c_void};
 use std::ffi::CString;
@@ -55,6 +57,7 @@ use crate::backend::{
     RenderPass, RenderTarget,
 };
 use crate::instance::{AttrFormat, InstanceLayout};
+use crate::program::{PROGRAM_TEXTURES, ProgramCode, ProgramCompiler, ProgramDesc};
 use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
     PipelineDesc, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
@@ -122,22 +125,8 @@ struct ProgramLayout {
     sets: [vk::DescriptorSetLayout; 2],
     textures: u32,
     samplers: u32,
-}
-
-/// A user shader program for [`VulkanBackend::install_program`]: one SPIR-V
-/// module holding both entries, laid out as the shader program ABI.
-pub struct VulkanProgramDesc<'a> {
-    pub label: &'a str,
-    /// SPIR-V words as little-endian bytes.
-    pub spirv: &'a [u8],
-    pub vertex_entry: &'a str,
-    pub fragment_entry: &'a str,
-    pub color_format: TextureFormat,
-    pub blend: BlendMode,
-    /// The textures the program declares, bound at set 1 from binding 0.
-    pub textures: u32,
-    /// The samplers it declares, bound at set 1 after the textures.
-    pub samplers: u32,
+    /// Bytes of the uniform block an inline payload is staged into.
+    uniform_size: u32,
 }
 
 /// A bind group: one descriptor set of the shared layout, the pool it came
@@ -279,6 +268,9 @@ pub struct VulkanBackend {
     /// The device's `minStorageBufferOffsetAlignment`: a program's instance
     /// offset is a multiple of it.
     storage_align: u64,
+    /// The device's `minUniformBufferOffsetAlignment`, where a staged inline
+    /// uniform block starts.
+    uniform_align: u64,
 }
 
 impl Default for VulkanBackend {
@@ -534,11 +526,14 @@ impl VulkanBackend {
                 compute_dispatch: false,
                 bindless_texture_slots: 0,
                 indirect_draw: false,
+                program_instance_align: (limits.min_storage_buffer_offset_alignment.max(4) as u32)
+                    .next_power_of_two(),
             },
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
             reclaim_scratch: Vec::new(),
             storage_align: limits.min_storage_buffer_offset_alignment.max(1),
+            uniform_align: limits.min_uniform_buffer_offset_alignment.max(16),
         })
     }
 
@@ -747,32 +742,8 @@ impl VulkanBackend {
         {
             return e.pass;
         }
-        let attachment = [vk::AttachmentDescription::default()
-            .format(format)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(if clear {
-                vk::AttachmentLoadOp::CLEAR
-            } else {
-                vk::AttachmentLoadOp::LOAD
-            })
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
-        let color_ref = [vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
-        let subpass = [vk::SubpassDescription::default()
-            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(&color_ref)];
-        let info = vk::RenderPassCreateInfo::default()
-            .attachments(&attachment)
-            .subpasses(&subpass);
-        // SAFETY: `info` describes one color attachment used by one subpass; the
-        // layouts around it are established by explicit barriers.
-        let pass = unsafe { self.device.create_render_pass(&info, None) }
-            .expect("failed to create a Vulkan render pass");
+        // SAFETY: the device is live.
+        let pass = unsafe { create_render_pass(&self.device, format, clear) };
         self.render_passes.push(RenderPassEntry {
             format,
             clear,
@@ -926,13 +897,18 @@ impl VulkanBackend {
     /// Copy `bytes` into the current slot's staging arena, returning the chunk
     /// buffer and byte offset. The recording must be open.
     fn stage(&mut self, bytes: &[u8]) -> (vk::Buffer, u64) {
+        // Texel-copy offsets must be a multiple of 4 and of the texel size; 16
+        // covers every format.
+        self.stage_aligned(bytes, 16)
+    }
+
+    /// [`stage`](Self::stage) at an offset that is a multiple of `align`.
+    fn stage_aligned(&mut self, bytes: &[u8], align: u64) -> (vk::Buffer, u64) {
         let size = bytes.len() as u64;
         loop {
             let staging = &mut self.slots[self.slot].staging;
             if let Some(chunk) = staging.chunks.get(staging.current) {
-                // Texel-copy offsets must be a multiple of 4 and of the texel
-                // size; 16 covers every format.
-                let offset = staging.cursor.next_multiple_of(16);
+                let offset = staging.cursor.next_multiple_of(align);
                 if offset + size <= chunk.size {
                     // SAFETY: `offset + size` lies inside the chunk's mapping,
                     // and the slot's previous reader finished before it opened.
@@ -951,8 +927,10 @@ impl VulkanBackend {
                 continue;
             }
             let chunk_size = size.max(STAGING_CHUNK).next_power_of_two();
-            let (buffer, memory, ptr) =
-                self.create_host_buffer(chunk_size, vk::BufferUsageFlags::TRANSFER_SRC);
+            let (buffer, memory, ptr) = self.create_host_buffer(
+                chunk_size,
+                vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::UNIFORM_BUFFER,
+            );
             let staging = &mut self.slots[self.slot].staging;
             staging.chunks.push(StagingChunk {
                 buffer,
@@ -1017,162 +995,20 @@ impl VulkanBackend {
         blend: BlendMode,
         layout: vk::PipelineLayout,
     ) -> Result<vk::Pipeline, vk::Result> {
-        let vertex_entry = CString::new(vertex_entry).expect("entry name");
-        let fragment_entry = CString::new(fragment_entry).expect("entry name");
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(module)
-                .name(&vertex_entry),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(module)
-                .name(&fragment_entry),
-        ];
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        let viewport = vk::PipelineViewportStateCreateInfo::default()
-            .viewport_count(1)
-            .scissor_count(1);
-        let raster = vk::PipelineRasterizationStateCreateInfo::default()
-            .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .line_width(1.0);
-        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        let blend_attachment = [match blend {
-            BlendMode::Replace => vk::PipelineColorBlendAttachmentState::default()
-                .color_write_mask(vk::ColorComponentFlags::RGBA),
-            BlendMode::PremultipliedOver => vk::PipelineColorBlendAttachmentState::default()
-                .blend_enable(true)
-                .src_color_blend_factor(vk::BlendFactor::ONE)
-                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .color_blend_op(vk::BlendOp::ADD)
-                .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .alpha_blend_op(vk::BlendOp::ADD)
-                .color_write_mask(vk::ColorComponentFlags::RGBA),
-        }];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachment);
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
         let render_pass = self.render_pass(vk_format(color_format), true);
-        let info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&stages)
-            .vertex_input_state(vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport)
-            .rasterization_state(&raster)
-            .multisample_state(&multisample)
-            .color_blend_state(&blend)
-            .dynamic_state(&dynamic)
-            .layout(layout)
-            .render_pass(render_pass)
-            .subpass(0);
-        // SAFETY: every state block borrows live locals; the caller vouches for
-        // the module and the layout.
+        // SAFETY: forwarded from the caller; the render pass is live.
         unsafe {
-            self.device
-                .create_graphics_pipelines(self.pipeline_cache, &[info], None)
-                .map(|p| p[0])
-                .map_err(|(_, e)| e)
-        }
-    }
-
-    /// Installs a user program: SPIR-V laid out as the shader program ABI
-    /// (see the module docs). Draw it with its uniform block bound as a
-    /// [`Binding::Uniform`] buffer, its textures and samplers in the bind
-    /// group in declaration order, and its instances as the instance buffer
-    /// at an offset that is a multiple of the device's storage-buffer offset
-    /// alignment.
-    ///
-    /// # Errors
-    ///
-    /// Malformed SPIR-V, or the driver's refusal of the module or pipeline.
-    pub fn install_program(&mut self, desc: &VulkanProgramDesc<'_>) -> Result<PipelineId, String> {
-        let label = desc.label;
-        let words = ash::util::read_spv(&mut Cursor::new(desc.spirv))
-            .map_err(|e| format!("{label}: malformed SPIR-V: {e}"))?;
-        let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
-        let buffers = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(stages),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(stages),
-        ];
-        let images: Vec<vk::DescriptorSetLayoutBinding<'_>> = (0..desc.textures)
-            .map(|i| (i, vk::DescriptorType::SAMPLED_IMAGE))
-            .chain((0..desc.samplers).map(|i| (desc.textures + i, vk::DescriptorType::SAMPLER)))
-            .map(|(binding, ty)| {
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(binding)
-                    .descriptor_type(ty)
-                    .descriptor_count(1)
-                    .stage_flags(stages)
-            })
-            .collect();
-        // SAFETY: plain object creation on a live device; every object made
-        // here is destroyed on each failure path, or owned by the pipeline.
-        unsafe {
-            let module = self
-                .device
-                .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&words), None)
-                .map_err(|e| format!("{label}: the shader module was refused: {e}"))?;
-            let set_layout = |bindings: &[vk::DescriptorSetLayoutBinding<'_>]| {
-                self.device
-                    .create_descriptor_set_layout(
-                        &vk::DescriptorSetLayoutCreateInfo::default().bindings(bindings),
-                        None,
-                    )
-                    .expect("failed to create a program descriptor set layout")
-            };
-            let sets = [set_layout(&buffers), set_layout(&images)];
-            let layout = self
-                .device
-                .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&sets),
-                    None,
-                )
-                .expect("failed to create a program pipeline layout");
-            let result = self.graphics_pipeline(
+            graphics_pipeline(
+                &self.device,
+                self.pipeline_cache,
+                render_pass,
                 module,
-                desc.vertex_entry,
-                desc.fragment_entry,
-                &vk::PipelineVertexInputStateCreateInfo::default(),
-                desc.color_format,
-                desc.blend,
+                vertex_entry,
+                fragment_entry,
+                vertex_input,
+                blend,
                 layout,
-            );
-            self.device.destroy_shader_module(module, None);
-            let pipeline = match result {
-                Ok(pipeline) => pipeline,
-                Err(e) => {
-                    self.device.destroy_pipeline_layout(layout, None);
-                    for set in sets {
-                        self.device.destroy_descriptor_set_layout(set, None);
-                    }
-                    return Err(format!("{label}: the pipeline was refused: {e}"));
-                }
-            };
-            Ok(self
-                .pipelines
-                .insert(VulkanPipeline {
-                    pipeline,
-                    program: Some(ProgramLayout {
-                        layout,
-                        sets,
-                        textures: desc.textures,
-                        samplers: desc.samplers,
-                    }),
-                })
-                .into())
+            )
         }
     }
 
@@ -1187,15 +1023,12 @@ impl VulkanBackend {
             .get(c.pipeline.into())
             .expect("pipeline handle does not resolve");
         let program = p.program.as_ref()?;
-        let (layout, layouts, textures, samplers) = (
+        let (layout, layouts, textures, samplers, uniform_size) = (
             program.layout,
             program.sets,
             program.textures,
             program.samplers,
-        );
-        assert!(
-            c.uniforms.as_bytes().is_empty(),
-            "a Vulkan program reads its uniforms from a `Binding::Uniform` buffer"
+            program.uniform_size,
         );
         assert!(
             (c.instance_offset as u64).is_multiple_of(self.storage_align),
@@ -1240,11 +1073,24 @@ impl VulkanBackend {
             views.len(),
             sampler_states.len()
         );
-        let uniform_info = uniform.map(|id| {
-            [vk::DescriptorBufferInfo::default()
+        let uniform_info = match uniform {
+            Some(id) => Some([vk::DescriptorBufferInfo::default()
                 .buffer(self.buffer(id).buffer)
-                .range(vk::WHOLE_SIZE)]
-        });
+                .range(vk::WHOLE_SIZE)]),
+            // An inline block, padded to the size the program declares.
+            None if !c.uniforms.is_empty() => {
+                let mut block = [0u8; InlineUniforms::MAX];
+                let inline = c.uniforms.as_bytes();
+                block[..inline.len()].copy_from_slice(inline);
+                let len = (uniform_size as usize).clamp(inline.len(), InlineUniforms::MAX);
+                let (buffer, offset) = self.stage_aligned(&block[..len], self.uniform_align);
+                Some([vk::DescriptorBufferInfo::default()
+                    .buffer(buffer)
+                    .offset(offset)
+                    .range(len as u64)])
+            }
+            None => None,
+        };
         let instance = self.buffer(c.instance_buffer);
         let instance_info = [vk::DescriptorBufferInfo::default()
             .buffer(instance.buffer)
@@ -1292,7 +1138,7 @@ impl VulkanBackend {
             writes.push(
                 vk::WriteDescriptorSet::default()
                     .dst_set(sets[1])
-                    .dst_binding(textures + i as u32)
+                    .dst_binding(PROGRAM_TEXTURES + i as u32)
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .image_info(info),
             );
@@ -1783,6 +1629,28 @@ impl VulkanBackend {
 
 impl GpuBackend for VulkanBackend {
     const SHADER_LANG: ShaderLang = ShaderLang::SpirV;
+
+    type Compiler = VulkanCompiler;
+
+    fn program_compiler(&self) -> VulkanCompiler {
+        VulkanCompiler {
+            device: self.device.clone(),
+            cache: self.pipeline_cache,
+        }
+    }
+
+    fn install_program(&mut self, mut program: VulkanProgram) -> PipelineId {
+        let (pipeline, layout) = program
+            .built
+            .take()
+            .expect("a compiled program is installed once");
+        self.pipelines
+            .insert(VulkanPipeline {
+                pipeline,
+                program: Some(layout),
+            })
+            .into()
+    }
 
     fn create_buffer(&mut self, desc: &BufferDesc) -> BufferId {
         let len = desc.size.max(1);
@@ -2680,6 +2548,264 @@ fn create_frame_slot(device: &ash::Device, queue_family: u32) -> FrameSlot {
             staging: Staging::default(),
             program_pools: Vec::new(),
             program_pool: 0,
+        }
+    }
+}
+
+/// A render pass for `format` with a clearing or loading color attachment.
+///
+/// # Safety
+///
+/// `device` is live.
+unsafe fn create_render_pass(
+    device: &ash::Device,
+    format: vk::Format,
+    clear: bool,
+) -> vk::RenderPass {
+    let attachment = [vk::AttachmentDescription::default()
+        .format(format)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .load_op(if clear {
+            vk::AttachmentLoadOp::CLEAR
+        } else {
+            vk::AttachmentLoadOp::LOAD
+        })
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+        .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+        .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+    let color_ref = [vk::AttachmentReference::default()
+        .attachment(0)
+        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+    let subpass = [vk::SubpassDescription::default()
+        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+        .color_attachments(&color_ref)];
+    let info = vk::RenderPassCreateInfo::default()
+        .attachments(&attachment)
+        .subpasses(&subpass);
+    // SAFETY: `info` describes one color attachment used by one subpass; the
+    // layouts around it are established by explicit barriers.
+    unsafe { device.create_render_pass(&info, None) }
+        .expect("failed to create a Vulkan render pass")
+}
+
+/// A triangle-list graphics pipeline over `module`'s two entries, drawing with
+/// `blend` through `layout`, built against `render_pass` (and usable with any
+/// pass compatible with it).
+///
+/// # Safety
+///
+/// Every handle is a live object of `device`, and the entries read only what
+/// `layout` and `vertex_input` declare.
+#[allow(clippy::too_many_arguments)]
+unsafe fn graphics_pipeline(
+    device: &ash::Device,
+    cache: vk::PipelineCache,
+    render_pass: vk::RenderPass,
+    module: vk::ShaderModule,
+    vertex_entry: &str,
+    fragment_entry: &str,
+    vertex_input: &vk::PipelineVertexInputStateCreateInfo<'_>,
+    blend: BlendMode,
+    layout: vk::PipelineLayout,
+) -> Result<vk::Pipeline, vk::Result> {
+    let vertex_entry = CString::new(vertex_entry).expect("entry name");
+    let fragment_entry = CString::new(fragment_entry).expect("entry name");
+    let stages = [
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(module)
+            .name(&vertex_entry),
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(module)
+            .name(&fragment_entry),
+    ];
+    let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+        .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+    let viewport = vk::PipelineViewportStateCreateInfo::default()
+        .viewport_count(1)
+        .scissor_count(1);
+    let raster = vk::PipelineRasterizationStateCreateInfo::default()
+        .polygon_mode(vk::PolygonMode::FILL)
+        .cull_mode(vk::CullModeFlags::NONE)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .line_width(1.0);
+    let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+        .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+    let blend_attachment = [match blend {
+        BlendMode::Replace => vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA),
+        BlendMode::PremultipliedOver => vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::ONE)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .color_write_mask(vk::ColorComponentFlags::RGBA),
+    }];
+    let blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachment);
+    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+    let info = vk::GraphicsPipelineCreateInfo::default()
+        .stages(&stages)
+        .vertex_input_state(vertex_input)
+        .input_assembly_state(&input_assembly)
+        .viewport_state(&viewport)
+        .rasterization_state(&raster)
+        .multisample_state(&multisample)
+        .color_blend_state(&blend)
+        .dynamic_state(&dynamic)
+        .layout(layout)
+        .render_pass(render_pass)
+        .subpass(0);
+    // SAFETY: every state block borrows live locals; the caller vouches for
+    // the handles.
+    unsafe {
+        device
+            .create_graphics_pipelines(cache, &[info], None)
+            .map(|p| p[0])
+            .map_err(|(_, e)| e)
+    }
+}
+
+/// Builds user programs on any thread: object creation on a Vulkan device is
+/// free-threaded, and the pipeline cache synchronizes itself.
+#[derive(Clone)]
+pub struct VulkanCompiler {
+    device: ash::Device,
+    cache: vk::PipelineCache,
+}
+
+/// A user program built by [`VulkanCompiler`], destroyed with its layouts if
+/// it is dropped before it is installed.
+pub struct VulkanProgram {
+    device: ash::Device,
+    built: Option<(vk::Pipeline, ProgramLayout)>,
+}
+
+impl Drop for VulkanProgram {
+    fn drop(&mut self) {
+        if let Some((pipeline, program)) = self.built.take() {
+            // SAFETY: an uninstalled program was never recorded into a command.
+            unsafe {
+                destroy_pipeline(
+                    &self.device,
+                    VulkanPipeline {
+                        pipeline,
+                        program: Some(program),
+                    },
+                );
+            }
+        }
+    }
+}
+
+impl ProgramCompiler for VulkanCompiler {
+    type Program = VulkanProgram;
+
+    /// Builds the program's SPIR-V, laid out as the program ABI (see the
+    /// module docs), against a render pass of its own for `color_format` that
+    /// is destroyed once the pipeline exists: any pass of that format is
+    /// compatible with it.
+    fn compile(&self, desc: &ProgramDesc<'_>) -> Result<VulkanProgram, String> {
+        let label = desc.label;
+        let ProgramCode::SpirV(spirv) = desc.code else {
+            return Err(format!(
+                "{label}: Vulkan builds SPIR-V, not {:?}",
+                desc.code.lang()
+            ));
+        };
+        desc.check_abi()?;
+        let words = ash::util::read_spv(&mut Cursor::new(spirv))
+            .map_err(|e| format!("{label}: malformed SPIR-V: {e}"))?;
+        let (textures, samplers) = (desc.abi.textures, desc.abi.samplers);
+        let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
+        let buffers = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(stages),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(stages),
+        ];
+        let images: Vec<vk::DescriptorSetLayoutBinding<'_>> = (0..textures)
+            .map(|i| (i, vk::DescriptorType::SAMPLED_IMAGE))
+            .chain((0..samplers).map(|i| (PROGRAM_TEXTURES + i, vk::DescriptorType::SAMPLER)))
+            .map(|(binding, ty)| {
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(binding)
+                    .descriptor_type(ty)
+                    .descriptor_count(1)
+                    .stage_flags(stages)
+            })
+            .collect();
+        let device = &self.device;
+        // SAFETY: plain object creation on a live device; every object made
+        // here is destroyed on each failure path, or owned by the program.
+        unsafe {
+            let module = device
+                .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&words), None)
+                .map_err(|e| format!("{label}: the shader module was refused: {e}"))?;
+            let set_layout = |bindings: &[vk::DescriptorSetLayoutBinding<'_>]| {
+                device
+                    .create_descriptor_set_layout(
+                        &vk::DescriptorSetLayoutCreateInfo::default().bindings(bindings),
+                        None,
+                    )
+                    .expect("failed to create a program descriptor set layout")
+            };
+            let sets = [set_layout(&buffers), set_layout(&images)];
+            let layout = device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&sets),
+                    None,
+                )
+                .expect("failed to create a program pipeline layout");
+            let pass = create_render_pass(device, vk_format(desc.color_format), true);
+            let result = graphics_pipeline(
+                device,
+                self.cache,
+                pass,
+                module,
+                desc.vertex_entry,
+                desc.fragment_entry,
+                &vk::PipelineVertexInputStateCreateInfo::default(),
+                desc.blend,
+                layout,
+            );
+            device.destroy_render_pass(pass, None);
+            device.destroy_shader_module(module, None);
+            let pipeline = match result {
+                Ok(pipeline) => pipeline,
+                Err(e) => {
+                    device.destroy_pipeline_layout(layout, None);
+                    for set in sets {
+                        device.destroy_descriptor_set_layout(set, None);
+                    }
+                    return Err(format!("{label}: the pipeline was refused: {e}"));
+                }
+            };
+            Ok(VulkanProgram {
+                device: device.clone(),
+                built: Some((
+                    pipeline,
+                    ProgramLayout {
+                        layout,
+                        sets,
+                        textures,
+                        samplers,
+                        uniform_size: desc.abi.uniform_size,
+                    },
+                )),
+            })
         }
     }
 }

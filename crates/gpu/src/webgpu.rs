@@ -15,6 +15,15 @@
 //!   that reads it. Queue operations execute in order, so the ring is rewound
 //!   after every submission and only ever holds one encode's worth of slots; it
 //!   grows (by powers of two) before an encode that needs more.
+//! - **A user program has its own group 0**: the uniforms (a ring slot, or
+//!   the bind group's uniform buffer for a block larger than the ring's slot)
+//!   at binding 0 and the instance array at binding 1 as a read-only storage
+//!   view at the draw's instance offset. Its group 1 is the program texture
+//!   layout — [`PROGRAM_TEXTURES`] textures, then [`PROGRAM_SAMPLERS`]
+//!   samplers — which a bind group builds its view of the first time a program
+//!   draws with it. Group-0 bind groups are cached by pipeline, instance range
+//!   and uniform source across frames and dropped once unused for a few frames,
+//!   or with what they view.
 //! - **Buffers and textures are device memory written through the queue**
 //!   (`writeBuffer` / `writeTexture`): the browser stages the copy, and every
 //!   write is ordered before any later submission, exactly the ordering the
@@ -52,6 +61,9 @@ use crate::backend::{
     RenderPass, RenderTarget,
 };
 use crate::instance::{AttrFormat, InstanceLayout};
+use crate::program::{
+    PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi, ProgramCode, ProgramCompiler, ProgramDesc,
+};
 use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
     PipelineDesc, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
@@ -62,6 +74,8 @@ use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
 /// Uniform-ring slots allocated up front.
 const INITIAL_UNIFORM_SLOTS: usize = 256;
+/// Frames a cached program group may go unused before it is dropped.
+const PROGRAM_GROUP_IDLE_FRAMES: u64 = 4;
 
 // GPUBufferUsage bits.
 const BUFFER_MAP_READ: u32 = 0x0001;
@@ -69,6 +83,7 @@ const BUFFER_COPY_DST: u32 = 0x0008;
 const BUFFER_INDEX: u32 = 0x0010;
 const BUFFER_VERTEX: u32 = 0x0020;
 const BUFFER_UNIFORM: u32 = 0x0040;
+const BUFFER_STORAGE: u32 = 0x0080;
 // GPUTextureUsage bits.
 const TEXTURE_COPY_SRC: u32 = 0x01;
 const TEXTURE_COPY_DST: u32 = 0x02;
@@ -111,6 +126,10 @@ extern "C" {
     fn max_texture_dimension_2d(this: &SupportedLimits) -> u32;
     #[wasm_bindgen(method, getter, js_name = minUniformBufferOffsetAlignment)]
     fn min_uniform_buffer_offset_alignment(this: &SupportedLimits) -> u32;
+    #[wasm_bindgen(method, getter, js_name = minStorageBufferOffsetAlignment)]
+    fn min_storage_buffer_offset_alignment(this: &SupportedLimits) -> u32;
+    #[wasm_bindgen(method, getter, js_name = maxStorageBufferBindingSize)]
+    fn max_storage_buffer_binding_size(this: &SupportedLimits) -> f64;
 
     type GpuDevice;
     #[wasm_bindgen(method, getter)]
@@ -373,6 +392,84 @@ struct WebGpuPipeline {
     pipeline: GpuRenderPipeline,
     /// Whether the pipeline declares a vertex buffer at slot 0.
     has_vertex_buffer: bool,
+    /// A user program's group-0 layout; `None` for a built-in.
+    program: Option<ProgramLayout>,
+}
+
+/// The group 0 a user program reads.
+struct ProgramLayout {
+    layout: GpuBindGroupLayout,
+    /// Declares a uniform block at binding 0.
+    uniforms: bool,
+    /// The block outgrows a ring slot, so it is the bind group's uniform buffer.
+    uniform_buffer: bool,
+    /// Declares an instance array at binding 1.
+    instances: bool,
+}
+
+/// A bind group: the built-ins' view of it, what a program's view is built
+/// from, and the uniform buffer it names, if any.
+struct WebGpuBindGroup {
+    group: GpuBindGroup,
+    views: Vec<GpuTextureView>,
+    samplers: Vec<GpuSampler>,
+    /// The program texture layout's view, built on first use.
+    program: Option<GpuBindGroup>,
+    uniform: Option<BufferId>,
+}
+
+/// A user program's group 0 for one instance range and uniform source.
+struct ProgramGroup {
+    pipeline: PipelineId,
+    instances: BufferId,
+    offset: usize,
+    /// The uniform buffer viewed; `None` for the ring (or no uniforms).
+    uniform: Option<BufferId>,
+    group: GpuBindGroup,
+    /// The epoch the group was last drawn with.
+    used: Epoch,
+}
+
+/// The WebGPU program compiler. The browser compiles shader modules and
+/// pipelines on its own threads, so compiling here only checks the program
+/// and keeps its code for [`GpuBackend::install_program`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WebGpuCompiler;
+
+/// A checked user program, ready to install.
+#[derive(Debug, Clone)]
+pub struct WebGpuProgram {
+    label: String,
+    source: String,
+    vertex_entry: String,
+    fragment_entry: String,
+    color_format: TextureFormat,
+    blend: BlendMode,
+    abi: ProgramAbi,
+}
+
+impl ProgramCompiler for WebGpuCompiler {
+    type Program = WebGpuProgram;
+
+    fn compile(&self, desc: &ProgramDesc<'_>) -> Result<WebGpuProgram, String> {
+        desc.check_abi()?;
+        let ProgramCode::Wgsl(source) = desc.code else {
+            return Err(format!(
+                "{}: WebGPU consumes WGSL, not {:?}",
+                desc.label,
+                desc.code.lang()
+            ));
+        };
+        Ok(WebGpuProgram {
+            label: desc.label.to_owned(),
+            source: source.clone(),
+            vertex_entry: desc.vertex_entry.to_owned(),
+            fragment_entry: desc.fragment_entry.to_owned(),
+            color_format: desc.color_format,
+            blend: desc.blend,
+            abi: desc.abi,
+        })
+    }
 }
 
 /// A canvas surface.
@@ -470,10 +567,14 @@ pub struct WebGpuBackend {
     float32_filterable: bool,
     uniform_layout: GpuBindGroupLayout,
     texture_layout: GpuBindGroupLayout,
+    /// Group 1 of every user program.
+    program_texture_layout: GpuBindGroupLayout,
     pipeline_layout: GpuPipelineLayout,
     /// Bound as group 1 at every pass start, so a draw with no bind group of its
     /// own still satisfies the layout.
     default_group: GpuBindGroup,
+    /// Group 1 of a program drawn with no bind group.
+    program_default_group: GpuBindGroup,
     default_texture: GpuTexture,
     default_view: GpuTextureView,
     default_sampler: GpuSampler,
@@ -486,8 +587,11 @@ pub struct WebGpuBackend {
     buffers: SlotMap<WebGpuBuffer>,
     textures: SlotMap<WebGpuTexture>,
     samplers: SlotMap<GpuSampler>,
-    bind_groups: SlotMap<GpuBindGroup>,
+    bind_groups: SlotMap<WebGpuBindGroup>,
     pipelines: SlotMap<WebGpuPipeline>,
+    program_groups: Vec<ProgramGroup>,
+    /// The device's `maxStorageBufferBindingSize`.
+    max_storage_binding: usize,
     surfaces: SlotMap<WebGpuSurface>,
     caps: Caps,
     retire_queue: RetireQueue,
@@ -610,6 +714,20 @@ impl WebGpuBackend {
             ])
             .into(),
         )]));
+        let program_texture_layout = {
+            let entries = Array::new();
+            for i in 0..PROGRAM_TEXTURES {
+                entries.push(&texture_entry(i));
+            }
+            for i in 0..PROGRAM_SAMPLERS {
+                entries.push(&obj(&[
+                    ("binding", (PROGRAM_TEXTURES + i).into()),
+                    ("visibility", visibility.into()),
+                    ("sampler", obj(&[("type", "filtering".into())]).into()),
+                ]));
+            }
+            device.create_bind_group_layout(&obj(&[("entries", entries.into())]))
+        };
         let pipeline_layout = device.create_pipeline_layout(&obj(&[(
             "bindGroupLayouts",
             arr(&[uniform_layout.clone(), texture_layout.clone()]).into(),
@@ -632,6 +750,14 @@ impl WebGpuBackend {
             &default_view,
             &default_sampler,
         );
+        let program_default_group = program_texture_group(
+            &device,
+            &program_texture_layout,
+            &[],
+            &[],
+            &default_view,
+            &default_sampler,
+        );
 
         let stride =
             (limits.min_uniform_buffer_offset_alignment() as usize).max(InlineUniforms::MAX);
@@ -643,6 +769,7 @@ impl WebGpuBackend {
             compute_dispatch: false,
             bindless_texture_slots: 0,
             indirect_draw: false,
+            program_instance_align: limits.min_storage_buffer_offset_alignment().max(4),
         };
         Self {
             device,
@@ -651,8 +778,10 @@ impl WebGpuBackend {
             float32_filterable,
             uniform_layout,
             texture_layout,
+            program_texture_layout,
             pipeline_layout,
             default_group,
+            program_default_group,
             default_texture,
             default_view,
             default_sampler,
@@ -666,6 +795,8 @@ impl WebGpuBackend {
             samplers: SlotMap::new(),
             bind_groups: SlotMap::new(),
             pipelines: SlotMap::new(),
+            program_groups: Vec::new(),
+            max_storage_binding: limits.max_storage_buffer_binding_size() as usize,
             surfaces: SlotMap::new(),
             caps,
             retire_queue: RetireQueue::new(),
@@ -783,6 +914,9 @@ impl WebGpuBackend {
                 ResourceKind::Buffer => {
                     if let Some(b) = self.buffers.remove(entry.id) {
                         b.buffer.destroy_buffer();
+                        let id = BufferId::from(entry.id);
+                        self.program_groups
+                            .retain(|g| g.instances != id && g.uniform != Some(id));
                     }
                 }
                 ResourceKind::Texture => {
@@ -795,12 +929,168 @@ impl WebGpuBackend {
                 }
                 ResourceKind::Pipeline => {
                     self.pipelines.remove(entry.id);
+                    let id = PipelineId::from(entry.id);
+                    self.program_groups.retain(|g| g.pipeline != id);
                 }
                 ResourceKind::BindGroup => {
                     self.bind_groups.remove(entry.id);
                 }
             }
         }
+    }
+
+    /// Build `bg`'s program view if it has none yet.
+    fn build_program_view(&mut self, bg: BindGroupId) {
+        let g = self
+            .bind_groups
+            .get(bg.into())
+            .expect("bind group handle does not resolve");
+        if g.program.is_some() {
+            return;
+        }
+        let views: Vec<&GpuTextureView> = g.views.iter().collect();
+        let samplers: Vec<&GpuSampler> = g.samplers.iter().collect();
+        let group = program_texture_group(
+            &self.device,
+            &self.program_texture_layout,
+            &views,
+            &samplers,
+            &self.default_view,
+            &self.default_sampler,
+        );
+        if let Some(g) = self.bind_groups.get_mut(bg.into()) {
+            g.program = Some(group);
+        }
+    }
+
+    /// Drop the cached program groups no frame has drawn with lately.
+    fn evict_idle_program_groups(&mut self) {
+        let now = self.current_epoch.0;
+        self.program_groups
+            .retain(|g| g.used.0 + PROGRAM_GROUP_IDLE_FRAMES >= now);
+    }
+
+    /// The cached group 0 `c` draws its program with, built on first use.
+    fn program_group(&mut self, c: &DrawCommand, uniform: Option<BufferId>) -> usize {
+        let used = self.current_epoch;
+        if let Some(i) = self.program_groups.iter().position(|g| {
+            g.pipeline == c.pipeline
+                && g.instances == c.instance_buffer
+                && g.offset == c.instance_offset
+                && g.uniform == uniform
+        }) {
+            self.program_groups[i].used = used;
+            return i;
+        }
+        let p = self
+            .pipelines
+            .get(c.pipeline.into())
+            .and_then(|p| p.program.as_ref())
+            .expect("a program pipeline");
+        let entries = Array::new();
+        let view = |binding: u32, buffer: &GpuBuffer, offset: usize, size: usize| {
+            obj(&[
+                ("binding", binding.into()),
+                (
+                    "resource",
+                    obj(&[
+                        ("buffer", buffer.into()),
+                        ("offset", (offset as f64).into()),
+                        ("size", (size as f64).into()),
+                    ])
+                    .into(),
+                ),
+            ])
+        };
+        if p.uniforms {
+            let entry = match uniform {
+                Some(id) => {
+                    let b = self.buffer(id);
+                    view(0, &b.buffer, 0, b.len)
+                }
+                None => view(0, &self.uniforms.buffer, 0, InlineUniforms::MAX),
+            };
+            entries.push(&entry);
+        }
+        if p.instances {
+            let b = self.buffer(c.instance_buffer);
+            let size = (b.len - c.instance_offset).min(self.max_storage_binding);
+            entries.push(&view(1, &b.buffer, c.instance_offset, size & !3));
+        }
+        let group = self.device.create_bind_group(&obj(&[
+            ("layout", p.layout.clone()),
+            ("entries", entries.into()),
+        ]));
+        self.program_groups.push(ProgramGroup {
+            pipeline: c.pipeline,
+            instances: c.instance_buffer,
+            offset: c.instance_offset,
+            uniform,
+            group,
+            used,
+        });
+        self.program_groups.len() - 1
+    }
+
+    /// A render pipeline under `layout` drawing into one `color_format`
+    /// target, reading `buffers` as its vertex buffers.
+    #[allow(clippy::too_many_arguments)]
+    fn render_pipeline(
+        &self,
+        label: &str,
+        layout: &GpuPipelineLayout,
+        module: &GpuShaderModule,
+        vertex_entry: &str,
+        fragment_entry: &str,
+        buffers: Array,
+        color_format: TextureFormat,
+        blend: BlendMode,
+    ) -> GpuRenderPipeline {
+        let target = obj(&[("format", gpu_format(color_format).into())]);
+        if blend == BlendMode::PremultipliedOver {
+            let over = || {
+                obj(&[
+                    ("operation", "add".into()),
+                    ("srcFactor", "one".into()),
+                    ("dstFactor", "one-minus-src-alpha".into()),
+                ])
+            };
+            set(
+                &target,
+                "blend",
+                obj(&[("color", over().into()), ("alpha", over().into())]),
+            );
+        }
+        self.device.create_render_pipeline(&obj(&[
+            ("label", label.into()),
+            ("layout", layout.into()),
+            (
+                "vertex",
+                obj(&[
+                    ("module", module.into()),
+                    ("entryPoint", vertex_entry.into()),
+                    ("buffers", buffers.into()),
+                ])
+                .into(),
+            ),
+            (
+                "fragment",
+                obj(&[
+                    ("module", module.into()),
+                    ("entryPoint", fragment_entry.into()),
+                    ("targets", arr(&[target.into()]).into()),
+                ])
+                .into(),
+            ),
+            (
+                "primitive",
+                obj(&[
+                    ("topology", "triangle-list".into()),
+                    ("cullMode", "none".into()),
+                ])
+                .into(),
+            ),
+        ]))
     }
 
     /// Grow the uniform ring to hold at least `slots` slots. Called between
@@ -816,6 +1106,15 @@ impl WebGpuBackend {
             uniform_ring(&self.device, &self.uniform_layout, capacity, stride),
         );
         old.buffer.destroy_buffer();
+        // Groups viewing the old ring go with it.
+        let pipelines = &self.pipelines;
+        self.program_groups.retain(|g| {
+            g.uniform.is_some()
+                || !pipelines
+                    .get(g.pipeline.into())
+                    .and_then(|p| p.program.as_ref())
+                    .is_some_and(|p| p.uniforms)
+        });
     }
 
     /// The ring offset holding `bytes` for the next submission.
@@ -888,8 +1187,11 @@ impl WebGpuBackend {
         let rp = encoder.begin_render_pass(&self.pass_desc.pass);
         rp.set_bind_group(1, &self.default_group);
         let mut bound_pipeline = None;
-        let mut bound_group = None;
-        let mut bound_offset = None;
+        // Group 1: the bind group bound (`None`: a default) and whether it is
+        // the program view.
+        let mut bound_group: Option<(Option<BindGroupId>, bool)> = Some((None, false));
+        // Group 0: the program group bound (`None`: the ring's) and its offset.
+        let mut bound_zero: Option<(Option<usize>, u32)> = None;
         for c in commands {
             let (sx, sy, sw, sh) = match c.scissor {
                 Some((x, y, w, h)) => {
@@ -900,7 +1202,7 @@ impl WebGpuBackend {
                 None => (0, 0, width, height),
             };
             rp.set_scissor_rect(sx, sy, sw, sh);
-            let has_vertex_buffer = {
+            let (has_vertex_buffer, program) = {
                 let p = self
                     .pipelines
                     .get(c.pipeline.into())
@@ -909,26 +1211,85 @@ impl WebGpuBackend {
                     rp.set_pipeline(&p.pipeline);
                     bound_pipeline = Some(c.pipeline);
                 }
-                p.has_vertex_buffer
+                (
+                    p.has_vertex_buffer,
+                    p.program.as_ref().map(|g| (g.uniforms, g.uniform_buffer)),
+                )
             };
-            if let Some(bg) = c.bind_group
-                && bound_group != Some(bg)
-            {
-                let g = self
-                    .bind_groups
-                    .get(bg.into())
-                    .expect("bind group handle does not resolve");
-                rp.set_bind_group(1, g);
-                bound_group = Some(bg);
+            let program_view = program.is_some();
+            let mut uniform_buffer = None;
+            match c.bind_group {
+                Some(bg) => {
+                    if program_view {
+                        self.build_program_view(bg);
+                    }
+                    let g = self
+                        .bind_groups
+                        .get(bg.into())
+                        .expect("bind group handle does not resolve");
+                    uniform_buffer = g.uniform;
+                    if bound_group != Some((Some(bg), program_view)) {
+                        let group = if program_view {
+                            g.program.as_ref().expect("built above")
+                        } else {
+                            &g.group
+                        };
+                        rp.set_bind_group(1, group);
+                        bound_group = Some((Some(bg), program_view));
+                    }
+                }
+                // A built-in drawing without a bind group reads no texture, so
+                // whatever built-in view is bound serves it.
+                None if program_view => {
+                    if bound_group != Some((None, true)) {
+                        rp.set_bind_group(1, &self.program_default_group);
+                        bound_group = Some((None, true));
+                    }
+                }
+                None => {
+                    if matches!(bound_group, Some((_, true))) {
+                        rp.set_bind_group(1, &self.default_group);
+                        bound_group = Some((None, false));
+                    }
+                }
             }
             let uniforms = c.uniforms.as_bytes();
-            let offset = match bound_offset {
-                Some(o) if uniforms.is_empty() => o,
-                _ => self.uniform_offset(uniforms),
-            };
-            if bound_offset != Some(offset) {
-                rp.set_bind_group_with_offsets(0, &self.uniforms.group, &[offset], 0.0, 1);
-                bound_offset = Some(offset);
+            match program {
+                None => {
+                    let offset = match bound_zero {
+                        Some((None, o)) if uniforms.is_empty() => o,
+                        _ => self.uniform_offset(uniforms),
+                    };
+                    if bound_zero != Some((None, offset)) {
+                        rp.set_bind_group_with_offsets(0, &self.uniforms.group, &[offset], 0.0, 1);
+                        bound_zero = Some((None, offset));
+                    }
+                }
+                Some((declares, large)) => {
+                    let ring = declares && !large;
+                    let offset = if ring {
+                        self.uniform_offset(uniforms)
+                    } else {
+                        0
+                    };
+                    let source = if large {
+                        Some(uniform_buffer.expect(
+                            "a program with a large uniform block draws with a uniform buffer",
+                        ))
+                    } else {
+                        None
+                    };
+                    let index = self.program_group(c, source);
+                    if bound_zero != Some((Some(index), offset)) {
+                        let group = &self.program_groups[index].group;
+                        if ring {
+                            rp.set_bind_group_with_offsets(0, group, &[offset], 0.0, 1);
+                        } else {
+                            rp.set_bind_group(0, group);
+                        }
+                        bound_zero = Some((Some(index), offset));
+                    }
+                }
             }
             match c.geometry {
                 Geometry::Generated { count } => {
@@ -1035,6 +1396,42 @@ fn texture_group(
     ]))
 }
 
+/// A program-layout group 1: `views` then `samplers`, each list's last (or
+/// the default) repeated to fill the layout.
+fn program_texture_group(
+    device: &GpuDevice,
+    layout: &GpuBindGroupLayout,
+    views: &[&GpuTextureView],
+    samplers: &[&GpuSampler],
+    default_view: &GpuTextureView,
+    default_sampler: &GpuSampler,
+) -> GpuBindGroup {
+    let entries = Array::new();
+    let entry = |binding: u32, resource: &JsValue| {
+        obj(&[("binding", binding.into()), ("resource", resource.clone())])
+    };
+    for i in 0..PROGRAM_TEXTURES {
+        let view = views
+            .get(i as usize)
+            .or(views.last())
+            .copied()
+            .unwrap_or(default_view);
+        entries.push(&entry(i, view));
+    }
+    for i in 0..PROGRAM_SAMPLERS {
+        let sampler = samplers
+            .get(i as usize)
+            .or(samplers.last())
+            .copied()
+            .unwrap_or(default_sampler);
+        entries.push(&entry(PROGRAM_TEXTURES + i, sampler));
+    }
+    device.create_bind_group(&obj(&[
+        ("layout", layout.into()),
+        ("entries", entries.into()),
+    ]))
+}
+
 fn sampler_descriptor(desc: &SamplerDesc) -> Object {
     let (filter, mip) = match desc.filter {
         FilterMode::Nearest => ("nearest", "nearest"),
@@ -1094,7 +1491,8 @@ impl GpuBackend for WebGpuBackend {
             ("size", (len as f64).into()),
             (
                 "usage",
-                (BUFFER_VERTEX | BUFFER_INDEX | BUFFER_COPY_DST).into(),
+                (BUFFER_VERTEX | BUFFER_INDEX | BUFFER_UNIFORM | BUFFER_STORAGE | BUFFER_COPY_DST)
+                    .into(),
             ),
         ]));
         self.buffers.insert(WebGpuBuffer { buffer, len }).into()
@@ -1144,14 +1542,15 @@ impl GpuBackend for WebGpuBackend {
                 desc.code.lang()
             );
         };
-        let module = self
+        let module: GpuShaderModule = self
             .modules
             .entry(source.as_ptr() as usize)
             .or_insert_with(|| {
                 self.device
                     .create_shader_module(&obj(&[("code", source.into())]))
             })
-            .clone();
+            .clone()
+            .unchecked_into();
 
         let step_mode = match desc.builtin {
             BuiltinShader::Path | BuiltinShader::Mesh => "vertex",
@@ -1178,95 +1577,146 @@ impl GpuBackend for WebGpuBackend {
         } else {
             Array::new()
         };
-        let target = obj(&[("format", gpu_format(desc.color_format).into())]);
-        if desc.blend == BlendMode::PremultipliedOver {
-            let over = || {
-                obj(&[
-                    ("operation", "add".into()),
-                    ("srcFactor", "one".into()),
-                    ("dstFactor", "one-minus-src-alpha".into()),
-                ])
-            };
-            set(
-                &target,
-                "blend",
-                obj(&[("color", over().into()), ("alpha", over().into())]),
-            );
-        }
-        let pipeline = self.device.create_render_pipeline(&obj(&[
-            ("label", desc.label.into()),
-            ("layout", self.pipeline_layout.clone()),
-            (
-                "vertex",
-                obj(&[
-                    ("module", module.clone()),
-                    ("entryPoint", desc.vertex_entry.into()),
-                    ("buffers", buffers.into()),
-                ])
-                .into(),
-            ),
-            (
-                "fragment",
-                obj(&[
-                    ("module", module),
-                    ("entryPoint", desc.fragment_entry.into()),
-                    ("targets", arr(&[target.into()]).into()),
-                ])
-                .into(),
-            ),
-            (
-                "primitive",
-                obj(&[
-                    ("topology", "triangle-list".into()),
-                    ("cullMode", "none".into()),
-                ])
-                .into(),
-            ),
-        ]));
+        let pipeline = self.render_pipeline(
+            desc.label,
+            &self.pipeline_layout,
+            &module,
+            desc.vertex_entry,
+            desc.fragment_entry,
+            buffers,
+            desc.color_format,
+            desc.blend,
+        );
         Ok(self
             .pipelines
             .insert(WebGpuPipeline {
                 pipeline,
                 has_vertex_buffer,
+                program: None,
             })
             .into())
     }
 
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
-        let mut views: [Option<&GpuTextureView>; 2] = [None; 2];
-        let mut texture_count = 0;
-        let mut sampler = None;
+        let mut views: Vec<GpuTextureView> = Vec::new();
+        let mut samplers: Vec<GpuSampler> = Vec::new();
+        let mut uniform = None;
         for binding in &desc.bindings {
             match *binding {
                 Binding::Texture(id) => {
-                    if texture_count < views.len() {
-                        views[texture_count] = Some(&self.texture(id).view);
-                        texture_count += 1;
+                    if views.len() < PROGRAM_TEXTURES as usize {
+                        views.push(self.texture(id).view.clone().unchecked_into());
                     }
                 }
                 Binding::Sampler(id) => {
-                    sampler = Some(
-                        self.samplers
+                    if samplers.len() < PROGRAM_SAMPLERS as usize {
+                        let s = self
+                            .samplers
                             .get(id.into())
-                            .expect("sampler handle does not resolve"),
-                    );
+                            .expect("sampler handle does not resolve");
+                        samplers.push(JsValue::clone(s).unchecked_into());
+                    }
                 }
-                // The built-ins' uniforms live in the shared uniform ring.
-                Binding::Uniform(_) => {}
+                // The built-ins' uniforms live in the shared uniform ring; a
+                // user program with a large block reads this buffer.
+                Binding::Uniform(id) => uniform = Some(id),
             }
         }
-        // The layout is complete for every program: a single-texture program
+        // The layout is complete for every built-in: a single-texture one
         // leaves `dst_tex` unread, so it repeats `tex`.
-        let tex = views[0].unwrap_or(&self.default_view);
-        let dst = views[1].unwrap_or(tex);
+        let tex = views.first().unwrap_or(&self.default_view);
+        let dst = views.get(1).unwrap_or(tex);
         let group = texture_group(
             &self.device,
             &self.texture_layout,
             tex,
             dst,
-            sampler.unwrap_or(&self.default_sampler),
+            samplers.first().unwrap_or(&self.default_sampler),
         );
-        self.bind_groups.insert(group).into()
+        self.bind_groups
+            .insert(WebGpuBindGroup {
+                group,
+                views,
+                samplers,
+                program: None,
+                uniform,
+            })
+            .into()
+    }
+
+    type Compiler = WebGpuCompiler;
+
+    fn program_compiler(&self) -> WebGpuCompiler {
+        WebGpuCompiler
+    }
+
+    fn install_program(&mut self, program: WebGpuProgram) -> PipelineId {
+        let abi = program.abi;
+        let module = self
+            .device
+            .create_shader_module(&obj(&[("code", program.source.as_str().into())]));
+        let visibility = STAGE_VERTEX | STAGE_FRAGMENT;
+        let uniforms = abi.uniform_size > 0;
+        let uniform_buffer = abi.uniform_size as usize > InlineUniforms::MAX;
+        let instances = abi.instance_stride > 0;
+        let entries = Array::new();
+        if uniforms {
+            entries.push(&obj(&[
+                ("binding", 0.into()),
+                ("visibility", visibility.into()),
+                (
+                    "buffer",
+                    obj(&[
+                        ("type", "uniform".into()),
+                        ("hasDynamicOffset", (!uniform_buffer).into()),
+                        (
+                            "minBindingSize",
+                            abi.uniform_size.next_multiple_of(16).into(),
+                        ),
+                    ])
+                    .into(),
+                ),
+            ]));
+        }
+        if instances {
+            entries.push(&obj(&[
+                ("binding", 1.into()),
+                ("visibility", visibility.into()),
+                (
+                    "buffer",
+                    obj(&[("type", "read-only-storage".into())]).into(),
+                ),
+            ]));
+        }
+        let layout = self
+            .device
+            .create_bind_group_layout(&obj(&[("entries", entries.into())]));
+        let pipeline_layout = self.device.create_pipeline_layout(&obj(&[(
+            "bindGroupLayouts",
+            arr(&[layout.clone(), self.program_texture_layout.clone()]).into(),
+        )]));
+        let pipeline = self.render_pipeline(
+            &program.label,
+            &pipeline_layout,
+            &module,
+            &program.vertex_entry,
+            &program.fragment_entry,
+            Array::new(),
+            program.color_format,
+            program.blend,
+        );
+        self.pipelines
+            .insert(WebGpuPipeline {
+                pipeline,
+                has_vertex_buffer: false,
+                program: Some(ProgramLayout {
+                    layout,
+                    uniforms,
+                    uniform_buffer,
+                    instances,
+                }),
+            })
+            .into()
     }
 
     fn destroy_buffer(&mut self, id: BufferId) {
@@ -1433,6 +1883,7 @@ impl GpuBackend for WebGpuBackend {
             self.device_lost(open);
         }
         self.reclaim_completed();
+        self.evict_idle_program_groups();
         let texture = self.surface(surface).context.get_current_texture().ok()?;
         self.acquired = Some(Acquired {
             surface,

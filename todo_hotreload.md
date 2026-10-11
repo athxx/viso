@@ -480,6 +480,62 @@ and a failure keeps the drawn pipeline.
 
 ### H5.2 — Remaining
 
+ShaderBrush first: a running app draws no user shader yet (the renderer only knows its
+built-in pipelines, `view!` drops the checked shaders), so the app-side path of
+Rendering §27.2 lands before the reload items, end to end, then the reload items build
+on it.
+
+- [x] GPU: user programs on the RHI trait — `GpuBackend::{Compiler, program_compiler,
+      install_program}`: a `Send` compiler builds a backend program off the render
+      thread from code in the backend's language, install registers it as a pipeline;
+      a program's uniform block may come inline on every backend, and
+      `Caps::program_instance_align` is the instance-offset alignment its storage
+      buffer needs. Portable binding limits `PROGRAM_TEXTURES` (4) /
+      `PROGRAM_SAMPLERS` (2), samplers numbered after the textures where one binding
+      space holds both; D3D12 gives a program its own root signature (root SRV for
+      the instances), WebGPU its own group 0 (cached per instance range) and a
+      program view of each bind group. `ProgramReload` hands the new pipeline to the
+      caller to install. Metal and Vulkan (MoltenVK) runtime-verified; D3D12 and
+      WebGPU type-checked.
+- [ ] Headless: a program carries a `CpuProgram` the shader crate supplies (the
+      reference interpreter drawing into the framebuffer under the scissor), so the
+      headless backend and its goldens draw user shaders. (The headless side —
+      `HeadlessCompiler` taking `ProgramCode::Cpu`, scissor, inline or bound
+      uniforms — is in; textures for a `CpuProgram` and the interpreter-backed
+      implementation remain.)
+- [ ] Shader: the brush profile — reserved members `uniform viewport_size: Vec2F32`,
+      `instance rect_pos: Vec2F32`, `instance rect_size: Vec2F32`; every other
+      instance member is a parameter of a host-typed kind (`F32 I32 U32 Vec2F32
+      Vec3F32 ColorLinear`); `BrushLayout` (stride, reserved offsets, parameter
+      descriptors), a parameter encoder, and the program's code for each backend
+      language from one program (SPIR-V through naga).
+- [ ] Render: `Primitive::Shader` (rect, program slot, encoded parameters); programs
+      installed per renderer slot (install, replace with the old pipeline retired
+      through the fence, release); one persistent instance pool per program with
+      runs aligned to `program_instance_align`; one batch family where adjacent draws
+      of one program merge; offscreen origin subtraction; never folded into a group
+      opacity; inspect and counters; headless golden.
+- [ ] UI: `Content::Shader` paints a node's box with its program; the node store
+      keeps the shaders its nodes use by slot, with a revision the facade installs
+      from; a parameter change is `PAINT` only.
+- [ ] DSL: a shader name heads a record literal of its parameters
+      (`Ripple { tint: c, rings: 8.0 }`), typed against them; a `ShaderView` leaf
+      widget with a `shader` property; diagnostics for a missing or mistyped
+      reserved member, a parameter type with no host value and a foreign uniform;
+      DSL §97–§101 and Rendering §27.2 updated.
+- [ ] View and package: the plan names each `ShaderView`'s shader by `ShaderId`; the
+      macro, the release package and the dev plan carry the view's shaders (layout,
+      the target backend's code generated at build time, the program for the CPU
+      path); the control delivers encoded parameters; the facade installs a
+      window's shaders into its renderer when they mount.
+- [ ] Example `10-custom-shader` and an end-to-end test: a `.vs` `ShaderView` drawn
+      headless against the reference interpreter and on Metal.
+- [ ] `uniform time: F32` with continuous repaint while a time-reading shader is on
+      screen (makepad's `uses_time`), measured.
+- [ ] Texture and sampler parameters.
+
+Reload:
+
 - [ ] Host compiles shader candidates (`.vs` shader declarations, and external shader
       files in the watch scope) through Shader IR to every backend the runtime's
       target uses and validates them; `ShaderPatch` carries the backend code and the

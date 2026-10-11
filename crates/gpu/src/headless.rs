@@ -33,10 +33,15 @@ use crate::backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, LoadOp, RenderPass,
     RenderTarget,
 };
+use std::sync::Arc;
+
 use crate::instance::{AttrFormat, InstanceLayout};
+use crate::program::{
+    CpuDraw, CpuProgram, CpuTarget, ProgramAbi, ProgramCode, ProgramCompiler, ProgramDesc,
+};
 use crate::resource::{
-    BindGroupDesc, BufferDesc, BuiltinShader, Caps, ColorSpace, PipelineDesc, SamplerDesc,
-    TextureDesc, TextureFormat, f16_to_f32, f32_to_f16,
+    BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, ColorSpace, PipelineDesc,
+    SamplerDesc, TextureDesc, TextureFormat, f16_to_f32, f32_to_f16,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
@@ -58,10 +63,46 @@ struct HeadlessTexture {
 }
 
 /// A registered pipeline: the built-in program tag plus the validated instance
-/// layout, which the fill routines use to locate fields inside instance bytes.
+/// layout, which the fill routines use to locate fields inside instance bytes,
+/// or a user program run on the CPU.
 struct HeadlessPipeline {
     builtin: BuiltinShader,
     layout: InstanceLayout,
+    program: Option<HeadlessProgram>,
+}
+
+/// A user program for the headless raster: the CPU program the shader crate
+/// built, and what it was compiled for.
+#[derive(Clone)]
+pub struct HeadlessProgram {
+    cpu: Arc<dyn CpuProgram>,
+    blend: BlendMode,
+    abi: ProgramAbi,
+}
+
+/// The headless raster's program "compiler": it accepts the CPU program a
+/// user program's code carries.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeadlessCompiler;
+
+impl ProgramCompiler for HeadlessCompiler {
+    type Program = HeadlessProgram;
+
+    fn compile(&self, desc: &ProgramDesc<'_>) -> Result<HeadlessProgram, String> {
+        desc.check_abi()?;
+        match desc.code {
+            ProgramCode::Cpu(cpu) => Ok(HeadlessProgram {
+                cpu: Arc::clone(cpu),
+                blend: desc.blend,
+                abi: desc.abi,
+            }),
+            other => Err(format!(
+                "{}: the headless raster runs CPU programs, not {:?}",
+                desc.label,
+                other.lang()
+            )),
+        }
+    }
 }
 
 /// A registered bind group (its bindings, in slot order).
@@ -127,6 +168,7 @@ impl HeadlessRaster {
                 compute_dispatch: false,
                 bindless_texture_slots: 0,
                 indirect_draw: false,
+                program_instance_align: 4,
             },
             retire_queue: RetireQueue::new(),
             fence: Fence::new(),
@@ -314,8 +356,28 @@ impl GpuBackend for HeadlessRaster {
             .insert(HeadlessPipeline {
                 builtin: desc.builtin,
                 layout: *layout,
+                program: None,
             })
             .into())
+    }
+
+    type Compiler = HeadlessCompiler;
+
+    fn program_compiler(&self) -> HeadlessCompiler {
+        HeadlessCompiler
+    }
+
+    fn install_program(&mut self, program: HeadlessProgram) -> PipelineId {
+        self.pipelines
+            .insert(HeadlessPipeline {
+                builtin: BuiltinShader::Quad,
+                layout: InstanceLayout {
+                    stride: program.abi.instance_stride as usize,
+                    fields: &[],
+                },
+                program: Some(program),
+            })
+            .into()
     }
 
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
@@ -603,6 +665,10 @@ impl HeadlessRaster {
             .expect("pipeline handle does not resolve");
         let builtin = pipeline.builtin;
         let layout = pipeline.layout;
+        if let Some(program) = pipeline.program.clone() {
+            self.draw_program(target, width, height, cmd, &program);
+            return;
+        }
 
         match cmd.geometry {
             Geometry::Generated { count } => {
@@ -787,6 +853,69 @@ impl HeadlessRaster {
                 );
             }
         }
+    }
+
+    /// Runs a user program's draw on the CPU into the target framebuffer, its
+    /// uniforms inline or from the bind group's uniform buffer.
+    fn draw_program(
+        &mut self,
+        target: FbTarget,
+        width: u32,
+        height: u32,
+        cmd: &DrawCommand,
+        program: &HeadlessProgram,
+    ) {
+        let Geometry::Generated { count } = cmd.geometry else {
+            return;
+        };
+        let stride = program.abi.instance_stride as usize;
+        let span = count as usize * stride;
+        let bytes = &self.buffer(cmd.instance_buffer).bytes;
+        let Some(instances) = bytes.get(cmd.instance_offset..cmd.instance_offset + span) else {
+            return;
+        };
+        let instances = instances.to_vec();
+        let uniforms = if cmd.uniforms.is_empty() {
+            cmd.bind_group
+                .and_then(|bg| {
+                    self.bind_group(bg).bindings.iter().find_map(|b| match b {
+                        Binding::Uniform(id) => Some(*id),
+                        _ => None,
+                    })
+                })
+                .map(|id| {
+                    let bytes = &self.buffer(id).bytes;
+                    bytes[..(program.abi.uniform_size as usize).min(bytes.len())].to_vec()
+                })
+                .unwrap_or_default()
+        } else {
+            cmd.uniforms.as_bytes().to_vec()
+        };
+        let scissor = match cmd.scissor {
+            Some((x, y, w, h)) => {
+                let x0 = x.min(width);
+                let y0 = y.min(height);
+                [x0, y0, x0 + w.min(width - x0), y0 + h.min(height - y0)]
+            }
+            None => [0, 0, width, height],
+        };
+        let unorm8 = !self.target_format(target).is_extended_range();
+        let mut fb = CpuTarget {
+            pixels: self.framebuffer(target),
+            width,
+            height,
+            scissor,
+            unorm8,
+        };
+        program.cpu.draw(
+            &mut fb,
+            &CpuDraw {
+                uniforms: &uniforms,
+                instances: &instances,
+                count,
+            },
+            program.blend,
+        );
     }
 
     /// Rasterize an indexed triangle mesh (Path/Mesh) into the framebuffer.

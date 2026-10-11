@@ -20,6 +20,7 @@ pub mod instance;
 /// The native Metal backend (compiled only on Apple targets; ADR 0029 cfg select).
 #[cfg(target_vendor = "apple")]
 pub mod metal;
+pub mod program;
 pub mod resource;
 pub mod retire;
 pub mod slots;
@@ -33,17 +34,17 @@ pub mod webgpu;
 
 pub use backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
-    RenderPass, RenderTarget,
+    ProgramOf, RenderPass, RenderTarget,
 };
 #[cfg(target_os = "windows")]
-pub use d3d12::D3D12Backend;
-pub use headless::HeadlessRaster;
+pub use d3d12::{D3D12Backend, D3D12Compiler, D3D12Program};
+pub use headless::{HeadlessCompiler, HeadlessProgram, HeadlessRaster};
 #[cfg(target_vendor = "apple")]
-pub use metal::{MetalBackend, MetalCompiler, MetalProgram, ProgramDesc};
+pub use metal::{MetalBackend, MetalCompiler, MetalProgram};
 #[cfg(any(feature = "vulkan", target_os = "linux", target_os = "android"))]
-pub use vulkan::{VulkanBackend, VulkanProgramDesc};
+pub use vulkan::{VulkanBackend, VulkanCompiler, VulkanProgram};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub use webgpu::WebGpuBackend;
+pub use webgpu::{WebGpuBackend, WebGpuCompiler, WebGpuProgram};
 
 /// The concrete GPU backend for this target, selected at compile time.
 ///
@@ -86,6 +87,10 @@ pub fn create_device() -> Backend {
 }
 pub use instance::{
     AttrFormat, InstanceField, InstanceLayout, InstanceSchema, LayoutError, SchemaAttr,
+};
+pub use program::{
+    CpuDraw, CpuProgram, CpuTarget, PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi, ProgramCode,
+    ProgramCompiler, ProgramDesc,
 };
 pub use resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader, Caps,

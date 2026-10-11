@@ -6,11 +6,12 @@
 //! out and compiles it for the backend. [`ProgramReload::poll`], called
 //! between frames, takes the newest outcome:
 //!
-//! - a success swaps in the new pipeline and interface and hands back the old
-//!   pipeline for retirement after the GPU is done with it; when the instance
-//!   or uniform layout changed, the [`Swap`] carries the [`Migration`] that
-//!   re-encodes the host's blocks, so the new buffer and the new pipeline go
-//!   live in the same frame;
+//! - a success makes the new program and interface live and hands the host
+//!   the compiled pipeline to install in place of the one it draws with, which
+//!   it retires through the GPU's fence; when the instance or uniform layout
+//!   changed, the [`Swap`] carries the [`Migration`] that re-encodes the
+//!   host's blocks, so the new buffer and the new pipeline go live in the same
+//!   frame;
 //! - a failure keeps the current pipeline and reports the front end's and the
 //!   validator's spans, or the backend's log.
 //!
@@ -31,12 +32,11 @@ pub enum ReloadError {
     Backend(String),
 }
 
-/// The program that is live, laid out, with its pipeline.
-#[derive(Debug)]
-pub struct Live<P> {
+/// The program that is live, laid out.
+#[derive(Debug, Clone)]
+pub struct Live {
     pub program: Program,
     pub interface: ShaderInterface,
-    pub pipeline: P,
 }
 
 /// How a block's members carry over to a new layout: each new member takes the
@@ -55,7 +55,7 @@ pub struct Migration {
 
 impl Migration {
     fn new(
-        old: &Live<impl Sized>,
+        old: &Live,
         new: &Program,
         new_interface: &ShaderInterface,
         uniforms: bool,
@@ -123,8 +123,9 @@ impl Migration {
 /// A reload that went live.
 #[derive(Debug)]
 pub struct Swap<P> {
-    /// The pipeline the swap replaced; retire it once the frames using it end.
-    pub retired: P,
+    /// The compiled pipeline of the program now live: install it in place of
+    /// the one drawing, and retire that one once the frames using it end.
+    pub pipeline: P,
     /// Set when the instance layout changed: re-encode the instance buffer
     /// before the next draw.
     pub instance: Option<Box<Migration>>,
@@ -152,7 +153,7 @@ struct Outcome<P> {
 
 /// A program the worker compiles and the host swaps in between frames.
 pub struct ProgramReload<S, P> {
-    live: Live<P>,
+    live: Live,
     jobs: Option<Sender<Job<S>>>,
     outcomes: Receiver<Outcome<P>>,
     submitted: u64,
@@ -162,14 +163,15 @@ pub struct ProgramReload<S, P> {
 }
 
 impl<S: Send + 'static, P: Send + 'static> ProgramReload<S, P> {
-    /// Compiles `source` now, then starts the worker. `lower` turns a source
-    /// into a program; `compile` builds the backend pipeline of a laid-out
-    /// program. Both run on the worker for later sources.
+    /// Compiles `source` now, then starts the worker; returns the reload and
+    /// the first program's pipeline to install. `lower` turns a source into a
+    /// program; `compile` builds the backend pipeline of a laid-out program.
+    /// Both run on the worker for later sources.
     ///
     /// # Errors
     ///
     /// Why the first source does not build; there is no pipeline to keep.
-    pub fn new<L, C>(source: S, mut lower: L, mut compile: C) -> Result<Self, ReloadError>
+    pub fn new<L, C>(source: S, mut lower: L, mut compile: C) -> Result<(Self, P), ReloadError>
     where
         L: FnMut(&S) -> Result<Program, Vec<ProgramError>> + Send + 'static,
         C: FnMut(&Program, &ShaderInterface) -> Result<P, String> + Send + 'static,
@@ -202,18 +204,15 @@ impl<S: Send + 'static, P: Send + 'static> ProgramReload<S, P> {
                 }
             })
             .expect("the shader reload worker starts");
-        Ok(ProgramReload {
-            live: Live {
-                program,
-                interface,
-                pipeline,
-            },
+        let reload = ProgramReload {
+            live: Live { program, interface },
             jobs: Some(jobs),
             outcomes,
             submitted: 0,
             settled: 0,
             worker: Some(worker),
-        })
+        };
+        Ok((reload, pipeline))
     }
 
     /// Queues `source`, superseding any source not yet live.
@@ -227,8 +226,8 @@ impl<S: Send + 'static, P: Send + 'static> ProgramReload<S, P> {
         }
     }
 
-    /// The live program and pipeline.
-    pub fn live(&self) -> &Live<P> {
+    /// The live program and its interface.
+    pub fn live(&self) -> &Live {
         &self.live
     }
 
@@ -265,16 +264,9 @@ impl<S: Send + 'static, P: Send + 'static> ProgramReload<S, P> {
                     .then(|| Box::new(Migration::new(&self.live, &program, &interface, false)));
                 let uniforms = changed(&self.live.interface.uniforms, &interface.uniforms)
                     .then(|| Box::new(Migration::new(&self.live, &program, &interface, true)));
-                let old = std::mem::replace(
-                    &mut self.live,
-                    Live {
-                        program,
-                        interface,
-                        pipeline,
-                    },
-                );
+                self.live = Live { program, interface };
                 ReloadEvent::Swapped(Swap {
-                    retired: old.pipeline,
+                    pipeline,
                     instance,
                     uniforms,
                 })
@@ -384,8 +376,9 @@ mod tests {
 
     #[test]
     fn a_failure_keeps_the_live_pipeline_and_a_success_swaps_it() {
-        let mut r = ProgramReload::new(program("a", Vec::new()), lower, compile).expect("builds");
-        assert_eq!(r.live().pipeline, "a");
+        let (mut r, live) =
+            ProgramReload::new(program("a", Vec::new()), lower, compile).expect("builds");
+        assert_eq!(live, "a");
 
         r.submit(program("bad", Vec::new()));
         let ReloadEvent::Failed(ReloadError::Program(errors)) = wait(&mut r) else {
@@ -395,14 +388,14 @@ mod tests {
             (errors[0].code, errors[0].span),
             ("E8105", Span { start: 3, end: 7 })
         );
-        assert_eq!(r.live().pipeline, "a");
+        assert_eq!(&*r.live().program.name, "a");
 
         r.submit(program("rejected", Vec::new()));
         let ReloadEvent::Failed(ReloadError::Backend(log)) = wait(&mut r) else {
             panic!("a backend failure");
         };
         assert!(log.contains("undeclared"));
-        assert_eq!(r.live().pipeline, "a");
+        assert_eq!(&*r.live().program.name, "a");
 
         // A program the validator rejects never reaches the backend.
         let mut invalid = program("invalid", Vec::new());
@@ -417,9 +410,9 @@ mod tests {
         let ReloadEvent::Swapped(swap) = wait(&mut r) else {
             panic!("a swap");
         };
-        assert_eq!(swap.retired, "a");
+        assert_eq!(swap.pipeline, "b");
         assert!(swap.instance.is_none() && swap.uniforms.is_none());
-        assert_eq!(r.live().pipeline, "b");
+        assert_eq!(&*r.live().program.name, "b");
         assert!(!r.pending());
     }
 
@@ -440,7 +433,7 @@ mod tests {
             log.lock().unwrap().push(p.name.to_string());
             Ok(p.name.to_string())
         };
-        let mut r =
+        let (mut r, _) =
             ProgramReload::new(program("first", Vec::new()), lower, compile).expect("builds");
         r.submit(program("one", Vec::new()));
         starts.recv().unwrap();
@@ -456,8 +449,8 @@ mod tests {
         };
         // `one` finished first but was already superseded; `two` was skipped.
         assert_eq!(
-            (swap.retired.as_str(), r.live().pipeline.as_str()),
-            ("first", "three")
+            (swap.pipeline.as_str(), &*r.live().program.name),
+            ("three", "three")
         );
         assert_eq!(*seen.lock().unwrap(), ["first", "one", "three"]);
     }
@@ -475,7 +468,8 @@ mod tests {
             binding("pos", Ty::VEC2),
             binding("id", Ty::I32),
         ];
-        let mut r = ProgramReload::new(program("s", old.clone()), lower, compile).expect("builds");
+        let (mut r, _) =
+            ProgramReload::new(program("s", old.clone()), lower, compile).expect("builds");
         let old_program = r.live().program.clone();
         let rows = [
             vec![Value::floats(&[1.0, 2.0]), Value::f32(3.0), Value::u32(9)],

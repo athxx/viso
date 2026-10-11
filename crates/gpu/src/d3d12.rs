@@ -14,11 +14,19 @@
 //!   of root constants at `b0`, a two-SRV descriptor table at `t0` and a
 //!   one-sampler table at `s0` — a draw's uniforms are one
 //!   `SetGraphicsRoot32BitConstants`, and a bind group is two table offsets.
+//! - **A user program has its own root signature**, built with its pipeline
+//!   state by [`D3D12Compiler`] on any thread: the same three parameters (the
+//!   uniforms as a root constant-buffer view when the block outgrows the root
+//!   constants) and a root view of the instance array at `t0, space1`, set at
+//!   the draw's instance offset — the structured buffer replaces the input
+//!   layout. Drawing one switches the root signature and rebinds the tables.
 //! - **One shader-visible heap per descriptor type** for the device's lifetime.
-//!   A bind group owns one two-descriptor unit of the SRV heap (a lone texture is
-//!   written to both), and a sampler owns one slot of the sampler heap; unit 0
-//!   holds null SRVs and slot 0 a default sampler, bound when a draw has no
-//!   bind group. The heaps are set once per command list, never switched.
+//!   A bind group owns one [`PROGRAM_TEXTURES`]-descriptor unit of the SRV heap
+//!   (its last texture repeated to fill it), and a sampler owns one slot of the
+//!   sampler heap; a group binding two samplers also holds a pair of adjacent
+//!   slots, shared by every group naming the same two. Unit 0 holds null SRVs
+//!   and slots 0–1 the default sampler, bound when a draw has no bind group.
+//!   The heaps are set once per command list, never switched.
 //! - **Buffers are persistently mapped**: in the GPU-upload heap (device-local,
 //!   CPU-visible through resizable BAR) where the device supports it, otherwise
 //!   the upload heap — `write_buffer` is a memcpy exactly as on Metal.
@@ -65,6 +73,9 @@ use crate::backend::{
     RenderPass, RenderTarget,
 };
 use crate::instance::{AttrFormat, InstanceLayout};
+use crate::program::{
+    PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramCode, ProgramCompiler, ProgramDesc,
+};
 use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
     PipelineDesc, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
@@ -79,17 +90,24 @@ const FRAMES_IN_FLIGHT: usize = 2;
 const STAGING_CHUNK: u64 = 4 << 20;
 /// Swapchain buffers: one on screen, one queued, one being drawn.
 const SWAP_BUFFERS: u32 = 3;
-/// Two-descriptor units in the shader-visible SRV heap (unit 0 is the null pair).
+/// Descriptor units in the shader-visible SRV heap (unit 0 is all null views).
 const SRV_UNITS: u32 = 32768;
+/// Views one unit holds: a bind group's textures, the last repeated to fill it.
+const SRV_UNIT: u32 = PROGRAM_TEXTURES;
 /// Slots in the shader-visible sampler heap (slot 0 is the default sampler);
 /// 2048 is the D3D12 limit.
 const SAMPLER_SLOTS: u32 = 2048;
 /// Render-target views per CPU-only RTV heap; a full heap is followed by another.
 const RTV_BLOCK: u32 = 256;
-/// Root parameter indices.
+/// Root parameter indices; a user program's root signature appends the
+/// instance array's view.
 const ROOT_UNIFORMS: u32 = 0;
 const ROOT_TEXTURES: u32 = 1;
 const ROOT_SAMPLER: u32 = 2;
+const ROOT_INSTANCES: u32 = 3;
+/// Textures and samplers the built-ins' tables read.
+const BUILTIN_TEXTURES: u32 = 2;
+const BUILTIN_SAMPLERS: u32 = 1;
 /// Compile targets and the attribute semantic of the HLSL the shader crate emits.
 const VERTEX_PROFILE: &CStr = c"vs_5_1";
 const PIXEL_PROFILE: &CStr = c"ps_5_1";
@@ -129,16 +147,49 @@ struct D3D12Texture {
 struct D3D12Pipeline {
     pso: ID3D12PipelineState,
     stride: u32,
+    /// A user program's own root signature; `None` for a built-in, drawn under
+    /// the shared one.
+    program: Option<ProgramRoot>,
 }
 
-/// A bind group: its SRV-heap unit and sampler-heap slot.
+/// The root signature a user program is drawn under.
+struct ProgramRoot {
+    signature: ID3D12RootSignature,
+    /// Samplers the program reads: two read the bind group's sampler pair.
+    samplers: u32,
+    /// The uniforms are a root constant-buffer view on the bind group's uniform
+    /// buffer rather than root constants.
+    uniform_buffer: bool,
+}
+
+/// A sampler: its own heap slot and the description that filled it.
+struct D3D12Sampler {
+    slot: u32,
+    desc: D3D12_SAMPLER_DESC,
+}
+
+/// Two samplers written side by side for a program's two-sampler table,
+/// shared by every bind group naming the same pair.
+struct SamplerPair {
+    samplers: [SamplerId; 2],
+    slot: u32,
+    refs: u32,
+}
+
+/// A bind group: its SRV-heap unit and sampler-heap slots.
 #[derive(Clone, Copy)]
 struct D3D12BindGroup {
     /// 0 (the null pair) when the group binds no texture.
     srv_unit: u32,
     /// Owned by the group, returned to the free list when it is reclaimed.
     owns_unit: bool,
+    /// The first sampler's own slot.
     sampler_slot: u32,
+    /// The group's two samplers and the heap slots holding them side by side,
+    /// for a program that reads both.
+    sampler_pair: Option<([SamplerId; 2], u32)>,
+    /// The uniform buffer a user program with a large uniform block reads.
+    uniform: Option<BufferId>,
 }
 
 /// A window surface and its swapchain.
@@ -188,6 +239,16 @@ struct FrameSlot {
     /// The oldest epoch the last submission's commands were recorded in.
     epoch: Epoch,
     staging: Staging,
+}
+
+/// What a pass's recording has bound so far.
+#[derive(Default)]
+struct Bound {
+    pipeline: Option<PipelineId>,
+    /// The user program whose root signature is bound; `None` for the shared one.
+    root: Option<PipelineId>,
+    /// The bind group and whether its sampler pair is bound.
+    group: Option<(BindGroupId, bool)>,
 }
 
 /// The frame between `begin_frame` and `present`.
@@ -266,7 +327,10 @@ pub struct D3D12Backend {
     buffers: SlotMap<D3D12Buffer>,
     textures: SlotMap<D3D12Texture>,
     /// Each sampler's slot in the sampler heap.
-    samplers: SlotMap<u32>,
+    samplers: SlotMap<D3D12Sampler>,
+    sampler_pairs: Vec<SamplerPair>,
+    /// Freed pair slots (the first of two adjacent slots).
+    sampler_pair_free: Vec<u32>,
     bind_groups: SlotMap<D3D12BindGroup>,
     pipelines: SlotMap<D3D12Pipeline>,
     surfaces: SlotMap<D3D12Surface>,
@@ -351,21 +415,24 @@ impl D3D12Backend {
         let srv_heap = create_gpu_heap(
             &device,
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-            SRV_UNITS * 2,
+            SRV_UNITS * SRV_UNIT,
         );
         let sampler_heap =
             create_gpu_heap(&device, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, SAMPLER_SLOTS);
         let heaps = [Some(srv_heap.heap.clone()), Some(sampler_heap.heap.clone())];
-        // SAFETY: the null SRVs and the default sampler are written into slots
-        // 0 of heaps just created with room for them.
+        // SAFETY: the null SRVs and the default sampler pair are written into
+        // the first unit and slots of heaps just created with room for them.
         unsafe {
             let null = null_srv_desc();
-            device.CreateShaderResourceView(None, Some(&null), srv_heap.cpu(0));
-            device.CreateShaderResourceView(None, Some(&null), srv_heap.cpu(1));
-            device.CreateSampler(
-                &sampler_desc(&SamplerDesc::LINEAR_CLAMP),
-                sampler_heap.cpu(0),
-            );
+            for i in 0..SRV_UNIT {
+                device.CreateShaderResourceView(None, Some(&null), srv_heap.cpu(i));
+            }
+            for i in 0..2 {
+                device.CreateSampler(
+                    &sampler_desc(&SamplerDesc::LINEAR_CLAMP),
+                    sampler_heap.cpu(i),
+                );
+            }
         }
         let gpu_upload_heap = supports_gpu_upload_heap(&device);
         // SAFETY: querying a descriptor size has no preconditions.
@@ -386,7 +453,7 @@ impl D3D12Backend {
             srv_free: Vec::new(),
             srv_next: 1,
             sampler_free: Vec::new(),
-            sampler_next: 1,
+            sampler_next: 2,
             rtv_heaps: Vec::new(),
             rtv_free: Vec::new(),
             rtv_increment,
@@ -402,6 +469,8 @@ impl D3D12Backend {
             buffers: SlotMap::new(),
             textures: SlotMap::new(),
             samplers: SlotMap::new(),
+            sampler_pairs: Vec::new(),
+            sampler_pair_free: Vec::new(),
             bind_groups: SlotMap::new(),
             pipelines: SlotMap::new(),
             surfaces: SlotMap::new(),
@@ -411,6 +480,7 @@ impl D3D12Backend {
                 compute_dispatch: false,
                 bindless_texture_slots: 0,
                 indirect_draw: false,
+                program_instance_align: 4,
             },
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
@@ -766,18 +836,21 @@ impl D3D12Backend {
                     }
                 }
                 ResourceKind::Sampler => {
-                    if let Some(slot) = self.samplers.remove(entry.id) {
-                        self.sampler_free.push(slot);
+                    if let Some(s) = self.samplers.remove(entry.id) {
+                        self.sampler_free.push(s.slot);
                     }
                 }
                 ResourceKind::Pipeline => {
                     self.pipelines.remove(entry.id);
                 }
                 ResourceKind::BindGroup => {
-                    if let Some(g) = self.bind_groups.remove(entry.id)
-                        && g.owns_unit
-                    {
-                        self.srv_free.push(g.srv_unit);
+                    if let Some(g) = self.bind_groups.remove(entry.id) {
+                        if g.owns_unit {
+                            self.srv_free.push(g.srv_unit);
+                        }
+                        if let Some((pair, _)) = g.sampler_pair {
+                            self.release_sampler_pair(pair);
+                        }
                     }
                 }
             }
@@ -881,6 +954,51 @@ impl D3D12Backend {
         self.sampler_next - 1
     }
 
+    /// The heap slots holding `pair` side by side, written on first use.
+    fn acquire_sampler_pair(&mut self, pair: [SamplerId; 2]) -> u32 {
+        if let Some(p) = self.sampler_pairs.iter_mut().find(|p| p.samplers == pair) {
+            p.refs += 1;
+            return p.slot;
+        }
+        let slot = self.sampler_pair_free.pop().unwrap_or_else(|| {
+            assert!(
+                self.sampler_next + 2 <= SAMPLER_SLOTS,
+                "more than {SAMPLER_SLOTS} live sampler slots"
+            );
+            self.sampler_next += 2;
+            self.sampler_next - 2
+        });
+        for (i, id) in pair.iter().enumerate() {
+            let desc = self
+                .samplers
+                .get((*id).into())
+                .expect("sampler handle does not resolve")
+                .desc;
+            // SAFETY: `slot + i` lies in the pair's two free slots.
+            unsafe {
+                self.device
+                    .CreateSampler(&desc, self.sampler_heap.cpu(slot + i as u32));
+            }
+        }
+        self.sampler_pairs.push(SamplerPair {
+            samplers: pair,
+            slot,
+            refs: 1,
+        });
+        slot
+    }
+
+    fn release_sampler_pair(&mut self, pair: [SamplerId; 2]) {
+        if let Some(i) = self.sampler_pairs.iter().position(|p| p.samplers == pair) {
+            let p = &mut self.sampler_pairs[i];
+            p.refs -= 1;
+            if p.refs == 0 {
+                self.sampler_pair_free.push(p.slot);
+                self.sampler_pairs.swap_remove(i);
+            }
+        }
+    }
+
     /// `source`'s `entry` compiled for `profile`, compiled once per program.
     fn compile(&mut self, source: &'static str, entry: &'static str, pixel: bool) -> ID3DBlob {
         if let Some(c) = self
@@ -890,36 +1008,7 @@ impl D3D12Backend {
         {
             return c.blob.clone();
         }
-        let entry_c = CString::new(entry).expect("entry name");
-        let profile = if pixel { PIXEL_PROFILE } else { VERTEX_PROFILE };
-        let mut code: Option<ID3DBlob> = None;
-        let mut errors: Option<ID3DBlob> = None;
-        // SAFETY: the source pointer and length describe `source`; the entry and
-        // profile are NUL-terminated and outlive the call.
-        let result = unsafe {
-            D3DCompile(
-                source.as_ptr().cast(),
-                source.len(),
-                PCSTR::null(),
-                None,
-                None,
-                PCSTR(entry_c.as_ptr().cast()),
-                PCSTR(profile.as_ptr().cast()),
-                D3DCOMPILE_OPTIMIZATION_LEVEL3,
-                0,
-                &mut code,
-                Some(&mut errors),
-            )
-        };
-        if let Err(e) = result {
-            let log = errors.map(|b| blob_bytes(&b).to_vec()).unwrap_or_default();
-            panic!(
-                "HLSL compile of `{entry}` ({}) failed: {e}\n{}",
-                profile.to_string_lossy(),
-                String::from_utf8_lossy(&log)
-            );
-        }
-        let blob = code.expect("D3DCompile returned no bytecode");
+        let blob = compile_stage(source, entry, pixel).unwrap_or_else(|e| panic!("{e}"));
         self.shader_cache.push(CompiledStage {
             source: source.as_ptr(),
             entry: entry.as_ptr(),
@@ -1045,10 +1134,9 @@ impl D3D12Backend {
             }
             cmd.RSSetViewports(&[viewport]);
         }
-        let mut bound_pipeline = None;
-        let mut bound_group = None;
+        let mut bound = Bound::default();
         for c in commands {
-            self.record_command(&cmd, c, extent, &mut bound_pipeline, &mut bound_group);
+            self.record_command(&cmd, c, extent, &mut bound);
         }
         if texture {
             // SAFETY: the texture returns to its resting state.
@@ -1068,8 +1156,7 @@ impl D3D12Backend {
         cmd: &ID3D12GraphicsCommandList,
         c: &DrawCommand,
         extent: (u32, u32),
-        bound_pipeline: &mut Option<(PipelineId, u32)>,
-        bound_group: &mut Option<BindGroupId>,
+        bound: &mut Bound,
     ) {
         let (sx, sy, sw, sh) = match c.scissor {
             Some((x, y, w, h)) => {
@@ -1085,44 +1172,78 @@ impl D3D12Backend {
             right: (sx + sw) as i32,
             bottom: (sy + sh) as i32,
         };
-        let stride = match *bound_pipeline {
-            Some((id, stride)) if id == c.pipeline => stride,
-            _ => {
-                let p = self
-                    .pipelines
-                    .get(c.pipeline.into())
-                    .expect("pipeline handle does not resolve");
-                // SAFETY: `cmd` is recording; the PSO was built against the
-                // bound root signature.
-                unsafe { cmd.SetPipelineState(&p.pso) };
-                *bound_pipeline = Some((c.pipeline, p.stride));
-                p.stride
+        let p = self
+            .pipelines
+            .get(c.pipeline.into())
+            .expect("pipeline handle does not resolve");
+        if bound.pipeline != Some(c.pipeline) {
+            let root = p.program.as_ref().map(|_| c.pipeline);
+            if bound.root != root {
+                let signature = p
+                    .program
+                    .as_ref()
+                    .map_or(&self.root_signature, |r| &r.signature);
+                // SAFETY: `cmd` is recording; switching the root signature
+                // drops every root binding, so the default tables are rebound
+                // and the bind group with them.
+                unsafe {
+                    cmd.SetGraphicsRootSignature(signature);
+                    if root.is_none() {
+                        let zeros = [0u32; InlineUniforms::MAX / 4];
+                        cmd.SetGraphicsRoot32BitConstants(
+                            ROOT_UNIFORMS,
+                            zeros.len() as u32,
+                            zeros.as_ptr().cast(),
+                            0,
+                        );
+                    }
+                    cmd.SetGraphicsRootDescriptorTable(ROOT_TEXTURES, self.srv_heap.gpu(0));
+                    cmd.SetGraphicsRootDescriptorTable(ROOT_SAMPLER, self.sampler_heap.gpu(0));
+                }
+                bound.root = root;
+                bound.group = None;
             }
-        };
-        // SAFETY: `cmd` is recording under the shared root signature; the tables
-        // point into the bound heaps, the views into live buffers, and the
-        // renderer guarantees the instance/index ranges lie inside them.
+            // SAFETY: `cmd` is recording; the PSO was built against the root
+            // signature just bound.
+            unsafe { cmd.SetPipelineState(&p.pso) };
+            bound.pipeline = Some(c.pipeline);
+        }
+        let stride = p.stride;
+        let group = c.bind_group.map(|bg| {
+            self.bind_groups
+                .get(bg.into())
+                .expect("bind group handle does not resolve")
+        });
+        // SAFETY: `cmd` is recording under the pipeline's root signature; the
+        // tables point into the bound heaps, the views into live buffers, and
+        // the renderer guarantees the instance/index ranges lie inside them.
         unsafe {
             cmd.RSSetScissorRects(&[scissor]);
-            if let Some(bg) = c.bind_group
-                && *bound_group != Some(bg)
+            let pair = p.program.as_ref().is_some_and(|r| r.samplers > 1);
+            if let (Some(bg), Some(g)) = (c.bind_group, group)
+                && bound.group != Some((bg, pair))
             {
-                let g = self
-                    .bind_groups
-                    .get(bg.into())
-                    .expect("bind group handle does not resolve");
+                let sampler = if pair {
+                    g.sampler_pair
+                        .expect("a program reading two samplers draws with a group binding two")
+                        .1
+                } else {
+                    g.sampler_slot
+                };
                 cmd.SetGraphicsRootDescriptorTable(
                     ROOT_TEXTURES,
-                    self.srv_heap.gpu(g.srv_unit * 2),
+                    self.srv_heap.gpu(g.srv_unit * SRV_UNIT),
                 );
-                cmd.SetGraphicsRootDescriptorTable(
-                    ROOT_SAMPLER,
-                    self.sampler_heap.gpu(g.sampler_slot),
-                );
-                *bound_group = Some(bg);
+                cmd.SetGraphicsRootDescriptorTable(ROOT_SAMPLER, self.sampler_heap.gpu(sampler));
+                bound.group = Some((bg, pair));
             }
             let uniforms = c.uniforms.as_bytes();
-            if !uniforms.is_empty() {
+            if p.program.as_ref().is_some_and(|r| r.uniform_buffer) {
+                let buffer = group
+                    .and_then(|g| g.uniform)
+                    .expect("a program with a large uniform block draws with a uniform buffer");
+                cmd.SetGraphicsRootConstantBufferView(ROOT_UNIFORMS, self.buffer(buffer).gpu_va);
+            } else if !uniforms.is_empty() {
                 let mut words = [0u32; InlineUniforms::MAX / 4];
                 core::ptr::copy_nonoverlapping(
                     uniforms.as_ptr(),
@@ -1137,6 +1258,14 @@ impl D3D12Backend {
                 );
             }
             match c.geometry {
+                Geometry::Generated { count } if p.program.is_some() => {
+                    let inst = self.buffer(c.instance_buffer);
+                    cmd.SetGraphicsRootShaderResourceView(
+                        ROOT_INSTANCES,
+                        inst.gpu_va + c.instance_offset as u64,
+                    );
+                    cmd.DrawInstanced(6, count, 0, 0);
+                }
                 Geometry::Generated { count } => {
                     let inst = self.buffer(c.instance_buffer);
                     if stride > 0 {
@@ -1170,6 +1299,55 @@ impl D3D12Backend {
                 }
             }
         }
+    }
+}
+
+/// The Direct3D 12 program compiler: `D3DCompile`, the program's root
+/// signature and its pipeline state, on any thread.
+#[derive(Clone)]
+pub struct D3D12Compiler {
+    device: ID3D12Device,
+}
+
+/// A compiled user program, ready to install.
+pub struct D3D12Program {
+    pso: ID3D12PipelineState,
+    root: ProgramRoot,
+}
+
+impl ProgramCompiler for D3D12Compiler {
+    type Program = D3D12Program;
+
+    fn compile(&self, desc: &ProgramDesc<'_>) -> Result<D3D12Program, String> {
+        let ProgramCode::Hlsl(source) = desc.code else {
+            return Err(format!(
+                "the Direct3D 12 backend consumes HLSL, got {:?}",
+                desc.code.lang()
+            ));
+        };
+        desc.check_abi()?;
+        let uniform_buffer = desc.abi.uniform_size as usize > InlineUniforms::MAX;
+        let tables = (desc.abi.textures.max(1), desc.abi.samplers.max(1));
+        let signature = serialize_root_signature(&self.device, Some(tables), uniform_buffer)?;
+        let vs = compile_stage(source, desc.vertex_entry, false)?;
+        let ps = compile_stage(source, desc.fragment_entry, true)?;
+        let pso = create_pso(
+            &self.device,
+            &signature,
+            &vs,
+            &ps,
+            &[],
+            desc.color_format,
+            desc.blend,
+        )?;
+        Ok(D3D12Program {
+            pso,
+            root: ProgramRoot {
+                signature,
+                samplers: desc.abi.samplers,
+                uniform_buffer,
+            },
+        })
     }
 }
 
@@ -1279,12 +1457,13 @@ impl GpuBackend for D3D12Backend {
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> SamplerId {
         let slot = self.allocate_sampler_slot();
+        let desc = sampler_desc(desc);
         // SAFETY: `slot` is a free slot of the sampler heap.
         unsafe {
             self.device
-                .CreateSampler(&sampler_desc(desc), self.sampler_heap.cpu(slot));
+                .CreateSampler(&desc, self.sampler_heap.cpu(slot));
         }
-        self.samplers.insert(slot).into()
+        self.samplers.insert(D3D12Sampler { slot, desc }).into()
     }
 
     fn create_pipeline(
@@ -1323,100 +1502,33 @@ impl GpuBackend for D3D12Backend {
             offset += a.format.size() as u32;
         }
 
-        let blend = match desc.blend {
-            BlendMode::Replace => D3D12_RENDER_TARGET_BLEND_DESC {
-                BlendEnable: false.into(),
-                LogicOpEnable: false.into(),
-                SrcBlend: D3D12_BLEND_ONE,
-                DestBlend: D3D12_BLEND_ZERO,
-                BlendOp: D3D12_BLEND_OP_ADD,
-                SrcBlendAlpha: D3D12_BLEND_ONE,
-                DestBlendAlpha: D3D12_BLEND_ZERO,
-                BlendOpAlpha: D3D12_BLEND_OP_ADD,
-                LogicOp: D3D12_LOGIC_OP_NOOP,
-                RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
-            },
-            BlendMode::PremultipliedOver => D3D12_RENDER_TARGET_BLEND_DESC {
-                BlendEnable: true.into(),
-                LogicOpEnable: false.into(),
-                SrcBlend: D3D12_BLEND_ONE,
-                DestBlend: D3D12_BLEND_INV_SRC_ALPHA,
-                BlendOp: D3D12_BLEND_OP_ADD,
-                SrcBlendAlpha: D3D12_BLEND_ONE,
-                DestBlendAlpha: D3D12_BLEND_INV_SRC_ALPHA,
-                BlendOpAlpha: D3D12_BLEND_OP_ADD,
-                LogicOp: D3D12_LOGIC_OP_NOOP,
-                RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
-            },
-        };
-        let mut blend_state = D3D12_BLEND_DESC::default();
-        blend_state.RenderTarget[0] = blend;
-        let stencil_op = D3D12_DEPTH_STENCILOP_DESC {
-            StencilFailOp: D3D12_STENCIL_OP_KEEP,
-            StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
-            StencilPassOp: D3D12_STENCIL_OP_KEEP,
-            StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
-        };
-        let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
-        rtv_formats[0] = dxgi_format(desc.color_format);
-        let pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-            // SAFETY: a borrowed copy of the root signature pointer, wrapped in
-            // `ManuallyDrop` so the description never releases it; the
-            // signature outlives the call.
-            pRootSignature: unsafe { core::mem::transmute_copy(&self.root_signature) },
-            VS: bytecode(&vs),
-            PS: bytecode(&ps),
-            BlendState: blend_state,
-            SampleMask: u32::MAX,
-            RasterizerState: D3D12_RASTERIZER_DESC {
-                FillMode: D3D12_FILL_MODE_SOLID,
-                CullMode: D3D12_CULL_MODE_NONE,
-                DepthClipEnable: true.into(),
-                ..Default::default()
-            },
-            DepthStencilState: D3D12_DEPTH_STENCIL_DESC {
-                DepthEnable: false.into(),
-                DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
-                DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
-                StencilEnable: false.into(),
-                StencilReadMask: 0xff,
-                StencilWriteMask: 0xff,
-                FrontFace: stencil_op,
-                BackFace: stencil_op,
-            },
-            InputLayout: D3D12_INPUT_LAYOUT_DESC {
-                pInputElementDescs: elements.as_ptr(),
-                NumElements: elements.len() as u32,
-            },
-            PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-            NumRenderTargets: 1,
-            RTVFormats: rtv_formats,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            ..Default::default()
-        };
-        // SAFETY: every pointer in the description borrows a live local or blob
-        // for the call; the bytecode reads the attributes, root constants and
-        // tables the shared root signature declares.
-        let pso: ID3D12PipelineState =
-            unsafe { self.device.CreateGraphicsPipelineState(&pso_desc) }
-                .expect("failed to create a Direct3D 12 pipeline");
+        let pso = create_pso(
+            &self.device,
+            &self.root_signature,
+            &vs,
+            &ps,
+            &elements,
+            desc.color_format,
+            desc.blend,
+        )
+        .unwrap_or_else(|e| panic!("failed to create a Direct3D 12 pipeline: {e}"));
         Ok(self
             .pipelines
             .insert(D3D12Pipeline {
                 pso,
                 stride: layout.stride as u32,
+                program: None,
             })
             .into())
     }
 
     fn create_bind_group(&mut self, desc: &BindGroupDesc) -> BindGroupId {
-        let mut textures: [Option<ID3D12Resource>; 2] = [None, None];
-        let mut formats = [TextureFormat::Rgba8Unorm; 2];
+        let mut textures: [Option<ID3D12Resource>; SRV_UNIT as usize] = Default::default();
+        let mut formats = [TextureFormat::Rgba8Unorm; SRV_UNIT as usize];
         let mut texture_count = 0;
-        let mut sampler_slot = 0;
+        let mut samplers = [None; PROGRAM_SAMPLERS as usize];
+        let mut sampler_count = 0;
+        let mut uniform = None;
         for binding in &desc.bindings {
             match *binding {
                 Binding::Texture(id) => {
@@ -1428,20 +1540,21 @@ impl GpuBackend for D3D12Backend {
                     }
                 }
                 Binding::Sampler(id) => {
-                    sampler_slot = *self
-                        .samplers
-                        .get(id.into())
-                        .expect("sampler handle does not resolve");
+                    if sampler_count < samplers.len() {
+                        samplers[sampler_count] = Some(id);
+                        sampler_count += 1;
+                    }
                 }
-                // The built-ins' uniforms are root constants.
-                Binding::Uniform(_) => {}
+                // The built-ins' uniforms are root constants; a user program
+                // with a large block reads this buffer.
+                Binding::Uniform(id) => uniform = Some(id),
             }
         }
-        // A single-texture program leaves `dst_tex` unread; fill it anyway so the
-        // table is complete for any program it is bound with.
-        if texture_count == 1 {
-            textures[1] = textures[0].clone();
-            formats[1] = formats[0];
+        // A program reading fewer textures leaves the rest of the unit unread;
+        // repeat the last one so the unit is complete for any program.
+        for i in texture_count.max(1)..textures.len() {
+            textures[i] = textures[i - 1].clone();
+            formats[i] = formats[i - 1];
         }
         let srv_unit = if texture_count == 0 {
             0
@@ -1455,17 +1568,47 @@ impl GpuBackend for D3D12Backend {
                     self.device.CreateShaderResourceView(
                         t.as_ref(),
                         Some(&srv),
-                        self.srv_heap.cpu(unit * 2 + i as u32),
+                        self.srv_heap.cpu(unit * SRV_UNIT + i as u32),
                     );
                 }
             }
             unit
+        };
+        let sampler_slot = samplers[0].map_or(0, |id| {
+            self.samplers
+                .get(id.into())
+                .expect("sampler handle does not resolve")
+                .slot
+        });
+        let sampler_pair = match samplers {
+            [Some(a), Some(b)] => Some(([a, b], self.acquire_sampler_pair([a, b]))),
+            _ => None,
         };
         self.bind_groups
             .insert(D3D12BindGroup {
                 srv_unit,
                 owns_unit: texture_count > 0,
                 sampler_slot,
+                sampler_pair,
+                uniform,
+            })
+            .into()
+    }
+
+    type Compiler = D3D12Compiler;
+
+    fn program_compiler(&self) -> D3D12Compiler {
+        D3D12Compiler {
+            device: self.device.clone(),
+        }
+    }
+
+    fn install_program(&mut self, program: D3D12Program) -> PipelineId {
+        self.pipelines
+            .insert(D3D12Pipeline {
+                pso: program.pso,
+                stride: 0,
+                program: Some(program.root),
             })
             .into()
     }
@@ -1835,17 +1978,33 @@ fn supports_gpu_upload_heap(device: &ID3D12Device) -> bool {
 
 /// The shared root signature: root constants at `b0`, an SRV table at `t0..t1`
 /// and a sampler table at `s0`, visible to every stage.
+/// The shared root signature every built-in pipeline is drawn under.
 fn create_root_signature(device: &ID3D12Device) -> ID3D12RootSignature {
+    serialize_root_signature(device, None, false)
+        .unwrap_or_else(|e| panic!("failed to create the Direct3D 12 root signature: {e}"))
+}
+
+/// A root signature: the uniforms at `b0` (root constants, or a root
+/// constant-buffer view when `uniform_buffer`), the texture table at `t0` and
+/// the sampler table at `s0`. A program's — `program` holds its table sizes —
+/// appends the instance array's root view at `t0, space1` and reads no input
+/// layout.
+fn serialize_root_signature(
+    device: &ID3D12Device,
+    program: Option<(u32, u32)>,
+    uniform_buffer: bool,
+) -> Result<ID3D12RootSignature, String> {
+    let (textures, samplers) = program.unwrap_or((BUILTIN_TEXTURES, BUILTIN_SAMPLERS));
     let srv_range = [D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-        NumDescriptors: 2,
+        NumDescriptors: textures,
         BaseShaderRegister: 0,
         RegisterSpace: 0,
         OffsetInDescriptorsFromTableStart: 0,
     }];
     let sampler_range = [D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
-        NumDescriptors: 1,
+        NumDescriptors: samplers,
         BaseShaderRegister: 0,
         RegisterSpace: 0,
         OffsetInDescriptorsFromTableStart: 0,
@@ -1860,7 +2019,19 @@ fn create_root_signature(device: &ID3D12Device) -> ID3D12RootSignature {
         },
         ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
     };
-    let params = [
+    let root_view = |ty, space| D3D12_ROOT_PARAMETER {
+        ParameterType: ty,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            Descriptor: D3D12_ROOT_DESCRIPTOR {
+                ShaderRegister: 0,
+                RegisterSpace: space,
+            },
+        },
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+    };
+    let uniforms = if uniform_buffer {
+        root_view(D3D12_ROOT_PARAMETER_TYPE_CBV, 0)
+    } else {
         D3D12_ROOT_PARAMETER {
             ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
             Anonymous: D3D12_ROOT_PARAMETER_0 {
@@ -1871,16 +2042,25 @@ fn create_root_signature(device: &ID3D12Device) -> ID3D12RootSignature {
                 },
             },
             ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-        },
+        }
+    };
+    let params = [
+        uniforms,
         table(&srv_range),
         table(&sampler_range),
+        root_view(D3D12_ROOT_PARAMETER_TYPE_SRV, 1),
     ];
+    let count = if program.is_some() { 4 } else { 3 };
     let desc = D3D12_ROOT_SIGNATURE_DESC {
-        NumParameters: params.len() as u32,
+        NumParameters: count,
         pParameters: params.as_ptr(),
         NumStaticSamplers: 0,
         pStaticSamplers: core::ptr::null(),
-        Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        Flags: if program.is_some() {
+            D3D12_ROOT_SIGNATURE_FLAG_NONE
+        } else {
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        },
     };
     let mut blob: Option<ID3DBlob> = None;
     let mut errors: Option<ID3DBlob> = None;
@@ -1894,16 +2074,139 @@ fn create_root_signature(device: &ID3D12Device) -> ID3D12RootSignature {
             Some(&mut errors),
         ) {
             let log = errors.map(|b| blob_bytes(&b).to_vec()).unwrap_or_default();
-            panic!(
+            return Err(format!(
                 "root signature serialization failed: {e}\n{}",
                 String::from_utf8_lossy(&log)
-            );
+            ));
         }
-        let blob = blob.expect("serialization returned no blob");
+        let blob = blob.ok_or("root signature serialization returned no blob")?;
         device
             .CreateRootSignature(0, blob_bytes(&blob))
-            .expect("failed to create the Direct3D 12 root signature")
+            .map_err(|e| e.to_string())
     }
+}
+
+/// `source`'s `entry` compiled for the vertex or the `pixel` stage, or the
+/// compiler's log.
+fn compile_stage(source: &str, entry: &str, pixel: bool) -> Result<ID3DBlob, String> {
+    let entry_c = CString::new(entry).map_err(|_| format!("entry name `{entry}` holds a NUL"))?;
+    let profile = if pixel { PIXEL_PROFILE } else { VERTEX_PROFILE };
+    let mut code: Option<ID3DBlob> = None;
+    let mut errors: Option<ID3DBlob> = None;
+    // SAFETY: the source pointer and length describe `source`; the entry and
+    // profile are NUL-terminated and outlive the call.
+    let result = unsafe {
+        D3DCompile(
+            source.as_ptr().cast(),
+            source.len(),
+            PCSTR::null(),
+            None,
+            None,
+            PCSTR(entry_c.as_ptr().cast()),
+            PCSTR(profile.as_ptr().cast()),
+            D3DCOMPILE_OPTIMIZATION_LEVEL3,
+            0,
+            &mut code,
+            Some(&mut errors),
+        )
+    };
+    if let Err(e) = result {
+        let log = errors.map(|b| blob_bytes(&b).to_vec()).unwrap_or_default();
+        return Err(format!(
+            "HLSL compile of `{entry}` ({}) failed: {e}\n{}",
+            profile.to_string_lossy(),
+            String::from_utf8_lossy(&log)
+        ));
+    }
+    code.ok_or_else(|| "D3DCompile returned no bytecode".to_owned())
+}
+
+/// A render-target blend description for `blend`.
+fn blend_desc(blend: BlendMode) -> D3D12_RENDER_TARGET_BLEND_DESC {
+    let (enable, dest) = match blend {
+        BlendMode::Replace => (false, D3D12_BLEND_ZERO),
+        BlendMode::PremultipliedOver => (true, D3D12_BLEND_INV_SRC_ALPHA),
+    };
+    D3D12_RENDER_TARGET_BLEND_DESC {
+        BlendEnable: enable.into(),
+        LogicOpEnable: false.into(),
+        SrcBlend: D3D12_BLEND_ONE,
+        DestBlend: dest,
+        BlendOp: D3D12_BLEND_OP_ADD,
+        SrcBlendAlpha: D3D12_BLEND_ONE,
+        DestBlendAlpha: dest,
+        BlendOpAlpha: D3D12_BLEND_OP_ADD,
+        LogicOp: D3D12_LOGIC_OP_NOOP,
+        RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
+    }
+}
+
+/// A triangle-list pipeline state drawing into one `color_format` target
+/// under `root`, reading `elements` as its input layout.
+fn create_pso(
+    device: &ID3D12Device,
+    root: &ID3D12RootSignature,
+    vs: &ID3DBlob,
+    ps: &ID3DBlob,
+    elements: &[D3D12_INPUT_ELEMENT_DESC],
+    color_format: TextureFormat,
+    blend: BlendMode,
+) -> Result<ID3D12PipelineState, String> {
+    let mut blend_state = D3D12_BLEND_DESC::default();
+    blend_state.RenderTarget[0] = blend_desc(blend);
+    let stencil_op = D3D12_DEPTH_STENCILOP_DESC {
+        StencilFailOp: D3D12_STENCIL_OP_KEEP,
+        StencilDepthFailOp: D3D12_STENCIL_OP_KEEP,
+        StencilPassOp: D3D12_STENCIL_OP_KEEP,
+        StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+    };
+    let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
+    rtv_formats[0] = dxgi_format(color_format);
+    let desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+        // SAFETY: a borrowed copy of the root signature pointer, wrapped in
+        // `ManuallyDrop` so the description never releases it; the
+        // signature outlives the call.
+        pRootSignature: unsafe { core::mem::transmute_copy(root) },
+        VS: bytecode(vs),
+        PS: bytecode(ps),
+        BlendState: blend_state,
+        SampleMask: u32::MAX,
+        RasterizerState: D3D12_RASTERIZER_DESC {
+            FillMode: D3D12_FILL_MODE_SOLID,
+            CullMode: D3D12_CULL_MODE_NONE,
+            DepthClipEnable: true.into(),
+            ..Default::default()
+        },
+        DepthStencilState: D3D12_DEPTH_STENCIL_DESC {
+            DepthEnable: false.into(),
+            DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
+            DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+            StencilEnable: false.into(),
+            StencilReadMask: 0xff,
+            StencilWriteMask: 0xff,
+            FrontFace: stencil_op,
+            BackFace: stencil_op,
+        },
+        InputLayout: D3D12_INPUT_LAYOUT_DESC {
+            pInputElementDescs: if elements.is_empty() {
+                core::ptr::null()
+            } else {
+                elements.as_ptr()
+            },
+            NumElements: elements.len() as u32,
+        },
+        PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+        NumRenderTargets: 1,
+        RTVFormats: rtv_formats,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        ..Default::default()
+    };
+    // SAFETY: every pointer in the description borrows a live local or blob for
+    // the call; the bytecode reads what the root signature declares.
+    unsafe { device.CreateGraphicsPipelineState(&desc) }.map_err(|e| e.to_string())
 }
 
 fn create_gpu_heap(device: &ID3D12Device, ty: D3D12_DESCRIPTOR_HEAP_TYPE, count: u32) -> GpuHeap {

@@ -10,7 +10,8 @@ use viso_dsl::frontend::{Origin, compile_file};
 use viso_gpu::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, DrawCommand, DrawList,
     FilterMode, Geometry, GpuBackend, InlineUniforms, LoadOp, MetalBackend, PipelineId,
-    ProgramDesc, RenderPass, RenderTarget, SamplerDesc, TextureDesc, TextureFormat, TextureId,
+    ProgramCode, ProgramCompiler, ProgramDesc, RenderPass, RenderTarget, SamplerDesc, TextureDesc,
+    TextureFormat, TextureId,
 };
 use viso_shader::program::{
     Bindings, FRAGMENT_ENTRY, Program, Raster, ShaderInterface, Target, TextureData, VERTEX_ENTRY,
@@ -144,18 +145,18 @@ fn metal(e: &Encoded) -> Vec<u8> {
     let mut gpu = MetalBackend::new();
     let msl = emit(p, &e.interface, Target::Msl);
     let compiled = gpu
-        .compiler()
+        .program_compiler()
         .compile(&ProgramDesc {
             label: &p.name,
-            msl: &msl,
+            code: &ProgramCode::Msl(msl.clone()),
             vertex_entry: VERTEX_ENTRY,
             fragment_entry: FRAGMENT_ENTRY,
             color_format: TextureFormat::Bgra8Unorm,
             blend: BlendMode::PremultipliedOver,
-            vertex_textures: e.interface.vertex_textures,
+            abi: e.interface.abi(),
         })
         .unwrap_or_else(|log| panic!("{log}\n{msl}"));
-    let pipeline = gpu.install_program(&compiled);
+    let pipeline = gpu.install_program(compiled);
     let target = draw(&mut gpu, pipeline, e);
     gpu.read_texture(target)
 }
@@ -164,7 +165,7 @@ fn metal(e: &Encoded) -> Vec<u8> {
 /// without a Vulkan device (or without the `vulkan` feature).
 #[cfg(feature = "vulkan")]
 fn vulkan(e: &Encoded) -> Option<Vec<u8>> {
-    use viso_gpu::{VulkanBackend, VulkanProgramDesc};
+    use viso_gpu::VulkanBackend;
     let Some(mut gpu) = VulkanBackend::try_new_with(true) else {
         eprintln!("no Vulkan device; Vulkan skipped");
         return None;
@@ -188,18 +189,19 @@ fn vulkan(e: &Encoded) -> Option<Vec<u8>> {
     };
     let words = naga::back::spv::write_vec(&module, &info, &options, None).expect("SPIR-V");
     let spirv: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-    let pipeline = gpu
-        .install_program(&VulkanProgramDesc {
+    let compiled = gpu
+        .program_compiler()
+        .compile(&ProgramDesc {
             label: &p.name,
-            spirv: &spirv,
+            code: &ProgramCode::SpirV(spirv),
             vertex_entry: VERTEX_ENTRY,
             fragment_entry: FRAGMENT_ENTRY,
             color_format: TextureFormat::Bgra8Unorm,
             blend: BlendMode::PremultipliedOver,
-            textures: e.interface.textures.len() as u32,
-            samplers: e.interface.samplers.len() as u32,
+            abi: e.interface.abi(),
         })
         .unwrap_or_else(|log| panic!("{log}"));
+    let pipeline = gpu.install_program(compiled);
     let target = draw(&mut gpu, pipeline, e);
     let picture = gpu.read_texture(target);
     assert_eq!(

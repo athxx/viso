@@ -4,6 +4,7 @@
 use super::{Gen, entry_name, leaf_lanes, put};
 use crate::program::layout::Interpolation;
 use crate::program::{Scalar, Stage, Ty};
+use viso_gpu::PROGRAM_TEXTURES;
 
 pub(super) fn ty(ty: Ty) -> String {
     let scalar = |s: Scalar| match s {
@@ -124,7 +125,7 @@ pub(super) fn module(g: &mut Gen<'_>) {
             &mut g.out,
             format_args!(
                 "@group(1) @binding({}) var s{}: sampler;\n",
-                textures as u32 + s.index,
+                PROGRAM_TEXTURES + s.index,
                 s.index
             ),
         );
