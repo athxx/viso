@@ -574,12 +574,15 @@ on it.
       program view of each bind group. `ProgramReload` hands the new pipeline to the
       caller to install. Metal and Vulkan (MoltenVK) runtime-verified; D3D12 and
       WebGPU type-checked.
-- [ ] Headless: a program carries a `CpuProgram` the shader crate supplies (the
-      reference interpreter drawing into the framebuffer under the scissor), so the
-      headless backend and its goldens draw user shaders. (The headless side —
-      `HeadlessCompiler` taking `ProgramCode::Cpu`, scissor, inline or bound
-      uniforms — is in; textures for a `CpuProgram` and the interpreter-backed
-      implementation remain.)
+- [x] Headless: a program carries a `CpuProgram` the shader crate supplies —
+      `viso_shader::program::CpuShader`, the reference interpreter reading the draw's
+      uniform and instance bytes through the program's layout and drawing into the
+      framebuffer under the scissor (float targets keep the floats) — so the headless
+      backend and its goldens draw user shaders; a draw hands the program its bind
+      group's textures and samplers in slot order (`CpuDraw::{textures, samplers}`,
+      `CpuTexture`), and `HeadlessRaster::read_texture` reads a target back as a GPU
+      backend does. `shader_golden` draws every scene headless too, on every
+      platform.
 - [ ] Shader: the brush profile — reserved members `uniform viewport_size: Vec2F32`,
       `instance rect_pos: Vec2F32`, `instance rect_size: Vec2F32`; every other
       instance member is a parameter of a host-typed kind (`F32 I32 U32 Vec2F32

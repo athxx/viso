@@ -1,21 +1,21 @@
 //! `.vs` shaders drawn from the same encoded buffers by the reference
-//! interpreter's rasterizer on the CPU, by Metal from the MSL, and — with the
-//! `vulkan` feature, on MoltenVK — by Vulkan from the SPIR-V of the WGSL. Every
-//! GPU image agrees with the reference, and Vulkan with Metal, within a small
-//! per-channel tolerance.
+//! interpreter's rasterizer on the CPU, by the headless raster running the
+//! program as its `CpuShader`, by Metal from the MSL, and — with the `vulkan`
+//! feature, on MoltenVK — by Vulkan from the SPIR-V of the WGSL. Every image
+//! agrees with the reference, and Vulkan with Metal, within a small
+//! per-channel tolerance; the headless one on every platform.
 
-#![cfg(target_os = "macos")]
+use std::sync::Arc;
 
 use viso_dsl::frontend::{Origin, compile_file};
 use viso_gpu::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, DrawCommand, DrawList,
-    FilterMode, Geometry, GpuBackend, InlineUniforms, LoadOp, MetalBackend, PipelineId,
+    FilterMode, Geometry, GpuBackend, HeadlessRaster, InlineUniforms, LoadOp, PipelineId,
     ProgramCode, ProgramCompiler, ProgramDesc, RenderPass, RenderTarget, SamplerDesc, TextureDesc,
     TextureFormat, TextureId,
 };
 use viso_shader::program::{
-    Bindings, FRAGMENT_ENTRY, Program, Raster, ShaderInterface, Target, TextureData, VERTEX_ENTRY,
-    Value, emit,
+    Bindings, CpuShader, FRAGMENT_ENTRY, Program, Raster, ShaderInterface, VERTEX_ENTRY, Value,
 };
 
 const W: u32 = 64;
@@ -51,11 +51,13 @@ struct Scene<'a> {
     texture: bool,
 }
 
-/// The pictures of one scene: the CPU reference's, Metal's, and Vulkan's
-/// when a Vulkan device exists; all BGRA8, top-left.
+/// The pictures of one scene: the CPU reference's, the headless raster's,
+/// Metal's on macOS, and Vulkan's when a Vulkan device exists; all BGRA8,
+/// top-left.
 struct Pictures {
     cpu: Vec<u8>,
-    metal: Vec<u8>,
+    headless: Vec<u8>,
+    metal: Option<Vec<u8>>,
     vulkan: Option<Vec<u8>>,
 }
 
@@ -98,6 +100,7 @@ fn render(scene: &Scene<'_>) -> Pictures {
     };
     Pictures {
         cpu: cpu(&encoded),
+        headless: headless(&encoded),
         metal: metal(&encoded),
         vulkan: vulkan(&encoded),
     }
@@ -119,10 +122,10 @@ fn cpu(e: &Encoded) -> Vec<u8> {
         .iter()
         .map(|t| std::array::from_fn(|i| f32::from(t[i]) / 255.0))
         .collect();
-    let textures = [TextureData {
+    let textures = [viso_gpu::CpuTexture {
         width: 4,
         height: 4,
-        texels,
+        texels: &texels,
     }];
     let samplers = [SAMPLER];
     let bindings = Bindings {
@@ -140,7 +143,32 @@ const SAMPLER: SamplerDesc = SamplerDesc {
     address: AddressMode::ClampToEdge,
 };
 
-fn metal(e: &Encoded) -> Vec<u8> {
+/// The program on the headless raster, run on the CPU from the bytes the GPU
+/// backends read.
+fn headless(e: &Encoded) -> Vec<u8> {
+    let p = &e.program;
+    let mut gpu = HeadlessRaster::new();
+    let compiled = gpu
+        .program_compiler()
+        .compile(&ProgramDesc {
+            label: &p.name,
+            code: &ProgramCode::Cpu(Arc::new(CpuShader::new(p.clone()))),
+            vertex_entry: VERTEX_ENTRY,
+            fragment_entry: FRAGMENT_ENTRY,
+            color_format: TextureFormat::Bgra8Unorm,
+            blend: BlendMode::PremultipliedOver,
+            abi: e.interface.abi(),
+        })
+        .unwrap_or_else(|log| panic!("{log}"));
+    let pipeline = gpu.install_program(compiled);
+    let target = draw(&mut gpu, pipeline, e);
+    gpu.read_texture(target)
+}
+
+#[cfg(target_os = "macos")]
+fn metal(e: &Encoded) -> Option<Vec<u8>> {
+    use viso_gpu::MetalBackend;
+    use viso_shader::program::{Target, emit};
     let p = &e.program;
     let mut gpu = MetalBackend::new();
     let msl = emit(p, &e.interface, Target::Msl);
@@ -158,14 +186,20 @@ fn metal(e: &Encoded) -> Vec<u8> {
         .unwrap_or_else(|log| panic!("{log}\n{msl}"));
     let pipeline = gpu.install_program(compiled);
     let target = draw(&mut gpu, pipeline, e);
-    gpu.read_texture(target)
+    Some(gpu.read_texture(target))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn metal(_: &Encoded) -> Option<Vec<u8>> {
+    None
 }
 
 /// The program on Vulkan from the SPIR-V naga writes for its WGSL, or `None`
 /// without a Vulkan device (or without the `vulkan` feature).
-#[cfg(feature = "vulkan")]
+#[cfg(all(target_os = "macos", feature = "vulkan"))]
 fn vulkan(e: &Encoded) -> Option<Vec<u8>> {
     use viso_gpu::VulkanBackend;
+    use viso_shader::program::{Target, emit};
     let Some(mut gpu) = VulkanBackend::try_new_with(true) else {
         eprintln!("no Vulkan device; Vulkan skipped");
         return None;
@@ -220,7 +254,7 @@ fn vulkan(e: &Encoded) -> Option<Vec<u8>> {
     Some(picture)
 }
 
-#[cfg(not(feature = "vulkan"))]
+#[cfg(not(all(target_os = "macos", feature = "vulkan")))]
 fn vulkan(_: &Encoded) -> Option<Vec<u8>> {
     None
 }
@@ -285,12 +319,21 @@ fn draw<B: GpuBackend>(gpu: &mut B, pipeline: PipelineId, e: &Encoded) -> Textur
     target
 }
 
-/// Each GPU picture against the CPU reference, and Vulkan against Metal.
+/// Each picture against the CPU reference, and Vulkan against Metal.
 fn compare_all(name: &str, pictures: &Pictures) {
-    compare(&format!("{name} Metal"), &pictures.metal, &pictures.cpu);
+    compare(
+        &format!("{name} headless"),
+        &pictures.headless,
+        &pictures.cpu,
+    );
+    if let Some(metal) = &pictures.metal {
+        compare(&format!("{name} Metal"), metal, &pictures.cpu);
+        if let Some(vulkan) = &pictures.vulkan {
+            compare(&format!("{name} Vulkan/Metal"), vulkan, metal);
+        }
+    }
     if let Some(vulkan) = &pictures.vulkan {
         compare(&format!("{name} Vulkan"), vulkan, &pictures.cpu);
-        compare(&format!("{name} Vulkan/Metal"), vulkan, &pictures.metal);
     }
 }
 

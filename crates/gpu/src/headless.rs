@@ -37,7 +37,8 @@ use std::sync::Arc;
 
 use crate::instance::{AttrFormat, InstanceLayout};
 use crate::program::{
-    CpuDraw, CpuProgram, CpuTarget, ProgramAbi, ProgramCode, ProgramCompiler, ProgramDesc,
+    CpuDraw, CpuProgram, CpuTarget, CpuTexture, PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi,
+    ProgramCode, ProgramCompiler, ProgramDesc,
 };
 use crate::resource::{
     BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, ColorSpace, PipelineDesc,
@@ -230,6 +231,17 @@ impl HeadlessRaster {
             out.push(to_unorm8(a)); // A
         }
         out
+    }
+
+    /// Read texture `id` as tightly-packed **BGRA8** bytes, top-left origin,
+    /// as stored (premultiplied) — the readback of a `Bgra8Unorm` render
+    /// target on a GPU backend.
+    pub fn read_texture(&self, id: TextureId) -> Vec<u8> {
+        self.texture(id)
+            .texels
+            .iter()
+            .flat_map(|&[r, g, b, a]| [b, g, r, a].map(to_unorm8))
+            .collect()
     }
 
     /// Read the last-presented framebuffer of `surface` as tightly-packed
@@ -562,7 +574,7 @@ impl HeadlessRaster {
     /// The framebuffer slice for `target`, for a single blend write. Scoped per
     /// call to keep the `&mut self` borrow narrow (the fill routines snapshot any
     /// sampled source texture out first, so a texture target never aliases here).
-    fn framebuffer(&mut self, target: FbTarget) -> &mut [[f32; 4]] {
+    fn framebuffer(&mut self, target: FbTarget) -> &mut Vec<[f32; 4]> {
         match target {
             FbTarget::Surface(id) => {
                 &mut self
@@ -856,7 +868,8 @@ impl HeadlessRaster {
     }
 
     /// Runs a user program's draw on the CPU into the target framebuffer, its
-    /// uniforms inline or from the bind group's uniform buffer.
+    /// uniforms inline or from the bind group's uniform buffer, its textures
+    /// and samplers the bind group's in slot order.
     fn draw_program(
         &mut self,
         target: FbTarget,
@@ -868,29 +881,10 @@ impl HeadlessRaster {
         let Geometry::Generated { count } = cmd.geometry else {
             return;
         };
-        let stride = program.abi.instance_stride as usize;
-        let span = count as usize * stride;
-        let bytes = &self.buffer(cmd.instance_buffer).bytes;
-        let Some(instances) = bytes.get(cmd.instance_offset..cmd.instance_offset + span) else {
-            return;
-        };
-        let instances = instances.to_vec();
-        let uniforms = if cmd.uniforms.is_empty() {
-            cmd.bind_group
-                .and_then(|bg| {
-                    self.bind_group(bg).bindings.iter().find_map(|b| match b {
-                        Binding::Uniform(id) => Some(*id),
-                        _ => None,
-                    })
-                })
-                .map(|id| {
-                    let bytes = &self.buffer(id).bytes;
-                    bytes[..(program.abi.uniform_size as usize).min(bytes.len())].to_vec()
-                })
-                .unwrap_or_default()
-        } else {
-            cmd.uniforms.as_bytes().to_vec()
-        };
+        let unorm8 = !self.target_format(target).is_extended_range();
+        // The framebuffer leaves its owner for the draw, so the buffers and
+        // textures the draw reads stay borrowable.
+        let mut pixels = std::mem::take(self.framebuffer(target));
         let scissor = match cmd.scissor {
             Some((x, y, w, h)) => {
                 let x0 = x.min(width);
@@ -899,23 +893,71 @@ impl HeadlessRaster {
             }
             None => [0, 0, width, height],
         };
-        let unorm8 = !self.target_format(target).is_extended_range();
-        let mut fb = CpuTarget {
-            pixels: self.framebuffer(target),
-            width,
-            height,
-            scissor,
-            unorm8,
-        };
-        program.cpu.draw(
-            &mut fb,
-            &CpuDraw {
-                uniforms: &uniforms,
-                instances: &instances,
-                count,
-            },
-            program.blend,
-        );
+        let span = count as usize * program.abi.instance_stride as usize;
+        let bytes = &self.buffer(cmd.instance_buffer).bytes;
+        if let Some(instances) = bytes.get(cmd.instance_offset..cmd.instance_offset + span) {
+            let bindings = cmd
+                .bind_group
+                .map_or(&[][..], |bg| &self.bind_group(bg).bindings[..]);
+            let uniforms = if cmd.uniforms.is_empty() {
+                bindings
+                    .iter()
+                    .find_map(|b| match b {
+                        Binding::Uniform(id) => Some(&self.buffer(*id).bytes[..]),
+                        _ => None,
+                    })
+                    .map_or(&[][..], |bytes| {
+                        &bytes[..(program.abi.uniform_size as usize).min(bytes.len())]
+                    })
+            } else {
+                cmd.uniforms.as_bytes()
+            };
+            let none = CpuTexture {
+                width: 0,
+                height: 0,
+                texels: &[],
+            };
+            let mut textures = [none; PROGRAM_TEXTURES as usize];
+            let mut samplers = [SamplerDesc::default(); PROGRAM_SAMPLERS as usize];
+            let (mut t, mut s) = (0, 0);
+            for binding in bindings {
+                match *binding {
+                    Binding::Texture(id) if t < textures.len() => {
+                        let texture = self.texture(id);
+                        textures[t] = CpuTexture {
+                            width: texture.width,
+                            height: texture.height,
+                            texels: &texture.texels,
+                        };
+                        t += 1;
+                    }
+                    Binding::Sampler(id) if s < samplers.len() => {
+                        samplers[s] = self.sampler(id);
+                        s += 1;
+                    }
+                    _ => {}
+                }
+            }
+            let mut fb = CpuTarget {
+                pixels: &mut pixels,
+                width,
+                height,
+                scissor,
+                unorm8,
+            };
+            program.cpu.draw(
+                &mut fb,
+                &CpuDraw {
+                    uniforms,
+                    instances,
+                    count,
+                    textures: &textures[..t],
+                    samplers: &samplers[..s],
+                },
+                program.blend,
+            );
+        }
+        *self.framebuffer(target) = pixels;
     }
 
     /// Rasterize an indexed triangle mesh (Path/Mesh) into the framebuffer.

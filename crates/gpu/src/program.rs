@@ -34,7 +34,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::resource::{BlendMode, ShaderLang, TextureFormat};
+use crate::resource::{BlendMode, SamplerDesc, ShaderLang, TextureFormat};
 
 /// Textures one program may declare.
 pub const PROGRAM_TEXTURES: u32 = 4;
@@ -170,7 +170,7 @@ pub struct CpuTarget<'a> {
     pub unorm8: bool,
 }
 
-/// The buffers one draw of a [`CpuProgram`] reads.
+/// The buffers and bindings one draw of a [`CpuProgram`] reads.
 #[derive(Debug, Clone, Copy)]
 pub struct CpuDraw<'a> {
     /// The uniform block, laid out as the program's ABI says.
@@ -178,4 +178,17 @@ pub struct CpuDraw<'a> {
     /// The instance array from the draw's first instance.
     pub instances: &'a [u8],
     pub count: u32,
+    /// The textures of the draw's bind group, in declaration order.
+    pub textures: &'a [CpuTexture<'a>],
+    /// Its samplers, in declaration order.
+    pub samplers: &'a [SamplerDesc],
+}
+
+/// A texture as a [`CpuProgram`] samples it: what a GPU sample returns, one
+/// linear RGBA texel per pixel, row-major from the top.
+#[derive(Debug, Clone, Copy)]
+pub struct CpuTexture<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub texels: &'a [[f32; 4]],
 }

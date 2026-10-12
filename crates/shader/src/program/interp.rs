@@ -11,34 +11,73 @@
 //!
 //! The rasterizer draws six vertices per instance as two triangles, maps clip
 //! space to pixels with the y axis pointing down, samples pixel centers with a
-//! top-left fill rule, interpolates `F32` varyings perspective-correct and
-//! integer ones from the first vertex, and blends into a float target that
-//! rounds to 8 bits per channel after every write, as a `Unorm8` attachment
-//! stores it.
+//! top-left fill rule inside the draw's scissor, interpolates `F32` varyings
+//! perspective-correct and integer ones from the first vertex, and blends into
+//! a float target that rounds to 8 bits per channel after every write, as a
+//! `Unorm8` attachment stores it (an extended-range target keeps the floats).
+//!
+//! [`CpuShader`] is a program as the headless raster runs it: the
+//! [`CpuProgram`] its [`ProgramCode::Cpu`](viso_gpu::ProgramCode::Cpu) carries,
+//! reading the draw's uniform and instance bytes through the program's layout.
 
-use viso_gpu::{AddressMode, BlendMode, FilterMode, SamplerDesc};
+use viso_gpu::{
+    AddressMode, BlendMode, CpuDraw, CpuProgram, CpuTarget, CpuTexture, FilterMode, SamplerDesc,
+};
 
+use super::layout::ShaderInterface;
 use super::{
     BinaryOp, Block, Builtin, Expr, ExprKind, Function, Intrinsic, Lane, Loop, Place, Program,
     Root, Scalar, Stage, Stmt, Texel, Ty, UnaryOp, Value,
 };
-
-/// A texture as the program samples it: RGBA texels in `0..=1`, row-major
-/// from the top.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TextureData {
-    pub width: u32,
-    pub height: u32,
-    pub texels: Vec<[f32; 4]>,
-}
 
 /// What a draw binds besides its instances.
 #[derive(Debug, Clone, Copy)]
 pub struct Bindings<'a> {
     /// One value per uniform member.
     pub uniforms: &'a [Value],
-    pub textures: &'a [TextureData],
+    pub textures: &'a [CpuTexture<'a>],
     pub samplers: &'a [SamplerDesc],
+}
+
+/// A program run on the CPU by the headless raster.
+#[derive(Debug, Clone)]
+pub struct CpuShader {
+    program: Program,
+    interface: ShaderInterface,
+}
+
+impl CpuShader {
+    /// `program`, a validated program, laid out.
+    pub fn new(program: Program) -> CpuShader {
+        let interface = program.interface();
+        CpuShader { program, interface }
+    }
+}
+
+impl CpuProgram for CpuShader {
+    fn draw(&self, target: &mut CpuTarget<'_>, draw: &CpuDraw<'_>, blend: BlendMode) {
+        let p = &self.program;
+        let uniforms = self
+            .interface
+            .uniforms
+            .decode(p, &p.uniforms, draw.uniforms);
+        let stride = self.interface.instance.size as usize;
+        let instances: Vec<Vec<Value>> = if stride == 0 {
+            vec![Vec::new(); draw.count as usize]
+        } else {
+            draw.instances
+                .chunks_exact(stride)
+                .take(draw.count as usize)
+                .map(|row| self.interface.instance.decode(p, &p.instance, row))
+                .collect()
+        };
+        let bindings = Bindings {
+            uniforms: &uniforms,
+            textures: draw.textures,
+            samplers: draw.samplers,
+        };
+        draw_into(target, p, &bindings, &instances, blend);
+    }
 }
 
 /// A float color target, premultiplied RGBA, row-major from the top.
@@ -77,34 +116,58 @@ impl Raster {
         instances: &[Vec<Value>],
         blend: BlendMode,
     ) {
-        let (Some(vertex), Some(fragment)) = (&program.vertex, &program.fragment) else {
-            return;
+        let mut target = CpuTarget {
+            pixels: &mut self.pixels,
+            width: self.width,
+            height: self.height,
+            scissor: [0, 0, self.width, self.height],
+            unorm8: true,
         };
-        for (iid, instance) in instances.iter().enumerate() {
-            let run = Run {
-                p: program,
-                bindings,
-                instance,
-            };
-            let corners: Vec<(Point, Vec<Value>)> = (0..6u32)
-                .map(|vid| {
-                    let (clip, varyings) = run.vertex(vertex, vid, iid as u32);
-                    let w = clip[3];
-                    let point = Point {
-                        x: (clip[0] / w * 0.5 + 0.5) * self.width as f32,
-                        y: (0.5 - clip[1] / w * 0.5) * self.height as f32,
-                        z: clip[2] / w,
-                        inv_w: 1.0 / w,
-                    };
-                    (point, varyings)
-                })
-                .collect();
-            for triangle in corners.as_chunks::<3>().0 {
-                self.triangle(&run, fragment, triangle, blend);
-            }
+        draw_into(&mut target, program, bindings, instances, blend);
+    }
+}
+
+/// Draws one quad per entry of `instances` with `program` into `target`.
+fn draw_into(
+    target: &mut CpuTarget<'_>,
+    program: &Program,
+    bindings: &Bindings<'_>,
+    instances: &[Vec<Value>],
+    blend: BlendMode,
+) {
+    let (Some(vertex), Some(fragment)) = (&program.vertex, &program.fragment) else {
+        return;
+    };
+    let mut canvas = Canvas(target);
+    for (iid, instance) in instances.iter().enumerate() {
+        let run = Run {
+            p: program,
+            bindings,
+            instance,
+        };
+        let corners: Vec<(Point, Vec<Value>)> = (0..6u32)
+            .map(|vid| {
+                let (clip, varyings) = run.vertex(vertex, vid, iid as u32);
+                let w = clip[3];
+                let point = Point {
+                    x: (clip[0] / w * 0.5 + 0.5) * canvas.0.width as f32,
+                    y: (0.5 - clip[1] / w * 0.5) * canvas.0.height as f32,
+                    z: clip[2] / w,
+                    inv_w: 1.0 / w,
+                };
+                (point, varyings)
+            })
+            .collect();
+        for triangle in corners.as_chunks::<3>().0 {
+            canvas.triangle(&run, fragment, triangle, blend);
         }
     }
+}
 
+/// The target a draw rasterizes into.
+struct Canvas<'t, 'a>(&'t mut CpuTarget<'a>);
+
+impl Canvas<'_, '_> {
     fn triangle(
         &mut self,
         run: &Run<'_>,
@@ -117,10 +180,13 @@ impl Raster {
         if area == 0.0 || !area.is_finite() {
             return;
         }
-        let min_x = a.x.min(b.x).min(c.x).floor().max(0.0) as i64 & !1;
-        let min_y = a.y.min(b.y).min(c.y).floor().max(0.0) as i64 & !1;
-        let max_x = (a.x.max(b.x).max(c.x).ceil() as i64).min(i64::from(self.width));
-        let max_y = (a.y.max(b.y).max(c.y).ceil() as i64).min(i64::from(self.height));
+        // Quads start on even pixels, so a lane outside the scissor runs as
+        // a helper.
+        let [sx0, sy0, sx1, sy1] = self.0.scissor.map(i64::from);
+        let min_x = (a.x.min(b.x).min(c.x).floor() as i64).max(sx0) & !1;
+        let min_y = (a.y.min(b.y).min(c.y).floor() as i64).max(sy0) & !1;
+        let max_x = (a.x.max(b.x).max(c.x).ceil() as i64).min(sx1);
+        let max_y = (a.y.max(b.y).max(c.y).ceil() as i64).min(sy1);
         // Each edge with the vertex opposite it; a pixel center on an edge is
         // inside only on a top or left edge.
         let edges = [(b, c), (c, a), (a, b)];
@@ -150,7 +216,7 @@ impl Raster {
                         .iter()
                         .zip(edges)
                         .all(|(w, e)| *w > 0.0 || (*w == 0.0 && owns(e)));
-                    let on_target = px < i64::from(self.width) && py < i64::from(self.height);
+                    let on_target = (sx0..sx1).contains(&px) && (sy0..sy1).contains(&py);
                     *lane = Pixel {
                         x: px,
                         y: py,
@@ -219,15 +285,15 @@ impl Raster {
             let (true, Some(src)) = (px.covered, color) else {
                 continue;
             };
-            let at = (px.y as u32 * self.width + px.x as u32) as usize;
-            let dst = self.pixels[at];
+            let at = (px.y as u32 * self.0.width + px.x as u32) as usize;
+            let dst = self.0.pixels[at];
             let out = match blend {
                 BlendMode::Replace => src,
                 BlendMode::PremultipliedOver => {
                     std::array::from_fn(|i| src[i] + dst[i] * (1.0 - src[3]))
                 }
             };
-            self.pixels[at] = unorm8(out);
+            self.0.pixels[at] = if self.0.unorm8 { unorm8(out) } else { out };
         }
     }
 }
@@ -685,13 +751,15 @@ impl Run<'_> {
                 let (Value::Texture(t), Value::Sampler(s)) = (&v[0], &v[1]) else {
                     return Value::zero(self.p, ty);
                 };
+                // A binding the draw left out samples as zero.
+                let (Some(texture), Some(sampler)) = (
+                    self.bindings.textures.get(*t as usize),
+                    self.bindings.samplers.get(*s as usize),
+                ) else {
+                    return Value::zero(self.p, ty);
+                };
                 let uv = v[2].to_floats();
-                let texel = sample(
-                    &self.bindings.textures[*t as usize],
-                    &self.bindings.samplers[*s as usize],
-                    uv[0],
-                    uv[1],
-                );
+                let texel = sample(texture, sampler, uv[0], uv[1]);
                 match args[0].ty {
                     Ty::Texture(Texel::F32) => Value::f32(texel[0]),
                     _ => Value::floats(&texel),
@@ -1046,8 +1114,11 @@ fn convert(ty: Ty, v: &Value) -> Value {
 }
 
 /// `texture` at `(u, v)` through `sampler`, at the base level.
-fn sample(texture: &TextureData, sampler: &SamplerDesc, u: f32, v: f32) -> [f32; 4] {
+fn sample(texture: &CpuTexture<'_>, sampler: &SamplerDesc, u: f32, v: f32) -> [f32; 4] {
     let (w, h) = (texture.width as i64, texture.height as i64);
+    if w == 0 || h == 0 {
+        return [0.0; 4];
+    }
     let wrap = |i: i64, size: i64| -> i64 {
         match sampler.address {
             AddressMode::ClampToEdge => i.clamp(0, size - 1),
@@ -1278,6 +1349,47 @@ mod tests {
             covered
                 .iter()
                 .all(|(x, y)| raster.pixels[(y * 8 + x) as usize] == [half; 4])
+        );
+
+        // As the headless raster runs it: from the encoded uniform bytes,
+        // inside a scissor, into a target that keeps the floats.
+        let interface = program.interface();
+        let bytes = interface
+            .uniforms
+            .encode(&program.uniforms, &uniforms)
+            .expect("encodes");
+        let mut pixels = vec![[0.0; 4]; 64];
+        let mut target = CpuTarget {
+            pixels: &mut pixels,
+            width: 8,
+            height: 8,
+            scissor: [3, 2, 8, 8],
+            unorm8: false,
+        };
+        CpuShader::new(program).draw(
+            &mut target,
+            &CpuDraw {
+                uniforms: &bytes,
+                instances: &[],
+                count: 1,
+                textures: &[],
+                samplers: &[],
+            },
+            BlendMode::PremultipliedOver,
+        );
+        let clipped: Vec<(u32, u32)> = (0..64)
+            .filter(|i| pixels[*i as usize] != [0.0; 4])
+            .map(|i| (i % 8, i / 8))
+            .collect();
+        let inside: Vec<(u32, u32)> = expected
+            .into_iter()
+            .filter(|&(x, y)| x >= 3 && y >= 2)
+            .collect();
+        assert_eq!(clipped, inside, "the scissor clips the quad");
+        assert!(
+            clipped
+                .iter()
+                .all(|(x, y)| pixels[(y * 8 + x) as usize] == [0.5; 4])
         );
     }
 }

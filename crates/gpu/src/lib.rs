@@ -89,8 +89,8 @@ pub use instance::{
     AttrFormat, InstanceField, InstanceLayout, InstanceSchema, LayoutError, SchemaAttr,
 };
 pub use program::{
-    CpuDraw, CpuProgram, CpuTarget, PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi, ProgramCode,
-    ProgramCompiler, ProgramDesc,
+    CpuDraw, CpuProgram, CpuTarget, CpuTexture, PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi,
+    ProgramCode, ProgramCompiler, ProgramDesc,
 };
 pub use resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader, Caps,

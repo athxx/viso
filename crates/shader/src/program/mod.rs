@@ -21,7 +21,7 @@ mod validate;
 pub mod value;
 
 pub use codegen::{Target, emit};
-pub use interp::{Bindings, Raster, TextureData};
+pub use interp::{Bindings, CpuShader, Raster};
 pub use layout::{
     BindingDescriptor, BlockLayout, EntryDescriptor, FRAGMENT_ENTRY, FieldDescriptor,
     Interpolation, LAYOUT_VERSION, ShaderInterface, VERTEX_ENTRY,
