@@ -1,21 +1,21 @@
 //! `.vs` shaders drawn from the same encoded buffers by the reference
 //! interpreter's rasterizer on the CPU, by the headless raster running the
 //! program as its `CpuShader`, by Metal from the MSL, and — with the `vulkan`
-//! feature, on MoltenVK — by Vulkan from the SPIR-V of the WGSL. Every image
+//! feature, on MoltenVK — by Vulkan from the SPIR-V of the WGSL, each
+//! backend's code from `program::code`. Every image
 //! agrees with the reference, and Vulkan with Metal, within a small
 //! per-channel tolerance; the headless one on every platform.
-
-use std::sync::Arc;
 
 use viso_dsl::frontend::{Origin, compile_file};
 use viso_gpu::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, DrawCommand, DrawList,
     FilterMode, Geometry, GpuBackend, HeadlessRaster, InlineUniforms, LoadOp, PipelineId,
-    ProgramCode, ProgramCompiler, ProgramDesc, RenderPass, RenderTarget, SamplerDesc, TextureDesc,
-    TextureFormat, TextureId,
+    ProgramCode, ProgramCompiler, ProgramDesc, RenderPass, RenderTarget, SamplerDesc, ShaderLang,
+    TextureDesc, TextureFormat, TextureId,
 };
 use viso_shader::program::{
-    Bindings, CpuShader, FRAGMENT_ENTRY, Program, Raster, ShaderInterface, VERTEX_ENTRY, Value,
+    Bindings, BrushLayout, FRAGMENT_ENTRY, ParamValue, Program, Raster, ShaderInterface,
+    VERTEX_ENTRY, Value, code,
 };
 
 const W: u32 = 64;
@@ -90,19 +90,22 @@ fn render(scene: &Scene<'_>) -> Pictures {
                 .expect("instance encodes")
         })
         .collect();
-    let encoded = Encoded {
+    pictures(&Encoded {
         program: p,
         interface,
         uniforms,
         instances,
         count: scene.instances.len() as u32,
         texture: scene.texture,
-    };
+    })
+}
+
+fn pictures(encoded: &Encoded) -> Pictures {
     Pictures {
-        cpu: cpu(&encoded),
-        headless: headless(&encoded),
-        metal: metal(&encoded),
-        vulkan: vulkan(&encoded),
+        cpu: cpu(encoded),
+        headless: headless(encoded),
+        metal: metal(encoded),
+        vulkan: vulkan(encoded),
     }
 }
 
@@ -152,7 +155,7 @@ fn headless(e: &Encoded) -> Vec<u8> {
         .program_compiler()
         .compile(&ProgramDesc {
             label: &p.name,
-            code: &ProgramCode::Cpu(Arc::new(CpuShader::new(p.clone()))),
+            code: &code(p, &e.interface, ShaderLang::None).expect("CPU"),
             vertex_entry: VERTEX_ENTRY,
             fragment_entry: FRAGMENT_ENTRY,
             color_format: TextureFormat::Bgra8Unorm,
@@ -168,22 +171,21 @@ fn headless(e: &Encoded) -> Vec<u8> {
 #[cfg(target_os = "macos")]
 fn metal(e: &Encoded) -> Option<Vec<u8>> {
     use viso_gpu::MetalBackend;
-    use viso_shader::program::{Target, emit};
     let p = &e.program;
     let mut gpu = MetalBackend::new();
-    let msl = emit(p, &e.interface, Target::Msl);
+    let msl = code(p, &e.interface, ShaderLang::Msl).expect("MSL");
     let compiled = gpu
         .program_compiler()
         .compile(&ProgramDesc {
             label: &p.name,
-            code: &ProgramCode::Msl(msl.clone()),
+            code: &msl,
             vertex_entry: VERTEX_ENTRY,
             fragment_entry: FRAGMENT_ENTRY,
             color_format: TextureFormat::Bgra8Unorm,
             blend: BlendMode::PremultipliedOver,
             abi: e.interface.abi(),
         })
-        .unwrap_or_else(|log| panic!("{log}\n{msl}"));
+        .unwrap_or_else(|log| panic!("{log}\n{msl:?}"));
     let pipeline = gpu.install_program(compiled);
     let target = draw(&mut gpu, pipeline, e);
     Some(gpu.read_texture(target))
@@ -194,40 +196,22 @@ fn metal(_: &Encoded) -> Option<Vec<u8>> {
     None
 }
 
-/// The program on Vulkan from the SPIR-V naga writes for its WGSL, or `None`
-/// without a Vulkan device (or without the `vulkan` feature).
+/// The program on Vulkan from the SPIR-V of its WGSL, or `None` without a
+/// Vulkan device (or without the `vulkan` feature).
 #[cfg(all(target_os = "macos", feature = "vulkan"))]
 fn vulkan(e: &Encoded) -> Option<Vec<u8>> {
     use viso_gpu::VulkanBackend;
-    use viso_shader::program::{Target, emit};
     let Some(mut gpu) = VulkanBackend::try_new_with(true) else {
         eprintln!("no Vulkan device; Vulkan skipped");
         return None;
     };
     let p = &e.program;
-    let wgsl = emit(p, &e.interface, Target::Wgsl);
-    let module = naga::front::wgsl::parse_str(&wgsl).unwrap_or_else(|err| panic!("{err}\n{wgsl}"));
-    let info = naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::empty(),
-    )
-    .validate(&module)
-    .unwrap_or_else(|err| panic!("{err:?}\n{wgsl}"));
-    let options = naga::back::spv::Options {
-        lang_version: (1, 0),
-        // Clip-space y flips in the vertex stage, as in the built-ins.
-        flags: naga::back::spv::WriterFlags::ADJUST_COORDINATE_SPACE,
-        // Every loop of a program is bounded by construction.
-        force_loop_bounding: false,
-        ..Default::default()
-    };
-    let words = naga::back::spv::write_vec(&module, &info, &options, None).expect("SPIR-V");
-    let spirv: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let spirv = code(p, &e.interface, ShaderLang::SpirV).unwrap_or_else(|log| panic!("{log}"));
     let compiled = gpu
         .program_compiler()
         .compile(&ProgramDesc {
             label: &p.name,
-            code: &ProgramCode::SpirV(spirv),
+            code: &spirv,
             vertex_entry: VERTEX_ENTRY,
             fragment_entry: FRAGMENT_ENTRY,
             color_format: TextureFormat::Bgra8Unorm,
@@ -430,17 +414,68 @@ export shader RoundedRect {
             Value::floats(&c),
         ]
     };
+    let rects = [
+        (4.0, 4.0, 40.0, 28.0, 8.0, [0.8, 0.2, 0.1, 1.0]),
+        (20.0, 16.0, 40.0, 44.0, 14.0, [0.1, 0.3, 0.6, 0.75]),
+        (8.0, 40.0, 20.0, 20.0, 30.0, [0.5, 0.5, 0.0, 0.5]),
+    ];
     let scene = Scene {
         source,
         uniforms: vec![Value::floats(&[W as f32, H as f32])],
-        instances: vec![
-            rect(4.0, 4.0, 40.0, 28.0, 8.0, [0.8, 0.2, 0.1, 1.0]),
-            rect(20.0, 16.0, 40.0, 44.0, 14.0, [0.1, 0.3, 0.6, 0.75]),
-            rect(8.0, 40.0, 20.0, 20.0, 30.0, [0.5, 0.5, 0.0, 0.5]),
-        ],
+        instances: rects
+            .iter()
+            .map(|&(x, y, w, h, r, c)| rect(x, y, w, h, r, c))
+            .collect(),
         texture: false,
     };
-    compare_all("RoundedRect", &render(&scene));
+    let generic = render(&scene);
+    compare_all("RoundedRect", &generic);
+
+    // As a brush: the parameters encoded once per box, the box placed and the
+    // viewport written by the renderer, every backend's code from one call.
+    let program = program(source);
+    let interface = program.interface();
+    let brush = BrushLayout::new(&program, &interface).expect("a brush");
+    let names: Vec<&str> = brush.params.iter().map(|p| &*p.name).collect();
+    assert_eq!(names, ["radius", "color"]);
+    let mut instances = Vec::new();
+    let mut instance = Vec::new();
+    for &(x, y, w, h, r, c) in &rects {
+        let params = [ParamValue::F32(r), ParamValue::ColorLinear(c)];
+        brush.encode(&params, &mut instance).expect("encodes");
+        brush.place(&mut instance, [x, y], [w, h]);
+        instances.extend_from_slice(&instance);
+    }
+    let mut uniforms = vec![0; brush.uniform_size as usize];
+    brush.write_uniforms(&mut uniforms, [W as f32, H as f32]);
+    let encoded = Encoded {
+        program,
+        interface,
+        uniforms,
+        instances,
+        count: rects.len() as u32,
+        texture: false,
+    };
+    let pictures = pictures(&encoded);
+    assert_eq!(pictures.cpu, generic.cpu, "the brush writes the same bytes");
+    compare_all("RoundedRect brush", &pictures);
+    for lang in [ShaderLang::Wgsl, ShaderLang::Hlsl] {
+        let (ProgramCode::Wgsl(text) | ProgramCode::Hlsl(text)) =
+            code(&encoded.program, &encoded.interface, lang).expect("source")
+        else {
+            panic!("{lang:?} is source");
+        };
+        assert!(text.contains(FRAGMENT_ENTRY), "{lang:?}");
+    }
+    let spirv = code(&encoded.program, &encoded.interface, ShaderLang::SpirV).expect("SPIR-V");
+    let ProgramCode::SpirV(words) = spirv else {
+        panic!("SPIR-V");
+    };
+    assert_eq!(
+        &words[..4],
+        &0x0723_0203u32.to_le_bytes(),
+        "the SPIR-V magic"
+    );
 }
 
 #[test]

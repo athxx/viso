@@ -9,8 +9,10 @@
 //! ill-typed tree.
 //!
 //! - [`ty`] — the closed type set;
-//! - [`ops`] — the operators and intrinsics, and the types they take.
+//! - [`ops`] — the operators and intrinsics, and the types they take;
+//! - [`brush`] — the profile of a program that paints a node's box.
 
+pub mod brush;
 pub mod codegen;
 pub mod interp;
 pub mod layout;
@@ -20,7 +22,8 @@ pub mod ty;
 mod validate;
 pub mod value;
 
-pub use codegen::{Target, emit};
+pub use brush::{BrushLayout, BrushParam, ParamKind, ParamValue};
+pub use codegen::{Target, code, emit};
 pub use interp::{Bindings, CpuShader, Raster};
 pub use layout::{
     BindingDescriptor, BlockLayout, EntryDescriptor, FRAGMENT_ENTRY, FieldDescriptor,

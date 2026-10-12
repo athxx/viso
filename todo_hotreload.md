@@ -583,12 +583,19 @@ on it.
       `CpuTexture`), and `HeadlessRaster::read_texture` reads a target back as a GPU
       backend does. `shader_golden` draws every scene headless too, on every
       platform.
-- [ ] Shader: the brush profile — reserved members `uniform viewport_size: Vec2F32`,
-      `instance rect_pos: Vec2F32`, `instance rect_size: Vec2F32`; every other
-      instance member is a parameter of a host-typed kind (`F32 I32 U32 Vec2F32
-      Vec3F32 ColorLinear`); `BrushLayout` (stride, reserved offsets, parameter
-      descriptors), a parameter encoder, and the program's code for each backend
-      language from one program (SPIR-V through naga).
+- [x] Shader: the brush profile (`shader/src/program/brush.rs`) — reserved members
+      `uniform viewport_size: Vec2F32`, `instance rect_pos: Vec2F32`, `instance
+      rect_size: Vec2F32`; every other instance member is a parameter of a
+      host-typed kind (`ParamKind`: `F32 I32 U32 Vec2F32 Vec3F32 ColorLinear`); no
+      other uniform, no texture or sampler; each break `E8107`. `BrushLayout`
+      (stride, reserved offsets, uniform size, parameter descriptors) encodes a
+      node's parameters once into an instance (`encode`), rewrites one in place
+      (`set`), places the box (`place`) and writes the uniforms
+      (`write_uniforms`). `program::code(program, interface, ShaderLang)` gives each
+      backend's code from one program: MSL, WGSL, HLSL, SPIR-V from the WGSL through
+      naga (the optional `spirv` feature, enabled only by build-time and dev-host
+      tools), the `CpuShader` for headless. `shader_golden` draws the spec example
+      as a brush on CPU, headless, Metal and Vulkan from one call each.
 - [ ] Render: `Primitive::Shader` (rect, program slot, encoded parameters); programs
       installed per renderer slot (install, replace with the old pipeline retired
       through the fence, release); one persistent instance pool per program with

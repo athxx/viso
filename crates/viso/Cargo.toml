@@ -71,6 +71,8 @@ vulkan = ["viso-gpu/vulkan"]
 [dev-dependencies]
 # The DSL tests compile `.vs` sources themselves, with or without `hot-reload`.
 viso-dsl = { workspace = true }
+# The shader goldens draw a program on Vulkan from the SPIR-V its code writes.
+viso-shader = { workspace = true, features = ["spirv"] }
 # The CoreText provider's sfnt-reassembly tests parse their output to prove the
 # reassembled directory is valid, and the system-font smoke tests shape through
 # the resolved face. Only used in tests, so they stay dev-dependencies.

@@ -10,6 +10,13 @@ rust-version.workspace = true
 # but does NOT share a runtime VM with it.
 [dependencies]
 viso-gpu = { workspace = true }
+# The reference WGSL front end and SPIR-V writer: a program's Vulkan code.
+# Only the tools that generate a program's code at build time and in the dev
+# host enable it; no runtime crate links it.
+naga = { version = "30", features = ["wgsl-in", "spv-out"], optional = true }
+
+[features]
+spirv = ["dep:naga"]
 
 [dev-dependencies]
 # The reference WGSL front end + validator and SPIR-V writer: checks every

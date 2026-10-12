@@ -5486,6 +5486,8 @@ Shader Entry 的实际 Builtin 参数、返回 Record 和可写 Varying 由 Rend
 
 当前 Render Profile：一个 Shader 恰好一个 `vertex` 与一个 `fragment` Entry（缺少、重复或声明 `compute` 报 `E8106`）。`vertex` 的参数只能是 Builtin `vertex_id: U32`（实例四边形的六个顶点之一，`quad_vertex(vertex_id)` 依次给出 `(0,0) (1,0) (0,1) (1,0) (1,1) (0,1)`）与 `instance_id: U32`，返回 `VertexOutput { clip_position: Vec4F32 }`；`fragment` 的参数只能是 `frag_coord: Vec4F32`，返回 `Vec4F32` 或 `ColorLinear`（颜色目标 0）。只有 `vertex` 写 Varying，Varying 是数值标量或向量（`F32` 透视插值，整数 Flat）；Instance 字段在两个阶段都可读；Uniform 与 Instance 成员不能含 `Bool`（无 Buffer Layout，报 `E8104`），Texture 与 Sampler 只能用 `texture`/`sampler` 声明。`to_clip(position, viewport)` 把左上原点的像素坐标映射到 Clip Space；`rounded_rect_sdf(p, size, radius)` 是 `p` 到原点在左上、尺寸 `size`、圆角 `radius` 的矩形的有符号距离，内部为负。
 
+Brush Profile：绘制一个节点盒子的 Shader（上例即是）。Renderer 写入三个保留成员，每个 Brush 都必须声明：`uniform viewport_size: Vec2F32`（目标的像素尺寸，`to_clip` 据此映射）、`instance rect_pos: Vec2F32` 与 `instance rect_size: Vec2F32`（盒子在目标中的像素位置与尺寸，左上原点）。其余 Instance 成员都是参数，类型限于 Host 值可转换的 `F32 I32 U32 Vec2F32 Vec3F32 ColorLinear`；Brush 不声明其他 Uniform（Host 无从写入），也不绑定 Texture 或 Sampler。缺少或类型不符的保留成员、无 Host 值的参数类型、其他 Uniform 与 Texture/Sampler 报 `E8107`。`BrushLayout` 给出 Instance Stride、盒子的两个 Offset、Uniform 大小与 `viewport_size` 的 Offset，以及每个参数的名字、类型与 Offset：节点的参数一次编码成一个盒子为零的 Instance，参数变化原地改写其字节，绘制时复制该 Instance 并写入盒子。同一 Program 经 `program::code` 得到各 Backend 的代码：Metal、WebGPU、Direct3D 12 为源码，Vulkan 为其 WGSL 经 naga 写成的 SPIR-V（`viso-shader` 的 `spirv` Feature，仅由构建期与 Dev Host 的工具启用，运行时 Crate 不链接 naga），Headless Raster 为参考解释器。
+
 ---
 
 ## 101. Instance ABI
@@ -8746,6 +8748,7 @@ RecordPatternField
 | E8104  | Shader ABI 不匹配，或 Uniform/Instance 成员无 Buffer Layout（`Bool`） |
 | E8105  | Shader 使用 §99 子集之外的构造（Closure、递归、`?`、命名实参、泛型 Shader、误放的 `@max_iterations`/`@shader_value` 等） |
 | E8106  | 违反 Render Profile 阶段规则（Entry 签名与 Builtin、Varying 写入、阶段专用 Intrinsic、`fn` 读成员） |
+| E8107  | 违反 Brush Profile（保留成员缺失或类型不符、参数类型无 Host 值、其他 Uniform、Texture/Sampler） |
 | E9101  | Game System Order 循环                                  |
 | E9102  | Fixed Tick 预算超限                                     |
 | E9103  | Simulation 域访问 Local 状态或 Presentation 返回值，或 `@local` 误用（§106.4） |

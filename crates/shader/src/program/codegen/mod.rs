@@ -24,7 +24,11 @@ mod msl;
 mod wgsl;
 
 use std::fmt::Write;
+use std::sync::Arc;
 
+use viso_gpu::{ProgramCode, ShaderLang};
+
+use super::interp::CpuShader;
 use super::layout::{ShaderInterface, VERTEX_ENTRY};
 use super::{
     BinaryOp, Block, Builtin, Expr, ExprKind, Function, Intrinsic, Lane, Loop, Place, Program,
@@ -40,6 +44,55 @@ pub enum Target {
     Wgsl,
     /// HLSL shader model 5.1, for Direct3D 12.
     Hlsl,
+}
+
+/// The program, laid out by `interface`, as code in `lang` for a backend's
+/// program compiler: source for Metal, WebGPU and Direct3D 12; for Vulkan,
+/// SPIR-V from the WGSL through naga (the `spirv` feature), clip-space y
+/// flipped in the vertex stage as the built-in shaders do; for the headless
+/// raster, the reference interpreter.
+///
+/// # Errors
+///
+/// SPIR-V without the `spirv` feature, or naga rejecting the WGSL.
+pub fn code(
+    program: &Program,
+    interface: &ShaderInterface,
+    lang: ShaderLang,
+) -> Result<ProgramCode, String> {
+    Ok(match lang {
+        ShaderLang::Msl => ProgramCode::Msl(emit(program, interface, Target::Msl)),
+        ShaderLang::Wgsl => ProgramCode::Wgsl(emit(program, interface, Target::Wgsl)),
+        ShaderLang::Hlsl => ProgramCode::Hlsl(emit(program, interface, Target::Hlsl)),
+        ShaderLang::SpirV => ProgramCode::SpirV(spirv(&emit(program, interface, Target::Wgsl))?),
+        ShaderLang::None => ProgramCode::Cpu(Arc::new(CpuShader::new(program.clone()))),
+    })
+}
+
+#[cfg(feature = "spirv")]
+fn spirv(wgsl: &str) -> Result<Vec<u8>, String> {
+    let module = naga::front::wgsl::parse_str(wgsl).map_err(|e| e.emit_to_string(wgsl))?;
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .map_err(|e| e.emit_to_string(wgsl))?;
+    let options = naga::back::spv::Options {
+        lang_version: (1, 0),
+        flags: naga::back::spv::WriterFlags::ADJUST_COORDINATE_SPACE,
+        // Every loop of a program is bounded by construction.
+        force_loop_bounding: false,
+        ..Default::default()
+    };
+    let words =
+        naga::back::spv::write_vec(&module, &info, &options, None).map_err(|e| e.to_string())?;
+    Ok(words.iter().flat_map(|w| w.to_le_bytes()).collect())
+}
+
+#[cfg(not(feature = "spirv"))]
+fn spirv(_: &str) -> Result<Vec<u8>, String> {
+    Err("SPIR-V is written by `viso-shader`'s `spirv` feature".to_owned())
 }
 
 /// The program as `target` source, laid out by `interface`.
