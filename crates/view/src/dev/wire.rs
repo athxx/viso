@@ -640,6 +640,9 @@ pub const NACK_UNLOADABLE_SYSTEM: &str = "NACK_UNLOADABLE_SYSTEM";
 /// smoke tick, or its physics tier does not hold: the whole revision is
 /// refused with every game and view at its last good.
 pub const NACK_SYSTEM_FAULT: &str = "NACK_SYSTEM_FAULT";
+/// A game of the patch replays a tape: deterministic replay takes no live
+/// patch, so the tape reproduces the run it recorded.
+pub const NACK_REPLAYING: &str = "NACK_REPLAYING";
 
 /// A log line's level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

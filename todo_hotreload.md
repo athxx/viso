@@ -468,10 +468,14 @@ session comes first, then every reload item builds on it.
       code completes N, the new code runs N+1, the World, its entity ids and the
       session identical (`hot_reload::tests::games`, with the faulting, World Rebuild
       and missing-view cases).
-- [ ] Replay timeline: a live patch is recorded as `PatchRevision applied at TickId`
-      with the system code revision and any state resets; replay re-applies it at the
-      same tick; deterministic-replay mode refuses live patches with a stage
-      `runtime-stage` NACK (§18).
+- [x] Replay timeline: a recording tape records each live reload as a `TapePatch` —
+      the tick it applied before, the dev revision, the build hash, the build's module
+      and the states it reset — with the module the run started on; the binary form
+      carries them (the text form lists them as comments); a replay checks the start
+      build, links every patch up front through the game's `Linker` and swaps each in
+      before its tick; a rewind folds the later patches into one at the rewound tick;
+      a game replaying a tape refuses live patches (`NACK_REPLAYING`, stage
+      `runtime-stage`, with a warning line) (§18).
 - [ ] Audio: a session's audio systems start on the default device (`GameAudio`)
       where the target has one, attached when the store hands out the started client;
       a logic reload swaps the audio host without a gap: the new host is built off the

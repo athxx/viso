@@ -378,7 +378,7 @@ fn a_prepared_swap_aborted_leaves_the_game_as_it_was() {
 
     // Committed, each swap reports what it carried.
     let prepared = game.prepare_reload(vm_of(&faster)).expect("proves");
-    let Committed::Reloaded(restored) = game.commit_swap(prepared) else {
+    let Committed::Reloaded(restored) = game.commit_swap(prepared, 0) else {
         panic!("a reload");
     };
     assert_eq!(restored.states, 2);
@@ -388,8 +388,67 @@ fn a_prepared_swap_aborted_leaves_the_game_as_it_was() {
         .prepare_rebuild(vm_of(&moved), Rebuild::KeepCharacters)
         .expect("proves");
     assert_eq!(
-        game.commit_swap(prepared),
+        game.commit_swap(prepared, 0),
         Committed::Rebuilt { characters: 1 }
     );
     assert_eq!(game.clock().tick(), 0);
+}
+
+#[test]
+fn a_recorded_run_replays_its_live_patches_at_the_same_ticks() {
+    use viso_behavior::game::{InputTape, Linker};
+
+    let start = program(GAME);
+    let linker: Linker = Rc::new(|module| {
+        let mut vm = Vm::new(module, Budget::default());
+        vm.link(&Natives::standard(), &[])
+            .map_err(|e| e.to_string())?;
+        Ok(vm)
+    });
+    let mut live = running(&start);
+    live.record();
+    live.step(5);
+    let faster = program(&GAME.replace("steps += 1;", "steps += 2;"));
+    let prepared = live.prepare_reload(vm_of(&faster)).expect("proves");
+    live.commit_swap(prepared, 7);
+    live.step(5);
+    let tape = live.stop_recording().expect("recording");
+    assert_eq!(steps(&live), Value::Int(15));
+
+    let [patch] = &tape.patches[..] else {
+        panic!("one patch: {:?}", tape.patches.len());
+    };
+    assert_eq!((patch.tick, patch.revision, patch.resets), (5, 7, 0));
+    assert_eq!(patch.build, live.build());
+    assert!(tape.start.is_some(), "the build the run started on");
+    let decoded = InputTape::decode(&tape.encode()).expect("decodes");
+    assert_eq!(decoded, tape);
+    assert!(
+        tape.to_text().contains("# 5: patch r7"),
+        "{}",
+        tape.to_text()
+    );
+
+    // A replay needs the game's linker to swap the patch in.
+    let mut bare = running(&start);
+    assert!(bare.play(tape.clone()).is_err());
+
+    let mut replay = running(&start);
+    replay.set_linker(linker);
+    replay.play(tape.clone()).expect("plays");
+    assert!(replay.replaying());
+    replay.step(5);
+    assert_eq!(steps(&replay), Value::Int(5), "the old code through tick 4");
+    replay.step(5);
+    assert!(!replay.replaying(), "the tape is over");
+    assert_eq!(
+        replay.build(),
+        live.build(),
+        "the patch swapped in at tick 5"
+    );
+    assert_eq!(replay.snapshot(), live.snapshot(), "the same run");
+
+    // A tape whose run started on another build does not play.
+    let mut other = running(&faster);
+    assert!(other.play(tape).is_err());
 }

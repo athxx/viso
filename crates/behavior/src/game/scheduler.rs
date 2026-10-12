@@ -13,7 +13,7 @@ use super::persist::{PERSIST_CAPABILITY, Persist, PersistReport, Persistence, St
 use super::physics::{Kinematic, Physics, PhysicsTier};
 use super::quick::{QUICK_FIXED, QUICK_START, QuickFrame, QuickStart};
 use super::snapshot::{GameSnapshot, Restored, SystemState, fnv};
-use super::tape::{InputTape, Playback, Recorder, TapeError};
+use super::tape::{InputTape, Playback, Recorder, TapeError, TapePatch};
 use super::world::Bodies;
 use super::{
     COLLISION, Clock, CollisionDelivery, CollisionEvent, EntityId, FIXED_UPDATE, FRAME_UPDATE,
@@ -256,7 +256,14 @@ pub struct Scheduler {
     persist_reports: Vec<PersistReport>,
     /// The players in the game, `frame.players()`.
     players: u32,
+    /// What links a module a replayed tape swaps in, as the host links the
+    /// game's own.
+    linker: Option<Linker>,
 }
+
+/// Links a module into a VM the way the host linked the game's own: its
+/// natives, grants and services.
+pub type Linker = Rc<dyn Fn(Rc<Module>) -> Result<Vm, String>>;
 
 impl Scheduler {
     /// A scheduler running `vm`'s module on a clock at its tick rate over an
@@ -354,6 +361,7 @@ impl Scheduler {
             persist,
             persist_reports: Vec::new(),
             players: 1,
+            linker: None,
             instances,
         })
     }
@@ -425,7 +433,7 @@ impl Scheduler {
     /// kind.
     pub fn rebuild(&mut self, vm: Vm, keep: Rebuild) -> Result<u32, GameError> {
         let prepared = self.prepare_rebuild(vm, keep)?;
-        match self.commit_swap(prepared) {
+        match self.commit_swap(prepared, 0) {
             Committed::Rebuilt { characters } => Ok(characters),
             Committed::Reloaded(_) => unreachable!("a rebuild commits a rebuild"),
         }
@@ -465,6 +473,7 @@ impl Scheduler {
             shadow.clock.fixed_dt(),
         );
         shadow.set_players(self.players);
+        shadow.linker = self.linker.clone();
         shadow.input = self.input.clone();
         shadow.input.remap(&input_schema(&module));
         match shadow.prove_start(&self.world.bodies(), keep) {
@@ -483,7 +492,7 @@ impl Scheduler {
 
     /// Replaces this game's build with the one `prepared` proved, which this
     /// game prepared and has not advanced since: what the swap carried.
-    pub fn commit_swap(&mut self, prepared: PreparedSwap) -> Committed {
+    pub fn commit_swap(&mut self, prepared: PreparedSwap, revision: u64) -> Committed {
         match prepared.0 {
             Prepared::Reload {
                 mut old,
@@ -505,6 +514,16 @@ impl Scheduler {
                 }
                 if let Some(link) = old.vm.services_mut().remove::<AudioLink>() {
                     self.vm.services_mut().insert(link);
+                }
+                if let Some(recorder) = &mut self.recorder {
+                    let patch = TapePatch {
+                        tick: self.clock.tick(),
+                        revision,
+                        build: self.build,
+                        module: self.vm.module().encode(),
+                        resets: restored.mismatched + restored.missing,
+                    };
+                    recorder.patch(patch, || old.vm.module().encode());
                 }
                 self.rebind_tapes();
                 Committed::Reloaded(restored)
@@ -607,7 +626,7 @@ impl Scheduler {
     /// is left as it was.
     pub fn reload(&mut self, vm: Vm) -> Result<Restored, GameError> {
         let prepared = self.prepare_reload(vm)?;
-        match self.commit_swap(prepared) {
+        match self.commit_swap(prepared, 0) {
             Committed::Reloaded(restored) => Ok(restored),
             Committed::Rebuilt { .. } => unreachable!("a reload commits a reload"),
         }
@@ -756,6 +775,32 @@ impl Scheduler {
                 ),
             });
         }
+        if let Some(start) = &tape.start
+            && fnv(start) != self.build
+        {
+            return Err(TapeError {
+                line: None,
+                message: "the tape's run started on another build than the game runs".into(),
+            });
+        }
+        if !tape.patches.is_empty() {
+            let Some(linker) = &self.linker else {
+                return Err(TapeError {
+                    line: None,
+                    message:
+                        "the tape takes live patches, and the game has no linker to swap them in"
+                            .into(),
+                });
+            };
+            for patch in &tape.patches {
+                let refused = |why: String| TapeError {
+                    line: None,
+                    message: format!("the patch before tick {}: {why}", patch.tick),
+                };
+                let module = Module::decode(&patch.module).map_err(|e| refused(e.to_string()))?;
+                linker(Rc::new(module)).map_err(refused)?;
+            }
+        }
         let mut playback = Playback::new(tape, &input_schema(&module).actions)?;
         if let Some(last) = self.clock.tick().checked_sub(1) {
             playback.changes(last);
@@ -770,6 +815,48 @@ impl Scheduler {
     /// The ticks the replayed tape covers, if one plays.
     pub fn tape_ticks(&self) -> Option<u64> {
         self.playback.as_ref().map(Playback::ticks)
+    }
+
+    /// Whether a replayed tape still feeds the ticks: the run is
+    /// deterministic replay, which a live patch would change.
+    pub fn replaying(&self) -> bool {
+        self.playback
+            .as_ref()
+            .is_some_and(|p| self.clock.tick() < p.ticks())
+    }
+
+    /// Sets what links the modules a replayed tape's patches swap in.
+    pub fn set_linker(&mut self, linker: Linker) {
+        self.linker = Some(linker);
+    }
+
+    /// Swaps in the build a replayed tape's patch applies before tick
+    /// `tick`, as the recorded run did; a swap that faults is recorded as
+    /// the fault and the running build kept.
+    fn apply_tape_patch(&mut self, tick: u64) {
+        let Some(playback) = &mut self.playback else {
+            return;
+        };
+        let Some(patch) = playback.patch_before(tick) else {
+            return;
+        };
+        if patch.build == self.build {
+            return;
+        }
+        let (Some(linker), Ok(module)) = (&self.linker, Module::decode(&patch.module)) else {
+            return;
+        };
+        let revision = patch.revision;
+        let Ok(vm) = linker(Rc::new(module)) else {
+            return;
+        };
+        match self.prepare_reload(vm) {
+            Ok(prepared) => {
+                self.commit_swap(prepared, revision);
+            }
+            Err(GameError::Fault(fault)) => self.faults.push(fault),
+            Err(GameError::Physics(_)) => {}
+        }
     }
 
     /// Starts recording the input every tick reads into a tape, replacing
@@ -1269,6 +1356,9 @@ impl Scheduler {
     /// 0's from the device or a replayed tape and nothing from the rest.
     fn run_tick_with(&mut self, inputs: Option<&[TickInput]>) {
         let tick = self.clock.tick();
+        if self.playback.is_some() {
+            self.apply_tape_patch(tick);
+        }
         if self.history.as_ref().is_some_and(|h| h.due(tick)) {
             let snapshot = self.snapshot();
             if let Some(history) = &mut self.history {

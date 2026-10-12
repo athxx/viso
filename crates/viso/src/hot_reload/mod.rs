@@ -43,10 +43,10 @@ use viso_ui::state::{StateId, StateKey};
 use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, static_nodes};
 use viso_view::dev::wire::{
     CommitCounts, Domain, Domains, FileCommit, FileId, GameCommit, GameTier, LogLevel, MAX_NOTICES,
-    MAX_SCOPED_RESETS, MountEntry, NACK_SYSTEM_FAULT, NACK_UNKNOWN_FILE, NACK_UNLOADABLE_SYSTEM,
-    NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack, PatchSection, PatchTimings,
-    RESET_NOTICE, ReloadPlan, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint,
-    ScopedReset, Stage,
+    MAX_SCOPED_RESETS, MountEntry, NACK_REPLAYING, NACK_SYSTEM_FAULT, NACK_UNKNOWN_FILE,
+    NACK_UNLOADABLE_SYSTEM, NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack,
+    PatchSection, PatchTimings, RESET_NOTICE, ReloadPlan, Revision, RuntimeIdentity,
+    RuntimeMessage, SchemaFingerprint, ScopedReset, Stage,
 };
 use viso_view::{
     GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
@@ -335,6 +335,24 @@ impl HotReloadSession {
         let mut games = staged.games;
         // Systems first: every session's swap is proved before anything
         // commits, so a fault refuses the revision with nothing changed.
+        // A game replaying a tape is deterministic replay: a live patch would
+        // change what the tape reproduces.
+        if let Some(path) = self.replaying(&games, windows) {
+            let line = format!("{path}: the game replays a tape, so it takes no live patch");
+            if let Some(link) = &mut self.link {
+                link.send(RuntimeMessage::Log {
+                    level: LogLevel::Warn,
+                    line,
+                });
+            }
+            return RuntimeMessage::Nack(PatchNack {
+                base_revision: staged.base_revision,
+                candidate_revision: staged.next_revision,
+                stage: Stage::RuntimeStage,
+                diagnostic_codes: vec![NACK_REPLAYING.into()],
+                last_good_revision: last_good,
+            });
+        }
         let proved = match self.prove_games(&mut games, windows) {
             Ok(proved) => proved,
             Err(line) => {
@@ -357,6 +375,7 @@ impl HotReloadSession {
             unreachable!("checked above");
         };
         identity.current_revision = staged.next_revision;
+        let revision = staged.next_revision;
         let mut files = Vec::with_capacity(staged.views.len());
         let mut notices = Vec::new();
         let mut state_resets = Vec::new();
@@ -419,10 +438,11 @@ impl HotReloadSession {
         let mut swapped: Vec<GameCommit> = Vec::with_capacity(games.len());
         for proof in proved {
             let game = &games[proof.game];
-            let swap = proof
-                .session
-                .borrow_mut()
-                .commit(Rc::clone(&game.module), proof.prepared);
+            let swap = proof.session.borrow_mut().commit(
+                Rc::clone(&game.module),
+                proof.prepared,
+                revision.0,
+            );
             let file = FileId(game.file as u32);
             let commit = match swapped.iter_mut().find(|c| c.file == file) {
                 Some(commit) => commit,
@@ -462,6 +482,21 @@ impl HotReloadSession {
 }
 
 impl HotReloadSession {
+    /// The path of a file of `games` one of whose sessions replays a tape.
+    fn replaying(&self, games: &[StagedGame], windows: &[WindowState]) -> Option<&str> {
+        let game = games.iter().find(|game| {
+            self.views
+                .iter()
+                .filter(|live| live.file == game.file)
+                .filter_map(|live| {
+                    let ws = windows.iter().find(|ws| ws.window == live.window)?;
+                    game_session(&ws.store, live.root)
+                })
+                .any(|session| session.borrow().scheduler().replaying())
+        })?;
+        Some(&self.files[game.file].entry.path)
+    }
+
     /// Proves the swap of each game of a patch on every session running its
     /// file, in the windows' order: the proved swaps, or the line saying
     /// which game faulted, every swap proved before it put back.
@@ -2083,6 +2118,44 @@ mod tests {
             );
             assert_eq!((ack.games[0].tick, ack.games[0].characters), (0, 1));
             assert_eq!(state(&ws, "steps"), Value::Int(0), "the World starts over");
+        }
+
+        #[test]
+        fn a_game_replaying_a_tape_takes_no_live_patch() {
+            let mut ws = mounted(mount_game);
+            let (mut session, mut host, mut edits) = session(&mut ws, GAME);
+            let game = game_session(&ws.store, ws.root.expect("built")).expect("a game");
+            let tape = viso_behavior::game::InputTape {
+                ticks: 600,
+                ..viso_behavior::game::InputTape::new(0, 60)
+            };
+            game.borrow_mut().scheduler_mut().play(tape).expect("plays");
+            ws.store.run_frame_clients(TICK);
+
+            let faster = GAME.replace("steps += 1;", "steps += 10;");
+            let patch = game_patch_to(&mut edits, &host, (1, 2), &faster);
+            host.send(&patch);
+            assert!(
+                answer_or_staged(&mut session, &mut host).is_none(),
+                "staged"
+            );
+            session.reload(std::slice::from_mut(&mut ws));
+            assert!(
+                matches!(host.read(), Some(RuntimeMessage::Log { level: LogLevel::Warn, line }) if line.contains("replays a tape")),
+            );
+            let Some(RuntimeMessage::Nack(nack)) = host.read() else {
+                panic!("not refused");
+            };
+            assert_eq!(
+                (nack.stage, &nack.diagnostic_codes[..]),
+                (Stage::RuntimeStage, &[NACK_REPLAYING.to_owned()][..])
+            );
+            ws.store.run_frame_clients(TICK);
+            assert_eq!(
+                state(&ws, "steps"),
+                Value::Int(2),
+                "the recorded code runs on"
+            );
         }
 
         #[test]

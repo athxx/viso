@@ -10,6 +10,12 @@
 //! edge, as a remap does), and the move vector set. Changes of one tick apply
 //! in order before it runs, so a press and a release in one tick are a tap.
 //!
+//! A run that took live patches records each as a [`TapePatch`]: the tick it
+//! applied before, the dev revision, the build it swapped in and that build's
+//! module, so a replay swaps the same code in at the same tick; such a tape
+//! also keeps the module the run started on. Only the binary form carries
+//! patches.
+//!
 //! The binary form is a versioned `viso-ende` blob. The text form is one
 //! directive a line, `#` starting a comment:
 //!
@@ -57,6 +63,22 @@ pub struct TapeEvent {
     pub change: TapeChange,
 }
 
+/// A live patch a recorded run took: replaying the tape swaps the same
+/// build in before the same tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TapePatch {
+    /// The tick it applied before.
+    pub tick: u64,
+    /// The dev revision it moved the app to; 0 off a dev session.
+    pub revision: u64,
+    /// The hash of the build it swapped in: the system code revision.
+    pub build: u64,
+    /// That build's module, in its wire form.
+    pub module: Vec<u8>,
+    /// The states it set to their initializers.
+    pub resets: u32,
+}
+
 /// A recorded or hand-written run's input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InputTape {
@@ -74,6 +96,11 @@ pub struct InputTape {
     pub actions: Vec<String>,
     /// The changes, by ascending tick, each tick's in order.
     pub events: Vec<TapeEvent>,
+    /// The module the run started on, in its wire form, when it took
+    /// patches.
+    pub start: Option<Vec<u8>>,
+    /// The live patches it took, by ascending tick.
+    pub patches: Vec<TapePatch>,
 }
 
 /// Why a text tape did not parse, or a tape does not fit a build.
@@ -109,6 +136,8 @@ impl InputTape {
             ticks: 0,
             actions: Vec::new(),
             events: Vec::new(),
+            start: None,
+            patches: Vec::new(),
         }
     }
 
@@ -168,6 +197,22 @@ impl InputTape {
                 }
             }
         });
+        match &self.start {
+            Some(start) => {
+                enc.write_u8(1);
+                enc.write_bytes(start);
+            }
+            None => enc.write_u8(0),
+        }
+        let mut tick = 0;
+        write_list(&mut enc, &self.patches, |enc, p| {
+            enc.write_varint(p.tick - tick);
+            tick = p.tick;
+            enc.write_varint(p.revision);
+            enc.write_u64(p.build);
+            enc.write_bytes(&p.module);
+            enc.write_varint(u64::from(p.resets));
+        });
         enc.into_bytes()
     }
 
@@ -216,7 +261,28 @@ impl InputTape {
             };
             Ok(TapeEvent { tick, change })
         })?;
+        let start = match dec.read_u8()? {
+            0 => None,
+            1 => Some(dec.read_bytes()?.to_vec()),
+            _ => return Err(malformed(&dec)),
+        };
+        let mut tick = 0u64;
+        let patches = read_list(&mut dec, |dec| {
+            tick = tick
+                .checked_add(dec.read_varint()?)
+                .ok_or_else(|| malformed(dec))?;
+            Ok(TapePatch {
+                tick,
+                revision: dec.read_varint()?,
+                build: dec.read_u64()?,
+                module: dec.read_bytes()?.to_vec(),
+                resets: u32::try_from(dec.read_varint()?).map_err(|_| malformed(dec))?,
+            })
+        })?;
         dec.finish()?;
+        if !patches.is_empty() && start.is_none() {
+            return Err(DecodeError::Malformed { offset });
+        }
         if tick_rate == 0 {
             return Err(DecodeError::Malformed { offset });
         }
@@ -228,6 +294,8 @@ impl InputTape {
             ticks,
             actions,
             events,
+            start,
+            patches,
         })
     }
 
@@ -347,6 +415,20 @@ impl InputTape {
         let _ = writeln!(out, "determinism {tier}");
         let _ = writeln!(out, "tick_rate {}", self.tick_rate);
         let _ = writeln!(out, "ticks {}", self.ticks);
+        if !self.patches.is_empty() {
+            let _ = writeln!(
+                out,
+                "# the run took {} live patches, which only the binary form replays:",
+                self.patches.len()
+            );
+        }
+        for patch in &self.patches {
+            let _ = writeln!(
+                out,
+                "# {}: patch r{} build 0x{:016x}, {} states reset",
+                patch.tick, patch.revision, patch.build, patch.resets
+            );
+        }
         let name = |a: u32| self.actions[a as usize].as_str();
         let mut i = 0;
         while i < self.events.len() {
@@ -410,6 +492,8 @@ fn parse_move(text: &str) -> Option<(f64, f64)> {
 #[derive(Debug)]
 pub(super) struct Playback {
     tape: InputTape,
+    /// The index of the next patch to swap in.
+    next_patch: usize,
     /// The schema index of each tape action, `None` for one the build lacks.
     map: Vec<Option<u32>>,
     next: usize,
@@ -438,6 +522,7 @@ impl Playback {
             held: vec![false; tape.actions.len()],
             map,
             next: 0,
+            next_patch: 0,
             moved: (0.0, 0.0),
             tape,
         })
@@ -450,6 +535,7 @@ impl Playback {
             held: vec![false; tape.actions.len()],
             map: map_actions(&tape, actions),
             next: 0,
+            next_patch: 0,
             moved: (0.0, 0.0),
             tape,
         }
@@ -465,6 +551,7 @@ impl Playback {
     pub(super) fn restart(&mut self, actions: &[Box<str>]) {
         self.rebind(actions);
         self.next = 0;
+        self.next_patch = 0;
         self.held.fill(false);
         self.moved = (0.0, 0.0);
     }
@@ -523,6 +610,25 @@ impl Playback {
     /// The ticks the tape covers.
     pub(super) fn ticks(&self) -> u64 {
         self.tape.ticks
+    }
+
+    /// The patch that applies before tick `tick`, once, skipping those of
+    /// earlier ticks.
+    pub(super) fn patch_before(&mut self, tick: u64) -> Option<&TapePatch> {
+        while self
+            .tape
+            .patches
+            .get(self.next_patch)
+            .is_some_and(|p| p.tick < tick)
+        {
+            self.next_patch += 1;
+        }
+        let patch = self.tape.patches.get(self.next_patch)?;
+        if patch.tick != tick {
+            return None;
+        }
+        self.next_patch += 1;
+        Some(patch)
     }
 }
 
@@ -595,9 +701,25 @@ impl Recorder {
         self.tape.ticks = tick + 1;
     }
 
+    /// Records `patch`, a live patch the run took; `start` writes the module
+    /// the run ran until its first patch.
+    pub(super) fn patch(&mut self, patch: TapePatch, start: impl FnOnce() -> Vec<u8>) {
+        if self.tape.start.is_none() {
+            self.tape.start = Some(start());
+        }
+        self.tape.patches.push(patch);
+    }
+
     /// Forgets what ticks from `tick` on read, as a restored or rewound game
     /// runs them again.
     pub(super) fn rewind(&mut self, tick: u64) {
+        // The ticks run again on the build the game runs now: the patches
+        // after `tick` fold into one swapping it in before `tick`.
+        if let Some(cut) = self.tape.patches.iter().position(|p| p.tick > tick) {
+            let last = self.tape.patches.pop().expect("a patch after the tick");
+            self.tape.patches.truncate(cut);
+            self.tape.patches.push(TapePatch { tick, ..last });
+        }
         self.tape.events.retain(|e| e.tick < tick);
         self.tape.ticks = self.tape.ticks.min(tick);
         self.held.fill(false);

@@ -109,10 +109,11 @@ pub use persist::{
 };
 pub use physics::{Kinematic, Physics, PhysicsError, PhysicsTier, StepBodies};
 pub use scheduler::{
-    CommandKey, Committed, DEFAULT_SEED, GameError, PreparedSwap, Rebuild, Scheduler, SystemFault,
+    CommandKey, Committed, DEFAULT_SEED, GameError, Linker, PreparedSwap, Rebuild, Scheduler,
+    SystemFault,
 };
 pub use snapshot::{GameSnapshot, Restored};
-pub use tape::{InputTape, TapeChange, TapeError, TapeEvent};
+pub use tape::{InputTape, TapeChange, TapeError, TapeEvent, TapePatch};
 pub use timer::{Cooldown, TickTimer};
 pub use world::{
     BodyKind, EntityId, Extracted, GAME_TAG_DERIVE, GRAVITY, GameTag, GameWorld, SpawnDesc, Tag,

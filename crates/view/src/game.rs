@@ -126,8 +126,10 @@ impl GameSession {
     /// instance or in the start.
     pub fn start(module: Rc<Module>) -> Result<GameSession, GameReloadError> {
         let vm = link(&module).map_err(GameReloadError::Link)?;
-        let scheduler =
+        let mut scheduler =
             Scheduler::new(vm).map_err(|fault| GameReloadError::Game(GameError::Fault(fault)))?;
+        // A replayed tape's patches link as the game's own build did.
+        scheduler.set_linker(Rc::new(|module: Rc<Module>| link(&module)));
         Ok(GameSession {
             scheduler,
             module,
@@ -221,7 +223,7 @@ impl GameSession {
         rebuild: Option<Rebuild>,
     ) -> Result<GameSwap, GameReloadError> {
         let prepared = self.prepare(vm, rebuild)?;
-        Ok(self.commit(module, prepared))
+        Ok(self.commit(module, prepared, 0))
     }
 
     /// The first half of [`reload`](Self::reload): proves the swap, the
@@ -244,10 +246,16 @@ impl GameSession {
         .map_err(GameReloadError::Game)
     }
 
-    /// Commits the swap [`prepare`](Self::prepare) proved from `module`, the
-    /// audio systems swapping with it.
-    pub fn commit(&mut self, module: Rc<Module>, prepared: PreparedSwap) -> GameSwap {
-        let swap = match self.scheduler.commit_swap(prepared) {
+    /// Commits the swap [`prepare`](Self::prepare) proved from `module` as
+    /// dev revision `revision` (0 off a dev session), the audio systems
+    /// swapping with it; a recording tape records it.
+    pub fn commit(
+        &mut self,
+        module: Rc<Module>,
+        prepared: PreparedSwap,
+        revision: u64,
+    ) -> GameSwap {
+        let swap = match self.scheduler.commit_swap(prepared, revision) {
             Committed::Rebuilt { characters } => GameSwap {
                 tick: self.scheduler.clock().tick(),
                 characters,
