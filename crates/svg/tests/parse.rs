@@ -222,3 +222,17 @@ fn invalid_bytes_are_a_parse_error() {
     let err = parse_svg(b"not an svg at all").unwrap_err();
     assert!(err.to_string().contains("invalid SVG"));
 }
+
+#[test]
+fn a_scene_becomes_a_vector_asset_of_its_paths_and_size() {
+    let scene = parse_svg(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="12">
+            <rect x="2" y="2" width="8" height="8" fill="red"/>
+            <circle cx="18" cy="6" r="4" fill="blue"/>
+        </svg>"#,
+    )
+    .expect("parses");
+    let vector = scene.into_vector();
+    assert_eq!(vector.size, [24.0, 12.0]);
+    assert_eq!(vector.paths.len(), 2);
+}

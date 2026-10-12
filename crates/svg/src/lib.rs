@@ -3,8 +3,9 @@
 //! SVG is an **input format**, not a per-frame renderer: bytes are parsed once
 //! into a normalized vector scene and lowered to the same retained
 //! [`viso_render::Primitive`] stream every other source produces, so the result
-//! is a cacheable Render IR input rather than a live XML DOM. [`parse_svg`] is
-//! the whole public surface — a synchronous, allocation-bounded CPU pass. Static
+//! is a cacheable Render IR input rather than a live XML DOM. [`parse_svg`]
+//! (and [`SvgScene::into_vector`], the scene as a vector asset) is the whole
+//! public surface — a synchronous, allocation-bounded CPU pass. Static
 //! assets can run it at build time and dynamic assets on a worker thread (§26);
 //! the call site owns that policy, this crate just does the transform.
 //!
@@ -113,6 +114,26 @@ impl SvgScene {
             return None;
         }
         Some(viso_math::point_bounds(&pts))
+    }
+}
+
+impl SvgScene {
+    /// The scene as a vector asset: its paths and its document size, which
+    /// [`VectorScene::place`](viso_render::asset::VectorScene::place) stretches
+    /// into a node's box.
+    pub fn into_vector(self) -> viso_render::asset::VectorScene {
+        let paths: Vec<viso_render::Path> = self
+            .prims
+            .into_iter()
+            .filter_map(|prim| match prim {
+                Primitive::Path(path) => Some(path),
+                _ => None,
+            })
+            .collect();
+        viso_render::asset::VectorScene {
+            paths: paths.into(),
+            size: [self.size.0, self.size.1],
+        }
     }
 }
 

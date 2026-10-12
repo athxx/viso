@@ -520,16 +520,63 @@ session comes first, then every reload item builds on it.
 
 Goal: an asset change swaps one resource revision and dirties only its dependents.
 
-- [ ] Watch `assets/**` (and asset entries named by `Viso.toml`) on the host.
-- [ ] `ResourcePatch`: content hash → decode/build candidate on the host (images,
-      SVG) → `ResourceRevision++` → logical `ResourceId` remapped on the runtime only
-      after the new payload is ready (§22); old payload retired after the frame that
-      stopped using it.
-- [ ] Precise dependents: only nodes and paint ranges referencing the resource get
-      `PAINT` (or `MEASURE` when intrinsic size changed); no global cache clear.
-- [ ] A failing decode is a `resource-build` NACK, the old resource stays.
-- [ ] Tests: image edit repaints only its nodes; size change remeasures its node; a
-      corrupt file keeps the old image.
+There is no asset system yet (no `.vs` way to name an asset, no decoder but the
+emoji PNG path, no registry, no `Image` widget), so H4 builds it first, then its
+reload. makepad has no asset reload at all (its watcher reloads only `script_mod!`
+blocks; images, SVGs and fonts are read once, cached by path, and change only after a
+restart); avoid what it stacks instead: three path-keyed caches with no shared
+invalidation, encoded bytes and decoded pixels kept alive beside the texture,
+swallowed decode errors, GPU memory freed only on slot reuse, fonts memory-mapped from
+editable source files.
+
+### H4.1 — Asset system
+
+- [x] Decode (`render/src/asset.rs`): PNG and JPEG (`zune-png`, `zune-jpeg`) to
+      premultiplied RGBA8 in the texture convention (`RasterImage { width, height,
+      pixels }`), the format sniffed from the bytes (`AssetFormat::sniff`); SVG to a
+      `VectorScene { paths, size }` (`SvgScene::into_vector`) that `place`s its paths
+      stretched into a box, strokes and dashes scaled, colors optionally tinted.
+      Errors are values (`AssetError`); `MAX_DIMENSION` / `MAX_PIXELS` are checked
+      from the header before any pixel is allocated.
+- [x] Identity: `ResourceId::of` (FNV-1a of the path under `assets/` as
+      `normalize_path` spells it — absolute paths and `..` refused),
+      `ResourceRevision` per payload; paths exist only while compiling and packaging.
+- [ ] UI: each `NodeStore` keeps an asset table — `ResourceId` → revision, natural
+      size, payload (raster with its per-window `TextureId` once uploaded, or vector
+      scene) and a revision of the table; `set_asset(node, id)` shows a resource on a
+      node; `Content::Vector` paints a scene scaled into the node's box, optionally
+      tinted; replacing a resource rewrites only the nodes showing it, `PAINT` when
+      the natural size holds, `MEASURE | LAYOUT | PAINT` when it changes.
+- [ ] DSL: `asset("images/logo.png")` takes a string literal, checks the file exists
+      under the package's `assets/` and sniffs its format at compile time, and is an
+      `Image` (PNG, JPEG) or a `Svg` (SVG) value — a typed handle states and branches
+      can hold; `Image { source; fit; }` and `Svg { source; tint; fit; }` leaf
+      widgets, natural size from the asset; diagnostics for a non-literal path, a
+      missing file, an unknown format and an asset outside `assets/`; DSL spec and
+      the widget table updated.
+- [ ] View and package: the compiled view lists the assets it can show (id, kind,
+      path); the control delivers a node's resource; the `view!` macro embeds their
+      bytes (`include_bytes!`, so cargo rebuilds on change), the release package
+      carries them; mounting provides them to the store's table, decoded once.
+- [ ] Facade: one app-wide registry decodes each resource once and shares it across
+      windows; each window uploads the rasters it shows, resolves its nodes, and
+      releases a replaced texture through the fence-deferred path; a rebuilt renderer
+      re-uploads; frame counters for decodes, uploads and upload bytes.
+
+### H4.2 — Asset reload
+
+- [ ] Watch `assets/**` on the host: byte reads and a byte hash; an unchanged hash
+      sends nothing.
+- [ ] `ResourcePatch { id, kind, revision, bytes }` (`Domain::Resource`), large payloads
+      split under the frame limit; the host validates the decode first and reports a
+      failure at stage `resource-build` against the asset's path; a view patch naming
+      a new asset carries its bytes; protocol version bumped.
+- [ ] Runtime: decodes during staging (a failing decode is a `resource-build` NACK,
+      the old resource stays), swaps the resource at the frame boundary only after the
+      new payload is ready, dirties only its dependents, and retires the old texture
+      after the frame that stopped using it.
+- [ ] Tests: an image edit repaints only its nodes; a size change remeasures its node;
+      a corrupt file keeps the old image; an SVG edit; the dirty counts in the ACK.
 - [ ] Font patch (§23): `FontFaceRevision` bump from a dev font file change, reflowing
       only paragraphs using the face — **waits for the font work in progress**; it
       reuses `text/src/progressive.rs::FontRevision`, no change to font code from
