@@ -432,16 +432,19 @@ session comes first, then every reload item builds on it.
       the window or the UI takes focus; freeing the root drops it, a reload that
       rebuilds the root moves it (`game_session.rs`, store and facade loop; the
       headless backend gained a frame budget for apps that never stop animating).
-- [ ] Wire: a `system` section — `SystemPatch { file, module, tier, keep }` (the
-      candidate's encoded module, the classified tier, the World Rebuild's
-      character policy) — encoded and decoded with the section bounds; the runtime
-      advertises `system` when it hosts a game.
+- [x] Wire: a `system` section — `SystemPatch { games: [GamePatch { file, tier }] }`,
+      `GameTier` Presentation / Logic / LogicMigration / WorldRebuild { keep } —
+      encoded and decoded with the section bounds; the candidate module is the
+      behavior of the file's view in the same patch's `ui` section, never sent twice
+      (dev protocol 8).
 - [ ] Host: `Sources` keeps each game file's last-good behavior program; a candidate
       of a file whose module declares systems is classified (`classify`), reported
       as the `E5103` note, and sent as the file's `ui` and `system` sections of one
       candidate revision; `Unchanged` sends no `system` section; the ACK makes the
       candidate the last good.
-- [ ] Runtime stage: decode, verify and link the candidate module into a VM at stage
+- [ ] Runtime stage: the runtime advertises `system`; a `system` entry whose file has
+      no view in the `ui` section, or no running game, refuses the patch; decode,
+      verify and link the candidate module into a VM at stage
       time, nothing live touched (`NACK_UNLOADABLE_SYSTEM`, stage `runtime-stage`);
       commit at the tick boundary after the current tick — systems first (reload or
       shadow rebuild by tier), then the UI sections, so a faulting smoke tick NACKs

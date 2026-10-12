@@ -34,9 +34,9 @@ use viso_ui::state::{StateId, StateKey};
 use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, static_nodes};
 use viso_view::dev::wire::{
     CommitCounts, Domain, Domains, FileCommit, FileId, MAX_NOTICES, MAX_SCOPED_RESETS, MountEntry,
-    NACK_UNKNOWN_FILE, NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack,
-    PatchSection, PatchTimings, RESET_NOTICE, ReloadPlan, Revision, RuntimeIdentity,
-    RuntimeMessage, SchemaFingerprint, ScopedReset, Stage,
+    NACK_UNKNOWN_FILE, NACK_UNLOADABLE_VIEW, NACK_UNSUPPORTED_DOMAIN, Notice, PatchAck,
+    PatchBundle, PatchNack, PatchSection, PatchTimings, RESET_NOTICE, ReloadPlan, Revision,
+    RuntimeIdentity, RuntimeMessage, SchemaFingerprint, ScopedReset, Stage,
 };
 use viso_view::{MountRecord, ViewHost, take_mounts};
 
@@ -408,6 +408,8 @@ fn stage(bundle: PatchBundle, files: &[ViewFile]) -> Result<StagedPatch, PatchNa
                     });
                 }
             }
+            // Not advertised: the identity check refuses it first.
+            PatchSection::System(_) => return Err(refuse(NACK_UNSUPPORTED_DOMAIN)),
         }
     }
     Ok(StagedPatch {
@@ -1081,7 +1083,9 @@ mod tests {
         let HostMessage::Patch(patch) = &mut broken else {
             unreachable!()
         };
-        let PatchSection::Ui(ui) = &mut patch.sections[0];
+        let PatchSection::Ui(ui) = &mut patch.sections[0] else {
+            unreachable!("a ui section")
+        };
         ui.views[0].package.behavior = vec![0xEE; 8];
         match apply(&mut session, &mut host, &mut ws, &broken) {
             RuntimeMessage::Nack(nack) => {
@@ -1117,7 +1121,9 @@ mod tests {
         let HostMessage::Patch(bundle) = &mut patch else {
             unreachable!()
         };
-        let PatchSection::Ui(ui) = &mut bundle.sections[0];
+        let PatchSection::Ui(ui) = &mut bundle.sections[0] else {
+            unreachable!("a ui section")
+        };
         let mut stray = ui.views[0].clone();
         stray.file = FileId(9);
         ui.views.push(stray);
@@ -1280,7 +1286,9 @@ mod tests {
         let HostMessage::Patch(patch) = &mut broken else {
             unreachable!()
         };
-        let PatchSection::Ui(ui) = &mut patch.sections[0];
+        let PatchSection::Ui(ui) = &mut patch.sections[0] else {
+            unreachable!("a ui section")
+        };
         ui.views[0].package.behavior = vec![0xEE; 8];
         match apply_on(&mut session, &mut host, &mut windows, &broken) {
             RuntimeMessage::Nack(nack) => {

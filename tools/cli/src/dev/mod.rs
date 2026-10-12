@@ -666,7 +666,9 @@ mod tests {
         let HostMessage::Patch(patch) = message else {
             panic!("not a patch: {message:?}");
         };
-        let PatchSection::Ui(ui) = &patch.sections[0];
+        let PatchSection::Ui(ui) = &patch.sections[0] else {
+            panic!("a ui section")
+        };
         assert_eq!(ui.views[0].file, FileId(0));
         (patch.base_revision.0, patch.next_revision.0, &ui.views[0])
     }

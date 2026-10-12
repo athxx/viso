@@ -12,6 +12,7 @@
 //! region, arm and arm item of its template. No source text, name lookup or
 //! template diff reaches the runtime.
 
+use viso_behavior::game::Rebuild;
 use viso_behavior::native::MigratableState;
 use viso_behavior::retype::Retyping;
 use viso_ende::{Decode, Decoder, Encode, Encoder};
@@ -204,6 +205,110 @@ pub struct RetypePlan {
     pub from: String,
     pub to: String,
     pub at: (u32, u32),
+}
+
+/// The `system` section of a patch: each game file whose systems it swaps.
+/// A game's candidate module is the behavior of its file's view in the same
+/// patch's `ui` section, so the section carries only how to swap it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SystemPatch {
+    pub games: Vec<GamePatch>,
+}
+
+/// One game file's swap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GamePatch {
+    pub file: FileId,
+    /// The layer the host classified the candidate's changes at.
+    pub tier: GameTier,
+}
+
+/// The layer a running game swaps a candidate in at. An unchanged game has
+/// no entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameTier {
+    /// Only Presentation code or `@local` states changed.
+    Presentation,
+    /// Simulation code, the input map, the tick rate or the system order
+    /// changed: the World, states, tick and random state are kept.
+    Logic,
+    /// [`Logic`](Self::Logic), and a Simulation state was added, removed,
+    /// retyped or given a new initializer: states carry by identity and
+    /// schema, the rest take their initializers.
+    LogicMigration,
+    /// The start changed: the World is built again in a shadow game,
+    /// keeping what `keep` says.
+    WorldRebuild { keep: Rebuild },
+}
+
+impl GameTier {
+    /// The spelling of the `dev` event and the ACK report.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GameTier::Presentation => "presentation-only",
+            GameTier::Logic => "logic-only",
+            GameTier::LogicMigration => "logic+state-migration",
+            GameTier::WorldRebuild { .. } => "world-rebuild",
+        }
+    }
+
+    /// The World Rebuild the swap runs; `None` for a reload over the
+    /// running World.
+    pub fn rebuild(self) -> Option<Rebuild> {
+        match self {
+            GameTier::WorldRebuild { keep } => Some(keep),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn write_systems(enc: &mut Encoder, systems: &SystemPatch) {
+    enc.write_varint(systems.games.len() as u64);
+    for game in &systems.games {
+        enc.write_varint(u64::from(game.file.0));
+        write_tier(enc, game.tier);
+    }
+}
+
+pub(super) fn read_systems(dec: &mut Decoder<'_>) -> Result<SystemPatch, WireError> {
+    let games = read_list(dec, MAX_FILES, "patched games", |dec| {
+        Ok(GamePatch {
+            file: read_file(dec)?,
+            tier: read_tier(dec)?,
+        })
+    })?;
+    Ok(SystemPatch { games })
+}
+
+pub(super) fn write_tier(enc: &mut Encoder, tier: GameTier) {
+    match tier {
+        GameTier::Presentation => enc.write_u8(0),
+        GameTier::Logic => enc.write_u8(1),
+        GameTier::LogicMigration => enc.write_u8(2),
+        GameTier::WorldRebuild { keep } => {
+            enc.write_u8(3);
+            enc.write_u8(match keep {
+                Rebuild::Fresh => 0,
+                Rebuild::KeepCharacters => 1,
+            });
+        }
+    }
+}
+
+pub(super) fn read_tier(dec: &mut Decoder<'_>) -> Result<GameTier, WireError> {
+    Ok(match dec.read_u8()? {
+        0 => GameTier::Presentation,
+        1 => GameTier::Logic,
+        2 => GameTier::LogicMigration,
+        3 => GameTier::WorldRebuild {
+            keep: match dec.read_u8()? {
+                0 => Rebuild::Fresh,
+                1 => Rebuild::KeepCharacters,
+                _ => return Err(malformed(dec)),
+            },
+        },
+        _ => return Err(malformed(dec)),
+    })
 }
 
 pub(super) fn write_ui(enc: &mut Encoder, ui: &UiPatch) {

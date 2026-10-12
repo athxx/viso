@@ -25,13 +25,13 @@ use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 use viso_ui::state::StateKey;
 
 pub use super::patch::{
-    MAX_PLAN_ENTRIES, NodeCarry, NodeRef, RESET_NOTICE, ReloadPlan, RetypePlan, StateAction,
-    StatePlan, StructuralOp, UiPatch, ViewPatch,
+    GamePatch, GameTier, MAX_PLAN_ENTRIES, NodeCarry, NodeRef, RESET_NOTICE, ReloadPlan,
+    RetypePlan, StateAction, StatePlan, StructuralOp, SystemPatch, UiPatch, ViewPatch,
 };
-use super::patch::{read_ui, write_ui};
+use super::patch::{read_systems, read_ui, write_systems, write_ui};
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 7;
+pub const DEV_PROTOCOL_VERSION: u16 = 8;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -386,12 +386,17 @@ pub enum PatchSection {
     /// The `ui` domain: each view the host compiled, validated and planned,
     /// which the runtime commits.
     Ui(UiPatch),
+    /// The `system` domain: each game the patch swaps, at the tier the host
+    /// classified, its candidate the behavior of its file's view in the
+    /// `ui` section.
+    System(SystemPatch),
 }
 
 impl PatchSection {
     pub fn domain(&self) -> Domain {
         match self {
             PatchSection::Ui(_) => Domain::Ui,
+            PatchSection::System(_) => Domain::System,
         }
     }
 }
@@ -1120,6 +1125,7 @@ impl Message for HostMessage {
                     enc.write_u8(section.domain() as u8);
                     match section {
                         PatchSection::Ui(ui) => write_ui(enc, ui),
+                        PatchSection::System(systems) => write_systems(enc, systems),
                     }
                 }
             }
@@ -1177,6 +1183,7 @@ impl Message for HostMessage {
                     last = Some(tag);
                     sections.push(match Domain::from_tag(tag) {
                         Some(Domain::Ui) => PatchSection::Ui(read_ui(dec)?),
+                        Some(Domain::System) => PatchSection::System(read_systems(dec)?),
                         Some(domain) => return Err(WireError::UnsupportedDomain(domain)),
                         None => return Err(malformed(dec)),
                     });
@@ -1477,6 +1484,10 @@ mod tests {
                 sections: vec![PatchSection::Ui(ui())],
                 ..patch(3, 4)
             })),
+            HostMessage::Patch(Box::new(PatchBundle {
+                sections: vec![PatchSection::Ui(ui()), PatchSection::System(systems())],
+                ..patch(3, 4)
+            })),
             HostMessage::Failure {
                 file: FileId(2),
                 lines: vec![
@@ -1489,6 +1500,30 @@ mod tests {
                 lines: Vec::new(),
             },
         ]
+    }
+
+    fn systems() -> SystemPatch {
+        use viso_behavior::game::Rebuild;
+        SystemPatch {
+            games: [
+                GameTier::Presentation,
+                GameTier::Logic,
+                GameTier::LogicMigration,
+                GameTier::WorldRebuild {
+                    keep: Rebuild::Fresh,
+                },
+                GameTier::WorldRebuild {
+                    keep: Rebuild::KeepCharacters,
+                },
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, tier)| GamePatch {
+                file: FileId(i as u32),
+                tier,
+            })
+            .collect(),
+        }
     }
 
     fn ui() -> UiPatch {
@@ -2048,6 +2083,50 @@ mod tests {
             HostMessage::from_frame(&encode(&backwards)),
             Err(WireError::Malformed(_))
         ));
+    }
+
+    #[test]
+    fn system_bounds_are_checked() {
+        let many = HostMessage::Patch(Box::new(PatchBundle {
+            sections: vec![PatchSection::System(SystemPatch {
+                games: vec![
+                    GamePatch {
+                        file: FileId(0),
+                        tier: GameTier::Logic,
+                    };
+                    MAX_FILES + 1
+                ],
+            })],
+            ..patch(3, 4)
+        }));
+        assert_eq!(
+            HostMessage::from_frame(&encode(&many)),
+            Err(WireError::Bound {
+                what: "patched games"
+            })
+        );
+        // An unknown tier, and an unknown World Rebuild policy.
+        for (at, byte) in [(1, 4), (2, 2)] {
+            let one = HostMessage::Patch(Box::new(PatchBundle {
+                sections: vec![PatchSection::System(SystemPatch {
+                    games: vec![GamePatch {
+                        file: FileId(0),
+                        tier: GameTier::WorldRebuild {
+                            keep: viso_behavior::game::Rebuild::Fresh,
+                        },
+                    }],
+                })],
+                ..patch(3, 4)
+            }));
+            let body = body_with(&one, |body| {
+                let len = body.len();
+                body[len - 3 + at] = byte;
+            });
+            assert!(matches!(
+                HostMessage::from_frame(&body),
+                Err(WireError::Malformed(_))
+            ));
+        }
     }
 
     #[test]
