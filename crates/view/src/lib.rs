@@ -46,8 +46,8 @@ pub use control::{Control, ControlInput, ControlKind, Look, LookArm, When};
 pub use effects::{__mount_effects, mount_effects, release_effects};
 pub use env::{__link_env, env_value};
 pub use game::{
-    GameAudioDevice, GameReloadError, GameSession, GameSwap, describe_fault, game_session,
-    mount_game, started_game, take_game_faults,
+    GameAudioDevice, GameAudioStart, GameReloadError, GameSession, GameSwap, StartedAudio,
+    describe_fault, game_session, install_game_audio, mount_game, take_game_faults,
 };
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
 #[cfg(feature = "hot-reload")]

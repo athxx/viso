@@ -1532,6 +1532,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             // app's data; a session handed its services (a headless test)
             // persists nothing unless it installs a store itself.
             persist::install(&app);
+            // The games the views run play their audio on the default
+            // output device.
+            audio::install();
         }
         // Open the initial window with the app's declared configuration
         // (`window_config`, defaulting to a self-drawn, captioned window). Later

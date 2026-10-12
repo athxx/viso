@@ -9,7 +9,9 @@
 //! A reload swaps the session's build at a tick boundary
 //! ([`GameSession::reload`]), the World, entities and compatible states
 //! kept, or rebuilds the World in a shadow game for a World Rebuild; the
-//! audio device, when one is attached, swaps its audio systems with it.
+//! audio device swaps its audio systems with it. A game whose module has
+//! audio systems starts them on the device the app installed
+//! ([`install_game_audio`]), also when a reload adds them.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -35,6 +37,29 @@ pub trait GameAudioDevice {
     /// When `module`'s audio systems do not build; the running ones keep
     /// playing.
     fn reload(&mut self, module: &Module, natives: &Natives) -> Result<(), String>;
+
+    /// Drops what the device handed back since, here rather than on its
+    /// thread: called once a frame.
+    fn collect(&mut self);
+}
+
+/// Starts the audio systems of a game's `module`, linked against `natives`,
+/// on the app's device: the device and the link the game reaches them
+/// through, `None` when the module has none or the target no device.
+pub type GameAudioStart = fn(&Module, &Natives) -> Result<Option<StartedAudio>, String>;
+
+/// A game's audio started on a device: the device, and the link the game
+/// reaches its audio systems through.
+pub type StartedAudio = (Box<dyn GameAudioDevice>, AudioLink);
+
+thread_local! {
+    static AUDIO: std::cell::Cell<Option<GameAudioStart>> = const { std::cell::Cell::new(None) };
+}
+
+/// Installs `start` as how the games of this thread's views start their
+/// audio; `None` leaves them silent.
+pub fn install_game_audio(start: Option<GameAudioStart>) {
+    AUDIO.with(|installed| installed.set(start));
 }
 
 /// Why a session's build was not swapped.
@@ -93,6 +118,8 @@ pub struct GameSession {
     /// every tick is reported once until it faults otherwise or the build
     /// swaps.
     reported: Option<(usize, &'static str)>,
+    /// The audio faults the link counted when last reported.
+    audio_faults: u64,
 }
 
 impl std::fmt::Debug for GameSession {
@@ -130,12 +157,15 @@ impl GameSession {
             Scheduler::new(vm).map_err(|fault| GameReloadError::Game(GameError::Fault(fault)))?;
         // A replayed tape's patches link as the game's own build did.
         scheduler.set_linker(Rc::new(|module: Rc<Module>| link(&module)));
-        Ok(GameSession {
+        let mut session = GameSession {
             scheduler,
             module,
             audio: None,
             reported: None,
-        })
+            audio_faults: 0,
+        };
+        session.start_audio();
+        Ok(session)
     }
 
     /// The running game.
@@ -165,6 +195,20 @@ impl GameSession {
         self.scheduler.instance(index).states().get(slot).cloned()
     }
 
+    /// Starts the module's audio systems on the installed device, if it has
+    /// any and the app installed one; why they did not start is queued for
+    /// [`take_game_faults`].
+    fn start_audio(&mut self) {
+        let Some(start) = AUDIO.with(std::cell::Cell::get) else {
+            return;
+        };
+        match start(&self.module, &Natives::standard()) {
+            Ok(Some((device, link))) => self.attach_audio(link, device),
+            Ok(None) => {}
+            Err(why) => queue_fault(format!("the game's audio did not start: {why}")),
+        }
+    }
+
     /// Lets the systems talk to the audio systems `device` renders through
     /// `link`.
     pub fn attach_audio(&mut self, link: AudioLink, device: Box<dyn GameAudioDevice>) {
@@ -187,6 +231,26 @@ impl GameSession {
     /// [`take_game_faults`], a fault repeating the last one reported left
     /// out.
     fn report_faults(&mut self) {
+        if let Some(audio) = &mut self.audio {
+            audio.collect();
+        }
+        if let Some(link) = self.scheduler.audio() {
+            let status = link.status();
+            if status.faults() != self.audio_faults {
+                self.audio_faults = status.faults();
+                if let Some(fault) = status.take_fault() {
+                    let module = self.scheduler.vm().module();
+                    let name = module
+                        .systems()
+                        .get(fault.system)
+                        .map_or("an audio system", |s| &*module.layout(s.component).name);
+                    queue_fault(format!(
+                        "`{name}` faulted on the audio thread: {}",
+                        fault.fault
+                    ));
+                }
+            }
+        }
         let faults = self.scheduler.take_faults();
         for fault in &faults {
             let key = (fault.system, fault.code);
@@ -268,13 +332,19 @@ impl GameSession {
                 characters: 0,
             },
         };
-        if let Some(audio) = &mut self.audio {
-            // The new systems run; audio that does not build keeps the old
-            // sound rather than failing the swap.
-            let _ = audio.reload(&module, &Natives::standard());
-        }
         self.module = module;
         self.reported = None;
+        match &mut self.audio {
+            // The new systems run; audio that does not build keeps the old
+            // sound rather than failing the swap.
+            Some(audio) => {
+                if let Err(why) = audio.reload(&self.module, &Natives::standard()) {
+                    queue_fault(format!("the new audio systems did not build: {why}"));
+                }
+            }
+            // A reload that adds audio systems starts them.
+            None => self.start_audio(),
+        }
         swap
     }
 
@@ -454,12 +524,4 @@ pub fn mount_game(
     let session = Rc::new(RefCell::new(GameSession::start(Rc::clone(module))?));
     store.add_frame_client(owner, Rc::new(RefCell::new(GameClient(session))));
     Ok(())
-}
-
-/// The session behind a client [`NodeStore::take_started_clients`] handed
-/// out, if it is a game.
-pub fn started_game(client: &viso_ui::SharedClient) -> Option<Rc<RefCell<GameSession>>> {
-    let mut client = client.try_borrow_mut().ok()?;
-    let client = client.as_any_mut().downcast_mut::<GameClient>()?;
-    Some(Rc::clone(&client.0))
 }

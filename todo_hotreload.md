@@ -476,12 +476,17 @@ session comes first, then every reload item builds on it.
       before its tick; a rewind folds the later patches into one at the rewound tick;
       a game replaying a tape refuses live patches (`NACK_REPLAYING`, stage
       `runtime-stage`, with a warning line) (§18).
-- [ ] Audio: a session's audio systems start on the default device (`GameAudio`)
-      where the target has one, attached when the store hands out the started client;
-      a logic reload swaps the audio host without a gap: the new host is built off the
-      audio thread and handed over through a lock-free slot, the old one handed back
-      for dropping off the audio thread; the queues move across, so the game's link
-      stays valid (with the D5 audio item).
+- [x] Audio: a session whose module has audio systems starts them on the device the
+      app installed (`install_game_audio`; the facade installs `GameAudio` on the
+      default output, the device opened only for a module with audio systems), also
+      when a reload adds them; a reload swaps them without a gap: the new
+      `AudioProgram` — VM, instances, its own block and message slot — is built and
+      warmed off the audio thread and published through the host's `AudioSwap` (two
+      atomic pointers), installed before the next block, the old one handed back and
+      dropped on the game's thread once a frame; the queues and status stay with the
+      host and the event queue moves to the new block, so the link stays valid; the
+      install and the new program's first block allocate nothing; audio faults are
+      reported once each with the game's faults.
 - [ ] `viso game peek` / `viso game record` over the dev channel against the running
       session (CLI §22.3): a loopback control endpoint of `viso run`, named in its
       session lock, relays a query to the runtime (`HostMessage::Game`,

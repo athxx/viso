@@ -9,8 +9,21 @@
 //! `AudioCommands` hook, and every `AudioProcess` hook fills the block in
 //! system order. A hook that faults is silenced until the host is rebuilt,
 //! and its fault is left for the app to report.
+//!
+//! A reload swaps the systems without a gap and without touching the
+//! link: the game builds the new [`AudioProgram`] — VM and instances — off
+//! the audio thread and publishes it through the host's [`AudioSwap`], a
+//! pair of atomic pointers; the next block installs it in place of the
+//! running one, which goes back through the other pointer to be dropped on
+//! the game's thread. A program owns every value its VM can reach — its
+//! block and the slot commands decode into — so the one dropped there
+//! shares nothing with the audio thread; the queues and the status belong
+//! to the host and carry across, the event queue moving from the old block
+//! to the new. The audio thread only ever exchanges pointers: it neither
+//! allocates nor frees.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::message::{AudioMessage, MessageSlot};
@@ -111,31 +124,30 @@ struct AudioSystem {
     silenced: bool,
 }
 
-/// Runs a game's audio systems on the audio thread.
-pub struct AudioHost {
+/// A module's audio systems on a VM of their own: what a host runs, and
+/// what a reload hands it in place of what it runs.
+pub struct AudioProgram {
     vm: Vm,
     systems: Box<[AudioSystem]>,
     block: Obj<AudioBlock>,
     /// The block as the value each `AudioProcess` hook takes.
     arg: Value,
-    commands: RealtimeReceiver<AudioMessage>,
     slot: MessageSlot,
-    status: Arc<AudioStatus>,
 }
 
-// SAFETY: a host is built from the module's bytes (`AudioHost::new`), so the
-// `Rc`s it holds — its module, VM, instances, block and values — reach only
-// one another and none is shared with anything outside it; moving the whole
-// host to another thread moves every handle to them at once. Its VM has no
-// services, and the natives it links are `Send + Sync` statics. It is used
-// from one thread at a time (`render` takes `&mut self`).
-unsafe impl Send for AudioHost {}
+// SAFETY: a program is built from the module's bytes (`AudioProgram::new`),
+// so the `Rc`s it holds — its module, VM, instances, block, the block's value
+// and the values its slot decodes — reach only one another, and every value
+// its hooks see is one of them; moving it moves every handle to them at once.
+// Its VM has no services, and the natives it links are `Send + Sync`
+// statics. It runs on one thread at a time.
+unsafe impl Send for AudioProgram {}
 
-impl AudioHost {
-    /// A host running the audio systems of the module encoded in `module`,
-    /// linked against `natives`, filling blocks of `channels` channels of up
-    /// to `max_frames` frames at `sample_rate`; `None` when the module has
-    /// no system with an audio-thread hook.
+impl AudioProgram {
+    /// The audio systems of the module encoded in `module`, linked against
+    /// `natives`, filling blocks of `channels` channels of up to `max_frames`
+    /// frames at `sample_rate`; none when the module has no audio-thread
+    /// hook.
     ///
     /// # Errors
     ///
@@ -147,7 +159,7 @@ impl AudioHost {
         channels: usize,
         max_frames: usize,
         sample_rate: f64,
-    ) -> Result<Option<(AudioHost, AudioLink)>, String> {
+    ) -> Result<AudioProgram, String> {
         let module = Module::decode(module).map_err(|e: LoadError| e.to_string())?;
         let mut systems = Vec::new();
         let mut vm = Vm::new(std::rc::Rc::new(module), block_budget(channels, max_frames));
@@ -169,21 +181,169 @@ impl AudioHost {
                 silenced: false,
             });
         }
-        if systems.is_empty() {
-            return Ok(None);
-        }
-        let (commands, inbox) = realtime_queue(COMMAND_CAPACITY);
-        let (outbox, events) = realtime_queue(EVENT_CAPACITY);
-        let block =
-            Obj::new(AudioBlock::new(channels, max_frames, sample_rate).with_events(outbox));
-        let status = Arc::new(AudioStatus::default());
-        let host = AudioHost {
+        let block = Obj::new(AudioBlock::new(channels, max_frames, sample_rate));
+        let mut program = AudioProgram {
             vm,
             systems: systems.into(),
             arg: block.clone().into_value(),
             block,
-            commands: inbox,
             slot: MessageSlot::default(),
+        };
+        program.warm();
+        Ok(program)
+    }
+
+    /// Runs each `AudioProcess` hook once over a full block here and puts
+    /// its instance back as it was, so the VM's registers and frames have
+    /// grown to what the hooks need before the program reaches the audio
+    /// thread: its first block there allocates nothing. A command's first
+    /// decode of each variant still sizes the slot.
+    fn warm(&mut self) {
+        self.block.set_frames(self.block.capacity());
+        for system in &mut self.systems {
+            let Some(chunk) = system.process else {
+                continue;
+            };
+            let kept = system.instance.clone();
+            let _ = self
+                .vm
+                .call(&mut system.instance, chunk, std::slice::from_ref(&self.arg));
+            system.instance = kept;
+        }
+        self.block.clear_output();
+    }
+
+    /// The audio systems it runs.
+    pub fn systems(&self) -> usize {
+        self.systems.len()
+    }
+}
+
+/// Where a reload's program waits for the audio thread, and where the one
+/// it replaced waits for the game's thread.
+#[derive(Default)]
+struct HandOff {
+    /// Published by the game, taken by the audio thread.
+    next: AtomicPtr<AudioProgram>,
+    /// Put back by the audio thread, taken by the game.
+    retired: AtomicPtr<AudioProgram>,
+}
+
+impl HandOff {
+    /// Takes the program `slot` holds.
+    fn take(slot: &AtomicPtr<AudioProgram>) -> Option<Box<AudioProgram>> {
+        let program = slot.swap(ptr::null_mut(), Ordering::Acquire);
+        // SAFETY: a non-null pointer in a slot came from `Box::into_raw` and
+        // the swap took it out, so this is its one owner.
+        (!program.is_null()).then(|| unsafe { Box::from_raw(program) })
+    }
+}
+
+impl Drop for HandOff {
+    fn drop(&mut self) {
+        drop(HandOff::take(&self.next));
+        drop(HandOff::take(&self.retired));
+    }
+}
+
+/// The game's end of a host's hand-off: swaps the systems the host runs.
+pub struct AudioSwap {
+    handoff: Arc<HandOff>,
+    channels: usize,
+    max_frames: usize,
+    sample_rate: f64,
+}
+
+impl AudioSwap {
+    /// Builds the audio systems of the module encoded in `module`, linked
+    /// against `natives`, here, and hands them to the host, which installs
+    /// them before its next block; a module without audio systems silences
+    /// it. Drops the program the host gave back from the last swap, and one
+    /// published but not installed yet.
+    ///
+    /// # Errors
+    ///
+    /// As [`AudioProgram::new`]: the host keeps what it runs.
+    pub fn swap(&self, module: &[u8], natives: &Natives) -> Result<(), String> {
+        drop(HandOff::take(&self.handoff.retired));
+        let program = AudioProgram::new(
+            module,
+            natives,
+            self.channels,
+            self.max_frames,
+            self.sample_rate,
+        )?;
+        let stale = self
+            .handoff
+            .next
+            .swap(Box::into_raw(Box::new(program)), Ordering::AcqRel);
+        if !stale.is_null() {
+            // SAFETY: as in `HandOff::take`: the swap took it out.
+            drop(unsafe { Box::from_raw(stale) });
+        }
+        Ok(())
+    }
+
+    /// Drops the program the host gave back, if it gave one back.
+    pub fn collect(&self) {
+        drop(HandOff::take(&self.handoff.retired));
+    }
+}
+
+impl std::fmt::Debug for AudioSwap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioSwap")
+            .field("channels", &self.channels)
+            .field("max_frames", &self.max_frames)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Runs a game's audio systems on the audio thread.
+pub struct AudioHost {
+    program: Box<AudioProgram>,
+    handoff: Arc<HandOff>,
+    commands: RealtimeReceiver<AudioMessage>,
+    status: Arc<AudioStatus>,
+}
+
+// SAFETY: a host is built from the module's bytes (`AudioHost::new`), so the
+// `Rc`s it holds are its program's, which reach only one another; moving the
+// whole host to another thread moves every handle to them at once. A program
+// the hand-off installs or retires is itself `Send` and shares no `Rc` with
+// the host. It is used from one thread at a time (`render` takes `&mut
+// self`).
+unsafe impl Send for AudioHost {}
+
+impl AudioHost {
+    /// A host running the audio systems of the module encoded in `module`,
+    /// linked against `natives`, filling blocks of `channels` channels of up
+    /// to `max_frames` frames at `sample_rate`; `None` when the module has
+    /// no system with an audio-thread hook.
+    ///
+    /// # Errors
+    ///
+    /// When the module does not decode or link, or an audio system's
+    /// instance cannot be created.
+    pub fn new(
+        module: &[u8],
+        natives: &Natives,
+        channels: usize,
+        max_frames: usize,
+        sample_rate: f64,
+    ) -> Result<Option<(AudioHost, AudioLink)>, String> {
+        let program = AudioProgram::new(module, natives, channels, max_frames, sample_rate)?;
+        if program.systems.is_empty() {
+            return Ok(None);
+        }
+        let (commands, inbox) = realtime_queue(COMMAND_CAPACITY);
+        let (outbox, events) = realtime_queue(EVENT_CAPACITY);
+        program.block.set_events(Some(outbox));
+        let status = Arc::new(AudioStatus::default());
+        let host = AudioHost {
+            program: Box::new(program),
+            handoff: Arc::default(),
+            commands: inbox,
             status: Arc::clone(&status),
         };
         let link = AudioLink {
@@ -196,7 +356,42 @@ impl AudioHost {
 
     /// The channels of a block.
     pub fn channels(&self) -> usize {
-        self.block.channels()
+        self.program.block.channels()
+    }
+
+    /// The game's end of the hand-off swapping the systems this host runs,
+    /// taken before the host moves to the audio thread.
+    pub fn swapper(&self) -> AudioSwap {
+        let block = &self.program.block;
+        AudioSwap {
+            handoff: Arc::clone(&self.handoff),
+            channels: block.channels(),
+            max_frames: block.capacity(),
+            sample_rate: block.sample_rate(),
+        }
+    }
+
+    /// Installs the program a swap published, unless the one it replaced
+    /// last has not been taken back yet: pointers exchanged, nothing
+    /// allocated or freed.
+    fn install(&mut self) {
+        if !self.handoff.retired.load(Ordering::Acquire).is_null() {
+            return;
+        }
+        let next = self.handoff.next.swap(ptr::null_mut(), Ordering::Acquire);
+        if next.is_null() {
+            return;
+        }
+        // SAFETY: the pointer came from `Box::into_raw` in `AudioSwap::swap`
+        // and the swap above took it out, so this is its one owner.
+        let next = unsafe { Box::from_raw(next) };
+        // The event queue moves to the new block: the link stays valid.
+        next.block.set_events(self.program.block.take_events());
+        let old = std::mem::replace(&mut self.program, next);
+        // Only this thread fills `retired`, and it was empty.
+        self.handoff
+            .retired
+            .store(Box::into_raw(old), Ordering::Release);
     }
 
     /// Renders one block into `output`, channel-major: each channel's frames
@@ -207,27 +402,30 @@ impl AudioHost {
     ///
     /// When `output` holds more frames than the host was made for.
     pub fn render(&mut self, output: &mut [f32]) {
-        let frames = output.len() / self.block.channels().max(1);
-        self.block.set_frames(frames);
-        self.block.clear_output();
+        self.install();
+        let program = &mut *self.program;
+        let block = &program.block;
+        let frames = output.len() / block.channels().max(1);
+        block.set_frames(frames);
+        block.clear_output();
         while let Some(message) = self.commands.pop() {
-            let command = self.slot.decode(&message);
-            for system in &mut self.systems {
+            let command = program.slot.decode(&message);
+            for system in &mut program.systems {
                 if let (Some(chunk), false) = (system.command, system.silenced) {
                     let args = [command.clone()];
-                    let result = self.vm.call(&mut system.instance, chunk, &args);
+                    let result = program.vm.call(&mut system.instance, chunk, &args);
                     settle(system, result, &self.status);
                 }
             }
         }
-        for system in &mut self.systems {
+        for system in &mut program.systems {
             if let (Some(chunk), false) = (system.process, system.silenced) {
-                let args = [self.arg.clone()];
-                let result = self.vm.call(&mut system.instance, chunk, &args);
+                let args = [program.arg.clone()];
+                let result = program.vm.call(&mut system.instance, chunk, &args);
                 settle(system, result, &self.status);
             }
         }
-        for (out, sample) in output.iter_mut().zip(self.block.output_samples()) {
+        for (out, sample) in output.iter_mut().zip(program.block.output_samples()) {
             *out = sample;
         }
         self.status.blocks.fetch_add(1, Ordering::Relaxed);
@@ -268,8 +466,8 @@ fn settle<T>(system: &mut AudioSystem, result: Result<T, Fault>, status: &AudioS
 impl std::fmt::Debug for AudioHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioHost")
-            .field("systems", &self.systems.len())
-            .field("channels", &self.block.channels())
+            .field("systems", &self.program.systems.len())
+            .field("channels", &self.program.block.channels())
             .finish()
     }
 }

@@ -9,7 +9,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use crate::component::NodeStore;
 use crate::input::Key;
@@ -42,9 +42,6 @@ pub type SharedClient = Rc<RefCell<dyn FrameClient>>;
 #[derive(Default)]
 pub(crate) struct FrameClients {
     clients: Vec<(NodeId, SharedClient)>,
-    /// Clients registered since [`NodeStore::take_started_clients`], not
-    /// kept alive by it.
-    started: Vec<Weak<RefCell<dyn FrameClient>>>,
     /// Whether the clients hold input: cleared when the UI takes the keys.
     holding: bool,
 }
@@ -52,7 +49,6 @@ pub(crate) struct FrameClients {
 impl FrameClients {
     pub(crate) fn clear(&mut self) {
         self.clients.clear();
-        self.started.clear();
         self.holding = false;
     }
 }
@@ -63,10 +59,7 @@ impl NodeStore {
     pub fn add_frame_client(&mut self, owner: NodeId, client: SharedClient) {
         let clients = &mut self.frame_clients_mut().clients;
         clients.retain(|(node, _)| *node != owner);
-        clients.push((owner, Rc::clone(&client)));
-        self.frame_clients_mut()
-            .started
-            .push(Rc::downgrade(&client));
+        clients.push((owner, client));
     }
 
     /// The client `owner` owns.
@@ -100,13 +93,6 @@ impl NodeStore {
         self.frame_clients_mut()
             .clients
             .retain(|(node, _)| *node != owner);
-    }
-
-    /// The clients registered since the last call, for the host to attach
-    /// what it provides (an audio device).
-    pub fn take_started_clients(&mut self, into: &mut Vec<SharedClient>) {
-        let started = &mut self.frame_clients_mut().started;
-        into.extend(started.drain(..).filter_map(|client| client.upgrade()));
     }
 
     /// Advances every client by `dt`, first dropping those whose owner is
@@ -206,9 +192,6 @@ mod tests {
         let owner = BuildCx::new(&mut store).leaf(LeafStyle::default()).id();
         let clock = Rc::new(RefCell::new(Clock::default()));
         store.add_frame_client(owner, clock.clone());
-        let mut started = Vec::new();
-        store.take_started_clients(&mut started);
-        assert_eq!(started.len(), 1);
         assert!(store.frame_clients_want_frame());
 
         store.run_frame_clients(0.5);

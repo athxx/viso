@@ -234,3 +234,65 @@ fn the_message_types_are_the_packages_derived_enums() {
         "send_audio is not for the audio thread: {found:?}"
     );
 }
+
+#[test]
+fn a_swap_installs_new_systems_at_the_next_block_with_the_link_kept() {
+    let band = module(BAND);
+    let (host, link) = AudioHost::new(&band.encode(), &Natives::standard(), 2, 16, 48_000.0)
+        .expect("builds")
+        .expect("has audio systems");
+    let swap = host.swapper();
+    let mut vm = Vm::new(Rc::clone(&band), Budget::default());
+    vm.link(&Natives::standard(), &[]).expect("links");
+    let mut game = Scheduler::new(vm).expect("starts");
+    game.attach_audio(link);
+    game.frame(1.0 / 60.0);
+
+    // The audio thread renders on while the game swaps the synth for one
+    // twice as loud: every block is one or the other, none silent.
+    let (rendered, done) = std::sync::mpsc::channel::<Vec<f32>>();
+    let (go, wait) = std::sync::mpsc::channel::<bool>();
+    let audio = std::thread::spawn(move || {
+        let mut host = host;
+        while wait.recv().expect("asked") {
+            let mut block = vec![0.0f32; 2 * 8];
+            host.render(&mut block);
+            rendered.send(block).expect("sent");
+        }
+        host
+    });
+    go.send(true).unwrap();
+    assert!(done.recv().unwrap().iter().all(|&s| s == 0.25));
+
+    // Twice as loud, and already playing: the first block after the swap
+    // is the new sound, with no silent block between.
+    let louder = BAND
+        .replace(
+            "block.write(c, f, level);",
+            "block.write(c, f, level * 2.0f32);",
+        )
+        .replace("level: F32 = 0.0f32;", "level: F32 = 0.25f32;")
+        .replace("@local state every = 0;", "@local state every = 4;");
+    swap.swap(&module(&louder).encode(), &Natives::standard())
+        .expect("builds");
+    go.send(true).unwrap();
+    let block = done.recv().unwrap();
+    assert!(
+        block.iter().all(|&s| s == 0.5),
+        "the new code renders: {block:?}"
+    );
+
+    // The program it replaced comes back to be dropped here.
+    swap.collect();
+    go.send(false).unwrap();
+    let host = audio.join().expect("rendered");
+    assert_eq!(host.channels(), 2);
+    let link = game.audio().expect("attached");
+    assert_eq!(link.status().blocks(), 2);
+    assert_eq!(link.status().faults(), 0);
+    game.frame(1.0 / 60.0);
+    assert!(
+        matches!(state(&game, "Conductor", "heard"), Value::Int(n) if n > 0),
+        "the new systems' events come back through the same link"
+    );
+}

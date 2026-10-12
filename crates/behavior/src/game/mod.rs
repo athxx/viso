@@ -91,8 +91,8 @@ pub use crate::module::CollisionDelivery;
 pub use audio::{
     AUDIO_COMMAND, AUDIO_COMMAND_DERIVE, AUDIO_EVENT, AUDIO_EVENT_DERIVE, AUDIO_PROCESS,
     AudioBlock, AudioCommandValue, AudioEventValue, AudioFault, AudioHost, AudioLink, AudioMessage,
-    AudioStatus, COMMAND_CAPACITY, EVENT_CAPACITY, MESSAGE_TOKENS, MessageSlot, RealtimeReceiver,
-    RealtimeSender, realtime_queue,
+    AudioProgram, AudioStatus, AudioSwap, COMMAND_CAPACITY, EVENT_CAPACITY, MESSAGE_TOKENS,
+    MessageSlot, RealtimeReceiver, RealtimeSender, realtime_queue,
 };
 pub use clock::{Clock, TickOverrun};
 pub use history::{DEFAULT_HISTORY_SECONDS, ReplayError, Replayed};

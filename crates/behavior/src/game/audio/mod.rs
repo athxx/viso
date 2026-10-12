@@ -12,9 +12,12 @@ mod host;
 mod message;
 mod queue;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
-pub use host::{AudioFault, AudioHost, AudioLink, AudioStatus, COMMAND_CAPACITY, EVENT_CAPACITY};
+pub use host::{
+    AudioFault, AudioHost, AudioLink, AudioProgram, AudioStatus, AudioSwap, COMMAND_CAPACITY,
+    EVENT_CAPACITY,
+};
 pub use message::{AudioMessage, MESSAGE_TOKENS, MessageSlot};
 pub use queue::{RealtimeReceiver, RealtimeSender, realtime_queue};
 
@@ -85,7 +88,7 @@ pub struct AudioBlock {
     sample_rate: f64,
     input: Box<[Cell<f32>]>,
     output: Box<[Cell<f32>]>,
-    events: Option<RealtimeSender<i64>>,
+    events: RefCell<Option<RealtimeSender<i64>>>,
 }
 
 impl NativeObject for AudioBlock {
@@ -104,19 +107,40 @@ impl AudioBlock {
             sample_rate,
             input: silence(),
             output: silence(),
-            events: None,
+            events: RefCell::new(None),
         }
     }
 
     /// Sends the events `block.send` queues through `events`.
-    pub fn with_events(mut self, events: RealtimeSender<i64>) -> AudioBlock {
-        self.events = Some(events);
+    pub fn with_events(self, events: RealtimeSender<i64>) -> AudioBlock {
+        self.events.replace(Some(events));
         self
+    }
+
+    /// Takes the queue its events leave through, as a swapped-in program's
+    /// block takes it over.
+    pub(super) fn take_events(&self) -> Option<RealtimeSender<i64>> {
+        self.events.take()
+    }
+
+    /// Sends its events through `events` from now on.
+    pub(super) fn set_events(&self, events: Option<RealtimeSender<i64>>) {
+        self.events.replace(events);
     }
 
     /// The channels.
     pub fn channels(&self) -> usize {
         self.channels
+    }
+
+    /// The frames a block holds at most.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// The frames a second.
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate
     }
 
     /// The frames of this block.
@@ -219,7 +243,7 @@ pub(super) static AUDIO_BLOCK_METHODS: [NativeFunction; 6] = [
     // Sends an event to the `AudioListener`s; false when the queue is full
     // or the block has none.
     crate::native!(action "send" |_cx, this: Obj<AudioBlock>, event: AudioEventValue| -> bool {
-        Ok(this.events.as_ref().is_some_and(|events| events.push(event.0)))
+        Ok(this.events.borrow().as_ref().is_some_and(|events| events.push(event.0)))
     })
     .realtime_safe(),
 ];

@@ -141,3 +141,115 @@ mod facade_loop {
         );
     }
 }
+
+mod audio {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use viso::ui::{
+        BindingTable, BuildCx, NodeStore, SemanticProjector, StateStore, TextEdits, VirtualLists,
+    };
+    use viso_behavior::Module;
+    use viso_behavior::game::AudioHost;
+    use viso_behavior::native::Natives;
+    use viso_dsl::frontend::{Origin, compile_file_for};
+    use viso_dsl::hir::TargetProfile;
+    use viso_view::{GameAudioDevice, GameSession, StartedAudio, game_session, install_game_audio};
+
+    thread_local! {
+        static STARTS: Cell<u32> = const { Cell::new(0) };
+        static RELOADS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// A device that renders nothing, counting the swaps it is handed.
+    struct Quiet(AudioHost);
+
+    impl GameAudioDevice for Quiet {
+        fn reload(&mut self, module: &Module, natives: &Natives) -> Result<(), String> {
+            RELOADS.with(|n| n.set(n.get() + 1));
+            self.0.swapper().swap(&module.encode(), natives)
+        }
+
+        fn collect(&mut self) {}
+    }
+
+    fn start(module: &Module, natives: &Natives) -> Result<Option<StartedAudio>, String> {
+        STARTS.with(|n| n.set(n.get() + 1));
+        let built = AudioHost::new(&module.encode(), natives, 2, 64, 48_000.0)?;
+        Ok(built.map(|(host, link)| (Box::new(Quiet(host)) as Box<dyn GameAudioDevice>, link)))
+    }
+
+    const SYNTH: &str = "
+system Synth implements AudioProcess {
+    action audio_process(block: AudioBlock) {}
+}
+";
+
+    /// The game fixture's module, with an audio system when `synth`.
+    fn module(synth: bool) -> Rc<Module> {
+        let source = include_str!("fixtures/game.vs").replacen(
+            "import viso::math::Vec3F32;",
+            "import viso::math::Vec3F32;\nimport viso::game::{AudioProcess, AudioBlock};",
+            1,
+        );
+        let source = if synth { source + SYNTH } else { source };
+        let compiled = compile_file_for(
+            &source,
+            &Origin {
+                package: "app".into(),
+                module: vec!["game".into()],
+                language: None,
+            },
+            Natives::standard(),
+            TargetProfile::default(),
+        );
+        assert!(!compiled.has_errors(), "{:#?}", compiled.diagnostics);
+        Rc::new(compiled.behavior.bytecode().expect("bytecode"))
+    }
+
+    #[test]
+    fn a_game_starts_its_audio_when_a_reload_adds_it_and_swaps_it_after() {
+        install_game_audio(Some(start));
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let mut lists = VirtualLists::new();
+        let mut text_edits = TextEdits::new();
+        let mut projectors = SemanticProjector::new();
+        let root = {
+            let mut cx = BuildCx::with_reactive(
+                &mut store,
+                &mut states,
+                &mut bindings,
+                &mut lists,
+                &mut text_edits,
+                &mut projectors,
+            );
+            viso::view!("fixtures/game.vs")(&mut cx).id()
+        };
+        let session = game_session(&store, root).expect("a game");
+        assert_eq!(STARTS.with(Cell::get), 1, "asked once");
+        assert!(!session.borrow().has_audio(), "no audio system, no device");
+
+        let swap = |session: &Rc<std::cell::RefCell<GameSession>>, synth| {
+            let module = module(synth);
+            let vm = GameSession::stage(&module).expect("links");
+            session
+                .borrow_mut()
+                .reload(module, vm, None)
+                .expect("swaps");
+        };
+        swap(&session, true);
+        assert_eq!(STARTS.with(Cell::get), 2, "the reload added a synth");
+        assert!(session.borrow().has_audio());
+        assert!(
+            session.borrow_mut().scheduler_mut().audio().is_some(),
+            "linked"
+        );
+
+        swap(&session, true);
+        assert_eq!(RELOADS.with(Cell::get), 1, "swapped on the running device");
+        assert_eq!(STARTS.with(Cell::get), 2);
+        install_game_audio(None);
+    }
+}

@@ -183,3 +183,36 @@ fn a_warm_block_allocates_nothing() {
     assert!(block.iter().any(|&s| s != 0.0), "it rendered");
     assert_eq!(link.status().blocks(), 1_003);
 }
+
+#[test]
+fn a_swapped_in_program_renders_its_first_block_without_allocating() {
+    let (host, link) = AudioHost::new(&module().encode(), &Natives::standard(), 2, 256, 48_000.0)
+        .expect("builds")
+        .expect("has audio systems");
+    let swap = host.swapper();
+    let audio = std::thread::spawn(move || {
+        let mut host = host;
+        let mut block = vec![0.0f32; 2 * 256];
+        // The first host warms up with its first blocks.
+        for _ in 0..3 {
+            host.render(&mut block);
+        }
+        host
+    });
+    let mut host = audio.join().expect("rendered");
+    // Built and warmed on this thread, installed by the next block.
+    swap.swap(&module().encode(), &Natives::standard())
+        .expect("builds");
+    let mut block = vec![0.0f32; 2 * 256];
+    let made = allocations(|| {
+        for _ in 0..100 {
+            host.render(&mut block);
+        }
+    });
+    assert_eq!(
+        made, 0,
+        "the install and the new program's blocks allocate nothing"
+    );
+    assert_eq!(link.status().blocks(), 103);
+    swap.collect();
+}
