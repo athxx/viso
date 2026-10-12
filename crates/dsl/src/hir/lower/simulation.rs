@@ -68,6 +68,9 @@ pub struct TargetProfile {
     pub messages: Option<std::rc::Rc<crate::i18n::Messages>>,
     /// The package's assets (`assets/`): what `asset("…")` checks against.
     pub assets: Option<std::rc::Rc<crate::assets::AssetCatalog>>,
+    /// The languages a package packs the shaders its views paint with in:
+    /// the target backend's, and `None` for the reference interpreter.
+    pub shader_langs: Vec<viso_shader::program::ShaderLang>,
 }
 
 impl Default for TargetProfile {
@@ -83,6 +86,7 @@ impl Default for TargetProfile {
             i18n_strict: false,
             messages: None,
             assets: None,
+            shader_langs: vec![viso_shader::program::ShaderLang::None],
         }
     }
 }

@@ -77,6 +77,33 @@ pub type Backend = WebGpuBackend;
 )))]
 pub type Backend = HeadlessRaster;
 
+/// The one of its expressions for this target's [`Backend`], the others
+/// compiled out: how code built ahead of time for every backend embeds only
+/// what this target's reads. `none` is the software raster's.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __per_backend {
+    (msl: $msl:expr, hlsl: $hlsl:expr, spirv: $spirv:expr, wgsl: $wgsl:expr, none: $none:expr $(,)?) => {{
+        #[cfg(target_vendor = "apple")]
+        let chosen = $msl;
+        #[cfg(target_os = "windows")]
+        let chosen = $hlsl;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let chosen = $spirv;
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let chosen = $wgsl;
+        #[cfg(not(any(
+            target_vendor = "apple",
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "android",
+            all(target_arch = "wasm32", target_os = "unknown")
+        )))]
+        let chosen = $none;
+        chosen
+    }};
+}
+
 /// Create the GPU device/backend for this target (ADR 0029 cfg static select).
 ///
 /// The facade calls this once at launch and stores the returned [`Backend`] by

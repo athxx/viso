@@ -47,7 +47,9 @@ pub use capability::CapabilitySet;
 pub use component::MemberEnv;
 pub use effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 pub use infer::{FieldInfo, InferCx, TypeEnv, TypeSchemas, VariantInfo, VariantPayload};
-pub use lower::{CheckedShader, InputDevices, LoweredPackage, Migrator, TargetProfile, lower};
+pub use lower::{
+    CheckedShader, InputDevices, LoweredPackage, Migrator, ShaderPaint, TargetProfile, lower,
+};
 pub(crate) use lower::{persists, write_backs};
 pub use nodes::{
     CallableKind, ComponentSchema, ConstValue, HirCallable, HirComponent, HirComputed, HirEvent,

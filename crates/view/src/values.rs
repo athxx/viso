@@ -21,9 +21,11 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use viso_behavior::Value;
 use viso_ui::resource::{ResourceId, ResourceRevision};
+use viso_ui::shader::BrushProgram;
 use viso_ui::{
     AssetFit, BuildCx, Easing, LookValue, NodeId, NodeStore, Rgba, SemanticState, Srgb, StateId,
     StructureCx, TextRequest, Timing,
@@ -32,6 +34,7 @@ use viso_ui::{
 use crate::control::{Control, ControlInput, ControlKind, When};
 use crate::host::ViewHost;
 use crate::scope::Scope;
+use crate::shaders::encode_params;
 
 /// The font size of the text a view shows, in logical pixels.
 const FONT_SIZE: f32 = 14.0;
@@ -185,6 +188,9 @@ pub(crate) struct Shown {
     /// reload mounted it again: the next delivery skips the values equal to
     /// it and delivers the others as a first delivery.
     seeded: bool,
+    /// The program a shader view paints with, as last delivered: a reload
+    /// that changes it repaints the node even when its parameters hold.
+    program: Option<Arc<BrushProgram>>,
 }
 
 impl Shown {
@@ -207,6 +213,7 @@ impl Shown {
             deps: Box::default(),
             shows: None,
             seeded: false,
+            program: None,
         };
         shown.rescope(scope, host);
         shown
@@ -266,9 +273,17 @@ impl Shown {
                 }
             }
         }
+        let program = match control.kind {
+            ControlKind::Shader => control.shader.and_then(|at| host.shader(at)).cloned(),
+            _ => None,
+        };
+        let repaint = match (&program, &self.program) {
+            (Some(next), Some(prior)) => !Arc::ptr_eq(next, prior),
+            (next, prior) => next.is_some() != prior.is_some(),
+        };
         let prior = self.shows.as_ref();
         let first = prior.is_none() || std::mem::take(&mut self.seeded);
-        if prior == Some(&shows) {
+        if prior == Some(&shows) && !repaint {
             return;
         }
         // A look value shows when an entry or an arm gives it; with arms and no
@@ -324,12 +339,21 @@ impl Shown {
             soft_wrap: false,
             locale: None,
         };
-        if prior.is_some() && (0..LOOK).all(|at| !changed(at)) {
+        if prior.is_some() && (0..LOOK).all(|at| !changed(at)) && !repaint {
             self.shows = Some(shows);
             return;
         }
         match control.kind {
             ControlKind::Plain => {}
+            // A shader the view's table lacks, or a value that is not its
+            // parameters, leaves the node as it is.
+            ControlKind::Shader => {
+                if let Some(program) = &program
+                    && let Some(params) = encode_params(&program.layout, value)
+                {
+                    store.set_shader(self.node, program, params);
+                }
+            }
             // An unbound source shows nothing.
             ControlKind::Asset => {
                 if let Some(resource) = resource(value) {
@@ -370,6 +394,7 @@ impl Shown {
             ControlKind::Select => select(store, self.node, value.as_int().unwrap_or(0)),
         }
         self.shows = Some(shows);
+        self.program = program;
     }
 }
 

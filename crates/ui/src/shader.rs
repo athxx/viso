@@ -10,51 +10,75 @@
 //! installs the slots that changed into the window's renderer and releases the
 //! ones emptied.
 //!
-//! Slots are kept while the store lives; [`sweep`](ShaderSlots::sweep) empties
-//! the ones no live node paints with, which a structural change may leave.
+//! A slot counts the nodes painting with it: a node taking other content, or
+//! freed, lets go of its slot, and the last one to let go empties it, so a
+//! program no node paints with leaves the renderer without a walk of the tree.
 
 use std::sync::Arc;
 
-use viso_render::{BrushProgram, ProgramSlot};
+pub use viso_render::{
+    __per_backend, BrushLayout, BrushProgram, PackedBrush, ParamKind, ParamValue, ProgramSlot,
+    ShaderLang,
+};
 
 /// The programs of one node store, by slot.
 #[derive(Debug, Default)]
 pub struct ShaderSlots {
     slots: Vec<Option<Arc<BrushProgram>>>,
+    /// How many nodes paint with each slot.
+    users: Vec<u32>,
     revision: u64,
 }
 
 impl ShaderSlots {
-    /// The slot holding `program`, putting it in the first empty slot when no
-    /// slot does.
-    pub fn slot(&mut self, program: &Arc<BrushProgram>) -> ProgramSlot {
-        if let Some(i) = self
+    /// The slot holding `program`, counting one more node painting with it;
+    /// the program takes the first empty slot when no slot holds it.
+    pub(crate) fn take(&mut self, program: &Arc<BrushProgram>) -> ProgramSlot {
+        let at = match self
             .slots
             .iter()
             .position(|s| s.as_ref().is_some_and(|p| Arc::ptr_eq(p, program)))
         {
-            return ProgramSlot(i as u32);
-        }
-        let i = match self.slots.iter().position(Option::is_none) {
-            Some(i) => i,
+            Some(at) => at,
             None => {
-                self.slots.push(None);
-                self.slots.len() - 1
+                let at = match self.slots.iter().position(Option::is_none) {
+                    Some(at) => at,
+                    None => {
+                        self.slots.push(None);
+                        self.users.push(0);
+                        self.slots.len() - 1
+                    }
+                };
+                self.slots[at] = Some(Arc::clone(program));
+                self.revision += 1;
+                at
             }
         };
-        self.slots[i] = Some(Arc::clone(program));
-        self.revision += 1;
-        ProgramSlot(i as u32)
+        self.users[at] += 1;
+        ProgramSlot(at as u32)
+    }
+
+    /// Counts one node fewer painting with `slot`, emptying it with the last.
+    pub(crate) fn leave(&mut self, slot: ProgramSlot) {
+        let at = slot.0 as usize;
+        let Some(users) = self.users.get_mut(at) else {
+            return;
+        };
+        *users = users.saturating_sub(1);
+        if *users == 0 && self.slots[at].take().is_some() {
+            self.revision += 1;
+        }
     }
 
     /// Puts `program` in `slot` in place of what it held, so every node
-    /// painting with the slot paints with `program`: a reloaded shader.
+    /// painting with the slot paints with `program`: a reloaded shader. A
+    /// slot no node paints with stays empty.
     pub fn replace(&mut self, slot: ProgramSlot, program: Arc<BrushProgram>) {
-        let i = slot.0 as usize;
-        if self.slots.len() <= i {
-            self.slots.resize(i + 1, None);
+        let at = slot.0 as usize;
+        if self.users.get(at).is_none_or(|&users| users == 0) {
+            return;
         }
-        self.slots[i] = Some(program);
+        self.slots[at] = Some(program);
         self.revision += 1;
     }
 
@@ -86,33 +110,19 @@ impl ShaderSlots {
         self.revision
     }
 
-    /// Empties every slot `used` does not report in use.
-    pub fn sweep(&mut self, used: impl Fn(ProgramSlot) -> bool) {
-        let mut emptied = false;
-        for (i, slot) in self.slots.iter_mut().enumerate() {
-            if slot.is_some() && !used(ProgramSlot(i as u32)) {
-                *slot = None;
-                emptied = true;
-            }
-        }
-        if emptied {
-            self.revision += 1;
-        }
-    }
-
     /// Forgets every slot.
     pub(crate) fn clear(&mut self) {
         if self.slots.iter().any(Option::is_some) {
             self.revision += 1;
         }
         self.slots.clear();
+        self.users.clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viso_render::BrushLayout;
 
     fn program(name: &str) -> Arc<BrushProgram> {
         Arc::new(BrushProgram {
@@ -130,23 +140,26 @@ mod tests {
     }
 
     #[test]
-    fn a_program_keeps_its_slot_and_a_change_moves_the_revision() {
+    fn a_program_keeps_its_slot_while_a_node_paints_with_it() {
         let mut slots = ShaderSlots::default();
         let (a, b) = (program("A"), program("B"));
-        assert_eq!(slots.slot(&a), ProgramSlot(0));
-        assert_eq!(slots.slot(&b), ProgramSlot(1));
+        assert_eq!(slots.take(&a), ProgramSlot(0));
+        assert_eq!(slots.take(&b), ProgramSlot(1));
         let r = slots.revision();
-        assert_eq!(slots.slot(&a), ProgramSlot(0), "found by identity");
+        assert_eq!(slots.take(&a), ProgramSlot(0), "found by identity");
         assert_eq!(slots.revision(), r, "nothing changed");
         // Another program of the same name is another program.
-        assert_eq!(slots.slot(&program("A")), ProgramSlot(2));
+        assert_eq!(slots.take(&program("A")), ProgramSlot(2));
 
-        slots.sweep(|s| s != ProgramSlot(0));
+        // Two nodes paint with `a`: the first to leave keeps it.
+        slots.leave(ProgramSlot(0));
+        assert!(slots.get(ProgramSlot(0)).is_some());
+        assert_eq!(slots.revision(), r + 1);
+        slots.leave(ProgramSlot(0));
         assert!(slots.get(ProgramSlot(0)).is_none());
-        assert!(slots.revision() > r);
-        assert_eq!(slots.slot(&b), ProgramSlot(1));
+        assert_eq!(slots.revision(), r + 2);
         assert_eq!(
-            slots.slot(&program("C")),
+            slots.take(&program("C")),
             ProgramSlot(0),
             "an emptied slot is reused"
         );
@@ -158,5 +171,13 @@ mod tests {
         assert!(slots.revision() > r);
         let occupied: Vec<u32> = slots.iter().map(|(s, _)| s.0).collect();
         assert_eq!(occupied, [0, 1, 2]);
+
+        // A slot no node paints with stays empty.
+        slots.leave(ProgramSlot(2));
+        let r = slots.revision();
+        slots.replace(ProgramSlot(2), program("D"));
+        slots.replace(ProgramSlot(9), program("E"));
+        assert!(slots.get(ProgramSlot(2)).is_none());
+        assert_eq!(slots.revision(), r);
     }
 }

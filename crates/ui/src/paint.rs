@@ -1173,7 +1173,7 @@ mod tests {
             "the same program, new params"
         );
 
-        // A node that stops painting with the program leaves it to a sweep.
+        // The program leaves its slot with the last node painting with it.
         let r = store.shaders().revision();
         store.set_content_payload(
             a,
@@ -1184,20 +1184,24 @@ mod tests {
                 natural: crate::layout::Vec2::ZERO,
             },
         );
-        store.sweep_shaders();
         assert_eq!(store.shaders().revision(), r, "b still paints with it");
-        store.set_content_payload(
-            b,
-            crate::content::Content::Path {
-                cmds: Vec::new(),
-                fill: None,
-                stroke: None,
-                natural: crate::layout::Vec2::ZERO,
-            },
-        );
-        store.sweep_shaders();
+        let mut effects = crate::reactive::EffectStore::default();
+        store.free_tree(b, &mut effects, &mut Vec::new());
         assert!(store.shaders().revision() > r);
         assert_eq!(store.shaders().iter().count(), 0);
+        // The slot is the next program's.
+        let next = Arc::new(BrushProgram {
+            name: "Next".into(),
+            ..(*program).clone()
+        });
+        store.set_shader(a, &next, Arc::clone(&params));
+        assert_eq!(
+            store.content_payload(a).map(|c| match c {
+                crate::content::Content::Shader { program, .. } => *program,
+                _ => ProgramSlot(99),
+            }),
+            Some(ProgramSlot(0))
+        );
     }
 
     #[test]

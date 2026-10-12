@@ -277,27 +277,41 @@ fn a_program_and_a_packed_brush_round_trip_through_the_package_codec() {
         ShaderLang::Msl,
         ShaderLang::Wgsl,
         ShaderLang::Hlsl,
+        ShaderLang::SpirV,
     ] {
-        let packed = PackedBrush::pack(program, layout.clone(), lang).unwrap();
-        assert_eq!(packed.lang(), lang);
+        let packed = PackedBrush::pack(program, layout.clone(), &[lang]).unwrap();
+        assert_eq!(packed.langs().collect::<Vec<_>>(), [lang]);
         let bytes = packed.encode_to_vec();
         assert_eq!(PackedBrush::decode_from_slice(&bytes).unwrap(), packed);
-        assert_eq!(packed.unpack().lang(), lang);
+        let code = packed.unpack();
+        assert_eq!(code.iter().map(|c| c.lang()).collect::<Vec<_>>(), [lang]);
         // Every truncation is an error, never a panic.
         for end in 0..bytes.len() {
             assert!(PackedBrush::decode_from_slice(&bytes[..end]).is_err());
         }
     }
-    assert!(matches!(
-        PackedBrush::pack(program, layout.clone(), ShaderLang::SpirV),
-        Err(e) if e.contains("spirv")
-    ));
+
+    // A release package's brush: the target's language and the program, each
+    // once.
+    let langs = [ShaderLang::Msl, ShaderLang::None, ShaderLang::Msl];
+    let packed = PackedBrush::pack(program, layout.clone(), &langs).unwrap();
+    assert_eq!(
+        packed.langs().collect::<Vec<_>>(),
+        [ShaderLang::Msl, ShaderLang::None]
+    );
+    assert_eq!(
+        PackedBrush::decode_from_slice(&packed.encode_to_vec()).unwrap(),
+        packed
+    );
+    let mut twice = packed.clone();
+    twice.code.push(twice.code[0].clone());
+    assert!(PackedBrush::decode_from_slice(&twice.encode_to_vec()).is_err());
 
     // A CPU brush whose layout is not its program's own is refused.
-    let mut packed = PackedBrush::pack(program, layout, ShaderLang::None).unwrap();
+    let mut packed = PackedBrush::pack(program, layout, &[ShaderLang::None]).unwrap();
     packed.layout.params[0].offset += 4;
     assert!(PackedBrush::decode_from_slice(&packed.encode_to_vec()).is_err());
-    let PackedCode::Program(p) = &mut packed.code else {
+    let PackedCode::Program(p) = &mut packed.code[0] else {
         unreachable!()
     };
     p.instance[0].ty = viso_shader::program::Ty::Color;

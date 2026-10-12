@@ -1,12 +1,13 @@
-//! A brush as a view package carries it: its layout and its code in the one
-//! language the target's backend reads, generated when the package is built.
+//! A brush as a view package carries it: its layout and its code in each
+//! language it was built for — the one the target's backend reads and the
+//! reference interpreter's — generated when the package is built.
 //!
 //! The GPU languages travel as their text or SPIR-V bytes; the headless
 //! target's code is the program itself, which the reference interpreter runs,
-//! so it travels as the program. Unpacking a GPU brush moves its bytes into a
-//! [`ProgramCode`] without generating anything; unpacking a CPU brush
-//! revalidates the program, so the interpreter never meets an ill-typed tree
-//! whatever wrote the bytes.
+//! so it travels as the program. Unpacking moves a GPU language's bytes into a
+//! [`ProgramCode`] without generating anything; decoding a CPU program
+//! revalidates it, so the interpreter never meets an ill-typed tree whatever
+//! wrote the bytes.
 
 use std::sync::Arc;
 
@@ -19,12 +20,12 @@ use super::{
     Loop, ParamKind, Place, Program, Record, Root, Scalar, Span, Stage, Stmt, Texel, Ty, code,
 };
 
-/// A brush built for one backend.
+/// A brush built for the backends it targets: its code once per language.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackedBrush {
     pub name: Box<str>,
     pub layout: BrushLayout,
-    pub code: PackedCode,
+    pub code: Vec<PackedCode>,
 }
 
 /// A brush's code as a package carries it.
@@ -39,7 +40,9 @@ pub enum PackedCode {
 }
 
 impl PackedBrush {
-    /// `program`, laid out as the brush `layout`, built for `lang`.
+    /// `program`, laid out as the brush `layout`, built for each of `langs`
+    /// once; [`ShaderLang::None`] carries the program for the reference
+    /// interpreter.
     ///
     /// # Errors
     ///
@@ -47,37 +50,56 @@ impl PackedBrush {
     pub fn pack(
         program: &Program,
         layout: BrushLayout,
-        lang: ShaderLang,
+        langs: &[ShaderLang],
     ) -> Result<PackedBrush, String> {
-        let code = match lang {
-            ShaderLang::None => PackedCode::Program(Box::new(program.clone())),
-            lang => match code(program, &program.interface(), lang)? {
-                ProgramCode::Msl(t) => PackedCode::Text(ShaderLang::Msl, t),
-                ProgramCode::Wgsl(t) => PackedCode::Text(ShaderLang::Wgsl, t),
-                ProgramCode::Hlsl(t) => PackedCode::Text(ShaderLang::Hlsl, t),
-                ProgramCode::SpirV(b) => PackedCode::SpirV(b),
-                ProgramCode::Cpu(_) => unreachable!("a GPU language gives GPU code"),
-            },
-        };
+        let interface = program.interface();
+        let mut packed = Vec::with_capacity(langs.len());
+        for (at, &lang) in langs.iter().enumerate() {
+            if langs[..at].contains(&lang) {
+                continue;
+            }
+            packed.push(match lang {
+                ShaderLang::None => PackedCode::Program(Box::new(program.clone())),
+                lang => match code(program, &interface, lang)? {
+                    ProgramCode::Msl(t) => PackedCode::Text(ShaderLang::Msl, t),
+                    ProgramCode::Wgsl(t) => PackedCode::Text(ShaderLang::Wgsl, t),
+                    ProgramCode::Hlsl(t) => PackedCode::Text(ShaderLang::Hlsl, t),
+                    ProgramCode::SpirV(b) => PackedCode::SpirV(b),
+                    ProgramCode::Cpu(_) => unreachable!("a GPU language gives GPU code"),
+                },
+            });
+        }
         Ok(PackedBrush {
             name: program.name.clone(),
             layout,
-            code,
+            code: packed,
         })
     }
 
-    /// The language its code is in.
+    /// The languages its code is in, in order.
+    pub fn langs(&self) -> impl Iterator<Item = ShaderLang> + '_ {
+        self.code.iter().map(PackedCode::lang)
+    }
+
+    /// Its code as a backend's program compiler takes it, once per language.
+    pub fn unpack(self) -> Vec<ProgramCode> {
+        self.code.into_iter().map(PackedCode::unpack).collect()
+    }
+}
+
+impl PackedCode {
+    /// The language it is in.
     pub fn lang(&self) -> ShaderLang {
-        match &self.code {
+        match self {
             PackedCode::Text(lang, _) => *lang,
             PackedCode::SpirV(_) => ShaderLang::SpirV,
             PackedCode::Program(_) => ShaderLang::None,
         }
     }
 
-    /// Its code as a backend's program compiler takes it.
+    /// It as a backend's program compiler takes it.
     pub fn unpack(self) -> ProgramCode {
-        match self.code {
+        match self {
             PackedCode::Text(ShaderLang::Msl, t) => ProgramCode::Msl(t),
             PackedCode::Text(ShaderLang::Wgsl, t) => ProgramCode::Wgsl(t),
             PackedCode::Text(_, t) => ProgramCode::Hlsl(t),
@@ -90,6 +112,9 @@ impl PackedBrush {
 /// How deep an expression or block may nest in a decoded program: deeper is
 /// malformed, so hostile bytes cannot overflow the decoder's stack.
 const MAX_DEPTH: u32 = 256;
+
+/// How many languages a brush can carry: each GPU language and the program.
+const LANGS: usize = 5;
 
 fn malformed(dec: &Decoder<'_>) -> DecodeError {
     DecodeError::Malformed {
@@ -644,22 +669,25 @@ impl Encode for PackedBrush {
     fn encode(&self, enc: &mut Encoder) {
         enc.write_str(&self.name);
         Encode::encode(&self.layout, enc);
-        match &self.code {
-            PackedCode::Text(lang, text) => {
-                enc.write_u8(match lang {
-                    ShaderLang::Msl => 0,
-                    ShaderLang::Wgsl => 1,
-                    _ => 2,
-                });
-                enc.write_str(text);
-            }
-            PackedCode::SpirV(bytes) => {
-                enc.write_u8(3);
-                enc.write_bytes(bytes);
-            }
-            PackedCode::Program(program) => {
-                enc.write_u8(4);
-                program.encode(enc);
+        enc.write_varint(self.code.len() as u64);
+        for code in &self.code {
+            match code {
+                PackedCode::Text(lang, text) => {
+                    enc.write_u8(match lang {
+                        ShaderLang::Msl => 0,
+                        ShaderLang::Wgsl => 1,
+                        _ => 2,
+                    });
+                    enc.write_str(text);
+                }
+                PackedCode::SpirV(bytes) => {
+                    enc.write_u8(3);
+                    enc.write_bytes(bytes);
+                }
+                PackedCode::Program(program) => {
+                    enc.write_u8(4);
+                    program.encode(enc);
+                }
             }
         }
     }
@@ -668,29 +696,37 @@ impl Encode for PackedBrush {
 impl Decode for PackedBrush {
     /// # Errors
     ///
-    /// Malformed bytes, a program the validator rejects, or a layout that is
-    /// not the program's own.
+    /// Malformed bytes, a language carried twice, a program the validator
+    /// rejects, or a layout that is not the program's own.
     fn decode(dec: &mut Decoder<'_>) -> Result<PackedBrush, DecodeError> {
         let name = name(dec)?;
         let layout = BrushLayout::decode(dec)?;
         let text = |dec: &mut Decoder<'_>| Ok::<_, DecodeError>(dec.read_str()?.to_owned());
-        let code = match dec.read_u8()? {
-            0 => PackedCode::Text(ShaderLang::Msl, text(dec)?),
-            1 => PackedCode::Text(ShaderLang::Wgsl, text(dec)?),
-            2 => PackedCode::Text(ShaderLang::Hlsl, text(dec)?),
-            3 => PackedCode::SpirV(dec.read_bytes()?.to_vec()),
-            4 => {
-                let at = dec.position();
-                let program = Program::decode(dec)?;
-                let own = program.validate().is_ok()
-                    && BrushLayout::new(&program, &program.interface()).as_ref() == Ok(&layout);
-                if !own {
-                    return Err(DecodeError::Malformed { offset: at });
+        let count = len(dec)?;
+        let mut code: Vec<PackedCode> = Vec::with_capacity(count.min(LANGS));
+        for _ in 0..count {
+            let at = dec.position();
+            let next = match dec.read_u8()? {
+                0 => PackedCode::Text(ShaderLang::Msl, text(dec)?),
+                1 => PackedCode::Text(ShaderLang::Wgsl, text(dec)?),
+                2 => PackedCode::Text(ShaderLang::Hlsl, text(dec)?),
+                3 => PackedCode::SpirV(dec.read_bytes()?.to_vec()),
+                4 => {
+                    let program = Program::decode(dec)?;
+                    let own = program.validate().is_ok()
+                        && BrushLayout::new(&program, &program.interface()).as_ref() == Ok(&layout);
+                    if !own {
+                        return Err(DecodeError::Malformed { offset: at });
+                    }
+                    PackedCode::Program(Box::new(program))
                 }
-                PackedCode::Program(Box::new(program))
+                _ => return Err(DecodeError::Malformed { offset: at }),
+            };
+            if code.iter().any(|c| c.lang() == next.lang()) {
+                return Err(DecodeError::Malformed { offset: at });
             }
-            _ => return Err(malformed(dec)),
-        };
+            code.push(next);
+        }
         Ok(PackedBrush { name, layout, code })
     }
 }

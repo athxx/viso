@@ -40,7 +40,7 @@ pub use viso_view::dev::wire::source_hash;
 
 use std::rc::Rc;
 
-use crate::aot::{emit_view_package, static_shape};
+use crate::aot::{ShaderLang, emit_view_package, package_shaders, static_shape};
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
 use crate::resolve::SymbolId;
@@ -186,13 +186,21 @@ pub fn hot_reload_view(
 /// [`plan_view`], committed in process: the plan lowered to the typed patch a
 /// running app receives, then the runtime's commit. A session that mounts one
 /// file several times compiles the edit once and commits it to each mount in
-/// turn, threading the returned candidate through.
+/// turn, threading the returned candidate through. The shaders the view paints
+/// with are packed for the reference interpreter, which a headless runtime
+/// draws them with.
+///
+/// # Panics
+///
+/// If a shader that checked as a brush does not build for it.
 pub fn transact(
     rt: &mut LiveRuntime<'_>,
     last_good: &CandidatePlan,
     candidate: CandidatePlan,
 ) -> HotReload {
-    let package = emit_view_package(&candidate);
+    let mut package = emit_view_package(&candidate);
+    package.shaders = package_shaders(&candidate, &[ShaderLang::None])
+        .unwrap_or_else(|error| panic!("a checked brush does not build: {error}"));
     let plan = reload_plan(last_good, &candidate, &package);
     // A view without regions mounted outside the commit names its static
     // nodes by walking the last-good shape over the live tree.

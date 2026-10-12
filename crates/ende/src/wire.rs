@@ -15,6 +15,18 @@
 use crate::decode::{Decode, DecodeError, Decoder};
 use crate::encode::{Encode, Encoder};
 
+/// The stable 64-bit FNV-1a hash of `bytes`, the same whatever the toolchain
+/// or target: what tells two payloads apart across processes and builds.
+pub const fn content_hash(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash = (hash ^ bytes[i] as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        i += 1;
+    }
+    hash
+}
+
 /// The wire format version this build reads and writes.
 ///
 /// Bumped when the byte layout of the format changes incompatibly. A stream may

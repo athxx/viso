@@ -29,21 +29,25 @@
 //! compiler absent.
 
 use viso_ende::Encode;
+use viso_shader::program::PackedBrush;
 use viso_ui::AssetBytes;
 use viso_ui::aot::{
     AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotScope, AotStyle,
 };
 use viso_ui::state::StateKey;
 use viso_ui::{LengthTerms, NodeLengths, StateValue};
-use viso_view::{ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewState};
+// The languages a package's shaders are built for.
+pub use viso_shader::program::ShaderLang;
+use viso_view::{ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewShader, ViewState};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
 use crate::hir::TargetProfile;
-use crate::hotreload::plan::{CandidatePlan, plan, plan_view, plan_view_for};
+use crate::hotreload::plan::{CandidatePlan, plan, plan_view_for};
 use crate::ir::ui_ir::{
     AxisIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
 };
+use crate::view_behavior::ViewBrush;
 use crate::view_regions::StaticNodes;
 
 /// Compile a fragment source straight into an encoded release package blob, or the
@@ -64,15 +68,16 @@ pub fn build_package(source: &str) -> Result<Vec<u8>, Vec<Diagnostic>> {
 /// its tree, its state cells and, when a node declares a handler, its behavior
 /// module and handler table — or the fatal diagnostics.
 pub fn build_view_package(source: &str, origin: &Origin) -> Result<Vec<u8>, Vec<Diagnostic>> {
-    let plan = plan_view(source, origin)?;
-    Ok(emit_view_package(&plan).encode_to_vec())
+    build_view_package_for(source, origin, TargetProfile::default())
 }
 
 /// [`build_view_package`] checked against `profile`, the grants of the
 /// package it belongs to among them.
 ///
 /// The package carries the bytes of every asset the view names, read from the
-/// profile's asset directory; one that cannot be read is an `E3713`.
+/// profile's asset directory; one that cannot be read is an `E3713`. Each
+/// shader the view paints with is packed in each of the profile's shader
+/// languages.
 pub fn build_view_package_for(
     source: &str,
     origin: &Origin,
@@ -82,8 +87,16 @@ pub fn build_view_package_for(
         .assets
         .as_ref()
         .map(|catalog| catalog.dir().to_owned());
+    let langs = profile.shader_langs.clone();
     let plan = plan_view_for(source, origin, profile)?;
     let mut package = emit_view_package(&plan);
+    package.shaders = package_shaders(&plan, &langs).map_err(|error| {
+        vec![Diagnostic::error(
+            "E3711",
+            crate::syntax::TextRange::empty(0.into()),
+            format!("internal: a shader the view paints with does not build: {error}"),
+        )]
+    })?;
     if let Some(dir) = dir {
         package.assets = package_assets(&plan, &dir).map_err(|(path, error)| {
             vec![Diagnostic::error(
@@ -123,9 +136,38 @@ pub fn package_assets(
     Ok(assets)
 }
 
+/// The shader table of `plan`'s view, each shader packed in each of `langs`.
+///
+/// # Errors
+///
+/// Why a shader's code does not build in one of them.
+pub fn package_shaders(
+    plan: &CandidatePlan,
+    langs: &[ShaderLang],
+) -> Result<Vec<ViewShader>, String> {
+    let Some(view) = &plan.view else {
+        return Ok(Vec::new());
+    };
+    view.shaders
+        .iter()
+        .map(|brush| ViewShader::new(pack_brush(brush, langs)?).map_err(|error| error.to_string()))
+        .collect()
+}
+
+/// `brush` packed in each of `langs`, encoded as a package carries it.
+///
+/// # Errors
+///
+/// Why its code does not build in one of them.
+pub fn pack_brush(brush: &ViewBrush, langs: &[ShaderLang]) -> Result<Vec<u8>, String> {
+    let packed = PackedBrush::pack(&brush.program, brush.layout.clone(), langs)?;
+    Ok(packed.encode_to_vec())
+}
+
 /// Lower a validated [`CandidatePlan`] into a [`ViewPackage`]: [`emit_package`]'s
 /// tree, a cell per state, and the view's behavior and regions. The assets'
-/// bytes are not read here: see [`package_assets`].
+/// bytes are not read here, nor the shaders' code built: see
+/// [`package_assets`] and [`package_shaders`].
 ///
 /// A state with a constant scalar initializer holds its value; any other state
 /// of the component holds a revision (see [`ViewState::tracked`]). A handler
@@ -197,6 +239,7 @@ pub fn emit_view_package(plan: &CandidatePlan) -> ViewPackage {
         regions: view.regions.clone(),
         env,
         assets: Vec::new(),
+        shaders: Vec::new(),
     }
 }
 

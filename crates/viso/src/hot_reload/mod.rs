@@ -983,6 +983,10 @@ mod tests {
     use super::link::fake::{self, Host};
     use super::*;
 
+    /// The language this target's backend reads shaders in.
+    const LANG: viso_view::dev::wire::ShaderLang =
+        <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG;
+
     const COUNTER: &str = include_str!("../../tests/fixtures/counter.vs");
     const LOGGER: &str = include_str!("../../tests/fixtures/logger.vs");
     const SCROLLER: &str = include_str!("../../tests/fixtures/scroller.vs");
@@ -1087,7 +1091,8 @@ mod tests {
         fn section(&mut self, source: &str) -> PatchSection {
             let candidate = plan_view_for(source, &self.origin, self.profile.clone())
                 .expect("the edit compiles");
-            let view = view_patch(self.file, &self.last_good, &candidate);
+            let view = view_patch(self.file, Some(&self.last_good), &candidate, &[LANG])
+                .expect("the shaders build");
             self.sent = Some(candidate);
             PatchSection::Ui(UiPatch { views: vec![view] })
         }
@@ -2231,7 +2236,8 @@ mod tests {
             let candidate = plan_view_for(&source(width), &edits.origin, edits.profile.clone())
                 .expect("the edit compiles");
             let compiled = Instant::now();
-            let view = view_patch(FileId(0), &edits.last_good, &candidate);
+            let view = view_patch(FileId(0), Some(&edits.last_good), &candidate, &[LANG])
+                .expect("the shaders build");
             let planned = Instant::now();
             let HostMessage::Patch(mut patch) = host.patch(base, base + 1) else {
                 unreachable!()

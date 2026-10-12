@@ -48,6 +48,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use viso_behavior::native::MigratableState;
 use viso_behavior::{Fault, Module};
@@ -293,6 +294,9 @@ pub fn commit(rt: &mut LiveRuntime<'_>, candidate: &Candidate, plan: &ReloadPlan
         }
         None => ViewHost::new(Rc::clone(module), &package.component),
     });
+    if let Some(Ok(next)) = next.as_mut() {
+        next.set_shaders(package.shaders.iter().map(|s| Arc::clone(s.program())));
+    }
     let mut changed = Vec::new();
     let cells = {
         let prior = rt.view.as_ref().map(|host| host.borrow());

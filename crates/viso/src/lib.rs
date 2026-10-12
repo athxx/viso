@@ -61,6 +61,7 @@ pub mod audio;
 mod environment;
 mod persist;
 pub mod services;
+mod shaders;
 pub mod system_fonts;
 mod text_content;
 mod text_harness;
@@ -643,6 +644,9 @@ struct WindowState {
     /// The revision of the store's asset table the app last served: a frame
     /// that moved nothing in it serves nothing.
     assets_served: u64,
+    /// What the window's renderer holds of the programs its nodes paint
+    /// with.
+    shaders: shaders::InstalledShaders,
     /// The facade's font stack + glyph atlas. Shapes each node's `TextRequest`
     /// into a `Content::Text` payload (`viso-ui` holds no font stack). `None`
     /// until launch, when a GPU backend exists to allocate the atlas; the app's
@@ -781,6 +785,7 @@ impl WindowState {
             recompute: FrameRecompute::default(),
             awaiting_first_frame: true,
             assets_served: 0,
+            shaders: shaders::InstalledShaders::default(),
             text: None,
             text_scratch: Vec::new(),
             text_sources: std::collections::HashMap::new(),
@@ -2147,6 +2152,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     let gpu = ws.gpu.as_mut().map(|g| (&mut g.backend, &mut g.renderer));
                     self.assets.serve(&mut ws.store, gpu, &|| cx.loop_waker());
                     ws.assets_served = ws.store.assets().revision();
+                }
+                // Install the programs the settle's shader views took and
+                // release the ones no node paints with any more, so this
+                // frame paints with them.
+                for ws in &mut self.windows {
+                    if let Some(gpu) = ws.gpu.as_mut() {
+                        ws.shaders
+                            .sync(ws.store.shaders(), &mut gpu.backend, &mut gpu.renderer);
+                    }
                 }
 
                 // Session-level window open/close drain, once per frame after

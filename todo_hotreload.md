@@ -707,8 +707,8 @@ on it.
 - [x] UI: `Content::Shader { program: ProgramSlot, params }` paints a node's box as a
       `Primitive::Shader`; `ShaderSlots` (`ui/src/shader.rs`) keeps the store's
       `Arc<BrushProgram>`s by slot, found by identity, with a revision the facade
-      installs from (`replace` for a reloaded program, `sweep` for unused slots);
-      `NodeStore::{set_shader, set_shader_params, replace_shader, sweep_shaders}`, a
+      installs from (`replace` for a reloaded program);
+      `NodeStore::{set_shader, set_shader_params, replace_shader}`, a
       parameter change or the same program with new parameters `PAINT` only. Render
       gains `BrushProgram` (name, layout, code per language) and
       `Renderer::install_brush`, and re-exports the brush types.
@@ -728,11 +728,26 @@ on it.
       `PackedBrush`, nesting bounded, a decoded CPU program revalidated and its
       layout required to be its own; `unpack` gives the `ProgramCode` without
       generating anything.
-- [ ] View and package: the plan names each `ShaderView`'s shader by `ShaderId`; the
-      macro, the release package and the dev plan carry the view's shaders (layout,
-      the target backend's code generated at build time, the program for the CPU
-      path); the control delivers encoded parameters; the facade installs a
-      window's shaders into its renderer when they mount.
+- [x] View and package: a view's shader table lists each shader its `ShaderView`s
+      paint with once (`ViewBehavior::shaders`, resolved per paint site by component
+      and span, `Compiled::paints`); `ControlKind::Shader` names its program by table
+      index (`Control::shader`) and delivers the value's fields encoded by the
+      brush's layout (`ColorLinear` from `Color` in linear light), repainting when
+      the parameters or the program change. `PackedBrush` carries code per
+      language; the release package packs `TargetProfile::shader_langs`
+      (`ViewPackage::shaders`, `ViewShader`), `view!` packs every backend's and
+      keeps the target's through `viso_gpu::__per_backend!` (same `cfg`s as
+      `Backend`) beside the reference interpreter's program, the dev host packs the
+      language the runtime reports (`RuntimeHello::shader_lang`, protocol version
+      11) into the view patch, an in-process reload the interpreter's; `viso-dsl`
+      always builds SPIR-V. The same bytes load as one `Arc<BrushProgram>` per
+      thread (`load_shader`, weak cache), so one shader holds one slot and one
+      pipeline per window; a slot counts the nodes painting with it and empties
+      with the last (no sweep); the facade installs the slots that changed after
+      the settle and releases the emptied (`viso/src/shaders.rs`), a refused
+      program reported once. `content_hash` moved to `viso-ende`. Tests:
+      `dsl/tests/view_shaders.rs`, `viso/tests/dsl_shaders.rs`,
+      `viso::shaders::tests`, `ui::shader::tests`.
 - [ ] Example `10-custom-shader` and an end-to-end test: a `.vs` `ShaderView` drawn
       headless against the reference interpreter and on Metal.
 - [ ] `uniform time: F32` with continuous repaint while a time-reading shader is on
@@ -752,8 +767,10 @@ Reload:
       bindings/instance buffers rebuilt before a scoped commit; an incompatible
       host-side GPU ABI is a `gpu-validate` NACK, not a crash (§20).
 - [ ] Source-keyed pipeline cache: an edit that leaves generated code unchanged reuses
-      the existing pipeline; a bounded cache evicts pipelines no revision references
-      (makepad leaks here).
+      the existing pipeline — an edit elsewhere in the file moves a shader's spans,
+      which the packed program carries, so its bytes change while its code does
+      not; a bounded cache evicts pipelines no revision references (makepad leaks
+      here).
 - [ ] Cross-domain candidate: a save touching a view and its shader commits both or
       NACKs both (§40).
 - [ ] Tests (§62 Shader): valid pipeline, invalid candidate → old pipeline drawn;

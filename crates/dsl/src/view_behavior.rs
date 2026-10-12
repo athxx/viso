@@ -9,6 +9,7 @@
 use std::rc::Rc;
 
 use viso_behavior::Module;
+use viso_shader::program::BrushLayout;
 use viso_ui::StateValue;
 use viso_ui::adaptive::EnvField;
 pub use viso_view::{Control, ControlInput, LookArm, When};
@@ -16,7 +17,7 @@ use viso_view::{ControlKind, EventRoute, Route, ViewHost, ViewRegions};
 
 use crate::behavior::Site;
 use crate::frontend::{Compiled, SourceKind};
-use crate::hir::ConstValue;
+use crate::hir::{CheckedShader, ConstValue};
 use crate::ir::binding_ir::NodeKey;
 use crate::ir::ui_ir::{UiItem, UiNode, UiStyled, UiWhen};
 use crate::resolve::SymbolId;
@@ -74,6 +75,16 @@ pub struct ViewBehavior {
     controls: Vec<(NodeKey, Control)>,
     /// Each `env` field the view reads.
     pub env: Vec<EnvRead>,
+    /// The view's shader table: each shader its shader views paint with, in
+    /// the order their controls index it.
+    pub shaders: Vec<ViewBrush>,
+}
+
+/// A shader a view paints with: its program and its layout as a brush.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewBrush {
+    pub program: viso_shader::program::Program,
+    pub layout: BrushLayout,
 }
 
 /// An `env` field a view reads.
@@ -266,12 +277,31 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         }
     }
     let mut controls = Vec::with_capacity(nodes.len());
+    let mut shaders: Vec<(SymbolId, ViewBrush)> = Vec::new();
     for (key, kind, node) in nodes {
         let mut control = Control::new(kind);
         for (property, at, instance) in &node.control_reads {
             let Some(input) = kind.input(property) else {
                 continue;
             };
+            if kind == ControlKind::Shader && input == ControlInput::Value {
+                match painted(compiled, *instance, *at) {
+                    Some((symbol, brush)) => {
+                        let at = match shaders.iter().position(|(s, _)| *s == symbol) {
+                            Some(at) => at,
+                            None => {
+                                shaders.push((symbol, brush));
+                                shaders.len() - 1
+                            }
+                        };
+                        control.shader = Some(at as u32);
+                    }
+                    None => errors.push(MountError::new(
+                        Some(*at),
+                        "internal: the shader the view paints with was not lowered",
+                    )),
+                }
+            }
             let site = Site {
                 instance: *instance,
                 at: *at,
@@ -368,7 +398,39 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         routes,
         controls,
         env,
+        shaders: shaders.into_iter().map(|(_, brush)| brush).collect(),
     }))
+}
+
+/// The shader the `shader` value at `at`, in the view of instance `instance`,
+/// paints with, and it as a brush; `None` when it did not check as one.
+fn painted(compiled: &Compiled, instance: u32, at: TextRange) -> Option<(SymbolId, ViewBrush)> {
+    let component = match compiled.tree.instance(instance) {
+        Some(inlined) => Some(inlined.component),
+        None => compiled.component.as_ref().map(|c| c.schema.symbol),
+    };
+    let paint = compiled
+        .paints
+        .iter()
+        .find(|paint| paint.component == component && paint.at == at)?;
+    let CheckedShader {
+        program: Some(program),
+        brush: Some(layout),
+        ..
+    } = compiled
+        .shaders
+        .iter()
+        .find(|shader| shader.symbol == Some(paint.shader))?
+    else {
+        return None;
+    };
+    Some((
+        paint.shader,
+        ViewBrush {
+            program: program.clone(),
+            layout: layout.clone(),
+        },
+    ))
 }
 
 /// Fills `control` (of a node of kind `kind` in instance `instance`) with the

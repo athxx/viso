@@ -567,7 +567,7 @@ SystemPatch
 
 Runtime 不需要重新解析 `.vs` source。
 
-当前实现（`viso-view::dev::patch`）：`ui` section 的每个 view 是 `ViewPatch { file, package, plan }`——`package` 是 candidate 的 release 形态 `ViewPackage`（与 release build 嵌入的同一格式：保留树、绑定边、已校验 behavior 字节码、state/handler/control/region/env 表，catalog 已编译进去），`plan` 是 host 由 last-good 与 candidate 的 IR 算出的 `ReloadPlan`：
+当前实现（`viso-view::dev::patch`）：`ui` section 的每个 view 是 `ViewPatch { file, package, plan }`——`package` 是 candidate 的 release 形态 `ViewPackage`（与 release build 嵌入的同一格式：保留树、绑定边、已校验 behavior 字节码、state/handler/control/region/env 表与 Shader 表，catalog 已编译进去），`plan` 是 host 由 last-good 与 candidate 的 IR 算出的 `ReloadPlan`：
 
 ```text
 ReloadPlan
@@ -1203,12 +1203,12 @@ request restart/rebuild
 
 不能 decoder 猜版本。
 
-已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 10`）：
+已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 11`）：
 
-- runtime 连接并先说话：`RuntimeHello { protocol_version, token, dev_session, runtime_session, build_id, current_revision, schema_fingerprint, capabilities, target }`。连接方用 session token 证明自己是本 session 启动的 app，所以 token 在 `RuntimeHello` 里而不在 `HostHello` 里——host 不向尚未证明身份的连接发送任何东西；
+- runtime 连接并先说话：`RuntimeHello { protocol_version, token, dev_session, runtime_session, build_id, current_revision, schema_fingerprint, capabilities, target, shader_lang }`。连接方用 session token 证明自己是本 session 启动的 app，所以 token 在 `RuntimeHello` 里而不在 `HostHello` 里——host 不向尚未证明身份的连接发送任何东西；
 - host 回 `HostHello { protocol_version, dev_session, runtime_session, project_fingerprint, expected_build_id }`（接受，`runtime_session` 原样回显）或 `Reject { Protocol{host} | Build | Session | Schema }`；token 不符的连接不回应直接关闭（不给猜 token 的 oracle）。runtime 也检查 `HostHello`：protocol、session、runtime session 与 build 任一不符即断开；
 - hello 与 reject 的前缀在所有 protocol version 中保持不变（stream `ProtocolTag`，再是 dev protocol version），解码在读到别的 version 时立即以该 version 号停止，不去解读其后布局可能不同的字段；
-- build id 由 CLI 经 `VISO_DEV_BUILD` 交给所启动的 app，app 原样报告，host 用它拒绝不是其当前编译目标的 artifact（Rust rebuild 之后仍连着的旧 app）；`schema_fingerprint` 取自 mount record（§4.1），与 host 的不同即 `Reject::Schema`；`capabilities` 是 runtime 能 apply 的 domain 集合（当前为 `ui`、`system` 与 `resource`），host 不发送其外的 domain；不声明 `system` 的 app 只收到 view、不声明 `resource` 的 app 不收到 asset，host 各给出一条 warning。
+- build id 由 CLI 经 `VISO_DEV_BUILD` 交给所启动的 app，app 原样报告，host 用它拒绝不是其当前编译目标的 artifact（Rust rebuild 之后仍连着的旧 app）；`schema_fingerprint` 取自 mount record（§4.1），与 host 的不同即 `Reject::Schema`；`capabilities` 是 runtime 能 apply 的 domain 集合（当前为 `ui`、`system` 与 `resource`），host 不发送其外的 domain；不声明 `system` 的 app 只收到 view、不声明 `resource` 的 app 不收到 asset，host 各给出一条 warning；`shader_lang` 是 runtime 的 GPU Backend 读 Shader 的语言（Software Raster 为 `None`，即参考解释器），host 把 view patch 所画 Shader 打包成这一种语言的代码随 `ViewPackage` 发送，打包失败是内部错误（`E3711`），该 view 不发送。
 
 ---
 

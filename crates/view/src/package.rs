@@ -1,6 +1,6 @@
 //! The release form of a view with behavior: its UI package, its behavior
-//! module, the tables that join them and the bytes of the assets it shows,
-//! loaded with no compiler present.
+//! module, the tables that join them, the bytes of the assets it shows and
+//! the shaders it paints with, loaded with no compiler present.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -11,6 +11,7 @@ use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 use viso_ui::adaptive::EnvField;
 use viso_ui::aot::{AotPackage, instantiate_indexed};
 use viso_ui::resource::ResourceId;
+use viso_ui::shader::BrushProgram;
 use viso_ui::state::StateKey;
 use viso_ui::{
     AssetBytes, BindingTable, EffectStore, NodeId, NodeStore, StateStore, StateValue, StructureCx,
@@ -23,6 +24,7 @@ use crate::effects::mount_effects;
 use crate::host::{HostError, ViewHost};
 use crate::regions::{ViewRegions, mount_regions};
 use crate::scope::Scope;
+use crate::shaders::load_shader;
 use crate::values::mount_values;
 
 /// A compiled view with behavior, as a release build embeds it.
@@ -48,6 +50,46 @@ pub struct ViewPackage {
     pub env: Vec<ViewEnv>,
     /// The assets the view can show, ascending by resource.
     pub assets: Vec<ViewAsset>,
+    /// The view's shader table: each shader its shader views paint with, in
+    /// the order their controls index it.
+    pub shaders: Vec<ViewShader>,
+}
+
+/// A shader a view paints with: the packed brush its build produced, and the
+/// program that loads as.
+#[derive(Debug, Clone)]
+pub struct ViewShader {
+    bytes: Arc<[u8]>,
+    program: Arc<BrushProgram>,
+}
+
+impl ViewShader {
+    /// The shader the packed brush `bytes` encodes.
+    ///
+    /// # Errors
+    ///
+    /// Bytes that are not a packed brush.
+    pub fn new(bytes: impl Into<Arc<[u8]>>) -> Result<ViewShader, DecodeError> {
+        let bytes = bytes.into();
+        let program = load_shader(&bytes)?;
+        Ok(ViewShader { bytes, program })
+    }
+
+    /// The packed brush, as the package carries it.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The program it loads as.
+    pub fn program(&self) -> &Arc<BrushProgram> {
+        &self.program
+    }
+}
+
+impl PartialEq for ViewShader {
+    fn eq(&self, other: &ViewShader) -> bool {
+        self.bytes == other.bytes
+    }
 }
 
 /// An asset a view can show: its resource and encoded bytes, decoded only
@@ -186,6 +228,7 @@ pub fn instantiate_view_with(
         let mut host = ViewHost::from_bytes(&package.behavior, &package.component)
             .map_err(ViewLoadError::Host)?;
         host.set_assets(package.assets.iter().map(|a| (a.id, a.bytes.clone())));
+        host.set_shaders(package.shaders.iter().map(|s| Arc::clone(&s.program)));
         setup(&mut host);
         Some(host)
     };
@@ -367,6 +410,10 @@ impl Encode for ViewPackage {
             enc.write_u64(asset.id.0);
             enc.write_bytes(&asset.bytes);
         }
+        enc.write_varint(self.shaders.len() as u64);
+        for shader in &self.shaders {
+            enc.write_bytes(&shader.bytes);
+        }
     }
 }
 
@@ -434,6 +481,14 @@ impl Decode for ViewPackage {
             let bytes = AssetBytes::Shared(Arc::from(dec.read_bytes()?));
             assets.push(ViewAsset { id, bytes });
         }
+        let count = dec.read_varint()?;
+        let mut shaders = Vec::with_capacity(bounded_capacity(count));
+        for _ in 0..count {
+            let offset = dec.position();
+            let shader = ViewShader::new(dec.read_bytes()?)
+                .map_err(|_| DecodeError::Malformed { offset })?;
+            shaders.push(shader);
+        }
         Ok(ViewPackage {
             ui,
             behavior,
@@ -444,6 +499,7 @@ impl Decode for ViewPackage {
             regions,
             env,
             assets,
+            shaders,
         })
     }
 }
@@ -480,16 +536,23 @@ mod tests {
                 anchor: 0,
             }],
             assets: Vec::new(),
+            shaders: Vec::new(),
         };
         let bytes = package.encode_to_vec();
         assert_eq!(ViewPackage::decode_from_slice(&bytes), Ok(package.clone()));
         let mut bad = bytes.clone();
-        let (env, assets) = (4, 1);
-        let route = bytes.len() - assets - env - 3 - ViewRegions::default().encode_to_vec().len();
+        let (env, assets, shaders) = (4, 1, 1);
+        let route =
+            bytes.len() - shaders - assets - env - 3 - ViewRegions::default().encode_to_vec().len();
         bad[route] = 99;
         assert!(ViewPackage::decode_from_slice(&bad).is_err());
         let mut bad = bytes.clone();
-        bad[bytes.len() - assets - 2] = 13;
+        bad[bytes.len() - shaders - assets - 2] = 13;
+        assert!(ViewPackage::decode_from_slice(&bad).is_err());
+        // A shader that is not a packed brush.
+        let mut bad = bytes.clone();
+        bad.pop();
+        bad.extend([1, 3, 1, 2, 3]);
         assert!(ViewPackage::decode_from_slice(&bad).is_err());
 
         let mut with_assets = package;

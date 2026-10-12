@@ -17,7 +17,9 @@ use viso_view::dev::wire::{
     StateAction as PatchAction, StatePlan, StructuralOp, ViewPatch,
 };
 
-use crate::aot::emit_view_package;
+use viso_shader::program::ShaderLang;
+
+use crate::aot::{emit_view_package, package_shaders};
 use crate::hotreload::compat::retype;
 use crate::hotreload::diff::{StructuralPatch, diff};
 use crate::hotreload::game::{GameReload, ReloadTier, classify};
@@ -28,15 +30,29 @@ use crate::resolve::SymbolId;
 use crate::view_regions::{RegionKeys, StaticNodes, has_regions};
 
 /// The patch that moves the mounts of `file` from `last_good` to
-/// `candidate`.
-pub fn view_patch(file: FileId, last_good: &CandidatePlan, candidate: &CandidatePlan) -> ViewPatch {
-    let package = emit_view_package(candidate);
-    let plan = reload_plan(last_good, candidate, &package);
-    ViewPatch {
+/// `candidate` — or, with the last good unknown, mounts it fresh — its
+/// shaders packed in `langs`, the languages the runtime reads.
+///
+/// # Errors
+///
+/// Why a shader the candidate paints with does not build in one of them.
+pub fn view_patch(
+    file: FileId,
+    last_good: Option<&CandidatePlan>,
+    candidate: &CandidatePlan,
+    langs: &[ShaderLang],
+) -> Result<ViewPatch, String> {
+    let mut package = emit_view_package(candidate);
+    package.shaders = package_shaders(candidate, langs)?;
+    let plan = match last_good {
+        Some(last_good) => reload_plan(last_good, candidate, &package),
+        None => ReloadPlan::fresh(&package),
+    };
+    Ok(ViewPatch {
         file,
         package,
         plan,
-    }
+    })
 }
 
 /// The `system` entry that swaps the game `file`'s mounts run onto

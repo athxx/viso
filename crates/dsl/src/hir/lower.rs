@@ -73,7 +73,7 @@ mod themes;
 mod traits;
 
 pub use input::InputDevices;
-pub use shader::CheckedShader;
+pub use shader::{CheckedShader, ShaderPaint};
 pub use simulation::TargetProfile;
 
 /// The typed HIR of a whole package: every component lowered, every free callable, and every
@@ -104,6 +104,8 @@ pub struct LoweredPackage {
     pub migrators: Vec<Migrator>,
     /// Every `shader`, across all modules, in module then source order.
     pub shaders: Vec<CheckedShader>,
+    /// Every value a view paints a node with a shader by, across all modules.
+    pub paints: Vec<ShaderPaint>,
     /// Every asset an `asset("…")` names, by identity, once each.
     pub assets: Vec<crate::assets::AssetUse>,
 }
@@ -250,7 +252,7 @@ pub fn lower(
         input_flows.push(flows);
     }
     traits::lower_instances(&decls, &envs, resolved, &behavior, &mut per_module);
-    let brushes: Vec<(usize, TextRange, SymbolId)> = envs
+    let brushes: Vec<(usize, ShaderPaint)> = envs
         .iter()
         .flatten()
         .flat_map(|env| {
@@ -258,7 +260,7 @@ pub fn lower(
             env.brushes
                 .take()
                 .into_iter()
-                .map(move |(at, shader)| (module, at, shader))
+                .map(move |paint| (module, paint))
         })
         .collect();
     let mut assets: Vec<crate::assets::AssetUse> = envs
@@ -307,6 +309,7 @@ pub fn lower(
         types: std::mem::take(&mut decls.types),
         migrators: migrators.into_iter().map(|(_, m)| m).collect(),
         shaders,
+        paints: brushes.into_iter().map(|(_, paint)| paint).collect(),
         assets,
     }
 }
@@ -1484,7 +1487,7 @@ struct ModuleEnv<'p> {
     /// call's span.
     user_calls: RefCell<Vec<(TextRange, SymbolId)>>,
     /// Each shader a view paints with, by the span of the value naming it.
-    brushes: RefCell<Vec<(TextRange, SymbolId)>>,
+    brushes: RefCell<Vec<ShaderPaint>>,
     /// Each asset an `asset("…")` names.
     assets: RefCell<Vec<crate::assets::AssetUse>>,
     /// Each call typing found to be a list method editing its receiver in
@@ -1652,8 +1655,12 @@ impl ViewEnv for ModuleEnv<'_> {
         &self.decls.profile
     }
 
-    fn paints_with(&self, shader: SymbolId, at: TextRange) {
-        self.brushes.borrow_mut().push((at, shader));
+    fn paints_with(&self, component: Option<SymbolId>, shader: SymbolId, at: TextRange) {
+        self.brushes.borrow_mut().push(ShaderPaint {
+            component,
+            at,
+            shader,
+        });
     }
 }
 

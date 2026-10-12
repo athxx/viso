@@ -195,6 +195,7 @@ mod tests {
             schema_fingerprint: SchemaFingerprint(55),
             capabilities: Domains::NONE,
             target: RuntimeTarget::DesktopHost,
+            shader_lang: viso_view::dev::wire::ShaderLang::Msl,
         }
     }
 

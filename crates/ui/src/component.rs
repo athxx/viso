@@ -1381,6 +1381,7 @@ impl NodeStore {
         if matches!(content, Content::Text { .. }) {
             classes |= DirtyClass::SEMANTICS;
         }
+        self.leave_shader(id.index() as usize);
         self.content_payload[id.index() as usize] = Some(Box::new(content));
         self.mark_dirty(id, classes);
     }
@@ -1395,11 +1396,12 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let slot = self.shaders.slot(program);
+        let slot = self.shaders.take(program);
         let same = matches!(
             self.content_payload(id),
             Some(Content::Shader { program, .. }) if *program == slot
         );
+        self.leave_shader(id.index() as usize);
         let classes = if same {
             DirtyClass::PAINT
         } else {
@@ -1474,10 +1476,11 @@ impl NodeStore {
             fit,
             tint,
         };
-        let slot = &mut self.content_payload[id.index() as usize];
-        if slot.as_deref() == Some(&content) {
+        if self.content_payload[id.index() as usize].as_deref() == Some(&content) {
             return;
         }
+        self.leave_shader(id.index() as usize);
+        let slot = &mut self.content_payload[id.index() as usize];
         let same_size = matches!(
             slot.as_deref(),
             Some(Content::Asset { natural: n, .. }) if *n == natural
@@ -1582,19 +1585,23 @@ impl NodeStore {
         }
     }
 
-    /// Empties every program slot no live node paints with. Cold: a walk of
-    /// the content column, for after a structural change or a reload.
-    pub fn sweep_shaders(&mut self) {
-        let mut used = vec![false; self.shaders.len()];
-        for (i, content) in self.content_payload.iter().enumerate() {
-            if let Some(Content::Shader { program, .. }) = content.as_deref()
-                && self.arena.live_id(i as u32).is_some()
-                && let Some(u) = used.get_mut(program.0 as usize)
-            {
-                *u = true;
-            }
+    /// Lets go of the program slot node `index` paints with, if it paints
+    /// with one: its content is about to change.
+    fn leave_shader(&mut self, index: usize) {
+        if let Some(Content::Shader { program, .. }) = self.content_payload[index].as_deref() {
+            self.shaders.leave(*program);
         }
-        self.shaders.sweep(|slot| used[slot.0 as usize]);
+    }
+
+    /// Frees node `node`'s slot, letting go of the program it paints with.
+    fn free_node(&mut self, node: NodeId) -> bool {
+        if !self.arena.is_live(node) {
+            return false;
+        }
+        let index = node.index() as usize;
+        self.leave_shader(index);
+        self.content_payload[index] = None;
+        self.arena.free(node)
     }
 
     /// Write back a run reshaped at a layout-assigned width, marking
@@ -1609,6 +1616,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
+        self.leave_shader(id.index() as usize);
         self.content_payload[id.index() as usize] = Some(Box::new(content));
         self.mark_dirty(
             id,
@@ -2406,7 +2414,7 @@ impl NodeStore {
             }
             effects.cancel_for_node(node);
             self.cancel_tasks_for(node);
-            if self.arena.free(node) {
+            if self.free_node(node) {
                 freed += 1;
             }
         }
@@ -2456,7 +2464,7 @@ impl NodeStore {
         self.arena.detach_child(old);
         effects.cancel_for_node(old);
         self.cancel_tasks_for(old);
-        if self.arena.free(old) {
+        if self.free_node(old) {
             freed += 1;
         }
         self.arena.append_child(parent, new);
@@ -2488,7 +2496,7 @@ impl NodeStore {
         }
         effects.cancel_for_node(root);
         self.cancel_tasks_for(root);
-        if self.arena.free(root) {
+        if self.free_node(root) {
             freed += 1;
         }
         freed

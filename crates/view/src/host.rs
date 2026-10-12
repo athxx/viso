@@ -5,6 +5,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 use viso_behavior::game::{PERSIST_CAPABILITY, Persist, PersistReport, Persistence};
@@ -16,6 +17,7 @@ use viso_behavior::{
 use viso_ui::adaptive::{AdaptiveEnv, AnchorId, EnvField};
 use viso_ui::context::UpdateCx;
 use viso_ui::resource::ResourceId;
+use viso_ui::shader::BrushProgram;
 use viso_ui::{
     AssetBytes, EventCx, NodeId, NodeStore, StateId, StateStore, StateValue, StructureHookId,
     TaskFuture, TaskId,
@@ -222,6 +224,9 @@ pub struct ViewHost {
     /// The encoded bytes of each asset the view can show, by resource,
     /// ascending.
     assets: Vec<(ResourceId, AssetBytes)>,
+    /// The view's shader table: the program of each shader its shader views
+    /// paint with, by index.
+    shaders: Vec<Arc<BrushProgram>>,
 }
 
 /// Where a view's `@persist` states load from and are stored, decided at the
@@ -320,6 +325,7 @@ impl ViewHost {
             persist: Persisting::Unmounted,
             persist_reports: Vec::new(),
             assets: Vec::new(),
+            shaders: Vec::new(),
         })
     }
 
@@ -339,6 +345,17 @@ impl ViewHost {
     pub fn asset_bytes(&self, id: ResourceId) -> Option<&AssetBytes> {
         let at = self.assets.binary_search_by_key(&id, |(id, _)| *id).ok()?;
         Some(&self.assets[at].1)
+    }
+
+    /// Gives the view its shader table, in the order its controls index it.
+    pub fn set_shaders(&mut self, shaders: impl IntoIterator<Item = Arc<BrushProgram>>) {
+        self.shaders.clear();
+        self.shaders.extend(shaders);
+    }
+
+    /// The program of shader `index` of the view's table.
+    pub fn shader(&self, index: u32) -> Option<&Arc<BrushProgram>> {
+        self.shaders.get(index as usize)
     }
 
     /// The host, shared by the view's handlers, regions and tasks.
@@ -1156,7 +1173,8 @@ impl ViewHost {
     /// registered, stay this host's, for the caller to reuse, release or
     /// replace; [`prune_env`](Self::prune_env) releases the anchors relinking
     /// left unused. The installed services move to `next`, and so do the
-    /// assets, `next`'s own taking over the same resources.
+    /// assets, `next`'s own taking over the same resources; the shader table
+    /// is `next`'s, which its controls index.
     pub fn reload(&mut self, mut next: ViewHost) {
         *next.vm.services_mut() = std::mem::take(self.vm.services_mut());
         next.events = std::mem::take(&mut self.events);

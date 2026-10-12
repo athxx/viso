@@ -26,4 +26,4 @@ mod wire;
 pub use decode::{Decode, DecodeError, Decoder};
 pub use encode::{Encode, Encoder};
 pub use json::JsonWriter;
-pub use wire::{IdKind, ProtocolTag, WIRE_VERSION, WireId};
+pub use wire::{IdKind, ProtocolTag, WIRE_VERSION, WireId, content_hash};

@@ -20,7 +20,7 @@
 
 use viso_gpu::backend::{DrawCommand, Geometry, InlineUniforms};
 use viso_gpu::{BufferUsage, GpuBackend, PipelineId, ProgramCode, ShaderLang};
-use viso_shader::program::BrushLayout;
+use viso_shader::program::{BrushLayout, PackedBrush};
 
 use crate::batch::BatchKey;
 use crate::pool::InstancePool;
@@ -35,6 +35,18 @@ pub struct BrushProgram {
     pub name: Box<str>,
     pub layout: BrushLayout,
     pub code: Vec<ProgramCode>,
+}
+
+impl From<PackedBrush> for BrushProgram {
+    /// The brush a package carries, its code moved over as built.
+    fn from(packed: PackedBrush) -> BrushProgram {
+        let PackedBrush { name, layout, code } = packed;
+        BrushProgram {
+            name,
+            layout,
+            code: code.into_iter().map(|code| code.unpack()).collect(),
+        }
+    }
 }
 
 impl BrushProgram {

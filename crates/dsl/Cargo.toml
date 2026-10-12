@@ -18,8 +18,9 @@ viso-behavior = { workspace = true }
 # Mounting a view's handlers: the route table and the host the macros, the
 # hot reload commit and the release package all dispatch through.
 viso-view = { workspace = true, features = ["hot-reload"] }
-# A `shader` declaration lowers into the shader program IR.
-viso-shader = { workspace = true }
+# A `shader` declaration lowers into the shader program IR, and a package
+# carries its code in the target backend's language, SPIR-V included.
+viso-shader = { workspace = true, features = ["spirv"] }
 # XID_Start/XID_Continue for identifier lexing and NFC for symbol-table entry.
 icu_properties = { workspace = true }
 icu_normalizer = { workspace = true }

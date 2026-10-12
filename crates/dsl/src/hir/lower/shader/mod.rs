@@ -43,6 +43,17 @@ pub struct CheckedShader {
     pub(super) brush_errors: Vec<Diagnostic>,
 }
 
+/// A value a view paints a node with a shader by: a `ShaderView`'s `shader`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShaderPaint {
+    /// The component whose view holds it; `None` in a fragment.
+    pub component: Option<SymbolId>,
+    /// The value's span.
+    pub at: TextRange,
+    /// The shader whose parameters it gives.
+    pub shader: SymbolId,
+}
+
 /// A type annotation as written, its head bound by the resolver.
 #[derive(Debug, Clone)]
 pub(super) struct TypeRef {
@@ -639,15 +650,21 @@ pub(super) fn check(
 
 /// Reports, once each, how a shader a view paints with breaks the brush
 /// profile: in the shader's module, pointing at the first `ShaderView` that
-/// paints with it. `brushes` holds each use's module, span and shader.
+/// paints with it. `brushes` holds each use and its module.
 pub(super) fn check_brushes(
     shaders: &[CheckedShader],
-    brushes: &[(usize, TextRange, SymbolId)],
+    brushes: &[(usize, ShaderPaint)],
     decls: &super::Declarations,
     per_module: &mut [Vec<Diagnostic>],
 ) {
     let mut reported = HashSet::new();
-    for &(module, at, symbol) in brushes {
+    for &(
+        module,
+        ShaderPaint {
+            at, shader: symbol, ..
+        },
+    ) in brushes
+    {
         if !reported.insert(symbol) {
             continue;
         }

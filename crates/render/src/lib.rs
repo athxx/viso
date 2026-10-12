@@ -102,7 +102,12 @@ pub use program::{BrushProgram, ProgramError};
 // The brush profile a `ShaderDraw`'s parameters are encoded by, named in this
 // crate's program API.
 pub use renderer::{BackdropDependency, FrameStats, Renderer};
-pub use viso_shader::program::{BrushLayout, BrushParam, ParamKind, ParamValue};
+pub use viso_shader::program::{
+    BrushLayout, BrushParam, PackedBrush, PackedCode, ParamKind, ParamValue,
+};
+// What a package's brush is built for, and the expression keeping only the
+// target backend's code.
+pub use viso_gpu::{__per_backend, ShaderLang};
 // Which lane rasterizes vector geometry (§20.1). The compute lane is workload
 // specialization, so the *decision* is public (a host can describe its workload
 // and see the answer) while the kernels behind it are not a frozen contract.

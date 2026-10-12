@@ -45,15 +45,14 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use viso_dsl::Diagnostic;
-use viso_dsl::aot::emit_view_package;
 use viso_dsl::assets::{ASSET_ERROR, ResourceId};
 use viso_dsl::behavior::probe::state_json;
 use viso_dsl::hotreload::{CandidatePlan, game_patch, view_patch};
 use viso_project::LockGuard;
 use viso_view::dev::wire::{
     CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply, HostMessage,
-    PatchBundle, PatchSection, Rebuild, ReloadPlan, ResourceAsset, ResourcePatch, Revision,
-    RuntimeHello, RuntimeMessage, Stage, SystemPatch, UiPatch, ViewPatch, blob_chunks, source_hash,
+    PatchBundle, PatchSection, Rebuild, ResourceAsset, ResourcePatch, Revision, RuntimeHello,
+    RuntimeMessage, Stage, SystemPatch, UiPatch, blob_chunks, source_hash,
 };
 
 pub use control::{Control, ControlCall, ControlDeliver, ControlReply};
@@ -845,17 +844,20 @@ impl DevSession {
                 .mount
                 .as_ref()
                 .expect("a candidate is mounted");
-            ui.views.push(match &mount.last_good {
-                Some(last_good) => view_patch(mount.file, last_good, &candidate),
-                None => {
-                    let package = emit_view_package(&candidate);
-                    ViewPatch {
-                        file: mount.file,
-                        plan: ReloadPlan::fresh(&package),
-                        package,
-                    }
+            let langs = [runtime.hello.shader_lang];
+            match view_patch(mount.file, mount.last_good.as_ref(), &candidate, &langs) {
+                Ok(view) => ui.views.push(view),
+                Err(error) => {
+                    out.failure(
+                        "E3711",
+                        &format!(
+                            "`{name}`: internal: a shader it paints with does not build: {error}"
+                        ),
+                        &["the app keeps showing its last good version".to_owned()],
+                    );
+                    continue;
                 }
-            });
+            }
             let mut notes = Vec::new();
             if let Some((entry, reload)) =
                 game_patch(mount.file, mount.last_good.as_ref(), &candidate, KEEP)
@@ -1012,10 +1014,12 @@ fn elapsed_us(since: Instant) -> u64 {
 mod tests {
     use std::sync::mpsc::{self, Receiver};
 
+    use viso_dsl::aot::emit_view_package;
     use viso_project::{Layout, LockKind, Target};
     use viso_view::dev::wire::{
         BuildId, DevSessionId, Domains, FileCommit, FileId, MountEntry, PatchAck, PatchNack,
-        PatchTimings, ProjectFingerprint, RuntimeSessionId, RuntimeTarget, SchemaFingerprint,
+        PatchTimings, ProjectFingerprint, ReloadPlan, RuntimeSessionId, RuntimeTarget,
+        SchemaFingerprint, ViewPatch,
     };
 
     use super::link::Connection;
@@ -1095,6 +1099,7 @@ mod tests {
                 schema_fingerprint: SchemaFingerprint(4),
                 capabilities,
                 target: RuntimeTarget::DesktopHost,
+                shader_lang: viso_view::dev::wire::ShaderLang::Msl,
             };
             dev.link(LinkEvent::Connected(Connection { hello, writer }), &mut out);
             let path = root.join("view.vs");
@@ -1208,7 +1213,13 @@ mod tests {
         assert_eq!((b, n), (base, next));
         assert_eq!(
             *view,
-            view_patch(FileId(0), &compiled(last_good), &compiled(text))
+            view_patch(
+                FileId(0),
+                Some(&compiled(last_good)),
+                &compiled(text),
+                &[viso_view::dev::wire::ShaderLang::Msl],
+            )
+            .unwrap()
         );
     }
 

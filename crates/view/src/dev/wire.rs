@@ -24,6 +24,8 @@ use std::io::{self, Read, Write};
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 use viso_ui::resource::ResourceId;
 use viso_ui::state::StateKey;
+// The language a runtime reads shaders in, named in its hello.
+pub use viso_ui::shader::ShaderLang;
 
 pub use super::patch::{
     GamePatch, GameTier, MAX_PLAN_ENTRIES, NodeCarry, NodeRef, RESET_NOTICE, ReloadPlan,
@@ -41,7 +43,7 @@ use super::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 10;
+pub const DEV_PROTOCOL_VERSION: u16 = 11;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -106,11 +108,7 @@ pub fn source_hash(text: &str) -> u64 {
 
 /// [`source_hash`] of any file's bytes: what tells two versions of an asset
 /// apart, and names the blob carrying one.
-pub fn content_hash(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
-}
+pub use viso_ende::content_hash;
 
 /// A 128-bit identity, written as its two halves.
 macro_rules! id128 {
@@ -334,6 +332,10 @@ pub struct RuntimeHello {
     /// The domains the runtime applies; the host sends no other.
     pub capabilities: Domains,
     pub target: RuntimeTarget,
+    /// The language its GPU backend reads a shader in, which the host packs
+    /// a view's shaders in; `None` for the software raster's reference
+    /// interpreter.
+    pub shader_lang: ShaderLang,
 }
 
 /// The host's acceptance of a runtime (§34).
@@ -1361,6 +1363,13 @@ impl Message for RuntimeMessage {
                 hello.schema_fingerprint.encode(enc);
                 enc.write_varint(u64::from(hello.capabilities.0));
                 enc.write_u8(hello.target as u8);
+                enc.write_u8(match hello.shader_lang {
+                    ShaderLang::None => 0,
+                    ShaderLang::Msl => 1,
+                    ShaderLang::Wgsl => 2,
+                    ShaderLang::Hlsl => 3,
+                    ShaderLang::SpirV => 4,
+                });
             }
             RuntimeMessage::Ack(ack) => {
                 enc.write_u8(RUNTIME_ACK);
@@ -1469,6 +1478,14 @@ impl Message for RuntimeMessage {
                     3 => RuntimeTarget::Web,
                     _ => return Err(malformed(dec)),
                 };
+                let shader_lang = match dec.read_u8()? {
+                    0 => ShaderLang::None,
+                    1 => ShaderLang::Msl,
+                    2 => ShaderLang::Wgsl,
+                    3 => ShaderLang::Hlsl,
+                    4 => ShaderLang::SpirV,
+                    _ => return Err(malformed(dec)),
+                };
                 Ok(RuntimeMessage::Hello(RuntimeHello {
                     protocol_version,
                     token,
@@ -1479,6 +1496,7 @@ impl Message for RuntimeMessage {
                     schema_fingerprint,
                     capabilities,
                     target,
+                    shader_lang,
                 }))
             }
             RUNTIME_ACK => Ok(RuntimeMessage::Ack(PatchAck {
@@ -1600,6 +1618,7 @@ mod tests {
             schema_fingerprint: SchemaFingerprint(42),
             capabilities: Domains::NONE.with(Domain::Ui).with(Domain::State),
             target: RuntimeTarget::DesktopHost,
+            shader_lang: ShaderLang::Msl,
         }
     }
 
@@ -2039,6 +2058,18 @@ mod tests {
         ] {
             round_trip(&RuntimeMessage::Hello(RuntimeHello {
                 target,
+                ..runtime_hello()
+            }));
+        }
+        for shader_lang in [
+            ShaderLang::None,
+            ShaderLang::Msl,
+            ShaderLang::Wgsl,
+            ShaderLang::Hlsl,
+            ShaderLang::SpirV,
+        ] {
+            round_trip(&RuntimeMessage::Hello(RuntimeHello {
+                shader_lang,
                 ..runtime_hello()
             }));
         }

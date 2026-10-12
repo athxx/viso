@@ -239,6 +239,7 @@ pub(super) fn profile(project: &Project) -> TargetProfile {
         i18n_strict: false,
         messages: None,
         assets: None,
+        shader_langs: TargetProfile::default().shader_langs,
     }
 }
 

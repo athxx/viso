@@ -504,7 +504,11 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(control.max),
         entry(control.step),
     );
-    let (fit, tint) = (entry(control.fit), entry(control.tint));
+    let (fit, tint, shader) = (
+        entry(control.fit),
+        entry(control.tint),
+        entry(control.shader),
+    );
     let look = control.look;
     let (background, opacity) = (entry(look.background), entry(look.opacity));
     let (background_transition, opacity_transition) = (
@@ -544,6 +548,7 @@ fn control_tokens(control: Control) -> TokenStream {
             step: #step,
             fit: #fit,
             tint: #tint,
+            shader: #shader,
             look: ::viso_view::Look {
                 background: #background,
                 opacity: #opacity,

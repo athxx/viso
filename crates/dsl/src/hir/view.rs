@@ -135,9 +135,9 @@ pub(crate) trait ViewEnv: TypeEnv {
     /// accessibility and localization checks are.
     fn profile(&self) -> &TargetProfile;
 
-    /// Notes that the value at `at` paints a node with `shader`, which must
-    /// then be a brush.
-    fn paints_with(&self, shader: SymbolId, at: TextRange);
+    /// Notes that the value at `at`, in the view of `component`, paints a
+    /// node with `shader`, which must then be a brush.
+    fn paints_with(&self, component: Option<SymbolId>, shader: SymbolId, at: TextRange);
 }
 
 /// Where a view's event handlers lower to: the component layout registered last
@@ -1598,7 +1598,7 @@ impl<'a> ViewWalk<'a> {
     fn shader_value(&mut self, have: &Ty, at: TextRange) {
         match have {
             Ty::Named(symbol, _) if self.env.symbol_kind(*symbol) == Some(SymbolKind::Shader) => {
-                self.env.paints_with(*symbol, at);
+                self.env.paints_with(self.flow.own, *symbol, at);
             }
             Ty::Unknown => {}
             other => {

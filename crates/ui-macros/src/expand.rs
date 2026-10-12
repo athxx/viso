@@ -23,6 +23,7 @@ use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 use std::io::Read as _;
 use syn::{Ident, LitStr};
+use viso_dsl::aot::{ShaderLang, pack_brush};
 use viso_dsl::assets::{
     ASSET_ERROR, AssetCatalog, AssetFormat, AssetIssue, AssetKind, ResourceId, normalize_path,
 };
@@ -390,8 +391,12 @@ fn mount<'a>(
     }
     combine(errors)?;
     if let Some(behavior) = &behavior {
-        let embedded = embedded_assets(compiled, assets)
+        let mut embedded = embedded_assets(compiled, assets)
             .map_err(|message| report.at(component.schema.view, message))?;
+        embedded.extend(
+            embedded_shaders(behavior)
+                .map_err(|message| report.at(component.schema.view, message))?,
+        );
         allocations.extend(host_tokens(behavior, &idents, &tracked, embedded));
     }
     let record = record.map(|(file, origin, build)| {
@@ -475,6 +480,43 @@ fn embedded_assets(compiled: &Compiled, dir: Option<&Path>) -> Result<TokenStrea
         });
     }
     Ok(quote! { __viso_view.set_assets([#(#entries),*]); })
+}
+
+/// The statement giving the host its shader table, or nothing for a view
+/// painting with none: each shader packed, at build time, in every backend's
+/// language beside the reference interpreter's program, the target keeping
+/// only its backend's.
+fn embedded_shaders(behavior: &ViewBehavior) -> Result<TokenStream, String> {
+    if behavior.shaders.is_empty() {
+        return Ok(TokenStream::new());
+    }
+    let mut entries = Vec::with_capacity(behavior.shaders.len());
+    for brush in &behavior.shaders {
+        let pack = |lang: ShaderLang| {
+            pack_brush(brush, &[lang, ShaderLang::None])
+                .map(|bytes| Literal::byte_string(&bytes))
+                .map_err(|error| {
+                    format!("internal: a shader the view paints with does not build: {error}")
+                })
+        };
+        let (msl, hlsl, spirv, wgsl, none) = (
+            pack(ShaderLang::Msl)?,
+            pack(ShaderLang::Hlsl)?,
+            pack(ShaderLang::SpirV)?,
+            pack(ShaderLang::Wgsl)?,
+            pack(ShaderLang::None)?,
+        );
+        entries.push(quote! {
+            ::viso_view::__embedded_shader(::viso_view::__per_backend!(
+                msl: #msl,
+                hlsl: #hlsl,
+                spirv: #spirv,
+                wgsl: #wgsl,
+                none: #none,
+            ))
+        });
+    }
+    Ok(quote! { __viso_view.set_shaders([#(#entries),*]); })
 }
 
 /// The fields of a `view!` mount record the expansion knows before the tree is

@@ -29,8 +29,8 @@ use crate::behavior::{Program, hidden_state, inline_instances};
 use crate::diag::{Diagnostic, Severity};
 use crate::hir::style::StyleBook;
 use crate::hir::{
-    CheckedShader, ConstValue, DerivedReads, HirComponent, Migrator, SourceSet, TargetProfile, Ty,
-    TypeSchemas, persists, write_backs,
+    CheckedShader, ConstValue, DerivedReads, HirComponent, Migrator, ShaderPaint, SourceSet,
+    TargetProfile, Ty, TypeSchemas, persists, write_backs,
 };
 use crate::ir::{
     BindingIr, ComponentLibrary, InstanceSources, KeyIr, LibraryComponent, UiTree, analyze_keys,
@@ -183,6 +183,8 @@ pub struct Compiled {
     pub migrators: Vec<Migrator>,
     /// The unit's shaders, each with its program when it checked cleanly.
     pub shaders: Vec<CheckedShader>,
+    /// Every value the unit's views paint a node with a shader by.
+    pub paints: Vec<ShaderPaint>,
     /// The assets the unit names, by identity, once each.
     pub assets: Vec<crate::assets::AssetUse>,
 }
@@ -256,6 +258,7 @@ pub fn compile_fragment(source: &str) -> Compiled {
         types: TypeSchemas::default(),
         migrators: Vec::new(),
         shaders: Vec::new(),
+        paints: Vec::new(),
         assets: Vec::new(),
     }
 }
@@ -357,6 +360,7 @@ fn compile_unit(
     );
     let mut behavior = lowered.behavior;
     let shaders = lowered.shaders;
+    let paints = lowered.paints;
     let assets = lowered.assets;
     let Some(module) = resolved.pop() else {
         return Compiled::empty(diagnostics, behavior, shaders);
@@ -517,6 +521,7 @@ fn compile_unit(
         types: lowered.types,
         migrators: lowered.migrators,
         shaders,
+        paints,
         assets,
     }
 }
@@ -580,6 +585,7 @@ impl Compiled {
             types: TypeSchemas::default(),
             migrators: Vec::new(),
             shaders,
+            paints: Vec::new(),
             assets: Vec::new(),
         }
     }

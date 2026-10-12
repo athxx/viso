@@ -44,11 +44,15 @@ pub enum ControlKind {
     /// `Image` and `Svg`: shows the asset of its `source`, fitted and tinted;
     /// it has no built-in response.
     Asset = 6,
+    /// `ShaderView`: paints its box with the view's shader its `shader`
+    /// names, the value's fields as the brush's parameters; it has no
+    /// built-in response.
+    Shader = 7,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 7] = [
+    pub const ALL: [ControlKind; 8] = [
         ControlKind::Toggle,
         ControlKind::Slider,
         ControlKind::Select,
@@ -56,6 +60,7 @@ impl ControlKind {
         ControlKind::Label,
         ControlKind::Plain,
         ControlKind::Asset,
+        ControlKind::Shader,
     ];
 
     /// The kind native widget `widget` is.
@@ -67,6 +72,7 @@ impl ControlKind {
             "TextInput" => ControlKind::TextInput,
             "Text" | "Button" => ControlKind::Label,
             "Image" | "Svg" => ControlKind::Asset,
+            "ShaderView" => ControlKind::Shader,
             _ => ControlKind::Plain,
         }
     }
@@ -87,7 +93,7 @@ impl ControlKind {
     pub fn responds(self) -> bool {
         !matches!(
             self,
-            ControlKind::Label | ControlKind::Plain | ControlKind::Asset
+            ControlKind::Label | ControlKind::Plain | ControlKind::Asset | ControlKind::Shader
         )
     }
 
@@ -116,7 +122,8 @@ impl ControlKind {
             | (ControlKind::Select, "selected")
             | (ControlKind::TextInput, "value")
             | (ControlKind::Label, "text")
-            | (ControlKind::Asset, "source") => ControlInput::Value,
+            | (ControlKind::Asset, "source")
+            | (ControlKind::Shader, "shader") => ControlInput::Value,
             (ControlKind::Slider, "min") => ControlInput::Min,
             (ControlKind::Slider, "max") => ControlInput::Max,
             (ControlKind::Slider, "step") => ControlInput::Step,
@@ -136,6 +143,7 @@ impl ControlKind {
             ControlKind::Label => "Label",
             ControlKind::Plain => "Plain",
             ControlKind::Asset => "Asset",
+            ControlKind::Shader => "Shader",
         }
     }
 
@@ -148,8 +156,8 @@ impl ControlKind {
 /// A value a control reads from the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlInput {
-    /// Its current value: `checked`, `value`, `selected`, a label's `text` or
-    /// an image's `source`.
+    /// Its current value: `checked`, `value`, `selected`, a label's `text`,
+    /// an image's `source` or a shader view's `shader`.
     Value,
     /// A slider's lower bound.
     Min,
@@ -190,6 +198,9 @@ pub struct Control {
     pub fit: Option<u32>,
     /// The entry of an image's tint.
     pub tint: Option<u32>,
+    /// The shader a shader view paints with, by its index in the view's
+    /// shader table; its value gives the shader's parameters.
+    pub shader: Option<u32>,
     /// The entries of the look it shows.
     pub look: Look,
     /// The look values its styles' `when` blocks select, the first that holds
@@ -318,6 +329,7 @@ impl Control {
             step: None,
             fit: None,
             tint: None,
+            shader: None,
             look: Look::default(),
             arms: Box::new([]),
         }
@@ -378,7 +390,9 @@ impl Control {
             ControlKind::Slider => self.slider(host, scope, cx),
             ControlKind::Select => self.select(host, scope, cx),
             ControlKind::TextInput => text_input(cx),
-            ControlKind::Label | ControlKind::Plain | ControlKind::Asset => None,
+            ControlKind::Label | ControlKind::Plain | ControlKind::Asset | ControlKind::Shader => {
+                None
+            }
         }
     }
 
@@ -509,6 +523,7 @@ impl Encode for Control {
             self.step,
             self.fit,
             self.tint,
+            self.shader,
             look.background,
             look.opacity,
             look.background_transition,
@@ -558,6 +573,7 @@ impl Decode for Control {
             step: entry()?,
             fit: entry()?,
             tint: entry()?,
+            shader: entry()?,
             look: Look {
                 background: entry()?,
                 opacity: entry()?,
@@ -740,8 +756,14 @@ mod tests {
         for kind in ControlKind::ALL {
             assert_eq!(ControlKind::from_u8(kind as u8), Some(kind));
         }
-        assert_eq!(ControlKind::from_u8(7), None);
+        assert_eq!(ControlKind::from_u8(8), None);
         assert_eq!(ControlKind::of("Svg"), ControlKind::Asset);
+        assert_eq!(ControlKind::of("ShaderView"), ControlKind::Shader);
+        assert_eq!(
+            ControlKind::Shader.input("shader"),
+            Some(ControlInput::Value)
+        );
+        assert!(!ControlKind::Shader.responds());
         assert_eq!(ControlKind::Asset.input("fit"), Some(ControlInput::Fit));
         assert_eq!(ControlKind::Plain.input("fit"), None);
         assert!(!ControlKind::Asset.responds());
@@ -781,6 +803,7 @@ mod tests {
             step: None,
             fit: None,
             tint: Some(8),
+            shader: Some(2),
             look: Look {
                 background: Some(3),
                 opacity: None,

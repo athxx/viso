@@ -100,6 +100,7 @@ impl DevLink {
             schema_fingerprint: schema,
             capabilities,
             target: RuntimeTarget::DesktopHost,
+            shader_lang: <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG,
         };
         Some(Self::connect(addr, hello, wake))
     }
@@ -332,6 +333,7 @@ pub(crate) mod fake {
             schema_fingerprint: SchemaFingerprint(0),
             capabilities: super::super::APPLIES,
             target: RuntimeTarget::DesktopHost,
+            shader_lang: <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG,
         }
     }
 
