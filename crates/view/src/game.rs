@@ -16,7 +16,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_behavior::game::{
-    AudioLink, GameError, Key as GameKey, Persist, Rebuild, Restored, Scheduler, SystemFault,
+    AudioLink, Committed, GameError, Key as GameKey, Persist, PreparedSwap, Rebuild, Scheduler,
+    SystemFault,
 };
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Value, Vm};
@@ -60,6 +61,15 @@ impl std::fmt::Display for GameReloadError {
     }
 }
 
+/// `fault`, raised by a system of `module`, as one line naming the system.
+pub fn describe_fault(module: &Module, fault: &SystemFault) -> String {
+    let name = module
+        .systems()
+        .get(fault.system)
+        .map_or("a system", |system| &*module.layout(system.component).name);
+    format!("`{name}` faulted at tick {}: {}", fault.tick, fault.fault)
+}
+
 /// What a swap kept.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GameSwap {
@@ -79,6 +89,10 @@ pub struct GameSession {
     /// The module the running build was made from.
     module: Rc<Module>,
     audio: Option<Box<dyn GameAudioDevice>>,
+    /// The system and code of the fault last reported, so a system faulting
+    /// every tick is reported once until it faults otherwise or the build
+    /// swaps.
+    reported: Option<(usize, &'static str)>,
 }
 
 impl std::fmt::Debug for GameSession {
@@ -118,6 +132,7 @@ impl GameSession {
             scheduler,
             module,
             audio: None,
+            reported: None,
         })
     }
 
@@ -160,9 +175,24 @@ impl GameSession {
         self.audio.is_some()
     }
 
-    /// The faults the systems raised since the last call.
+    /// The faults the systems raised since the frame loop last reported
+    /// them to [`take_game_faults`].
     pub fn take_faults(&mut self) -> Vec<SystemFault> {
         self.scheduler.take_faults()
+    }
+
+    /// Queues the faults raised since the last frame for
+    /// [`take_game_faults`], a fault repeating the last one reported left
+    /// out.
+    fn report_faults(&mut self) {
+        let faults = self.scheduler.take_faults();
+        for fault in &faults {
+            let key = (fault.system, fault.code);
+            if self.reported != Some(key) {
+                self.reported = Some(key);
+                queue_fault(describe_fault(self.scheduler.vm().module(), fault));
+            }
+        }
     }
 
     /// Links `module` into a VM for [`reload`](Self::reload), touching
@@ -190,28 +220,45 @@ impl GameSession {
         vm: Vm,
         rebuild: Option<Rebuild>,
     ) -> Result<GameSwap, GameReloadError> {
-        let swap = match rebuild {
-            Some(keep) => {
-                let characters = self
-                    .scheduler
-                    .rebuild(vm, keep)
-                    .map_err(GameReloadError::Game)?;
-                GameSwap {
-                    tick: self.scheduler.clock().tick(),
-                    characters,
-                    ..GameSwap::default()
-                }
-            }
-            None => {
-                let restored: Restored =
-                    self.scheduler.reload(vm).map_err(GameReloadError::Game)?;
-                GameSwap {
-                    tick: self.scheduler.clock().tick(),
-                    carried: restored.states + restored.locals,
-                    reset: restored.mismatched + restored.missing,
-                    characters: 0,
-                }
-            }
+        let prepared = self.prepare(vm, rebuild)?;
+        Ok(self.commit(module, prepared))
+    }
+
+    /// The first half of [`reload`](Self::reload): proves the swap, the
+    /// session not advancing until [`commit`](Self::commit) or
+    /// [`abort`](Self::abort) settles it, so a revision swapping several
+    /// sessions swaps every one or none.
+    ///
+    /// # Errors
+    ///
+    /// As [`reload`](Self::reload): the running game is unchanged.
+    pub fn prepare(
+        &mut self,
+        vm: Vm,
+        rebuild: Option<Rebuild>,
+    ) -> Result<PreparedSwap, GameReloadError> {
+        match rebuild {
+            Some(keep) => self.scheduler.prepare_rebuild(vm, keep),
+            None => self.scheduler.prepare_reload(vm),
+        }
+        .map_err(GameReloadError::Game)
+    }
+
+    /// Commits the swap [`prepare`](Self::prepare) proved from `module`, the
+    /// audio systems swapping with it.
+    pub fn commit(&mut self, module: Rc<Module>, prepared: PreparedSwap) -> GameSwap {
+        let swap = match self.scheduler.commit_swap(prepared) {
+            Committed::Rebuilt { characters } => GameSwap {
+                tick: self.scheduler.clock().tick(),
+                characters,
+                ..GameSwap::default()
+            },
+            Committed::Reloaded(restored) => GameSwap {
+                tick: self.scheduler.clock().tick(),
+                carried: restored.states + restored.locals,
+                reset: restored.mismatched + restored.missing,
+                characters: 0,
+            },
         };
         if let Some(audio) = &mut self.audio {
             // The new systems run; audio that does not build keeps the old
@@ -219,7 +266,13 @@ impl GameSession {
             let _ = audio.reload(&module, &Natives::standard());
         }
         self.module = module;
-        Ok(swap)
+        self.reported = None;
+        swap
+    }
+
+    /// Puts back the build [`prepare`](Self::prepare) displaced.
+    pub fn abort(&mut self, prepared: PreparedSwap) {
+        self.scheduler.abort_swap(prepared);
     }
 }
 
@@ -229,7 +282,9 @@ struct GameClient(Rc<RefCell<GameSession>>);
 
 impl FrameClient for GameClient {
     fn frame(&mut self, dt: f64) {
-        self.0.borrow_mut().scheduler.frame(dt);
+        let mut session = self.0.borrow_mut();
+        session.scheduler.frame(dt);
+        session.report_faults();
     }
 
     fn key(&mut self, key: Key, pressed: bool) -> bool {
@@ -319,21 +374,55 @@ pub fn game_session(store: &NodeStore, owner: NodeId) -> Option<Rc<RefCell<GameS
     Some(Rc::clone(&client.0))
 }
 
-thread_local! {
-    static START_FAULTS: RefCell<Vec<GameReloadError>> = const { RefCell::new(Vec::new()) };
+/// The most fault lines queued between two frames; the rest are counted.
+const MAX_QUEUED_FAULTS: usize = 64;
+
+#[derive(Default)]
+struct FaultQueue {
+    lines: Vec<String>,
+    dropped: u32,
 }
 
-/// Why the games mounted since the last call did not start, across every
-/// view of this thread.
-pub fn take_game_start_faults() -> Vec<GameReloadError> {
-    START_FAULTS.with(|faults| std::mem::take(&mut *faults.borrow_mut()))
+thread_local! {
+    static FAULTS: RefCell<FaultQueue> = RefCell::default();
+}
+
+fn queue_fault(line: String) {
+    FAULTS.with(|queue| {
+        let mut queue = queue.borrow_mut();
+        if queue.lines.len() < MAX_QUEUED_FAULTS {
+            queue.lines.push(line);
+        } else {
+            queue.dropped += 1;
+        }
+    });
+}
+
+/// The faults the games of this thread raised since the last call, one line
+/// each naming the system — a game that did not start, and a system that
+/// faulted while it ran, reported once while it keeps faulting the same way
+/// — for the frame loop to log.
+pub fn take_game_faults() -> Vec<String> {
+    FAULTS.with(|queue| {
+        let mut queue = queue.borrow_mut();
+        let mut lines = std::mem::take(&mut queue.lines);
+        let dropped = std::mem::take(&mut queue.dropped);
+        if dropped > 0 {
+            lines.push(format!("{dropped} more game faults were not reported"));
+        }
+        lines
+    })
 }
 
 /// [`mount_game`] for a mount that has no caller to answer: a start that
-/// faults is queued for [`take_game_start_faults`].
+/// faults is queued for [`take_game_faults`].
 pub(crate) fn mount_game_queued(store: &mut NodeStore, module: &Rc<Module>, owner: NodeId) {
     if let Err(error) = mount_game(store, module, owner) {
-        START_FAULTS.with(|faults| faults.borrow_mut().push(error));
+        let why = match &error {
+            GameReloadError::Game(GameError::Fault(fault)) => describe_fault(module, fault),
+            error => error.to_string(),
+        };
+        queue_fault(format!("the game did not start: {why}"));
     }
 }
 

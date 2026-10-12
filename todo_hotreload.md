@@ -446,17 +446,28 @@ session comes first, then every reload item builds on it.
       good rebuilds the World keeping its characters (the host's World Rebuild
       policy); an app that does not advertise `system` gets the view alone with a
       warning; the ACK makes the candidate the last good.
-- [ ] Runtime stage: the runtime advertises `system`; a `system` entry whose file has
-      no view in the `ui` section, or no running game, refuses the patch; decode,
-      verify and link the candidate module into a VM at stage
-      time, nothing live touched (`NACK_UNLOADABLE_SYSTEM`, stage `runtime-stage`);
-      commit at the tick boundary after the current tick — systems first (reload or
-      shadow rebuild by tier), then the UI sections, so a faulting smoke tick NACKs
-      the whole revision (`NACK_SYSTEM_FAULT`, stage `runtime-commit`) with the last
-      good kept everywhere; the ACK carries the tick the patch applied before, the
-      tier and the carried and reset states.
-- [ ] Integration test (§62 Game): run tick N, stage a patch during N, assert old code
-      completes N, new code starts N+1, world and entity ids identical.
+- [x] Runtime stage: the runtime advertises `system`; a `system` entry whose file has
+      no view with systems in the `ui` section refuses the patch, and the candidate
+      module links into a VM at stage time with nothing live touched
+      (`NACK_UNLOADABLE_SYSTEM`, stage `runtime-stage`); a mount whose game did not
+      start gets one with its view instead.
+- [x] Runtime commit at the tick boundary the frame is at, before its ticks run:
+      systems first — every session of the file proves its swap
+      (`Scheduler::prepare_reload` / `prepare_rebuild`, the smoke tick run, the old
+      build held) — then the views, then every proved swap commits; a fault puts every
+      proved swap back and refuses the whole revision (`NACK_SYSTEM_FAULT`, stage
+      `runtime-commit`, the fault as an error log line naming the system); the ACK
+      carries a `GameCommit` per file — tier, sessions, the first tick of the new
+      build, the carried and reset states and the kept characters — shown in the
+      `dev` event's `game` object and the human line.
+- [x] Game faults reach the developer: a session reports each new fault once (a
+      system faulting every tick the same way is not repeated) to a bounded queue,
+      `take_game_faults`, with the starts that failed; the facade forwards them to
+      `viso run` as log lines, or prints them without it.
+- [x] Integration test (§62 Game): run tick N, the patch sent while it runs; the old
+      code completes N, the new code runs N+1, the World, its entity ids and the
+      session identical (`hot_reload::tests::games`, with the faulting, World Rebuild
+      and missing-view cases).
 - [ ] Replay timeline: a live patch is recorded as `PatchRevision applied at TickId`
       with the system code revision and any state resets; replay re-applies it at the
       same tick; deterministic-replay mode refuses live patches with a stage

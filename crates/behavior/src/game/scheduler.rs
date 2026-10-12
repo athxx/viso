@@ -124,6 +124,62 @@ enum Phase {
     Frame,
 }
 
+/// A swap a game prepared and proved: the new build ran its start or smoke
+/// tick clean. The game it was prepared on commits or aborts it before it
+/// advances, so the parts of one revision commit together or not at all.
+#[must_use = "a prepared swap is committed or aborted"]
+pub struct PreparedSwap(Prepared);
+
+impl std::fmt::Debug for PreparedSwap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            Prepared::Reload { .. } => "PreparedSwap::Reload",
+            Prepared::Rebuild { .. } => "PreparedSwap::Rebuild",
+        })
+    }
+}
+
+enum Prepared {
+    /// The new build runs in the game's place; the old one waits.
+    Reload {
+        old: Box<OldBuild>,
+        restored: Restored,
+        incoming: Option<Persistence>,
+        rate_changed: bool,
+    },
+    /// The shadow game waits to replace the running one.
+    Rebuild {
+        shadow: Box<Scheduler>,
+        incoming: Option<Persistence>,
+        characters: u32,
+        /// The persist reports the game had before the shadow's carry.
+        reports: usize,
+    },
+}
+
+/// What a reload displaced, until it commits.
+struct OldBuild {
+    vm: Vm,
+    instances: Vec<Instance>,
+    sequences: Box<[u32]>,
+    budget: Budget,
+    build: u64,
+    hooks: Hooks,
+    cx: Contexts,
+    input: InputLatch,
+    clock: Clock,
+    reports: usize,
+}
+
+/// What a committed swap carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Committed {
+    /// A reload over the running World, and the states it carried.
+    Reloaded(Restored),
+    /// A World Rebuild, and the characters it carried by stable key.
+    Rebuilt { characters: u32 },
+}
+
 /// Runs a module's systems on a fixed-step [`Clock`].
 ///
 /// Each system is one [`Instance`] created when the scheduler is, which then
@@ -368,11 +424,28 @@ impl Scheduler {
     /// left as it was. The shadow steps with a fresh engine of this game's
     /// kind.
     pub fn rebuild(&mut self, vm: Vm, keep: Rebuild) -> Result<u32, GameError> {
+        let prepared = self.prepare_rebuild(vm, keep)?;
+        match self.commit_swap(prepared) {
+            Committed::Rebuilt { characters } => Ok(characters),
+            Committed::Reloaded(_) => unreachable!("a rebuild commits a rebuild"),
+        }
+    }
+
+    /// The first half of [`rebuild`](Self::rebuild): builds the shadow game
+    /// and proves its start and smoke tick, leaving this game running its
+    /// own build until [`commit_swap`](Self::commit_swap) replaces it, or
+    /// [`abort_swap`](Self::abort_swap) drops the shadow.
+    ///
+    /// # Errors
+    ///
+    /// As [`rebuild`](Self::rebuild): this game is left as it was.
+    pub fn prepare_rebuild(&mut self, vm: Vm, keep: Rebuild) -> Result<PreparedSwap, GameError> {
         let physics = self.world.fork_physics();
         PhysicsTier::check(&*physics, vm.module().determinism())?;
         let mut shadow = Scheduler::assemble(vm, self.seed, physics)?;
         // The shadow stores nothing until it replaces this game.
         let incoming = shadow.persist.take();
+        let reports = self.persist_reports.len();
         if incoming.is_some() || self.persist.is_some() {
             carry_persisted(
                 (self.vm.module(), &self.instances),
@@ -394,21 +467,80 @@ impl Scheduler {
         shadow.set_players(self.players);
         shadow.input = self.input.clone();
         shadow.input.remap(&input_schema(&module));
-        let carried = shadow.prove_start(&self.world.bodies(), keep)?;
-        shadow.faults = mem::take(&mut self.faults);
-        shadow.playback = self.playback.take();
-        shadow.recorder = self.recorder.take();
-        shadow.restart_tapes();
-        shadow.delivered_commands = self.delivered_commands;
-        shadow.replayed_commands = self.replayed_commands;
-        shadow.persist = incoming.or_else(|| self.persist.take());
-        shadow.persist_reports = mem::take(&mut self.persist_reports);
-        shadow.deliver_queued(0);
-        if let Some(link) = self.vm.services_mut().remove::<AudioLink>() {
-            shadow.vm.services_mut().insert(link);
+        match shadow.prove_start(&self.world.bodies(), keep) {
+            Ok(characters) => Ok(PreparedSwap(Prepared::Rebuild {
+                shadow: Box::new(shadow),
+                incoming,
+                characters,
+                reports,
+            })),
+            Err(fault) => {
+                self.persist_reports.truncate(reports);
+                Err(GameError::Fault(fault))
+            }
         }
-        *self = shadow;
-        Ok(carried)
+    }
+
+    /// Replaces this game's build with the one `prepared` proved, which this
+    /// game prepared and has not advanced since: what the swap carried.
+    pub fn commit_swap(&mut self, prepared: PreparedSwap) -> Committed {
+        match prepared.0 {
+            Prepared::Reload {
+                mut old,
+                restored,
+                incoming,
+                rate_changed,
+            } => {
+                if let Some(persistence) = incoming {
+                    self.persist = Some(persistence);
+                }
+                if rate_changed && let Some(history) = &mut self.history {
+                    // The past ran at another rate, so it does not replay.
+                    let schema = input_schema(self.vm.module());
+                    history.restart(Recorder::new(
+                        self.seed,
+                        self.vm.module().tick_rate(),
+                        &schema.actions,
+                    ));
+                }
+                if let Some(link) = old.vm.services_mut().remove::<AudioLink>() {
+                    self.vm.services_mut().insert(link);
+                }
+                self.rebind_tapes();
+                Committed::Reloaded(restored)
+            }
+            Prepared::Rebuild {
+                shadow,
+                incoming,
+                characters,
+                ..
+            } => {
+                let mut shadow = *shadow;
+                shadow.faults = mem::take(&mut self.faults);
+                shadow.playback = self.playback.take();
+                shadow.recorder = self.recorder.take();
+                shadow.restart_tapes();
+                shadow.delivered_commands = self.delivered_commands;
+                shadow.replayed_commands = self.replayed_commands;
+                shadow.persist = incoming.or_else(|| self.persist.take());
+                shadow.persist_reports = mem::take(&mut self.persist_reports);
+                shadow.deliver_queued(0);
+                if let Some(link) = self.vm.services_mut().remove::<AudioLink>() {
+                    shadow.vm.services_mut().insert(link);
+                }
+                *self = shadow;
+                Committed::Rebuilt { characters }
+            }
+        }
+    }
+
+    /// Puts back the build `prepared` displaced, as if it was never
+    /// prepared: another part of the same revision failed.
+    pub fn abort_swap(&mut self, prepared: PreparedSwap) {
+        match prepared.0 {
+            Prepared::Reload { old, .. } => self.put_back(*old),
+            Prepared::Rebuild { reports, .. } => self.persist_reports.truncate(reports),
+        }
     }
 
     /// Runs the start of a rebuilt world at tick 0, carries the characters
@@ -473,7 +605,23 @@ impl Scheduler {
     /// smoke tick, or [`GameError::Physics`] when the physics engine does not
     /// reach the new build's determinism tier: the game, its build among it,
     /// is left as it was.
-    pub fn reload(&mut self, mut vm: Vm) -> Result<Restored, GameError> {
+    pub fn reload(&mut self, vm: Vm) -> Result<Restored, GameError> {
+        let prepared = self.prepare_reload(vm)?;
+        match self.commit_swap(prepared) {
+            Committed::Reloaded(restored) => Ok(restored),
+            Committed::Rebuilt { .. } => unreachable!("a reload commits a reload"),
+        }
+    }
+
+    /// The first half of [`reload`](Self::reload): `vm`'s build takes this
+    /// game's place and runs its smoke tick, the displaced build held until
+    /// [`commit_swap`](Self::commit_swap) drops it, or
+    /// [`abort_swap`](Self::abort_swap) puts it back.
+    ///
+    /// # Errors
+    ///
+    /// As [`reload`](Self::reload): the game is left as it was.
+    pub fn prepare_reload(&mut self, mut vm: Vm) -> Result<PreparedSwap, GameError> {
         PhysicsTier::check(&*self.world.fork_physics(), vm.module().determinism())?;
         let snapshot = self.snapshot();
         let mut instances = instantiate(&mut vm, self.clock.tick())?;
@@ -512,43 +660,44 @@ impl Scheduler {
         );
         self.set_players(self.players);
         self.input.remap(&schema);
-        let hooks = mem::replace(&mut self.hooks, Hooks::of(&module));
-        let build = mem::replace(&mut self.build, fnv(&module.encode()));
-        let budget = mem::replace(&mut self.budget, vm.budget());
-        let sequences = mem::replace(&mut self.sequences, vec![0; module.systems().len()].into());
-        let old_instances = mem::replace(&mut self.instances, instances);
-        let mut old_vm = mem::replace(&mut self.vm, vm);
+        let old = Box::new(OldBuild {
+            hooks: mem::replace(&mut self.hooks, Hooks::of(&module)),
+            build: mem::replace(&mut self.build, fnv(&module.encode())),
+            budget: mem::replace(&mut self.budget, vm.budget()),
+            sequences: mem::replace(&mut self.sequences, vec![0; module.systems().len()].into()),
+            instances: mem::replace(&mut self.instances, instances),
+            vm: mem::replace(&mut self.vm, vm),
+            cx,
+            input,
+            clock,
+            reports,
+        });
         let restored = self.restore_states(&snapshot);
         if let Some(fault) = self.smoke_tick() {
-            self.vm = old_vm;
-            self.instances = old_instances;
-            self.sequences = sequences;
-            self.budget = budget;
-            self.build = build;
-            self.hooks = hooks;
-            self.cx = cx;
-            self.set_players(self.players);
-            self.input = input;
-            self.clock = clock;
-            self.persist_reports.truncate(reports);
+            self.put_back(*old);
             return Err(GameError::Fault(fault));
         }
-        if let Some(persistence) = incoming {
-            self.persist = Some(persistence);
-        }
-        if rate_changed && let Some(history) = &mut self.history {
-            // The past ran at another rate, so it does not replay.
-            history.restart(Recorder::new(
-                self.seed,
-                module.tick_rate(),
-                &schema.actions,
-            ));
-        }
-        if let Some(link) = old_vm.services_mut().remove::<AudioLink>() {
-            self.vm.services_mut().insert(link);
-        }
-        self.rebind_tapes();
-        Ok(Restored { locals, ..restored })
+        Ok(PreparedSwap(Prepared::Reload {
+            old,
+            restored: Restored { locals, ..restored },
+            incoming,
+            rate_changed,
+        }))
+    }
+
+    /// Puts the build a reload displaced back in its place.
+    fn put_back(&mut self, old: OldBuild) {
+        self.vm = old.vm;
+        self.instances = old.instances;
+        self.sequences = old.sequences;
+        self.budget = old.budget;
+        self.build = old.build;
+        self.hooks = old.hooks;
+        self.cx = old.cx;
+        self.set_players(self.players);
+        self.input = old.input;
+        self.clock = old.clock;
+        self.persist_reports.truncate(old.reports);
     }
 
     /// Runs every start hook in system order on one shared budget, then

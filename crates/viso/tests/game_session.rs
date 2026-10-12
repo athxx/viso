@@ -32,7 +32,7 @@ fn a_mounted_game_runs_on_the_frame_loop_until_its_root_goes() {
         );
         viso::view!("fixtures/game.vs")(&mut cx).id()
     };
-    assert!(viso_view::take_game_start_faults().is_empty());
+    assert!(viso_view::take_game_faults().is_empty());
     let session = game_session(&store, root).expect("the root runs the game");
     assert!(store.frame_clients_want_frame());
     let steps = || session.borrow().state("Runner", "steps");

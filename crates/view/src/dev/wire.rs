@@ -28,7 +28,7 @@ pub use super::patch::{
     GamePatch, GameTier, MAX_PLAN_ENTRIES, NodeCarry, NodeRef, RESET_NOTICE, ReloadPlan,
     RetypePlan, StateAction, StatePlan, StructuralOp, SystemPatch, UiPatch, ViewPatch,
 };
-use super::patch::{read_systems, read_ui, write_systems, write_ui};
+use super::patch::{read_systems, read_tier, read_ui, write_systems, write_tier, write_ui};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
@@ -570,7 +570,29 @@ pub struct PatchAck {
     /// Every state cell a commit reset, by its own owning key. At most
     /// [`MAX_SCOPED_RESETS`]; [`PatchAck::scoped_resets`] is the total.
     pub state_resets: Vec<ScopedReset>,
+    /// What the swap of each game the patch's `system` section named kept,
+    /// over every session of its file.
+    pub games: Vec<GameCommit>,
     pub timings: PatchTimings,
+}
+
+/// What swapping a file's game kept, over every session running it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameCommit {
+    pub file: FileId,
+    /// The tier it swapped at.
+    pub tier: GameTier,
+    /// The sessions it swapped.
+    pub sessions: u32,
+    /// The first tick the new build ran: the old one completed every tick
+    /// before it. A World Rebuild starts again at 0.
+    pub tick: u64,
+    /// The states carried across by stable identity and schema.
+    pub carried: u32,
+    /// The states that took their initializers.
+    pub reset: u32,
+    /// The characters a World Rebuild carried by stable entity key.
+    pub characters: u32,
 }
 
 impl PatchAck {
@@ -611,6 +633,13 @@ pub const NACK_UNKNOWN_FILE: &str = "NACK_UNKNOWN_FILE";
 /// A view of the patch does not load: its behavior module does not decode,
 /// verify or hold the component the view mounts.
 pub const NACK_UNLOADABLE_VIEW: &str = "NACK_UNLOADABLE_VIEW";
+/// A game of the patch does not load: its file has no view in the `ui`
+/// section, or its module does not link.
+pub const NACK_UNLOADABLE_SYSTEM: &str = "NACK_UNLOADABLE_SYSTEM";
+/// A game's candidate faulted creating its systems, in its start or in its
+/// smoke tick, or its physics tier does not hold: the whole revision is
+/// refused with every game and view at its last good.
+pub const NACK_SYSTEM_FAULT: &str = "NACK_SYSTEM_FAULT";
 
 /// A log line's level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1267,6 +1296,16 @@ impl Message for RuntimeMessage {
                     enc.write_u64(reset.owner.lo);
                     write_string(enc, &reset.code);
                 }
+                enc.write_varint(ack.games.len() as u64);
+                for game in &ack.games {
+                    enc.write_varint(u64::from(game.file.0));
+                    write_tier(enc, game.tier);
+                    enc.write_varint(u64::from(game.sessions));
+                    enc.write_varint(game.tick);
+                    for count in [game.carried, game.reset, game.characters] {
+                        enc.write_varint(u64::from(count));
+                    }
+                }
                 enc.write_varint(ack.timings.decode_us);
                 enc.write_varint(ack.timings.stage_us);
                 enc.write_varint(ack.timings.commit_us);
@@ -1371,6 +1410,17 @@ impl Message for RuntimeMessage {
                         file: read_file(dec)?,
                         owner: StateKey::from_parts(dec.read_u64()?, dec.read_u64()?),
                         code: read_string(dec, MAX_CODE, "diagnostic code")?,
+                    })
+                })?,
+                games: read_list(dec, MAX_FILES, "swapped games", |dec| {
+                    Ok(GameCommit {
+                        file: read_file(dec)?,
+                        tier: read_tier(dec)?,
+                        sessions: read_u32(dec)?,
+                        tick: dec.read_varint()?,
+                        carried: read_u32(dec)?,
+                        reset: read_u32(dec)?,
+                        characters: read_u32(dec)?,
                     })
                 })?,
                 timings: PatchTimings {
@@ -1712,6 +1762,17 @@ mod tests {
                     file: FileId(1),
                     owner: StateKey::from_parts(5, 6),
                     code: "E5101".into(),
+                }],
+                games: vec![GameCommit {
+                    file: FileId(1),
+                    tier: GameTier::WorldRebuild {
+                        keep: Rebuild::KeepCharacters,
+                    },
+                    sessions: 2,
+                    tick: u64::MAX,
+                    carried: 0,
+                    reset: 1,
+                    characters: 3,
                 }],
                 timings: PatchTimings {
                     decode_us: 1,

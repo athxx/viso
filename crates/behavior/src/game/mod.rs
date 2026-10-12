@@ -108,7 +108,9 @@ pub use persist::{
     SharedStore,
 };
 pub use physics::{Kinematic, Physics, PhysicsError, PhysicsTier, StepBodies};
-pub use scheduler::{CommandKey, DEFAULT_SEED, GameError, Rebuild, Scheduler, SystemFault};
+pub use scheduler::{
+    CommandKey, Committed, DEFAULT_SEED, GameError, PreparedSwap, Rebuild, Scheduler, SystemFault,
+};
 pub use snapshot::{GameSnapshot, Restored};
 pub use tape::{InputTape, TapeChange, TapeError, TapeEvent};
 pub use timer::{Cooldown, TickTimer};

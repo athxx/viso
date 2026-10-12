@@ -240,10 +240,7 @@ fn the_reload_note_names_the_deciding_change_first() {
 }
 
 fn running(program: &Program) -> Scheduler {
-    let module = Rc::new(program.bytecode().expect("verified bytecode"));
-    let mut vm = Vm::new(module, Budget::default());
-    vm.link(&Natives::standard(), &[]).expect("link");
-    Scheduler::new(vm).expect("a started game")
+    Scheduler::new(vm_of(program)).expect("a started game")
 }
 
 fn steps(game: &Scheduler) -> Value {
@@ -346,4 +343,53 @@ fn a_swap_applies_each_tier_to_the_running_game() {
         "{error}"
     );
     assert_eq!(game.snapshot(), before, "the last good game runs on");
+}
+
+fn vm_of(program: &Program) -> Vm {
+    let module = Rc::new(program.bytecode().expect("verified bytecode"));
+    let mut vm = Vm::new(module, Budget::default());
+    vm.link(&Natives::standard(), &[]).expect("link");
+    vm
+}
+
+#[test]
+fn a_prepared_swap_aborted_leaves_the_game_as_it_was() {
+    use viso_behavior::game::Committed;
+
+    let mut game = running(&program(GAME));
+    game.step(4);
+    let (build, tick) = (game.build(), game.clock().tick());
+    let faster = program(&GAME.replace("steps += 1;", "steps += 2;"));
+
+    // Another part of the revision failed: the reload is put back.
+    let prepared = game.prepare_reload(vm_of(&faster)).expect("proves");
+    game.abort_swap(prepared);
+    assert_eq!((game.build(), game.clock().tick()), (build, tick));
+    game.step(1);
+    assert_eq!(steps(&game), Value::Int(5), "the old logic runs on");
+
+    let moved = program(&GAME.replace("0.0f32, 1.0f32, 0.0f32", "0.0f32, 2.0f32, 0.0f32"));
+    let prepared = game
+        .prepare_rebuild(vm_of(&moved), Rebuild::Fresh)
+        .expect("proves");
+    assert_eq!(game.clock().tick(), 5, "a prepared rebuild touches nothing");
+    game.abort_swap(prepared);
+    assert_eq!(game.build(), build);
+
+    // Committed, each swap reports what it carried.
+    let prepared = game.prepare_reload(vm_of(&faster)).expect("proves");
+    let Committed::Reloaded(restored) = game.commit_swap(prepared) else {
+        panic!("a reload");
+    };
+    assert_eq!(restored.states, 2);
+    game.step(1);
+    assert_eq!(steps(&game), Value::Int(7));
+    let prepared = game
+        .prepare_rebuild(vm_of(&moved), Rebuild::KeepCharacters)
+        .expect("proves");
+    assert_eq!(
+        game.commit_swap(prepared),
+        Committed::Rebuilt { characters: 1 }
+    );
+    assert_eq!(game.clock().tick(), 0);
 }

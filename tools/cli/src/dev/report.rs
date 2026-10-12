@@ -7,7 +7,7 @@
 use std::sync::{Mutex, OnceLock};
 
 use viso_dsl::{Diagnostic, Severity};
-use viso_view::dev::wire::{CommitCounts, Stage};
+use viso_view::dev::wire::{CommitCounts, GameCommit, Stage};
 
 /// How a candidate ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +73,8 @@ pub struct ReloadEvent {
     pub counts: CommitCounts,
     /// The codes of its diagnostics and notices, or of the runtime's NACK.
     pub codes: Vec<String>,
+    /// What swapping the file's game kept, when the commit swapped it.
+    pub game: Option<GameCommit>,
 }
 
 impl ReloadEvent {
@@ -167,6 +169,7 @@ mod tests {
             elapsed_us: 0,
             counts: CommitCounts::default(),
             codes: vec!["E1405".into(), "E2103".into(), "E1405".into()],
+            game: None,
         };
         assert_eq!(event.codes(), ["E1405", "E2103"]);
     }

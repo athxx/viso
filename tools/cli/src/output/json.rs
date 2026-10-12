@@ -264,6 +264,28 @@ fn dev(
         w.uint(u64::from(count));
     }
     w.end_object();
+    w.name("game");
+    match &event.game {
+        Some(game) => {
+            w.begin_object();
+            w.name("tier");
+            w.string(game.tier.as_str());
+            w.name("sessions");
+            w.uint(u64::from(game.sessions));
+            w.name("tick");
+            w.uint(game.tick);
+            for (name, count) in [
+                ("carried", game.carried),
+                ("reset", game.reset),
+                ("characters", game.characters),
+            ] {
+                w.name(name);
+                w.uint(u64::from(count));
+            }
+            w.end_object();
+        }
+        None => w.null(),
+    }
     w.end_object();
 }
 
@@ -495,6 +517,7 @@ mod tests {
             elapsed_us: 1500,
             counts: Default::default(),
             codes: vec!["E1001".into(), "E1001".into()],
+            game: None,
         };
         let mut w = JsonWriter::new();
         dev(&mut w, "src/view.vs", "s1", "r1", "b1", &event);
@@ -508,7 +531,7 @@ mod tests {
                 r#""last_good_revision":2,"elapsed_ms":1.5,"mounts":0,"migrated":0,"#,
                 r#""reset":0,"focus_lost":0,"scroll_lost":0,"handlers_lost":0,"#,
                 r#""dirty":{"structure":0,"style":0,"measure":0,"layout":0,"#,
-                r#""transform":0,"paint":0,"hit_test":0,"semantics":0}}"#,
+                r#""transform":0,"paint":0,"hit_test":0,"semantics":0},"game":null}"#,
             )
         );
     }

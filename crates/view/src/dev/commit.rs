@@ -107,6 +107,11 @@ impl Candidate {
         Candidate { package, module }
     }
 
+    /// The verified behavior module, `None` for a view without behavior.
+    pub fn module(&self) -> Option<&Rc<Module>> {
+        self.module.as_ref()
+    }
+
     /// The number of static nodes of the view.
     pub fn static_count(&self) -> usize {
         self.package.ui.nodes.len()
@@ -1153,6 +1158,12 @@ fn mount_behavior(
             }
             None => rt.store.clear_event_handlers(node),
         }
+    }
+    if host.is_none()
+        && let Some(root) = rt.root
+    {
+        // A view without behavior runs no game.
+        rt.store.remove_frame_client(root);
     }
     if let Some(host) = &host {
         let mut cx = StructureCx {

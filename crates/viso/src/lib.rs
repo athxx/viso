@@ -2034,6 +2034,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // so a reload's writes settle and paint this frame.
                 #[cfg(feature = "hot-reload")]
                 self.hot_reload.reload(&mut self.windows);
+                // The faults the games raised last frame: to `viso run` when
+                // it is attached, to stderr otherwise.
+                let faults = viso_view::take_game_faults();
+                #[cfg(feature = "hot-reload")]
+                let faults = self.hot_reload.forward_game_faults(faults);
+                for line in faults {
+                    eprintln!("[viso] {line}");
+                }
                 for ws in &mut self.windows {
                     // Start any animations a handler requested this frame — a
                     // sheet sliding in queued a `TranslateAnim` through

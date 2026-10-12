@@ -307,6 +307,7 @@ impl DevSession {
                         elapsed_us: elapsed,
                         counts,
                         codes,
+                        game: ack.games.iter().find(|game| game.file == file).copied(),
                     };
                     out.dev(
                         source.name(),
@@ -355,6 +356,7 @@ impl DevSession {
                         elapsed_us: elapsed,
                         counts: CommitCounts::default(),
                         codes,
+                        game: None,
                     };
                     let name = Source::new(&view.path, &self.root, "").name().to_owned();
                     out.dev(&name, &self.session, &runtime_session, &self.build, &event);
@@ -452,6 +454,7 @@ impl DevSession {
                         elapsed_us: elapsed_us(started),
                         counts: CommitCounts::default(),
                         codes: Vec::new(),
+                        game: None,
                     };
                     let name = Source::new(&view.path, &self.root, "").name().to_owned();
                     out.dev(&name, &self.session, &runtime_session, &self.build, &event);
@@ -480,6 +483,7 @@ impl DevSession {
                 elapsed_us: elapsed_us(started),
                 counts: CommitCounts::default(),
                 codes: diagnostics.iter().map(|d| d.code.to_owned()).collect(),
+                game: None,
             };
             out.dev(
                 source.name(),
@@ -714,6 +718,7 @@ mod tests {
                 }],
                 notices: Vec::new(),
                 state_resets: Vec::new(),
+                games: Vec::new(),
                 timings: PatchTimings::default(),
             }));
         }

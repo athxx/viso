@@ -16,7 +16,14 @@
 //! it (a window opened later) is rebuilt from the view the file now runs. An
 //! edit the host rejected arrives as a failure, shown over the last-good UI of
 //! each window mounting the file until the host clears it or a patch commits
-//! the file. Without `viso run` there is no session: the mounts are dropped.
+//! the file. A patch's `system` section names the files whose games swap
+//! with their views: staging links each candidate module, and the commit
+//! proves the swap on every session running the file before anything else
+//! commits — systems first, so a candidate whose start or smoke tick faults
+//! refuses the whole revision with every game and view at its last good —
+//! then commits the views and the swaps together at the tick boundary the
+//! frame is at. The faults the games raise reach the host as log lines.
+//! Without `viso run` there is no session: the mounts are dropped.
 //! Without the feature this module is not compiled and a `view!` records
 //! nothing.
 
@@ -27,24 +34,29 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use viso_behavior::game::PreparedSwap;
+use viso_behavior::{Module, Vm};
 use viso_platform::{LoopWaker, WindowId};
 use viso_runtime::RuntimeCx;
 use viso_ui::NodeId;
 use viso_ui::state::{StateId, StateKey};
 use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, static_nodes};
 use viso_view::dev::wire::{
-    CommitCounts, Domain, Domains, FileCommit, FileId, MAX_NOTICES, MAX_SCOPED_RESETS, MountEntry,
-    NACK_UNKNOWN_FILE, NACK_UNLOADABLE_VIEW, NACK_UNSUPPORTED_DOMAIN, Notice, PatchAck,
-    PatchBundle, PatchNack, PatchSection, PatchTimings, RESET_NOTICE, ReloadPlan, Revision,
-    RuntimeIdentity, RuntimeMessage, SchemaFingerprint, ScopedReset, Stage,
+    CommitCounts, Domain, Domains, FileCommit, FileId, GameCommit, GameTier, LogLevel, MAX_NOTICES,
+    MAX_SCOPED_RESETS, MountEntry, NACK_SYSTEM_FAULT, NACK_UNKNOWN_FILE, NACK_UNLOADABLE_SYSTEM,
+    NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack, PatchSection, PatchTimings,
+    RESET_NOTICE, ReloadPlan, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint,
+    ScopedReset, Stage,
 };
-use viso_view::{MountRecord, ViewHost, take_mounts};
+use viso_view::{
+    GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
+};
 
 use crate::WindowState;
 use link::{DevLink, Incoming};
 
 /// The domains this runtime applies.
-const APPLIES: Domains = Domains::NONE.with(Domain::Ui);
+const APPLIES: Domains = Domains::NONE.with(Domain::Ui).with(Domain::System);
 
 /// The hot reload session of an app: its mounted views and their files, and
 /// the dev channel to `viso run`, opened with the first mount.
@@ -74,8 +86,27 @@ struct StagedPatch {
     next_revision: Revision,
     domains: Domains,
     views: Vec<StagedView>,
+    games: Vec<StagedGame>,
     decode: Duration,
     stage: Duration,
+}
+
+/// A game of a staged patch: its file, the tier it swaps at, and the
+/// candidate module its view carries, linked once at stage time.
+struct StagedGame {
+    file: usize,
+    tier: GameTier,
+    module: Rc<Module>,
+    /// The VM staging linked, for the first session; each other session of
+    /// the file links its own at commit.
+    vm: Option<Vm>,
+}
+
+/// A session's swap proved at commit, waiting for the rest of the revision.
+struct ProvedSwap {
+    game: usize,
+    session: Rc<RefCell<GameSession>>,
+    prepared: PreparedSwap,
 }
 
 /// A view of a staged patch: its file, its loaded candidate and the plan
@@ -300,6 +331,31 @@ impl HotReloadSession {
                 last_good_revision: identity.current_revision,
             });
         }
+        let last_good = identity.current_revision;
+        let mut games = staged.games;
+        // Systems first: every session's swap is proved before anything
+        // commits, so a fault refuses the revision with nothing changed.
+        let proved = match self.prove_games(&mut games, windows) {
+            Ok(proved) => proved,
+            Err(line) => {
+                if let Some(link) = &mut self.link {
+                    link.send(RuntimeMessage::Log {
+                        level: LogLevel::Error,
+                        line,
+                    });
+                }
+                return RuntimeMessage::Nack(PatchNack {
+                    base_revision: staged.base_revision,
+                    candidate_revision: staged.next_revision,
+                    stage: Stage::RuntimeCommit,
+                    diagnostic_codes: vec![NACK_SYSTEM_FAULT.into()],
+                    last_good_revision: last_good,
+                });
+            }
+        };
+        let Some(identity) = &mut self.identity else {
+            unreachable!("checked above");
+        };
         identity.current_revision = staged.next_revision;
         let mut files = Vec::with_capacity(staged.views.len());
         let mut notices = Vec::new();
@@ -359,6 +415,35 @@ impl HotReloadSession {
                 self.failures_changed = true;
             }
         }
+        // The views committed: the games swap with them.
+        let mut swapped: Vec<GameCommit> = Vec::with_capacity(games.len());
+        for proof in proved {
+            let game = &games[proof.game];
+            let swap = proof
+                .session
+                .borrow_mut()
+                .commit(Rc::clone(&game.module), proof.prepared);
+            let file = FileId(game.file as u32);
+            let commit = match swapped.iter_mut().find(|c| c.file == file) {
+                Some(commit) => commit,
+                None => {
+                    swapped.push(GameCommit {
+                        file,
+                        tier: game.tier,
+                        sessions: 0,
+                        tick: swap.tick,
+                        carried: 0,
+                        reset: 0,
+                        characters: 0,
+                    });
+                    swapped.last_mut().expect("pushed")
+                }
+            };
+            commit.sessions += 1;
+            commit.carried += swap.carried;
+            commit.reset += swap.reset;
+            commit.characters += swap.characters;
+        }
         let micros = |d: Duration| u64::try_from(d.as_micros()).unwrap_or(u64::MAX);
         RuntimeMessage::Ack(PatchAck {
             revision: staged.next_revision,
@@ -366,12 +451,83 @@ impl HotReloadSession {
             files,
             notices,
             state_resets,
+            games: swapped,
             timings: PatchTimings {
                 decode_us: micros(staged.decode),
                 stage_us: micros(staged.stage),
                 commit_us: micros(started.elapsed()),
             },
         })
+    }
+}
+
+impl HotReloadSession {
+    /// Proves the swap of each game of a patch on every session running its
+    /// file, in the windows' order: the proved swaps, or the line saying
+    /// which game faulted, every swap proved before it put back.
+    fn prove_games(
+        &self,
+        games: &mut [StagedGame],
+        windows: &[WindowState],
+    ) -> Result<Vec<ProvedSwap>, String> {
+        let mut proved: Vec<ProvedSwap> = Vec::new();
+        for (index, game) in games.iter_mut().enumerate() {
+            for live in self.views.iter().filter(|live| live.file == game.file) {
+                let Some(ws) = windows.iter().find(|ws| ws.window == live.window) else {
+                    continue;
+                };
+                // A mount whose game did not start gets one with its view.
+                let Some(session) = game_session(&ws.store, live.root) else {
+                    continue;
+                };
+                if proved.iter().any(|p| Rc::ptr_eq(&p.session, &session)) {
+                    continue;
+                }
+                let vm = match game.vm.take() {
+                    Some(vm) => Ok(vm),
+                    None => GameSession::stage(&game.module),
+                };
+                let prepared = vm
+                    .map_err(GameReloadError::Link)
+                    .and_then(|vm| session.borrow_mut().prepare(vm, game.tier.rebuild()));
+                match prepared {
+                    Ok(prepared) => proved.push(ProvedSwap {
+                        game: index,
+                        session,
+                        prepared,
+                    }),
+                    Err(error) => {
+                        for proof in proved.into_iter().rev() {
+                            proof.session.borrow_mut().abort(proof.prepared);
+                        }
+                        let path = &self.files[game.file].entry.path;
+                        let why = match &error {
+                            GameReloadError::Game(viso_behavior::game::GameError::Fault(fault)) => {
+                                describe_fault(&game.module, fault)
+                            }
+                            error => error.to_string(),
+                        };
+                        return Err(format!("{path}: the game was not swapped: {why}"));
+                    }
+                }
+            }
+        }
+        Ok(proved)
+    }
+
+    /// Sends the host `lines`, the faults the games raised this frame: the
+    /// lines it could not send, there being no dev channel.
+    pub(crate) fn forward_game_faults(&mut self, lines: Vec<String>) -> Vec<String> {
+        let Some(link) = &mut self.link else {
+            return lines;
+        };
+        for line in lines {
+            link.send(RuntimeMessage::Log {
+                level: LogLevel::Error,
+                line,
+            });
+        }
+        Vec::new()
     }
 }
 
@@ -391,6 +547,7 @@ fn stage(bundle: PatchBundle, files: &[ViewFile]) -> Result<StagedPatch, PatchNa
         .iter()
         .fold(Domains::NONE, |domains, s| domains.with(s.domain()));
     let mut views = Vec::new();
+    let mut games = Vec::new();
     for section in bundle.sections {
         match section {
             PatchSection::Ui(ui) => {
@@ -408,8 +565,32 @@ fn stage(bundle: PatchBundle, files: &[ViewFile]) -> Result<StagedPatch, PatchNa
                     });
                 }
             }
-            // Not advertised: the identity check refuses it first.
-            PatchSection::System(_) => return Err(refuse(NACK_UNSUPPORTED_DOMAIN)),
+            PatchSection::System(systems) => {
+                for game in systems.games {
+                    let file = game.file.0 as usize;
+                    if file >= files.len() {
+                        return Err(refuse(NACK_UNKNOWN_FILE));
+                    }
+                    // A game swaps with its view, whose behavior is its
+                    // candidate module.
+                    let module = views
+                        .iter()
+                        .find(|view| view.file == file)
+                        .and_then(|view| view.candidate.module())
+                        .filter(|module| !module.systems().is_empty())
+                        .filter(|_| !games.iter().any(|g: &StagedGame| g.file == file))
+                        .cloned()
+                        .ok_or_else(|| refuse(NACK_UNLOADABLE_SYSTEM))?;
+                    let vm =
+                        GameSession::stage(&module).map_err(|_| refuse(NACK_UNLOADABLE_SYSTEM))?;
+                    games.push(StagedGame {
+                        file,
+                        tier: game.tier,
+                        module,
+                        vm: Some(vm),
+                    });
+                }
+            }
         }
     }
     Ok(StagedPatch {
@@ -417,6 +598,7 @@ fn stage(bundle: PatchBundle, files: &[ViewFile]) -> Result<StagedPatch, PatchNa
         next_revision: bundle.next_revision,
         domains,
         views,
+        games,
         decode: Duration::ZERO,
         stage: Duration::ZERO,
     })
@@ -844,7 +1026,7 @@ mod tests {
         );
         let ack = accept(&mut session, &mut host, &mut ws, &mut edits, &edited);
         assert_eq!(ack.revision, Revision(2));
-        assert_eq!(ack.applied_domains, APPLIES);
+        assert_eq!(ack.applied_domains, Domains::NONE.with(Domain::Ui));
         let [commit] = &ack.files[..] else {
             panic!("one view: {:?}", ack.files);
         };
@@ -1709,5 +1891,224 @@ mod tests {
         }
         stream.set_nonblocking(false).unwrap();
         host.read().expect("an answer")
+    }
+
+    mod games {
+        use viso_behavior::Value;
+        use viso_dsl::hotreload::game_patch;
+        use viso_view::dev::wire::{GameTier, Rebuild, SystemPatch};
+
+        use super::*;
+
+        const GAME: &str = include_str!("../../tests/fixtures/game.vs");
+        const TICK: f64 = 1.0 / 60.0;
+
+        fn mount_game(cx: &mut BuildCx<'_>) -> NodeId {
+            viso_ui_macros::view!("../../tests/fixtures/game.vs")(cx).id()
+        }
+
+        /// A patch moving the game file to `source`: its view, and its game
+        /// at the tier the host classifies.
+        fn game_patch_to(
+            edits: &mut Edits,
+            host: &Host,
+            (base, next): (u64, u64),
+            source: &str,
+        ) -> HostMessage {
+            let HostMessage::Patch(mut patch) = edits.patch(host, base, next, source) else {
+                unreachable!()
+            };
+            let candidate = edits.sent.as_ref().expect("in flight");
+            if let Some((entry, _)) = game_patch(
+                edits.file,
+                Some(&edits.last_good),
+                candidate,
+                Rebuild::KeepCharacters,
+            ) {
+                patch
+                    .sections
+                    .push(PatchSection::System(SystemPatch { games: vec![entry] }));
+            }
+            HostMessage::Patch(patch)
+        }
+
+        fn state(ws: &WindowState, name: &str) -> Value {
+            let root = ws.root.expect("built");
+            let session = game_session(&ws.store, root).expect("a game");
+            session.borrow().state("Runner", name).expect("a state")
+        }
+
+        fn width(ws: &WindowState) -> Option<viso_ui::Length> {
+            let root = ws.root.expect("built");
+            ws.store.size_request(root).map(|size| size.width)
+        }
+
+        /// The Game integration case: run tick N, a patch arrives while it
+        /// runs; the old code completes N, the new one runs from N + 1, and
+        /// the World and its entity ids are the same.
+        #[test]
+        fn a_patch_arriving_during_a_tick_applies_from_the_next_with_the_world_kept() {
+            let mut ws = mounted(mount_game);
+            let (mut session, mut host, mut edits) = session(&mut ws, GAME);
+            let game = game_session(&ws.store, ws.root.expect("built")).expect("a game");
+            for _ in 0..2 {
+                ws.store.run_frame_clients(TICK);
+            }
+            let world = |game: &Rc<RefCell<GameSession>>| {
+                let game = game.borrow();
+                let world = game.scheduler().world();
+                let ids = world.entities();
+                let at: Vec<_> = ids
+                    .iter()
+                    .map(|&id| world.position(id).expect("alive").to_array())
+                    .collect();
+                (ids, at)
+            };
+            let (ids, _) = world(&game);
+
+            // The host sends while tick 2 runs; the link thread takes it in
+            // concurrently, but nothing commits mid-frame.
+            let faster = GAME.replace("steps += 1;", "steps += 10;");
+            host.send(&game_patch_to(&mut edits, &host, (1, 2), &faster));
+            ws.store.run_frame_clients(TICK);
+            assert_eq!(
+                state(&ws, "steps"),
+                Value::Int(3),
+                "the old code completed tick 2"
+            );
+            let (_, walked) = world(&game);
+
+            // The next frame boundary stages and commits it, then tick 3 runs.
+            assert!(
+                answer_or_staged(&mut session, &mut host).is_none(),
+                "staged"
+            );
+            session.reload(std::slice::from_mut(&mut ws));
+            let Some(RuntimeMessage::Ack(ack)) = host.read() else {
+                panic!("not applied");
+            };
+            edits.acked();
+            assert_eq!(ack.applied_domains, APPLIES);
+            let [commit] = ack.games[..] else {
+                panic!("one game: {:?}", ack.games);
+            };
+            assert_eq!(
+                (commit.tier, commit.sessions, commit.tick, commit.reset),
+                (GameTier::Logic, 1, 3, 0)
+            );
+            assert_eq!(commit.carried, 2, "steps and jumps");
+            assert_eq!(
+                world(&game),
+                (ids.clone(), walked),
+                "the swap moved nothing"
+            );
+            ws.store.run_frame_clients(TICK);
+            assert_eq!(
+                state(&ws, "steps"),
+                Value::Int(13),
+                "the new code runs tick 3"
+            );
+            assert_eq!(world(&game).0, ids, "the same World, the same entities");
+            assert_eq!(game.borrow().scheduler().clock().tick(), 4);
+            assert!(
+                Rc::ptr_eq(
+                    &game,
+                    &game_session(&ws.store, ws.root.expect("built")).expect("a game")
+                ),
+                "the same session"
+            );
+        }
+
+        #[test]
+        fn a_faulting_candidate_refuses_the_revision_with_everything_at_its_last_good() {
+            let mut ws = mounted(mount_game);
+            let (mut session, mut host, mut edits) = session(&mut ws, GAME);
+            ws.store.run_frame_clients(TICK);
+            let before = width(&ws);
+
+            // The view widens and the next tick divides by zero.
+            let broken = GAME
+                .replace("steps += 1;", "steps += 1 / (steps - steps);")
+                .replace("200dp", "300dp");
+            let patch = game_patch_to(&mut edits, &host, (1, 2), &broken);
+            host.send(&patch);
+            assert!(
+                answer_or_staged(&mut session, &mut host).is_none(),
+                "staged"
+            );
+            session.reload(std::slice::from_mut(&mut ws));
+            match host.read() {
+                Some(RuntimeMessage::Log { level, line }) => {
+                    assert_eq!(level, LogLevel::Error);
+                    assert!(line.contains("`Runner` faulted at tick"), "{line}");
+                }
+                other => panic!("not the fault: {other:?}"),
+            }
+            match host.read() {
+                Some(RuntimeMessage::Nack(nack)) => {
+                    assert_eq!(nack.stage, Stage::RuntimeCommit);
+                    assert_eq!(nack.diagnostic_codes, [NACK_SYSTEM_FAULT]);
+                    assert_eq!(nack.last_good_revision, Revision(1));
+                }
+                other => panic!("not refused: {other:?}"),
+            }
+            assert_eq!(width(&ws), before, "the view is the last good");
+            ws.store.run_frame_clients(TICK);
+            assert_eq!(state(&ws, "steps"), Value::Int(2), "so is the game");
+
+            // The fix goes on from the last good revision.
+            let fixed = GAME.replace("200dp", "300dp");
+            let patch = game_patch_to(&mut edits, &host, (1, 3), &fixed);
+            let answer = apply(&mut session, &mut host, &mut ws, &patch);
+            assert!(matches!(answer, RuntimeMessage::Ack(_)), "{answer:?}");
+        }
+
+        #[test]
+        fn a_start_edit_rebuilds_the_world_keeping_the_player() {
+            let mut ws = mounted(mount_game);
+            let (mut session, mut host, mut edits) = session(&mut ws, GAME);
+            for _ in 0..5 {
+                ws.store.run_frame_clients(TICK);
+            }
+            let moved = GAME.replace("0.0f32, 1.0f32, 0.0f32", "4.0f32, 1.0f32, 0.0f32");
+            let patch = game_patch_to(&mut edits, &host, (1, 2), &moved);
+            let RuntimeMessage::Ack(ack) = apply(&mut session, &mut host, &mut ws, &patch) else {
+                panic!("not applied");
+            };
+            assert_eq!(
+                ack.games[0].tier,
+                GameTier::WorldRebuild {
+                    keep: Rebuild::KeepCharacters
+                }
+            );
+            assert_eq!((ack.games[0].tick, ack.games[0].characters), (0, 1));
+            assert_eq!(state(&ws, "steps"), Value::Int(0), "the World starts over");
+        }
+
+        #[test]
+        fn a_game_without_its_view_in_the_patch_does_not_load() {
+            let mut ws = mounted(mount_game);
+            let (mut session, mut host, edits) = session(&mut ws, GAME);
+            let HostMessage::Patch(mut patch) = host.patch(1, 2) else {
+                unreachable!()
+            };
+            patch.sections = vec![PatchSection::System(SystemPatch {
+                games: vec![viso_view::dev::wire::GamePatch {
+                    file: edits.file,
+                    tier: GameTier::Logic,
+                }],
+            })];
+            let answer = apply(&mut session, &mut host, &mut ws, &HostMessage::Patch(patch));
+            let RuntimeMessage::Nack(nack) = answer else {
+                panic!("not refused: {answer:?}");
+            };
+            assert_eq!(
+                (nack.stage, &nack.diagnostic_codes[..]),
+                (
+                    Stage::RuntimeStage,
+                    &[NACK_UNLOADABLE_SYSTEM.to_owned()][..]
+                )
+            );
+        }
     }
 }

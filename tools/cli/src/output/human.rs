@@ -58,6 +58,22 @@ pub(super) fn dev(file: &str, event: &ReloadEvent) -> String {
                 line.push_str("   ");
                 line.push_str(&dirty);
             }
+            if let Some(game) = &event.game {
+                line.push_str(&format!(
+                    "   game {} from tick {}",
+                    game.tier.as_str(),
+                    game.tick
+                ));
+                let plural = |n: u32| if n == 1 { "" } else { "s" };
+                if game.reset > 0 {
+                    let n = game.reset;
+                    line.push_str(&format!(", {n} state{} reset", plural(n)));
+                }
+                if game.characters > 0 {
+                    let n = game.characters;
+                    line.push_str(&format!(", {n} character{} kept", plural(n)));
+                }
+            }
             if outcome == Outcome::ScopedReset {
                 line.push_str("   (scoped reset)");
             }
@@ -312,7 +328,39 @@ mod tests {
             elapsed_us: 37_000,
             counts: Default::default(),
             codes: Vec::new(),
+            game: None,
         }
+    }
+
+    #[test]
+    fn a_patch_that_swapped_a_game_names_its_tier_and_first_tick() {
+        use viso_view::dev::wire::{FileId, GameCommit, GameTier, Rebuild};
+        let mut event = reload_event(Outcome::Applied, viso_view::dev::wire::Stage::RuntimeCommit);
+        event.game = Some(GameCommit {
+            file: FileId(0),
+            tier: GameTier::LogicMigration,
+            sessions: 1,
+            tick: 312,
+            carried: 4,
+            reset: 1,
+            characters: 0,
+        });
+        assert_eq!(
+            dev("game.vs", &event),
+            "✓ game.vs patch r41 -> r42   37 ms   game logic+state-migration from tick 312, 1 state reset"
+        );
+        event.game = Some(GameCommit {
+            tier: GameTier::WorldRebuild {
+                keep: Rebuild::KeepCharacters,
+            },
+            tick: 0,
+            reset: 0,
+            characters: 2,
+            ..event.game.unwrap()
+        });
+        assert!(
+            dev("game.vs", &event).ends_with("game world-rebuild from tick 0, 2 characters kept")
+        );
     }
 
     #[test]
