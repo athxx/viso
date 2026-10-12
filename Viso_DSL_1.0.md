@@ -6289,6 +6289,12 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 
 当前实现：`Scheduler::reload(vm)` 在两次 `frame` 之间切换，此处既是 Tick Boundary 也是 Frame Boundary，Presentation-only 改动走同一入口，Simulation 状态、World、Tick 与 RNG 原样保留。Simulation State 按 Stable ID + Schema Hash 保留；`@local` 状态同样按 Stable ID + Schema Hash 保留（模块为每个 System 记录 `@local` 状态的身份），值中含 Closure 的除外（Closure 指向旧 Build 的代码），其余取 Initializer。
 
+切换分两步，使一个 revision 能原子地切换多个游戏：`prepare_reload(vm)` / `prepare_rebuild(vm, keep)` 证明切换（新 Build 接管、Smoke Tick 跑过）并返回 `PreparedSwap`，旧 Build 保留其中，游戏在结清之前不推进；`commit_swap(prepared, revision)` 提交（录制中的 Tape 记下该 patch，§110.5），`abort_swap(prepared)` 放回旧 Build。`reload` 与 `rebuild` 是二者连用。
+
+运行中的游戏由 `viso_view::GameSession` 持有：一个 view 的 module 声明 System 时，挂载在其根上启动 session——自己的 VM，链接标准 Native 与 package 的 Capability——由 window 的 frame loop 推进，没有 UI node 持有键盘焦点时接收按键，根释放时结束（`Viso_Hot_Reload.md` §16）。
+
+音频：module 含音频 System 的 session 在 app 安装的设备上启动它们（facade 在默认输出上安装，只为含音频 System 的 module 打开设备），reload 新增音频 System 时同样启动。reload 时新的音频程序——VM、实例、它自己的 Block 与 Message Slot——在音频线程之外构建并预热，经 host 的两个原子指针发布，在下一个 Block 之前装上；换下的程序交回游戏线程，每帧回收。队列与状态留在 host，事件队列随新 Block 移交，游戏持有的链接保持有效；装入与新程序的首个 Block 都不分配。新音频 System 构建失败时旧的继续发声，故障以一条日志报告，切换照常提交。
+
 ### 110.2 World Rebuild Reload
 
 - 在 Shadow World 执行新 Build Script/System；
@@ -6326,9 +6332,9 @@ UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Rea
 - 同一 Build + Tape 的 Snapshot Hash 在所选 determinism 档位下逐字节一致；
 - `--json` 使用 §138 同一 Diagnostic Schema，AI 可以据此闭环。
 
-当前实现（Input Tape，`viso_behavior::game::InputTape`）：Tape 头部是 Seed、Build Hash（手写为 0）、determinism 档位与 Tick Rate（即 `fixed_dt = 1 / tick_rate`）及覆盖的 Tick 数；正文是按 Tick 的 InputSnapshot，存为相邻 Tick 之间的变化——动作按下（带 press 边沿）、松开（带 release 边沿）、静默置位（无边沿，如 Remap）与 Move 向量，同一 Tick 的变化按序在该 Tick 运行前生效，因此同 Tick 的按下加松开即一次 Tap。动作按名字存放，回放时按名字映射到当前 Build 的动作集，Tape 中有 Build 没有的动作、或 Tick Rate 不同，拒绝回放。二进制形式是带 `GTP1` 标记的版本化 Ende Blob，解码有界；文本形式一行一条：`30: press Jump`、`40: release Jump`、`95: tap Fire`、`hold`/`unhold`（无边沿）、`31..90: axis move = (1, 0)`，区间 `a..b` 在 `a` 生效、在 `b` 撤销（`a..=b` 在 `b` 之后撤销：按下变松开，Move 回到 `(0, 0)`），头部行 `seed`、`build`、`determinism`、`tick_rate`、`ticks`，`#` 起注释，出错报告行号。`Scheduler::record` 录制每个 Tick 实际读到的输入，`stop_recording` 取出 Tape；`Scheduler::play` 回放时设备输入不再起作用；Logic Reload 按名字重新映射，World Rebuild 让回放与录制都从 Tick 0 重新开始。同一 Seed 与 Tape 的回放得到相同 Snapshot Hash（`GameSnapshot::hash`）。
+当前实现（Input Tape，`viso_behavior::game::InputTape`）：Tape 头部是 Seed、Build Hash（手写为 0）、determinism 档位与 Tick Rate（即 `fixed_dt = 1 / tick_rate`）及覆盖的 Tick 数；正文是按 Tick 的 InputSnapshot，存为相邻 Tick 之间的变化——动作按下（带 press 边沿）、松开（带 release 边沿）、静默置位（无边沿，如 Remap）与 Move 向量，同一 Tick 的变化按序在该 Tick 运行前生效，因此同 Tick 的按下加松开即一次 Tap。动作按名字存放，回放时按名字映射到当前 Build 的动作集，Tape 中有 Build 没有的动作、或 Tick Rate 不同，拒绝回放。二进制形式是带 `GTP1` 标记的版本化 Ende Blob，解码有界；文本形式一行一条：`30: press Jump`、`40: release Jump`、`95: tap Fire`、`hold`/`unhold`（无边沿）、`31..90: axis move = (1, 0)`，区间 `a..b` 在 `a` 生效、在 `b` 撤销（`a..=b` 在 `b` 之后撤销：按下变松开，Move 回到 `(0, 0)`），头部行 `seed`、`build`、`determinism`、`tick_rate`、`ticks`，`#` 起注释，出错报告行号。`Scheduler::record` 录制每个 Tick 实际读到的输入，`stop_recording` 取出 Tape；`Scheduler::play` 回放时设备输入不再起作用；Logic Reload 按名字重新映射，World Rebuild 让回放与录制都从 Tick 0 重新开始。同一 Seed 与 Tape 的回放得到相同 Snapshot Hash（`GameSnapshot::hash`）。录制中的 run 每次 live reload 记一个 `TapePatch`（应用前的 Tick、dev revision、新 Build Hash、新 Build 的 module、被重置的状态数），并记下 run 开始时的 module；二进制形式携带它们，文本形式只以注释 `# <tick>: patch r<revision> build 0x…, <n> states reset` 列出。回放核对开始 Build，经 `Scheduler::set_linker` 设的 `Linker` 预先链接全部 patch（链接失败即拒绝回放），并在同一 Tick 之前换入；倒回时之后的 patch 折叠为倒回 Tick 处的一个（`Viso_Hot_Reload.md` §18）。
 
-当前实现（`@probe`）：`@probe` 只标在 System 的 Simulation `state` 上，标在 `@local` 状态、其他成员或 Component 上报 `E9110`；它不改变运行时，也不进入 Release 模块，只由编译器连同状态类型的形状记入 Behavior IR（`SystemLayout::probes`），测试 Runner 每个 Tick 按形状把值写进 JSON Trace：`Bool` 写 `true`/`false`，无符号整数按无符号写，单元枚举变体写名字，带载荷变体写 `{"Name": 载荷}`，Record 写字段对象，`Option` 的 `None` 写 `null`；形状不描述的类型（`Vec3F32` 等 Native 值类型、递归类型）按结构写，聚合值写成字段数组。
+当前实现（`@probe`）：`@probe` 只标在 System 的 Simulation `state` 上，标在 `@local` 状态、其他成员或 Component 上报 `E9110`；它不改变运行时，也不进入 Release 模块，只由编译器在 Behavior IR 中标记（`SystemLayout::states` 记下每个 System 状态的名字、槽位与类型形状，`@probe` 状态带标记；`viso game peek` 按同一形状写出任意状态），测试 Runner 每个 Tick 按形状把值写进 JSON Trace：`Bool` 写 `true`/`false`，无符号整数按无符号写，单元枚举变体写名字，带载荷变体写 `{"Name": 载荷}`，Record 写字段对象，`Option` 的 `None` 写 `null`；形状不描述的类型（`Vec3F32` 等 Native 值类型、递归类型）按结构写，聚合值写成字段数组。
 
 ---
 

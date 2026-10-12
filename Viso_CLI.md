@@ -2362,7 +2362,7 @@ last_good_revision
 elapsed_ms
 ```
 
-`.vs` patch 另带：`file`（相对 project root）、`mounts`（该文件被提交到的 mount 数）以及 commit report 计数 `migrated, reset, focus_lost, scroll_lost, handlers_lost`（rejected 时全为 0）、`dirty`（嵌套 object，§11 八个 dirty class 各一个 node 计数：`structure, style, measure, layout, transform, paint, hit_test, semantics`；rejected 时全为 0）。`runtime_session_id` 是已连接 runtime 的 `RuntimeSessionId`（§4.1）的十六进制，没有已连接 runtime 时为空字符串。`patch_class` 在 rejected 与 held 时为 `null`。每条 `dev` 之前先输出该 candidate 的 `diagnostic`。字段均为 revision/计数/stage 名/诊断码，不携带任何可能是密钥的内容（`Viso_Hot_Reload.md` §47）。
+`.vs` patch 另带：`file`（相对 project root）、`mounts`（该文件被提交到的 mount 数）以及 commit report 计数 `migrated, reset, focus_lost, scroll_lost, handlers_lost`（rejected 时全为 0）、`dirty`（嵌套 object，§11 八个 dirty class 各一个 node 计数：`structure, style, measure, layout, transform, paint, hit_test, semantics`；rejected 时全为 0）、`game`（该文件的游戏随 patch 切换时为嵌套 object `tier`（`presentation-only|logic-only|logic+state-migration|world-rebuild`）、`sessions`、`tick`（新 Build 运行的首个 Tick）、`carried`、`reset`、`characters`，否则 `null`；游戏层级的 `E5103` 计入 `diagnostic_codes`）。`runtime_session_id` 是已连接 runtime 的 `RuntimeSessionId`（§4.1）的十六进制，没有已连接 runtime 时为空字符串。`patch_class` 在 rejected 与 held 时为 `null`。每条 `dev` 之前先输出该 candidate 的 `diagnostic`。字段均为 revision/计数/stage 名/诊断码，不携带任何可能是密钥的内容（`Viso_Hot_Reload.md` §47）。
 
 ---
 

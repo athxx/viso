@@ -497,8 +497,11 @@ session comes first, then every reload item builds on it.
       answers with the tape once the game ran the ticks asked for, written as text, or
       binary when it took live patches; an answer the app never sends is refused when
       it exits.
-- [ ] Docs: Hot Reload §16–§18 and §35–§37 (the `system` section, its NACKs and ACK
-      fields), CLI §22.3 and §36 (`dev` fields of a system patch), DSL §110.
+- [x] Docs: Hot Reload §16–§18 and §34–§37 (the session's tick-boundary commit, the
+      `system` section, the game query messages, the NACKs and ACK fields, the replay
+      timeline, protocol 9), CLI §22.3, §36.4 (the `dev` event's `game` object) and
+      §44 (the lock's endpoint line), DSL §110 (the two-phase swap, `GameSession`,
+      the audio swap, tape patches, `SystemLayout::states`).
 - [ ] Not in this phase: `GameViewport` and the 3D lane that draws the World (the
       Rendering spec's Mesh/3D lane needs its design and ADR first), HUD reads of game
       state (§109 Reactive Query) — tracked in `todo_dsl.md` D5.

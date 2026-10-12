@@ -806,6 +806,8 @@ stage now
 commit after Tick N
 ```
 
+当前实现：挂载了含 System 的 view 的根运行一个 `GameSession`（`viso_view`），作为 window store 的 frame client 每帧推进时钟欠下的 Tick 再跑 `FrameUpdate`。patch 由 link 线程收下、在 loop 唤醒时 stage（候选 module 此时就链接成 VM，不触碰任何运行中的东西），在下一个帧边界（`FlushStateTransactions`，frame client 推进之前）提交——即 Tick N 由旧代码跑完，新代码从 N+1 开始。提交顺序是 systems 优先：先让运行该文件的每个 session 证明自己的切换（`Scheduler::prepare_reload` / `prepare_rebuild`：新 Build 接管、在副本上跑 Smoke Tick、旧 Build 留着备用），再提交 views，最后提交全部已证明的切换；任一 session 故障，已证明的全部放回，整个 revision 以 `NACK_SYSTEM_FAULT` 拒绝，views 与 games 都停在 last-good（§37）。
+
 ---
 
 ## 17. Preserve World, patch logic
@@ -821,6 +823,8 @@ new FixedUpdate code starts next tick
 ```
 
 不允许为了改移动速度销毁整个 GameWorld。
+
+当前实现：host 按 DSL §110 的 Stable ID Diff 给每个游戏文件定层（`hotreload::game_patch`），层级随该文件的 `ui` 条目作为 `system` 条目一起发出（§35）。Presentation-only、Logic-only 与 Logic + State Migration 保留 World、Entity ID、时钟、RNG 与兼容的 System State；`start` 或 World 构建变化走 World Rebuild，host 的策略是按 Stable Entity Key 保留角色（`Rebuild::KeepCharacters`），last-good 未知时同样按此重建。ACK 为每个文件报告层级、session 数、新 Build 的首个 Tick、保留与重置的状态数和保留的角色数（§37）。游戏的音频 System 随之换成新 Build 的，输出不间断（DSL §110.1）。
 
 ---
 
@@ -842,6 +846,8 @@ StateReset events
 - 将 patch artifact 固定记录进 replay timeline。
 
 不能 silently 改变 replay 语义。
+
+当前实现两者兼有：录制中的 Tape 把每次 live reload 记为一个 `TapePatch { tick, revision, build, module, resets }`（应用前的 Tick、dev revision、System code revision 即 Build Hash、该 Build 的 module 与被重置的状态数），并记下 run 开始时的 module；只有二进制形式携带它们（文本形式以注释列出）。回放时先核对开始 Build，经游戏的 `Linker` 预先链接每个 patch，在同一 Tick 之前换入；倒回时其后的 patch 折叠为倒回 Tick 处的一个。正在回放 Tape 的游戏拒绝 live patch（`NACK_REPLAYING`，stage `runtime-stage`，并有一条 warn log），使 Tape 重现它录下的 run。`viso game record`（`Viso_CLI.md` §22.3）先以 `Rebuild::Fresh` 重启 World，因此录下的 Tape 从 Tick 0 起可重放。
 
 ---
 
@@ -1195,12 +1201,12 @@ request restart/rebuild
 
 不能 decoder 猜版本。
 
-已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 4`；version 2 是 runtime 先说话、绑定 session/build/revision 的 handshake，version 3 加入 mount inventory、host 对被拒编辑的 `Failure` 与 `ui` section，version 4 把 `ui` section 换成 typed patch）：
+已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 9`）：
 
 - runtime 连接并先说话：`RuntimeHello { protocol_version, token, dev_session, runtime_session, build_id, current_revision, schema_fingerprint, capabilities, target }`。连接方用 session token 证明自己是本 session 启动的 app，所以 token 在 `RuntimeHello` 里而不在 `HostHello` 里——host 不向尚未证明身份的连接发送任何东西；
 - host 回 `HostHello { protocol_version, dev_session, runtime_session, project_fingerprint, expected_build_id }`（接受，`runtime_session` 原样回显）或 `Reject { Protocol{host} | Build | Session | Schema }`；token 不符的连接不回应直接关闭（不给猜 token 的 oracle）。runtime 也检查 `HostHello`：protocol、session、runtime session 与 build 任一不符即断开；
 - hello 与 reject 的前缀在所有 protocol version 中保持不变（stream `ProtocolTag`，再是 dev protocol version），解码在读到别的 version 时立即以该 version 号停止，不去解读其后布局可能不同的字段；
-- build id 由 CLI 经 `VISO_DEV_BUILD` 交给所启动的 app，app 原样报告，host 用它拒绝不是其当前编译目标的 artifact（Rust rebuild 之后仍连着的旧 app）；`schema_fingerprint` 取自 mount record（§4.1），与 host 的不同即 `Reject::Schema`；`capabilities` 是 runtime 能 apply 的 domain 集合（当前为 `ui`），host 不发送其外的 domain。
+- build id 由 CLI 经 `VISO_DEV_BUILD` 交给所启动的 app，app 原样报告，host 用它拒绝不是其当前编译目标的 artifact（Rust rebuild 之后仍连着的旧 app）；`schema_fingerprint` 取自 mount record（§4.1），与 host 的不同即 `Reject::Schema`；`capabilities` 是 runtime 能 apply 的 domain 集合（当前为 `ui` 与 `system`），host 不发送其外的 domain；不声明 `system` 的 app 只收到 view，host 给出一条 warning。
 
 ---
 
@@ -1236,10 +1242,13 @@ struct PatchBundle {
 
 `ui` section 是 `UiPatch { views: [ViewPatch{file, package, plan}] }`（§9）：candidate 的 release 形态与 host 算出的 reload plan。behavior 字节码在 stage 时由 runtime 的 verifier 重新校验，校验不过或缺少所挂载的 component 时 NACK `NACK_UNLOADABLE_VIEW`；catalog 已编译进 package，不再单独发送。只有 host 接受的编辑会被发送——被拒的编辑从不离开 host（§41）。app 不含 `.vs` 编译器（§1.3）。
 
-另外两条消息（version 3 起）：
+`system` section 是 `SystemPatch { games: [GamePatch{file, tier}] }`：`tier` 为 `Presentation`、`Logic`、`LogicMigration` 或 `WorldRebuild { keep: Fresh | KeepCharacters }`（各一个稳定 tag，未知 tag 是 malformed），至多 4096 项。候选 module 就是同一 patch 的 `ui` section 中该文件 view 的 behavior，不重复发送；`system` 条目的文件在 `ui` section 中没有含 System 的 view，或 module 链接失败，整个 patch 以 `NACK_UNLOADABLE_SYSTEM`（stage `runtime-stage`）拒绝。
+
+另外的消息：
 
 - `RuntimeMessage::Mounts([MountEntry{file, path, package, module, language, catalog, capabilities, source_hash}])`：每个首次挂载的文件一条，`file` 是 runtime 分配的 `FileId`，patch 与 failure 都用它指代文件；host 据此编译与 build 完全一致的 candidate，并按 `source_hash` 知道 runtime 运行的是哪个版本——app 不发源码；
-- `HostMessage::Failure { file, lines }`：host 拒绝某文件最新编辑时的 overlay 行（`path:line:col: CODE message`，至多 16 行）；`lines` 为空表示清除（编辑被撤回到 runtime 运行的版本）。它只是显示，不带 revision。
+- `HostMessage::Failure { file, lines }`：host 拒绝某文件最新编辑时的 overlay 行（`path:line:col: CODE message`，至多 16 行）；`lines` 为空表示清除（编辑被撤回到 runtime 运行的版本）。它只是显示，不带 revision；
+- `HostMessage::Game(GameQuery { id, file, ask })` 与 `RuntimeMessage::Game(GameAnswer { id, reply })`：`viso game`（`Viso_CLI.md` §22.3）经 host 对运行该文件的第一个 Game Session 的提问。`ask` 是 `Peek { system, state }`（名字各至多 256 B）或 `Record { span: Ticks(n) | Millis(n) }`（至多 2^24 Tick）；`reply` 是 `State { value, tick, sessions }`（状态值的 behavior wire 形式，由 host 按类型写成 JSON）、`Tape { tape }`（二进制 Tape）或拒绝 `NotRunning | UnknownState | Replaying | Recording | Ended | Fault(line) | TooLarge`。Peek 在下一个帧边界回答；Record 先重启 World，录满所要求的 Tick 后回答。它们不带 revision，不改变 last-good。
 
 ---
 
@@ -1294,11 +1303,11 @@ PatchNack {
 
 NACK 后 running app 保持 last-good revision。
 
-已实现：`PatchAck { revision, applied_domains, files: [FileCommit{file, counts}], notices, timings{decode_us, stage_us, commit_us} }`，`counts` 是每个 view 提交到其所有挂载时保留与丢失的计数（`mounts, migrated, reset, focus_lost, scroll_lost, handlers_lost`）与 `dirty`（§11 八个 dirty class 各一个 node 计数，由 `commit()` 提交后扫描该 view 的静态节点在 `NodeStore` 中实际携带的 dirty bit 得出，再按文件对每个挂载求和——即 commit 要重做的量，不是语义上"改了什么"），`scoped_resets` 由保留/丢失计数求和（不含 `dirty`）；`notices` 是 commit 产生的提示（`E5101` 状态重置），span 指向 host 为该文件编译的 candidate 源码（plan 带着 state 声明的范围），由 host 解析成行列。`PatchNack { base_revision, candidate_revision, stage, diagnostic_codes, last_good_revision }`，`stage` 取 §51 的全部 stage。NACK code 是稳定字符串：上面 §36 的五个，host frame 无法解码时的 `NACK_MALFORMED`（帧长度保住了帧边界，channel 不断开；超过帧上限的帧则读不到边界，连接结束），patch 指向 runtime 未报告的文件时的 `NACK_UNKNOWN_FILE`，candidate 无法加载时的 `NACK_UNLOADABLE_VIEW`（stage `runtime-stage`）。runtime 端的 link 不阻塞 UI loop：入站 frame 经有界队列交给 loop 并唤醒它（队列满时阻塞的是 reader 线程），出站消息 `try_send` 进有界队列，满了就丢弃并计数，计数在有空位时以 `Dropped{count}` 发出。
+已实现：`PatchAck { revision, applied_domains, files: [FileCommit{file, counts}], notices, state_resets, games: [GameCommit{file, tier, sessions, tick, carried, reset, characters}], timings{decode_us, stage_us, commit_us} }`，`counts` 是每个 view 提交到其所有挂载时保留与丢失的计数（`mounts, migrated, reset, focus_lost, scroll_lost, handlers_lost`）与 `dirty`（§11 八个 dirty class 各一个 node 计数，由 `commit()` 提交后扫描该 view 的静态节点在 `NodeStore` 中实际携带的 dirty bit 得出，再按文件对每个挂载求和——即 commit 要重做的量，不是语义上"改了什么"），`scoped_resets` 由保留/丢失计数求和（不含 `dirty`）；`notices` 是 commit 产生的提示（`E5101` 状态重置），span 指向 host 为该文件编译的 candidate 源码（plan 带着 state 声明的范围），由 host 解析成行列。`PatchNack { base_revision, candidate_revision, stage, diagnostic_codes, last_good_revision }`，`stage` 取 §51 的全部 stage。NACK code 是稳定字符串：上面 §36 的五个，host frame 无法解码时的 `NACK_MALFORMED`（帧长度保住了帧边界，channel 不断开；超过帧上限的帧则读不到边界，连接结束），patch 指向 runtime 未报告的文件时的 `NACK_UNKNOWN_FILE`，candidate 无法加载时的 `NACK_UNLOADABLE_VIEW`（stage `runtime-stage`），游戏无法加载时的 `NACK_UNLOADABLE_SYSTEM`（stage `runtime-stage`），游戏候选在创建实例、Start 或 Smoke Tick 中故障或物理层级不成立时的 `NACK_SYSTEM_FAULT`（stage `runtime-commit`，故障另以一条 error log 指名 System），以及游戏正在回放 Tape 时的 `NACK_REPLAYING`（stage `runtime-stage`）。`games` 是每个切换了游戏的文件一条：层级、切换的 session 数、新 Build 运行的首个 Tick、跨切换保留与回到 Initializer 的状态数、World Rebuild 按 Stable Entity Key 保留的角色数。游戏运行中的故障（含音频线程上的）以 error log 发给 host：同一 System 以同一方式连续故障只报一次，每帧至多排队 64 条，余数汇总；没有 `viso run` 时打印到 stderr。runtime 端的 link 不阻塞 UI loop：入站 frame 经有界队列交给 loop 并唤醒它（队列满时阻塞的是 reader 线程），出站消息 `try_send` 进有界队列，满了就丢弃并计数，计数在有空位时以 `Dropped{count}` 发出。
 
 ### 37.1 当前实现：`.vs` reload event
 
-host 为每个 candidate revision 的每个 `.vs` 文件构造一条 report（`tools/cli/src/dev/report.rs`），由它自己的编译与 runtime 的 ACK/NACK 组成：`base_revision, candidate_revision, last_good_revision, outcome(applied|scoped_reset|rejected|held), stage, elapsed, counts, codes`（`held`：`--no-hot-reload` 下编译通过、未发送，stage 为 `transport`；`counts.dirty` 随 `counts` 一起来自 ACK，rejected/held 时全为 0）；诊断由 host 用它编译的源码给出行列，app 不发源码也不发诊断。`--json` 的 `dev` payload 在这些字段之外另带 `runtime_session_id`（已连接 runtime 的 `RuntimeSessionId` 十六进制；没有已连接 runtime 时为空字符串）与嵌套的 `dirty` object（`Viso_CLI.md` §36.4）。
+host 为每个 candidate revision 的每个 `.vs` 文件构造一条 report（`tools/cli/src/dev/report.rs`），由它自己的编译与 runtime 的 ACK/NACK 组成：`base_revision, candidate_revision, last_good_revision, outcome(applied|scoped_reset|rejected|held), stage, elapsed, counts, codes`（`held`：`--no-hot-reload` 下编译通过、未发送，stage 为 `transport`；`counts.dirty` 随 `counts` 一起来自 ACK，rejected/held 时全为 0）；诊断由 host 用它编译的源码给出行列，app 不发源码也不发诊断。`--json` 的 `dev` payload 在这些字段之外另带 `runtime_session_id`（已连接 runtime 的 `RuntimeSessionId` 十六进制；没有已连接 runtime 时为空字符串）、嵌套的 `dirty` object 与 `game` object（切换了游戏时为 ACK 的 `GameCommit`，否则 `null`；`Viso_CLI.md` §36.4）。游戏文件的层级另以提示诊断 `E5103` 报告、其 code 计入 `codes`；人类输出的 reload 行在切换了游戏时追加 `game <tier> from tick <n>[, <n> state(s) reset][, <n> character(s) kept]`。
 
 - 一个 batch 是一个 candidate revision（被拒的 candidate 也消耗一个号，下一个 patch 跳号）；host 拒绝的文件 `stage` 是 §51 中的失败 stage（`parse`、`resolve`、`typecheck`、`capability`、`state-compat`、`shader-compile`），runtime NACK 的文件是 NACK 的 stage，提交的文件为 `runtime-commit`，计数来自 ACK；
 - `elapsed` 从 batch 开始编译算到 runtime 的回答（含编译、传输、等待帧边界与提交）；
