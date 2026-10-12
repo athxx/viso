@@ -9,6 +9,10 @@
 //! must open with a hello carrying the token it was launched with; a connection
 //! that does not is dropped. Under `--json` the app's stdout and stderr, and the
 //! build's stderr, reach the stream only as `log` events (section 37).
+//!
+//! A second loopback listener, the control endpoint, is named with its own
+//! token in the session lock: `viso game peek` and `viso game record` reach
+//! the running app through it (section 22.3).
 
 use std::collections::hash_map::RandomState;
 use std::ffi::OsString;
@@ -37,7 +41,9 @@ use super::{
     ENV_NO_EXECUTABLE, ENVIRONMENT, RUN_APP_FAILED, RUNTIME, SUCCESS,
 };
 use crate::args::{Global, RunArgs};
-use crate::dev::{self, Deliver, DevSession, Expect, LinkEvent};
+use crate::dev::{
+    self, Control, ControlCall, ControlDeliver, Deliver, DevSession, Expect, LinkEvent,
+};
 use crate::output::Output;
 
 /// How long the session waits for a message before it polls the app and the
@@ -58,6 +64,8 @@ enum Incoming {
     Change(dev::Change),
     /// What a dev connection delivered.
     Link(LinkEvent),
+    /// What `viso game` asked through the control endpoint.
+    Control(ControlCall),
 }
 
 pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
@@ -152,6 +160,28 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         !args.no_hot_reload,
         move |change| watched.send(Incoming::Change(change)).is_ok(),
     );
+    // `viso game` finds the endpoint in the lock; a session without one
+    // still runs, and says why `viso game` cannot reach it.
+    let control = Control::bind(random_hex())
+        .and_then(|control| Ok((control.endpoint()?, control)))
+        .map_err(|error| error.to_string())
+        .and_then(|(endpoint, control)| {
+            dev.lock_mut()
+                .publish(&endpoint)
+                .map(|()| control)
+                .map_err(|diagnostic| diagnostic.message)
+        });
+    let control = match control {
+        Ok(control) => Some(control),
+        Err(why) => {
+            out.log(
+                "warn",
+                "tool",
+                &format!("`viso game` cannot reach this session: {why}"),
+            );
+            None
+        }
+    };
 
     out.progress("build", "building the dev artifact");
     let exe = match build(global, &cargo_manifest, out) {
@@ -215,8 +245,16 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         let tx = tx.clone();
         Arc::new(move |event| tx.send(Incoming::Link(event)).is_ok())
     };
+    let ask: ControlDeliver = {
+        let tx = tx.clone();
+        Arc::new(move |call| tx.send(Incoming::Control(call)).is_ok())
+    };
+    let mut asking = Vec::new();
     let status = loop {
         dev::link::accept(&listener, &expect, &deliver, &mut threads);
+        if let Some(control) = &control {
+            control.accept(&ask, &mut asking);
+        }
         let wait = dev.deadline().map_or(POLL, |due| {
             due.saturating_duration_since(Instant::now()).min(POLL)
         });
@@ -243,6 +281,12 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     }
     while let Ok(message) = rx.try_recv() {
         relay(out, &mut dev, message);
+    }
+    // A question that arrives now finds the queue gone and is refused.
+    drop(ask);
+    drop(rx);
+    for thread in asking {
+        let _ = thread.join();
     }
     exit_code(out, status)
 }
@@ -297,7 +341,7 @@ fn build(global: &Global, manifest: &Path, out: &mut Output) -> Result<PathBuf, 
                 source,
                 line,
             } => out.log(level, source, &line),
-            Incoming::Change(_) | Incoming::Link(_) => {}
+            Incoming::Change(_) | Incoming::Link(_) | Incoming::Control(_) => {}
         }
     }
     for thread in threads {
@@ -501,6 +545,7 @@ fn relay(out: &mut Output, dev: &mut DevSession, message: Incoming) {
         } => out.log(level, source, &line),
         Incoming::Change(change) => dev.change(change, out),
         Incoming::Link(event) => dev.link(event, out),
+        Incoming::Control(call) => dev.control(call, out),
         Incoming::Executable(_) => {}
     }
 }

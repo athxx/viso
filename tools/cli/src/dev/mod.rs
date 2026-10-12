@@ -28,7 +28,13 @@
 //! With `--no-hot-reload` (§2.1) the session still watches, compiles and
 //! reports each candidate, but sends the app nothing: a candidate that
 //! compiles is `held`.
+//!
+//! The session also relays what `viso game` asks through its control
+//! endpoint ([`control`]): the game is found among the mounted views by its
+//! file, the question goes to the app, and a peeked state comes back written
+//! as JSON by its type, as the last good of the file declares it.
 
+pub mod control;
 pub mod link;
 pub mod report;
 mod sources;
@@ -40,13 +46,16 @@ use std::time::{Duration, Instant};
 
 use viso_dsl::Diagnostic;
 use viso_dsl::aot::emit_view_package;
+use viso_dsl::behavior::probe::state_json;
 use viso_dsl::hotreload::{CandidatePlan, game_patch, view_patch};
 use viso_project::LockGuard;
 use viso_view::dev::wire::{
-    CommitCounts, Domain, HostMessage, PatchBundle, PatchSection, Rebuild, ReloadPlan, Revision,
-    RuntimeHello, RuntimeMessage, Stage, SystemPatch, UiPatch, ViewPatch, source_hash,
+    CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply, HostMessage,
+    PatchBundle, PatchSection, Rebuild, ReloadPlan, Revision, RuntimeHello, RuntimeMessage, Stage,
+    SystemPatch, UiPatch, ViewPatch, source_hash,
 };
 
+pub use control::{Control, ControlCall, ControlDeliver, ControlReply};
 pub use link::{Deliver, Expect, LinkEvent};
 pub use watch::Change;
 
@@ -81,6 +90,29 @@ struct Runtime {
     /// The revision it matches.
     revision: Revision,
     in_flight: Option<InFlight>,
+    /// The questions of `viso game` it was sent and has not answered.
+    asked: Vec<Asked>,
+}
+
+impl Drop for Runtime {
+    /// A runtime gone answers nothing more.
+    fn drop(&mut self) {
+        for asked in self.asked.drain(..) {
+            let _ = asked.reply.send(ControlReply::refused(
+                control::GAME_NOT_RUNNING,
+                "the app exited before it answered",
+            ));
+        }
+    }
+}
+
+/// A question of `viso game` relayed to the runtime.
+struct Asked {
+    id: u32,
+    /// The view of the game asked about, by its index in the source graph.
+    at: usize,
+    ask: GameAsk,
+    reply: std::sync::mpsc::Sender<ControlReply>,
 }
 
 /// A patch sent and not yet answered.
@@ -122,6 +154,8 @@ pub struct DevSession {
     next_revision: u64,
     /// Whether candidates are sent to the app; not with `--no-hot-reload`.
     apply: bool,
+    /// The id the next question of `viso game` takes.
+    next_query: u32,
 }
 
 impl DevSession {
@@ -149,6 +183,7 @@ impl DevSession {
             ready: false,
             next_revision: Revision::LAUNCH.0 + 1,
             apply,
+            next_query: 0,
         }
     }
 
@@ -212,6 +247,7 @@ impl DevSession {
                     hello,
                     writer: connection.writer,
                     in_flight: None,
+                    asked: Vec::new(),
                 });
             }
             LinkEvent::Runtime(message) => self.runtime_message(message, out),
@@ -368,11 +404,161 @@ impl DevSession {
                 "tool",
                 &format!("the app dropped {count} dev messages: `viso run` read too slowly"),
             ),
+            RuntimeMessage::Game(answer) => self.answer(answer),
             // The link thread delivers no second hello.
             RuntimeMessage::Hello(_) => {}
         }
     }
 
+    /// The lock this session holds, to publish its control endpoint in.
+    pub fn lock_mut(&mut self) -> &mut LockGuard {
+        &mut self._lock
+    }
+
+    /// Relays what `viso game` asks about the game `call.game` names to the
+    /// app, or refuses it.
+    pub fn control(&mut self, call: ControlCall, out: &mut Output) {
+        let refuse = |code: &str, message: String| {
+            let _ = call.reply.send(ControlReply::refused(code, message));
+        };
+        let Some(runtime) = &self.runtime else {
+            return refuse(
+                control::GAME_NOT_RUNNING,
+                "the app is not connected to `viso run`".into(),
+            );
+        };
+        if !runtime.hello.capabilities.contains(Domain::System) {
+            return refuse(
+                control::GAME_NOT_RUNNING,
+                "the app runs no game sessions".into(),
+            );
+        }
+        let at = match self.find_game(&call.game) {
+            Ok(at) => at,
+            Err(reply) => {
+                let _ = call.reply.send(reply);
+                return;
+            }
+        };
+        let view = &self.sources.views[at];
+        let file = view.mount.as_ref().expect("a mounted view").file;
+        if let GameAsk::Record { .. } = call.ask {
+            let name = Source::new(&view.path, &self.root, "").name().to_owned();
+            out.log(
+                "info",
+                "tool",
+                &format!("recording `{name}` from a restarted World"),
+            );
+        }
+        let id = self.next_query;
+        self.next_query = self.next_query.wrapping_add(1);
+        let runtime = self.runtime.as_mut().expect("connected");
+        let query = GameQuery {
+            id,
+            file,
+            ask: call.ask.clone(),
+        };
+        if runtime.writer.send(HostMessage::Game(query)).is_err() {
+            return refuse(
+                control::GAME_NOT_RUNNING,
+                "the app is not connected to `viso run`".into(),
+            );
+        }
+        runtime.asked.push(Asked {
+            id,
+            at,
+            ask: call.ask,
+            reply: call.reply,
+        });
+    }
+
+    /// The mounted view `game` names: its path from the project root, with
+    /// or without the extension, or its file's stem.
+    fn find_game(&self, game: &str) -> Result<usize, ControlReply> {
+        let game = game.trim_start_matches("./").replace('\\', "/");
+        let mut named = Vec::new();
+        let mut mounted = Vec::new();
+        for (at, view) in self.sources.views.iter().enumerate() {
+            if view.mount.is_none() {
+                continue;
+            }
+            let name = Source::new(&view.path, &self.root, "").name().to_owned();
+            let bare = name.strip_suffix(".vs").unwrap_or(&name);
+            let stem = bare.rsplit('/').next().unwrap_or(bare);
+            if name == game || bare == game || stem == game {
+                named.push((at, name.clone()));
+            }
+            mounted.push(name);
+        }
+        match &named[..] {
+            [(at, _)] => Ok(*at),
+            [] => Err(ControlReply::Refused {
+                code: control::GAME_NOT_RUNNING.into(),
+                message: format!("no mounted view is `{game}`"),
+                notes: if mounted.is_empty() {
+                    vec!["the app mounts no `.vs` view".into()]
+                } else {
+                    vec![format!("the app mounts {}", quoted(&mounted))]
+                },
+            }),
+            several => Err(ControlReply::Refused {
+                code: control::GAME_AMBIGUOUS.into(),
+                message: format!("`{game}` names more than one mounted view"),
+                notes: vec![format!(
+                    "name one by its path: {}",
+                    quoted(&several.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>())
+                )],
+            }),
+        }
+    }
+
+    /// Hands the runtime's answer to the `viso game` that asked.
+    fn answer(&mut self, answer: GameAnswer) {
+        let Some(runtime) = &mut self.runtime else {
+            return;
+        };
+        let Some(index) = runtime.asked.iter().position(|a| a.id == answer.id) else {
+            return;
+        };
+        let asked = runtime.asked.swap_remove(index);
+        let view = &self.sources.views[asked.at];
+        let file = Source::new(&view.path, &self.root, "").name().to_owned();
+        let program = view
+            .mount
+            .as_ref()
+            .and_then(|m| m.last_good.as_ref())
+            .and_then(|plan| plan.game.as_ref());
+        let reply = match (answer.reply, &asked.ask) {
+            (
+                Ok(GameReply::State {
+                    value,
+                    tick,
+                    sessions,
+                }),
+                GameAsk::Peek { system, state },
+            ) => match state_json(program, system, state, &value) {
+                Ok(json) => ControlReply::State {
+                    file,
+                    json,
+                    tick,
+                    sessions,
+                },
+                Err(error) => ControlReply::refused(
+                    control::GAME_ANSWER_INVALID,
+                    format!("the app sent a malformed state: {error}"),
+                ),
+            },
+            (Ok(GameReply::Tape { tape }), GameAsk::Record { .. }) => {
+                ControlReply::Tape { file, tape }
+            }
+            (Ok(_), _) => ControlReply::refused(
+                control::GAME_ANSWER_INVALID,
+                "the app answered another question",
+            ),
+            (Err(refusal), ask) => refusal_reply(&refusal, &file, ask, program),
+        };
+        let _ = asked.reply.send(reply);
+    }
     /// Closes the patch in flight if it is the one moving to `next`, and
     /// takes the next batch now.
     fn answered(&mut self, next: Revision) -> Option<InFlight> {
@@ -581,6 +767,67 @@ impl DevSession {
             started,
         });
     }
+}
+
+/// What `viso game` is told when the app refused its question about the
+/// game of `file`.
+fn refusal_reply(
+    refusal: &GameRefusal,
+    file: &str,
+    ask: &GameAsk,
+    program: Option<&viso_dsl::behavior::Program>,
+) -> ControlReply {
+    let code = match refusal {
+        GameRefusal::NotRunning => control::GAME_NOT_RUNNING,
+        GameRefusal::UnknownState => control::GAME_UNKNOWN_STATE,
+        GameRefusal::Replaying | GameRefusal::Recording => control::GAME_BUSY,
+        GameRefusal::Ended => control::GAME_ENDED,
+        GameRefusal::Fault(_) => control::GAME_FAULT,
+        GameRefusal::TooLarge => control::GAME_ANSWER_INVALID,
+    };
+    let mut notes = Vec::new();
+    let message = match (refusal, ask) {
+        (GameRefusal::UnknownState, GameAsk::Peek { system, state }) => {
+            if let Some(program) = program {
+                let systems = || program.systems.iter();
+                let name = |s: &viso_dsl::behavior::ir::SystemLayout| {
+                    program.components[s.component as usize].name.clone()
+                };
+                match systems().find(|s| name(s) == *system) {
+                    Some(layout) => notes.push(format!(
+                        "`{system}` has {}",
+                        quoted(
+                            &layout
+                                .states
+                                .iter()
+                                .map(|s| s.name.clone())
+                                .collect::<Vec<_>>()
+                        )
+                    )),
+                    None => notes.push(format!(
+                        "the game's systems are {}",
+                        quoted(&systems().map(name).collect::<Vec<_>>())
+                    )),
+                }
+            }
+            format!("the game of `{file}` has no state `{system}.{state}`")
+        }
+        (refusal, _) => format!("`{file}`: {refusal}"),
+    };
+    ControlReply::Refused {
+        code: code.to_owned(),
+        message,
+        notes,
+    }
+}
+
+/// `names`, each in backquotes, comma-separated.
+fn quoted(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn elapsed_us(since: Instant) -> u64 {
@@ -881,6 +1128,143 @@ mod tests {
             PatchSection::System(systems) => Some(systems),
             PatchSection::Ui(_) => None,
         })
+    }
+
+    /// Asks the session `ask` about `game` as `viso game` does: what it sent
+    /// the app, and where its reply arrives.
+    fn ask(
+        f: &mut Fixture,
+        game: &str,
+        ask: GameAsk,
+    ) -> (Vec<HostMessage>, Receiver<ControlReply>) {
+        let (reply, answer) = mpsc::channel();
+        let call = ControlCall {
+            game: game.into(),
+            ask,
+            reply,
+        };
+        f.dev.control(call, &mut f.out);
+        (f.sent.try_iter().collect(), answer)
+    }
+
+    fn peek(system: &str, state: &str) -> GameAsk {
+        GameAsk::Peek {
+            system: system.into(),
+            state: state.into(),
+        }
+    }
+
+    #[test]
+    fn a_game_question_goes_to_the_app_and_its_answer_comes_back_typed() {
+        let swaps = Domains::NONE.with(Domain::Ui).with(Domain::System);
+        let mut f = Fixture::app("game-ask", true, GAME, GAME, swaps);
+        let _ = f.settle();
+
+        let (sent, answer) = ask(&mut f, "view", peek("Runner", "steps"));
+        let [HostMessage::Game(query)] = &sent[..] else {
+            panic!("not asked: {sent:?}");
+        };
+        assert_eq!(
+            (query.file, &query.ask),
+            (FileId(0), &peek("Runner", "steps"))
+        );
+        f.runtime(RuntimeMessage::Game(GameAnswer {
+            id: query.id,
+            // `Int(4)`: its tag, then the zig-zag varint.
+            reply: Ok(GameReply::State {
+                value: vec![1, 8],
+                tick: 4,
+                sessions: 1,
+            }),
+        }));
+        assert_eq!(
+            answer.try_recv(),
+            Ok(ControlReply::State {
+                file: "view.vs".into(),
+                json: "4".into(),
+                tick: 4,
+                sessions: 1,
+            })
+        );
+
+        // A state the game lacks is refused with the ones it has.
+        let (sent, answer) = ask(&mut f, "view.vs", peek("Runner", "speed"));
+        let [HostMessage::Game(query)] = &sent[..] else {
+            panic!("not asked: {sent:?}");
+        };
+        f.runtime(RuntimeMessage::Game(GameAnswer {
+            id: query.id,
+            reply: Err(GameRefusal::UnknownState),
+        }));
+        let Ok(ControlReply::Refused { code, notes, .. }) = answer.try_recv() else {
+            panic!("not refused");
+        };
+        assert_eq!(
+            (&*code, &notes[..]),
+            (
+                control::GAME_UNKNOWN_STATE,
+                &["`Runner` has `steps`".to_owned()][..]
+            )
+        );
+
+        // A recording's tape comes back as the app wrote it.
+        let record = GameAsk::Record {
+            span: viso_view::dev::wire::RecordSpan::Ticks(60),
+        };
+        let (sent, answer) = ask(&mut f, "./view", record);
+        let [HostMessage::Game(query)] = &sent[..] else {
+            panic!("not asked: {sent:?}");
+        };
+        f.runtime(RuntimeMessage::Game(GameAnswer {
+            id: query.id,
+            reply: Ok(GameReply::Tape { tape: vec![7; 9] }),
+        }));
+        assert_eq!(
+            answer.try_recv(),
+            Ok(ControlReply::Tape {
+                file: "view.vs".into(),
+                tape: vec![7; 9],
+            })
+        );
+
+        // A file the app does not mount is refused here, naming what it does.
+        let (sent, answer) = ask(&mut f, "level", peek("Runner", "steps"));
+        assert!(sent.is_empty());
+        let Ok(ControlReply::Refused { code, notes, .. }) = answer.try_recv() else {
+            panic!("not refused");
+        };
+        assert_eq!(
+            (&*code, &notes[..]),
+            (
+                control::GAME_NOT_RUNNING,
+                &["the app mounts `view.vs`".to_owned()][..]
+            )
+        );
+
+        // The app exits with a question open: it is refused, not left hanging.
+        let (_, answer) = ask(&mut f, "view", peek("Runner", "steps"));
+        f.dev.link(LinkEvent::Closed, &mut f.out);
+        assert!(matches!(
+            answer.try_recv(),
+            Ok(ControlReply::Refused { code, .. }) if code == control::GAME_NOT_RUNNING
+        ));
+    }
+
+    #[test]
+    fn an_app_that_runs_no_games_is_not_asked() {
+        let mut f = Fixture::app(
+            "game-none",
+            true,
+            GAME,
+            GAME,
+            Domains::NONE.with(Domain::Ui),
+        );
+        let (sent, answer) = ask(&mut f, "view", peek("Runner", "steps"));
+        assert!(sent.is_empty());
+        assert!(matches!(
+            answer.try_recv(),
+            Ok(ControlReply::Refused { code, .. }) if code == control::GAME_NOT_RUNNING
+        ));
     }
 
     #[test]

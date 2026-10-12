@@ -1585,7 +1585,7 @@ replay
 ```bash
 viso test game movement --tape runs/jump.tape      # 回放 Tape，对 @probe 断言
 viso game record movement -o runs/jump.tape        # 运行中录制 Input Tape
-viso game peek <session> Player.score              # 读取运行中 System State
+viso game peek movement Player.score               # 读取运行中 System State
 ```
 
 输出包含每 Tick `@probe` Trace、最终 Snapshot Hash、Entity Snapshot，以及可选的 Headless 帧截图 Sheet（`--sheet <png>`）。同一 Build + Tape 在所选 determinism 档位下 Snapshot Hash 逐字节一致（DSL §110.5）。
@@ -1596,7 +1596,11 @@ viso game peek <session> Player.score              # 读取运行中 System Stat
 - `--tape <path>` 用给定 Tape（二进制或文本）替换 Scenario 的输入、保留其期望；单独使用时以文件名为 Scenario 名、无期望；`--seed` 覆盖 Tape 的 Seed（缺省 Seed 为 `0x5eed5eed5eed5eed`）；`--frames` 缺省为 Tape 覆盖的 Tick 数与最后一个期望之后的较大者；一帧运行一个 Fixed Tick，再运行全部 `FrameUpdate`；Tick Rate 与 determinism 档位取自 `Viso.toml [game]`；
 - `--json` 下每个 Tick 输出一条 `trace`（`scenario, tick, probes{"System.state": 值}`），每个 Scenario 一条 `test`（§36，另带 `seed, frames, build, snapshot_hash`（16 位十六进制）、`entities[{id[index, generation], kind, tags, model, position, half_extents}], failures, faults`）；未满足的期望是指向 Scenario 行的 `TEST_EXPECTATION` 诊断，System 故障以其故障码报告；人类输出每个 Scenario 一行 `test game <name> ... ok|FAILED (<n> frames, seed <s>, snapshot <hash>)`，末行 `test result: …`；
 - 任一 Scenario 失败退出 1，Scenario 或 Tape 文件缺失或不可读退出 3；
-- `viso game record`、`viso game peek` 需要运行中的游戏 Session，`--sheet` 需要 Headless 游戏渲染，均尚未实现；`viso test` 目前只有 `game` 域。
+- `viso game peek <game> <System.state>` 与 `viso game record <game> -o <path> [--seconds S | --ticks N]`（缺省 10 秒）询问本 project 正在运行的 `viso run` session 的 app：`viso run` 另开一个 loopback control endpoint，把 `<地址> <token>` 写入 dev session lock（§44，第 4 行）；`viso game` 读 lock、连上 endpoint、带 token 发出请求，token 不符的连接不回应。`<game>` 按 app 挂载的 `.vs` 文件选取：相对 project root 的路径（可省 `.vs`）或文件名 stem，多个匹配时 `GAME_AMBIGUOUS`（exit 2）。`viso run` 经 dev channel 转给 runtime（`HostMessage::Game` / `RuntimeMessage::Game`，`Viso_Hot_Reload.md` §34），由运行该文件的第一个 Game Session 在帧边界回答；
+- `peek` 可读 System 的任意 State（不限 `@probe`），host 按该文件 last-good 的类型写成 JSON（无 last-good 时按结构）；人类输出 `<System>.<state> = <JSON> (<file> at tick <n>)`，`--json` 为一条 `result`（`game, system, state, value, tick, sessions`）；
+- `record` 先以 `Rebuild::Fresh` 重启该游戏的 World（时钟回到 tick 0、以其 seed 重跑 start），再录制所要求的 Tick 数（`--seconds` 按游戏 Tick Rate 向上取整），录满后 runtime 回传 Tape：未经 live patch 的写成文本形式（可直接作 `viso test game --tape` 输入或补上期望行成为 Scenario），带 live patch 的写成二进制形式（只有二进制携带 patch）；人类输出 `recorded <n> ticks of <file> to <path> (text|binary[, n live patches])`，`--json` 为一条 `result`（`game, path, form, ticks, seed, patches`）。游戏暂停时录制随之暂停；
+- 失败码：没有 session 或连不上 `ENV_NO_DEV_SESSION`（exit 3）；文件未挂载、app 未连上或不运行游戏 `GAME_NOT_RUNNING`（3）；没有该 System/State `GAME_UNKNOWN_STATE`（1，note 列出已有 State）；正在回放 Tape 或已在录制 `GAME_BUSY`（3）；World 重启时故障 `GAME_FAULT`、录制完成前游戏结束 `GAME_ENDED`（5）；Tape 超过 dev frame 上限或回答不可解码 `GAME_ANSWER_INVALID`；写 Tape 失败 `ENV_TAPE_WRITE`（3）；
+- `--sheet` 需要 Headless 游戏渲染，尚未实现；`viso test` 目前只有 `game` 域。
 
 ### 22.4 Test filters
 
@@ -2658,7 +2662,7 @@ package-<target>.lock              dist/<target>/ 输出，按 target
 dev-<target>[-<device>].lock       dev session，按 target/device
 ```
 
-- 获取：`create_new` 原子创建；文件内容记录 holder `pid`、`acquired_unix`、description。
+- 获取：`create_new` 原子创建；文件内容记录 holder `pid`、`acquired_unix`、description，以及可选的第 4 行 endpoint：持有者接收请求之处（dev session 的 control endpoint `<地址> <token>`，§22.3），发布时整体替换文件（写临时文件再 rename），读者看到的是旧内容或新内容，不会是半截。
 - 不阻塞等待：锁被占用时立即失败，diagnostic 给出 holder pid、age 与锁路径，exit 3。
 - 释放：持有者退出时删除（含 §43 取消路径）。
 - Stale：只按 age 判定（不探测 pid 存活，pid 可能被复用）；阈值由调用命令给定，移除 stale lock 时输出 warning。

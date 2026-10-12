@@ -280,6 +280,7 @@ impl Domains {
                                     diagnostics,
                                 );
                             }
+                            let mut probed = false;
                             if local.is_some() {
                                 self.locals.extend(symbol);
                                 if let (Some(state), Some(symbol)) = (state, symbol) {
@@ -300,16 +301,19 @@ impl Domains {
                                         symbol,
                                         schema_hash(ty, env),
                                     );
-                                    if probe.is_some() {
-                                        let shape = probe_shape(ty, env, &mut Vec::new());
-                                        env.behavior.borrow_mut().probe_state(
-                                            system_symbol,
-                                            symbol,
-                                            &name,
-                                            shape,
-                                        );
-                                    }
+                                    probed = probe.is_some();
                                 }
+                            }
+                            if let (Some(state), Some(symbol)) = (state, symbol) {
+                                let ty = &state.meta.inferred_type;
+                                let shape = probe_shape(ty, env, &mut Vec::new());
+                                env.behavior.borrow_mut().system_state(
+                                    system_symbol,
+                                    symbol,
+                                    &name,
+                                    shape,
+                                    probed,
+                                );
                             }
                         } else {
                             if let Some(attr) = local {

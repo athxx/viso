@@ -29,10 +29,14 @@ pub use super::patch::{
     RetypePlan, StateAction, StatePlan, StructuralOp, SystemPatch, UiPatch, ViewPatch,
 };
 use super::patch::{read_systems, read_tier, read_ui, write_systems, write_tier, write_ui};
+pub use super::query::{
+    GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply, MAX_RECORD_TICKS, RecordSpan,
+};
+use super::query::{read_answer, read_query, write_answer, write_query};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 8;
+pub const DEV_PROTOCOL_VERSION: u16 = 9;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -675,6 +679,8 @@ pub enum HostMessage {
         file: FileId,
         lines: Vec<String>,
     },
+    /// A question about the game a file's mounts run, for `viso game`.
+    Game(GameQuery),
 }
 
 /// What the runtime sends.
@@ -693,6 +699,8 @@ pub enum RuntimeMessage {
     },
     /// Files mounted since the last inventory message.
     Mounts(Vec<MountEntry>),
+    /// The answer to a [`HostMessage::Game`].
+    Game(GameAnswer),
 }
 
 /// Why a frame or message was refused.
@@ -943,6 +951,7 @@ const HOST_HELLO: u8 = 0;
 const HOST_REJECT: u8 = 1;
 const HOST_PATCH: u8 = 2;
 const HOST_FAILURE: u8 = 3;
+const HOST_GAME: u8 = 4;
 
 const RUNTIME_HELLO: u8 = 0;
 const RUNTIME_ACK: u8 = 1;
@@ -951,6 +960,7 @@ const RUNTIME_LOG: u8 = 3;
 const RUNTIME_DROPPED: u8 = 4;
 // 5 was version 2's in-app reload report.
 const RUNTIME_MOUNTS: u8 = 6;
+const RUNTIME_GAME: u8 = 7;
 
 const REJECT_PROTOCOL: u8 = 0;
 const REJECT_BUILD: u8 = 1;
@@ -1167,6 +1177,10 @@ impl Message for HostMessage {
                 enc.write_varint(u64::from(file.0));
                 write_strings(enc, lines);
             }
+            HostMessage::Game(query) => {
+                enc.write_u8(HOST_GAME);
+                write_query(enc, query);
+            }
         }
     }
 
@@ -1236,6 +1250,7 @@ impl Message for HostMessage {
                     read_string(dec, MAX_LINE, "failure line")
                 })?,
             }),
+            HOST_GAME => Ok(HostMessage::Game(read_query(dec)?)),
             _ => Err(malformed(dec)),
         }
     }
@@ -1339,6 +1354,10 @@ impl Message for RuntimeMessage {
                 for entry in entries {
                     write_mount(enc, entry);
                 }
+            }
+            RuntimeMessage::Game(answer) => {
+                enc.write_u8(RUNTIME_GAME);
+                write_answer(enc, answer);
             }
         }
     }
@@ -1472,6 +1491,7 @@ impl Message for RuntimeMessage {
                 "mount entries",
                 read_mount,
             )?)),
+            RUNTIME_GAME => Ok(RuntimeMessage::Game(read_answer(dec)?)),
             _ => Err(malformed(dec)),
         }
     }
@@ -1553,6 +1573,28 @@ mod tests {
                 file: FileId(2),
                 lines: Vec::new(),
             },
+            HostMessage::Game(GameQuery {
+                id: 1,
+                file: FileId(2),
+                ask: GameAsk::Peek {
+                    system: "Player".into(),
+                    state: "score".into(),
+                },
+            }),
+            HostMessage::Game(GameQuery {
+                id: u32::MAX,
+                file: FileId(0),
+                ask: GameAsk::Record {
+                    span: RecordSpan::Ticks(MAX_RECORD_TICKS),
+                },
+            }),
+            HostMessage::Game(GameQuery {
+                id: 0,
+                file: FileId(0),
+                ask: GameAsk::Record {
+                    span: RecordSpan::Millis(10_000),
+                },
+            }),
         ]
     }
 
@@ -1805,7 +1847,40 @@ mod tests {
                     ..mount(7)
                 },
             ]),
+            RuntimeMessage::Game(GameAnswer {
+                id: 1,
+                reply: Ok(GameReply::State {
+                    value: vec![1, 6],
+                    tick: 600,
+                    sessions: 2,
+                }),
+            }),
+            RuntimeMessage::Game(GameAnswer {
+                id: 2,
+                reply: Ok(GameReply::Tape {
+                    tape: vec![0xAB; 300],
+                }),
+            }),
         ]
+        .into_iter()
+        .chain(
+            [
+                GameRefusal::NotRunning,
+                GameRefusal::UnknownState,
+                GameRefusal::Replaying,
+                GameRefusal::Recording,
+                GameRefusal::Ended,
+                GameRefusal::Fault("`Player` faulted at tick 0: overflow".into()),
+                GameRefusal::TooLarge,
+            ]
+            .map(|refusal| {
+                RuntimeMessage::Game(GameAnswer {
+                    id: 3,
+                    reply: Err(refusal),
+                })
+            }),
+        )
+        .collect()
     }
 
     fn round_trip<M: Message + PartialEq + fmt::Debug>(message: &M) {
@@ -2192,6 +2267,54 @@ mod tests {
                 Err(WireError::Malformed(_))
             ));
         }
+    }
+
+    #[test]
+    fn game_query_bounds_are_checked() {
+        let peek = |system: String| {
+            HostMessage::Game(GameQuery {
+                id: 0,
+                file: FileId(0),
+                ask: GameAsk::Peek {
+                    system,
+                    state: "score".into(),
+                },
+            })
+        };
+        assert_eq!(
+            HostMessage::from_frame(&encode(&peek("S".repeat(MAX_NAME + 1)))),
+            Err(WireError::Bound {
+                what: "system name"
+            })
+        );
+        let long = HostMessage::Game(GameQuery {
+            id: 0,
+            file: FileId(0),
+            ask: GameAsk::Record {
+                span: RecordSpan::Ticks(MAX_RECORD_TICKS + 1),
+            },
+        });
+        assert_eq!(
+            HostMessage::from_frame(&encode(&long)),
+            Err(WireError::Bound {
+                what: "recorded ticks"
+            })
+        );
+        // An unknown question, and an unknown refusal.
+        let body = body_with(&peek("S".into()), |body| body[3] = 9);
+        assert!(matches!(
+            HostMessage::from_frame(&body),
+            Err(WireError::Malformed(_))
+        ));
+        let refused = RuntimeMessage::Game(GameAnswer {
+            id: 0,
+            reply: Err(GameRefusal::TooLarge),
+        });
+        let body = body_with(&refused, |body| *body.last_mut().unwrap() = 7);
+        assert!(matches!(
+            RuntimeMessage::from_frame(&body),
+            Err(WireError::Malformed(_))
+        ));
     }
 
     #[test]

@@ -29,7 +29,7 @@ use viso_behavior::native::NativeId;
 use viso_behavior::{PersistSlot, TaskPolicy};
 use viso_ui::adaptive::EnvField;
 
-use super::probe::Probe;
+use super::probe::SystemState;
 use crate::resolve::SymbolId;
 use crate::syntax::TextRange;
 
@@ -581,8 +581,8 @@ pub struct SystemLayout {
     pub snapshot: Vec<(SymbolId, u32, u64)>,
     /// Each `@local` state, likewise.
     pub locals: Vec<(SymbolId, u32, u64)>,
-    /// Each `@probe` state, in declaration order.
-    pub probes: Vec<Probe>,
+    /// Every state, in declaration order, its `@probe` states marked.
+    pub states: Vec<SystemState>,
     /// Each `@persist` state, in declaration order.
     pub persist: Vec<PersistSlot>,
 }

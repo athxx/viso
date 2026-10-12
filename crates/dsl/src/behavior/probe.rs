@@ -1,8 +1,9 @@
-//! The `@probe` states of a system (Viso_DSL_1.0.md section 110.5): what a
-//! headless game test traces every tick, and how each value is written to
-//! the JSON trace.
+//! The states of a system as tooling reads them: the `@probe` states a
+//! headless game test traces every tick (Viso_DSL_1.0.md section 110.5), and
+//! every state `viso game peek` reads from a running game, each with how its
+//! values are written to JSON.
 //!
-//! A probe's [`ProbeShape`] comes from the state's type, so the trace shows
+//! A state's [`ProbeShape`] comes from its type, so the JSON shows
 //! a `Bool` as `true`, a unit enum variant by name and a record by field
 //! names, where the runtime value alone holds only integers and fields. A
 //! type the shape does not describe (a native value such as `Vec3F32`, a
@@ -10,17 +11,21 @@
 //! its fields.
 
 use viso_behavior::Value;
-use viso_ende::JsonWriter;
+use viso_ende::{DecodeError, JsonWriter};
 
-/// A Simulation state a game test traces.
+use super::ir::Program;
+
+/// A state of a system.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Probe {
+pub struct SystemState {
     /// The state's name.
     pub name: String,
     /// Its slot in the system's layout.
     pub slot: u32,
     /// How its values are written.
     pub shape: ProbeShape,
+    /// Whether it is a `@probe` Simulation state, which a game test traces.
+    pub probe: bool,
 }
 
 /// How a probed value is written to JSON.
@@ -122,6 +127,36 @@ impl ProbeShape {
             _ => structure(value, json),
         }
     }
+}
+
+/// The JSON of `value`, a value of state `state` of system `system` in its
+/// wire form ([`Value::encode`]), as a running game sends what `viso game
+/// peek` reads: written by the state's type when `program` declares it, by
+/// structure otherwise.
+///
+/// # Errors
+///
+/// When `value` is not one value's wire form.
+pub fn state_json(
+    program: Option<&Program>,
+    system: &str,
+    state: &str,
+    value: &[u8],
+) -> Result<String, DecodeError> {
+    let value = Value::decode(value)?;
+    let shape = program.and_then(|program| {
+        program
+            .systems
+            .iter()
+            .find(|s| program.components[s.component as usize].name == system)?
+            .states
+            .iter()
+            .find(|s| s.name == state)
+            .map(|s| &s.shape)
+    });
+    let mut json = JsonWriter::new();
+    shape.unwrap_or(&ProbeShape::Value).write(&value, &mut json);
+    Ok(json.into_string())
 }
 
 fn array<'s>(

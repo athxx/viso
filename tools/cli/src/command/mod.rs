@@ -2,6 +2,7 @@
 //! returns the process exit code.
 
 mod check;
+mod game;
 mod run;
 mod schema;
 mod test;
@@ -53,6 +54,7 @@ pub fn run(cli: &Cli) -> u8 {
     let mut out = Output::new(&cli.global, Some(cli.command.name()));
     let code = match &cli.command {
         Command::Check => check::run(&cli.global, &mut out),
+        Command::Game(command) => game::run(&cli.global, command, &mut out),
         Command::Run(args) => run::run(&cli.global, args, &mut out),
         Command::Schema(args) => schema::run(args, &mut out),
         Command::Test(args) => test::run(&cli.global, args, &mut out),

@@ -870,6 +870,11 @@ impl Scheduler {
         ));
     }
 
+    /// Whether the input is being recorded.
+    pub fn recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
     /// Stops recording and returns the tape, of this build and seed, through
     /// the last tick run; `None` when not recording.
     pub fn stop_recording(&mut self) -> Option<InputTape> {

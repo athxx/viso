@@ -23,9 +23,9 @@ use std::time::{Duration, Instant};
 use viso_platform::LoopWaker;
 use viso_view::dev::wire::{
     BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV, DEV_TOKEN_ENV,
-    DevSessionId, Domains, FileId, FrameError, HostMessage, Message, PatchBundle, Reject, Revision,
-    RuntimeHello, RuntimeIdentity, RuntimeMessage, RuntimeSessionId, RuntimeTarget,
-    SchemaFingerprint, WireError, accept_host, read_body, read_frame, write_frame,
+    DevSessionId, Domains, FileId, FrameError, GameQuery, HostMessage, Message, PatchBundle,
+    Reject, Revision, RuntimeHello, RuntimeIdentity, RuntimeMessage, RuntimeSessionId,
+    RuntimeTarget, SchemaFingerprint, WireError, accept_host, read_body, read_frame, write_frame,
 };
 
 /// How long the thread waits for the CLI to accept, and then to answer.
@@ -45,6 +45,8 @@ pub(crate) enum Incoming {
     Patch(Box<PatchBundle>, Duration),
     /// The host's verdict on a rejected edit, or its clearing.
     Failure { file: FileId, lines: Vec<String> },
+    /// A question about a running game.
+    Game(GameQuery),
     /// A host frame that did not decode.
     Undecodable(WireError),
 }
@@ -221,6 +223,7 @@ fn read_all(mut stream: TcpStream, deliver: &SyncSender<Incoming>, wake: &LoopWa
         let incoming = match HostMessage::from_frame(&buf) {
             Ok(HostMessage::Patch(patch)) => Incoming::Patch(patch, started.elapsed()),
             Ok(HostMessage::Failure { file, lines }) => Incoming::Failure { file, lines },
+            Ok(HostMessage::Game(query)) => Incoming::Game(query),
             Ok(HostMessage::Hello(_) | HostMessage::Reject(_)) => return,
             Err(error) => Incoming::Undecodable(error),
         };

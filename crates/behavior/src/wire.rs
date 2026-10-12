@@ -587,6 +587,28 @@ pub(crate) fn canonical_f32_bits(v: f32) -> u32 {
     }
 }
 
+impl Value {
+    /// The value in the form a module's constants take, as the dev channel
+    /// carries a game state; a closure or native handle is written as `Nil`.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut enc = Encoder::new();
+        write_value(&mut enc, self);
+        enc.into_bytes()
+    }
+
+    /// Reads a value [`Value::encode`] wrote, nesting bounded.
+    ///
+    /// # Errors
+    ///
+    /// When the bytes are not exactly one value.
+    pub fn decode(bytes: &[u8]) -> Result<Value, DecodeError> {
+        let mut dec = Decoder::new(bytes);
+        let value = read_value(&mut dec)?;
+        dec.finish()?;
+        Ok(value)
+    }
+}
+
 pub(crate) fn write_value(enc: &mut Encoder, value: &Value) {
     match value {
         Value::Nil | Value::Closure(_) | Value::Handle(_) => enc.write_u8(VALUE_NIL),
@@ -1337,5 +1359,23 @@ mod tests {
         assert!(with(Box::new([(NativeId(1), 0)])).is_err());
         assert!(with(Box::new([(NativeId(1), 2), (NativeId(1), 2)])).is_err());
         assert!(with(Box::new([(NativeId(1), 2)])).is_ok());
+    }
+
+    #[test]
+    fn a_value_round_trips_and_a_truncated_one_is_refused() {
+        let value = Value::Agg(Rc::new(Aggregate {
+            tag: 2,
+            fields: vec![
+                Value::Int(-3),
+                Value::Float(0.5),
+                Value::Str(Rc::new("run".into())),
+                Value::List(Rc::new(vec![Value::Nil, Value::Int(9)])),
+            ]
+            .into(),
+        }));
+        let bytes = value.encode();
+        assert_eq!(Value::decode(&bytes), Ok(value));
+        assert!(Value::decode(&bytes[..bytes.len() - 1]).is_err());
+        assert!(Value::decode(&[bytes.as_slice(), &[0]].concat()).is_err());
     }
 }

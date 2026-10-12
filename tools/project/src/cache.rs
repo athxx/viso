@@ -281,6 +281,9 @@ pub struct LockHolder {
     pub acquired_unix: u64,
     /// What it is protecting.
     pub description: String,
+    /// Where the holder takes requests, once it published one: a dev
+    /// session's control endpoint, `<address> <token>`.
+    pub endpoint: Option<String>,
 }
 
 impl LockHolder {
@@ -291,10 +294,15 @@ impl LockHolder {
     }
 
     fn encode(&self) -> String {
-        format!(
+        let mut text = format!(
             "{}\n{}\n{}\n",
             self.pid, self.acquired_unix, self.description
-        )
+        );
+        if let Some(endpoint) = &self.endpoint {
+            text.push_str(endpoint);
+            text.push('\n');
+        }
+        text
     }
 
     /// Parses a lock file. A malformed file still yields a holder, because the
@@ -312,6 +320,11 @@ impl LockHolder {
                 .and_then(|l| l.trim().parse().ok())
                 .unwrap_or(0),
             description: lines.next().unwrap_or("unknown").trim().to_string(),
+            endpoint: lines
+                .next()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string),
         }
     }
 }
@@ -379,6 +392,7 @@ impl fmt::Display for LockError {
 pub struct LockGuard {
     path: PathBuf,
     kind: LockKind,
+    holder: LockHolder,
 }
 
 impl LockGuard {
@@ -391,6 +405,7 @@ impl LockGuard {
             pid: std::process::id(),
             acquired_unix: unix_seconds(),
             description: kind.description(),
+            endpoint: None,
         };
         match fs::OpenOptions::new()
             .write(true)
@@ -405,7 +420,7 @@ impl LockGuard {
                     let _ = fs::remove_file(&path);
                     return Err(LockError::Io(io_diagnostic(&path, "write lock file", &err)));
                 }
-                Ok(Self { path, kind })
+                Ok(Self { path, kind, holder })
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 let holder = fs::read_to_string(&path)
@@ -414,6 +429,7 @@ impl LockGuard {
                         pid: 0,
                         acquired_unix: 0,
                         description: kind.description(),
+                        endpoint: None,
                     });
                 Err(LockError::Held { path, holder })
             }
@@ -454,6 +470,24 @@ impl LockGuard {
             },
             _ => Ok(false),
         }
+    }
+
+    /// Names `endpoint` in the lock file as where this holder takes
+    /// requests. The file is replaced whole, so a reader sees the old holder
+    /// or the new one, never a part.
+    ///
+    /// # Errors
+    ///
+    /// When the file cannot be written; the lock is still held.
+    pub fn publish(&mut self, endpoint: &str) -> Result<(), ConfigDiagnostic> {
+        self.holder.endpoint = Some(endpoint.to_string());
+        let staged = self.path.with_extension("lock.new");
+        fs::write(&staged, self.holder.encode())
+            .and_then(|()| fs::rename(&staged, &self.path))
+            .map_err(|err| {
+                let _ = fs::remove_file(&staged);
+                io_diagnostic(&self.path, "write lock file", &err)
+            })
     }
 
     /// The lock file.
@@ -762,11 +796,23 @@ mod tests {
         };
         assert!(LockGuard::holder(&layout, kind).is_none());
 
-        let _guard = LockGuard::acquire(&layout, kind).unwrap();
+        let mut guard = LockGuard::acquire(&layout, kind).unwrap();
         let holder = LockGuard::holder(&layout, kind).unwrap();
         assert_eq!(holder.pid, std::process::id());
         assert!(holder.age().unwrap() < Duration::from_secs(60));
         assert!(holder.to_string().starts_with("pid "));
+        assert_eq!(holder.endpoint, None);
+
+        guard.publish("127.0.0.1:4000 abc").unwrap();
+        let published = LockGuard::holder(&layout, kind).unwrap();
+        assert_eq!(published.endpoint.as_deref(), Some("127.0.0.1:4000 abc"));
+        assert_eq!(
+            (published.pid, published.acquired_unix),
+            (holder.pid, holder.acquired_unix)
+        );
+        assert!(LockGuard::acquire(&layout, kind).is_err(), "still held");
+        drop(guard);
+        assert!(LockGuard::holder(&layout, kind).is_none(), "released");
     }
 
     /// A lock file is never stolen implicitly: removal is a separate, age-gated call,
@@ -807,7 +853,13 @@ mod tests {
             pid: 4123,
             acquired_unix: 1_700_000_000,
             description: "build cache for `host`".to_string(),
+            endpoint: None,
         };
         assert_eq!(LockHolder::decode(&round_trip.encode()), round_trip);
+        let published = LockHolder {
+            endpoint: Some("127.0.0.1:4000 abc".to_string()),
+            ..round_trip
+        };
+        assert_eq!(LockHolder::decode(&published.encode()), published);
     }
 }

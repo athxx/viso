@@ -36,6 +36,10 @@ pub struct Global {
 pub enum Command {
     /// Check the project's `.vs` sources and `Viso.toml` without building.
     Check,
+    /// Read a state of, or record a tape from, a game the running `viso run`
+    /// session's app plays.
+    #[command(subcommand)]
+    Game(GameCommand),
     /// Build the project as a dev artifact and run it on this machine, hot
     /// reloading its `.vs` views as they are saved.
     Run(RunArgs),
@@ -43,6 +47,50 @@ pub enum Command {
     Schema(SchemaArgs),
     /// Run the project's headless tests of a domain.
     Test(TestArgs),
+}
+
+/// What `viso game` does with a running game (section 22.3).
+#[derive(Debug, Subcommand)]
+pub enum GameCommand {
+    /// Print a state of the running game as JSON.
+    Peek(PeekArgs),
+    /// Restart the running game's World and record the next stretch of
+    /// play as an input tape.
+    Record(RecordArgs),
+}
+
+/// What `viso game peek` reads.
+#[derive(Debug, Args)]
+pub struct PeekArgs {
+    /// The game, by its `.vs` file: a path from the project root, with or
+    /// without the extension, or the file's stem.
+    pub game: String,
+    /// The state, as `System.state`.
+    #[arg(value_name = "SYSTEM.STATE")]
+    pub state: String,
+}
+
+/// What `viso game record` records.
+#[derive(Debug, Args)]
+pub struct RecordArgs {
+    /// The game, by its `.vs` file: a path from the project root, with or
+    /// without the extension, or the file's stem.
+    pub game: String,
+    /// Where to write the tape: its text form, or its binary form when the
+    /// run took live patches.
+    #[arg(long, short, value_name = "PATH")]
+    pub output: PathBuf,
+    /// How many seconds of play to record.
+    #[arg(
+        long,
+        value_name = "S",
+        default_value_t = 10.0,
+        conflicts_with = "ticks"
+    )]
+    pub seconds: f64,
+    /// How many fixed ticks to record, instead of `--seconds`.
+    #[arg(long, value_name = "N")]
+    pub ticks: Option<u64>,
 }
 
 /// The test domains `viso test` runs (section 22).
@@ -103,6 +151,8 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::Check => "check",
+            Command::Game(GameCommand::Peek(_)) => "game peek",
+            Command::Game(GameCommand::Record(_)) => "game record",
             Command::Run(_) => "run",
             Command::Schema(_) => "schema",
             Command::Test(_) => "test",
@@ -228,5 +278,44 @@ mod tests {
         assert_eq!(args.tape, Some(PathBuf::from("runs/jump.tape")));
         assert!(Cli::try_parse_from(["viso", "test", "game"]).is_ok());
         assert!(Cli::try_parse_from(["viso", "test", "web"]).is_err());
+    }
+
+    #[test]
+    fn game_peeks_a_state_or_records_a_stretch_of_play() {
+        let cli =
+            Cli::try_parse_from(["viso", "game", "peek", "movement", "Player.score"]).unwrap();
+        let Command::Game(GameCommand::Peek(args)) = &cli.command else {
+            panic!("a peek");
+        };
+        assert_eq!((&*args.game, &*args.state), ("movement", "Player.score"));
+        assert_eq!(cli.command.name(), "game peek");
+
+        let cli =
+            Cli::try_parse_from(["viso", "game", "record", "movement", "-o", "runs/jump.tape"])
+                .unwrap();
+        let Command::Game(GameCommand::Record(args)) = cli.command else {
+            panic!("a recording");
+        };
+        assert_eq!(args.output, PathBuf::from("runs/jump.tape"));
+        assert_eq!((args.seconds, args.ticks), (10.0, None));
+        let ticks = ["viso", "game", "record", "m", "-o", "t", "--ticks", "600"];
+        assert!(Cli::try_parse_from(ticks).is_ok());
+        let both = [
+            "viso",
+            "game",
+            "record",
+            "m",
+            "-o",
+            "t",
+            "--ticks",
+            "6",
+            "--seconds",
+            "1",
+        ];
+        assert!(Cli::try_parse_from(both).is_err());
+        assert!(
+            Cli::try_parse_from(["viso", "game", "record", "m"]).is_err(),
+            "-o is needed"
+        );
     }
 }

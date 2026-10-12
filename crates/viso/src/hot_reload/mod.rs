@@ -23,6 +23,10 @@
 //! refuses the whole revision with every game and view at its last good —
 //! then commits the views and the swaps together at the tick boundary the
 //! frame is at. The faults the games raise reach the host as log lines.
+//! The host's questions about a running game (`viso game peek` and `record`)
+//! are answered at the frame boundary from the first session running the
+//! file; a recording restarts the World and answers with its tape once the
+//! game ran the ticks asked for.
 //! Without `viso run` there is no session: the mounts are dropped.
 //! Without the feature this module is not compiled and a `view!` records
 //! nothing.
@@ -31,7 +35,7 @@ mod link;
 pub(crate) mod overlay;
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use viso_behavior::game::PreparedSwap;
@@ -42,10 +46,11 @@ use viso_ui::NodeId;
 use viso_ui::state::{StateId, StateKey};
 use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, static_nodes};
 use viso_view::dev::wire::{
-    CommitCounts, Domain, Domains, FileCommit, FileId, GameCommit, GameTier, LogLevel, MAX_NOTICES,
+    CommitCounts, Domain, Domains, FileCommit, FileId, GameAnswer, GameAsk, GameCommit, GameQuery,
+    GameRefusal, GameReply, GameTier, LogLevel, MAX_FRAME, MAX_NOTICES, MAX_RECORD_TICKS,
     MAX_SCOPED_RESETS, MountEntry, NACK_REPLAYING, NACK_SYSTEM_FAULT, NACK_UNKNOWN_FILE,
     NACK_UNLOADABLE_SYSTEM, NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack,
-    PatchSection, PatchTimings, RESET_NOTICE, ReloadPlan, Revision, RuntimeIdentity,
+    PatchSection, PatchTimings, RESET_NOTICE, RecordSpan, ReloadPlan, Revision, RuntimeIdentity,
     RuntimeMessage, SchemaFingerprint, ScopedReset, Stage,
 };
 use viso_view::{
@@ -78,6 +83,17 @@ pub(crate) struct HotReloadSession {
     records: Vec<MountRecord>,
     /// Scratch a commit frees subtrees with.
     scratch: Vec<NodeId>,
+    /// The host's questions about games, answered at the frame boundary.
+    queries: Vec<GameQuery>,
+    /// The games being recorded for the host.
+    recordings: Vec<Recording>,
+}
+
+/// A game recorded for the host's query `id` until it ran `until` ticks.
+struct Recording {
+    id: u32,
+    session: Weak<RefCell<GameSession>>,
+    until: u64,
 }
 
 /// A patch the runtime loaded, to commit at the next frame boundary.
@@ -275,6 +291,10 @@ impl HotReloadSession {
                         changed = true;
                     }
                 }
+                Incoming::Game(query) => {
+                    self.queries.push(query);
+                    changed = true;
+                }
                 Incoming::Undecodable(error) => {
                     if let Some(identity) = &self.identity {
                         link.send(RuntimeMessage::Nack(identity.undecodable(error)));
@@ -291,9 +311,10 @@ impl HotReloadSession {
     }
 
     /// Commits the staged patches in revision order at the frame boundary
-    /// before the windows flush, answering each, and shows the failures that
-    /// changed. A mount recorded since the last adoption is not a window's
-    /// build (a list row) and is not tracked.
+    /// before the windows flush, answering each, shows the failures that
+    /// changed, and answers the host's questions about games. A mount
+    /// recorded since the last adoption is not a window's build (a list row)
+    /// and is not tracked.
     pub(crate) fn reload(&mut self, windows: &mut [WindowState]) {
         take_mounts(&mut self.records);
         self.records.clear();
@@ -312,6 +333,121 @@ impl HotReloadSession {
         }
         if std::mem::take(&mut self.failures_changed) {
             show_failures(&self.files, &self.views, windows, &mut self.scratch);
+        }
+        for query in std::mem::take(&mut self.queries) {
+            if let Some(answer) = self.ask(query, windows)
+                && let Some(link) = &mut self.link
+            {
+                link.send(RuntimeMessage::Game(answer));
+            }
+        }
+        if !self.recordings.is_empty() {
+            self.finish_recordings();
+        }
+    }
+
+    /// The sessions the mounts of `file` run, in mount order.
+    fn sessions(&self, file: usize, windows: &[WindowState]) -> Vec<Rc<RefCell<GameSession>>> {
+        let mut sessions: Vec<Rc<RefCell<GameSession>>> = Vec::new();
+        for live in self.views.iter().filter(|live| live.file == file) {
+            let Some(ws) = windows.iter().find(|ws| ws.window == live.window) else {
+                continue;
+            };
+            if let Some(session) = game_session(&ws.store, live.root)
+                && !sessions.iter().any(|s| Rc::ptr_eq(s, &session))
+            {
+                sessions.push(session);
+            }
+        }
+        sessions
+    }
+
+    /// Answers `query` from the first session running its file; a recording
+    /// it starts is answered once the game ran the ticks asked for.
+    fn ask(&mut self, query: GameQuery, windows: &[WindowState]) -> Option<GameAnswer> {
+        let answer = |reply| {
+            Some(GameAnswer {
+                id: query.id,
+                reply,
+            })
+        };
+        let sessions = self.sessions(query.file.0 as usize, windows);
+        let Some(session) = sessions.first() else {
+            return answer(Err(GameRefusal::NotRunning));
+        };
+        match query.ask {
+            GameAsk::Peek { system, state } => {
+                let session = session.borrow();
+                answer(match session.state(&system, &state) {
+                    Some(value) => Ok(GameReply::State {
+                        value: value.encode(),
+                        tick: session.scheduler().clock().tick(),
+                        sessions: sessions.len() as u32,
+                    }),
+                    None => Err(GameRefusal::UnknownState),
+                })
+            }
+            GameAsk::Record { span } => {
+                let mut game = session.borrow_mut();
+                if game.scheduler().replaying() {
+                    return answer(Err(GameRefusal::Replaying));
+                }
+                if game.scheduler().recording() {
+                    return answer(Err(GameRefusal::Recording));
+                }
+                let ticks = match span {
+                    RecordSpan::Ticks(ticks) => ticks,
+                    RecordSpan::Millis(ms) => {
+                        let rate = u64::from(game.module().tick_rate());
+                        ms.saturating_mul(rate).div_ceil(1000)
+                    }
+                };
+                if let Err(fault) = game.record() {
+                    let line = describe_fault(game.module(), &fault);
+                    return answer(Err(GameRefusal::Fault(line)));
+                }
+                self.recordings.push(Recording {
+                    id: query.id,
+                    session: Rc::downgrade(session),
+                    until: ticks.clamp(1, MAX_RECORD_TICKS),
+                });
+                None
+            }
+        }
+    }
+
+    /// Answers each recording whose game ran its ticks, or ended.
+    fn finish_recordings(&mut self) {
+        let mut answers = Vec::new();
+        self.recordings.retain(|recording| {
+            let reply = match recording.session.upgrade() {
+                Some(session) => {
+                    let mut session = session.borrow_mut();
+                    if session.scheduler().clock().tick() < recording.until {
+                        return true;
+                    }
+                    match session.stop_recording() {
+                        // What the frame holds besides the tape fits in a
+                        // few bytes.
+                        Some(tape) => match tape.encode() {
+                            tape if tape.len() <= MAX_FRAME - 64 => Ok(GameReply::Tape { tape }),
+                            _ => Err(GameRefusal::TooLarge),
+                        },
+                        None => Err(GameRefusal::Ended),
+                    }
+                }
+                None => Err(GameRefusal::Ended),
+            };
+            answers.push(GameAnswer {
+                id: recording.id,
+                reply,
+            });
+            false
+        });
+        if let Some(link) = &mut self.link {
+            for answer in answers {
+                link.send(RuntimeMessage::Game(answer));
+            }
         }
     }
 
@@ -2156,6 +2292,121 @@ mod tests {
                 Value::Int(2),
                 "the recorded code runs on"
             );
+        }
+
+        fn ask(
+            session: &mut HotReloadSession,
+            host: &mut Host,
+            ws: &mut WindowState,
+            query: GameQuery,
+        ) {
+            host.send(&HostMessage::Game(query));
+            until(session, |s| !s.queries.is_empty());
+            session.reload(std::slice::from_mut(ws));
+        }
+
+        fn answered(host: &mut Host) -> GameAnswer {
+            match host.read() {
+                Some(RuntimeMessage::Game(answer)) => answer,
+                other => panic!("not an answer: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_peek_reads_any_state_of_the_running_game() {
+            let mut ws = mounted(mount_game);
+            let (mut session, mut host, edits) = session(&mut ws, GAME);
+            for _ in 0..3 {
+                ws.store.run_frame_clients(TICK);
+            }
+            let peek = |id, system: &str, state: &str| GameQuery {
+                id,
+                file: edits.file,
+                ask: GameAsk::Peek {
+                    system: system.into(),
+                    state: state.into(),
+                },
+            };
+            ask(&mut session, &mut host, &mut ws, peek(7, "Runner", "steps"));
+            let answer = answered(&mut host);
+            assert_eq!(answer.id, 7);
+            let Ok(GameReply::State {
+                value,
+                tick,
+                sessions,
+            }) = answer.reply
+            else {
+                panic!("no state: {answer:?}");
+            };
+            assert_eq!(Value::decode(&value), Ok(Value::Int(3)));
+            assert_eq!((tick, sessions), (3, 1));
+
+            ask(&mut session, &mut host, &mut ws, peek(8, "Runner", "speed"));
+            assert_eq!(answered(&mut host).reply, Err(GameRefusal::UnknownState));
+            let elsewhere = GameQuery {
+                file: FileId(9),
+                ..peek(9, "Runner", "steps")
+            };
+            ask(&mut session, &mut host, &mut ws, elsewhere);
+            assert_eq!(answered(&mut host).reply, Err(GameRefusal::NotRunning));
+        }
+
+        #[test]
+        fn a_recording_restarts_the_world_and_answers_with_a_tape_that_replays_it() {
+            let mut ws = mounted(mount_game);
+            let (mut session, mut host, edits) = session(&mut ws, GAME);
+            let game = game_session(&ws.store, ws.root.expect("built")).expect("a game");
+            for _ in 0..5 {
+                ws.store.run_frame_clients(TICK);
+            }
+            let record = |id, span| GameQuery {
+                id,
+                file: edits.file,
+                ask: GameAsk::Record { span },
+            };
+            // 50 ms at 60 Hz: three ticks.
+            ask(
+                &mut session,
+                &mut host,
+                &mut ws,
+                record(1, RecordSpan::Millis(50)),
+            );
+            assert_eq!(state(&ws, "steps"), Value::Int(0), "the World restarted");
+            ask(
+                &mut session,
+                &mut host,
+                &mut ws,
+                record(2, RecordSpan::Ticks(9)),
+            );
+            assert_eq!(answered(&mut host).reply, Err(GameRefusal::Recording));
+
+            ws.store.run_frame_clients(TICK);
+            ws.store.frame_clients_key(viso_ui::input::Key::Space, true);
+            ws.store.run_frame_clients(TICK);
+            session.reload(std::slice::from_mut(&mut ws));
+            assert_eq!(session.recordings.len(), 1, "two ticks of three");
+            ws.store
+                .frame_clients_key(viso_ui::input::Key::Space, false);
+            ws.store.run_frame_clients(TICK);
+            session.reload(std::slice::from_mut(&mut ws));
+            let answer = answered(&mut host);
+            let Ok(GameReply::Tape { tape }) = answer.reply else {
+                panic!("no tape: {answer:?}");
+            };
+            let tape = viso_behavior::game::InputTape::decode(&tape).expect("a tape");
+            assert_eq!((answer.id, tape.ticks), (1, 3));
+            assert!(!game.borrow().scheduler().recording());
+
+            // The tape replays the run on a fresh game of the same build.
+            let module = Rc::clone(game.borrow().module());
+            let vm = GameSession::stage(&module).expect("links");
+            let mut replay =
+                viso_behavior::game::Scheduler::with_seed(vm, tape.seed).expect("starts");
+            replay.play(tape).expect("fits");
+            replay.step(3);
+            let jumps = replay.instance(0).states()[1].clone();
+            assert_eq!(jumps, Value::Int(1), "the jump replays");
+            assert_eq!(state(&ws, "jumps"), Value::Int(1));
         }
 
         #[test]

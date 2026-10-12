@@ -24,7 +24,7 @@ use super::ir::{
     Body, ComponentLayout, Const, EffectEntry, EnvSlot, FuncId, Function, FunctionKind, Inst,
     NativeImport, Num, Program, Reg, Site, SystemLayout, Unsupported,
 };
-use super::probe::{Probe, ProbeShape};
+use super::probe::{ProbeShape, SystemState};
 use crate::ast::{AssignablePath, AstNode, Block, Expr};
 use crate::hir::infer::InferCx;
 use crate::hir::{CallableKind, ComponentSchema, Ty, TypeEnv};
@@ -359,7 +359,7 @@ impl ProgramBuilder {
             hooks,
             snapshot: Vec::new(),
             locals: Vec::new(),
-            probes: Vec::new(),
+            states: Vec::new(),
             persist: Vec::new(),
         });
     }
@@ -386,23 +386,25 @@ impl ProgramBuilder {
         }
     }
 
-    /// Traces the state `state`, named `name`, of system `system` in a game
-    /// test, its values written as `shape`.
-    pub(crate) fn probe_state(
+    /// Records the state `state`, named `name`, of system `system`, its
+    /// values written as `shape`; a game test traces it when `probe`.
+    pub(crate) fn system_state(
         &mut self,
         system: SymbolId,
         state: SymbolId,
         name: &str,
         shape: ProbeShape,
+        probe: bool,
     ) {
         let Some(&(_, Place::State(slot))) = self.places.get(&state) else {
             return;
         };
         if let Some(layout) = self.program.systems.iter_mut().find(|s| s.symbol == system) {
-            layout.probes.push(Probe {
+            layout.states.push(SystemState {
                 name: name.to_owned(),
                 slot,
                 shape,
+                probe,
             });
         }
     }

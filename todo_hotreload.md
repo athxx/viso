@@ -487,10 +487,16 @@ session comes first, then every reload item builds on it.
       host and the event queue moves to the new block, so the link stays valid; the
       install and the new program's first block allocate nothing; audio faults are
       reported once each with the game's faults.
-- [ ] `viso game peek` / `viso game record` over the dev channel against the running
-      session (CLI §22.3): a loopback control endpoint of `viso run`, named in its
-      session lock, relays a query to the runtime (`HostMessage::Game`,
-      `RuntimeMessage::Game`) and prints or writes the answer.
+- [x] `viso game peek` / `viso game record` over the dev channel against the running
+      session (CLI §22.3): a loopback control endpoint of `viso run`, named with its
+      token in the session lock (`LockGuard::publish`), relays a query to the runtime
+      (`HostMessage::Game`, `RuntimeMessage::Game`, dev protocol 9) and prints or
+      writes the answer; the game is named by its `.vs` file; a peek reads any state,
+      written as JSON by its type from the file's last good (every system state now
+      carries its shape); a recording restarts the World with `Rebuild::Fresh` and
+      answers with the tape once the game ran the ticks asked for, written as text, or
+      binary when it took live patches; an answer the app never sends is refused when
+      it exits.
 - [ ] Docs: Hot Reload §16–§18 and §35–§37 (the `system` section, its NACKs and ACK
       fields), CLI §22.3 and §36 (`dev` fields of a system patch), DSL §110.
 - [ ] Not in this phase: `GameViewport` and the 3D lane that draws the World (the

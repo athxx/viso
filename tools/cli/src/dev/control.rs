@@ -1,0 +1,501 @@
+//! The control endpoint of `viso run` (`Viso_CLI.md` §22.3): a loopback
+//! listener, named with its token in the dev session's lock, through which
+//! `viso game peek` and `viso game record` ask the running app about a game.
+//!
+//! A control connection sends one [`ControlRequest`] — the session's control
+//! token, the game by its `.vs` file and the question — and reads one
+//! [`ControlReply`]. A wrong token is dropped unanswered. The session relays
+//! the question to the runtime over the dev channel and answers the
+//! connection when the runtime does: a peek at the next frame, a recording
+//! once the game ran the ticks asked for.
+
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Sender};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use viso_ende::{Decoder, Encoder};
+use viso_view::dev::wire::{
+    DEV_PROTOCOL_VERSION, GameAsk, MAX_RECORD_TICKS, Message, RecordSpan, WireError, read_frame,
+    same_token, write_frame,
+};
+
+/// How long a control connection has to send its request.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a client waits to connect.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The longest token, game name and state name a request carries.
+const MAX_FIELD: usize = 4096;
+
+/// No `viso run` session is running for the project, or it cannot be
+/// reached.
+pub const ENV_NO_DEV_SESSION: &str = "ENV_NO_DEV_SESSION";
+/// No mounted view of the named file runs a game.
+pub const GAME_NOT_RUNNING: &str = "GAME_NOT_RUNNING";
+/// The name matches more than one mounted view.
+pub const GAME_AMBIGUOUS: &str = "GAME_AMBIGUOUS";
+/// The game has no such system or state.
+pub const GAME_UNKNOWN_STATE: &str = "GAME_UNKNOWN_STATE";
+/// The game replays a tape, or is being recorded already.
+pub const GAME_BUSY: &str = "GAME_BUSY";
+/// The game ended before the recording did.
+pub const GAME_ENDED: &str = "GAME_ENDED";
+/// The World did not restart for the recording.
+pub const GAME_FAULT: &str = "GAME_FAULT";
+/// The tape outgrew a dev frame, or the answer did not decode.
+pub const GAME_ANSWER_INVALID: &str = "GAME_ANSWER_INVALID";
+
+/// What a control connection asks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlRequest {
+    pub token: String,
+    /// The game, by its `.vs` file: a path from the project root, with or
+    /// without the extension, or the file's stem.
+    pub game: String,
+    pub ask: GameAsk,
+}
+
+/// The session's answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlReply {
+    /// The state as JSON, the ticks the game ran and the sessions running
+    /// the file, named as the project root sees it.
+    State {
+        file: String,
+        json: String,
+        tick: u64,
+        sessions: u32,
+    },
+    /// The recorded tape, binary.
+    Tape { file: String, tape: Vec<u8> },
+    /// Why there is no answer: a code of this module and what to tell the
+    /// developer.
+    Refused {
+        code: String,
+        message: String,
+        notes: Vec<String>,
+    },
+}
+
+impl ControlReply {
+    /// A refusal under `code`.
+    pub fn refused(code: &str, message: impl Into<String>) -> ControlReply {
+        ControlReply::Refused {
+            code: code.to_owned(),
+            message: message.into(),
+            notes: Vec::new(),
+        }
+    }
+}
+
+/// A request a control connection delivered, and where its answer goes.
+#[derive(Debug)]
+pub struct ControlCall {
+    pub game: String,
+    pub ask: GameAsk,
+    pub reply: Sender<ControlReply>,
+}
+
+/// Where the control threads deliver; `false` once nobody listens.
+pub type ControlDeliver = Arc<dyn Fn(ControlCall) -> bool + Send + Sync>;
+
+/// The listener, and the token a request must present.
+pub struct Control {
+    listener: TcpListener,
+    token: String,
+}
+
+impl Control {
+    /// Binds the endpoint on a free loopback port, taking requests that
+    /// present `token`.
+    ///
+    /// # Errors
+    ///
+    /// When the loopback interface refuses.
+    pub fn bind(token: String) -> io::Result<Control> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        listener.set_nonblocking(true)?;
+        Ok(Control { listener, token })
+    }
+
+    /// The endpoint as the session lock names it: `<address> <token>`.
+    ///
+    /// # Errors
+    ///
+    /// When the listener's address cannot be read.
+    pub fn endpoint(&self) -> io::Result<String> {
+        Ok(format!("{} {}", self.listener.local_addr()?, self.token))
+    }
+
+    /// Accepts every connection waiting, each read and answered by its own
+    /// thread.
+    pub fn accept(&self, deliver: &ControlDeliver, threads: &mut Vec<JoinHandle<()>>) {
+        while let Ok((stream, _)) = self.listener.accept() {
+            let token = self.token.clone();
+            let deliver = Arc::clone(deliver);
+            threads.push(thread::spawn(move || serve(stream, &token, &*deliver)));
+        }
+    }
+}
+
+/// Reads one request, hands it to the session and writes its answer.
+fn serve(mut stream: TcpStream, token: &str, deliver: &dyn Fn(ControlCall) -> bool) {
+    if stream.set_nonblocking(false).is_err()
+        || stream.set_read_timeout(Some(REQUEST_TIMEOUT)).is_err()
+    {
+        return;
+    }
+    let mut buf = Vec::new();
+    let request = match read_frame::<ControlRequest>(&mut stream, &mut buf) {
+        Ok(Some(request)) if same_token(&request.token, token) => request,
+        Err(viso_view::dev::wire::FrameError::Wire(WireError::Version { peer })) => {
+            let reply = ControlReply::refused(
+                ENV_NO_DEV_SESSION,
+                format!(
+                    "`viso run` speaks dev protocol version {DEV_PROTOCOL_VERSION}, this \
+                     `viso` {peer}"
+                ),
+            );
+            let _ = write_frame(&mut stream, &reply);
+            return;
+        }
+        _ => return,
+    };
+    let (reply, answer) = mpsc::channel();
+    let call = ControlCall {
+        game: request.game,
+        ask: request.ask,
+        reply,
+    };
+    let reply = if deliver(call) {
+        answer.recv().ok()
+    } else {
+        None
+    };
+    let reply =
+        reply.unwrap_or_else(|| ControlReply::refused(GAME_NOT_RUNNING, "`viso run` ended"));
+    let _ = write_frame(&mut stream, &reply);
+}
+
+/// Asks the session at `endpoint` (`<address> <token>`, as its lock names
+/// it) about `game`, waiting `wait` for the answer, or as long as it takes.
+///
+/// # Errors
+///
+/// When the session cannot be reached or does not answer: the message.
+pub fn call(
+    endpoint: &str,
+    game: &str,
+    ask: GameAsk,
+    wait: Option<Duration>,
+) -> Result<ControlReply, String> {
+    let (address, token) = endpoint
+        .split_once(' ')
+        .ok_or_else(|| "the session lock names no control endpoint".to_owned())?;
+    let address: SocketAddr = address
+        .parse()
+        .map_err(|_| format!("the session lock names `{address}`, not an address"))?;
+    if !address.ip().is_loopback() {
+        return Err(format!("the session lock names `{address}`, not loopback"));
+    }
+    let unreachable = |error: io::Error| format!("cannot reach `viso run` at {address}: {error}");
+    let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).map_err(unreachable)?;
+    let request = ControlRequest {
+        token: token.to_owned(),
+        game: game.to_owned(),
+        ask,
+    };
+    write_frame(&mut stream, &request).map_err(unreachable)?;
+    stream.set_read_timeout(wait).map_err(unreachable)?;
+    let mut buf = Vec::new();
+    match read_frame::<ControlReply>(&mut stream, &mut buf) {
+        Ok(Some(reply)) => Ok(reply),
+        Ok(None) => Err("`viso run` closed the connection unanswered".to_owned()),
+        Err(error) => Err(format!("no answer from `viso run`: {error}")),
+    }
+}
+
+fn write_string(enc: &mut Encoder, text: &str) {
+    enc.write_bytes(text.as_bytes());
+}
+
+fn read_string(dec: &mut Decoder<'_>, what: &'static str) -> Result<String, WireError> {
+    let text = dec.read_str()?;
+    if text.len() > MAX_FIELD {
+        return Err(WireError::Bound { what });
+    }
+    Ok(text.to_owned())
+}
+
+fn malformed(dec: &Decoder<'_>) -> WireError {
+    WireError::Malformed(viso_ende::DecodeError::Malformed {
+        offset: dec.position(),
+    })
+}
+
+impl Message for ControlRequest {
+    fn write(&self, enc: &mut Encoder) {
+        enc.write_u16(DEV_PROTOCOL_VERSION);
+        write_string(enc, &self.token);
+        write_string(enc, &self.game);
+        match &self.ask {
+            GameAsk::Peek { system, state } => {
+                enc.write_u8(0);
+                write_string(enc, system);
+                write_string(enc, state);
+            }
+            GameAsk::Record {
+                span: RecordSpan::Ticks(n),
+            } => {
+                enc.write_u8(1);
+                enc.write_varint(*n);
+            }
+            GameAsk::Record {
+                span: RecordSpan::Millis(n),
+            } => {
+                enc.write_u8(2);
+                enc.write_varint(*n);
+            }
+        }
+    }
+
+    fn read(dec: &mut Decoder<'_>) -> Result<Self, WireError> {
+        let version = dec.read_u16()?;
+        if version != DEV_PROTOCOL_VERSION {
+            return Err(WireError::Version { peer: version });
+        }
+        let token = read_string(dec, "control token")?;
+        let game = read_string(dec, "game name")?;
+        let ask = match dec.read_u8()? {
+            0 => GameAsk::Peek {
+                system: read_string(dec, "system name")?,
+                state: read_string(dec, "state name")?,
+            },
+            1 => match dec.read_varint()? {
+                n if n <= MAX_RECORD_TICKS => GameAsk::Record {
+                    span: RecordSpan::Ticks(n),
+                },
+                _ => {
+                    return Err(WireError::Bound {
+                        what: "recorded ticks",
+                    });
+                }
+            },
+            2 => GameAsk::Record {
+                span: RecordSpan::Millis(dec.read_varint()?),
+            },
+            _ => return Err(malformed(dec)),
+        };
+        Ok(ControlRequest { token, game, ask })
+    }
+}
+
+impl Message for ControlReply {
+    fn write(&self, enc: &mut Encoder) {
+        match self {
+            ControlReply::State {
+                file,
+                json,
+                tick,
+                sessions,
+            } => {
+                enc.write_u8(0);
+                write_string(enc, file);
+                write_string(enc, json);
+                enc.write_varint(*tick);
+                enc.write_varint(u64::from(*sessions));
+            }
+            ControlReply::Tape { file, tape } => {
+                enc.write_u8(1);
+                write_string(enc, file);
+                enc.write_bytes(tape);
+            }
+            ControlReply::Refused {
+                code,
+                message,
+                notes,
+            } => {
+                enc.write_u8(2);
+                write_string(enc, code);
+                write_string(enc, message);
+                enc.write_varint(notes.len() as u64);
+                for note in notes {
+                    write_string(enc, note);
+                }
+            }
+        }
+    }
+
+    fn read(dec: &mut Decoder<'_>) -> Result<Self, WireError> {
+        Ok(match dec.read_u8()? {
+            0 => ControlReply::State {
+                file: read_string(dec, "file")?,
+                json: dec.read_str()?.to_owned(),
+                tick: dec.read_varint()?,
+                sessions: u32::try_from(dec.read_varint()?).map_err(|_| malformed(dec))?,
+            },
+            1 => ControlReply::Tape {
+                file: read_string(dec, "file")?,
+                tape: dec.read_bytes()?.to_vec(),
+            },
+            2 => {
+                let code = read_string(dec, "code")?;
+                let message = read_string(dec, "message")?;
+                let count = dec.read_varint()?;
+                if count > 64 {
+                    return Err(WireError::Bound { what: "notes" });
+                }
+                let notes = (0..count)
+                    .map(|_| read_string(dec, "note"))
+                    .collect::<Result<_, _>>()?;
+                ControlReply::Refused {
+                    code,
+                    message,
+                    notes,
+                }
+            }
+            _ => return Err(malformed(dec)),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn served(token: &str) -> (Control, mpsc::Receiver<ControlCall>, ControlDeliver) {
+        let control = Control::bind(token.to_owned()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let deliver: ControlDeliver = Arc::new(move |call| tx.send(call).is_ok());
+        (control, rx, deliver)
+    }
+
+    #[test]
+    fn a_request_reaches_the_session_and_its_answer_the_caller() {
+        let (control, calls, deliver) = served("secret");
+        let endpoint = control.endpoint().unwrap();
+        assert!(endpoint.ends_with(" secret"), "{endpoint}");
+        let caller = thread::spawn(move || {
+            call(
+                &endpoint,
+                "movement",
+                GameAsk::Peek {
+                    system: "Player".into(),
+                    state: "score".into(),
+                },
+                Some(Duration::from_secs(10)),
+            )
+        });
+        let mut threads = Vec::new();
+        let call = loop {
+            control.accept(&deliver, &mut threads);
+            if let Ok(call) = calls.recv_timeout(Duration::from_millis(10)) {
+                break call;
+            }
+        };
+        assert_eq!(call.game, "movement");
+        let state = ControlReply::State {
+            file: "src/movement.vs".into(),
+            json: "{\"x\":1}".into(),
+            tick: 600,
+            sessions: 1,
+        };
+        call.reply.send(state.clone()).unwrap();
+        assert_eq!(caller.join().unwrap(), Ok(state));
+        threads.into_iter().for_each(|t| t.join().unwrap());
+    }
+
+    #[test]
+    fn a_wrong_token_is_dropped_unanswered() {
+        let (control, calls, deliver) = served("secret");
+        let endpoint = control.endpoint().unwrap().replace("secret", "guess!");
+        let ask = GameAsk::Record {
+            span: RecordSpan::Ticks(60),
+        };
+        let caller = thread::spawn(move || call(&endpoint, "movement", ask, None));
+        let mut threads = Vec::new();
+        while threads.is_empty() {
+            control.accept(&deliver, &mut threads);
+        }
+        threads.into_iter().for_each(|t| t.join().unwrap());
+        assert!(caller.join().unwrap().is_err());
+        assert!(calls.try_recv().is_err(), "nothing reached the session");
+    }
+
+    #[test]
+    fn an_unanswered_call_is_refused_when_the_session_lets_it_go() {
+        let (control, calls, deliver) = served("t");
+        let endpoint = control.endpoint().unwrap();
+        let ask = GameAsk::Record {
+            span: RecordSpan::Millis(1000),
+        };
+        let caller = thread::spawn(move || call(&endpoint, "game", ask, None));
+        let mut threads = Vec::new();
+        let call = loop {
+            control.accept(&deliver, &mut threads);
+            if let Ok(call) = calls.recv_timeout(Duration::from_millis(10)) {
+                break call;
+            }
+        };
+        drop(call);
+        let Ok(ControlReply::Refused { code, .. }) = caller.join().unwrap() else {
+            panic!("not refused");
+        };
+        assert_eq!(code, GAME_NOT_RUNNING);
+    }
+
+    #[test]
+    fn every_message_round_trips_and_bounds_hold() {
+        for request in [
+            ControlRequest {
+                token: "t".into(),
+                game: "src/a.vs".into(),
+                ask: GameAsk::Peek {
+                    system: "S".into(),
+                    state: "s".into(),
+                },
+            },
+            ControlRequest {
+                token: "t".into(),
+                game: "a".into(),
+                ask: GameAsk::Record {
+                    span: RecordSpan::Millis(5),
+                },
+            },
+        ] {
+            let body = viso_view::dev::wire::encode(&request);
+            assert_eq!(ControlRequest::from_frame(&body), Ok(request));
+        }
+        for reply in [
+            ControlReply::Tape {
+                file: "a.vs".into(),
+                tape: vec![1, 2, 3],
+            },
+            ControlReply::Refused {
+                code: GAME_BUSY.into(),
+                message: "busy".into(),
+                notes: vec!["n".into()],
+            },
+        ] {
+            let body = viso_view::dev::wire::encode(&reply);
+            assert_eq!(ControlReply::from_frame(&body), Ok(reply));
+        }
+        let long = ControlRequest {
+            token: "t".repeat(MAX_FIELD + 1),
+            game: "a".into(),
+            ask: GameAsk::Record {
+                span: RecordSpan::Ticks(1),
+            },
+        };
+        assert_eq!(
+            ControlRequest::from_frame(&viso_view::dev::wire::encode(&long)),
+            Err(WireError::Bound {
+                what: "control token"
+            })
+        );
+    }
+}

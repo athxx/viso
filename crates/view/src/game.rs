@@ -18,8 +18,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_behavior::game::{
-    AudioLink, Committed, GameError, Key as GameKey, Persist, PreparedSwap, Rebuild, Scheduler,
-    SystemFault,
+    AudioLink, Committed, GameError, InputTape, Key as GameKey, Persist, PreparedSwap, Rebuild,
+    Scheduler, SystemFault,
 };
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Value, Vm};
@@ -193,6 +193,27 @@ impl GameSession {
         })?;
         let slot = layout.state(state)?;
         self.scheduler.instance(index).states().get(slot).cloned()
+    }
+
+    /// Restarts the World — fresh instances, the start run again on the
+    /// game's seed, the clock at tick 0 — and records the input from there,
+    /// so the tape replays the run: what `viso game record` asks.
+    ///
+    /// # Errors
+    ///
+    /// The fault of a system that could not be created or of the start: the
+    /// game runs on as it was, unrecorded.
+    pub fn record(&mut self) -> Result<(), SystemFault> {
+        self.scheduler.rebuild_world(Rebuild::Fresh)?;
+        self.scheduler.record();
+        self.reported = None;
+        Ok(())
+    }
+
+    /// Stops recording and returns the tape through the last tick run;
+    /// `None` when not recording.
+    pub fn stop_recording(&mut self) -> Option<InputTape> {
+        self.scheduler.stop_recording()
     }
 
     /// Starts the module's audio systems on the installed device, if it has

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use viso_behavior::game::Scheduler;
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Vm};
-use viso_dsl::behavior::probe::ProbeShape;
+use viso_dsl::behavior::probe::{ProbeShape, state_json};
 use viso_dsl::frontend::{Compiled, Origin, compile_file_in};
 use viso_ende::JsonWriter;
 
@@ -56,13 +56,19 @@ fn probes_are_recorded_with_the_shape_of_their_type() {
     let errors: Vec<_> = compiled.errors().collect();
     assert!(errors.is_empty(), "{errors:#?}");
     let system = &compiled.behavior.systems[0];
-    let names: Vec<_> = system.probes.iter().map(|p| p.name.as_str()).collect();
+    let probes: Vec<_> = system.states.iter().filter(|s| s.probe).collect();
+    let names: Vec<_> = probes.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(
         names,
         ["alive", "mode", "stats", "target", "at", "speed", "name"]
     );
-    assert_eq!(system.probes[0].shape, ProbeShape::Bool);
-    assert_eq!(system.probes[4].shape, ProbeShape::Value);
+    assert_eq!(probes[0].shape, ProbeShape::Bool);
+    assert_eq!(probes[4].shape, ProbeShape::Value);
+    let hidden = system.states.iter().find(|s| s.name == "hidden");
+    assert!(
+        hidden.is_some_and(|s| !s.probe && s.shape == ProbeShape::Signed),
+        "every state has its shape: {hidden:?}"
+    );
 
     let module = Rc::new(compiled.behavior.bytecode().expect("verified bytecode"));
     let mut vm = Vm::new(module, Budget::default());
@@ -71,7 +77,7 @@ fn probes_are_recorded_with_the_shape_of_their_type() {
     let trace = |game: &Scheduler| {
         let mut json = JsonWriter::new();
         json.begin_object();
-        for probe in &system.probes {
+        for probe in &probes {
             json.name(&probe.name);
             probe
                 .shape
@@ -91,6 +97,17 @@ fn probes_are_recorded_with_the_shape_of_their_type() {
         "{}",
         trace(&game)
     );
+
+    // What `viso game peek` reads: any state, typed by the host's program.
+    let wire = |name: &str| {
+        let slot = system.states.iter().find(|s| s.name == name).unwrap().slot;
+        game.instance(0).states()[slot as usize].encode()
+    };
+    let peek = |program, name| state_json(program, "Player", name, &wire(name)).unwrap();
+    assert_eq!(peek(Some(&compiled.behavior), "mode"), r#"{"Hurt":[2]}"#);
+    assert_eq!(peek(Some(&compiled.behavior), "hidden"), "0");
+    assert_eq!(peek(None, "alive"), "1", "by structure without a program");
+    assert!(state_json(None, "Player", "alive", &[0xFF]).is_err());
 }
 
 #[test]

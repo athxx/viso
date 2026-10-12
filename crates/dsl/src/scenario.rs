@@ -27,7 +27,7 @@ use viso_behavior::{Budget, Vm};
 use viso_ende::JsonWriter;
 
 use crate::behavior::Program;
-use crate::behavior::probe::Probe;
+use crate::behavior::probe::SystemState;
 
 /// A tape and what its run should show.
 #[derive(Debug, Clone, PartialEq)]
@@ -206,15 +206,16 @@ pub fn run(
     frames: u64,
     mut trace: impl FnMut(u64, &str),
 ) -> Result<GameRun, RunError> {
-    let probes: Vec<(usize, String, &Probe)> = program
+    let probes: Vec<(usize, String, &SystemState)> = program
         .systems
         .iter()
         .enumerate()
         .flat_map(|(i, system)| {
             let name = &program.components[system.component as usize].name;
             system
-                .probes
+                .states
                 .iter()
+                .filter(|s| s.probe)
                 .map(move |p| (i, format!("{name}.{}", p.name), p))
         })
         .collect();
@@ -240,11 +241,12 @@ pub fn run(
     let mut pending = pending.into_iter().peekable();
     let mut failures = Vec::new();
     let mut faults = Vec::new();
-    let value =
-        |game: &Scheduler, (system, _, probe): &(usize, String, &Probe), json: &mut JsonWriter| {
-            let state = &game.instance(*system).states()[probe.slot as usize];
-            probe.shape.write(state, json);
-        };
+    let value = |game: &Scheduler,
+                 (system, _, probe): &(usize, String, &SystemState),
+                 json: &mut JsonWriter| {
+        let state = &game.instance(*system).states()[probe.slot as usize];
+        probe.shape.write(state, json);
+    };
     for tick in 0..frames {
         game.step(1);
         game.frame(0.0);
