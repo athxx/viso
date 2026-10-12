@@ -16,8 +16,11 @@
 //! the last-good UI, and it is not sent. Each view that compiles is planned
 //! against the compiled view its mounts run (§11): the patch carries the
 //! candidate in its release form and the typed plan that moves the mounts
-//! onto it, so the app applies it with no compiler present. The views that
-//! compile are sent as one patch, and the runtime's ACK or NACK closes the
+//! onto it, so the app applies it with no compiler present. A view whose
+//! module declares systems is also classified against the game its mounts
+//! run (§16–§17): the tier is reported as an `E5103` note and sent as the
+//! file's `system` entry beside its view, so the game swaps with the view in
+//! one revision. The views that compile are sent as one patch, and the runtime's ACK or NACK closes the
 //! candidate; an ACK makes each candidate the last-good its next edit is
 //! planned against. One patch is in flight at a time: what is saved meanwhile
 //! waits for the answer and goes as the next batch.
@@ -37,11 +40,11 @@ use std::time::{Duration, Instant};
 
 use viso_dsl::Diagnostic;
 use viso_dsl::aot::emit_view_package;
-use viso_dsl::hotreload::{CandidatePlan, view_patch};
+use viso_dsl::hotreload::{CandidatePlan, game_patch, view_patch};
 use viso_project::LockGuard;
 use viso_view::dev::wire::{
-    CommitCounts, HostMessage, PatchBundle, PatchSection, ReloadPlan, Revision, RuntimeHello,
-    RuntimeMessage, Stage, UiPatch, ViewPatch, source_hash,
+    CommitCounts, Domain, HostMessage, PatchBundle, PatchSection, Rebuild, ReloadPlan, Revision,
+    RuntimeHello, RuntimeMessage, Stage, SystemPatch, UiPatch, ViewPatch, source_hash,
 };
 
 pub use link::{Deliver, Expect, LinkEvent};
@@ -60,6 +63,10 @@ pub const COALESCE: Duration = Duration::from_millis(5);
 
 /// How long a batch that keeps growing waits at most after its first change.
 pub const COALESCE_LIMIT: Duration = Duration::from_millis(50);
+
+/// What a World Rebuild keeps of a running game: the player stays where the
+/// developer left them while the level around them is built again.
+const KEEP: Rebuild = Rebuild::KeepCharacters;
 
 /// A batch of changes being coalesced.
 struct Batch {
@@ -80,9 +87,19 @@ struct Runtime {
 struct InFlight {
     base: Revision,
     next: Revision,
-    /// Each view sent: its index, the text sent and its compiled view.
-    views: Vec<(usize, String, CandidatePlan)>,
+    views: Vec<SentView>,
     started: Instant,
+}
+
+/// A view a patch carries.
+struct SentView {
+    /// Its index in the source graph.
+    at: usize,
+    /// The text sent, and its compiled view.
+    text: String,
+    candidate: CandidatePlan,
+    /// The codes of the notes the host reported compiling it.
+    notes: Vec<String>,
 }
 
 /// The dev session.
@@ -244,7 +261,14 @@ impl DevSession {
                     .runtime
                     .as_ref()
                     .map_or_else(String::new, |r| r.hello.runtime_session.to_hex());
-                for (at, text, candidate) in sent.views {
+                for SentView {
+                    at,
+                    text,
+                    candidate,
+                    notes,
+                    ..
+                } in sent.views
+                {
                     let view = &mut self.sources.views[at];
                     let Some(mount) = view.mount.as_mut() else {
                         continue;
@@ -261,7 +285,7 @@ impl DevSession {
                         .find(|commit| commit.file == file)
                         .map_or_else(CommitCounts::default, |commit| commit.counts);
                     let source = Source::new(&view.path, &self.root, &text);
-                    let mut codes = Vec::new();
+                    let mut codes = notes;
                     for notice in ack.notices.iter().filter(|n| n.file == file) {
                         let Some(code) = intern_code(&notice.code) else {
                             continue;
@@ -313,13 +337,15 @@ impl DevSession {
                     None => String::new(),
                 };
                 let elapsed = elapsed_us(sent.started);
-                for (at, text, _) in &sent.views {
-                    let view = &mut self.sources.views[*at];
+                for sent_view in &sent.views {
+                    let view = &mut self.sources.views[sent_view.at];
                     // Its mounts still run their last-good: the next edit is
                     // planned against it.
                     if let Some(mount) = view.mount.as_mut() {
-                        mount.settled = Some(source_hash(text));
+                        mount.settled = Some(source_hash(&sent_view.text));
                     }
+                    let mut codes = sent_view.notes.clone();
+                    codes.extend(nack.diagnostic_codes.iter().cloned());
                     let event = ReloadEvent {
                         base_revision: sent.base.0,
                         candidate_revision: sent.next.0,
@@ -328,7 +354,7 @@ impl DevSession {
                         stage: nack.stage,
                         elapsed_us: elapsed,
                         counts: CommitCounts::default(),
-                        codes: nack.diagnostic_codes.clone(),
+                        codes,
                     };
                     let name = Source::new(&view.path, &self.root, "").name().to_owned();
                     out.dev(&name, &self.session, &runtime_session, &self.build, &event);
@@ -466,25 +492,29 @@ impl DevSession {
         if views.is_empty() {
             return;
         }
+        let swaps_games = runtime.hello.capabilities.contains(Domain::System);
         let mut ui = UiPatch::default();
-        for (at, _, candidate) in &views {
-            if let Err(reason) = self.sources.baseline(*at) {
-                let view = &self.sources.views[*at];
-                let name = Source::new(&view.path, &self.root, "").name().to_owned();
+        let mut systems = SystemPatch::default();
+        let mut sent = Vec::with_capacity(views.len());
+        for (at, text, candidate) in views {
+            let name = Source::new(&self.sources.views[at].path, &self.root, "")
+                .name()
+                .to_owned();
+            if let Err(reason) = self.sources.baseline(at) {
                 out.log(
                     "warn",
                     "tool",
                     &format!("`{name}`: {reason}, so its mounts rebuild with fresh state"),
                 );
             }
-            let mount = self.sources.views[*at]
+            let mount = self.sources.views[at]
                 .mount
                 .as_ref()
                 .expect("a candidate is mounted");
             ui.views.push(match &mount.last_good {
-                Some(last_good) => view_patch(mount.file, last_good, candidate),
+                Some(last_good) => view_patch(mount.file, last_good, &candidate),
                 None => {
-                    let package = emit_view_package(candidate);
+                    let package = emit_view_package(&candidate);
                     ViewPatch {
                         file: mount.file,
                         plan: ReloadPlan::fresh(&package),
@@ -492,6 +522,38 @@ impl DevSession {
                     }
                 }
             });
+            let mut notes = Vec::new();
+            if let Some((entry, reload)) =
+                game_patch(mount.file, mount.last_good.as_ref(), &candidate, KEEP)
+            {
+                if let Some(note) = reload.as_ref().and_then(|r| r.diagnostic()) {
+                    let source = Source::new(&self.sources.views[at].path, &self.root, &text);
+                    out.source(Some(&source), &[], &note);
+                    notes.push(note.code.to_owned());
+                }
+                if swaps_games {
+                    systems.games.push(entry);
+                } else {
+                    out.log(
+                        "warn",
+                        "tool",
+                        &format!(
+                            "`{name}`: the app does not swap game systems, so its game keeps \
+                             running the systems it started with"
+                        ),
+                    );
+                }
+            }
+            sent.push(SentView {
+                at,
+                text,
+                candidate,
+                notes,
+            });
+        }
+        let mut sections = vec![PatchSection::Ui(ui)];
+        if !systems.games.is_empty() {
+            sections.push(PatchSection::System(systems));
         }
         let patch = PatchBundle {
             dev_session: runtime.hello.dev_session,
@@ -499,7 +561,7 @@ impl DevSession {
             base_revision: base,
             next_revision: next,
             build_id: runtime.hello.build_id,
-            sections: vec![PatchSection::Ui(ui)],
+            sections,
         };
         if runtime
             .writer
@@ -511,7 +573,7 @@ impl DevSession {
         runtime.in_flight = Some(InFlight {
             base,
             next,
-            views,
+            views: sent,
             started,
         });
     }
@@ -552,6 +614,12 @@ mod tests {
         /// A session, applying candidates or not, whose app runs `built`
         /// while `view.vs` reads `VIEW`.
         fn with(name: &str, apply: bool, built: &str) -> Self {
+            Fixture::app(name, apply, built, VIEW, Domains::NONE)
+        }
+
+        /// A session whose app, applying `capabilities`, runs `built` while
+        /// `view.vs` reads `text`.
+        fn app(name: &str, apply: bool, built: &str, text: &str, capabilities: Domains) -> Self {
             let root = std::env::temp_dir().join(format!("viso-dev-{}-{name}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
@@ -587,7 +655,7 @@ mod tests {
                 build_id: BuildId(2),
                 current_revision: Revision::LAUNCH,
                 schema_fingerprint: SchemaFingerprint(4),
-                capabilities: Domains::NONE,
+                capabilities,
                 target: RuntimeTarget::DesktopHost,
             };
             dev.link(LinkEvent::Connected(Connection { hello, writer }), &mut out);
@@ -598,7 +666,7 @@ mod tests {
                 sent,
                 path,
             };
-            fixture.save(VIEW);
+            fixture.save(text);
             fixture.runtime(RuntimeMessage::Mounts(vec![MountEntry {
                 file: FileId(0),
                 path: fixture.path.display().to_string(),
@@ -792,6 +860,80 @@ mod tests {
         f.save(&VIEW.replace("state count = 0;", "state count = ;"));
         assert!(f.settle().is_empty(), "not even a failure");
         assert!(f.out.errors() > errors, "the diagnostics are reported");
+    }
+
+    const GAME: &str = "import viso::game::{FixedUpdate, FixedFrame, InputAction};\n\
+        system Runner implements FixedUpdate {\n    state steps = 0;\n    \
+        action fixed_update(frame: FixedFrame) { steps += 1; }\n}\n\
+        export component Arena { view { Column { width: 200dp; } } }\n";
+
+    /// The `system` section of `message`, a patch, if it has one.
+    fn systems(message: &HostMessage) -> Option<&SystemPatch> {
+        let HostMessage::Patch(patch) = message else {
+            panic!("not a patch: {message:?}");
+        };
+        patch.sections.iter().find_map(|section| match section {
+            PatchSection::System(systems) => Some(systems),
+            PatchSection::Ui(_) => None,
+        })
+    }
+
+    #[test]
+    fn a_game_edit_swaps_the_game_beside_its_view_at_the_classified_tier() {
+        let swaps = Domains::NONE.with(Domain::Ui).with(Domain::System);
+        let mut f = Fixture::app("game", true, GAME, GAME, swaps);
+        // Simulation code: a Logic swap, reported as the tier note.
+        let faster = GAME.replace("steps += 1;", "steps += 2;");
+        f.save(&faster);
+        let sent = f.settle();
+        patches(&sent[0], (1, 2), GAME, &faster);
+        assert_eq!(
+            systems(&sent[0]).expect("a system section").games,
+            [viso_view::dev::wire::GamePatch {
+                file: FileId(0),
+                tier: viso_view::dev::wire::GameTier::Logic,
+            }]
+        );
+        f.ack(2);
+
+        // A view-only edit leaves the game alone.
+        let wider = faster.replace("200dp", "240dp");
+        f.save(&wider);
+        let sent = f.settle();
+        patches(&sent[0], (2, 3), &faster, &wider);
+        assert_eq!(systems(&sent[0]), None);
+        f.ack(3);
+
+        // A new Simulation state migrates.
+        let jumps = wider.replace("state steps = 0;", "state steps = 0;\n    state jumps = 0;");
+        f.save(&jumps);
+        let sent = f.settle();
+        assert_eq!(
+            systems(&sent[0]).expect("a system section").games[0].tier,
+            viso_view::dev::wire::GameTier::LogicMigration
+        );
+    }
+
+    #[test]
+    fn a_game_the_session_cannot_classify_is_rebuilt_keeping_its_characters() {
+        let swaps = Domains::NONE.with(Domain::Ui).with(Domain::System);
+        let unread = GAME.replace("200dp", "210dp");
+        let f = &mut Fixture::app("game-unread", true, &unread, GAME, swaps);
+        let sent = f.settle();
+        assert_eq!(
+            systems(&sent[0]).expect("a system section").games[0].tier,
+            viso_view::dev::wire::GameTier::WorldRebuild {
+                keep: Rebuild::KeepCharacters
+            }
+        );
+    }
+
+    #[test]
+    fn an_app_that_does_not_swap_games_gets_the_view_alone() {
+        let mut f = Fixture::app("game-ui-only", true, GAME, GAME, Domains::NONE);
+        f.save(&GAME.replace("steps += 1;", "steps += 3;"));
+        let sent = f.settle();
+        assert_eq!(systems(&sent[0]), None);
     }
 
     #[test]

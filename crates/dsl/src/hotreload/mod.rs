@@ -33,7 +33,7 @@ pub use diff::{InsertedNode, KeptNode, RemovedNode, ReplacedNode, StructuralPatc
 pub use migrate::{
     MigrationPlan, NodeMigration, Retype, SlotMigration, StateAction, StateMigration, migrate,
 };
-pub use patch::{reload_plan, view_patch};
+pub use patch::{game_patch, reload_plan, view_patch};
 pub use plan::{CandidatePlan, MigrateFn, plan, plan_view, plan_view_for, plan_view_parsed};
 pub use viso_view::dev::commit::{Candidate, LiveRuntime, static_nodes};
 pub use viso_view::dev::wire::source_hash;

@@ -29,6 +29,7 @@ pub use super::patch::{
     RetypePlan, StateAction, StatePlan, StructuralOp, SystemPatch, UiPatch, ViewPatch,
 };
 use super::patch::{read_systems, read_ui, write_systems, write_ui};
+pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
 pub const DEV_PROTOCOL_VERSION: u16 = 8;

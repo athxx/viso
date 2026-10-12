@@ -437,11 +437,15 @@ session comes first, then every reload item builds on it.
       encoded and decoded with the section bounds; the candidate module is the
       behavior of the file's view in the same patch's `ui` section, never sent twice
       (dev protocol 8).
-- [ ] Host: `Sources` keeps each game file's last-good behavior program; a candidate
-      of a file whose module declares systems is classified (`classify`), reported
-      as the `E5103` note, and sent as the file's `ui` and `system` sections of one
-      candidate revision; `Unchanged` sends no `system` section; the ACK makes the
-      candidate the last good.
+- [x] Host: a candidate keeps the behavior program of a module declaring systems
+      (`CandidatePlan::game`), so each mount's last good holds it; a candidate of a
+      game file is classified against it (`hotreload::game_patch`), reported as the
+      `E5103` note (its code in the `dev` event) and sent as the file's `ui` and
+      `system` entries of one candidate revision; `Unchanged`, a game the mounts do
+      not run yet and a view without one send no `system` entry; an unknown last
+      good rebuilds the World keeping its characters (the host's World Rebuild
+      policy); an app that does not advertise `system` gets the view alone with a
+      warning; the ACK makes the candidate the last good.
 - [ ] Runtime stage: the runtime advertises `system`; a `system` entry whose file has
       no view in the `ui` section, or no running game, refuses the patch; decode,
       verify and link the candidate module into a VM at stage

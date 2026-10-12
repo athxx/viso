@@ -18,7 +18,7 @@
 
 use viso_ui::StateValue;
 
-use crate::behavior::ir::{FuncId, FunctionKind};
+use crate::behavior::ir::{FuncId, FunctionKind, Program};
 use crate::diag::{Diagnostic, Related};
 use crate::frontend::{
     Compiled, Origin, Source, SourceKind, compile_file, compile_file_for, compile_fragment,
@@ -63,6 +63,9 @@ pub struct CandidatePlan {
     pub migrators: Vec<MigrateFn>,
     /// The view's behavior, `None` when no node declares a handler.
     pub view: Option<ViewBehavior>,
+    /// The lowered behavior of a component whose module declares systems:
+    /// what a reload of the game its view runs is classified by.
+    pub game: Option<Program>,
 }
 
 /// A `@migrate(from: "T")` function of a candidate.
@@ -226,8 +229,10 @@ fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
         declared,
         schemas: compiled.types,
         migrators,
-        field_defaults: compiled.behavior.field_defaults,
+        field_defaults: compiled.behavior.field_defaults.clone(),
         view,
+        game: (compiled.component.is_some() && !compiled.behavior.systems.is_empty())
+            .then_some(compiled.behavior),
     })
 }
 

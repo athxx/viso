@@ -8,17 +8,19 @@
 //! `StateKey`, the runtime twin of the identity the plan matched it by. The
 //! candidate travels in its release form.
 
+use viso_behavior::game::Rebuild;
 use viso_ui::aot::AotNode;
 use viso_ui::state::StateKey;
 use viso_view::ViewPackage;
 use viso_view::dev::wire::{
-    FileId, NodeCarry, NodeRef, ReloadPlan, RetypePlan, StateAction as PatchAction, StatePlan,
-    StructuralOp, ViewPatch,
+    FileId, GamePatch, GameTier, NodeCarry, NodeRef, ReloadPlan, RetypePlan,
+    StateAction as PatchAction, StatePlan, StructuralOp, ViewPatch,
 };
 
 use crate::aot::emit_view_package;
 use crate::hotreload::compat::retype;
 use crate::hotreload::diff::{StructuralPatch, diff};
+use crate::hotreload::game::{GameReload, ReloadTier, classify};
 use crate::hotreload::migrate::{MigrationPlan, StateAction, migrate};
 use crate::hotreload::plan::CandidatePlan;
 use crate::ir::binding_ir::NodeKey;
@@ -35,6 +37,34 @@ pub fn view_patch(file: FileId, last_good: &CandidatePlan, candidate: &Candidate
         package,
         plan,
     }
+}
+
+/// The `system` entry that swaps the game `file`'s mounts run onto
+/// `candidate`, and the reload it was classified by: `None` when the
+/// candidate runs no game, when the mounts run none yet (committing the view
+/// starts it), or when nothing the game runs changed. With the last good
+/// unknown (`None`) the game cannot be classified and is rebuilt, keeping
+/// what `keep` says, as its view rebuilds with fresh state.
+pub fn game_patch(
+    file: FileId,
+    last_good: Option<&CandidatePlan>,
+    candidate: &CandidatePlan,
+    keep: Rebuild,
+) -> Option<(GamePatch, Option<GameReload>)> {
+    let new = candidate.game.as_ref()?;
+    let Some(last_good) = last_good else {
+        let tier = GameTier::WorldRebuild { keep };
+        return Some((GamePatch { file, tier }, None));
+    };
+    let reload = classify(last_good.game.as_ref()?, new);
+    let tier = match reload.tier {
+        ReloadTier::Unchanged => return None,
+        ReloadTier::Presentation => GameTier::Presentation,
+        ReloadTier::Logic => GameTier::Logic,
+        ReloadTier::LogicMigration => GameTier::LogicMigration,
+        ReloadTier::WorldRebuild => GameTier::WorldRebuild { keep },
+    };
+    Some((GamePatch { file, tier }, Some(reload)))
 }
 
 /// How a mount moves from `last_good` to `candidate`: the structural diff,
