@@ -2190,6 +2190,90 @@ mod tests {
             );
         }
 
+        /// The phase's acceptance case: a movement speed edit changes the
+        /// game at the next tick with the World, its entities and the score
+        /// kept, and a broken edit after it keeps that last good.
+        #[test]
+        fn a_speed_edit_applies_next_tick_and_a_broken_one_keeps_the_last_good() {
+            let mut ws = mounted(mount_game);
+            let (mut session, mut host, mut edits) = session(&mut ws, GAME);
+            let game = game_session(&ws.store, ws.root.expect("built")).expect("a game");
+            let player = || {
+                let game = game.borrow();
+                let world = game.scheduler().world();
+                let ids = world.entities();
+                (
+                    ids.clone(),
+                    world.position(ids[0]).expect("alive").to_array()[0],
+                )
+            };
+            // A tick's step along x once the walk has settled.
+            let step = |ws: &mut WindowState| {
+                let (_, before) = player();
+                ws.store.run_frame_clients(TICK);
+                player().1 - before
+            };
+            for _ in 0..30 {
+                step(&mut ws);
+            }
+            let slow = step(&mut ws);
+            assert!(slow > 0.0, "the player walks");
+            let (ids, _) = player();
+            assert_eq!(state(&ws, "steps"), Value::Int(31));
+
+            let faster = GAME.replace("walk(id, 2.0, 0.0f32)", "walk(id, 4.0, 0.0f32)");
+            let patch = game_patch_to(&mut edits, &host, (1, 2), &faster);
+            let RuntimeMessage::Ack(ack) = apply(&mut session, &mut host, &mut ws, &patch) else {
+                panic!("not applied");
+            };
+            edits.acked();
+            assert_eq!(
+                (ack.games[0].tier, ack.games[0].tick),
+                (GameTier::Logic, 31)
+            );
+            let mut fast = 0.0;
+            for _ in 0..30 {
+                fast = step(&mut ws);
+            }
+            assert!(
+                (fast / slow - 2.0).abs() < 0.05,
+                "twice the speed: {slow} then {fast}"
+            );
+            assert_eq!(player().0, ids, "the same World and entities");
+            assert_eq!(
+                state(&ws, "steps"),
+                Value::Int(61),
+                "the score kept counting"
+            );
+
+            // A broken edit: its start faults, so nothing of it applies.
+            let broken = faster.replace("cx.spawn(", "let zero = 0; let _ = 1 / zero; cx.spawn(");
+            let patch = game_patch_to(&mut edits, &host, (2, 3), &broken);
+            host.send(&patch);
+            assert!(
+                answer_or_staged(&mut session, &mut host).is_none(),
+                "staged"
+            );
+            session.reload(std::slice::from_mut(&mut ws));
+            assert!(matches!(
+                host.read(),
+                Some(RuntimeMessage::Log {
+                    level: LogLevel::Error,
+                    ..
+                })
+            ));
+            let Some(RuntimeMessage::Nack(nack)) = host.read() else {
+                panic!("not refused");
+            };
+            assert_eq!(nack.last_good_revision, Revision(2));
+            assert!(
+                (step(&mut ws) / fast - 1.0).abs() < 0.05,
+                "the last good runs on"
+            );
+            assert_eq!(player().0, ids);
+            assert_eq!(state(&ws, "steps"), Value::Int(62));
+        }
+
         #[test]
         fn a_faulting_candidate_refuses_the_revision_with_everything_at_its_last_good() {
             let mut ws = mounted(mount_game);

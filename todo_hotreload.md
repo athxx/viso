@@ -508,8 +508,11 @@ session comes first, then every reload item builds on it.
 
 ### Done
 
-- [ ] Editing a system's movement speed in a running game changes it at the next tick
-      with the world, entities and score kept; a broken edit keeps the last good.
+- [x] Editing a system's movement speed in a running game changes it at the next tick
+      with the world, entities and score kept; a broken edit keeps the last good
+      (`hot_reload::tests::games::a_speed_edit_applies_next_tick_and_a_broken_one_keeps_the_last_good`;
+      an edit that does not compile never leaves the host, its failure shown over the
+      last good).
 
 ---
 
