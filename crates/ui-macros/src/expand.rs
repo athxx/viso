@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{Ident, LitStr};
+use viso_dsl::assets::AssetCatalog;
 use viso_dsl::frontend::{self, Compiled, Origin, Source, SourceKind};
 use viso_dsl::hir::{ConstValue, HirComponent};
 use viso_dsl::resolve::SymbolId;
@@ -62,14 +63,15 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let origin = package::origin(&root_dir, package::invoking_file().as_deref())?;
         let profile = package::profile(&root_dir)?;
         let catalogs = catalog_dependencies(profile.catalogs.as_ref());
-        let compiled = frontend::compile_component_for(&source.text, &origin, profile.target);
+        let compiled =
+            frontend::compile_component_for(&source.text, &origin, profile.target.clone());
         report.check(&compiled)?;
         let Mounted {
             component,
             states,
             allocations,
             root,
-        } = mount(&compiled, &report, None)?;
+        } = mount(&compiled, &report, None, asset_dir(&profile))?;
         let name = rust_ident(&component.schema.name)
             .map_err(|message| report.at(Some(component.source_origin), message))?;
         let doc = format!("The `{name}` component's state ids.");
@@ -150,7 +152,12 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         report.check(&compiled)?;
         let Mounted {
             allocations, root, ..
-        } = mount(&compiled, &report, Some((dependency, &origin, build)))?;
+        } = mount(
+            &compiled,
+            &report,
+            Some((dependency, &origin, build)),
+            asset_dir(&profile),
+        )?;
         Ok(quote! {
             {
                 const _: &str = ::core::include_str!(#dependency);
@@ -236,10 +243,14 @@ struct Mounted<'a> {
 /// `record` is the `.vs` file a `view!` mounts and the module identity it
 /// compiles under, which the mount records for the development session; `None`
 /// for a form that records no mount.
+///
+/// `assets` is the package's asset directory, which the view's assets are
+/// embedded from.
 fn mount<'a>(
     compiled: &'a Compiled,
     report: &Report<'_>,
     record: Option<(&str, &Origin, TokenStream)>,
+    assets: Option<&Path>,
 ) -> syn::Result<Mounted<'a>> {
     let Some(component) = &compiled.component else {
         return Err(report.at(None, "the frontend produced no component to mount"));
@@ -306,7 +317,9 @@ fn mount<'a>(
     }
     combine(errors)?;
     if let Some(behavior) = &behavior {
-        allocations.extend(host_tokens(behavior, &idents, &tracked));
+        let embedded = embedded_assets(compiled, assets)
+            .map_err(|message| report.at(component.schema.view, message))?;
+        allocations.extend(host_tokens(behavior, &idents, &tracked, embedded));
     }
     let record = record.map(|(file, origin, build)| {
         record_tokens(file, origin, build, &idents, behavior.is_some())
@@ -335,6 +348,7 @@ fn host_tokens(
     behavior: &ViewBehavior,
     idents: &HashMap<SymbolId, Ident>,
     tracked: &BTreeSet<SymbolId>,
+    assets: TokenStream,
 ) -> TokenStream {
     let bytes = Literal::byte_string(&behavior.bytes);
     let component = &behavior.component;
@@ -352,9 +366,42 @@ fn host_tokens(
         {
             let mut __viso_view = __viso_host.borrow_mut();
             #(#mirrors)*
+            #assets
         }
         ::viso_view::__load_persisted(cx, &__viso_host);
     }
+}
+
+/// The package's asset directory a form's profile indexes.
+fn asset_dir(profile: &package::Profile) -> Option<&Path> {
+    profile.target.assets.as_deref().map(AssetCatalog::dir)
+}
+
+/// The statement giving the host the bytes of every asset the view names,
+/// embedded with `include_bytes!` — so editing one rebuilds the form — or
+/// nothing for a view naming none.
+fn embedded_assets(compiled: &Compiled, dir: Option<&Path>) -> Result<TokenStream, String> {
+    if compiled.assets.is_empty() {
+        return Ok(TokenStream::new());
+    }
+    let Some(dir) = dir else {
+        return Err("internal: a view names assets but its profile has no asset directory".into());
+    };
+    let mut entries = Vec::with_capacity(compiled.assets.len());
+    for asset in &compiled.assets {
+        let path = dir.join(&asset.path);
+        let path = path
+            .to_str()
+            .ok_or_else(|| format!("the path of `assets/{}` is not UTF-8", asset.path))?;
+        let id = Literal::u64_suffixed(asset.id.0);
+        entries.push(quote! {
+            (
+                ::viso_ui::resource::ResourceId(#id),
+                ::viso_ui::AssetBytes::Static(::core::include_bytes!(#path)),
+            )
+        });
+    }
+    Ok(quote! { __viso_view.set_assets([#(#entries),*]); })
 }
 
 /// The fields of a `view!` mount record the expansion knows before the tree is

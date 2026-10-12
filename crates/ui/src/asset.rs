@@ -12,7 +12,8 @@
 //! 3. **Resident**: for a raster, the facade uploads the pixels into the
 //!    window's renderer and attaches the texture
 //!    ([`NodeStore::attach_texture`](crate::component::NodeStore::attach_texture)),
-//!    which resolves the nodes and hands back the texture it replaced, for the
+//!    which resolves the nodes, drops the table's hold on the pixels (the
+//!    texture holds them now) and hands back the texture it replaced, for the
 //!    facade to release once no frame in flight draws it.
 //!
 //! A node's [`Content::Asset`](crate::content::Content::Asset) carries what it
@@ -49,6 +50,38 @@ pub enum AssetFit {
     Fill,
 }
 
+/// An asset's encoded bytes: embedded in the binary, or loaded and shared.
+#[derive(Clone)]
+pub enum AssetBytes {
+    Static(&'static [u8]),
+    Shared(Arc<[u8]>),
+}
+
+impl std::ops::Deref for AssetBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            AssetBytes::Static(bytes) => bytes,
+            AssetBytes::Shared(bytes) => bytes,
+        }
+    }
+}
+
+impl PartialEq for AssetBytes {
+    fn eq(&self, other: &AssetBytes) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for AssetBytes {}
+
+impl std::fmt::Debug for AssetBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AssetBytes({} bytes)", self.len())
+    }
+}
+
 /// A decoded asset.
 #[derive(Debug, Clone)]
 pub enum AssetPayload {
@@ -72,13 +105,32 @@ pub(crate) struct AssetEntry {
     /// The revision of the newest bytes offered.
     pub(crate) offered: ResourceRevision,
     /// Those bytes, until a payload of their revision is provided.
-    pub(crate) bytes: Option<Arc<[u8]>>,
-    /// The newest payload provided, and its revision.
+    pub(crate) bytes: Option<AssetBytes>,
+    /// The newest payload provided, and its revision: a vector's for as long
+    /// as it draws, a raster's until its texture is attached.
     pub(crate) payload: Option<(ResourceRevision, AssetPayload)>,
     /// A raster's texture in this store's window, the revision it was uploaded
     /// from and that raster's size; it draws until the newest payload's
     /// replaces it.
     pub(crate) texture: Option<(ResourceRevision, TextureId, [f32; 2])>,
+}
+
+impl AssetEntry {
+    fn new(offered: ResourceRevision) -> AssetEntry {
+        AssetEntry {
+            offered,
+            bytes: None,
+            payload: None,
+            texture: None,
+        }
+    }
+
+    /// The newest revision decoded: provided, or resident.
+    fn decoded(&self) -> Option<ResourceRevision> {
+        let payload = self.payload.as_ref().map(|(r, _)| *r);
+        let texture = self.texture.map(|(r, ..)| r);
+        payload.max(texture)
+    }
 }
 
 /// The assets of one node store.
@@ -92,14 +144,12 @@ impl AssetTable {
     /// Offers the encoded bytes of `id` at `revision`, to decode. Bytes no newer
     /// than what the table holds are ignored, so every node mounting the same
     /// asset offers it for free.
-    pub fn offer(&mut self, id: ResourceId, revision: ResourceRevision, bytes: Arc<[u8]>) {
-        let entry = self.entries.entry(id).or_insert_with(|| AssetEntry {
-            offered: revision,
-            bytes: None,
-            payload: None,
-            texture: None,
-        });
-        let newer = entry.payload.as_ref().is_none_or(|(r, _)| revision > *r)
+    pub fn offer(&mut self, id: ResourceId, revision: ResourceRevision, bytes: AssetBytes) {
+        let entry = self
+            .entries
+            .entry(id)
+            .or_insert_with(|| AssetEntry::new(revision));
+        let newer = entry.decoded().is_none_or(|r| revision > r)
             && (entry.bytes.is_none() || revision > entry.offered);
         if newer {
             entry.offered = revision;
@@ -110,7 +160,7 @@ impl AssetTable {
 
     /// Every resource whose newest bytes are not decoded yet: its id, revision
     /// and bytes.
-    pub fn undecoded(&self) -> impl Iterator<Item = (ResourceId, ResourceRevision, &Arc<[u8]>)> {
+    pub fn undecoded(&self) -> impl Iterator<Item = (ResourceId, ResourceRevision, &AssetBytes)> {
         self.entries
             .iter()
             .filter_map(|(id, e)| Some((*id, e.offered, e.bytes.as_ref()?)))
@@ -131,21 +181,12 @@ impl AssetTable {
         })
     }
 
-    /// Every texture the table holds, to release when the window's renderer
-    /// goes away or is rebuilt; the table forgets them.
-    pub fn take_textures(&mut self) -> Vec<TextureId> {
-        let textures: Vec<TextureId> = self
-            .entries
-            .values_mut()
-            .filter_map(|e| e.texture.take().map(|(_, t, _)| t))
-            .collect();
-        if !textures.is_empty() {
-            self.revision += 1;
-        }
-        textures
+    /// Whether the table holds `id` in any state.
+    pub fn knows(&self, id: ResourceId) -> bool {
+        self.entries.contains_key(&id)
     }
 
-    /// The payload of `id`, and its revision.
+    /// The payload of `id` not yet resident, and its revision.
     pub fn payload(&self, id: ResourceId) -> Option<(ResourceRevision, &AssetPayload)> {
         let (revision, payload) = self.entries.get(&id)?.payload.as_ref()?;
         Some((*revision, payload))
@@ -191,7 +232,7 @@ impl AssetTable {
     }
 
     /// Stores `payload` as `id`'s at `revision`, dropping the bytes it was
-    /// decoded from; `false` when the table already holds a newer one. The
+    /// decoded from; `false` when the table already decoded one as new. The
     /// previous texture stays until the new payload's is attached, so the old
     /// pixels draw until the new ones are resident.
     pub(crate) fn provide(
@@ -200,13 +241,11 @@ impl AssetTable {
         revision: ResourceRevision,
         payload: AssetPayload,
     ) -> bool {
-        let entry = self.entries.entry(id).or_insert_with(|| AssetEntry {
-            offered: revision,
-            bytes: None,
-            payload: None,
-            texture: None,
-        });
-        if entry.payload.as_ref().is_some_and(|(r, _)| *r >= revision) {
+        let entry = self
+            .entries
+            .entry(id)
+            .or_insert_with(|| AssetEntry::new(revision));
+        if entry.decoded().is_some_and(|r| r >= revision) {
             return false;
         }
         if entry.offered <= revision {
@@ -218,9 +257,10 @@ impl AssetTable {
         true
     }
 
-    /// Records `texture` as `id`'s at `revision`; the texture it replaces, or
-    /// `texture` itself when the table has moved past `revision` (the caller
-    /// releases whichever comes back).
+    /// Records `texture` as `id`'s at `revision` and lets go of the pixels it
+    /// was uploaded from; the texture it replaces, or `texture` itself when
+    /// the table has moved past `revision` (the caller releases whichever comes
+    /// back).
     pub(crate) fn attach(
         &mut self,
         id: ResourceId,
@@ -235,6 +275,7 @@ impl AssetTable {
             _ => return Err(texture),
         };
         let old = entry.texture.replace((revision, texture, size));
+        entry.payload = None;
         self.revision += 1;
         Ok(old.map(|(_, t, _)| t))
     }

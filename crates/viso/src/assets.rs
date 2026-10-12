@@ -1,0 +1,468 @@
+//! The app's assets, shared by its windows: each resource's bytes decoded
+//! once, on a worker thread, for every window showing it, and each window's
+//! rasters uploaded into its own device.
+//!
+//! A window's store offers the bytes of what its nodes show
+//! ([`AssetTable`](viso_ui::AssetTable)); every frame, before layout, the app
+//! serves the windows whose tables moved: a payload it already decoded is
+//! provided at once, anything else goes to the worker, which wakes the loop
+//! when it is done, and its result is provided to every window on the next
+//! frame. The app keeps decoded payloads only weakly — the tables hold them,
+//! and a table lets go of a raster's pixels once its texture is attached — so
+//! a resident image costs its texture and nothing on the CPU. A payload that
+//! does not decode is reported once and never retried at that revision.
+//!
+//! Textures live on the window's device, which keeps them across a renderer
+//! rebuild and a device loss; a replaced one is released through the
+//! renderer, whose device destroys it once no frame in flight draws it.
+
+use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Weak};
+use std::thread;
+
+use viso_gpu::{GpuBackend, TextureDesc, TextureFormat};
+use viso_platform::LoopWaker;
+use viso_render::Renderer;
+use viso_render::asset::{
+    AssetError, AssetFormat, AssetKind, RasterImage, ResourceId, ResourceRevision, VectorScene,
+    decode_raster,
+};
+use viso_ui::{AssetBytes, AssetPayload, NodeStore};
+
+/// What the app's assets cost, counted since it started.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AssetCounters {
+    /// Payloads decoded.
+    pub(crate) decodes: u64,
+    /// Payloads that did not decode.
+    pub(crate) decode_failures: u64,
+    /// Rasters uploaded into a window's device.
+    pub(crate) uploads: u64,
+    /// The bytes those uploads wrote.
+    pub(crate) upload_bytes: u64,
+}
+
+/// A decoded payload the app remembers while some table holds it.
+enum Held {
+    Raster(Weak<RasterImage>),
+    Vector(Weak<VectorScene>),
+}
+
+impl Held {
+    fn of(payload: &AssetPayload) -> Held {
+        match payload {
+            AssetPayload::Raster(image) => Held::Raster(Arc::downgrade(image)),
+            AssetPayload::Vector(scene) => Held::Vector(Arc::downgrade(scene)),
+        }
+    }
+
+    fn upgrade(&self) -> Option<AssetPayload> {
+        match self {
+            Held::Raster(image) => image.upgrade().map(AssetPayload::Raster),
+            Held::Vector(scene) => scene.upgrade().map(AssetPayload::Vector),
+        }
+    }
+}
+
+/// A payload to decode.
+struct Job {
+    id: ResourceId,
+    revision: ResourceRevision,
+    bytes: AssetBytes,
+}
+
+/// A decoded payload, or why it did not decode.
+struct Done {
+    id: ResourceId,
+    revision: ResourceRevision,
+    result: Result<AssetPayload, AssetError>,
+}
+
+/// The decode thread.
+struct Worker {
+    jobs: Sender<Job>,
+    done: Receiver<Done>,
+}
+
+impl Worker {
+    /// A worker that wakes the loop with `waker` after each result; `None`
+    /// when no thread can be spawned.
+    fn spawn(waker: LoopWaker) -> Option<Worker> {
+        let (jobs, inbox) = mpsc::channel::<Job>();
+        let (outbox, done) = mpsc::channel();
+        thread::Builder::new()
+            .name("viso-assets".into())
+            .spawn(move || {
+                for job in inbox {
+                    let done = Done {
+                        id: job.id,
+                        revision: job.revision,
+                        result: decode(&job.bytes),
+                    };
+                    if outbox.send(done).is_err() {
+                        break;
+                    }
+                    waker.wake();
+                }
+            })
+            .ok()?;
+        Some(Worker { jobs, done })
+    }
+}
+
+/// `bytes` decoded by the format they are in.
+fn decode(bytes: &[u8]) -> Result<AssetPayload, AssetError> {
+    match AssetFormat::sniff(bytes).map(AssetFormat::kind) {
+        Some(AssetKind::Raster) => {
+            decode_raster(bytes).map(|image| AssetPayload::Raster(image.into()))
+        }
+        Some(AssetKind::Vector) => viso_svg::parse_svg(bytes)
+            .map(|scene| AssetPayload::Vector(Arc::new(scene.into_vector())))
+            .map_err(|error| AssetError::Decode(error.to_string())),
+        None => Err(AssetError::Format),
+    }
+}
+
+/// The app's assets.
+#[derive(Default)]
+pub(crate) struct Assets {
+    /// The newest payload decoded of each resource, while a table holds it.
+    decoded: HashMap<ResourceId, (ResourceRevision, Held)>,
+    /// The revision of each resource the worker is decoding.
+    decoding: HashMap<ResourceId, ResourceRevision>,
+    /// The newest revision of each resource that did not decode.
+    failed: HashMap<ResourceId, ResourceRevision>,
+    worker: Option<Worker>,
+    /// Whether no worker thread could be spawned: decoding runs inline.
+    inline: bool,
+    /// The results received and not yet provided.
+    arrived: Vec<Done>,
+    /// Reused per window: the resources to serve.
+    scratch: Vec<(ResourceId, ResourceRevision, AssetBytes)>,
+    rasters: Vec<(ResourceId, ResourceRevision, Arc<RasterImage>)>,
+    counters: AssetCounters,
+}
+
+impl Assets {
+    pub(crate) fn counters(&self) -> AssetCounters {
+        self.counters
+    }
+
+    /// Takes the worker's results; `true` when any arrived, for the caller to
+    /// frame the windows.
+    pub(crate) fn receive(&mut self) -> bool {
+        let before = self.arrived.len();
+        while let Some(worker) = &self.worker {
+            match worker.done.try_recv() {
+                Ok(done) => self.arrived.push(done),
+                Err(TryRecvError::Empty) => break,
+                // The worker died: decode inline from now on.
+                Err(TryRecvError::Disconnected) => {
+                    self.worker = None;
+                    self.inline = true;
+                    self.decoding.clear();
+                }
+            }
+        }
+        self.arrived.len() > before
+    }
+
+    /// Provides the results that arrived to every store of `stores` that
+    /// knows the resource.
+    pub(crate) fn provide<'s>(&mut self, stores: impl Iterator<Item = &'s mut NodeStore>) {
+        self.receive();
+        if self.arrived.is_empty() {
+            return;
+        }
+        let arrived = std::mem::take(&mut self.arrived);
+        let mut payloads = Vec::with_capacity(arrived.len());
+        for done in arrived {
+            if self.decoding.get(&done.id) == Some(&done.revision) {
+                self.decoding.remove(&done.id);
+            }
+            if let Some(payload) = self.settle(done) {
+                payloads.push(payload);
+            }
+        }
+        for store in stores {
+            for (id, revision, payload) in &payloads {
+                if store.assets().knows(*id) {
+                    store.provide_asset(*id, *revision, payload.clone());
+                }
+            }
+        }
+    }
+
+    /// Records a result: the payload to provide, or the failure reported.
+    fn settle(&mut self, done: Done) -> Option<(ResourceId, ResourceRevision, AssetPayload)> {
+        match done.result {
+            Ok(payload) => {
+                self.counters.decodes += 1;
+                let newer = self
+                    .decoded
+                    .get(&done.id)
+                    .is_none_or(|(r, held)| done.revision > *r || held.upgrade().is_none());
+                if newer {
+                    self.decoded
+                        .insert(done.id, (done.revision, Held::of(&payload)));
+                }
+                Some((done.id, done.revision, payload))
+            }
+            Err(error) => {
+                self.counters.decode_failures += 1;
+                let failed = self.failed.entry(done.id).or_insert(done.revision);
+                *failed = (*failed).max(done.revision);
+                eprintln!(
+                    "[viso] asset {:016x} (revision {}) does not decode: {error}",
+                    done.id.0, done.revision.0
+                );
+                None
+            }
+        }
+    }
+
+    /// Serves `store`, whose table moved: provides what the app decoded, sends
+    /// the rest to the worker (`waker` wakes the loop when it is done), and
+    /// uploads the rasters not resident into `gpu`, releasing what they
+    /// replace.
+    pub(crate) fn serve<B: GpuBackend>(
+        &mut self,
+        store: &mut NodeStore,
+        gpu: Option<(&mut B, &mut Renderer)>,
+        waker: &dyn Fn() -> LoopWaker,
+    ) {
+        let mut todo = std::mem::take(&mut self.scratch);
+        todo.extend(
+            store
+                .assets()
+                .undecoded()
+                .map(|(id, revision, bytes)| (id, revision, bytes.clone())),
+        );
+        for (id, revision, bytes) in todo.drain(..) {
+            if let Some((decoded, held)) = self.decoded.get(&id)
+                && *decoded >= revision
+                && let Some(payload) = held.upgrade()
+            {
+                store.provide_asset(id, *decoded, payload);
+                continue;
+            }
+            let pending = |at: Option<&ResourceRevision>| at.is_some_and(|r| *r >= revision);
+            if pending(self.failed.get(&id)) || pending(self.decoding.get(&id)) {
+                continue;
+            }
+            if self.worker.is_none() && !self.inline {
+                self.worker = Worker::spawn(waker());
+                self.inline = self.worker.is_none();
+            }
+            let job = Job {
+                id,
+                revision,
+                bytes: bytes.clone(),
+            };
+            match &self.worker {
+                Some(worker) if worker.jobs.send(job).is_ok() => {
+                    self.decoding.insert(id, revision);
+                }
+                _ => {
+                    let done = Done {
+                        id,
+                        revision,
+                        result: decode(&bytes),
+                    };
+                    if let Some((id, revision, payload)) = self.settle(done) {
+                        store.provide_asset(id, revision, payload);
+                    }
+                }
+            }
+        }
+        self.scratch = todo;
+        let Some((backend, renderer)) = gpu else {
+            return;
+        };
+        self.rasters.clear();
+        self.rasters.extend(
+            store
+                .assets()
+                .unresident()
+                .map(|(id, revision, image)| (id, revision, Arc::clone(image))),
+        );
+        for (id, revision, image) in self.rasters.drain(..) {
+            let texture = backend.create_texture(&TextureDesc {
+                width: image.width,
+                height: image.height,
+                format: TextureFormat::Rgba8Unorm,
+                render_target: false,
+                label: "asset",
+            });
+            backend.write_texture(texture, 0, 0, image.width, image.height, &image.pixels);
+            self.counters.uploads += 1;
+            self.counters.upload_bytes += image.pixels.len() as u64;
+            if let Some(released) = store.attach_texture(id, revision, texture) {
+                renderer.release_texture(backend, released);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use viso_gpu::{HeadlessRaster, RawWindowHandle};
+    use viso_ui::{AssetDraw, AssetFit, BoxStyle, BuildCx, Content, LeafStyle, NodeId, Size};
+
+    const JPEG: &[u8] = include_bytes!("../../render/src/fixtures/two_tone.jpg");
+    const SVG: &[u8] =
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 20\"><rect width=\"10\" height=\"20\" fill=\"#f00\"/></svg>";
+
+    struct Gpu {
+        backend: HeadlessRaster,
+        renderer: Renderer,
+    }
+
+    impl Gpu {
+        fn new() -> Gpu {
+            let mut backend = HeadlessRaster::new();
+            let surface = backend.create_surface(RawWindowHandle::Headless, 64, 64);
+            let format = backend.surface_format(surface);
+            let renderer = Renderer::new(&mut backend, format);
+            Gpu { backend, renderer }
+        }
+    }
+
+    /// A store with one leaf per resource of `shows`, each showing it.
+    fn store(shows: &[(ResourceId, &'static [u8])]) -> (NodeStore, Vec<NodeId>) {
+        let mut store = NodeStore::new();
+        let mut nodes = Vec::new();
+        {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(Default::default(), |cx| {
+                for _ in shows {
+                    nodes.push(
+                        cx.leaf(LeafStyle {
+                            size: Size::fixed(40.0, 40.0),
+                            style: BoxStyle::NONE,
+                        })
+                        .id(),
+                    );
+                }
+            });
+        }
+        for (&(id, bytes), &node) in shows.iter().zip(&nodes) {
+            store
+                .assets_mut()
+                .offer(id, ResourceRevision::default(), AssetBytes::Static(bytes));
+            store.set_asset(node, id, AssetFit::Contain, None);
+        }
+        (store, nodes)
+    }
+
+    /// Serves `store` until the worker has nothing in flight.
+    fn serve(assets: &mut Assets, store: &mut NodeStore, gpu: &mut Gpu) {
+        for _ in 0..2000 {
+            assets.provide(std::iter::once(&mut *store));
+            assets.serve(
+                store,
+                Some((&mut gpu.backend, &mut gpu.renderer)),
+                &LoopWaker::inert,
+            );
+            if assets.decoding.is_empty() && assets.arrived.is_empty() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the worker never finished");
+    }
+
+    fn drawn(store: &NodeStore, node: NodeId) -> (AssetDraw, [f32; 2]) {
+        match store.content_payload(node) {
+            Some(Content::Asset { draw, natural, .. }) => (draw.clone(), [natural.x, natural.y]),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn assets_decode_once_upload_per_window_and_hold_no_pixels_once_resident() {
+        let (photo, icon) = (ResourceId::of("photo.jpg"), ResourceId::of("icon.svg"));
+        let mut assets = Assets::default();
+        let mut gpu = Gpu::new();
+        let (mut first, nodes) = store(&[(photo, JPEG), (icon, SVG)]);
+        serve(&mut assets, &mut first, &mut gpu);
+
+        let (draw, size) = drawn(&first, nodes[0]);
+        assert!(matches!(draw, AssetDraw::Raster(_)), "{draw:?}");
+        assert_eq!(size, [8.0, 4.0]);
+        let (draw, size) = drawn(&first, nodes[1]);
+        assert!(matches!(draw, AssetDraw::Vector(_)), "{draw:?}");
+        assert_eq!(size, [10.0, 20.0]);
+        assert_eq!(
+            assets.counters(),
+            AssetCounters {
+                decodes: 2,
+                decode_failures: 0,
+                uploads: 1,
+                upload_bytes: 8 * 4 * 4,
+            }
+        );
+        assert!(
+            first.assets().payload(photo).is_none(),
+            "the texture holds the pixels"
+        );
+        assert_eq!(first.assets().undecoded().count(), 0);
+
+        // A second window: the scene it shares, the raster it decodes again,
+        // since no table held its pixels.
+        let mut second_gpu = Gpu::new();
+        let (mut second, nodes) = store(&[(icon, SVG), (photo, JPEG)]);
+        serve(&mut assets, &mut second, &mut second_gpu);
+        assert!(matches!(drawn(&second, nodes[0]).0, AssetDraw::Vector(_)));
+        assert!(matches!(drawn(&second, nodes[1]).0, AssetDraw::Raster(_)));
+        assert_eq!(assets.counters().decodes, 3);
+        assert_eq!(assets.counters().uploads, 2);
+
+        // A frame that moved nothing serves nothing.
+        let textures = gpu.backend.texture_count();
+        serve(&mut assets, &mut first, &mut gpu);
+        assert_eq!(gpu.backend.texture_count(), textures);
+        assert_eq!(assets.counters().uploads, 2);
+    }
+
+    #[test]
+    fn a_new_revision_replaces_the_texture_and_a_bad_one_is_reported_once() {
+        let photo = ResourceId::of("photo.jpg");
+        let mut assets = Assets::default();
+        let mut gpu = Gpu::new();
+        let (mut store, nodes) = store(&[(photo, JPEG)]);
+        serve(&mut assets, &mut store, &mut gpu);
+        let AssetDraw::Raster(old) = drawn(&store, nodes[0]).0 else {
+            panic!("resident");
+        };
+
+        let next = ResourceRevision(1);
+        store
+            .assets_mut()
+            .offer(photo, next, AssetBytes::Static(JPEG));
+        serve(&mut assets, &mut store, &mut gpu);
+        let AssetDraw::Raster(new) = drawn(&store, nodes[0]).0 else {
+            panic!("resident");
+        };
+        assert_ne!(new, old);
+        assert_eq!(store.assets().texture(photo), Some((next, new)));
+
+        let bad = ResourceRevision(2);
+        store.assets_mut().offer(
+            photo,
+            bad,
+            AssetBytes::Static(b"\x89PNG\r\n\x1a\nnot a png"),
+        );
+        serve(&mut assets, &mut store, &mut gpu);
+        serve(&mut assets, &mut store, &mut gpu);
+        assert_eq!(assets.counters().decode_failures, 1, "never retried");
+        assert_eq!(
+            drawn(&store, nodes[0]).0,
+            AssetDraw::Raster(new),
+            "the last good draws"
+        );
+    }
+}

@@ -552,7 +552,7 @@ impl Builder<'_> {
             .controls
             .binary_search_by_key(&key, |(k, _)| *k)
             .ok()
-            .map(|i| self.controls[i].1.clone());
+            .map(|i| Box::new(self.controls[i].1.clone()));
         let at = out.len();
         out.push(ItemTemplate::Node {
             node: node_template(node),

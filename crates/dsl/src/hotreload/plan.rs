@@ -66,6 +66,8 @@ pub struct CandidatePlan {
     /// The lowered behavior of a component whose module declares systems:
     /// what a reload of the game its view runs is classified by.
     pub game: Option<Program>,
+    /// Every asset the source names, ascending.
+    pub assets: Vec<crate::assets::AssetUse>,
 }
 
 /// A `@migrate(from: "T")` function of a candidate.
@@ -231,6 +233,7 @@ fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
         migrators,
         field_defaults: compiled.behavior.field_defaults.clone(),
         view,
+        assets: compiled.assets,
         game: (compiled.component.is_some() && !compiled.behavior.systems.is_empty())
             .then_some(compiled.behavior),
     })

@@ -56,6 +56,7 @@ use viso_ui::{
 use viso_widgets::caption_bar;
 
 mod accessibility;
+mod assets;
 pub mod audio;
 mod environment;
 mod persist;
@@ -464,6 +465,8 @@ struct AppDriver<A: Application> {
     /// The session's service registry, lent type-erased to every window's
     /// store. Created on launch unless injected (a headless session, a test).
     services: Option<Rc<dyn Any>>,
+    /// The assets the windows show, decoded once for all of them.
+    assets: assets::Assets,
     /// The development session: the mounted views, their watched files and
     /// the reloads staged for the next frame.
     #[cfg(feature = "hot-reload")]
@@ -637,6 +640,9 @@ struct WindowState {
     /// a one-shot diagnostic (gated on `VISO_DEBUG`) proving the first
     /// frame reached the GPU, then fall dark for every steady-state frame.
     awaiting_first_frame: bool,
+    /// The revision of the store's asset table the app last served: a frame
+    /// that moved nothing in it serves nothing.
+    assets_served: u64,
     /// The facade's font stack + glyph atlas. Shapes each node's `TextRequest`
     /// into a `Content::Text` payload (`viso-ui` holds no font stack). `None`
     /// until launch, when a GPU backend exists to allocate the atlas; the app's
@@ -717,6 +723,7 @@ impl<A: Application> AppDriver<A> {
             pending_closes: Vec::new(),
             fonts: SessionFonts::default(),
             services: services.map(|s| Rc::new(s) as Rc<dyn Any>),
+            assets: assets::Assets::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload: hot_reload::HotReloadSession::default(),
         }
@@ -773,6 +780,7 @@ impl WindowState {
             dev_overlay: None,
             recompute: FrameRecompute::default(),
             awaiting_first_frame: true,
+            assets_served: 0,
             text: None,
             text_scratch: Vec::new(),
             text_sources: std::collections::HashMap::new(),
@@ -1864,9 +1872,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         #[cfg(feature = "hot-reload")]
         self.hot_reload.wakeup(cx);
         let now = cx.frame_now();
+        // A decoded asset frames the windows that show assets.
+        let decoded = self.assets.receive();
         for ws in &self.windows {
             let timer_due = ws.timers.earliest().is_some_and(|at| at <= now);
-            if ws.store.tasks_woken() || timer_due {
+            let asset_due = decoded && !ws.store.assets().is_empty();
+            if ws.store.tasks_woken() || timer_due || asset_due {
                 cx.request_redraw(ws.window);
             }
         }
@@ -2123,6 +2134,20 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         eprintln!("[viso] {cycle}");
                     }
                 }
+                // Serve the assets the settle offered, before layout: what
+                // decoded since the last frame reaches every window, and each
+                // window whose table moved gets its decodes started and its
+                // rasters uploaded, so this frame measures and paints them.
+                self.assets
+                    .provide(self.windows.iter_mut().map(|ws| &mut ws.store));
+                for ws in &mut self.windows {
+                    if ws.store.assets().revision() == ws.assets_served {
+                        continue;
+                    }
+                    let gpu = ws.gpu.as_mut().map(|g| (&mut g.backend, &mut g.renderer));
+                    self.assets.serve(&mut ws.store, gpu, &|| cx.loop_waker());
+                    ws.assets_served = ws.store.assets().revision();
+                }
 
                 // Session-level window open/close drain, once per frame after
                 // every window has flushed its own transaction. A `window(...)`
@@ -2350,6 +2375,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 let recompute = ws.recompute;
                                 eprintln!(
                                     "viso: first frame submitting {w}x{h} {stats:?} {recompute:?}"
+                                );
+                                let a = self.assets.counters();
+                                eprintln!(
+                                    "viso: assets decodes={} decode_failures={} uploads={} upload_bytes={}",
+                                    a.decodes, a.decode_failures, a.uploads, a.upload_bytes,
                                 );
                                 if let Some(text) = &ws.text {
                                     let c = text.counters();

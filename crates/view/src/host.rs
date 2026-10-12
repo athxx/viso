@@ -15,9 +15,10 @@ use viso_behavior::{
 };
 use viso_ui::adaptive::{AdaptiveEnv, AnchorId, EnvField};
 use viso_ui::context::UpdateCx;
+use viso_ui::resource::ResourceId;
 use viso_ui::{
-    EventCx, NodeId, NodeStore, StateId, StateStore, StateValue, StructureHookId, TaskFuture,
-    TaskId,
+    AssetBytes, EventCx, NodeId, NodeStore, StateId, StateStore, StateValue, StructureHookId,
+    TaskFuture, TaskId,
 };
 
 use crate::env::env_value;
@@ -218,6 +219,9 @@ pub struct ViewHost {
     pub(crate) tasks: Tasks,
     persist: Persisting,
     persist_reports: Vec<PersistReport>,
+    /// The encoded bytes of each asset the view can show, by resource,
+    /// ascending.
+    assets: Vec<(ResourceId, AssetBytes)>,
 }
 
 /// Where a view's `@persist` states load from and are stored, decided at the
@@ -315,7 +319,26 @@ impl ViewHost {
             tasks: Tasks::default(),
             persist: Persisting::Unmounted,
             persist_reports: Vec::new(),
+            assets: Vec::new(),
         })
+    }
+
+    /// Gives the view the encoded bytes of the assets it can show, which a
+    /// node offers to its store the first time it shows one. A resource given
+    /// again takes the newer bytes.
+    pub fn set_assets(&mut self, assets: impl IntoIterator<Item = (ResourceId, AssetBytes)>) {
+        for (id, bytes) in assets {
+            match self.assets.binary_search_by_key(&id, |(id, _)| *id) {
+                Ok(at) => self.assets[at].1 = bytes,
+                Err(at) => self.assets.insert(at, (id, bytes)),
+            }
+        }
+    }
+
+    /// The encoded bytes of asset `id`, when the view can show it.
+    pub fn asset_bytes(&self, id: ResourceId) -> Option<&AssetBytes> {
+        let at = self.assets.binary_search_by_key(&id, |(id, _)| *id).ok()?;
+        Some(&self.assets[at].1)
     }
 
     /// The host, shared by the view's handlers, regions and tasks.
@@ -1132,7 +1155,8 @@ impl ViewHost {
     /// the environment anchors, and the cells and hooks the view's mounts
     /// registered, stay this host's, for the caller to reuse, release or
     /// replace; [`prune_env`](Self::prune_env) releases the anchors relinking
-    /// left unused. The installed services move to `next`.
+    /// left unused. The installed services move to `next`, and so do the
+    /// assets, `next`'s own taking over the same resources.
     pub fn reload(&mut self, mut next: ViewHost) {
         *next.vm.services_mut() = std::mem::take(self.vm.services_mut());
         next.events = std::mem::take(&mut self.events);
@@ -1145,6 +1169,9 @@ impl ViewHost {
         next.root = self.root;
         next.persist = std::mem::take(&mut self.persist);
         next.persist_reports = std::mem::take(&mut self.persist_reports);
+        let given = std::mem::take(&mut next.assets);
+        next.assets = std::mem::take(&mut self.assets);
+        next.set_assets(given);
         *self = next;
     }
 }

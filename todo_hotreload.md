@@ -563,21 +563,35 @@ editable source files.
       wrong argument count, a non-literal path, a path outside `assets/`, a missing
       file (with the nearest path as a fix), a file in no asset format, a compile
       with no asset directory and a record literal of either; DSL spec §U5.1.
-- [ ] View and package: the compiled view lists the assets it can show (id, kind,
-      path); the control delivers a node's resource; the `view!` macro embeds their
-      bytes (`include_bytes!`, so cargo rebuilds on change), the release package
-      carries them; mounting provides them to the store's table, decoded once. The
-      mount report names the package's asset directory, and the dev host compiles a
-      candidate against its catalog.
-- [ ] Facade: one app-wide registry decodes each resource once and shares it across
-      windows; each window uploads the rasters it shows, resolves its nodes, and
-      releases a replaced texture through the fence-deferred path; a rebuilt renderer
-      re-uploads; frame counters for decodes, uploads and upload bytes.
+- [x] View and package: `ControlKind::Asset` (`Image`, `Svg`) reads `source`, `fit`
+      and `tint` as entries and shows them with `set_asset`; the host holds each
+      asset's bytes (`AssetBytes`: embedded or shared) and a node offers them to its
+      store the first time it shows the resource, so only what shows decodes; a
+      reload keeps the host's assets, the new host's own taking over. `view!` and
+      `component!` embed the bytes of every asset the view names with
+      `include_bytes!` (cargo rebuilds on change); `ViewPackage::assets` carries
+      them (`build_view_package_for` reads them from the profile's asset directory,
+      `E3713` when one cannot be read; ascending ids, checked on decode).
+- [x] Facade (`viso/src/assets.rs`): before each frame's layout the app serves
+      every window whose table moved — a payload it already decoded is provided at
+      once, anything else is decoded on the `viso-assets` worker (which wakes the
+      loop), once for every window; each window uploads its unresident rasters
+      (`Rgba8Unorm`, premultiplied) into its own device and releases what they
+      replace through the renderer. The app keeps payloads weakly and a table drops
+      a raster's pixels once its texture is attached, so a resident image costs only
+      its texture; textures live on the device across a renderer rebuild and a
+      device loss. A payload that does not decode is reported once and never
+      retried at that revision; the last good keeps drawing. Counters: decodes,
+      decode failures, uploads, upload bytes (`VISO_DEBUG`). `examples/images`.
+- [ ] The Rust `Image` widget shows an asset by resource as well as a resident
+      texture; `Image` and `Svg` nodes take `Role::Image`, their `semantics.label`
+      the text alternative.
 
 ### H4.2 — Asset reload
 
 - [ ] Watch `assets/**` on the host: byte reads and a byte hash; an unchanged hash
-      sends nothing.
+      sends nothing. The mount report names the package's asset directory, and the
+      dev host compiles candidates against its catalog.
 - [ ] `ResourcePatch { id, kind, revision, bytes }` (`Domain::Resource`), large payloads
       split under the frame limit; the host validates the decode first and reports a
       failure at stage `resource-build` against the asset's path; a view patch naming

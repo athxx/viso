@@ -1,6 +1,7 @@
 //! Delivering the values a view's nodes show: a label's text, a text field's
-//! seeded buffer, a control's value and range as its semantic state, and any
-//! node's look (its `background` and `opacity`). A text field with no `value`
+//! seeded buffer, a control's value and range as its semantic state, an
+//! image's asset (its bytes offered to the store the first time it shows), and
+//! any node's look (its `background` and `opacity`). A text field with no `value`
 //! is never seeded: its text is what its user types.
 //!
 //! A look value with a `transition.*` entry moves to each new value over the
@@ -22,9 +23,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_behavior::Value;
+use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::{
-    BuildCx, Easing, LookValue, NodeId, NodeStore, Rgba, SemanticState, Srgb, StateId, StructureCx,
-    TextRequest, Timing,
+    AssetFit, BuildCx, Easing, LookValue, NodeId, NodeStore, Rgba, SemanticState, Srgb, StateId,
+    StructureCx, TextRequest, Timing,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, When};
@@ -144,6 +146,8 @@ pub(crate) fn control_cells(
         control.value,
         control.min,
         control.max,
+        control.fit,
+        control.tint,
         look.background,
         look.opacity,
     ]
@@ -155,8 +159,13 @@ pub(crate) fn control_cells(
     }
 }
 
-/// How many values a node shows.
-const SHOWN: usize = 5;
+/// How many values a node shows: its value, the two entries beside it (a
+/// slider's bounds, an image's fit and tint) and its look's background and
+/// opacity.
+const SHOWN: usize = 7;
+
+/// Where its background and opacity sit among the values a node shows.
+const LOOK: usize = 5;
 
 /// A node showing a value of the view.
 pub(crate) struct Shown {
@@ -169,8 +178,8 @@ pub(crate) struct Shown {
     scope: Scope,
     /// The cells its entries read, ascending.
     deps: Box<[StateId]>,
-    /// The value, lower bound, upper bound, background and opacity it shows,
-    /// `None` before the first delivery.
+    /// The value, lower bound, upper bound, fit, tint, background and opacity
+    /// it shows, `None` before the first delivery.
     shows: Option<[Value; SHOWN]>,
     /// Whether [`shows`](Self::shows) is what the node showed before a hot
     /// reload mounted it again: the next delivery skips the values equal to
@@ -239,11 +248,15 @@ impl Shown {
             return;
         };
         let mut shows: [Value; SHOWN] = Default::default();
-        for (value, entry) in
-            shows
-                .iter_mut()
-                .zip([control.value, control.min, control.max, background, opacity])
-        {
+        for (value, entry) in shows.iter_mut().zip([
+            control.value,
+            control.min,
+            control.max,
+            control.fit,
+            control.tint,
+            background,
+            opacity,
+        ]) {
             let Some(entry) = entry else { continue };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
                 Ok(evaluated) => *value = evaluated,
@@ -264,12 +277,12 @@ impl Shown {
         let shown_background =
             (background.is_some() || styled(ControlInput::Background)).then_some(());
         let shown_opacity = (opacity.is_some() || styled(ControlInput::Opacity)).then_some(());
-        let [value, min, max, background, opacity] = &shows;
+        let [value, min, max, fit, tint, background, opacity] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
         let mut moves: [Option<Timing>; 2] = [None; 2];
         for (at, (shown, transition)) in [
-            (3, (shown_background, look.background_transition)),
-            (4, (shown_opacity, look.opacity_transition)),
+            (LOOK, (shown_background, look.background_transition)),
+            (LOOK + 1, (shown_opacity, look.opacity_transition)),
         ] {
             let (Some(_), Some(transition), false) = (shown, transition, first) else {
                 continue;
@@ -280,20 +293,24 @@ impl Shown {
             match host.evaluate(transition, &self.scope, None, &*cx.states) {
                 Ok(spec) => {
                     let reduced = cx.states.env().environment().reduced_motion;
-                    moves[at - 3] = Some(timing(&spec, reduced));
+                    moves[at - LOOK] = Some(timing(&spec, reduced));
                 }
                 Err(fault) => host.record_fault(fault),
             }
         }
         let store = &mut *cx.store;
         for (at, entry, value) in [
-            (3, shown_background, LookValue::Fill(color(background))),
-            (4, shown_opacity, LookValue::Opacity(float(opacity, 1.0))),
+            (LOOK, shown_background, LookValue::Fill(color(background))),
+            (
+                LOOK + 1,
+                shown_opacity,
+                LookValue::Opacity(float(opacity, 1.0)),
+            ),
         ] {
             if entry.is_none() || !changed(at) {
                 continue;
             }
-            match (moves[at - 3], value) {
+            match (moves[at - LOOK], value) {
                 (Some(timing), value) => store.transition(self.node, value, timing),
                 (None, value) if first => store.present(self.node, value),
                 (None, LookValue::Fill(fill)) => store.set_fill(self.node, fill),
@@ -307,12 +324,28 @@ impl Shown {
             soft_wrap: false,
             locale: None,
         };
-        if prior.is_some() && (0..3).all(|at| !changed(at)) {
+        if prior.is_some() && (0..LOOK).all(|at| !changed(at)) {
             self.shows = Some(shows);
             return;
         }
         match control.kind {
             ControlKind::Plain => {}
+            // An unbound source shows nothing.
+            ControlKind::Asset => {
+                if let Some(resource) = resource(value) {
+                    if !store.assets().knows(resource)
+                        && let Some(bytes) = host.asset_bytes(resource)
+                    {
+                        store.assets_mut().offer(
+                            resource,
+                            ResourceRevision::default(),
+                            bytes.clone(),
+                        );
+                    }
+                    let tint = tint.as_int().map(|_| color(tint));
+                    store.set_asset(self.node, resource, asset_fit(fit), tint);
+                }
+            }
             ControlKind::Label => store.set_text_request(self.node, text()),
             ControlKind::TextInput if control.value.is_some() => {
                 store.seed_text(self.node, text());
@@ -375,6 +408,24 @@ fn select(store: &mut NodeStore, node: NodeId, selected: i64) {
         };
         store.set_semantic_state(id, state);
         index += 1;
+    }
+}
+
+/// The resource an `ImageAsset` or `SvgAsset` value names.
+fn resource(value: &Value) -> Option<ResourceId> {
+    let Value::Agg(asset) = value else {
+        return None;
+    };
+    let id = asset.fields.first()?.as_int()?;
+    Some(ResourceId(id.cast_unsigned()))
+}
+
+/// An `ImageFit` value as the fit it names, `contain` for any other.
+fn asset_fit(value: &Value) -> AssetFit {
+    match value.as_int() {
+        Some(1) => AssetFit::Cover,
+        Some(2) => AssetFit::Fill,
+        _ => AssetFit::Contain,
     }
 }
 

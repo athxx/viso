@@ -41,17 +41,21 @@ pub enum ControlKind {
     /// Any other native node: it shows only its [`Look`] and has no built-in
     /// response.
     Plain = 5,
+    /// `Image` and `Svg`: shows the asset of its `source`, fitted and tinted;
+    /// it has no built-in response.
+    Asset = 6,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 6] = [
+    pub const ALL: [ControlKind; 7] = [
         ControlKind::Toggle,
         ControlKind::Slider,
         ControlKind::Select,
         ControlKind::TextInput,
         ControlKind::Label,
         ControlKind::Plain,
+        ControlKind::Asset,
     ];
 
     /// The kind native widget `widget` is.
@@ -62,6 +66,7 @@ impl ControlKind {
             "Tabs" | "RadioGroup" => ControlKind::Select,
             "TextInput" => ControlKind::TextInput,
             "Text" | "Button" => ControlKind::Label,
+            "Image" | "Svg" => ControlKind::Asset,
             _ => ControlKind::Plain,
         }
     }
@@ -80,7 +85,10 @@ impl ControlKind {
 
     /// Whether the node responds to pointer and key samples itself.
     pub fn responds(self) -> bool {
-        !matches!(self, ControlKind::Label | ControlKind::Plain)
+        !matches!(
+            self,
+            ControlKind::Label | ControlKind::Plain | ControlKind::Asset
+        )
     }
 
     /// Whether the control reports `route`.
@@ -107,10 +115,13 @@ impl ControlKind {
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
             | (ControlKind::TextInput, "value")
-            | (ControlKind::Label, "text") => ControlInput::Value,
+            | (ControlKind::Label, "text")
+            | (ControlKind::Asset, "source") => ControlInput::Value,
             (ControlKind::Slider, "min") => ControlInput::Min,
             (ControlKind::Slider, "max") => ControlInput::Max,
             (ControlKind::Slider, "step") => ControlInput::Step,
+            (ControlKind::Asset, "fit") => ControlInput::Fit,
+            (ControlKind::Asset, "tint") => ControlInput::Tint,
             _ => return None,
         })
     }
@@ -124,6 +135,7 @@ impl ControlKind {
             ControlKind::TextInput => "TextInput",
             ControlKind::Label => "Label",
             ControlKind::Plain => "Plain",
+            ControlKind::Asset => "Asset",
         }
     }
 
@@ -136,7 +148,8 @@ impl ControlKind {
 /// A value a control reads from the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlInput {
-    /// Its current value: `checked`, `value`, `selected` or a label's `text`.
+    /// Its current value: `checked`, `value`, `selected`, a label's `text` or
+    /// an image's `source`.
     Value,
     /// A slider's lower bound.
     Min,
@@ -144,6 +157,10 @@ pub enum ControlInput {
     Max,
     /// A slider's step.
     Step,
+    /// An image's `fit`.
+    Fit,
+    /// An image's `tint`.
+    Tint,
     /// The node's `background`.
     Background,
     /// The node's `opacity`.
@@ -169,6 +186,10 @@ pub struct Control {
     pub max: Option<u32>,
     /// The entry of a slider's step.
     pub step: Option<u32>,
+    /// The entry of an image's fit.
+    pub fit: Option<u32>,
+    /// The entry of an image's tint.
+    pub tint: Option<u32>,
     /// The entries of the look it shows.
     pub look: Look,
     /// The look values its styles' `when` blocks select, the first that holds
@@ -295,6 +316,8 @@ impl Control {
             min: None,
             max: None,
             step: None,
+            fit: None,
+            tint: None,
             look: Look::default(),
             arms: Box::new([]),
         }
@@ -312,6 +335,8 @@ impl Control {
             ControlInput::Min => self.min,
             ControlInput::Max => self.max,
             ControlInput::Step => self.step,
+            ControlInput::Fit => self.fit,
+            ControlInput::Tint => self.tint,
             ControlInput::Background => self.look.background,
             ControlInput::Opacity => self.look.opacity,
             ControlInput::BackgroundTransition => self.look.background_transition,
@@ -326,6 +351,8 @@ impl Control {
             ControlInput::Min => &mut self.min,
             ControlInput::Max => &mut self.max,
             ControlInput::Step => &mut self.step,
+            ControlInput::Fit => &mut self.fit,
+            ControlInput::Tint => &mut self.tint,
             ControlInput::Background => &mut self.look.background,
             ControlInput::Opacity => &mut self.look.opacity,
             ControlInput::BackgroundTransition => &mut self.look.background_transition,
@@ -351,7 +378,7 @@ impl Control {
             ControlKind::Slider => self.slider(host, scope, cx),
             ControlKind::Select => self.select(host, scope, cx),
             ControlKind::TextInput => text_input(cx),
-            ControlKind::Label | ControlKind::Plain => None,
+            ControlKind::Label | ControlKind::Plain | ControlKind::Asset => None,
         }
     }
 
@@ -480,6 +507,8 @@ impl Encode for Control {
             self.min,
             self.max,
             self.step,
+            self.fit,
+            self.tint,
             look.background,
             look.opacity,
             look.background_transition,
@@ -527,6 +556,8 @@ impl Decode for Control {
             min: entry()?,
             max: entry()?,
             step: entry()?,
+            fit: entry()?,
+            tint: entry()?,
             look: Look {
                 background: entry()?,
                 opacity: entry()?,
@@ -709,7 +740,11 @@ mod tests {
         for kind in ControlKind::ALL {
             assert_eq!(ControlKind::from_u8(kind as u8), Some(kind));
         }
-        assert_eq!(ControlKind::from_u8(6), None);
+        assert_eq!(ControlKind::from_u8(7), None);
+        assert_eq!(ControlKind::of("Svg"), ControlKind::Asset);
+        assert_eq!(ControlKind::Asset.input("fit"), Some(ControlInput::Fit));
+        assert_eq!(ControlKind::Plain.input("fit"), None);
+        assert!(!ControlKind::Asset.responds());
         assert_eq!(ControlKind::of("CheckBox"), ControlKind::Toggle);
         assert_eq!(ControlKind::of("Button"), ControlKind::Label);
         assert_eq!(ControlKind::of("Column"), ControlKind::Plain);
@@ -744,6 +779,8 @@ mod tests {
             min: None,
             max: Some(7),
             step: None,
+            fit: None,
+            tint: Some(8),
             look: Look {
                 background: Some(3),
                 opacity: None,

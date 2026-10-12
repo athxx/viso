@@ -212,7 +212,7 @@ pub enum ItemTemplate {
         /// Its handler routes.
         routes: Vec<Route>,
         /// Its built-in response, for a native control node.
-        control: Option<Control>,
+        control: Option<Box<Control>>,
     },
     /// A nested region, by index into [`ViewRegions::regions`]; it counts as one
     /// child of the node it sits in.
@@ -300,7 +300,7 @@ pub fn mount_regions(
             .flat_map(|region| &region.arms)
             .flat_map(|arm| &arm.items)
             .filter_map(|item| match item {
-                ItemTemplate::Node { control, .. } => control.as_ref(),
+                ItemTemplate::Node { control, .. } => control.as_deref(),
                 _ => None,
             });
         let mut styled = false;
@@ -852,7 +852,7 @@ impl Patch<'_, '_> {
                         self.host,
                         id,
                         routes,
-                        control.clone(),
+                        control.as_deref().cloned(),
                         &frag.scope,
                     );
                 }
@@ -1089,7 +1089,7 @@ impl Patch<'_, '_> {
                     self.host,
                     id,
                     routes,
-                    control.clone(),
+                    control.as_deref().cloned(),
                     &frag_scope,
                 );
                 routed.push((id, index as u32));
@@ -1097,7 +1097,8 @@ impl Patch<'_, '_> {
             if let Some(control) = control
                 && let Ok(mut host) = self.host.try_borrow_mut()
             {
-                let mut node = Shown::new(id, control.clone(), frag_scope.clone(), &host, self.cx);
+                let control = Control::clone(control);
+                let mut node = Shown::new(id, control, frag_scope.clone(), &host, self.cx);
                 node.deliver(self.cx, &mut host);
                 shown.push(node);
             }
@@ -1796,7 +1797,7 @@ impl Decode for ViewRegions {
                                 routes.push(Route::decode(dec)?);
                             }
                             let control = if dec.read_bool()? {
-                                Some(Control::decode(dec)?)
+                                Some(Box::new(Control::decode(dec)?))
                             } else {
                                 None
                             };
@@ -2017,7 +2018,7 @@ mod tests {
                             node: node(AotNodeKind::Leaf, 0),
                             edges: vec![],
                             routes: vec![],
-                            control: Some(Control::new(crate::ControlKind::Toggle)),
+                            control: Some(Box::new(Control::new(crate::ControlKind::Toggle))),
                         }],
                     }],
                 },

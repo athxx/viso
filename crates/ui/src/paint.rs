@@ -336,6 +336,7 @@ fn translate_cmd(cmd: PathCmd, dx: f32, dy: f32) -> PathCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::asset::AssetBytes;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
     use crate::dirty::DirtyClass;
     use crate::layout::{Axis, Size};
@@ -1234,9 +1235,13 @@ mod tests {
         };
         let (a, b, c) = (a.unwrap(), b.unwrap(), c.unwrap());
         let r1 = ResourceRevision(1);
-        store.assets_mut().offer(logo, r1, Arc::from(&b"png"[..]));
+        store
+            .assets_mut()
+            .offer(logo, r1, AssetBytes::Static(b"png"));
         let offered = store.assets().revision();
-        store.assets_mut().offer(logo, r1, Arc::from(&b"png"[..]));
+        store
+            .assets_mut()
+            .offer(logo, r1, AssetBytes::Static(b"png"));
         assert_eq!(store.assets().revision(), offered, "the same bytes again");
         store.set_asset(a, logo, AssetFit::Fill, None);
         store.set_asset(b, logo, AssetFit::Contain, None);
@@ -1297,6 +1302,10 @@ mod tests {
         store.clear_dirty();
         let first = TextureId::new(1);
         assert_eq!(store.attach_texture(logo, r1, first), None);
+        assert!(
+            store.assets().payload(logo).is_none(),
+            "the texture holds the pixels now"
+        );
         assert_eq!(store.dirty(a), DirtyClass::PAINT);
         assert_eq!(store.dirty(c), DirtyClass::EMPTY);
         let drawn = images(&layout(&mut store));
@@ -1346,6 +1355,14 @@ mod tests {
         store.provide_asset(logo, r3, raster(10, 10));
         store.attach_texture(logo, r3, TextureId::new(3));
         assert_eq!(store.dirty(a), DirtyClass::PAINT);
+        store.clear_dirty();
+        store.provide_asset(logo, r2, raster(30, 30));
+        assert_eq!(
+            store.dirty(a),
+            DirtyClass::EMPTY,
+            "older than the resident one"
+        );
+        assert!(store.assets().payload(logo).is_none());
 
         // A vector draws as soon as it is decoded, cover cropped to the box.
         let scene = Arc::new(VectorScene {

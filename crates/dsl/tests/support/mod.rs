@@ -12,7 +12,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use viso_behavior::native::Timers;
-use viso_dsl::aot::build_view_package;
+use viso_dsl::aot::{build_view_package, build_view_package_for};
 use viso_dsl::frontend::{Compiled, Origin, compile_file, compile_file_for};
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
 use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
@@ -164,9 +164,19 @@ impl Rt {
     /// `source` loaded from its release package, with the test clock.
     pub fn packaged(source: &str) -> Self {
         let blob = build_view_package(source, &origin()).expect("packages");
+        Rt::load(&blob)
+    }
+
+    /// `source` loaded from its release package built for `profile`.
+    pub fn packaged_for(source: &str, profile: TargetProfile) -> Self {
+        let blob = build_view_package_for(source, &origin(), profile).expect("packages");
+        Rt::load(&blob)
+    }
+
+    fn load(blob: &[u8]) -> Self {
         let mut rt = Rt::default();
         let view = load_view(
-            &blob,
+            blob,
             &mut rt.store,
             &mut rt.states,
             &mut rt.bindings,

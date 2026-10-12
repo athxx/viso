@@ -1,16 +1,20 @@
 //! The release form of a view with behavior: its UI package, its behavior
-//! module, and the tables that join them, loaded with no compiler present.
+//! module, the tables that join them and the bytes of the assets it shows,
+//! loaded with no compiler present.
 
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 use viso_ui::adaptive::EnvField;
 use viso_ui::aot::{AotPackage, instantiate_indexed};
+use viso_ui::resource::ResourceId;
 use viso_ui::state::StateKey;
 use viso_ui::{
-    BindingTable, EffectStore, NodeId, NodeStore, StateStore, StateValue, StructureCx, VirtualLists,
+    AssetBytes, BindingTable, EffectStore, NodeId, NodeStore, StateStore, StateValue, StructureCx,
+    VirtualLists,
 };
 
 use crate::attach::{Route, attach_node};
@@ -42,6 +46,16 @@ pub struct ViewPackage {
     pub regions: ViewRegions,
     /// The `env` fields the view's static instances read.
     pub env: Vec<ViewEnv>,
+    /// The assets the view can show, ascending by resource.
+    pub assets: Vec<ViewAsset>,
+}
+
+/// An asset a view can show: its resource and encoded bytes, decoded only
+/// when a node shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewAsset {
+    pub id: ResourceId,
+    pub bytes: AssetBytes,
 }
 
 /// An `env` field a view reads.
@@ -171,6 +185,7 @@ pub fn instantiate_view_with(
     } else {
         let mut host = ViewHost::from_bytes(&package.behavior, &package.component)
             .map_err(ViewLoadError::Host)?;
+        host.set_assets(package.assets.iter().map(|a| (a.id, a.bytes.clone())));
         setup(&mut host);
         Some(host)
     };
@@ -347,6 +362,11 @@ impl Encode for ViewPackage {
             enc.write_u8(env.field.tag());
             enc.write_varint(u64::from(env.anchor));
         }
+        enc.write_varint(self.assets.len() as u64);
+        for asset in &self.assets {
+            enc.write_u64(asset.id.0);
+            enc.write_bytes(&asset.bytes);
+        }
     }
 }
 
@@ -403,6 +423,17 @@ impl Decode for ViewPackage {
                 anchor,
             });
         }
+        let count = dec.read_varint()?;
+        let mut assets = Vec::with_capacity(bounded_capacity(count));
+        for _ in 0..count {
+            let offset = dec.position();
+            let id = ResourceId(dec.read_u64()?);
+            if assets.last().is_some_and(|a: &ViewAsset| a.id >= id) {
+                return Err(DecodeError::Malformed { offset });
+            }
+            let bytes = AssetBytes::Shared(Arc::from(dec.read_bytes()?));
+            assets.push(ViewAsset { id, bytes });
+        }
         Ok(ViewPackage {
             ui,
             behavior,
@@ -412,6 +443,7 @@ impl Decode for ViewPackage {
             controls,
             regions,
             env,
+            assets,
         })
     }
 }
@@ -447,16 +479,40 @@ mod tests {
                 field: EnvField::SizeClass,
                 anchor: 0,
             }],
+            assets: Vec::new(),
         };
         let bytes = package.encode_to_vec();
-        assert_eq!(ViewPackage::decode_from_slice(&bytes), Ok(package));
+        assert_eq!(ViewPackage::decode_from_slice(&bytes), Ok(package.clone()));
         let mut bad = bytes.clone();
-        let env = 4;
-        let route = bytes.len() - env - 3 - ViewRegions::default().encode_to_vec().len();
+        let (env, assets) = (4, 1);
+        let route = bytes.len() - assets - env - 3 - ViewRegions::default().encode_to_vec().len();
         bad[route] = 99;
         assert!(ViewPackage::decode_from_slice(&bad).is_err());
         let mut bad = bytes.clone();
-        bad[bytes.len() - 2] = 13;
+        bad[bytes.len() - assets - 2] = 13;
         assert!(ViewPackage::decode_from_slice(&bad).is_err());
+
+        let mut with_assets = package;
+        with_assets.assets = vec![
+            ViewAsset {
+                id: ResourceId(3),
+                bytes: AssetBytes::Static(b"\x89PNG"),
+            },
+            ViewAsset {
+                id: ResourceId(9),
+                bytes: AssetBytes::Shared(Arc::from(&b"<svg/>"[..])),
+            },
+        ];
+        let bytes = with_assets.encode_to_vec();
+        assert_eq!(
+            ViewPackage::decode_from_slice(&bytes),
+            Ok(with_assets.clone())
+        );
+        for end in 0..bytes.len() {
+            assert!(ViewPackage::decode_from_slice(&bytes[..end]).is_err());
+        }
+        // Resources out of order.
+        with_assets.assets.swap(0, 1);
+        assert!(ViewPackage::decode_from_slice(&with_assets.encode_to_vec()).is_err());
     }
 }

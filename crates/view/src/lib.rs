@@ -53,8 +53,8 @@ pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value
 #[cfg(feature = "hot-reload")]
 pub use mounts::{__mounted_view, MountRecord, take_mounts};
 pub use package::{
-    LoadedView, ViewControl, ViewEnv, ViewHandler, ViewLoadError, ViewPackage, ViewState,
-    instantiate_view, instantiate_view_with, load_view, load_view_with,
+    LoadedView, ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewLoadError, ViewPackage,
+    ViewState, instantiate_view, instantiate_view_with, load_view, load_view_with,
 };
 pub use persistence::{
     __load_persisted, __mount_persisted, install_persistence, take_persist_reports,

@@ -29,12 +29,13 @@
 //! compiler absent.
 
 use viso_ende::Encode;
+use viso_ui::AssetBytes;
 use viso_ui::aot::{
     AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotScope, AotStyle,
 };
 use viso_ui::state::StateKey;
 use viso_ui::{LengthTerms, NodeLengths, StateValue};
-use viso_view::{ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewState};
+use viso_view::{ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewState};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
@@ -69,17 +70,62 @@ pub fn build_view_package(source: &str, origin: &Origin) -> Result<Vec<u8>, Vec<
 
 /// [`build_view_package`] checked against `profile`, the grants of the
 /// package it belongs to among them.
+///
+/// The package carries the bytes of every asset the view names, read from the
+/// profile's asset directory; one that cannot be read is an `E3713`.
 pub fn build_view_package_for(
     source: &str,
     origin: &Origin,
     profile: TargetProfile,
 ) -> Result<Vec<u8>, Vec<Diagnostic>> {
+    let dir = profile
+        .assets
+        .as_ref()
+        .map(|catalog| catalog.dir().to_owned());
     let plan = plan_view_for(source, origin, profile)?;
-    Ok(emit_view_package(&plan).encode_to_vec())
+    let mut package = emit_view_package(&plan);
+    if let Some(dir) = dir {
+        package.assets = package_assets(&plan, &dir).map_err(|(path, error)| {
+            vec![Diagnostic::error(
+                crate::hir::infer::asset::ASSET,
+                crate::syntax::TextRange::empty(0.into()),
+                format!("cannot read `assets/{path}`: {error}"),
+            )]
+        })?;
+    }
+    Ok(package.encode_to_vec())
+}
+
+/// The encoded bytes of every asset `plan` names, read from `dir`, the
+/// package's asset directory, ascending by resource.
+///
+/// # Errors
+///
+/// The path of an asset that cannot be read, and why.
+pub fn package_assets(
+    plan: &CandidatePlan,
+    dir: &std::path::Path,
+) -> Result<Vec<ViewAsset>, (String, std::io::Error)> {
+    let mut assets: Vec<ViewAsset> = plan
+        .assets
+        .iter()
+        .map(|asset| {
+            let bytes = std::fs::read(dir.join(&asset.path))
+                .map_err(|error| (asset.path.clone(), error))?;
+            Ok(ViewAsset {
+                id: asset.id,
+                bytes: AssetBytes::Shared(bytes.into()),
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    assets.sort_unstable_by_key(|asset| asset.id);
+    assets.dedup_by_key(|asset| asset.id);
+    Ok(assets)
 }
 
 /// Lower a validated [`CandidatePlan`] into a [`ViewPackage`]: [`emit_package`]'s
-/// tree, a cell per state, and the view's behavior and regions.
+/// tree, a cell per state, and the view's behavior and regions. The assets'
+/// bytes are not read here: see [`package_assets`].
 ///
 /// A state with a constant scalar initializer holds its value; any other state
 /// of the component holds a revision (see [`ViewState::tracked`]). A handler
@@ -150,6 +196,7 @@ pub fn emit_view_package(plan: &CandidatePlan) -> ViewPackage {
         controls,
         regions: view.regions.clone(),
         env,
+        assets: Vec::new(),
     }
 }
 

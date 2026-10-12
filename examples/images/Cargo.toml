@@ -1,0 +1,15 @@
+[package]
+name = "viso-example-images"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A photo and an icon from `assets/`, named in `.vs` with `asset("…")`, checked
+# when the crate compiles and embedded in the binary.
+[dependencies]
+viso = { workspace = true }
+# `view!` expands to paths in these crates; the facade does not re-export
+# them under the names the expansion uses yet.
+viso-ui = { workspace = true }
+viso-view = { workspace = true }
