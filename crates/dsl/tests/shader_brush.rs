@@ -208,3 +208,98 @@ export component Pair {{
     );
     assert_eq!(codes(&twice), ["E8107"; 4]);
 }
+
+/// A shader using every construct a program holds: a record, a `fn`, a
+/// varying, the fragment's builtin, a loop, branches, swizzles, an index, a
+/// conversion and a discard.
+const EVERY: &str = "@shader_value
+record Light { position: Vec2F32; strength: F32; }
+
+shader Every {
+    uniform viewport_size: Vec2F32;
+    uniform light: Light;
+    uniform mode: I32;
+    instance rect_pos: Vec2F32;
+    instance rect_size: Vec2F32;
+    instance tint: ColorLinear;
+    varying local: Vec2F32;
+    varying band: U32;
+
+    fn falloff(d: F32, k: F32) -> F32 {
+        return clamp(1.0 - d * k, 0.0, 1.0);
+    }
+
+    vertex(vertex_id: U32, instance_id: U32) -> VertexOutput {
+        let unit = quad_vertex(vertex_id);
+        local = unit * rect_size;
+        band = instance_id % 3u32;
+        return VertexOutput {
+            clip_position: to_clip(rect_pos + local, viewport_size),
+        };
+    }
+
+    fragment(frag_coord: Vec4F32) -> Vec4F32 {
+        let mut sum = 0.0;
+        for i in 0..4 { sum += falloff(distance(local, light.position), 0.01) * 0.25; }
+        let k = match mode { 0 | 1 => 0.25, 2 => 0.5, _ => 1.0 };
+        let g = if k > 0.4 { k } else { -k };
+        if frag_coord.x < 0.0 { discard(); }
+        let c = tint.to_vec4();
+        let lane = c[band];
+        let rgb = c.rgb * sum * light.strength;
+        let flip = if !(mode == 1) { 1.0 } else { 0.0 };
+        let n = (band as F32) + lane + g + flip;
+        return Vec4F32(rgb, c.a * fract(n));
+    }
+}";
+
+#[test]
+fn a_program_and_a_packed_brush_round_trip_through_the_package_codec() {
+    use viso_ende::{Decode, Encode};
+    use viso_shader::program::{PackedBrush, PackedCode, Program, ShaderLang};
+
+    let compiled = compile_file(EVERY, &origin());
+    let errors: Vec<_> = compiled.errors().collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let program = compiled.shaders[0].program.clone().expect("a program");
+    let bytes = program.encode_to_vec();
+    assert_eq!(Program::decode_from_slice(&bytes).unwrap(), program);
+
+    let source = painting(&brush("Ripple", RIPPLE_MEMBERS), RIPPLE);
+    let compiled = compile_file(&source, &origin());
+    let shader = &compiled.shaders[0];
+    let (program, layout) = (
+        shader.program.as_ref().unwrap(),
+        shader.brush.clone().unwrap(),
+    );
+    for lang in [
+        ShaderLang::None,
+        ShaderLang::Msl,
+        ShaderLang::Wgsl,
+        ShaderLang::Hlsl,
+    ] {
+        let packed = PackedBrush::pack(program, layout.clone(), lang).unwrap();
+        assert_eq!(packed.lang(), lang);
+        let bytes = packed.encode_to_vec();
+        assert_eq!(PackedBrush::decode_from_slice(&bytes).unwrap(), packed);
+        assert_eq!(packed.unpack().lang(), lang);
+        // Every truncation is an error, never a panic.
+        for end in 0..bytes.len() {
+            assert!(PackedBrush::decode_from_slice(&bytes[..end]).is_err());
+        }
+    }
+    assert!(matches!(
+        PackedBrush::pack(program, layout.clone(), ShaderLang::SpirV),
+        Err(e) if e.contains("spirv")
+    ));
+
+    // A CPU brush whose layout is not its program's own is refused.
+    let mut packed = PackedBrush::pack(program, layout, ShaderLang::None).unwrap();
+    packed.layout.params[0].offset += 4;
+    assert!(PackedBrush::decode_from_slice(&packed.encode_to_vec()).is_err());
+    let PackedCode::Program(p) = &mut packed.code else {
+        unreachable!()
+    };
+    p.instance[0].ty = viso_shader::program::Ty::Color;
+    assert!(PackedBrush::decode_from_slice(&packed.encode_to_vec()).is_err());
+}

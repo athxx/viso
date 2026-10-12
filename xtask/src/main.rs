@@ -208,11 +208,13 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 deps: &["viso-gpu"],
             },
         ),
+        // `viso-ende` is the codec a view package carries a brush's layout
+        // and code in. Leaf edge, no cycle.
         (
             "viso-shader",
             Allowed {
                 dir: "crates/shader",
-                deps: &["viso-gpu"],
+                deps: &["viso-gpu", "viso-ende"],
             },
         ),
         (

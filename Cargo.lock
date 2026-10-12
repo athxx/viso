@@ -2715,6 +2715,7 @@ name = "viso-shader"
 version = "0.0.0"
 dependencies = [
  "naga",
+ "viso-ende",
  "viso-gpu",
 ]
 

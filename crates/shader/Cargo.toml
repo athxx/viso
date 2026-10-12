@@ -10,6 +10,8 @@ rust-version.workspace = true
 # but does NOT share a runtime VM with it.
 [dependencies]
 viso-gpu = { workspace = true }
+# The codec a view package carries a brush's layout and code in.
+viso-ende = { workspace = true }
 # The reference WGSL front end and SPIR-V writer: a program's Vulkan code.
 # Only the tools that generate a program's code at build time and in the dev
 # host enable it; no runtime crate links it.

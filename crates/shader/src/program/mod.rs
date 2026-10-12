@@ -10,13 +10,15 @@
 //!
 //! - [`ty`] — the closed type set;
 //! - [`ops`] — the operators and intrinsics, and the types they take;
-//! - [`brush`] — the profile of a program that paints a node's box.
+//! - [`brush`] — the profile of a program that paints a node's box;
+//! - [`package`] — a brush built for one backend, as a view package carries it.
 
 pub mod brush;
 pub mod codegen;
 pub mod interp;
 pub mod layout;
 pub mod ops;
+pub mod package;
 pub mod reload;
 pub mod ty;
 mod validate;
@@ -30,6 +32,7 @@ pub use layout::{
     Interpolation, LAYOUT_VERSION, ShaderInterface, VERTEX_ENTRY,
 };
 pub use ops::{BinaryOp, Intrinsic, StageUse, UnaryOp};
+pub use package::{PackedBrush, PackedCode, ProgramCode, ShaderLang};
 pub use reload::{Live, Migration, ProgramReload, ReloadError, ReloadEvent, Swap};
 pub use ty::{Scalar, Texel, Ty};
 pub use validate::ProgramError;

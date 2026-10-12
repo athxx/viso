@@ -623,6 +623,13 @@ on it.
       brush profile's breaks (`E8107`) are reported once per shader, only when a
       view paints with it, pointing at the first such view
       (`dsl/tests/shader_brush.rs`); DSL §100 and Rendering §27.2 updated.
+- [x] Package codec: `PackedBrush { name, layout, code: PackedCode }`
+      (`shader/src/program/package.rs`) — a brush built for one backend at package
+      time: MSL/WGSL/HLSL text, SPIR-V bytes, or the program itself for the
+      reference interpreter; ende codecs for `Program`, `BrushLayout` and
+      `PackedBrush`, nesting bounded, a decoded CPU program revalidated and its
+      layout required to be its own; `unpack` gives the `ProgramCode` without
+      generating anything.
 - [ ] View and package: the plan names each `ShaderView`'s shader by `ShaderId`; the
       macro, the release package and the dev plan carry the view's shaders (layout,
       the target backend's code generated at build time, the program for the CPU
