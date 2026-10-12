@@ -748,8 +748,12 @@ on it.
       program reported once. `content_hash` moved to `viso-ende`. Tests:
       `dsl/tests/view_shaders.rs`, `viso/tests/dsl_shaders.rs`,
       `viso::shaders::tests`, `ui::shader::tests`.
-- [ ] Example `10-custom-shader` and an end-to-end test: a `.vs` `ShaderView` drawn
-      headless against the reference interpreter and on Metal.
+- [x] Example `10-custom-shader` and an end-to-end test: a `.vs` `ShaderView` drawn
+      headless against the reference interpreter and on Metal — a `Ripple` brush
+      whose rings a slider drives through a state; the headless picture is checked
+      at the box's center, edge and the gap below it, a slider click repaints it,
+      and Metal matches the interpreter within 2/255
+      (`examples/10-custom-shader`).
 - [ ] `uniform time: F32` with continuous repaint while a time-reading shader is on
       screen (makepad's `uses_time`), measured.
 - [ ] Texture and sampler parameters.

@@ -1,0 +1,16 @@
+[package]
+name = "viso-example-10-custom-shader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A `.vs` shader painting a box: the shader's name heads a record of its
+# parameters, a `ShaderView` paints with one, and a slider drives a parameter
+# through a state. The build packs the shader for the target's backend.
+[dependencies]
+viso = { workspace = true }
+# `view!` expands to paths in these crates; the facade does not re-export
+# them under the names the expansion uses yet.
+viso-ui = { workspace = true }
+viso-view = { workspace = true }

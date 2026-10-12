@@ -314,6 +314,10 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         one resolves `%` to `0`.
   - [x] Each is reported once per node and kind through
         `take_length_warnings` in debug builds; `length_stats` always counts.
+- [ ] Container `padding`: a constant or bound `padding` on `Column`/`Row`/`Stack`
+      pads its content through the flex style, across the macros, hot reload and the
+      release package. Today it compiles and is dropped at runtime; a layout property
+      no lowering reads is a diagnostic, never silent.
 
 ### D2.6 — Animation (§U6)
 

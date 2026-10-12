@@ -1,0 +1,52 @@
+import viso::math::Vec2F32;
+
+// Rings of `tint` around `center`, `rings` of them across the box, fading
+// out toward its edge.
+shader Ripple {
+    uniform viewport_size: Vec2F32;
+    instance rect_pos: Vec2F32;
+    instance rect_size: Vec2F32;
+    instance tint: ColorLinear;
+    instance rings: F32;
+    instance center: Vec2F32;
+    varying local: Vec2F32;
+
+    vertex(vertex_id: U32) -> VertexOutput {
+        let unit = quad_vertex(vertex_id);
+        local = unit;
+        return VertexOutput {
+            clip_position: to_clip(rect_pos + unit * rect_size, viewport_size),
+        };
+    }
+
+    fragment() -> ColorLinear {
+        let d = distance(local, center);
+        let wave = 0.5 + 0.5 * cos(d * rings * 6.2831855);
+        let fade = 1.0 - smoothstep(0.3, 0.5, d);
+        let k = wave * fade;
+        return ColorLinear(tint.r * k, tint.g * k, tint.b * k, 1.0);
+    }
+}
+
+component Ripples {
+    state rings: F32 = 6.0;
+    view {
+        Column {
+            width: 288dp;
+            height: 328dp;
+            gap: 16dp;
+            ShaderView {
+                shader: Ripple { tint: #3366ff, rings: rings, center: Vec2F32::new(0.5, 0.5) };
+                width: 288dp;
+                height: 288dp;
+            }
+            Slider {
+                min: 1.0;
+                max: 16.0;
+                bind value <=> rings;
+                width: 288dp;
+                height: 24dp;
+            }
+        }
+    }
+}
