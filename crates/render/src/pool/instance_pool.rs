@@ -202,6 +202,18 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
         writes
     }
 
+    /// Destroy the device buffer through the backend's deferred-destruction
+    /// path and forget every slot, leaving the pool as [`new`](Self::new) made
+    /// it.
+    pub fn release<B: GpuBackend>(&mut self, backend: &mut B) {
+        if let Some(buffer) = self.buffer.take() {
+            backend.destroy_buffer(buffer);
+        }
+        self.capacity = 0;
+        self.shadow.clear();
+        self.last_upload_bytes = 0;
+    }
+
     /// Grow the device buffer to hold at least `needed` elements, retiring the
     /// old buffer through the backend's deferred-destruction path.
     ///

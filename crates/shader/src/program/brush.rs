@@ -18,6 +18,8 @@
 //! ([`BrushLayout::set`]); a draw copies the instance and places the box in
 //! it ([`BrushLayout::place`]).
 
+use viso_gpu::ProgramAbi;
+
 use super::layout::{FieldDescriptor, ShaderInterface};
 use super::{EncodeError, Program, ProgramError, Span, Ty};
 
@@ -310,6 +312,17 @@ impl BrushLayout {
         }
     }
 
+    /// The program's interface as the GPU backends bind it.
+    pub fn abi(&self) -> ProgramAbi {
+        ProgramAbi {
+            instance_stride: self.stride,
+            uniform_size: self.uniform_size,
+            textures: 0,
+            samplers: 0,
+            vertex_textures: false,
+        }
+    }
+
     /// The index of the parameter `name`.
     pub fn param(&self, name: &str) -> Option<usize> {
         self.params.iter().position(|p| &*p.name == name)
@@ -491,6 +504,7 @@ mod tests {
         assert!(l.set(&mut bytes, 5, ParamValue::F32(2.0)).is_err(), "index");
         assert!(l.encode(&values[..4], &mut bytes).is_err(), "count");
 
+        assert_eq!(l.abi(), interface.abi());
         let mut uniforms = vec![0; l.uniform_size as usize];
         l.write_uniforms(&mut uniforms, [640.0, 480.0]);
         assert_eq!(

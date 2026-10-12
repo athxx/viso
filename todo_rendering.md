@@ -3102,3 +3102,23 @@ mechanism test still passes.
 - [x] Verified: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
     -- -D warnings`, `cargo xtask check-deps` (18 crates), `cargo test --workspace`,
       `cargo bench -p viso-render -- --test`.
+
+---
+
+## Device scale — scissors and offscreen targets on a HiDPI surface
+
+The facade hands the renderer logical coordinates and a logical viewport
+(`viso/src/lib.rs`, `viewport = size / dpi`), which the projection maps onto the
+physical surface correctly; but `clip_to_scissor` turns a clip into a scissor in
+those logical units and the backends apply it in physical pixels (Metal clamps to
+the physical surface), and offscreen / blur / capture targets are sized from the
+same logical extents.
+
+- [ ] Reproduce on a scale-2 headless surface: a clipped quad and a translucent layer
+      drawn at `dpi = 2` against the same scene at `dpi = 1` scaled up.
+- [ ] Scissors in physical pixels: the renderer knows the surface's device scale
+      (`set_surface_size` gains it, or `submit` takes it) and scales clip rects into
+      the scissor; offscreen, blur and capture targets allocate physical texels, their
+      composites sample them at the same scale.
+- [ ] Goldens at scale 2 on headless and Metal; counters (`transient_target_bytes`)
+      report physical bytes.

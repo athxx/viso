@@ -13,6 +13,8 @@
 //! `create_pipeline` validates the derived layout against the schema, so a
 //! mismatch is caught at pipeline-registration time.
 
+use std::sync::Arc;
+
 use crate::blend::Blend;
 use crate::color_effect::{ColorEffect, ColorOp};
 use viso_gpu::{AddressMode, FilterMode, GpuPod, SamplerDesc, TextureId};
@@ -1869,6 +1871,29 @@ pub struct Mesh {
     pub indices: Vec<u32>,
 }
 
+/// A user program's slot in a [`Renderer`](crate::Renderer): where
+/// [`Renderer::set_program`](crate::Renderer::set_program) installs it and a
+/// [`ShaderDraw`] names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ProgramSlot(pub u32);
+
+/// A box painted by a user program of the brush profile.
+///
+/// `params` is one instance of the program with its parameters encoded
+/// (`BrushLayout::encode`); the renderer copies it, writes the box into its
+/// `rect_pos`/`rect_size` — in the space of the target it draws into, so an
+/// offscreen layer's origin is already subtracted — and the target's size into
+/// `viewport_size`. Shared, so re-emitting an unchanged node clones a pointer.
+///
+/// The program's output is opaque to the renderer, so a group opacity around it
+/// is never folded into it: the group renders offscreen instead.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShaderDraw {
+    pub rect: Rect,
+    pub program: ProgramSlot,
+    pub params: Arc<[u8]>,
+}
+
 /// Renderer-facing primitive. This expresses *only* what the renderer needs —
 /// it is neither a component nor a node. One node may emit several
 /// primitives; primitives of the same kind may batch into one draw call.
@@ -1906,6 +1931,8 @@ pub enum Primitive {
     Path(Path),
     /// A colored triangle mesh.
     Mesh(Mesh),
+    /// A box painted by a user program.
+    Shader(ShaderDraw),
     /// Push a clip/compositing layer. Following primitives are constrained to
     /// its clip (intersected with any enclosing layer's clip) until the matching
     /// [`Primitive::LayerEnd`]. A `LayerClip::opacity < 1` layer additionally

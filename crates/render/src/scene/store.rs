@@ -28,10 +28,12 @@
 //! produce (the diff either left the retained value in place, when equal, or
 //! overwrote it with the freshly lowered one, when changed).
 
+use std::sync::Arc;
+
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
     GlyphInstance, GlyphInstanceData, GradientInstance, ImageInstance, MeshVertex, Path,
-    PathGeometry, QuadInstance, Rect, Rgba, ShadowInstance,
+    PathGeometry, ProgramSlot, QuadInstance, Rect, Rgba, ShaderDraw, ShadowInstance,
 };
 
 use super::ids::{
@@ -716,6 +718,94 @@ impl GradientStore {
 
     /// The entry at `id`, or `None` if the slot is out of range.
     pub fn get(&self, id: GeometryId) -> Option<&GradientEntry> {
+        self.entries.get(id.index() as usize)
+    }
+
+    /// Number of live entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the store holds no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// A retained user-program draw: the box in world space (origin not yet
+/// subtracted), the program's slot, and the parameters encoded as one of its
+/// instances.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShaderEntry {
+    pub rect_pos: [f32; 2],
+    pub rect_size: [f32; 2],
+    pub program: ProgramSlot,
+    pub params: Arc<[u8]>,
+}
+
+/// Dense store of user-program draws (§8). The diff splits `rect_pos` →
+/// transform, `rect_size`/`program` → geometry, `params` → paint. An unchanged
+/// node re-emits the same shared `params`, so its diff is a pointer compare.
+#[derive(Debug, Default)]
+pub struct ShaderStore {
+    entries: Vec<ShaderEntry>,
+    cursor: usize,
+}
+
+impl ShaderStore {
+    /// Reset the cursor for a new frame, keeping entries to diff against.
+    pub fn begin_frame(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Trim entries the frame's walk did not revisit. Returns whether a trim
+    /// happened.
+    pub fn finish_frame(&mut self) -> bool {
+        if self.cursor < self.entries.len() {
+            self.entries.truncate(self.cursor);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Diff `draw` against the retained entry at the cursor and advance,
+    /// appending on cold growth. Returns the slot and the moved planes.
+    pub fn ingest(&mut self, draw: &ShaderDraw) -> (GeometryId, DirtyPlanes) {
+        let index = self.cursor;
+        let rect_pos = [draw.rect.x, draw.rect.y];
+        let rect_size = [draw.rect.w, draw.rect.h];
+        let dirty = if let Some(prev) = self.entries.get_mut(index) {
+            let paint = !Arc::ptr_eq(&prev.params, &draw.params) && prev.params != draw.params;
+            let dirty = DirtyPlanes {
+                transform: prev.rect_pos != rect_pos,
+                geometry: prev.rect_size != rect_size || prev.program != draw.program,
+                paint,
+                resource: false,
+                appended: false,
+            };
+            prev.rect_pos = rect_pos;
+            prev.rect_size = rect_size;
+            prev.program = draw.program;
+            if !Arc::ptr_eq(&prev.params, &draw.params) {
+                prev.params = Arc::clone(&draw.params);
+            }
+            dirty
+        } else {
+            self.entries.push(ShaderEntry {
+                rect_pos,
+                rect_size,
+                program: draw.program,
+                params: Arc::clone(&draw.params),
+            });
+            DirtyPlanes::APPENDED
+        };
+        self.cursor += 1;
+        (GeometryId::new(index as u32), dirty)
+    }
+
+    /// The entry at `id`, or `None` if the slot is out of range.
+    pub fn get(&self, id: GeometryId) -> Option<&ShaderEntry> {
         self.entries.get(id.index() as usize)
     }
 
@@ -1777,6 +1867,8 @@ pub enum StoreRef {
     Gradient(GeometryId),
     /// Slot in the [`AnalyticShadowStore`].
     AnalyticShadow(GeometryId),
+    /// Slot in the [`ShaderStore`].
+    Shader(GeometryId),
     /// Run slot in the [`GlyphRunStore`].
     GlyphRun(u32),
     /// Slot in the [`VectorPathStore`].
@@ -1822,6 +1914,7 @@ impl std::fmt::Display for StoreRef {
             StoreRef::Image(_) => write!(f, "image"),
             StoreRef::Gradient(_) => write!(f, "gradient"),
             StoreRef::AnalyticShadow(_) => write!(f, "analytic-shadow"),
+            StoreRef::Shader(_) => write!(f, "shader"),
             StoreRef::GlyphRun(_) => write!(f, "glyph-run"),
             StoreRef::Path(_) => write!(f, "path"),
             StoreRef::Mesh(_) => write!(f, "mesh"),

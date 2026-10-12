@@ -98,6 +98,10 @@ pub enum BatchFamily {
     /// rather than an [`Image`](BatchFamily::Image) variant because the fragment
     /// tints, grains and masks in one pass.
     Material,
+    /// Boxes painted by one user program, drawn instanced from that program's
+    /// own buffer. The program's slot is part of the key
+    /// ([`BatchKey::with_program`]), so only draws of one program merge.
+    Program,
 }
 
 impl BatchFamily {
@@ -119,6 +123,7 @@ impl BatchFamily {
             BatchFamily::AdvancedBlend => 11,
             BatchFamily::Material => 12,
             BatchFamily::MtsdfRun => 13,
+            BatchFamily::Program => 14,
         }
     }
 
@@ -139,6 +144,7 @@ impl BatchFamily {
             11 => Some(BatchFamily::AdvancedBlend),
             12 => Some(BatchFamily::Material),
             13 => Some(BatchFamily::MtsdfRun),
+            14 => Some(BatchFamily::Program),
             _ => None,
         }
     }
@@ -156,6 +162,8 @@ impl BatchFamily {
     /// icons or a page of text into a draw per atlas, which is the draw count a
     /// resource table would have reached with backend support this RHI does not
     /// need.
+    ///
+    /// A user program's boxes merge on the program: one pipeline, one buffer.
     ///
     /// The composite families stand alone regardless: a color transform, an
     /// advanced blend, and a material surface each carry per-draw state beyond
@@ -175,6 +183,7 @@ impl BatchFamily {
                 | BatchFamily::GlyphRun
                 | BatchFamily::MtsdfRun
                 | BatchFamily::Gradient
+                | BatchFamily::Program
         )
     }
 }
@@ -234,7 +243,8 @@ impl BatchTarget {
 /// | 24..48  | 24    | resource table       | bind-group index, or `0`  |
 /// | 48..50  | 2     | render target class  | surface/offscreen, or     |
 /// |         |       |                      | backdrop capture          |
-/// | 50..64  | 14    | reserved             | `0`                       |
+/// | 50..64  | 14    | program slot         | the [`BatchFamily::Program`] |
+/// |         |       |                      | draw's slot, or `0`       |
 ///
 /// The reserved fields carry the single class this renderer uses today; they
 /// exist in the layout so that adding blend modes, MSAA, or a depth pass later
@@ -252,6 +262,11 @@ impl BatchKey {
     const RESOURCE_MASK: u64 = 0xff_ffff; // 24 bits
     const TARGET_CLASS_SHIFT: u64 = 48;
     const TARGET_CLASS_MASK: u64 = 0b11;
+    const PROGRAM_SHIFT: u64 = 50;
+    const PROGRAM_MASK: u64 = 0x3fff; // 14 bits
+
+    /// The most program slots a key tells apart.
+    pub const PROGRAM_SLOTS: u32 = Self::PROGRAM_MASK as u32 + 1;
 
     /// Pack a key from the state a primitive fixes: its pipeline `family`, the
     /// pass `target` it draws into, and the `resource` bind group it binds (the
@@ -283,6 +298,22 @@ impl BatchKey {
                 | ((resource_field & Self::RESOURCE_MASK) << Self::RESOURCE_SHIFT)
                 | ((target.class() & Self::TARGET_CLASS_MASK) << Self::TARGET_CLASS_SHIFT),
         )
+    }
+
+    /// The key of a [`BatchFamily::Program`] draw of the program in `slot`.
+    ///
+    /// Panics in debug when `slot` is not below [`PROGRAM_SLOTS`](Self::PROGRAM_SLOTS),
+    /// which the renderer refuses to install into.
+    pub fn with_program(self, slot: u32) -> BatchKey {
+        debug_assert!(slot < Self::PROGRAM_SLOTS, "program slot exceeds its field");
+        let cleared = self.0 & !(Self::PROGRAM_MASK << Self::PROGRAM_SHIFT);
+        BatchKey(cleared | ((u64::from(slot) & Self::PROGRAM_MASK) << Self::PROGRAM_SHIFT))
+    }
+
+    /// The program-slot field: a program draw's slot, `0` for every other
+    /// family.
+    pub fn program_field(self) -> u64 {
+        (self.0 >> Self::PROGRAM_SHIFT) & Self::PROGRAM_MASK
     }
 
     /// The pipeline family this key selects.
@@ -358,6 +389,27 @@ mod tests {
     }
 
     #[test]
+    fn a_program_key_carries_its_slot() {
+        let key = BatchKey::pack(BatchFamily::Program, BatchTarget::Offscreen(2), None);
+        let a = key.with_program(5);
+        assert_eq!(a.family(), BatchFamily::Program);
+        assert_eq!(a.target_field(), 3);
+        assert_eq!(a.program_field(), 5);
+        assert_eq!(
+            a.with_program(9).program_field(),
+            9,
+            "a slot replaces the slot"
+        );
+        assert_ne!(a, key.with_program(6));
+        assert_eq!(
+            key.with_program(BatchKey::PROGRAM_SLOTS - 1)
+                .program_field(),
+            u64::from(BatchKey::PROGRAM_SLOTS - 1)
+        );
+        assert_eq!(key.program_field(), 0);
+    }
+
+    #[test]
     fn family_round_trips_through_the_key() {
         for family in [
             BatchFamily::Quad,
@@ -372,6 +424,7 @@ mod tests {
             BatchFamily::AnalyticShadow,
             BatchFamily::ColorTransform,
             BatchFamily::AdvancedBlend,
+            BatchFamily::Program,
         ] {
             let key = BatchKey::pack(family, BatchTarget::Main, None);
             assert_eq!(key.family(), family);

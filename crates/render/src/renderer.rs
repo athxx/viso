@@ -18,11 +18,13 @@ use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, IndexFormat, InlineUniforms, RenderPass, RenderTarget,
 };
 use viso_gpu::{
-    BindGroupDesc, Binding, BufferUsage, ColorDomain, ColorSpace, GpuBackend, LoadOp, PipelineDesc,
-    PipelineId, SamplerDesc, SurfaceId, TextureDesc, TextureFormat, TextureId,
+    BindGroupDesc, Binding, BlendMode, BufferUsage, ColorDomain, ColorSpace, GpuBackend, LoadOp,
+    PipelineDesc, PipelineId, ProgramCode, ProgramCompiler, ProgramDesc, SamplerDesc, SurfaceId,
+    TextureDesc, TextureFormat, TextureId,
 };
 use viso_gpu::{BindGroupId, SamplerId};
 
+use viso_shader::program::{BrushLayout, FRAGMENT_ENTRY, VERTEX_ENTRY};
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
 use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
@@ -40,8 +42,9 @@ use crate::primitive::{
     AdvancedBlendInstance, AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance,
     AnalyticRRectInstance, BlurInstance, ColorTransformInstance, GlyphInstance, GradientInstance,
     ImageInstance, MaterialInstance, MaterialLane, MeshVertex, NativeMaterialRegion, PathCmd,
-    Primitive, QuadInstance, Rect, ShadowInstance, rgba_array,
+    Primitive, ProgramSlot, QuadInstance, Rect, ShadowInstance, rgba_array,
 };
+use crate::program::{ProgramError, ProgramTable};
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
 use crate::scene::{EmitContext, PaintEntry, Scene};
@@ -225,6 +228,10 @@ pub(crate) enum SegmentKind {
     /// `bind_group`'s blurred backdrop. `start`/`count` count instances in that
     /// buffer.
     Material { bind_group: BindGroupId },
+    /// A run of adjacent boxes of the user program in `slot`, in that
+    /// program's buffer. `start` is a **byte** offset there, aligned to the
+    /// backend's program instance alignment; `count` counts instances.
+    Program { slot: ProgramSlot },
 }
 
 impl SegmentKind {
@@ -246,6 +253,15 @@ impl SegmentKind {
             SegmentKind::ColorTransform { .. } => BatchFamily::ColorTransform,
             SegmentKind::AdvancedBlend { .. } => BatchFamily::AdvancedBlend,
             SegmentKind::Material { .. } => BatchFamily::Material,
+            SegmentKind::Program { .. } => BatchFamily::Program,
+        }
+    }
+
+    /// The user program this kind draws, if it is one.
+    pub(crate) fn program(self) -> Option<ProgramSlot> {
+        match self {
+            SegmentKind::Program { slot } => Some(slot),
+            _ => None,
         }
     }
 
@@ -267,7 +283,8 @@ impl SegmentKind {
             | SegmentKind::AnalyticCapsule
             | SegmentKind::AnalyticLine
             | SegmentKind::AnalyticShadow
-            | SegmentKind::Mesh => None,
+            | SegmentKind::Mesh
+            | SegmentKind::Program { .. } => None,
         }
     }
 }
@@ -320,12 +337,16 @@ impl Segment {
     /// adjacent segments merge exactly when [`joins`] holds for their items —
     /// the single merge predicate every lowering and introspection site shares.
     fn batch_item(&self) -> BatchItem {
+        let key = BatchKey::pack(
+            self.kind.family(),
+            self.target.batch_target(),
+            self.kind.resource(),
+        );
         BatchItem {
-            key: BatchKey::pack(
-                self.kind.family(),
-                self.target.batch_target(),
-                self.kind.resource(),
-            ),
+            key: match self.kind.program() {
+                Some(slot) => key.with_program(slot.0),
+                None => key,
+            },
             clip: self.clip,
             mergeable: self.kind.family().mergeable(),
         }
@@ -781,6 +802,13 @@ pub struct FrameStats {
     pub quad_instances: u32,
     /// Glyph instances retained this frame, summed across runs (§61).
     pub glyph_instances: u32,
+    /// User-program boxes retained this frame (§61).
+    pub shader_instances: u32,
+    /// User-program draws dropped this frame because their slot held no
+    /// program for their parameters.
+    pub program_draws_dropped: u32,
+    /// User programs installed in the renderer.
+    pub programs: u32,
     /// Paths (re-)tessellated this frame — a geometry/paint change or a cold
     /// append; a cache hit does not count (§61).
     pub path_tessellations: u32,
@@ -1137,6 +1165,9 @@ pub struct Renderer {
     glyph_scratch: Vec<GlyphInstance>,
     /// Scratch gradient instance data, reused each frame.
     gradient_scratch: Vec<GradientInstance>,
+    /// The user programs installed, by slot, each with its own instance
+    /// buffer and scratch.
+    programs: ProgramTable,
     /// Scratch analytic soft-shadow instance data, reused each frame.
     analytic_shadow_scratch: Vec<ShadowInstance>,
     /// Scratch blur instance data, reused each frame: one [`BlurInstance`] per
@@ -1260,6 +1291,10 @@ pub struct Renderer {
     /// outside their pass's tight ROI (the clip excluded them), so their draw
     /// was skipped (§16.2). Read into `FrameStats::culled_primitives` (§61).
     culled_this_frame: u32,
+    /// Program draws this frame whose slot held no program for their
+    /// parameters, so they painted nothing. Read into
+    /// `FrameStats::program_draws_dropped`.
+    program_draws_dropped: u32,
     /// The surface's own color-attachment format — what every prewarmed pipeline
     /// was built against, so it is also the only format an offscreen pass can
     /// legally use (a pipeline is bound to its attachment format).
@@ -1848,6 +1883,7 @@ impl Renderer {
             image_scratch: Vec::with_capacity(64),
             glyph_scratch: Vec::with_capacity(256),
             gradient_scratch: Vec::with_capacity(64),
+            programs: ProgramTable::new(backend.caps().program_instance_align),
             analytic_shadow_scratch: Vec::with_capacity(256),
             blur_scratch: Vec::with_capacity(8),
             color_transform_scratch: Vec::with_capacity(8),
@@ -1877,6 +1913,7 @@ impl Renderer {
             color_space,
             intermediate_format: surface_format,
             culled_this_frame: 0,
+            program_draws_dropped: 0,
         }
     }
 
@@ -1886,6 +1923,89 @@ impl Renderer {
     /// ROIs clamp only to content and clip (no surface bound).
     pub fn set_surface_size(&mut self, surface_size: [f32; 2]) {
         self.surface_size = surface_size;
+    }
+
+    /// Installs `pipeline`, a brush-profile program laid out by `layout` and
+    /// built for this renderer's [`surface_format`](Self::surface_format)
+    /// with premultiplied source-over blending, in `slot`, where a
+    /// [`ShaderDraw`](crate::ShaderDraw) names it. A program already in the
+    /// slot is replaced and its pipeline destroyed once in-flight frames are
+    /// done with it. Call between frames.
+    ///
+    /// # Errors
+    ///
+    /// A slot past [`BatchKey::PROGRAM_SLOTS`], or a layout a draw cannot
+    /// carry; the slot is left as it was and `pipeline` stays the caller's.
+    pub fn set_program<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        slot: ProgramSlot,
+        pipeline: PipelineId,
+        layout: BrushLayout,
+    ) -> Result<(), ProgramError> {
+        self.programs.set(backend, slot, pipeline, layout)
+    }
+
+    /// Compiles `code`, a brush-profile program laid out by `layout`, on the
+    /// calling thread and installs it in `slot` as
+    /// [`set_program`](Self::set_program) does. A caller that compiles off the
+    /// render thread uses the backend's
+    /// [`program_compiler`](GpuBackend::program_compiler) and `set_program`.
+    ///
+    /// # Errors
+    ///
+    /// The compiler's or the driver's message, or what `set_program` refuses.
+    pub fn install_program<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        slot: ProgramSlot,
+        label: &str,
+        code: &ProgramCode,
+        layout: BrushLayout,
+    ) -> Result<(), ProgramError> {
+        let compiled = backend
+            .program_compiler()
+            .compile(&self.program_desc(label, code, &layout))
+            .map_err(ProgramError::Compile)?;
+        let pipeline = backend.install_program(compiled);
+        self.programs
+            .set(backend, slot, pipeline, layout)
+            .inspect_err(|_| backend.destroy_pipeline(pipeline))
+    }
+
+    /// What a backend builds a program of this renderer from: `code` laid out
+    /// by `layout`, drawn into the surface format, premultiplied source-over.
+    pub fn program_desc<'a>(
+        &self,
+        label: &'a str,
+        code: &'a ProgramCode,
+        layout: &BrushLayout,
+    ) -> ProgramDesc<'a> {
+        ProgramDesc {
+            label,
+            code,
+            vertex_entry: VERTEX_ENTRY,
+            fragment_entry: FRAGMENT_ENTRY,
+            color_format: self.surface_format,
+            blend: BlendMode::PremultipliedOver,
+            abi: layout.abi(),
+        }
+    }
+
+    /// Empties `slot`, destroying its program's pipeline and buffer once
+    /// in-flight frames are done with them; a draw naming it then paints
+    /// nothing. Whether it held a program. Call between frames.
+    pub fn release_program<B: GpuBackend>(&mut self, backend: &mut B, slot: ProgramSlot) -> bool {
+        let released = self.programs.release(backend, slot);
+        if released {
+            self.segments.retain(|seg| seg.kind.program() != Some(slot));
+        }
+        released
+    }
+
+    /// The pipeline installed in `slot`.
+    pub fn program_pipeline(&self, slot: ProgramSlot) -> Option<PipelineId> {
+        self.programs.get(slot).map(|(pipeline, _)| pipeline)
     }
 
     /// The color-attachment format every built-in pipeline was created against.
@@ -2224,6 +2344,7 @@ impl Renderer {
         self.mask_cache.begin_frame();
         self.mask_builds_this_frame = 0;
         self.culled_this_frame = 0;
+        self.program_draws_dropped = 0;
         self.blend_isolations = 0;
         self.layer_plans.clear();
         self.layers_planned = 0;
@@ -2473,6 +2594,19 @@ impl Renderer {
                     }
                     self.scene
                         .ingest_path(path, ctx, crate::scene::bounds::Bounds::default());
+                }
+                Primitive::Shader(draw) => {
+                    // A slot holding no program for these parameters paints
+                    // nothing. The layer planner never folds a group opacity
+                    // into a program's output, so `fold` is 1 here.
+                    debug_assert!(fold >= 1.0, "a program draw is never folded");
+                    if !self.programs.draws(draw.program, &draw.params) {
+                        self.program_draws_dropped += 1;
+                        continue;
+                    }
+                    let bounds =
+                        crate::scene::bounds::Bounds::from_world(draw.rect, clip, 0.0, 0.0);
+                    self.scene.ingest_shader(draw, ctx, bounds);
                 }
                 Primitive::Mesh(mesh) => {
                     self.scene.ingest_mesh(
@@ -2890,6 +3024,8 @@ impl Renderer {
                 .mesh_vertex_pool
                 .sync(backend, &self.mesh_vertex_scratch)
             + self.mesh_index_pool.sync(backend, &self.mesh_index_scratch);
+        let (program_ranges, program_bytes) = self.programs.sync(backend);
+        self.uploaded_ranges += program_ranges;
 
         // Sum the bytes each pool actually handed to the backend this frame into
         // the frame-scoped upload counter (§61). A steady frame that changed no
@@ -2909,7 +3045,8 @@ impl Renderer {
             + self.advanced_blend_pool.last_upload_bytes()
             + self.material_pool.last_upload_bytes()
             + self.mesh_vertex_pool.last_upload_bytes()
-            + self.mesh_index_pool.last_upload_bytes();
+            + self.mesh_index_pool.last_upload_bytes()
+            + program_bytes;
     }
 
     /// Lower the retained scene to this frame's instance scratch + submission-
@@ -2937,6 +3074,7 @@ impl Renderer {
         self.material_scratch.clear();
         self.mesh_vertex_scratch.clear();
         self.mesh_index_scratch.clear();
+        self.programs.begin_lowering();
         self.segments.clear();
 
         // Take the paint-order record so the store/backend borrows below do not
@@ -3171,6 +3309,30 @@ impl Renderer {
                     clip,
                     target,
                 });
+            }
+            StoreRef::Shader(id) => {
+                let e = self.scene.shaders.get(id).expect("shader slot");
+                let segment = Segment {
+                    kind: SegmentKind::Program { slot: e.program },
+                    start: 0,
+                    count: 1,
+                    clip,
+                    target,
+                };
+                // A draw that joins the previous one extends its run; any other
+                // opens an aligned run of its own.
+                let extends = self
+                    .segments
+                    .last()
+                    .is_some_and(|prev| joins(&prev.batch_item(), &segment.batch_item()));
+                let pos = [e.rect_pos[0] - origin[0], e.rect_pos[1] - origin[1]];
+                let Some(start) =
+                    self.programs
+                        .push(e.program, extends, &e.params, pos, e.rect_size)
+                else {
+                    return;
+                };
+                self.merge_or_push(Segment { start, ..segment });
             }
             StoreRef::AnalyticShadow(id) => {
                 let mut inst = self
@@ -3535,9 +3697,12 @@ impl Renderer {
         // first draw is a switch on entry from the cleared state.
         let mut pipeline_switches = 0u32;
         let mut texture_binding_switches = 0u32;
-        let mut prev: Option<(BatchFamily, Option<BindGroupId>)> = None;
+        // A program draw's pipeline is its program's, so two programs side by
+        // side switch pipelines though they share a family.
+        type Pipeline = (BatchFamily, Option<ProgramSlot>);
+        let mut prev: Option<(Pipeline, Option<BindGroupId>)> = None;
         for seg in &self.segments {
-            let family = seg.kind.family();
+            let family = (seg.kind.family(), seg.kind.program());
             let binding = seg.kind.resource();
             match prev {
                 None => {
@@ -3630,6 +3795,9 @@ impl Renderer {
             clip_mask_builds: self.mask_builds_this_frame,
             // Offscreen children the tight ROI excluded this frame (§16.2).
             culled_primitives: self.culled_this_frame,
+            shader_instances: ingest.shader_instances,
+            program_draws_dropped: self.program_draws_dropped,
+            programs: self.programs.installed() as u32,
             // Counters no stage below D0 lights up yet; meaning fixed, value 0.
             instance_rebuilds: 0,
             gpu_upload_bytes: self.gpu_upload_bytes,
@@ -3667,6 +3835,40 @@ impl Renderer {
     /// holds the frame just lowered.
     pub(crate) fn scene_snapshot(&self) -> &Scene {
         &self.scene
+    }
+
+    /// The user programs, for the introspection walks that replay where their
+    /// instances land.
+    pub(crate) fn program_table(&self) -> &ProgramTable {
+        &self.programs
+    }
+
+    /// The program a recorded entry draws and its instance stride, for a
+    /// user-program draw whose program is installed.
+    pub(crate) fn entry_program(&self, store: StoreRef) -> Option<(ProgramSlot, u32)> {
+        let StoreRef::Shader(id) = store else {
+            return None;
+        };
+        let slot = self.scene.shaders.get(id)?.program;
+        let (_, layout) = self.programs.get(slot)?;
+        Some((slot, layout.stride))
+    }
+
+    /// The batch key of a recorded entry of `family` drawing into `target`
+    /// and binding `resource`: the program's slot folded in for a program
+    /// draw, as [`Segment::batch_item`] folds it.
+    pub(crate) fn entry_key(
+        &self,
+        family: BatchFamily,
+        target: BatchTarget,
+        store: StoreRef,
+        resource: Option<BindGroupId>,
+    ) -> BatchKey {
+        let key = BatchKey::pack(family, target, resource);
+        match self.entry_program(store) {
+            Some((slot, _)) => key.with_program(slot.0),
+            None => key,
+        }
     }
 
     /// The resource a recorded paint-order entry samples, or `None` for the
@@ -4764,6 +4966,10 @@ impl Renderer {
             // A frosted material surface: the same generated quad, through the
             // pipeline that samples the shared blurred backdrop and applies the
             // whole §18 chain in one fragment (M0.1).
+            SegmentKind::Program { slot } => {
+                self.programs
+                    .command(slot, seg.start, seg.count, viewport, scissor)
+            }
             SegmentKind::Material { bind_group } => DrawCommand {
                 pipeline: self.material_pipeline,
                 bind_group: Some(bind_group),

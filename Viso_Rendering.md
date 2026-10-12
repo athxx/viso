@@ -1391,6 +1391,8 @@ Release：`.vs` shader source -> build-time typed compile（§7.1）-> MSL / HLS
 
 Custom shader 必须声明 §30.2 cost class；在标准 renderer ABI 冻结（F4 Done）前不公开。
 
+当前实现：`Primitive::Shader(ShaderDraw { rect, program: ProgramSlot, params })` 以一个 Brush Profile Program（DSL §100）绘制一个盒子。`params` 是该 Program 的一个已编码 Instance（`BrushLayout::encode`，盒子为零），以 `Arc<[u8]>` 共享，节点未变时重发只复制指针，Scene Store 的 Diff 先比指针：`rect_pos` 归 Transform、`rect_size` 与 Program 归 Geometry、参数归 Paint。Program 按 Renderer 的槽位安装：`set_program`（调用方已在渲染线程外用 Backend 的 `program_compiler` 编译并 `install_program`）或 `install_program`（当场编译），同一槽位再次安装即替换，旧 Pipeline 经 Backend 的 Fence 延迟销毁；`release_program` 清空槽位并以同样方式销毁 Pipeline 与 Instance Buffer。槽位为空或参数长度不是其 Stride 的绘制不画（`FrameStats::program_draws_dropped`）。每个 Program 一个持久 Instance Pool：Lowering 把盒子写进复制来的 Instance（减去 Offscreen Layer 的 Origin），不接续上一绘制的 Run 起于对齐到 `Caps::program_instance_align` 的字节 Offset，Pool 与 CPU Shadow 逐字比对，只上传变化的范围。Batch Family `Program` 的 Key 在保留的高位字段（50..64）带槽位，所以只有同一 Program 的相邻绘制合并为一次 Draw，两个 Program 相邻计为一次 Pipeline 切换。Uniform Block（`viewport_size`）以 Inline Uniform 按 Program 的 Layout 写入每个 Pass 的 Viewport。Program 的输出对 Renderer 不透明，Group Opacity 从不折进它（`scan_layer_subtree` 视其为不可折），包着它的半透明组走 Offscreen。Inspect 以 `BatchPipeline::Program` 报告其 Batch（Range 起点为字节 Offset），`FrameStats` 增加 `shader_instances`、`program_draws_dropped` 与 `programs`。Headless 上 Program 以 `CpuShader` 运行，Metal 上同一场景与之逐像素比对（每通道差不超过 2/255）。
+
 ## 27.3 Custom Canvas
 
 `Canvas2D` / `Scene2DBuilder` 风格 API 是：

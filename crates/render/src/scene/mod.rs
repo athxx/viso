@@ -54,7 +54,7 @@ use revision::Revisions;
 use store::{
     AnalyticCapsuleStore, AnalyticEllipseStore, AnalyticLineStore, AnalyticRRectStore,
     AnalyticShadowStore, BrushStore, ClipChainStore, ClipStore, GlyphRunStore, GradientStore,
-    ImageStore, MeshStore, SolidQuadStore, StoreRef, TransformStore, VectorPathStore,
+    ImageStore, MeshStore, ShaderStore, SolidQuadStore, StoreRef, TransformStore, VectorPathStore,
 };
 
 /// Where an emitted primitive's geometry is routed and how it is offset — the
@@ -122,6 +122,8 @@ pub struct Scene {
     pub gradients: GradientStore,
     /// Analytic soft drop shadows (rounded box / ellipse / capsule), in paint order.
     pub analytic_shadows: AnalyticShadowStore,
+    /// Boxes painted by user programs, in paint order.
+    pub shaders: ShaderStore,
     /// Glyph runs and their packed instances.
     pub glyph_runs: GlyphRunStore,
     /// Vector paths with their cached tessellation.
@@ -184,6 +186,7 @@ impl Scene {
         self.analytic_lines.begin_frame();
         self.images.begin_frame();
         self.gradients.begin_frame();
+        self.shaders.begin_frame();
         self.analytic_shadows.begin_frame();
         self.glyph_runs.begin_frame();
         self.paths.begin_frame();

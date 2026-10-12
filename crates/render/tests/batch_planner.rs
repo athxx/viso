@@ -40,6 +40,7 @@ fn pipeline_family(pipeline: BatchPipeline) -> BatchFamily {
         BatchPipeline::ColorTransform => BatchFamily::ColorTransform,
         BatchPipeline::AdvancedBlend => BatchFamily::AdvancedBlend,
         BatchPipeline::Material => BatchFamily::Material,
+        BatchPipeline::Program => BatchFamily::Program,
     }
 }
 

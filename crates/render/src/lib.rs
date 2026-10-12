@@ -33,6 +33,7 @@ pub mod opacity;
 pub mod path;
 pub mod pool;
 pub mod primitive;
+pub mod program;
 pub mod raster_mask;
 pub mod rect_packer;
 pub mod renderer;
@@ -89,13 +90,14 @@ pub use primitive::{
     Fit, FrostedMaterial, GlyphInstance, GlyphInstanceData, GlyphLane, GlyphRunDraw, Gradient,
     GradientInstance, GradientKind, GradientStop, ImageDraw, ImageInstance, ImageRect, LayerClip,
     LineCap, LineJoin, MaterialLane, MaterialLaneNeeds, Mesh, MeshVertex, NativeMaterialRegion,
-    NineSlice, Path, PathCmd, PathShadow, Point, Primitive, Quad, QuadInstance, Rect,
-    ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba, ShadowInstance, ShadowShape,
-    SpriteRegion, Stroke, StrokeAlign, TiledImage, analytic_capsule_schema,
+    NineSlice, Path, PathCmd, PathShadow, Point, Primitive, ProgramSlot, Quad, QuadInstance, Rect,
+    ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba, ShaderDraw, ShadowInstance,
+    ShadowShape, SpriteRegion, Stroke, StrokeAlign, TiledImage, analytic_capsule_schema,
     analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema,
     color_transform_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
     quad_schema,
 };
+pub use program::ProgramError;
 pub use renderer::{BackdropDependency, FrameStats, Renderer};
 // Which lane rasterizes vector geometry (§20.1). The compute lane is workload
 // specialization, so the *decision* is public (a host can describe its workload

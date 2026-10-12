@@ -119,6 +119,8 @@ pub enum BatchPipeline {
     /// One frosted material surface (the material pipeline, binding the shared
     /// blurred backdrop capture it samples).
     Material,
+    /// A run of adjacent boxes of one user program (that program's pipeline).
+    Program,
 }
 
 impl BatchPipeline {
@@ -140,6 +142,7 @@ impl BatchPipeline {
             BatchPipeline::ColorTransform => "color-transform",
             BatchPipeline::AdvancedBlend => "advanced-blend",
             BatchPipeline::Material => "material",
+            BatchPipeline::Program => "program",
         }
     }
 
@@ -162,6 +165,7 @@ impl BatchPipeline {
             BatchPipeline::ColorTransform => BatchFamily::ColorTransform,
             BatchPipeline::AdvancedBlend => BatchFamily::AdvancedBlend,
             BatchPipeline::Material => BatchFamily::Material,
+            BatchPipeline::Program => BatchFamily::Program,
         }
     }
 }
@@ -445,6 +449,12 @@ impl Renderer {
                 self.material_pipeline_id(),
                 Some(bind_group),
             ),
+            SegmentKind::Program { slot } => (
+                BatchPipeline::Program,
+                self.program_pipeline(slot)
+                    .expect("a program segment names an installed program"),
+                None,
+            ),
         };
         let offscreen = matches!(seg.target, PassTarget::Offscreen(_));
         InspectBatch {
@@ -499,6 +509,8 @@ impl Renderer {
         let mut color_transform_cursor: u32 = 0;
         let mut advanced_blend_cursor: u32 = 0;
         let mut index_cursor: u32 = 0;
+        // Each program's buffer end, in bytes, by slot.
+        let mut program_ends: Vec<usize> = Vec::new();
 
         // The resource each entry samples, as the dense stand-in the merge key
         // needs: the bind group is part of the key (§20.2), so two adjacent images
@@ -585,6 +597,9 @@ impl Renderer {
                     gradient_cursor += 1;
                     (BatchPipeline::Gradient, start, 1)
                 }
+                // Placed below, once the merge decision says whether it extends
+                // its program's run or opens an aligned one.
+                StoreRef::Shader(_) => (BatchPipeline::Program, 0, 1),
                 StoreRef::GlyphRun(run) => {
                     let e = self
                         .scene_snapshot()
@@ -646,9 +661,10 @@ impl Renderer {
                 PassTarget::Capture(i) => BatchTarget::Backdrop(i),
             };
             let item = BatchItem {
-                key: BatchKey::pack(
+                key: self.entry_key(
                     family,
                     target_field,
+                    entry.store,
                     resources.get(self.sampled_source(entry.store)),
                 ),
                 clip,
@@ -659,6 +675,16 @@ impl Renderer {
                 batch += 1;
             }
             last_item = Some(item);
+            let mut start = start;
+            if let Some((slot, stride)) = self.entry_program(entry.store) {
+                let slot = slot.0 as usize;
+                if program_ends.len() <= slot {
+                    program_ends.resize(slot + 1, 0);
+                }
+                let at = self.program_table().run_start(program_ends[slot], merges);
+                program_ends[slot] = at + stride as usize;
+                start = at as u32;
+            }
 
             primitives.push(PrimitiveRange {
                 id: entry.id,
@@ -767,6 +793,7 @@ impl Renderer {
                 },
                 StoreRef::MaterialComposite { .. } => (BatchFamily::Material, true),
                 StoreRef::Gradient(_) => (BatchFamily::Gradient, true),
+                StoreRef::Shader(_) => (BatchFamily::Program, true),
                 StoreRef::GlyphRun(run) => {
                     let e = self
                         .scene_snapshot()
@@ -793,9 +820,10 @@ impl Renderer {
             // packs it, as a dense stand-in for the bind group. The emitted chunk
             // still carries the real bind group, read from its segment.
             let item = BatchItem {
-                key: BatchKey::pack(
+                key: self.entry_key(
                     family,
                     target,
+                    entry.store,
                     resources.get(self.sampled_source(entry.store)),
                 ),
                 clip,

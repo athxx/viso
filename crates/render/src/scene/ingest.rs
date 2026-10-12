@@ -32,7 +32,7 @@ use viso_gpu::{SamplerDesc, TextureId};
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
     GlyphInstance, GradientInstance, ImageInstance, MeshVertex, Path, QuadInstance, Rect,
-    ShadowInstance,
+    ShaderDraw, ShadowInstance,
 };
 
 use super::bounds::Bounds;
@@ -66,6 +66,8 @@ pub struct IngestStats {
     pub gradient_instances: u32,
     /// Analytic soft-shadow instances retained this frame.
     pub analytic_shadow_instances: u32,
+    /// User-program draws retained this frame.
+    pub shader_instances: u32,
     /// Paths (re-)tessellated this frame — a geometry or paint change on a path,
     /// or a cold append. A cache hit does not count.
     pub path_tessellations: u32,
@@ -230,6 +232,20 @@ impl Scene {
         self.apply_planes(dirty);
         self.ingest_stats.gradient_instances += 1;
         self.record(StoreRef::Gradient(slot), context, bounds)
+    }
+
+    /// Ingest a user-program draw: diff into the shader store, bump the moved
+    /// planes, record its slot.
+    pub fn ingest_shader(
+        &mut self,
+        draw: &ShaderDraw,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        let (slot, dirty) = self.shaders.ingest(draw);
+        self.apply_planes(dirty);
+        self.ingest_stats.shader_instances += 1;
+        self.record(StoreRef::Shader(slot), context, bounds)
     }
 
     /// Ingest a glyph run: pack its instances, diff against last frame's run,
@@ -423,6 +439,7 @@ impl Scene {
         shrank |= self.analytic_lines.finish_frame();
         shrank |= self.images.finish_frame();
         shrank |= self.gradients.finish_frame();
+        shrank |= self.shaders.finish_frame();
         shrank |= self.analytic_shadows.finish_frame();
         shrank |= self.glyph_runs.finish_frame();
         shrank |= self.paths.finish_frame();

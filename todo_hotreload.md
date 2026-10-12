@@ -596,12 +596,16 @@ on it.
       naga (the optional `spirv` feature, enabled only by build-time and dev-host
       tools), the `CpuShader` for headless. `shader_golden` draws the spec example
       as a brush on CPU, headless, Metal and Vulkan from one call each.
-- [ ] Render: `Primitive::Shader` (rect, program slot, encoded parameters); programs
-      installed per renderer slot (install, replace with the old pipeline retired
-      through the fence, release); one persistent instance pool per program with
-      runs aligned to `program_instance_align`; one batch family where adjacent draws
-      of one program merge; offscreen origin subtraction; never folded into a group
-      opacity; inspect and counters; headless golden.
+- [x] Render: `Primitive::Shader(ShaderDraw { rect, program: ProgramSlot, params:
+      Arc<[u8]> })`; programs installed per renderer slot (`set_program`,
+      `install_program`, a replace retiring the old pipeline through the fence,
+      `release_program`) in `render/src/program.rs`; one persistent instance pool per
+      program with runs aligned to `program_instance_align`; batch family `Program`
+      whose key carries the slot (bits 50..64), so adjacent draws of one program
+      merge; offscreen origin subtraction; never folded into a group opacity;
+      `BatchPipeline::Program` in inspect, `FrameStats::{shader_instances,
+      program_draws_dropped, programs}`; `render/tests/program_draw.rs` on headless,
+      and the same scene on Metal against it.
 - [ ] UI: `Content::Shader` paints a node's box with its program; the node store
       keeps the shaders its nodes use by slot, with a revision the facade installs
       from; a parameter change is `PAINT` only.
