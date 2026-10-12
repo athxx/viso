@@ -97,8 +97,11 @@ pub use primitive::{
     color_transform_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
     quad_schema,
 };
-pub use program::ProgramError;
+pub use program::{BrushProgram, ProgramError};
+// The brush profile a `ShaderDraw`'s parameters are encoded by, named in this
+// crate's program API.
 pub use renderer::{BackdropDependency, FrameStats, Renderer};
+pub use viso_shader::program::{BrushLayout, BrushParam, ParamKind, ParamValue};
 // Which lane rasterizes vector geometry (§20.1). The compute lane is workload
 // specialization, so the *decision* is public (a host can describe its workload
 // and see the answer) while the kernels behind it are not a frozen contract.

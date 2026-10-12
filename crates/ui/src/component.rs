@@ -11,6 +11,7 @@
 
 use std::any::Any;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::animation::{LookTransition, LookValue, Timing, TranslateAnim};
@@ -26,13 +27,14 @@ use crate::layout::{
 use crate::node::{NodeArena, NodeId};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
 use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
+use crate::shader::ShaderSlots;
 use crate::state::{StateId, StateStore, StateValue};
 use crate::style::{BoxStyle, InteractionStyle, StyleId};
 use crate::task::{Continuation, TaskFuture, TaskId, TaskOps};
 use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
-use viso_render::{PathCmd, Rect, Rgba, Stroke, TextureId};
+use viso_render::{BrushProgram, PathCmd, ProgramSlot, Rect, Rgba, Stroke, TextureId};
 use viso_runtime::{LoopWaker, TaskSet};
 
 /// The application entry into the tree: a component declares its children into
@@ -345,6 +347,8 @@ pub struct NodeStore {
     /// glyph-run/image/path primitive. Named `content_payload` to avoid the
     /// scroll `content` extent column above.
     content_payload: Vec<Option<Box<Content>>>,
+    /// The brush programs `Content::Shader` nodes paint with, by slot.
+    shaders: ShaderSlots,
     /// Cold: per-node unshaped text request, index-aligned but mostly `None`.
     /// `viso-ui` cannot shape text (no font stack), so a text node records what
     /// it wants drawn here and an upper tier that owns text preparation drains
@@ -492,6 +496,7 @@ impl NodeStore {
         self.semantics.clear();
         self.semantic_state.clear();
         self.content_payload.clear();
+        self.shaders.clear();
         self.text_request.clear();
         self.animation_requests.clear();
         self.transitions.clear();
@@ -1373,6 +1378,86 @@ impl NodeStore {
         }
         self.content_payload[id.index() as usize] = Some(Box::new(content));
         self.mark_dirty(id, classes);
+    }
+
+    /// Paint `id`'s box with `program` and `params`, its parameters encoded as
+    /// one of the program's instances; the program takes a slot in
+    /// [`shaders`](Self::shaders), or keeps the one it has. A node already
+    /// painting with the same program marks PAINT only — a program has no
+    /// intrinsic size, so only a node taking it from other content
+    /// re-measures. A live-guarded write — a stale handle is a no-op.
+    pub fn set_shader(&mut self, id: NodeId, program: &Arc<BrushProgram>, params: Arc<[u8]>) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let slot = self.shaders.slot(program);
+        let same = matches!(
+            self.content_payload(id),
+            Some(Content::Shader { program, .. }) if *program == slot
+        );
+        let classes = if same {
+            DirtyClass::PAINT
+        } else {
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT
+        };
+        self.content_payload[id.index() as usize] = Some(Box::new(Content::Shader {
+            program: slot,
+            params,
+        }));
+        self.mark_dirty(id, classes);
+    }
+
+    /// Replace the parameters of `id`'s shader, marking PAINT only. A no-op
+    /// for a stale handle or a node not painting with a program.
+    pub fn set_shader_params(&mut self, id: NodeId, params: Arc<[u8]>) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let Some(content) = self.content_payload[id.index() as usize].as_deref_mut() else {
+            return;
+        };
+        let Content::Shader {
+            params: current, ..
+        } = content
+        else {
+            return;
+        };
+        *current = params;
+        self.mark_dirty(id, DirtyClass::PAINT);
+    }
+
+    /// The brush programs this store's nodes paint with, by slot.
+    pub fn shaders(&self) -> &ShaderSlots {
+        &self.shaders
+    }
+
+    /// Puts `program` in `slot`, so every node painting with the slot paints
+    /// with it from the next frame, and marks those nodes PAINT dirty.
+    pub fn replace_shader(&mut self, slot: ProgramSlot, program: Arc<BrushProgram>) {
+        self.shaders.replace(slot, program);
+        for i in 0..self.content_payload.len() {
+            if let Some(Content::Shader { program, .. }) = self.content_payload[i].as_deref()
+                && *program == slot
+                && let Some(id) = self.arena.live_id(i as u32)
+            {
+                self.mark_dirty(id, DirtyClass::PAINT);
+            }
+        }
+    }
+
+    /// Empties every program slot no live node paints with. Cold: a walk of
+    /// the content column, for after a structural change or a reload.
+    pub fn sweep_shaders(&mut self) {
+        let mut used = vec![false; self.shaders.len()];
+        for (i, content) in self.content_payload.iter().enumerate() {
+            if let Some(Content::Shader { program, .. }) = content.as_deref()
+                && self.arena.live_id(i as u32).is_some()
+                && let Some(u) = used.get_mut(program.0 as usize)
+            {
+                *u = true;
+            }
+        }
+        self.shaders.sweep(|slot| used[slot.0 as usize]);
     }
 
     /// Write back a run reshaped at a layout-assigned width, marking

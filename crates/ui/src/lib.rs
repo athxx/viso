@@ -30,6 +30,7 @@ pub mod node;
 pub mod paint;
 pub mod reactive;
 pub mod semantics;
+pub mod shader;
 pub mod state;
 pub mod structure;
 pub mod style;
@@ -90,6 +91,7 @@ pub use reactive::{
     ProjectId, SemanticProjector,
 };
 pub use semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
+pub use shader::ShaderSlots;
 pub use state::{StateId, StateStore, StateValue};
 pub use structure::{StructureCx, StructureHookId, run_structure_hooks};
 pub use style::{BoxStyle, InteractionStyle, StyleId};

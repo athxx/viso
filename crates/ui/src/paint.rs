@@ -17,12 +17,14 @@
 //! is clipped away. The viewport's own background quad paints before the clip is
 //! pushed, so it fills the whole box regardless of scroll.
 
+use std::sync::Arc;
+
 use crate::component::NodeStore;
 use crate::content::Content;
 use crate::node::NodeId;
 use viso_render::{
     GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point,
-    Primitive, Quad, Rect, Rgba, SamplerDesc,
+    Primitive, Quad, Rect, Rgba, SamplerDesc, ShaderDraw,
 };
 
 /// The opaque white tint that passes a premultiplied color-atlas texel through
@@ -220,6 +222,13 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
                 fill: *fill,
                 stroke: *stroke,
                 shadow: None,
+            }));
+        }
+        Content::Shader { program, params } => {
+            out.push(Primitive::Shader(ShaderDraw {
+                rect: world,
+                program: *program,
+                params: Arc::clone(params),
             }));
         }
     }
@@ -995,5 +1004,112 @@ mod tests {
             !d.intersects(DirtyClass::LAYOUT | DirtyClass::MEASURE),
             "overlay lays out in place — no relayout"
         );
+    }
+
+    #[test]
+    fn a_shader_paints_the_box_and_a_parameter_change_is_paint_only() {
+        use std::sync::Arc;
+        use viso_render::{BrushLayout, BrushProgram, ProgramSlot, ShaderDraw};
+
+        let program = Arc::new(BrushProgram {
+            name: "Ripple".into(),
+            layout: BrushLayout {
+                stride: 20,
+                rect_pos: 0,
+                rect_size: 8,
+                uniform_size: 16,
+                viewport_size: 0,
+                params: Vec::new(),
+            },
+            code: Vec::new(),
+        });
+        let mut store = NodeStore::new();
+        let (mut a, mut b) = (None, None);
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                for slot in [&mut a, &mut b] {
+                    *slot = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fixed(30.0, 20.0),
+                            style: BoxStyle::NONE,
+                        })
+                        .id(),
+                    );
+                }
+            });
+            cx.root().unwrap()
+        };
+        let (a, b) = (a.unwrap(), b.unwrap());
+        let params: Arc<[u8]> = Arc::from(vec![7u8; 20]);
+        store.set_shader(a, &program, Arc::clone(&params));
+        store.set_shader(b, &program, Arc::clone(&params));
+        assert_eq!(store.shaders().iter().count(), 1, "one program, one slot");
+        assert!(store.dirty(a).contains(DirtyClass::MEASURE));
+
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        let draws: Vec<&ShaderDraw> = out
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::Shader(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(draws.len(), 2);
+        assert_eq!(draws[1].rect, store.world(b));
+        assert_eq!(draws[1].program, ProgramSlot(0));
+        assert!(
+            Arc::ptr_eq(&draws[0].params, &params),
+            "re-emitted, not copied"
+        );
+
+        store.clear_dirty();
+        store.set_shader_params(b, Arc::from(vec![9u8; 20]));
+        assert_eq!(store.dirty(b), DirtyClass::PAINT);
+        store.clear_dirty();
+        store.set_shader(a, &program, Arc::from(vec![1u8; 20]));
+        assert_eq!(
+            store.dirty(a),
+            DirtyClass::PAINT,
+            "the same program, new params"
+        );
+
+        // A node that stops painting with the program leaves it to a sweep.
+        let r = store.shaders().revision();
+        store.set_content_payload(
+            a,
+            crate::content::Content::Path {
+                cmds: Vec::new(),
+                fill: None,
+                stroke: None,
+                natural: crate::layout::Vec2::ZERO,
+            },
+        );
+        store.sweep_shaders();
+        assert_eq!(store.shaders().revision(), r, "b still paints with it");
+        store.set_content_payload(
+            b,
+            crate::content::Content::Path {
+                cmds: Vec::new(),
+                fill: None,
+                stroke: None,
+                natural: crate::layout::Vec2::ZERO,
+            },
+        );
+        store.sweep_shaders();
+        assert!(store.shaders().revision() > r);
+        assert_eq!(store.shaders().iter().count(), 0);
     }
 }

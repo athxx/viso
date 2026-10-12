@@ -44,7 +44,7 @@ use crate::primitive::{
     ImageInstance, MaterialInstance, MaterialLane, MeshVertex, NativeMaterialRegion, PathCmd,
     Primitive, ProgramSlot, QuadInstance, Rect, ShadowInstance, rgba_array,
 };
-use crate::program::{ProgramError, ProgramTable};
+use crate::program::{BrushProgram, ProgramError, ProgramTable};
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
 use crate::scene::{EmitContext, PaintEntry, Scene};
@@ -1971,6 +1971,24 @@ impl Renderer {
         self.programs
             .set(backend, slot, pipeline, layout)
             .inspect_err(|_| backend.destroy_pipeline(pipeline))
+    }
+
+    /// Installs `program` in `slot` from its code in the backend's language,
+    /// as [`install_program`](Self::install_program) does.
+    ///
+    /// # Errors
+    ///
+    /// No code in the backend's language, or what `install_program` refuses.
+    pub fn install_brush<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        slot: ProgramSlot,
+        program: &BrushProgram,
+    ) -> Result<(), ProgramError> {
+        let code = program
+            .code_for(B::SHADER_LANG)
+            .ok_or(ProgramError::NoCode(B::SHADER_LANG))?;
+        self.install_program(backend, slot, &program.name, code, program.layout.clone())
     }
 
     /// What a backend builds a program of this renderer from: `code` laid out

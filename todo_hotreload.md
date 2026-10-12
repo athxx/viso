@@ -606,9 +606,14 @@ on it.
       `BatchPipeline::Program` in inspect, `FrameStats::{shader_instances,
       program_draws_dropped, programs}`; `render/tests/program_draw.rs` on headless,
       and the same scene on Metal against it.
-- [ ] UI: `Content::Shader` paints a node's box with its program; the node store
-      keeps the shaders its nodes use by slot, with a revision the facade installs
-      from; a parameter change is `PAINT` only.
+- [x] UI: `Content::Shader { program: ProgramSlot, params }` paints a node's box as a
+      `Primitive::Shader`; `ShaderSlots` (`ui/src/shader.rs`) keeps the store's
+      `Arc<BrushProgram>`s by slot, found by identity, with a revision the facade
+      installs from (`replace` for a reloaded program, `sweep` for unused slots);
+      `NodeStore::{set_shader, set_shader_params, replace_shader, sweep_shaders}`, a
+      parameter change or the same program with new parameters `PAINT` only. Render
+      gains `BrushProgram` (name, layout, code per language) and
+      `Renderer::install_brush`, and re-exports the brush types.
 - [ ] DSL: a shader name heads a record literal of its parameters
       (`Ripple { tint: c, rings: 8.0 }`), typed against them; a `ShaderView` leaf
       widget with a `shader` property; diagnostics for a missing or mistyped

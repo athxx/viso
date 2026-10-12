@@ -19,12 +19,41 @@
 //! [`ShaderDraw`]: crate::primitive::ShaderDraw
 
 use viso_gpu::backend::{DrawCommand, Geometry, InlineUniforms};
-use viso_gpu::{BufferUsage, GpuBackend, PipelineId};
+use viso_gpu::{BufferUsage, GpuBackend, PipelineId, ProgramCode, ShaderLang};
 use viso_shader::program::BrushLayout;
 
 use crate::batch::BatchKey;
 use crate::pool::InstancePool;
 use crate::primitive::ProgramSlot;
+
+/// A brush-profile program as a renderer installs it: its name, its layout,
+/// and its code in each language it was built for — a release package carries
+/// the target backend's and the CPU program, a dev host every language its
+/// runtime's target uses.
+#[derive(Clone)]
+pub struct BrushProgram {
+    pub name: Box<str>,
+    pub layout: BrushLayout,
+    pub code: Vec<ProgramCode>,
+}
+
+impl BrushProgram {
+    /// Its code in `lang`.
+    pub fn code_for(&self, lang: ShaderLang) -> Option<&ProgramCode> {
+        self.code.iter().find(|code| code.lang() == lang)
+    }
+}
+
+impl std::fmt::Debug for BrushProgram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let langs: Vec<ShaderLang> = self.code.iter().map(ProgramCode::lang).collect();
+        f.debug_struct("BrushProgram")
+            .field("name", &self.name)
+            .field("layout", &self.layout)
+            .field("code", &langs)
+            .finish()
+    }
+}
 
 /// Why a program was not installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +66,8 @@ pub enum ProgramError {
     Stride { stride: u32 },
     /// The backend's compiler or driver refused the code.
     Compile(String),
+    /// The program carries no code in the backend's language.
+    NoCode(ShaderLang),
 }
 
 impl std::fmt::Display for ProgramError {
@@ -57,6 +88,7 @@ impl std::fmt::Display for ProgramError {
                 write!(f, "an instance stride of {stride} bytes is not whole words")
             }
             ProgramError::Compile(log) => f.write_str(log),
+            ProgramError::NoCode(lang) => write!(f, "the program carries no {lang:?} code"),
         }
     }
 }

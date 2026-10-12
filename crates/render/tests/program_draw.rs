@@ -495,3 +495,31 @@ fn the_program_scene_matches_the_headless_raster_on_metal() {
         .count();
     assert_eq!(over, 0, "worst channel difference {worst}");
 }
+
+#[test]
+fn a_brush_program_installs_from_its_code_in_the_backend_language() {
+    let mut f = Frame::new();
+    let program = fill("Fill", None);
+    let interface = program.interface();
+    let layout = BrushLayout::new(&program, &interface).unwrap();
+    let msl = code(&program, &interface, ShaderLang::Msl).unwrap();
+    let mut brush = viso_render::BrushProgram {
+        name: "Fill".into(),
+        layout: layout.clone(),
+        code: vec![msl],
+    };
+    assert_eq!(
+        f.renderer
+            .install_brush(&mut f.gpu, ProgramSlot(0), &brush)
+            .unwrap_err(),
+        viso_render::ProgramError::NoCode(ShaderLang::None)
+    );
+    brush
+        .code
+        .push(code(&program, &interface, ShaderLang::None).unwrap());
+    f.renderer
+        .install_brush(&mut f.gpu, ProgramSlot(0), &brush)
+        .unwrap();
+    f.draw(&[shaded(&layout, 0, rect(8.0, 8.0, 8.0, 8.0), GREEN)]);
+    assert_eq!(f.pixel(10, 10), bgra(GREEN));
+}

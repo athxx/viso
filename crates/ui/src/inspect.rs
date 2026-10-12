@@ -38,6 +38,8 @@ pub enum InspectKind {
     Image,
     /// A node carrying a vector path.
     Path,
+    /// A node whose box a brush program paints.
+    Shader,
 }
 
 impl InspectKind {
@@ -48,6 +50,7 @@ impl InspectKind {
             InspectKind::Text => "text",
             InspectKind::Image => "image",
             InspectKind::Path => "path",
+            InspectKind::Shader => "shader",
         }
     }
 
@@ -57,6 +60,7 @@ impl InspectKind {
             Some(Content::Text { .. }) => InspectKind::Text,
             Some(Content::Image { .. }) => InspectKind::Image,
             Some(Content::Path { .. }) => InspectKind::Path,
+            Some(Content::Shader { .. }) => InspectKind::Shader,
         }
     }
 }

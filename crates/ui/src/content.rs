@@ -1,5 +1,5 @@
 //! Node content payload: the measured intrinsic size plus the paint data for a
-//! node that draws text, an image, or a vector path — everything the paint step
+//! node that draws text, an image, a vector path or a brush program — everything the paint step
 //! needs beyond a node's background quad.
 //!
 //! `viso-ui` cannot shape text or decode images: the architecture DAG allows it
@@ -22,8 +22,10 @@
 //! repositioned node draws its content in the right place without the producer
 //! re-emitting it.
 
+use std::sync::Arc;
+
 use crate::layout::Vec2;
-use viso_render::{GlyphInstanceData, PathCmd, Rect, Rgba, Stroke, TextureId};
+use viso_render::{GlyphInstanceData, PathCmd, ProgramSlot, Rect, Rgba, Stroke, TextureId};
 
 /// A node's drawable content plus its measured intrinsic size.
 ///
@@ -104,6 +106,14 @@ pub enum Content {
         /// The path's intrinsic size in physical pixels.
         natural: Vec2,
     },
+    /// The node's box painted by a brush program: the program in the store's
+    /// [`ShaderSlots`](crate::shader::ShaderSlots) slot `program`, its
+    /// parameters encoded as one of the program's instances. A program has no
+    /// intrinsic size, so a `Fit` axis sizes to zero.
+    Shader {
+        program: ProgramSlot,
+        params: Arc<[u8]>,
+    },
 }
 
 impl Content {
@@ -115,6 +125,7 @@ impl Content {
             Content::Text { natural, .. }
             | Content::Image { natural, .. }
             | Content::Path { natural, .. } => *natural,
+            Content::Shader { .. } => Vec2::ZERO,
         }
     }
 
@@ -125,7 +136,7 @@ impl Content {
     pub fn baseline(&self) -> Option<f32> {
         match self {
             Content::Text { baseline, .. } => Some(*baseline),
-            Content::Image { .. } | Content::Path { .. } => None,
+            Content::Image { .. } | Content::Path { .. } | Content::Shader { .. } => None,
         }
     }
 }
