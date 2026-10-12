@@ -183,6 +183,8 @@ pub struct Compiled {
     pub migrators: Vec<Migrator>,
     /// The unit's shaders, each with its program when it checked cleanly.
     pub shaders: Vec<CheckedShader>,
+    /// The assets the unit names, by identity, once each.
+    pub assets: Vec<crate::assets::AssetUse>,
 }
 
 impl Compiled {
@@ -254,6 +256,7 @@ pub fn compile_fragment(source: &str) -> Compiled {
         types: TypeSchemas::default(),
         migrators: Vec::new(),
         shaders: Vec::new(),
+        assets: Vec::new(),
     }
 }
 
@@ -354,6 +357,7 @@ fn compile_unit(
     );
     let mut behavior = lowered.behavior;
     let shaders = lowered.shaders;
+    let assets = lowered.assets;
     let Some(module) = resolved.pop() else {
         return Compiled::empty(diagnostics, behavior, shaders);
     };
@@ -513,6 +517,7 @@ fn compile_unit(
         types: lowered.types,
         migrators: lowered.migrators,
         shaders,
+        assets,
     }
 }
 
@@ -575,6 +580,7 @@ impl Compiled {
             types: TypeSchemas::default(),
             migrators: Vec::new(),
             shaders,
+            assets: Vec::new(),
         }
     }
 }

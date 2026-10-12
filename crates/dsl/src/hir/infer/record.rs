@@ -114,6 +114,17 @@ impl InferCx<'_> {
             .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
             .collect();
         let head = self.record_head(&heads);
+        if let Some(RecordHead::Record(id)) = head
+            && (id == crate::resolve::prelude::image_record()
+                || id == crate::resolve::prelude::svg_record())
+        {
+            let name = self.describe(&Ty::named(id));
+            self.diagnostics.push(Diagnostic::error(
+                super::asset::ASSET,
+                node.text_range(),
+                format!("an `{name}` comes from `asset(\"…\")`, which checks the file it names"),
+            ));
+        }
         let (owner, fields, owner_name) = match head {
             Some(RecordHead::Record(id)) => {
                 let fields = self.env.record_fields(id).map(<[FieldInfo]>::to_vec);

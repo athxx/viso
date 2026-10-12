@@ -25,6 +25,7 @@
 //! the environment, so this module is testable against a stub environment without the
 //! component-lowering machinery existing yet.
 
+pub(crate) mod asset;
 pub(crate) mod body;
 mod carry;
 pub(crate) mod format;
@@ -171,6 +172,16 @@ pub trait TypeEnv {
     /// The package's compiled message catalogs, when it has any.
     fn messages(&self) -> Option<&crate::i18n::Messages> {
         None
+    }
+
+    /// The package's assets, when the compile has them.
+    fn assets(&self) -> Option<&crate::assets::AssetCatalog> {
+        None
+    }
+
+    /// Notes that the package shows `asset`.
+    fn record_asset(&self, asset: crate::assets::AssetUse) {
+        let _ = asset;
     }
 
     /// The ticks a second of the game's fixed step, which a tick duration
@@ -633,6 +644,10 @@ impl<'a> InferCx<'a> {
         if head.is_none() && !segments.is_empty() {
             if segments.len() == 1 && segments[0].text() == "format" {
                 let ty = self.check_format(node);
+                return self.check_against(ty, expected, node);
+            }
+            if segments.len() == 1 && segments[0].text() == "asset" {
+                let ty = self.check_asset(&args, node);
                 return self.check_against(ty, expected, node);
             }
             // `untracked(value)` is its value, read without recording a dependency.

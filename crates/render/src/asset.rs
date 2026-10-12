@@ -58,7 +58,7 @@ pub fn normalize_path(path: &str) -> Option<String> {
 }
 
 /// What an asset's bytes are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AssetFormat {
     Png,
     Jpeg,

@@ -104,6 +104,8 @@ pub struct LoweredPackage {
     pub migrators: Vec<Migrator>,
     /// Every `shader`, across all modules, in module then source order.
     pub shaders: Vec<CheckedShader>,
+    /// Every asset an `asset("…")` names, by identity, once each.
+    pub assets: Vec<crate::assets::AssetUse>,
 }
 
 /// A `fn` marked `@migrate(from: "T")`: hot reload calls it to carry a state
@@ -259,6 +261,13 @@ pub fn lower(
                 .map(move |(at, shader)| (module, at, shader))
         })
         .collect();
+    let mut assets: Vec<crate::assets::AssetUse> = envs
+        .iter()
+        .flatten()
+        .flat_map(|env| env.assets.take())
+        .collect();
+    assets.sort();
+    assets.dedup();
     drop(envs);
     shader::check_brushes(&shaders, &brushes, &decls, &mut per_module);
     traits::check_overlap(&decls, &mut per_module);
@@ -298,6 +307,7 @@ pub fn lower(
         types: std::mem::take(&mut decls.types),
         migrators: migrators.into_iter().map(|(_, m)| m).collect(),
         shaders,
+        assets,
     }
 }
 
@@ -1475,6 +1485,8 @@ struct ModuleEnv<'p> {
     user_calls: RefCell<Vec<(TextRange, SymbolId)>>,
     /// Each shader a view paints with, by the span of the value naming it.
     brushes: RefCell<Vec<(TextRange, SymbolId)>>,
+    /// Each asset an `asset("…")` names.
+    assets: RefCell<Vec<crate::assets::AssetUse>>,
     /// Each call typing found to be a list method editing its receiver in
     /// place, by the call's span.
     list_writes: RefCell<HashSet<TextRange>>,
@@ -1515,6 +1527,14 @@ impl TypeEnv for ModuleEnv<'_> {
 
     fn messages(&self) -> Option<&crate::i18n::Messages> {
         self.decls.profile.messages.as_deref()
+    }
+
+    fn assets(&self) -> Option<&crate::assets::AssetCatalog> {
+        self.decls.profile.assets.as_deref()
+    }
+
+    fn record_asset(&self, asset: crate::assets::AssetUse) {
+        self.assets.borrow_mut().push(asset);
     }
 
     fn record_native(&self, call: TextRange, id: NativeId) {
@@ -1725,6 +1745,7 @@ impl<'p> ModuleEnv<'p> {
             styles: OnceCell::new(),
             user_calls: RefCell::default(),
             brushes: RefCell::default(),
+            assets: RefCell::default(),
             list_writes: RefCell::default(),
         }
     }

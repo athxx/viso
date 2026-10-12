@@ -25,6 +25,9 @@ pub(crate) type EventSpec = &'static WidgetEvent;
 /// such rather than against one type.
 pub(crate) const SHADER_TY: &str = "Shader";
 
+/// The schema types naming a prelude declaration, checked as that type.
+pub(crate) const PRELUDE_TYS: &[&str] = &["ImageAsset", "SvgAsset", "ImageFit"];
+
 /// The type a binding of a property typed `name` is checked against, or `None`
 /// for a schema type the checker does not model.
 pub(crate) fn value_ty(name: &str) -> Option<Ty> {
@@ -236,7 +239,9 @@ mod tests {
 
         let fragment = builtin("Fragment").expect("Fragment is registered");
         assert_eq!(fragment.lookup(&["width"]), PropLookup::Unknown);
-        assert!(builtin("Image").is_none());
+        let image = builtin("Image").expect("Image is registered");
+        assert!(matches!(image.lookup(&["source"]), PropLookup::Known(_)));
+        assert!(builtin("Picture").is_none());
     }
 
     #[test]

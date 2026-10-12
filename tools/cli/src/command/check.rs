@@ -131,8 +131,25 @@ pub(super) fn load(global: &Global, out: &mut Output) -> Result<Checked, u8> {
             out.source(Some(&source), &[], &diagnostic);
         }
     }
+    // The assets, which `asset("…")` checks against.
+    let asset_dir = project.root.join(viso_dsl::assets::ASSET_DIR);
+    let assets = match viso_dsl::assets::AssetCatalog::scan(&asset_dir) {
+        Ok(assets) => assets,
+        Err(error) => {
+            out.failure(
+                ENV_SOURCE_UNREADABLE,
+                &format!(
+                    "cannot read `{}`: {error}",
+                    relative(&project.root, &asset_dir).display()
+                ),
+                &[],
+            );
+            return Err(ENVIRONMENT);
+        }
+    };
     let mut profile = profile(&project);
     profile.messages = messages.map(Rc::new);
+    profile.assets = Some(Rc::new(assets));
 
     let package = load_package(
         &project.root,
@@ -221,6 +238,7 @@ pub(super) fn profile(project: &Project) -> TargetProfile {
         a11y_strict: false,
         i18n_strict: false,
         messages: None,
+        assets: None,
     }
 }
 

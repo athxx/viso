@@ -552,17 +552,23 @@ editable source files.
       box). A raster keeps drawing its resident pixels until the new ones are
       attached; then only the nodes showing it are rewritten, `PAINT` when the
       natural size holds, `MEASURE | LAYOUT | PAINT` when it moves.
-- [ ] DSL: `asset("images/logo.png")` takes a string literal, checks the file exists
-      under the package's `assets/` and sniffs its format at compile time, and is an
-      `Image` (PNG, JPEG) or a `Svg` (SVG) value — a typed handle states and branches
-      can hold; `Image { source; fit; }` and `Svg { source; tint; fit; }` leaf
-      widgets, natural size from the asset; diagnostics for a non-literal path, a
-      missing file, an unknown format and an asset outside `assets/`; DSL spec and
-      the widget table updated.
+- [x] DSL: `asset("images/logo.png")` takes a string literal, checks the file exists
+      under the package's `assets/` (`AssetCatalog`, scanned once, formats sniffed
+      from each file's head; the `view!`/`component!` profile loads it) and is an
+      `ImageAsset` (PNG, JPEG) or an `SvgAsset` (SVG) — prelude records only `asset`
+      makes, a constant the behavior builds, which states and branches hold; the
+      compile lists every asset it names (`Compiled::assets`). `Image` and `Svg` leaf
+      widgets take `source`, `fit: ImageFit` and `tint: Option<Color>` (`source`
+      dirties `MEASURE | LAYOUT | PAINT`, `fit` and `tint` `PAINT`). `E3713` for a
+      wrong argument count, a non-literal path, a path outside `assets/`, a missing
+      file (with the nearest path as a fix), a file in no asset format, a compile
+      with no asset directory and a record literal of either; DSL spec §U5.1.
 - [ ] View and package: the compiled view lists the assets it can show (id, kind,
       path); the control delivers a node's resource; the `view!` macro embeds their
       bytes (`include_bytes!`, so cargo rebuilds on change), the release package
-      carries them; mounting provides them to the store's table, decoded once.
+      carries them; mounting provides them to the store's table, decoded once. The
+      mount report names the package's asset directory, and the dev host compiles a
+      candidate against its catalog.
 - [ ] Facade: one app-wide registry decodes each resource once and shares it across
       windows; each window uploads the rasters it shows, resolves its nodes, and
       releases a replaced texture through the fence-deferred path; a rebuilt renderer

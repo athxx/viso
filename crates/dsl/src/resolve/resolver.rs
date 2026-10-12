@@ -868,7 +868,7 @@ fn keyword_start(node: &SyntaxNode) -> TextSize {
 ///
 /// The value names the language provides without a declaration: the `Option`
 /// and `Result` constructors and the `format`/`untracked` intrinsics.
-const BUILTIN_VALUES: &[&str] = &["Some", "None", "Ok", "Err", "format", "untracked"];
+const BUILTIN_VALUES: &[&str] = &["Some", "None", "Ok", "Err", "format", "untracked", "asset"];
 
 /// An item naming a declaration its module does not export is `E2001`, pointing at
 /// the declaration and offering to export it; it still binds, so its uses type as

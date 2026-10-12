@@ -4659,6 +4659,32 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - `text` 在 Schema 中标记为 Localizable（U10.3）。
 - `String` 文本槽（`text`、`label`、`placeholder` 等）只接受 `String`（或 `Option<String>` 槽的 U1.3 提升），不做隐式 `Display` 转换：`text: count;`（`count: I64`）是 `E2103`，并附 Machine-Applicable Fix `format("{}", count)`；对无 `Display` 的类型不给出该 Fix。
 
+### U5.1 图像
+
+包的资源放在 `Viso.toml` 旁的 `assets/` 目录中。`asset("…")` 以字符串字面量命名其中的一个文件：路径相对 `assets/`，以 `/` 分隔（`\` 视同 `/`），空段与 `.` 段被规范化掉，绝对路径与 `..` 不允许。编译期检查该文件存在，并按其字节（而非扩展名）判定格式：PNG、JPEG 得到 `ImageAsset`，SVG 得到 `SvgAsset`。这两个 Prelude Record 只由 `asset` 产生；作为普通值，它们可存入 State、在 `if`/`match` 中选择、作为 Input 传递。资源的身份是规范化路径的 64 位哈希，同一文件的不同拼写是同一资源；编译结果列出包用到的全部资源，Release 包只携带这些文件。
+
+| Widget | Property（类型 = 默认；失效） |
+| ------ | ----------------------------- |
+| `Image` | `source: ImageAsset`（未绑定时不绘制，固有尺寸为零；`MEASURE\|LAYOUT\|PAINT`）；`fit: ImageFit = ImageFit::contain`（`PAINT`）；`tint: Option<Color> = Option::None`（与像素逐通道相乘；`PAINT`） |
+| `Svg`   | `source: SvgAsset`（同上）；`fit`、`tint` 同 `Image`（`tint` 与每条路径的填充、描边颜色相乘，白色保持原色，可为单色图标着色） |
+
+```viso
+state dark = false;
+
+view {
+    Row {
+        Image { source: if dark { asset("images/logo_dark.png") } else { asset("images/logo.png") }; width: 48dp; }
+        Svg { source: asset("icons/close.svg"); tint: theme.colors.foreground; width: 16dp; height: 16dp; }
+    }
+}
+```
+
+- `ImageFit { contain; cover; fill; }`：`contain` 保持比例完整放入盒子并居中；`cover` 保持比例铺满盒子，居中裁去溢出部分；`fill` 拉伸到盒子；
+- 固有尺寸是图像的像素尺寸（SVG 取其 `viewBox` 与 `width`/`height`），1 像素计为 `1dp`；布局属性给出的尺寸优先；
+- 解码不在帧路径上：解码完成前节点不绘制，已知尺寸即参与布局；资源的新内容（如热重载）解码并驻留前旧内容继续绘制，之后只脏显示该资源的节点：尺寸不变为 `PAINT`，改变为 `MEASURE|LAYOUT|PAINT`；
+- 以下情形报 `E3713`：`asset` 不是恰好一个参数；参数不是不含插值的字符串字面量（要在资源间选择，在 `asset("…")` 值之间分支）；路径越出 `assets/`；文件不存在（附最接近的已有路径作为 Fix）；文件不是 PNG、JPEG 或 SVG；本次编译没有资源目录；以及 `ImageAsset`/`SvgAsset` 的 Record 表达式；
+- 把 `SvgAsset` 绑到 `Image` 的 `source`、`ImageAsset` 绑到 `Svg` 的 `source`，或绑定其他类型的值，是 `E2103`。
+
 ---
 
 ## U6. 动画与转场
@@ -8746,6 +8772,7 @@ RecordPatternField
 | E3710  | `@selector` 或 `@styleable` 误用（§U2.3）               |
 | E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
+| E3713  | 资源误用：`asset` 的参数不是恰好一个字符串字面量、路径越出 `assets/`、文件不存在或不是 PNG/JPEG/SVG、编译没有资源目录，或写出 `ImageAsset`/`SvgAsset` 的 Record 表达式（§U5.1） |
 | E4101  | 非 Task 主体（Action、Event、Effect 等）中使用 Await    |
 | E4102  | Task 跨挂起访问可变 State（编译期；绕过检查时为运行时故障） |
 | E4201  | Effect 读取未声明依赖                                   |

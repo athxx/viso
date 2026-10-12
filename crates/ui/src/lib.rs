@@ -105,6 +105,10 @@ pub use virtual_list::{
     HeightCache, HeightTree, ItemBuilder, VirtualListState, VirtualLists, absorb_measurements,
     reconcile, set_item_count,
 };
+/// The renderer's asset vocabulary — resource identity, formats, decoded
+/// payloads — which the compiler names resources by and the facade decodes
+/// into.
+pub use viso_render::asset as resource;
 pub use viso_render::{Border, LineJoin, PathCmd, Point, Rect, Rgba, Srgb, Stroke, TextureId};
 pub use viso_text::selection::Selection;
 pub use viso_text::{CaretAffinity, TextOffset, TextPosition};

@@ -677,6 +677,23 @@ impl Lowerer<'_, '_> {
             return self.format(node);
         }
         let args = emit_args(node);
+        if head.is_none() && segments.len() == 1 && segments[0].text() == "asset" {
+            // The checker named the file; the value is its resource.
+            let Some(resource) = (match args.as_slice() {
+                [(None, path)] => crate::hir::infer::asset::asset_resource(path),
+                _ => None,
+            }) else {
+                return self.bail("`asset` takes one path, a string literal");
+            };
+            let id = self.constant(Const::Int(i128::from(resource.0.cast_signed())));
+            let dst = self.reg();
+            self.emit(Inst::Make {
+                dst,
+                tag: 0,
+                fields: vec![id],
+            });
+            return Ok(dst);
+        }
         if head.is_none() && segments.len() == 1 && segments[0].text() == "untracked" {
             return match args.as_slice() {
                 [(None, value)] => self.expr(value),

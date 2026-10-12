@@ -103,6 +103,12 @@ export record InputCapabilities {
 export enum LayoutDirection { ltr; rtl; }
 export record Locale { tag: String; }
 
+// Assets: only `asset("…")` makes an `ImageAsset` (PNG, JPEG), which an `Image`
+// shows, or an `SvgAsset`, which an `Svg` shows.
+export record ImageAsset { resource: I64; }
+export record SvgAsset { resource: I64; }
+export enum ImageFit { contain; cover; fill; }
+
 export record Environment {
     window: WindowMetrics;
     constraints: LocalConstraints;

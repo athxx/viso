@@ -40,6 +40,26 @@ pub(crate) fn theme_record() -> SymbolId {
     })
 }
 
+/// The prelude record of a raster asset, which only `asset("…")` makes.
+pub(crate) fn image_record() -> SymbolId {
+    fingerprint(SymbolIdentity {
+        package: PRELUDE_MODULE,
+        module_path: PRELUDE_MODULE,
+        kind: SymbolKind::Record,
+        decl_path: "ImageAsset",
+    })
+}
+
+/// The prelude record of a vector asset, which only `asset("…")` makes.
+pub(crate) fn svg_record() -> SymbolId {
+    fingerprint(SymbolIdentity {
+        package: PRELUDE_MODULE,
+        module_path: PRELUDE_MODULE,
+        kind: SymbolKind::Record,
+        decl_path: "SvgAsset",
+    })
+}
+
 /// The parsed and resolved prelude.
 pub(crate) struct Prelude {
     pub(crate) unit: CompilationUnit,
@@ -106,10 +126,15 @@ mod tests {
             "LayoutDirection",
             "Locale",
             "Environment",
+            "ImageAsset",
+            "SvgAsset",
+            "ImageFit",
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
         let types: Vec<_> = prelude.types(&interner).collect();
         assert!(types.contains(&("Environment", environment())));
+        assert!(types.contains(&("ImageAsset", image_record())));
+        assert!(types.contains(&("SvgAsset", svg_record())));
     }
 }

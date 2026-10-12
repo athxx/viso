@@ -1742,7 +1742,12 @@ impl<'a> ViewWalk<'a> {
         let names: Vec<&str> = segments.iter().map(String::as_str).collect();
         match owner.schema.lookup(&names) {
             PropLookup::Known(spec) => Some(Declared {
-                ty: value_ty(spec.ty),
+                ty: value_ty(spec.ty).or_else(|| {
+                    widget::PRELUDE_TYS
+                        .contains(&spec.ty)
+                        .then(|| self.env.standard_type(spec.ty).map(Ty::named))
+                        .flatten()
+                }),
                 two_way: spec.two_way,
                 basis: Basis::of(spec.percent_basis),
                 localizable: spec.localizable,

@@ -66,6 +66,8 @@ pub struct TargetProfile {
     /// The package's message catalogs (`i18n/`), compiled: what `tr` and a
     /// `MessageKey` literal check against and the module carries.
     pub messages: Option<std::rc::Rc<crate::i18n::Messages>>,
+    /// The package's assets (`assets/`): what `asset("…")` checks against.
+    pub assets: Option<std::rc::Rc<crate::assets::AssetCatalog>>,
 }
 
 impl Default for TargetProfile {
@@ -80,6 +82,7 @@ impl Default for TargetProfile {
             a11y_strict: false,
             i18n_strict: false,
             messages: None,
+            assets: None,
         }
     }
 }

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use proc_macro2::Span;
+use viso_dsl::assets::{ASSET_DIR, AssetCatalog};
 use viso_dsl::frontend::Origin;
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
 use viso_dsl::i18n::{self, CatalogIssue, Messages};
@@ -101,7 +102,8 @@ pub struct Catalogs {
 /// The build profile of the crate rooted at `root`: the capabilities its
 /// `Viso.toml` grants (`[package] capabilities`), which the module it embeds
 /// carries to the host that links it, and the message catalogs beside it
-/// (`i18n/`, the source locale `[i18n] source`), which `tr` checks against.
+/// (`i18n/`, the source locale `[i18n] source`), which `tr` checks against,
+/// and the assets beside it (`assets/`), which `asset("…")` checks against.
 pub fn profile(root: &Path) -> syn::Result<Profile> {
     let mut capabilities = CapabilitySet::new();
     let manifest = manifest(root)?;
@@ -172,10 +174,18 @@ pub fn profile(root: &Path) -> syn::Result<Profile> {
         };
         (Some(Rc::new(messages)), Some(catalogs))
     };
+    let dir = base.join(ASSET_DIR);
+    let assets = AssetCatalog::scan(&dir).map_err(|error| {
+        syn::Error::new(
+            Span::call_site(),
+            format!("cannot read `{}`: {error}", dir.display()),
+        )
+    })?;
     Ok(Profile {
         target: TargetProfile {
             capabilities,
             messages,
+            assets: Some(Rc::new(assets)),
             ..TargetProfile::default()
         },
         catalogs,

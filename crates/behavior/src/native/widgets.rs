@@ -1,5 +1,5 @@
 //! The standard widget library `viso::widgets`: the layout containers, text, the
-//! interactive controls, the shader view, focus and shortcut scopes and the
+//! interactive controls, images, the shader view, focus and shortcut scopes and the
 //! virtual list, with the common layout, transform, focus, semantics and
 //! transition properties and the standard input events every layout node takes.
 
@@ -159,6 +159,20 @@ const SLIDER: &[WidgetProperty] = &[
 
 /// The parameters of the brush shader painting a `ShaderView`'s box.
 const SHADER_VIEW: &[WidgetProperty] = &[prop("shader", "Shader")];
+
+/// An `Image`'s raster, from `asset("…")`, and how it fills the box.
+const IMAGE: &[WidgetProperty] = &[
+    prop("source", "ImageAsset"),
+    look("fit", "ImageFit"),
+    look("tint", "Option<Color>"),
+];
+
+/// An `Svg`'s scene, from `asset("…")`, and how it fills the box.
+const SVG: &[WidgetProperty] = &[
+    prop("source", "SvgAsset"),
+    look("fit", "ImageFit"),
+    look("tint", "Option<Color>"),
+];
 
 const SELECTED: &[WidgetProperty] = &[two_way("selected", "U32")];
 
@@ -368,6 +382,12 @@ pub(super) static WIDGETS: NativeLibrary = NativeLibrary {
         )
         .events(&[SLIDER_EVENTS, STANDARD_EVENTS])
         .interactive(),
+        layout(
+            "Image",
+            WidgetNode::Leaf,
+            &[IMAGE, LAYOUT, TRANSFORM, FOCUS],
+        ),
+        layout("Svg", WidgetNode::Leaf, &[SVG, LAYOUT, TRANSFORM, FOCUS]),
         layout(
             "ShaderView",
             WidgetNode::Leaf,

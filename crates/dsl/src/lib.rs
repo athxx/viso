@@ -17,6 +17,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod aot;
+pub mod assets;
 pub mod ast;
 pub mod behavior;
 pub mod diag;
