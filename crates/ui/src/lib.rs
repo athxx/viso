@@ -12,6 +12,7 @@
 pub mod adaptive;
 pub mod animation;
 pub mod aot;
+pub mod asset;
 pub mod binding;
 pub mod component;
 pub mod content;
@@ -86,6 +87,7 @@ pub use viso_runtime::Instant;
 // the DAG allows to reach `viso-ui` alone) can name them to construct a
 // `BoxStyle`, `TextRequest`, or `Content`. `viso-render` is already a `viso-ui`
 // dependency, so this adds no new edge.
+pub use asset::{AssetDraw, AssetFit, AssetPayload, AssetTable};
 pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
     ProjectId, SemanticProjector,

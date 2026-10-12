@@ -541,12 +541,17 @@ editable source files.
 - [x] Identity: `ResourceId::of` (FNV-1a of the path under `assets/` as
       `normalize_path` spells it — absolute paths and `..` refused),
       `ResourceRevision` per payload; paths exist only while compiling and packaging.
-- [ ] UI: each `NodeStore` keeps an asset table — `ResourceId` → revision, natural
-      size, payload (raster with its per-window `TextureId` once uploaded, or vector
-      scene) and a revision of the table; `set_asset(node, id)` shows a resource on a
-      node; `Content::Vector` paints a scene scaled into the node's box, optionally
-      tinted; replacing a resource rewrites only the nodes showing it, `PAINT` when
-      the natural size holds, `MEASURE | LAYOUT | PAINT` when it changes.
+- [x] UI (`ui/src/asset.rs`): each `NodeStore` keeps an `AssetTable` — a resource is
+      offered (encoded bytes, by revision; the same or older bytes again are free),
+      decoded (`provide_asset`, the bytes dropped), and for a raster resident
+      (`attach_texture`, the texture it replaces handed back to release; a texture of
+      a revision the table moved past handed back unused). `Content::Asset {
+      resource, draw, natural, fit, tint }` carries what it draws, so paint reads no
+      table; `set_asset(node, id, fit, tint)` shows a resource; `AssetFit::{Contain,
+      Cover, Fill}` (a cover crops a raster in the texture and clips a vector to the
+      box). A raster keeps drawing its resident pixels until the new ones are
+      attached; then only the nodes showing it are rewritten, `PAINT` when the
+      natural size holds, `MEASURE | LAYOUT | PAINT` when it moves.
 - [ ] DSL: `asset("images/logo.png")` takes a string literal, checks the file exists
       under the package's `assets/` and sniffs its format at compile time, and is an
       `Image` (PNG, JPEG) or a `Svg` (SVG) value — a typed handle states and branches

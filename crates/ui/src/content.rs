@@ -1,5 +1,5 @@
 //! Node content payload: the measured intrinsic size plus the paint data for a
-//! node that draws text, an image, a vector path or a brush program — everything the paint step
+//! node that draws text, an image, a vector path, an asset or a brush program — everything the paint step
 //! needs beyond a node's background quad.
 //!
 //! `viso-ui` cannot shape text or decode images: the architecture DAG allows it
@@ -24,7 +24,9 @@
 
 use std::sync::Arc;
 
+use crate::asset::{AssetDraw, AssetFit};
 use crate::layout::Vec2;
+use viso_render::asset::ResourceId;
 use viso_render::{GlyphInstanceData, PathCmd, ProgramSlot, Rect, Rgba, Stroke, TextureId};
 
 /// A node's drawable content plus its measured intrinsic size.
@@ -106,6 +108,18 @@ pub enum Content {
         /// The path's intrinsic size in physical pixels.
         natural: Vec2,
     },
+    /// An asset of the store's [`AssetTable`](crate::asset::AssetTable): what it
+    /// draws now and its natural size, kept here so paint reads no table, and
+    /// rewritten when the resource takes a new payload.
+    Asset {
+        resource: ResourceId,
+        draw: AssetDraw,
+        /// The asset's natural size in pixels.
+        natural: Vec2,
+        fit: AssetFit,
+        /// Multiplies the asset's colors; `None` draws them as they are.
+        tint: Option<Rgba>,
+    },
     /// The node's box painted by a brush program: the program in the store's
     /// [`ShaderSlots`](crate::shader::ShaderSlots) slot `program`, its
     /// parameters encoded as one of the program's instances. A program has no
@@ -124,7 +138,8 @@ impl Content {
         match self {
             Content::Text { natural, .. }
             | Content::Image { natural, .. }
-            | Content::Path { natural, .. } => *natural,
+            | Content::Path { natural, .. }
+            | Content::Asset { natural, .. } => *natural,
             Content::Shader { .. } => Vec2::ZERO,
         }
     }
@@ -136,7 +151,10 @@ impl Content {
     pub fn baseline(&self) -> Option<f32> {
         match self {
             Content::Text { baseline, .. } => Some(*baseline),
-            Content::Image { .. } | Content::Path { .. } | Content::Shader { .. } => None,
+            Content::Image { .. }
+            | Content::Path { .. }
+            | Content::Asset { .. }
+            | Content::Shader { .. } => None,
         }
     }
 }

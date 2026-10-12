@@ -40,6 +40,8 @@ pub enum InspectKind {
     Path,
     /// A node whose box a brush program paints.
     Shader,
+    /// A node showing an asset.
+    Asset,
 }
 
 impl InspectKind {
@@ -51,6 +53,7 @@ impl InspectKind {
             InspectKind::Image => "image",
             InspectKind::Path => "path",
             InspectKind::Shader => "shader",
+            InspectKind::Asset => "asset",
         }
     }
 
@@ -61,6 +64,7 @@ impl InspectKind {
             Some(Content::Image { .. }) => InspectKind::Image,
             Some(Content::Path { .. }) => InspectKind::Path,
             Some(Content::Shader { .. }) => InspectKind::Shader,
+            Some(Content::Asset { .. }) => InspectKind::Asset,
         }
     }
 }

@@ -19,8 +19,10 @@
 
 use std::sync::Arc;
 
+use crate::asset::{AssetDraw, AssetFit};
 use crate::component::NodeStore;
 use crate::content::Content;
+use crate::layout::Vec2;
 use crate::node::NodeId;
 use viso_render::{
     GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point,
@@ -230,6 +232,90 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
                 program: *program,
                 params: Arc::clone(params),
             }));
+        }
+        Content::Asset {
+            draw,
+            natural,
+            fit,
+            tint,
+            ..
+        } => paint_asset(draw, *natural, *fit, *tint, world, out),
+    }
+}
+
+/// An asset of `natural` size placed into `world` by `fit`.
+fn paint_asset(
+    draw: &AssetDraw,
+    natural: Vec2,
+    fit: AssetFit,
+    tint: Option<Rgba>,
+    world: Rect,
+    out: &mut Vec<Primitive>,
+) {
+    if natural.x <= 0.0 || natural.y <= 0.0 || world.w <= 0.0 || world.h <= 0.0 {
+        return;
+    }
+    let scale = match fit {
+        AssetFit::Contain => (world.w / natural.x).min(world.h / natural.y),
+        AssetFit::Cover => (world.w / natural.x).max(world.h / natural.y),
+        AssetFit::Fill => 0.0,
+    };
+    // The box the whole asset takes, centered on the node's.
+    let placed = if fit == AssetFit::Fill {
+        world
+    } else {
+        let (w, h) = (natural.x * scale, natural.y * scale);
+        Rect {
+            x: world.x + (world.w - w) * 0.5,
+            y: world.y + (world.h - h) * 0.5,
+            w,
+            h,
+        }
+    };
+    match draw {
+        AssetDraw::Nothing => {}
+        AssetDraw::Raster(texture) => {
+            // A cover crops in the texture rather than drawing past the box.
+            let (rect, uv) = if fit == AssetFit::Cover {
+                let (uw, uh) = (world.w / placed.w, world.h / placed.h);
+                let uv = Rect {
+                    x: (1.0 - uw) * 0.5,
+                    y: (1.0 - uh) * 0.5,
+                    w: uw,
+                    h: uh,
+                };
+                (world, uv)
+            } else {
+                let full = Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                };
+                (placed, full)
+            };
+            out.push(Primitive::Image(ImageDraw {
+                rect,
+                uv,
+                tint: tint.unwrap_or(WHITE),
+                texture: *texture,
+                sampler: SamplerDesc::LINEAR_CLAMP,
+            }));
+        }
+        AssetDraw::Vector(scene) => {
+            let crop = fit == AssetFit::Cover;
+            if crop {
+                out.push(Primitive::Layer(LayerClip {
+                    clip: world,
+                    opacity: 1.0,
+                    blur_sigma: 0.0,
+                    backdrop_sigma: 0.0,
+                }));
+            }
+            out.extend(scene.place(placed, tint).map(Primitive::Path));
+            if crop {
+                out.push(Primitive::LayerEnd);
+            }
         }
     }
 }
@@ -1111,5 +1197,185 @@ mod tests {
         store.sweep_shaders();
         assert!(store.shaders().revision() > r);
         assert_eq!(store.shaders().iter().count(), 0);
+    }
+
+    #[test]
+    fn an_asset_draws_what_its_table_holds_and_a_new_payload_dirties_only_its_nodes() {
+        use crate::asset::{AssetFit, AssetPayload};
+        use std::sync::Arc;
+        use viso_render::TextureId;
+        use viso_render::asset::{RasterImage, ResourceId, ResourceRevision, VectorScene};
+
+        let raster = |w: u32, h: u32| {
+            AssetPayload::Raster(Arc::new(RasterImage {
+                width: w,
+                height: h,
+                pixels: vec![255; (w * h * 4) as usize],
+            }))
+        };
+        let logo = ResourceId::of("images/logo.png");
+        let other = ResourceId::of("images/other.png");
+        let mut store = NodeStore::new();
+        let (mut a, mut b, mut c) = (None, None, None);
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                for slot in [&mut a, &mut b, &mut c] {
+                    *slot = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fixed(40.0, 40.0),
+                            style: BoxStyle::NONE,
+                        })
+                        .id(),
+                    );
+                }
+            });
+            cx.root().unwrap()
+        };
+        let (a, b, c) = (a.unwrap(), b.unwrap(), c.unwrap());
+        let r1 = ResourceRevision(1);
+        store.assets_mut().offer(logo, r1, Arc::from(&b"png"[..]));
+        let offered = store.assets().revision();
+        store.assets_mut().offer(logo, r1, Arc::from(&b"png"[..]));
+        assert_eq!(store.assets().revision(), offered, "the same bytes again");
+        store.set_asset(a, logo, AssetFit::Fill, None);
+        store.set_asset(b, logo, AssetFit::Contain, None);
+        store.set_asset(c, other, AssetFit::Fill, None);
+        assert_eq!(
+            store
+                .content_payload(a)
+                .map_or(Vec2::ZERO, Content::natural),
+            Vec2::ZERO,
+            "nothing decoded yet"
+        );
+        assert_eq!(store.assets().undecoded().count(), 1);
+
+        // Decoded: its size lays out, but no pixels draw before they are resident.
+        store.clear_dirty();
+        store.provide_asset(logo, r1, raster(20, 10));
+        assert_eq!(
+            store.assets().undecoded().count(),
+            0,
+            "the bytes are dropped"
+        );
+        assert_eq!(
+            store
+                .content_payload(a)
+                .map_or(Vec2::ZERO, Content::natural),
+            Vec2::new(20.0, 10.0)
+        );
+        assert!(store.dirty(a).contains(DirtyClass::MEASURE));
+        assert_eq!(store.dirty(c), DirtyClass::EMPTY, "another resource");
+        assert_eq!(store.assets().unresident().count(), 1);
+        let layout = |store: &mut NodeStore| {
+            let mut scratch = Vec::new();
+            store.layout(
+                root,
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 100.0,
+                },
+                &mut scratch,
+            );
+            let mut out = Vec::new();
+            paint_tree(store, root, &mut out);
+            out
+        };
+        let images = |out: &[Primitive]| -> Vec<ImageDraw> {
+            out.iter()
+                .filter_map(|p| match p {
+                    Primitive::Image(d) => Some(*d),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(images(&layout(&mut store)).is_empty());
+
+        // Resident: the pixels draw, PAINT only, the size unchanged.
+        store.clear_dirty();
+        let first = TextureId::new(1);
+        assert_eq!(store.attach_texture(logo, r1, first), None);
+        assert_eq!(store.dirty(a), DirtyClass::PAINT);
+        assert_eq!(store.dirty(c), DirtyClass::EMPTY);
+        let drawn = images(&layout(&mut store));
+        assert_eq!(drawn.len(), 2);
+        assert_eq!(drawn[0].rect, store.world(a), "fill stretches to the box");
+        let wb = store.world(b);
+        assert_eq!(
+            drawn[1].rect,
+            Rect {
+                x: wb.x,
+                y: wb.y + 10.0,
+                w: 40.0,
+                h: 20.0
+            },
+            "contain keeps the aspect, centered"
+        );
+
+        // A new payload of another size: the old pixels draw until the new
+        // ones are resident, then the nodes remeasure and the old texture
+        // comes back to release.
+        store.clear_dirty();
+        let r2 = ResourceRevision(2);
+        store.provide_asset(logo, r2, raster(10, 10));
+        assert_eq!(
+            store.dirty(a),
+            DirtyClass::EMPTY,
+            "the old pixels still draw"
+        );
+        let second = TextureId::new(2);
+        assert_eq!(store.attach_texture(logo, r2, second), Some(first));
+        assert!(store.dirty(a).contains(DirtyClass::MEASURE));
+        assert!(store.dirty(b).contains(DirtyClass::MEASURE));
+        assert_eq!(store.dirty(c), DirtyClass::EMPTY);
+        assert_eq!(
+            store
+                .content_payload(a)
+                .map_or(Vec2::ZERO, Content::natural),
+            Vec2::new(10.0, 10.0)
+        );
+        // A texture of a revision the table moved past is handed back.
+        assert_eq!(store.attach_texture(logo, r1, first), Some(first));
+        assert_eq!(store.assets().texture(logo), Some((r2, second)));
+
+        // The same size again: PAINT only.
+        store.clear_dirty();
+        let r3 = ResourceRevision(3);
+        store.provide_asset(logo, r3, raster(10, 10));
+        store.attach_texture(logo, r3, TextureId::new(3));
+        assert_eq!(store.dirty(a), DirtyClass::PAINT);
+
+        // A vector draws as soon as it is decoded, cover cropped to the box.
+        let scene = Arc::new(VectorScene {
+            paths: Arc::from(vec![Path {
+                cmds: vec![
+                    PathCmd::MoveTo(Point::new(0.0, 0.0)),
+                    PathCmd::LineTo(Point::new(20.0, 10.0)),
+                ],
+                fill: Some(WHITE),
+                stroke: None,
+                shadow: None,
+            }]),
+            size: [20.0, 10.0],
+        });
+        store.set_asset(c, other, AssetFit::Cover, None);
+        store.provide_asset(other, r1, AssetPayload::Vector(scene));
+        let out = layout(&mut store);
+        let wc = store.world(c);
+        let layer = out
+            .iter()
+            .position(|p| matches!(p, Primitive::Layer(l) if l.clip == wc))
+            .expect("a cover clips to the box");
+        let Primitive::Path(path) = &out[layer + 1] else {
+            panic!("{out:?}");
+        };
+        assert_eq!(
+            path.cmds[1],
+            PathCmd::LineTo(Point::new(wc.x + 60.0, wc.y + 40.0)),
+            "scaled by 4 to cover the 40x40 box, centered: x from -20"
+        );
+        assert!(matches!(out[layer + 2], Primitive::LayerEnd));
     }
 }

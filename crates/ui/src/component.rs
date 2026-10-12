@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::animation::{LookTransition, LookValue, Timing, TranslateAnim};
+use crate::asset::{AssetFit, AssetPayload, AssetTable};
 use crate::binding::BindingTable;
 use crate::content::{Content, TextRequest};
 use crate::context::EventCx;
@@ -34,6 +35,7 @@ use crate::task::{Continuation, TaskFuture, TaskId, TaskOps};
 use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
+use viso_render::asset::{ResourceId, ResourceRevision};
 use viso_render::{BrushProgram, PathCmd, ProgramSlot, Rect, Rgba, Stroke, TextureId};
 use viso_runtime::{LoopWaker, TaskSet};
 
@@ -349,6 +351,8 @@ pub struct NodeStore {
     content_payload: Vec<Option<Box<Content>>>,
     /// The brush programs `Content::Shader` nodes paint with, by slot.
     shaders: ShaderSlots,
+    /// The assets `Content::Asset` nodes show, by resource.
+    assets: AssetTable,
     /// Cold: per-node unshaped text request, index-aligned but mostly `None`.
     /// `viso-ui` cannot shape text (no font stack), so a text node records what
     /// it wants drawn here and an upper tier that owns text preparation drains
@@ -497,6 +501,7 @@ impl NodeStore {
         self.semantic_state.clear();
         self.content_payload.clear();
         self.shaders.clear();
+        self.assets.clear();
         self.text_request.clear();
         self.animation_requests.clear();
         self.transitions.clear();
@@ -1441,6 +1446,124 @@ impl NodeStore {
                 && let Some(id) = self.arena.live_id(i as u32)
             {
                 self.mark_dirty(id, DirtyClass::PAINT);
+            }
+        }
+    }
+
+    /// Show `resource` on `id`, placed by `fit` and colored by `tint`, drawing
+    /// whatever of it the [`assets`](Self::assets) table holds (nothing, until
+    /// it is decoded; a raster's size but no pixels, until it is resident). A
+    /// node already showing the resource at the same natural size marks PAINT
+    /// only. A live-guarded write — a stale handle is a no-op.
+    pub fn set_asset(
+        &mut self,
+        id: NodeId,
+        resource: ResourceId,
+        fit: AssetFit,
+        tint: Option<Rgba>,
+    ) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let (draw, [w, h]) = self.assets.resolve(resource);
+        let natural = Vec2::new(w, h);
+        let content = Content::Asset {
+            resource,
+            draw,
+            natural,
+            fit,
+            tint,
+        };
+        let slot = &mut self.content_payload[id.index() as usize];
+        if slot.as_deref() == Some(&content) {
+            return;
+        }
+        let same_size = matches!(
+            slot.as_deref(),
+            Some(Content::Asset { natural: n, .. }) if *n == natural
+        );
+        *slot = Some(Box::new(content));
+        let classes = if same_size {
+            DirtyClass::PAINT
+        } else {
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT
+        };
+        self.mark_dirty(id, classes);
+    }
+
+    /// The assets this store's nodes show.
+    pub fn assets(&self) -> &AssetTable {
+        &self.assets
+    }
+
+    /// The assets this store's nodes show, to offer encoded bytes to.
+    pub fn assets_mut(&mut self) -> &mut AssetTable {
+        &mut self.assets
+    }
+
+    /// Stores `payload` as `resource`'s at `revision` and rewrites the nodes
+    /// showing it; a payload older than the table's is ignored. A vector draws
+    /// at once; a raster keeps drawing its resident pixels until
+    /// [`attach_texture`](Self::attach_texture) gives the new ones.
+    pub fn provide_asset(
+        &mut self,
+        resource: ResourceId,
+        revision: ResourceRevision,
+        payload: AssetPayload,
+    ) {
+        if self.assets.provide(resource, revision, payload) {
+            self.refresh_asset(resource);
+        }
+    }
+
+    /// Records `texture`, uploaded from `resource`'s raster at `revision`, and
+    /// rewrites the nodes showing it. Returns the texture for the caller to
+    /// release once no frame in flight draws it: the one replaced, or `texture`
+    /// itself when the table has moved past `revision`.
+    pub fn attach_texture(
+        &mut self,
+        resource: ResourceId,
+        revision: ResourceRevision,
+        texture: TextureId,
+    ) -> Option<TextureId> {
+        match self.assets.attach(resource, revision, texture) {
+            Ok(old) => {
+                self.refresh_asset(resource);
+                old
+            }
+            Err(unused) => Some(unused),
+        }
+    }
+
+    /// Rewrites every live node showing `resource` to what the table now
+    /// resolves it to: PAINT when its natural size holds, MEASURE | LAYOUT |
+    /// PAINT when it moves. Cold: a walk of the content column, once per new
+    /// payload.
+    fn refresh_asset(&mut self, resource: ResourceId) {
+        let (draw, [w, h]) = self.assets.resolve(resource);
+        let natural = Vec2::new(w, h);
+        for i in 0..self.content_payload.len() {
+            let Some(Content::Asset {
+                resource: r,
+                draw: d,
+                natural: n,
+                ..
+            }) = self.content_payload[i].as_deref_mut()
+            else {
+                continue;
+            };
+            if *r != resource || (*d == draw && *n == natural) {
+                continue;
+            }
+            let classes = if *n == natural {
+                DirtyClass::PAINT
+            } else {
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT
+            };
+            *d = draw.clone();
+            *n = natural;
+            if let Some(id) = self.arena.live_id(i as u32) {
+                self.mark_dirty(id, classes);
             }
         }
     }
