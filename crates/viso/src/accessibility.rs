@@ -182,6 +182,7 @@ fn access_role(role: Role, named: bool) -> ak::Role {
         Role::Slider => ak::Role::Slider,
         Role::Radio => ak::Role::RadioButton,
         Role::Label => ak::Role::Label,
+        Role::Image => ak::Role::Image,
         Role::TextField => ak::Role::TextInput,
         Role::Tab => ak::Role::Tab,
         Role::TabList => ak::Role::TabList,

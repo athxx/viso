@@ -1,23 +1,19 @@
 //! Image controls — the [`Image`] widget.
 //!
-//! `Image` is the base texture control: a single leaf node that draws an
-//! already-resident texture. It is the widget-layer face of the `viso-ui` image
-//! seam — it declares a [`viso_ui::Content::Image`] payload on its node via
-//! [`BuildCx::image`], which needs no shaping step. Unlike [`crate::Label`],
-//! which leaves shaping to a font-stack-owning tier, an image's pixels are
-//! already on the GPU as a [`TextureId`]; there is nothing to prepare, so the
-//! content is written directly at build time.
+//! `Image` is one leaf node that draws a picture: an asset ([`image_asset`]),
+//! a PNG, JPEG or SVG embedded with `asset!("…")` and decoded off the frame
+//! path, or an already-resident texture ([`image`]). An asset's node shows
+//! nothing until it is decoded and resident, then draws at its natural size
+//! unless its box is set, fitted into the box by its [`AssetFit`]; a texture
+//! draws at once, written directly at build time.
 //!
-//! It maps to exactly one `viso-ui` node: a leaf with a transparent box (the
-//! texture is the content), an image content payload, and a [`Role::Group`]
-//! semantics node (a non-interactive presentational element; a dedicated
-//! `Role::Image` variant is a later slice). Its size defaults to
-//! [`Length::Fixed`] at the texture's intrinsic pixel size, and its intrinsic
-//! size drives a [`Length::Fit`] axis's measure.
+//! Its semantics are [`Role::Image`] named by its [`label`](Image::label), the
+//! text alternative; an image without one is decoration, a mute
+//! [`Role::Group`].
 
 use viso_ui::{
-    BoxStyle, BuildCx, Component, LeafStyle, Length, Rect, Rgba, Role, Semantics, Size, TextureId,
-    Vec2,
+    Asset, AssetFit, BoxStyle, BuildCx, Component, LeafStyle, Length, Rect, Rgba, Role, Semantics,
+    Size, TextureId, Vec2,
 };
 
 /// A white (identity) tint: the texture is drawn unmodulated.
@@ -76,16 +72,23 @@ pub struct ImageStyle {
 /// thumbnail.build(&mut cx);
 /// ```
 ///
-/// Invalidation: `Image` declares an image content payload that carries the
-/// texture's intrinsic size; changing the texture or its parameters is expressed
-/// by rebuilding the image. Semantics are [`Role::Group`] (a presentational,
-/// non-interactive element).
+/// Invalidation: `Image` declares a content payload that carries its intrinsic
+/// size; changing the picture or its parameters is expressed by rebuilding the
+/// image.
 pub struct Image {
-    texture: TextureId,
-    /// The texture's intrinsic pixel size — the default box and the value a
-    /// `Fit` axis measures against.
-    natural: Vec2,
+    source: ImageSource,
     style: ImageStyle,
+    /// The text alternative; `None` for decoration.
+    label: Option<String>,
+}
+
+/// What an [`Image`] draws.
+enum ImageSource {
+    /// A resident texture and its intrinsic pixel size — the default box and
+    /// the value a `Fit` axis measures against.
+    Texture { texture: TextureId, natural: Vec2 },
+    /// An asset, fitted into the box.
+    Asset { asset: Asset, fit: AssetFit },
 }
 
 /// Construct an [`Image`] drawing `texture` at its intrinsic pixel size
@@ -98,8 +101,7 @@ pub fn image(texture: TextureId, width: f32, height: f32) -> Image {
         y: height,
     };
     Image {
-        texture,
-        natural,
+        source: ImageSource::Texture { texture, natural },
         style: ImageStyle {
             uv: FULL_UV,
             tint: NO_TINT,
@@ -108,12 +110,66 @@ pub fn image(texture: TextureId, width: f32, height: f32) -> Image {
                 height: Length::Fixed(height),
             },
         },
+        label: None,
+    }
+}
+
+/// Construct an [`Image`] showing `asset`, from `asset!("…")`, at its natural
+/// size, contained in its box. Chain [`Image::fit`], [`Image::tint`],
+/// [`Image::size`] and [`Image::label`] to adjust it.
+///
+/// ```
+/// use viso_ui::resource::{AssetKind, ResourceId};
+/// use viso_ui::{Asset, AssetBytes, AssetFit, BuildCx, Component, NodeStore};
+/// use viso_widgets::image_asset;
+///
+/// // `asset!("photos/day.png")` embeds a package asset as this value.
+/// let day = Asset {
+///     id: ResourceId::of("photos/day.png"),
+///     kind: AssetKind::Raster,
+///     bytes: AssetBytes::Static(b"\x89PNG\r\n\x1a\n"),
+/// };
+/// let mut store = NodeStore::new();
+/// let mut cx = BuildCx::new(&mut store);
+/// image_asset(day).fit(AssetFit::Cover).label("Today's photo").build(&mut cx);
+/// ```
+pub fn image_asset(asset: Asset) -> Image {
+    Image {
+        source: ImageSource::Asset {
+            asset,
+            fit: AssetFit::Contain,
+        },
+        style: ImageStyle {
+            uv: FULL_UV,
+            tint: NO_TINT,
+            size: Size {
+                width: Length::Fit,
+                height: Length::Fit,
+            },
+        },
+        label: None,
     }
 }
 
 impl Image {
-    /// Set the source sub-rect in normalized `0..1` UV space (defaults to the
-    /// full texture).
+    /// Set how an asset fills the box (defaults to [`AssetFit::Contain`]); a
+    /// texture always fills it.
+    pub fn fit(mut self, fit: AssetFit) -> Self {
+        if let ImageSource::Asset { fit: own, .. } = &mut self.source {
+            *own = fit;
+        }
+        self
+    }
+
+    /// Set the text alternative, which names the image to assistive
+    /// technology; an image without one is decoration.
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// Set the source sub-rect of a texture in normalized `0..1` UV space
+    /// (defaults to the full texture).
     pub fn uv(mut self, uv: Rect) -> Self {
         self.style.uv = uv;
         self
@@ -145,14 +201,20 @@ impl Component for Image {
             size: self.style.size,
             style: BoxStyle::NONE,
         });
-        cx.image(
-            handle,
-            self.texture,
-            self.style.uv,
-            self.style.tint,
-            self.natural,
-        );
-        cx.semantics(handle, Semantics::role(Role::Group));
+        match &self.source {
+            ImageSource::Texture { texture, natural } => {
+                cx.image(handle, *texture, self.style.uv, self.style.tint, *natural);
+            }
+            ImageSource::Asset { asset, fit } => {
+                let tint = (self.style.tint != NO_TINT).then_some(self.style.tint);
+                cx.asset(handle, asset, *fit, tint);
+            }
+        }
+        let semantics = match &self.label {
+            Some(label) => Semantics::role(Role::Image).with_label(label.clone()),
+            None => Semantics::role(Role::Group),
+        };
+        cx.semantics(handle, semantics);
     }
 }
 
@@ -256,6 +318,56 @@ mod tests {
             }
             other => panic!("expected Content::Image, got {other:?}"),
         }
+    }
+
+    /// An asset image offers its bytes, shows the resource fitted and tinted at
+    /// its natural size, and with a label is an `Image` named by it.
+    #[test]
+    fn an_asset_image_shows_its_resource_and_is_named_by_its_label() {
+        use viso_ui::AssetBytes;
+        use viso_ui::resource::{AssetKind, ResourceId};
+
+        let id = ResourceId::of("icons/star.svg");
+        let star = Asset {
+            id,
+            kind: AssetKind::Vector,
+            bytes: AssetBytes::Static(b"<svg/>"),
+        };
+        let red = Rgba {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+        let mut store = NodeStore::new();
+        let mut cx = BuildCx::new(&mut store);
+        image_asset(star)
+            .fit(AssetFit::Cover)
+            .tint(red)
+            .label("Favorite")
+            .build(&mut cx);
+        let root = cx.root().expect("image declares a root node");
+        match store.content_payload(root) {
+            Some(Content::Asset {
+                resource,
+                fit,
+                tint,
+                ..
+            }) => {
+                assert_eq!(*resource, id);
+                assert_eq!(*fit, AssetFit::Cover);
+                assert_eq!(*tint, Some(red));
+            }
+            other => panic!("expected Content::Asset, got {other:?}"),
+        }
+        assert_eq!(
+            store.assets().undecoded().count(),
+            1,
+            "the bytes are offered"
+        );
+        let sem = store.semantics(root).expect("semantics present");
+        assert_eq!(sem.role, Role::Image);
+        assert_eq!(sem.label.as_deref(), Some("Favorite"));
     }
 
     /// An image is static, non-interactive content: it registers no pointer or

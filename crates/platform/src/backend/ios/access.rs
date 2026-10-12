@@ -23,8 +23,8 @@ use objc2_ui_kit::{
     UIAccessibilityElement, UIAccessibilityIsSwitchControlRunning,
     UIAccessibilityIsVoiceOverRunning, UIAccessibilityLayoutChangedNotification,
     UIAccessibilityPostNotification, UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton,
-    UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText, UIAccessibilityTraits,
-    UIResponder,
+    UIAccessibilityTraitImage, UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText,
+    UIAccessibilityTraits, UIResponder,
 };
 
 use super::view::VisoView;
@@ -169,11 +169,12 @@ fn announced(node: &Node) -> bool {
 /// mapping on the other targets.
 fn traits(node: &Node) -> UIAccessibilityTraits {
     // SAFETY: the trait constants are immutable UIKit values.
-    let (button, adjustable, text, selected) = unsafe {
+    let (button, adjustable, text, image, selected) = unsafe {
         (
             UIAccessibilityTraitButton,
             UIAccessibilityTraitAdjustable,
             UIAccessibilityTraitStaticText,
+            UIAccessibilityTraitImage,
             UIAccessibilityTraitSelected,
         )
     };
@@ -181,6 +182,7 @@ fn traits(node: &Node) -> UIAccessibilityTraits {
         Role::Button | Role::CheckBox | Role::RadioButton | Role::Tab => button,
         Role::Slider => adjustable,
         Role::Label | Role::Status => text,
+        Role::Image => image,
         _ if node.supports_action(Action::Click) => button,
         _ => 0,
     };

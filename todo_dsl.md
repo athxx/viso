@@ -326,6 +326,14 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 - [ ] `NodeRef::animate` returning an `Animation` handle, with `animation_end`
       (§U6.3).
 
+### D2.7 — Semantics
+
+- [ ] `semantics.*` (`role`, `label`, `hint`, `value`, `live`, `hidden`) reach the
+      node through all three targets (today they are checked, `E3704`, and dropped);
+      the prelude's `Role` enum mirrors `viso_ui::Role`, `image` included. An
+      `Image`/`Svg` with a `semantics.label` is `Role::Image` named by it, one
+      without is decoration.
+
 ### Done
 
 - [x] A todo-list app with `if`, keyed `for`, handlers and a user component runs

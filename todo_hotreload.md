@@ -583,9 +583,12 @@ editable source files.
       device loss. A payload that does not decode is reported once and never
       retried at that revision; the last good keeps drawing. Counters: decodes,
       decode failures, uploads, upload bytes (`VISO_DEBUG`). `examples/images`.
-- [ ] The Rust `Image` widget shows an asset by resource as well as a resident
-      texture; `Image` and `Svg` nodes take `Role::Image`, their `semantics.label`
-      the text alternative.
+- [x] Rust: `viso::asset!("…")` checks the path like `asset("…")` (`E3713`) and
+      embeds the file as a `viso_ui::Asset`; `widgets::image_asset` shows one
+      (`BuildCx::asset` offers its bytes), fitted, tinted and labelled. `Role::Image`
+      (AccessKit `Image`, ARIA `img`, UIKit's image trait) names an image by its
+      label; an unlabelled one is decoration. The DSL's `semantics.*` reaching the
+      node is `todo_dsl.md` D2.7.
 
 ### H4.2 — Asset reload
 

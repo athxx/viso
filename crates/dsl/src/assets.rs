@@ -10,10 +10,13 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use viso_ui::resource::{AssetFormat, ResourceId, normalize_path};
+pub use viso_ui::resource::{AssetFormat, AssetKind, ResourceId, normalize_path};
 
 /// The directory of a package's assets, beside its `Viso.toml`.
 pub const ASSET_DIR: &str = "assets";
+
+/// The diagnostic code of every misuse of an asset.
+pub const ASSET_ERROR: &str = "E3713";
 
 /// The assets of one package.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

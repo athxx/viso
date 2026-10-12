@@ -21,8 +21,11 @@ use std::path::{Path, PathBuf};
 
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote};
+use std::io::Read as _;
 use syn::{Ident, LitStr};
-use viso_dsl::assets::AssetCatalog;
+use viso_dsl::assets::{
+    ASSET_ERROR, AssetCatalog, AssetFormat, AssetIssue, AssetKind, ResourceId, normalize_path,
+};
 use viso_dsl::frontend::{self, Compiled, Origin, Source, SourceKind};
 use viso_dsl::hir::{ConstValue, HirComponent};
 use viso_dsl::resolve::SymbolId;
@@ -166,6 +169,58 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     #allocations
                     #root
                 }
+            }
+        })
+    })();
+    finish(expansion, true)
+}
+
+/// `asset!("images/logo.png")`: the file of the package's `assets/` the path
+/// names, checked to exist and to be a PNG, JPEG or SVG, as a
+/// `viso_ui::Asset` embedding its bytes — so editing it rebuilds the crate.
+pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let expansion = (|| {
+        let literal: LitStr = syn::parse(input)?;
+        let span = literal.span();
+        let fail = |message: String| syn::Error::new(span, format!("{ASSET_ERROR}: {message}"));
+        let written = literal.value();
+        let path = normalize_path(&written).ok_or_else(|| {
+            fail(format!(
+                "`{written}` is outside `assets/`: an asset path is relative to it and never \
+                 climbs out"
+            ))
+        })?;
+        let dir = package::asset_dir(&package::root()?)?;
+        let file = dir.join(&path);
+        let mut head = Vec::with_capacity(4096);
+        let opened = std::fs::File::open(&file)
+            .and_then(|f| std::io::Read::take(f, 4096).read_to_end(&mut head));
+        if opened.is_err() || !file.is_file() {
+            let nearest = AssetCatalog::scan(&dir)
+                .ok()
+                .and_then(|catalog| match catalog.lookup(&path) {
+                    Err(AssetIssue::Missing { nearest }) => nearest,
+                    _ => None,
+                })
+                .map(|nearest| format!("; did you mean `{nearest}`?"))
+                .unwrap_or_default();
+            return Err(fail(format!("`assets/{path}` does not exist{nearest}")));
+        }
+        let format = AssetFormat::sniff(&head)
+            .ok_or_else(|| fail(format!("`assets/{path}` is not a PNG, JPEG or SVG file")))?;
+        let file = file
+            .to_str()
+            .ok_or_else(|| fail(format!("the path of `assets/{path}` is not UTF-8")))?;
+        let id = Literal::u64_suffixed(ResourceId::of(&path).0);
+        let kind = match format.kind() {
+            AssetKind::Raster => quote! { Raster },
+            AssetKind::Vector => quote! { Vector },
+        };
+        Ok(quote! {
+            ::viso_ui::Asset {
+                id: ::viso_ui::resource::ResourceId(#id),
+                kind: ::viso_ui::resource::AssetKind::#kind,
+                bytes: ::viso_ui::AssetBytes::Static(::core::include_bytes!(#file)),
             }
         })
     })();

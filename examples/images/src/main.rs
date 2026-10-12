@@ -1,7 +1,8 @@
 //! A photo and an icon from `assets/`: `asset("…")` names each file, checked
 //! when the crate compiles and typed by its format, and `view!` embeds the
 //! bytes, so editing a file rebuilds the crate. A button switches the photo
-//! between two assets; only the ones shown are decoded.
+//! between two assets; only the ones shown are decoded. Rust code embeds one
+//! with `viso::asset!("…")` and shows it with `viso::widgets::image_asset`.
 
 use viso::prelude::*;
 
@@ -184,5 +185,24 @@ mod tests {
         expected.push((night, size("photos/night.jpg")));
         expected.sort();
         assert_eq!(gallery.offered(), expected);
+    }
+
+    #[test]
+    fn rust_code_embeds_an_asset_with_the_macro() {
+        use viso::ui::{Component, Role};
+        use viso_ui::resource::AssetKind;
+
+        let star = viso::asset!("icons/star.svg");
+        assert_eq!(star.id, ResourceId::of("icons/star.svg"));
+        assert_eq!(star.kind, AssetKind::Vector);
+        assert_eq!(&*star.bytes, include_bytes!("../assets/icons/star.svg"));
+        let mut store = NodeStore::new();
+        let mut cx = BuildCx::new(&mut store);
+        viso::widgets::image_asset(star)
+            .label("Star")
+            .build(&mut cx);
+        let root = cx.root().expect("a root");
+        assert_eq!(store.semantics(root).map(|s| s.role), Some(Role::Image));
+        assert_eq!(store.assets().undecoded().count(), 1);
     }
 }

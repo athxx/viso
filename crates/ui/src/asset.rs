@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use viso_render::TextureId;
-use viso_render::asset::{RasterImage, ResourceId, ResourceRevision, VectorScene};
+use viso_render::asset::{AssetKind, RasterImage, ResourceId, ResourceRevision, VectorScene};
 
 /// What a node showing an asset draws.
 #[derive(Debug, Clone, PartialEq)]
@@ -80,6 +80,15 @@ impl std::fmt::Debug for AssetBytes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "AssetBytes({} bytes)", self.len())
     }
+}
+
+/// An asset a Rust view shows, as `asset!("…")` embeds it: its resource, how
+/// it draws and its encoded bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asset {
+    pub id: ResourceId,
+    pub kind: AssetKind,
+    pub bytes: AssetBytes,
 }
 
 /// A decoded asset.

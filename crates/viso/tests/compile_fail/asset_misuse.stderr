@@ -1,0 +1,11 @@
+error: E3713: `assets/photos/missing.png` does not exist
+ --> tests/compile_fail/asset_misuse.rs:2:33
+  |
+2 |     let _missing = viso::asset!("photos/missing.png");
+  |                                 ^^^^^^^^^^^^^^^^^^^^
+
+error: E3713: `../secret.png` is outside `assets/`: an asset path is relative to it and never climbs out
+ --> tests/compile_fail/asset_misuse.rs:3:33
+  |
+3 |     let _outside = viso::asset!("../secret.png");
+  |                                 ^^^^^^^^^^^^^^^

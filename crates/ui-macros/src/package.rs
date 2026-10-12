@@ -46,6 +46,21 @@ pub fn origin(root: &Path, file: Option<&Path>) -> syn::Result<Origin> {
     })
 }
 
+/// The directory of the package the crate rooted at `root` belongs to: the
+/// one holding its `Viso.toml`, else the crate's own.
+fn package_dir<'a>(
+    root: &'a Path,
+    manifest: Option<&'a (PathBuf, toml_edit::DocumentMut)>,
+) -> &'a Path {
+    manifest.and_then(|(path, _)| path.parent()).unwrap_or(root)
+}
+
+/// The asset directory of the package the crate rooted at `root` belongs to.
+pub fn asset_dir(root: &Path) -> syn::Result<PathBuf> {
+    let manifest = manifest(root)?;
+    Ok(package_dir(root, manifest.as_ref()).join(ASSET_DIR))
+}
+
 /// The nearest `Viso.toml` at or above `root`, parsed, with its path.
 fn manifest(root: &Path) -> syn::Result<Option<(PathBuf, toml_edit::DocumentMut)>> {
     let Some(manifest) = root
@@ -137,10 +152,7 @@ pub fn profile(root: &Path) -> syn::Result<Profile> {
         },
         None => i18n::DEFAULT_SOURCE.to_owned(),
     };
-    let base = manifest
-        .as_ref()
-        .and_then(|(path, _)| path.parent())
-        .unwrap_or(root);
+    let base = package_dir(root, manifest.as_ref());
     let dir = base.join(i18n::CATALOG_DIR);
     let files = Messages::read_dir(&dir).map_err(|error| {
         syn::Error::new(

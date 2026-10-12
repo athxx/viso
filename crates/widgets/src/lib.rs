@@ -39,7 +39,7 @@ pub use controls::{
 };
 pub use grid::{Grid, GridViewStyle, grid};
 pub use icon::{Icon, IconStyle, icon};
-pub use image::{Image, ImageStyle, image};
+pub use image::{Image, ImageStyle, image, image_asset};
 pub use list::{VirtualList, VirtualListViewStyle, virtual_list};
 pub use scroll::{Scroll, ScrollViewStyle, scroll};
 pub use text::{Label, LabelStyle, label};

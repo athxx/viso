@@ -44,6 +44,10 @@ pub enum Role {
     Radio,
     /// A static text label.
     Label,
+    /// An image: a picture or an icon, named by its label (its text
+    /// alternative). An image with no label is decoration, a mute
+    /// [`Group`](Role::Group).
+    Image,
     /// An editable text field: accepts typed characters and IME composition,
     /// carries a caret and an optional selection. The live text value, caret,
     /// and selection are held in the control's own reactive cells, not this cold
@@ -126,6 +130,7 @@ impl Role {
             Role::Slider => "slider",
             Role::Radio => "radio",
             Role::Label => "label",
+            Role::Image => "image",
             Role::TextField => "textfield",
             Role::Tab => "tab",
             Role::TabList => "tablist",

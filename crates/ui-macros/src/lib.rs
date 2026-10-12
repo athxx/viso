@@ -59,3 +59,8 @@ pub fn component(input: TokenStream) -> TokenStream {
 pub fn view(input: TokenStream) -> TokenStream {
     expand::view(input)
 }
+
+#[proc_macro]
+pub fn asset(input: TokenStream) -> TokenStream {
+    expand::asset(input)
+}

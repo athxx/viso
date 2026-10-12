@@ -93,7 +93,7 @@ pub use viso_ui::{WindowChrome, WindowConfig};
 // themselves depend on `viso-ui`. The facade re-exports them and already depends on
 // `viso-ui`, so those emitted paths resolve at the call site — the same
 // reverse-re-export shape `viso-gpu` uses for `viso_macros::GpuPod`.
-pub use viso_ui_macros::{component, ui, view};
+pub use viso_ui_macros::{asset, component, ui, view};
 
 // The SVG input lane (§13), re-exported as `viso::svg` so an app that has SVG
 // bytes calls `viso::svg::parse_svg(..)` without naming the internal

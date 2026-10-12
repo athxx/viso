@@ -356,6 +356,7 @@ pub(crate) fn aria_role(role: Role) -> Option<&'static str> {
         Role::Tree => "tree",
         Role::TreeItem => "treeitem",
         Role::Group => "group",
+        Role::Image => "img",
         Role::Region => "region",
         Role::Navigation => "navigation",
         Role::Dialog => "dialog",

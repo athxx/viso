@@ -13,8 +13,7 @@ use crate::resolve::prelude::{image_record, svg_record};
 use crate::syntax::SyntaxNode;
 use viso_ui::resource::{AssetFormat, AssetKind, ResourceId, normalize_path};
 
-/// The diagnostic code of every misuse of an asset.
-pub(crate) const ASSET: &str = "E3713";
+pub(crate) use crate::assets::ASSET_ERROR as ASSET;
 
 /// The path `asset(…)`'s argument spells, when it is a string literal.
 pub(crate) fn asset_path(arg: &Expr) -> Option<String> {

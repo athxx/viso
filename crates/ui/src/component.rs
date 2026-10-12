@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::animation::{LookTransition, LookValue, Timing, TranslateAnim};
-use crate::asset::{AssetFit, AssetPayload, AssetTable};
+use crate::asset::{Asset, AssetFit, AssetPayload, AssetTable};
 use crate::binding::BindingTable;
 use crate::content::{Content, TextRequest};
 use crate::context::EventCx;
@@ -3781,6 +3781,27 @@ impl<'a> BuildCx<'a> {
                 natural,
             },
         );
+        handle
+    }
+
+    /// Show `asset` on an already-declared node, fitted into its box and
+    /// tinted: its bytes are offered to the store's asset table, which the
+    /// facade decodes and, for a raster, uploads; until then the node draws
+    /// nothing. Its natural size is the asset's once decoded. Returns the
+    /// handle so authoring chains inline.
+    pub fn asset(
+        &mut self,
+        handle: Handle,
+        asset: &Asset,
+        fit: AssetFit,
+        tint: Option<Rgba>,
+    ) -> Handle {
+        if !self.store.assets.knows(asset.id) {
+            self.store
+                .assets
+                .offer(asset.id, ResourceRevision::default(), asset.bytes.clone());
+        }
+        self.store.set_asset(handle.id, asset.id, fit, tint);
         handle
     }
 
