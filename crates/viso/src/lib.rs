@@ -363,7 +363,18 @@ pub mod __test_support {
         script: Vec<viso_platform::RawEvent>,
         step: Duration,
     ) -> DrivenApp<A> {
-        drive_host::<A>(script, step, true, None)
+        drive_host::<A>(script, step, true, None, None)
+    }
+
+    /// [`drive_scripted`] bounded to `frames` frames, for an app that never
+    /// stops asking for them (a running game); each scripted event lands
+    /// before the frames queued behind it.
+    pub fn drive_scripted_frames<A: Application>(
+        script: Vec<viso_platform::RawEvent>,
+        step: Duration,
+        frames: u32,
+    ) -> DrivenApp<A> {
+        drive_host::<A>(script, step, true, None, Some(frames))
     }
 
     /// [`drive_scripted`] with `services` lent to every handler in place of
@@ -373,7 +384,7 @@ pub mod __test_support {
         step: Duration,
         services: crate::services::Services,
     ) -> DrivenApp<A> {
-        drive_host::<A>(script, step, true, Some(services))
+        drive_host::<A>(script, step, true, Some(services), None)
     }
 
     /// [`drive_scripted`] on a host whose windows fill the screen (mobile, a
@@ -382,7 +393,7 @@ pub mod __test_support {
         script: Vec<viso_platform::RawEvent>,
         step: Duration,
     ) -> DrivenApp<A> {
-        drive_host::<A>(script, step, false, None)
+        drive_host::<A>(script, step, false, None, None)
     }
 
     fn drive_host<A: Application>(
@@ -390,11 +401,15 @@ pub mod __test_support {
         step: Duration,
         framed: bool,
         services: Option<crate::services::Services>,
+        frames: Option<u32>,
     ) -> DrivenApp<A> {
         let mut app = Box::new(viso_platform::backend::headless::HeadlessApp::scripted(
             script,
         ));
         app.set_framed_windows(framed);
+        if let Some(frames) = frames {
+            app.frame_budget(frames);
+        }
         let services = services.unwrap_or_else(crate::services::Services::unsupported);
         let driver = AppDriver::<A>::new(Some(services));
         let clock = FixedStepClock::new(Instant::now(), step);
@@ -1017,7 +1032,9 @@ impl WindowState {
 
     /// Whether a node of the window is mid-slide or a look property mid-move.
     fn is_animating(&self) -> bool {
-        !self.animations.is_empty() || self.store.is_transitioning()
+        !self.animations.is_empty()
+            || self.store.is_transitioning()
+            || self.store.frame_clients_want_frame()
     }
 
     /// Whether the text worker still owes results a later frame commits.
@@ -1692,6 +1709,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 environment::note_key(&mut ws.states);
                 if matches!(k.key, viso_runtime::Key::Tab) && k.pressed {
                     focus_next(&mut ws.store, root, !modifiers.shift);
+                } else if ws.store.focused().is_none() {
+                    // No UI node takes keys: a running game does. An
+                    // auto-repeat is not a new press for it.
+                    if !k.repeat {
+                        ws.store.frame_clients_key(k.key, k.pressed);
+                    }
                 } else {
                     let ev = KeyEvent {
                         key: k.key,
@@ -1886,6 +1909,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
+    fn on_window_focus(&mut self, window: WindowId, focused: bool) {
+        // A window losing focus stops delivering key-ups: release every key
+        // its games hold so none stays down.
+        if !focused && let Some(ws) = self.windows.iter_mut().find(|w| w.window == window) {
+            ws.store.release_client_input();
+        }
+    }
+
     fn on_window_chrome_geom(
         &mut self,
         _cx: &mut RuntimeCx<'_>,
@@ -2026,6 +2057,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if ws.store.is_transitioning() {
                         ws.store.tick_transitions(cx.frame_delta());
                     }
+                    // Advance the games the window's views run — the ticks
+                    // their clocks owe, then their frame hooks — after the
+                    // reload above committed, so a patch staged during the
+                    // last frame's ticks runs from the next tick on.
+                    ws.store.run_frame_clients(cx.frame_delta().as_secs_f64());
                     // Arm any one-shot timers a handler requested this frame (a
                     // toast's auto-dismiss), then fire every timer whose deadline
                     // this frame's instant has crossed. Arming resolves each

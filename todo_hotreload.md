@@ -418,19 +418,57 @@ Goal: a game `.vs` edit swaps logic at a fixed-tick boundary with the world kept
 
 ### H3.2 — Remaining
 
-- [ ] Game host wiring: the host classifies the candidate and sends `SystemPatch`
-      (bytecode + tier + state plan); the runtime stages it and commits after the
-      current tick completes, never mid-tick (§16, B.4).
+No game runs in an app yet: `view!` compiles a file's systems into its module, but
+nothing builds a `Scheduler` for them outside tests and `viso test game`. The running
+session comes first, then every reload item builds on it.
+
+- [x] Game session: a `view!` (or `component!` / package / dev-plan) mount whose
+      module declares systems starts a `viso_view::GameSession` owned by the mount's
+      root — its own VM over the shared module, `Natives::standard`, the module's
+      capabilities — registered as a frame client of the window's store
+      (`viso_ui::FrameClient`); the facade advances every client each frame after the
+      reload commit (the ticks the clock owes, then `FrameUpdate`), feeds it the
+      window's keys while no UI node holds keyboard focus and releases its input when
+      the window or the UI takes focus; freeing the root drops it, a reload that
+      rebuilds the root moves it (`game_session.rs`, store and facade loop; the
+      headless backend gained a frame budget for apps that never stop animating).
+- [ ] Wire: a `system` section — `SystemPatch { file, module, tier, keep }` (the
+      candidate's encoded module, the classified tier, the World Rebuild's
+      character policy) — encoded and decoded with the section bounds; the runtime
+      advertises `system` when it hosts a game.
+- [ ] Host: `Sources` keeps each game file's last-good behavior program; a candidate
+      of a file whose module declares systems is classified (`classify`), reported
+      as the `E5103` note, and sent as the file's `ui` and `system` sections of one
+      candidate revision; `Unchanged` sends no `system` section; the ACK makes the
+      candidate the last good.
+- [ ] Runtime stage: decode, verify and link the candidate module into a VM at stage
+      time, nothing live touched (`NACK_UNLOADABLE_SYSTEM`, stage `runtime-stage`);
+      commit at the tick boundary after the current tick — systems first (reload or
+      shadow rebuild by tier), then the UI sections, so a faulting smoke tick NACKs
+      the whole revision (`NACK_SYSTEM_FAULT`, stage `runtime-commit`) with the last
+      good kept everywhere; the ACK carries the tick the patch applied before, the
+      tier and the carried and reset states.
 - [ ] Integration test (§62 Game): run tick N, stage a patch during N, assert old code
       completes N, new code starts N+1, world and entity ids identical.
 - [ ] Replay timeline: a live patch is recorded as `PatchRevision applied at TickId`
       with the system code revision and any state resets; replay re-applies it at the
       same tick; deterministic-replay mode refuses live patches with a stage
       `runtime-stage` NACK (§18).
-- [ ] Audio host swap on a logic reload without a gap (lock-free slot hand-off; with
-      the D5 audio item).
+- [ ] Audio: a session's audio systems start on the default device (`GameAudio`)
+      where the target has one, attached when the store hands out the started client;
+      a logic reload swaps the audio host without a gap: the new host is built off the
+      audio thread and handed over through a lock-free slot, the old one handed back
+      for dropping off the audio thread; the queues move across, so the game's link
+      stays valid (with the D5 audio item).
 - [ ] `viso game peek` / `viso game record` over the dev channel against the running
-      session (CLI §22.3).
+      session (CLI §22.3): a loopback control endpoint of `viso run`, named in its
+      session lock, relays a query to the runtime (`HostMessage::Game`,
+      `RuntimeMessage::Game`) and prints or writes the answer.
+- [ ] Docs: Hot Reload §16–§18 and §35–§37 (the `system` section, its NACKs and ACK
+      fields), CLI §22.3 and §36 (`dev` fields of a system patch), DSL §110.
+- [ ] Not in this phase: `GameViewport` and the 3D lane that draws the World (the
+      Rendering spec's Mesh/3D lane needs its design and ADR first), HUD reads of game
+      state (§109 Reactive Query) — tracked in `todo_dsl.md` D5.
 
 ### Done
 

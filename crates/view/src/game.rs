@@ -1,0 +1,368 @@
+//! The game a mounted view runs: a view whose module declares systems starts
+//! a [`GameSession`] on its root — its own interpreter over the view's
+//! module, linked against the standard natives with the package's
+//! capabilities — which the window's frame loop advances as a
+//! [`FrameClient`]: every frame runs the ticks the clock owes and then every
+//! `FrameUpdate`, the keys no UI node takes reach the game, and the session
+//! ends with the root.
+//!
+//! A reload swaps the session's build at a tick boundary
+//! ([`GameSession::reload`]), the World, entities and compatible states
+//! kept, or rebuilds the World in a shadow game for a World Rebuild; the
+//! audio device, when one is attached, swaps its audio systems with it.
+
+use std::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use viso_behavior::game::{
+    AudioLink, GameError, Key as GameKey, Persist, Rebuild, Restored, Scheduler, SystemFault,
+};
+use viso_behavior::native::Natives;
+use viso_behavior::{Budget, Module, Value, Vm};
+use viso_ui::input::Key;
+use viso_ui::{FrameClient, NodeId, NodeStore};
+
+/// The device a session's audio systems render on, provided by the host.
+pub trait GameAudioDevice {
+    /// Builds `module`'s audio systems and hands them to the device in
+    /// place of the running ones, with no gap in the output; the game's
+    /// link stays valid.
+    ///
+    /// # Errors
+    ///
+    /// When `module`'s audio systems do not build; the running ones keep
+    /// playing.
+    fn reload(&mut self, module: &Module, natives: &Natives) -> Result<(), String>;
+}
+
+/// Why a session's build was not swapped.
+#[derive(Debug)]
+pub enum GameReloadError {
+    /// The candidate module does not link.
+    Link(String),
+    /// A system faulted building the candidate's instances, its start or its
+    /// smoke tick, or the physics tier does not hold; the last good runs on.
+    Game(GameError),
+}
+
+impl std::fmt::Display for GameReloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GameReloadError::Link(e) => write!(f, "the systems do not link: {e}"),
+            GameReloadError::Game(GameError::Fault(fault)) => write!(
+                f,
+                "{} faulted at tick {}: {}",
+                fault.system, fault.tick, fault.fault
+            ),
+            GameReloadError::Game(GameError::Physics(tier)) => write!(f, "{tier:?}"),
+        }
+    }
+}
+
+/// What a swap kept.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GameSwap {
+    /// The tick the new build runs first.
+    pub tick: u64,
+    /// The states carried across, by stable identity and schema.
+    pub carried: u32,
+    /// The states that started over at their initializers.
+    pub reset: u32,
+    /// The characters a World Rebuild carried by stable entity key.
+    pub characters: u32,
+}
+
+/// A running game.
+pub struct GameSession {
+    scheduler: Scheduler,
+    /// The module the running build was made from.
+    module: Rc<Module>,
+    audio: Option<Box<dyn GameAudioDevice>>,
+}
+
+impl std::fmt::Debug for GameSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GameSession")
+            .field("tick", &self.scheduler.clock().tick())
+            .field("audio", &self.audio.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A VM over `module` linked against the standard natives with the
+/// package's capabilities, persisting through the installed store.
+fn link(module: &Rc<Module>) -> Result<Vm, String> {
+    let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
+    let mut vm = Vm::new(Rc::clone(module), Budget::default());
+    vm.link(&Natives::standard(), &grant)
+        .map_err(|e| e.to_string())?;
+    if let Some(shared) = crate::persistence::installed() {
+        vm.services_mut().insert(Persist::new(shared));
+    }
+    Ok(vm)
+}
+
+impl GameSession {
+    /// Starts the game `module`'s systems make.
+    ///
+    /// # Errors
+    ///
+    /// When the module does not link, or a system faults creating its
+    /// instance or in the start.
+    pub fn start(module: Rc<Module>) -> Result<GameSession, GameReloadError> {
+        let vm = link(&module).map_err(GameReloadError::Link)?;
+        let scheduler =
+            Scheduler::new(vm).map_err(|fault| GameReloadError::Game(GameError::Fault(fault)))?;
+        Ok(GameSession {
+            scheduler,
+            module,
+            audio: None,
+        })
+    }
+
+    /// The running game.
+    pub fn scheduler(&self) -> &Scheduler {
+        &self.scheduler
+    }
+
+    /// The running game, to drive or inspect it.
+    pub fn scheduler_mut(&mut self) -> &mut Scheduler {
+        &mut self.scheduler
+    }
+
+    /// The module the running build was made from.
+    pub fn module(&self) -> &Rc<Module> {
+        &self.module
+    }
+
+    /// The value of state `state` of system `system`, as the running build
+    /// holds it: what `viso game peek <session> System.state` reads.
+    pub fn state(&self, system: &str, state: &str) -> Option<Value> {
+        let module = self.scheduler.vm().module();
+        let (index, layout) = module.systems().iter().enumerate().find_map(|(i, s)| {
+            let layout = module.layout(s.component);
+            (&*layout.name == system).then_some((i, layout))
+        })?;
+        let slot = layout.state(state)?;
+        self.scheduler.instance(index).states().get(slot).cloned()
+    }
+
+    /// Lets the systems talk to the audio systems `device` renders through
+    /// `link`.
+    pub fn attach_audio(&mut self, link: AudioLink, device: Box<dyn GameAudioDevice>) {
+        self.scheduler.attach_audio(link);
+        self.audio = Some(device);
+    }
+
+    /// Whether an audio device is attached.
+    pub fn has_audio(&self) -> bool {
+        self.audio.is_some()
+    }
+
+    /// The faults the systems raised since the last call.
+    pub fn take_faults(&mut self) -> Vec<SystemFault> {
+        self.scheduler.take_faults()
+    }
+
+    /// Links `module` into a VM for [`reload`](Self::reload), touching
+    /// nothing live: what a reload stages when its patch arrives.
+    ///
+    /// # Errors
+    ///
+    /// When the module does not link.
+    pub fn stage(module: &Rc<Module>) -> Result<Vm, String> {
+        link(module)
+    }
+
+    /// Swaps in `vm`, staged from `module`, at the tick boundary the session
+    /// is at: a Logic or Presentation reload keeps the World, entities,
+    /// clock and compatible states; `rebuild` runs a World Rebuild in a
+    /// shadow game, carrying characters as `keep` says. On any failure the
+    /// running game is unchanged. The audio systems swap with the build.
+    ///
+    /// # Errors
+    ///
+    /// The candidate's fault, or its physics tier.
+    pub fn reload(
+        &mut self,
+        module: Rc<Module>,
+        vm: Vm,
+        rebuild: Option<Rebuild>,
+    ) -> Result<GameSwap, GameReloadError> {
+        let swap = match rebuild {
+            Some(keep) => {
+                let characters = self
+                    .scheduler
+                    .rebuild(vm, keep)
+                    .map_err(GameReloadError::Game)?;
+                GameSwap {
+                    tick: self.scheduler.clock().tick(),
+                    characters,
+                    ..GameSwap::default()
+                }
+            }
+            None => {
+                let restored: Restored =
+                    self.scheduler.reload(vm).map_err(GameReloadError::Game)?;
+                GameSwap {
+                    tick: self.scheduler.clock().tick(),
+                    carried: restored.states + restored.locals,
+                    reset: restored.mismatched + restored.missing,
+                    characters: 0,
+                }
+            }
+        };
+        if let Some(audio) = &mut self.audio {
+            // The new systems run; audio that does not build keeps the old
+            // sound rather than failing the swap.
+            let _ = audio.reload(&module, &Natives::standard());
+        }
+        self.module = module;
+        Ok(swap)
+    }
+}
+
+/// The frame client a mount registers: the shared session, so the dev
+/// runtime reaches it typed through its owner.
+struct GameClient(Rc<RefCell<GameSession>>);
+
+impl FrameClient for GameClient {
+    fn frame(&mut self, dt: f64) {
+        self.0.borrow_mut().scheduler.frame(dt);
+    }
+
+    fn key(&mut self, key: Key, pressed: bool) -> bool {
+        let Some(key) = game_key(key) else {
+            return false;
+        };
+        self.0.borrow_mut().scheduler.key(key, pressed);
+        true
+    }
+
+    fn release_input(&mut self) {
+        self.0.borrow_mut().scheduler.release_input();
+    }
+
+    fn wants_frame(&self) -> bool {
+        !self.0.borrow().scheduler.clock().paused()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// The game key of a keyboard key, by its position on a US layout.
+fn game_key(key: Key) -> Option<GameKey> {
+    use GameKey as G;
+    Some(match key {
+        Key::A => G::A,
+        Key::B => G::B,
+        Key::C => G::C,
+        Key::D => G::D,
+        Key::E => G::E,
+        Key::F => G::F,
+        Key::G => G::G,
+        Key::H => G::H,
+        Key::I => G::I,
+        Key::J => G::J,
+        Key::K => G::K,
+        Key::L => G::L,
+        Key::M => G::M,
+        Key::N => G::N,
+        Key::O => G::O,
+        Key::P => G::P,
+        Key::Q => G::Q,
+        Key::R => G::R,
+        Key::S => G::S,
+        Key::T => G::T,
+        Key::U => G::U,
+        Key::V => G::V,
+        Key::W => G::W,
+        Key::X => G::X,
+        Key::Y => G::Y,
+        Key::Z => G::Z,
+        Key::Digit0 => G::Digit0,
+        Key::Digit1 => G::Digit1,
+        Key::Digit2 => G::Digit2,
+        Key::Digit3 => G::Digit3,
+        Key::Digit4 => G::Digit4,
+        Key::Digit5 => G::Digit5,
+        Key::Digit6 => G::Digit6,
+        Key::Digit7 => G::Digit7,
+        Key::Digit8 => G::Digit8,
+        Key::Digit9 => G::Digit9,
+        Key::Space => G::Space,
+        Key::Enter => G::Enter,
+        Key::Escape => G::Escape,
+        Key::Tab => G::Tab,
+        Key::Backspace => G::Backspace,
+        Key::Up => G::ArrowUp,
+        Key::Down => G::ArrowDown,
+        Key::Left => G::ArrowLeft,
+        Key::Right => G::ArrowRight,
+        Key::ShiftLeft => G::ShiftLeft,
+        Key::ShiftRight => G::ShiftRight,
+        Key::ControlLeft => G::ControlLeft,
+        Key::ControlRight => G::ControlRight,
+        Key::AltLeft => G::AltLeft,
+        Key::AltRight => G::AltRight,
+        _ => return None,
+    })
+}
+
+/// The session `owner` runs, if it runs one.
+pub fn game_session(store: &NodeStore, owner: NodeId) -> Option<Rc<RefCell<GameSession>>> {
+    let mut client = store.frame_client(owner)?.try_borrow_mut().ok()?;
+    let client = client.as_any_mut().downcast_mut::<GameClient>()?;
+    Some(Rc::clone(&client.0))
+}
+
+thread_local! {
+    static START_FAULTS: RefCell<Vec<GameReloadError>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Why the games mounted since the last call did not start, across every
+/// view of this thread.
+pub fn take_game_start_faults() -> Vec<GameReloadError> {
+    START_FAULTS.with(|faults| std::mem::take(&mut *faults.borrow_mut()))
+}
+
+/// [`mount_game`] for a mount that has no caller to answer: a start that
+/// faults is queued for [`take_game_start_faults`].
+pub(crate) fn mount_game_queued(store: &mut NodeStore, module: &Rc<Module>, owner: NodeId) {
+    if let Err(error) = mount_game(store, module, owner) {
+        START_FAULTS.with(|faults| faults.borrow_mut().push(error));
+    }
+}
+
+/// Starts the game `module`'s systems make on `owner` unless `owner` runs
+/// one already, or stops the one it runs when `module` declares no system.
+/// A start that faults leaves `owner` without a game and returns why.
+pub fn mount_game(
+    store: &mut NodeStore,
+    module: &Rc<Module>,
+    owner: NodeId,
+) -> Result<(), GameReloadError> {
+    if module.systems().is_empty() {
+        if store.frame_client(owner).is_some() {
+            store.remove_frame_client(owner);
+        }
+        return Ok(());
+    }
+    if store.frame_client(owner).is_some() {
+        return Ok(());
+    }
+    let session = Rc::new(RefCell::new(GameSession::start(Rc::clone(module))?));
+    store.add_frame_client(owner, Rc::new(RefCell::new(GameClient(session))));
+    Ok(())
+}
+
+/// The session behind a client [`NodeStore::take_started_clients`] handed
+/// out, if it is a game.
+pub fn started_game(client: &viso_ui::SharedClient) -> Option<Rc<RefCell<GameSession>>> {
+    let mut client = client.try_borrow_mut().ok()?;
+    let client = client.as_any_mut().downcast_mut::<GameClient>()?;
+    Some(Rc::clone(&client.0))
+}

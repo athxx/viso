@@ -89,9 +89,13 @@ pub struct EnvRead {
 }
 
 impl ViewBehavior {
-    /// Whether the view mounts anything on its root: an `effect`, or the
-    /// tasks a `start` runs, which the root owns.
+    /// Whether the view mounts anything on its root: an `effect`, the
+    /// tasks a `start` runs, or the game its module's systems make, which the
+    /// root owns.
     pub fn mounts_on_root(&self) -> bool {
+        if !self.module.systems().is_empty() {
+            return true;
+        }
         let effects = self
             .module
             .component(&self.component)
@@ -181,9 +185,12 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             .component(&c.schema.name)
             .is_some_and(|layout| !layout.effects.is_empty())
     });
+    // A module declaring systems runs a game on the view's root.
+    let game = compiled.component.is_some() && !compiled.behavior.systems.is_empty();
     if sites.is_empty()
         && !regions
         && !effects
+        && !game
         && (nodes.is_empty() || compiled.component.is_none())
     {
         return Ok(None);

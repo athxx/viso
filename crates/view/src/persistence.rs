@@ -31,7 +31,7 @@ pub fn install_persistence(store: Option<SharedStore>) {
     STORE.with(|installed| *installed.borrow_mut() = store);
 }
 
-fn installed() -> Option<SharedStore> {
+pub(crate) fn installed() -> Option<SharedStore> {
     STORE.with(|installed| installed.borrow().clone())
 }
 

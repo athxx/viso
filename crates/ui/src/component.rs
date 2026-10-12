@@ -452,6 +452,9 @@ pub struct NodeStore {
     /// Cold: what runs when the app goes to the background or the window
     /// closes. Empty in a tree that persists nothing.
     suspend_hooks: crate::suspend::SuspendHooks,
+    /// Cold: the clients the frame loop advances, each owned by a node.
+    /// Empty in a window that runs no game.
+    frame_clients: crate::frame_client::FrameClients,
 }
 
 impl NodeStore {
@@ -510,6 +513,7 @@ impl NodeStore {
         self.lengths.clear();
         self.pending_effects.clear();
         self.suspend_hooks.clear();
+        self.frame_clients.clear();
     }
 
     /// Registers an effect scoped to `node` whose dependencies `when` declares
@@ -747,6 +751,21 @@ impl NodeStore {
 
     pub(crate) fn structure_hooks(&self) -> &crate::structure::StructureHooks {
         &self.structure_hooks
+    }
+
+    pub(crate) fn frame_clients(&self) -> &crate::frame_client::FrameClients {
+        &self.frame_clients
+    }
+
+    pub(crate) fn frame_clients_mut(&mut self) -> &mut crate::frame_client::FrameClients {
+        &mut self.frame_clients
+    }
+
+    /// The arena alongside the frame clients, to drop those whose owner died.
+    pub(crate) fn arena_and_frame_clients(
+        &mut self,
+    ) -> (&NodeArena, &mut crate::frame_client::FrameClients) {
+        (&self.arena, &mut self.frame_clients)
     }
 
     pub(crate) fn suspend_hooks(&self) -> &crate::suspend::SuspendHooks {

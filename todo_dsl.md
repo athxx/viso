@@ -766,8 +766,16 @@ timers (§104–§111).
         `trace` events, `TEST_EXPECTATION` diagnostics at the scenario line, a
         `test` event with the snapshot hash and entity snapshot
         (`viso_dsl::scenario` runs it).
-  - [ ] `viso game record`, `viso game peek` (need a running game session).
+  - [ ] `viso game record`, `viso game peek` (with the running session, `todo_hotreload.md`
+        H3.2).
   - [ ] Headless frame sheet (`--sheet`; needs a game renderer).
+- [x] A mounted view runs its module's game (`viso_view::GameSession`, a frame client of
+      the window's store owned by the view's root; `todo_hotreload.md` H3.2).
+- [ ] `GameViewport` and the World's drawing: the Rendering spec's Mesh/3D lane (design
+      and ADR first), the Kit's models, terrain, camera rigs, particles and debug shapes
+      drawn from the session's World and Stage; the viewport takes input focus (§106.2).
+- [ ] HUD reads of game state through a Schema Reactive Query (§109): `session.score()`,
+      `is_paused()`, `resume()` over a `Handle<GameSession>`.
 
 ### D5.8 — Kit
 

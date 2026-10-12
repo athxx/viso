@@ -6256,6 +6256,8 @@ export component GameScreen {
 
 UI Binding 对 Game Observable Handle 的读取必须通过 Schema 标记为 Reactive Query。高频 World 数据不应逐 Entity 直接驱动 Widget Tree；应通过 Snapshot/Observable 汇总。
 
+当前实现：Module 声明了 System 的 View（`view!`、`component!`、Package 与 Dev Plan 三条挂载路径一致）在其根节点上运行一个 `GameSession`：它用同一 Module 建自己的 VM，以 `Natives::standard` 与 Package 的 Capability 链接，按已安装的持久化 Store 持久化，启动失败时根节点不运行游戏，原因排入 `take_game_start_faults`。Session 是该窗口 Store 的 Frame Client，由根节点拥有：每帧在 Hot Reload 提交之后、State Flush 之前以帧的 Wall Delta 推进——先运行时钟欠下的全部 Tick，再运行全部 `FrameUpdate`；未暂停时让帧循环持续出帧。没有 UI 节点持有键盘焦点时，按键（不含自动重复）按 US 布局位置交给游戏；UI 节点获得焦点或窗口失去焦点时释放游戏持有的全部按键，仍按下的动作在下一 Tick 得到 `released`（§106.2）。根节点释放后的第一帧 Session 随之结束；Hot Reload 重建根节点时 Session 移到新根上继续运行。`GameViewport`、World 的绘制（Mesh/3D Lane）与 HUD 对游戏状态的 Reactive Query 尚未实现。
+
 ---
 
 ## 110. 游戏热重载

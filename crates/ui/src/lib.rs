@@ -18,6 +18,7 @@ pub mod content;
 pub mod context;
 pub mod dirty;
 pub mod flush;
+pub mod frame_client;
 pub mod grid;
 pub mod hit_test;
 pub mod input;
@@ -54,6 +55,7 @@ pub use flush::{
     ADAPTIVE_ROUNDS, AdaptiveCycle, ReactiveCycle, SETTLE_ROUNDS, Unsettled, settle_adaptive,
     settle_states,
 };
+pub use frame_client::{FrameClient, SharedClient};
 pub use grid::{
     AdaptiveColumns, AutoRepeat, GridAreas, GridPlacement, GridStyle, LineNames, TrackMax,
     TrackSizing, repeat, repeated,

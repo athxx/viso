@@ -29,11 +29,13 @@ use crate::scope::Scope;
 
 /// Mounts each effect of the view `host` runs on `owner`, its root node, in
 /// the empty scope. They first run in the next flush. The root also owns the
-/// tasks the view starts outside region content.
+/// tasks the view starts outside region content, and the game its module's
+/// systems make.
 pub fn mount_effects(store: &mut NodeStore, host: &Rc<RefCell<ViewHost>>, owner: NodeId) {
     let effects = match host.try_borrow_mut() {
         Ok(mut view) => {
             view.set_root(owner);
+            crate::game::mount_game_queued(store, view.module(), owner);
             if view.effects().is_empty() {
                 return;
             }

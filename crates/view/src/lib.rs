@@ -27,6 +27,7 @@ mod control;
 pub mod dev;
 mod effects;
 mod env;
+mod game;
 mod host;
 #[cfg(feature = "hot-reload")]
 mod mounts;
@@ -44,6 +45,10 @@ pub use attach::{Route, attach, attach_node};
 pub use control::{Control, ControlInput, ControlKind, Look, LookArm, When};
 pub use effects::{__mount_effects, mount_effects, release_effects};
 pub use env::{__link_env, env_value};
+pub use game::{
+    GameAudioDevice, GameReloadError, GameSession, GameSwap, game_session, mount_game,
+    started_game, take_game_start_faults,
+};
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
 #[cfg(feature = "hot-reload")]
 pub use mounts::{__mounted_view, MountRecord, take_mounts};

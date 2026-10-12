@@ -356,6 +356,7 @@ fn apply_structural(
         host.release_values(rt.store);
     }
     let mut placement = None;
+    let old_root = rt.root;
     if let Some(old) = rt.root.take() {
         let before = rt.store.arena().links(old).and_then(|l| l.next_sibling);
         placement = rt.store.parent(old).map(|parent| (parent, before));
@@ -379,6 +380,11 @@ fn apply_structural(
     };
     if let (Some((parent, before)), Some(root)) = (placement, new_root) {
         rt.store.arena_insert_before(parent, root, before);
+    }
+    // The game the view runs is the root's: it carries over to the rebuilt
+    // root rather than starting again.
+    if let (Some(old), Some(new)) = (old_root, new_root) {
+        rt.store.move_frame_client(old, new);
     }
     rt.root = new_root;
 
@@ -497,6 +503,9 @@ fn apply_structural_ops(
                     cx.root()
                 };
                 if is_root {
+                    if let Some(new) = new_root {
+                        rt.store.move_frame_client(live, new);
+                    }
                     rt.root = new_root;
                 } else if let (Some(parent), Some(root)) = (parent, new_root) {
                     rt.store.arena_insert_before(parent, root, before);

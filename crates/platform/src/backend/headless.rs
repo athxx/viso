@@ -41,6 +41,8 @@ pub struct HeadlessApp {
     /// Set by a [`LoopWaker`] kick from any thread; delivered as one
     /// [`RawEvent::Wakeup`] ahead of the script.
     woken: Arc<AtomicBool>,
+    /// The beats left when the run is bounded ([`HeadlessApp::frame_budget`]).
+    frames_left: Option<u32>,
 }
 
 impl HeadlessApp {
@@ -57,6 +59,7 @@ impl HeadlessApp {
             display_features: Vec::new(),
             framed_windows: true,
             woken: Arc::new(AtomicBool::new(false)),
+            frames_left: None,
         }
     }
 
@@ -68,6 +71,14 @@ impl HeadlessApp {
         let mut app = Self::new();
         app.script = script.into_iter().collect();
         app
+    }
+
+    /// Bounds the run to `frames` redraw beats, for an app that never stops
+    /// asking for frames (a running game): each scripted event is delivered
+    /// before the beats queued behind it, so input lands between frames, and
+    /// redraws requested once the budget is spent are dropped.
+    pub fn frame_budget(&mut self, frames: u32) {
+        self.frames_left = Some(frames);
     }
 
     /// Set the appearance [`PlatformApp::appearance`] reports. Scripts that
@@ -137,6 +148,21 @@ impl HeadlessApp {
     }
 
     fn next_event(&mut self) -> Option<RawEvent> {
+        if let Some(left) = &mut self.frames_left {
+            if let Some(event) = self.script.pop_front() {
+                return Some(event);
+            }
+            if *left == 0 {
+                self.pending_redraws.clear();
+            } else if let Some(w) = self.pending_redraws.pop_front() {
+                *left -= 1;
+                return Some(RawEvent::RedrawRequested { window: w });
+            }
+            if self.woken.swap(false, Ordering::AcqRel) {
+                return Some(RawEvent::Wakeup);
+            }
+            return None;
+        }
         if let Some(w) = self.pending_redraws.pop_front() {
             return Some(RawEvent::RedrawRequested { window: w });
         }
