@@ -27,9 +27,9 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant, SystemTime};
 
-use viso_view::dev::wire::source_hash;
+use viso_view::dev::wire::content_hash;
 
-pub(crate) use scope::{excluded_dir, in_scope};
+pub(crate) use scope::{asset_dir, excluded_dir, in_scope};
 
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
 #[path = "kqueue.rs"]
@@ -105,7 +105,7 @@ pub struct Change {
     /// The file's canonical path.
     pub path: PathBuf,
     /// Its new content.
-    pub text: String,
+    pub bytes: Vec<u8>,
 }
 
 /// A file the thread watches.
@@ -127,7 +127,7 @@ struct Watched {
 impl Watched {
     /// Checks the file at `now`, returning its content once a change has
     /// settled and its hash differs from the last delivered.
-    fn check(&mut self, now: Instant) -> Option<String> {
+    fn check(&mut self, now: Instant) -> Option<Vec<u8>> {
         if self.group.is_some() {
             if self.due.is_none_or(|due| due > now) {
                 return None;
@@ -152,14 +152,14 @@ impl Watched {
     }
 
     /// The file's content when it differs from the last delivered.
-    fn read(&mut self) -> Option<String> {
-        let text = std::fs::read_to_string(&self.path).ok()?;
-        let hash = source_hash(&text);
+    fn read(&mut self) -> Option<Vec<u8>> {
+        let bytes = std::fs::read(&self.path).ok()?;
+        let hash = content_hash(&bytes);
         if self.hash == Some(hash) {
             return None;
         }
         self.hash = Some(hash);
-        Some(text)
+        Some(bytes)
     }
 }
 
@@ -270,10 +270,10 @@ impl Tree {
                 }
             }
             for watched in &mut self.files {
-                if let Some(text) = watched.check(now) {
+                if let Some(bytes) = watched.check(now) {
                     let change = Change {
                         path: watched.path.clone(),
-                        text,
+                        bytes,
                     };
                     if !deliver(change) {
                         return;
@@ -397,14 +397,14 @@ mod tests {
 
     /// The content delivered for `path` within a second after `taken`
     /// deliveries, if any.
-    fn next(seen: &Mutex<Vec<Change>>, path: &Path, taken: &mut usize) -> Option<String> {
+    fn next(seen: &Mutex<Vec<Change>>, path: &Path, taken: &mut usize) -> Option<Vec<u8>> {
         let deadline = Instant::now() + Duration::from_secs(1);
         while Instant::now() < deadline {
             {
                 let seen = seen.lock().unwrap();
                 if let Some(at) = seen[*taken..].iter().position(|c| c.path == path) {
                     *taken += at + 1;
-                    return Some(seen[*taken - 1].text.clone());
+                    return Some(seen[*taken - 1].bytes.clone());
                 }
             }
             thread::sleep(Duration::from_millis(5));
@@ -418,7 +418,7 @@ mod tests {
         let view = root.join("src/view.vs");
         let (_watcher, seen) = watching(&root);
         let mut taken = 0;
-        assert_eq!(next(&seen, &view, &mut taken).as_deref(), Some("a"));
+        assert_eq!(next(&seen, &view, &mut taken).as_deref(), Some(&b"a"[..]));
         let manifest = seen
             .lock()
             .unwrap()
@@ -427,7 +427,7 @@ mod tests {
         assert!(manifest, "the manifest is in scope");
         thread::sleep(POLL * 3);
         std::fs::write(&view, "ab").unwrap();
-        assert_eq!(next(&seen, &view, &mut taken).as_deref(), Some("ab"));
+        assert_eq!(next(&seen, &view, &mut taken).as_deref(), Some(&b"ab"[..]));
         assert_eq!(
             next(&seen, &view, &mut taken),
             None,
@@ -451,11 +451,14 @@ mod tests {
         let staged = view.with_extension("vs.tmp");
         std::fs::write(&staged, "renamed").unwrap();
         std::fs::rename(&staged, &view).unwrap();
-        assert_eq!(next(&seen, &view, &mut taken).as_deref(), Some("renamed"));
+        assert_eq!(
+            next(&seen, &view, &mut taken).as_deref(),
+            Some(&b"renamed"[..])
+        );
         std::fs::write(&view, "again").unwrap();
         assert_eq!(
             next(&seen, &view, &mut taken).as_deref(),
-            Some("again"),
+            Some(&b"again"[..]),
             "the replaced file still reports"
         );
     }
@@ -468,16 +471,30 @@ mod tests {
         next(&seen, &root.join("src/view.vs"), &mut taken);
         let later = root.join("src/later.vs");
         std::fs::write(&later, "new").unwrap();
-        assert_eq!(next(&seen, &later, &mut taken).as_deref(), Some("new"));
+        assert_eq!(
+            next(&seen, &later, &mut taken).as_deref(),
+            Some(&b"new"[..])
+        );
         let nested = root.join("src/feature/deep");
         std::fs::create_dir_all(&nested).unwrap();
         let deep = nested.join("page.vs");
         std::fs::write(&deep, "deep").unwrap();
-        assert_eq!(next(&seen, &deep, &mut taken).as_deref(), Some("deep"));
+        assert_eq!(
+            next(&seen, &deep, &mut taken).as_deref(),
+            Some(&b"deep"[..])
+        );
         std::fs::create_dir_all(root.join("i18n")).unwrap();
         let catalog = root.join("i18n/en.toml");
         std::fs::write(&catalog, "title = \"T\"\n").unwrap();
         assert!(next(&seen, &catalog, &mut taken).is_some());
+        std::fs::create_dir_all(root.join("assets/icons")).unwrap();
+        let icon = root.join("assets/icons/star.png");
+        std::fs::write(&icon, b"\x89PNG\r\n\x1a\n\xff").unwrap();
+        assert_eq!(
+            next(&seen, &icon, &mut taken).as_deref(),
+            Some(&b"\x89PNG\r\n\x1a\n\xff"[..]),
+            "an asset arrives as its bytes"
+        );
     }
 
     #[test]
@@ -576,7 +593,7 @@ mod tests {
         let root = project("polled");
         let mut watched = Watched {
             path: root.join("src/view.vs"),
-            hash: Some(source_hash("old")),
+            hash: Some(content_hash(b"old")),
             group: None,
             due: None,
             stamp: None,
@@ -585,7 +602,7 @@ mod tests {
         let start = Instant::now();
         assert_eq!(watched.check(start), None, "a new stamp starts the window");
         assert_eq!(watched.check(start + SETTLE / 2), None);
-        assert_eq!(watched.check(start + SETTLE).as_deref(), Some("a"));
+        assert_eq!(watched.check(start + SETTLE).as_deref(), Some(&b"a"[..]));
         assert_eq!(watched.check(start + SETTLE * 3), None, "read once");
     }
 }

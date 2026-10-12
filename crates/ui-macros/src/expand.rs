@@ -140,8 +140,26 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let compiled =
             frontend::compile_file_for(&text, &origin, Natives::standard(), profile.target.clone());
         let statics = viso_dsl::aot::static_shape(&compiled.tree);
+        // The asset directory the dev session compiles the file's edits
+        // against, and what the build embedded, which a patch need not send.
+        let assets = match asset_dir(&profile).and_then(Path::to_str) {
+            Some(dir) => {
+                let ids = compiled
+                    .assets
+                    .iter()
+                    .map(|asset| Literal::u64_suffixed(asset.id.0));
+                quote! {
+                    ::core::option::Option::Some((
+                        #dir,
+                        &[#(::viso_ui::resource::ResourceId(#ids)),*],
+                    ))
+                }
+            }
+            None => quote! { ::core::option::Option::None },
+        };
         let build = quote! {
             catalog: #catalog,
+            assets: #assets,
             capabilities: &[#(#granted),*],
             schema: #schema,
             source_hash: #hash,

@@ -22,6 +22,7 @@ use std::fmt;
 use std::io::{self, Read, Write};
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
+use viso_ui::resource::ResourceId;
 use viso_ui::state::StateKey;
 
 pub use super::patch::{
@@ -33,10 +34,14 @@ pub use super::query::{
     GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply, MAX_RECORD_TICKS, RecordSpan,
 };
 use super::query::{read_answer, read_query, write_answer, write_query};
+pub use super::resource::{
+    BLOB_CHUNK, BlobChunk, Blobs, MAX_ASSET, MAX_STAGED, ResourceAsset, ResourcePatch, blob_chunks,
+};
+use super::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 9;
+pub const DEV_PROTOCOL_VERSION: u16 = 10;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -96,7 +101,13 @@ pub const MAX_SCOPED_RESETS: usize = 64;
 /// the same whatever their toolchain: how the host learns which version of a
 /// file the runtime runs without the runtime sending it.
 pub fn source_hash(text: &str) -> u64 {
-    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+    content_hash(text.as_bytes())
+}
+
+/// [`source_hash`] of any file's bytes: what tells two versions of an asset
+/// apart, and names the blob carrying one.
+pub fn content_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
 }
@@ -395,6 +406,9 @@ pub enum PatchSection {
     /// classified, its candidate the behavior of its file's view in the
     /// `ui` section.
     System(SystemPatch),
+    /// The `resource` domain: each asset the patch replaces, its bytes in the
+    /// blobs sent ahead of it.
+    Resource(ResourcePatch),
 }
 
 impl PatchSection {
@@ -402,6 +416,7 @@ impl PatchSection {
         match self {
             PatchSection::Ui(_) => Domain::Ui,
             PatchSection::System(_) => Domain::System,
+            PatchSection::Resource(_) => Domain::Resource,
         }
     }
 }
@@ -429,6 +444,9 @@ pub struct MountEntry {
     pub capabilities: Vec<String>,
     /// [`source_hash`] of the source the runtime runs.
     pub source_hash: u64,
+    /// Its package's assets: the directory, and each resource the build
+    /// embedded for the file.
+    pub assets: Option<(String, Vec<ResourceId>)>,
 }
 
 /// What committing a patch's view to its mounts kept and lost.
@@ -560,6 +578,16 @@ pub struct PatchTimings {
     pub commit_us: u64,
 }
 
+/// What replacing an asset touched, over every window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceCommit {
+    pub id: ResourceId,
+    /// The nodes showing it.
+    pub nodes: u32,
+    /// How many of them carry each dirty class once the commit finished.
+    pub dirty: DirtyCounts,
+}
+
 /// A patch applied (§37).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchAck {
@@ -577,6 +605,8 @@ pub struct PatchAck {
     /// What the swap of each game the patch's `system` section named kept,
     /// over every session of its file.
     pub games: Vec<GameCommit>,
+    /// What replacing each asset the patch's `resource` section named touched.
+    pub resources: Vec<ResourceCommit>,
     pub timings: PatchTimings,
 }
 
@@ -647,6 +677,9 @@ pub const NACK_SYSTEM_FAULT: &str = "NACK_SYSTEM_FAULT";
 /// A game of the patch replays a tape: deterministic replay takes no live
 /// patch, so the tape reproduces the run it recorded.
 pub const NACK_REPLAYING: &str = "NACK_REPLAYING";
+/// An asset of the patch does not load: its bytes did not arrive whole, or do
+/// not decode.
+pub const NACK_UNLOADABLE_ASSET: &str = "NACK_UNLOADABLE_ASSET";
 
 /// A log line's level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -681,6 +714,8 @@ pub enum HostMessage {
     },
     /// A question about the game a file's mounts run, for `viso game`.
     Game(GameQuery),
+    /// Bytes of an asset the next patch replaces.
+    Blob(BlobChunk),
 }
 
 /// What the runtime sends.
@@ -952,6 +987,7 @@ const HOST_REJECT: u8 = 1;
 const HOST_PATCH: u8 = 2;
 const HOST_FAILURE: u8 = 3;
 const HOST_GAME: u8 = 4;
+const HOST_BLOB: u8 = 5;
 
 const RUNTIME_HELLO: u8 = 0;
 const RUNTIME_ACK: u8 = 1;
@@ -1101,6 +1137,45 @@ fn write_mount(enc: &mut Encoder, entry: &MountEntry) {
     }
     write_strings(enc, &entry.capabilities);
     enc.write_u64(entry.source_hash);
+    match &entry.assets {
+        Some((dir, held)) => {
+            enc.write_u8(1);
+            write_string(enc, dir);
+            enc.write_varint(held.len() as u64);
+            for id in held {
+                enc.write_u64(id.0);
+            }
+        }
+        None => enc.write_u8(0),
+    }
+}
+
+fn write_dirty(enc: &mut Encoder, dirty: &DirtyCounts) {
+    for count in [
+        dirty.structure,
+        dirty.style,
+        dirty.measure,
+        dirty.layout,
+        dirty.transform,
+        dirty.paint,
+        dirty.hit_test,
+        dirty.semantics,
+    ] {
+        enc.write_varint(u64::from(count));
+    }
+}
+
+fn read_dirty(dec: &mut Decoder<'_>) -> Result<DirtyCounts, WireError> {
+    Ok(DirtyCounts {
+        structure: read_u32(dec)?,
+        style: read_u32(dec)?,
+        measure: read_u32(dec)?,
+        layout: read_u32(dec)?,
+        transform: read_u32(dec)?,
+        paint: read_u32(dec)?,
+        hit_test: read_u32(dec)?,
+        semantics: read_u32(dec)?,
+    })
 }
 
 /// An optional value: a presence byte, then the value.
@@ -1128,6 +1203,14 @@ fn read_mount(dec: &mut Decoder<'_>) -> Result<MountEntry, WireError> {
         })?,
         capabilities: read_list(dec, MAX_CAPABILITIES, "capabilities", name)?,
         source_hash: dec.read_u64()?,
+        assets: read_option(dec, |dec| {
+            Ok((
+                read_string(dec, MAX_PATH, "asset directory")?,
+                read_list(dec, MAX_FILES, "embedded assets", |dec| {
+                    Ok(ResourceId(dec.read_u64()?))
+                })?,
+            ))
+        })?,
     })
 }
 
@@ -1169,6 +1252,7 @@ impl Message for HostMessage {
                     match section {
                         PatchSection::Ui(ui) => write_ui(enc, ui),
                         PatchSection::System(systems) => write_systems(enc, systems),
+                        PatchSection::Resource(resources) => write_resources(enc, resources),
                     }
                 }
             }
@@ -1180,6 +1264,10 @@ impl Message for HostMessage {
             HostMessage::Game(query) => {
                 enc.write_u8(HOST_GAME);
                 write_query(enc, query);
+            }
+            HostMessage::Blob(chunk) => {
+                enc.write_u8(HOST_BLOB);
+                write_chunk(enc, chunk);
             }
         }
     }
@@ -1231,6 +1319,7 @@ impl Message for HostMessage {
                     sections.push(match Domain::from_tag(tag) {
                         Some(Domain::Ui) => PatchSection::Ui(read_ui(dec)?),
                         Some(Domain::System) => PatchSection::System(read_systems(dec)?),
+                        Some(Domain::Resource) => PatchSection::Resource(read_resources(dec)?),
                         Some(domain) => return Err(WireError::UnsupportedDomain(domain)),
                         None => return Err(malformed(dec)),
                     });
@@ -1251,6 +1340,7 @@ impl Message for HostMessage {
                 })?,
             }),
             HOST_GAME => Ok(HostMessage::Game(read_query(dec)?)),
+            HOST_BLOB => Ok(HostMessage::Blob(read_chunk(dec)?)),
             _ => Err(malformed(dec)),
         }
     }
@@ -1287,17 +1377,10 @@ impl Message for RuntimeMessage {
                         c.focus_lost,
                         c.scroll_lost,
                         c.handlers_lost,
-                        c.dirty.structure,
-                        c.dirty.style,
-                        c.dirty.measure,
-                        c.dirty.layout,
-                        c.dirty.transform,
-                        c.dirty.paint,
-                        c.dirty.hit_test,
-                        c.dirty.semantics,
                     ] {
                         enc.write_varint(u64::from(count));
                     }
+                    write_dirty(enc, &c.dirty);
                 }
                 enc.write_varint(ack.notices.len() as u64);
                 for notice in &ack.notices {
@@ -1323,6 +1406,12 @@ impl Message for RuntimeMessage {
                     for count in [game.carried, game.reset, game.characters] {
                         enc.write_varint(u64::from(count));
                     }
+                }
+                enc.write_varint(ack.resources.len() as u64);
+                for resource in &ack.resources {
+                    enc.write_u64(resource.id.0);
+                    enc.write_varint(u64::from(resource.nodes));
+                    write_dirty(enc, &resource.dirty);
                 }
                 enc.write_varint(ack.timings.decode_us);
                 enc.write_varint(ack.timings.stage_us);
@@ -1405,16 +1494,7 @@ impl Message for RuntimeMessage {
                             focus_lost: read_u32(dec)?,
                             scroll_lost: read_u32(dec)?,
                             handlers_lost: read_u32(dec)?,
-                            dirty: DirtyCounts {
-                                structure: read_u32(dec)?,
-                                style: read_u32(dec)?,
-                                measure: read_u32(dec)?,
-                                layout: read_u32(dec)?,
-                                transform: read_u32(dec)?,
-                                paint: read_u32(dec)?,
-                                hit_test: read_u32(dec)?,
-                                semantics: read_u32(dec)?,
-                            },
+                            dirty: read_dirty(dec)?,
                         },
                     })
                 })?,
@@ -1443,6 +1523,13 @@ impl Message for RuntimeMessage {
                         carried: read_u32(dec)?,
                         reset: read_u32(dec)?,
                         characters: read_u32(dec)?,
+                    })
+                })?,
+                resources: read_list(dec, MAX_FILES, "replaced assets", |dec| {
+                    Ok(ResourceCommit {
+                        id: ResourceId(dec.read_u64()?),
+                        nodes: read_u32(dec)?,
+                        dirty: read_dirty(dec)?,
                     })
                 })?,
                 timings: PatchTimings {
@@ -1562,6 +1649,31 @@ mod tests {
                 sections: vec![PatchSection::Ui(ui()), PatchSection::System(systems())],
                 ..patch(3, 4)
             })),
+            HostMessage::Patch(Box::new(PatchBundle {
+                sections: vec![
+                    PatchSection::Ui(ui()),
+                    PatchSection::Resource(ResourcePatch {
+                        assets: vec![ResourceAsset {
+                            path: "photos/night.jpg".into(),
+                            hash: content_hash(b"night"),
+                            len: 5,
+                        }],
+                    }),
+                ],
+                ..patch(3, 4)
+            })),
+            HostMessage::Blob(BlobChunk {
+                hash: content_hash(b"night"),
+                total: 5,
+                offset: 0,
+                bytes: b"night".to_vec(),
+            }),
+            HostMessage::Blob(BlobChunk {
+                hash: 1,
+                total: MAX_ASSET as u32,
+                offset: (MAX_ASSET - 3) as u32,
+                bytes: vec![0; 3],
+            }),
             HostMessage::Failure {
                 file: FileId(2),
                 lines: vec![
@@ -1760,6 +1872,10 @@ mod tests {
             catalog: Some(("fr".into(), "/app/i18n".into())),
             capabilities: vec!["clipboard.write".into()],
             source_hash: source_hash("Text { }"),
+            assets: Some((
+                "/app/assets".into(),
+                vec![ResourceId::of("logo.png"), ResourceId(u64::MAX)],
+            )),
         }
     }
 
@@ -1819,6 +1935,16 @@ mod tests {
                     reset: 1,
                     characters: 3,
                 }],
+                resources: vec![ResourceCommit {
+                    id: ResourceId::of("photos/day.png"),
+                    nodes: 2,
+                    dirty: DirtyCounts {
+                        measure: 1,
+                        layout: 1,
+                        paint: 2,
+                        ..DirtyCounts::default()
+                    },
+                }],
                 timings: PatchTimings {
                     decode_us: 1,
                     stage_us: 20,
@@ -1844,6 +1970,7 @@ mod tests {
                     catalog: None,
                     module: Vec::new(),
                     capabilities: Vec::new(),
+                    assets: None,
                     ..mount(7)
                 },
             ]),
@@ -2129,6 +2256,57 @@ mod tests {
         assert_eq!(nack.last_good_revision, Revision(3));
         let nack = identity().undecodable(WireError::NotDevStream);
         assert_eq!(nack.diagnostic_codes, [NACK_MALFORMED]);
+    }
+
+    #[test]
+    fn an_asset_or_blob_past_its_bounds_is_refused() {
+        let long = |what: &'static str, message: HostMessage| {
+            assert_eq!(
+                HostMessage::from_frame(&encode(&message)),
+                Err(WireError::Bound { what })
+            );
+        };
+        long(
+            "asset",
+            HostMessage::Patch(Box::new(PatchBundle {
+                sections: vec![PatchSection::Resource(ResourcePatch {
+                    assets: vec![ResourceAsset {
+                        path: "big.png".into(),
+                        hash: 0,
+                        len: MAX_ASSET as u32 + 1,
+                    }],
+                })],
+                ..patch(3, 4)
+            })),
+        );
+        long(
+            "blob",
+            HostMessage::Blob(BlobChunk {
+                hash: 0,
+                total: MAX_ASSET as u32 + 1,
+                offset: 0,
+                bytes: Vec::new(),
+            }),
+        );
+        long(
+            "blob chunk",
+            HostMessage::Blob(BlobChunk {
+                hash: 0,
+                total: MAX_ASSET as u32,
+                offset: 0,
+                bytes: vec![0; BLOB_CHUNK + 1],
+            }),
+        );
+        let past = HostMessage::Blob(BlobChunk {
+            hash: 0,
+            total: 4,
+            offset: 2,
+            bytes: vec![0; 3],
+        });
+        assert!(matches!(
+            HostMessage::from_frame(&encode(&past)),
+            Err(WireError::Malformed(_))
+        ));
     }
 
     #[test]

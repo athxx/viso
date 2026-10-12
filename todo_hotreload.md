@@ -592,18 +592,34 @@ editable source files.
 
 ### H4.2 — Asset reload
 
-- [ ] Watch `assets/**` on the host: byte reads and a byte hash; an unchanged hash
-      sends nothing. The mount report names the package's asset directory, and the
-      dev host compiles candidates against its catalog.
-- [ ] `ResourcePatch { id, kind, revision, bytes }` (`Domain::Resource`), large payloads
-      split under the frame limit; the host validates the decode first and reports a
-      failure at stage `resource-build` against the asset's path; a view patch naming
-      a new asset carries its bytes; protocol version bumped.
-- [ ] Runtime: decodes during staging (a failing decode is a `resource-build` NACK,
-      the old resource stays), swaps the resource at the frame boundary only after the
-      new payload is ready, dirties only its dependents, and retires the old texture
-      after the frame that stopped using it.
-- [ ] Tests: an image edit repaints only its nodes; a size change remeasures its node;
+- [x] Watch: every file under an `assets/` directory joins the watch scope; the
+      watcher reads bytes and hashes them (`content_hash`), an unchanged hash sends
+      nothing, a `.vs` or catalog that is not UTF-8 is skipped. The mount report
+      (`MountEntry::assets`, from `view!`'s record) names the package's asset
+      directory and the resources the build embedded for the file; the host keeps
+      each directory's files, formats and catalog, compiles candidates against it,
+      and rechecks a view that did not compile once an asset appears.
+- [x] Wire and host: `PatchSection::Resource(ResourcePatch { assets: [ResourceAsset
+      { path, hash, len }] })` on `Domain::Resource`; the bytes travel ahead as
+      `HostMessage::Blob` chunks (`BLOB_CHUNK` each, `MAX_ASSET` per asset, sent once
+      per content), assembled by hash and claimed by the patch (`Blobs`: a blob cut
+      short, out of order or of other bytes is not claimed); `PatchAck::resources`
+      (`ResourceCommit { id, nodes, dirty }`); `NACK_UNLOADABLE_ASSET`; protocol
+      version 10. The host sends an asset the app holds (a mount embeds it or a
+      patch carried it) once its content changes, and one a candidate view names
+      that the app lacks with that view; it decodes each first with the app's
+      decoder (`viso_svg::decode_asset`), and one that does not decode is reported
+      (`E3713`, stage `resource-build`, against its path) and not sent.
+- [x] Runtime: the reader assembles the blobs and decodes each patch's assets off the
+      main thread; a missing or undecodable one refuses the revision at
+      `resource-build` with a log line naming its path, the old resource staying.
+      The commit, at the frame boundary after the views, records the newest bytes
+      app-wide (a window or mount opened later shows them; a node showing a resource
+      its host has no bytes for asks for it), provides the payload to every store
+      showing it — only those nodes are rewritten — uploads rasters, releases the
+      replaced texture through the renderer once no frame in flight draws it, and
+      reports each resource's dirty counts.
+- [x] Tests: an image edit repaints only its nodes; a size change remeasures its node;
       a corrupt file keeps the old image; an SVG edit; the dirty counts in the ACK.
 - [ ] Font patch (§23): `FontFaceRevision` bump from a dev font file change, reflowing
       only paragraphs using the face — **waits for the font work in progress**; it
@@ -612,8 +628,15 @@ editable source files.
 
 ### Done
 
-- [ ] Replacing an image in `assets/` updates it in the running app with only its
-      dependents dirty; a corrupt image keeps the last good.
+- [x] Replacing an image in `assets/` updates it in the running app with only its
+      dependents dirty; a corrupt image keeps the last good
+      (`hot_reload::tests::an_asset_patch_swaps_the_resource_and_dirties_only_the_nodes_showing_it`,
+      `dev::tests::an_asset_that_does_not_decode_is_reported_and_kept_from_the_app`;
+      in `examples/images` under `viso run`: an SVG fill edit applies with one node
+      painted, a `viewBox` edit with one node measured, laid out and painted, a PNG
+      swap with one node painted, a truncated PNG is reported `E3713` at
+      `resource-build` and nothing is sent). The font patch stays open with the font
+      work.
 
 ---
 

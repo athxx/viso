@@ -4,7 +4,7 @@
 //! Under the `hot-reload` feature a `view!` expansion records, once its tree is
 //! built, the identities a reload needs to reach the mount: the `.vs` file and
 //! the hash of the source it was compiled from, the module identity, catalogs,
-//! grants and compiler schema it compiles under, the mounted root and static
+//! assets, grants and compiler schema it compiles under, the mounted root and static
 //! nodes, the state cells it allocated and the behavior host it dispatches
 //! into. No source text is embedded: the host holds it. The records queue on
 //! the UI thread until the session [takes](take_mounts) them. Without the
@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use viso_ui::resource::ResourceId;
 use viso_ui::state::StateKey;
 use viso_ui::{NodeId, StateId};
 
@@ -35,6 +36,9 @@ pub struct MountRecord {
     /// The package's message catalogs, its source locale and the directory
     /// holding them, when it has any.
     pub catalog: Option<(&'static str, &'static str)>,
+    /// The package's asset directory, and each asset the build embedded for
+    /// the view.
+    pub assets: Option<(&'static str, &'static [ResourceId])>,
     /// The capabilities the package grants, which the build checked the file
     /// against.
     pub capabilities: &'static [&'static str],
@@ -85,6 +89,7 @@ macro_rules! __record_mount {
         module: [$($module:expr),* $(,)?],
         language: $language:expr,
         catalog: $catalog:expr,
+        assets: $assets:expr,
         capabilities: $capabilities:expr,
         schema: $schema:expr,
         source_hash: $source_hash:expr,
@@ -100,6 +105,7 @@ macro_rules! __record_mount {
             module: &[$($module),*],
             language: $language,
             catalog: $catalog,
+            assets: $assets,
             capabilities: $capabilities,
             schema: $schema,
             statics: $statics,

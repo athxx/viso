@@ -4,7 +4,9 @@
 //! through three states here, each filled by the tier that can:
 //!
 //! 1. **Offered**: a view mounting a node that shows an asset offers the
-//!    asset's encoded bytes ([`AssetTable::offer`]).
+//!    asset's encoded bytes ([`AssetTable::offer`]), or, holding none, asks
+//!    for it ([`AssetTable::want`]) for the facade to offer the bytes the app
+//!    holds.
 //! 2. **Decoded**: the facade decodes what is offered — once per resource
 //!    revision for the whole app — and provides the payload
 //!    ([`NodeStore::provide_asset`](crate::component::NodeStore::provide_asset)).
@@ -165,6 +167,23 @@ impl AssetTable {
             entry.bytes = Some(bytes);
             self.revision += 1;
         }
+    }
+
+    /// Records that a node shows `id` while no bytes of it are at hand, for
+    /// the facade to offer what the app holds.
+    pub fn want(&mut self, id: ResourceId) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.entries.entry(id) {
+            entry.insert(AssetEntry::new(ResourceRevision::default()));
+            self.revision += 1;
+        }
+    }
+
+    /// Every resource a node shows that the table holds nothing of: no bytes,
+    /// no payload, no texture.
+    pub fn wanted(&self) -> impl Iterator<Item = ResourceId> + '_ {
+        self.entries.iter().filter_map(|(id, e)| {
+            (e.bytes.is_none() && e.payload.is_none() && e.texture.is_none()).then_some(*id)
+        })
     }
 
     /// Every resource whose newest bytes are not decoded yet: its id, revision

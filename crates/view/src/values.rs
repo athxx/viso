@@ -333,14 +333,17 @@ impl Shown {
             // An unbound source shows nothing.
             ControlKind::Asset => {
                 if let Some(resource) = resource(value) {
-                    if !store.assets().knows(resource)
-                        && let Some(bytes) = host.asset_bytes(resource)
-                    {
-                        store.assets_mut().offer(
-                            resource,
-                            ResourceRevision::default(),
-                            bytes.clone(),
-                        );
+                    if !store.assets().knows(resource) {
+                        match host.asset_bytes(resource) {
+                            Some(bytes) => store.assets_mut().offer(
+                                resource,
+                                ResourceRevision::default(),
+                                bytes.clone(),
+                            ),
+                            // An asset a reload named: the app holds its
+                            // bytes.
+                            None => store.assets_mut().want(resource),
+                        }
                     }
                     let tint = tint.as_int().map(|_| color(tint));
                     store.set_asset(self.node, resource, asset_fit(fit), tint);

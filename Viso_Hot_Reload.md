@@ -397,7 +397,7 @@ editor temp directories
 unrelated workspace members outside active dependency graph
 ```
 
-已实现（`dev/watch/scope.rs`）：监听 `*.vs`、`i18n/` 目录下的 `*.toml` catalog 与 root `Viso.toml`；shader、asset、font 与 Rust 源码随 patch 它们的 domain 加入。排除 root 下的 `target/`、`dist/`，所有隐藏目录（`.git/`、`.viso/`、编辑器状态），含 `CACHEDIR.TAG` 的目录（移走的 Cargo target dir、生成的 cache），`node_modules/`，以及编辑器临时文件（隐藏、`#…#`、`…~`）。`Viso.toml` 的改动只给出 warning：运行中的 app 保留它 build 时的配置，需重启 `viso run`。
+已实现（`dev/watch/scope.rs`）：监听 `*.vs`、`i18n/` 目录下的 `*.toml` catalog、`assets/` 目录下的每个文件（格式由字节判定，不看扩展名）与 root `Viso.toml`；shader、font 与 Rust 源码随 patch 它们的 domain 加入。watcher 读字节并按 `content_hash` 去重；不是 UTF-8 的 `.vs` 或 catalog 被跳过。排除 root 下的 `target/`、`dist/`，所有隐藏目录（`.git/`、`.viso/`、编辑器状态），含 `CACHEDIR.TAG` 的目录（移走的 Cargo target dir、生成的 cache），`node_modules/`，以及编辑器临时文件（隐藏、`#…#`、`…~`）。`Viso.toml` 的改动只给出 warning：运行中的 app 保留它 build 时的配置，需重启 `viso run`。
 
 ---
 
@@ -925,6 +925,8 @@ precise dependents dirty
 
 旧资源只有在新资源 ready 后才替换。
 
+已实现：mount record 报告 package 的 asset 目录与 build 为该文件嵌入的 resource（`MountEntry::assets`）；host 按目录保存每个文件的字节、格式与 catalog，candidate 对它编译（新出现的 asset 让此前编译失败的 view 重新成为 candidate）。asset 以 watcher 首次读到的内容为 app 运行的版本（build 在 watcher 之后读它），此后以每次 ACK 的内容为准：app 持有的 asset（某 mount 嵌入了它，或某 patch 带过它）内容一变就发送，candidate view 引用而 app 尚未持有的 asset 随该 view 发送；build 期间被编辑的 asset 至多多发一次。host 先用 app 的同一 decoder（`viso_svg::decode_asset`）解码：解不出的以 `E3713`、stage `resource-build`、指向其路径报告，不发送。字节在 patch 之前以 `HostMessage::Blob` 分块发出（每块至多 1 MiB，每个 asset 至多 64 MiB，相同内容只发一次），runtime 的 reader 线程按 content hash 组装、由 patch 的 `resource` section 认领并解码——不在 UI loop 上解码；缺失、截断、乱序或内容不符的 blob 与解不出的 asset 整个 revision 以 `NACK_UNLOADABLE_ASSET`（stage `resource-build`）拒绝，另有一条 error log 指名路径，旧资源保留。commit 在帧边界、在 view 之后进行（这样 reload 的 view 新增的节点也拿到新资源）：`ResourceRevision` 取 patch 的 revision，app 记下每个资源最新的字节（之后打开的窗口或挂载、以及 host 没有字节的节点经 `AssetTable::want` 都由它供给），每个显示该资源的 store 收到 payload——只改写显示它的节点，natural size 不变为 `PAINT`，变了为 `MEASURE | LAYOUT | PAINT`——raster 立即上传，被替换的 texture 经 renderer 在不再有 in-flight frame 使用后释放。ACK 的 `resources` 给出每个资源的节点数与 dirty 计数。
+
 ---
 
 ## 23. Font patch
@@ -1201,12 +1203,12 @@ request restart/rebuild
 
 不能 decoder 猜版本。
 
-已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 9`）：
+已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 10`）：
 
 - runtime 连接并先说话：`RuntimeHello { protocol_version, token, dev_session, runtime_session, build_id, current_revision, schema_fingerprint, capabilities, target }`。连接方用 session token 证明自己是本 session 启动的 app，所以 token 在 `RuntimeHello` 里而不在 `HostHello` 里——host 不向尚未证明身份的连接发送任何东西；
 - host 回 `HostHello { protocol_version, dev_session, runtime_session, project_fingerprint, expected_build_id }`（接受，`runtime_session` 原样回显）或 `Reject { Protocol{host} | Build | Session | Schema }`；token 不符的连接不回应直接关闭（不给猜 token 的 oracle）。runtime 也检查 `HostHello`：protocol、session、runtime session 与 build 任一不符即断开；
 - hello 与 reject 的前缀在所有 protocol version 中保持不变（stream `ProtocolTag`，再是 dev protocol version），解码在读到别的 version 时立即以该 version 号停止，不去解读其后布局可能不同的字段；
-- build id 由 CLI 经 `VISO_DEV_BUILD` 交给所启动的 app，app 原样报告，host 用它拒绝不是其当前编译目标的 artifact（Rust rebuild 之后仍连着的旧 app）；`schema_fingerprint` 取自 mount record（§4.1），与 host 的不同即 `Reject::Schema`；`capabilities` 是 runtime 能 apply 的 domain 集合（当前为 `ui` 与 `system`），host 不发送其外的 domain；不声明 `system` 的 app 只收到 view，host 给出一条 warning。
+- build id 由 CLI 经 `VISO_DEV_BUILD` 交给所启动的 app，app 原样报告，host 用它拒绝不是其当前编译目标的 artifact（Rust rebuild 之后仍连着的旧 app）；`schema_fingerprint` 取自 mount record（§4.1），与 host 的不同即 `Reject::Schema`；`capabilities` 是 runtime 能 apply 的 domain 集合（当前为 `ui`、`system` 与 `resource`），host 不发送其外的 domain；不声明 `system` 的 app 只收到 view、不声明 `resource` 的 app 不收到 asset，host 各给出一条 warning。
 
 ---
 
@@ -1244,9 +1246,11 @@ struct PatchBundle {
 
 `system` section 是 `SystemPatch { games: [GamePatch{file, tier}] }`：`tier` 为 `Presentation`、`Logic`、`LogicMigration` 或 `WorldRebuild { keep: Fresh | KeepCharacters }`（各一个稳定 tag，未知 tag 是 malformed），至多 4096 项。候选 module 就是同一 patch 的 `ui` section 中该文件 view 的 behavior，不重复发送；`system` 条目的文件在 `ui` section 中没有含 System 的 view，或 module 链接失败，整个 patch 以 `NACK_UNLOADABLE_SYSTEM`（stage `runtime-stage`）拒绝。
 
+`resource` section 是 `ResourcePatch { assets: [ResourceAsset{path, hash, len}] }`（§22）：`path` 是 `assets/` 下规范化的路径，resource id 由它算出；字节不在 section 里，而在 patch 之前的 `HostMessage::Blob(BlobChunk{hash, total, offset, bytes})` 中（每块至多 1 MiB，`total` 至多 64 MiB，等待中的 blob 合计至多 256 MiB），按顺序到达、按 hash 组装，patch 之后未被认领的 blob 丢弃。
+
 另外的消息：
 
-- `RuntimeMessage::Mounts([MountEntry{file, path, package, module, language, catalog, capabilities, source_hash}])`：每个首次挂载的文件一条，`file` 是 runtime 分配的 `FileId`，patch 与 failure 都用它指代文件；host 据此编译与 build 完全一致的 candidate，并按 `source_hash` 知道 runtime 运行的是哪个版本——app 不发源码；
+- `RuntimeMessage::Mounts([MountEntry{file, path, package, module, language, catalog, capabilities, source_hash, assets}])`（`assets` 为 asset 目录与 build 为该文件嵌入的 resource id）：每个首次挂载的文件一条，`file` 是 runtime 分配的 `FileId`，patch 与 failure 都用它指代文件；host 据此编译与 build 完全一致的 candidate，并按 `source_hash` 知道 runtime 运行的是哪个版本——app 不发源码；
 - `HostMessage::Failure { file, lines }`：host 拒绝某文件最新编辑时的 overlay 行（`path:line:col: CODE message`，至多 16 行）；`lines` 为空表示清除（编辑被撤回到 runtime 运行的版本）。它只是显示，不带 revision；
 - `HostMessage::Game(GameQuery { id, file, ask })` 与 `RuntimeMessage::Game(GameAnswer { id, reply })`：`viso game`（`Viso_CLI.md` §22.3）经 host 对运行该文件的第一个 Game Session 的提问。`ask` 是 `Peek { system, state }`（名字各至多 256 B）或 `Record { span: Ticks(n) | Millis(n) }`（至多 2^24 Tick）；`reply` 是 `State { value, tick, sessions }`（状态值的 behavior wire 形式，由 host 按类型写成 JSON）、`Tape { tape }`（二进制 Tape）或拒绝 `NotRunning | UnknownState | Replaying | Recording | Ended | Fault(line) | TooLarge`。Peek 在下一个帧边界回答；Record 先重启 World，录满所要求的 Tick 后回答。它们不带 revision，不改变 last-good。
 
@@ -1303,7 +1307,7 @@ PatchNack {
 
 NACK 后 running app 保持 last-good revision。
 
-已实现：`PatchAck { revision, applied_domains, files: [FileCommit{file, counts}], notices, state_resets, games: [GameCommit{file, tier, sessions, tick, carried, reset, characters}], timings{decode_us, stage_us, commit_us} }`，`counts` 是每个 view 提交到其所有挂载时保留与丢失的计数（`mounts, migrated, reset, focus_lost, scroll_lost, handlers_lost`）与 `dirty`（§11 八个 dirty class 各一个 node 计数，由 `commit()` 提交后扫描该 view 的静态节点在 `NodeStore` 中实际携带的 dirty bit 得出，再按文件对每个挂载求和——即 commit 要重做的量，不是语义上"改了什么"），`scoped_resets` 由保留/丢失计数求和（不含 `dirty`）；`notices` 是 commit 产生的提示（`E5101` 状态重置），span 指向 host 为该文件编译的 candidate 源码（plan 带着 state 声明的范围），由 host 解析成行列。`PatchNack { base_revision, candidate_revision, stage, diagnostic_codes, last_good_revision }`，`stage` 取 §51 的全部 stage。NACK code 是稳定字符串：上面 §36 的五个，host frame 无法解码时的 `NACK_MALFORMED`（帧长度保住了帧边界，channel 不断开；超过帧上限的帧则读不到边界，连接结束），patch 指向 runtime 未报告的文件时的 `NACK_UNKNOWN_FILE`，candidate 无法加载时的 `NACK_UNLOADABLE_VIEW`（stage `runtime-stage`），游戏无法加载时的 `NACK_UNLOADABLE_SYSTEM`（stage `runtime-stage`），游戏候选在创建实例、Start 或 Smoke Tick 中故障或物理层级不成立时的 `NACK_SYSTEM_FAULT`（stage `runtime-commit`，故障另以一条 error log 指名 System），以及游戏正在回放 Tape 时的 `NACK_REPLAYING`（stage `runtime-stage`）。`games` 是每个切换了游戏的文件一条：层级、切换的 session 数、新 Build 运行的首个 Tick、跨切换保留与回到 Initializer 的状态数、World Rebuild 按 Stable Entity Key 保留的角色数。游戏运行中的故障（含音频线程上的）以 error log 发给 host：同一 System 以同一方式连续故障只报一次，每帧至多排队 64 条，余数汇总；没有 `viso run` 时打印到 stderr。runtime 端的 link 不阻塞 UI loop：入站 frame 经有界队列交给 loop 并唤醒它（队列满时阻塞的是 reader 线程），出站消息 `try_send` 进有界队列，满了就丢弃并计数，计数在有空位时以 `Dropped{count}` 发出。
+已实现：`PatchAck { revision, applied_domains, files: [FileCommit{file, counts}], notices, state_resets, games: [GameCommit{file, tier, sessions, tick, carried, reset, characters}], resources: [ResourceCommit{id, nodes, dirty}], timings{decode_us, stage_us, commit_us} }`，`counts` 是每个 view 提交到其所有挂载时保留与丢失的计数（`mounts, migrated, reset, focus_lost, scroll_lost, handlers_lost`）与 `dirty`（§11 八个 dirty class 各一个 node 计数，由 `commit()` 提交后扫描该 view 的静态节点在 `NodeStore` 中实际携带的 dirty bit 得出，再按文件对每个挂载求和——即 commit 要重做的量，不是语义上"改了什么"），`scoped_resets` 由保留/丢失计数求和（不含 `dirty`）；`notices` 是 commit 产生的提示（`E5101` 状态重置），span 指向 host 为该文件编译的 candidate 源码（plan 带着 state 声明的范围），由 host 解析成行列。`PatchNack { base_revision, candidate_revision, stage, diagnostic_codes, last_good_revision }`，`stage` 取 §51 的全部 stage。NACK code 是稳定字符串：上面 §36 的五个，host frame 无法解码时的 `NACK_MALFORMED`（帧长度保住了帧边界，channel 不断开；超过帧上限的帧则读不到边界，连接结束），patch 指向 runtime 未报告的文件时的 `NACK_UNKNOWN_FILE`，candidate 无法加载时的 `NACK_UNLOADABLE_VIEW`（stage `runtime-stage`），游戏无法加载时的 `NACK_UNLOADABLE_SYSTEM`（stage `runtime-stage`），游戏候选在创建实例、Start 或 Smoke Tick 中故障或物理层级不成立时的 `NACK_SYSTEM_FAULT`（stage `runtime-commit`，故障另以一条 error log 指名 System），游戏正在回放 Tape 时的 `NACK_REPLAYING`（stage `runtime-stage`），以及 asset 的字节没有完整到达或解不出时的 `NACK_UNLOADABLE_ASSET`（stage `resource-build`，另以一条 error log 指名路径）。`games` 是每个切换了游戏的文件一条：层级、切换的 session 数、新 Build 运行的首个 Tick、跨切换保留与回到 Initializer 的状态数、World Rebuild 按 Stable Entity Key 保留的角色数。游戏运行中的故障（含音频线程上的）以 error log 发给 host：同一 System 以同一方式连续故障只报一次，每帧至多排队 64 条，余数汇总；没有 `viso run` 时打印到 stderr。runtime 端的 link 不阻塞 UI loop：入站 frame 经有界队列交给 loop 并唤醒它（队列满时阻塞的是 reader 线程），出站消息 `try_send` 进有界队列，满了就丢弃并计数，计数在有空位时以 `Dropped{count}` 发出。
 
 ### 37.1 当前实现：`.vs` reload event
 

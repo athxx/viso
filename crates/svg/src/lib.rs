@@ -5,7 +5,9 @@
 //! [`viso_render::Primitive`] stream every other source produces, so the result
 //! is a cacheable Render IR input rather than a live XML DOM. [`parse_svg`]
 //! (and [`SvgScene::into_vector`], the scene as a vector asset) is the whole
-//! public surface — a synchronous, allocation-bounded CPU pass. Static
+//! public surface — a synchronous, allocation-bounded CPU pass — beside
+//! [`decode_asset`], which decodes any asset by the format its bytes are in,
+//! the one decoder the app and the dev host share. Static
 //! assets can run it at build time and dynamic assets on a worker thread (§26);
 //! the call site owns that policy, this crate just does the transform.
 //!
@@ -153,6 +155,25 @@ impl fmt::Display for SvgError {
 }
 
 impl std::error::Error for SvgError {}
+
+/// Decodes an asset by the format its bytes are in: a PNG or JPEG to a
+/// raster, an SVG to a vector scene.
+///
+/// # Errors
+///
+/// Bytes in no asset format, or that their decoder refuses.
+pub fn decode_asset(
+    bytes: &[u8],
+) -> Result<viso_render::asset::DecodedAsset, viso_render::asset::AssetError> {
+    use viso_render::asset::{AssetError, AssetFormat, AssetKind, DecodedAsset, decode_raster};
+    match AssetFormat::sniff(bytes).map(AssetFormat::kind) {
+        Some(AssetKind::Raster) => decode_raster(bytes).map(DecodedAsset::Raster),
+        Some(AssetKind::Vector) => parse_svg(bytes)
+            .map(|scene| DecodedAsset::Vector(scene.into_vector()))
+            .map_err(|error| AssetError::Decode(error.to_string())),
+        None => Err(AssetError::Format),
+    }
+}
 
 /// Parse SVG `bytes` and lower them to a retained [`SvgScene`].
 ///

@@ -41,7 +41,7 @@ pub enum Command {
     #[command(subcommand)]
     Game(GameCommand),
     /// Build the project as a dev artifact and run it on this machine, hot
-    /// reloading its `.vs` views as they are saved.
+    /// reloading its `.vs` views and `assets/` files as they are saved.
     Run(RunArgs),
     /// Show the typed schema of a widget, native library, function or type.
     Schema(SchemaArgs),

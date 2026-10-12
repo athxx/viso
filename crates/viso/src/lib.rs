@@ -2047,7 +2047,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // Commit the edits the watcher staged before the windows flush,
                 // so a reload's writes settle and paint this frame.
                 #[cfg(feature = "hot-reload")]
-                self.hot_reload.reload(&mut self.windows);
+                self.hot_reload.reload(&mut self.windows, &mut self.assets);
                 // The faults the games raised last frame: to `viso run` when
                 // it is attached, to stderr otherwise.
                 let faults = viso_view::take_game_faults();

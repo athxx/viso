@@ -9,7 +9,9 @@
 //! counted, and the count goes out as [`RuntimeMessage::Dropped`] once there
 //! is room. The reader decodes each host frame and hands it to the loop
 //! through a bounded queue, waking it; a full queue stalls the reader, never
-//! the loop. A failed connect, handshake or write ends the threads, and later
+//! the loop. The reader also assembles the blobs the host sends ahead of a
+//! patch and decodes the assets the patch names, so no asset decodes on the
+//! loop. A failed connect, handshake or write ends the threads, and later
 //! messages are dropped. An address that is not loopback is refused.
 
 use std::collections::hash_map::RandomState;
@@ -21,11 +23,14 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use viso_platform::LoopWaker;
+use viso_render::asset::ResourceId;
+use viso_ui::{AssetBytes, AssetPayload};
 use viso_view::dev::wire::{
-    BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV, DEV_TOKEN_ENV,
-    DevSessionId, Domains, FileId, FrameError, GameQuery, HostMessage, Message, PatchBundle,
-    Reject, Revision, RuntimeHello, RuntimeIdentity, RuntimeMessage, RuntimeSessionId,
-    RuntimeTarget, SchemaFingerprint, WireError, accept_host, read_body, read_frame, write_frame,
+    Blobs, BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
+    DEV_TOKEN_ENV, DevSessionId, Domains, FileId, FrameError, GameQuery, HostMessage, Message,
+    PatchBundle, PatchSection, Reject, Revision, RuntimeHello, RuntimeIdentity, RuntimeMessage,
+    RuntimeSessionId, RuntimeTarget, SchemaFingerprint, WireError, accept_host, read_body,
+    read_frame, write_frame,
 };
 
 /// How long the thread waits for the CLI to accept, and then to answer.
@@ -41,14 +46,24 @@ const OUTGOING: usize = 64;
 pub(crate) enum Incoming {
     /// The host accepted the launch.
     Connected(RuntimeIdentity),
-    /// A patch, and how long its frame took to decode.
-    Patch(Box<PatchBundle>, Duration),
+    /// A patch, the assets its `resource` section names, in its order, and
+    /// how long its frame and assets took to decode.
+    Patch(Box<PatchBundle>, Vec<LoadedAsset>, Duration),
     /// The host's verdict on a rejected edit, or its clearing.
     Failure { file: FileId, lines: Vec<String> },
     /// A question about a running game.
     Game(GameQuery),
     /// A host frame that did not decode.
     Undecodable(WireError),
+}
+
+/// An asset a patch names, as its blob decoded.
+pub(crate) struct LoadedAsset {
+    pub(crate) id: ResourceId,
+    /// Its path under `assets/`.
+    pub(crate) path: String,
+    /// Its bytes and payload, or why it did not load.
+    pub(crate) loaded: Result<(AssetBytes, AssetPayload), String>,
 }
 
 /// The app's end of the dev channel.
@@ -207,6 +222,7 @@ fn handshake(addr: SocketAddr, hello: &RuntimeHello) -> Option<(TcpStream, Runti
 /// protocol violation that ends the link.
 fn read_all(mut stream: TcpStream, deliver: &SyncSender<Incoming>, wake: &LoopWaker) {
     let mut buf = Vec::new();
+    let mut blobs = Blobs::default();
     loop {
         match read_body(&mut stream, &mut buf) {
             Ok(true) => {}
@@ -221,7 +237,14 @@ fn read_all(mut stream: TcpStream, deliver: &SyncSender<Incoming>, wake: &LoopWa
         }
         let started = Instant::now();
         let incoming = match HostMessage::from_frame(&buf) {
-            Ok(HostMessage::Patch(patch)) => Incoming::Patch(patch, started.elapsed()),
+            Ok(HostMessage::Blob(chunk)) => {
+                blobs.add(chunk);
+                continue;
+            }
+            Ok(HostMessage::Patch(patch)) => {
+                let assets = load_assets(&patch, &mut blobs);
+                Incoming::Patch(patch, assets, started.elapsed())
+            }
             Ok(HostMessage::Failure { file, lines }) => Incoming::Failure { file, lines },
             Ok(HostMessage::Game(query)) => Incoming::Game(query),
             Ok(HostMessage::Hello(_) | HostMessage::Reject(_)) => return,
@@ -232,6 +255,32 @@ fn read_all(mut stream: TcpStream, deliver: &SyncSender<Incoming>, wake: &LoopWa
         }
         wake.wake();
     }
+}
+
+/// Each asset `patch` names, claimed from `blobs` and decoded; the blobs are
+/// dropped after, claimed or not.
+fn load_assets(patch: &PatchBundle, blobs: &mut Blobs) -> Vec<LoadedAsset> {
+    let mut assets = Vec::new();
+    for section in &patch.sections {
+        let PatchSection::Resource(resources) = section else {
+            continue;
+        };
+        for asset in &resources.assets {
+            let loaded = match blobs.claim(asset) {
+                Some(bytes) => crate::assets::decode(&bytes)
+                    .map(|payload| (AssetBytes::Shared(bytes), payload))
+                    .map_err(|error| format!("does not decode: {error}")),
+                None => Err("its bytes did not arrive whole".to_owned()),
+            };
+            assets.push(LoadedAsset {
+                id: asset.id(),
+                path: asset.path.clone(),
+                loaded,
+            });
+        }
+    }
+    blobs.clear();
+    assets
 }
 
 /// Writes every queued message until the loop closes the queue or a write
@@ -418,7 +467,7 @@ mod tests {
         );
         host.send(&host.patch(1, 2));
         assert!(
-            matches!(fake::next(&link), Incoming::Patch(p, _) if p.next_revision == Revision(2))
+            matches!(fake::next(&link), Incoming::Patch(p, ..) if p.next_revision == Revision(2))
         );
         assert!(
             kicks.load(Ordering::SeqCst) >= 2,

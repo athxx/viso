@@ -7,4 +7,5 @@
 pub mod commit;
 mod patch;
 mod query;
+mod resource;
 pub mod wire;

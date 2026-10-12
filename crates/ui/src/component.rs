@@ -1535,6 +1535,20 @@ impl NodeStore {
         }
     }
 
+    /// Every live node showing `resource`. Cold: a walk of the content
+    /// column.
+    pub fn asset_nodes(&self, resource: ResourceId) -> impl Iterator<Item = NodeId> + '_ {
+        self.content_payload
+            .iter()
+            .enumerate()
+            .filter_map(move |(i, content)| match content.as_deref() {
+                Some(Content::Asset { resource: r, .. }) if *r == resource => {
+                    self.arena.live_id(i as u32)
+                }
+                _ => None,
+            })
+    }
+
     /// Rewrites every live node showing `resource` to what the table now
     /// resolves it to: PAINT when its natural size holds, MEASURE | LAYOUT |
     /// PAINT when it moves. Cold: a walk of the content column, once per new

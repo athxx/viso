@@ -1,13 +1,14 @@
 //! The host's source graph of a dev session (`Viso_Hot_Reload.md` §3, §10,
-//! §11): every `.vs` file and message catalog of the watch scope as it is on
-//! disk, what the runtime reported of the files it mounts, the compiled view
-//! each mount runs, and the compile of an edit exactly as the build compiled
-//! the file.
+//! §11, §22): every `.vs` file, message catalog and asset of the watch scope as
+//! it is on disk, what the runtime reported of the files it mounts, the
+//! compiled view each mount runs, and the compile of an edit exactly as the
+//! build compiled the file.
 //!
-//! A `view!` compiles its file alone, against its package's catalogs and
-//! grants, so a file's candidate depends on its own text and its catalogs and
-//! nothing else: an edit re-checks only the files it touched, or every file of
-//! the package when a catalog changed. Each file keeps an
+//! A `view!` compiles its file alone, against its package's catalogs, assets
+//! and grants, so a file's candidate depends on its own text, its catalogs and
+//! which assets exist, and nothing else: an edit re-checks only the files it
+//! touched, every file of the package when a catalog changed, and a file that
+//! did not compile when an asset appeared. Each file keeps an
 //! [`IncrementalParse`] of its latest text, so an edit reparses only the
 //! declaration it touched. Which version of a file the runtime runs is known
 //! by its [`source_hash`]: the watcher read every version since before the
@@ -15,18 +16,25 @@
 //! the last-good the first edit is planned against. An edit saved while the
 //! app was building is simply a file whose text the runtime does not run
 //! yet.
+//!
+//! An asset is taken to run as first read — the build embedded it after the
+//! watcher read it — and as each patch carrying it left it. A changed asset
+//! goes to the app when the app holds it (a mount embedded it, or a patch
+//! carried it) or a candidate view names it; at worst an asset edited while
+//! the app built is sent once more than it needed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use viso_dsl::assets::{AssetCatalog, AssetFormat, ResourceId, normalize_path};
 use viso_dsl::frontend::Origin;
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
 use viso_dsl::hotreload::{CandidatePlan, plan_view_for, plan_view_parsed};
 use viso_dsl::i18n::{CatalogFile, CatalogIssue, Messages};
 use viso_dsl::syntax::{Edit, Entry, IncrementalParse, TextRange, TextSize};
 use viso_dsl::{Diagnostic, LineIndex, Severity};
-use viso_view::dev::wire::{FileId, MAX_LINE, MAX_LINES, MountEntry, source_hash};
+use viso_view::dev::wire::{FileId, MAX_LINE, MAX_LINES, MountEntry, content_hash, source_hash};
 
 /// How many of a file's latest distinct versions the session keeps, to find
 /// the one a build compiled.
@@ -69,6 +77,8 @@ pub(super) struct Mount {
     capabilities: Vec<String>,
     /// Its package's catalogs, by index.
     pub catalog: Option<usize>,
+    /// Its package's assets, by index.
+    pub assets: Option<usize>,
     /// The hash of the source the runtime runs.
     pub running: u64,
     /// The hash of the latest content that was a candidate (sent, or
@@ -76,6 +86,10 @@ pub(super) struct Mount {
     pub settled: Option<u64>,
     /// The catalog revision the file was last checked against.
     pub checked: u64,
+    /// The asset revision the file was last checked against, and whether
+    /// that compile failed.
+    checked_assets: u64,
+    rejected: bool,
     /// Whether the runtime shows a failure for it.
     pub failing: bool,
     /// The compiled view the runtime runs, which an edit is planned
@@ -102,6 +116,40 @@ pub(super) struct Catalog {
     stale: bool,
 }
 
+/// A package's assets: each file of its `assets/` directory as last read.
+pub(super) struct AssetDir {
+    /// The canonical directory.
+    dir: PathBuf,
+    /// Each file, by its path under the directory.
+    pub files: BTreeMap<String, AssetFile>,
+    /// The resources the app holds: those its mounts embed, and those a patch
+    /// carried.
+    held: BTreeSet<ResourceId>,
+    /// The files in an asset format, as candidates compile against them.
+    catalog: Rc<AssetCatalog>,
+    /// Counts each change of the catalog.
+    revision: u64,
+}
+
+/// A file of an asset directory.
+pub(super) struct AssetFile {
+    pub bytes: Vec<u8>,
+    pub hash: u64,
+    format: Option<AssetFormat>,
+    /// The hash of the content the app runs, when it holds the resource.
+    pub running: u64,
+    /// The hash of the latest content that was a candidate (sent, or
+    /// rejected), so the same content is not a candidate twice.
+    pub settled: Option<u64>,
+}
+
+/// An asset a patch is to carry: its directory, by index, and its path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct AssetRef {
+    pub dir: usize,
+    pub path: String,
+}
+
 /// A catalog compile that failed: each issue, with the file it is in.
 pub(super) struct CatalogErrors {
     pub files: Vec<(PathBuf, String)>,
@@ -113,12 +161,14 @@ pub(super) struct CatalogErrors {
 pub(super) struct Sources {
     pub views: Vec<View>,
     pub catalogs: Vec<Catalog>,
+    pub assets: Vec<AssetDir>,
 }
 
 /// What a changed file of the scope is.
 pub(super) enum Changed {
     View,
     Catalog,
+    Asset,
     Other,
 }
 
@@ -156,6 +206,71 @@ impl Sources {
         Changed::Catalog
     }
 
+    /// Takes the latest content of `path`, a file of the asset directory
+    /// `dir`.
+    pub fn change_asset(&mut self, dir: &Path, path: &Path, bytes: Vec<u8>) -> Changed {
+        let Some(name) = path
+            .strip_prefix(dir)
+            .ok()
+            .and_then(Path::to_str)
+            .and_then(normalize_path)
+        else {
+            return Changed::Other;
+        };
+        let at = self.asset_dir(dir);
+        let assets = &mut self.assets[at];
+        let hash = content_hash(&bytes);
+        let format = AssetFormat::sniff(&bytes);
+        let moved = match assets.files.get_mut(&name) {
+            Some(file) => {
+                let moved = file.format != format;
+                file.bytes = bytes;
+                file.hash = hash;
+                file.format = format;
+                moved
+            }
+            None => {
+                assets.files.insert(
+                    name,
+                    AssetFile {
+                        bytes,
+                        hash,
+                        format,
+                        running: hash,
+                        settled: None,
+                    },
+                );
+                format.is_some()
+            }
+        };
+        if moved {
+            assets.catalog = Rc::new(AssetCatalog::of(
+                assets.dir.clone(),
+                assets
+                    .files
+                    .iter()
+                    .filter_map(|(path, file)| Some((path.clone(), file.format?))),
+            ));
+            assets.revision += 1;
+        }
+        Changed::Asset
+    }
+
+    /// The assets of canonical directory `dir`, created on first use.
+    fn asset_dir(&mut self, dir: &Path) -> usize {
+        if let Some(at) = self.assets.iter().position(|a| a.dir == dir) {
+            return at;
+        }
+        self.assets.push(AssetDir {
+            dir: dir.to_owned(),
+            files: BTreeMap::new(),
+            held: BTreeSet::new(),
+            catalog: Rc::new(AssetCatalog::of(dir.to_owned(), [])),
+            revision: 0,
+        });
+        self.assets.len() - 1
+    }
+
     /// The catalogs of canonical directory `dir`, created on first use.
     fn catalog(&mut self, dir: &Path, named: Option<(&str, &str)>) -> usize {
         let at = match self.catalogs.iter().position(|c| c.dir == dir) {
@@ -191,6 +306,11 @@ impl Sources {
                 .unwrap_or_else(|_| PathBuf::from(dir));
             self.catalog(&canonical, Some((locale, dir)))
         });
+        let assets = entry.assets.as_ref().map(|(dir, held)| {
+            let at = self.asset_dir(&canonical_dir(Path::new(dir)));
+            self.assets[at].held.extend(held.iter().copied());
+            at
+        });
         let path = PathBuf::from(&entry.path);
         let mount = Mount {
             file: entry.file,
@@ -201,9 +321,12 @@ impl Sources {
             },
             capabilities: entry.capabilities.clone(),
             catalog,
+            assets,
             running: entry.source_hash,
             settled: None,
             checked: 0,
+            checked_assets: 0,
+            rejected: false,
             failing: false,
             last_good: None,
         };
@@ -247,7 +370,7 @@ impl Sources {
         else {
             return Err("the version the app runs is not one the session read".into());
         };
-        let profile = mount.profile(catalogs);
+        let profile = mount.profile(catalogs, &self.assets);
         let plan = plan_view_for(text, &mount.origin, profile).map_err(|errors| {
             let codes: Vec<&str> = errors.iter().map(|d| d.code).collect();
             format!(
@@ -333,8 +456,9 @@ impl Sources {
     }
 
     /// The mounted views that are candidates: their latest content is not
-    /// what the runtime runs and was not a candidate already, or their
-    /// catalogs changed since they were checked.
+    /// what the runtime runs and was not a candidate already, their catalogs
+    /// changed since they were checked, or they did not compile and an asset
+    /// appeared since.
     pub fn candidates(&self) -> Vec<usize> {
         (0..self.views.len())
             .filter(|&at| {
@@ -345,9 +469,75 @@ impl Sources {
                 let catalog_changed = mount
                     .catalog
                     .is_some_and(|c| self.catalogs[c].revision > mount.checked);
-                catalog_changed || (hash != mount.running && mount.settled != Some(hash))
+                let assets_appeared = mount.rejected
+                    && mount
+                        .assets
+                        .is_some_and(|a| self.assets[a].revision > mount.checked_assets);
+                catalog_changed
+                    || assets_appeared
+                    || (hash != mount.running && mount.settled != Some(hash))
             })
             .collect()
+    }
+
+    /// The assets a patch is to carry: each the app holds whose content is
+    /// not what the app runs, and each `named` (by a candidate view of a mount
+    /// of directory `dir`) that the app does not hold yet — neither a
+    /// candidate already at this content.
+    pub fn asset_candidates(&self, named: &[AssetRef]) -> Vec<AssetRef> {
+        let mut out = BTreeSet::new();
+        for (dir, assets) in self.assets.iter().enumerate() {
+            for (path, file) in &assets.files {
+                if file.hash != file.running
+                    && file.settled != Some(file.hash)
+                    && assets.held.contains(&ResourceId::of(path))
+                {
+                    out.insert(AssetRef {
+                        dir,
+                        path: path.clone(),
+                    });
+                }
+            }
+        }
+        for named in named {
+            let assets = &self.assets[named.dir];
+            let Some(file) = assets.files.get(&named.path) else {
+                continue;
+            };
+            let held = assets.held.contains(&ResourceId::of(&named.path));
+            if (!held || file.hash != file.running) && file.settled != Some(file.hash) {
+                out.insert(named.clone());
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// The file `asset` names.
+    pub fn asset(&self, asset: &AssetRef) -> &AssetFile {
+        &self.assets[asset.dir].files[&asset.path]
+    }
+
+    /// Records that the app runs `asset` at `hash`, a patch having carried it.
+    pub fn asset_applied(&mut self, asset: &AssetRef, hash: u64) {
+        let assets = &mut self.assets[asset.dir];
+        assets.held.insert(ResourceId::of(&asset.path));
+        if let Some(file) = assets.files.get_mut(&asset.path) {
+            file.running = hash;
+            file.settled = Some(hash);
+        }
+    }
+
+    /// Records that `asset` at `hash` was a candidate the app does not run:
+    /// it does not decode, or a patch carrying it was refused.
+    pub fn asset_settled(&mut self, asset: &AssetRef, hash: u64) {
+        if let Some(file) = self.assets[asset.dir].files.get_mut(&asset.path) {
+            file.settled = Some(hash);
+        }
+    }
+
+    /// The path of `asset` on disk.
+    pub fn asset_path(&self, asset: &AssetRef) -> PathBuf {
+        self.assets[asset.dir].dir.join(&asset.path)
     }
 
     /// Compiles view `at`'s latest content as the build would, reparsing
@@ -367,18 +557,21 @@ impl Sources {
             Some((_, parse)) => parse,
             None => IncrementalParse::new(text, Entry::CompilationUnit),
         };
-        let profile = mount.profile(catalogs);
+        let profile = mount.profile(catalogs, &self.assets);
         let planned = plan_view_parsed(text, parse.parse().clone(), &mount.origin, profile);
         mount.checked = mount.catalog.map_or(0, |c| catalogs[c].revision);
+        mount.checked_assets = mount.assets.map_or(0, |a| self.assets[a].revision);
+        mount.rejected = planned.is_err();
         view.parse = Some((text.to_owned(), parse));
         Some(planned)
     }
 }
 
 impl Mount {
-    /// The profile the build compiled the file with: its grants, and its
-    /// package's catalogs as last compiled.
-    fn profile(&self, catalogs: &[Catalog]) -> TargetProfile {
+    /// The profile the build compiled the file with: its grants, its
+    /// package's catalogs as last compiled and its package's assets as they
+    /// are.
+    fn profile(&self, catalogs: &[Catalog], assets: &[AssetDir]) -> TargetProfile {
         let mut capabilities = CapabilitySet::new();
         for capability in &self.capabilities {
             capabilities.insert(capability.as_str());
@@ -386,8 +579,21 @@ impl Mount {
         TargetProfile {
             capabilities,
             messages: self.catalog.and_then(|c| catalogs[c].messages.clone()),
+            assets: self.assets.map(|a| Rc::clone(&assets[a].catalog)),
             ..TargetProfile::default()
         }
+    }
+}
+
+/// `dir` canonical, or its parent's canonical path and its name while it does
+/// not exist yet.
+fn canonical_dir(dir: &Path) -> PathBuf {
+    if let Ok(canonical) = dir.canonicalize() {
+        return canonical;
+    }
+    match (dir.parent().map(Path::canonicalize), dir.file_name()) {
+        (Some(Ok(parent)), Some(name)) => parent.join(name),
+        _ => dir.to_owned(),
     }
 }
 
@@ -493,6 +699,7 @@ mod tests {
             catalog: None,
             capabilities: Vec::new(),
             source_hash: source_hash(text),
+            assets: None,
         };
         assert_eq!(sources.mount(&entry), 0);
         sources
@@ -628,6 +835,7 @@ mod tests {
             catalog: Some(("en".into(), i18n.display().to_string())),
             capabilities: Vec::new(),
             source_hash: source_hash(view),
+            assets: None,
         });
         sources.change(Path::new("/p/src/title.vs"), view.into());
         assert!(sources.compile_catalogs().is_empty());
@@ -672,6 +880,7 @@ mod tests {
             catalog: None,
             capabilities: Vec::new(),
             source_hash: source_hash(text),
+            assets: None,
         };
         let at = sources.mount(&entry(VIEW));
         assert_eq!(sources.baseline(at), Ok(()));

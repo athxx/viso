@@ -27,6 +27,11 @@
 //! are answered at the frame boundary from the first session running the
 //! file; a recording restarts the World and answers with its tape once the
 //! game ran the ticks asked for.
+//! A patch's `resource` section names the assets it replaces, whose bytes
+//! the link assembled and decoded off the loop: one that did not load
+//! refuses the revision with the old resource kept, and the commit — after
+//! the views, so a node a reloaded view adds takes the new resource too —
+//! hands each to the app's assets, which every window showing it takes.
 //! Without `viso run` there is no session: the mounts are dropped.
 //! Without the feature this module is not compiled and a `view!` records
 //! nothing.
@@ -41,27 +46,35 @@ use std::time::{Duration, Instant};
 use viso_behavior::game::PreparedSwap;
 use viso_behavior::{Module, Vm};
 use viso_platform::{LoopWaker, WindowId};
+use viso_render::asset::{ResourceId, ResourceRevision};
 use viso_runtime::RuntimeCx;
 use viso_ui::NodeId;
 use viso_ui::state::{StateId, StateKey};
+use viso_ui::{AssetBytes, AssetPayload};
+use viso_view::dev::commit::dirty_counts;
 use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, static_nodes};
 use viso_view::dev::wire::{
-    CommitCounts, Domain, Domains, FileCommit, FileId, GameAnswer, GameAsk, GameCommit, GameQuery,
-    GameRefusal, GameReply, GameTier, LogLevel, MAX_FRAME, MAX_NOTICES, MAX_RECORD_TICKS,
-    MAX_SCOPED_RESETS, MountEntry, NACK_REPLAYING, NACK_SYSTEM_FAULT, NACK_UNKNOWN_FILE,
-    NACK_UNLOADABLE_SYSTEM, NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack,
-    PatchSection, PatchTimings, RESET_NOTICE, RecordSpan, ReloadPlan, Revision, RuntimeIdentity,
-    RuntimeMessage, SchemaFingerprint, ScopedReset, Stage,
+    CommitCounts, DirtyCounts, Domain, Domains, FileCommit, FileId, GameAnswer, GameAsk,
+    GameCommit, GameQuery, GameRefusal, GameReply, GameTier, LogLevel, MAX_FRAME, MAX_NOTICES,
+    MAX_RECORD_TICKS, MAX_SCOPED_RESETS, MountEntry, NACK_REPLAYING, NACK_SYSTEM_FAULT,
+    NACK_UNKNOWN_FILE, NACK_UNLOADABLE_ASSET, NACK_UNLOADABLE_SYSTEM, NACK_UNLOADABLE_VIEW, Notice,
+    PatchAck, PatchBundle, PatchNack, PatchSection, PatchTimings, RESET_NOTICE, RecordSpan,
+    ReloadPlan, ResourceCommit, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint,
+    ScopedReset, Stage,
 };
 use viso_view::{
     GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
 };
 
 use crate::WindowState;
-use link::{DevLink, Incoming};
+use crate::assets::Assets;
+use link::{DevLink, Incoming, LoadedAsset};
 
 /// The domains this runtime applies.
-const APPLIES: Domains = Domains::NONE.with(Domain::Ui).with(Domain::System);
+const APPLIES: Domains = Domains::NONE
+    .with(Domain::Ui)
+    .with(Domain::System)
+    .with(Domain::Resource);
 
 /// The hot reload session of an app: its mounted views and their files, and
 /// the dev channel to `viso run`, opened with the first mount.
@@ -103,8 +116,16 @@ struct StagedPatch {
     domains: Domains,
     views: Vec<StagedView>,
     games: Vec<StagedGame>,
+    assets: Vec<StagedAsset>,
     decode: Duration,
     stage: Duration,
+}
+
+/// An asset of a staged patch, decoded.
+struct StagedAsset {
+    id: ResourceId,
+    bytes: AssetBytes,
+    payload: AssetPayload,
 }
 
 /// A game of a staged patch: its file, the tier it swaps at, and the
@@ -254,7 +275,7 @@ impl HotReloadSession {
         while let Some(incoming) = link.poll() {
             match incoming {
                 Incoming::Connected(identity) => self.identity = Some(identity),
-                Incoming::Patch(bundle, decode) => {
+                Incoming::Patch(bundle, assets, decode) => {
                     let Some(identity) = &self.identity else {
                         continue;
                     };
@@ -264,9 +285,20 @@ impl HotReloadSession {
                     if let Some(last) = self.patches.last() {
                         expected.current_revision = last.next_revision;
                     }
-                    let staged = expected
-                        .check(&bundle)
-                        .and_then(|()| stage(*bundle, &self.files));
+                    let staged = expected.check(&bundle).and_then(|()| {
+                        for asset in &assets {
+                            if let Err(why) = &asset.loaded {
+                                link.send(RuntimeMessage::Log {
+                                    level: LogLevel::Error,
+                                    line: format!(
+                                        "assets/{}: {why}; the app keeps the last good",
+                                        asset.path
+                                    ),
+                                });
+                            }
+                        }
+                        stage(*bundle, &self.files, assets)
+                    });
                     match staged {
                         Ok(mut staged) => {
                             staged.decode = decode;
@@ -315,7 +347,7 @@ impl HotReloadSession {
     /// changed, and answers the host's questions about games. A mount
     /// recorded since the last adoption is not a window's build (a list row)
     /// and is not tracked.
-    pub(crate) fn reload(&mut self, windows: &mut [WindowState]) {
+    pub(crate) fn reload(&mut self, windows: &mut [WindowState], assets: &mut Assets) {
         take_mounts(&mut self.records);
         self.records.clear();
         if !self.patches.is_empty() {
@@ -326,7 +358,7 @@ impl HotReloadSession {
             });
         }
         for staged in std::mem::take(&mut self.patches) {
-            let answer = self.commit_patch(staged, windows);
+            let answer = self.commit_patch(staged, windows, assets);
             if let Some(link) = &mut self.link {
                 link.send(answer);
             }
@@ -453,7 +485,12 @@ impl HotReloadSession {
 
     /// Commits one staged patch: each view to each mount of its file. The
     /// ACK to send, or the NACK of a patch staged behind one that failed.
-    fn commit_patch(&mut self, staged: StagedPatch, windows: &mut [WindowState]) -> RuntimeMessage {
+    fn commit_patch(
+        &mut self,
+        staged: StagedPatch,
+        windows: &mut [WindowState],
+        assets: &mut Assets,
+    ) -> RuntimeMessage {
         let started = Instant::now();
         let Some(identity) = &mut self.identity else {
             unreachable!("a patch is staged only once the host accepted the launch");
@@ -570,6 +607,34 @@ impl HotReloadSession {
                 self.failures_changed = true;
             }
         }
+        // The views committed: each asset replaces its last good in every
+        // window, a node the views just mounted showing it included.
+        let resource_revision = ResourceRevision(u32::try_from(revision.0).unwrap_or(u32::MAX));
+        let mut resources = Vec::with_capacity(staged.assets.len());
+        for asset in staged.assets {
+            assets.replace(
+                asset.id,
+                resource_revision,
+                asset.bytes,
+                asset.payload,
+                windows.iter_mut().map(|ws| &mut ws.store),
+            );
+            let mut commit = ResourceCommit {
+                id: asset.id,
+                nodes: 0,
+                dirty: DirtyCounts::default(),
+            };
+            for ws in windows.iter_mut() {
+                if let Some(gpu) = &mut ws.gpu {
+                    assets.upload(&mut ws.store, &mut gpu.backend, &mut gpu.renderer);
+                }
+                let mut nodes = 0;
+                let shown = ws.store.asset_nodes(asset.id).inspect(|_| nodes += 1);
+                commit.dirty = commit.dirty.merge(&dirty_counts(&ws.store, shown));
+                commit.nodes += nodes;
+            }
+            resources.push(commit);
+        }
         // The views committed: the games swap with them.
         let mut swapped: Vec<GameCommit> = Vec::with_capacity(games.len());
         for proof in proved {
@@ -608,6 +673,7 @@ impl HotReloadSession {
             notices,
             state_resets,
             games: swapped,
+            resources,
             timings: PatchTimings {
                 decode_us: micros(staged.decode),
                 stage_us: micros(staged.stage),
@@ -703,16 +769,34 @@ impl HotReloadSession {
 }
 
 /// Loads every view of `bundle`, which the runtime checked against its
-/// revision: a view naming a file the runtime did not report, or whose
-/// behavior does not load, refuses the whole patch.
-fn stage(bundle: PatchBundle, files: &[ViewFile]) -> Result<StagedPatch, PatchNack> {
-    let refuse = |code: &str| PatchNack {
+/// revision, and takes the assets its `resource` section names, as the link
+/// decoded them: a view naming a file the runtime did not report or whose
+/// behavior does not load, or an asset that did not load, refuses the whole
+/// patch.
+fn stage(
+    bundle: PatchBundle,
+    files: &[ViewFile],
+    loaded: Vec<LoadedAsset>,
+) -> Result<StagedPatch, PatchNack> {
+    let refuse_at = |stage, code: &str| PatchNack {
         base_revision: bundle.base_revision,
         candidate_revision: bundle.next_revision,
-        stage: Stage::RuntimeStage,
+        stage,
         diagnostic_codes: vec![code.to_owned()],
         last_good_revision: Revision::default(),
     };
+    let refuse = |code: &str| refuse_at(Stage::RuntimeStage, code);
+    let mut assets = Vec::with_capacity(loaded.len());
+    for asset in loaded {
+        let Ok((bytes, payload)) = asset.loaded else {
+            return Err(refuse_at(Stage::ResourceBuild, NACK_UNLOADABLE_ASSET));
+        };
+        assets.push(StagedAsset {
+            id: asset.id,
+            bytes,
+            payload,
+        });
+    }
     let domains = bundle
         .sections
         .iter()
@@ -736,6 +820,8 @@ fn stage(bundle: PatchBundle, files: &[ViewFile]) -> Result<StagedPatch, PatchNa
                     });
                 }
             }
+            // Loaded above, from the blobs the link assembled.
+            PatchSection::Resource(_) => {}
             PatchSection::System(systems) => {
                 for game in systems.games {
                     let file = game.file.0 as usize;
@@ -770,6 +856,7 @@ fn stage(bundle: PatchBundle, files: &[ViewFile]) -> Result<StagedPatch, PatchNa
         domains,
         views,
         games,
+        assets,
         decode: Duration::ZERO,
         stage: Duration::ZERO,
     })
@@ -788,6 +875,7 @@ fn entry(index: usize, record: &MountRecord) -> MountEntry {
             .map(|(source, dir)| (source.into(), dir.into())),
         capabilities: record.capabilities.iter().map(|&c| c.into()).collect(),
         source_hash: record.source_hash,
+        assets: record.assets.map(|(dir, held)| (dir.into(), held.to_vec())),
     }
 }
 
@@ -888,7 +976,8 @@ mod tests {
     };
     use viso_view::dev::wire::{
         HostMessage, NACK_BUILD_MISMATCH, NACK_MALFORMED, NACK_REVISION_MISMATCH,
-        NACK_UNKNOWN_SESSION, UiPatch, source_hash,
+        NACK_UNKNOWN_SESSION, ResourceAsset, ResourcePatch, UiPatch, blob_chunks, content_hash,
+        source_hash,
     };
 
     use super::link::fake::{self, Host};
@@ -1058,11 +1147,22 @@ mod tests {
         windows: &mut [WindowState],
         patch: &HostMessage,
     ) -> RuntimeMessage {
+        apply_with(session, host, windows, &mut Assets::default(), patch)
+    }
+
+    /// [`apply_on`] with the app's `assets`.
+    fn apply_with(
+        session: &mut HotReloadSession,
+        host: &mut Host,
+        windows: &mut [WindowState],
+        assets: &mut Assets,
+        patch: &HostMessage,
+    ) -> RuntimeMessage {
         host.send(patch);
         if let Some(answer) = answer_or_staged(session, host) {
             return answer;
         }
-        session.reload(windows);
+        session.reload(windows, assets);
         host.read().expect("an answer")
     }
 
@@ -1408,7 +1508,7 @@ mod tests {
             lines: vec!["counter.vs:3:19: E1405 expected an expression".into()],
         });
         until(&mut session, |s| s.failures_changed);
-        session.reload(std::slice::from_mut(&mut ws));
+        session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
         assert!(ws.dev_overlay.is_some(), "the failure is shown");
         assert_eq!((ws.root, revision(&session)), (Some(root), 1));
         assert_eq!(subtree(&ws.store, root), nodes, "no node changed");
@@ -1418,7 +1518,7 @@ mod tests {
             lines: Vec::new(),
         });
         until(&mut session, |s| s.failures_changed);
-        session.reload(std::slice::from_mut(&mut ws));
+        session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
         assert!(ws.dev_overlay.is_none(), "a reverted edit clears it");
     }
 
@@ -1831,6 +1931,239 @@ mod tests {
         );
     }
 
+    const PHOTO: &[u8] = include_bytes!("../../../render/src/fixtures/two_tone.jpg");
+
+    /// An SVG of `w × h` filled with `fill`.
+    fn star(w: u32, h: u32, fill: &str) -> Vec<u8> {
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\">\
+             <rect width=\"{w}\" height=\"{h}\" fill=\"{fill}\"/></svg>"
+        )
+        .into_bytes()
+    }
+
+    /// Sends the blobs of `assets` (path and bytes) as the host does, ahead of
+    /// `patch`, and returns `patch` with the `resource` section naming them.
+    fn carrying(host: &mut Host, patch: HostMessage, assets: &[(&str, &[u8])]) -> HostMessage {
+        let HostMessage::Patch(mut patch) = patch else {
+            unreachable!()
+        };
+        for (_, bytes) in assets {
+            for chunk in blob_chunks(bytes) {
+                host.send(&HostMessage::Blob(chunk));
+            }
+        }
+        patch.sections.push(PatchSection::Resource(ResourcePatch {
+            assets: assets
+                .iter()
+                .map(|(path, bytes)| ResourceAsset {
+                    path: (*path).into(),
+                    hash: content_hash(bytes),
+                    len: bytes.len() as u32,
+                })
+                .collect(),
+        }));
+        HostMessage::Patch(patch)
+    }
+
+    /// The draw and natural size of the asset node `node` shows.
+    fn shown(ws: &WindowState, node: NodeId) -> (viso_ui::AssetDraw, [f32; 2]) {
+        match ws.store.content_payload(node) {
+            Some(viso_ui::Content::Asset { draw, natural, .. }) => {
+                (draw.clone(), [natural.x, natural.y])
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_asset_patch_swaps_the_resource_and_dirties_only_the_nodes_showing_it() {
+        let mut ws = counter();
+        ws.surface_size = (800, 600);
+        let mut assets = Assets::default();
+        let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
+        edits.profile.assets = Some(Rc::new(viso_dsl::assets::AssetCatalog::of(
+            "/app/assets".into(),
+            [
+                (
+                    "icons/star.svg".to_owned(),
+                    viso_dsl::assets::AssetFormat::Svg,
+                ),
+                (
+                    "photos/day.jpg".to_owned(),
+                    viso_dsl::assets::AssetFormat::Jpeg,
+                ),
+            ],
+        )));
+
+        // A view edit naming assets the build did not embed carries them.
+        let named = COUNTER.replace(
+            "Text { visible: enabled; }",
+            "Text { visible: enabled; }\n            \
+             Svg { source: asset(\"icons/star.svg\"); width: 24dp; height: 24dp; }\n            \
+             Image { source: asset(\"photos/day.jpg\"); }",
+        );
+        let patch = edits.patch(&host, 1, 2, &named);
+        let red = star(10, 20, "#f00");
+        let patch = carrying(
+            &mut host,
+            patch,
+            &[("icons/star.svg", &red), ("photos/day.jpg", PHOTO)],
+        );
+        let RuntimeMessage::Ack(ack) = apply_with(
+            &mut session,
+            &mut host,
+            std::slice::from_mut(&mut ws),
+            &mut assets,
+            &patch,
+        ) else {
+            panic!("not an ACK");
+        };
+        edits.acked();
+        assert!(ack.applied_domains.contains(Domain::Resource));
+        assert_eq!(ack.resources.len(), 2);
+        assert!(ack.resources.iter().all(|r| r.nodes == 1), "{ack:?}");
+        let root = ws.root.unwrap();
+        let nodes = children(&ws.store, root);
+        let (icon, photo) = (nodes[2], nodes[3]);
+        let (draw, size) = shown(&ws, icon);
+        assert!(matches!(draw, viso_ui::AssetDraw::Vector(_)), "{draw:?}");
+        assert_eq!(size, [10.0, 20.0]);
+        assert_eq!(
+            shown(&ws, photo).1,
+            [8.0, 4.0],
+            "sized before it is resident"
+        );
+        ws.relayout_and_paint();
+        ws.store.clear_dirty();
+
+        // A new color: the icon repaints, nothing else.
+        let dirty = |ws: &WindowState| -> Vec<DirtyClass> {
+            subtree(&ws.store, root)
+                .iter()
+                .map(|&n| ws.store.dirty(n))
+                .collect()
+        };
+        let patch = host.patch(2, 3);
+        let patch = carrying(
+            &mut host,
+            patch,
+            &[("icons/star.svg", &star(10, 20, "#00f"))],
+        );
+        let RuntimeMessage::Ack(ack) = apply_with(
+            &mut session,
+            &mut host,
+            std::slice::from_mut(&mut ws),
+            &mut assets,
+            &patch,
+        ) else {
+            panic!("not an ACK");
+        };
+        let mut expected = vec![DirtyClass::EMPTY; 5];
+        expected[3] = DirtyClass::PAINT;
+        assert_eq!(dirty(&ws), expected, "only the icon");
+        assert_eq!(
+            ack.resources[0].dirty,
+            viso_view::dev::wire::DirtyCounts {
+                paint: 1,
+                ..Default::default()
+            }
+        );
+        assert!(ack.files.is_empty(), "no view changed");
+        ws.relayout_and_paint();
+        ws.store.clear_dirty();
+
+        // A new size: the icon remeasures.
+        let patch = host.patch(3, 4);
+        let patch = carrying(
+            &mut host,
+            patch,
+            &[("icons/star.svg", &star(30, 20, "#00f"))],
+        );
+        let RuntimeMessage::Ack(ack) = apply_with(
+            &mut session,
+            &mut host,
+            std::slice::from_mut(&mut ws),
+            &mut assets,
+            &patch,
+        ) else {
+            panic!("not an ACK");
+        };
+        expected[3] = DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT;
+        // Its column, sized by its content, measures again around it.
+        expected[0] = DirtyClass::MEASURE;
+        assert_eq!(dirty(&ws), expected);
+        assert_eq!(
+            ack.resources[0].dirty,
+            viso_view::dev::wire::DirtyCounts {
+                measure: 1,
+                layout: 1,
+                paint: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(shown(&ws, icon).1, [30.0, 20.0]);
+        ws.store.clear_dirty();
+
+        // A corrupt photo, or one whose bytes went missing, refuses the
+        // revision: the last good stays.
+        let corrupt = host.patch(4, 5);
+        let corrupt = carrying(
+            &mut host,
+            corrupt,
+            &[("photos/day.jpg", &PHOTO[..PHOTO.len() / 2])],
+        );
+        host.send(&corrupt);
+        let line = match answer_or_staged(&mut session, &mut host) {
+            Some(RuntimeMessage::Log { line, .. }) => line,
+            other => panic!("not a log line: {other:?}"),
+        };
+        assert!(line.starts_with("assets/photos/day.jpg: "), "{line}");
+        let nack = match host.read() {
+            Some(RuntimeMessage::Nack(nack)) => nack,
+            other => panic!("not a NACK: {other:?}"),
+        };
+        assert_eq!(nack.stage, Stage::ResourceBuild);
+        assert_eq!(nack.diagnostic_codes, [NACK_UNLOADABLE_ASSET]);
+        assert_eq!(nack.last_good_revision, Revision(4));
+        let HostMessage::Patch(mut missing) = host.patch(4, 5) else {
+            unreachable!()
+        };
+        missing.sections.push(PatchSection::Resource(ResourcePatch {
+            assets: vec![ResourceAsset {
+                path: "photos/day.jpg".into(),
+                hash: content_hash(b"never sent"),
+                len: 10,
+            }],
+        }));
+        host.send(&HostMessage::Patch(missing));
+        assert!(matches!(
+            answer_or_staged(&mut session, &mut host),
+            Some(RuntimeMessage::Log { .. })
+        ));
+        assert!(matches!(
+            host.read(),
+            Some(RuntimeMessage::Nack(n)) if n.stage == Stage::ResourceBuild
+        ));
+        assert_eq!(shown(&ws, photo).1, [8.0, 4.0]);
+        assert!(dirty(&ws).iter().all(|d| d.is_empty()), "nothing changed");
+
+        // A window opened later shows the newest icon, from the bytes the app
+        // keeps.
+        let mut later = WindowState::new(WindowId(2));
+        later.root = Some(build(&mut later, mount_counter));
+        session.adopt(|| unreachable!(), &mut later);
+        let icon = children(&later.store, later.root.unwrap())[2];
+        assets.serve::<viso_gpu::HeadlessRaster>(&mut later.store, None, &LoopWaker::inert);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !matches!(shown(&later, icon).0, viso_ui::AssetDraw::Vector(_)) {
+            assert!(Instant::now() < deadline, "never served");
+            std::thread::sleep(Duration::from_millis(1));
+            assets.provide(std::iter::once(&mut later.store));
+        }
+        assert_eq!(shown(&later, icon).1, [30.0, 20.0], "the newest");
+    }
+
     #[test]
     fn a_window_opened_after_a_patch_mounts_the_patched_view() {
         let mut ws = counter();
@@ -1912,7 +2245,7 @@ mod tests {
                 std::hint::spin_loop();
             }
             let staged = Instant::now();
-            session.reload(std::slice::from_mut(&mut ws));
+            session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
             let committed = Instant::now();
             ws.relayout_and_paint();
             let painted = Instant::now();
@@ -1984,7 +2317,7 @@ mod tests {
             1,
             "nothing commits before the frame boundary"
         );
-        session.reload(&mut []);
+        session.reload(&mut [], &mut Assets::default());
         for next in [2, 3] {
             match host.read() {
                 Some(RuntimeMessage::Ack(ack)) => {
@@ -2046,7 +2379,7 @@ mod tests {
         assert!(session.patches.is_empty());
         let patch = host.patch(1, 2);
         stage_all(&mut session, &mut host, &[patch]);
-        session.reload(&mut []);
+        session.reload(&mut [], &mut Assets::default());
         assert!(matches!(host.read(), Some(RuntimeMessage::Ack(a)) if a.revision == Revision(2)));
     }
 
@@ -2154,12 +2487,15 @@ mod tests {
                 answer_or_staged(&mut session, &mut host).is_none(),
                 "staged"
             );
-            session.reload(std::slice::from_mut(&mut ws));
+            session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
             let Some(RuntimeMessage::Ack(ack)) = host.read() else {
                 panic!("not applied");
             };
             edits.acked();
-            assert_eq!(ack.applied_domains, APPLIES);
+            assert_eq!(
+                ack.applied_domains,
+                Domains::NONE.with(Domain::Ui).with(Domain::System)
+            );
             let [commit] = ack.games[..] else {
                 panic!("one game: {:?}", ack.games);
             };
@@ -2254,7 +2590,7 @@ mod tests {
                 answer_or_staged(&mut session, &mut host).is_none(),
                 "staged"
             );
-            session.reload(std::slice::from_mut(&mut ws));
+            session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
             assert!(matches!(
                 host.read(),
                 Some(RuntimeMessage::Log {
@@ -2291,7 +2627,7 @@ mod tests {
                 answer_or_staged(&mut session, &mut host).is_none(),
                 "staged"
             );
-            session.reload(std::slice::from_mut(&mut ws));
+            session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
             match host.read() {
                 Some(RuntimeMessage::Log { level, line }) => {
                     assert_eq!(level, LogLevel::Error);
@@ -2359,7 +2695,7 @@ mod tests {
                 answer_or_staged(&mut session, &mut host).is_none(),
                 "staged"
             );
-            session.reload(std::slice::from_mut(&mut ws));
+            session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
             assert!(
                 matches!(host.read(), Some(RuntimeMessage::Log { level: LogLevel::Warn, line }) if line.contains("replays a tape")),
             );
@@ -2386,7 +2722,7 @@ mod tests {
         ) {
             host.send(&HostMessage::Game(query));
             until(session, |s| !s.queries.is_empty());
-            session.reload(std::slice::from_mut(ws));
+            session.reload(std::slice::from_mut(ws), &mut Assets::default());
         }
 
         fn answered(host: &mut Host) -> GameAnswer {
@@ -2467,12 +2803,12 @@ mod tests {
             ws.store.run_frame_clients(TICK);
             ws.store.frame_clients_key(viso_ui::input::Key::Space, true);
             ws.store.run_frame_clients(TICK);
-            session.reload(std::slice::from_mut(&mut ws));
+            session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
             assert_eq!(session.recordings.len(), 1, "two ticks of three");
             ws.store
                 .frame_clients_key(viso_ui::input::Key::Space, false);
             ws.store.run_frame_clients(TICK);
-            session.reload(std::slice::from_mut(&mut ws));
+            session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
             let answer = answered(&mut host);
             let Ok(GameReply::Tape { tape }) = answer.reply else {
                 panic!("no tape: {answer:?}");

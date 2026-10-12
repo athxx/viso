@@ -148,39 +148,37 @@ pub struct CommitReport {
     pub dirty: DirtyCounts,
 }
 
-impl DirtyCounts {
-    /// `nodes`' counts, one node at a time.
-    fn of(store: &NodeStore, nodes: &[Option<NodeId>]) -> DirtyCounts {
-        let mut counts = DirtyCounts::default();
-        for &node in nodes.iter().flatten() {
-            let dirty = store.dirty(node);
-            if dirty.intersects(DirtyClass::STRUCTURE) {
-                counts.structure += 1;
-            }
-            if dirty.intersects(DirtyClass::STYLE) {
-                counts.style += 1;
-            }
-            if dirty.intersects(DirtyClass::MEASURE) {
-                counts.measure += 1;
-            }
-            if dirty.intersects(DirtyClass::LAYOUT) {
-                counts.layout += 1;
-            }
-            if dirty.intersects(DirtyClass::TRANSFORM) {
-                counts.transform += 1;
-            }
-            if dirty.intersects(DirtyClass::PAINT) {
-                counts.paint += 1;
-            }
-            if dirty.intersects(DirtyClass::HIT_TEST) {
-                counts.hit_test += 1;
-            }
-            if dirty.intersects(DirtyClass::SEMANTICS) {
-                counts.semantics += 1;
-            }
+/// How many of `nodes` carry each dirty class, one node at a time.
+pub fn dirty_counts(store: &NodeStore, nodes: impl IntoIterator<Item = NodeId>) -> DirtyCounts {
+    let mut counts = DirtyCounts::default();
+    for node in nodes {
+        let dirty = store.dirty(node);
+        if dirty.intersects(DirtyClass::STRUCTURE) {
+            counts.structure += 1;
         }
-        counts
+        if dirty.intersects(DirtyClass::STYLE) {
+            counts.style += 1;
+        }
+        if dirty.intersects(DirtyClass::MEASURE) {
+            counts.measure += 1;
+        }
+        if dirty.intersects(DirtyClass::LAYOUT) {
+            counts.layout += 1;
+        }
+        if dirty.intersects(DirtyClass::TRANSFORM) {
+            counts.transform += 1;
+        }
+        if dirty.intersects(DirtyClass::PAINT) {
+            counts.paint += 1;
+        }
+        if dirty.intersects(DirtyClass::HIT_TEST) {
+            counts.hit_test += 1;
+        }
+        if dirty.intersects(DirtyClass::SEMANTICS) {
+            counts.semantics += 1;
+        }
     }
+    counts
 }
 
 /// A kept state the commit reset because its live value did not convert.
@@ -321,7 +319,7 @@ pub fn commit(rt: &mut LiveRuntime<'_>, candidate: &Candidate, plan: &ReloadPlan
         settle_carried(rt, pending, &mut report);
     }
 
-    report.dirty = DirtyCounts::of(rt.store, &nodes);
+    report.dirty = dirty_counts(rt.store, nodes.iter().flatten().copied());
     *rt.nodes = nodes;
     report
 }

@@ -2,12 +2,13 @@
 //! session acts on, and the directories it never descends into.
 //!
 //! In scope are the `.vs` sources, the message catalogs (`*.toml` in an
-//! `i18n/` directory) and the root `Viso.toml`. Out of scope are Cargo's and
-//! the packager's outputs at the root (`target/`, `dist/`), every hidden
-//! directory (`.git/`, `.viso/`, editor state), any directory marked as a
-//! cache by a `CACHEDIR.TAG` (a relocated target directory, generated
-//! caches), `node_modules/`, and editor temporaries (hidden, `#…#`, `…~`).
-//! Shader, asset, font and Rust sources join the scope with the domains that
+//! `i18n/` directory), every file under an `assets/` directory (its format is
+//! read from its bytes, not its name) and the root `Viso.toml`. Out of scope
+//! are Cargo's and the packager's outputs at the root (`target/`, `dist/`),
+//! every hidden directory (`.git/`, `.viso/`, editor state), any directory
+//! marked as a cache by a `CACHEDIR.TAG` (a relocated target directory,
+//! generated caches), `node_modules/`, and editor temporaries (hidden, `#…#`,
+//! `…~`). Shader, font and Rust sources join the scope with the domains that
 //! patch them.
 
 use std::path::Path;
@@ -36,12 +37,36 @@ pub(crate) fn in_scope(root: &Path, path: &Path) -> bool {
     }
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("vs") => true,
-        Some("toml") => path
-            .parent()
-            .and_then(Path::file_name)
-            .is_some_and(|dir| dir == viso_dsl::i18n::CATALOG_DIR),
-        _ => false,
+        Some("toml")
+            if path
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|dir| dir == viso_dsl::i18n::CATALOG_DIR) =>
+        {
+            true
+        }
+        _ => asset_dir(root, path).is_some(),
     }
+}
+
+/// The `assets/` directory file `path` of the project rooted at `root` lies
+/// in: the outermost of its ancestors below the root so named.
+pub(crate) fn asset_dir<'p>(root: &Path, path: &'p Path) -> Option<&'p Path> {
+    let mut found = None;
+    let mut dir = path.parent();
+    while let Some(at) = dir {
+        if at == root || !at.starts_with(root) {
+            break;
+        }
+        if at
+            .file_name()
+            .is_some_and(|n| n == viso_dsl::assets::ASSET_DIR)
+        {
+            found = Some(at);
+        }
+        dir = at.parent();
+    }
+    found
 }
 
 #[cfg(test)]
@@ -49,13 +74,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_scope_is_sources_catalogs_and_the_manifest() {
+    fn the_scope_is_sources_catalogs_assets_and_the_manifest() {
         let root = Path::new("/p");
         for file in [
             "/p/Viso.toml",
             "/p/src/a.vs",
             "/p/i18n/en.toml",
             "/p/x/i18n/fr.toml",
+            "/p/assets/logo.png",
+            "/p/assets/icons/star",
+            "/p/pkg/assets/a.toml",
         ] {
             assert!(in_scope(root, Path::new(file)), "{file}");
         }
@@ -67,9 +95,17 @@ mod tests {
             "/p/src/#a.vs#",
             "/p/src/a.vs~",
             "/p/src/a.rs",
+            "/p/assets/.DS_Store",
+            "/p/assets/logo.png~",
+            "/p/assets.png",
         ] {
             assert!(!in_scope(root, Path::new(file)), "{file}");
         }
+        assert_eq!(
+            asset_dir(root, Path::new("/p/pkg/assets/icons/assets/a.svg")),
+            Some(Path::new("/p/pkg/assets"))
+        );
+        assert_eq!(asset_dir(root, Path::new("/assets/a.png")), None);
         for dir in [
             "/p/target",
             "/p/dist",

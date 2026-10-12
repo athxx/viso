@@ -46,13 +46,14 @@ use std::time::{Duration, Instant};
 
 use viso_dsl::Diagnostic;
 use viso_dsl::aot::emit_view_package;
+use viso_dsl::assets::{ASSET_ERROR, ResourceId};
 use viso_dsl::behavior::probe::state_json;
 use viso_dsl::hotreload::{CandidatePlan, game_patch, view_patch};
 use viso_project::LockGuard;
 use viso_view::dev::wire::{
     CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply, HostMessage,
-    PatchBundle, PatchSection, Rebuild, ReloadPlan, Revision, RuntimeHello, RuntimeMessage, Stage,
-    SystemPatch, UiPatch, ViewPatch, source_hash,
+    PatchBundle, PatchSection, Rebuild, ReloadPlan, ResourceAsset, ResourcePatch, Revision,
+    RuntimeHello, RuntimeMessage, Stage, SystemPatch, UiPatch, ViewPatch, blob_chunks, source_hash,
 };
 
 pub use control::{Control, ControlCall, ControlDeliver, ControlReply};
@@ -61,7 +62,7 @@ pub use watch::Change;
 
 use crate::output::{Output, Source};
 use report::{Outcome, ReloadEvent, intern_code, rejection_stage};
-use sources::{Changed, Sources, failure_lines};
+use sources::{AssetRef, Changed, Sources, failure_lines};
 use watch::Watcher;
 
 /// How long the session waits after the latest change of a batch before it
@@ -120,7 +121,16 @@ struct InFlight {
     base: Revision,
     next: Revision,
     views: Vec<SentView>,
+    assets: Vec<SentAsset>,
     started: Instant,
+}
+
+/// An asset a patch carries.
+struct SentAsset {
+    asset: AssetRef,
+    /// The hash and length of the bytes sent.
+    hash: u64,
+    len: usize,
 }
 
 /// A view a patch carries.
@@ -199,8 +209,18 @@ impl DevSession {
     /// Takes the latest content of a file of the scope.
     pub fn change(&mut self, change: Change, out: &mut Output) {
         let now = Instant::now();
+        if let Some(dir) = watch::asset_dir(&self.root, &change.path) {
+            let dir = dir.to_owned();
+            self.sources.change_asset(&dir, &change.path, change.bytes);
+            self.batched(now);
+            return;
+        }
+        // A source or catalog that is not UTF-8 is not one the build reads.
+        let Ok(text) = String::from_utf8(change.bytes) else {
+            return;
+        };
         if change.path == self.root.join(viso_project::MANIFEST_NAME) {
-            let hash = source_hash(&change.text);
+            let hash = source_hash(&text);
             match self.manifest {
                 None => self.manifest = Some(hash),
                 Some(built) if built != hash => out.log(
@@ -213,9 +233,14 @@ impl DevSession {
             }
             return;
         }
-        if let Changed::Other = self.sources.change(&change.path, change.text) {
+        if let Changed::Other = self.sources.change(&change.path, text) {
             return;
         }
+        self.batched(now);
+    }
+
+    /// Adds a change at `now` to the batch being coalesced.
+    fn batched(&mut self, now: Instant) {
         match &mut self.batch {
             Some(batch) => batch.last = now,
             None => {
@@ -353,6 +378,33 @@ impl DevSession {
                         &event,
                     );
                 }
+                for SentAsset { asset, hash, .. } in sent.assets {
+                    self.sources.asset_applied(&asset, hash);
+                    let id = ResourceId::of(&asset.path);
+                    let dirty = ack
+                        .resources
+                        .iter()
+                        .find(|commit| commit.id == id)
+                        .map(|commit| commit.dirty)
+                        .unwrap_or_default();
+                    let event = ReloadEvent {
+                        base_revision: sent.base.0,
+                        candidate_revision: sent.next.0,
+                        last_good_revision: ack.revision.0,
+                        outcome: Outcome::Applied,
+                        stage: Stage::RuntimeCommit,
+                        elapsed_us: elapsed,
+                        counts: CommitCounts {
+                            dirty,
+                            ..CommitCounts::default()
+                        },
+                        codes: Vec::new(),
+                        game: None,
+                    };
+                    let path = self.sources.asset_path(&asset);
+                    let name = Source::new(&path, &self.root, "").name().to_owned();
+                    out.dev(&name, &self.session, &runtime_session, &self.build, &event);
+                }
             }
             RuntimeMessage::Nack(nack) => {
                 let Some(sent) = self.answered(nack.candidate_revision) else {
@@ -395,6 +447,24 @@ impl DevSession {
                         game: None,
                     };
                     let name = Source::new(&view.path, &self.root, "").name().to_owned();
+                    out.dev(&name, &self.session, &runtime_session, &self.build, &event);
+                }
+                for SentAsset { asset, hash, .. } in &sent.assets {
+                    // It runs its last good: the next edit of it goes again.
+                    self.sources.asset_settled(asset, *hash);
+                    let event = ReloadEvent {
+                        base_revision: sent.base.0,
+                        candidate_revision: sent.next.0,
+                        last_good_revision: nack.last_good_revision.0,
+                        outcome: Outcome::Rejected,
+                        stage: nack.stage,
+                        elapsed_us: elapsed,
+                        counts: CommitCounts::default(),
+                        codes: nack.diagnostic_codes.clone(),
+                        game: None,
+                    };
+                    let path = self.sources.asset_path(asset);
+                    let name = Source::new(&path, &self.root, "").name().to_owned();
                     out.dev(&name, &self.session, &runtime_session, &self.build, &event);
                 }
             }
@@ -608,7 +678,7 @@ impl DevSession {
             }
         }
         let candidates = self.sources.candidates();
-        if candidates.is_empty() {
+        if candidates.is_empty() && self.sources.asset_candidates(&[]).is_empty() {
             return;
         }
         let started = Instant::now();
@@ -679,7 +749,81 @@ impl DevSession {
                 &event,
             );
         }
-        if views.is_empty() {
+        // The assets to send: each the app holds that changed, and each a
+        // candidate names that it does not hold yet. Each is decoded here as
+        // the app would: one that does not decode is reported against its
+        // path and not sent, and the app keeps the last good.
+        let mut named = Vec::new();
+        for (at, _, candidate) in &views {
+            if let Some(dir) = self.sources.views[*at]
+                .mount
+                .as_ref()
+                .and_then(|m| m.assets)
+            {
+                named.extend(candidate.assets.iter().map(|asset| AssetRef {
+                    dir,
+                    path: asset.path.clone(),
+                }));
+            }
+        }
+        let replaces_assets = runtime.hello.capabilities.contains(Domain::Resource);
+        let mut assets = Vec::new();
+        for asset in self.sources.asset_candidates(&named) {
+            let file = self.sources.asset(&asset);
+            let hash = file.hash;
+            let path = self.sources.asset_path(&asset);
+            let name = Source::new(&path, &self.root, "").name().to_owned();
+            let decoded = viso_svg::decode_asset(&file.bytes);
+            let (outcome, stage, codes) = match decoded {
+                Ok(_) if self.apply && replaces_assets => {
+                    assets.push(SentAsset {
+                        asset,
+                        hash,
+                        len: file.bytes.len(),
+                    });
+                    continue;
+                }
+                Ok(_) => {
+                    if self.apply {
+                        out.log(
+                            "warn",
+                            "tool",
+                            &format!(
+                                "`{name}`: the app does not replace assets, so it keeps the \
+                                 one it was built with"
+                            ),
+                        );
+                    }
+                    (Outcome::Held, Stage::Transport, Vec::new())
+                }
+                Err(error) => {
+                    out.failure(
+                        ASSET_ERROR,
+                        &format!("`{name}` does not decode: {error}"),
+                        &["the app keeps showing its last good version".to_owned()],
+                    );
+                    (
+                        Outcome::Rejected,
+                        Stage::ResourceBuild,
+                        vec![ASSET_ERROR.to_owned()],
+                    )
+                }
+            };
+            self.sources.asset_settled(&asset, hash);
+            let event = ReloadEvent {
+                base_revision: base.0,
+                candidate_revision: next.0,
+                last_good_revision: base.0,
+                outcome,
+                stage,
+                elapsed_us: elapsed_us(started),
+                counts: CommitCounts::default(),
+                codes,
+                game: None,
+            };
+            out.dev(&name, &self.session, &runtime_session, &self.build, &event);
+        }
+        if views.is_empty() && assets.is_empty() {
             return;
         }
         let swaps_games = runtime.hello.capabilities.contains(Domain::System);
@@ -741,9 +885,38 @@ impl DevSession {
                 notes,
             });
         }
-        let mut sections = vec![PatchSection::Ui(ui)];
+        let mut sections = Vec::new();
+        if !ui.views.is_empty() {
+            sections.push(PatchSection::Ui(ui));
+        }
         if !systems.games.is_empty() {
             sections.push(PatchSection::System(systems));
+        }
+        if !assets.is_empty() {
+            // Each asset's bytes go ahead of the patch, once per content.
+            let mut blobs: Vec<u64> = Vec::with_capacity(assets.len());
+            for sent in &assets {
+                if blobs.contains(&sent.hash) {
+                    continue;
+                }
+                blobs.push(sent.hash);
+                let bytes = &self.sources.asset(&sent.asset).bytes;
+                for chunk in blob_chunks(bytes) {
+                    if runtime.writer.send(HostMessage::Blob(chunk)).is_err() {
+                        return;
+                    }
+                }
+            }
+            sections.push(PatchSection::Resource(ResourcePatch {
+                assets: assets
+                    .iter()
+                    .map(|sent| ResourceAsset {
+                        path: sent.asset.path.clone(),
+                        hash: sent.hash,
+                        len: sent.len as u32,
+                    })
+                    .collect(),
+            }));
         }
         let patch = PatchBundle {
             dev_session: runtime.hello.dev_session,
@@ -764,6 +937,7 @@ impl DevSession {
             base,
             next,
             views: sent,
+            assets,
             started,
         });
     }
@@ -871,6 +1045,19 @@ mod tests {
         /// A session whose app, applying `capabilities`, runs `built` while
         /// `view.vs` reads `text`.
         fn app(name: &str, apply: bool, built: &str, text: &str, capabilities: Domains) -> Self {
+            Fixture::app_with(name, apply, built, text, capabilities, &[])
+        }
+
+        /// [`app`](Self::app) with the package's `assets`: each one's path,
+        /// bytes as the build read them, and whether the mount embeds it.
+        fn app_with(
+            name: &str,
+            apply: bool,
+            built: &str,
+            text: &str,
+            capabilities: Domains,
+            assets: &[(&str, &[u8], bool)],
+        ) -> Self {
             let root = std::env::temp_dir().join(format!("viso-dev-{}-{name}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
@@ -918,6 +1105,15 @@ mod tests {
                 path,
             };
             fixture.save(text);
+            for (path, bytes, _) in assets {
+                fixture.save_asset(path, bytes);
+            }
+            let held = assets
+                .iter()
+                .filter(|(_, _, held)| *held)
+                .map(|(path, _, _)| ResourceId::of(path))
+                .collect();
+            let asset_dir = root.join("assets").display().to_string();
             fixture.runtime(RuntimeMessage::Mounts(vec![MountEntry {
                 file: FileId(0),
                 path: fixture.path.display().to_string(),
@@ -927,6 +1123,7 @@ mod tests {
                 catalog: None,
                 capabilities: Vec::new(),
                 source_hash: source_hash(built),
+                assets: Some((asset_dir, held)),
             }]));
             fixture
         }
@@ -934,7 +1131,17 @@ mod tests {
         fn save(&mut self, text: &str) {
             let change = Change {
                 path: self.path.clone(),
-                text: text.into(),
+                bytes: text.into(),
+            };
+            self.dev.change(change, &mut self.out);
+        }
+
+        /// Saves `bytes` as asset `path`.
+        fn save_asset(&mut self, path: &str, bytes: &[u8]) {
+            let root = self.path.parent().expect("in the root").to_owned();
+            let change = Change {
+                path: root.join("assets").join(path),
+                bytes: bytes.to_vec(),
             };
             self.dev.change(change, &mut self.out);
         }
@@ -966,6 +1173,7 @@ mod tests {
                 notices: Vec::new(),
                 state_resets: Vec::new(),
                 games: Vec::new(),
+                resources: Vec::new(),
                 timings: PatchTimings::default(),
             }));
         }
@@ -1002,6 +1210,158 @@ mod tests {
             *view,
             view_patch(FileId(0), &compiled(last_good), &compiled(text))
         );
+    }
+
+    const DAY: &[u8] = include_bytes!("../../../../examples/images/assets/photos/day.png");
+    const NIGHT: &[u8] = include_bytes!("../../../../examples/images/assets/photos/night.jpg");
+    const STAR: &[u8] = include_bytes!("../../../../examples/images/assets/icons/star.svg");
+
+    /// The blobs of `sent`, reassembled, and the resource section of its
+    /// patch, which ends it.
+    fn resources(sent: &[HostMessage]) -> (Vec<Vec<u8>>, &ResourcePatch) {
+        let Some((HostMessage::Patch(patch), blobs)) = sent.split_last() else {
+            panic!("no patch last: {sent:?}");
+        };
+        let Some(PatchSection::Resource(resources)) = patch.sections.last() else {
+            panic!("no resource section: {:?}", patch.sections);
+        };
+        let mut whole: Vec<Vec<u8>> = Vec::new();
+        for blob in blobs {
+            let HostMessage::Blob(chunk) = blob else {
+                panic!("not a blob: {blob:?}");
+            };
+            if chunk.offset == 0 {
+                whole.push(Vec::new());
+            }
+            whole.last_mut().unwrap().extend_from_slice(&chunk.bytes);
+        }
+        (whole, resources)
+    }
+
+    fn acked_assets(f: &mut Fixture, revision: u64, paths: &[&str]) {
+        f.runtime(RuntimeMessage::Ack(PatchAck {
+            revision: Revision(revision),
+            applied_domains: Domains::NONE.with(Domain::Resource),
+            files: Vec::new(),
+            notices: Vec::new(),
+            state_resets: Vec::new(),
+            games: Vec::new(),
+            resources: paths
+                .iter()
+                .map(|path| viso_view::dev::wire::ResourceCommit {
+                    id: ResourceId::of(path),
+                    nodes: 1,
+                    dirty: Default::default(),
+                })
+                .collect(),
+            timings: PatchTimings::default(),
+        }));
+    }
+
+    fn replaces_assets() -> Domains {
+        Domains::NONE.with(Domain::Ui).with(Domain::Resource)
+    }
+
+    #[test]
+    fn a_changed_asset_the_app_holds_goes_as_blobs_ahead_of_its_patch() {
+        let mut f = Fixture::app_with(
+            "asset-edit",
+            true,
+            VIEW,
+            VIEW,
+            replaces_assets(),
+            &[("photos/day.png", DAY, true), ("unused.png", DAY, false)],
+        );
+        assert!(f.settle().is_empty(), "the app runs what the build read");
+
+        f.save_asset("unused.png", NIGHT);
+        assert!(f.settle().is_empty(), "the app does not hold it");
+
+        f.save_asset("photos/day.png", NIGHT);
+        let sent = f.settle();
+        let (blobs, patch) = resources(&sent);
+        assert_eq!(blobs, [NIGHT]);
+        assert_eq!(
+            patch.assets,
+            [ResourceAsset {
+                path: "photos/day.png".into(),
+                hash: viso_view::dev::wire::content_hash(NIGHT),
+                len: NIGHT.len() as u32,
+            }]
+        );
+        let HostMessage::Patch(bundle) = sent.last().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(bundle.sections.len(), 1, "no view changed");
+        acked_assets(&mut f, 2, &["photos/day.png"]);
+        assert!(f.settle().is_empty());
+
+        // Back to what it was: the app holds the edit now, so that goes too.
+        f.save_asset("photos/day.png", DAY);
+        let (blobs, _) = resources(&f.settle());
+        assert_eq!(blobs, [DAY]);
+    }
+
+    #[test]
+    fn an_asset_that_does_not_decode_is_reported_and_kept_from_the_app() {
+        let mut f = Fixture::app_with(
+            "asset-corrupt",
+            true,
+            VIEW,
+            VIEW,
+            replaces_assets(),
+            &[("logo.png", DAY, true)],
+        );
+        let errors = f.out.errors();
+        f.save_asset("logo.png", &DAY[..DAY.len() / 2]);
+        assert!(f.settle().is_empty(), "nothing is sent");
+        assert!(f.out.errors() > errors, "the failure is reported");
+        assert!(f.settle().is_empty(), "nor retried");
+
+        f.save_asset("logo.png", NIGHT);
+        let (blobs, _) = resources(&f.settle());
+        assert_eq!(blobs, [NIGHT], "the next good one goes");
+    }
+
+    #[test]
+    fn a_view_naming_an_asset_the_app_lacks_carries_it_and_one_appearing_rechecks_it() {
+        let mut f = Fixture::app_with(
+            "asset-named",
+            true,
+            VIEW,
+            VIEW,
+            replaces_assets(),
+            &[("icons/star.svg", STAR, false)],
+        );
+        let named = VIEW.replace(
+            "Text { width: 120dp; }",
+            "Svg { source: asset(\"icons/star.svg\"); }",
+        );
+        f.save(&named);
+        let sent = f.settle();
+        let (blobs, patch) = resources(&sent);
+        assert_eq!(blobs, [STAR]);
+        assert_eq!(patch.assets[0].path, "icons/star.svg");
+        let HostMessage::Patch(bundle) = sent.last().unwrap() else {
+            unreachable!()
+        };
+        assert!(matches!(bundle.sections[0], PatchSection::Ui(_)));
+        acked_assets(&mut f, 2, &["icons/star.svg"]);
+
+        // A view naming an asset not there yet is rejected, and compiles once
+        // it appears.
+        let late = named.replace("icons/star.svg", "late.svg");
+        f.save(&late);
+        let sent = f.settle();
+        assert!(
+            matches!(&sent[..], [HostMessage::Failure { .. }]),
+            "{sent:?}"
+        );
+        f.save_asset("late.svg", STAR);
+        let sent = f.settle();
+        let (blobs, patch) = resources(&sent);
+        assert_eq!(blobs, [STAR]);
+        assert_eq!(patch.assets[0].path, "late.svg");
     }
 
     #[test]
@@ -1126,7 +1486,7 @@ mod tests {
         };
         patch.sections.iter().find_map(|section| match section {
             PatchSection::System(systems) => Some(systems),
-            PatchSection::Ui(_) => None,
+            PatchSection::Ui(_) | PatchSection::Resource(_) => None,
         })
     }
 

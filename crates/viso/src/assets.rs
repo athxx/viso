@@ -15,6 +15,11 @@
 //! Textures live on the window's device, which keeps them across a renderer
 //! rebuild and a device loss; a replaced one is released through the
 //! renderer, whose device destroys it once no frame in flight draws it.
+//!
+//! A hot reload [replaces](Assets::replace) a resource with bytes the build
+//! did not embed: the app keeps the newest bytes of each, so a table offering
+//! older ones — a window or mount opened later — or none at all is served
+//! those.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -25,8 +30,7 @@ use viso_gpu::{GpuBackend, TextureDesc, TextureFormat};
 use viso_platform::LoopWaker;
 use viso_render::Renderer;
 use viso_render::asset::{
-    AssetError, AssetFormat, AssetKind, RasterImage, ResourceId, ResourceRevision, VectorScene,
-    decode_raster,
+    AssetError, DecodedAsset, RasterImage, ResourceId, ResourceRevision, VectorScene,
 };
 use viso_ui::{AssetBytes, AssetPayload, NodeStore};
 
@@ -112,16 +116,11 @@ impl Worker {
 }
 
 /// `bytes` decoded by the format they are in.
-fn decode(bytes: &[u8]) -> Result<AssetPayload, AssetError> {
-    match AssetFormat::sniff(bytes).map(AssetFormat::kind) {
-        Some(AssetKind::Raster) => {
-            decode_raster(bytes).map(|image| AssetPayload::Raster(image.into()))
-        }
-        Some(AssetKind::Vector) => viso_svg::parse_svg(bytes)
-            .map(|scene| AssetPayload::Vector(Arc::new(scene.into_vector())))
-            .map_err(|error| AssetError::Decode(error.to_string())),
-        None => Err(AssetError::Format),
-    }
+pub(crate) fn decode(bytes: &[u8]) -> Result<AssetPayload, AssetError> {
+    viso_svg::decode_asset(bytes).map(|asset| match asset {
+        DecodedAsset::Raster(image) => AssetPayload::Raster(Arc::new(image)),
+        DecodedAsset::Vector(scene) => AssetPayload::Vector(Arc::new(scene)),
+    })
 }
 
 /// The app's assets.
@@ -133,6 +132,8 @@ pub(crate) struct Assets {
     decoding: HashMap<ResourceId, ResourceRevision>,
     /// The newest revision of each resource that did not decode.
     failed: HashMap<ResourceId, ResourceRevision>,
+    /// The newest bytes of each resource a hot reload replaced.
+    latest: HashMap<ResourceId, (ResourceRevision, AssetBytes)>,
     worker: Option<Worker>,
     /// Whether no worker thread could be spawned: decoding runs inline.
     inline: bool,
@@ -222,10 +223,32 @@ impl Assets {
         }
     }
 
-    /// Serves `store`, whose table moved: provides what the app decoded, sends
-    /// the rest to the worker (`waker` wakes the loop when it is done), and
-    /// uploads the rasters not resident into `gpu`, releasing what they
-    /// replace.
+    /// Replaces resource `id` with `bytes` at `revision`, decoded to
+    /// `payload` already: the app keeps the bytes for whatever shows the
+    /// resource later, and every store of `stores` showing it now takes the
+    /// payload.
+    #[cfg(feature = "hot-reload")]
+    pub(crate) fn replace<'s>(
+        &mut self,
+        id: ResourceId,
+        revision: ResourceRevision,
+        bytes: AssetBytes,
+        payload: AssetPayload,
+        stores: impl Iterator<Item = &'s mut NodeStore>,
+    ) {
+        self.latest.insert(id, (revision, bytes));
+        self.decoded.insert(id, (revision, Held::of(&payload)));
+        for store in stores {
+            if store.assets().knows(id) {
+                store.provide_asset(id, revision, payload.clone());
+            }
+        }
+    }
+
+    /// Serves `store`, whose table moved: offers the newest bytes the app
+    /// holds of what it shows, provides what the app decoded, sends the rest to
+    /// the worker (`waker` wakes the loop when it is done), and uploads the
+    /// rasters not resident into `gpu`, releasing what they replace.
     pub(crate) fn serve<B: GpuBackend>(
         &mut self,
         store: &mut NodeStore,
@@ -233,6 +256,24 @@ impl Assets {
         waker: &dyn Fn() -> LoopWaker,
     ) {
         let mut todo = std::mem::take(&mut self.scratch);
+        if !self.latest.is_empty() {
+            // What shows with no bytes, or with older bytes than a reload's.
+            let newer = |id: ResourceId, than: Option<ResourceRevision>| {
+                let (revision, bytes) = self.latest.get(&id)?;
+                than.is_none_or(|than| *revision > than)
+                    .then(|| (id, *revision, bytes.clone()))
+            };
+            let table = store.assets();
+            todo.extend(table.wanted().filter_map(|id| newer(id, None)));
+            todo.extend(
+                table
+                    .undecoded()
+                    .filter_map(|(id, revision, _)| newer(id, Some(revision))),
+            );
+            for (id, revision, bytes) in todo.drain(..) {
+                store.assets_mut().offer(id, revision, bytes);
+            }
+        }
         todo.extend(
             store
                 .assets()
@@ -277,9 +318,19 @@ impl Assets {
             }
         }
         self.scratch = todo;
-        let Some((backend, renderer)) = gpu else {
-            return;
-        };
+        if let Some((backend, renderer)) = gpu {
+            self.upload(store, backend, renderer);
+        }
+    }
+
+    /// Uploads the rasters of `store` not resident into `backend`, releasing
+    /// what they replace through `renderer`.
+    pub(crate) fn upload<B: GpuBackend>(
+        &mut self,
+        store: &mut NodeStore,
+        backend: &mut B,
+        renderer: &mut Renderer,
+    ) {
         self.rasters.clear();
         self.rasters.extend(
             store
@@ -426,6 +477,67 @@ mod tests {
         serve(&mut assets, &mut first, &mut gpu);
         assert_eq!(gpu.backend.texture_count(), textures);
         assert_eq!(assets.counters().uploads, 2);
+    }
+
+    #[cfg(feature = "hot-reload")]
+    #[test]
+    fn a_replaced_raster_repaints_its_nodes_and_serves_later_tables_the_newest() {
+        use viso_ui::DirtyClass;
+        let (photo, icon) = (ResourceId::of("photo.jpg"), ResourceId::of("icon.svg"));
+        let mut assets = Assets::default();
+        let mut gpu = Gpu::new();
+        let (mut first, nodes) = store(&[(photo, JPEG), (icon, SVG)]);
+        serve(&mut assets, &mut first, &mut gpu);
+        let AssetDraw::Raster(old) = drawn(&first, nodes[0]).0 else {
+            panic!("resident");
+        };
+        first.clear_dirty();
+
+        // The same size, other pixels: only the photo's node repaints, with a
+        // new texture.
+        let next = ResourceRevision(2);
+        let image = RasterImage {
+            width: 8,
+            height: 4,
+            pixels: vec![0x80; 8 * 4 * 4],
+        };
+        let bytes = AssetBytes::Shared(Arc::from(JPEG));
+        assets.replace(
+            photo,
+            next,
+            bytes.clone(),
+            AssetPayload::Raster(Arc::new(image)),
+            std::iter::once(&mut first),
+        );
+        assets.upload(&mut first, &mut gpu.backend, &mut gpu.renderer);
+        let AssetDraw::Raster(new) = drawn(&first, nodes[0]).0 else {
+            panic!("resident");
+        };
+        assert_ne!(new, old);
+        assert_eq!(first.dirty(nodes[0]), DirtyClass::PAINT);
+        assert!(first.dirty(nodes[1]).is_empty(), "the icon is untouched");
+        assert_eq!(
+            assets.counters().decodes,
+            2,
+            "the reload's payload is not decoded again"
+        );
+
+        // A table offering the build's bytes is served the newest instead.
+        let (mut later, _) = store(&[(photo, JPEG)]);
+        assets.serve(
+            &mut later,
+            Some((&mut gpu.backend, &mut gpu.renderer)),
+            &LoopWaker::inert,
+        );
+        assert_eq!(
+            later
+                .assets()
+                .undecoded()
+                .next()
+                .map(|(_, r, b)| (r, b.clone())),
+            Some((next, bytes)),
+            "the newest bytes, to decode"
+        );
     }
 
     #[test]

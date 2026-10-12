@@ -233,7 +233,7 @@ fn premultiplied(
 pub fn decode_raster(bytes: &[u8]) -> Result<RasterImage, AssetError> {
     use zune_core::bytestream::ZCursor;
     use zune_core::options::DecoderOptions;
-    let error = |e: &dyn std::fmt::Display| AssetError::Decode(e.to_string());
+    let error = |e: &dyn std::fmt::Display| AssetError::Decode(e.to_string().trim_end().to_owned());
     match AssetFormat::sniff(bytes) {
         Some(AssetFormat::Png) => {
             let options = DecoderOptions::default()
@@ -269,6 +269,13 @@ pub fn decode_raster(bytes: &[u8]) -> Result<RasterImage, AssetError> {
         Some(format) => Err(AssetError::Kind(format)),
         None => Err(AssetError::Format),
     }
+}
+
+/// An asset decoded, by how it draws.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DecodedAsset {
+    Raster(RasterImage),
+    Vector(VectorScene),
 }
 
 /// A vector asset: filled and stroked paths in its own space, `(0, 0)` its
