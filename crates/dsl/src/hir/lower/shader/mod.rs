@@ -14,22 +14,33 @@ mod body;
 
 use std::collections::{HashMap, HashSet};
 
-use viso_shader::program::{Binding, Function, Program, Scalar, Span, Stage, Texel, Ty};
+use viso_shader::program::brush::{RECT_POS, RECT_SIZE};
+use viso_shader::program::{
+    Binding, BrushLayout, Function, ParamKind, Program, Scalar, Span, Stage, Texel, Ty,
+};
 
 use super::{ModuleEnv, name_of};
 use crate::ast::{AstNode, RecordDecl, ShaderDecl, ShaderMember, ShaderStage, TypePath};
 use crate::diag::Diagnostic;
 use crate::hir::Ty as HostTy;
+use crate::hir::infer::FieldInfo;
 use crate::resolve::SymbolId;
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
-/// A checked shader: its program, when it checked cleanly.
+/// A checked shader: its program, when it checked cleanly, and its layout as a
+/// brush, when it is one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedShader {
     pub name: String,
     pub symbol: Option<SymbolId>,
     /// The program; `None` when the shader has errors.
     pub program: Option<Program>,
+    /// Where its parameters go as a brush; `None` when it has errors or breaks
+    /// the brush profile.
+    pub brush: Option<BrushLayout>,
+    /// How it breaks the brush profile, reported only where it paints: a
+    /// shader no `ShaderView` paints with need not be a brush.
+    pub(super) brush_errors: Vec<Diagnostic>,
 }
 
 /// A type annotation as written, its head bound by the resolver.
@@ -125,6 +136,51 @@ impl ShaderValueDecl {
             at: name.text_range(),
             fields,
         })
+    }
+}
+
+/// The parameters of the shader `decl` as the fields of the record literal its
+/// name heads: every instance member but the box the renderer writes, typed as
+/// the host value its parameter kind converts from. A member of no parameter
+/// kind is no field; the brush profile reports it where the shader paints.
+pub(super) fn parameters(decl: &ShaderDecl) -> Vec<FieldInfo> {
+    decl.members()
+        .filter_map(|member| {
+            let ShaderMember::Instance(m) = member else {
+                return None;
+            };
+            let name = m.name()?;
+            let text = name.text();
+            if text == RECT_POS || text == RECT_SIZE {
+                return None;
+            }
+            let path = m.ty()?;
+            let mut segments = path.segments();
+            let head = segments.next()?;
+            if segments.next().is_some() || path.syntax().text().contains('<') {
+                return None;
+            }
+            let kind = ParamKind::of(Ty::from_name(&head.text())?)?;
+            Some(FieldInfo {
+                name: text,
+                ty: host_ty(kind),
+                has_default: false,
+                declared_at: name.text_range(),
+            })
+        })
+        .collect()
+}
+
+/// The host type a parameter of `kind` takes its value from.
+fn host_ty(kind: ParamKind) -> HostTy {
+    let vector = |path| HostTy::Native(viso_behavior::native::NativeId::of(path));
+    match kind {
+        ParamKind::F32 => HostTy::F32,
+        ParamKind::I32 => HostTy::I32,
+        ParamKind::U32 => HostTy::U32,
+        ParamKind::Vec2F32 => vector(viso_behavior::native::Vec2F32::PATH),
+        ParamKind::Vec3F32 => vector(viso_behavior::native::Vec3F32::PATH),
+        ParamKind::ColorLinear => HostTy::Color,
     }
 }
 
@@ -546,12 +602,71 @@ pub(super) fn check(
             name,
             symbol,
             program: None,
+            brush: None,
+            brush_errors: Vec::new(),
         };
     }
+    let (brush, brush_errors) = match &program {
+        Some(program) => match BrushLayout::new(program, &program.interface()) {
+            Ok(layout) => (Some(layout), Vec::new()),
+            Err(errors) => {
+                let errors = errors
+                    .into_iter()
+                    .map(|e| {
+                        // A member the shader lacks has no span: the shader's
+                        // name stands for it.
+                        let range = if e.span == Span::default() {
+                            at
+                        } else {
+                            TextRange::new(e.span.start.into(), e.span.end.into())
+                        };
+                        Diagnostic::error(e.code, range, e.message)
+                    })
+                    .collect();
+                (None, errors)
+            }
+        },
+        None => (None, Vec::new()),
+    };
     CheckedShader {
         name,
         symbol,
         program,
+        brush,
+        brush_errors,
+    }
+}
+
+/// Reports, once each, how a shader a view paints with breaks the brush
+/// profile: in the shader's module, pointing at the first `ShaderView` that
+/// paints with it. `brushes` holds each use's module, span and shader.
+pub(super) fn check_brushes(
+    shaders: &[CheckedShader],
+    brushes: &[(usize, TextRange, SymbolId)],
+    decls: &super::Declarations,
+    per_module: &mut [Vec<Diagnostic>],
+) {
+    let mut reported = HashSet::new();
+    for &(module, at, symbol) in brushes {
+        if !reported.insert(symbol) {
+            continue;
+        }
+        let Some(shader) = shaders.iter().find(|s| s.symbol == Some(symbol)) else {
+            continue;
+        };
+        let Some(&home) = decls.homes.get(&symbol) else {
+            continue;
+        };
+        for error in &shader.brush_errors {
+            let mut d = error.clone();
+            let label = format!("`{}` paints this view", shader.name);
+            d.related.push(if module == home {
+                crate::diag::Related::new(at, label)
+            } else {
+                crate::diag::Related::in_module(decls.module_paths[module].as_str(), at, label)
+            });
+            per_module[home].push(d);
+        }
     }
 }
 

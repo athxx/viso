@@ -59,7 +59,7 @@ use crate::behavior::lower::{
 use crate::behavior::{FunctionKind, Site};
 use crate::diag::{Diagnostic, Related, Severity};
 use crate::resolve::suggest::{Candidate, attach, nearest};
-use crate::resolve::{Resolution, ResolvedRef, SymbolId};
+use crate::resolve::{Resolution, ResolvedRef, SymbolId, SymbolKind};
 use crate::syntax::{SyntaxNode, SyntaxToken, TextRange};
 
 /// One `input` of a user component, as a property of its nodes.
@@ -134,6 +134,10 @@ pub(crate) trait ViewEnv: TypeEnv {
     /// What the package is built for, which sets how strict the
     /// accessibility and localization checks are.
     fn profile(&self) -> &TargetProfile;
+
+    /// Notes that the value at `at` paints a node with `shader`, which must
+    /// then be a brush.
+    fn paints_with(&self, shader: SymbolId, at: TextRange);
 }
 
 /// Where a view's event handlers lower to: the component layout registered last
@@ -488,6 +492,8 @@ struct Declared {
     basis: Basis,
     /// Whether it shows text a user reads.
     localizable: bool,
+    /// Whether it takes a shader's parameters, which paint the node.
+    shader: bool,
 }
 
 /// Whether a property resolves a `Percent` against a basis.
@@ -1546,6 +1552,9 @@ impl<'a> ViewWalk<'a> {
             );
         }
         let at = value.syntax().text_range();
+        if declared.as_ref().is_some_and(|d| d.shader) {
+            self.shader_value(&have, at);
+        }
         if let (Some(path), Some(_), Some(want)) = (
             &transition,
             &declared,
@@ -1581,6 +1590,25 @@ impl<'a> ViewWalk<'a> {
         let carry = self.cx.carry(value.syntax());
         if carry.spelled.is_some() || !carry.names.is_empty() {
             self.flow.sinks.push(Sink { carry, at, to });
+        }
+    }
+
+    /// A `shader:` value: the parameters of a shader, which then paints the
+    /// node as a brush.
+    fn shader_value(&mut self, have: &Ty, at: TextRange) {
+        match have {
+            Ty::Named(symbol, _) if self.env.symbol_kind(*symbol) == Some(SymbolKind::Shader) => {
+                self.env.paints_with(*symbol, at);
+            }
+            Ty::Unknown => {}
+            other => {
+                let message = format!(
+                    "`shader` takes a shader's parameters, written `ShaderName {{ .. }}`, not `{}`",
+                    self.cx.describe(other)
+                );
+                self.diagnostics
+                    .push(Diagnostic::error("E2103", at, message));
+            }
         }
     }
 
@@ -1708,6 +1736,7 @@ impl<'a> ViewWalk<'a> {
                 two_way: input.two_way,
                 basis,
                 localizable: false,
+                shader: false,
             });
         }
         let names: Vec<&str> = segments.iter().map(String::as_str).collect();
@@ -1717,6 +1746,7 @@ impl<'a> ViewWalk<'a> {
                 two_way: spec.two_way,
                 basis: Basis::of(spec.percent_basis),
                 localizable: spec.localizable,
+                shader: spec.ty == widget::SHADER_TY,
             }),
             PropLookup::Unknown if names.len() == 2 && names[0] == "transition" => {
                 let message = format!(
@@ -1788,6 +1818,7 @@ impl<'a> ViewWalk<'a> {
                         two_way: spec.two_way,
                         basis: Basis::of(spec.percent_basis),
                         localizable: spec.localizable,
+                        shader: false,
                     });
                 }
                 let last = members.last().map_or("", String::as_str);

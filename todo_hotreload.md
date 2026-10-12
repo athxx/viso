@@ -614,11 +614,15 @@ on it.
       parameter change or the same program with new parameters `PAINT` only. Render
       gains `BrushProgram` (name, layout, code per language) and
       `Renderer::install_brush`, and re-exports the brush types.
-- [ ] DSL: a shader name heads a record literal of its parameters
-      (`Ripple { tint: c, rings: 8.0 }`), typed against them; a `ShaderView` leaf
-      widget with a `shader` property; diagnostics for a missing or mistyped
-      reserved member, a parameter type with no host value and a foreign uniform;
-      DSL §97–§101 and Rendering §27.2 updated.
+- [x] DSL: a shader name heads a record literal of its parameters
+      (`Ripple { tint: c, rings: 8.0 }`), typed against them — every instance
+      member but the box, `F32 I32 U32` as themselves, `Vec2F32`/`Vec3F32` as the
+      `viso::math` values, `ColorLinear` as `Color`, none defaulted; a `ShaderView`
+      leaf widget whose `shader` property takes one (`E2103` otherwise), dirtying
+      `PAINT` only; `CheckedShader::brush` carries the `BrushLayout`, and the
+      brush profile's breaks (`E8107`) are reported once per shader, only when a
+      view paints with it, pointing at the first such view
+      (`dsl/tests/shader_brush.rs`); DSL §100 and Rendering §27.2 updated.
 - [ ] View and package: the plan names each `ShaderView`'s shader by `ShaderId`; the
       macro, the release package and the dev plan carry the view's shaders (layout,
       the target backend's code generated at build time, the program for the CPU

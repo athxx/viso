@@ -248,7 +248,19 @@ pub fn lower(
         input_flows.push(flows);
     }
     traits::lower_instances(&decls, &envs, resolved, &behavior, &mut per_module);
+    let brushes: Vec<(usize, TextRange, SymbolId)> = envs
+        .iter()
+        .flatten()
+        .flat_map(|env| {
+            let module = env.module;
+            env.brushes
+                .take()
+                .into_iter()
+                .map(move |(at, shader)| (module, at, shader))
+        })
+        .collect();
     drop(envs);
+    shader::check_brushes(&shaders, &brushes, &decls, &mut per_module);
     traits::check_overlap(&decls, &mut per_module);
     lower_prelude_defaults(&prelude, &prelude_scope, &decls, &behavior, graph.natives());
     cap.finish(&mut components, &mut per_module);
@@ -1401,6 +1413,8 @@ struct Declarations {
     module_paths: Vec<String>,
     /// Every `@shader_value` record.
     shader_values: HashMap<SymbolId, shader::ShaderValueDecl>,
+    /// Every shader, whose name heads a record literal of its parameters.
+    shaders: HashSet<SymbolId>,
     /// Every trait, impl, generic declaration and alias.
     traits: super::generic::TraitTable,
     /// The body of every generic callable, which each instantiation lowers.
@@ -1459,6 +1473,8 @@ struct ModuleEnv<'p> {
     /// through a method, an associated path or an instantiation, by the
     /// call's span.
     user_calls: RefCell<Vec<(TextRange, SymbolId)>>,
+    /// Each shader a view paints with, by the span of the value naming it.
+    brushes: RefCell<Vec<(TextRange, SymbolId)>>,
     /// Each call typing found to be a list method editing its receiver in
     /// place, by the call's span.
     list_writes: RefCell<HashSet<TextRange>>,
@@ -1554,7 +1570,14 @@ impl TypeEnv for ModuleEnv<'_> {
     }
 
     fn symbol_kind(&self, id: SymbolId) -> Option<SymbolKind> {
-        self.decls.facts.get(&id).map(|f| f.kind)
+        match self.decls.facts.get(&id) {
+            Some(facts) => Some(facts.kind),
+            None => self
+                .decls
+                .shaders
+                .contains(&id)
+                .then_some(SymbolKind::Shader),
+        }
     }
 
     fn component_events(&self, component: SymbolId) -> Option<&[EventInfo]> {
@@ -1607,6 +1630,10 @@ impl ViewEnv for ModuleEnv<'_> {
 
     fn profile(&self) -> &TargetProfile {
         &self.decls.profile
+    }
+
+    fn paints_with(&self, shader: SymbolId, at: TextRange) {
+        self.brushes.borrow_mut().push((at, shader));
     }
 }
 
@@ -1697,6 +1724,7 @@ impl<'p> ModuleEnv<'p> {
             native_calls: RefCell::default(),
             styles: OnceCell::new(),
             user_calls: RefCell::default(),
+            brushes: RefCell::default(),
             list_writes: RefCell::default(),
         }
     }
@@ -1906,6 +1934,10 @@ impl ModuleScope {
                 Item::Shader(s) => {
                     if let Some(sym) = decl_symbol(table, interner, s.name(), Namespace::Type) {
                         scope.declared.insert(s.syntax().text_range(), sym);
+                        decls.types.records.insert(sym, shader::parameters(s));
+                        decls.types.names.insert(sym, name_of(s.name()));
+                        decls.shaders.insert(sym);
+                        scope.place(decls, sym);
                     }
                 }
                 Item::Const(c) => {

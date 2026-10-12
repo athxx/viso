@@ -21,6 +21,10 @@ pub(crate) type PropSpec = &'static WidgetProperty;
 /// An event a node takes.
 pub(crate) type EventSpec = &'static WidgetEvent;
 
+/// The schema spelling of a property taking a shader's parameters, checked as
+/// such rather than against one type.
+pub(crate) const SHADER_TY: &str = "Shader";
+
 /// The type a binding of a property typed `name` is checked against, or `None`
 /// for a schema type the checker does not model.
 pub(crate) fn value_ty(name: &str) -> Option<Ty> {

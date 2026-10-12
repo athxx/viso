@@ -1,7 +1,7 @@
 //! The standard widget library `viso::widgets`: the layout containers, text, the
-//! interactive controls, focus and shortcut scopes and the virtual list, with
-//! the common layout, transform, focus, semantics and transition properties and
-//! the standard input events every layout node takes.
+//! interactive controls, the shader view, focus and shortcut scopes and the
+//! virtual list, with the common layout, transform, focus, semantics and
+//! transition properties and the standard input events every layout node takes.
 
 use super::NativeLibrary;
 use super::widget::{
@@ -156,6 +156,9 @@ const SLIDER: &[WidgetProperty] = &[
     prop("max", "F32"),
     prop("step", "Option<F32>"),
 ];
+
+/// The parameters of the brush shader painting a `ShaderView`'s box.
+const SHADER_VIEW: &[WidgetProperty] = &[prop("shader", "Shader")];
 
 const SELECTED: &[WidgetProperty] = &[two_way("selected", "U32")];
 
@@ -365,6 +368,11 @@ pub(super) static WIDGETS: NativeLibrary = NativeLibrary {
         )
         .events(&[SLIDER_EVENTS, STANDARD_EVENTS])
         .interactive(),
+        layout(
+            "ShaderView",
+            WidgetNode::Leaf,
+            &[SHADER_VIEW, LAYOUT, TRANSFORM, FOCUS],
+        ),
         layout("Tabs", ROW, &[SELECTED, LAYOUT, TRANSFORM, FOCUS])
             .events(&[SELECTED_EVENTS, STANDARD_EVENTS])
             .slots(CHILDREN)
