@@ -163,6 +163,23 @@ const ALPHABET: &[&str] = &[
 ];
 
 #[test]
+fn a_dot_after_an_integer_keeps_a_digit_after_it_apart() {
+    let src = "component C {\n    state x: F32 = 0.\t32;\n}\n";
+    let once = format(src);
+    assert_eq!(significant(&once), significant(src), "{once:?}");
+    assert_eq!(format(&once), once);
+}
+
+#[test]
+fn a_string_left_open_on_the_last_line_keeps_its_trailing_space() {
+    // The bad escape is the error the lexer reports for it.
+    let src = "\"a\"\n\"open \\u{ \n";
+    let once = format(src);
+    assert_eq!(significant(&once), significant(src), "{once:?}");
+    assert_eq!(format(&once), once);
+}
+
+#[test]
 fn random_and_mutated_sources_never_make_the_formatter_panic() {
     let mut rng = Rng(0xD1B5_4A32_D192_ED03);
     for _ in 0..3000 {

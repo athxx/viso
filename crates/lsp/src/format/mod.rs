@@ -37,7 +37,7 @@
 
 use viso_dsl::syntax::SyntaxNode;
 use viso_dsl::syntax::grammar::parse;
-use viso_dsl::{LexError, SyntaxKind, tokenize};
+use viso_dsl::{LexError, SyntaxKind, Token, tokenize};
 
 /// One indentation level: four spaces.
 const INDENT: &str = "    ";
@@ -64,6 +64,9 @@ struct Tok {
     /// Its line must end after it: a string or char left open runs to the
     /// end of its line.
     ends_line: bool,
+    /// The text it hugs before it, when what follows could lex into both: a
+    /// `.` after an integer, which a digit after it would make a fraction.
+    lead: Option<String>,
 }
 
 impl Tok {
@@ -112,31 +115,22 @@ pub fn format(source: &str) -> String {
     let lexed = tokenize(source);
     let parsed = parse(&lexed, source);
     // A token left open as the last one runs to the end of the source (a raw
-    // string or block comment) or of its line (a string or char): trimming
-    // after it would cut its text, a final newline would join it.
+    // string or block comment) or of its line (a string or char, whatever
+    // whitespace follows it): trimming after it would cut its text, a final
+    // newline would join it.
     let open_end = lexed
         .iter()
         .rev()
-        .find(|t| t.kind != SyntaxKind::Eof)
+        .find(|t| !matches!(t.kind, SyntaxKind::Eof | SyntaxKind::Whitespace))
         .is_some_and(|t| {
             matches!(
                 t.error,
-                Some(
-                    LexError::UnterminatedRawString
-                        | LexError::UnterminatedBlockComment
-                        | LexError::UnterminatedString
-                        | LexError::UnterminatedChar
-                )
-            )
+                Some(LexError::UnterminatedRawString | LexError::UnterminatedBlockComment)
+            ) || open_on_its_line(t, source)
         });
     let open_lines: Vec<u32> = lexed
         .iter()
-        .filter(|t| {
-            matches!(
-                t.error,
-                Some(LexError::UnterminatedString | LexError::UnterminatedChar)
-            )
-        })
+        .filter(|t| open_on_its_line(t, source))
         .map(|t| t.range.start().to_u32())
         .collect();
 
@@ -161,7 +155,12 @@ pub fn format(source: &str) -> String {
             in_params = !in_params;
             in_params
         };
+        let lead = tokens
+            .last()
+            .filter(|before| kind == SyntaxKind::Dot && before.is(SyntaxKind::IntLiteral))
+            .map(|before| format!("{}{}", before.text, t.text()));
         tokens.push(Tok {
+            lead,
             kind,
             text: t.text(),
             parent,
@@ -202,6 +201,26 @@ fn matching_braces(tokens: &[Tok]) -> Vec<Option<usize>> {
     closes
 }
 
+/// Whether `t` runs to the end of its line: a string or char the lexer
+/// ended at a newline or the end of input, whatever else it found wrong in it
+/// (an escape error is the one it reports then).
+fn open_on_its_line(t: &Token, source: &str) -> bool {
+    let quote = match t.kind {
+        SyntaxKind::StringLiteral => b'"',
+        SyntaxKind::CharLiteral => b'\'',
+        _ => return false,
+    };
+    let text = &source.as_bytes()[t.range.start().to_usize()..t.range.end().to_usize()];
+    let Some((&last, body)) = text.split_last() else {
+        return true;
+    };
+    if body.is_empty() || last != quote {
+        return true;
+    }
+    // A closing quote after an odd run of backslashes is escaped.
+    body.iter().rev().take_while(|&&b| b == b'\\').count() % 2 == 1
+}
+
 /// Whether `before` and `after` written with nothing between them would lex
 /// as other tokens (`:` `:` as `::`, `/` `/` as a comment), so a space must
 /// keep them apart. Compared as the lexer sees each alone, since the parser
@@ -229,7 +248,8 @@ fn is_generic_angle(kind: SyntaxKind, parent: SyntaxKind) -> bool {
 fn spaced(prev: &Tok, next: &Tok) -> bool {
     use SyntaxKind as K;
     // Generic closers may touch: the parser splits a `>>` it closes on.
-    if !(prev.angle && next.angle) && joins(&prev.text, &next.text) {
+    let before = prev.lead.as_deref().unwrap_or(&prev.text);
+    if !(prev.angle && next.angle) && joins(before, &next.text) {
         return true;
     }
     // A generic `<` hugs its name and its first argument; a generic `>` hugs
