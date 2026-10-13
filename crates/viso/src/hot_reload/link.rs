@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use viso_platform::LoopWaker;
 use viso_render::asset::ResourceId;
+use viso_text::font_format;
 use viso_ui::{AssetBytes, AssetPayload};
 use viso_view::dev::wire::{
     BlobRef, Blobs, BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
@@ -79,8 +80,16 @@ pub(crate) struct LoadedAsset {
     pub(crate) id: ResourceId,
     /// Its path under `assets/`.
     pub(crate) path: String,
-    /// Its bytes and payload, or why it did not load.
-    pub(crate) loaded: Result<(AssetBytes, AssetPayload), String>,
+    /// What it decoded to, or why it did not load.
+    pub(crate) loaded: Result<Loaded, String>,
+}
+
+/// What an asset's bytes decoded to.
+pub(crate) enum Loaded {
+    /// An image: its bytes and payload.
+    Image(AssetBytes, AssetPayload),
+    /// A font whose every face parses: its sfnt bytes.
+    Font(Arc<[u8]>),
 }
 
 /// The app's end of the dev channel.
@@ -312,8 +321,16 @@ fn load_assets(patch: &PatchBundle, blobs: &mut Blobs) -> Vec<LoadedAsset> {
         };
         for asset in &resources.assets {
             let loaded = match blobs.claim(asset) {
+                // A font is told apart by its sfnt header, as the host told it.
+                Some(bytes) if font_format::detect(&bytes).is_some() => {
+                    if font_format::parses(&bytes) {
+                        Ok(Loaded::Font(bytes))
+                    } else {
+                        Err("does not decode: a face of it does not parse".to_owned())
+                    }
+                }
                 Some(bytes) => crate::assets::decode(&bytes)
-                    .map(|payload| (AssetBytes::Shared(bytes), payload))
+                    .map(|payload| Loaded::Image(AssetBytes::Shared(bytes), payload))
                     .map_err(|error| format!("does not decode: {error}")),
                 None => Err("its bytes did not arrive whole".to_owned()),
             };

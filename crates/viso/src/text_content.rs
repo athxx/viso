@@ -32,8 +32,8 @@ use viso_text::text_work::Priority;
 use viso_text::{
     Admission, ColorGlyphRasterizer, CoverageBitmap, FontCache, FontFaceId, FontRequest,
     FontResolver, FontRole, FontTarget, GlyphImageKind, GlyphKey, GlyphResidency,
-    LineBreakTailoring, MemoryClass, OUTLINE_POOL, PackagedFirst, PackagedFonts, PoolBudget,
-    Reclaimed, Resolved, TextBudgets, TextPosition, inspect_face,
+    LineBreakTailoring, MemoryClass, OUTLINE_POOL, PackagedFirst, PackagedFonts, PackagedSource,
+    PoolBudget, Reclaimed, ReplacedFiles, Resolved, TextBudgets, TextPosition, inspect_face,
 };
 use viso_ui::{Content, EditGeometry, EditLayout, NodeId, TextRequest, Vec2};
 
@@ -380,6 +380,11 @@ pub(crate) struct TextShaper {
     /// The faces packaged from `assets/fonts/`: the manifest's source, and
     /// tried ahead of the platform in fallback.
     packaged: PackagedFonts,
+    /// Packaged files a development session replaced since the build.
+    replaced: ReplacedFiles,
+    /// Faces of replaced files that layouts still draw with: no resolution
+    /// hands them out, and each is dropped once nothing draws with it.
+    retired: Vec<FontFaceId>,
     primary: Option<FontFaceId>,
     /// System queries made to resolve the primary face; one at most once it
     /// resolved, so a steady frame never asks the system for a font.
@@ -471,6 +476,8 @@ impl TextShaper {
             fallback: FontFallback::new(FALLBACK_FACE_IDS),
             manifest: FontManifest::default(),
             packaged: PackagedFonts::default(),
+            replaced: ReplacedFiles::default(),
+            retired: Vec::new(),
             primary: None,
             primary_queries: 0,
             next_asset: 0,
@@ -522,7 +529,7 @@ impl TextShaper {
         bytes: impl Into<Box<[u8]>>,
         index: u32,
     ) -> Option<FontFaceId> {
-        let bytes = bytes.into().into_vec();
+        let bytes: Arc<[u8]> = bytes.into().into();
         inspect_face(&bytes, index)?;
         let asset = AssetRef(self.next_asset);
         self.next_asset = self.next_asset.wrapping_add(1);
@@ -626,7 +633,100 @@ impl TextShaper {
         self.residency.advance_epoch();
         self.faces.advance_epoch();
         self.drop_evicted_faces();
+        self.drop_retired_faces();
         self.counters.reset();
+    }
+
+    /// Serve `bytes` for the packaged file `file_index` from now on, a
+    /// development session having replaced it: each face read from it is
+    /// retired — new layouts resolve a fresh face from the new bytes, and a
+    /// layout still drawing with an old face draws until its replacement is
+    /// ready — and every paragraph that laid out with one is laid out again.
+    /// Returns those paragraphs; each must be shaped again for its target to
+    /// take the new face. Nothing else is invalidated.
+    #[cfg(feature = "hot-reload")]
+    pub(crate) fn replace_packaged(
+        &mut self,
+        file_index: u32,
+        bytes: Arc<[u8]>,
+    ) -> Vec<ParagraphSlot> {
+        let asset = AssetRef(PackagedFonts::ASSET_BASE | file_index);
+        let mut retired = self.resolver.rebind_asset(asset);
+        if let Some(face) = self
+            .packaged
+            .faces()
+            .iter()
+            .find(|face| face.file_index == file_index)
+        {
+            // Fallback faces resolved from the file as it read before.
+            for face in self.fallback.faces_of(self.replaced.bytes_of(face)) {
+                self.fallback.retire(face);
+                retired.push(face);
+            }
+        }
+        self.replaced.replace(file_index, bytes);
+        if self.primary.is_some_and(|face| retired.contains(&face)) {
+            self.primary = None;
+        }
+        for &face in &retired {
+            if let Some(at) = self.hot_faces.iter().position(|&hot| hot == face) {
+                self.hot_faces.swap_remove(at);
+                self.faces.unpin(face);
+            }
+            // The worker routes and shapes nothing with it any more; a layout
+            // in flight that drew with it is laid out again when it returns.
+            if self.worker_faces.remove(&face) {
+                self.outbox.push(ToWorker::Forget(face));
+            }
+        }
+        let mut affected = Vec::new();
+        for (&at, entry) in &mut self.slots {
+            let uses = retired.contains(&entry.target.base)
+                || [&entry.drawn, &entry.staged]
+                    .into_iter()
+                    .flatten()
+                    .any(|committed| committed.faces.iter().any(|face| retired.contains(face)));
+            if !uses {
+                continue;
+            }
+            entry.full = true;
+            if !entry.queued {
+                entry.queued = true;
+                self.pending.push(at);
+            }
+            affected.push(at);
+        }
+        for face in retired {
+            if !self.retired.contains(&face) {
+                self.retired.push(face);
+            }
+        }
+        affected
+    }
+
+    /// Drop each retired face no paragraph draws, is staged or targets with
+    /// any more.
+    fn drop_retired_faces(&mut self) {
+        if self.retired.is_empty() {
+            return;
+        }
+        let mut retired = std::mem::take(&mut self.retired);
+        retired.retain(|&face| {
+            let used = self.slots.values().any(|entry| {
+                entry.target.base == face
+                    || [&entry.drawn, &entry.staged]
+                        .into_iter()
+                        .flatten()
+                        .any(|committed| committed.faces.contains(&face))
+            });
+            if !used {
+                self.drop_face(face);
+                self.faces.remove(face);
+                self.resolver.release(face);
+            }
+            used
+        });
+        self.retired = retired;
     }
 
     /// Drop every face the face cache evicted, unless it was re-admitted
@@ -1340,6 +1440,7 @@ impl TextShaper {
                 &need.cluster,
                 &PackagedFirst {
                     packaged: self.packaged,
+                    replaced: &self.replaced,
                     system: &self.provider,
                 },
             ) {
@@ -1504,12 +1605,12 @@ impl TextShaper {
         }) else {
             return false;
         };
-        AppFonts::load_face(
-            &mut self.resolver,
-            &self.packaged,
-            entry.asset,
-            entry.face_index,
-        ) == Some(face)
+        let source = PackagedSource {
+            packaged: self.packaged,
+            replaced: &self.replaced,
+        };
+        AppFonts::load_face(&mut self.resolver, &source, entry.asset, entry.face_index)
+            == Some(face)
     }
 
     fn register_color_face(&self, face: FontFaceId) {
@@ -1846,23 +1947,25 @@ mod tests {
         shaper
     }
 
+    /// The test font, packaged as the app's one UI family.
+    static PACKAGED: [viso_text::PackagedFace; 1] = [viso_text::PackagedFace {
+        file: "DejaVuSans-subset.ttf",
+        file_index: 0,
+        bytes: TEST_FONT,
+        face_index: 0,
+        family: "DejaVu Sans",
+        weight: 400,
+        width: 5,
+        slant: viso_text::FontSlant::Normal,
+        color: false,
+        mono: false,
+        scripts: &["Latn"],
+    }];
+
     #[test]
     fn a_packaged_ui_family_becomes_the_primary_on_first_use() {
-        static FACES: [viso_text::PackagedFace; 1] = [viso_text::PackagedFace {
-            file: "DejaVuSans-subset.ttf",
-            file_index: 0,
-            bytes: TEST_FONT,
-            face_index: 0,
-            family: "DejaVu Sans",
-            weight: 400,
-            width: 5,
-            slant: viso_text::FontSlant::Normal,
-            color: false,
-            mono: false,
-            scripts: &["Latn"],
-        }];
         let mut shaper = TextShaper::new();
-        shaper.use_packaged_fonts(PackagedFonts::__new(&FACES));
+        shaper.use_packaged_fonts(PackagedFonts::__new(&PACKAGED));
         assert_eq!(
             shaper.resolver.face_bytes(FontFaceId(0)),
             None,
@@ -2458,6 +2561,46 @@ mod tests {
         shaper.shape(gpu, at, request, 1.0, width);
         drain(shaper, gpu);
         shaper.shape(gpu, at, request, 1.0, width)
+    }
+
+    #[cfg(feature = "hot-reload")]
+    #[test]
+    fn a_replaced_packaged_font_lays_out_again_what_drew_with_it() {
+        let mut gpu = headless();
+        let mut shaper = TextShaper::new();
+        shaper.use_packaged_fonts(PackagedFonts::__new(&PACKAGED));
+        let text = request("bd", 20.0);
+        settle(&mut shaper, &mut gpu, slot(0), &text, None);
+        let old = shaper.primary.expect("the packaged family");
+        let drawn = |shaper: &TextShaper| {
+            let drawn = shaper.slots[&slot(0)].drawn.as_ref().expect("drawn");
+            drawn.faces.clone()
+        };
+        assert_eq!(drawn(&shaper), [old]);
+
+        assert!(shaper.replace_packaged(1, TEST_FONT.into()).is_empty());
+        let bytes: Arc<[u8]> = TEST_FONT.into();
+        assert_eq!(shaper.replace_packaged(0, Arc::clone(&bytes)), [slot(0)]);
+        shaper.end_frame();
+        assert!(
+            shaper.resolver.face_bytes(old).is_some(),
+            "the old face draws until the new layout lands"
+        );
+
+        let content = settle(&mut shaper, &mut gpu, slot(0), &text, None);
+        assert_eq!(glyph_count(&content), 2);
+        let new = shaper.primary.expect("the packaged family again");
+        assert_ne!(new, old);
+        assert_eq!(drawn(&shaper), [new]);
+        let (read, _) = shaper.resolver.face_bytes(new).expect("read");
+        assert_eq!(read.as_ptr(), bytes.as_ptr(), "the replacement's bytes");
+        shaper.end_frame();
+        assert_eq!(
+            shaper.resolver.face_bytes(old),
+            None,
+            "the old face dropped"
+        );
+        assert!(shaper.retired.is_empty());
     }
 
     fn glyph_count(content: &Content) -> usize {

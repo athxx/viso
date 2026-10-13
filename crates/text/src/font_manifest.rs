@@ -352,7 +352,7 @@ mod tests {
     }
 
     impl crate::app_fonts::AssetSource for CountingAssetSource {
-        fn read(&self, _asset: AssetRef) -> Option<Vec<u8>> {
+        fn read(&self, _asset: AssetRef) -> Option<std::sync::Arc<[u8]>> {
             self.reads.set(self.reads.get() + 1);
             None
         }

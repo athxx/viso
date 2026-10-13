@@ -71,6 +71,7 @@ use viso_gpu::GpuBackend;
 use viso_platform::{LoopWaker, WindowId};
 use viso_render::asset::{ResourceId, ResourceRevision};
 use viso_runtime::RuntimeCx;
+use viso_text::{PackagedFonts, ReplacedFiles};
 use viso_ui::NodeId;
 use viso_ui::context::DevState;
 use viso_ui::state::{StateId, StateKey};
@@ -99,7 +100,7 @@ use viso_view::{
 use crate::WindowState;
 use crate::assets::Assets;
 use compile::{Built, ShaderCompiles, Work};
-use link::{DevLink, Incoming, LoadedAsset};
+use link::{DevLink, Incoming, Loaded, LoadedAsset};
 
 /// `config` for the launch window: in a process `viso run` restarted, where
 /// and how large the first window of the process before it was.
@@ -181,6 +182,11 @@ pub(crate) struct HotReloadSession {
     launched: bool,
     /// Where each window is on the desktop, read for the snapshot asked for.
     positions: Vec<(WindowId, Option<(f64, f64)>)>,
+    /// The fonts the build packages.
+    packaged: PackagedFonts,
+    /// The packaged font files patches replaced, served to every window,
+    /// one opened later included.
+    fonts: ReplacedFiles,
 }
 
 /// A restore being applied: each window mounting a view before the first
@@ -212,6 +218,7 @@ struct StagedPatch {
     views: Vec<StagedView>,
     games: Vec<StagedGame>,
     assets: Vec<StagedAsset>,
+    fonts: Vec<StagedFont>,
     decode: Duration,
     stage: Duration,
     /// Whether its shaders are still compiling: it commits once they are not.
@@ -226,6 +233,14 @@ struct StagedAsset {
     id: ResourceId,
     bytes: AssetBytes,
     payload: AssetPayload,
+}
+
+/// A font of a staged patch, every face of it parsed.
+struct StagedFont {
+    id: ResourceId,
+    /// Its path under `assets/`.
+    path: String,
+    bytes: Arc<[u8]>,
 }
 
 /// A game of a staged patch: its file, the tier it swaps at, and the
@@ -303,6 +318,11 @@ impl HotReloadSession {
             self.allocated.clear();
             return;
         };
+        // A window opened after a font patch draws with the patched font too.
+        for (file, bytes) in self.fonts.files() {
+            ws.replace_packaged_font(file, Arc::clone(bytes), &mut self.scratch);
+        }
+        self.scratch.clear();
         let first = self.views.len();
         let mut mounted = Vec::new();
         for record in self.records.drain(..) {
@@ -424,6 +444,11 @@ impl HotReloadSession {
     /// Keeps what the app registered with `AppCx::dev_state`.
     pub(crate) fn set_dev_states(&mut self, states: Vec<DevState>) {
         self.dev_states = states;
+    }
+
+    /// Keeps the fonts the build packages, which a patch's fonts replace.
+    pub(crate) fn set_packaged_fonts(&mut self, packaged: PackagedFonts) {
+        self.packaged = packaged;
     }
 
     /// Waits, at most [`RESTORE_WAIT`], for the restore the host sends once
@@ -1252,6 +1277,37 @@ impl HotReloadSession {
             }
             resources.push(commit);
         }
+        // Each font replaces the packaged file at its path in every window:
+        // only the paragraphs that laid out with a face of it shape again.
+        for font in staged.fonts {
+            let mut commit = ResourceCommit {
+                id: font.id,
+                nodes: 0,
+                dirty: DirtyCounts::default(),
+            };
+            let Some(file) = self.packaged.file_for(&font.path) else {
+                self.log(
+                    LogLevel::Info,
+                    format!(
+                        "{} is not a font this build packages; the app uses it once rebuilt",
+                        font.path
+                    ),
+                );
+                resources.push(commit);
+                continue;
+            };
+            self.fonts.replace(file, Arc::clone(&font.bytes));
+            for ws in windows.iter_mut() {
+                self.scratch.clear();
+                ws.replace_packaged_font(file, Arc::clone(&font.bytes), &mut self.scratch);
+                commit.nodes += u32::try_from(self.scratch.len()).unwrap_or(u32::MAX);
+                commit.dirty = commit
+                    .dirty
+                    .merge(&dirty_counts(&ws.store, self.scratch.iter().copied()));
+            }
+            self.scratch.clear();
+            resources.push(commit);
+        }
         // The views committed: the games swap with them.
         let mut swapped: Vec<GameCommit> = Vec::with_capacity(games.len());
         for proof in proved {
@@ -1403,15 +1459,21 @@ fn stage(
     };
     let refuse = |code: &str| refuse_at(Stage::RuntimeStage, code);
     let mut assets = Vec::with_capacity(loaded.len());
+    let mut fonts = Vec::new();
     for asset in loaded {
-        let Ok((bytes, payload)) = asset.loaded else {
-            return Err(refuse_at(Stage::ResourceBuild, NACK_UNLOADABLE_ASSET));
-        };
-        assets.push(StagedAsset {
-            id: asset.id,
-            bytes,
-            payload,
-        });
+        match asset.loaded {
+            Ok(Loaded::Image(bytes, payload)) => assets.push(StagedAsset {
+                id: asset.id,
+                bytes,
+                payload,
+            }),
+            Ok(Loaded::Font(bytes)) => fonts.push(StagedFont {
+                id: asset.id,
+                path: asset.path,
+                bytes,
+            }),
+            Err(_) => return Err(refuse_at(Stage::ResourceBuild, NACK_UNLOADABLE_ASSET)),
+        }
     }
     let domains = bundle
         .sections
@@ -1473,6 +1535,7 @@ fn stage(
         views,
         games,
         assets,
+        fonts,
         decode: Duration::ZERO,
         stage: Duration::ZERO,
         compiling: false,
@@ -2973,13 +3036,17 @@ mod tests {
         .into_bytes()
     }
 
-    /// Sends the blobs of `assets` (path and bytes) as the host does, ahead of
-    /// `patch`, and returns `patch` with the `resource` section naming them.
+    /// Sends the blobs of `assets` (path and bytes) as the host does, once
+    /// per content, ahead of `patch`, and returns `patch` with the `resource`
+    /// section naming them.
     fn carrying(host: &mut Host, patch: HostMessage, assets: &[(&str, &[u8])]) -> HostMessage {
         let HostMessage::Patch(mut patch) = patch else {
             unreachable!()
         };
-        for (_, bytes) in assets {
+        for (at, (_, bytes)) in assets.iter().enumerate() {
+            if assets[..at].iter().any(|(_, sent)| sent == bytes) {
+                continue;
+            }
             for chunk in blob_chunks(bytes) {
                 host.send(&HostMessage::Blob(chunk));
             }
@@ -3193,6 +3260,76 @@ mod tests {
             assets.provide(std::iter::once(&mut later.store));
         }
         assert_eq!(shown(&later, icon).1, [30.0, 20.0], "the newest");
+    }
+
+    const FONT: &[u8] = include_bytes!("../../fixtures/DejaVuSans-subset.ttf");
+
+    #[test]
+    fn a_font_patch_replaces_the_packaged_file_and_a_broken_font_refuses() {
+        static PACKAGED: [viso_text::PackagedFace; 1] = [viso_text::PackagedFace {
+            file: "Body.ttf",
+            file_index: 0,
+            bytes: FONT,
+            face_index: 0,
+            family: "DejaVu Sans",
+            weight: 400,
+            width: 5,
+            slant: viso_text::FontSlant::Normal,
+            color: false,
+            mono: false,
+            scripts: &["Latn"],
+        }];
+        let mut ws = counter();
+        let mut assets = Assets::default();
+        let (mut session, mut host, _edits) = session(&mut ws, COUNTER);
+        session.set_packaged_fonts(PackagedFonts::__new(&PACKAGED));
+
+        // A packaged font replaces its file; one the build does not package
+        // waits for the next build.
+        let patch = host.patch(1, 2);
+        let patch = carrying(
+            &mut host,
+            patch,
+            &[("fonts/Body.ttf", FONT), ("fonts/Added.ttf", FONT)],
+        );
+        host.send(&patch);
+        let answer = answer_or_ready(&mut session, &mut host, std::slice::from_mut(&mut ws));
+        assert!(answer.is_none(), "answered before the commit: {answer:?}");
+        session.reload(std::slice::from_mut(&mut ws), &mut assets);
+        let line = match host.read() {
+            Some(RuntimeMessage::Log {
+                level: LogLevel::Info,
+                line,
+            }) => line,
+            other => panic!("not an info line: {other:?}"),
+        };
+        assert!(line.starts_with("fonts/Added.ttf is not a font"), "{line}");
+        let Some(RuntimeMessage::Ack(ack)) = host.read() else {
+            panic!("not an ACK");
+        };
+        assert!(ack.applied_domains.contains(Domain::Resource));
+        assert_eq!(ack.resources.len(), 2);
+        assert!(ack.resources.iter().all(|r| r.nodes == 0), "no text drew");
+        let replaced: Vec<u32> = session.fonts.files().map(|(file, _)| file).collect();
+        assert_eq!(replaced, [0]);
+
+        // A font a face of which does not parse refuses the revision.
+        let broken = host.patch(2, 3);
+        let broken = carrying(&mut host, broken, &[("fonts/Body.ttf", &FONT[..64])]);
+        host.send(&broken);
+        let line = match answer_or_staged(&mut session, &mut host) {
+            Some(RuntimeMessage::Log { line, .. }) => line,
+            other => panic!("not a log line: {other:?}"),
+        };
+        assert!(
+            line.starts_with("assets/fonts/Body.ttf: does not decode"),
+            "{line}"
+        );
+        let nack = match host.read() {
+            Some(RuntimeMessage::Nack(nack)) => nack,
+            other => panic!("not a NACK: {other:?}"),
+        };
+        assert_eq!(nack.diagnostic_codes, [NACK_UNLOADABLE_ASSET]);
     }
 
     #[test]

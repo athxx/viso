@@ -13,6 +13,8 @@
 //! fallback, so a run the primary face cannot draw is tried against the
 //! application's own faces before the system is asked.
 
+use std::sync::Arc;
+
 use icu_properties::CodePointSetData;
 use icu_properties::props::EmojiPresentation;
 use unicode_script::Script;
@@ -138,11 +140,38 @@ impl PackagedFonts {
         .collect()
     }
 
+    /// The packaged file at `path`, a path under the package's asset
+    /// directory: the file whose path below the fonts directory ends it, the
+    /// longest such.
+    pub fn file_for(&self, path: &str) -> Option<u32> {
+        let ends = |file: &str| {
+            path == file
+                || path
+                    .strip_suffix(file)
+                    .is_some_and(|dir| dir.ends_with('/'))
+        };
+        self.faces
+            .iter()
+            .filter(|face| ends(face.file))
+            .max_by_key(|face| face.file.len())
+            .map(|face| face.file_index)
+    }
+
     /// The packaged face that best draws `query`'s sample: one whose script
     /// summary admits the sample's script and whose `cmap` maps its first
     /// scalar, preferring a color face for emoji and a plain one otherwise,
     /// then the closest style.
     pub fn face_for(&self, query: &SystemFontQuery) -> Option<&'static PackagedFace> {
+        self.face_in(query, &ReplacedFiles::default())
+    }
+
+    /// [`face_for`](Self::face_for), reading each face from `replaced` where
+    /// its file was replaced.
+    fn face_in(
+        &self,
+        query: &SystemFontQuery,
+        replaced: &ReplacedFiles,
+    ) -> Option<&'static PackagedFace> {
         let first = query.sample.chars().next()?;
         let script = FontFallback::run_script(&query.sample);
         let wants_color = CodePointSetData::new::<EmojiPresentation>().contains(first);
@@ -155,7 +184,7 @@ impl PackagedFonts {
                     || face.scripts.is_empty()
                     || face.scripts.contains(&script.short_name())
             })
-            .filter(|face| face_covers(face.bytes, face.face_index, first))
+            .filter(|face| face_covers(replaced.bytes_of(face), face.face_index, first))
             .min_by_key(|face| {
                 let slant = u32::from(face.slant != query.slant) * 1_000_000;
                 let width = (i32::from(face.width) - i32::from(query.width.0)).unsigned_abs();
@@ -166,26 +195,86 @@ impl PackagedFonts {
 }
 
 impl AssetSource for PackagedFonts {
-    fn read(&self, asset: AssetRef) -> Option<Vec<u8>> {
-        let file_index = asset.0.checked_sub(Self::ASSET_BASE)?;
-        self.faces
+    fn read(&self, asset: AssetRef) -> Option<Arc<[u8]>> {
+        PackagedSource {
+            packaged: *self,
+            replaced: &ReplacedFiles::default(),
+        }
+        .read(asset)
+    }
+}
+
+/// Packaged files whose bytes changed after the build, which a development
+/// session replaced in the running app: served instead of the embedded ones.
+#[derive(Debug, Clone, Default)]
+pub struct ReplacedFiles {
+    files: Vec<(u32, Arc<[u8]>)>,
+}
+
+impl ReplacedFiles {
+    /// Serve `bytes` for the packaged file `file_index` from now on.
+    pub fn replace(&mut self, file_index: u32, bytes: Arc<[u8]>) {
+        match self.files.iter_mut().find(|(file, _)| *file == file_index) {
+            Some((_, held)) => *held = bytes,
+            None => self.files.push((file_index, bytes)),
+        }
+    }
+
+    /// Each replaced file and the bytes it reads now.
+    pub fn files(&self) -> impl Iterator<Item = (u32, &Arc<[u8]>)> {
+        self.files.iter().map(|(file, bytes)| (*file, bytes))
+    }
+
+    /// The bytes `face` reads now: its file's replacement, else the embedded
+    /// file.
+    pub fn bytes_of<'a>(&'a self, face: &'a PackagedFace) -> &'a [u8] {
+        self.files
             .iter()
-            .find(|face| face.file_index == file_index)
-            .map(|face| face.bytes.to_vec())
+            .find(|(file, _)| *file == face.file_index)
+            .map_or(face.bytes, |(_, bytes)| bytes)
+    }
+}
+
+/// The packaged faces as they read now, `replaced` served over the embedded
+/// files.
+pub struct PackagedSource<'a> {
+    pub packaged: PackagedFonts,
+    pub replaced: &'a ReplacedFiles,
+}
+
+impl AssetSource for PackagedSource<'_> {
+    fn read(&self, asset: AssetRef) -> Option<Arc<[u8]>> {
+        let file_index = asset.0.checked_sub(PackagedFonts::ASSET_BASE)?;
+        let face = self
+            .packaged
+            .faces
+            .iter()
+            .find(|face| face.file_index == file_index)?;
+        // A replacement is shared as it arrived; an embedded file is copied
+        // once, into the one allocation every reader of it shares.
+        Some(
+            self.replaced
+                .files
+                .iter()
+                .find(|(file, _)| *file == file_index)
+                .map_or_else(|| Arc::from(face.bytes), |(_, bytes)| Arc::clone(bytes)),
+        )
     }
 }
 
 /// Fallback that tries the packaged faces before the platform.
 pub struct PackagedFirst<'a> {
     pub packaged: PackagedFonts,
+    /// Packaged files replaced since the build.
+    pub replaced: &'a ReplacedFiles,
     pub system: &'a dyn SystemFontProvider,
 }
 
 impl SystemFontProvider for PackagedFirst<'_> {
     fn resolve_system_face(&self, query: &SystemFontQuery) -> Option<SystemFontResult> {
-        match self.packaged.face_for(query) {
+        match self.packaged.face_in(query, self.replaced) {
             Some(face) => Some(SystemFontResult {
-                bytes: face.bytes.to_vec(),
+                bytes: self.replaced.bytes_of(face).to_vec(),
                 index: face.face_index,
                 postscript_name: None,
             }),
@@ -311,6 +400,7 @@ mod tests {
         }
         let provider = PackagedFirst {
             packaged: packaged(),
+            replaced: &ReplacedFiles::default(),
             system: &Marker,
         };
         let packaged = provider.resolve_system_face(&query("A", 400)).unwrap();
@@ -319,5 +409,39 @@ mod tests {
             .resolve_system_face(&query("\u{4F60}", 400))
             .unwrap();
         assert_eq!(system.bytes, [7]);
+    }
+
+    #[test]
+    fn a_replaced_file_is_served_in_place_of_the_embedded_one() {
+        static NAMED: [PackagedFace; 2] = [
+            PackagedFace {
+                file: "Sans.ttf",
+                ..face(0, DEJAVU, "Sans", 400, false, &["Latn"])
+            },
+            PackagedFace {
+                file: "display/Sans.ttf",
+                ..face(1, DEJAVU, "Display", 400, false, &["Latn"])
+            },
+        ];
+        let fonts = PackagedFonts::__new(&NAMED);
+        assert_eq!(fonts.file_for("fonts/Sans.ttf"), Some(0));
+        assert_eq!(fonts.file_for("fonts/display/Sans.ttf"), Some(1));
+        assert_eq!(fonts.file_for("fonts/OtherSans.ttf"), None, "a whole name");
+
+        let mut replaced = ReplacedFiles::default();
+        replaced.replace(1, Arc::from(COLR));
+        let source = PackagedSource {
+            packaged: fonts,
+            replaced: &replaced,
+        };
+        assert_eq!(
+            source.read(PackagedFonts::asset(&NAMED[1])).as_deref(),
+            Some(COLR)
+        );
+        assert_eq!(
+            source.read(PackagedFonts::asset(&NAMED[0])).as_deref(),
+            Some(DEJAVU),
+            "another file keeps its bytes"
+        );
     }
 }

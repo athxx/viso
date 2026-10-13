@@ -76,6 +76,14 @@ pub fn face_count(bytes: &[u8]) -> Option<u32> {
     }
 }
 
+/// Whether `bytes` are an sfnt container every face of which parses: a font
+/// the framework can load whole.
+pub fn parses(bytes: &[u8]) -> bool {
+    face_count(bytes).is_some_and(|count| {
+        count > 0 && (0..count).all(|index| ttf_parser::Face::parse(bytes, index).is_ok())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +175,13 @@ mod tests {
         let truncated = b"ttcf\x00\x02\x00\x00"; // tag + version, no count.
         assert_eq!(detect(truncated), Some(FontFormat::Collection));
         assert_eq!(face_count(truncated), None);
+    }
+
+    #[test]
+    fn a_font_parses_whole_and_a_bare_magic_or_cut_face_does_not() {
+        assert!(parses(DEJAVU));
+        assert!(!parses(b"OTTO"));
+        assert!(!parses(&DEJAVU[..DEJAVU.len() / 3]));
+        assert!(!parses(b"\x89PNG\r\n"));
     }
 }

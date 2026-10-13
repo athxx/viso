@@ -289,6 +289,18 @@ impl FontCache {
         self.pinned.contains_key(&id)
     }
 
+    /// Drop `id`, which no scope pins, as if it was never admitted: a face no
+    /// resolution hands out any more, whose bytes are released with it. Not an
+    /// eviction.
+    pub fn remove(&mut self, id: FontFaceId) {
+        debug_assert!(!self.is_pinned(id), "a pinned face is removed");
+        if let Some(entry) = self.entries.remove(&id) {
+            self.total_bytes -= entry.cost_bytes;
+        }
+        self.used_this_epoch.remove(&id);
+        self.evicted.retain(|&evicted| evicted != id);
+    }
+
     /// Move the faces evicted since the last drain into `out`, in eviction
     /// order. Empty in steady state.
     pub fn take_evicted(&mut self, out: &mut Vec<FontFaceId>) {
@@ -454,6 +466,22 @@ mod tests {
         cache.admit(id(1), 4_000);
         assert_eq!(cache.total_bytes(), 4_100);
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn a_removed_face_frees_its_bytes_and_is_no_eviction() {
+        let mut cache = FontCache::with_budget(10_000);
+        cache.admit(id(0), 100);
+        cache.admit(id(1), 4_000);
+        cache.touch(id(1));
+        cache.remove(id(1));
+        assert!(!cache.contains(id(1)));
+        assert_eq!(cache.total_bytes(), 100);
+        cache.advance_epoch();
+        let mut evicted = Vec::new();
+        cache.take_evicted(&mut evicted);
+        assert!(evicted.is_empty());
+        assert_eq!(cache.evictions(), 0);
     }
 
     #[test]

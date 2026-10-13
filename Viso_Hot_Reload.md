@@ -953,6 +953,17 @@ rebuild whole UI
 
 远程 progressive font 在 Dev Runtime 和 Release runtime 都可以作为**产品资源能力**存在；但“因源码文件变化触发 Dev patch”的部分只属于 Dev Runtime。
 
+已实现（packaged font）：`assets/` 下的字体与图片走同一条 `resource` 通道，wire 不变——host 与 runtime 都按 sfnt 头（`\0\1\0\0`、`true`、`OTTO`、`ttcf`）识别字体，而不是按扩展名。字体被 app 用来绘制并不需要任何 view 引用它，所以字体文件内容一变就是 candidate。host 用 text runtime 的解析（`font_format::parses`：每个 face 都能解析）代替图片 decoder 校验，不通过的以 `E3713`、stage `resource-build` 报告，不发送；runtime 的 reader 线程同样校验，不通过的整个 revision 以 `NACK_UNLOADABLE_ASSET` 拒绝。commit 在帧边界、在图片之后：runtime 按路径找到 build 打包的文件（`PackagedFonts::file_for`：路径以该文件在字体目录下的路径结尾，取最长者），app 记下替换后的字节（之后打开的窗口在 adopt 时同样换上），每个窗口的 shaper：
+
+```text
+resolver 解绑该文件的 face 并丢掉解析到它的 resolve cache 项
+fallback 退役由旧字节解析出的 face（不再分配给新 plan，字节与 coverage 保留）
+primary / hot pin / worker 副本中去掉被退役的 face
+只把 drawn、staged 或 target 用到被退役 face 的段落重新排队并重新 shape
+```
+
+新 layout 从新字节解析出新的 face；新 layout 提交之前段落继续画旧的 layout。被退役的 face 在没有任何段落 drawn、staged 或以它为 target 后才释放（glyph residency、face cache 项与字节一并释放）。替换的字节以 `Arc` 共享：所有窗口与它解析出的每个 face 共用一份。ACK 的 `resources` 给出被重新 shape 的节点数与 dirty 计数（`MEASURE | LAYOUT | PAINT`，不含 `SEMANTICS`）。build 不打包的字体（新加入字体目录的文件）记一条 info log，下次 build 后才生效；字体的 family/style 元数据在编译期决定，改了它要下次 build 才重新绑定。
+
 ---
 
 # Part X — Rust Warm Restart

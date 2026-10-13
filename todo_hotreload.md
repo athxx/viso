@@ -38,9 +38,6 @@ Gate for every section: `cargo xtask check-deps` · `cargo fmt --all -- --check`
 `cargo test --workspace` · `cargo test -p viso --features hot-reload` ·
 `cargo xtask check-targets`.
 
-Not touched by this plan while the font work runs in another process: the text/font
-crates. §23 (font patch) is listed in H4 and waits for that work.
-
 ---
 
 ## H0 — Dev-only build contract (§1, §1.1, §1.2, §58–§60, §64)
@@ -621,10 +618,21 @@ editable source files.
       reports each resource's dirty counts.
 - [x] Tests: an image edit repaints only its nodes; a size change remeasures its node;
       a corrupt file keeps the old image; an SVG edit; the dirty counts in the ACK.
-- [ ] Font patch (§23): `FontFaceRevision` bump from a dev font file change, reflowing
-      only paragraphs using the face — **waits for the font work in progress**; it
-      reuses `text/src/progressive.rs::FontRevision`, no change to font code from
-      this plan until then.
+- [x] Font patch (§23): a packaged font edited under `assets/` travels as a `resource`
+      asset told apart by its sfnt header; the host and the reader thread check every
+      face parses (`E3713` / `NACK_UNLOADABLE_ASSET` otherwise). The commit records the
+      file's new bytes app-wide and, in each window's shaper, retires the faces read
+      from it (resolver rebinding, fallback retirement, primary, pins, worker copy),
+      reshapes only the paragraphs drawing, staged or targeted with one, and drops a
+      retired face once nothing uses it. A window opened later takes the new bytes;
+      a font the build does not package is logged and waits for the next build.
+- [x] Face bytes shared, not copied: `AssetSource::read` hands out `Arc<[u8]>`, so a
+      replaced file is one allocation across windows and faces.
+- [x] `FontCache::remove` for a face no resolution hands out any more.
+- [x] Tests: a replaced packaged font lays out again what drew with it and drops the
+      old face; the session's font commit, its info log and a broken font's NACK; the
+      host sends a changed font no view names and reports a broken one; a `viso run`
+      end-to-end test over a probe app (`tools/cli/tests/font_patch.rs`).
 
 ### Done
 
@@ -635,8 +643,14 @@ editable source files.
       in `examples/images` under `viso run`: an SVG fill edit applies with one node
       painted, a `viewBox` edit with one node measured, laid out and painted, a PNG
       swap with one node painted, a truncated PNG is reported `E3713` at
-      `resource-build` and nothing is sent). The font patch stays open with the font
-      work.
+      `resource-build` and nothing is sent).
+- [x] Editing a packaged font in `assets/fonts/` swaps it in the running app and
+      reshapes only the text drawing with it; a font that does not parse is reported
+      and the app keeps the last good
+      (`text_content::tests::a_replaced_packaged_font_lays_out_again_what_drew_with_it`,
+      `hot_reload::tests::a_font_patch_replaces_the_packaged_file_and_a_broken_font_refuses`,
+      `dev::tests::a_changed_font_goes_with_no_view_naming_it_and_a_broken_one_is_reported`,
+      `font_patch` end to end).
 
 ---
 

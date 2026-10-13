@@ -397,6 +397,24 @@ impl FontFallback {
         self.interned.retain(|_, interned| *interned != face);
     }
 
+    /// Stop handing out `face`: no plan names it, and a face of the same
+    /// bytes resolved later gets a fresh id. Its bytes and coverage stay for
+    /// the layouts still drawing with it, until [`forget`](Self::forget).
+    pub fn retire(&mut self, face: FontFaceId) {
+        self.plans.retain(|_, planned| *planned != face);
+        self.interned.retain(|_, interned| *interned != face);
+    }
+
+    /// The faces resolved from `bytes`, one per collection index.
+    pub fn faces_of(&self, bytes: &[u8]) -> Vec<FontFaceId> {
+        let hash = fnv1a(bytes);
+        self.interned
+            .iter()
+            .filter(|((h, _), _)| *h == hash)
+            .map(|(_, &face)| face)
+            .collect()
+    }
+
     /// Platform fallback queries issued (per run, never per scalar).
     pub fn system_fallback_query_count(&self) -> u64 {
         self.system_fallback_query_count
@@ -1048,5 +1066,22 @@ mod tests {
         let cold = fb.coverage_ledger().misses().last().expect("built once");
         assert_eq!(cold.key, CacheKey::Coverage(face));
         assert_eq!(cold.cause, MissCause::Cold);
+    }
+
+    #[test]
+    fn a_retired_face_is_handed_out_no_more_until_it_is_forgotten() {
+        let mut fallback = FontFallback::new(1 << 30);
+        let face = fallback.intern(vec![9, 8, 7], 0, None);
+        assert_eq!(fallback.faces_of(&[9, 8, 7]), [face]);
+        fallback.retire(face);
+        assert!(fallback.faces_of(&[9, 8, 7]).is_empty());
+        assert!(
+            fallback.face_bytes(face).is_some(),
+            "drawn layouts still read it"
+        );
+        let again = fallback.intern(vec![9, 8, 7], 0, None);
+        assert_ne!(again, face, "the same bytes resolve afresh");
+        fallback.forget(face);
+        assert!(fallback.face_bytes(face).is_none());
     }
 }

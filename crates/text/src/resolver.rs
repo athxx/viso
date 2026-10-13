@@ -168,22 +168,19 @@ impl FontResolver {
     /// The slot starts with `bytes` (owned bytes for a system face, `None` for
     /// an app face whose bytes load lazily). A repeated key returns the
     /// existing id and does not disturb its slot.
-    fn intern(&mut self, key: FaceKey, bytes: Option<Vec<u8>>, index: u32) -> FontFaceId {
+    fn intern(&mut self, key: FaceKey, bytes: Option<Arc<[u8]>>, index: u32) -> FontFaceId {
         if let Some(&id) = self.interned.get(&key) {
             // Fill lazily-loaded bytes into an existing empty slot.
             if let Some(bytes) = bytes {
                 let slot = &mut self.faces[id.0 as usize];
                 if slot.bytes.is_none() {
-                    slot.bytes = Some(bytes.into());
+                    slot.bytes = Some(bytes);
                 }
             }
             return id;
         }
         let id = FontFaceId(self.faces.len() as u32);
-        self.faces.push(FaceEntry {
-            bytes: bytes.map(Arc::from),
-            index,
-        });
+        self.faces.push(FaceEntry { bytes, index });
         self.interned.insert(key, id);
         id
     }
@@ -197,7 +194,7 @@ impl FontResolver {
         &mut self,
         asset: AssetRef,
         face_index: u32,
-        sfnt: Vec<u8>,
+        sfnt: Arc<[u8]>,
     ) -> FontFaceId {
         self.intern(FaceKey::App { asset, face_index }, Some(sfnt), face_index)
     }
@@ -231,6 +228,32 @@ impl FontResolver {
     pub fn face_metrics(&self, id: FontFaceId) -> Option<FaceMetrics> {
         let (bytes, index) = self.face_bytes(id)?;
         inspect_face(bytes, index)
+    }
+
+    /// Rebind the faces of the application asset `asset`, whose bytes were
+    /// replaced: each id it resolved to is retired, keeping its bytes for the
+    /// layouts still drawing with it until [`release`](Self::release), and
+    /// the next resolution interns a fresh id read from the asset again.
+    /// Returns the retired ids.
+    pub fn rebind_asset(&mut self, asset: AssetRef) -> Vec<FontFaceId> {
+        let mut retired = Vec::new();
+        self.interned.retain(|key, &mut id| match key {
+            FaceKey::App { asset: of, .. } if *of == asset => {
+                retired.push(id);
+                false
+            }
+            _ => true,
+        });
+        self.resolve_cache
+            .retain(|_, outcome| !matches!(outcome, Resolved::Face(id) if retired.contains(id)));
+        retired
+    }
+
+    /// Drop the bytes of `id`, a face no resolution hands out any more.
+    pub fn release(&mut self, id: FontFaceId) {
+        if let Some(face) = self.faces.get_mut(id.0 as usize) {
+            face.bytes = None;
+        }
     }
 
     /// Bump the system-font revision, invalidating cached system resolutions.
@@ -316,7 +339,7 @@ impl FontResolver {
                     slant: request.slant,
                     lang: lang.to_owned(),
                 },
-                Some(result.bytes),
+                Some(result.bytes.into()),
                 result.index,
             );
             return Resolved::Face(id);
@@ -454,7 +477,7 @@ mod tests {
 
         // Registering the same app face's bytes yields that same id and fills
         // the lazily-loaded slot.
-        let id = resolver.register_app_face(AssetRef(12), 0, vec![1, 2, 3, 4]);
+        let id = resolver.register_app_face(AssetRef(12), 0, Arc::from([1, 2, 3, 4]));
         assert_eq!(Resolved::Face(id), first);
         assert_eq!(resolver.face_bytes(id).map(|(b, _)| b.len()), Some(4));
     }
@@ -463,7 +486,7 @@ mod tests {
     fn face_metrics_parses_a_registered_face() {
         const DEJAVU: &[u8] = include_bytes!("../tests/fixtures/DejaVuSans-subset.ttf");
         let mut resolver = FontResolver::new();
-        let id = resolver.register_app_face(AssetRef(0), 0, DEJAVU.to_vec());
+        let id = resolver.register_app_face(AssetRef(0), 0, Arc::from(DEJAVU));
 
         let m = resolver.face_metrics(id).expect("real face parses");
         // Latin ascent is above the baseline and descent below it.
@@ -479,7 +502,7 @@ mod tests {
     fn face_metrics_none_for_unloaded_or_unknown() {
         let mut resolver = FontResolver::new();
         // Bytes that do not parse as a face yield None, not a panic.
-        let bogus = resolver.register_app_face(AssetRef(0), 0, vec![0u8; 8]);
+        let bogus = resolver.register_app_face(AssetRef(0), 0, Arc::from([0u8; 8]));
         assert!(resolver.face_metrics(bogus).is_none());
         // An id past the registry is None.
         assert!(resolver.face_metrics(FontFaceId(999)).is_none());
@@ -518,5 +541,24 @@ mod tests {
         resolver.resolve(&request, &manifest, &provider, "zh-Hans");
         resolver.resolve(&request, &manifest, &provider, "ja");
         assert_eq!(provider.calls.get(), 2);
+    }
+
+    #[test]
+    fn a_rebound_asset_resolves_to_a_fresh_face_and_the_old_keeps_its_bytes() {
+        let mut resolver = FontResolver::new();
+        let asset = AssetRef(5);
+        let old = resolver.register_app_face(asset, 0, Arc::from([1, 2, 3]));
+        assert_eq!(resolver.rebind_asset(asset), [old]);
+        let new = resolver.register_app_face(asset, 0, Arc::from([4, 5]));
+        assert_ne!(new, old);
+        assert_eq!(resolver.face_bytes(new).map(|(b, _)| b), Some(&[4, 5][..]));
+        assert_eq!(
+            resolver.face_bytes(old).map(|(b, _)| b),
+            Some(&[1, 2, 3][..]),
+            "drawn layouts still read it"
+        );
+        resolver.release(old);
+        assert!(resolver.face_bytes(old).is_none());
+        assert_eq!(resolver.rebind_asset(AssetRef(6)), [], "another asset");
     }
 }

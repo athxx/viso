@@ -7,12 +7,11 @@
 //! `cargo test -p viso-cli --test warm_restart -- --ignored --nocapture`.
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
-use std::thread;
+mod support;
+
 use std::time::{Duration, Instant};
+
+use support::Run;
 
 const VIEW: &str = r#"component Probe {
     state count = 0;
@@ -59,89 +58,23 @@ fn main() {{
     )
 }
 
-/// The probe project, written fresh under the test's scratch directory and
-/// depending on this repository's crates by path.
-fn project() -> PathBuf {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let repo = repo.canonicalize().expect("the repository");
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("warm_restart");
-    let app = dir.join("app");
-    std::fs::create_dir_all(app.join("src")).expect("the project directory");
-    let crate_path = |name: &str| repo.join("crates").join(name).display().to_string();
-    let manifest = format!(
-        "[package]\nname = \"warm-restart-probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-         publish = false\n\n[dependencies]\nviso = {{ path = {:?} }}\n\
-         viso-ui = {{ path = {:?} }}\nviso-view = {{ path = {:?} }}\n\n[workspace]\n",
-        crate_path("viso"),
-        crate_path("ui"),
-        crate_path("view"),
-    );
-    std::fs::write(app.join("Cargo.toml"), manifest).expect("Cargo.toml");
-    std::fs::write(app.join("Viso.toml"), "[package]\nname = \"probe\"\n").expect("Viso.toml");
-    std::fs::write(app.join("src/probe.vs"), VIEW).expect("probe.vs");
-    std::fs::write(app.join("src/main.rs"), main_rs("")).expect("main.rs");
-    app
+/// The probe project, its `main.rs` unedited.
+fn project() -> std::path::PathBuf {
+    support::project(
+        "warm_restart",
+        &[
+            ("src/probe.vs", VIEW.as_bytes()),
+            ("src/main.rs", main_rs("").as_bytes()),
+        ],
+    )
 }
 
-/// `viso run --json` in `app`, and the lines it writes.
-struct Run {
-    child: Child,
-    lines: Receiver<String>,
-}
-
-impl Run {
-    fn start(app: &Path) -> Run {
-        let target = app.parent().expect("the scratch directory").join("target");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_viso"))
-            .args(["run", "--json"])
-            .current_dir(app)
-            .env("CARGO_TARGET_DIR", target)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("viso runs");
-        let stdout = child.stdout.take().expect("piped");
-        let (tx, lines) = mpsc::channel();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                println!("{line}");
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        Run { child, lines }
-    }
-
-    /// The next line `matches` accepts, within `within`.
-    fn until(&self, within: Duration, what: &str, matches: impl Fn(&str) -> bool) -> String {
-        let deadline = Instant::now() + within;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match self.lines.recv_timeout(left) {
-                Ok(line) if matches(&line) => return line,
-                Ok(_) => {}
-                Err(_) => panic!("no {what} within {within:?}"),
-            }
-        }
-    }
-
-    /// The pid the probe printed after `said` (`launched` or `restored`).
-    fn probe(&self, within: Duration, said: &str) -> u32 {
-        let line = self.until(within, &format!("probe {said}"), |line| {
-            probe_pid(line, said).is_some()
-        });
-        probe_pid(&line, said).expect("matched")
-    }
-
-    /// Stops the session as Ctrl-C does; its exit code.
-    fn stop(mut self) -> Option<i32> {
-        let pid = libc::pid_t::try_from(self.child.id()).expect("a pid");
-        // SAFETY: a plain call on the child not yet reaped.
-        unsafe { libc::kill(pid, libc::SIGINT) };
-        self.child.wait().ok()?.code()
-    }
+/// The pid the probe printed after `said` (`launched` or `restored`).
+fn probe(run: &Run, within: Duration, said: &str) -> u32 {
+    let line = run.until(within, &format!("probe {said}"), |line| {
+        probe_pid(line, said).is_some()
+    });
+    probe_pid(&line, said).expect("matched")
 }
 
 /// The pid in `line` if it is the probe's log saying `said`.
@@ -159,9 +92,7 @@ fn alive(pid: u32) -> bool {
 }
 
 fn dev_event(line: &str, outcome: &str) -> bool {
-    line.contains("\"type\":\"dev\"")
-        && line.contains("\"stage\":\"warm-restart\"")
-        && line.contains(&format!("\"outcome\":\"{outcome}\""))
+    support::dev_event(line, "warm-restart", outcome)
 }
 
 #[test]
@@ -169,10 +100,8 @@ fn dev_event(line: &str, outcome: &str) -> bool {
 fn a_rust_edit_restarts_the_app_with_its_state_and_a_broken_one_keeps_it() {
     let app = project();
     let run = Run::start(&app);
-    let first = run.probe(Duration::from_secs(900), "launched");
-    run.until(Duration::from_secs(60), "the dev channel", |line| {
-        line.contains("dev runtime connected")
-    });
+    let first = probe(&run, Duration::from_secs(900), "launched");
+    run.connected();
 
     // A build that fails: the app keeps running, nothing restarts.
     std::fs::write(app.join("src/main.rs"), main_rs("fn broken() {")).expect("main.rs");

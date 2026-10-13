@@ -60,6 +60,7 @@ use viso_dsl::assets::{ASSET_ERROR, ResourceId};
 use viso_dsl::behavior::probe::state_json;
 use viso_dsl::hotreload::{CandidatePlan, game_patch, view_patch};
 use viso_project::LockGuard;
+use viso_text::font_format;
 use viso_view::dev::wire::{
     BlobRef, Blobs, CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply,
     HostMessage, PatchBundle, PatchSection, Rebuild, ResourceAsset, ResourcePatch, RestoreBundle,
@@ -1185,8 +1186,8 @@ impl DevSession {
                 &event,
             );
         }
-        // The assets to send: each the app holds that changed, and each a
-        // candidate names that it does not hold yet. Each is decoded here as
+        // The assets to send: each the app holds that changed, each font that
+        // changed, and each a candidate names that it does not hold yet. Each is decoded here as
         // the app would: one that does not decode is reported against its
         // path and not sent, and the app keeps the last good.
         let mut named = Vec::new();
@@ -1209,7 +1210,15 @@ impl DevSession {
             let hash = file.hash;
             let path = self.sources.asset_path(&asset);
             let name = Source::new(&path, &self.root, "").name().to_owned();
-            let decoded = viso_svg::decode_asset(&file.bytes);
+            let decoded = if file.font {
+                font_format::parses(&file.bytes)
+                    .then_some(())
+                    .ok_or_else(|| "a face of it does not parse".to_owned())
+            } else {
+                viso_svg::decode_asset(&file.bytes)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            };
             let (outcome, stage, codes) = match decoded {
                 Ok(_) if self.apply && replaces_assets => {
                     assets.push(SentAsset {
@@ -1806,6 +1815,35 @@ mod tests {
         f.save_asset("logo.png", NIGHT);
         let (blobs, _) = resources(&f.settle());
         assert_eq!(blobs, [NIGHT], "the next good one goes");
+    }
+
+    const FONT: &[u8] = include_bytes!("../../../../crates/viso/fixtures/DejaVuSans-subset.ttf");
+
+    #[test]
+    fn a_changed_font_goes_with_no_view_naming_it_and_a_broken_one_is_reported() {
+        let mut f = Fixture::app_with(
+            "font-edit",
+            true,
+            VIEW,
+            VIEW,
+            replaces_assets(),
+            &[("fonts/Body.ttf", FONT, false)],
+        );
+        assert!(f.settle().is_empty(), "the app runs what the build read");
+
+        // Trailing bytes change the file, not its faces.
+        let edited = [FONT, &[0; 4]].concat();
+        f.save_asset("fonts/Body.ttf", &edited);
+        let sent = f.settle();
+        let (blobs, patch) = resources(&sent);
+        assert_eq!(blobs, [&edited[..]]);
+        assert_eq!(patch.assets[0].path, "fonts/Body.ttf");
+        acked_assets(&mut f, 2, &["fonts/Body.ttf"]);
+
+        let errors = f.out.errors();
+        f.save_asset("fonts/Body.ttf", &FONT[..64]);
+        assert!(f.settle().is_empty(), "nothing is sent");
+        assert!(f.out.errors() > errors, "the failure is reported");
     }
 
     #[test]

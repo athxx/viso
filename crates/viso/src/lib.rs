@@ -1050,6 +1050,40 @@ impl WindowState {
         }
     }
 
+    /// Serve `bytes` for the packaged font file `file` from now on and shape
+    /// again each paragraph that laid out with a face of it, pushing its node
+    /// to `reshaped`. Until the new face's layout is committed a paragraph
+    /// keeps drawing its last good one.
+    #[cfg(feature = "hot-reload")]
+    fn replace_packaged_font(
+        &mut self,
+        file: u32,
+        bytes: std::sync::Arc<[u8]>,
+        reshaped: &mut Vec<NodeId>,
+    ) {
+        let (Some(gpu), Some(text)) = (self.gpu.as_mut(), self.text.as_mut()) else {
+            return;
+        };
+        let dpi = self.dpi;
+        for slot in text.replace_packaged(file, bytes) {
+            let Some(id) = self
+                .store
+                .arena()
+                .live_id(slot.index())
+                .filter(|&id| ParagraphSlot::from(id) == slot)
+            else {
+                continue;
+            };
+            let Some(request) = self.text_sources.get(&id) else {
+                continue;
+            };
+            let width = text.wrap_width(slot);
+            let content = text.shape(&mut gpu.backend, slot, request, dpi, width);
+            self.store.set_reflowed_content(id, content);
+            reshaped.push(id);
+        }
+    }
+
     /// Hand the text worker every layout this frame asked for, in one batch.
     fn dispatch_text_work(&mut self) {
         if let Some(text) = self.text.as_mut() {
@@ -1546,7 +1580,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             packaged: self.cx.__packaged_fonts(),
         };
         #[cfg(feature = "hot-reload")]
-        self.hot_reload.set_dev_states(self.cx.__take_dev_states());
+        {
+            self.hot_reload.set_dev_states(self.cx.__take_dev_states());
+            self.hot_reload.set_packaged_fonts(self.fonts.packaged);
+        }
         // Install the app's menu bar, if it declares one, before opening any
         // window. A `None` leaves the framework's standard app menu (with its
         // working Quit) in place from platform bring-up.

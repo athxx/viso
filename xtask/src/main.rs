@@ -261,7 +261,8 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
         // The `viso` command: argument parsing, output and exit codes over the
         // project model and the compiler it orchestrates (CLI sections 39-41).
         // A dev session decodes each changed asset as the app would before it
-        // sends it, through the SVG lane's asset decoder.
+        // sends it: an image through the SVG lane's asset decoder, a font
+        // through the text runtime's sfnt parser.
         (
             "viso-cli",
             Allowed {
@@ -272,6 +273,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-view",
                     "viso-ende",
                     "viso-svg",
+                    "viso-text",
                 ],
             },
         ),

@@ -34,6 +34,7 @@ use viso_dsl::hotreload::{CandidatePlan, plan_view_for, plan_view_parsed};
 use viso_dsl::i18n::{CatalogFile, CatalogIssue, Messages};
 use viso_dsl::syntax::{Edit, Entry, IncrementalParse, TextRange, TextSize};
 use viso_dsl::{Diagnostic, LineIndex, Severity};
+use viso_text::font_format;
 use viso_view::dev::wire::{FileId, MAX_LINE, MAX_LINES, MountEntry, content_hash, source_hash};
 
 /// How many of a file's latest distinct versions the session keeps, to find
@@ -136,6 +137,9 @@ pub(super) struct AssetFile {
     pub bytes: Vec<u8>,
     pub hash: u64,
     format: Option<AssetFormat>,
+    /// Whether it is a font, told by its sfnt header: the app may draw with
+    /// it though no view names it.
+    pub font: bool,
     /// The hash of the content the app runs, when it holds the resource.
     pub running: u64,
     /// The hash of the latest content that was a candidate (sent, or
@@ -221,12 +225,14 @@ impl Sources {
         let assets = &mut self.assets[at];
         let hash = content_hash(&bytes);
         let format = AssetFormat::sniff(&bytes);
+        let font = font_format::detect(&bytes).is_some();
         let moved = match assets.files.get_mut(&name) {
             Some(file) => {
                 let moved = file.format != format;
                 file.bytes = bytes;
                 file.hash = hash;
                 file.format = format;
+                file.font = font;
                 moved
             }
             None => {
@@ -236,6 +242,7 @@ impl Sources {
                         bytes,
                         hash,
                         format,
+                        font,
                         running: hash,
                         settled: None,
                     },
@@ -490,7 +497,7 @@ impl Sources {
             for (path, file) in &assets.files {
                 if file.hash != file.running
                     && file.settled != Some(file.hash)
-                    && assets.held.contains(&ResourceId::of(path))
+                    && (file.font || assets.held.contains(&ResourceId::of(path)))
                 {
                     out.insert(AssetRef {
                         dir,

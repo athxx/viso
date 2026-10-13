@@ -6,6 +6,8 @@
 //! fonts. Bytes come from an [`AssetSource`] seam so this crate stays free of
 //! any file/packaging specifics — the facade supplies the actual asset store.
 
+use std::sync::Arc;
+
 use crate::FontFaceId;
 use crate::font_manifest::{AssetRef, FontManifest};
 use crate::resolver::FontResolver;
@@ -16,7 +18,7 @@ use crate::resolver::FontResolver;
 /// in-memory source. Reading is lazy and on demand, never eager at startup.
 pub trait AssetSource {
     /// Read the bytes for an asset, if it exists.
-    fn read(&self, asset: AssetRef) -> Option<Vec<u8>>;
+    fn read(&self, asset: AssetRef) -> Option<Arc<[u8]>>;
 }
 
 /// Loader for application-declared fonts.
