@@ -41,10 +41,12 @@
 //! compiling and the old pipelines retire through the fence.
 //! Across a Rust warm restart the host asks for a [`DevSnapshot`], captured
 //! at the next frame boundary after the patches commit: every view mount's
-//! states, cells and node state, every game's snapshot, every window's size,
-//! and what the app registered with `AppCx::dev_state`. The process `viso
-//! run` launches next waits, a bounded time, for the restore the host sends
-//! once it has the mounts of the first window: each mount of a window opened
+//! states, cells and node state, every game's snapshot, every window's size
+//! and position, and what the app registered with `AppCx::dev_state`. The
+//! channel opens with the launch window, so an app that mounts no view
+//! carries its windows and extensions too. The process `viso run` launches
+//! next waits, a bounded time, for the restore the host sends once it has
+//! the mounts of the launch window: each mount of a window opened
 //! before the first frame boundary then takes the view of the snapshot at
 //! the same file, window and mount ordinal through the host's plan from the
 //! view the old process ran, and its game the game's snapshot, and the
@@ -117,6 +119,9 @@ pub(crate) fn launch_window(
 /// runs fresh.
 const RESTORE_WAIT: Duration = Duration::from_secs(5);
 
+/// The compiler schema every view of the build compiled against.
+const SCHEMA: SchemaFingerprint = SchemaFingerprint(viso_ui_macros::__schema_fingerprint!());
+
 /// The domains this runtime applies.
 const APPLIES: Domains = Domains::NONE
     .with(Domain::Ui)
@@ -124,7 +129,7 @@ const APPLIES: Domains = Domains::NONE
     .with(Domain::Resource);
 
 /// The hot reload session of an app: its mounted views and their files, and
-/// the dev channel to `viso run`, opened with the first mount.
+/// the dev channel to `viso run`, opened with the launch window.
 #[derive(Default)]
 pub(crate) struct HotReloadSession {
     /// Whether the environment was read for a dev channel.
@@ -147,12 +152,10 @@ pub(crate) struct HotReloadSession {
     queries: Vec<GameQuery>,
     /// The games being recorded for the host.
     recordings: Vec<Recording>,
-    /// What wakes the loop, kept from the first mount.
+    /// What wakes the loop, kept from the launch window.
     waker: Option<LoopWaker>,
     /// The thread compiling staged patches' shaders, started with the first.
     compiles: Option<ShaderCompiles>,
-    /// The schema the build compiled its views against.
-    schema: SchemaFingerprint,
     /// Whether the host asked for a snapshot, taken at the next frame
     /// boundary.
     snapshot_asked: bool,
@@ -168,6 +171,8 @@ pub(crate) struct HotReloadSession {
     dev_states: Vec<DevState>,
     /// The windows that mounted a view so far.
     windows_mounted: u32,
+    /// Whether the launch window was adopted.
+    launched: bool,
     /// Where each window is on the desktop, read for the snapshot asked for.
     positions: Vec<(WindowId, Option<(f64, f64)>)>,
 }
@@ -271,20 +276,21 @@ struct LiveView {
 
 impl HotReloadSession {
     /// Adopts the views `ws`'s build just mounted, opening the dev channel
-    /// `viso run` named with `waker` on the first, and reports the files not
-    /// mounted before. A mount of a file a patch already committed is
-    /// rebuilt from the view the file runs.
+    /// `viso run` named with `waker` with the launch window's, whether or not
+    /// it mounts a view, and reports the files not mounted before. A mount of
+    /// a file a patch already committed is rebuilt from the view the file
+    /// runs.
     pub(crate) fn adopt(&mut self, waker: impl FnOnce() -> LoopWaker, ws: &mut WindowState) {
         take_mounts(&mut self.records);
-        if self.records.is_empty() {
+        let launch = !std::mem::replace(&mut self.launched, true);
+        if self.records.is_empty() && !launch {
             return;
         }
         if !self.started {
             self.started = true;
-            self.schema = SchemaFingerprint(self.records[0].schema);
             let waker = waker();
             self.waker = Some(waker.clone());
-            self.link = DevLink::from_env(waker, self.schema, APPLIES);
+            self.link = DevLink::from_env(waker, SCHEMA, APPLIES);
             self.awaiting_restore =
                 self.link.is_some() && std::env::var_os(DEV_RESTORE_ENV).is_some();
         }
@@ -338,14 +344,18 @@ impl HotReloadSession {
             }
             self.views.push(view);
         }
-        if !mounted.is_empty() {
+        // The launch reports its mounts even when it has none: the host
+        // sends a restore once it has them.
+        if !mounted.is_empty() || launch {
             link.send(RuntimeMessage::Mounts(mounted));
         }
         if std::mem::take(&mut self.awaiting_restore) {
             self.await_restore();
         }
-        self.restore_window(ws, first);
-        self.windows_mounted += 1;
+        if self.views.len() > first {
+            self.restore_window(ws, first);
+            self.windows_mounted += 1;
+        }
     }
 
     /// Whether the host asked for a snapshot, which the next frame boundary
@@ -608,7 +618,7 @@ impl HotReloadSession {
         };
         let mut snapshot = DevSnapshot {
             source_build: identity.build_id,
-            app_schema: self.schema,
+            app_schema: SCHEMA,
             revision: identity.current_revision,
             ..DevSnapshot::default()
         };
@@ -683,10 +693,17 @@ impl HotReloadSession {
 
     /// Takes what the dev channel delivered and what the shader compiles
     /// finished, and requests a frame for each window with a mount when a
-    /// patch became ready to commit or a failure changed. `windows` compile
-    /// the shaders a patch brings.
+    /// patch became ready to commit or a failure changed, and for every
+    /// window when the host asked for a snapshot, which captures them all.
+    /// `windows` compile the shaders a patch brings.
     pub(crate) fn wakeup(&mut self, cx: &mut RuntimeCx<'_>, windows: &[WindowState]) {
         if !self.receive(windows) {
+            return;
+        }
+        if self.snapshot_asked {
+            for ws in windows {
+                cx.request_redraw(ws.window);
+            }
             return;
         }
         let mut asked: Vec<WindowId> = Vec::new();
@@ -3353,6 +3370,49 @@ mod tests {
             (0, 1, 0)
         );
         assert!(session.restoring.is_none(), "the first frame ends it");
+    }
+
+    #[test]
+    fn an_app_that_mounts_no_view_carries_its_window_and_extensions() {
+        let rust = |cx: &mut BuildCx<'_>| viso_ui_macros::ui! { Text { text: "rust"; } }(cx).id();
+        let mut old = mounted(rust);
+        let (mut session, mut host, entries) = linked(Some(&mut old));
+        assert!(entries.is_empty(), "the launch reports no mount");
+        session.dev_states = vec![DevState {
+            name: "route".into(),
+            capture: Box::new(|| b"inbox".to_vec()),
+            restore: Box::new(|_| unreachable!("the old process restores nothing")),
+        }];
+        old.surface_size = (640, 480);
+        old.dpi = 1.0;
+        session.set_positions(vec![(old.window, Some((10.0, 20.0)))]);
+        let (bytes, windows) = snapshot_of(&mut session, &mut host, std::slice::from_mut(&mut old));
+        assert_eq!(
+            windows,
+            [WindowGeometry {
+                size: (640.0, 480.0),
+                position: Some((10.0, 20.0)),
+            }]
+        );
+        let snapshot = DevSnapshot::decode(&bytes).expect("the snapshot decodes");
+        assert!(snapshot.views.is_empty());
+
+        let route = Rc::new(RefCell::new(Vec::new()));
+        let restored = Rc::clone(&route);
+        let states = vec![DevState {
+            name: "route".into(),
+            capture: Box::new(Vec::new),
+            restore: Box::new(move |bytes| *restored.borrow_mut() = bytes.to_vec()),
+        }];
+        let mut new = mounted(rust);
+        let (mut session, mut host) = restoring(&mut new, Some(&bytes), UiPatch::default(), states);
+        assert_eq!(*route.borrow(), b"inbox");
+        session.reload(std::slice::from_mut(&mut new), &mut Assets::default());
+        let Some(RuntimeMessage::Restored(report)) = host.read() else {
+            panic!("no restore report");
+        };
+        assert!(report.files.is_empty(), "{report:?}");
+        assert_eq!((report.extensions, report.extensions_lost), (1, 0));
     }
 
     #[test]

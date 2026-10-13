@@ -996,8 +996,15 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
       since natives come with the Viso version, so no `.vs` edit needs a restart),
       its channel closed or the app exited before restoring (`restored: false`); the
       session ending before the old app closed is `rejected`.
-- [ ] An app that mounts no `view!` opens the dev channel too (at launch, not at
-      the first mount), so its windows and extensions carry across a restart.
+- [x] An app that mounts no `view!` opens the dev channel too (at launch, not at
+      the first mount), so its windows and extensions carry across a restart: the
+      runtime takes its schema from the macro crate that compiles every `view!`
+      (`__schema_fingerprint!`, no longer per mount record), the launch window
+      reports its mounts even when empty, and a snapshot request asks every
+      window for a frame.
+- [ ] Rust-side state cells (`ui!`, `component!`, `AppCx` states) carried across a
+      restart: they have no durable key yet, so a pure-Rust counter restarts from
+      its initializer.
 - [ ] Integration test (§62 Rust): app with state, edit Rust, assert old app runs
       until the build succeeds, warm restart, assert state restored; a failing build
       leaves the old app running.

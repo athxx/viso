@@ -167,7 +167,7 @@ feature 关闭时登记宏展开为空：二进制里既没有记录代码，也
 
 app driver 在每个窗口同步构建完成后立即领取该窗口的挂载记录；之后才登记的挂载（例如列表行）不是窗口构建的一部分，不被跟踪。窗口关闭或挂载根已被释放时，对应挂载被丢弃。app 端的 session 是 `viso run` 的对端（§3）：它不监听任何文件、不读项目源码。
 
-- **连接与 inventory**：首个挂载时按 `viso run` 给的环境打开 dev channel（§46）；没有 `viso run`（环境里没有 dev channel）时不建 session，挂载记录直接丢弃。每个首次挂载的文件以一条 `MountEntry`（file id、canonical path、模块身份、catalog、capability、所运行源码的 `source_hash`）报给 host（§35）；同一文件再次挂载不重复报告。
+- **连接与 inventory**：启动窗口构建完成时按 `viso run` 给的环境打开 dev channel（§46），无论它是否挂载 view，并报告它的 mount（可以为空，host 据此发送 restore）；没有 `viso run`（环境里没有 dev channel）时不建 session，挂载记录直接丢弃。每个首次挂载的文件以一条 `MountEntry`（file id、canonical path、模块身份、catalog、capability、所运行源码的 `source_hash`）报给 host（§35）；同一文件再次挂载不重复报告。
 - **帧边界**：唤醒只把 patch 检查后暂存（§36）并为有挂载的窗口请求一帧；提交发生在下一帧 `FlushStateTransactions` 开头、窗口 flush 之前，因此一次 reload 的写入在同一帧结算并绘制。
 - **整 patch 原子**：一个 patch 的所有 view 先全部 stage——解码并校验 candidate 的 behavior 模块、确认其挂载的 component 存在（失败 NACK `NACK_UNLOADABLE_VIEW`，stage `runtime-stage`），任何一个失败则什么都不提交；全部成功后才在帧边界依次按 host 给的 reload plan 提交到每个文件的每个挂载（同一文件挂载多次时，提交前先把持久 key 指回当前挂载的 cell），revision 前进并 ACK。文件被 patch 之后才出现的挂载（例如新开的窗口）由 build 的 view 建成，领取时立即以 fresh plan 重建为该文件当前的 candidate。
 - **失败显示**：host 拒绝的编辑以 `Failure` 送达，app 在挂载该文件的窗口 last-good UI 之上显示，直到 host 清除（编辑被撤回）或该文件的 patch 提交（§37.1）。
@@ -325,7 +325,7 @@ CapabilitySet
 
 禁止仅靠端口号猜测“这是哪个运行中的 App”。
 
-已实现：`SchemaFingerprint` 是编译器 schema 的 128-bit 指纹（`viso_dsl::hotreload::schema_fingerprint`：编译器版本、candidate plan 格式号、每个标准 native library 的签名内容），`view!` 展开时写进 mount record，runtime 在 hello 里报告；与 `viso run` 自己的不同则 `Reject::Schema`——host 不给用另一个编译器构建的 runtime 编译 patch。runtime 的 `TargetProfile`（capability、catalog）随每条 `MountEntry` 报告。
+已实现：`SchemaFingerprint` 是编译器 schema 的 128-bit 指纹（`viso_dsl::hotreload::schema_fingerprint`：编译器版本、candidate plan 格式号、每个标准 native library 的签名内容），由编译 build 中每个 `view!` 的同一个 proc-macro crate 写进 runtime（`viso_ui_macros::__schema_fingerprint!`），所以不挂载 view 的 app 也知道自己的 schema，runtime 在 hello 里报告；与 `viso run` 自己的不同则 `Reject::Schema`——host 不给用另一个编译器构建的 runtime 编译 patch。runtime 的 `TargetProfile`（capability、catalog）随每条 `MountEntry` 报告。
 
 ---
 
@@ -1032,7 +1032,7 @@ restore
 
 旧 process 的窗口是否复用 OS handle 不作为要求；窗口 geometry 和 app state 可以通过 snapshot 恢复。
 
-已实现（`command/run.rs`、`dev/mod.rs`）：build 成功后 host 请旧 app 在下一帧边界给出 DevSnapshot（至多等 3 秒），再请它退出（Unix 上 SIGTERM，3 秒后强制结束）；旧进程结束后以新的可执行文件启动并设置 `VISO_DEV_RESTORE`。新进程照常握手（build id 不变，revision 从 `LAUNCH` 重新开始），第一个窗口的 mount 报告之后，host 把 snapshot 与每个文件的 plan（从旧 app 运行的 view 到新 build 嵌入的 view，与 patch 的 plan 相同）发过去；app 在第一帧之前恢复（至多等 5 秒，超时以全新状态运行），第一帧之前打开的窗口都参与恢复，第一帧边界回报 `Restored`。restart 进行中又有 build 成功，就改用最新的那个。一次 restart 输出一条 `dev{outcome:"warm_restarted", patch_class:"WARM_RESTART_REQUIRED", stage:"warm-restart"}`，新的可执行文件起不来时为 `rejected`。新进程没有取回状态也照样结束这次 restart（事件的 `restored` 为 `false`）：restore 被拒、握手被拒（另一个 Viso 编译器 build 的 app，snapshot 不再交给之后的连接）、在 `Restored` 之前关闭 dev channel 或退出。`.vs` 编辑所用的 native schema 由 Viso 版本决定，与 app 的不符只会在换了 Viso 版本的 Rust build 之后出现，由握手拒绝（`Reject::Schema`），不会出现在某次 `.vs` 编辑上。旧连接迟到的消息按 `RuntimeSessionId` 丢弃。窗口 geometry 随 snapshot 一起取得：每个窗口的逻辑尺寸与外框左上角位置（macOS 为相对主屏左上角的 point，Windows 与 X11 为物理像素；Wayland 不给 client 位置，只恢复尺寸）。host 以 `VISO_DEV_WINDOW=w,h[,x,y]` 把第一个窗口的 geometry 交给新进程，app 以它打开主窗口——位置不在任何屏幕上时（显示器已拔掉）按平台默认摆放。尚未实现：只用 Rust UI、不挂载 `view!` 的 app 不连接 dev channel，restart 不带状态。
+已实现（`command/run.rs`、`dev/mod.rs`）：build 成功后 host 请旧 app 在下一帧边界给出 DevSnapshot（至多等 3 秒），再请它退出（Unix 上 SIGTERM，3 秒后强制结束）；旧进程结束后以新的可执行文件启动并设置 `VISO_DEV_RESTORE`。新进程照常握手（build id 不变，revision 从 `LAUNCH` 重新开始），第一个窗口的 mount 报告之后，host 把 snapshot 与每个文件的 plan（从旧 app 运行的 view 到新 build 嵌入的 view，与 patch 的 plan 相同）发过去；app 在第一帧之前恢复（至多等 5 秒，超时以全新状态运行），第一帧之前打开的窗口都参与恢复，第一帧边界回报 `Restored`。restart 进行中又有 build 成功，就改用最新的那个。一次 restart 输出一条 `dev{outcome:"warm_restarted", patch_class:"WARM_RESTART_REQUIRED", stage:"warm-restart"}`，新的可执行文件起不来时为 `rejected`。新进程没有取回状态也照样结束这次 restart（事件的 `restored` 为 `false`）：restore 被拒、握手被拒（另一个 Viso 编译器 build 的 app，snapshot 不再交给之后的连接）、在 `Restored` 之前关闭 dev channel 或退出。`.vs` 编辑所用的 native schema 由 Viso 版本决定，与 app 的不符只会在换了 Viso 版本的 Rust build 之后出现，由握手拒绝（`Reject::Schema`），不会出现在某次 `.vs` 编辑上。旧连接迟到的消息按 `RuntimeSessionId` 丢弃。窗口 geometry 随 snapshot 一起取得：每个窗口的逻辑尺寸与外框左上角位置（macOS 为相对主屏左上角的 point，Windows 与 X11 为物理像素；Wayland 不给 client 位置，只恢复尺寸）。host 以 `VISO_DEV_WINDOW=w,h[,x,y]` 把第一个窗口的 geometry 交给新进程，app 以它打开主窗口——位置不在任何屏幕上时（显示器已拔掉）按平台默认摆放。只用 Rust UI、不挂载 `view!` 的 app 同样在启动窗口打开 dev channel：snapshot 请求为每个窗口请求一帧，restart 带回窗口 geometry 与 `AppCx::dev_state` 注册的状态。尚未实现：Rust 侧分配的 state cell（`ui!`、`component!` 与 `AppCx` 的 state）没有持久 key，restart 后从 initializer 开始。
 
 ---
 
@@ -1218,7 +1218,7 @@ request restart/rebuild
 - runtime 连接并先说话：`RuntimeHello { protocol_version, token, dev_session, runtime_session, build_id, current_revision, schema_fingerprint, capabilities, target, shader_lang }`。连接方用 session token 证明自己是本 session 启动的 app，所以 token 在 `RuntimeHello` 里而不在 `HostHello` 里——host 不向尚未证明身份的连接发送任何东西；
 - host 回 `HostHello { protocol_version, dev_session, runtime_session, project_fingerprint, expected_build_id }`（接受，`runtime_session` 原样回显）或 `Reject { Protocol{host} | Build | Session | Schema }`；token 不符的连接不回应直接关闭（不给猜 token 的 oracle）。runtime 也检查 `HostHello`：protocol、session、runtime session 与 build 任一不符即断开；
 - hello 与 reject 的前缀在所有 protocol version 中保持不变（stream `ProtocolTag`，再是 dev protocol version），解码在读到别的 version 时立即以该 version 号停止，不去解读其后布局可能不同的字段；
-- build id 由 CLI 经 `VISO_DEV_BUILD` 交给所启动的 app，app 原样报告，host 用它拒绝不是其当前编译目标的 artifact（Rust rebuild 之后仍连着的旧 app）；`schema_fingerprint` 取自 mount record（§4.1），与 host 的不同即 `Reject::Schema`；`capabilities` 是 runtime 能 apply 的 domain 集合（当前为 `ui`、`system` 与 `resource`），host 不发送其外的 domain；不声明 `system` 的 app 只收到 view、不声明 `resource` 的 app 不收到 asset，host 各给出一条 warning；`shader_lang` 是 runtime 的 GPU Backend 读 Shader 的语言（Software Raster 为 `None`，即参考解释器），host 把 view patch 所画 Shader 打包成这一种语言的代码随 `ViewPackage` 发送，打包失败是内部错误（`E3711`），该 view 不发送。
+- build id 由 CLI 经 `VISO_DEV_BUILD` 交给所启动的 app，app 原样报告，host 用它拒绝不是其当前编译目标的 artifact（Rust rebuild 之后仍连着的旧 app）；`schema_fingerprint` 是 build 的编译器 schema（§4.1），与 host 的不同即 `Reject::Schema`；`capabilities` 是 runtime 能 apply 的 domain 集合（当前为 `ui`、`system` 与 `resource`），host 不发送其外的 domain；不声明 `system` 的 app 只收到 view、不声明 `resource` 的 app 不收到 asset，host 各给出一条 warning；`shader_lang` 是 runtime 的 GPU Backend 读 Shader 的语言（Software Raster 为 `None`，即参考解释器），host 把 view patch 所画 Shader 打包成这一种语言的代码随 `ViewPackage` 发送，打包失败是内部错误（`E3711`），该 view 不发送。
 
 ---
 

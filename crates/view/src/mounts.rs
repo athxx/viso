@@ -4,7 +4,7 @@
 //! Under the `hot-reload` feature a `view!` expansion records, once its tree is
 //! built, the identities a reload needs to reach the mount: the `.vs` file and
 //! the hash of the source it was compiled from, the module identity, catalogs,
-//! assets, grants and compiler schema it compiles under, the mounted root and static
+//! assets and grants it compiles under, the mounted root and static
 //! nodes, the state cells it allocated and the behavior host it dispatches
 //! into. No source text is embedded: the host holds it. The records queue on
 //! the UI thread until the session [takes](take_mounts) them. Without the
@@ -42,8 +42,6 @@ pub struct MountRecord {
     /// The capabilities the package grants, which the build checked the file
     /// against.
     pub capabilities: &'static [&'static str],
-    /// The fingerprint of the compiler schema the build compiled the file with.
-    pub schema: u128,
     /// The number of static children of each static node, in pre-order: the
     /// shape a view without regions names its static nodes by.
     pub statics: &'static [u32],
@@ -91,7 +89,6 @@ macro_rules! __record_mount {
         catalog: $catalog:expr,
         assets: $assets:expr,
         capabilities: $capabilities:expr,
-        schema: $schema:expr,
         source_hash: $source_hash:expr,
         statics: $statics:expr,
         cells: [$($cell:expr),* $(,)?],
@@ -107,7 +104,6 @@ macro_rules! __record_mount {
             catalog: $catalog,
             assets: $assets,
             capabilities: $capabilities,
-            schema: $schema,
             statics: $statics,
             root: $root,
             cells: ::std::vec![$($cell),*],

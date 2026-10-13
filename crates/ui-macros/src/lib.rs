@@ -64,3 +64,13 @@ pub fn view(input: TokenStream) -> TokenStream {
 pub fn asset(input: TokenStream) -> TokenStream {
     expand::asset(input)
 }
+
+/// The fingerprint of the compiler schema every `view!` of the build compiles
+/// with, as a `u128` literal: what a dev runtime introduces itself with,
+/// whether or not it mounts a view.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __schema_fingerprint(_: TokenStream) -> TokenStream {
+    let fingerprint = viso_dsl::hotreload::schema_fingerprint();
+    proc_macro::TokenTree::Literal(proc_macro::Literal::u128_suffixed(fingerprint)).into()
+}
