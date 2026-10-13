@@ -51,6 +51,7 @@ fn frame_stats_roster_is_frozen() {
         program_draws_dropped: 44,
         programs: 45,
         clock_instances: 46,
+        program_pipelines: 47,
         // Data-path / upload discipline (§9.1/§9.3/§30).
         uploaded_ranges: 13,
         instance_rebuilds: 14,
@@ -137,6 +138,7 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(s.program_draws_dropped, 44);
     assert_eq!(s.programs, 45);
     assert_eq!(s.clock_instances, 46);
+    assert_eq!(s.program_pipelines, 47);
 
     // The default is the all-zero frame: a renderer that drew nothing reports
     // every counter at zero, so a steady frame's deltas are meaningful.
@@ -187,6 +189,7 @@ fn frame_stats_roster_is_frozen() {
     assert_eq!(z.program_draws_dropped, 0);
     assert_eq!(z.programs, 0);
     assert_eq!(z.clock_instances, 0);
+    assert_eq!(z.program_pipelines, 0);
 }
 
 /// The seven effect cost classes are frozen in cheapest-first order (§7.5): the

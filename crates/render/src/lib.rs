@@ -98,7 +98,7 @@ pub use primitive::{
     analytic_shadow_schema, color_transform_schema, glyphrun_schema, gradient_schema, image_schema,
     mesh_schema, quad_schema,
 };
-pub use program::{BrushProgram, ProgramError};
+pub use program::{BrushProgram, IDLE_PIPELINES, ProgramError};
 // The brush profile a `ShaderDraw`'s parameters are encoded by, named in this
 // crate's program API.
 pub use renderer::{BackdropDependency, FrameStats, Renderer};

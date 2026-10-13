@@ -22,7 +22,7 @@ use viso_gpu::{
     PipelineDesc, PipelineId, ProgramCode, ProgramCompiler, ProgramDesc, SamplerDesc, SurfaceId,
     TextureDesc, TextureFormat, TextureId,
 };
-use viso_gpu::{BindGroupId, SamplerId};
+use viso_gpu::{BindGroupId, ProgramOf, SamplerId};
 
 use viso_shader::program::{BrushLayout, FRAGMENT_ENTRY, VERTEX_ENTRY};
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
@@ -819,6 +819,9 @@ pub struct FrameStats {
     pub program_draws_dropped: u32,
     /// User programs installed in the renderer.
     pub programs: u32,
+    /// Pipelines of user programs the renderer holds, drawn with or kept
+    /// idle for an edit that comes back to them.
+    pub program_pipelines: u32,
     /// Paths (re-)tessellated this frame — a geometry/paint change or a cold
     /// append; a cache hit does not count (§61).
     pub path_tessellations: u32,
@@ -1178,6 +1181,8 @@ pub struct Renderer {
     /// The user programs installed, by slot, each with its own instance
     /// buffer and scratch.
     programs: ProgramTable,
+    /// The programs this renderer compiled.
+    program_compiles: u64,
     /// Scratch analytic soft-shadow instance data, reused each frame.
     analytic_shadow_scratch: Vec<ShadowInstance>,
     /// Scratch blur instance data, reused each frame: one [`BlurInstance`] per
@@ -1894,6 +1899,7 @@ impl Renderer {
             glyph_scratch: Vec::with_capacity(256),
             gradient_scratch: Vec::with_capacity(64),
             programs: ProgramTable::new(backend.caps().program_instance_align),
+            program_compiles: 0,
             analytic_shadow_scratch: Vec::with_capacity(256),
             blur_scratch: Vec::with_capacity(8),
             color_transform_scratch: Vec::with_capacity(8),
@@ -1971,11 +1977,12 @@ impl Renderer {
             .collect()
     }
 
-    /// Compiles `code`, a brush-profile program laid out by `layout`, on the
-    /// calling thread and installs it in `slot` as
-    /// [`set_program`](Self::set_program) does. A caller that compiles off the
-    /// render thread uses the backend's
-    /// [`program_compiler`](GpuBackend::program_compiler) and `set_program`.
+    /// Installs `code`, a brush-profile program laid out by `layout`, in
+    /// `slot` as [`set_program`](Self::set_program) does, drawing with the
+    /// pipeline of the same code when the renderer holds one and compiling it
+    /// on the calling thread otherwise. A caller that compiles off the render
+    /// thread hands the program over first with
+    /// [`adopt_program`](Self::adopt_program).
     ///
     /// # Errors
     ///
@@ -1988,15 +1995,56 @@ impl Renderer {
         code: &ProgramCode,
         layout: BrushLayout,
     ) -> Result<(), ProgramError> {
-        let compiled = backend
-            .program_compiler()
-            .compile(&self.program_desc(label, code, &layout))
-            .map_err(ProgramError::Compile)?;
-        let pipeline = backend.install_program(compiled);
+        let abi = layout.abi();
+        let pipeline = match self.programs.cached(code, abi) {
+            Some(pipeline) => pipeline,
+            None => {
+                let compiled = backend
+                    .program_compiler()
+                    .compile(&self.program_desc(label, code, &layout))
+                    .map_err(ProgramError::Compile)?;
+                self.program_compiles += 1;
+                let pipeline = backend.install_program(compiled);
+                self.programs.adopt(backend, pipeline, code, abi);
+                pipeline
+            }
+        };
         let samplers = self.program_samplers(backend, &layout);
-        self.programs
-            .set(backend, slot, pipeline, layout, samplers)
-            .inspect_err(|_| backend.destroy_pipeline(pipeline))
+        self.programs.set(backend, slot, pipeline, layout, samplers)
+    }
+
+    /// Whether the renderer holds a pipeline of `program`'s code in the
+    /// backend's language, which installing it draws with.
+    pub fn holds_program<B: GpuBackend>(&self, program: &BrushProgram) -> bool {
+        program
+            .code_for(B::SHADER_LANG)
+            .is_some_and(|code| self.programs.cached(code, program.layout.abi()).is_some())
+    }
+
+    /// Keeps `compiled`, `program` built off the render thread from its code
+    /// in the backend's language with [`program_desc`](Self::program_desc),
+    /// for the slots that install the program; when a pipeline of the same
+    /// code is held already, `compiled` is dropped uninstalled. Call between
+    /// frames.
+    pub fn adopt_program<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        program: &BrushProgram,
+        compiled: ProgramOf<B>,
+    ) {
+        let abi = program.layout.abi();
+        if let Some(code) = program.code_for(B::SHADER_LANG)
+            && self.programs.cached(code, abi).is_none()
+        {
+            let pipeline = backend.install_program(compiled);
+            self.programs.adopt(backend, pipeline, code, abi);
+        }
+    }
+
+    /// The programs this renderer compiled itself since it was created; one
+    /// adopted or found by its code is not counted.
+    pub fn program_compiles(&self) -> u64 {
+        self.program_compiles
     }
 
     /// Installs `program` in `slot` from its code in the backend's language,
@@ -3886,6 +3934,7 @@ impl Renderer {
             clock_instances: self.programs.clock_instances(),
             program_draws_dropped: self.program_draws_dropped,
             programs: self.programs.installed() as u32,
+            program_pipelines: self.programs.pipelines() as u32,
             // Counters no stage below D0 lights up yet; meaning fixed, value 0.
             instance_rebuilds: 0,
             gpu_upload_bytes: self.gpu_upload_bytes,

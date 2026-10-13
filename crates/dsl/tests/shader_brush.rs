@@ -263,7 +263,23 @@ fn a_program_and_a_packed_brush_round_trip_through_the_package_codec() {
     assert!(errors.is_empty(), "{errors:#?}");
     let program = compiled.shaders[0].program.clone().expect("a program");
     let bytes = program.encode_to_vec();
-    assert_eq!(Program::decode_from_slice(&bytes).unwrap(), program);
+    let decoded = Program::decode_from_slice(&bytes).unwrap();
+    assert_eq!(decoded.encode_to_vec(), bytes);
+    let msl = |p: &Program| match viso_shader::program::code(p, &p.interface(), ShaderLang::Msl) {
+        Ok(viso_shader::program::ProgramCode::Msl(text)) => text,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        msl(&decoded),
+        msl(&program),
+        "the same program but its spans"
+    );
+    assert!(
+        decoded
+            .functions
+            .iter()
+            .all(|f| f.span == Default::default())
+    );
 
     let source = painting(&brush("Ripple", RIPPLE_MEMBERS), RIPPLE);
     let compiled = compile_file(&source, &origin());
@@ -306,6 +322,19 @@ fn a_program_and_a_packed_brush_round_trip_through_the_package_codec() {
     let mut twice = packed.clone();
     twice.code.push(twice.code[0].clone());
     assert!(PackedBrush::decode_from_slice(&twice.encode_to_vec()).is_err());
+
+    // The brush moved down its file by an edit above it packs to the same
+    // bytes: a package carries no span.
+    let moved = compile_file(&format!("// a note\n\n{source}"), &origin());
+    let shader = &moved.shaders[0];
+    assert_ne!(shader.brush.as_ref().unwrap(), &layout, "the spans moved");
+    let repacked = PackedBrush::pack(
+        shader.program.as_ref().unwrap(),
+        shader.brush.clone().unwrap(),
+        &langs,
+    )
+    .unwrap();
+    assert_eq!(repacked.encode_to_vec(), packed.encode_to_vec());
 
     // A CPU brush whose layout is not its program's own is refused.
     let mut packed = PackedBrush::pack(program, layout, &[ShaderLang::None]).unwrap();

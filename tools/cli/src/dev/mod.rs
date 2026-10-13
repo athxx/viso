@@ -844,7 +844,13 @@ impl DevSession {
                 .mount
                 .as_ref()
                 .expect("a candidate is mounted");
-            let langs = [runtime.hello.shader_lang];
+            // What the build embeds: the runtime's backend's and the
+            // reference interpreter's, so a shader the edit left as it was
+            // packs to the bytes of the program the app runs and loads as it.
+            let langs = [
+                runtime.hello.shader_lang,
+                viso_view::dev::wire::ShaderLang::None,
+            ];
             match view_patch(mount.file, mount.last_good.as_ref(), &candidate, &langs) {
                 Ok(view) => ui.views.push(view),
                 Err(error) => {

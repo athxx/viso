@@ -5,16 +5,18 @@
 //! backend reads, beside the program the reference interpreter runs; loading
 //! it decodes the [`BrushProgram`] a node store's slots hold. The same bytes
 //! load as the same program for as long as anything holds it, whichever view
-//! or package names them, so every node painting with one shader in a window
-//! shares one slot, and the renderer one pipeline.
+//! or package names them and whichever thread loads them — a build's embedded
+//! shaders load on the loop, a patch's on the dev link's reader — so every node
+//! painting with one shader in a window shares one slot, and the renderer one
+//! pipeline. A package carries no source span, so a reload of a file whose
+//! shader did not change loads the program already running.
 //!
 //! A shader view's `shader` value is the shader's record of parameters, in
 //! declaration order, then its images; [`encode_shader`] writes the
 //! parameters as one instance of the brush, the box left for paint to place,
 //! and names the images' resources.
 
-use std::cell::RefCell;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use viso_behavior::Value;
 use viso_ende::{Decode, DecodeError, content_hash};
@@ -22,10 +24,11 @@ use viso_ui::Srgb;
 use viso_ui::resource::ResourceId;
 use viso_ui::shader::{BrushLayout, BrushProgram, PackedBrush, ParamKind, ParamValue};
 
-thread_local! {
-    /// Every program loaded and still held, by the hash of its bytes.
-    static LOADED: RefCell<Vec<(u64, Weak<BrushProgram>)>> = const { RefCell::new(Vec::new()) };
-}
+/// A program loaded and still held: the hash of its bytes, the bytes, and it.
+type Loaded = (u64, Box<[u8]>, Weak<BrushProgram>);
+
+/// Every program loaded and still held.
+static LOADED: Mutex<Vec<Loaded>> = Mutex::new(Vec::new());
 
 /// The program the packed brush `bytes` encodes, shared with every other load
 /// of the same bytes while one is held.
@@ -35,20 +38,18 @@ thread_local! {
 /// Bytes that are not a packed brush.
 pub fn load_shader(bytes: &[u8]) -> Result<Arc<BrushProgram>, DecodeError> {
     let key = content_hash(bytes);
-    LOADED.with(|loaded| {
-        let mut loaded = loaded.borrow_mut();
-        if let Some(program) = loaded
-            .iter()
-            .find(|(k, _)| *k == key)
-            .and_then(|(_, program)| program.upgrade())
-        {
-            return Ok(program);
-        }
-        let program = Arc::new(BrushProgram::from(PackedBrush::decode_from_slice(bytes)?));
-        loaded.retain(|(_, program)| program.strong_count() > 0);
-        loaded.push((key, Arc::downgrade(&program)));
-        Ok(program)
-    })
+    let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(program) = loaded
+        .iter()
+        .filter(|(k, held, _)| *k == key && **held == *bytes)
+        .find_map(|(_, _, program)| program.upgrade())
+    {
+        return Ok(program);
+    }
+    let program = Arc::new(BrushProgram::from(PackedBrush::decode_from_slice(bytes)?));
+    loaded.retain(|(_, _, program)| program.strong_count() > 0);
+    loaded.push((key, bytes.into(), Arc::downgrade(&program)));
+    Ok(program)
 }
 
 /// [`load_shader`] for the bytes `view!` embeds.

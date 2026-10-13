@@ -2,8 +2,8 @@
 //! its program, adjacent boxes of one program merged into one draw, a
 //! parameter change uploaded as one range, a box inside a translucent layer
 //! drawn at its place and never folded, a replaced or released program, a
-//! brush reading the clock redrawn as it moves with nothing uploaded, and a
-//! brush sampling its box's image.
+//! brush reading the clock redrawn as it moves with nothing uploaded, a
+//! brush sampling its box's image, and pipelines kept by their code.
 
 use std::sync::Arc;
 
@@ -607,6 +607,65 @@ fn a_brush_program_installs_from_its_code_in_the_backend_language() {
         .unwrap();
     f.draw(&[shaded(&layout, 0, rect(8.0, 8.0, 8.0, 8.0), GREEN)]);
     assert_eq!(f.pixel(10, 10), bgra(GREEN));
+}
+
+#[test]
+fn a_program_of_held_code_compiles_nothing_and_edits_hold_a_bounded_set_of_pipelines() {
+    let mut f = Frame::new();
+    let brush = |program: &Program| {
+        let interface = program.interface();
+        viso_render::BrushProgram {
+            name: program.name.clone(),
+            layout: BrushLayout::new(program, &interface).unwrap(),
+            code: vec![code(program, &interface, ShaderLang::None).unwrap()],
+        }
+    };
+    let red = brush(&fill("Fill", None));
+    for slot in [ProgramSlot(0), ProgramSlot(1)] {
+        f.renderer.install_brush(&mut f.gpu, slot, &red).unwrap();
+    }
+    assert_eq!(f.renderer.program_compiles(), 1, "one code, one pipeline");
+    assert_eq!(
+        f.renderer.program_pipeline(ProgramSlot(0)),
+        f.renderer.program_pipeline(ProgramSlot(1))
+    );
+
+    // A thousand edits of the program in slot 0: each compiles once, the
+    // pipelines no slot draws with go past the bound, and coming back to the
+    // last one before compiles nothing.
+    let edit = |n: u32| brush(&fill("Fill", Some([n as f32 / 1000.0, 0.0, 0.0, 1.0])));
+    let mut edits: Vec<_> = (0..1000).map(edit).collect();
+    for program in &edits {
+        f.renderer
+            .install_brush(&mut f.gpu, ProgramSlot(0), program)
+            .unwrap();
+    }
+    assert_eq!(f.renderer.program_compiles(), 1001);
+    let r#box = shaded(&red.layout, 0, rect(8.0, 8.0, 16.0, 16.0), RED);
+    let stats = f.draw(std::slice::from_ref(&r#box));
+    assert_eq!(stats.programs, 2);
+    assert_eq!(
+        stats.program_pipelines as usize,
+        2 + viso_render::IDLE_PIPELINES,
+        "the two drawn with and the idle bound"
+    );
+    let undo = edits.swap_remove(998);
+    f.renderer
+        .install_brush(&mut f.gpu, ProgramSlot(0), &undo)
+        .unwrap();
+    assert_eq!(f.renderer.program_compiles(), 1001);
+    f.draw(std::slice::from_ref(&r#box));
+    assert_eq!(f.pixel(12, 12), bgra([998.0 / 1000.0, 0.0, 0.0, 1.0]));
+
+    // Released, the slots' pipelines idle within the bound too.
+    f.renderer.release_program(&mut f.gpu, ProgramSlot(0));
+    f.renderer.release_program(&mut f.gpu, ProgramSlot(1));
+    let stats = f.draw(&[]);
+    assert_eq!(stats.programs, 0);
+    assert_eq!(
+        stats.program_pipelines as usize,
+        viso_render::IDLE_PIPELINES
+    );
 }
 
 #[test]

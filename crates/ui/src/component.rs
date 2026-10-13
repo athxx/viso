@@ -36,7 +36,7 @@ use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
 use viso_render::asset::{ResourceId, ResourceRevision};
-use viso_render::{BrushProgram, PathCmd, ProgramSlot, Rect, Rgba, Stroke, TextureId};
+use viso_render::{BrushProgram, PathCmd, Rect, Rgba, Stroke, TextureId};
 use viso_runtime::{LoopWaker, TaskSet};
 
 /// The application entry into the tree: a component declares its children into
@@ -1461,20 +1461,6 @@ impl NodeStore {
     /// The brush programs this store's nodes paint with, by slot.
     pub fn shaders(&self) -> &ShaderSlots {
         &self.shaders
-    }
-
-    /// Puts `program` in `slot`, so every node painting with the slot paints
-    /// with it from the next frame, and marks those nodes PAINT dirty.
-    pub fn replace_shader(&mut self, slot: ProgramSlot, program: Arc<BrushProgram>) {
-        self.shaders.replace(slot, program);
-        for i in 0..self.content_payload.len() {
-            if let Some(Content::Shader { program, .. }) = self.content_payload[i].as_deref()
-                && *program == slot
-                && let Some(id) = self.arena.live_id(i as u32)
-            {
-                self.mark_dirty(id, DirtyClass::PAINT);
-            }
-        }
     }
 
     /// Show `resource` on `id`, placed by `fit` and colored by `tint`, drawing

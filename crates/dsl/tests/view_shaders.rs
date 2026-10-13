@@ -1,8 +1,9 @@
 //! A view's shaders: the view names each shader its shader views paint with
 //! by its index in its table, the release package carries each packed, a
 //! node paints with the loaded program and its value's parameters, the nodes
-//! of one shader share a slot, and a reload that changes a shader's code
-//! repaints its nodes with the new program.
+//! of one shader share a slot, a reload that changes a shader's code
+//! repaints its nodes with the new program, and one that only moves a shader
+//! keeps it.
 
 mod support;
 
@@ -165,6 +166,30 @@ fn a_packaged_shader_view_paints_with_its_program_and_parameters() {
     assert_eq!(after, slot, "a parameter change keeps the program");
     assert_eq!(floats(&ripple, &params, "rings", 1), [9.0]);
     assert_eq!(floats(&ripple, &painted(&rt, second).1, "rings", 1), [2.0]);
+}
+
+#[test]
+fn a_reload_moving_a_shader_in_its_file_keeps_its_program_and_slot() {
+    let mut rt = Rt::mount(&card(FILL));
+    let nodes = rt.descendants();
+    let held: Vec<_> = [nodes[2], nodes[4]]
+        .map(|node| painted(&rt, node).0)
+        .into_iter()
+        .map(|slot| (slot, program(&rt, slot)))
+        .collect();
+    let revision = rt.store.shaders().revision();
+
+    rt.reload(&format!("// Shaded cards.\n\n{}", card(FILL)));
+    let nodes = rt.descendants();
+    for ((slot, program_was), node) in held.iter().zip([nodes[2], nodes[4]]) {
+        assert_eq!(painted(&rt, node).0, *slot);
+        assert!(Arc::ptr_eq(&program(&rt, *slot), program_was));
+    }
+    assert_eq!(
+        rt.store.shaders().revision(),
+        revision,
+        "nothing to install"
+    );
 }
 
 #[test]

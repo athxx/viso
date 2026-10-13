@@ -8,6 +8,10 @@
 //! [`ProgramCode`] without generating anything; decoding a CPU program
 //! revalidates it, so the interpreter never meets an ill-typed tree whatever
 //! wrote the bytes.
+//!
+//! A package carries no source span: spans place a declaration in the file it
+//! was compiled from, which a runtime never reads, so a brush whose code did
+//! not change packs to the same bytes wherever an edit moved it in its file.
 
 use std::sync::Arc;
 
@@ -44,7 +48,7 @@ pub enum PackedCode {
 impl PackedBrush {
     /// `program`, laid out as the brush `layout`, built for each of `langs`
     /// once; [`ShaderLang::None`] carries the program for the reference
-    /// interpreter.
+    /// interpreter. Both are kept without their spans.
     ///
     /// # Errors
     ///
@@ -61,7 +65,7 @@ impl PackedBrush {
                 continue;
             }
             packed.push(match lang {
-                ShaderLang::None => PackedCode::Program(Box::new(program.clone())),
+                ShaderLang::None => PackedCode::Program(Box::new(unspanned(program))),
                 lang => match code(program, &interface, lang)? {
                     ProgramCode::Msl(t) => PackedCode::Text(ShaderLang::Msl, t),
                     ProgramCode::Wgsl(t) => PackedCode::Text(ShaderLang::Wgsl, t),
@@ -70,6 +74,13 @@ impl PackedBrush {
                     ProgramCode::Cpu(_) => unreachable!("a GPU language gives GPU code"),
                 },
             });
+        }
+        let mut layout = layout;
+        for param in &mut layout.params {
+            param.source_span = Span::default();
+        }
+        for texture in &mut layout.textures {
+            texture.source_span = Span::default();
         }
         Ok(PackedBrush {
             name: program.name.clone(),
@@ -87,6 +98,33 @@ impl PackedBrush {
     pub fn unpack(self) -> Vec<ProgramCode> {
         self.code.into_iter().map(PackedCode::unpack).collect()
     }
+}
+
+/// `program` with every span cleared, as its codec carries it.
+fn unspanned(program: &Program) -> Program {
+    let mut program = program.clone();
+    for record in &mut program.records {
+        record.span = Span::default();
+        for field in &mut record.fields {
+            field.span = Span::default();
+        }
+    }
+    for members in [
+        &mut program.uniforms,
+        &mut program.instance,
+        &mut program.varyings,
+        &mut program.textures,
+        &mut program.samplers,
+    ] {
+        for member in members {
+            member.span = Span::default();
+        }
+    }
+    let entries = program.vertex.iter_mut().chain(&mut program.fragment);
+    for function in program.functions.iter_mut().chain(entries) {
+        function.span = Span::default();
+    }
+    program
 }
 
 impl PackedCode {
@@ -161,18 +199,6 @@ fn write_list<T>(enc: &mut Encoder, items: &[T], mut item: impl FnMut(&mut Encod
     }
 }
 
-fn write_span(enc: &mut Encoder, span: Span) {
-    enc.write_varint(span.start.into());
-    enc.write_varint(span.end.into());
-}
-
-fn read_span(dec: &mut Decoder<'_>) -> Result<Span, DecodeError> {
-    Ok(Span {
-        start: u32_of(dec)?,
-        end: u32_of(dec)?,
-    })
-}
-
 const fn scalar_tag(s: Scalar) -> u8 {
     match s {
         Scalar::Bool => 0,
@@ -239,14 +265,13 @@ fn read_ty(dec: &mut Decoder<'_>) -> Result<Ty, DecodeError> {
 fn write_binding(enc: &mut Encoder, b: &Binding) {
     enc.write_str(&b.name);
     write_ty(enc, b.ty);
-    write_span(enc, b.span);
 }
 
 fn read_binding(dec: &mut Decoder<'_>) -> Result<Binding, DecodeError> {
     Ok(Binding {
         name: name(dec)?,
         ty: read_ty(dec)?,
-        span: read_span(dec)?,
+        span: Span::default(),
     })
 }
 
@@ -528,7 +553,6 @@ fn write_function(enc: &mut Encoder, f: &Function) {
         enc.write_bool(l.mutable);
     });
     write_block(enc, &f.body);
-    write_span(enc, f.span);
 }
 
 fn read_function(dec: &mut Decoder<'_>) -> Result<Function, DecodeError> {
@@ -551,7 +575,7 @@ fn read_function(dec: &mut Decoder<'_>) -> Result<Function, DecodeError> {
             })
         })?,
         body: read_block(dec, 0)?,
-        span: read_span(dec)?,
+        span: Span::default(),
     })
 }
 
@@ -570,13 +594,13 @@ fn read_entry(dec: &mut Decoder<'_>) -> Result<Option<Function>, DecodeError> {
     })
 }
 
+/// Without its spans.
 impl Encode for Program {
     fn encode(&self, enc: &mut Encoder) {
         enc.write_str(&self.name);
         write_list(enc, &self.records, |enc, r| {
             enc.write_str(&r.name);
             write_list(enc, &r.fields, write_binding);
-            write_span(enc, r.span);
         });
         for members in [
             &self.uniforms,
@@ -601,7 +625,7 @@ impl Decode for Program {
                 Ok(Record {
                     name: name(dec)?,
                     fields: list(dec, read_binding)?,
-                    span: read_span(dec)?,
+                    span: Span::default(),
                 })
             })?,
             uniforms: list(dec, read_binding)?,
@@ -655,12 +679,8 @@ impl Encode for BrushLayout {
             enc.write_varint(tag(&KINDS, &p.kind));
             enc.write_varint(p.offset.into());
             enc.write_u64(p.stable_field_id);
-            write_span(enc, p.source_span);
         });
-        write_list(enc, &self.textures, |enc, t| {
-            enc.write_str(&t.name);
-            write_span(enc, t.source_span);
-        });
+        write_list(enc, &self.textures, |enc, t| enc.write_str(&t.name));
         write_list(enc, &self.samplers, |enc, s| {
             enc.write_varint(tag(&FILTERS, &s.filter));
             enc.write_varint(tag(&ADDRESSES, &s.address));
@@ -687,13 +707,13 @@ impl Decode for BrushLayout {
                     kind: pick(dec, &KINDS)?,
                     offset: u32_of(dec)?,
                     stable_field_id: dec.read_u64()?,
-                    source_span: read_span(dec)?,
+                    source_span: Span::default(),
                 })
             })?,
             textures: list(dec, |dec| {
                 Ok(BrushTexture {
                     name: name(dec)?,
-                    source_span: read_span(dec)?,
+                    source_span: Span::default(),
                 })
             })?,
             samplers: list(dec, |dec| {

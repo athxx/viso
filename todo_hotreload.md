@@ -707,8 +707,8 @@ on it.
 - [x] UI: `Content::Shader { program: ProgramSlot, params }` paints a node's box as a
       `Primitive::Shader`; `ShaderSlots` (`ui/src/shader.rs`) keeps the store's
       `Arc<BrushProgram>`s by slot, found by identity, with a revision the facade
-      installs from (`replace` for a reloaded program);
-      `NodeStore::{set_shader, set_shader_params, replace_shader}`, a
+      installs from;
+      `NodeStore::{set_shader, set_shader_params}`, a
       parameter change or the same program with new parameters `PAINT` only. Render
       gains `BrushProgram` (name, layout, code per language) and
       `Renderer::install_brush`, and re-exports the brush types.
@@ -807,28 +807,60 @@ on it.
         repaints one node and uploads no instance; nearest against linear sampling
         differ as declared.
 
-Reload:
+Reload (makepad keeps three caches — by script object, by function hash, by
+generated code — never evicts, and compiles on the frame; take the code-keyed
+reuse, drop the leak and the frame compile):
 
-- [ ] Host compiles shader candidates (`.vs` shader declarations, and external shader
-      files in the watch scope) through Shader IR to every backend the runtime's
-      target uses and validates them; `ShaderPatch` carries the backend code and the
-      interface (§19, §43 target-specific validation).
-- [ ] Runtime creates the candidate pipeline off the frame, swaps it at the GPU-safe
-      frame boundary, and hands the old pipeline/resources to the retire queue so
-      in-flight frames finish with them (§21).
-- [ ] Interface change: dependent material/render schemas validated and their
-      bindings/instance buffers rebuilt before a scoped commit; an incompatible
-      host-side GPU ABI is a `gpu-validate` NACK, not a crash (§20).
-- [ ] Source-keyed pipeline cache: an edit that leaves generated code unchanged reuses
-      the existing pipeline — an edit elsewhere in the file moves a shader's spans,
-      which the packed program carries, so its bytes change while its code does
-      not; a bounded cache evicts pipelines no revision references (makepad leaks
-      here).
-- [ ] Cross-domain candidate: a save touching a view and its shader commits both or
-      NACKs both (§40).
-- [ ] Tests (§62 Shader): valid pipeline, invalid candidate → old pipeline drawn;
-      interface change re-encodes instances; retired pipeline destroyed only after
-      its fence; pipeline count stays bounded over 1000 edits.
+- [x] Source-keyed pipeline cache: an edit that leaves generated code unchanged
+      reuses the existing pipeline, and a bounded cache evicts pipelines no slot
+      draws with.
+  - [x] A package carries no source span (`shader/src/program/package.rs`): a
+        shader an edit only moved packs to the same bytes; `load_shader`'s weak
+        cache is process-wide (a patch loads on the dev link's reader, the build's
+        shaders on the loop) and compares the bytes, not only their hash; the dev
+        host packs what the build embeds (the runtime's language and the reference
+        interpreter's), so a reload loads the program already running: same slot,
+        nothing installed. `ShaderSlots::replace` / `NodeStore::replace_shader`
+        removed — a changed shader is another program its nodes move to.
+  - [x] Renderer: pipelines kept by generated code and ABI (`ProgramTable`
+        pipelines, a CPU program by identity), counted per slot drawing with them;
+        a program whose code is held compiles nothing (`Renderer::program_compiles`);
+        a pipeline no slot draws with stays idle, at most `IDLE_PIPELINES` (8), the
+        longest unused retired first through the fence; a caller's own pipeline
+        (`set_program`) goes with its last slot; `adopt_program` takes a program
+        compiled off the render thread, `holds_program` says whether one is held;
+        `FrameStats::program_pipelines`. Tests: `render/tests/program_draw.rs`
+        (two slots of one code, 1000 edits bounded, an undo compiles nothing),
+        `program::tests`, `dsl/tests/view_shaders.rs` (a moved shader keeps its
+        program and slot), `viso::shaders::tests` (painted again, no compile).
+- [ ] Off-frame candidate compile and atomic commit: staging a patch hands each new
+      program (one no window's renderer holds) with each window's
+      `program_compiler` to a compile thread; the patch commits at the first frame
+      boundary after every compile finished, adopting the programs into the
+      renderers before the views commit, so the slots install without compiling
+      and the old pipelines retire through the fence (§21). A program the backend
+      refuses NACKs the whole revision at `shader-compile` with the driver's
+      message logged — view, games and assets with it, last good kept (§19, §40);
+      the ACK goes out only once the commit installed what it carries. A window
+      opened meanwhile compiles on its first sync, as at startup.
+- [ ] Host validation: the host checks every shader a candidate paints with
+      through the WGSL naga validates (a codegen fault is a host diagnostic, not a
+      device error), packs the runtime's languages and sends them with the view in
+      one revision. Shaders are declared in the `.vs` file that paints with them —
+      a view compiles its file alone — so there is no external shader file to
+      watch.
+- [ ] Interface change: a brush's parameters and images are re-encoded from the
+      view's values against the new layout at commit (`encode_shader`), the
+      record's shape checked against the shader at compile time (`E2103`); a
+      brush whose ABI the backend cannot bind (`ProgramDesc::check_abi`) or a
+      value its layout cannot encode is a `gpu-validate` NACK before anything
+      commits, never a node left on its old program (§20).
+- [ ] `ProgramReload` (the reduced in-app design: compile from source on the
+      runtime, migrate instance bytes by member name) removed with its test once
+      the patch path covers it — the runtime compiles no shader source.
+- [ ] Tests (§62 Shader): valid pipeline, invalid candidate → old pipeline drawn
+      and the revision NACKed; interface change re-encodes instances; retired
+      pipeline destroyed only after its fence; Metal end to end.
 
 ### Done
 

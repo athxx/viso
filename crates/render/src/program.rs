@@ -2,10 +2,16 @@
 //! slot, each with its own persistent instance buffer.
 //!
 //! A slot holds a pipeline and the [`BrushLayout`] it was laid out by.
-//! Installing into an occupied slot replaces the program: the old pipeline is
-//! destroyed through the backend's fence-deferred path, so a frame still in
-//! flight finishes with it. Releasing a slot destroys its pipeline and buffer
-//! the same way.
+//! Installing into an occupied slot replaces the program; releasing a slot
+//! destroys its buffer through the backend's fence-deferred path, so a frame
+//! still in flight finishes with it.
+//!
+//! The pipelines are kept by the code they were built from: a program whose
+//! code and ABI are those of a pipeline held draws with it, so two slots of one
+//! code share a pipeline and a reload that left a shader's code as it was
+//! compiles nothing. A pipeline no slot draws with stays a while for an edit
+//! that comes back to it: at most [`IDLE_PIPELINES`], the longest unused
+//! destroyed first, through the fence like the rest.
 //!
 //! Each frame, the lowering walk appends every [`ShaderDraw`] of a slot to that
 //! slot's word scratch: the node's encoded instance, its box written in, the
@@ -32,8 +38,8 @@
 
 use viso_gpu::backend::{DrawCommand, Geometry, InlineUniforms};
 use viso_gpu::{
-    BindGroupDesc, BindGroupId, Binding, BufferUsage, GpuBackend, PipelineId, ProgramCode,
-    SamplerId, ShaderLang, TextureId,
+    BindGroupDesc, BindGroupId, Binding, BufferUsage, GpuBackend, PipelineId, ProgramAbi,
+    ProgramCode, SamplerId, ShaderLang, TextureId,
 };
 use viso_shader::program::{BrushLayout, PackedBrush};
 
@@ -122,6 +128,31 @@ impl std::fmt::Display for ProgramError {
 
 impl std::error::Error for ProgramError {}
 
+/// Pipelines a renderer keeps built with no slot drawing with them.
+pub const IDLE_PIPELINES: usize = 8;
+
+/// A pipeline the table holds.
+struct Pipeline {
+    id: PipelineId,
+    /// The code and ABI it was built from; `None` for one a caller built and
+    /// handed over, which no other program finds.
+    source: Option<(ProgramCode, ProgramAbi)>,
+    /// The slots drawing with it.
+    users: u32,
+    /// When the last slot let go of it, in let-goes: the oldest idle
+    /// pipeline goes first.
+    idle_since: u64,
+}
+
+/// Whether `a` and `b` are the same code: the same text or bytes, or the same
+/// CPU program.
+fn same_code(a: &ProgramCode, b: &ProgramCode) -> bool {
+    match (a, b) {
+        (ProgramCode::Cpu(a), ProgramCode::Cpu(b)) => std::sync::Arc::ptr_eq(a, b),
+        (a, b) => a.lang() == b.lang() && a.bytes() == b.bytes(),
+    }
+}
+
 /// One installed program.
 struct Installed {
     pipeline: PipelineId,
@@ -148,6 +179,9 @@ impl Installed {
 /// The programs of one renderer, by slot.
 pub(crate) struct ProgramTable {
     slots: Vec<Option<Installed>>,
+    pipelines: Vec<Pipeline>,
+    /// Counts let-goes, stamping the pipelines going idle.
+    let_goes: u64,
     /// The backend's instance-offset alignment, in words.
     align_words: usize,
     /// The seconds since the window opened, written into the draws of the
@@ -163,6 +197,8 @@ impl ProgramTable {
     pub(crate) fn new(align: u32) -> ProgramTable {
         ProgramTable {
             slots: Vec::new(),
+            pipelines: Vec::new(),
+            let_goes: 0,
             align_words: (align as usize / 4).max(1),
             time: 0.0,
             clock_instances: 0,
@@ -179,9 +215,94 @@ impl ProgramTable {
         self.clock_instances
     }
 
+    /// The pipeline built from `code` for `abi`, if the table holds one.
+    pub(crate) fn cached(&self, code: &ProgramCode, abi: ProgramAbi) -> Option<PipelineId> {
+        self.pipelines
+            .iter()
+            .find(|p| {
+                p.source
+                    .as_ref()
+                    .is_some_and(|(c, a)| *a == abi && same_code(c, code))
+            })
+            .map(|p| p.id)
+    }
+
+    /// Keeps `pipeline`, built from `code` for `abi`, for the programs of that
+    /// code; idle until a slot draws with it.
+    pub(crate) fn adopt<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        pipeline: PipelineId,
+        code: &ProgramCode,
+        abi: ProgramAbi,
+    ) {
+        self.let_goes += 1;
+        self.pipelines.push(Pipeline {
+            id: pipeline,
+            source: Some((code.clone(), abi)),
+            users: 0,
+            idle_since: self.let_goes,
+        });
+        self.trim(backend);
+    }
+
+    /// Counts one more slot drawing with `pipeline`, a caller's own when the
+    /// table does not hold it.
+    fn hold(&mut self, pipeline: PipelineId) {
+        match self.pipelines.iter_mut().find(|p| p.id == pipeline) {
+            Some(held) => held.users += 1,
+            None => self.pipelines.push(Pipeline {
+                id: pipeline,
+                source: None,
+                users: 1,
+                idle_since: 0,
+            }),
+        }
+    }
+
+    /// Counts one slot fewer drawing with `pipeline`: a caller's own is
+    /// destroyed with its last slot, a built one goes idle.
+    fn let_go<B: GpuBackend>(&mut self, backend: &mut B, pipeline: PipelineId) {
+        let Some(at) = self.pipelines.iter().position(|p| p.id == pipeline) else {
+            return;
+        };
+        let held = &mut self.pipelines[at];
+        held.users -= 1;
+        if held.users > 0 {
+            return;
+        }
+        if held.source.is_none() {
+            self.pipelines.swap_remove(at);
+            backend.destroy_pipeline(pipeline);
+            return;
+        }
+        self.let_goes += 1;
+        held.idle_since = self.let_goes;
+        self.trim(backend);
+    }
+
+    /// Destroys the longest idle pipelines past [`IDLE_PIPELINES`].
+    fn trim<B: GpuBackend>(&mut self, backend: &mut B) {
+        while self.pipelines.iter().filter(|p| p.users == 0).count() > IDLE_PIPELINES {
+            let (at, _) = self
+                .pipelines
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.users == 0)
+                .min_by_key(|(_, p)| p.idle_since)
+                .expect("past the bound, a pipeline is idle");
+            backend.destroy_pipeline(self.pipelines.swap_remove(at).id);
+        }
+    }
+
+    /// The pipelines held, drawn with or idle.
+    pub(crate) fn pipelines(&self) -> usize {
+        self.pipelines.len()
+    }
+
     /// Installs `pipeline`, laid out by `layout` and sampling through
-    /// `samplers`, in `slot`, destroying the pipeline it replaces and the
-    /// bind groups the old program's draws bound.
+    /// `samplers`, in `slot`, letting go of the pipeline it replaces and
+    /// destroying the bind groups the old program's draws bound.
     ///
     /// # Errors
     ///
@@ -201,15 +322,14 @@ impl ProgramTable {
         if self.slots.len() <= index {
             self.slots.resize_with(index + 1, || None);
         }
+        self.hold(pipeline);
         match &mut self.slots[index] {
             Some(installed) => {
                 let old = std::mem::replace(&mut installed.pipeline, pipeline);
-                if old != pipeline {
-                    backend.destroy_pipeline(old);
-                }
                 installed.unbind(backend);
                 installed.layout = layout;
                 installed.samplers = samplers;
+                self.let_go(backend, old);
             }
             empty => {
                 *empty = Some(Installed {
@@ -225,14 +345,14 @@ impl ProgramTable {
         Ok(())
     }
 
-    /// Empties `slot`, destroying its pipeline and buffer. Whether it held a
-    /// program.
+    /// Empties `slot`, destroying its buffer and letting go of its pipeline.
+    /// Whether it held a program.
     pub(crate) fn release<B: GpuBackend>(&mut self, backend: &mut B, slot: ProgramSlot) -> bool {
         let Some(mut installed) = self.slots.get_mut(slot.0 as usize).and_then(Option::take) else {
             return false;
         };
         installed.unbind(backend);
-        backend.destroy_pipeline(installed.pipeline);
+        self.let_go(backend, installed.pipeline);
         let mut pool = installed.pool;
         pool.release(backend);
         true
@@ -568,5 +688,58 @@ mod tests {
             .set(&mut gpu, ProgramSlot(1), pipeline, layout(16), Vec::new())
             .unwrap();
         assert_eq!(table.bind_group(&mut gpu, ProgramSlot(1), &[None; 4]), None);
+    }
+
+    #[test]
+    fn a_pipeline_is_kept_by_its_code_and_idles_within_a_bound() {
+        let mut gpu = HeadlessRaster::new();
+        let mut table = ProgramTable::new(4);
+        let id = |index| PipelineId {
+            index,
+            generation: 1,
+        };
+        let code = |n: u32| ProgramCode::Wgsl(format!("// program {n}"));
+        let abi = layout(16).abi();
+        table.adopt(&mut gpu, id(0), &code(0), abi);
+        assert_eq!(table.cached(&code(0), abi), Some(id(0)));
+        assert_eq!(table.cached(&code(1), abi), None);
+        assert_eq!(
+            table.cached(&code(0), layout(32).abi()),
+            None,
+            "the same code for another ABI"
+        );
+
+        // Two slots of one code draw with one pipeline, which outlives them.
+        for slot in [ProgramSlot(0), ProgramSlot(1)] {
+            table
+                .set(&mut gpu, slot, id(0), layout(16), Vec::new())
+                .unwrap();
+        }
+        assert_eq!(table.pipelines(), 1);
+        table.release(&mut gpu, ProgramSlot(0));
+        table.release(&mut gpu, ProgramSlot(1));
+        assert_eq!(table.cached(&code(0), abi), Some(id(0)), "idle");
+
+        // Past the bound the longest idle goes first; one drawn with stays.
+        table.adopt(&mut gpu, id(1), &code(1), abi);
+        table
+            .set(&mut gpu, ProgramSlot(0), id(1), layout(16), Vec::new())
+            .unwrap();
+        for n in 2..2 + IDLE_PIPELINES as u32 {
+            table.adopt(&mut gpu, id(n), &code(n), abi);
+        }
+        assert_eq!(table.pipelines(), 1 + IDLE_PIPELINES);
+        assert_eq!(table.cached(&code(0), abi), None, "the oldest went");
+        assert_eq!(table.cached(&code(1), abi), Some(id(1)), "drawn with");
+        assert_eq!(table.cached(&code(2), abi), Some(id(2)));
+
+        // A caller's own pipeline goes with its last slot; no program finds it.
+        let own = id(99);
+        table
+            .set(&mut gpu, ProgramSlot(3), own, layout(16), Vec::new())
+            .unwrap();
+        assert_eq!(table.pipelines(), 2 + IDLE_PIPELINES);
+        table.release(&mut gpu, ProgramSlot(3));
+        assert_eq!(table.pipelines(), 1 + IDLE_PIPELINES);
     }
 }

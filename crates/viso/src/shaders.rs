@@ -145,6 +145,16 @@ shader Fill {
         installed.sync(store.shaders(), &mut gpu, &mut renderer);
         assert!(renderer.program_pipeline(ProgramSlot(0)).is_none());
 
+        // Painted with again, it draws with the pipeline its code kept.
+        let compiles = renderer.program_compiles();
+        let again = BuildCx::new(&mut store).leaf(LeafStyle::default()).id();
+        store.set_shader(again, &program, Arc::clone(&params), &[]);
+        installed.sync(store.shaders(), &mut gpu, &mut renderer);
+        assert_eq!(renderer.program_pipeline(ProgramSlot(0)), pipeline);
+        assert_eq!(renderer.program_compiles(), compiles);
+        store.free_tree(again, &mut effects, &mut Vec::new());
+        installed.sync(store.shaders(), &mut gpu, &mut renderer);
+
         // A program without this backend's code draws nothing.
         let c = BuildCx::new(&mut store).leaf(LeafStyle::default()).id();
         let metal = fill(&[ShaderLang::Msl]);

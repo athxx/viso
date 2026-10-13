@@ -4,7 +4,8 @@
 //! names its program by a [`ProgramSlot`]; the store keeps each slot's
 //! [`BrushProgram`] here. A program is found by identity: setting a node's
 //! shader to a program already in a slot reuses the slot, so a list of a
-//! thousand rippling rows holds one program. Every change of what a slot
+//! thousand rippling rows holds one program, and a reloaded shader is another
+//! program its nodes move to. Every change of what a slot
 //! holds bumps the [`revision`](ShaderSlots::revision); the facade compares it
 //! against the revision it last installed from and, only when it moved,
 //! installs the slots that changed into the window's renderer and releases the
@@ -68,18 +69,6 @@ impl ShaderSlots {
         if *users == 0 && self.slots[at].take().is_some() {
             self.revision += 1;
         }
-    }
-
-    /// Puts `program` in `slot` in place of what it held, so every node
-    /// painting with the slot paints with `program`: a reloaded shader. A
-    /// slot no node paints with stays empty.
-    pub fn replace(&mut self, slot: ProgramSlot, program: Arc<BrushProgram>) {
-        let at = slot.0 as usize;
-        if self.users.get(at).is_none_or(|&users| users == 0) {
-            return;
-        }
-        self.slots[at] = Some(program);
-        self.revision += 1;
     }
 
     /// The program in `slot`.
@@ -168,19 +157,15 @@ mod tests {
             "an emptied slot is reused"
         );
 
-        let r = slots.revision();
-        let reloaded = program("B");
-        slots.replace(ProgramSlot(1), Arc::clone(&reloaded));
-        assert!(Arc::ptr_eq(slots.get(ProgramSlot(1)).unwrap(), &reloaded));
-        assert!(slots.revision() > r);
         let occupied: Vec<u32> = slots.iter().map(|(s, _)| s.0).collect();
         assert_eq!(occupied, [0, 1, 2]);
 
-        // A slot no node paints with stays empty.
+        // Leaving a slot no node paints with, or past the last, changes
+        // nothing.
         slots.leave(ProgramSlot(2));
         let r = slots.revision();
-        slots.replace(ProgramSlot(2), program("D"));
-        slots.replace(ProgramSlot(9), program("E"));
+        slots.leave(ProgramSlot(2));
+        slots.leave(ProgramSlot(9));
         assert!(slots.get(ProgramSlot(2)).is_none());
         assert_eq!(slots.revision(), r);
     }
