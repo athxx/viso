@@ -5,7 +5,8 @@
 //! - a compact binary wire format ([`Encoder`] / [`Decoder`]) with a **bounded**
 //!   decoder — every read validates the remaining length, so decoding untrusted
 //!   input never panics and never reads past the slice;
-//! - a minimal JSON emitter for diagnostics and tool interchange;
+//! - a minimal JSON emitter for diagnostics and tool interchange, and a
+//!   bounded reader for a tool reading another tool's JSON;
 //! - the canonical wire representation of core typed IDs (the *format* — a stable
 //!   tag plus a fixed-width payload — not the identity type itself, which is
 //!   owned elsewhere, so no edge back into those crates is needed).
@@ -21,9 +22,11 @@
 mod decode;
 mod encode;
 mod json;
+mod json_value;
 mod wire;
 
 pub use decode::{Decode, DecodeError, Decoder};
 pub use encode::{Encode, Encoder};
 pub use json::JsonWriter;
+pub use json_value::{JsonError, JsonValue};
 pub use wire::{IdKind, ProtocolTag, WIRE_VERSION, WireId, content_hash};

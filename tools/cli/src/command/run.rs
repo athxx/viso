@@ -1,9 +1,14 @@
 //! `viso run` (`Viso_CLI.md` section 13) on the desktop host: take the dev
-//! session's lock, start its watcher, build the project's Cargo package as a
-//! dev artifact, launch it with the dev channel's loopback address and session
-//! identity, and run the dev session (`crate::dev`) until the app exits: each
-//! batch of edits is compiled on the host, reported as `diagnostic` and `dev`
-//! events, and what compiles is patched into the running app.
+//! session's lock, read the Rust scope from Cargo, start the watcher, build
+//! the project's Cargo package as a dev artifact, launch it with the dev
+//! channel's loopback address and session identity, and run the dev session
+//! (`crate::dev`) until the app exits: each batch of edits is compiled on the
+//! host, reported as `diagnostic` and `dev` events, and what compiles is
+//! patched into the running app. A Rust edit rebuilds the artifact in the
+//! background while the app keeps running.
+//!
+//! Ctrl-C is the command's own: the first kills the build and asks the app to
+//! close, a second kills the app, and the command exits 130.
 //!
 //! The app connects back to a listener bound to `127.0.0.1` on a free port and
 //! must open with a hello carrying the token it was launched with; a connection
@@ -20,9 +25,9 @@ use std::hash::{BuildHasher, Hasher as _};
 use std::io::{BufRead, BufReader, Read};
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::Arc;
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -38,12 +43,16 @@ use viso_view::dev::wire::{
 use super::check::{config_in_its_file, failure_code};
 use super::{
     BUILD, BUILD_FAILED, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_CURRENT_DIR, ENV_DEV_CHANNEL,
-    ENV_NO_EXECUTABLE, ENVIRONMENT, RUN_APP_FAILED, RUNTIME, SUCCESS,
+    ENV_NO_EXECUTABLE, ENVIRONMENT, INTERRUPTED, RUN_APP_FAILED, RUNTIME, SUCCESS,
 };
 use crate::args::{Global, RunArgs};
+use crate::dev::build::{BuildCommand, BuildEvent, BuildFailure, RustBuild};
+use crate::dev::cargo::RustScope;
 use crate::dev::{
-    self, Control, ControlCall, ControlDeliver, Deliver, DevSession, Expect, LinkEvent,
+    self, Control, ControlCall, ControlDeliver, Deliver, DevSession, Expect, LinkEvent, WatchScope,
+    build_failure,
 };
+use crate::interrupt;
 use crate::output::Output;
 
 /// How long the session waits for a message before it polls the app and the
@@ -58,8 +67,8 @@ enum Incoming {
         source: &'static str,
         line: String,
     },
-    /// The executable a build artifact message named.
-    Executable(PathBuf),
+    /// What a build of the dev artifact said.
+    Build(BuildEvent),
     /// A file of the watch scope changed.
     Change(dev::Change),
     /// What a dev connection delivered.
@@ -148,18 +157,30 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         schema: SchemaFingerprint(viso_dsl::hotreload::schema_fingerprint()),
     };
 
+    interrupt::catch();
+    // The Rust the artifact is built from, as Cargo resolves it; without it
+    // the session still runs, and a Rust edit needs `viso run` again.
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let manifest = canonical.join("Cargo.toml");
+    let rust = RustScope::read(&manifest).unwrap_or_else(|why| {
+        out.log(
+            "warn",
+            "tool",
+            &format!("Rust edits do not rebuild the app: {why}"),
+        );
+        RustScope::default()
+    });
     // The watcher starts before the build, so an edit saved while the app
     // builds reaches the session.
     let (tx, rx) = mpsc::channel();
     let watched = tx.clone();
-    let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-    let mut dev = DevSession::start(
-        canonical,
-        &expect,
-        lock,
-        !args.no_hot_reload,
-        move |change| watched.send(Incoming::Change(change)).is_ok(),
-    );
+    let scope = WatchScope {
+        project: canonical,
+        rust,
+    };
+    let mut dev = DevSession::start(scope, &expect, lock, !args.no_hot_reload, move |change| {
+        watched.send(Incoming::Change(change)).is_ok()
+    });
     // `viso game` finds the endpoint in the lock; a session without one
     // still runs, and says why `viso game` cannot reach it.
     let control = Control::bind(random_hex())
@@ -183,11 +204,28 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         }
     };
 
+    let built = Mutex::new(tx.clone());
+    let mut builds = RustBuild::new(
+        BuildCommand {
+            cargo: std::env::var_os("CARGO").map_or_else(|| "cargo".into(), PathBuf::from),
+            manifest,
+            quiet: global.quiet,
+            piped: global.json,
+            target_dir: None,
+        },
+        move |event| {
+            built
+                .lock()
+                .is_ok_and(|tx| tx.send(Incoming::Build(event)).is_ok())
+        },
+    );
     out.progress("build", "building the dev artifact");
-    let exe = match build(global, &cargo_manifest, out) {
+    builds.start();
+    let exe = match launch_build(out, &mut dev, &mut builds, &rx) {
         Ok(exe) => exe,
         Err(code) => return code,
     };
+    builds.launched(&exe);
 
     let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
@@ -250,27 +288,51 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         Arc::new(move |call| tx.send(Incoming::Control(call)).is_ok())
     };
     let mut asking = Vec::new();
+    // The interrupts acted on: the first stops the session, the second kills
+    // the app.
+    let mut interrupts = 0;
     let status = loop {
         dev::link::accept(&listener, &expect, &deliver, &mut threads);
         if let Some(control) = &control {
             control.accept(&ask, &mut asking);
         }
-        let wait = dev.deadline().map_or(POLL, |due| {
-            due.saturating_duration_since(Instant::now()).min(POLL)
-        });
+        let caught = interrupt::count();
+        if caught > interrupts {
+            if interrupts == 0 {
+                out.progress("cancel", "stopping the session");
+                builds.stop();
+                close(&child);
+            }
+            if caught >= 2 {
+                let _ = child.kill();
+            }
+            interrupts = caught;
+        }
+        let wait = [dev.deadline(), builds.deadline()]
+            .into_iter()
+            .flatten()
+            .min()
+            .map_or(POLL, |due| {
+                due.saturating_duration_since(Instant::now()).min(POLL)
+            });
         match rx.recv_timeout(wait) {
-            Ok(message) => relay(out, &mut dev, message),
+            Ok(message) => relay(out, &mut dev, &mut builds, message),
             Err(RecvTimeoutError::Timeout) => {}
             // The loop holds a sender, so the channel cannot close.
             Err(RecvTimeoutError::Disconnected) => {}
         }
         dev.tick(out);
+        if interrupts == 0 {
+            builds.tick(Instant::now());
+        }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {}
             Err(error) => break Err(error),
         }
     };
+    // The session's end kills a build still running.
+    builds.stop();
     // The app is gone: a connection it opened is waiting in the listener's
     // backlog or being read to its end, and its pipes are at their end.
     dev::link::accept(&listener, &expect, &deliver, &mut threads);
@@ -280,7 +342,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         let _ = thread.join();
     }
     while let Ok(message) = rx.try_recv() {
-        relay(out, &mut dev, message);
+        relay(out, &mut dev, &mut builds, message);
     }
     // A question that arrives now finds the queue gone and is refused.
     drop(ask);
@@ -288,100 +350,74 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     for thread in asking {
         let _ = thread.join();
     }
+    if interrupts > 0 {
+        return INTERRUPTED;
+    }
     exit_code(out, status)
 }
 
-/// Builds the dev artifact of the Cargo package at `manifest` and returns its
-/// executable, or the exit code of the failure it reported.
-fn build(global: &Global, manifest: &Path, out: &mut Output) -> Result<PathBuf, u8> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let mut command = Command::new(&cargo);
-    command
-        .arg("build")
-        .arg("--manifest-path")
-        .arg(manifest)
-        .args(["--features", "viso/hot-reload"])
-        // The facade's build script refuses `hot-reload` in a release or
-        // shipping artifact; this one is a dev artifact.
-        .env("VISO_PROFILE", Profile::Dev.as_str())
-        .arg("--message-format=json-render-diagnostics")
-        .stdout(Stdio::piped());
-    if global.quiet {
-        command.arg("--quiet");
-    }
-    if global.json {
-        command.stderr(Stdio::piped());
-    }
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            out.failure(
-                ENV_CARGO,
-                &format!("cannot run `{}`: {error}", cargo.to_string_lossy()),
-                &[],
-            );
-            return Err(ENVIRONMENT);
+/// Waits for the launch build, which a Rust edit while it runs starts again,
+/// and returns its executable, or the exit code of the failure it reported.
+/// The edits of the other domains wait for the app.
+fn launch_build(
+    out: &mut Output,
+    dev: &mut DevSession,
+    builds: &mut RustBuild,
+    rx: &Receiver<Incoming>,
+) -> Result<PathBuf, u8> {
+    loop {
+        if interrupt::count() > 0 {
+            return Err(INTERRUPTED);
         }
-    };
-    let (tx, rx) = mpsc::channel();
-    let mut threads = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        threads.push(artifact_reader(stdout, tx.clone()));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        threads.push(line_reader(stderr, "tool", cargo_level, tx.clone()));
-    }
-    drop(tx);
-    let mut executables = Vec::new();
-    for message in rx {
-        match message {
-            Incoming::Executable(exe) => executables.push(exe),
-            Incoming::Log {
-                level,
-                source,
-                line,
-            } => out.log(level, source, &line),
-            Incoming::Change(_) | Incoming::Link(_) | Incoming::Control(_) => {}
+        let wait = builds.deadline().map_or(POLL, |due| {
+            due.saturating_duration_since(Instant::now()).min(POLL)
+        });
+        match rx.recv_timeout(wait) {
+            Ok(Incoming::Build(BuildEvent::Finished(finished))) => {
+                let Some(build) = builds.finished(finished) else {
+                    continue;
+                };
+                return build.result.map_err(|failure| {
+                    let code = match &failure {
+                        BuildFailure::Spawn(_) => ENV_CARGO,
+                        BuildFailure::Failed { .. } | BuildFailure::Cancelled => BUILD_FAILED,
+                        BuildFailure::Executables(_) => ENV_NO_EXECUTABLE,
+                    };
+                    let notes = match &failure {
+                        BuildFailure::Executables(executables) => executables
+                            .iter()
+                            .map(|exe| format!("built `{}`", exe.display()))
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    out.failure(code, &build_failure(&failure), &notes);
+                    if code == BUILD_FAILED {
+                        BUILD
+                    } else {
+                        ENVIRONMENT
+                    }
+                });
+            }
+            Ok(message) => relay(out, dev, builds, message),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {}
         }
+        builds.tick(Instant::now());
     }
-    for thread in threads {
-        let _ = thread.join();
+}
+
+/// Asks the app to close: a termination request, which it handles as a
+/// close of its windows.
+fn close(child: &Child) {
+    #[cfg(unix)]
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: a plain call; the child is not yet reaped, so its id names
+        // it.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
     }
-    match child.wait() {
-        Ok(status) if status.success() => {}
-        Ok(status) => {
-            out.failure(
-                BUILD_FAILED,
-                &format!("`cargo build` failed ({status})"),
-                &[],
-            );
-            return Err(BUILD);
-        }
-        Err(error) => {
-            out.failure(
-                ENV_CARGO,
-                &format!("cannot wait for `cargo build`: {error}"),
-                &[],
-            );
-            return Err(ENVIRONMENT);
-        }
-    }
-    match <[PathBuf; 1]>::try_from(executables) {
-        Ok([exe]) => Ok(exe),
-        Err(executables) => {
-            let message = if executables.is_empty() {
-                "the package builds no executable".to_string()
-            } else {
-                "the package builds more than one executable".to_string()
-            };
-            let notes = executables
-                .iter()
-                .map(|exe| format!("built `{}`", exe.display()))
-                .collect::<Vec<_>>();
-            out.failure(ENV_NO_EXECUTABLE, &message, &notes);
-            Err(ENVIRONMENT)
-        }
-    }
+    // The console's Ctrl-C reaches the app itself.
+    #[cfg(not(unix))]
+    let _ = child;
 }
 
 /// The compiler identity of the build: `rustc -V`, or `unknown` when it does
@@ -452,101 +488,30 @@ fn line_reader(
     })
 }
 
-/// The level of a line of Cargo's rendered output.
-fn cargo_level(line: &str) -> &'static str {
-    if line.starts_with("error") {
-        "error"
-    } else if line.starts_with("warning") {
-        "warn"
-    } else {
-        "info"
-    }
-}
-
-/// Starts a thread that reads Cargo's JSON messages and sends the executable of
-/// each artifact that has one.
-fn artifact_reader(stdout: ChildStdout, tx: Sender<Incoming>) -> JoinHandle<()> {
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else {
-                return;
-            };
-            if let Some(exe) = artifact_executable(&line)
-                && tx.send(Incoming::Executable(exe)).is_err()
-            {
-                return;
-            }
-        }
-    })
-}
-
-/// The `executable` of a `compiler-artifact` message, when it is not `null`.
-fn artifact_executable(line: &str) -> Option<PathBuf> {
-    if !line.contains(r#""reason":"compiler-artifact""#) {
-        return None;
-    }
-    let at = line.find(r#""executable":"#)? + r#""executable":"#.len();
-    let value = line[at..].trim_start();
-    let value = value.strip_prefix('"')?;
-    json_string(value).map(PathBuf::from)
-}
-
-/// The JSON string whose opening quote precedes `text`, unescaped.
-fn json_string(text: &str) -> Option<String> {
-    let mut out = String::new();
-    let mut chars = text.chars();
-    loop {
-        match chars.next()? {
-            '"' => return Some(out),
-            '\\' => match chars.next()? {
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                '/' => out.push('/'),
-                'b' => out.push('\u{8}'),
-                'f' => out.push('\u{c}'),
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                'u' => {
-                    let first = hex_unit(&mut chars)?;
-                    let units = if (0xd800..0xdc00).contains(&first) {
-                        if (chars.next()?, chars.next()?) != ('\\', 'u') {
-                            return None;
-                        }
-                        vec![first, hex_unit(&mut chars)?]
-                    } else {
-                        vec![first]
-                    };
-                    out.push_str(&String::from_utf16(&units).ok()?);
-                }
-                _ => return None,
-            },
-            c => out.push(c),
-        }
-    }
-}
-
-/// The UTF-16 unit of the four hex digits `chars` starts with.
-fn hex_unit(chars: &mut std::str::Chars<'_>) -> Option<u16> {
-    let mut unit = 0u16;
-    for _ in 0..4 {
-        unit = unit << 4 | chars.next()?.to_digit(16)? as u16;
-    }
-    Some(unit)
-}
-
 /// Hands one message of the running session to where it goes.
-fn relay(out: &mut Output, dev: &mut DevSession, message: Incoming) {
+fn relay(out: &mut Output, dev: &mut DevSession, builds: &mut RustBuild, message: Incoming) {
     match message {
         Incoming::Log {
             level,
             source,
             line,
         } => out.log(level, source, &line),
+        Incoming::Change(change) if change.rust => builds.change(change.path, Instant::now()),
         Incoming::Change(change) => dev.change(change, out),
         Incoming::Link(event) => dev.link(event, out),
         Incoming::Control(call) => dev.control(call, out),
-        Incoming::Executable(_) => {}
+        Incoming::Build(BuildEvent::Log { level, line }) => out.log(level, "tool", &line),
+        Incoming::Build(BuildEvent::Rescoped(Ok(rust))) => dev.rescope(rust),
+        Incoming::Build(BuildEvent::Rescoped(Err(why))) => out.log(
+            "warn",
+            "tool",
+            &format!("the Rust scope stays as it was: {why}"),
+        ),
+        Incoming::Build(BuildEvent::Finished(finished)) => {
+            if let Some(build) = builds.finished(finished) {
+                dev.rebuilt(&build, out);
+            }
+        }
     }
 }
 
@@ -583,25 +548,6 @@ mod tests {
     use viso_view::dev::wire::same_token;
 
     use super::*;
-
-    #[test]
-    fn an_artifact_message_names_its_executable() {
-        let bin = concat!(
-            r#"{"reason":"compiler-artifact","package_id":"app 0.1.0","#,
-            r#""filenames":["/t/debug/app"],"executable":"/t/debug/my \"app\"é","fresh":false}"#,
-        );
-        assert_eq!(
-            artifact_executable(bin),
-            Some(PathBuf::from("/t/debug/my \"app\"é"))
-        );
-        let lib = r#"{"reason":"compiler-artifact","executable":null,"fresh":true}"#;
-        assert_eq!(artifact_executable(lib), None);
-        let done = r#"{"reason":"build-finished","success":true}"#;
-        assert_eq!(artifact_executable(done), None);
-        assert_eq!(json_string(r#"😀""#).as_deref(), Some("😀"));
-        assert_eq!(json_string(r#"\ud83d""#), None);
-        assert_eq!(json_string("unterminated"), None);
-    }
 
     #[test]
     fn tokens_are_distinct_hex() {

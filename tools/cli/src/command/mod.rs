@@ -22,6 +22,8 @@ pub const ENVIRONMENT: u8 = 3;
 pub const BUILD: u8 = 4;
 /// The app crashed or exited with a failure.
 pub const RUNTIME: u8 = 5;
+/// The user interrupted the command.
+pub const INTERRUPTED: u8 = 130;
 
 /// The code of a command line that did not parse.
 pub const CLI_USAGE: &str = "CLI_USAGE";

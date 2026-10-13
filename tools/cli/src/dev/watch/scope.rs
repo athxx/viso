@@ -1,4 +1,4 @@
-//! The watch scope of a project (`Viso_Hot_Reload.md` §6): the files a dev
+//! The project half of the watch scope: the files of the project a dev
 //! session acts on, and the directories it never descends into.
 //!
 //! In scope are the `.vs` sources, the message catalogs (`*.toml` in an
@@ -8,8 +8,8 @@
 //! every hidden directory (`.git/`, `.viso/`, editor state), any directory
 //! marked as a cache by a `CACHEDIR.TAG` (a relocated target directory,
 //! generated caches), `node_modules/`, and editor temporaries (hidden, `#…#`,
-//! `…~`). Shader, font and Rust sources join the scope with the domains that
-//! patch them.
+//! `…~`). Shader and font sources join the scope with the domains that
+//! patch them; the Rust half is Cargo's (`crate::dev::cargo`).
 
 use std::path::Path;
 

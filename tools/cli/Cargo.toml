@@ -31,7 +31,9 @@ clap = { version = "4.6", default-features = false, features = [
 ] }
 
 # The dev session's project watcher: kqueue (macOS, FreeBSD) and inotify
-# (Linux) file events, and `ReadDirectoryChangesW` on Windows.
+# (Linux) file events, and `ReadDirectoryChangesW` on Windows. A build is
+# killed with every process under it: its process group, or a job object on
+# Windows; `viso run` catches Ctrl-C to do so.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -40,7 +42,9 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_System_IO",
+    "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
 windows-core = "0.62"

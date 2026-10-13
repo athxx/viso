@@ -889,48 +889,90 @@ reuse, drop the leak and the frame compile):
 Goal: a Rust edit rebuilds while the old app keeps running, then the app restarts with
 its compatible state restored.
 
+Nothing of it exists: `viso run` builds once, launches once and ends with the app;
+the watch scope leaves Rust out; the host's `Expect` fixes the build id for the
+session; only game snapshots encode to bytes; windows have no position API. Makepad
+carries no state across a relaunch; its remote tool kills a spawned process's whole
+tree (a job object on Windows, the process group elsewhere) — take that for a
+cancelled build, whose `rustc`s must not outlive their `cargo`.
+
 ### H6.1 — Build coordinator
 
-- [ ] Host watches Rust sources in the active workspace dependency closure and build
-      scripts/config that affect the artifact (§6), from `cargo metadata`.
-- [ ] `RustBuildService`: incremental `cargo build` of the dev artifact in the
-      background; the old app is never stopped before success (§25, B.5); a failed
-      build reports diagnostics (`warm-restart` stage) and keeps the old app.
-- [ ] A `.vs`-only change never triggers a Rust build (B.3); a Rust change that only
-      touches `ui!`/`component!` still needs the build.
-- [ ] Coalesce: edits during a build restart the build; the newest successful build
-      wins.
+- [x] A bounded JSON reader in `viso-ende` (`JsonValue::parse` into a value tree,
+      nesting bounded, RFC 8259 strict) for the tool's reading of Cargo's output —
+      `cargo metadata` and the build's artifact messages — beside the writer.
+- [x] Rust scope from `cargo metadata --format-version 1 --filter-platform <host>`:
+      the directory of every path package in the app package's dependency closure
+      (the resolve graph from the root), and what else changes the artifact — the
+      workspace's `Cargo.lock`, `.cargo/config.toml`, `rust-toolchain{,.toml}`; read
+      once at session start, and again when a `Cargo.toml` in it changes.
+- [x] Watcher: several roots (a path dependency outside the project), each with its
+      own `target/` excluded; the Rust files of the scope (`.rs`, `Cargo.toml`,
+      `build.rs`, the files above) are tracked by content hash without being
+      delivered at the first scan, so the build's own state is the baseline and a
+      touch or a save that changed nothing builds nothing.
+- [x] `RustBuild` (`tools/cli/src/dev/build.rs`): the launch build and every
+      rebuild run `cargo build` of the dev artifact on a thread, its rendered
+      diagnostics as log lines and its artifact messages read; the old app is never
+      stopped before a build succeeds (§25, B.5). A Rust change while idle starts a
+      build after the debounce window; one during a build kills it — its whole
+      process tree — and starts the next, so the newest sources build and the
+      newest successful build wins. A build
+      whose executable is fresh (nothing relinked) restarts nothing. A failed build
+      is a `warm-restart` reload event with Cargo's diagnostics, the old app kept.
+- [x] A `.vs`-only change never builds (B.3); a Rust change that only touches
+      `ui!`/`component!` builds — a Rust edit is always a warm restart.
+- [x] Ctrl-C is `viso run`'s own (the build's process group no longer hears the
+      terminal): the first kills the build and asks the app to close, a second
+      kills the app; exit 130 with a `cancelled` summary.
 
 ### H6.2 — DevSnapshot (§29–§32)
 
-- [ ] `DevSnapshot { snapshot_version, source_build, app_schema, component_state,
-      system_state, ui_ephemeral, app_extensions }` in ende binary, typed by
-      `SymbolId` + schema fingerprint; never pointers, handles, fds, sockets, task
-      stacks or platform objects (§30).
-- [ ] `DevSnapshot` and its endpoint join the release-absence markers
+- [ ] `DevSnapshot { snapshot_version, source_build, app_schema, views, games,
+      windows, extensions }` in ende binary (`crates/view/src/dev/snapshot.rs`): per
+      mounted view — its file, window and mount ordinals, its state cells by
+      `StateKey`, its VM states by durable key each as its type and value schema and
+      value (the `@persist` form: plain data only, a closure or handle is not
+      captured), focus, scroll offsets and text editing state (text and selection)
+      by static node; per game session its `GameSnapshot`; per window its geometry;
+      per registered extension its bytes. Never pointers, handles, fds, sockets,
+      task stacks or platform objects (§30).
+- [ ] Protocol 12: `HostMessage::{Snapshot, Restore}`, `RuntimeMessage::{Snapshot,
+      Restored}` — the restore carries each file's plan from the view the old app
+      ran to the one the new build embeds, the host's as for a patch.
+- [ ] Capture at the frame boundary after the request, every window, every view
+      mount, every game session; the extensions an app registers
+      (`AppCx::dev_state(name, capture, restore)`).
+- [ ] Restore before the first frame of the new process (it waits for the restore
+      a bounded time when launched to restore): each view through its file's plan,
+      the same compatibility matrix and `@migrate` as a patch, an entry that does not
+      carry reset with `E5101`; games through `Scheduler::restore`; a restore that
+      does not decode is a `snapshot-restore` NACK and the app runs fresh; the
+      `Restored` report gives what carried and what reset.
+- [ ] `DevSnapshot` and its messages join the release-absence markers
       (`xtask/src/absence.rs`).
-- [ ] Capture: every mounted view's state cells and VM slots, focus identity, scroll
-      offsets, text editing logical state, navigation/tab state, window geometry,
-      game snapshots when the Game Profile exposes them (`game/snapshot.rs`), and app
-      `DevStateExtension`s registered explicitly.
-- [ ] Restore through the same compatibility matrix and `@migrate` as a patch;
-      incompatible entries reset with `E5101`; a restore failure is a
-      `snapshot-restore` NACK and the app starts fresh.
-- [ ] Storage: host memory, current session only; opt-in disk cache under the
-      ignored dev cache with sensitive-field exclusion; never printed in logs or JSON
-      (§32, §47).
+- [ ] Storage: host memory, current session only, never printed in logs or JSON
+      (§32, §47); an opt-in disk cache under the ignored dev cache excludes
+      `@sensitive` states and secure text fields.
 
 ### H6.3 — Desktop warm restart (§26)
 
-- [ ] Sequence: build success → request snapshot → stop old process → launch new →
-      handshake → restore → resume; window geometry restored from the snapshot.
-- [ ] `WARM_RESTART_REQUIRED` class reported by the host when native schema, Rust
-      types used by the runtime, platform bindings or link-time features change (§8).
+- [ ] Platform: a window's outer position and size read back, and a window created
+      at a given position (`WindowConfig::position`) on macOS, Windows and X11;
+      Wayland places windows itself, so only the size carries there.
+- [ ] Sequence: build success → request snapshot (bounded wait) → stop the old
+      process → launch the new one with the window geometry and the restore flag →
+      handshake against the new build id (the host accepts the build it launched;
+      revisions restart at `LAUNCH`) → restore → resume; the mounts re-report and
+      the session plans the next edit against what the new build embeds.
+- [ ] `WARM_RESTART_REQUIRED` class reported by the host for a Rust change, and for
+      a `.vs` edit whose schema fingerprint the runtime does not match (a native it
+      lacks), instead of a patch (§8).
 - [ ] Integration test (§62 Rust): app with state, edit Rust, assert old app runs
       until the build succeeds, warm restart, assert state restored; a failing build
       leaves the old app running.
 - [ ] Measurements: Rust incremental build time, snapshot time, relaunch time,
-      restore time (§48).
+      restore time (§48), in the `warm-restart` event.
 
 ### Done
 

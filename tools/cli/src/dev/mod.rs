@@ -34,6 +34,8 @@
 //! file, the question goes to the app, and a peeked state comes back written
 //! as JSON by its type, as the last good of the file declares it.
 
+pub(crate) mod build;
+pub(crate) mod cargo;
 pub mod control;
 pub mod link;
 pub mod report;
@@ -60,8 +62,11 @@ pub use link::{Deliver, Expect, LinkEvent};
 pub use watch::Change;
 
 use crate::output::{Output, Source};
-use report::{Outcome, ReloadEvent, intern_code, rejection_stage};
+use build::{Build, BuildFailure};
+use cargo::RustScope;
+use report::{Outcome, RebuildEvent, ReloadEvent, intern_code, rejection_stage};
 use sources::{AssetRef, Changed, Sources, failure_lines};
+pub(crate) use watch::WatchScope;
 use watch::Watcher;
 
 /// How long the session waits after the latest change of a batch before it
@@ -168,17 +173,18 @@ pub struct DevSession {
 }
 
 impl DevSession {
-    /// Starts the session of the project rooted at `root`, a canonical path,
-    /// holding `lock`; the watcher hands each change to `deliver`. `apply`
-    /// is whether candidates are sent to the app.
-    pub fn start(
-        root: PathBuf,
+    /// Starts the session watching `scope`, holding `lock`; the watcher
+    /// hands each change to `deliver`. `apply` is whether candidates are sent
+    /// to the app.
+    pub(crate) fn start(
+        scope: WatchScope,
         expect: &Expect,
         lock: LockGuard,
         apply: bool,
         deliver: impl FnMut(Change) -> bool + Send + 'static,
     ) -> Self {
-        let watcher = Watcher::spawn(root.clone(), deliver);
+        let root = scope.project.clone();
+        let watcher = Watcher::spawn(scope, deliver);
         DevSession {
             root,
             session: expect.dev_session.to_hex(),
@@ -236,6 +242,61 @@ impl DevSession {
             return;
         }
         self.batched(now);
+    }
+
+    /// Watches the Rust scope `rust` from now on.
+    pub(crate) fn rescope(&self, rust: RustScope) {
+        self._watcher.rescope(rust);
+    }
+
+    /// Reports `build`, a build of the Rust sources after the launch: a
+    /// failure keeps the app running; one that relinked nothing changes
+    /// nothing.
+    pub(crate) fn rebuilt(&mut self, build: &Build, out: &mut Output) {
+        if build.unchanged {
+            return out.log("info", "tool", "the Rust edit changed nothing the app runs");
+        }
+        let (outcome, codes) = match &build.result {
+            Ok(_) => (Outcome::Held, Vec::new()),
+            Err(BuildFailure::Cancelled) => return,
+            Err(failure) => {
+                out.log(
+                    "error",
+                    "tool",
+                    &format!("{}; the app keeps running", build_failure(failure)),
+                );
+                let codes = match failure {
+                    BuildFailure::Failed { codes, .. } => codes.clone(),
+                    _ => Vec::new(),
+                };
+                (Outcome::Rejected, codes)
+            }
+        };
+        let revision = self
+            .runtime
+            .as_ref()
+            .map_or(Revision::LAUNCH, |r| r.revision);
+        let candidate = self.next_revision;
+        self.next_revision += 1;
+        let files = build
+            .files
+            .iter()
+            .map(|path| Source::new(path, &self.root, "").name().to_owned())
+            .collect();
+        let runtime_session = self
+            .runtime
+            .as_ref()
+            .map_or_else(String::new, |r| r.hello.runtime_session.to_hex());
+        let event = RebuildEvent {
+            files,
+            base_revision: revision.0,
+            candidate_revision: candidate,
+            last_good_revision: revision.0,
+            outcome,
+            codes,
+            build_us: u64::try_from(build.elapsed.as_micros()).unwrap_or(u64::MAX),
+        };
+        out.rebuild(&self.session, &runtime_session, &self.build, &event);
     }
 
     /// Adds a change at `now` to the batch being coalesced.
@@ -1012,6 +1073,19 @@ fn quoted(names: &[String]) -> String {
         .join(", ")
 }
 
+/// What a build that gave no executable says of it.
+pub(crate) fn build_failure(failure: &BuildFailure) -> String {
+    match failure {
+        BuildFailure::Spawn(why) => why.clone(),
+        BuildFailure::Failed { status, .. } => format!("`cargo build` failed ({status})"),
+        BuildFailure::Executables(executables) if executables.is_empty() => {
+            "the package builds no executable".to_owned()
+        }
+        BuildFailure::Executables(_) => "the package builds more than one executable".to_owned(),
+        BuildFailure::Cancelled => "the build was cancelled".to_owned(),
+    }
+}
+
 fn elapsed_us(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
@@ -1087,7 +1161,11 @@ mod tests {
                 project: ProjectFingerprint(3),
                 schema: SchemaFingerprint(4),
             };
-            let mut dev = DevSession::start(root.clone(), &expect, lock, apply, |_| true);
+            let scope = WatchScope {
+                project: root.clone(),
+                rust: RustScope::default(),
+            };
+            let mut dev = DevSession::start(scope, &expect, lock, apply, |_| true);
             let global = Global {
                 project: None,
                 quiet: true,
@@ -1143,6 +1221,7 @@ mod tests {
             let change = Change {
                 path: self.path.clone(),
                 bytes: text.into(),
+                rust: false,
             };
             self.dev.change(change, &mut self.out);
         }
@@ -1153,6 +1232,7 @@ mod tests {
             let change = Change {
                 path: root.join("assets").join(path),
                 bytes: bytes.to_vec(),
+                rust: false,
             };
             self.dev.change(change, &mut self.out);
         }

@@ -1,6 +1,6 @@
 //! A minimal JSON emitter for diagnostics and tool interchange.
 //!
-//! Write-side only, hand-rolled, no serde: it exists so diagnostics and tool
+//! Hand-rolled, no serde: it exists so diagnostics and tool
 //! output have one canonical JSON shape without pulling a serialization
 //! framework into a leaf crate. The target consumer is the diagnostic schema —
 //! objects, arrays, strings, numbers, bools, null — so that is exactly what this

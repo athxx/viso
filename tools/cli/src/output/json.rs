@@ -11,8 +11,9 @@ use std::io::Write as _;
 use std::ops::Range;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::dev::report::ReloadEvent;
+use crate::dev::report::{RebuildEvent, ReloadEvent};
 use viso_ende::JsonWriter;
+use viso_view::dev::wire::Stage;
 
 use super::{Location, Report, Source};
 
@@ -128,6 +129,56 @@ impl Stream {
         });
     }
 
+    /// Writes the `dev` event of a build of the Rust sources.
+    pub(super) fn rebuild(
+        &mut self,
+        session: &str,
+        runtime_session: &str,
+        build_id: &str,
+        event: &RebuildEvent,
+    ) {
+        self.event("dev", |w| {
+            w.begin_object();
+            w.name("dev_session_id");
+            w.string(session);
+            w.name("runtime_session_id");
+            w.string(runtime_session);
+            w.name("build_id");
+            w.string(build_id);
+            w.name("file");
+            w.null();
+            w.name("files");
+            w.begin_array();
+            for file in &event.files {
+                w.string(file);
+            }
+            w.end_array();
+            w.name("base_revision");
+            w.uint(event.base_revision);
+            w.name("candidate_revision");
+            w.uint(event.candidate_revision);
+            w.name("patch_class");
+            w.null();
+            w.name("outcome");
+            w.string(event.outcome.as_str());
+            w.name("stage");
+            w.string(Stage::WarmRestart.as_str());
+            w.name("diagnostic_codes");
+            w.begin_array();
+            for code in &event.codes {
+                w.string(code);
+            }
+            w.end_array();
+            w.name("last_good_revision");
+            w.uint(event.last_good_revision);
+            w.name("elapsed_ms");
+            w.number(event.build_us as f64 / 1000.0);
+            w.name("build_ms");
+            w.number(event.build_us as f64 / 1000.0);
+            w.end_object();
+        });
+    }
+
     /// Writes the closing `summary` event. `checked` is the package and file count
     /// of a check that got as far as loading the package.
     pub(super) fn summary(
@@ -141,7 +192,11 @@ impl Stream {
         self.event("summary", |w| {
             w.begin_object();
             w.name("status");
-            w.string(if code == 0 { "success" } else { "failure" });
+            w.string(match code {
+                0 => "success",
+                crate::command::INTERRUPTED => "cancelled",
+                _ => "failure",
+            });
             w.name("exit_code");
             w.uint(u64::from(code));
             w.name("elapsed_ms");

@@ -90,6 +90,25 @@ impl ReloadEvent {
     }
 }
 
+/// One build of the Rust sources a batch of Rust edits asked for: a
+/// candidate whose class is a warm restart, reported as a `dev` event naming
+/// the files it carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuildEvent {
+    /// The changed Rust files, as the project names them.
+    pub files: Vec<String>,
+    /// The revision the runtime matched when the build ended.
+    pub base_revision: u64,
+    pub candidate_revision: u64,
+    pub last_good_revision: u64,
+    /// `Rejected` for a failed build, `Held` for one built and not run.
+    pub outcome: Outcome,
+    /// The codes of the compiler's errors, each once.
+    pub codes: Vec<String>,
+    /// How long Cargo took.
+    pub build_us: u64,
+}
+
 /// The §51 stage a candidate rejected with `diagnostics` failed at: that of
 /// its first error, by the code ranges of Viso_DSL_1.0.md appendix C.
 pub fn rejection_stage(diagnostics: &[Diagnostic]) -> Stage {

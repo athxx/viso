@@ -1139,9 +1139,11 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
 - project root 须是一个 Cargo package（root 下有 `Cargo.toml`，否则 `ENV_CARGO_MANIFEST`）；CLI 以 `VISO_PROFILE=dev cargo build --features viso/hot-reload --message-format=json-render-diagnostics` 构建 Dev artifact（facade 的 build script 拒绝 `hot-reload` 与 `VISO_PROFILE=release|shipping` 同时出现，见 `Viso_Hot_Reload.md` §58），构建须恰好产出一个可执行文件（否则 `ENV_NO_EXECUTABLE`）。`$CARGO` 覆盖 cargo 路径；
 - app 以 project root 为工作目录启动，`--` 之后的参数原样传入；
 - Dev Runtime transport 是 loopback TCP：CLI 绑定 `127.0.0.1` 的临时端口，经 `VISO_DEV_RUNTIME`（地址）、`VISO_DEV_TOKEN`（每 session 随机 128-bit token）、`VISO_DEV_SESSION`（dev session id）与 `VISO_DEV_BUILD`（所启动 artifact 的 build id）交给 app。app 只连 loopback 地址，先发 `RuntimeHello`（`Viso_Hot_Reload.md` §34）；token 不符、首帧不是 hello 或 5 秒内没有首帧的连接被丢弃且不回应，protocol version、session、build 或编译器 schema 不符的连接收到带原因的 `Reject`；两种情况都记一条 `log{level:"warn", source:"tool"}`（protocol/build/schema 不符时提示 rebuild）。接受时 CLI 回 `HostHello`；app 报告它挂载的文件（mount inventory），CLI 按所报 `source_hash` 找到 build 编译的版本并编译为 last-good，在 host 上编译每个 batch 的编辑，输出 `diagnostic` 与 `dev`，把编译通过的对 last-good 算出 typed patch 发送（ACK 后它成为新的 last-good）、把被拒编辑的错误行发给 app 显示，app 回 ACK/NACK；app 的 log 与丢弃计数也经此 channel；帧为 u32 LE 长度 + ende 二进制 body，上限 4 MiB；
-- `--json` 下 app 与 cargo 的 stdout/stderr 逐行成为 `log`（app stdout 为 `info`、app stderr 为 `warn`；cargo 行按前缀 `error`/`warning` 定级）；human mode 下它们直通终端，每次 reload 在 stderr 打一行摘要；
+- `--json` 下 app 与 cargo 的 stdout/stderr 逐行成为 `log`（app stdout 为 `info`、app stderr 为 `warn`；cargo 行按前缀 `error`/`warning` 定级，编译诊断按其 level）；human mode 下它们直通终端，每次 reload 在 stderr 打一行摘要；
 - `--no-hot-reload`：session 照常建立、watch、编译并报告诊断，但不向 app 发送 patch 与失败 overlay；编译通过的 candidate 输出 `dev{outcome:"held"}`；
-- 尚未实现：mobile/web target、§13.7 中 `--no-hot-reload` 之外的 options、`artifact` 事件、shader/asset/Rust 域、§13.8 Ctrl-C 流程与 130（Ctrl-C 现由终端直接结束进程组）。
+- Rust 改动在后台重新 build Dev artifact（`Viso_Hot_Reload.md` §6、§25），旧 app 保持运行：失败输出 `dev{outcome:"rejected", stage:"warm-restart"}`，成功目前输出 `dev{outcome:"held"}`；warm restart 尚未实现；
+- Ctrl-C/SIGTERM：第一次杀掉进行中的 build（整棵进程树）并请 app 退出（Unix 上 SIGTERM），第二次强制结束 app；exit 130，`summary{status:"cancelled"}`；
+- 尚未实现：mobile/web target、§13.7 中 `--no-hot-reload` 之外的 options、`artifact` 事件、warm restart。
 
 ---
 
@@ -2361,6 +2363,8 @@ diagnostic_codes[]   去重，按首次出现排序
 last_good_revision
 elapsed_ms
 ```
+
+Rust candidate（一个 batch 的 Rust 改动触发的一次 build）输出一条 `dev`：`file` 为 `null`，`files[]` 是它带的 Rust 文件（project 内相对 root，其外为绝对路径），`stage` 为 `warm-restart`，`diagnostic_codes` 是 rustc 的错误码，`build_ms` 是 cargo 用时，没有 `.vs` 的 commit 计数。
 
 `.vs` patch 另带：`file`（相对 project root）、`mounts`（该文件被提交到的 mount 数）以及 commit report 计数 `migrated, reset, focus_lost, scroll_lost, handlers_lost`（rejected 时全为 0）、`dirty`（嵌套 object，§11 八个 dirty class 各一个 node 计数：`structure, style, measure, layout, transform, paint, hit_test, semantics`；rejected 时全为 0）、`game`（该文件的游戏随 patch 切换时为嵌套 object `tier`（`presentation-only|logic-only|logic+state-migration|world-rebuild`）、`sessions`、`tick`（新 Build 运行的首个 Tick）、`carried`、`reset`、`characters`，否则 `null`；游戏层级的 `E5103` 计入 `diagnostic_codes`）。`runtime_session_id` 是已连接 runtime 的 `RuntimeSessionId`（§4.1）的十六进制，没有已连接 runtime 时为空字符串。`patch_class` 在 rejected 与 held 时为 `null`。每条 `dev` 之前先输出该 candidate 的 `diagnostic`。字段均为 revision/计数/stage 名/诊断码，不携带任何可能是密钥的内容（`Viso_Hot_Reload.md` §47）。
 

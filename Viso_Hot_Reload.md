@@ -397,7 +397,7 @@ editor temp directories
 unrelated workspace members outside active dependency graph
 ```
 
-已实现（`dev/watch/scope.rs`）：监听 `*.vs`、`i18n/` 目录下的 `*.toml` catalog、`assets/` 目录下的每个文件（格式由字节判定，不看扩展名）与 root `Viso.toml`；shader、font 与 Rust 源码随 patch 它们的 domain 加入。watcher 读字节并按 `content_hash` 去重；不是 UTF-8 的 `.vs` 或 catalog 被跳过。排除 root 下的 `target/`、`dist/`，所有隐藏目录（`.git/`、`.viso/`、编辑器状态），含 `CACHEDIR.TAG` 的目录（移走的 Cargo target dir、生成的 cache），`node_modules/`，以及编辑器临时文件（隐藏、`#…#`、`…~`）。`Viso.toml` 的改动只给出 warning：运行中的 app 保留它 build 时的配置，需重启 `viso run`。
+已实现（`dev/watch/scope.rs`）：监听 `*.vs`、`i18n/` 目录下的 `*.toml` catalog、`assets/` 目录下的每个文件（格式由字节判定，不看扩展名）与 root `Viso.toml`；shader 与 font 源码随 patch 它们的 domain 加入。Rust scope（`dev/cargo.rs`）来自 session 开始时的 `cargo metadata --format-version 1 --filter-platform <host>`：从 app package 沿 resolve graph 的 normal/build 依赖可达的每个 path package（含 project 外的 path dependency）的 `.rs` 与 `Cargo.toml`（属于最内层 package，未被链接的 workspace member 不算），加上 workspace 的 `Cargo.lock`、从 app 目录向上每层的 `.cargo/config{,.toml}` 与 `rust-toolchain{,.toml}`、Cargo home 的配置；`Cargo.toml` 改动后下一次 build 先重读。watcher 有多个 root（project root 与其外的每个 linked package），各 package 自己的 `target/` 排除；首次扫描到的 Rust 文件只记 hash 不投递（build 自己读到的就是 baseline），之后的改动才触发 build。watcher 读字节并按 `content_hash` 去重；不是 UTF-8 的 `.vs` 或 catalog 被跳过。排除 root 下的 `target/`、`dist/`，所有隐藏目录（`.git/`、`.viso/`、编辑器状态），含 `CACHEDIR.TAG` 的目录（移走的 Cargo target dir、生成的 cache），`node_modules/`，以及编辑器临时文件（隐藏、`#…#`、`…~`）。`Viso.toml` 的改动只给出 warning：运行中的 app 保留它 build 时的配置，需重启 `viso run`。
 
 ---
 
@@ -1014,6 +1014,8 @@ resume dev session
 关键 UX：
 
 > Rust 编译期间不要先杀死当前可运行 App。
+
+已实现（`dev/build.rs`）：launch build 与每次 rebuild 都在线程上跑 `cargo build --message-format=json`，从 JSON 消息读出可执行文件与每条编译诊断（错误码与 rendered 文本，human 模式写到终端，`--json` 下逐行成为 `log`）。Rust 改动经与 `.vs` 相同的合并窗口后开始 build；build 进行中又有改动则杀掉它的整棵进程树（Unix 上 cargo 独占的 process group，Windows 上 `KILL_ON_JOB_CLOSE` 的 job object），再以最新源码开始下一次，所以最终运行的是最新一次成功的 build。可执行文件与 app 启动时的（长度、修改时间）相同则什么也不重启；失败的 build 输出 `dev{outcome:"rejected", stage:"warm-restart"}` 并带 rustc 错误码，旧 app 继续运行；`.vs`、catalog、asset 改动从不触发 build。成功的 build 目前输出 `dev{outcome:"held"}`，warm restart 序列（§26）与 DevSnapshot（§29–§32）尚未实现。
 
 ---
 

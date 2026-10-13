@@ -23,7 +23,7 @@ use std::fmt::{self, Write as _};
 use std::io::Write as _;
 use std::ops::Range;
 
-use crate::dev::report::{Outcome, ReloadEvent};
+use crate::dev::report::{Outcome, RebuildEvent, ReloadEvent};
 
 use super::{Location, Report, Source};
 
@@ -79,6 +79,24 @@ pub(super) fn dev(file: &str, event: &ReloadEvent) -> String {
             }
             line
         }
+    }
+}
+
+/// The line a build of the Rust sources prints.
+pub(super) fn rebuild(event: &RebuildEvent) -> String {
+    let files = match event.files.as_slice() {
+        [] => "rust".to_owned(),
+        [file] => file.clone(),
+        [file, rest @ ..] => format!("{file} (+{})", rest.len()),
+    };
+    let s = event.build_us as f64 / 1e6;
+    match event.outcome {
+        Outcome::Rejected => format!(
+            "✗ {files} build failed    kept r{}   {}",
+            event.last_good_revision,
+            event.codes.join(",")
+        ),
+        _ => format!("… {files} built in {s:.1} s, not restarted; restart `viso run` to run it"),
     }
 }
 

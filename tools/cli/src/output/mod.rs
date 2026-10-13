@@ -17,7 +17,7 @@ use viso_ende::JsonWriter;
 use viso_project::ConfigDiagnostic;
 
 use crate::args::Global;
-use crate::dev::report::ReloadEvent;
+use crate::dev::report::{RebuildEvent, ReloadEvent};
 
 /// A file diagnostics can point into: where it is, how to name it, and its text.
 pub struct Source<'a> {
@@ -309,6 +309,21 @@ impl Output {
         match &mut self.form {
             Form::Json(stream) => stream.dev(file, session, runtime_session, build_id, event),
             Form::Human => eprintln!("{}", human::dev(file, event)),
+        }
+    }
+
+    /// Reports a build of the Rust sources in the dev session `session`: a
+    /// `dev` event naming its files, or one line on stderr.
+    pub fn rebuild(
+        &mut self,
+        session: &str,
+        runtime_session: &str,
+        build_id: &str,
+        event: &RebuildEvent,
+    ) {
+        match &mut self.form {
+            Form::Json(stream) => stream.rebuild(session, runtime_session, build_id, event),
+            Form::Human => eprintln!("{}", human::rebuild(event)),
         }
     }
 
