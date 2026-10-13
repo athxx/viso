@@ -475,6 +475,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     while let Ok(message) = rx.try_recv() {
         let _ = relay(out, &mut dev, &mut builds, message);
     }
+    dev.ended(out);
     // A question that arrives now finds the queue gone and is refused.
     drop(ask);
     drop(rx);

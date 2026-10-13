@@ -194,6 +194,9 @@ pub struct DevSession {
     held: Option<HeldSnapshot>,
     /// Whether the next app to connect was launched to restore it.
     restore_next: bool,
+    /// Whether the app launched to restore has yet to: from its launch until
+    /// its restore lands, or it is refused, closes or exits first.
+    landing: bool,
     /// The event of the Rust build the app is restarting on, reported once
     /// the restart lands.
     restarting: Option<RebuildEvent>,
@@ -230,6 +233,7 @@ impl DevSession {
             next_query: 0,
             held: None,
             restore_next: false,
+            landing: false,
             restarting: None,
             windows: Vec::new(),
         }
@@ -330,6 +334,7 @@ impl DevSession {
             last_good_revision: revision.0,
             outcome,
             codes,
+            restored: false,
             build_us: u64::try_from(build.elapsed.as_micros()).unwrap_or(u64::MAX),
         };
         if outcome == Outcome::WarmRestarted {
@@ -355,8 +360,27 @@ impl DevSession {
     /// it runs fresh, which reports the restart now; otherwise the restore
     /// reports it.
     pub(crate) fn relaunched(&mut self, out: &mut Output) {
-        if !self.restore_next {
-            self.finish_restart(Outcome::WarmRestarted, Vec::new(), out);
+        if self.restore_next {
+            self.landing = true;
+        } else {
+            self.finish_restart(Outcome::WarmRestarted, false, Vec::new(), out);
+        }
+    }
+
+    /// The app is gone and the session ends: a restart that has not landed
+    /// is reported as it ended — the restarted app without its state, or,
+    /// before the old one closed for it, no restart.
+    pub(crate) fn ended(&mut self, out: &mut Output) {
+        if self.landing {
+            out.log(
+                "warn",
+                "tool",
+                "the restarted app exited before restoring its state",
+            );
+            self.finish_restart(Outcome::WarmRestarted, false, Vec::new(), out);
+        } else if self.restarting.is_some() {
+            out.log("warn", "tool", "the session ended before the app restarted");
+            self.finish_restart(Outcome::Rejected, false, Vec::new(), out);
         }
     }
 
@@ -364,15 +388,23 @@ impl DevSession {
     pub(crate) fn restart_failed(&mut self, why: &str, out: &mut Output) {
         out.log("error", "tool", why);
         self.restore_next = false;
-        self.finish_restart(Outcome::Rejected, Vec::new(), out);
+        self.finish_restart(Outcome::Rejected, false, Vec::new(), out);
     }
 
     /// Reports the restart under way with `outcome`.
-    fn finish_restart(&mut self, outcome: Outcome, codes: Vec<String>, out: &mut Output) {
+    fn finish_restart(
+        &mut self,
+        outcome: Outcome,
+        restored: bool,
+        codes: Vec<String>,
+        out: &mut Output,
+    ) {
+        self.landing = false;
         let Some(mut event) = self.restarting.take() else {
             return;
         };
         event.outcome = outcome;
+        event.restored = restored;
         event.codes.extend(codes);
         event.last_good_revision = match outcome {
             Outcome::Rejected => event.base_revision,
@@ -431,9 +463,25 @@ impl DevSession {
                 if self.runs(from) {
                     self.runtime = None;
                     self.sources.unmount();
+                    if self.landing {
+                        out.log(
+                            "warn",
+                            "tool",
+                            "the restarted app closed its dev channel before restoring its state",
+                        );
+                        self.finish_restart(Outcome::WarmRestarted, false, Vec::new(), out);
+                    }
                 }
             }
-            LinkEvent::Refused(reason) => out.log("warn", "tool", &reason),
+            LinkEvent::Refused(reason) => {
+                out.log("warn", "tool", &reason);
+                // The app launched to restore is the one refused: it runs
+                // the new build fresh, out of the session's reach.
+                if self.landing && self.runtime.is_none() {
+                    self.restore_next = false;
+                    self.finish_restart(Outcome::WarmRestarted, false, Vec::new(), out);
+                }
+            }
         }
     }
 
@@ -622,7 +670,7 @@ impl DevSession {
                         nack.diagnostic_codes.join(", ")
                     ),
                 );
-                self.finish_restart(Outcome::WarmRestarted, nack.diagnostic_codes, out);
+                self.finish_restart(Outcome::WarmRestarted, false, nack.diagnostic_codes, out);
             }
             RuntimeMessage::Nack(nack) => {
                 let Some(sent) = self.answered(nack.candidate_revision) else {
@@ -794,7 +842,7 @@ impl DevSession {
                 report.restore_us as f64 / 1000.0
             ),
         );
-        self.finish_restart(Outcome::WarmRestarted, Vec::new(), out);
+        self.finish_restart(Outcome::WarmRestarted, true, Vec::new(), out);
     }
 
     /// The lock this session holds, to publish its control endpoint in.
@@ -2154,6 +2202,61 @@ mod tests {
         }));
         assert!(f.dev.restarting.is_none(), "the restart landed");
         assert!(!f.dev.restore_next, "one restore per launch");
+    }
+
+    /// `f`'s app restarting on a new build with a snapshot held, its old
+    /// connection closed and the new one launched to restore.
+    fn relaunched_to_restore(f: &mut Fixture) {
+        let built = Build {
+            result: Ok(PathBuf::from("app")),
+            elapsed: Duration::from_millis(1),
+            files: Vec::new(),
+            unchanged: false,
+        };
+        assert!(f.dev.rebuilt(&built, &mut f.out));
+        assert!(f.dev.request_snapshot());
+        let bytes = [1, 2, 3];
+        for chunk in blob_chunks(&bytes) {
+            f.runtime(RuntimeMessage::Blob(chunk));
+        }
+        f.runtime(RuntimeMessage::Snapshot {
+            blob: BlobRef::of(&bytes),
+            windows: Vec::new(),
+            capture_us: 1,
+        });
+        let old = f.launch();
+        f.dev.link(LinkEvent::Closed(old), &mut f.out);
+        assert!(f.dev.restore_next());
+        f.dev.relaunched(&mut f.out);
+        assert!(f.dev.landing && f.dev.restarting.is_some());
+    }
+
+    #[test]
+    fn a_restart_whose_app_never_restores_still_ends() {
+        // Refused at the handshake: another Viso compiler built it.
+        let mut f = Fixture::new("refused");
+        relaunched_to_restore(&mut f);
+        f.dev.link(LinkEvent::Refused("schema".into()), &mut f.out);
+        assert!(!f.dev.landing && f.dev.restarting.is_none());
+        assert!(!f.dev.restore_next, "no later app takes the snapshot");
+
+        // Exited before it connected.
+        let mut f = Fixture::new("exited");
+        relaunched_to_restore(&mut f);
+        f.dev.ended(&mut f.out);
+        assert!(!f.dev.landing && f.dev.restarting.is_none());
+
+        // The session ended while the old app was still closing.
+        let mut f = Fixture::new("interrupted");
+        let built = Build {
+            result: Ok(PathBuf::from("app")),
+            elapsed: Duration::from_millis(1),
+            files: Vec::new(),
+            unchanged: false,
+        };
+        assert!(f.dev.rebuilt(&built, &mut f.out));
+        f.dev.ended(&mut f.out);
+        assert!(f.dev.restarting.is_none());
     }
 
     #[test]

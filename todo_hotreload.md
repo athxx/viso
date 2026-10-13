@@ -990,8 +990,12 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
 - [x] `WARM_RESTART_REQUIRED` class for a Rust change: one `dev` event per restart,
       `outcome: warm_restarted`, once the restore lands (`rejected` when the new
       executable does not launch).
-- [ ] `WARM_RESTART_REQUIRED` for a `.vs` edit whose schema fingerprint the runtime
-      does not match (a native it lacks), instead of a patch (§8).
+- [x] A restart ends whatever the new app does: restored (`restored: true`), its
+      restore refused, its handshake refused (another Viso compiler built it — the
+      only way the schema a `.vs` edit compiles against can differ from the app's,
+      since natives come with the Viso version, so no `.vs` edit needs a restart),
+      its channel closed or the app exited before restoring (`restored: false`); the
+      session ending before the old app closed is `rejected`.
 - [ ] An app that mounts no `view!` opens the dev channel too (at launch, not at
       the first mount), so its windows and extensions carry across a restart.
 - [ ] Integration test (§62 Rust): app with state, edit Rust, assert old app runs

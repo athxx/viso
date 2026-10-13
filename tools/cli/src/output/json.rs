@@ -174,6 +174,8 @@ impl Stream {
             w.end_array();
             w.name("last_good_revision");
             w.uint(event.last_good_revision);
+            w.name("restored");
+            w.bool(event.restored);
             w.name("elapsed_ms");
             w.number(event.build_us as f64 / 1000.0);
             w.name("build_ms");

@@ -109,6 +109,8 @@ pub struct RebuildEvent {
     pub outcome: Outcome,
     /// The codes of the compiler's errors, each once.
     pub codes: Vec<String>,
+    /// Whether the restarted app took its snapshot back.
+    pub restored: bool,
     /// How long Cargo took.
     pub build_us: u64,
 }
