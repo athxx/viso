@@ -1,19 +1,23 @@
 //! User programs through the renderer on the headless raster: a box painted by
 //! its program, adjacent boxes of one program merged into one draw, a
 //! parameter change uploaded as one range, a box inside a translucent layer
-//! drawn at its place and never folded, a replaced or released program, and a
-//! brush reading the clock redrawn as it moves with nothing uploaded.
+//! drawn at its place and never folded, a replaced or released program, a
+//! brush reading the clock redrawn as it moves with nothing uploaded, and a
+//! brush sampling its box's image.
 
 use std::sync::Arc;
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, ShaderLang, SurfaceId};
+use viso_gpu::{
+    AddressMode, FilterMode, GpuBackend, HeadlessRaster, RawWindowHandle, SamplerDesc, ShaderLang,
+    SurfaceId, TextureDesc, TextureFormat, TextureId,
+};
 use viso_render::{
     BatchPipeline, Border, LayerClip, Primitive, ProgramSlot, Quad, Rect, Renderer, Rgba,
     ShaderDraw,
 };
 use viso_shader::program::{
     BinaryOp, Binding, Block, BrushLayout, Builtin, Expr, ExprKind, Function, Intrinsic, Local,
-    ParamValue, Program, Span, Stage, Stmt, Ty, code,
+    ParamValue, Program, Span, Stage, Stmt, Texel, Ty, code,
 };
 
 const W: u32 = 64;
@@ -128,6 +132,36 @@ fn clock(name: &str) -> Program {
     program
 }
 
+/// A brush filling its box with the texel at the middle of its image.
+fn imaged(name: &str) -> Program {
+    let e = Expr::new;
+    let mut program = fill(name, None);
+    program
+        .textures
+        .push(binding("image", Ty::Texture(Texel::Vec4F32)));
+    program.samplers.push(binding("pixels", Ty::Sampler));
+    let texel = e(
+        Ty::VEC4,
+        ExprKind::Intrinsic(
+            Intrinsic::Sample,
+            vec![
+                e(Ty::Texture(Texel::Vec4F32), ExprKind::Texture(0)),
+                e(Ty::Sampler, ExprKind::Sampler(0)),
+                e(
+                    Ty::VEC2,
+                    ExprKind::Construct(vec![
+                        e(Ty::F32, ExprKind::F32(0.5)),
+                        e(Ty::F32, ExprKind::F32(0.5)),
+                    ]),
+                ),
+            ],
+        ),
+    );
+    program.fragment.as_mut().unwrap().body = Block(vec![Stmt::Return(Some(texel))]);
+    program.validate().expect("a valid program");
+    program
+}
+
 struct Frame {
     gpu: HeadlessRaster,
     surface: SurfaceId,
@@ -150,8 +184,22 @@ impl Frame {
 
     /// Installs `program` in `slot`; its layout.
     fn install(&mut self, slot: u32, program: &Program) -> BrushLayout {
+        self.install_sampling(slot, program, None)
+    }
+
+    /// Installs `program` in `slot`, its sampler's state `sampler` when
+    /// given; its layout.
+    fn install_sampling(
+        &mut self,
+        slot: u32,
+        program: &Program,
+        sampler: Option<SamplerDesc>,
+    ) -> BrushLayout {
         let interface = program.interface();
-        let layout = BrushLayout::new(program, &interface).expect("a brush");
+        let mut layout = BrushLayout::new(program, &interface).expect("a brush");
+        if let Some(sampler) = sampler {
+            layout.samplers = vec![sampler];
+        }
         let cpu = code(program, &interface, ShaderLang::None).expect("CPU code");
         self.renderer
             .install_program(
@@ -172,6 +220,21 @@ impl Frame {
         self.renderer
             .submit(&mut self.gpu, self.surface, WHITE, [W as f32, H as f32]);
         stats
+    }
+
+    /// A 1×1 image of `color`, premultiplied RGBA8.
+    fn image(&mut self, color: [f32; 4]) -> TextureId {
+        let texture = self.gpu.create_texture(&TextureDesc {
+            width: 1,
+            height: 1,
+            format: TextureFormat::Rgba8Unorm,
+            render_target: false,
+            label: "image",
+        });
+        let q = |v: f32| (v * 255.0).round() as u8;
+        let texel = [q(color[0]), q(color[1]), q(color[2]), q(color[3])];
+        self.gpu.write_texture(texture, 0, 0, 1, 1, &texel);
+        texture
     }
 
     /// The BGRA8 pixel at `(x, y)`.
@@ -196,6 +259,7 @@ fn shaded(layout: &BrushLayout, slot: u32, r: Rect, color: [f32; 4]) -> Primitiv
         rect: r,
         program: ProgramSlot(slot),
         params: params.into(),
+        textures: Default::default(),
     })
 }
 
@@ -381,6 +445,7 @@ fn a_replaced_program_draws_at_once_and_a_released_one_draws_nothing() {
         rect: rect(8.0, 8.0, 16.0, 16.0),
         program: ProgramSlot(0),
         params: Arc::from(vec![0u8; 8]),
+        textures: Default::default(),
     });
     assert_eq!(f.draw(&[foreign]).program_draws_dropped, 1);
 }
@@ -597,4 +662,99 @@ fn a_brush_reading_the_clock_redraws_as_it_moves_and_uploads_nothing() {
     assert!(f.renderer.reads_time());
     f.draw(&[b]);
     assert!(!f.renderer.reads_time());
+}
+
+#[test]
+fn a_brush_samples_its_boxs_image_and_merges_only_over_the_same_one() {
+    let mut f = Frame::new();
+    let layout = f.install(0, &imaged("Image"));
+    assert_eq!(layout.abi().textures, 1);
+    let (red, blue) = (f.image(RED), f.image(BLUE));
+    let boxed = |x: f32, image: Option<TextureId>| {
+        let Primitive::Shader(mut draw) = shaded(&layout, 0, rect(x, 2.0, 10.0, 10.0), WHITE)
+        else {
+            unreachable!()
+        };
+        draw.textures[0] = image;
+        Primitive::Shader(draw)
+    };
+    let scene = [
+        boxed(2.0, Some(red)),
+        boxed(14.0, Some(red)),
+        boxed(26.0, Some(blue)),
+    ];
+    let first = f.draw(&scene);
+    assert_eq!(
+        first.draw_calls, 2,
+        "the same image merges, another does not"
+    );
+    assert_eq!(f.pixel(6, 6), bgra(RED));
+    assert_eq!(f.pixel(18, 6), bgra(RED));
+    assert_eq!(f.pixel(30, 6), bgra(BLUE));
+    let bind_groups = f.gpu.bind_group_count();
+
+    // The same images bind the same groups; a swap uploads no instance.
+    assert_eq!(f.draw(&scene).gpu_upload_bytes, 0);
+    let swapped = [
+        boxed(2.0, Some(blue)),
+        boxed(14.0, Some(red)),
+        boxed(26.0, Some(blue)),
+    ];
+    let swap = f.draw(&swapped);
+    assert_eq!((swap.dirty_primitives, swap.gpu_upload_bytes), (1, 0));
+    assert_eq!(swap.draw_calls, 3);
+    assert_eq!(f.pixel(6, 6), bgra(BLUE));
+    assert_eq!(f.gpu.bind_group_count(), bind_groups, "no new texture set");
+
+    // A box missing its image draws nothing.
+    let missing = f.draw(&[boxed(2.0, None)]);
+    assert_eq!(missing.program_draws_dropped, 1);
+    assert_eq!(missing.draw_calls, 0);
+
+    // A texture going away takes its bind group: drawn again, it binds anew.
+    f.renderer.release_texture(&mut f.gpu, red);
+    let again = f.image(GREEN);
+    f.draw(&[boxed(2.0, Some(again))]);
+    assert_eq!(f.gpu.bind_group_count(), bind_groups + 1);
+    assert_eq!(f.pixel(6, 6), bgra(GREEN));
+}
+
+#[test]
+fn a_brush_samples_through_the_state_its_sampler_declares() {
+    let mut f = Frame::new();
+    let program = imaged("Image");
+    let smooth = f.install(0, &program);
+    let nearest = f.install_sampling(
+        1,
+        &program,
+        Some(SamplerDesc {
+            filter: FilterMode::Nearest,
+            address: AddressMode::ClampToEdge,
+        }),
+    );
+    // Red then blue: the middle is their boundary.
+    let image = f.gpu.create_texture(&TextureDesc {
+        width: 2,
+        height: 1,
+        format: TextureFormat::Rgba8Unorm,
+        render_target: false,
+        label: "pair",
+    });
+    f.gpu
+        .write_texture(image, 0, 0, 2, 1, &[255, 0, 0, 255, 0, 0, 255, 255]);
+    let boxed = |layout: &BrushLayout, slot: u32, x: f32| {
+        let Primitive::Shader(mut draw) = shaded(layout, slot, rect(x, 2.0, 10.0, 10.0), WHITE)
+        else {
+            unreachable!()
+        };
+        draw.textures[0] = Some(image);
+        Primitive::Shader(draw)
+    };
+    f.draw(&[boxed(&smooth, 0, 2.0), boxed(&nearest, 1, 20.0)]);
+    let [b, g, r, _] = f.pixel(6, 6);
+    assert!(
+        r.abs_diff(128) <= 1 && b.abs_diff(128) <= 1 && g == 0,
+        "bilinear blends the pair: {r} {g} {b}"
+    );
+    assert_eq!(f.pixel(24, 6), bgra(BLUE), "nearest takes one texel");
 }

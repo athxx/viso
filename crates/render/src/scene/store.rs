@@ -33,7 +33,8 @@ use std::sync::Arc;
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
     GlyphInstance, GlyphInstanceData, GradientInstance, ImageInstance, MeshVertex, Path,
-    PathGeometry, ProgramSlot, QuadInstance, Rect, Rgba, ShaderDraw, ShadowInstance,
+    PathGeometry, ProgramSlot, ProgramTextures, QuadInstance, Rect, Rgba, ShaderDraw,
+    ShadowInstance,
 };
 
 use super::ids::{
@@ -741,11 +742,13 @@ pub struct ShaderEntry {
     pub rect_size: [f32; 2],
     pub program: ProgramSlot,
     pub params: Arc<[u8]>,
+    pub textures: ProgramTextures,
 }
 
 /// Dense store of user-program draws (§8). The diff splits `rect_pos` →
-/// transform, `rect_size`/`program` → geometry, `params` → paint. An unchanged
-/// node re-emits the same shared `params`, so its diff is a pointer compare.
+/// transform, `rect_size`/`program` → geometry, `params` → paint, `textures`
+/// → resource. An unchanged node re-emits the same shared `params`, so its
+/// diff is a pointer compare.
 #[derive(Debug, Default)]
 pub struct ShaderStore {
     entries: Vec<ShaderEntry>,
@@ -781,12 +784,13 @@ impl ShaderStore {
                 transform: prev.rect_pos != rect_pos,
                 geometry: prev.rect_size != rect_size || prev.program != draw.program,
                 paint,
-                resource: false,
+                resource: prev.textures != draw.textures,
                 appended: false,
             };
             prev.rect_pos = rect_pos;
             prev.rect_size = rect_size;
             prev.program = draw.program;
+            prev.textures = draw.textures;
             if !Arc::ptr_eq(&prev.params, &draw.params) {
                 prev.params = Arc::clone(&draw.params);
             }
@@ -797,6 +801,7 @@ impl ShaderStore {
                 rect_size,
                 program: draw.program,
                 params: Arc::clone(&draw.params),
+                textures: draw.textures,
             });
             DirtyPlanes::APPENDED
         };

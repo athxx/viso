@@ -1,7 +1,8 @@
 //! A custom shader: `ripples.vs` declares a brush, `Ripple`, whose name heads
 //! the record of its parameters; a `ShaderView` paints its box with one, a
 //! slider drives the `rings` parameter through a state, and the rings spread
-//! with the window's clock. `view!` packs the
+//! with the window's clock. A second brush, `Lens`, samples an image from
+//! `assets/` through a sampler it declares, bending it with a running wave. `view!` packs the
 //! shader at build time for the target's GPU backend, beside the program the
 //! reference interpreter runs headless.
 
@@ -25,16 +26,24 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use viso::gpu::{GpuBackend, HeadlessRaster, TextureDesc, TextureFormat};
-    use viso::render::{Rect, Renderer};
+    use viso::render::asset::decode_raster;
+    use viso::render::{Primitive, Rect, Renderer};
     use viso::ui::{
-        BindingTable, BuildCx, Content, EffectStore, NodeId, NodeStore, PointerButtons,
-        PointerEvent, PointerPhase, PointerRouter, SemanticProjector, StateStore, TextEdits,
-        VirtualLists, paint_tree, run_structure_hooks,
+        AssetPayload, BindingTable, BuildCx, Content, EffectStore, NodeId, NodeStore,
+        PointerButtons, PointerEvent, PointerPhase, PointerRouter, SemanticProjector, StateStore,
+        TextEdits, VirtualLists, paint_tree, run_structure_hooks,
     };
 
     const W: u32 = 288;
-    const H: u32 = 328;
+    const H: u32 = 440;
+    /// The lens's box: below the slider, the card's width, 96 high.
+    const LENS_Y: u32 = 344;
+    /// The checker's two colors, as BGRA8.
+    const ORANGE: [u8; 4] = [0, 140, 255, 255];
+    const NAVY: [u8; 4] = [120, 40, 20, 255];
     const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
     struct Mounted {
@@ -96,8 +105,9 @@ mod tests {
 
         /// The value of parameter `name` of the shader view's instance.
         fn param(&self, name: &str) -> f32 {
-            let Some(Content::Shader { program, params }) =
-                self.store.content_payload(self.child(0))
+            let Some(Content::Shader {
+                program, params, ..
+            }) = self.store.content_payload(self.child(0))
             else {
                 panic!("the shader view paints with its shader");
             };
@@ -140,10 +150,54 @@ mod tests {
             self.layout();
         }
 
+        /// The shader primitives the card paints.
+        fn shader_draws(&self) -> usize {
+            let mut prims = Vec::new();
+            paint_tree(&self.store, self.root, &mut prims);
+            prims
+                .iter()
+                .filter(|p| matches!(p, Primitive::Shader(_)))
+                .count()
+        }
+
+        /// Decodes the images the card's nodes name and makes each resident
+        /// in `gpu`, as the app does for its window.
+        fn resident<B: GpuBackend>(&mut self, gpu: &mut B) {
+            let offered: Vec<_> = self
+                .store
+                .assets()
+                .undecoded()
+                .map(|(id, revision, bytes)| (id, revision, bytes.to_vec()))
+                .collect();
+            for (id, revision, bytes) in offered {
+                let image = decode_raster(&bytes).expect("a raster");
+                self.store
+                    .provide_asset(id, revision, AssetPayload::Raster(Arc::new(image)));
+            }
+            let rasters: Vec<_> = self
+                .store
+                .assets()
+                .unresident()
+                .map(|(id, revision, image)| (id, revision, Arc::clone(image)))
+                .collect();
+            for (id, revision, image) in rasters {
+                let texture = gpu.create_texture(&TextureDesc {
+                    width: image.width,
+                    height: image.height,
+                    format: TextureFormat::Rgba8Unorm,
+                    render_target: false,
+                    label: "asset",
+                });
+                gpu.write_texture(texture, 0, 0, image.width, image.height, &image.pixels);
+                self.store.attach_texture(id, revision, texture);
+            }
+        }
+
         /// The card drawn on `gpu` `time` seconds after its window opened,
         /// each program its nodes paint with installed from its code in the
-        /// backend's language; its target.
-        fn draw<B: GpuBackend>(&self, gpu: &mut B, time: f32) -> viso::gpu::TextureId {
+        /// backend's language and each image resident; its target.
+        fn draw<B: GpuBackend>(&mut self, gpu: &mut B, time: f32) -> viso::gpu::TextureId {
+            self.resident(gpu);
             let mut renderer = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
             renderer.set_surface_size([W as f32, H as f32]);
             renderer.set_time(time);
@@ -168,11 +222,34 @@ mod tests {
             target
         }
 
-        fn headless(&self, time: f32) -> Vec<u8> {
+        fn headless(&mut self, time: f32) -> Vec<u8> {
             let mut gpu = HeadlessRaster::new();
             let target = self.draw(&mut gpu, time);
             gpu.read_texture(target)
         }
+    }
+
+    #[test]
+    fn the_lens_shows_its_image_once_resident_texel_by_texel() {
+        let mut card = Mounted::new();
+        assert_eq!(card.shader_draws(), 1, "the image is not resident yet");
+        let picture = card.headless(0.0);
+        assert_eq!(card.shader_draws(), 2);
+        // The nearest sampler shows only the image's own two colors, and
+        // both: no texel blends into its neighbor.
+        let (mut orange, mut navy) = (0, 0);
+        for y in LENS_Y..H {
+            for x in 0..W {
+                match pixel(&picture, x, y) {
+                    ORANGE => orange += 1,
+                    NAVY => navy += 1,
+                    other => panic!("({x}, {y}) is {other:?}"),
+                }
+            }
+        }
+        assert!(orange > 1000 && navy > 1000, "{orange} {navy}");
+        // The wave bends it as the clock moves.
+        assert_ne!(card.headless(0.5), picture);
     }
 
     /// The BGRA8 pixel at `(x, y)` of a `W`-wide picture.
@@ -203,7 +280,7 @@ mod tests {
 
     #[test]
     fn the_rings_spread_with_the_clock() {
-        let card = Mounted::new();
+        let mut card = Mounted::new();
         let start = card.headless(0.0);
         let later = card.headless(0.5);
         assert_ne!(later, start);
@@ -211,16 +288,23 @@ mod tests {
         // center, which falls to about half the tint.
         let (b0, b1) = (pixel(&start, 144, 144)[0], pixel(&later, 144, 144)[0]);
         assert!(b0 >= 250 && (115..=150).contains(&b1), "{b0} {b1}");
-        // A whole period, two seconds, later the picture is the same again.
+        // A whole period, two seconds, later the ripples are the same again.
         let again = card.headless(2.0);
-        assert!(again.iter().zip(&start).all(|(a, b)| a.abs_diff(*b) <= 1));
+        let ripples = (288 * W * 4) as usize;
+        assert!(
+            again[..ripples]
+                .iter()
+                .zip(&start[..ripples])
+                .all(|(a, b)| a.abs_diff(*b) <= 1)
+        );
     }
 
     #[cfg(target_vendor = "apple")]
     #[test]
     fn the_ripples_match_the_reference_interpreter_on_metal() {
-        let card = Mounted::new();
-        let reference = card.headless(0.75);
+        let reference = Mounted::new().headless(0.75);
+        // A store's images are resident in one device: Metal gets its own.
+        let mut card = Mounted::new();
         let mut metal = viso::gpu::MetalBackend::new();
         let target = card.draw(&mut metal, 0.75);
         let pixels = metal.read_texture(target);

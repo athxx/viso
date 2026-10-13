@@ -1,7 +1,8 @@
 //! A view's assets in its release package: the package carries the bytes of
 //! every asset the view names, a node showing one offers them to its store the
 //! first time it shows it, and a state the source reads switches the resource
-//! the node shows.
+//! the node shows. A shader view's brush samples the images its value names
+//! the same way.
 
 mod support;
 
@@ -127,6 +128,73 @@ fn a_packaged_view_offers_the_assets_it_shows_and_switches_them() {
     rt.click(0);
     assert_eq!(shown(&rt, image), (dark, AssetFit::Cover, false));
     expected.push((dark, DARK.to_vec()));
+    expected.sort();
+    assert_eq!(offered(&rt), expected);
+    drop(assets);
+}
+
+const LENS: &str = r#"
+shader Lens {
+    uniform viewport_size: Vec2F32;
+    instance rect_pos: Vec2F32;
+    instance rect_size: Vec2F32;
+    texture photo: Texture2D<Vec4F32>;
+    sampler smooth: Sampler;
+    varying uv: Vec2F32;
+    vertex(vertex_id: U32) -> VertexOutput {
+        let unit = quad_vertex(vertex_id);
+        uv = unit;
+        return VertexOutput {
+            clip_position: to_clip(rect_pos + unit * rect_size, viewport_size),
+        };
+    }
+    fragment() -> Vec4F32 {
+        return sample(photo, smooth, uv);
+    }
+}
+
+component Viewer {
+    state dark = false;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Text { width: 20dp; height: 20dp; on click { dark = !dark; } }
+            ShaderView {
+                shader: Lens { photo: if dark { asset("images/dark.png") } else { asset("images/light.png") } };
+                width: 64dp;
+                height: 64dp;
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_packaged_shader_view_offers_the_images_its_brush_samples() {
+    let assets = Assets::new("shader");
+    let mut rt = Rt::packaged_for(LENS, assets.profile());
+    let lens = rt.descendants()[2];
+    let images = |rt: &Rt| match rt.store.content_payload(lens) {
+        Some(Content::Shader { images, .. }) => images
+            .iter()
+            .map(|image| {
+                assert_eq!(image.texture, None, "nothing is resident here");
+                image.resource
+            })
+            .collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    let (light, dark) = (
+        ResourceId::of("images/light.png"),
+        ResourceId::of("images/dark.png"),
+    );
+    assert_eq!(images(&rt), [light]);
+    assert_eq!(offered(&rt), [(light, LIGHT.to_vec())]);
+
+    rt.click(0);
+    assert_eq!(images(&rt), [dark]);
+    let mut expected = vec![(light, LIGHT.to_vec()), (dark, DARK.to_vec())];
     expected.sort();
     assert_eq!(offered(&rt), expected);
     drop(assets);

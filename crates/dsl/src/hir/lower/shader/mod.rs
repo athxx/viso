@@ -16,7 +16,8 @@ use std::collections::{HashMap, HashSet};
 
 use viso_shader::program::brush::{RECT_POS, RECT_SIZE};
 use viso_shader::program::{
-    Binding, BrushLayout, Function, ParamKind, Program, Scalar, Span, Stage, Texel, Ty,
+    AddressMode, Binding, BrushLayout, FilterMode, Function, ParamKind, Program, SamplerDesc,
+    Scalar, Span, Stage, Texel, Ty,
 };
 
 use super::{ModuleEnv, name_of};
@@ -152,10 +153,32 @@ impl ShaderValueDecl {
 
 /// The parameters of the shader `decl` as the fields of the record literal its
 /// name heads: every instance member but the box the renderer writes, typed as
-/// the host value its parameter kind converts from. A member of no parameter
-/// kind is no field; the brush profile reports it where the shader paints.
+/// the host value its parameter kind converts from, then every image texture,
+/// an `ImageAsset`. A member of no parameter kind is no field; the brush
+/// profile reports it where the shader paints.
 pub(super) fn parameters(decl: &ShaderDecl) -> Vec<FieldInfo> {
-    decl.members()
+    let textures = decl.members().filter_map(|member| {
+        let ShaderMember::Texture(m) = member else {
+            return None;
+        };
+        let name = m.name()?;
+        let ty: String = m
+            .ty()?
+            .syntax()
+            .text()
+            .to_string()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        (ty == "Texture2D<Vec4F32>").then(|| FieldInfo {
+            name: name.text(),
+            ty: HostTy::named(crate::resolve::prelude::image_record()),
+            has_default: false,
+            declared_at: name.text_range(),
+        })
+    });
+    let instance: Vec<FieldInfo> = decl
+        .members()
         .filter_map(|member| {
             let ShaderMember::Instance(m) = member else {
                 return None;
@@ -179,7 +202,8 @@ pub(super) fn parameters(decl: &ShaderDecl) -> Vec<FieldInfo> {
                 declared_at: name.text_range(),
             })
         })
-        .collect()
+        .collect();
+    instance.into_iter().chain(textures).collect()
 }
 
 /// The host type a parameter of `kind` takes its value from.
@@ -375,6 +399,8 @@ struct Shader<'e, 'p> {
     globals: HashMap<String, (Global, TextRange)>,
     /// Each `fn` by name: its declaration index and signature.
     fns: HashMap<String, (u32, Signature)>,
+    /// Each sampler's state, in declaration order.
+    samplers: Vec<SamplerDesc>,
 }
 
 pub(super) fn span(range: TextRange) -> Span {
@@ -524,6 +550,7 @@ pub(super) fn check(
         interning: HashSet::new(),
         globals: HashMap::new(),
         fns: HashMap::new(),
+        samplers: Vec::new(),
     };
     if let Some(generics) = decl.generic_params() {
         sh.error(
@@ -594,6 +621,7 @@ pub(super) fn check(
     let clean = !sh.diagnostics[sh.errors_before..]
         .iter()
         .any(|d| d.severity == crate::diag::Severity::Error);
+    let samplers = std::mem::take(&mut sh.samplers);
     let program = clean.then_some(sh.program);
     if let Some(program) = &program
         && let Err(errors) = program.validate()
@@ -619,7 +647,7 @@ pub(super) fn check(
     }
     let (brush, brush_errors) = match &program {
         Some(program) => match BrushLayout::new(program, &program.interface()) {
-            Ok(layout) => (Some(layout), Vec::new()),
+            Ok(layout) => (Some(BrushLayout { samplers, ..layout }), Vec::new()),
             Err(errors) => {
                 let errors = errors
                     .into_iter()
@@ -715,6 +743,7 @@ fn interface(sh: &mut Shader<'_, '_>, members: &[ShaderMember]) {
             ShaderMember::Sampler(m) => (m.name(), m.syntax()),
             ShaderMember::Fn(_) | ShaderMember::Entry(_) => continue,
         };
+        let state = member_attributes(sh, member, node);
         let Some(name) = name else {
             continue;
         };
@@ -773,9 +802,143 @@ fn interface(sh: &mut Shader<'_, '_>, members: &[ShaderMember]) {
             Global::Instance(_) => p.instance.push(binding),
             Global::Varying(_) => p.varyings.push(binding),
             Global::Texture(_) => p.textures.push(binding),
-            Global::Sampler(_) => p.samplers.push(binding),
+            Global::Sampler(_) => {
+                p.samplers.push(binding);
+                sh.samplers.push(state);
+            }
         }
     }
+}
+
+/// Checks the attributes on the binding member `member`: `@sampler` gives a
+/// sampler its state, which is bilinear and clamped to the edge without one;
+/// no other member takes it.
+fn member_attributes(
+    sh: &mut Shader<'_, '_>,
+    member: &ShaderMember,
+    node: &SyntaxNode,
+) -> SamplerDesc {
+    let mut state = SamplerDesc::LINEAR_CLAMP;
+    let mut stated = false;
+    let attrs: Vec<SyntaxNode> =
+        std::iter::successors(node.prev_sibling(), SyntaxNode::prev_sibling)
+            .take_while(|n| n.kind() == SyntaxKind::Attribute)
+            .collect();
+    for attr in attrs.iter().rev() {
+        let path = attr
+            .children()
+            .into_iter()
+            .find(|c| c.kind() == SyntaxKind::PathExpr)
+            .map(|p| p.text().to_string().trim().to_owned());
+        if path.as_deref() != Some("sampler") {
+            continue;
+        }
+        if !matches!(member, ShaderMember::Sampler(_)) {
+            sh.error(
+                "E8105",
+                attr.text_range(),
+                "`@sampler` sets a `sampler` member's state",
+            );
+            continue;
+        }
+        if std::mem::replace(&mut stated, true) {
+            sh.error(
+                "E8105",
+                attr.text_range(),
+                "a sampler takes one `@sampler`; name both settings in it",
+            );
+            continue;
+        }
+        sampler_settings(sh, attr, &mut state);
+    }
+    state
+}
+
+/// Reads `@sampler(filter: nearest | linear, address: clamp | repeat |
+/// mirror)` into `state`, each setting at most once.
+fn sampler_settings(sh: &mut Shader<'_, '_>, attr: &SyntaxNode, state: &mut SamplerDesc) {
+    let args = attr
+        .children()
+        .into_iter()
+        .filter(|c| c.kind() == SyntaxKind::ArgumentList)
+        .flat_map(|list| list.children())
+        .filter(|c| c.kind() == SyntaxKind::Argument);
+    let (mut filter, mut address) = (false, false);
+    for arg in args {
+        let tokens: Vec<_> = arg
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .filter(|t| !t.kind().is_trivia())
+            .collect();
+        let label = match tokens.as_slice() {
+            [label, colon, ..] if colon.kind() == SyntaxKind::Colon => label.text().to_string(),
+            _ => {
+                sh.error(
+                    "E8105",
+                    arg.text_range(),
+                    "a `@sampler` setting is `filter: …` or `address: …`",
+                );
+                continue;
+            }
+        };
+        let value = match arg.children().as_slice() {
+            [value] if value.kind() == SyntaxKind::PathExpr => {
+                value.text().to_string().trim().to_owned()
+            }
+            _ => String::new(),
+        };
+        let (seen, setting, choices) = match label.as_str() {
+            "filter" => (
+                &mut filter,
+                match value.as_str() {
+                    "nearest" => Some(Setting::Filter(FilterMode::Nearest)),
+                    "linear" => Some(Setting::Filter(FilterMode::Linear)),
+                    _ => None,
+                },
+                "`nearest` or `linear`",
+            ),
+            "address" => (
+                &mut address,
+                match value.as_str() {
+                    "clamp" => Some(Setting::Address(AddressMode::ClampToEdge)),
+                    "repeat" => Some(Setting::Address(AddressMode::Repeat)),
+                    "mirror" => Some(Setting::Address(AddressMode::Mirror)),
+                    _ => None,
+                },
+                "`clamp`, `repeat` or `mirror`",
+            ),
+            _ => {
+                sh.error(
+                    "E8105",
+                    arg.text_range(),
+                    format!(
+                        "`{label}` is no sampler setting; a sampler sets `filter` and `address`"
+                    ),
+                );
+                continue;
+            }
+        };
+        if std::mem::replace(seen, true) {
+            sh.error("E8105", arg.text_range(), format!("`{label}` is set twice"));
+            continue;
+        }
+        match setting {
+            Some(Setting::Filter(f)) => state.filter = f,
+            Some(Setting::Address(a)) => state.address = a,
+            None => sh.error(
+                "E8105",
+                arg.text_range(),
+                format!("a sampler's `{label}` is {choices}"),
+            ),
+        }
+    }
+}
+
+/// One `@sampler` setting.
+enum Setting {
+    Filter(FilterMode),
+    Address(AddressMode),
 }
 
 /// Types every `fn`'s signature, so a body calls a `fn` declared after it.

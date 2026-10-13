@@ -13,7 +13,12 @@
 //!
 //! Every other instance member is a parameter, of a kind a host value
 //! converts into ([`ParamKind`]). A brush declares no other uniform, since
-//! nothing on the host would write it, and binds no texture or sampler.
+//! nothing on the host would write it.
+//!
+//! Each `texture` a brush declares is a parameter too, an image its node
+//! names ([`BrushTexture`]), and each `sampler` is state of the brush itself,
+//! the same for every node ([`BrushLayout::samplers`]): a draw binds its
+//! node's images and the brush's samplers in declaration order.
 //!
 //! [`BrushLayout`] is what a draw is written from: the instance stride, where
 //! the box goes, and where each parameter goes. A node's parameters encode
@@ -22,10 +27,10 @@
 //! ([`BrushLayout::set`]); a draw copies the instance and places the box in
 //! it ([`BrushLayout::place`]).
 
-use viso_gpu::ProgramAbi;
+use viso_gpu::{PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi, SamplerDesc};
 
 use super::layout::{FieldDescriptor, ShaderInterface};
-use super::{EncodeError, Program, ProgramError, Span, Ty};
+use super::{EncodeError, Program, ProgramError, Span, Texel, Ty};
 
 /// The uniform the renderer writes the target size into.
 pub const VIEWPORT_SIZE: &str = "viewport_size";
@@ -155,6 +160,13 @@ pub struct BrushParam {
     pub source_span: Span,
 }
 
+/// A texture parameter: an image the node names, which the brush samples.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BrushTexture {
+    pub name: Box<str>,
+    pub source_span: Span,
+}
+
 /// Where a brush draw's bytes go.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BrushLayout {
@@ -172,6 +184,13 @@ pub struct BrushLayout {
     pub time: Option<u32>,
     /// The parameters, in declaration order.
     pub params: Vec<BrushParam>,
+    /// The texture parameters, in declaration order, bound from slot 0.
+    pub textures: Vec<BrushTexture>,
+    /// Each sampler's state, in declaration order, bound from slot 0:
+    /// bilinear and clamped to the edge unless the shader says otherwise.
+    pub samplers: Vec<SamplerDesc>,
+    /// Whether the vertex entry samples too.
+    pub vertex_textures: bool,
 }
 
 impl BrushLayout {
@@ -181,7 +200,8 @@ impl BrushLayout {
     ///
     /// Each way it breaks the profile, `E8107`: a reserved member missing or
     /// of another type, a uniform the renderer does not write, a parameter of
-    /// a type no host value converts into, a texture or sampler.
+    /// a type no host value converts into, a texture of no image, more
+    /// textures or samplers than a draw binds.
     pub fn new(
         program: &Program,
         interface: &ShaderInterface,
@@ -287,13 +307,35 @@ impl BrushLayout {
             }
         }
 
-        for b in program.textures.iter().chain(&program.samplers) {
+        let mut textures = Vec::new();
+        for t in &program.textures {
+            if t.ty == Ty::Texture(Texel::Vec4F32) {
+                textures.push(BrushTexture {
+                    name: t.name.clone(),
+                    source_span: t.span,
+                });
+            } else {
+                error(
+                    t.span,
+                    format!(
+                        "a brush texture is an image its node names, a `Texture2D<Vec4F32>`; \
+                         `{}` is a `{}`",
+                        t.name,
+                        program.spell(t.ty)
+                    ),
+                );
+            }
+        }
+        if let Some(t) = program.textures.get(PROGRAM_TEXTURES as usize) {
             error(
-                b.span,
-                format!(
-                    "a brush binds no texture or sampler; `{}` has no source",
-                    b.name
-                ),
+                t.span,
+                format!("a brush samples at most {PROGRAM_TEXTURES} textures"),
+            );
+        }
+        if let Some(s) = program.samplers.get(PROGRAM_SAMPLERS as usize) {
+            error(
+                s.span,
+                format!("a brush declares at most {PROGRAM_SAMPLERS} samplers"),
             );
         }
         let declares =
@@ -331,6 +373,9 @@ impl BrushLayout {
                 viewport_size,
                 time,
                 params,
+                textures,
+                samplers: vec![SamplerDesc::LINEAR_CLAMP; program.samplers.len()],
+                vertex_textures: interface.vertex_textures,
             }),
             _ => Err(errors),
         }
@@ -341,15 +386,20 @@ impl BrushLayout {
         ProgramAbi {
             instance_stride: self.stride,
             uniform_size: self.uniform_size,
-            textures: 0,
-            samplers: 0,
-            vertex_textures: false,
+            textures: self.textures.len() as u32,
+            samplers: self.samplers.len() as u32,
+            vertex_textures: self.vertex_textures,
         }
     }
 
     /// The index of the parameter `name`.
     pub fn param(&self, name: &str) -> Option<usize> {
         self.params.iter().position(|p| &*p.name == name)
+    }
+
+    /// The slot of the texture parameter `name`.
+    pub fn texture(&self, name: &str) -> Option<usize> {
+        self.textures.iter().position(|t| &*t.name == name)
     }
 
     /// Encodes `values`, one per parameter in order, into `out` as one
@@ -596,8 +646,7 @@ mod tests {
                 binding("mask", Ty::Vector(crate::program::Scalar::U32, 2)),
             ],
         );
-        p.textures
-            .push(binding("image", Ty::Texture(Texel::Vec4F32)));
+        p.textures.push(binding("image", Ty::Texture(Texel::F32)));
         let wrong = codes(&p);
         let at: Vec<u32> = wrong.iter().map(|(at, _)| *at).collect();
         // viewport_size, scale, rect_size, basis, mask, image; nothing missing.
@@ -606,5 +655,41 @@ mod tests {
         assert!(wrong[1].1.contains("make `scale` an `instance` parameter"));
         assert!(wrong[3].1.contains("`basis`, a `Mat2F32`"));
         assert!(wrong[4].1.contains("a `Vec2U32`"));
+        assert!(wrong[5].1.contains("`image` is a `Texture2D<F32>`"));
+    }
+
+    #[test]
+    fn a_brushs_images_are_parameters_and_its_samplers_its_own() {
+        let boxed = || {
+            brush(
+                vec![binding(VIEWPORT_SIZE, Ty::VEC2)],
+                vec![binding(RECT_POS, Ty::VEC2), binding(RECT_SIZE, Ty::VEC2)],
+            )
+        };
+        let image = || Ty::Texture(Texel::Vec4F32);
+        let mut p = boxed();
+        p.textures = vec![binding("photo", image()), binding("mask", image())];
+        p.samplers = vec![binding("smooth", Ty::Sampler)];
+        let l = layout(&p).expect("a brush");
+        let names: Vec<&str> = l.textures.iter().map(|t| &*t.name).collect();
+        assert_eq!(names, ["photo", "mask"]);
+        assert_eq!(l.texture("mask"), Some(1));
+        assert_eq!(l.samplers, [SamplerDesc::LINEAR_CLAMP]);
+        let abi = l.abi();
+        assert_eq!((abi.textures, abi.samplers), (2, 1));
+        assert_eq!(abi, p.interface().abi());
+
+        let mut wide = boxed();
+        wide.textures = (0..=PROGRAM_TEXTURES)
+            .map(|_| binding("image", image()))
+            .collect();
+        wide.samplers = (0..=PROGRAM_SAMPLERS)
+            .map(|_| binding("s", Ty::Sampler))
+            .collect();
+        let errors = layout(&wide).expect_err("too many bindings");
+        let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].contains("at most 4 textures"));
+        assert!(messages[1].contains("at most 2 samplers"));
     }
 }

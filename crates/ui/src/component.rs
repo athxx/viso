@@ -15,9 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::animation::{LookTransition, LookValue, Timing, TranslateAnim};
-use crate::asset::{Asset, AssetFit, AssetPayload, AssetTable};
+use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetTable};
 use crate::binding::BindingTable;
-use crate::content::{Content, TextRequest};
+use crate::content::{BrushImage, Content, TextRequest};
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::grid::{GridPlacement, GridStyle, GridTracks, TrackSizing};
@@ -1387,15 +1387,31 @@ impl NodeStore {
     }
 
     /// Paint `id`'s box with `program` and `params`, its parameters encoded as
-    /// one of the program's instances; the program takes a slot in
-    /// [`shaders`](Self::shaders), or keeps the one it has. A node already
-    /// painting with the same program marks PAINT only — a program has no
-    /// intrinsic size, so only a node taking it from other content
-    /// re-measures. A live-guarded write — a stale handle is a no-op.
-    pub fn set_shader(&mut self, id: NodeId, program: &Arc<BrushProgram>, params: Arc<[u8]>) {
+    /// one of the program's instances, sampling the images `images`, one per
+    /// texture parameter in order; the program takes a slot in
+    /// [`shaders`](Self::shaders), or keeps the one it has. Each image draws
+    /// whatever of it the [`assets`](Self::assets) table holds: until all are
+    /// resident the node draws nothing. A node already painting with the same
+    /// program marks PAINT only — a program has no intrinsic size, so only a
+    /// node taking it from other content re-measures. A live-guarded write —
+    /// a stale handle is a no-op.
+    pub fn set_shader(
+        &mut self,
+        id: NodeId,
+        program: &Arc<BrushProgram>,
+        params: Arc<[u8]>,
+        images: &[ResourceId],
+    ) {
         if !self.arena.is_live(id) {
             return;
         }
+        let images = images
+            .iter()
+            .map(|&resource| BrushImage {
+                resource,
+                texture: self.raster(resource),
+            })
+            .collect();
         let slot = self.shaders.take(program);
         let same = matches!(
             self.content_payload(id),
@@ -1410,8 +1426,17 @@ impl NodeStore {
         self.content_payload[id.index() as usize] = Some(Box::new(Content::Shader {
             program: slot,
             params,
+            images,
         }));
         self.mark_dirty(id, classes);
+    }
+
+    /// The texture `resource`'s raster is resident in, if it is.
+    fn raster(&self, resource: ResourceId) -> Option<TextureId> {
+        match self.assets.resolve(resource).0 {
+            AssetDraw::Raster(texture) => Some(texture),
+            AssetDraw::Nothing | AssetDraw::Vector(_) => None,
+        }
     }
 
     /// Replace the parameters of `id`'s shader, marking PAINT only. A no-op
@@ -1538,8 +1563,8 @@ impl NodeStore {
         }
     }
 
-    /// Every live node showing `resource`. Cold: a walk of the content
-    /// column.
+    /// Every live node showing `resource`, or a brush sampling it. Cold: a
+    /// walk of the content column.
     pub fn asset_nodes(&self, resource: ResourceId) -> impl Iterator<Item = NodeId> + '_ {
         self.content_payload
             .iter()
@@ -1548,18 +1573,38 @@ impl NodeStore {
                 Some(Content::Asset { resource: r, .. }) if *r == resource => {
                     self.arena.live_id(i as u32)
                 }
+                Some(Content::Shader { images, .. })
+                    if images.iter().any(|image| image.resource == resource) =>
+                {
+                    self.arena.live_id(i as u32)
+                }
                 _ => None,
             })
     }
 
     /// Rewrites every live node showing `resource` to what the table now
     /// resolves it to: PAINT when its natural size holds, MEASURE | LAYOUT |
-    /// PAINT when it moves. Cold: a walk of the content column, once per new
-    /// payload.
+    /// PAINT when it moves; a brush sampling it takes its texture, PAINT.
+    /// Cold: a walk of the content column, once per new payload.
     fn refresh_asset(&mut self, resource: ResourceId) {
         let (draw, [w, h]) = self.assets.resolve(resource);
         let natural = Vec2::new(w, h);
+        let raster = match draw {
+            AssetDraw::Raster(texture) => Some(texture),
+            AssetDraw::Nothing | AssetDraw::Vector(_) => None,
+        };
         for i in 0..self.content_payload.len() {
+            if let Some(Content::Shader { images, .. }) = self.content_payload[i].as_deref_mut() {
+                let mut moved = false;
+                for image in images.iter_mut().filter(|image| image.resource == resource) {
+                    moved |= image.texture != raster;
+                    image.texture = raster;
+                }
+                if moved && let Some(id) = self.arena.live_id(i as u32) {
+                    self.mark_dirty(id, DirtyClass::PAINT);
+                }
+                continue;
+            }
             let Some(Content::Asset {
                 resource: r,
                 draw: d,

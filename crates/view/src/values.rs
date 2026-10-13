@@ -34,7 +34,7 @@ use viso_ui::{
 use crate::control::{Control, ControlInput, ControlKind, When};
 use crate::host::ViewHost;
 use crate::scope::Scope;
-use crate::shaders::encode_params;
+use crate::shaders::encode_shader;
 
 /// The font size of the text a view shows, in logical pixels.
 const FONT_SIZE: f32 = 14.0;
@@ -349,26 +349,18 @@ impl Shown {
             // parameters, leaves the node as it is.
             ControlKind::Shader => {
                 if let Some(program) = &program
-                    && let Some(params) = encode_params(&program.layout, value)
+                    && let Some((params, images)) = encode_shader(&program.layout, value)
                 {
-                    store.set_shader(self.node, program, params);
+                    for &image in &images {
+                        offer(store, host, image);
+                    }
+                    store.set_shader(self.node, program, params, &images);
                 }
             }
             // An unbound source shows nothing.
             ControlKind::Asset => {
                 if let Some(resource) = resource(value) {
-                    if !store.assets().knows(resource) {
-                        match host.asset_bytes(resource) {
-                            Some(bytes) => store.assets_mut().offer(
-                                resource,
-                                ResourceRevision::default(),
-                                bytes.clone(),
-                            ),
-                            // An asset a reload named: the app holds its
-                            // bytes.
-                            None => store.assets_mut().want(resource),
-                        }
-                    }
+                    offer(store, host, resource);
                     let tint = tint.as_int().map(|_| color(tint));
                     store.set_asset(self.node, resource, asset_fit(fit), tint);
                 }
@@ -440,12 +432,28 @@ fn select(store: &mut NodeStore, node: NodeId, selected: i64) {
 }
 
 /// The resource an `ImageAsset` or `SvgAsset` value names.
-fn resource(value: &Value) -> Option<ResourceId> {
+pub(crate) fn resource(value: &Value) -> Option<ResourceId> {
     let Value::Agg(asset) = value else {
         return None;
     };
     let id = asset.fields.first()?.as_int()?;
     Some(ResourceId(id.cast_unsigned()))
+}
+
+/// Offers `resource`'s bytes to the store the first time a node shows it:
+/// those the view embeds, else, for an asset a reload named, the app's.
+fn offer(store: &mut NodeStore, host: &ViewHost, resource: ResourceId) {
+    if store.assets().knows(resource) {
+        return;
+    }
+    match host.asset_bytes(resource) {
+        Some(bytes) => {
+            store
+                .assets_mut()
+                .offer(resource, ResourceRevision::default(), bytes.clone());
+        }
+        None => store.assets_mut().want(resource),
+    }
 }
 
 /// An `ImageFit` value as the fit it names, `contain` for any other.

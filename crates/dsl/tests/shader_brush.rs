@@ -139,7 +139,7 @@ const OFF_PROFILE: &str = "shader Glow {
     instance rect_pos: Vec2F32;
     instance strength: F32;
     instance basis: Mat2F32;
-    texture noise: Texture2D<Vec4F32>;
+    texture noise: Texture2D<F32>;
     vertex(vertex_id: U32) -> VertexOutput {
         let unit = quad_vertex(vertex_id);
         return VertexOutput {
@@ -316,4 +316,198 @@ fn a_program_and_a_packed_brush_round_trip_through_the_package_codec() {
     };
     p.instance[0].ty = viso_shader::program::Ty::Color;
     assert!(PackedBrush::decode_from_slice(&packed.encode_to_vec()).is_err());
+}
+
+/// A brush sampling an image its node names through samplers it declares.
+const PHOTO: &str = "shader Photo {
+    uniform viewport_size: Vec2F32;
+    instance rect_pos: Vec2F32;
+    instance rect_size: Vec2F32;
+    instance fade: F32;
+    texture photo: Texture2D<Vec4F32>;
+    @sampler(filter: nearest, address: repeat)
+    sampler pixels: Sampler;
+    sampler smooth: Sampler;
+    varying uv: Vec2F32;
+    vertex(vertex_id: U32) -> VertexOutput {
+        let unit = quad_vertex(vertex_id);
+        uv = unit;
+        return VertexOutput {
+            clip_position: to_clip(rect_pos + unit * rect_size, viewport_size),
+        };
+    }
+    fragment() -> Vec4F32 {
+        return sample(photo, pixels, uv) * fade + sample(photo, smooth, uv) * (1.0 - fade);
+    }
+}";
+
+#[test]
+fn a_brush_samples_its_nodes_images_through_samplers_it_declares() {
+    use viso_shader::program::{AddressMode, FilterMode, SamplerDesc};
+
+    let compiled = compile_file(PHOTO, &origin());
+    let errors: Vec<_> = compiled.errors().collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let layout = compiled.shaders[0].brush.as_ref().expect("a brush");
+    let textures: Vec<&str> = layout.textures.iter().map(|t| &*t.name).collect();
+    assert_eq!(textures, ["photo"]);
+    assert_eq!(
+        layout.samplers,
+        [
+            SamplerDesc {
+                filter: FilterMode::Nearest,
+                address: AddressMode::Repeat,
+            },
+            SamplerDesc::LINEAR_CLAMP,
+        ]
+    );
+    let abi = layout.abi();
+    assert_eq!((abi.textures, abi.samplers), (1, 2));
+
+    // Every backend's code binds the image and both samplers, and the
+    // package carries the samplers' state.
+    use viso_ende::{Decode, Encode};
+    use viso_shader::program::{PackedBrush, ShaderLang};
+    let program = compiled.shaders[0].program.as_ref().unwrap();
+    for lang in [
+        ShaderLang::None,
+        ShaderLang::Msl,
+        ShaderLang::Wgsl,
+        ShaderLang::Hlsl,
+        ShaderLang::SpirV,
+    ] {
+        let packed = PackedBrush::pack(program, layout.clone(), &[lang]).unwrap();
+        let decoded = PackedBrush::decode_from_slice(&packed.encode_to_vec()).unwrap();
+        assert_eq!(decoded, packed, "{lang:?}");
+    }
+    let mut packed = PackedBrush::pack(program, layout.clone(), &[ShaderLang::None]).unwrap();
+    packed.layout.textures.clear();
+    assert!(
+        PackedBrush::decode_from_slice(&packed.encode_to_vec()).is_err(),
+        "a layout missing the program's texture is not its own"
+    );
+}
+
+#[test]
+fn a_sampler_setting_is_checked() {
+    let with = |attr: &str, member: &str| {
+        let shader = PHOTO.replace(
+            "@sampler(filter: nearest, address: repeat)\n    sampler pixels: Sampler;",
+            &format!("{attr}\n    {member}"),
+        );
+        errors(&shader)
+    };
+    let sampler = "sampler pixels: Sampler;";
+    let cases = [
+        ("@sampler(filter: linear)", sampler, None),
+        (
+            "@sampler(filter: cubic)",
+            sampler,
+            Some("`nearest` or `linear`"),
+        ),
+        (
+            "@sampler(address: wrap)",
+            sampler,
+            Some("`clamp`, `repeat` or `mirror`"),
+        ),
+        (
+            "@sampler(blend: nearest)",
+            sampler,
+            Some("`blend` is no sampler setting"),
+        ),
+        (
+            "@sampler(nearest)",
+            sampler,
+            Some("`filter: …` or `address: …`"),
+        ),
+        (
+            "@sampler(filter: nearest, filter: linear)",
+            sampler,
+            Some("`filter` is set twice"),
+        ),
+        (
+            "@sampler(filter: nearest) @sampler(address: repeat)",
+            sampler,
+            Some("one `@sampler`"),
+        ),
+        (
+            "@sampler(filter: nearest)",
+            "sampler pixels: Sampler;\n    @sampler(filter: nearest) uniform scale: F32;",
+            Some("sets a `sampler` member's state"),
+        ),
+    ];
+    for (attr, member, expected) in cases {
+        let found = with(attr, member);
+        match expected {
+            None => assert!(found.is_empty(), "{attr}: {found:?}"),
+            Some(part) => assert!(
+                found.len() == 1 && found[0].0 == "E8105" && found[0].1.contains(part),
+                "{attr}: {found:?}"
+            ),
+        }
+    }
+}
+
+/// A package directory holding a photo and an icon, removed on drop.
+struct Assets(std::path::PathBuf);
+
+impl Assets {
+    fn new(name: &str) -> Assets {
+        let dir = std::env::temp_dir().join(format!("viso-brush-{name}-{}", std::process::id()));
+        for (path, bytes) in [
+            ("photo.png", &b"\x89PNG\r\n\x1a\nphoto"[..]),
+            (
+                "icon.svg",
+                &b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"/>"[..],
+            ),
+        ] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(path), bytes).unwrap();
+        }
+        Assets(dir)
+    }
+
+    fn errors(&self, source: &str) -> Vec<(String, String)> {
+        let profile = viso_dsl::hir::TargetProfile {
+            assets: Some(std::rc::Rc::new(
+                viso_dsl::assets::AssetCatalog::scan(&self.0).unwrap(),
+            )),
+            ..viso_dsl::hir::TargetProfile::default()
+        };
+        viso_dsl::frontend::compile_file_for(
+            source,
+            &origin(),
+            viso_behavior::native::Natives::standard(),
+            profile,
+        )
+        .errors()
+        .map(|d| (d.code.to_string(), d.message.clone()))
+        .collect()
+    }
+}
+
+impl Drop for Assets {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn a_texture_parameter_takes_an_image_asset() {
+    let assets = Assets::new("texture");
+    let photo = |value: &str| painting(PHOTO, &format!("Photo {{ fade: 0.5, photo: {value} }}"));
+    assert_eq!(assets.errors(&photo("asset(\"photo.png\")")), []);
+    for wrong in ["asset(\"icon.svg\")", "7"] {
+        let found = assets.errors(&photo(wrong));
+        assert_eq!(
+            found.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>(),
+            ["E2103"],
+            "{wrong}: {found:?}"
+        );
+    }
+    let missing = assets.errors(&painting(PHOTO, "Photo { fade: 0.5 }"));
+    assert!(
+        missing.len() == 1 && missing[0].1.contains("photo"),
+        "{missing:?}"
+    );
 }

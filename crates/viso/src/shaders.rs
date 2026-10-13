@@ -126,8 +126,8 @@ shader Fill {
         let (a, b) = (a.unwrap(), b.unwrap());
         let program = fill(&[ShaderLang::None]);
         let params: Arc<[u8]> = vec![0; program.layout.stride as usize].into();
-        store.set_shader(a, &program, Arc::clone(&params));
-        store.set_shader(b, &program, Arc::clone(&params));
+        store.set_shader(a, &program, Arc::clone(&params), &[]);
+        store.set_shader(b, &program, Arc::clone(&params), &[]);
         installed.sync(store.shaders(), &mut gpu, &mut renderer);
         let pipeline = renderer.program_pipeline(ProgramSlot(0));
         assert!(pipeline.is_some(), "installed once for both nodes");
@@ -148,7 +148,7 @@ shader Fill {
         // A program without this backend's code draws nothing.
         let c = BuildCx::new(&mut store).leaf(LeafStyle::default()).id();
         let metal = fill(&[ShaderLang::Msl]);
-        store.set_shader(c, &metal, params);
+        store.set_shader(c, &metal, params, &[]);
         installed.sync(store.shaders(), &mut gpu, &mut renderer);
         assert!(renderer.program_pipeline(ProgramSlot(0)).is_none());
     }

@@ -12,12 +12,14 @@
 use std::sync::Arc;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder};
+use viso_gpu::{AddressMode, FilterMode, SamplerDesc};
 pub use viso_gpu::{ProgramCode, ShaderLang};
 
 use super::ops::{BinaryOp, Intrinsic, UnaryOp};
 use super::{
-    Binding, Block, BrushLayout, BrushParam, Builtin, CpuShader, Expr, ExprKind, Function, Local,
-    Loop, ParamKind, Place, Program, Record, Root, Scalar, Span, Stage, Stmt, Texel, Ty, code,
+    Binding, Block, BrushLayout, BrushParam, BrushTexture, Builtin, CpuShader, Expr, ExprKind,
+    Function, Local, Loop, ParamKind, Place, Program, Record, Root, Scalar, Span, Stage, Stmt,
+    Texel, Ty, code,
 };
 
 /// A brush built for the backends it targets: its code once per language.
@@ -614,6 +616,18 @@ impl Decode for Program {
     }
 }
 
+const FILTERS: [FilterMode; 3] = [
+    FilterMode::Nearest,
+    FilterMode::Linear,
+    FilterMode::MipmapLinear,
+];
+
+const ADDRESSES: [AddressMode; 3] = [
+    AddressMode::ClampToEdge,
+    AddressMode::Repeat,
+    AddressMode::Mirror,
+];
+
 const KINDS: [ParamKind; 6] = [
     ParamKind::F32,
     ParamKind::I32,
@@ -643,6 +657,15 @@ impl Encode for BrushLayout {
             enc.write_u64(p.stable_field_id);
             write_span(enc, p.source_span);
         });
+        write_list(enc, &self.textures, |enc, t| {
+            enc.write_str(&t.name);
+            write_span(enc, t.source_span);
+        });
+        write_list(enc, &self.samplers, |enc, s| {
+            enc.write_varint(tag(&FILTERS, &s.filter));
+            enc.write_varint(tag(&ADDRESSES, &s.address));
+        });
+        enc.write_u8(u8::from(self.vertex_textures));
     }
 }
 
@@ -667,6 +690,23 @@ impl Decode for BrushLayout {
                     source_span: read_span(dec)?,
                 })
             })?,
+            textures: list(dec, |dec| {
+                Ok(BrushTexture {
+                    name: name(dec)?,
+                    source_span: read_span(dec)?,
+                })
+            })?,
+            samplers: list(dec, |dec| {
+                Ok(SamplerDesc {
+                    filter: pick(dec, &FILTERS)?,
+                    address: pick(dec, &ADDRESSES)?,
+                })
+            })?,
+            vertex_textures: match dec.read_u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(malformed(dec)),
+            },
         })
     }
 }
@@ -719,8 +759,15 @@ impl Decode for PackedBrush {
                 3 => PackedCode::SpirV(dec.read_bytes()?.to_vec()),
                 4 => {
                     let program = Program::decode(dec)?;
+                    // The samplers' state is the shader's, not the program's:
+                    // the rest of the layout must be the program's own.
                     let own = program.validate().is_ok()
-                        && BrushLayout::new(&program, &program.interface()).as_ref() == Ok(&layout);
+                        && BrushLayout::new(&program, &program.interface()).is_ok_and(|mut own| {
+                            if own.samplers.len() == layout.samplers.len() {
+                                own.samplers.clone_from(&layout.samplers);
+                            }
+                            own == layout
+                        });
                     if !own {
                         return Err(DecodeError::Malformed { offset: at });
                     }

@@ -122,12 +122,23 @@ pub enum Content {
     },
     /// The node's box painted by a brush program: the program in the store's
     /// [`ShaderSlots`](crate::shader::ShaderSlots) slot `program`, its
-    /// parameters encoded as one of the program's instances. A program has no
+    /// parameters encoded as one of the program's instances, and the images
+    /// its texture parameters name, in their order. A program has no
     /// intrinsic size, so a `Fit` axis sizes to zero.
     Shader {
         program: ProgramSlot,
         params: Arc<[u8]>,
+        images: Box<[BrushImage]>,
     },
+}
+
+/// An image a brush node samples: the resource its texture parameter names,
+/// and the texture holding it once the resource is resident. Until each of a
+/// node's images is, the node draws nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrushImage {
+    pub resource: ResourceId,
+    pub texture: Option<TextureId>,
 }
 
 impl Content {

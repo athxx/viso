@@ -449,11 +449,11 @@ impl Renderer {
                 self.material_pipeline_id(),
                 Some(bind_group),
             ),
-            SegmentKind::Program { slot } => (
+            SegmentKind::Program { slot, bind_group } => (
                 BatchPipeline::Program,
                 self.program_pipeline(slot)
                     .expect("a program segment names an installed program"),
-                None,
+                bind_group,
             ),
         };
         let offscreen = matches!(seg.target, PassTarget::Offscreen(_));

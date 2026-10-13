@@ -26,7 +26,7 @@ use crate::layout::Vec2;
 use crate::node::NodeId;
 use viso_render::{
     GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point,
-    Primitive, Quad, Rect, Rgba, SamplerDesc, ShaderDraw,
+    Primitive, ProgramTextures, Quad, Rect, Rgba, SamplerDesc, ShaderDraw,
 };
 
 /// The opaque white tint that passes a premultiplied color-atlas texel through
@@ -226,12 +226,24 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
                 shadow: None,
             }));
         }
-        Content::Shader { program, params } => {
-            out.push(Primitive::Shader(ShaderDraw {
-                rect: world,
-                program: *program,
-                params: Arc::clone(params),
-            }));
+        Content::Shader {
+            program,
+            params,
+            images,
+        } => {
+            let mut textures: ProgramTextures = Default::default();
+            for (slot, image) in textures.iter_mut().zip(images.iter()) {
+                *slot = image.texture;
+            }
+            // An image not yet resident: the node draws nothing until it is.
+            if images.len() <= textures.len() && images.iter().all(|i| i.texture.is_some()) {
+                out.push(Primitive::Shader(ShaderDraw {
+                    rect: world,
+                    program: *program,
+                    params: Arc::clone(params),
+                    textures,
+                }));
+            }
         }
         Content::Asset {
             draw,
@@ -1107,6 +1119,9 @@ mod tests {
                 uniform_size: 16,
                 viewport_size: 0,
                 time: None,
+                textures: Vec::new(),
+                samplers: Vec::new(),
+                vertex_textures: false,
                 params: Vec::new(),
             },
             code: Vec::new(),
@@ -1130,8 +1145,8 @@ mod tests {
         };
         let (a, b) = (a.unwrap(), b.unwrap());
         let params: Arc<[u8]> = Arc::from(vec![7u8; 20]);
-        store.set_shader(a, &program, Arc::clone(&params));
-        store.set_shader(b, &program, Arc::clone(&params));
+        store.set_shader(a, &program, Arc::clone(&params), &[]);
+        store.set_shader(b, &program, Arc::clone(&params), &[]);
         assert_eq!(store.shaders().iter().count(), 1, "one program, one slot");
         assert!(store.dirty(a).contains(DirtyClass::MEASURE));
 
@@ -1167,7 +1182,7 @@ mod tests {
         store.set_shader_params(b, Arc::from(vec![9u8; 20]));
         assert_eq!(store.dirty(b), DirtyClass::PAINT);
         store.clear_dirty();
-        store.set_shader(a, &program, Arc::from(vec![1u8; 20]));
+        store.set_shader(a, &program, Arc::from(vec![1u8; 20]), &[]);
         assert_eq!(
             store.dirty(a),
             DirtyClass::PAINT,
@@ -1195,7 +1210,7 @@ mod tests {
             name: "Next".into(),
             ..(*program).clone()
         });
-        store.set_shader(a, &next, Arc::clone(&params));
+        store.set_shader(a, &next, Arc::clone(&params), &[]);
         assert_eq!(
             store.content_payload(a).map(|c| match c {
                 crate::content::Content::Shader { program, .. } => *program,

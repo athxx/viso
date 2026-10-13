@@ -769,31 +769,43 @@ on it.
       example's ripples runs ~8% CPU where an idle one is at 0%. Tests:
       `render/tests/program_draw.rs`, `shader::program::brush` tests, the example's
       `the_rings_spread_with_the_clock` and Metal at a moved clock.
-- [ ] Texture and sampler parameters: a brush samples images its nodes name, through
+- [x] Texture and sampler parameters: a brush samples images its nodes name, through
       samplers it declares.
-  - [ ] Shader: the brush profile admits `texture name: Texture2D<Vec4F32>` as a
+  - [x] Shader: the brush profile admits `texture name: Texture2D<Vec4F32>` as a
         texture parameter (at most `PROGRAM_TEXTURES`) and `sampler` members (at
         most `PROGRAM_SAMPLERS`), each sampler's state static in the layout
         (`BrushLayout::{textures, samplers}`, a `SamplerDesc` each, linear and
-        clamp by default); `abi()` counts them; the package codec carries them.
-  - [ ] DSL: `@sampler(filter: nearest | linear | trilinear, address: clamp |
-        repeat | mirror)` on a `sampler` member, checked (unknown label or value,
-        on another member, repeated); a texture parameter takes an `ImageAsset`
-        in the shader's record literal, an `SvgAsset` or other value `E2103`.
-  - [ ] UI and view: `Content::Shader` names each texture parameter's resource;
-        the store resolves it through the asset table as an asset node does — a
-        texture attached or replaced repaints only the nodes sampling it (`PAINT`)
-        — and a node with a texture not yet resident draws nothing; delivery
-        encodes an `ImageAsset` field into the node's resources, the macro embeds
-        the image, the release package and the dev patch carry it.
-  - [ ] Render: `ShaderDraw` carries its textures; a program draw binds one bind
-        group of its textures and the program's samplers (samplers interned per
-        descriptor, bind groups cached per program and texture set, released with
-        the texture or the program); the batch key carries the bind group, so
-        draws of one program merge only over the same textures.
-  - [ ] Example and tests: a textured brush in `10-custom-shader`, the headless
-        interpreter against Metal; a texture swap repaints one node and uploads no
-        instance; nearest against linear sampling differ as declared.
+        clamp by default); `abi()` counts them; the package codec carries them, a
+        decoded CPU layout checked against its program but for the samplers' state.
+  - [x] DSL: `@sampler(filter: nearest | linear, address: clamp | repeat | mirror)`
+        on a `sampler` member, checked (`E8105`: unknown setting or value, set
+        twice, two `@sampler`s, on another member); a texture parameter is a field
+        after the instance parameters taking an `ImageAsset`, an `SvgAsset` or
+        other value `E2103` (`dsl/tests/shader_brush.rs`). Trilinear waits for
+        asset mip chains.
+  - [x] UI and view: `Content::Shader { images }` names each texture
+        parameter's resource and the texture resident for it (`BrushImage`); the
+        store resolves it through the asset table as an asset node does
+        (`NodeStore::set_shader(.., images)`, the asset's nodes include those
+        sampling it), a texture attached or replaced repaints only them (`PAINT`),
+        and paint emits no draw until every image is resident; delivery splits the
+        value's fields into the encoded parameters and the images' resources
+        (`encode_shader`) and offers each image's bytes as an asset node does; the
+        macro embeds the image, the release package and the dev patch carry it
+        (`dsl/tests/view_assets.rs`).
+  - [x] Render: `ShaderDraw::textures` (`ProgramTextures`); a program draw binds
+        one bind group of its textures then the program's samplers (samplers
+        interned per descriptor through the sampler cache, bind groups cached per
+        program and texture set, released with the texture or the program); the
+        segment's resource is the bind group, so draws of one program merge only
+        over the same textures; a texture change is a resource change of the
+        retained draw, no instance re-upload (`render/tests/program_draw.rs`).
+  - [x] Example and tests: a `Lens` brush in `10-custom-shader` samples
+        `assets/images/checker.png` through a nearest, repeating sampler with a
+        running wave — headless shows only the image's two colors once it is
+        resident, Metal matches the interpreter within 2/255; a texture swap
+        repaints one node and uploads no instance; nearest against linear sampling
+        differ as declared.
 
 Reload:
 

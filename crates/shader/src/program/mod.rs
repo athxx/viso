@@ -24,7 +24,7 @@ pub mod ty;
 mod validate;
 pub mod value;
 
-pub use brush::{BrushLayout, BrushParam, ParamKind, ParamValue};
+pub use brush::{BrushLayout, BrushParam, BrushTexture, ParamKind, ParamValue};
 pub use codegen::{Target, code, emit};
 pub use interp::{Bindings, CpuShader, Raster};
 pub use layout::{
@@ -37,6 +37,7 @@ pub use reload::{Live, Migration, ProgramReload, ReloadError, ReloadEvent, Swap}
 pub use ty::{Scalar, Texel, Ty};
 pub use validate::ProgramError;
 pub use value::{EncodeError, Lane, Value};
+pub use viso_gpu::{AddressMode, FilterMode, SamplerDesc};
 
 /// A byte range of the source a program was built from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

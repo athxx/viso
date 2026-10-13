@@ -3613,6 +3613,7 @@ fn setup_clock_scene() -> Harness {
             },
             program: ProgramSlot(0),
             params: Arc::clone(&params),
+            textures: Default::default(),
         }));
     }
     h

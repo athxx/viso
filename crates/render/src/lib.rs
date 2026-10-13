@@ -91,12 +91,12 @@ pub use primitive::{
     Fit, FrostedMaterial, GlyphInstance, GlyphInstanceData, GlyphLane, GlyphRunDraw, Gradient,
     GradientInstance, GradientKind, GradientStop, ImageDraw, ImageInstance, ImageRect, LayerClip,
     LineCap, LineJoin, MaterialLane, MaterialLaneNeeds, Mesh, MeshVertex, NativeMaterialRegion,
-    NineSlice, Path, PathCmd, PathShadow, Point, Primitive, ProgramSlot, Quad, QuadInstance, Rect,
-    ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba, ShaderDraw, ShadowInstance,
-    ShadowShape, SpriteRegion, Stroke, StrokeAlign, TiledImage, analytic_capsule_schema,
-    analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema, analytic_shadow_schema,
-    color_transform_schema, glyphrun_schema, gradient_schema, image_schema, mesh_schema,
-    quad_schema,
+    NineSlice, Path, PathCmd, PathShadow, Point, Primitive, ProgramSlot, ProgramTextures, Quad,
+    QuadInstance, Rect, ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba, ShaderDraw,
+    ShadowInstance, ShadowShape, SpriteRegion, Stroke, StrokeAlign, TiledImage,
+    analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
+    analytic_shadow_schema, color_transform_schema, glyphrun_schema, gradient_schema, image_schema,
+    mesh_schema, quad_schema,
 };
 pub use program::{BrushProgram, ProgramError};
 // The brush profile a `ShaderDraw`'s parameters are encoded by, named in this

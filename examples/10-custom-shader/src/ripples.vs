@@ -30,12 +30,42 @@ shader Ripple {
     }
 }
 
+// An image tiled `tiles` times across the box, bent by a wave running out
+// from its middle; the sampler shows each texel as a crisp square and tiles
+// past the image's edge.
+shader Lens {
+    uniform viewport_size: Vec2F32;
+    uniform time: F32;
+    instance rect_pos: Vec2F32;
+    instance rect_size: Vec2F32;
+    instance tiles: F32;
+    texture image: Texture2D<Vec4F32>;
+    @sampler(filter: nearest, address: repeat)
+    sampler pixels: Sampler;
+    varying local: Vec2F32;
+
+    vertex(vertex_id: U32) -> VertexOutput {
+        let unit = quad_vertex(vertex_id);
+        local = unit;
+        return VertexOutput {
+            clip_position: to_clip(rect_pos + unit * rect_size, viewport_size),
+        };
+    }
+
+    fragment() -> Vec4F32 {
+        let d = (local - Vec2F32(0.5, 0.5)) * rect_size;
+        let bend = 1.0 + 0.08 * sin(length(d) * 0.1 - time * 3.0);
+        let uv = (Vec2F32(0.5, 0.5) + d * bend / rect_size) * Vec2F32(tiles * 3.0, tiles);
+        return sample(image, pixels, uv);
+    }
+}
+
 component Ripples {
     state rings: F32 = 6.0;
     view {
         Column {
             width: 288dp;
-            height: 328dp;
+            height: 440dp;
             gap: 16dp;
             ShaderView {
                 shader: Ripple { tint: #3366ff, rings: rings, center: Vec2F32::new(0.5, 0.5) };
@@ -48,6 +78,11 @@ component Ripples {
                 bind value <=> rings;
                 width: 288dp;
                 height: 24dp;
+            }
+            ShaderView {
+                shader: Lens { tiles: 2.0, image: asset("images/checker.png") };
+                width: 288dp;
+                height: 96dp;
             }
         }
     }

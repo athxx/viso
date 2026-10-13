@@ -40,7 +40,10 @@ fn painted(store: &NodeStore, root: NodeId) -> Arc<viso_ui::shader::BrushProgram
         .links(root)
         .and_then(|l| l.first_child)
         .unwrap();
-    let Some(Content::Shader { program, params }) = store.content_payload(view) else {
+    let Some(Content::Shader {
+        program, params, ..
+    }) = store.content_payload(view)
+    else {
         panic!("{:?}", store.content_payload(view));
     };
     let program = Arc::clone(store.shaders().get(*program).unwrap());

@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crate::blend::Blend;
 use crate::color_effect::{ColorEffect, ColorOp};
-use viso_gpu::{AddressMode, FilterMode, GpuPod, SamplerDesc, TextureId};
+use viso_gpu::{AddressMode, FilterMode, GpuPod, PROGRAM_TEXTURES, SamplerDesc, TextureId};
 use viso_math::{ExtendMode, InterpolationSpace};
 
 // The Quad/Image/Mesh field contracts (`quad_schema`/`image_schema`/
@@ -1877,6 +1877,11 @@ pub struct Mesh {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProgramSlot(pub u32);
 
+/// The images a [`ShaderDraw`] binds, by its program's texture slots: slot
+/// `i` holds the program's texture parameter `i`, the slots past the
+/// program's textures `None`.
+pub type ProgramTextures = [Option<TextureId>; PROGRAM_TEXTURES as usize];
+
 /// A box painted by a user program of the brush profile.
 ///
 /// `params` is one instance of the program with its parameters encoded
@@ -1884,6 +1889,8 @@ pub struct ProgramSlot(pub u32);
 /// `rect_pos`/`rect_size` — in the space of the target it draws into, so an
 /// offscreen layer's origin is already subtracted — and the target's size into
 /// `viewport_size`. Shared, so re-emitting an unchanged node clones a pointer.
+/// `textures` are the images it samples, bound with the program's samplers; a
+/// draw missing one of its program's draws nothing.
 ///
 /// The program's output is opaque to the renderer, so a group opacity around it
 /// is never folded into it: the group renders offscreen instead.
@@ -1892,6 +1899,7 @@ pub struct ShaderDraw {
     pub rect: Rect,
     pub program: ProgramSlot,
     pub params: Arc<[u8]>,
+    pub textures: ProgramTextures,
 }
 
 /// Renderer-facing primitive. This expresses *only* what the renderer needs —

@@ -87,7 +87,9 @@ const DIMMER: &str = "Vec4F32(tint.r * 0.5, tint.g * 0.5, tint.b * 0.5, 1.0)";
 /// The slot node `node` paints with and its encoded parameters.
 fn painted(rt: &Rt, node: NodeId) -> (ProgramSlot, Arc<[u8]>) {
     match rt.store.content_payload(node) {
-        Some(Content::Shader { program, params }) => (*program, Arc::clone(params)),
+        Some(Content::Shader {
+            program, params, ..
+        }) => (*program, Arc::clone(params)),
         other => panic!("{other:?}"),
     }
 }

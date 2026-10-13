@@ -9,8 +9,9 @@
 //! shares one slot, and the renderer one pipeline.
 //!
 //! A shader view's `shader` value is the shader's record of parameters, in
-//! declaration order; [`encode_params`] writes it as one instance of the
-//! brush, the box left for paint to place.
+//! declaration order, then its images; [`encode_shader`] writes the
+//! parameters as one instance of the brush, the box left for paint to place,
+//! and names the images' resources.
 
 use std::cell::RefCell;
 use std::sync::{Arc, Weak};
@@ -18,6 +19,7 @@ use std::sync::{Arc, Weak};
 use viso_behavior::Value;
 use viso_ende::{Decode, DecodeError, content_hash};
 use viso_ui::Srgb;
+use viso_ui::resource::ResourceId;
 use viso_ui::shader::{BrushLayout, BrushProgram, PackedBrush, ParamKind, ParamValue};
 
 thread_local! {
@@ -60,23 +62,31 @@ pub fn __embedded_shader(bytes: &'static [u8]) -> Arc<BrushProgram> {
     load_shader(bytes).unwrap_or_else(|error| panic!("an embedded shader does not load: {error}"))
 }
 
-/// The parameters `value`, a shader's record of them, give under `layout`, as
-/// one encoded instance whose box is zero; `None` for a value of another
-/// shape.
-pub(crate) fn encode_params(layout: &BrushLayout, value: &Value) -> Option<Arc<[u8]>> {
+/// What `value`, a shader's record, gives under `layout`: its parameters as
+/// one encoded instance whose box is zero, and the resource of each image
+/// after them; `None` for a value of another shape.
+pub(crate) fn encode_shader(
+    layout: &BrushLayout,
+    value: &Value,
+) -> Option<(Arc<[u8]>, Vec<ResourceId>)> {
     let Value::Agg(record) = value else {
         return None;
     };
-    if record.fields.len() != layout.params.len() {
+    if record.fields.len() != layout.params.len() + layout.textures.len() {
         return None;
     }
+    let (params, images) = record.fields.split_at(layout.params.len());
     let mut values = Vec::with_capacity(layout.params.len());
-    for (param, field) in layout.params.iter().zip(record.fields.iter()) {
+    for (param, field) in layout.params.iter().zip(params) {
         values.push(param_value(param.kind, field)?);
     }
     let mut out = Vec::new();
     layout.encode(&values, &mut out).ok()?;
-    Some(out.into())
+    let images = images
+        .iter()
+        .map(crate::values::resource)
+        .collect::<Option<Vec<_>>>()?;
+    Some((out.into(), images))
 }
 
 /// `value` as a parameter of `kind`: `F32` from a float, `I32` and `U32` from

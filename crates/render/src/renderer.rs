@@ -42,7 +42,7 @@ use crate::primitive::{
     AdvancedBlendInstance, AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance,
     AnalyticRRectInstance, BlurInstance, ColorTransformInstance, GlyphInstance, GradientInstance,
     ImageInstance, MaterialInstance, MaterialLane, MeshVertex, NativeMaterialRegion, PathCmd,
-    Primitive, ProgramSlot, QuadInstance, Rect, ShadowInstance, rgba_array,
+    Primitive, ProgramSlot, ProgramTextures, QuadInstance, Rect, ShadowInstance, rgba_array,
 };
 use crate::program::{BrushProgram, ProgramError, ProgramTable};
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
@@ -229,9 +229,13 @@ pub(crate) enum SegmentKind {
     /// buffer.
     Material { bind_group: BindGroupId },
     /// A run of adjacent boxes of the user program in `slot`, in that
-    /// program's buffer. `start` is a **byte** offset there, aligned to the
+    /// program's buffer, binding `bind_group`'s images and samplers when the
+    /// program samples any. `start` is a **byte** offset there, aligned to the
     /// backend's program instance alignment; `count` counts instances.
-    Program { slot: ProgramSlot },
+    Program {
+        slot: ProgramSlot,
+        bind_group: Option<BindGroupId>,
+    },
 }
 
 impl SegmentKind {
@@ -260,7 +264,7 @@ impl SegmentKind {
     /// The user program this kind draws, if it is one.
     pub(crate) fn program(self) -> Option<ProgramSlot> {
         match self {
-            SegmentKind::Program { slot } => Some(slot),
+            SegmentKind::Program { slot, .. } => Some(slot),
             _ => None,
         }
     }
@@ -277,14 +281,14 @@ impl SegmentKind {
             | SegmentKind::ColorTransform { bind_group }
             | SegmentKind::AdvancedBlend { bind_group }
             | SegmentKind::Material { bind_group } => Some(bind_group),
+            SegmentKind::Program { bind_group, .. } => bind_group,
             SegmentKind::Quad
             | SegmentKind::AnalyticRRect
             | SegmentKind::AnalyticEllipse
             | SegmentKind::AnalyticCapsule
             | SegmentKind::AnalyticLine
             | SegmentKind::AnalyticShadow
-            | SegmentKind::Mesh
-            | SegmentKind::Program { .. } => None,
+            | SegmentKind::Mesh => None,
         }
     }
 }
@@ -718,6 +722,9 @@ pub(crate) enum SampledSource {
     /// blurred output — whose bind group the transient pool owns and reuses, so
     /// the target identity is the resource identity.
     Transient(TargetId),
+    /// A user program's images, bound with the program's samplers: one bind
+    /// group per program and texture set.
+    Program(ProgramSlot, ProgramTextures),
 }
 
 /// Which pipeline an offscreen layer's closing composite lowers through.
@@ -1946,7 +1953,22 @@ impl Renderer {
         pipeline: PipelineId,
         layout: BrushLayout,
     ) -> Result<(), ProgramError> {
-        self.programs.set(backend, slot, pipeline, layout)
+        let samplers = self.program_samplers(backend, &layout);
+        self.programs.set(backend, slot, pipeline, layout, samplers)
+    }
+
+    /// The samplers a program laid out by `layout` samples through,
+    /// interned per descriptor.
+    fn program_samplers<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        layout: &BrushLayout,
+    ) -> Vec<SamplerId> {
+        layout
+            .samplers
+            .iter()
+            .map(|desc| self.sampler_cache.intern(backend, *desc))
+            .collect()
     }
 
     /// Compiles `code`, a brush-profile program laid out by `layout`, on the
@@ -1971,8 +1993,9 @@ impl Renderer {
             .compile(&self.program_desc(label, code, &layout))
             .map_err(ProgramError::Compile)?;
         let pipeline = backend.install_program(compiled);
+        let samplers = self.program_samplers(backend, &layout);
         self.programs
-            .set(backend, slot, pipeline, layout)
+            .set(backend, slot, pipeline, layout, samplers)
             .inspect_err(|_| backend.destroy_pipeline(pipeline))
     }
 
@@ -2635,7 +2658,10 @@ impl Renderer {
                     // nothing. The layer planner never folds a group opacity
                     // into a program's output, so `fold` is 1 here.
                     debug_assert!(fold >= 1.0, "a program draw is never folded");
-                    if !self.programs.draws(draw.program, &draw.params) {
+                    if !self
+                        .programs
+                        .draws(draw.program, &draw.params, &draw.textures)
+                    {
                         self.program_draws_dropped += 1;
                         continue;
                     }
@@ -3368,8 +3394,12 @@ impl Renderer {
             }
             StoreRef::Shader(id) => {
                 let e = self.scene.shaders.get(id).expect("shader slot");
+                let bind_group = self.programs.bind_group(backend, e.program, &e.textures);
                 let segment = Segment {
-                    kind: SegmentKind::Program { slot: e.program },
+                    kind: SegmentKind::Program {
+                        slot: e.program,
+                        bind_group,
+                    },
                     start: 0,
                     count: 1,
                     clip,
@@ -3734,6 +3764,7 @@ impl Renderer {
     /// still names it. The next paint that samples a replacement texture binds
     /// it afresh.
     pub fn release_texture<B: GpuBackend>(&mut self, backend: &mut B, texture: TextureId) {
+        self.programs.release_texture(backend, texture);
         self.texture_bindings.retain(|tb| {
             if tb.texture != texture {
                 return true;
@@ -3950,6 +3981,12 @@ impl Renderer {
             StoreRef::GlyphRun(run) => {
                 let e = self.scene.glyph_runs.run(run).expect("glyph run slot");
                 Some(SampledSource::Texture(e.atlas, SamplerDesc::LINEAR_CLAMP))
+            }
+            StoreRef::Shader(id) => {
+                let e = self.scene.shaders.get(id).expect("shader slot");
+                let (_, layout) = self.programs.get(e.program)?;
+                (!layout.textures.is_empty() || !layout.samplers.is_empty())
+                    .then_some(SampledSource::Program(e.program, e.textures))
             }
             StoreRef::Composite { pass, .. } => self.offscreen_passes[pass]
                 .sample
@@ -5023,9 +5060,9 @@ impl Renderer {
             // A frosted material surface: the same generated quad, through the
             // pipeline that samples the shared blurred backdrop and applies the
             // whole §18 chain in one fragment (M0.1).
-            SegmentKind::Program { slot } => {
+            SegmentKind::Program { slot, bind_group } => {
                 self.programs
-                    .command(slot, seg.start, seg.count, viewport, scissor)
+                    .command(slot, bind_group, seg.start, seg.count, viewport, scissor)
             }
             SegmentKind::Material { bind_group } => DrawCommand {
                 pipeline: self.material_pipeline,
