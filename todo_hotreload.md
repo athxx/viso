@@ -928,32 +928,44 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
 
 ### H6.2 — DevSnapshot (§29–§32)
 
-- [ ] `DevSnapshot { snapshot_version, source_build, app_schema, views, games,
-      windows, extensions }` in ende binary (`crates/view/src/dev/snapshot.rs`): per
-      mounted view — its file, window and mount ordinals, its state cells by
-      `StateKey`, its VM states by durable key each as its type and value schema and
-      value (the `@persist` form: plain data only, a closure or handle is not
-      captured), focus, scroll offsets and text editing state (text and selection)
-      by static node; per game session its `GameSnapshot`; per window its geometry;
-      per registered extension its bytes. Never pointers, handles, fds, sockets,
-      task stacks or platform objects (§30).
-- [ ] Protocol 12: `HostMessage::{Snapshot, Restore}`, `RuntimeMessage::{Snapshot,
-      Restored}` — the restore carries each file's plan from the view the old app
-      ran to the one the new build embeds, the host's as for a patch.
-- [ ] Capture at the frame boundary after the request, every window, every view
-      mount, every game session; the extensions an app registers
-      (`AppCx::dev_state(name, capture, restore)`).
-- [ ] Restore before the first frame of the new process (it waits for the restore
-      a bounded time when launched to restore): each view through its file's plan,
-      the same compatibility matrix and `@migrate` as a patch, an entry that does not
-      carry reset with `E5101`; games through `Scheduler::restore`; a restore that
-      does not decode is a `snapshot-restore` NACK and the app runs fresh; the
-      `Restored` report gives what carried and what reset.
+- [x] `DevSnapshot { source_build, app_schema, revision, views, games, windows,
+      extensions }` in ende binary (`crates/view/src/dev/snapshot.rs`, bounded on
+      decode): per mounted view (`MountRef`: file path, window ordinal, mount
+      ordinal) its state cells by `StateKey`, its behavior's states by slot as plain
+      data (a closure or handle is not captured), and the focus, scroll offset, text
+      and selection, and active child of each node holding one, by `NodeRef` (with
+      its `for` item keys for a region node); per game its `GameSnapshot` bytes; per
+      window its geometry; per extension its bytes. Never pointers, handles, fds,
+      sockets, task stacks or platform objects (§30). The states carry no schema: the
+      host's plan from the old view knows their types.
+- [x] `commit::restore`: the commit with the snapshot as the last-good — the view
+      rebuilt from the new build's package, each kept cell seeded, each state through
+      the plan (kept, converted, `@migrate`, reset with `E5101`), each kept node's
+      state carried by the plan's node map; what no node takes reported lost. A
+      carried edit buffer keeps its text over the rebuilt field's seed (also for a
+      patch's carry).
+- [ ] Protocol 12: `HostMessage::{Snapshot, Restore}`, `RuntimeMessage::{Blob,
+      Snapshot, Restored}` — the snapshot travels as blob chunks both ways; the
+      restore carries each view's plan from the view the old app ran to the one the
+      new build embeds, the host's as for a patch.
+- [ ] Capture at the frame boundary after the request: every window (its size; its
+      position once the platform reports one), every view mount, every game session
+      (`Scheduler::snapshot`), every extension the app registered
+      (`AppCx::dev_state(name, capture, restore)`, a no-op without `hot-reload`).
+- [ ] Restore before the first frame of a process launched to restore (it waits for
+      the restore a bounded time): each view through its plan; games through
+      `Scheduler::restore`; extensions by name; a restore that does not decode is a
+      `snapshot-restore` NACK and the app runs fresh; `Restored` reports what carried
+      and what reset per file.
+- [ ] Host: the snapshot assembled from its chunks and kept in memory for the
+      session only, never printed in logs or JSON (§32, §47); the restore's plans
+      from the last-good of each mount the old app ran to the view the new build
+      reports.
 - [ ] `DevSnapshot` and its messages join the release-absence markers
       (`xtask/src/absence.rs`).
-- [ ] Storage: host memory, current session only, never printed in logs or JSON
-      (§32, §47); an opt-in disk cache under the ignored dev cache excludes
-      `@sensitive` states and secure text fields.
+- [ ] An opt-in disk cache under the ignored dev cache (§32, "if ever allowed") waits
+      for a DSL way to mark a state sensitive; it would exclude those and secure text
+      fields.
 
 ### H6.3 — Desktop warm restart (§26)
 

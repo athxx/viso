@@ -250,6 +250,28 @@ impl Buffer {
         true
     }
 
+    /// Replace the text and selection with ones recorded of this field
+    /// elsewhere (a snapshot of the process before), ending any composition.
+    /// A selection end past the text or inside a character moves to its end.
+    pub fn restore(&mut self, text: String, sel: Selection) {
+        let end = TextPosition::upstream(TextOffset(text.len()));
+        let clamp = |position: TextPosition| {
+            let at = position.offset.0;
+            if at <= text.len() && text.is_char_boundary(at) {
+                position
+            } else {
+                end
+            }
+        };
+        self.sel = Selection {
+            anchor: clamp(sel.anchor),
+            focus: clamp(sel.focus),
+        };
+        self.text = text;
+        self.composition = ImeComposition::default();
+        self.revision = self.revision.next();
+    }
+
     /// The text request that declares the buffer's text in its resident
     /// style. An edit buffer is single-line: it clips and scrolls, never wraps.
     pub fn request(&self) -> TextRequest {

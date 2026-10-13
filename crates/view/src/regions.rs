@@ -377,6 +377,68 @@ pub fn __mount_embedded(
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ItemKey(Key);
 
+impl ItemKey {
+    /// The deepest an aggregate key nests when it is read back.
+    const MAX_DEPTH: u32 = 32;
+
+    /// Writes the key to `enc`.
+    pub fn write(&self, enc: &mut Encoder) {
+        fn write(key: &Key, enc: &mut Encoder) {
+            match key {
+                Key::Nil => enc.write_u8(0),
+                Key::Int(n) => {
+                    enc.write_u8(1);
+                    enc.write_varint_signed(*n);
+                }
+                Key::Str(s) => {
+                    enc.write_u8(2);
+                    enc.write_str(s);
+                }
+                Key::Agg(tag, fields) => {
+                    enc.write_u8(3);
+                    enc.write_varint(u64::from(*tag));
+                    enc.write_varint(fields.len() as u64);
+                    for field in fields {
+                        write(field, enc);
+                    }
+                }
+            }
+        }
+        write(&self.0, enc);
+    }
+
+    /// Reads a key [`write`](Self::write) wrote.
+    ///
+    /// # Errors
+    ///
+    /// Bytes that are not a key, or one nested deeper than 32.
+    pub fn read(dec: &mut Decoder<'_>) -> Result<ItemKey, DecodeError> {
+        fn read(dec: &mut Decoder<'_>, depth: u32) -> Result<Key, DecodeError> {
+            let malformed = |dec: &Decoder<'_>| DecodeError::Malformed {
+                offset: dec.position(),
+            };
+            Ok(match dec.read_u8()? {
+                0 => Key::Nil,
+                1 => Key::Int(dec.read_varint_signed()?),
+                2 => Key::Str(Rc::new(dec.read_str()?.to_owned())),
+                3 if depth < ItemKey::MAX_DEPTH => {
+                    let tag = u32::try_from(dec.read_varint()?).map_err(|_| malformed(dec))?;
+                    let count = dec.read_varint()?;
+                    if count > dec.remaining() as u64 {
+                        return Err(malformed(dec));
+                    }
+                    let fields = (0..count)
+                        .map(|_| read(dec, depth + 1))
+                        .collect::<Result<_, _>>()?;
+                    Key::Agg(tag, fields)
+                }
+                _ => return Err(malformed(dec)),
+            })
+        }
+        read(dec, 0).map(ItemKey)
+    }
+}
+
 /// A node a view's regions mount.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionNode {

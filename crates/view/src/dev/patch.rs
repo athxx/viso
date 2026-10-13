@@ -414,7 +414,7 @@ fn read_plan(dec: &mut Decoder<'_>) -> Result<ReloadPlan, WireError> {
     })
 }
 
-fn write_node(enc: &mut Encoder, node: NodeRef) {
+pub(super) fn write_node(enc: &mut Encoder, node: NodeRef) {
     match node {
         NodeRef::Static(index) => {
             enc.write_u8(0);
@@ -429,7 +429,7 @@ fn write_node(enc: &mut Encoder, node: NodeRef) {
     }
 }
 
-fn read_node(dec: &mut Decoder<'_>) -> Result<NodeRef, WireError> {
+pub(super) fn read_node(dec: &mut Decoder<'_>) -> Result<NodeRef, WireError> {
     Ok(match dec.read_u8()? {
         0 => NodeRef::Static(read_u32(dec)?),
         1 => NodeRef::Region {

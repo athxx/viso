@@ -1738,6 +1738,19 @@ impl NodeStore {
         }
     }
 
+    /// Take the seeds queued for `node`, the latest of them: what a carried
+    /// edit buffer takes its style from instead of reconcile seeding it.
+    pub fn take_text_seed(&mut self, node: NodeId) -> Option<TextRequest> {
+        let mut latest = None;
+        self.text_seeds.retain(|(seeded, request)| {
+            if *seeded == node {
+                latest = Some(request.clone());
+            }
+            *seeded != node
+        });
+        latest
+    }
+
     /// Whether any text field seed is waiting for reconcile.
     #[inline]
     pub fn has_text_seeds(&self) -> bool {

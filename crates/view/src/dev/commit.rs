@@ -51,15 +51,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use viso_behavior::native::MigratableState;
-use viso_behavior::{Fault, Module};
+use viso_behavior::{Fault, Module, Value};
 use viso_ui::aot::{build_nodes, restyle_aot_node};
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     BindingTable, Buffer, BuildCx, DirtyClass, EffectStore, LookTransition, NodeId, NodeStore,
-    SemanticProjector, StateId, StateStore, StateValue, StructureCx, TextEdits, Vec2,
+    Selection, SemanticProjector, StateId, StateStore, StateValue, StructureCx, TextEdits, Vec2,
 };
 
+use super::snapshot::ViewSnapshot;
 use super::wire::{
     DirtyCounts, NodeCarry, NodeRef, RESET_NOTICE, ReloadPlan, RetypePlan, StateAction, StatePlan,
     StructuralOp,
@@ -268,6 +269,32 @@ fn walk_static(
 /// and lost. Infallible: everything that can fail ran before the patch was
 /// staged.
 pub fn commit(rt: &mut LiveRuntime<'_>, candidate: &Candidate, plan: &ReloadPlan) -> CommitReport {
+    commit_from(rt, candidate, plan, None)
+}
+
+/// Restores `snapshot`, a mount of a view another process ran, into the
+/// mount `rt` of `candidate`, the view this process runs, by `plan`, the
+/// host's plan from that view to this one: the same migration as a commit,
+/// with the snapshot as the last-good. The view is rebuilt: each state the
+/// plan keeps takes the snapshot's value, converted where its type changed,
+/// and each node it keeps takes the focus, scroll offset, text and active
+/// child the snapshot recorded for it.
+pub fn restore(
+    rt: &mut LiveRuntime<'_>,
+    candidate: &Candidate,
+    plan: &ReloadPlan,
+    snapshot: &ViewSnapshot,
+) -> CommitReport {
+    commit_from(rt, candidate, plan, Some(snapshot))
+}
+
+/// A commit whose last-good is the live mount, or `snapshot`.
+fn commit_from(
+    rt: &mut LiveRuntime<'_>,
+    candidate: &Candidate,
+    plan: &ReloadPlan,
+    snapshot: Option<&ViewSnapshot>,
+) -> CommitReport {
     let mut report = CommitReport::default();
     let package = &candidate.package;
 
@@ -279,8 +306,17 @@ pub fn commit(rt: &mut LiveRuntime<'_>, candidate: &Candidate, plan: &ReloadPlan
     }
 
     // Step 1 — reuse the live nodes in place, or rebuild the view carrying
-    // each kept node's migratable state.
-    let (nodes, pending) = apply_structural(rt, package, plan);
+    // each kept node's migratable state. A snapshot's cells take their place
+    // first, so the rebuilt nodes show them.
+    let (nodes, pending) = match snapshot {
+        None => apply_structural(rt, package, plan),
+        Some(snapshot) => {
+            seed_cells(rt.states, plan, snapshot);
+            let (carried, regional) = snapshot.carried(plan);
+            let (focused, scrolled) = snapshot.census();
+            rebuild(rt, package, carried, regional, focused, scrolled)
+        }
+    };
 
     // Step 2 — the recompiled behavior's host is created first, so the
     // migration sets each carried state into it while the prior host still
@@ -299,10 +335,14 @@ pub fn commit(rt: &mut LiveRuntime<'_>, candidate: &Candidate, plan: &ReloadPlan
     }
     let mut changed = Vec::new();
     let cells = {
-        let prior = rt.view.as_ref().map(|host| host.borrow());
+        let host = rt.view.as_ref().map(|host| host.borrow());
+        let prior = match snapshot {
+            Some(snapshot) => Prior::Snapshot(snapshot),
+            None => Prior::Live(host.as_deref()),
+        };
         migrate_states(
             rt.states,
-            prior.as_deref(),
+            &prior,
             next.as_mut().and_then(|next| next.as_mut().ok()),
             plan,
             &mut changed,
@@ -357,6 +397,21 @@ fn apply_structural(
     let carried = carry_out(rt, &plan.nodes);
     let regional = carry_out_regions(rt, &plan.nodes);
     let (focused, scrolled) = rt.root.map_or((false, 0), |root| census(rt, root));
+    rebuild(rt, package, carried, regional, focused, scrolled)
+}
+
+/// Frees the view's subtree and builds `package`'s in its place, settling on
+/// the rebuilt static nodes what `carried` lifted; what `regional` lifted
+/// waits for the regions to mount. `focused` and `scrolled` are what the old
+/// subtree held, for the report of what no node took.
+fn rebuild(
+    rt: &mut LiveRuntime<'_>,
+    package: &ViewPackage,
+    carried: Vec<Carried>,
+    regional: Vec<Carried>,
+    focused: bool,
+    scrolled: u32,
+) -> (Vec<Option<NodeId>>, Option<Pending>) {
     if let Some(host) = rt.view.as_ref() {
         let mut host = host.borrow_mut();
         host.release_regions(rt.store, rt.states);
@@ -631,29 +686,39 @@ fn settle_carried(rt: &mut LiveRuntime<'_>, mut pending: Pending, report: &mut C
 }
 
 /// The node state one kept node carries across a rebuild.
-struct Carried {
+pub(super) struct Carried {
     /// The node in the candidate.
-    to: NodeRef,
+    pub(super) to: NodeRef,
     /// For a node a region mounts, the keys of the `for` items it sits in.
-    path: Option<Vec<ItemKey>>,
+    pub(super) path: Option<Vec<ItemKey>>,
     /// Whether it held focus.
-    focus: bool,
+    pub(super) focus: bool,
     /// Its nonzero scroll offset.
-    scroll: Option<Vec2>,
-    /// Its edit buffer: text, caret, selection and composition.
-    buffer: Option<Box<Buffer>>,
+    pub(super) scroll: Option<Vec2>,
+    /// Its edit state.
+    pub(super) buffer: Option<CarriedText>,
     /// Its look transitions in flight.
-    moving: Vec<LookTransition>,
+    pub(super) moving: Vec<LookTransition>,
     /// The ordinal, among its immediate children, of the one with its
     /// `hidden` flag clear — a `Tabs`-like widget's selected panel or a
     /// `NavigationStack`-like widget's top page.
-    active_child: Option<u32>,
+    pub(super) active_child: Option<u32>,
+}
+
+/// A carried node's edit state.
+pub(super) enum CarriedText {
+    /// Its whole edit buffer, composition included, moved within the
+    /// process.
+    Buffer(Box<Buffer>),
+    /// Its text and selection, as a snapshot recorded them; the rebuilt
+    /// node's buffer keeps its own style.
+    Text(String, Selection),
 }
 
 /// The ordinal, among `parent`'s immediate children, of the one with its
 /// `hidden` flag clear, or `None` when zero or more than one is (no single
 /// active child to carry).
-fn active_child(store: &NodeStore, parent: NodeId) -> Option<u32> {
+pub(super) fn active_child(store: &NodeStore, parent: NodeId) -> Option<u32> {
     let mut index = 0u32;
     let mut found = None;
     let mut child = store.arena().links(parent).and_then(|l| l.first_child);
@@ -745,7 +810,8 @@ fn lift(
         scroll: (carries(MigratableState::SCROLL) && offset != Vec2::ZERO).then_some(offset),
         buffer: carries(MigratableState::SELECTION)
             .then(|| rt.text_edits.take(old))
-            .flatten(),
+            .flatten()
+            .map(CarriedText::Buffer),
         moving,
         active_child: carries(MigratableState::ACTIVE_CHILD)
             .then(|| active_child(rt.store, old))
@@ -802,9 +868,14 @@ fn carry_in(
             rt.store.restore_scroll(node, offset);
             restored += 1;
         }
-        if let Some(buffer) = carried.buffer {
-            rt.store.set_text_request(node, buffer.request());
-            rt.text_edits.register(node, buffer);
+        match carried.buffer {
+            Some(CarriedText::Buffer(buffer)) => settle_buffer(rt, node, buffer),
+            Some(CarriedText::Text(text, selection)) => {
+                let mut buffer = rt.text_edits.take(node).unwrap_or_default();
+                buffer.restore(text, selection);
+                settle_buffer(rt, node, buffer);
+            }
+            None => {}
         }
         if let Some(index) = carried.active_child {
             restore_active_child(rt.store, node, index);
@@ -812,6 +883,18 @@ fn carry_in(
         moving.extend(carried.moving.into_iter().map(|m| (node, m)));
     }
     (refocused, restored)
+}
+
+/// Settles the carried edit buffer `buffer` on the rebuilt field `node`: the
+/// style its build seeds the field with, the text and selection the buffer
+/// carries, which the seed would otherwise replace at the next reconcile.
+fn settle_buffer(rt: &mut LiveRuntime<'_>, node: NodeId, mut buffer: Box<Buffer>) {
+    if let Some(mut seed) = rt.store.take_text_seed(node) {
+        seed.text.clone_from(&buffer.text);
+        buffer.seed(&seed);
+    }
+    rt.store.set_text_request(node, buffer.request());
+    rt.text_edits.register(node, buffer);
 }
 
 /// Migrates each state cell of `plan` by its durable key, carries each kept
@@ -828,7 +911,7 @@ fn carry_in(
 /// bumped, so each region reading it re-reads the value `next` now holds.
 fn migrate_states(
     states: &mut StateStore,
-    prior: Option<&ViewHost>,
+    prior: &Prior<'_>,
     mut next: Option<&mut ViewHost>,
     plan: &ReloadPlan,
     changed: &mut Vec<StateId>,
@@ -856,9 +939,9 @@ fn migrate_states(
                         changed.push(id);
                     }
                 }
-                if let (Some(from), Some(to), Some(prior), Some(next)) =
-                    (state.from_slot, state.slot, prior, next.as_deref_mut())
-                    && let Some(value) = prior.current(from as usize, &*states)
+                if let (Some(from), Some(to), Some(next)) =
+                    (state.from_slot, state.slot, next.as_deref_mut())
+                    && let Some(value) = prior.current(from, states)
                 {
                     next.set_state(to as usize, value);
                 }
@@ -887,11 +970,51 @@ fn migrate_states(
     out
 }
 
+/// Where a commit's kept states come from: the host of the live view, or a
+/// snapshot of a view another process ran.
+enum Prior<'p> {
+    Live(Option<&'p ViewHost>),
+    Snapshot(&'p ViewSnapshot),
+}
+
+impl Prior<'_> {
+    /// The value the prior view's state `slot` holds.
+    fn current(&self, slot: u32, states: &StateStore) -> Option<Value> {
+        match self {
+            Prior::Live(host) => host.as_ref()?.current(slot as usize, states),
+            Prior::Snapshot(snapshot) => snapshot.states.get(slot as usize)?.clone(),
+        }
+    }
+
+    /// The value the prior view's cell `key` holds, for a state held in its
+    /// cell alone.
+    fn held(&self, key: StateKey, states: &StateStore) -> Option<Value> {
+        let cell = match self {
+            Prior::Live(_) => states.get(states.id_for_key(key)?)?,
+            Prior::Snapshot(snapshot) => snapshot.cell(key)?,
+        };
+        vm_value(cell)
+    }
+}
+
+/// Writes each cell of `snapshot` that `plan` keeps as it is into the cell
+/// of its key, so the rebuilt view reads the snapshot's values.
+fn seed_cells(states: &mut StateStore, plan: &ReloadPlan, snapshot: &ViewSnapshot) {
+    for state in &plan.states {
+        if state.action == StateAction::Keep
+            && let Some(value) = snapshot.cell(state.key)
+            && let Some(id) = states.id_for_key(state.key)
+        {
+            states.set(id, value);
+        }
+    }
+}
+
 /// Converts the kept state `state` whose type or cell form changed into its
 /// new type, or resets it and reports the reset.
 fn retype_state(
     states: &mut StateStore,
-    prior: Option<&ViewHost>,
+    prior: &Prior<'_>,
     mut next: Option<&mut ViewHost>,
     state: &StatePlan,
     report: &mut CommitReport,
@@ -901,8 +1024,8 @@ fn retype_state(
     let mut fault = None;
     let converted = retype.and_then(|retype| {
         let old = match state.from_slot {
-            Some(slot) => prior?.current(slot as usize, &*states)?,
-            None if retype.held => vm_value(states.get(states.id_for_key(key)?)?)?,
+            Some(slot) => prior.current(slot, states)?,
+            None if retype.held => prior.held(key, states)?,
             None => return None,
         };
         let mut convert = |conversion: &viso_behavior::retype::Retyping| {
