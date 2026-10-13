@@ -26,7 +26,7 @@ impl WindowState {
         self.report_window();
         initial_input(&mut self.states);
         self.report_appearance(appearance);
-        report_locale(&mut self.states, locale);
+        self.report_locale(locale);
         report_display_features(&mut self.states, features);
     }
 
@@ -49,6 +49,26 @@ impl WindowState {
         if lengths.text_scale != text_scale {
             self.store.set_length_env(viso_ui::LengthEnv {
                 text_scale,
+                ..lengths
+            });
+        }
+    }
+
+    /// Writes the user's locale and the layout direction its script reads in;
+    /// the direction also places the window's `start` and `end` paddings.
+    pub(crate) fn report_locale(&mut self, locale: &str) {
+        let direction = LayoutDirection::of_locale(locale);
+        let now = self.states.env().environment();
+        if now.locale != locale || now.layout_direction != direction {
+            self.states.update_env(|env| {
+                locale.clone_into(&mut env.locale);
+                env.layout_direction = direction;
+            });
+        }
+        let lengths = self.store.length_env();
+        if lengths.direction != direction {
+            self.store.set_length_env(viso_ui::LengthEnv {
+                direction,
                 ..lengths
             });
         }
@@ -94,18 +114,6 @@ fn report_metrics(
         env.safe_area = safe_area;
         env.keyboard_inset = keyboard_inset;
     });
-}
-
-/// Writes the user's locale and the layout direction its script reads in.
-pub(crate) fn report_locale(states: &mut StateStore, locale: &str) {
-    let direction = LayoutDirection::of_locale(locale);
-    let now = states.env().environment();
-    if now.locale != locale || now.layout_direction != direction {
-        states.update_env(|env| {
-            locale.clone_into(&mut env.locale);
-            env.layout_direction = direction;
-        });
-    }
 }
 
 /// Writes the hinges, folds and cutouts over a window.

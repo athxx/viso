@@ -485,9 +485,27 @@ impl InferCx<'_> {
         self.diagnostics.push(diagnostic);
     }
 
-    /// Types a record-field initializer against its field type, with the one
-    /// implicit promotion a field slot allows: a `T` initializes an `Option<T>`.
+    /// Types a property value or a record-field initializer against its
+    /// type, with the implicit promotions such a slot allows (§U1.3): a `T`
+    /// initializes an `Option<T>`, and a length an `EdgeInsets` as `all` of it.
     pub(crate) fn infer_promoted(&mut self, value: &Expr, target: &Ty) -> Ty {
+        if is_edge_insets(target) {
+            let mark = self.diagnostics.len();
+            let ty = self.infer_expr(value, Some(target));
+            if self.diagnostics.len() == mark {
+                return ty;
+            }
+            // Not an `EdgeInsets`: a length stands for one, else the mismatch
+            // names the type the slot wants.
+            let wanted = self.diagnostics.split_off(mark);
+            let _ = self.infer_expr(value, Some(&Ty::MixedLength));
+            if self.diagnostics.len() == mark {
+                return target.clone();
+            }
+            self.diagnostics.truncate(mark);
+            self.diagnostics.extend(wanted);
+            return ty;
+        }
         let Ty::Option(inner) = target else {
             return self.infer_expr(value, Some(target));
         };
@@ -509,8 +527,17 @@ impl InferCx<'_> {
         {
             return;
         }
+        if is_edge_insets(target) && compatible(&ty, &Ty::MixedLength) {
+            return;
+        }
         let _ = self.check_against(ty, Some(target), node);
     }
+}
+
+/// Whether `ty` is the prelude's `EdgeInsets`.
+fn is_edge_insets(ty: &Ty) -> bool {
+    matches!(ty, Ty::Named(id, args)
+        if *id == crate::resolve::prelude::edge_insets_record() && args.is_empty())
 }
 
 /// The suggestion candidates for a record's fields.

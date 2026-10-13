@@ -7,13 +7,15 @@
 //! whose length carries such a term keeps its terms here, with the mask of
 //! what they read, so a scale-factor, text-scale or font-size change re-folds
 //! only the bindings it meets and dirties only the nodes whose folded length
-//! moved. A tree of plain `dp` and `%` lengths never touches this table.
+//! moved. A tree of plain `dp` and `%` lengths never touches this table, nor
+//! does a padding of plain `dp` whose `start` and `end` agree.
 
 use core::ops::{Add, BitOr, BitOrAssign, Div, Mul, Neg, Sub};
 
+use crate::adaptive::LayoutDirection;
 use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
-use crate::layout::{LayoutInput, Length};
+use crate::layout::{Inset, LayoutInput, Length};
 use crate::node::NodeId;
 
 /// A length as five terms, each in its own unit: `dp + px + sp + em + pct`.
@@ -152,6 +154,63 @@ impl From<Length> for LengthTerms {
     }
 }
 
+/// A box's four edges as terms: `start` and `end` are the edges the layout
+/// direction begins and ends a line at, left and right in a left-to-right
+/// layout.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct EdgeTerms {
+    pub top: LengthTerms,
+    pub end: LengthTerms,
+    pub bottom: LengthTerms,
+    pub start: LengthTerms,
+}
+
+impl EdgeTerms {
+    /// `terms` on every edge.
+    pub const fn all(terms: LengthTerms) -> Self {
+        Self {
+            top: terms,
+            end: terms,
+            bottom: terms,
+            start: terms,
+        }
+    }
+
+    /// What the edges read: their terms', and the layout direction when
+    /// `start` and `end` differ.
+    pub fn deps(self) -> LengthDeps {
+        let mut deps = self.top.deps() | self.end.deps() | self.bottom.deps() | self.start.deps();
+        if self.start != self.end {
+            deps |= LengthDeps::DIRECTION;
+        }
+        deps
+    }
+
+    /// The physical inset the edges fold to at `font` dp per em, each edge
+    /// never negative; a percent term counts as `0`. `None` when an edge is
+    /// not finite.
+    pub fn fold(self, env: &LengthEnv, font: f32) -> Option<Inset> {
+        let edge = |terms: LengthTerms| Some(terms.fixed(env, font)?.max(0.0));
+        let (left, right) = match env.direction {
+            LayoutDirection::Ltr => (self.start, self.end),
+            LayoutDirection::Rtl => (self.end, self.start),
+        };
+        Some(Inset {
+            left: edge(left)?,
+            top: edge(self.top)?,
+            right: edge(right)?,
+            bottom: edge(self.bottom)?,
+        })
+    }
+
+    /// Whether an edge has a percent term.
+    pub fn has_pct(self) -> bool {
+        [self.top, self.end, self.bottom, self.start]
+            .iter()
+            .any(|terms| terms.pct != 0.0)
+    }
+}
+
 impl Add for LengthTerms {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
@@ -225,6 +284,8 @@ impl LengthDeps {
     pub const TEXT_SCALE: Self = Self(1 << 1);
     /// Reads the resolved font size (`em`, and `%` inside `font_size`).
     pub const FONT_SIZE: Self = Self(1 << 2);
+    /// Reads the layout direction (a padding whose `start` and `end` differ).
+    pub const DIRECTION: Self = Self(1 << 3);
 
     /// Whether any dependency of `other` is set.
     #[inline]
@@ -261,6 +322,9 @@ pub struct LengthEnv {
     pub text_scale: f32,
     /// The root's font size, in sp.
     pub base_font_size: f32,
+    /// The direction a line runs in: which physical edges `start` and `end`
+    /// are.
+    pub direction: LayoutDirection,
 }
 
 impl Default for LengthEnv {
@@ -269,6 +333,7 @@ impl Default for LengthEnv {
             scale_factor: 1.0,
             text_scale: 1.0,
             base_font_size: 14.0,
+            direction: LayoutDirection::Ltr,
         }
     }
 }
@@ -300,6 +365,9 @@ impl LengthEnv {
         if !deps.is_empty() || self.base_font_size != next.base_font_size {
             deps |= LengthDeps::FONT_SIZE;
         }
+        if self.direction != next.direction {
+            deps |= LengthDeps::DIRECTION;
+        }
         deps
     }
 }
@@ -317,6 +385,8 @@ pub struct NodeLengths {
     /// The node's font size, the typography source of its subtree: `em` and
     /// `%` read the parent's resolved font size.
     pub font_size: Option<LengthTerms>,
+    /// A container's padding. Its percent terms count as `0`.
+    pub padding: Option<EdgeTerms>,
 }
 
 impl NodeLengths {
@@ -326,6 +396,9 @@ impl NodeLengths {
         let mut deps = LengthDeps::EMPTY;
         for terms in [self.width, self.height, self.gap].into_iter().flatten() {
             deps |= terms.deps();
+        }
+        if let Some(padding) = self.padding {
+            deps |= padding.deps();
         }
         if let Some(font) = self.font_size {
             deps |= font.deps() | LengthDeps::FONT_SIZE;
@@ -675,6 +748,26 @@ impl NodeStore {
                 class = class | DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT;
             }
         }
+        if let Some(edges) = lengths.padding {
+            if edges.has_pct() {
+                self.lengths_mut().report(id, LengthIssue::IndefiniteBasis);
+            }
+            let folded = edges.fold(&env, font).unwrap_or_else(|| {
+                self.lengths_mut().report(id, LengthIssue::NonFinite);
+                Inset::default()
+            });
+            let moved = match self.layout_input_mut(id) {
+                LayoutInput::Flex { padding, .. } | LayoutInput::Grid { padding, .. } => {
+                    let moved = *padding != folded;
+                    *padding = folded;
+                    moved
+                }
+                _ => false,
+            };
+            if moved {
+                class = class | DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT;
+            }
+        }
         if class != DirtyClass::EMPTY {
             self.mark_dirty(id, class);
         }
@@ -701,6 +794,7 @@ mod tests {
         scale_factor: 2.0,
         text_scale: 1.5,
         base_font_size: 14.0,
+        direction: LayoutDirection::Ltr,
     };
 
     #[test]
@@ -842,6 +936,52 @@ mod tests {
             ..LengthEnv::default()
         });
         assert_eq!(width_of(&mut store, root, item), 40.0);
+    }
+
+    #[test]
+    fn a_padding_s_start_and_end_follow_the_layout_direction() {
+        let (mut store, root, column, item) = tree(None, LengthTerms::dp(10.0));
+        let sided = EdgeTerms {
+            start: LengthTerms::dp(6.0),
+            top: LengthTerms::sp(2.0),
+            ..EdgeTerms::default()
+        };
+        store.bind_lengths(
+            column,
+            NodeLengths {
+                padding: Some(sided),
+                ..NodeLengths::default()
+            },
+        );
+        store.layout(root, surface(), &mut Vec::new());
+        let column_box = store.bounds(column);
+        assert_eq!(store.bounds(item).x - column_box.x, 6.0);
+        assert_eq!(store.bounds(item).y - column_box.y, 2.0);
+        store.clear_dirty();
+        store.set_length_env(LengthEnv {
+            direction: LayoutDirection::Rtl,
+            ..LengthEnv::default()
+        });
+        let (mut scratch, mut redo) = (Vec::new(), Vec::new());
+        store.relayout_dirty(root, surface(), &mut scratch, &mut redo);
+        assert!(matches!(
+            *store.layout_input_mut(column),
+            LayoutInput::Flex { padding, .. } if padding == Inset { right: 6.0, top: 2.0, ..Inset::default() }
+        ));
+
+        // Edges that agree read no direction.
+        assert!(
+            !EdgeTerms::all(LengthTerms::dp(4.0))
+                .deps()
+                .intersects(LengthDeps::DIRECTION)
+        );
+        assert!(
+            sided
+                .deps()
+                .intersects(LengthDeps::DIRECTION | LengthDeps::TEXT_SCALE)
+        );
+        let cut = EdgeTerms::all(LengthTerms::dp(-3.0)).fold(&LengthEnv::default(), 14.0);
+        assert_eq!(cut, Some(Inset::default()), "never negative");
     }
 
     #[test]

@@ -12,9 +12,11 @@
 //! node's environment. A bare number is a scalar, not a length, and never folds
 //! into one.
 
-use crate::ast::{AstNode, BinaryExpr, Expr, LiteralExpr, ParenExpr, UnaryExpr};
-use crate::ir::ui_ir::{LengthIr, TermsIr};
-use crate::syntax::SyntaxKind;
+use crate::ast::{
+    AstNode, BinaryExpr, CallExpr, Expr, LiteralExpr, ParenExpr, PathExpr, UnaryExpr,
+};
+use crate::ir::ui_ir::{EdgeTermsIr, InsetIr, LengthIr, TermsIr};
+use crate::syntax::{SyntaxKind, SyntaxNode};
 
 /// The five coefficients of a length-family constant.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -128,6 +130,182 @@ pub(super) fn fold_gap(value: &Expr) -> Option<Lowered> {
 /// the parent's font size, resolves in the typography context at layout.
 pub(super) fn fold_font_size(value: &Expr) -> Option<TermsIr> {
     fold_length(value).map(Terms::lower)
+}
+
+/// A constant padding as it lowers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Padding {
+    /// Plain `dp` edges whose `start` and `end` agree: the inset layout reads
+    /// as is.
+    Fixed(InsetIr),
+    /// Edges that read the environment, or the layout direction to place
+    /// `start` and `end`.
+    Env(EdgeTermsIr),
+}
+
+/// Folds a `padding` property: a length (every edge), `EdgeInsets::zero()`,
+/// `EdgeInsets::all(v)`, `EdgeInsets::axes(inline: a, block: b)` or an
+/// `EdgeInsets { .. }` literal whose fields are constants, a missing field
+/// being `0dp`. Each edge is clamped non-negative (§19.8). A `%` term — its
+/// basis is the parent's box, which layout does not pad against yet — or a
+/// value that is not a constant yields `None`.
+pub(super) fn fold_padding(value: &Expr) -> Option<Padding> {
+    let edges = padding_edges(value)?;
+    let all = [edges.top, edges.end, edges.bottom, edges.start];
+    if all.iter().any(|t| t.pct != 0.0) {
+        return None;
+    }
+    let clamp = |t: Terms| {
+        if t.needs_env() {
+            t.lower()
+        } else {
+            Terms {
+                dp: t.dp.max(0.0),
+                ..Terms::default()
+            }
+            .lower()
+        }
+    };
+    if all.iter().any(|t| t.needs_env()) || edges.start != edges.end {
+        return Some(Padding::Env(EdgeTermsIr {
+            top: clamp(edges.top),
+            end: clamp(edges.end),
+            bottom: clamp(edges.bottom),
+            start: clamp(edges.start),
+        }));
+    }
+    Some(Padding::Fixed(InsetIr {
+        left: edges.start.dp.max(0.0),
+        top: edges.top.dp.max(0.0),
+        right: edges.end.dp.max(0.0),
+        bottom: edges.bottom.dp.max(0.0),
+    }))
+}
+
+/// The four edges of a padding value, in their own terms.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct Edges {
+    top: Terms,
+    end: Terms,
+    bottom: Terms,
+    start: Terms,
+}
+
+impl Edges {
+    fn all(terms: Terms) -> Self {
+        Self {
+            top: terms,
+            end: terms,
+            bottom: terms,
+            start: terms,
+        }
+    }
+}
+
+fn padding_edges(value: &Expr) -> Option<Edges> {
+    if let Some(all) = fold_length(value) {
+        return Some(Edges::all(all));
+    }
+    let node = value.syntax();
+    match node.kind() {
+        SyntaxKind::ParenExpr => padding_edges(&ParenExpr::cast(node.clone())?.inner()?),
+        SyntaxKind::CallExpr => {
+            let call = CallExpr::cast(node.clone())?;
+            let callee = PathExpr::cast(call.callee()?.syntax().clone())?;
+            let path: Vec<String> = callee.segments().map(|t| t.text().to_string()).collect();
+            let [ty, ctor] = path.as_slice() else {
+                return None;
+            };
+            if ty != "EdgeInsets" {
+                return None;
+            }
+            let args = arguments(node)?;
+            match (ctor.as_str(), args.as_slice()) {
+                ("zero", []) => Some(Edges::default()),
+                ("all", [(None, v)]) => Some(Edges::all(fold_length(v)?)),
+                ("axes", [(inline, a), (block, b)]) => {
+                    let (a, b) = match (inline.as_deref(), block.as_deref()) {
+                        (None | Some("inline"), None | Some("block")) => (a, b),
+                        (Some("block"), Some("inline")) => (b, a),
+                        _ => return None,
+                    };
+                    let (inline, block) = (fold_length(a)?, fold_length(b)?);
+                    Some(Edges {
+                        top: block,
+                        end: inline,
+                        bottom: block,
+                        start: inline,
+                    })
+                }
+                _ => None,
+            }
+        }
+        SyntaxKind::RecordExpr => {
+            let head: Vec<String> = node
+                .children_with_tokens()
+                .into_iter()
+                .filter_map(|e| e.as_token().cloned())
+                .take_while(|t| t.kind() != SyntaxKind::LBrace)
+                .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
+                .map(|t| t.text().to_string())
+                .collect();
+            if head != ["EdgeInsets"] {
+                return None;
+            }
+            let mut edges = Edges::default();
+            for field in node.children() {
+                if field.kind() != SyntaxKind::RecordExprField {
+                    continue;
+                }
+                let label = field
+                    .children_with_tokens()
+                    .into_iter()
+                    .filter_map(|e| e.as_token().cloned())
+                    .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))?;
+                // A `..base` or a shorthand reads a value, not a constant.
+                let value = field.children().into_iter().find_map(Expr::cast)?;
+                let terms = fold_length(&value)?;
+                match label.text().to_string().as_str() {
+                    "top" => edges.top = terms,
+                    "end" => edges.end = terms,
+                    "bottom" => edges.bottom = terms,
+                    "start" => edges.start = terms,
+                    _ => return None,
+                }
+            }
+            Some(edges)
+        }
+        _ => None,
+    }
+}
+
+/// A call's arguments, each with its name when it is named.
+fn arguments(call: &SyntaxNode) -> Option<Vec<(Option<String>, Expr)>> {
+    let list = call
+        .children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::ArgumentList)?;
+    list.children()
+        .into_iter()
+        .filter(|arg| arg.kind() == SyntaxKind::Argument)
+        .map(|arg| {
+            let value = arg.children().into_iter().find_map(Expr::cast)?;
+            let named = arg
+                .children_with_tokens()
+                .into_iter()
+                .any(|e| e.as_token().is_some_and(|t| t.kind() == SyntaxKind::Colon));
+            let name = named
+                .then(|| {
+                    arg.children_with_tokens()
+                        .into_iter()
+                        .filter_map(|e| e.as_token().cloned())
+                        .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
+                        .map(|t| t.text().to_string())
+                })
+                .flatten();
+            Some((name, value))
+        })
+        .collect()
 }
 
 /// A finite length-family constant's terms.

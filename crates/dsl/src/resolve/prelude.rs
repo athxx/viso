@@ -40,6 +40,17 @@ pub(crate) fn theme_record() -> SymbolId {
     })
 }
 
+/// The prelude record of a box's insets, which a length stands for as `all`
+/// of it.
+pub(crate) fn edge_insets_record() -> SymbolId {
+    fingerprint(SymbolIdentity {
+        package: PRELUDE_MODULE,
+        module_path: PRELUDE_MODULE,
+        kind: SymbolKind::Record,
+        decl_path: "EdgeInsets",
+    })
+}
+
 /// The prelude record of a raster asset, which only `asset("…")` makes.
 pub(crate) fn image_record() -> SymbolId {
     fingerprint(SymbolIdentity {

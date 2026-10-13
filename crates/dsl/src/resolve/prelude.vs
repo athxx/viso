@@ -76,6 +76,22 @@ export record SelectionChanged { value: U32; }
 export record Rect { x: Dp; y: Dp; width: Dp; height: Dp; }
 export record Insets { top: Dp; right: Dp; bottom: Dp; left: Dp; }
 
+// A box's insets: `start` and `end` are the edges a line begins and ends at in
+// the layout direction. A length where an `EdgeInsets` is wanted is `all` of it.
+export record EdgeInsets {
+    top: MixedLength = 0dp;
+    end: MixedLength = 0dp;
+    bottom: MixedLength = 0dp;
+    start: MixedLength = 0dp;
+}
+impl EdgeInsets {
+    fn zero() -> EdgeInsets { EdgeInsets {} }
+    fn all(v: MixedLength) -> EdgeInsets { EdgeInsets { top: v, end: v, bottom: v, start: v } }
+    fn axes(inline: MixedLength, block: MixedLength) -> EdgeInsets {
+        EdgeInsets { top: block, end: inline, bottom: block, start: inline }
+    }
+}
+
 export record WindowMetrics { logical_size: SizeDp; scale_factor: F32; }
 export record LocalConstraints {
     min_width: Dp;

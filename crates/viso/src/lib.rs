@@ -2029,7 +2029,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
 
     fn on_locale(&mut self, locale: &str) {
         for ws in &mut self.windows {
-            environment::report_locale(&mut ws.states, locale);
+            ws.report_locale(locale);
         }
     }
 

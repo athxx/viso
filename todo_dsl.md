@@ -314,10 +314,27 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         one resolves `%` to `0`.
   - [x] Each is reported once per node and kind through
         `take_length_warnings` in debug builds; `length_stats` always counts.
-- [ ] Container `padding`: a constant or bound `padding` on `Column`/`Row`/`Stack`
-      pads its content through the flex style, across the macros, hot reload and the
-      release package. Today it compiles and is dropped at runtime; a layout property
-      no lowering reads is a diagnostic, never silent.
+- [x] Container `padding`: a constant `padding` on `Column`/`Row`/`Flex`/`Stack`/`Grid`
+      pads its content across the macros, hot reload (in place) and the release package.
+  - [x] `EdgeInsets` in the prelude with `zero`/`all`/`axes`; `padding` is typed
+        `EdgeInsets` and a length promotes to `all` of it (§U1.3).
+  - [x] Plain `dp` with `start == end` folds to the built `Inset`; `px`/`sp`/`em` or a
+        `start` that differs from `end` binds `EdgeTerms` that fold at layout against
+        the environment and the layout direction (`LengthEnv::direction`, fed from the
+        locale), dirtying only a node whose inset moved. Package style mask is a varint.
+  - [x] `E3711` for a `%` or non-constant padding, padding on a node with no content
+        box, padding on an avoiding region (folded or not), and `margin`.
+- [ ] Bound layout values: a `width`/`height`/`gap`/`padding` that reads state, an input
+      or `theme` writes its value to the node (the behavior VM carries `MixedLength` as
+      terms, delivered as `NodeLengths`). Today a bound `width`/`height`/`gap` only marks
+      its node dirty — that silence becomes `E3711` until the value path lands; a bound
+      `padding` is already `E3711`.
+- [ ] `%` padding against the parent's content box (`start`/`end` its width,
+      `top`/`bottom` its height), resolved when the parent places the node.
+- [ ] `margin` (§U3.3) in layout.
+- [ ] Right-to-left layout: a `Row`'s children, `Justify`/`Align` start and end, and
+      `Grid` columns mirror under `env.layout_direction`, from the same
+      `LengthEnv::direction` the padding reads.
 
 ### D2.6 — Animation (§U6)
 

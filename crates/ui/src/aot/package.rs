@@ -33,7 +33,8 @@
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
 use crate::adaptive::Avoid;
-use crate::length::{LengthTerms, NodeLengths};
+use crate::layout::Inset;
+use crate::length::{EdgeTerms, LengthTerms, NodeLengths};
 use crate::state::StateKey;
 
 /// A compact, self-describing release UI package: the retained node tree and its
@@ -130,6 +131,9 @@ pub struct AotStyle {
     pub height: Option<AotLength>,
     /// The folded gap between children, when a constant property set one.
     pub gap: Option<f32>,
+    /// The folded padding of a container, when a constant property set one
+    /// that reads neither the environment nor the layout direction.
+    pub padding: Option<Inset>,
     /// The lengths that read the environment (`px`, `sp`, `em`), which the
     /// loader binds to fold at layout; boxed, as few nodes have any.
     pub lengths: Option<Box<NodeLengths>>,
@@ -192,18 +196,26 @@ pub struct AotEdge {
     pub class: u8,
 }
 
-// The style field is written as a small presence bitmask followed by the payloads of
-// the fields that are present, so an all-default style costs a single byte. The bits
-// are private to this format: emitter and loader are the same source, so no external
-// contract depends on them.
-const STYLE_HAS_AXIS: u8 = 1 << 0;
-const STYLE_HAS_WIDTH: u8 = 1 << 1;
-const STYLE_HAS_HEIGHT: u8 = 1 << 2;
-const STYLE_HAS_GAP: u8 = 1 << 3;
-const STYLE_HAS_LENGTHS: u8 = 1 << 4;
-const STYLE_IS_SCOPE: u8 = 1 << 5;
-const STYLE_HAS_BASIS: u8 = 1 << 6;
-const STYLE_AVOIDS: u8 = 1 << 7;
+// The style field is written as a varint presence bitmask followed by the payloads of
+// the fields that are present, so an all-default style costs a single byte and only
+// the rare fields past the seventh bit a second. The bits are private to this format:
+// emitter and loader are the same source, so no external contract depends on them.
+const STYLE_HAS_AXIS: u16 = 1 << 0;
+const STYLE_HAS_WIDTH: u16 = 1 << 1;
+const STYLE_HAS_HEIGHT: u16 = 1 << 2;
+const STYLE_HAS_GAP: u16 = 1 << 3;
+const STYLE_HAS_LENGTHS: u16 = 1 << 4;
+const STYLE_IS_SCOPE: u16 = 1 << 5;
+const STYLE_HAS_BASIS: u16 = 1 << 6;
+const STYLE_AVOIDS: u16 = 1 << 7;
+const STYLE_HAS_PADDING: u16 = 1 << 8;
+const STYLE_BITS: u16 = (1 << 9) - 1;
+
+// An inset is a byte naming its non-zero edges, then their values.
+const EDGE_LEFT: u8 = 1 << 0;
+const EDGE_TOP: u8 = 1 << 1;
+const EDGE_RIGHT: u8 = 1 << 2;
+const EDGE_BOTTOM: u8 = 1 << 3;
 
 // Environment lengths are a byte naming the bound properties, then each one's
 // terms as a byte naming the non-zero terms followed by their values.
@@ -211,6 +223,7 @@ const LENGTHS_WIDTH: u8 = 1 << 0;
 const LENGTHS_HEIGHT: u8 = 1 << 1;
 const LENGTHS_GAP: u8 = 1 << 2;
 const LENGTHS_FONT_SIZE: u8 = 1 << 3;
+const LENGTHS_PADDING: u8 = 1 << 4;
 const TERMS_DP: u8 = 1 << 0;
 const TERMS_PX: u8 = 1 << 1;
 const TERMS_SP: u8 = 1 << 2;
@@ -305,6 +318,43 @@ fn decode_terms(dec: &mut Decoder) -> Result<LengthTerms, DecodeError> {
     })
 }
 
+fn encode_inset(inset: &Inset, enc: &mut Encoder) {
+    let edges = [inset.left, inset.top, inset.right, inset.bottom];
+    let mut mask = 0u8;
+    for (bit, edge) in edges.iter().enumerate() {
+        if *edge != 0.0 {
+            mask |= 1 << bit;
+        }
+    }
+    enc.write_u8(mask);
+    for edge in edges {
+        if edge != 0.0 {
+            enc.write_f32(edge);
+        }
+    }
+}
+
+fn decode_inset(dec: &mut Decoder) -> Result<Inset, DecodeError> {
+    let offset = dec.position();
+    let mask = dec.read_u8()?;
+    if mask & !(EDGE_LEFT | EDGE_TOP | EDGE_RIGHT | EDGE_BOTTOM) != 0 {
+        return Err(DecodeError::Malformed { offset });
+    }
+    let mut edges = [0.0f32; 4];
+    for (bit, edge) in edges.iter_mut().enumerate() {
+        if mask & (1 << bit) != 0 {
+            *edge = dec.read_f32()?;
+        }
+    }
+    let [left, top, right, bottom] = edges;
+    Ok(Inset {
+        left,
+        top,
+        right,
+        bottom,
+    })
+}
+
 /// The bound properties of `lengths` in the order the property byte names them.
 fn properties(lengths: &NodeLengths) -> [Option<LengthTerms>; 4] {
     [
@@ -324,9 +374,17 @@ impl Encode for NodeLengths {
                 mask |= 1 << bit;
             }
         }
+        if self.padding.is_some() {
+            mask |= LENGTHS_PADDING;
+        }
         enc.write_u8(mask);
         for terms in present.iter().flatten() {
             encode_terms(terms, enc);
+        }
+        if let Some(edges) = &self.padding {
+            for terms in [edges.top, edges.end, edges.bottom, edges.start] {
+                encode_terms(&terms, enc);
+            }
         }
     }
 }
@@ -335,7 +393,8 @@ impl Decode for NodeLengths {
     fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
         let offset = dec.position();
         let mask = dec.read_u8()?;
-        if mask & !(LENGTHS_WIDTH | LENGTHS_HEIGHT | LENGTHS_GAP | LENGTHS_FONT_SIZE) != 0 {
+        let known = LENGTHS_WIDTH | LENGTHS_HEIGHT | LENGTHS_GAP | LENGTHS_FONT_SIZE;
+        if mask & !(known | LENGTHS_PADDING) != 0 {
             return Err(DecodeError::Malformed { offset });
         }
         let mut present = [None; 4];
@@ -345,18 +404,29 @@ impl Decode for NodeLengths {
             }
         }
         let [width, height, gap, font_size] = present;
+        let padding = if mask & LENGTHS_PADDING != 0 {
+            Some(EdgeTerms {
+                top: decode_terms(dec)?,
+                end: decode_terms(dec)?,
+                bottom: decode_terms(dec)?,
+                start: decode_terms(dec)?,
+            })
+        } else {
+            None
+        };
         Ok(NodeLengths {
             width,
             height,
             gap,
             font_size,
+            padding,
         })
     }
 }
 
 impl Encode for AotStyle {
     fn encode(&self, enc: &mut Encoder) {
-        let mut mask = 0u8;
+        let mut mask = 0u16;
         if self.axis.is_some() {
             mask |= STYLE_HAS_AXIS;
         }
@@ -381,7 +451,10 @@ impl Encode for AotStyle {
         if self.avoid.is_some() {
             mask |= STYLE_AVOIDS;
         }
-        enc.write_u8(mask);
+        if self.padding.is_some() {
+            mask |= STYLE_HAS_PADDING;
+        }
+        enc.write_varint(u64::from(mask));
         if let Some(axis) = self.axis {
             enc.write_u8(match axis {
                 AotAxis::Row => 0,
@@ -396,6 +469,9 @@ impl Encode for AotStyle {
         }
         if let Some(gap) = self.gap {
             enc.write_f32(gap);
+        }
+        if let Some(padding) = &self.padding {
+            encode_inset(padding, enc);
         }
         if let Some(lengths) = &self.lengths {
             lengths.encode(enc);
@@ -415,7 +491,10 @@ impl Encode for AotStyle {
 impl Decode for AotStyle {
     fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
         let offset = dec.position();
-        let mask = dec.read_u8()?;
+        let mask = u16::try_from(dec.read_varint()?)
+            .ok()
+            .filter(|mask| mask & !STYLE_BITS == 0)
+            .ok_or(DecodeError::Malformed { offset })?;
         if mask & STYLE_HAS_BASIS != 0 && mask & STYLE_IS_SCOPE == 0 {
             return Err(DecodeError::Malformed { offset });
         }
@@ -441,6 +520,11 @@ impl Decode for AotStyle {
         };
         let gap = if mask & STYLE_HAS_GAP != 0 {
             Some(dec.read_f32()?)
+        } else {
+            None
+        };
+        let padding = if mask & STYLE_HAS_PADDING != 0 {
+            Some(decode_inset(dec)?)
         } else {
             None
         };
@@ -474,6 +558,7 @@ impl Decode for AotStyle {
             width,
             height,
             gap,
+            padding,
             lengths,
             scope,
             avoid,
@@ -604,6 +689,11 @@ mod tests {
                             pct: 1.0,
                         }),
                         gap: Some(8.0),
+                        padding: Some(Inset {
+                            left: 4.0,
+                            top: 2.0,
+                            ..Inset::default()
+                        }),
                         lengths: None,
                         scope: Some(AotScope { basis: Some(600.0) }),
                         avoid: None,
@@ -617,9 +707,14 @@ mod tests {
                         width: Some(AotLength::Fill { weight: 2.0 }),
                         height: Some(AotLength::Fit),
                         gap: None,
+                        padding: None,
                         lengths: Some(Box::new(NodeLengths {
                             width: Some(LengthTerms::pct(50.0) - LengthTerms::px(1.0)),
                             font_size: Some(LengthTerms::em(1.25)),
+                            padding: Some(EdgeTerms {
+                                start: LengthTerms::sp(3.0),
+                                ..EdgeTerms::all(LengthTerms::dp(1.0))
+                            }),
                             ..NodeLengths::default()
                         })),
                         scope: None,

@@ -166,3 +166,64 @@ fn environment_lengths_fold_at_layout_and_follow_the_environment() {
         "2sp + 4px at text scale 1.5, scale 2"
     );
 }
+
+/// A constant padding pads the container's content: plain `dp` as the built
+/// style, an `sp` edge or one whose `start` and `end` differ as bound terms the
+/// store folds at layout against the text scale and the layout direction.
+#[test]
+fn padding_pads_the_content_and_follows_the_environment() {
+    use viso::render::Rect;
+    use viso::ui::LengthEnv;
+    use viso::ui::adaptive::LayoutDirection;
+
+    let build = viso::ui! {
+        Column {
+            padding: 8dp;
+            Column {
+                width: 100dp;
+                padding: EdgeInsets { start: 6dp, top: 1sp };
+                Text { width: 10dp; height: 10dp; }
+            }
+            Grid {
+                padding: EdgeInsets::all(3dp);
+                Text { width: 10dp; height: 10dp; }
+            }
+        }
+    };
+    let mut store = NodeStore::new();
+    let root = {
+        let mut cx = BuildCx::new(&mut store);
+        build(&mut cx).id()
+    };
+    let inner = store.arena().links(root).unwrap().first_child.unwrap();
+    let text = store.arena().links(inner).unwrap().first_child.unwrap();
+    let grid = store.arena().links(inner).unwrap().next_sibling.unwrap();
+    let cell = store.arena().links(grid).unwrap().first_child.unwrap();
+    let surface = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 400.0,
+        h: 300.0,
+    };
+    store.layout(root, surface, &mut Vec::new());
+    assert_eq!((store.bounds(inner).x, store.bounds(inner).y), (8.0, 8.0));
+    assert_eq!((store.bounds(text).x, store.bounds(text).y), (14.0, 9.0));
+    let (g, c) = (store.bounds(grid), store.bounds(cell));
+    assert_eq!(
+        (c.x - g.x, c.y - g.y),
+        (3.0, 3.0),
+        "the grid pads its cells"
+    );
+
+    store.set_length_env(LengthEnv {
+        text_scale: 2.0,
+        direction: LayoutDirection::Rtl,
+        ..LengthEnv::default()
+    });
+    store.layout(root, surface, &mut Vec::new());
+    assert_eq!(
+        (store.bounds(text).x, store.bounds(text).y),
+        (8.0, 10.0),
+        "`start` is the right edge right to left; `top` follows the text scale"
+    );
+}

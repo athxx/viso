@@ -166,17 +166,17 @@ pub fn restyle_aot_node(
     live: NodeId,
 ) {
     let style = &node.style;
-    let (mut size, gap) = match node.kind {
+    let (mut size, gap, padding) = match node.kind {
         AotNodeKind::Flex => {
             let built = flex_style(style);
-            (built.size, Some(built.gap))
+            (built.size, Some(built.gap), Some(built.padding))
         }
         AotNodeKind::Grid => {
-            let built = GridStyle::default();
-            (built.size, Some(built.column_gap))
+            let built = grid_style(style);
+            (built.size, Some(built.column_gap), Some(built.padding))
         }
-        AotNodeKind::Scroll => (scroll_style(style).size, None),
-        AotNodeKind::Leaf => (leaf_style(style).size, None),
+        AotNodeKind::Scroll => (scroll_style(style).size, None, None),
+        AotNodeKind::Leaf => (leaf_style(style).size, None, None),
     };
     let lengths = style.lengths.as_deref();
     if let Some(current) = store.size_request(live) {
@@ -206,8 +206,13 @@ pub fn restyle_aot_node(
     match style.avoid {
         Some(avoid) => states.mark_avoiding(live, avoid, Inset::default()),
         None => {
-            if states.unmark_avoiding(live) {
-                store.set_padding(live, Inset::default());
+            states.unmark_avoiding(live);
+            // An avoiding region's padding is the runtime's; any other's is
+            // authored, folded here or, reading the environment, at layout.
+            if let Some(padding) = padding
+                && lengths.is_none_or(|lengths| lengths.padding.is_none())
+            {
+                store.set_padding(live, padding);
             }
         }
     }
@@ -254,7 +259,7 @@ pub fn build_aot_node(
             (None, Some(avoid)) => cx.avoiding(avoid, flex_style(&node.style), children),
             (None, None) => cx.flex(flex_style(&node.style), children),
         },
-        AotNodeKind::Grid => cx.grid(Default::default(), children),
+        AotNodeKind::Grid => cx.grid(grid_style(&node.style), children),
         AotNodeKind::Scroll => cx.scroll(scroll_style(&node.style), children),
         // A leaf hosts no child region; the emitter guarantees `child_count == 0`
         // for a leaf (a `VirtualList` collapses to a leaf on the package side,
@@ -278,10 +283,22 @@ fn flex_style(style: &AotStyle) -> FlexStyle {
     if let Some(gap) = style.gap {
         out.gap = gap;
     }
+    if let Some(padding) = style.padding {
+        out.padding = padding;
+    }
     if has_size(style) {
         out.size = size_of(style);
     }
     out
+}
+
+/// The grid builder style for a packaged grid: its padding; the rest of a
+/// grid's style is the builder default.
+fn grid_style(style: &AotStyle) -> GridStyle {
+    GridStyle {
+        padding: style.padding.unwrap_or_default(),
+        ..GridStyle::default()
+    }
 }
 
 /// The scroll builder style, mirroring the commit's `scroll_style`: the authored

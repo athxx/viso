@@ -77,7 +77,8 @@ pub use inspect::{
 pub use interaction::Interaction;
 pub use layout::{Align, Axis, Basis, Inset, Justify, Length, Size, Vec2};
 pub use length::{
-    LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms, LengthWarning, NodeLengths,
+    EdgeTerms, LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms, LengthWarning,
+    NodeLengths,
 };
 pub use node::{NodeArena, NodeId, NodeLinks};
 pub use paint::paint_tree;

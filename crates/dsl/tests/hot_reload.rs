@@ -684,3 +684,50 @@ fn a_mounted_environment_length_follows_the_environment() {
     });
     assert_eq!(boxes(&mut live)[1], (8.0, 10.0));
 }
+
+#[test]
+fn a_padding_edit_patches_kept_nodes_in_place() {
+    let column = |padding: &str| {
+        format!(
+            "Row {{ Column {{ width: 100dp; {padding} Text {{ width: 10dp; height: 10dp; }} }} }}"
+        )
+    };
+    let (mut live, mut last_good) = mount(&column("padding: 4dp;"));
+    let before = preorder(&live.store, live.root);
+    let text_at = |live: &mut Live| {
+        boxes(live);
+        let b = live.store.bounds(before[2]);
+        (b.x, b.y)
+    };
+    assert_eq!(text_at(&mut live), (4.0, 4.0));
+
+    let edits = [
+        (
+            "padding: EdgeInsets::axes(inline: 6dp, block: 2dp);",
+            (6.0, 2.0),
+        ),
+        ("padding: EdgeInsets { start: 3dp, top: 2sp };", (3.0, 2.0)),
+        ("padding: 5dp;", (5.0, 5.0)),
+        ("", (0.0, 0.0)),
+    ];
+    for (padding, expected) in edits {
+        let source = column(padding);
+        let done = {
+            let mut rt = live.runtime();
+            hot_reload(&mut rt, &last_good, &source)
+                .unwrap_or_else(|e| panic!("{source} reloads: {e:?}"))
+        };
+        assert_eq!(
+            preorder(&live.store, live.root),
+            before,
+            "{source} reuses every node"
+        );
+        assert_eq!(text_at(&mut live), expected, "{source}");
+        last_good = done.candidate;
+    }
+    assert_eq!(
+        live.store.bound_lengths(before[1]),
+        None,
+        "nothing left bound"
+    );
+}

@@ -336,3 +336,98 @@ fn packaged_environment_lengths_resolve_as_the_live_commit_does() {
         assert_eq!(expected[1].0, 200.0 - 4.0 / env.scale_factor);
     }
 }
+
+/// Each node's laid-out box in pre-order, in a 400×300 surface under `env`.
+fn rects(store: &mut NodeStore, root: NodeId, env: viso_ui::LengthEnv) -> Vec<[f32; 4]> {
+    store.set_length_env(env);
+    let surface = viso_ui::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 400.0,
+        h: 300.0,
+    };
+    store.layout(root, surface, &mut Vec::new());
+    preorder(store, Some(root))
+        .into_iter()
+        .map(|id| {
+            let b = store.bounds(id);
+            [b.x, b.y, b.w, b.h]
+        })
+        .collect()
+}
+
+#[test]
+fn packaged_padding_lays_out_as_the_live_commit_does() {
+    use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload};
+    use viso_ui::adaptive::LayoutDirection;
+    use viso_ui::{EffectStore, LengthEnv, SemanticProjector};
+
+    let source = "Column { padding: 8dp; \
+                  Column { width: 100dp; padding: EdgeInsets { start: 6dp, top: 1sp }; \
+                  Text { width: 10dp; height: 10dp; } } \
+                  Row { height: 40dp; padding: EdgeInsets::axes(inline: 2px, block: 3dp); \
+                  Text { width: 10dp; height: 10dp; } } }";
+    let envs = [
+        LengthEnv::default(),
+        LengthEnv {
+            scale_factor: 2.0,
+            text_scale: 2.0,
+            direction: LayoutDirection::Rtl,
+            ..LengthEnv::default()
+        },
+    ];
+
+    let blob = build_package(source).expect("compiles to a package");
+    let mut rt = Runtime::new();
+    let packaged = load_from_bytes(
+        &blob,
+        &mut rt.store,
+        &mut rt.states,
+        &mut rt.bindings,
+        &mut rt.lists,
+    )
+    .expect("loads")
+    .expect("has a root");
+
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut effects = EffectStore::new();
+    let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
+    let mut scratch: Vec<NodeId> = Vec::new();
+    let mut nodes = Vec::new();
+    let mut live = LiveRuntime {
+        store: &mut store,
+        states: &mut states,
+        bindings: &mut bindings,
+        effects: &mut effects,
+        lists: &mut lists,
+        text_edits: &mut text_edits,
+        projectors: &mut projectors,
+        root: None,
+        scratch: &mut scratch,
+        nodes: &mut nodes,
+        view: &mut None,
+    };
+    hot_reload(&mut live, &CandidatePlan::default(), source).expect("commits");
+    let committed = live.root.expect("mounted root");
+
+    for env in envs {
+        let expected = rects(&mut store, committed, env);
+        assert_eq!(rects(&mut rt.store, packaged, env), expected, "{env:?}");
+        let rtl = env.direction == LayoutDirection::Rtl;
+        // The outer column pads 8dp all round.
+        assert_eq!(expected[1][..2], [8.0, 8.0], "{env:?}");
+        // `start` is the left edge left to right and the right edge right to
+        // left; `top` follows the text scale.
+        let inner = expected[2];
+        assert_eq!(inner[0], if rtl { 8.0 } else { 14.0 }, "{env:?}");
+        assert_eq!(inner[1], 8.0 + env.text_scale, "{env:?}");
+        // `inline` in physical pixels on both sides, `block` above and below.
+        let row = expected[3];
+        assert_eq!(expected[4][0] - row[0], 2.0 / env.scale_factor, "{env:?}");
+        assert_eq!(expected[4][1] - row[1], 3.0, "{env:?}");
+    }
+}

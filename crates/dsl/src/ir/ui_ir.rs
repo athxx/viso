@@ -231,6 +231,25 @@ pub struct TermsIr {
     pub pct: f32,
 }
 
+/// A container's four edges as lowered terms, mirroring
+/// `viso_ui::EdgeTerms`: `start` and `end` follow the layout direction.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct EdgeTermsIr {
+    pub top: TermsIr,
+    pub end: TermsIr,
+    pub bottom: TermsIr,
+    pub start: TermsIr,
+}
+
+/// A physical inset in dp, mirroring `viso_ui::layout::Inset`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct InsetIr {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
 /// A node's lengths that fold against its environment at layout, mirroring
 /// `viso_ui::NodeLengths`. The node builds with its [`StyleIr`] and binds
 /// these on top.
@@ -241,6 +260,9 @@ pub struct LengthsIr {
     pub gap: Option<TermsIr>,
     /// The node's font size, the typography source of its subtree.
     pub font_size: Option<TermsIr>,
+    /// A container's padding that reads the environment or the layout
+    /// direction.
+    pub padding: Option<EdgeTermsIr>,
 }
 
 impl LengthsIr {
@@ -250,6 +272,7 @@ impl LengthsIr {
             && self.height.is_none()
             && self.gap.is_none()
             && self.font_size.is_none()
+            && self.padding.is_none()
     }
 }
 
@@ -276,6 +299,9 @@ pub struct StyleIr {
     pub height: Option<LengthIr>,
     /// The folded gap between children, when a constant `gap`/`spacing` set one.
     pub gap: Option<f32>,
+    /// The folded padding of a container, when a constant `padding` of plain
+    /// `dp` whose `start` and `end` agree set one.
+    pub padding: Option<InsetIr>,
     /// The constant lengths that fold against the environment at layout;
     /// boxed, as few nodes have any. Read through [`lengths`](Self::lengths).
     pub lengths: Option<Box<LengthsIr>>,
@@ -301,6 +327,7 @@ impl StyleIr {
             && self.width.is_none()
             && self.height.is_none()
             && self.gap.is_none()
+            && self.padding.is_none()
             && self.lengths().is_empty()
             && self.scope.is_none()
             && self.avoid.is_none()
@@ -313,6 +340,7 @@ impl StyleIr {
             height: None,
             gap: None,
             font_size: None,
+            padding: None,
         };
         self.lengths.as_deref().unwrap_or(&NONE)
     }

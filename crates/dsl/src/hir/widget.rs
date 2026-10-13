@@ -6,8 +6,9 @@
 //!
 //! A property type the checker models (`Bool`, `String`, the numeric and length
 //! types, `Color`, `Angle`, their `Option`s) types its binding; any other
-//! (`Sizing`, `EdgeInsets`, an enum) is a native schema type the value is
-//! inferred without an expectation for.
+//! (`Sizing`, an enum) is a native schema type the value is inferred without
+//! an expectation for, unless it names a prelude declaration
+//! ([`PRELUDE_TYS`]).
 
 use viso_behavior::native::{
     COMPONENT, NativeWidget, Natives, PropertyGroup, WidgetEvent, WidgetNode, WidgetProperty,
@@ -26,7 +27,7 @@ pub(crate) type EventSpec = &'static WidgetEvent;
 pub(crate) const SHADER_TY: &str = "Shader";
 
 /// The schema types naming a prelude declaration, checked as that type.
-pub(crate) const PRELUDE_TYS: &[&str] = &["ImageAsset", "SvgAsset", "ImageFit"];
+pub(crate) const PRELUDE_TYS: &[&str] = &["ImageAsset", "SvgAsset", "ImageFit", "EdgeInsets"];
 
 /// The type a binding of a property typed `name` is checked against, or `None`
 /// for a schema type the checker does not model.

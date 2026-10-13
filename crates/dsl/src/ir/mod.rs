@@ -54,7 +54,7 @@ use crate::hir::ComponentSchema;
 use crate::hir::style::{self, StyleBook};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::span::TextRange;
-use length::Lowered;
+use length::{Lowered, Padding};
 
 /// A lowered view: its template, every node type name it wrote that neither a
 /// registered widget nor a component of the library declares (each with the
@@ -459,6 +459,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let mut write_backs = 0;
         let mut control_reads = Vec::new();
         let mut children = Vec::new();
+        // Where the node's own `padding` is written, for the diagnostics.
+        let mut padding_at = None;
         let own: Vec<ViewItem> = body.iter().flat_map(|b| b.members()).collect();
         let styled = self.styled(&type_name, &own, instance, &mut style, &mut pending);
         // The caller's overrides replace the node's own bindings of the same
@@ -480,6 +482,9 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 ViewItem::Property(prop) => {
                     if let (Some(name), Some(value)) = (dotted(prop.path()), prop.value()) {
                         let at = value.syntax().text_range();
+                        if name == "padding" {
+                            padding_at = Some(at);
+                        }
                         if control.input(&name).is_some() {
                             control_reads.push((name, at, instance));
                         } else if let Some(member) = name.strip_prefix("transition.")
@@ -534,12 +539,42 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 "an adaptive scope's `basis` is a constant `dp` length".to_string(),
             ));
         }
-        if style.avoid.is_some()
-            && let Some(at) = pending.iter().position(|p| p.name == "padding")
+        let pending_padding = pending.iter().position(|p| p.name == "padding");
+        if style.padding.is_some() || style.lengths().padding.is_some() || pending_padding.is_some()
         {
+            let reason = if style.avoid.is_some() {
+                Some(format!(
+                    "a `{type_name}`'s padding is the area it avoids; pad its content instead"
+                ))
+            } else if !matches!(kind, NodeKind::Flex | NodeKind::Grid) {
+                Some(format!(
+                    "a `{type_name}` has no content box to pad; pad a container around it"
+                ))
+            } else if pending_padding.is_some() {
+                Some(
+                    "`padding` lays out from a constant without a `%` term; a padding that reads \
+                     a value or a percentage does not lay out yet"
+                        .to_string(),
+                )
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                let at = pending_padding.map(|at| pending.remove(at).value);
+                style.padding = None;
+                if let Some(lengths) = &mut style.lengths {
+                    lengths.padding = None;
+                }
+                let at = padding_at
+                    .or(at)
+                    .unwrap_or_else(|| ty.syntax().text_range());
+                self.unmount((at, reason));
+            }
+        }
+        if let Some(at) = pending.iter().position(|p| p.name == "margin") {
             self.unmount((
                 pending.remove(at).value,
-                format!("a `{type_name}`'s padding is the area it avoids; pad its content instead"),
+                "`margin` does not lay out yet; pad the parent instead".to_string(),
             ));
         }
         out.push(UiItem::Node(UiNode {
@@ -1078,6 +1113,21 @@ fn fold_static(name: &str, value: &Expr, style: &mut StyleIr) -> bool {
                 true
             }
             _ => false,
+        },
+        "padding" => match length::fold_padding(value) {
+            Some(Padding::Fixed(inset)) => {
+                style.padding = Some(inset);
+                if let Some(lengths) = &mut style.lengths {
+                    lengths.padding = None;
+                }
+                true
+            }
+            Some(Padding::Env(edges)) => {
+                style.padding = None;
+                style.lengths_mut().padding = Some(edges);
+                true
+            }
+            None => false,
         },
         "font_size" => match length::fold_font_size(value) {
             Some(terms) => {

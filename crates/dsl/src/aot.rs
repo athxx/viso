@@ -34,8 +34,9 @@ use viso_ui::AssetBytes;
 use viso_ui::aot::{
     AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotScope, AotStyle,
 };
+use viso_ui::layout::Inset;
 use viso_ui::state::StateKey;
-use viso_ui::{LengthTerms, NodeLengths, StateValue};
+use viso_ui::{EdgeTerms, LengthTerms, NodeLengths, StateValue};
 // The languages a package's shaders are built for.
 pub use viso_shader::program::ShaderLang;
 use viso_view::{ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewShader, ViewState};
@@ -45,7 +46,7 @@ use crate::frontend::Origin;
 use crate::hir::TargetProfile;
 use crate::hotreload::plan::{CandidatePlan, plan, plan_view_for};
 use crate::ir::ui_ir::{
-    AxisIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
+    AxisIr, InsetIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
 };
 use crate::view_behavior::ViewBrush;
 use crate::view_regions::StaticNodes;
@@ -362,6 +363,7 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
         width: style.width.map(aot_length),
         height: style.height.map(aot_length),
         gap: style.gap,
+        padding: style.padding.map(inset_of),
         lengths: node_lengths(style.lengths()).map(Box::new),
         scope: style.scope.map(|scope| AotScope { basis: scope.basis }),
         avoid: style.avoid,
@@ -376,7 +378,23 @@ pub(crate) fn node_lengths(lengths: &LengthsIr) -> Option<NodeLengths> {
         height: lengths.height.map(terms_of),
         gap: lengths.gap.map(terms_of),
         font_size: lengths.font_size.map(terms_of),
+        padding: lengths.padding.map(|edges| EdgeTerms {
+            top: terms_of(edges.top),
+            end: terms_of(edges.end),
+            bottom: terms_of(edges.bottom),
+            start: terms_of(edges.start),
+        }),
     })
+}
+
+/// A lowered physical inset to the runtime [`Inset`].
+fn inset_of(inset: InsetIr) -> Inset {
+    Inset {
+        left: inset.left,
+        top: inset.top,
+        right: inset.right,
+        bottom: inset.bottom,
+    }
 }
 
 /// One lowered term sum to the runtime [`LengthTerms`].

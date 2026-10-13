@@ -30,7 +30,8 @@ use syn::Ident;
 use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
 use viso_dsl::ir::ui_ir::{
-    Avoid, AxisIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
+    Avoid, AxisIr, EdgeTermsIr, InsetIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem,
+    UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::{Control, ControlInput, ViewBehavior, When};
@@ -384,10 +385,22 @@ impl Emit<'_> {
                 }
             }
             NodeKind::Grid => {
-                // Grid style beyond the shared axis/size seam is a consuming-slice
-                // concern; the folded StyleIr carries no grid track sizing yet, so a
-                // default GridStyle mounts the container and its children.
-                quote! { cx.grid(::core::default::Default::default(), |cx| { #child_block }) }
+                // Grid style beyond the shared padding is a consuming-slice concern;
+                // the folded StyleIr carries no grid track sizing yet, so a default
+                // GridStyle with the node's padding mounts the container and its
+                // children.
+                let padding = node.style.padding.map(inset_tokens).map(|padding| {
+                    quote! { padding: #padding, }
+                });
+                quote! {
+                    cx.grid(
+                        ::viso_ui::grid::GridStyle {
+                            #padding
+                            ..::core::default::Default::default()
+                        },
+                        |cx| { #child_block },
+                    )
+                }
             }
             NodeKind::Scroll => {
                 let axis = axis_tokens(node.style.axis.unwrap_or(AxisIr::Column));
@@ -576,6 +589,10 @@ fn flex_style_tokens(style: &StyleIr) -> TokenStream {
     if let Some(gap) = style.gap {
         fields.push(quote! { gap: #gap });
     }
+    if let Some(padding) = style.padding {
+        let padding = inset_tokens(padding);
+        fields.push(quote! { padding: #padding });
+    }
     if has_size(style) {
         let size = size_tokens(style);
         fields.push(quote! { size: #size });
@@ -621,30 +638,63 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
     let height = terms_tokens(lengths.height);
     let gap = terms_tokens(lengths.gap);
     let font_size = terms_tokens(lengths.font_size);
+    let padding = match lengths.padding {
+        Some(EdgeTermsIr {
+            top,
+            end,
+            bottom,
+            start,
+        }) => {
+            let [top, end, bottom, start] = [top, end, bottom, start].map(one_terms_tokens);
+            quote! {
+                ::core::option::Option::Some(::viso_ui::EdgeTerms {
+                    top: #top, end: #end, bottom: #bottom, start: #start,
+                })
+            }
+        }
+        None => quote! { ::core::option::Option::None },
+    };
     quote! {
         cx.bind_lengths(#handle, ::viso_ui::NodeLengths {
             width: #width,
             height: #height,
             gap: #gap,
             font_size: #font_size,
+            padding: #padding,
         });
     }
+}
+
+/// `::viso_ui::Inset { .. }` from a folded [`InsetIr`].
+fn inset_tokens(inset: InsetIr) -> TokenStream {
+    let InsetIr {
+        left,
+        top,
+        right,
+        bottom,
+    } = inset;
+    quote! { ::viso_ui::Inset { left: #left, top: #top, right: #right, bottom: #bottom } }
+}
+
+/// `::viso_ui::LengthTerms { .. }` from [`TermsIr`].
+fn one_terms_tokens(terms: TermsIr) -> TokenStream {
+    let TermsIr {
+        dp,
+        px,
+        sp,
+        em,
+        pct,
+    } = terms;
+    quote! { ::viso_ui::LengthTerms { dp: #dp, px: #px, sp: #sp, em: #em, pct: #pct } }
 }
 
 /// `Option<::viso_ui::LengthTerms>` from optional [`TermsIr`].
 fn terms_tokens(terms: Option<TermsIr>) -> TokenStream {
     match terms {
-        Some(TermsIr {
-            dp,
-            px,
-            sp,
-            em,
-            pct,
-        }) => quote! {
-            ::core::option::Option::Some(::viso_ui::LengthTerms {
-                dp: #dp, px: #px, sp: #sp, em: #em, pct: #pct,
-            })
-        },
+        Some(terms) => {
+            let terms = one_terms_tokens(terms);
+            quote! { ::core::option::Option::Some(#terms) }
+        }
         None => quote! { ::core::option::Option::None },
     }
 }
