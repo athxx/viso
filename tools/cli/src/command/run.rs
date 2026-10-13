@@ -38,9 +38,9 @@ use viso_project::{
     Toolchain,
 };
 use viso_view::dev::wire::{
-    self, DEV_BUILD_ENV, DEV_RESTORE_ENV, DEV_RUNTIME_ENV, DEV_SESSION_ENV, DEV_TOKEN_ENV,
-    DEV_WINDOW_ENV, DevSessionId, ProjectFingerprint as WireProject, SchemaFingerprint,
-    WindowGeometry,
+    self, DEV_BUILD_ENV, DEV_PREWARM_ENV, DEV_RESTORE_ENV, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
+    DEV_TOKEN_ENV, DEV_WINDOW_ENV, DevSessionId, ProjectFingerprint as WireProject,
+    SchemaFingerprint, WindowGeometry,
 };
 
 use super::check::{config_in_its_file, failure_code};
@@ -66,6 +66,10 @@ const POLL: Duration = Duration::from_millis(50);
 /// the new one starts as soon as it is gone.
 const CLOSING_POLL: Duration = Duration::from_millis(1);
 
+/// How long the prewarm run of a new executable may take before the restart
+/// goes on without it.
+const PREWARM_WAIT: Duration = Duration::from_secs(10);
+
 /// How long a warm restart waits for the old app's snapshot, then for it to
 /// close before it is killed.
 const SNAPSHOT_WAIT: Duration = Duration::from_secs(3);
@@ -73,6 +77,14 @@ const CLOSE_WAIT: Duration = Duration::from_secs(3);
 
 /// Where a warm restart onto `exe` is.
 enum Restart {
+    /// The new executable runs once, from `since`, to exit as it starts: the
+    /// OS checks a newly linked executable at its first launch, which takes
+    /// most of a second on macOS, while the old app runs on.
+    Prewarm {
+        exe: PathBuf,
+        run: Child,
+        since: Instant,
+    },
     /// The old app was asked for its snapshot at `since`.
     Snapshot { exe: PathBuf, since: Instant },
     /// The old app was asked to close at `since`.
@@ -80,8 +92,14 @@ enum Restart {
 }
 
 impl Restart {
-    fn exe_mut(&mut self) -> &mut PathBuf {
+    /// The executable the app restarts on, its prewarm run stopped.
+    fn into_exe(self) -> PathBuf {
         match self {
+            Restart::Prewarm { exe, mut run, .. } => {
+                let _ = run.kill();
+                let _ = run.wait();
+                exe
+            }
             Restart::Snapshot { exe, .. } | Restart::Closing { exe, .. } => exe,
         }
     }
@@ -125,6 +143,18 @@ impl Launch<'_> {
             launch.stdout(Stdio::piped()).stderr(Stdio::piped());
         }
         launch.spawn()
+    }
+
+    /// Runs `exe` once to exit as it starts (see [`Restart::Prewarm`]).
+    fn prewarm(&self, exe: &Path) -> std::io::Result<Child> {
+        Command::new(exe)
+            .args(self.args)
+            .current_dir(self.root)
+            .env(DEV_PREWARM_ENV, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
     }
 }
 
@@ -378,7 +408,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
             interrupts = caught;
         }
         let poll = match restart {
-            Some(Restart::Closing { .. }) => CLOSING_POLL,
+            Some(Restart::Prewarm { .. } | Restart::Closing { .. }) => CLOSING_POLL,
             _ => POLL,
         };
         let wait = [dev.deadline(), builds.deadline()]
@@ -393,21 +423,18 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
                 if let Some(exe) = relay(out, &mut dev, &mut builds, message)
                     && interrupts == 0
                 {
-                    match &mut restart {
+                    restart = Some(match restart.take() {
                         // A newer build while the restart runs: the app
-                        // restarts on it.
-                        Some(restart) => *restart.exe_mut() = exe,
-                        None => {
-                            out.progress("restart", "taking the app's snapshot");
-                            let since = Instant::now();
-                            restart = Some(if dev.request_snapshot() {
-                                Restart::Snapshot { exe, since }
-                            } else {
-                                close(&child);
-                                Restart::Closing { exe, since }
-                            });
+                        // restarts on it, prewarmed if the old app still runs.
+                        Some(Restart::Prewarm { mut run, .. }) => {
+                            let _ = run.kill();
+                            let _ = run.wait();
+                            prewarm(&launch, exe, &mut dev, &child, out)
                         }
-                    }
+                        Some(Restart::Snapshot { since, .. }) => Restart::Snapshot { exe, since },
+                        Some(Restart::Closing { since, .. }) => Restart::Closing { exe, since },
+                        None => prewarm(&launch, exe, &mut dev, &child, out),
+                    });
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -419,6 +446,20 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
             builds.tick(Instant::now());
         }
         restart = match restart.take() {
+            Some(Restart::Prewarm {
+                exe,
+                mut run,
+                since,
+            }) => {
+                let done = matches!(run.try_wait(), Ok(Some(_)) | Err(_));
+                if done || since.elapsed() >= PREWARM_WAIT {
+                    let _ = run.kill();
+                    let _ = run.wait();
+                    Some(snapshot(exe, &mut dev, &child, out))
+                } else {
+                    Some(Restart::Prewarm { exe, run, since })
+                }
+            }
             Some(Restart::Snapshot { exe, since })
                 if dev.has_snapshot() || since.elapsed() >= SNAPSHOT_WAIT =>
             {
@@ -442,9 +483,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
                 let Some(restart) = restart.take().filter(|_| interrupts == 0) else {
                     break Ok(status);
                 };
-                let exe = match restart {
-                    Restart::Snapshot { exe, .. } | Restart::Closing { exe, .. } => exe,
-                };
+                let exe = restart.into_exe();
                 let restore = dev.restore_next();
                 out.progress(
                     "launch",
@@ -470,7 +509,10 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
             Err(error) => break Err(error),
         }
     };
-    // The session's end kills a build still running.
+    // The session's end stops a prewarm run and a build still running.
+    if let Some(restart) = restart.take() {
+        restart.into_exe();
+    }
     builds.stop();
     // The app is gone: a connection it opened is waiting in the listener's
     // backlog or being read to its end, and its pipes are at their end.
@@ -550,6 +592,42 @@ fn launch_build(
 
 /// Asks the app to close: a termination request, which it handles as a
 /// close of its windows.
+/// Starts the restart on `exe`: its prewarm run while the old app `child`
+/// runs on, or, when that does not start, the snapshot right away.
+fn prewarm(
+    launch: &Launch<'_>,
+    exe: PathBuf,
+    dev: &mut DevSession,
+    child: &Child,
+    out: &mut Output,
+) -> Restart {
+    match launch.prewarm(&exe) {
+        Ok(run) => {
+            dev.prewarm_started();
+            out.progress("restart", "starting the new build once");
+            Restart::Prewarm {
+                exe,
+                run,
+                since: Instant::now(),
+            }
+        }
+        Err(_) => snapshot(exe, dev, child, out),
+    }
+}
+
+/// Asks the old app `child` for its snapshot before the restart on `exe`;
+/// with no app connected to ask, asks it to close.
+fn snapshot(exe: PathBuf, dev: &mut DevSession, child: &Child, out: &mut Output) -> Restart {
+    out.progress("restart", "taking the app's snapshot");
+    let since = Instant::now();
+    if dev.request_snapshot() {
+        Restart::Snapshot { exe, since }
+    } else {
+        close(child);
+        Restart::Closing { exe, since }
+    }
+}
+
 fn close(child: &Child) {
     #[cfg(unix)]
     if let Ok(pid) = libc::pid_t::try_from(child.id()) {

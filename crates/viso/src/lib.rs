@@ -168,6 +168,12 @@ pub trait Application: Sized + 'static {
 /// UI-agnostic [`viso_runtime::FrameDriver`] to the user's [`Application`] and
 /// its [`AppCx`], and runs the scheduler until the last window closes.
 pub fn run<A: Application>() {
+    // `viso run` executes a new build once before restarting on it, for the
+    // OS to check the executable while the old app runs on.
+    #[cfg(feature = "hot-reload")]
+    if std::env::var_os(viso_view::dev::wire::DEV_PREWARM_ENV).is_some() {
+        return;
+    }
     // A headless fallback has no OS behind its services.
     let (platform_app, services) = match viso_platform::create_app() {
         Ok(app) => (app, None),

@@ -177,10 +177,12 @@ impl Stream {
             w.name("restored");
             w.bool(event.restored);
             w.name("elapsed_ms");
-            w.number((event.build_us + event.restart_us.unwrap_or(0)) as f64 / 1000.0);
+            let restart = event.prewarm_us.unwrap_or(0) + event.restart_us.unwrap_or(0);
+            w.number((event.build_us + restart) as f64 / 1000.0);
             w.name("build_ms");
             w.number(event.build_us as f64 / 1000.0);
             for (name, us) in [
+                ("prewarm_ms", event.prewarm_us),
                 ("snapshot_ms", event.snapshot_us),
                 ("close_ms", event.close_us),
                 ("launch_ms", event.launch_us),

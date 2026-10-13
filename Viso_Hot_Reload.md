@@ -1032,7 +1032,7 @@ restore
 
 旧 process 的窗口是否复用 OS handle 不作为要求；窗口 geometry 和 app state 可以通过 snapshot 恢复。
 
-已实现（`command/run.rs`、`dev/mod.rs`）：build 成功后 host 请旧 app 在下一帧边界给出 DevSnapshot（至多等 3 秒），再请它退出（Unix 上 SIGTERM，3 秒后强制结束）；旧进程结束后以新的可执行文件启动并设置 `VISO_DEV_RESTORE`。新进程照常握手（build id 不变，revision 从 `LAUNCH` 重新开始），第一个窗口的 mount 报告之后，host 把 snapshot 与每个文件的 plan（从旧 app 运行的 view 到新 build 嵌入的 view，与 patch 的 plan 相同）发过去；app 在第一帧之前恢复（至多等 5 秒，超时以全新状态运行），第一帧之前打开的窗口都参与恢复，第一帧边界回报 `Restored`。restart 进行中又有 build 成功，就改用最新的那个。一次 restart 输出一条 `dev{outcome:"warm_restarted", patch_class:"WARM_RESTART_REQUIRED", stage:"warm-restart"}`，新的可执行文件起不来时为 `rejected`。新进程没有取回状态也照样结束这次 restart（事件的 `restored` 为 `false`）：restore 被拒、握手被拒（另一个 Viso 编译器 build 的 app，snapshot 不再交给之后的连接）、在 `Restored` 之前关闭 dev channel 或退出。`.vs` 编辑所用的 native schema 由 Viso 版本决定，与 app 的不符只会在换了 Viso 版本的 Rust build 之后出现，由握手拒绝（`Reject::Schema`），不会出现在某次 `.vs` 编辑上。旧连接迟到的消息按 `RuntimeSessionId` 丢弃。窗口 geometry 随 snapshot 一起取得：每个窗口的逻辑尺寸与外框左上角位置（macOS 为相对主屏左上角的 point，Windows 与 X11 为物理像素；Wayland 不给 client 位置，只恢复尺寸）。host 以 `VISO_DEV_WINDOW=w,h[,x,y]` 把第一个窗口的 geometry 交给新进程，app 以它打开主窗口——位置不在任何屏幕上时（显示器已拔掉）按平台默认摆放。只用 Rust UI、不挂载 `view!` 的 app 同样在启动窗口打开 dev channel：snapshot 请求为每个窗口请求一帧，restart 带回窗口 geometry 与 `AppCx::dev_state` 注册的状态。Rust 侧分配的 state cell 按其分配位置恢复（§31）。
+已实现（`command/run.rs`、`dev/mod.rs`）：build 成功后 host 先以 `VISO_DEV_PREWARM` 把新的可执行文件运行一次（app 在 `viso::run` 开头即退出，至多等 10 秒）：OS 在新链接的可执行文件第一次启动时检查它（macOS 上 exec 到 `main` 约 0.65 s，之后约 5 ms），这段时间旧 app 照常运行；然后请旧 app 在下一帧边界给出 DevSnapshot（至多等 3 秒），再请它退出（Unix 上 SIGTERM，3 秒后强制结束）；旧进程结束后以新的可执行文件启动并设置 `VISO_DEV_RESTORE`。新进程照常握手（build id 不变，revision 从 `LAUNCH` 重新开始），第一个窗口的 mount 报告之后，host 把 snapshot 与每个文件的 plan（从旧 app 运行的 view 到新 build 嵌入的 view，与 patch 的 plan 相同）发过去；app 在第一帧之前恢复（至多等 5 秒，超时以全新状态运行），第一帧之前打开的窗口都参与恢复，第一帧边界回报 `Restored`。restart 进行中又有 build 成功，就改用最新的那个。一次 restart 输出一条 `dev{outcome:"warm_restarted", patch_class:"WARM_RESTART_REQUIRED", stage:"warm-restart"}`，新的可执行文件起不来时为 `rejected`。新进程没有取回状态也照样结束这次 restart（事件的 `restored` 为 `false`）：restore 被拒、握手被拒（另一个 Viso 编译器 build 的 app，snapshot 不再交给之后的连接）、在 `Restored` 之前关闭 dev channel 或退出。`.vs` 编辑所用的 native schema 由 Viso 版本决定，与 app 的不符只会在换了 Viso 版本的 Rust build 之后出现，由握手拒绝（`Reject::Schema`），不会出现在某次 `.vs` 编辑上。旧连接迟到的消息按 `RuntimeSessionId` 丢弃。窗口 geometry 随 snapshot 一起取得：每个窗口的逻辑尺寸与外框左上角位置（macOS 为相对主屏左上角的 point，Windows 与 X11 为物理像素；Wayland 不给 client 位置，只恢复尺寸）。host 以 `VISO_DEV_WINDOW=w,h[,x,y]` 把第一个窗口的 geometry 交给新进程，app 以它打开主窗口——位置不在任何屏幕上时（显示器已拔掉）按平台默认摆放。只用 Rust UI、不挂载 `view!` 的 app 同样在启动窗口打开 dev channel：snapshot 请求为每个窗口请求一帧，restart 带回窗口 geometry 与 `AppCx::dev_state` 注册的状态。Rust 侧分配的 state cell 按其分配位置恢复（§31）。
 
 ---
 
@@ -1585,15 +1585,16 @@ app 端（transport + commit + repaint）中位数约 0.08 ms；此前 app 为�
 Rust warm restart（`examples/persist` 的 `main.rs` 编辑，debug dev artifact，Apple M4，连续 3 次，`dev` 事件的各段）：
 
 ```text
-build     2.30–2.79 s     # cargo 增量 build
-snapshot  1.2–1.9 ms      # 请求到 150 B snapshot 到达（app 端采集 0.1–0.2 ms）
-close     5.5–6.3 ms      # 旧 app 收到 SIGTERM 到退出（run loop 此时每 1 ms 检查一次）
-launch    688–809 ms      # 新进程启动到第一个窗口建成、报告 mount
-restore   0.15–0.25 ms    # app 端恢复 1 个 view mount、2 个 state
-restart   696–817 ms      # 请求 snapshot 到 restart 完成
+build     2.47–2.75 s     # cargo 增量 build
+prewarm   647–715 ms      # 新可执行文件运行一次（OS 首次启动检查），旧 app 照常运行
+snapshot  0.8–1.1 ms      # 请求到 150 B snapshot 到达（app 端采集 0.1–0.2 ms）
+close     8.2–10.3 ms     # 旧 app 收到 SIGTERM 到退出（run loop 此时每 1 ms 检查一次）
+launch    165–172 ms      # 新进程启动到第一个窗口建成、报告 mount
+restore   0.18–0.26 ms    # app 端恢复 1 个 view mount、2 个 state
+restart   175–184 ms      # 请求 snapshot 到 restart 完成：app 不可用的时间
 ```
 
-restart 几乎全部是新进程（debug build）自身的启动；连接之后到 `Restored` 约 8 ms。
+没有 prewarm 时 launch 为 688–809 ms：新链接的可执行文件 exec 到 `main` 约 624 ms（再次启动约 5 ms），之后 `main` 到第一帧约 110–120 ms（其中 NSApplication 建立 42–59 ms、建窗口约 40 ms）；连接之后到 `Restored` 约 8 ms。
 
 ---
 
@@ -1946,7 +1947,7 @@ no hot-reload runtime configuration key
 
 已实现的是 `cargo xtask check-release-absence [-p <package>] [--no-launch]`（CI 在 macOS 上带 launch、在 Linux 上 `--no-launch` 运行；默认 package 是挂载 `view!` 的 `viso-example-i18n`）：
 
-- 同一组 marker（dev channel 的 env 名 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD`、patch 检查与 candidate stage 的 NACK code、dev link 的线程名与类型名、失败 overlay 的文案、snapshot endpoint 的 `VISO_DEV_RESTORE`、`VISO_DEV_WINDOW`、`NACK_UNRESTORABLE_SNAPSHOT` 与等待 restore 的文案）先在 `--release --features viso/hot-reload`、`VISO_PROFILE=dev` 的对照 artifact 中必须全部出现——marker 失效时在这里失败，而不是让 release 扫描空过；release artifact（`VISO_PROFILE=release`、无 feature）中必须一个都不出现。`viso_dsl` 符号在两个 artifact 中都不得出现（§1.3：app 不含编译器）。符号从可执行文件本身读取，所以扫描只在符号留在其中的平台（macOS、Linux）上运行；
+- 同一组 marker（dev channel 的 env 名 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD`、patch 检查与 candidate stage 的 NACK code、dev link 的线程名与类型名、失败 overlay 的文案、snapshot endpoint 的 `VISO_DEV_RESTORE`、`VISO_DEV_WINDOW`、`VISO_DEV_PREWARM`、`NACK_UNRESTORABLE_SNAPSHOT` 与等待 restore 的文案）先在 `--release --features viso/hot-reload`、`VISO_PROFILE=dev` 的对照 artifact 中必须全部出现——marker 失效时在这里失败，而不是让 release 扫描空过；release artifact（`VISO_PROFILE=release`、无 feature）中必须一个都不出现。`viso_dsl` 符号在两个 artifact 中都不得出现（§1.3：app 不含编译器）。符号从可执行文件本身读取，所以扫描只在符号留在其中的平台（macOS、Linux）上运行；
 - 同一构建在 `VISO_PROFILE=shipping` 下必须被 facade build script 拒绝（§58）；
 - launch：两个 artifact 都以 dev channel 的全部环境变量（`VISO_DEV_RUNTIME` 指向 loopback listener，以及 token、session、build）启动；对照 artifact 必须连上，release artifact 必须持续运行对照连接耗时的 3 倍（至少 5 秒）且从不连接，提前退出也算失败；
 - 以后的 dev 层落地时各自把 marker 加入列表。

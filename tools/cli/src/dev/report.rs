@@ -111,6 +111,8 @@ pub struct RebuildEvent {
     pub codes: Vec<String>,
     /// Whether the restarted app took its snapshot back.
     pub restored: bool,
+    /// The new executable's prewarm run, which the old app runs through.
+    pub prewarm_us: Option<u64>,
     /// The phases of the restart, for a build the app restarted on: asking
     /// the old app for its snapshot until it arrived, from then until the
     /// new app launched (the old one closing), from its launch until it

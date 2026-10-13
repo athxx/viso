@@ -75,6 +75,11 @@ pub const DEV_RESTORE_ENV: &str = "VISO_DEV_RESTORE";
 /// launches to restore (see [`WindowGeometry::to_env`]).
 pub const DEV_WINDOW_ENV: &str = "VISO_DEV_WINDOW";
 
+/// The environment variable `viso run` sets when it executes a new build
+/// once before restarting on it, for the OS to check the new executable
+/// while the old app still runs: the app exits as `viso::run` starts.
+pub const DEV_PREWARM_ENV: &str = "VISO_DEV_PREWARM";
+
 /// The largest frame either side writes or reads.
 pub const MAX_FRAME: usize = 4 << 20;
 

@@ -55,6 +55,7 @@ const MARKERS: &[&str] = &[
     // its refusal, and its wait.
     "VISO_DEV_RESTORE",
     "VISO_DEV_WINDOW",
+    "VISO_DEV_PREWARM",
     "NACK_UNRESTORABLE_SNAPSHOT",
     "no restore arrived in time",
 ];

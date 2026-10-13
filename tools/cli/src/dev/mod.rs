@@ -115,6 +115,8 @@ struct Runtime {
 /// When the phases of the restart under way ended.
 #[derive(Debug, Default)]
 struct RestartClock {
+    /// The new executable's prewarm run started.
+    prewarm: Option<Instant>,
     /// The old app was asked for its snapshot.
     asked: Option<Instant>,
     /// Its snapshot arrived.
@@ -355,6 +357,7 @@ impl DevSession {
             outcome,
             codes,
             restored: false,
+            prewarm_us: None,
             snapshot_us: None,
             close_us: None,
             launch_us: None,
@@ -432,6 +435,10 @@ impl DevSession {
         event.outcome = outcome;
         event.restored = restored;
         let clock = std::mem::take(&mut self.clock);
+        event.prewarm_us = clock
+            .prewarm
+            .zip(clock.asked)
+            .map(|(prewarm, asked)| micros(prewarm, asked));
         if let Some(asked) = clock.asked {
             let now = Instant::now();
             let ready = clock.held.unwrap_or(asked);
@@ -796,6 +803,7 @@ impl DevSession {
         self.held = None;
         self.windows.clear();
         self.clock = RestartClock {
+            prewarm: self.clock.prewarm.take(),
             asked: Some(Instant::now()),
             ..RestartClock::default()
         };
@@ -808,6 +816,15 @@ impl DevSession {
     /// the app was when it sent its snapshot.
     pub(crate) fn launch_window(&self) -> Option<WindowGeometry> {
         self.windows.first().copied()
+    }
+
+    /// The new executable's prewarm run started, before the old app is asked
+    /// for its snapshot.
+    pub(crate) fn prewarm_started(&mut self) {
+        self.clock = RestartClock {
+            prewarm: Some(Instant::now()),
+            ..RestartClock::default()
+        };
     }
 
     /// Whether the app sent the snapshot asked for.

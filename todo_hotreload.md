@@ -1017,9 +1017,12 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
       restore time (§48), in the `warm-restart` event: `build_ms`, `snapshot_ms`,
       `close_ms`, `launch_ms`, `restore_ms`, `restart_ms`; the session polls the
       old app every 1 ms while it closes (6 ms, was 64 ms at the 50 ms poll).
-- [ ] The new process's own startup is the restart (about 0.7 s of 0.8 s for the
+- [x] The new process's own startup is the restart (about 0.7 s of 0.8 s for the
       debug `examples/persist`): profile the dev artifact's launch to its first
-      window.
+      window. A newly linked executable spends ~0.62 s from exec to `main` (the
+      OS checking it; 5 ms once run), so the host runs it once first with
+      `VISO_DEV_PREWARM` (it exits at `viso::run`) while the old app runs on: the
+      app is down 175–184 ms instead of 700–850 ms (`prewarm_ms` in the event).
 
 ### Done
 
