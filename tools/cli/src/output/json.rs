@@ -158,7 +158,10 @@ impl Stream {
             w.name("candidate_revision");
             w.uint(event.candidate_revision);
             w.name("patch_class");
-            w.null();
+            match event.outcome.patch_class() {
+                Some(class) => w.string(class),
+                None => w.null(),
+            }
             w.name("outcome");
             w.string(event.outcome.as_str());
             w.name("stage");

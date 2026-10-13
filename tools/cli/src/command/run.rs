@@ -5,7 +5,9 @@
 //! (`crate::dev`) until the app exits: each batch of edits is compiled on the
 //! host, reported as `diagnostic` and `dev` events, and what compiles is
 //! patched into the running app. A Rust edit rebuilds the artifact in the
-//! background while the app keeps running.
+//! background while the app keeps running; once the build succeeds the app
+//! is asked for its snapshot, asked to close, and the new executable is
+//! launched to restore it (a warm restart).
 //!
 //! Ctrl-C is the command's own: the first kills the build and asks the app to
 //! close, a second kills the app, and the command exits 130.
@@ -36,8 +38,8 @@ use viso_project::{
     Toolchain,
 };
 use viso_view::dev::wire::{
-    self, DEV_BUILD_ENV, DEV_RUNTIME_ENV, DEV_SESSION_ENV, DEV_TOKEN_ENV, DevSessionId,
-    ProjectFingerprint as WireProject, SchemaFingerprint,
+    self, DEV_BUILD_ENV, DEV_RESTORE_ENV, DEV_RUNTIME_ENV, DEV_SESSION_ENV, DEV_TOKEN_ENV,
+    DevSessionId, ProjectFingerprint as WireProject, SchemaFingerprint,
 };
 
 use super::check::{config_in_its_file, failure_code};
@@ -58,6 +60,60 @@ use crate::output::Output;
 /// How long the session waits for a message before it polls the app and the
 /// listener again.
 const POLL: Duration = Duration::from_millis(50);
+
+/// How long a warm restart waits for the old app's snapshot, then for it to
+/// close before it is killed.
+const SNAPSHOT_WAIT: Duration = Duration::from_secs(3);
+const CLOSE_WAIT: Duration = Duration::from_secs(3);
+
+/// Where a warm restart onto `exe` is.
+enum Restart {
+    /// The old app was asked for its snapshot at `since`.
+    Snapshot { exe: PathBuf, since: Instant },
+    /// The old app was asked to close at `since`.
+    Closing { exe: PathBuf, since: Instant },
+}
+
+impl Restart {
+    fn exe_mut(&mut self) -> &mut PathBuf {
+        match self {
+            Restart::Snapshot { exe, .. } | Restart::Closing { exe, .. } => exe,
+        }
+    }
+}
+
+/// How the app is launched: the first time and on each warm restart.
+struct Launch<'a> {
+    root: &'a Path,
+    args: &'a [OsString],
+    address: String,
+    token: &'a str,
+    session: &'a str,
+    build_id: &'a str,
+    piped: bool,
+}
+
+impl Launch<'_> {
+    /// Starts `exe`, to restore the snapshot of the app before it when
+    /// `restore`.
+    fn spawn(&self, exe: &Path, restore: bool) -> std::io::Result<Child> {
+        let mut launch = Command::new(exe);
+        launch
+            .args(self.args)
+            .current_dir(self.root)
+            .env(DEV_RUNTIME_ENV, &self.address)
+            .env(DEV_TOKEN_ENV, self.token)
+            .env(DEV_SESSION_ENV, self.session)
+            .env(DEV_BUILD_ENV, self.build_id);
+        if restore {
+            launch.env(DEV_RESTORE_ENV, "1");
+        }
+        if self.piped {
+            launch.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
+        launch.spawn()
+    }
+}
 
 /// What the session's threads hand the main loop.
 enum Incoming {
@@ -255,18 +311,16 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         "launch",
         &format!("launching `{}`", relative(&root, &exe).display()),
     );
-    let mut launch = Command::new(&exe);
-    launch
-        .args(&args.app_args)
-        .current_dir(&root)
-        .env(DEV_RUNTIME_ENV, address.to_string())
-        .env(DEV_TOKEN_ENV, &token)
-        .env(DEV_SESSION_ENV, &session)
-        .env(DEV_BUILD_ENV, &build_id);
-    if global.json {
-        launch.stdout(Stdio::piped()).stderr(Stdio::piped());
-    }
-    let mut child = match launch.spawn() {
+    let launch = Launch {
+        root: &root,
+        args: &args.app_args,
+        address: address.to_string(),
+        token: &token,
+        session: &session,
+        build_id: &build_id,
+        piped: global.json,
+    };
+    let mut child = match launch.spawn(&exe, false) {
         Ok(child) => child,
         Err(error) => {
             out.failure(
@@ -291,6 +345,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     // The interrupts acted on: the first stops the session, the second kills
     // the app.
     let mut interrupts = 0;
+    let mut restart: Option<Restart> = None;
     let status = loop {
         dev::link::accept(&listener, &expect, &deliver, &mut threads);
         if let Some(control) = &control {
@@ -301,6 +356,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
             if interrupts == 0 {
                 out.progress("cancel", "stopping the session");
                 builds.stop();
+                restart = None;
                 close(&child);
             }
             if caught >= 2 {
@@ -316,7 +372,27 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
                 due.saturating_duration_since(Instant::now()).min(POLL)
             });
         match rx.recv_timeout(wait) {
-            Ok(message) => relay(out, &mut dev, &mut builds, message),
+            Ok(message) => {
+                if let Some(exe) = relay(out, &mut dev, &mut builds, message)
+                    && interrupts == 0
+                {
+                    match &mut restart {
+                        // A newer build while the restart runs: the app
+                        // restarts on it.
+                        Some(restart) => *restart.exe_mut() = exe,
+                        None => {
+                            out.progress("restart", "taking the app's snapshot");
+                            let since = Instant::now();
+                            restart = Some(if dev.request_snapshot() {
+                                Restart::Snapshot { exe, since }
+                            } else {
+                                close(&child);
+                                Restart::Closing { exe, since }
+                            });
+                        }
+                    }
+                }
+            }
             Err(RecvTimeoutError::Timeout) => {}
             // The loop holds a sender, so the channel cannot close.
             Err(RecvTimeoutError::Disconnected) => {}
@@ -325,8 +401,54 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         if interrupts == 0 {
             builds.tick(Instant::now());
         }
+        restart = match restart.take() {
+            Some(Restart::Snapshot { exe, since })
+                if dev.has_snapshot() || since.elapsed() >= SNAPSHOT_WAIT =>
+            {
+                close(&child);
+                Some(Restart::Closing {
+                    exe,
+                    since: Instant::now(),
+                })
+            }
+            Some(Restart::Closing { exe, since }) => {
+                if since.elapsed() >= CLOSE_WAIT {
+                    let _ = child.kill();
+                }
+                Some(Restart::Closing { exe, since })
+            }
+            other => other,
+        };
         match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
+            Ok(Some(status)) => {
+                // The old app closed for the restart: the new one starts.
+                let Some(restart) = restart.take().filter(|_| interrupts == 0) else {
+                    break Ok(status);
+                };
+                let exe = match restart {
+                    Restart::Snapshot { exe, .. } | Restart::Closing { exe, .. } => exe,
+                };
+                let restore = dev.restore_next();
+                out.progress(
+                    "launch",
+                    &format!("restarting `{}`", relative(&root, &exe).display()),
+                );
+                match launch.spawn(&exe, restore) {
+                    Ok(next) => {
+                        child = next;
+                        threads.extend(pipe_logs(&mut child, &tx));
+                        builds.launched(&exe);
+                        dev.relaunched(out);
+                    }
+                    Err(error) => {
+                        dev.restart_failed(
+                            &format!("cannot launch `{}`: {error}", exe.display()),
+                            out,
+                        );
+                        break Ok(status);
+                    }
+                }
+            }
             Ok(None) => {}
             Err(error) => break Err(error),
         }
@@ -342,7 +464,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         let _ = thread.join();
     }
     while let Ok(message) = rx.try_recv() {
-        relay(out, &mut dev, &mut builds, message);
+        let _ = relay(out, &mut dev, &mut builds, message);
     }
     // A question that arrives now finds the queue gone and is refused.
     drop(ask);
@@ -398,7 +520,9 @@ fn launch_build(
                     }
                 });
             }
-            Ok(message) => relay(out, dev, builds, message),
+            Ok(message) => {
+                let _ = relay(out, dev, builds, message);
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {}
         }
@@ -488,8 +612,14 @@ fn line_reader(
     })
 }
 
-/// Hands one message of the running session to where it goes.
-fn relay(out: &mut Output, dev: &mut DevSession, builds: &mut RustBuild, message: Incoming) {
+/// Hands one message of the running session to where it goes; the executable
+/// of a build the app is to restart on.
+fn relay(
+    out: &mut Output,
+    dev: &mut DevSession,
+    builds: &mut RustBuild,
+    message: Incoming,
+) -> Option<PathBuf> {
     match message {
         Incoming::Log {
             level,
@@ -508,11 +638,13 @@ fn relay(out: &mut Output, dev: &mut DevSession, builds: &mut RustBuild, message
             &format!("the Rust scope stays as it was: {why}"),
         ),
         Incoming::Build(BuildEvent::Finished(finished)) => {
-            if let Some(build) = builds.finished(finished) {
-                dev.rebuilt(&build, out);
+            let build = builds.finished(finished)?;
+            if dev.rebuilt(&build, out) {
+                return build.result.ok();
             }
         }
     }
+    None
 }
 
 /// The exit code of an app that ended with `status`: 0 for a normal exit, 5

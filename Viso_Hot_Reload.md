@@ -1015,7 +1015,7 @@ resume dev session
 
 > Rust 编译期间不要先杀死当前可运行 App。
 
-已实现（`dev/build.rs`）：launch build 与每次 rebuild 都在线程上跑 `cargo build --message-format=json`，从 JSON 消息读出可执行文件与每条编译诊断（错误码与 rendered 文本，human 模式写到终端，`--json` 下逐行成为 `log`）。Rust 改动经与 `.vs` 相同的合并窗口后开始 build；build 进行中又有改动则杀掉它的整棵进程树（Unix 上 cargo 独占的 process group，Windows 上 `KILL_ON_JOB_CLOSE` 的 job object），再以最新源码开始下一次，所以最终运行的是最新一次成功的 build。可执行文件与 app 启动时的（长度、修改时间）相同则什么也不重启；失败的 build 输出 `dev{outcome:"rejected", stage:"warm-restart"}` 并带 rustc 错误码，旧 app 继续运行；`.vs`、catalog、asset 改动从不触发 build。成功的 build 目前输出 `dev{outcome:"held"}`，warm restart 序列（§26）与 DevSnapshot（§29–§32）尚未实现。
+已实现（`dev/build.rs`）：launch build 与每次 rebuild 都在线程上跑 `cargo build --message-format=json`，从 JSON 消息读出可执行文件与每条编译诊断（错误码与 rendered 文本，human 模式写到终端，`--json` 下逐行成为 `log`）。Rust 改动经与 `.vs` 相同的合并窗口后开始 build；build 进行中又有改动则杀掉它的整棵进程树（Unix 上 cargo 独占的 process group，Windows 上 `KILL_ON_JOB_CLOSE` 的 job object），再以最新源码开始下一次，所以最终运行的是最新一次成功的 build。可执行文件与 app 启动时的（长度、修改时间）相同则什么也不重启；失败的 build 输出 `dev{outcome:"rejected", stage:"warm-restart"}` 并带 rustc 错误码，旧 app 继续运行；`.vs`、catalog、asset 改动从不触发 build。成功的 build 进入 warm restart（§26）；`--no-hot-reload` 下只输出 `dev{outcome:"held"}`。
 
 ---
 
@@ -1031,6 +1031,8 @@ restore
 ```
 
 旧 process 的窗口是否复用 OS handle 不作为要求；窗口 geometry 和 app state 可以通过 snapshot 恢复。
+
+已实现（`command/run.rs`、`dev/mod.rs`）：build 成功后 host 请旧 app 在下一帧边界给出 DevSnapshot（至多等 3 秒），再请它退出（Unix 上 SIGTERM，3 秒后强制结束）；旧进程结束后以新的可执行文件启动并设置 `VISO_DEV_RESTORE`。新进程照常握手（build id 不变，revision 从 `LAUNCH` 重新开始），第一个窗口的 mount 报告之后，host 把 snapshot 与每个文件的 plan（从旧 app 运行的 view 到新 build 嵌入的 view，与 patch 的 plan 相同）发过去；app 在第一帧之前恢复（至多等 5 秒，超时以全新状态运行），第一帧之前打开的窗口都参与恢复，第一帧边界回报 `Restored`。restart 进行中又有 build 成功，就改用最新的那个。一次 restart 输出一条 `dev{outcome:"warm_restarted", patch_class:"WARM_RESTART_REQUIRED", stage:"warm-restart"}`，新的可执行文件起不来时为 `rejected`。旧连接迟到的消息按 `RuntimeSessionId` 丢弃。尚未实现：窗口位置与大小的恢复（snapshot 已记录逻辑尺寸）；只用 Rust UI、不挂载 `view!` 的 app 不连接 dev channel，restart 不带状态。
 
 ---
 
@@ -1128,6 +1130,8 @@ struct DevSnapshot {
 
 具体 wire 使用 Ende Binary，不 raw-dump Rust memory。
 
+已实现（`viso_view::dev::snapshot`，`SNAPSHOT_VERSION = 1`，magic `VDS1`）：`DevSnapshot { source_build, app_schema, revision, views, games, windows, extensions }`。每个 view mount 以 `MountRef { path, window, mount }` 标识（文件的规范路径、挂载 view 的窗口按打开顺序的序号、该窗口内同一文件 mount 的序号），带 state cell（按 `StateKey` 排序）、behavior state（按 slot；持有 closure 或 native handle 的记为空，在新进程中取 initializer），以及每个持有 focus、scroll offset、编辑文本与选区或 active child 的 node（`NodeRef`，region node 带它所在 `for` item 的 key）。state 不带 schema：恢复使用 host 从旧 view 到新 view 的 plan（与 patch 相同的 keep/convert/`@migrate`/reset 规则），以 snapshot 为 last-good 走 commit（`commit::restore`）——view 由新 build 的 package 重建，保留的 cell 先写入，node state 按 plan 的 node map 落到它成为的 node，找不到落点的报告为 lost。每个游戏是 `GameSnapshot` 字节，经 `Scheduler::restore` 恢复（同 identity、同 schema 的 Simulation state，World、随机状态与 Tick）。每个窗口记录逻辑尺寸（位置等平台 API）。`AppCx::dev_state(name, capture, restore)` 注册 app 自己持有的状态（如导航栈），按名字恢复；没有 `hot-reload` feature 时注册被丢弃。解码有界（每类条目 2^20、名字 4 KiB、文本 16 MiB、单个字节块 256 MiB）。
+
 ---
 
 ## 32. Snapshot storage/security
@@ -1150,6 +1154,8 @@ current dev session only
 - 路径在 ignored dev cache；
 - 支持敏感字段 exclusion；
 - 不成为 production persistence format。
+
+已实现：snapshot 只在 `viso run` 的内存中，每次 restart 替换，不写盘，不进 log 与 JSON（只报告字节数与耗时）。落盘的 opt-in cache 等 DSL 能标记敏感 state 之后再做。
 
 ---
 
@@ -1207,7 +1213,7 @@ request restart/rebuild
 
 不能 decoder 猜版本。
 
-已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 11`）：
+已实现（`viso_view::dev::wire`，`DEV_PROTOCOL_VERSION = 12`）：
 
 - runtime 连接并先说话：`RuntimeHello { protocol_version, token, dev_session, runtime_session, build_id, current_revision, schema_fingerprint, capabilities, target, shader_lang }`。连接方用 session token 证明自己是本 session 启动的 app，所以 token 在 `RuntimeHello` 里而不在 `HostHello` 里——host 不向尚未证明身份的连接发送任何东西；
 - host 回 `HostHello { protocol_version, dev_session, runtime_session, project_fingerprint, expected_build_id }`（接受，`runtime_session` 原样回显）或 `Reject { Protocol{host} | Build | Session | Schema }`；token 不符的连接不回应直接关闭（不给猜 token 的 oracle）。runtime 也检查 `HostHello`：protocol、session、runtime session 与 build 任一不符即断开；
@@ -1250,13 +1256,15 @@ struct PatchBundle {
 
 `system` section 是 `SystemPatch { games: [GamePatch{file, tier}] }`：`tier` 为 `Presentation`、`Logic`、`LogicMigration` 或 `WorldRebuild { keep: Fresh | KeepCharacters }`（各一个稳定 tag，未知 tag 是 malformed），至多 4096 项。候选 module 就是同一 patch 的 `ui` section 中该文件 view 的 behavior，不重复发送；`system` 条目的文件在 `ui` section 中没有含 System 的 view，或 module 链接失败，整个 patch 以 `NACK_UNLOADABLE_SYSTEM`（stage `runtime-stage`）拒绝。
 
-`resource` section 是 `ResourcePatch { assets: [ResourceAsset{path, hash, len}] }`（§22）：`path` 是 `assets/` 下规范化的路径，resource id 由它算出；字节不在 section 里，而在 patch 之前的 `HostMessage::Blob(BlobChunk{hash, total, offset, bytes})` 中（每块至多 1 MiB，`total` 至多 64 MiB，等待中的 blob 合计至多 256 MiB），按顺序到达、按 hash 组装，patch 之后未被认领的 blob 丢弃。
+`resource` section 是 `ResourcePatch { assets: [ResourceAsset{path, hash, len}] }`（§22）：`path` 是 `assets/` 下规范化的路径，resource id 由它算出；字节不在 section 里，而在 patch 之前的 `HostMessage::Blob(BlobChunk{hash, total, offset, bytes})` 中（每块至多 1 MiB，`total` 至多 64 MiB，等待中的 blob 合计至多 256 MiB），按顺序到达、按 hash 组装，patch 之后未被认领的 blob 丢弃。blob 的 `total` 上限是 256 MiB，asset 仍至多 64 MiB。
 
 另外的消息：
 
 - `RuntimeMessage::Mounts([MountEntry{file, path, package, module, language, catalog, capabilities, source_hash, assets}])`（`assets` 为 asset 目录与 build 为该文件嵌入的 resource id）：每个首次挂载的文件一条，`file` 是 runtime 分配的 `FileId`，patch 与 failure 都用它指代文件；host 据此编译与 build 完全一致的 candidate，并按 `source_hash` 知道 runtime 运行的是哪个版本——app 不发源码；
 - `HostMessage::Failure { file, lines }`：host 拒绝某文件最新编辑时的 overlay 行（`path:line:col: CODE message`，至多 16 行）；`lines` 为空表示清除（编辑被撤回到 runtime 运行的版本）。它只是显示，不带 revision；
-- `HostMessage::Game(GameQuery { id, file, ask })` 与 `RuntimeMessage::Game(GameAnswer { id, reply })`：`viso game`（`Viso_CLI.md` §22.3）经 host 对运行该文件的第一个 Game Session 的提问。`ask` 是 `Peek { system, state }`（名字各至多 256 B）或 `Record { span: Ticks(n) | Millis(n) }`（至多 2^24 Tick）；`reply` 是 `State { value, tick, sessions }`（状态值的 behavior wire 形式，由 host 按类型写成 JSON）、`Tape { tape }`（二进制 Tape）或拒绝 `NotRunning | UnknownState | Replaying | Recording | Ended | Fault(line) | TooLarge`。Peek 在下一个帧边界回答；Record 先重启 World，录满所要求的 Tick 后回答。它们不带 revision，不改变 last-good。
+- `HostMessage::Game(GameQuery { id, file, ask })` 与 `RuntimeMessage::Game(GameAnswer { id, reply })`：`viso game`（`Viso_CLI.md` §22.3）经 host 对运行该文件的第一个 Game Session 的提问。`ask` 是 `Peek { system, state }`（名字各至多 256 B）或 `Record { span: Ticks(n) | Millis(n) }`（至多 2^24 Tick）；`reply` 是 `State { value, tick, sessions }`（状态值的 behavior wire 形式，由 host 按类型写成 JSON）、`Tape { tape }`（二进制 Tape）或拒绝 `NotRunning | UnknownState | Replaying | Recording | Ended | Fault(line) | TooLarge`。Peek 在下一个帧边界回答；Record 先重启 World，录满所要求的 Tick 后回答。它们不带 revision，不改变 last-good；
+- `HostMessage::Snapshot`：请 app 在下一帧边界给出 DevSnapshot（§31）。app 以 `RuntimeMessage::Blob` 分块发送（由 writer 线程切块，不占 outgoing 队列，不会被丢弃），随后 `RuntimeMessage::Snapshot { blob: BlobRef{hash, len}, capture_us }`；
+- `HostMessage::Restore(RestoreBundle { dev_session, target_runtime, snapshot: BlobRef, ui: UiPatch })`：snapshot 的字节在其前的 `HostMessage::Blob` 中，`ui` 是新 build 挂载的每个文件的 view 与从旧 view 出发的 plan。app 回 `RuntimeMessage::Restored(RestoreReport { files, notices, state_resets, games: [GameRestore{file, sessions, tick, states, reset, degraded}], views_lost, extensions, extensions_lost, restore_us })`；不是本次 launch 的、snapshot 不完整或解码不了的、view 加载不了的，以 stage `snapshot-restore` NACK（`NACK_UNKNOWN_SESSION`、`NACK_UNRESTORABLE_SNAPSHOT`、`NACK_UNLOADABLE_VIEW`），app 以全新状态运行。
 
 ---
 
@@ -1925,10 +1933,10 @@ no hot-reload runtime configuration key
 
 已实现的是 `cargo xtask check-release-absence [-p <package>] [--no-launch]`（CI 在 macOS 上带 launch、在 Linux 上 `--no-launch` 运行；默认 package 是挂载 `view!` 的 `viso-example-i18n`）：
 
-- 同一组 marker（dev channel 的 env 名 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD`、patch 检查与 candidate stage 的 NACK code、dev link 的线程名与类型名、失败 overlay 的文案）先在 `--release --features viso/hot-reload`、`VISO_PROFILE=dev` 的对照 artifact 中必须全部出现——marker 失效时在这里失败，而不是让 release 扫描空过；release artifact（`VISO_PROFILE=release`、无 feature）中必须一个都不出现。`viso_dsl` 符号在两个 artifact 中都不得出现（§1.3：app 不含编译器）。符号从可执行文件本身读取，所以扫描只在符号留在其中的平台（macOS、Linux）上运行；
+- 同一组 marker（dev channel 的 env 名 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD`、patch 检查与 candidate stage 的 NACK code、dev link 的线程名与类型名、失败 overlay 的文案、snapshot endpoint 的 `VISO_DEV_RESTORE`、`NACK_UNRESTORABLE_SNAPSHOT` 与等待 restore 的文案）先在 `--release --features viso/hot-reload`、`VISO_PROFILE=dev` 的对照 artifact 中必须全部出现——marker 失效时在这里失败，而不是让 release 扫描空过；release artifact（`VISO_PROFILE=release`、无 feature）中必须一个都不出现。`viso_dsl` 符号在两个 artifact 中都不得出现（§1.3：app 不含编译器）。符号从可执行文件本身读取，所以扫描只在符号留在其中的平台（macOS、Linux）上运行；
 - 同一构建在 `VISO_PROFILE=shipping` 下必须被 facade build script 拒绝（§58）；
 - launch：两个 artifact 都以 dev channel 的全部环境变量（`VISO_DEV_RUNTIME` 指向 loopback listener，以及 token、session、build）启动；对照 artifact 必须连上，release artifact 必须持续运行对照连接耗时的 3 倍（至少 5 秒）且从不连接，提前退出也算失败；
-- 尚未覆盖：PatchBundle、DevSnapshot endpoint 等尚不存在的 dev 层，它们落地时各自把 marker 加入列表。
+- 以后的 dev 层落地时各自把 marker 加入列表。
 
 ---
 

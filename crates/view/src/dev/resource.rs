@@ -7,7 +7,10 @@
 //! The patch's [`ResourceAsset`]s then claim them, each by its path, hash and
 //! length, so a blob that went missing, was cut short or holds other bytes
 //! refuses the revision instead of showing something else. What no patch
-//! claims is dropped with the next patch.
+//! claims is dropped with the next patch. A [`DevSnapshot`] travels the same
+//! way, in both directions.
+//!
+//! [`DevSnapshot`]: super::snapshot::DevSnapshot
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,6 +51,39 @@ pub struct ResourceAsset {
 impl ResourceAsset {
     pub fn id(&self) -> ResourceId {
         ResourceId::of(&self.path)
+    }
+}
+
+/// A blob, by its content hash and length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BlobRef {
+    /// The [`content_hash`] of its bytes.
+    pub hash: u64,
+    pub len: u32,
+}
+
+impl BlobRef {
+    pub fn of(bytes: &[u8]) -> BlobRef {
+        BlobRef {
+            hash: content_hash(bytes),
+            len: bytes.len() as u32,
+        }
+    }
+
+    pub(super) fn write(self, enc: &mut Encoder) {
+        enc.write_u64(self.hash);
+        enc.write_varint(u64::from(self.len));
+    }
+
+    pub(super) fn read(dec: &mut Decoder<'_>) -> Result<BlobRef, WireError> {
+        let blob = BlobRef {
+            hash: dec.read_u64()?,
+            len: read_u32(dec)?,
+        };
+        if blob.len as usize > MAX_STAGED {
+            return Err(WireError::Bound { what: "blob" });
+        }
+        Ok(blob)
     }
 }
 
@@ -128,16 +164,24 @@ impl Blobs {
     /// The bytes of `asset`: a whole blob of its length whose content hashes
     /// to its hash.
     pub fn claim(&mut self, asset: &ResourceAsset) -> Option<Arc<[u8]>> {
-        let blob = self.blobs.get_mut(&asset.hash)?;
-        if let Blob::Filling(total, bytes) = blob {
-            if bytes.len() != *total || content_hash(bytes) != asset.hash {
-                self.drop_blob(asset.hash);
+        self.take(BlobRef {
+            hash: asset.hash,
+            len: asset.len,
+        })
+    }
+
+    /// The bytes `blob` names, whole and hashing to its hash.
+    pub fn take(&mut self, blob: BlobRef) -> Option<Arc<[u8]>> {
+        let staged = self.blobs.get_mut(&blob.hash)?;
+        if let Blob::Filling(total, bytes) = staged {
+            if bytes.len() != *total || content_hash(bytes) != blob.hash {
+                self.drop_blob(blob.hash);
                 return None;
             }
-            *blob = Blob::Whole(Arc::from(std::mem::take(bytes)));
+            *staged = Blob::Whole(Arc::from(std::mem::take(bytes)));
         }
-        match blob {
-            Blob::Whole(bytes) if bytes.len() == asset.len as usize => Some(Arc::clone(bytes)),
+        match staged {
+            Blob::Whole(bytes) if bytes.len() == blob.len as usize => Some(Arc::clone(bytes)),
             _ => None,
         }
     }
@@ -194,7 +238,7 @@ pub(super) fn read_chunk(dec: &mut Decoder<'_>) -> Result<BlobChunk, WireError> 
     let hash = dec.read_u64()?;
     let total = read_u32(dec)?;
     let offset = read_u32(dec)?;
-    if total as usize > MAX_ASSET {
+    if total as usize > MAX_STAGED {
         return Err(WireError::Bound { what: "blob" });
     }
     let len = read_count(dec, BLOB_CHUNK, "blob chunk")?;

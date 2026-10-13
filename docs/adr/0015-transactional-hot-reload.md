@@ -256,3 +256,25 @@ two prior tests that asserted the opposite — that an edit elsewhere in the tre
 untouched kept node — were corrected to assert the new, intended identity-preserving
 behavior instead. The wire round-trip suite (`crates/view/src/dev/wire.rs`) covers all
 three `StructuralOp` variants.
+
+## Amendment — 2026-10-14: a Rust edit restarts the app with a typed snapshot
+
+A Rust edit cannot patch the running process (`Viso_Hot_Reload.md` §24), so it restarts
+it, and the restart reuses the transaction rather than adding a second state-carrying
+path:
+
+- **Capture (`viso-view::dev::snapshot`)**: at a frame boundary the old process writes a
+  `DevSnapshot` — per view mount its cells by `StateKey`, its behavior states by slot as
+  plain data, and the focus, scroll, text and active child of its nodes by `NodeRef`;
+  per game its `GameSnapshot`; per window its size; per `AppCx::dev_state` registration
+  its bytes. Nothing in it is a pointer, handle or platform object, and it carries no
+  schema of its own.
+- **Restore (`commit::restore`)**: the commit of decision 4 with the snapshot in the
+  place of the live last-good. The host plans each file from the view the old process
+  ran to the one the new build embeds exactly as for a patch, so conversion,
+  `@migrate` and reset follow the same rules, and the new process applies it before its
+  first frame.
+
+The snapshot lives in the memory of `viso run` for the session only. Keep-last-good
+holds across the restart: the old process runs until the new build succeeds, and a
+restore that does not load is NACKed and leaves the new process running fresh.

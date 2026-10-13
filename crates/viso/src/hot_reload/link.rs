@@ -11,13 +11,17 @@
 //! through a bounded queue, waking it; a full queue stalls the reader, never
 //! the loop. The reader also assembles the blobs the host sends ahead of a
 //! patch and decodes the assets the patch names, so no asset decodes on the
-//! loop. A failed connect, handshake or write ends the threads, and later
-//! messages are dropped. An address that is not loopback is refused.
+//! loop. A snapshot the app captured goes out whole: the writer cuts it into
+//! blob chunks, so it never fills the queue; and the reader assembles the
+//! snapshot a restore carries before the loop sees the restore. A failed
+//! connect, handshake or write ends the threads, and later messages are
+//! dropped. An address that is not loopback is refused.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -26,11 +30,11 @@ use viso_platform::LoopWaker;
 use viso_render::asset::ResourceId;
 use viso_ui::{AssetBytes, AssetPayload};
 use viso_view::dev::wire::{
-    Blobs, BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
+    BlobRef, Blobs, BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
     DEV_TOKEN_ENV, DevSessionId, Domains, FileId, FrameError, GameQuery, HostMessage, Message,
-    PatchBundle, PatchSection, Reject, Revision, RuntimeHello, RuntimeIdentity, RuntimeMessage,
-    RuntimeSessionId, RuntimeTarget, SchemaFingerprint, WireError, accept_host, read_body,
-    read_frame, write_frame,
+    PatchBundle, PatchSection, Reject, RestoreBundle, Revision, RuntimeHello, RuntimeIdentity,
+    RuntimeMessage, RuntimeSessionId, RuntimeTarget, SchemaFingerprint, WireError, accept_host,
+    blob_chunks, read_body, read_frame, write_frame,
 };
 
 /// How long the thread waits for the CLI to accept, and then to answer.
@@ -53,8 +57,21 @@ pub(crate) enum Incoming {
     Failure { file: FileId, lines: Vec<String> },
     /// A question about a running game.
     Game(GameQuery),
+    /// The host asks for the app's snapshot.
+    Snapshot,
+    /// The state to restore, and the bytes of its snapshot, `None` when they
+    /// did not arrive whole.
+    Restore(Box<RestoreBundle>, Option<Arc<[u8]>>),
     /// A host frame that did not decode.
     Undecodable(WireError),
+}
+
+/// What the loop hands the writer.
+enum Outgoing {
+    Message(RuntimeMessage),
+    /// A snapshot's bytes and how long capturing them took, written as blob
+    /// chunks and the message naming them.
+    Snapshot(Vec<u8>, u64),
 }
 
 /// An asset a patch names, as its blob decoded.
@@ -68,7 +85,7 @@ pub(crate) struct LoadedAsset {
 
 /// The app's end of the dev channel.
 pub(crate) struct DevLink {
-    outgoing: Option<SyncSender<RuntimeMessage>>,
+    outgoing: Option<SyncSender<Outgoing>>,
     incoming: Receiver<Incoming>,
     /// Messages dropped since the last that went out.
     dropped: u32,
@@ -108,7 +125,7 @@ impl DevLink {
     /// Starts the reader, which connects to `addr` and introduces the launch
     /// with `hello`.
     pub(super) fn connect(addr: SocketAddr, hello: RuntimeHello, wake: LoopWaker) -> Self {
-        let (outgoing, to_send) = mpsc::sync_channel::<RuntimeMessage>(OUTGOING);
+        let (outgoing, to_send) = mpsc::sync_channel::<Outgoing>(OUTGOING);
         let (deliver, incoming) = mpsc::sync_channel::<Incoming>(INCOMING);
         let link = thread::Builder::new()
             .name("viso-dev-link".into())
@@ -146,9 +163,9 @@ impl DevLink {
             return;
         };
         if self.dropped > 0 {
-            match outgoing.try_send(RuntimeMessage::Dropped {
+            match outgoing.try_send(Outgoing::Message(RuntimeMessage::Dropped {
                 count: self.dropped,
-            }) {
+            })) {
                 Ok(()) => self.dropped = 0,
                 Err(TrySendError::Full(_)) => {
                     self.dropped = self.dropped.saturating_add(1);
@@ -157,14 +174,29 @@ impl DevLink {
                 Err(TrySendError::Disconnected(_)) => return,
             }
         }
-        if let Err(TrySendError::Full(_)) = outgoing.try_send(message) {
+        if let Err(TrySendError::Full(_)) = outgoing.try_send(Outgoing::Message(message)) {
             self.dropped = self.dropped.saturating_add(1);
+        }
+    }
+
+    /// Hands the writer the snapshot `bytes`, captured in `capture_us`: it is
+    /// never dropped, so this waits while the queue is full.
+    pub(crate) fn send_snapshot(&mut self, bytes: Vec<u8>, capture_us: u64) {
+        if let Some(outgoing) = &self.outgoing {
+            let _ = outgoing.send(Outgoing::Snapshot(bytes, capture_us));
         }
     }
 
     /// The next host frame the reader delivered.
     pub(crate) fn poll(&self) -> Option<Incoming> {
         self.incoming.try_recv().ok()
+    }
+
+    /// The next host frame the reader delivers before `deadline`; `None` at
+    /// the deadline or once the link ended.
+    pub(crate) fn wait(&self, deadline: Instant) -> Option<Incoming> {
+        let left = deadline.checked_duration_since(Instant::now())?;
+        self.incoming.recv_timeout(left).ok()
     }
 }
 
@@ -248,6 +280,12 @@ fn read_all(mut stream: TcpStream, deliver: &SyncSender<Incoming>, wake: &LoopWa
             }
             Ok(HostMessage::Failure { file, lines }) => Incoming::Failure { file, lines },
             Ok(HostMessage::Game(query)) => Incoming::Game(query),
+            Ok(HostMessage::Snapshot) => Incoming::Snapshot,
+            Ok(HostMessage::Restore(restore)) => {
+                let snapshot = blobs.take(restore.snapshot);
+                blobs.clear();
+                Incoming::Restore(restore, snapshot)
+            }
             Ok(HostMessage::Hello(_) | HostMessage::Reject(_)) => return,
             Err(error) => Incoming::Undecodable(error),
         };
@@ -286,9 +324,18 @@ fn load_assets(patch: &PatchBundle, blobs: &mut Blobs) -> Vec<LoadedAsset> {
 
 /// Writes every queued message until the loop closes the queue or a write
 /// fails.
-fn write_all(mut stream: TcpStream, to_send: &Receiver<RuntimeMessage>) {
-    for message in to_send {
-        if write_frame(&mut stream, &message).is_err() {
+fn write_all(mut stream: TcpStream, to_send: &Receiver<Outgoing>) {
+    for outgoing in to_send {
+        let written = match outgoing {
+            Outgoing::Message(message) => write_frame(&mut stream, &message),
+            Outgoing::Snapshot(bytes, capture_us) => blob_chunks(&bytes)
+                .try_for_each(|chunk| write_frame(&mut stream, &RuntimeMessage::Blob(chunk)))
+                .and_then(|()| {
+                    let blob = BlobRef::of(&bytes);
+                    write_frame(&mut stream, &RuntimeMessage::Snapshot { blob, capture_us })
+                }),
+        };
+        if written.is_err() {
             return;
         }
     }

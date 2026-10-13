@@ -944,24 +944,30 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
       state carried by the plan's node map; what no node takes reported lost. A
       carried edit buffer keeps its text over the rebuilt field's seed (also for a
       patch's carry).
-- [ ] Protocol 12: `HostMessage::{Snapshot, Restore}`, `RuntimeMessage::{Blob,
-      Snapshot, Restored}` — the snapshot travels as blob chunks both ways; the
-      restore carries each view's plan from the view the old app ran to the one the
-      new build embeds, the host's as for a patch.
-- [ ] Capture at the frame boundary after the request: every window (its size; its
-      position once the platform reports one), every view mount, every game session
-      (`Scheduler::snapshot`), every extension the app registered
-      (`AppCx::dev_state(name, capture, restore)`, a no-op without `hot-reload`).
-- [ ] Restore before the first frame of a process launched to restore (it waits for
-      the restore a bounded time): each view through its plan; games through
-      `Scheduler::restore`; extensions by name; a restore that does not decode is a
-      `snapshot-restore` NACK and the app runs fresh; `Restored` reports what carried
-      and what reset per file.
-- [ ] Host: the snapshot assembled from its chunks and kept in memory for the
-      session only, never printed in logs or JSON (§32, §47); the restore's plans
-      from the last-good of each mount the old app ran to the view the new build
-      reports.
-- [ ] `DevSnapshot` and its messages join the release-absence markers
+- [x] Protocol 12: `HostMessage::{Snapshot, Restore}`, `RuntimeMessage::{Blob,
+      Snapshot, Restored}` — the snapshot travels as blob chunks both ways (the
+      runtime's writer thread cuts them, so the snapshot never fills or is dropped
+      from the outgoing queue); the restore carries each view's package and plan
+      from the view the old app ran to the one the new build embeds, the host's as
+      for a patch. Blob totals bound at 256 MiB, assets still at 64 MiB.
+- [x] Capture at the frame boundary after the request, after the patches commit:
+      every window mounting a view (its logical size; its position once the platform
+      reports one), every view mount, every game session (`Scheduler::snapshot`),
+      every extension the app registered (`AppCx::dev_state(name, capture,
+      restore)`, kept with viso-ui's `hot-reload` feature, dropped without).
+- [x] Restore before the first frame of a process launched to restore
+      (`VISO_DEV_RESTORE`; it waits 5 s for the restore after its first mounts):
+      each mount of a window opened before the first frame boundary through its
+      file's plan; games through `Scheduler::restore`; extensions by name; a restore
+      not for the launch, whose snapshot did not arrive whole or does not decode, or
+      whose view does not load is a `snapshot-restore` NACK and the app runs fresh;
+      `Restored` at the first frame boundary reports what carried and reset per
+      file, per game, and what no mount or registration took.
+- [x] Host: the snapshot assembled from its chunks and kept in memory for the
+      session only, never printed in logs or JSON (only its size and capture time)
+      (§32, §47); the restore's plans from the last-good of each mount the old app
+      ran to the view the new build reports in its first mounts.
+- [x] `DevSnapshot` and its messages join the release-absence markers
       (`xtask/src/absence.rs`).
 - [ ] An opt-in disk cache under the ignored dev cache (§32, "if ever allowed") waits
       for a DSL way to mark a state sensitive; it would exclude those and secure text
@@ -972,14 +978,20 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
 - [ ] Platform: a window's outer position and size read back, and a window created
       at a given position (`WindowConfig::position`) on macOS, Windows and X11;
       Wayland places windows itself, so only the size carries there.
-- [ ] Sequence: build success → request snapshot (bounded wait) → stop the old
-      process → launch the new one with the window geometry and the restore flag →
-      handshake against the new build id (the host accepts the build it launched;
-      revisions restart at `LAUNCH`) → restore → resume; the mounts re-report and
-      the session plans the next edit against what the new build embeds.
-- [ ] `WARM_RESTART_REQUIRED` class reported by the host for a Rust change, and for
-      a `.vs` edit whose schema fingerprint the runtime does not match (a native it
-      lacks), instead of a patch (§8).
+- [x] Sequence: build success → request snapshot (3 s) → ask the old process to
+      close (SIGTERM; killed after 3 s) → launch the new one with the restore flag →
+      handshake (the build id is the session's; revisions restart at `LAUNCH`) →
+      restore → resume; the mounts re-report and the session plans the next edit
+      against what the new build embeds. A newer build during the restart replaces
+      it; the old connection's late messages are dropped by `RuntimeSessionId`.
+- [ ] Launch the new process with the old windows' geometry.
+- [x] `WARM_RESTART_REQUIRED` class for a Rust change: one `dev` event per restart,
+      `outcome: warm_restarted`, once the restore lands (`rejected` when the new
+      executable does not launch).
+- [ ] `WARM_RESTART_REQUIRED` for a `.vs` edit whose schema fingerprint the runtime
+      does not match (a native it lacks), instead of a patch (§8).
+- [ ] An app that mounts no `view!` opens the dev channel too (at launch, not at
+      the first mount), so its windows and extensions carry across a restart.
 - [ ] Integration test (§62 Rust): app with state, edit Rust, assert old app runs
       until the build succeeds, warm restart, assert state restored; a failing build
       leaves the old app running.

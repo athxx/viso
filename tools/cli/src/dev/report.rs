@@ -21,6 +21,8 @@ pub enum Outcome {
     Rejected,
     /// Compiled, and not sent: the session runs with `--no-hot-reload`.
     Held,
+    /// The app restarted on the new build and took its snapshot back.
+    WarmRestarted,
 }
 
 impl Outcome {
@@ -31,6 +33,7 @@ impl Outcome {
             Outcome::ScopedReset => "scoped_reset",
             Outcome::Rejected => "rejected",
             Outcome::Held => "held",
+            Outcome::WarmRestarted => "warm_restarted",
         }
     }
 
@@ -39,6 +42,7 @@ impl Outcome {
         match self {
             Outcome::Applied => Some("PATCH"),
             Outcome::ScopedReset => Some("PATCH_WITH_SCOPED_RESET"),
+            Outcome::WarmRestarted => Some("WARM_RESTART_REQUIRED"),
             Outcome::Rejected | Outcome::Held => None,
         }
     }

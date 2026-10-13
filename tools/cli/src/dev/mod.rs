@@ -29,6 +29,14 @@
 //! reports each candidate, but sends the app nothing: a candidate that
 //! compiles is `held`.
 //!
+//! Across a Rust warm restart the session asks the old app for its
+//! snapshot and keeps it in memory, never written, printed or logged (§32),
+//! with the view each file of the old app ran. When the app launched to
+//! restore reports its first mounts, each file's view as the new build
+//! embeds it is planned from the one the old app ran — the plan a patch
+//! between the two would carry — and the snapshot goes to the app with the
+//! plans.
+//!
 //! The session also relays what `viso game` asks through its control
 //! endpoint ([`control`]): the game is found among the mounted views by its
 //! file, the question goes to the app, and a peeked state comes back written
@@ -43,6 +51,7 @@ mod sources;
 pub mod watch;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -52,9 +61,10 @@ use viso_dsl::behavior::probe::state_json;
 use viso_dsl::hotreload::{CandidatePlan, game_patch, view_patch};
 use viso_project::LockGuard;
 use viso_view::dev::wire::{
-    CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply, HostMessage,
-    PatchBundle, PatchSection, Rebuild, ResourceAsset, ResourcePatch, Revision, RuntimeHello,
-    RuntimeMessage, Stage, SystemPatch, UiPatch, blob_chunks, source_hash,
+    BlobRef, Blobs, CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply,
+    HostMessage, PatchBundle, PatchSection, Rebuild, ResourceAsset, ResourcePatch, RestoreBundle,
+    RestoreReport, Revision, RuntimeHello, RuntimeMessage, RuntimeSessionId, ShaderLang, Stage,
+    SystemPatch, UiPatch, blob_chunks, source_hash,
 };
 
 pub use control::{Control, ControlCall, ControlDeliver, ControlReply};
@@ -97,6 +107,16 @@ struct Runtime {
     in_flight: Option<InFlight>,
     /// The questions of `viso game` it was sent and has not answered.
     asked: Vec<Asked>,
+    /// The chunks of the snapshot it is sending.
+    blobs: Blobs,
+}
+
+/// The snapshot of an app, kept for the app launched after it.
+pub(crate) struct HeldSnapshot {
+    bytes: Arc<[u8]>,
+    /// The view each file of the app ran, by path: what the restore plans
+    /// from.
+    views: Vec<(PathBuf, CandidatePlan)>,
 }
 
 impl Drop for Runtime {
@@ -170,6 +190,13 @@ pub struct DevSession {
     apply: bool,
     /// The id the next question of `viso game` takes.
     next_query: u32,
+    /// The latest snapshot the app sent.
+    held: Option<HeldSnapshot>,
+    /// Whether the next app to connect was launched to restore it.
+    restore_next: bool,
+    /// The event of the Rust build the app is restarting on, reported once
+    /// the restart lands.
+    restarting: Option<RebuildEvent>,
 }
 
 impl DevSession {
@@ -199,6 +226,9 @@ impl DevSession {
             next_revision: Revision::LAUNCH.0 + 1,
             apply,
             next_query: 0,
+            held: None,
+            restore_next: false,
+            restarting: None,
         }
     }
 
@@ -251,14 +281,17 @@ impl DevSession {
 
     /// Reports `build`, a build of the Rust sources after the launch: a
     /// failure keeps the app running; one that relinked nothing changes
-    /// nothing.
-    pub(crate) fn rebuilt(&mut self, build: &Build, out: &mut Output) {
+    /// nothing. Whether the app is to restart on the new executable: its
+    /// event waits for the restart to land.
+    pub(crate) fn rebuilt(&mut self, build: &Build, out: &mut Output) -> bool {
         if build.unchanged {
-            return out.log("info", "tool", "the Rust edit changed nothing the app runs");
+            out.log("info", "tool", "the Rust edit changed nothing the app runs");
+            return false;
         }
         let (outcome, codes) = match &build.result {
+            Ok(_) if self.apply => (Outcome::WarmRestarted, Vec::new()),
             Ok(_) => (Outcome::Held, Vec::new()),
-            Err(BuildFailure::Cancelled) => return,
+            Err(BuildFailure::Cancelled) => return false,
             Err(failure) => {
                 out.log(
                     "error",
@@ -296,6 +329,56 @@ impl DevSession {
             codes,
             build_us: u64::try_from(build.elapsed.as_micros()).unwrap_or(u64::MAX),
         };
+        if outcome == Outcome::WarmRestarted {
+            // A restart already under way takes the newer build: its event
+            // names every file since the app last restarted.
+            let mut event = event;
+            if let Some(earlier) = self.restarting.take() {
+                event.base_revision = earlier.base_revision;
+                for file in earlier.files {
+                    if !event.files.contains(&file) {
+                        event.files.push(file);
+                    }
+                }
+            }
+            self.restarting = Some(event);
+            return true;
+        }
+        out.rebuild(&self.session, &runtime_session, &self.build, &event);
+        false
+    }
+
+    /// The app restarted on the new executable: with no snapshot to restore
+    /// it runs fresh, which reports the restart now; otherwise the restore
+    /// reports it.
+    pub(crate) fn relaunched(&mut self, out: &mut Output) {
+        if !self.restore_next {
+            self.finish_restart(Outcome::WarmRestarted, Vec::new(), out);
+        }
+    }
+
+    /// The restart did not land: the new executable did not launch.
+    pub(crate) fn restart_failed(&mut self, why: &str, out: &mut Output) {
+        out.log("error", "tool", why);
+        self.restore_next = false;
+        self.finish_restart(Outcome::Rejected, Vec::new(), out);
+    }
+
+    /// Reports the restart under way with `outcome`.
+    fn finish_restart(&mut self, outcome: Outcome, codes: Vec<String>, out: &mut Output) {
+        let Some(mut event) = self.restarting.take() else {
+            return;
+        };
+        event.outcome = outcome;
+        event.codes.extend(codes);
+        event.last_good_revision = match outcome {
+            Outcome::Rejected => event.base_revision,
+            _ => Revision::LAUNCH.0,
+        };
+        let runtime_session = self
+            .runtime
+            .as_ref()
+            .map_or_else(String::new, |r| r.hello.runtime_session.to_hex());
         out.rebuild(&self.session, &runtime_session, &self.build, &event);
     }
 
@@ -333,15 +416,29 @@ impl DevSession {
                     writer: connection.writer,
                     in_flight: None,
                     asked: Vec::new(),
+                    blobs: Blobs::default(),
                 });
             }
-            LinkEvent::Runtime(message) => self.runtime_message(message, out),
-            LinkEvent::Closed => {
-                self.runtime = None;
-                self.sources.unmount();
+            LinkEvent::Runtime(from, message) => {
+                if self.runs(from) {
+                    self.runtime_message(message, out);
+                }
+            }
+            LinkEvent::Closed(from) => {
+                if self.runs(from) {
+                    self.runtime = None;
+                    self.sources.unmount();
+                }
             }
             LinkEvent::Refused(reason) => out.log("warn", "tool", &reason),
         }
+    }
+
+    /// Whether `launch` is the runtime connected.
+    fn runs(&self, launch: RuntimeSessionId) -> bool {
+        self.runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.hello.runtime_session == launch)
     }
 
     /// Takes the batch when it is due.
@@ -364,11 +461,53 @@ impl DevSession {
                 // Each mount's last-good compiles now, off the first edit's
                 // path; one that cannot is retried, and reported, then.
                 self.compile_catalogs(out);
-                for at in mounted {
+                for &at in &mounted {
                     let _ = self.sources.baseline(at);
+                }
+                if std::mem::take(&mut self.restore_next) {
+                    self.send_restore(&mounted, out);
                 }
                 self.ready = true;
             }
+            RuntimeMessage::Blob(chunk) => {
+                if let Some(runtime) = &mut self.runtime {
+                    runtime.blobs.add(chunk);
+                }
+            }
+            RuntimeMessage::Snapshot { blob, capture_us } => {
+                let Some(runtime) = &mut self.runtime else {
+                    return;
+                };
+                let bytes = runtime.blobs.take(blob);
+                runtime.blobs.clear();
+                let Some(bytes) = bytes else {
+                    return out.log(
+                        "warn",
+                        "tool",
+                        "the app's snapshot did not arrive whole: the next launch runs fresh",
+                    );
+                };
+                let views = self
+                    .sources
+                    .views
+                    .iter()
+                    .filter_map(|view| {
+                        let last_good = view.mount.as_ref()?.last_good.as_ref()?;
+                        Some((view.path.clone(), last_good.clone()))
+                    })
+                    .collect();
+                out.log(
+                    "info",
+                    "tool",
+                    &format!(
+                        "snapshot taken: {} bytes in {:.1} ms",
+                        bytes.len(),
+                        capture_us as f64 / 1000.0
+                    ),
+                );
+                self.held = Some(HeldSnapshot { bytes, views });
+            }
+            RuntimeMessage::Restored(report) => self.restored(&report, out),
             RuntimeMessage::Ack(ack) => {
                 let Some(sent) = self.answered(ack.revision) else {
                     return out.log(
@@ -466,6 +605,17 @@ impl DevSession {
                     out.dev(&name, &self.session, &runtime_session, &self.build, &event);
                 }
             }
+            RuntimeMessage::Nack(nack) if nack.stage == Stage::SnapshotRestore => {
+                out.log(
+                    "warn",
+                    "tool",
+                    &format!(
+                        "the app did not restore its state ({}): it runs fresh",
+                        nack.diagnostic_codes.join(", ")
+                    ),
+                );
+                self.finish_restart(Outcome::WarmRestarted, nack.diagnostic_codes, out);
+            }
             RuntimeMessage::Nack(nack) => {
                 let Some(sent) = self.answered(nack.candidate_revision) else {
                     return out.log(
@@ -538,6 +688,98 @@ impl DevSession {
             // The link thread delivers no second hello.
             RuntimeMessage::Hello(_) => {}
         }
+    }
+
+    /// Asks the app for its snapshot, dropping the one held; whether an app
+    /// runs to be asked.
+    pub(crate) fn request_snapshot(&mut self) -> bool {
+        self.held = None;
+        self.runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.writer.send(HostMessage::Snapshot).is_ok())
+    }
+
+    /// Whether the app sent the snapshot asked for.
+    pub(crate) fn has_snapshot(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// Restores the held snapshot into the next app to connect, once it
+    /// reports its mounts; whether one is held.
+    pub(crate) fn restore_next(&mut self) -> bool {
+        self.restore_next = self.held.is_some();
+        self.restore_next
+    }
+
+    /// Sends the held snapshot to the app, with a view for each file of it
+    /// the app just reported mounting that the old app ran: the view the
+    /// build embeds and the plan to it from the old one.
+    fn send_restore(&mut self, mounted: &[usize], out: &mut Output) {
+        let (Some(runtime), Some(held)) = (&self.runtime, &self.held) else {
+            return;
+        };
+        let langs = [runtime.hello.shader_lang, ShaderLang::None];
+        let mut ui = UiPatch::default();
+        for &at in mounted {
+            let view = &self.sources.views[at];
+            let Some(mount) = &view.mount else {
+                continue;
+            };
+            let old = held.views.iter().find(|(path, _)| *path == view.path);
+            let (Some((_, old)), Some(new)) = (old, &mount.last_good) else {
+                continue;
+            };
+            match view_patch(mount.file, Some(old), new, &langs) {
+                Ok(patch) => ui.views.push(patch),
+                Err(error) => {
+                    let name = Source::new(&view.path, &self.root, "").name().to_owned();
+                    out.log(
+                        "warn",
+                        "tool",
+                        &format!("`{name}`: its view does not restore: {error}; it runs fresh"),
+                    );
+                }
+            }
+        }
+        for chunk in blob_chunks(&held.bytes) {
+            if runtime.writer.send(HostMessage::Blob(chunk)).is_err() {
+                return;
+            }
+        }
+        let _ = runtime
+            .writer
+            .send(HostMessage::Restore(Box::new(RestoreBundle {
+                dev_session: runtime.hello.dev_session,
+                target_runtime: runtime.hello.runtime_session,
+                snapshot: BlobRef::of(&held.bytes),
+                ui,
+            })));
+    }
+
+    /// Reports what the restore carried, which lands the restart.
+    fn restored(&mut self, report: &RestoreReport, out: &mut Output) {
+        let mut migrated = 0;
+        let mut reset = 0;
+        let mut mounts = 0;
+        for file in &report.files {
+            mounts += file.counts.mounts;
+            migrated += file.counts.migrated;
+            reset += file.counts.reset;
+        }
+        let games: u32 = report.games.iter().map(|game| game.sessions).sum();
+        out.log(
+            "info",
+            "tool",
+            &format!(
+                "restored {mounts} view mounts ({migrated} states carried, {reset} reset, {} \
+                 lost), {games} games, {} extensions ({} lost) in {:.1} ms",
+                report.views_lost,
+                report.extensions,
+                report.extensions_lost,
+                report.restore_us as f64 / 1000.0
+            ),
+        );
+        self.finish_restart(Outcome::WarmRestarted, Vec::new(), out);
     }
 
     /// The lock this session holds, to publish its control endpoint in.
@@ -1097,9 +1339,9 @@ mod tests {
     use viso_dsl::aot::emit_view_package;
     use viso_project::{Layout, LockKind, Target};
     use viso_view::dev::wire::{
-        BuildId, DevSessionId, Domains, FileCommit, FileId, MountEntry, PatchAck, PatchNack,
-        PatchTimings, ProjectFingerprint, ReloadPlan, RuntimeSessionId, RuntimeTarget,
-        SchemaFingerprint, ViewPatch,
+        BLOB_CHUNK, BuildId, DevSessionId, Domains, FileCommit, FileId, MountEntry, PatchAck,
+        PatchNack, PatchTimings, ProjectFingerprint, ReloadPlan, RuntimeTarget, SchemaFingerprint,
+        ViewPatch,
     };
 
     use super::link::Connection;
@@ -1237,8 +1479,20 @@ mod tests {
             self.dev.change(change, &mut self.out);
         }
 
+        /// The launch connected.
+        fn launch(&self) -> RuntimeSessionId {
+            self.dev
+                .runtime
+                .as_ref()
+                .expect("a runtime connected")
+                .hello
+                .runtime_session
+        }
+
         fn runtime(&mut self, message: RuntimeMessage) {
-            self.dev.link(LinkEvent::Runtime(message), &mut self.out);
+            let launch = self.launch();
+            self.dev
+                .link(LinkEvent::Runtime(launch, message), &mut self.out);
         }
 
         /// Ticks the session once its batch is due and returns what it sent.
@@ -1700,7 +1954,8 @@ mod tests {
 
         // The app exits with a question open: it is refused, not left hanging.
         let (_, answer) = ask(&mut f, "view", peek("Runner", "steps"));
-        f.dev.link(LinkEvent::Closed, &mut f.out);
+        let launch = f.launch();
+        f.dev.link(LinkEvent::Closed(launch), &mut f.out);
         assert!(matches!(
             answer.try_recv(),
             Ok(ControlReply::Refused { code, .. }) if code == control::GAME_NOT_RUNNING
@@ -1783,9 +2038,108 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_is_held_and_restored_with_plans_into_the_app_launched_after_it() {
+        let mut f = Fixture::new("restore");
+        let _ = f.settle();
+        let built = Build {
+            result: Ok(PathBuf::from("app")),
+            elapsed: Duration::from_millis(1),
+            files: Vec::new(),
+            unchanged: false,
+        };
+        assert!(f.dev.rebuilt(&built, &mut f.out), "the app restarts on it");
+        assert!(f.dev.request_snapshot());
+        assert!(matches!(f.sent.try_recv(), Ok(HostMessage::Snapshot)));
+        assert!(!f.dev.has_snapshot());
+        let bytes: Vec<u8> = (0..BLOB_CHUNK + 9).map(|i| i as u8).collect();
+        for chunk in blob_chunks(&bytes) {
+            f.runtime(RuntimeMessage::Blob(chunk));
+        }
+        f.runtime(RuntimeMessage::Snapshot {
+            blob: BlobRef::of(&bytes),
+            capture_us: 800,
+        });
+        assert!(f.dev.has_snapshot());
+
+        // The old app closes; the new build's connects, launched to restore.
+        let old = f.launch();
+        f.dev.link(LinkEvent::Closed(old), &mut f.out);
+        assert!(f.dev.restore_next());
+        let (writer, sent) = mpsc::channel();
+        f.sent = sent;
+        let hello = RuntimeHello {
+            protocol_version: viso_view::dev::wire::DEV_PROTOCOL_VERSION,
+            token: "t".into(),
+            dev_session: DevSessionId(1),
+            runtime_session: RuntimeSessionId(10),
+            build_id: BuildId(2),
+            current_revision: Revision::LAUNCH,
+            schema_fingerprint: SchemaFingerprint(4),
+            capabilities: Domains::NONE,
+            target: RuntimeTarget::DesktopHost,
+            shader_lang: viso_view::dev::wire::ShaderLang::Msl,
+        };
+        f.dev.link(
+            LinkEvent::Connected(Connection { hello, writer }),
+            &mut f.out,
+        );
+        // What the old app said last is not the new one's.
+        f.dev.link(
+            LinkEvent::Runtime(old, RuntimeMessage::Mounts(Vec::new())),
+            &mut f.out,
+        );
+        f.dev.link(LinkEvent::Closed(old), &mut f.out);
+        assert_eq!(f.launch(), RuntimeSessionId(10));
+
+        f.runtime(RuntimeMessage::Mounts(vec![MountEntry {
+            file: FileId(0),
+            path: f.path.display().to_string(),
+            package: "app".into(),
+            module: vec!["view".into()],
+            language: None,
+            catalog: None,
+            capabilities: Vec::new(),
+            source_hash: source_hash(VIEW),
+            assets: None,
+        }]));
+        let mut blobs = Blobs::default();
+        let mut restore = None;
+        for message in f.sent.try_iter() {
+            match message {
+                HostMessage::Blob(chunk) => blobs.add(chunk),
+                HostMessage::Restore(bundle) => restore = Some(bundle),
+                other => panic!("{other:?}"),
+            }
+        }
+        let restore = restore.expect("the restore");
+        assert_eq!(restore.target_runtime, RuntimeSessionId(10));
+        assert_eq!(blobs.take(restore.snapshot).as_deref(), Some(&bytes[..]));
+        let [view] = &restore.ui.views[..] else {
+            panic!("{:?}", restore.ui);
+        };
+        assert_eq!(view.file, FileId(0));
+        assert!(!view.plan.states.is_empty(), "`count` is planned");
+
+        f.runtime(RuntimeMessage::Restored(RestoreReport {
+            files: vec![FileCommit {
+                file: FileId(0),
+                counts: CommitCounts {
+                    mounts: 1,
+                    migrated: 1,
+                    ..CommitCounts::default()
+                },
+            }],
+            ..RestoreReport::default()
+        }));
+        assert!(f.dev.restarting.is_none(), "the restart landed");
+        assert!(!f.dev.restore_next, "one restore per launch");
+    }
+
+    #[test]
     fn a_closed_runtime_is_forgotten() {
         let mut f = Fixture::new("closed");
-        f.dev.link(LinkEvent::Closed, &mut f.out);
+        let launch = f.launch();
+        f.dev.link(LinkEvent::Closed(launch), &mut f.out);
         f.save(&VIEW.replace("120dp", "190dp"));
         assert!(f.settle().is_empty());
     }

@@ -1538,6 +1538,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             loaded: self.cx.__take_fonts(),
             packaged: self.cx.__packaged_fonts(),
         };
+        #[cfg(feature = "hot-reload")]
+        self.hot_reload.set_dev_states(self.cx.__take_dev_states());
         // Install the app's menu bar, if it declares one, before opening any
         // window. A `None` leaves the framework's standard app menu (with its
         // working Quit) in place from platform bring-up.

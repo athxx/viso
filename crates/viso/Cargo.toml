@@ -60,7 +60,7 @@ mobile = []
 # The development session: every `view!` mount is recorded and reported to
 # `viso run`, and each edit the host accepts commits as one hot reload
 # transaction.
-hot-reload = ["viso-view/hot-reload"]
+hot-reload = ["viso-view/hot-reload", "viso-ui/hot-reload"]
 # Text runtime explanations — every fallback walk, cache miss and eviction —
 # for the Inspector; compiled out otherwise.
 inspector = ["viso-text/inspector"]

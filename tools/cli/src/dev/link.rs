@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use viso_view::dev::wire::{
     BuildId, DEV_PROTOCOL_VERSION, DevSessionId, FrameError, HostExpect, HostHello, HostMessage,
-    ProjectFingerprint, Reject, RuntimeHello, RuntimeMessage, SchemaFingerprint, WireError,
-    accept_runtime, read_frame, write_frame,
+    ProjectFingerprint, Reject, RuntimeHello, RuntimeMessage, RuntimeSessionId, SchemaFingerprint,
+    WireError, accept_runtime, read_frame, write_frame,
 };
 
 /// How long a dev connection has to present the session token.
@@ -47,10 +47,12 @@ pub struct Connection {
 pub enum LinkEvent {
     /// A runtime the host accepted.
     Connected(Connection),
-    /// A message from the accepted runtime.
-    Runtime(RuntimeMessage),
-    /// The accepted runtime closed its connection.
-    Closed,
+    /// A message from the accepted runtime of this launch: across a warm
+    /// restart the old one's last messages may arrive after the new one
+    /// connected.
+    Runtime(RuntimeSessionId, RuntimeMessage),
+    /// The accepted runtime of this launch closed its connection.
+    Closed(RuntimeSessionId),
     /// A connection that was dropped or refused, and why.
     Refused(String),
 }
@@ -132,6 +134,7 @@ fn read_dev(mut stream: TcpStream, expect: &Expect, deliver: &dyn Fn(LinkEvent) 
     let Ok(mut write_half) = stream.try_clone() else {
         return;
     };
+    let launch = hello.runtime_session;
     let (writer, to_send) = mpsc::channel::<HostMessage>();
     let spawned = thread::Builder::new()
         .name("viso-dev-write".into())
@@ -152,14 +155,14 @@ fn read_dev(mut stream: TcpStream, expect: &Expect, deliver: &dyn Fn(LinkEvent) 
                 break;
             }
             Ok(Some(message)) => {
-                if !deliver(LinkEvent::Runtime(message)) {
+                if !deliver(LinkEvent::Runtime(launch, message)) {
                     return;
                 }
             }
             Ok(None) | Err(FrameError::Io(_)) => break,
         }
     }
-    deliver(LinkEvent::Closed);
+    deliver(LinkEvent::Closed(launch));
 }
 
 #[cfg(test)]
@@ -168,9 +171,7 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::sync::Mutex;
 
-    use viso_view::dev::wire::{
-        self, Domains, LogLevel, Revision, RuntimeSessionId, RuntimeTarget, same_token,
-    };
+    use viso_view::dev::wire::{self, Domains, LogLevel, Revision, RuntimeTarget, same_token};
 
     use super::*;
 
@@ -255,9 +256,9 @@ mod tests {
                 &got[..],
                 [
                     LinkEvent::Connected(Connection { hello: h, .. }),
-                    LinkEvent::Runtime(RuntimeMessage::Log { line, .. }),
-                    LinkEvent::Runtime(RuntimeMessage::Dropped { count: 3 }),
-                    LinkEvent::Closed,
+                    LinkEvent::Runtime(_, RuntimeMessage::Log { line, .. }),
+                    LinkEvent::Runtime(_, RuntimeMessage::Dropped { count: 3 }),
+                    LinkEvent::Closed(_),
                 ] if *h == hello() && line == "boom"
             ),
             "{got:?}"
@@ -293,7 +294,7 @@ mod tests {
         );
         drop(app);
         host.join().unwrap();
-        assert!(matches!(rx.recv(), Ok(LinkEvent::Closed)));
+        assert!(matches!(rx.recv(), Ok(LinkEvent::Closed(_))));
     }
 
     #[test]
@@ -370,7 +371,7 @@ mod tests {
                 [
                     LinkEvent::Connected(_),
                     LinkEvent::Refused(_),
-                    LinkEvent::Closed
+                    LinkEvent::Closed(_)
                 ]
             ),
             "{got:?}"

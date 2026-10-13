@@ -51,6 +51,11 @@ const MARKERS: &[&str] = &[
     "DevLink",
     // The failure overlay.
     "Hot reload failed",
+    // The snapshot endpoint: the restore launch's environment, its refusal,
+    // and its wait.
+    "VISO_DEV_RESTORE",
+    "NACK_UNRESTORABLE_SNAPSHOT",
+    "no restore arrived in time",
 ];
 
 /// The `.vs` compiler, which no artifact links: `view!` expands at build

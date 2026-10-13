@@ -66,7 +66,25 @@ pub struct AppCx<'a> {
     fonts: Vec<Box<[u8]>>,
     /// The faces packaged from `assets/fonts/`, if the app asked for them.
     packaged: viso_text::PackagedFonts,
+    /// What the app keeps across a Rust warm restart, by name.
+    #[cfg(feature = "hot-reload")]
+    dev_states: Vec<DevState>,
 }
+
+/// State an app keeps across a Rust warm restart of `viso run`: the bytes
+/// `capture` returns in the old process are handed to `restore` in the new one.
+#[cfg(feature = "hot-reload")]
+#[doc(hidden)]
+pub struct DevState {
+    pub name: String,
+    pub capture: Box<dyn Fn() -> Vec<u8>>,
+    pub restore: DevRestore,
+}
+
+/// What takes a [`DevState`]'s bytes back in the new process.
+#[cfg(feature = "hot-reload")]
+#[doc(hidden)]
+pub type DevRestore = Box<dyn FnOnce(&[u8])>;
 
 impl<'a> AppCx<'a> {
     #[doc(hidden)]
@@ -75,6 +93,8 @@ impl<'a> AppCx<'a> {
             _life: PhantomData,
             fonts: Vec::new(),
             packaged: viso_text::PackagedFonts::default(),
+            #[cfg(feature = "hot-reload")]
+            dev_states: Vec::new(),
         }
     }
 
@@ -128,6 +148,45 @@ impl<'a> AppCx<'a> {
     #[doc(hidden)]
     pub fn __take_fonts(&mut self) -> Vec<Box<[u8]>> {
         core::mem::take(&mut self.fonts)
+    }
+
+    /// Keep state of the app's own across a Rust warm restart: when `viso run`
+    /// restarts the app after a Rust edit, the bytes `capture` returns in the
+    /// old process are handed to `restore` in the new one, before its first
+    /// frame, for the registration of the same `name`. State the views and
+    /// games hold is carried already; this is for what the app keeps itself,
+    /// such as a navigation stack. A later registration of a name replaces
+    /// the earlier one.
+    ///
+    /// Only a development build run by `viso run` keeps anything: elsewhere
+    /// the closures are dropped here and never called. The bytes stay in the
+    /// memory of `viso run`, never written to disk or logged.
+    pub fn dev_state(
+        &mut self,
+        name: impl Into<String>,
+        capture: impl Fn() -> Vec<u8> + 'static,
+        restore: impl FnOnce(&[u8]) + 'static,
+    ) {
+        #[cfg(feature = "hot-reload")]
+        {
+            let name = name.into();
+            self.dev_states.retain(|state| state.name != name);
+            self.dev_states.push(DevState {
+                name,
+                capture: Box::new(capture),
+                restore: Box::new(restore),
+            });
+        }
+        #[cfg(not(feature = "hot-reload"))]
+        let _ = (name, capture, restore);
+    }
+
+    /// Take what [`dev_state`](Self::dev_state) registered, for the
+    /// development session. Called once after `Application::new`.
+    #[cfg(feature = "hot-reload")]
+    #[doc(hidden)]
+    pub fn __take_dev_states(&mut self) -> Vec<DevState> {
+        core::mem::take(&mut self.dev_states)
     }
 }
 

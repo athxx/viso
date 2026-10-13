@@ -39,6 +39,16 @@
 //! (`shader-compile`), and once all are built the commit hands them to the
 //! renderers before the views commit, so the frame installs them without
 //! compiling and the old pipelines retire through the fence.
+//! Across a Rust warm restart the host asks for a [`DevSnapshot`], captured
+//! at the next frame boundary after the patches commit: every view mount's
+//! states, cells and node state, every game's snapshot, every window's size,
+//! and what the app registered with `AppCx::dev_state`. The process `viso
+//! run` launches next waits, a bounded time, for the restore the host sends
+//! once it has the mounts of the first window: each mount of a window opened
+//! before the first frame boundary then takes the view of the snapshot at
+//! the same file, window and mount ordinal through the host's plan from the
+//! view the old process ran, and its game the game's snapshot, and the
+//! first frame boundary reports what carried.
 //! Without `viso run` there is no session: the mounts are dropped.
 //! Without the feature this module is not compiled and a `view!` records
 //! nothing.
@@ -48,29 +58,36 @@ mod link;
 pub(crate) mod overlay;
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use viso_behavior::game::PreparedSwap;
+use viso_behavior::game::{GameSnapshot, PreparedSwap};
 use viso_behavior::{Module, Vm};
 use viso_gpu::GpuBackend;
 use viso_platform::{LoopWaker, WindowId};
 use viso_render::asset::{ResourceId, ResourceRevision};
 use viso_runtime::RuntimeCx;
 use viso_ui::NodeId;
+use viso_ui::context::DevState;
 use viso_ui::state::{StateId, StateKey};
 use viso_ui::{AssetBytes, AssetPayload};
 use viso_view::dev::commit::dirty_counts;
-use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, static_nodes};
+use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, restore, static_nodes};
+use viso_view::dev::snapshot::{
+    DevSnapshot, Extension, GameEntry, MountRef, ViewSnapshot, WindowGeometry, capture_view,
+};
 use viso_view::dev::wire::{
-    CommitCounts, DirtyCounts, Domain, Domains, FileCommit, FileId, GameAnswer, GameAsk,
-    GameCommit, GameQuery, GameRefusal, GameReply, GameTier, LogLevel, MAX_FRAME, MAX_NOTICES,
-    MAX_RECORD_TICKS, MAX_SCOPED_RESETS, MountEntry, NACK_REPLAYING, NACK_SYSTEM_FAULT,
-    NACK_UNBINDABLE_SHADER, NACK_UNCOMPILABLE_SHADER, NACK_UNKNOWN_FILE, NACK_UNLOADABLE_ASSET,
-    NACK_UNLOADABLE_SYSTEM, NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack,
-    PatchSection, PatchTimings, RESET_NOTICE, RecordSpan, ReloadPlan, ResourceCommit, Revision,
-    RuntimeIdentity, RuntimeMessage, SchemaFingerprint, ScopedReset, Stage,
+    CommitCounts, DEV_RESTORE_ENV, DirtyCounts, Domain, Domains, FileCommit, FileId, GameAnswer,
+    GameAsk, GameCommit, GameQuery, GameRefusal, GameReply, GameRestore, GameTier, LogLevel,
+    MAX_FRAME, MAX_NOTICES, MAX_RECORD_TICKS, MAX_SCOPED_RESETS, MountEntry, NACK_REPLAYING,
+    NACK_SYSTEM_FAULT, NACK_UNBINDABLE_SHADER, NACK_UNCOMPILABLE_SHADER, NACK_UNKNOWN_FILE,
+    NACK_UNKNOWN_SESSION, NACK_UNLOADABLE_ASSET, NACK_UNLOADABLE_SYSTEM, NACK_UNLOADABLE_VIEW,
+    NACK_UNRESTORABLE_SNAPSHOT, Notice, PatchAck, PatchBundle, PatchNack, PatchSection,
+    PatchTimings, RESET_NOTICE, RecordSpan, ReloadPlan, ResourceCommit, RestoreBundle,
+    RestoreReport, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint, ScopedReset,
+    Stage,
 };
 use viso_view::{
     GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
@@ -80,6 +97,10 @@ use crate::WindowState;
 use crate::assets::Assets;
 use compile::{Built, ShaderCompiles, Work};
 use link::{DevLink, Incoming, LoadedAsset};
+
+/// How long a process launched to restore waits for the restore before it
+/// runs fresh.
+const RESTORE_WAIT: Duration = Duration::from_secs(5);
 
 /// The domains this runtime applies.
 const APPLIES: Domains = Domains::NONE
@@ -115,6 +136,37 @@ pub(crate) struct HotReloadSession {
     waker: Option<LoopWaker>,
     /// The thread compiling staged patches' shaders, started with the first.
     compiles: Option<ShaderCompiles>,
+    /// The schema the build compiled its views against.
+    schema: SchemaFingerprint,
+    /// Whether the host asked for a snapshot, taken at the next frame
+    /// boundary.
+    snapshot_asked: bool,
+    /// Whether `viso run` launched this process to restore the one before it
+    /// and the restore is still to be waited for.
+    awaiting_restore: bool,
+    /// The restore being applied, until the first frame boundary.
+    restoring: Option<Restoring>,
+    /// What the host delivered while the loop waited for the restore, taken
+    /// with the next wakeup.
+    deferred: VecDeque<Incoming>,
+    /// What the app keeps across a restart, by name.
+    dev_states: Vec<DevState>,
+    /// The windows that mounted a view so far.
+    windows_mounted: u32,
+}
+
+/// A restore being applied: each window mounting a view before the first
+/// frame boundary takes its mounts' state from the snapshot.
+struct Restoring {
+    snapshot: DevSnapshot,
+    /// Each file the restore has a view for, with its plan from the view
+    /// the old process ran.
+    views: Vec<StagedView>,
+    /// Whether a mount took each view of the snapshot.
+    taken: Vec<bool>,
+    report: RestoreReport,
+    /// The time restoring took so far.
+    spent: Duration,
 }
 
 /// A game recorded for the host's query `id` until it ran `until` ticks.
@@ -212,15 +264,18 @@ impl HotReloadSession {
         }
         if !self.started {
             self.started = true;
-            let schema = SchemaFingerprint(self.records[0].schema);
+            self.schema = SchemaFingerprint(self.records[0].schema);
             let waker = waker();
             self.waker = Some(waker.clone());
-            self.link = DevLink::from_env(waker, schema, APPLIES);
+            self.link = DevLink::from_env(waker, self.schema, APPLIES);
+            self.awaiting_restore =
+                self.link.is_some() && std::env::var_os(DEV_RESTORE_ENV).is_some();
         }
         let Some(link) = &mut self.link else {
             self.records.clear();
             return;
         };
+        let first = self.views.len();
         let mut mounted = Vec::new();
         for record in self.records.drain(..) {
             let file = match self
@@ -260,6 +315,7 @@ impl HotReloadSession {
                     record.statics,
                     current,
                     &plan,
+                    None,
                     &mut self.scratch,
                 );
             }
@@ -267,6 +323,326 @@ impl HotReloadSession {
         }
         if !mounted.is_empty() {
             link.send(RuntimeMessage::Mounts(mounted));
+        }
+        if std::mem::take(&mut self.awaiting_restore) {
+            self.await_restore();
+        }
+        self.restore_window(ws, first);
+        self.windows_mounted += 1;
+    }
+
+    /// Keeps what the app registered with `AppCx::dev_state`.
+    pub(crate) fn set_dev_states(&mut self, states: Vec<DevState>) {
+        self.dev_states = states;
+    }
+
+    /// Waits, at most [`RESTORE_WAIT`], for the restore the host sends once
+    /// it has the first mounts, keeping what else arrives for the next
+    /// wakeup; without one the app runs fresh.
+    fn await_restore(&mut self) {
+        let Some(link) = &self.link else {
+            return;
+        };
+        let deadline = Instant::now() + RESTORE_WAIT;
+        let mut restore = None;
+        while let Some(incoming) = link.wait(deadline) {
+            match incoming {
+                Incoming::Connected(identity) => self.identity = Some(identity),
+                Incoming::Restore(bundle, bytes) => {
+                    restore = Some((bundle, bytes));
+                    break;
+                }
+                other => self.deferred.push_back(other),
+            }
+        }
+        match restore {
+            Some((bundle, bytes)) => self.load_restore(*bundle, bytes),
+            None => self.log(
+                LogLevel::Warn,
+                "no restore arrived in time: the app runs fresh".into(),
+            ),
+        }
+    }
+
+    /// Takes the restore `bundle` and its snapshot's `bytes`, for the
+    /// windows opened before the first frame boundary: each of its views
+    /// loaded, and each extension the app registers given its bytes. One that
+    /// is not for this launch, or whose snapshot or a view does not load, is
+    /// NACKed and the app runs fresh.
+    fn load_restore(&mut self, bundle: RestoreBundle, bytes: Option<Arc<[u8]>>) {
+        let started = Instant::now();
+        let Some(identity) = self.identity.clone() else {
+            return;
+        };
+        let refused = match self.restorable(&bundle, &identity, bytes) {
+            Ok((snapshot, views)) => {
+                let mut report = RestoreReport::default();
+                for extension in &snapshot.extensions {
+                    match self
+                        .dev_states
+                        .iter_mut()
+                        .find(|state| state.name == extension.name)
+                    {
+                        Some(state) => {
+                            let restore = std::mem::replace(&mut state.restore, Box::new(|_| {}));
+                            restore(&extension.bytes);
+                            report.extensions += 1;
+                        }
+                        None => report.extensions_lost += 1,
+                    }
+                }
+                self.restoring = Some(Restoring {
+                    taken: vec![false; snapshot.views.len()],
+                    snapshot,
+                    views,
+                    report,
+                    spent: started.elapsed(),
+                });
+                return;
+            }
+            Err(refused) => refused,
+        };
+        let (code, line) = refused;
+        self.log(LogLevel::Error, format!("{line}; the app runs fresh"));
+        let last_good = identity.current_revision;
+        if let Some(link) = &mut self.link {
+            link.send(RuntimeMessage::Nack(PatchNack {
+                base_revision: Revision::LAUNCH,
+                candidate_revision: Revision::LAUNCH,
+                stage: Stage::SnapshotRestore,
+                diagnostic_codes: vec![code.into()],
+                last_good_revision: last_good,
+            }));
+        }
+    }
+
+    /// The snapshot and loaded views of `bundle`, or the code and line
+    /// refusing it.
+    fn restorable(
+        &self,
+        bundle: &RestoreBundle,
+        identity: &RuntimeIdentity,
+        bytes: Option<Arc<[u8]>>,
+    ) -> Result<(DevSnapshot, Vec<StagedView>), (&'static str, String)> {
+        if bundle.dev_session != identity.dev_session
+            || bundle.target_runtime != identity.runtime_session
+        {
+            return Err((
+                NACK_UNKNOWN_SESSION,
+                "the restore is for another launch".into(),
+            ));
+        }
+        let bytes = bytes.ok_or((
+            NACK_UNRESTORABLE_SNAPSHOT,
+            "the snapshot did not arrive whole".into(),
+        ))?;
+        let snapshot = DevSnapshot::decode(&bytes).map_err(|error| {
+            (
+                NACK_UNRESTORABLE_SNAPSHOT,
+                format!("the snapshot does not decode: {error}"),
+            )
+        })?;
+        let mut views = Vec::with_capacity(bundle.ui.views.len());
+        for view in &bundle.ui.views {
+            let file = view.file.0 as usize;
+            let Some(entry) = self.files.get(file).map(|file| &file.entry) else {
+                return Err((
+                    NACK_UNKNOWN_FILE,
+                    "the restore names an unmounted file".into(),
+                ));
+            };
+            let candidate = Candidate::load(view.package.clone()).map_err(|error| {
+                (
+                    NACK_UNLOADABLE_VIEW,
+                    format!("{}: the restored view does not load: {error}", entry.path),
+                )
+            })?;
+            views.push(StagedView {
+                file,
+                candidate: Rc::new(candidate),
+                plan: view.plan.clone(),
+            });
+        }
+        Ok((snapshot, views))
+    }
+
+    /// Restores the mounts `ws`'s build just made, `self.views[first..]`:
+    /// each takes the view of the snapshot at its file, window ordinal and
+    /// mount ordinal through its file's plan, and its game the game's
+    /// snapshot. A mount with no counterpart, or of a file the restore has no
+    /// view for, runs fresh.
+    fn restore_window(&mut self, ws: &mut WindowState, first: usize) {
+        let Some(restoring) = &mut self.restoring else {
+            return;
+        };
+        let started = Instant::now();
+        let window = self.windows_mounted;
+        let mut ordinals: Vec<(usize, u32)> = Vec::new();
+        for live in &mut self.views[first..] {
+            let file = live.file;
+            let at = MountRef {
+                path: self.files[file].entry.path.clone(),
+                window,
+                mount: next_ordinal(&mut ordinals, file),
+            };
+            let report = &mut restoring.report;
+            let counts = match report.files.iter().position(|f| f.file.0 as usize == file) {
+                Some(index) => &mut report.files[index].counts,
+                None => {
+                    report.files.push(FileCommit {
+                        file: FileId(file as u32),
+                        counts: CommitCounts::default(),
+                    });
+                    &mut report.files.last_mut().expect("pushed").counts
+                }
+            };
+            counts.mounts += 1;
+            let Some(view) = restoring.views.iter().find(|view| view.file == file) else {
+                continue;
+            };
+            let Some(index) = (0..restoring.snapshot.views.len())
+                .find(|&i| !restoring.taken[i] && restoring.snapshot.views[i].mount == at)
+            else {
+                continue;
+            };
+            restoring.taken[index] = true;
+            let committed = commit_view(
+                ws,
+                live,
+                self.files[file].statics,
+                &view.candidate,
+                &view.plan,
+                Some(&restoring.snapshot.views[index]),
+                &mut self.scratch,
+            );
+            tally(
+                counts,
+                &mut report.notices,
+                &mut report.state_resets,
+                file,
+                committed,
+            );
+            let Some(game) = restoring.snapshot.games.iter().find(|g| g.mount == at) else {
+                continue;
+            };
+            let Some(session) = game_session(&ws.store, live.root) else {
+                continue;
+            };
+            let Ok(snapshot) = GameSnapshot::decode(&game.snapshot) else {
+                continue;
+            };
+            let restored = session.borrow_mut().scheduler_mut().restore(&snapshot);
+            let file = FileId(file as u32);
+            let game = match report.games.iter().position(|g| g.file == file) {
+                Some(index) => &mut report.games[index],
+                None => {
+                    report.games.push(GameRestore {
+                        file,
+                        sessions: 0,
+                        tick: snapshot.tick(),
+                        states: 0,
+                        reset: 0,
+                        degraded: false,
+                    });
+                    report.games.last_mut().expect("pushed")
+                }
+            };
+            game.sessions += 1;
+            game.states += restored.states;
+            game.reset += restored.mismatched + restored.missing;
+            game.degraded |= restored.degraded;
+        }
+        restoring.spent += started.elapsed();
+    }
+
+    /// Reports the restore applied to the windows opened before the first
+    /// frame boundary, which ends it.
+    fn finish_restore(&mut self) {
+        let Some(restoring) = self.restoring.take() else {
+            return;
+        };
+        let mut report = restoring.report;
+        report.views_lost = restoring.taken.iter().filter(|&&taken| !taken).count() as u32;
+        report.restore_us = micros(restoring.spent);
+        if let Some(link) = &mut self.link {
+            link.send(RuntimeMessage::Restored(report));
+        }
+    }
+
+    /// The app's development state now, at the frame boundary, to the host:
+    /// each window that mounts a view, in the order they opened, with its
+    /// mounts in the order they were adopted and their games, then each
+    /// extension the app registered.
+    fn capture(&mut self, windows: &[WindowState]) {
+        let started = Instant::now();
+        let Some(identity) = &self.identity else {
+            return;
+        };
+        let mut snapshot = DevSnapshot {
+            source_build: identity.build_id,
+            app_schema: self.schema,
+            revision: identity.current_revision,
+            ..DevSnapshot::default()
+        };
+        let mut ordinals: Vec<(usize, u32)> = Vec::new();
+        for ws in windows {
+            ordinals.clear();
+            let window = snapshot.windows.len() as u32;
+            for live in self.views.iter().filter(|live| live.window == ws.window) {
+                let file = &self.files[live.file];
+                let at = MountRef {
+                    path: file.entry.path.clone(),
+                    window,
+                    mount: next_ordinal(&mut ordinals, live.file),
+                };
+                let nodes = if live.nodes.is_empty() {
+                    static_nodes(&ws.store, live.root, file.statics)
+                } else {
+                    live.nodes.clone()
+                };
+                let host = live.host.as_ref().map(|host| host.borrow());
+                snapshot.views.push(capture_view(
+                    &ws.store,
+                    &ws.states,
+                    &ws.text_edits,
+                    host.as_deref(),
+                    &nodes,
+                    &live.cells,
+                    at.clone(),
+                ));
+                if let Some(session) = game_session(&ws.store, live.root) {
+                    snapshot.games.push(GameEntry {
+                        mount: at,
+                        snapshot: session.borrow().scheduler().snapshot().encode(),
+                    });
+                }
+            }
+            if !ordinals.is_empty() {
+                let scale = if ws.dpi > 0.0 { f64::from(ws.dpi) } else { 1.0 };
+                let (w, h) = ws.surface_size;
+                snapshot.windows.push(WindowGeometry {
+                    size: (f64::from(w) / scale, f64::from(h) / scale),
+                    position: None,
+                });
+            }
+        }
+        for state in &self.dev_states {
+            snapshot.extensions.push(Extension {
+                name: state.name.clone(),
+                bytes: (state.capture)(),
+            });
+        }
+        let bytes = snapshot.encode();
+        let capture_us = micros(started.elapsed());
+        if let Some(link) = &mut self.link {
+            link.send_snapshot(bytes, capture_us);
+        }
+    }
+
+    /// Sends `line` to the host's log.
+    fn log(&mut self, level: LogLevel, line: String) {
+        if let Some(link) = &mut self.link {
+            link.send(RuntimeMessage::Log { level, line });
         }
     }
 
@@ -298,7 +674,7 @@ impl HotReloadSession {
             return false;
         };
         let mut changed = false;
-        while let Some(incoming) = link.poll() {
+        while let Some(incoming) = self.deferred.pop_front().or_else(|| link.poll()) {
             match incoming {
                 Incoming::Connected(identity) => self.identity = Some(identity),
                 Incoming::Patch(bundle, assets, decode) => {
@@ -375,6 +751,28 @@ impl HotReloadSession {
                     self.queries.push(query);
                     changed = true;
                 }
+                Incoming::Snapshot => {
+                    self.snapshot_asked = true;
+                    changed = true;
+                }
+                // The app runs already: the state it would restore is not
+                // the state it shows.
+                Incoming::Restore(..) => {
+                    if let Some(identity) = &self.identity {
+                        link.send(RuntimeMessage::Log {
+                            level: LogLevel::Warn,
+                            line: "the restore arrived after the first frame: the app runs fresh"
+                                .into(),
+                        });
+                        link.send(RuntimeMessage::Nack(PatchNack {
+                            base_revision: Revision::LAUNCH,
+                            candidate_revision: Revision::LAUNCH,
+                            stage: Stage::SnapshotRestore,
+                            diagnostic_codes: vec![NACK_UNRESTORABLE_SNAPSHOT.into()],
+                            last_good_revision: identity.current_revision,
+                        }));
+                    }
+                }
                 Incoming::Undecodable(error) => {
                     if let Some(identity) = &self.identity {
                         link.send(RuntimeMessage::Nack(identity.undecodable(error)));
@@ -439,6 +837,7 @@ impl HotReloadSession {
     pub(crate) fn reload(&mut self, windows: &mut [WindowState], assets: &mut Assets) {
         take_mounts(&mut self.records);
         self.records.clear();
+        self.finish_restore();
         let ready = self.patches.iter().take_while(|p| !p.compiling).count();
         if ready > 0 {
             self.views.retain(|view| {
@@ -466,6 +865,9 @@ impl HotReloadSession {
         }
         if !self.recordings.is_empty() {
             self.finish_recordings();
+        }
+        if std::mem::take(&mut self.snapshot_asked) {
+            self.capture(windows);
         }
     }
 
@@ -668,37 +1070,17 @@ impl HotReloadSession {
                     statics,
                     &view.candidate,
                     &view.plan,
+                    None,
                     &mut self.scratch,
                 );
                 counts.mounts += 1;
-                counts.migrated += report.migrated;
-                counts.reset += report.reset;
-                counts.focus_lost += u32::from(report.focus_lost);
-                counts.scroll_lost += report.scroll_lost;
-                counts.handlers_lost += u32::from(report.handlers_lost);
-                counts.dirty = counts.dirty.merge(&report.dirty);
-                for notice in report.notices {
-                    let notice = Notice {
-                        file: FileId(view.file as u32),
-                        code: RESET_NOTICE.to_owned(),
-                        start: notice.start,
-                        end: notice.end,
-                        message: notice.message,
-                    };
-                    if notices.len() < MAX_NOTICES && !notices.contains(&notice) {
-                        notices.push(notice);
-                    }
-                }
-                for reset in report.state_resets {
-                    let reset = ScopedReset {
-                        file: FileId(view.file as u32),
-                        owner: reset.owner,
-                        code: reset.code.to_owned(),
-                    };
-                    if state_resets.len() < MAX_SCOPED_RESETS {
-                        state_resets.push(reset);
-                    }
-                }
+                tally(
+                    &mut counts,
+                    &mut notices,
+                    &mut state_resets,
+                    view.file,
+                    report,
+                );
             }
             files.push(FileCommit {
                 file: FileId(view.file as u32),
@@ -768,7 +1150,6 @@ impl HotReloadSession {
             commit.reset += swap.reset;
             commit.characters += swap.characters;
         }
-        let micros = |d: Duration| u64::try_from(d.as_micros()).unwrap_or(u64::MAX);
         RuntimeMessage::Ack(PatchAck {
             revision: staged.next_revision,
             applied_domains: staged.domains,
@@ -1037,6 +1418,64 @@ fn entry(index: usize, record: &MountRecord) -> MountEntry {
     }
 }
 
+/// Adds what committing or restoring a mount of `file` kept and lost to the
+/// file's `counts`, and its notices and scoped resets, each up to its bound.
+fn tally(
+    counts: &mut CommitCounts,
+    notices: &mut Vec<Notice>,
+    resets: &mut Vec<ScopedReset>,
+    file: usize,
+    report: CommitReport,
+) {
+    counts.migrated += report.migrated;
+    counts.reset += report.reset;
+    counts.focus_lost += u32::from(report.focus_lost);
+    counts.scroll_lost += report.scroll_lost;
+    counts.handlers_lost += u32::from(report.handlers_lost);
+    counts.dirty = counts.dirty.merge(&report.dirty);
+    let file = FileId(file as u32);
+    for notice in report.notices {
+        let notice = Notice {
+            file,
+            code: RESET_NOTICE.to_owned(),
+            start: notice.start,
+            end: notice.end,
+            message: notice.message,
+        };
+        if notices.len() < MAX_NOTICES && !notices.contains(&notice) {
+            notices.push(notice);
+        }
+    }
+    for reset in report.state_resets {
+        if resets.len() < MAX_SCOPED_RESETS {
+            resets.push(ScopedReset {
+                file,
+                owner: reset.owner,
+                code: reset.code.to_owned(),
+            });
+        }
+    }
+}
+
+/// The next mount ordinal of `file` among `ordinals`, the mounts counted so
+/// far by file.
+fn next_ordinal(ordinals: &mut Vec<(usize, u32)>, file: usize) -> u32 {
+    match ordinals.iter_mut().find(|(f, _)| *f == file) {
+        Some((_, next)) => {
+            *next += 1;
+            *next - 1
+        }
+        None => {
+            ordinals.push((file, 1));
+            0
+        }
+    }
+}
+
+fn micros(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
 /// Shows over each window that mounts a file the failures of the files it
 /// mounts, or removes its overlay when none fails.
 fn show_failures(
@@ -1066,15 +1505,17 @@ fn show_failures(
     }
 }
 
-/// Commits `candidate` by `plan` to the mount `view` in `ws`; `statics` is
-/// the static shape of the build's view, which names the static nodes of a
-/// mount that recorded none.
+/// Commits `candidate` by `plan` to the mount `view` in `ws`, or restores it
+/// from `snapshot` by the plan from the snapshot's view; `statics` is the
+/// static shape of the build's view, which names the static nodes of a mount
+/// that recorded none.
 fn commit_view(
     ws: &mut WindowState,
     view: &mut LiveView,
     statics: &[u32],
     candidate: &Candidate,
     plan: &ReloadPlan,
+    snapshot: Option<&ViewSnapshot>,
     scratch: &mut Vec<NodeId>,
 ) -> CommitReport {
     // The store maps a durable key to one cell; a file mounted twice points the
@@ -1099,7 +1540,10 @@ fn commit_view(
         scratch,
         view: &mut view.host,
     };
-    let report = commit(&mut live, candidate, plan);
+    let report = match snapshot {
+        Some(snapshot) => restore(&mut live, candidate, plan, snapshot),
+        None => commit(&mut live, candidate, plan),
+    };
     let root = live.root;
     if ws.root == Some(old_root) {
         ws.root = root;
@@ -1133,9 +1577,8 @@ mod tests {
         Rect, StateValue,
     };
     use viso_view::dev::wire::{
-        HostMessage, NACK_BUILD_MISMATCH, NACK_MALFORMED, NACK_REVISION_MISMATCH,
-        NACK_UNKNOWN_SESSION, ResourceAsset, ResourcePatch, UiPatch, blob_chunks, content_hash,
-        source_hash,
+        BlobRef, HostMessage, NACK_BUILD_MISMATCH, NACK_MALFORMED, NACK_REVISION_MISMATCH,
+        ResourceAsset, ResourcePatch, UiPatch, blob_chunks, content_hash, source_hash,
     };
 
     use viso_shader::program::PackedCode;
@@ -2731,6 +3174,175 @@ mod tests {
         println!("patch frame: {bytes} bytes");
     }
 
+    /// Asks `session` for its snapshot, which it takes at the frame boundary
+    /// of `windows`, and returns the bytes as the host assembles them.
+    fn snapshot_of(
+        session: &mut HotReloadSession,
+        host: &mut Host,
+        windows: &mut [WindowState],
+    ) -> Vec<u8> {
+        host.send(&HostMessage::Snapshot);
+        until(session, |s| s.snapshot_asked);
+        session.reload(windows, &mut Assets::default());
+        let mut blobs = viso_view::dev::wire::Blobs::default();
+        loop {
+            match host.read() {
+                Some(RuntimeMessage::Blob(chunk)) => blobs.add(chunk),
+                Some(RuntimeMessage::Snapshot { blob, .. }) => {
+                    return blobs.take(blob).expect("whole").to_vec();
+                }
+                other => panic!("not the snapshot: {other:?}"),
+            }
+        }
+    }
+
+    /// A process launched to restore, linked to a fake host that accepted
+    /// it and sent the restore of `ui` with the snapshot `bytes` ahead of it
+    /// (`None`: none arrive), having adopted the mounts of `ws`.
+    fn restoring(
+        ws: &mut WindowState,
+        bytes: Option<&[u8]>,
+        ui: UiPatch,
+        dev_states: Vec<DevState>,
+    ) -> (HotReloadSession, Host) {
+        let mut host = Host::bind();
+        let link = DevLink::connect(host.addr(), fake::hello(), LoopWaker::new(|| {}));
+        let mut session = HotReloadSession {
+            started: true,
+            link: Some(link),
+            awaiting_restore: true,
+            dev_states,
+            ..HotReloadSession::default()
+        };
+        host.accept();
+        host.welcome();
+        let hello = host.hello.clone().expect("accepted");
+        for chunk in bytes.into_iter().flat_map(blob_chunks) {
+            host.send(&HostMessage::Blob(chunk));
+        }
+        let snapshot = BlobRef::of(bytes.unwrap_or(b"never sent"));
+        host.send(&HostMessage::Restore(Box::new(RestoreBundle {
+            dev_session: hello.dev_session,
+            target_runtime: hello.runtime_session,
+            snapshot,
+            ui,
+        })));
+        session.adopt(|| unreachable!("the link is open"), ws);
+        assert!(matches!(host.read(), Some(RuntimeMessage::Mounts(_))));
+        (session, host)
+    }
+
+    /// The restore of the file `edits` names: the view `source` compiles to,
+    /// planned from the view the old process ran.
+    fn restore_of(edits: &mut Edits, source: &str) -> UiPatch {
+        let PatchSection::Ui(ui) = edits.section(source) else {
+            unreachable!("a view section")
+        };
+        ui
+    }
+
+    #[test]
+    fn a_restarted_app_takes_its_state_back_before_its_first_frame() {
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
+        let scroller = |cx: &mut BuildCx<'_>| {
+            viso_ui_macros::view!("../../tests/fixtures/scroller.vs")(cx).id()
+        };
+        let mut old = mounted(scroller);
+        let (mut session, mut host, mut edits) = session(&mut old, SCROLLER);
+        let root = old.root.expect("built");
+        old.store.layout(root, surface, &mut Vec::new());
+        let [scroll, _] = subtree(&old.store, root)[..] else {
+            panic!("Scroll + Text");
+        };
+        let (_, cell) = session.views[0].cells[0];
+        old.states.set(cell, StateValue::Int(7));
+        old.store
+            .set_scroll(scroll, viso_ui::Vec2 { x: 0.0, y: 50.0 });
+        session.dev_states = vec![DevState {
+            name: "route".into(),
+            capture: Box::new(|| b"settings".to_vec()),
+            restore: Box::new(|_| unreachable!("the old process restores nothing")),
+        }];
+        let bytes = snapshot_of(&mut session, &mut host, std::slice::from_mut(&mut old));
+        let snapshot = DevSnapshot::decode(&bytes).expect("the snapshot decodes");
+        assert_eq!(
+            (snapshot.views.len(), snapshot.windows.len()),
+            (1, 1),
+            "{snapshot:?}"
+        );
+        assert_eq!(snapshot.extensions[0].bytes, b"settings");
+        drop((session, host, old));
+
+        // The new process builds its window fresh, then takes the snapshot
+        // before its first frame.
+        let route = Rc::new(RefCell::new(Vec::new()));
+        let restored = Rc::clone(&route);
+        let states = vec![DevState {
+            name: "route".into(),
+            capture: Box::new(Vec::new),
+            restore: Box::new(move |bytes| *restored.borrow_mut() = bytes.to_vec()),
+        }];
+        let mut new = mounted(scroller);
+        let ui = restore_of(&mut edits, SCROLLER);
+        let (mut session, mut host) = restoring(&mut new, Some(&bytes), ui, states);
+        let root = new.root.expect("built");
+        new.store.layout(root, surface, &mut Vec::new());
+        let [scroll, _] = subtree(&new.store, root)[..] else {
+            panic!("Scroll + Text");
+        };
+        assert_eq!(count(&new, &session), Some(StateValue::Int(7)));
+        assert_eq!(new.store.scroll(scroll).y, 50.0);
+        assert_eq!(*route.borrow(), b"settings");
+
+        session.reload(std::slice::from_mut(&mut new), &mut Assets::default());
+        let Some(RuntimeMessage::Restored(report)) = host.read() else {
+            panic!("no restore report");
+        };
+        let counts = report.files[0].counts;
+        assert_eq!(counts.mounts, 1);
+        assert!(counts.migrated >= 1, "{report:?}");
+        assert_eq!(counts.scoped_resets(), 0, "{report:?}");
+        assert_eq!(
+            (report.views_lost, report.extensions, report.extensions_lost),
+            (0, 1, 0)
+        );
+        assert!(session.restoring.is_none(), "the first frame ends it");
+    }
+
+    #[test]
+    fn a_snapshot_that_did_not_arrive_whole_is_refused_and_the_app_runs_fresh() {
+        let mut ws = counter();
+        let (mut session, mut host) = restoring(&mut ws, None, UiPatch::default(), Vec::new());
+        assert!(matches!(
+            host.read(),
+            Some(RuntimeMessage::Log {
+                level: LogLevel::Error,
+                ..
+            })
+        ));
+        let Some(RuntimeMessage::Nack(nack)) = host.read() else {
+            panic!("not refused");
+        };
+        assert_eq!(
+            (nack.stage, &nack.diagnostic_codes[..]),
+            (
+                Stage::SnapshotRestore,
+                &[NACK_UNRESTORABLE_SNAPSHOT.to_owned()][..]
+            )
+        );
+        assert!(session.restoring.is_none());
+        assert_eq!(count(&ws, &session), Some(StateValue::Int(0)));
+        // Nothing to report at the first frame.
+        session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
+        session.log(LogLevel::Info, "after".into());
+        assert!(matches!(host.read(), Some(RuntimeMessage::Log { line, .. }) if line == "after"));
+    }
+
     #[test]
     fn a_mount_whose_window_closed_is_dropped() {
         let mut ws = counter();
@@ -3269,6 +3881,34 @@ mod tests {
             let jumps = replay.instance(0).states()[1].clone();
             assert_eq!(jumps, Value::Int(1), "the jump replays");
             assert_eq!(state(&ws, "jumps"), Value::Int(1));
+        }
+
+        #[test]
+        fn a_restarted_game_resumes_at_its_tick_with_its_states() {
+            let mut old = mounted(mount_game);
+            let (mut session, mut host, mut edits) = session(&mut old, GAME);
+            for _ in 0..3 {
+                old.store.run_frame_clients(TICK);
+            }
+            let steps = state(&old, "steps");
+            assert_ne!(steps, Value::Int(0));
+            let bytes = snapshot_of(&mut session, &mut host, std::slice::from_mut(&mut old));
+            drop((session, host, old));
+
+            let mut new = mounted(mount_game);
+            assert_eq!(state(&new, "steps"), Value::Int(0), "a fresh build");
+            let ui = restore_of(&mut edits, GAME);
+            let (mut session, mut host) = restoring(&mut new, Some(&bytes), ui, Vec::new());
+            assert_eq!(state(&new, "steps"), steps);
+            session.reload(std::slice::from_mut(&mut new), &mut Assets::default());
+            let Some(RuntimeMessage::Restored(report)) = host.read() else {
+                panic!("no restore report");
+            };
+            let [game] = report.games[..] else {
+                panic!("{report:?}");
+            };
+            assert_eq!((game.sessions, game.reset), (1, 0), "{game:?}");
+            assert!(game.states >= 2 && game.tick > 0, "{game:?}");
         }
 
         #[test]

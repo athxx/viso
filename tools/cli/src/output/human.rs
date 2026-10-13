@@ -92,11 +92,14 @@ pub(super) fn rebuild(event: &RebuildEvent) -> String {
     let s = event.build_us as f64 / 1e6;
     match event.outcome {
         Outcome::Rejected => format!(
-            "✗ {files} build failed    kept r{}   {}",
+            "✗ {files} not restarted   kept r{}   {}",
             event.last_good_revision,
             event.codes.join(",")
         ),
-        _ => format!("… {files} built in {s:.1} s, not restarted; restart `viso run` to run it"),
+        Outcome::Held => format!(
+            "… {files} built in {s:.1} s, not restarted (--no-hot-reload); restart `viso run` to run it"
+        ),
+        _ => format!("✓ {files} warm restart   built in {s:.1} s"),
     }
 }
 

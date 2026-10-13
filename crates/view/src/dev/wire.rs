@@ -12,7 +12,11 @@
 //! with a reason instead of being decoded by guesswork. After the handshake the
 //! runtime reports its [`MountEntry`] inventory as views mount, the host sends
 //! [`PatchBundle`]s and the failures of rejected edits, and the runtime answers
-//! each patch with a [`PatchAck`] or a [`PatchNack`].
+//! each patch with a [`PatchAck`] or a [`PatchNack`]. Across a Rust warm
+//! restart the host asks the old process for its
+//! [`DevSnapshot`](super::snapshot::DevSnapshot), which comes back as blob
+//! chunks, and hands it to the new process with a [`RestoreBundle`], which
+//! it answers with a [`RestoreReport`].
 //!
 //! Decoding is bounded: every string and count has a cap checked before it is
 //! read, and the only nesting, a state's retyping, has a fixed depth bound.
@@ -37,13 +41,14 @@ pub use super::query::{
 };
 use super::query::{read_answer, read_query, write_answer, write_query};
 pub use super::resource::{
-    BLOB_CHUNK, BlobChunk, Blobs, MAX_ASSET, MAX_STAGED, ResourceAsset, ResourcePatch, blob_chunks,
+    BLOB_CHUNK, BlobChunk, BlobRef, Blobs, MAX_ASSET, MAX_STAGED, ResourceAsset, ResourcePatch,
+    blob_chunks,
 };
 use super::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 11;
+pub const DEV_PROTOCOL_VERSION: u16 = 12;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -59,6 +64,11 @@ pub const DEV_SESSION_ENV: &str = "VISO_DEV_SESSION";
 /// The environment variable `viso run` passes the build id of the artifact it
 /// launched in, as 32 hex digits.
 pub const DEV_BUILD_ENV: &str = "VISO_DEV_BUILD";
+
+/// The environment variable `viso run` sets when it launched the app to
+/// take the snapshot of the process before it: the app waits for the
+/// restore, a bounded time, before its first frame.
+pub const DEV_RESTORE_ENV: &str = "VISO_DEV_RESTORE";
 
 /// The largest frame either side writes or reads.
 pub const MAX_FRAME: usize = 4 << 20;
@@ -690,6 +700,58 @@ pub const NACK_UNBINDABLE_SHADER: &str = "NACK_UNBINDABLE_SHADER";
 /// paints with.
 pub const NACK_UNCOMPILABLE_SHADER: &str = "NACK_UNCOMPILABLE_SHADER";
 
+/// A snapshot that does not restore: its blob did not arrive whole, or does
+/// not decode. The process runs fresh.
+pub const NACK_UNRESTORABLE_SNAPSHOT: &str = "NACK_UNRESTORABLE_SNAPSHOT";
+
+/// What a process launched to restore takes before its first frame: the
+/// snapshot of the process before it, whose bytes travel in the blob sent
+/// ahead, and for each file of the snapshot the new build mounts, the view
+/// the build embeds and the plan from the view the old process ran to it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestoreBundle {
+    pub dev_session: DevSessionId,
+    pub target_runtime: RuntimeSessionId,
+    pub snapshot: BlobRef,
+    pub ui: UiPatch,
+}
+
+/// What a restore carried.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RestoreReport {
+    /// What each file's mounts took from the snapshot; a mount with no
+    /// counterpart in it, or of a file the restore has no view for, runs
+    /// fresh and counts every state reset.
+    pub files: Vec<FileCommit>,
+    /// At most [`MAX_NOTICES`].
+    pub notices: Vec<Notice>,
+    /// At most [`MAX_SCOPED_RESETS`].
+    pub state_resets: Vec<ScopedReset>,
+    pub games: Vec<GameRestore>,
+    /// The view mounts of the snapshot no mount took.
+    pub views_lost: u32,
+    /// The extensions restored, and those the snapshot held that the app no
+    /// longer registers.
+    pub extensions: u32,
+    pub extensions_lost: u32,
+    pub restore_us: u64,
+}
+
+/// What restoring a file's games carried, over every session running it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameRestore {
+    pub file: FileId,
+    pub sessions: u32,
+    /// The tick the restored game resumes at.
+    pub tick: u64,
+    /// The Simulation states set from the snapshot, and those that kept
+    /// their initial value: absent from it or of another schema.
+    pub states: u32,
+    pub reset: u32,
+    /// Whether the physics engine started afresh over the restored bodies.
+    pub degraded: bool,
+}
+
 /// A log line's level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
@@ -723,8 +785,14 @@ pub enum HostMessage {
     },
     /// A question about the game a file's mounts run, for `viso game`.
     Game(GameQuery),
-    /// Bytes of an asset the next patch replaces.
+    /// Bytes of an asset the next patch replaces, or of the snapshot the
+    /// next restore carries.
     Blob(BlobChunk),
+    /// Asks for the app's [`DevSnapshot`](super::snapshot::DevSnapshot) at
+    /// the next frame boundary.
+    Snapshot,
+    /// The state a process launched to restore starts from.
+    Restore(Box<RestoreBundle>),
 }
 
 /// What the runtime sends.
@@ -745,6 +813,16 @@ pub enum RuntimeMessage {
     Mounts(Vec<MountEntry>),
     /// The answer to a [`HostMessage::Game`].
     Game(GameAnswer),
+    /// Bytes of the snapshot that follows.
+    Blob(BlobChunk),
+    /// The answer to a [`HostMessage::Snapshot`]: the snapshot, its bytes in
+    /// the blob sent ahead, and how long capturing it took.
+    Snapshot {
+        blob: BlobRef,
+        capture_us: u64,
+    },
+    /// The answer to a [`HostMessage::Restore`].
+    Restored(RestoreReport),
 }
 
 /// Why a frame or message was refused.
@@ -997,6 +1075,8 @@ const HOST_PATCH: u8 = 2;
 const HOST_FAILURE: u8 = 3;
 const HOST_GAME: u8 = 4;
 const HOST_BLOB: u8 = 5;
+const HOST_SNAPSHOT: u8 = 6;
+const HOST_RESTORE: u8 = 7;
 
 const RUNTIME_HELLO: u8 = 0;
 const RUNTIME_ACK: u8 = 1;
@@ -1006,6 +1086,9 @@ const RUNTIME_DROPPED: u8 = 4;
 // 5 was version 2's in-app reload report.
 const RUNTIME_MOUNTS: u8 = 6;
 const RUNTIME_GAME: u8 = 7;
+const RUNTIME_BLOB: u8 = 8;
+const RUNTIME_SNAPSHOT: u8 = 9;
+const RUNTIME_RESTORED: u8 = 10;
 
 const REJECT_PROTOCOL: u8 = 0;
 const REJECT_BUILD: u8 = 1;
@@ -1159,6 +1242,83 @@ fn write_mount(enc: &mut Encoder, entry: &MountEntry) {
     }
 }
 
+/// What a commit or a restore kept and lost per file, its notices and its
+/// scoped resets.
+fn write_commits(
+    enc: &mut Encoder,
+    files: &[FileCommit],
+    notices: &[Notice],
+    resets: &[ScopedReset],
+) {
+    enc.write_varint(files.len() as u64);
+    for commit in files {
+        enc.write_varint(u64::from(commit.file.0));
+        let c = &commit.counts;
+        for count in [
+            c.mounts,
+            c.migrated,
+            c.reset,
+            c.focus_lost,
+            c.scroll_lost,
+            c.handlers_lost,
+        ] {
+            enc.write_varint(u64::from(count));
+        }
+        write_dirty(enc, &c.dirty);
+    }
+    enc.write_varint(notices.len() as u64);
+    for notice in notices {
+        enc.write_varint(u64::from(notice.file.0));
+        write_string(enc, &notice.code);
+        enc.write_varint(u64::from(notice.start));
+        enc.write_varint(u64::from(notice.end));
+        write_string(enc, &notice.message);
+    }
+    enc.write_varint(resets.len() as u64);
+    for reset in resets {
+        enc.write_varint(u64::from(reset.file.0));
+        enc.write_u64(reset.owner.hi);
+        enc.write_u64(reset.owner.lo);
+        write_string(enc, &reset.code);
+    }
+}
+
+type Commits = (Vec<FileCommit>, Vec<Notice>, Vec<ScopedReset>);
+
+fn read_commits(dec: &mut Decoder<'_>) -> Result<Commits, WireError> {
+    let files = read_list(dec, MAX_FILES, "committed files", |dec| {
+        Ok(FileCommit {
+            file: read_file(dec)?,
+            counts: CommitCounts {
+                mounts: read_u32(dec)?,
+                migrated: read_u32(dec)?,
+                reset: read_u32(dec)?,
+                focus_lost: read_u32(dec)?,
+                scroll_lost: read_u32(dec)?,
+                handlers_lost: read_u32(dec)?,
+                dirty: read_dirty(dec)?,
+            },
+        })
+    })?;
+    let notices = read_list(dec, MAX_NOTICES, "notices", |dec| {
+        Ok(Notice {
+            file: read_file(dec)?,
+            code: read_string(dec, MAX_CODE, "diagnostic code")?,
+            start: read_u32(dec)?,
+            end: read_u32(dec)?,
+            message: read_string(dec, MAX_LOG, "notice")?,
+        })
+    })?;
+    let resets = read_list(dec, MAX_SCOPED_RESETS, "scoped resets", |dec| {
+        Ok(ScopedReset {
+            file: read_file(dec)?,
+            owner: StateKey::from_parts(dec.read_u64()?, dec.read_u64()?),
+            code: read_string(dec, MAX_CODE, "diagnostic code")?,
+        })
+    })?;
+    Ok((files, notices, resets))
+}
+
 fn write_dirty(enc: &mut Encoder, dirty: &DirtyCounts) {
     for count in [
         dirty.structure,
@@ -1278,6 +1438,14 @@ impl Message for HostMessage {
                 enc.write_u8(HOST_BLOB);
                 write_chunk(enc, chunk);
             }
+            HostMessage::Snapshot => enc.write_u8(HOST_SNAPSHOT),
+            HostMessage::Restore(restore) => {
+                enc.write_u8(HOST_RESTORE);
+                restore.dev_session.encode(enc);
+                restore.target_runtime.encode(enc);
+                restore.snapshot.write(enc);
+                write_ui(enc, &restore.ui);
+            }
         }
     }
 
@@ -1350,6 +1518,13 @@ impl Message for HostMessage {
             }),
             HOST_GAME => Ok(HostMessage::Game(read_query(dec)?)),
             HOST_BLOB => Ok(HostMessage::Blob(read_chunk(dec)?)),
+            HOST_SNAPSHOT => Ok(HostMessage::Snapshot),
+            HOST_RESTORE => Ok(HostMessage::Restore(Box::new(RestoreBundle {
+                dev_session: DevSessionId::decode(dec)?,
+                target_runtime: RuntimeSessionId::decode(dec)?,
+                snapshot: BlobRef::read(dec)?,
+                ui: read_ui(dec)?,
+            }))),
             _ => Err(malformed(dec)),
         }
     }
@@ -1382,37 +1557,7 @@ impl Message for RuntimeMessage {
                 enc.write_u8(RUNTIME_ACK);
                 write_revision(enc, ack.revision);
                 enc.write_varint(u64::from(ack.applied_domains.0));
-                enc.write_varint(ack.files.len() as u64);
-                for commit in &ack.files {
-                    enc.write_varint(u64::from(commit.file.0));
-                    let c = &commit.counts;
-                    for count in [
-                        c.mounts,
-                        c.migrated,
-                        c.reset,
-                        c.focus_lost,
-                        c.scroll_lost,
-                        c.handlers_lost,
-                    ] {
-                        enc.write_varint(u64::from(count));
-                    }
-                    write_dirty(enc, &c.dirty);
-                }
-                enc.write_varint(ack.notices.len() as u64);
-                for notice in &ack.notices {
-                    enc.write_varint(u64::from(notice.file.0));
-                    write_string(enc, &notice.code);
-                    enc.write_varint(u64::from(notice.start));
-                    enc.write_varint(u64::from(notice.end));
-                    write_string(enc, &notice.message);
-                }
-                enc.write_varint(ack.state_resets.len() as u64);
-                for reset in &ack.state_resets {
-                    enc.write_varint(u64::from(reset.file.0));
-                    enc.write_u64(reset.owner.hi);
-                    enc.write_u64(reset.owner.lo);
-                    write_string(enc, &reset.code);
-                }
+                write_commits(enc, &ack.files, &ack.notices, &ack.state_resets);
                 enc.write_varint(ack.games.len() as u64);
                 for game in &ack.games {
                     enc.write_varint(u64::from(game.file.0));
@@ -1464,6 +1609,32 @@ impl Message for RuntimeMessage {
                 enc.write_u8(RUNTIME_GAME);
                 write_answer(enc, answer);
             }
+            RuntimeMessage::Blob(chunk) => {
+                enc.write_u8(RUNTIME_BLOB);
+                write_chunk(enc, chunk);
+            }
+            RuntimeMessage::Snapshot { blob, capture_us } => {
+                enc.write_u8(RUNTIME_SNAPSHOT);
+                blob.write(enc);
+                enc.write_varint(*capture_us);
+            }
+            RuntimeMessage::Restored(report) => {
+                enc.write_u8(RUNTIME_RESTORED);
+                write_commits(enc, &report.files, &report.notices, &report.state_resets);
+                enc.write_varint(report.games.len() as u64);
+                for game in &report.games {
+                    enc.write_varint(u64::from(game.file.0));
+                    enc.write_varint(u64::from(game.sessions));
+                    enc.write_varint(game.tick);
+                    enc.write_varint(u64::from(game.states));
+                    enc.write_varint(u64::from(game.reset));
+                    enc.write_bool(game.degraded);
+                }
+                for count in [report.views_lost, report.extensions, report.extensions_lost] {
+                    enc.write_varint(u64::from(count));
+                }
+                enc.write_varint(report.restore_us);
+            }
         }
     }
 
@@ -1506,63 +1677,41 @@ impl Message for RuntimeMessage {
                     shader_lang,
                 }))
             }
-            RUNTIME_ACK => Ok(RuntimeMessage::Ack(PatchAck {
-                revision: read_revision(dec)?,
-                applied_domains: read_domains(dec)?,
-                files: read_list(dec, MAX_FILES, "committed files", |dec| {
-                    Ok(FileCommit {
-                        file: read_file(dec)?,
-                        counts: CommitCounts {
-                            mounts: read_u32(dec)?,
-                            migrated: read_u32(dec)?,
+            RUNTIME_ACK => {
+                let revision = read_revision(dec)?;
+                let applied_domains = read_domains(dec)?;
+                let (files, notices, state_resets) = read_commits(dec)?;
+                Ok(RuntimeMessage::Ack(PatchAck {
+                    revision,
+                    applied_domains,
+                    files,
+                    notices,
+                    state_resets,
+                    games: read_list(dec, MAX_FILES, "swapped games", |dec| {
+                        Ok(GameCommit {
+                            file: read_file(dec)?,
+                            tier: read_tier(dec)?,
+                            sessions: read_u32(dec)?,
+                            tick: dec.read_varint()?,
+                            carried: read_u32(dec)?,
                             reset: read_u32(dec)?,
-                            focus_lost: read_u32(dec)?,
-                            scroll_lost: read_u32(dec)?,
-                            handlers_lost: read_u32(dec)?,
+                            characters: read_u32(dec)?,
+                        })
+                    })?,
+                    resources: read_list(dec, MAX_FILES, "replaced assets", |dec| {
+                        Ok(ResourceCommit {
+                            id: ResourceId(dec.read_u64()?),
+                            nodes: read_u32(dec)?,
                             dirty: read_dirty(dec)?,
-                        },
-                    })
-                })?,
-                notices: read_list(dec, MAX_NOTICES, "notices", |dec| {
-                    Ok(Notice {
-                        file: read_file(dec)?,
-                        code: read_string(dec, MAX_CODE, "diagnostic code")?,
-                        start: read_u32(dec)?,
-                        end: read_u32(dec)?,
-                        message: read_string(dec, MAX_LOG, "notice")?,
-                    })
-                })?,
-                state_resets: read_list(dec, MAX_SCOPED_RESETS, "scoped resets", |dec| {
-                    Ok(ScopedReset {
-                        file: read_file(dec)?,
-                        owner: StateKey::from_parts(dec.read_u64()?, dec.read_u64()?),
-                        code: read_string(dec, MAX_CODE, "diagnostic code")?,
-                    })
-                })?,
-                games: read_list(dec, MAX_FILES, "swapped games", |dec| {
-                    Ok(GameCommit {
-                        file: read_file(dec)?,
-                        tier: read_tier(dec)?,
-                        sessions: read_u32(dec)?,
-                        tick: dec.read_varint()?,
-                        carried: read_u32(dec)?,
-                        reset: read_u32(dec)?,
-                        characters: read_u32(dec)?,
-                    })
-                })?,
-                resources: read_list(dec, MAX_FILES, "replaced assets", |dec| {
-                    Ok(ResourceCommit {
-                        id: ResourceId(dec.read_u64()?),
-                        nodes: read_u32(dec)?,
-                        dirty: read_dirty(dec)?,
-                    })
-                })?,
-                timings: PatchTimings {
-                    decode_us: dec.read_varint()?,
-                    stage_us: dec.read_varint()?,
-                    commit_us: dec.read_varint()?,
-                },
-            })),
+                        })
+                    })?,
+                    timings: PatchTimings {
+                        decode_us: dec.read_varint()?,
+                        stage_us: dec.read_varint()?,
+                        commit_us: dec.read_varint()?,
+                    },
+                }))
+            }
             RUNTIME_NACK => {
                 let base_revision = read_revision(dec)?;
                 let candidate_revision = read_revision(dec)?;
@@ -1604,6 +1753,34 @@ impl Message for RuntimeMessage {
                 read_mount,
             )?)),
             RUNTIME_GAME => Ok(RuntimeMessage::Game(read_answer(dec)?)),
+            RUNTIME_BLOB => Ok(RuntimeMessage::Blob(read_chunk(dec)?)),
+            RUNTIME_SNAPSHOT => Ok(RuntimeMessage::Snapshot {
+                blob: BlobRef::read(dec)?,
+                capture_us: dec.read_varint()?,
+            }),
+            RUNTIME_RESTORED => {
+                let (files, notices, state_resets) = read_commits(dec)?;
+                let games = read_list(dec, MAX_FILES, "restored games", |dec| {
+                    Ok(GameRestore {
+                        file: read_file(dec)?,
+                        sessions: read_u32(dec)?,
+                        tick: dec.read_varint()?,
+                        states: read_u32(dec)?,
+                        reset: read_u32(dec)?,
+                        degraded: dec.read_bool()?,
+                    })
+                })?;
+                Ok(RuntimeMessage::Restored(RestoreReport {
+                    files,
+                    notices,
+                    state_resets,
+                    games,
+                    views_lost: read_u32(dec)?,
+                    extensions: read_u32(dec)?,
+                    extensions_lost: read_u32(dec)?,
+                    restore_us: dec.read_varint()?,
+                }))
+            }
             _ => Err(malformed(dec)),
         }
     }
@@ -1700,6 +1877,13 @@ mod tests {
                 offset: (MAX_ASSET - 3) as u32,
                 bytes: vec![0; 3],
             }),
+            HostMessage::Snapshot,
+            HostMessage::Restore(Box::new(RestoreBundle {
+                dev_session: DevSessionId(7),
+                target_runtime: RuntimeSessionId(9),
+                snapshot: BlobRef::of(b"snapshot"),
+                ui: ui(),
+            })),
             HostMessage::Failure {
                 file: FileId(2),
                 lines: vec![
@@ -2014,6 +2198,53 @@ mod tests {
                     tape: vec![0xAB; 300],
                 }),
             }),
+            RuntimeMessage::Blob(BlobChunk {
+                hash: content_hash(b"snap"),
+                total: 4,
+                offset: 0,
+                bytes: b"snap".to_vec(),
+            }),
+            RuntimeMessage::Snapshot {
+                blob: BlobRef::of(b"snap"),
+                capture_us: 1200,
+            },
+            RuntimeMessage::Restored(RestoreReport::default()),
+            RuntimeMessage::Restored(RestoreReport {
+                files: vec![FileCommit {
+                    file: FileId(1),
+                    counts: CommitCounts {
+                        mounts: 2,
+                        migrated: 5,
+                        reset: 1,
+                        focus_lost: 1,
+                        ..CommitCounts::default()
+                    },
+                }],
+                notices: vec![Notice {
+                    file: FileId(1),
+                    code: RESET_NOTICE.into(),
+                    start: 3,
+                    end: 9,
+                    message: "`count` restarts from its initializer".into(),
+                }],
+                state_resets: vec![ScopedReset {
+                    file: FileId(1),
+                    owner: StateKey::from_parts(4, 5),
+                    code: RESET_NOTICE.into(),
+                }],
+                games: vec![GameRestore {
+                    file: FileId(1),
+                    sessions: 1,
+                    tick: 900,
+                    states: 4,
+                    reset: 1,
+                    degraded: true,
+                }],
+                views_lost: 1,
+                extensions: 2,
+                extensions_lost: 1,
+                restore_us: 3400,
+            }),
         ]
         .into_iter()
         .chain(
@@ -2321,7 +2552,7 @@ mod tests {
             "blob",
             HostMessage::Blob(BlobChunk {
                 hash: 0,
-                total: MAX_ASSET as u32 + 1,
+                total: MAX_STAGED as u32 + 1,
                 offset: 0,
                 bytes: Vec::new(),
             }),
