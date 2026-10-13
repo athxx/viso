@@ -16,6 +16,7 @@ x11rb::atom_manager! {
         _NET_WM_WINDOW_TYPE,
         _NET_WM_WINDOW_TYPE_NORMAL,
         _NET_WM_MOVERESIZE,
+        _NET_FRAME_EXTENTS,
         _MOTIF_WM_HINTS,
         CLIPBOARD,
         TARGETS,

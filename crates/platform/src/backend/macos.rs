@@ -42,8 +42,8 @@ use objc2_app_kit::{
     NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy,
     NSApplicationDelegate, NSApplicationTerminateReply, NSBackingStoreType, NSCursor, NSEvent,
     NSEventMask, NSEventModifierFlags, NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeString,
-    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
+    NSScreen, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
@@ -435,7 +435,18 @@ impl PlatformApp for MacApp {
             defang_titlebar_container(&window);
         }
 
-        window.center();
+        // A position on a screen puts the frame's top-left there; otherwise
+        // the window is centred.
+        match config
+            .position
+            .map(|(x, y)| top_left_to_cocoa(self.mtm, x, y))
+            .filter(|&point| on_a_screen(self.mtm, point))
+        {
+            Some(point) => {
+                window.setFrameTopLeftPoint(point);
+            }
+            None => window.center(),
+        }
 
         let delegate = WindowDelegate::new(self.mtm, id, self.shared.clone(), config.chrome);
         let proto = ProtocolObject::from_ref(&*delegate);
@@ -763,6 +774,33 @@ pub struct MacWindow {
     access: MacAccess,
 }
 
+/// The height of the primary screen, whose bottom-left is Cocoa's desktop
+/// origin and whose top-left is the one [`Window::outer_position`] measures
+/// from.
+fn primary_screen_height(mtm: MainThreadMarker) -> Option<f64> {
+    NSScreen::screens(mtm)
+        .firstObject()
+        .map(|screen| screen.frame().size.height)
+}
+
+/// The Cocoa point (bottom-left origin) of the top-left desktop point
+/// `(x, y)`.
+fn top_left_to_cocoa(mtm: MainThreadMarker, x: f64, y: f64) -> NSPoint {
+    let top = primary_screen_height(mtm).unwrap_or(0.0);
+    NSPoint::new(x, top - y)
+}
+
+/// Whether `point` is on a screen.
+fn on_a_screen(mtm: MainThreadMarker, point: NSPoint) -> bool {
+    NSScreen::screens(mtm).iter().any(|screen| {
+        let frame = screen.frame();
+        point.x >= frame.origin.x
+            && point.x < frame.origin.x + frame.size.width
+            && point.y > frame.origin.y
+            && point.y <= frame.origin.y + frame.size.height
+    })
+}
+
 impl Window for MacWindow {
     fn id(&self) -> WindowId {
         self.id
@@ -787,6 +825,12 @@ impl Window for MacWindow {
             (frame.size.width * scale) as u32,
             (frame.size.height * scale) as u32,
         )
+    }
+
+    fn outer_position(&self) -> Option<(f64, f64)> {
+        let frame = self.window.frame();
+        let top = primary_screen_height(self.window.mtm())?;
+        Some((frame.origin.x, top - (frame.origin.y + frame.size.height)))
     }
 
     fn raw_handle(&self) -> RawWindowHandle {

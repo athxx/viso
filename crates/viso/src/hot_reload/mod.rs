@@ -76,18 +76,18 @@ use viso_ui::{AssetBytes, AssetPayload};
 use viso_view::dev::commit::dirty_counts;
 use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, restore, static_nodes};
 use viso_view::dev::snapshot::{
-    DevSnapshot, Extension, GameEntry, MountRef, ViewSnapshot, WindowGeometry, capture_view,
+    DevSnapshot, Extension, GameEntry, MountRef, ViewSnapshot, capture_view,
 };
 use viso_view::dev::wire::{
-    CommitCounts, DEV_RESTORE_ENV, DirtyCounts, Domain, Domains, FileCommit, FileId, GameAnswer,
-    GameAsk, GameCommit, GameQuery, GameRefusal, GameReply, GameRestore, GameTier, LogLevel,
-    MAX_FRAME, MAX_NOTICES, MAX_RECORD_TICKS, MAX_SCOPED_RESETS, MountEntry, NACK_REPLAYING,
-    NACK_SYSTEM_FAULT, NACK_UNBINDABLE_SHADER, NACK_UNCOMPILABLE_SHADER, NACK_UNKNOWN_FILE,
-    NACK_UNKNOWN_SESSION, NACK_UNLOADABLE_ASSET, NACK_UNLOADABLE_SYSTEM, NACK_UNLOADABLE_VIEW,
-    NACK_UNRESTORABLE_SNAPSHOT, Notice, PatchAck, PatchBundle, PatchNack, PatchSection,
-    PatchTimings, RESET_NOTICE, RecordSpan, ReloadPlan, ResourceCommit, RestoreBundle,
-    RestoreReport, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint, ScopedReset,
-    Stage,
+    CommitCounts, DEV_RESTORE_ENV, DEV_WINDOW_ENV, DirtyCounts, Domain, Domains, FileCommit,
+    FileId, GameAnswer, GameAsk, GameCommit, GameQuery, GameRefusal, GameReply, GameRestore,
+    GameTier, LogLevel, MAX_FRAME, MAX_NOTICES, MAX_RECORD_TICKS, MAX_SCOPED_RESETS, MountEntry,
+    NACK_REPLAYING, NACK_SYSTEM_FAULT, NACK_UNBINDABLE_SHADER, NACK_UNCOMPILABLE_SHADER,
+    NACK_UNKNOWN_FILE, NACK_UNKNOWN_SESSION, NACK_UNLOADABLE_ASSET, NACK_UNLOADABLE_SYSTEM,
+    NACK_UNLOADABLE_VIEW, NACK_UNRESTORABLE_SNAPSHOT, Notice, PatchAck, PatchBundle, PatchNack,
+    PatchSection, PatchTimings, RESET_NOTICE, RecordSpan, ReloadPlan, ResourceCommit,
+    RestoreBundle, RestoreReport, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint,
+    ScopedReset, Stage, WindowGeometry,
 };
 use viso_view::{
     GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
@@ -97,6 +97,21 @@ use crate::WindowState;
 use crate::assets::Assets;
 use compile::{Built, ShaderCompiles, Work};
 use link::{DevLink, Incoming, LoadedAsset};
+
+/// `config` for the launch window: in a process `viso run` restarted, where
+/// and how large the first window of the process before it was.
+pub(crate) fn launch_window(
+    mut config: viso_platform::WindowConfig,
+) -> viso_platform::WindowConfig {
+    let geometry = std::env::var(DEV_WINDOW_ENV)
+        .ok()
+        .and_then(|value| WindowGeometry::from_env(&value));
+    if let Some(geometry) = geometry {
+        config.logical_size = geometry.size;
+        config.position = geometry.position;
+    }
+    config
+}
 
 /// How long a process launched to restore waits for the restore before it
 /// runs fresh.
@@ -153,6 +168,8 @@ pub(crate) struct HotReloadSession {
     dev_states: Vec<DevState>,
     /// The windows that mounted a view so far.
     windows_mounted: u32,
+    /// Where each window is on the desktop, read for the snapshot asked for.
+    positions: Vec<(WindowId, Option<(f64, f64)>)>,
 }
 
 /// A restore being applied: each window mounting a view before the first
@@ -329,6 +346,17 @@ impl HotReloadSession {
         }
         self.restore_window(ws, first);
         self.windows_mounted += 1;
+    }
+
+    /// Whether the host asked for a snapshot, which the next frame boundary
+    /// takes with each window's position.
+    pub(crate) fn snapshot_asked(&self) -> bool {
+        self.snapshot_asked
+    }
+
+    /// Where each window is on the desktop, for the snapshot asked for.
+    pub(crate) fn set_positions(&mut self, positions: Vec<(WindowId, Option<(f64, f64)>)>) {
+        self.positions = positions;
     }
 
     /// Keeps what the app registered with `AppCx::dev_state`.
@@ -585,9 +613,20 @@ impl HotReloadSession {
             ..DevSnapshot::default()
         };
         let mut ordinals: Vec<(usize, u32)> = Vec::new();
+        let mut geometry = Vec::with_capacity(windows.len());
+        let mut window = 0;
         for ws in windows {
+            let scale = if ws.dpi > 0.0 { f64::from(ws.dpi) } else { 1.0 };
+            let (w, h) = ws.surface_size;
+            geometry.push(WindowGeometry {
+                size: (f64::from(w) / scale, f64::from(h) / scale),
+                position: self
+                    .positions
+                    .iter()
+                    .find(|(id, _)| *id == ws.window)
+                    .and_then(|&(_, at)| at),
+            });
             ordinals.clear();
-            let window = snapshot.windows.len() as u32;
             for live in self.views.iter().filter(|live| live.window == ws.window) {
                 let file = &self.files[live.file];
                 let at = MountRef {
@@ -618,14 +657,10 @@ impl HotReloadSession {
                 }
             }
             if !ordinals.is_empty() {
-                let scale = if ws.dpi > 0.0 { f64::from(ws.dpi) } else { 1.0 };
-                let (w, h) = ws.surface_size;
-                snapshot.windows.push(WindowGeometry {
-                    size: (f64::from(w) / scale, f64::from(h) / scale),
-                    position: None,
-                });
+                window += 1;
             }
         }
+        self.positions.clear();
         for state in &self.dev_states {
             snapshot.extensions.push(Extension {
                 name: state.name.clone(),
@@ -635,7 +670,7 @@ impl HotReloadSession {
         let bytes = snapshot.encode();
         let capture_us = micros(started.elapsed());
         if let Some(link) = &mut self.link {
-            link.send_snapshot(bytes, capture_us);
+            link.send_snapshot(bytes, geometry, capture_us);
         }
     }
 
@@ -3180,7 +3215,7 @@ mod tests {
         session: &mut HotReloadSession,
         host: &mut Host,
         windows: &mut [WindowState],
-    ) -> Vec<u8> {
+    ) -> (Vec<u8>, Vec<WindowGeometry>) {
         host.send(&HostMessage::Snapshot);
         until(session, |s| s.snapshot_asked);
         session.reload(windows, &mut Assets::default());
@@ -3188,8 +3223,8 @@ mod tests {
         loop {
             match host.read() {
                 Some(RuntimeMessage::Blob(chunk)) => blobs.add(chunk),
-                Some(RuntimeMessage::Snapshot { blob, .. }) => {
-                    return blobs.take(blob).expect("whole").to_vec();
+                Some(RuntimeMessage::Snapshot { blob, windows, .. }) => {
+                    return (blobs.take(blob).expect("whole").to_vec(), windows);
                 }
                 other => panic!("not the snapshot: {other:?}"),
             }
@@ -3268,12 +3303,18 @@ mod tests {
             capture: Box::new(|| b"settings".to_vec()),
             restore: Box::new(|_| unreachable!("the old process restores nothing")),
         }];
-        let bytes = snapshot_of(&mut session, &mut host, std::slice::from_mut(&mut old));
+        old.surface_size = (800, 500);
+        old.dpi = 2.0;
+        session.set_positions(vec![(old.window, Some((120.0, 64.0)))]);
+        let (bytes, windows) = snapshot_of(&mut session, &mut host, std::slice::from_mut(&mut old));
         let snapshot = DevSnapshot::decode(&bytes).expect("the snapshot decodes");
+        assert_eq!(snapshot.views.len(), 1, "{snapshot:?}");
         assert_eq!(
-            (snapshot.views.len(), snapshot.windows.len()),
-            (1, 1),
-            "{snapshot:?}"
+            windows,
+            [WindowGeometry {
+                size: (400.0, 250.0),
+                position: Some((120.0, 64.0)),
+            }]
         );
         assert_eq!(snapshot.extensions[0].bytes, b"settings");
         drop((session, host, old));
@@ -3892,7 +3933,7 @@ mod tests {
             }
             let steps = state(&old, "steps");
             assert_ne!(steps, Value::Int(0));
-            let bytes = snapshot_of(&mut session, &mut host, std::slice::from_mut(&mut old));
+            let (bytes, _) = snapshot_of(&mut session, &mut host, std::slice::from_mut(&mut old));
             drop((session, host, old));
 
             let mut new = mounted(mount_game);

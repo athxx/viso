@@ -64,7 +64,7 @@ use viso_view::dev::wire::{
     BlobRef, Blobs, CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply,
     HostMessage, PatchBundle, PatchSection, Rebuild, ResourceAsset, ResourcePatch, RestoreBundle,
     RestoreReport, Revision, RuntimeHello, RuntimeMessage, RuntimeSessionId, ShaderLang, Stage,
-    SystemPatch, UiPatch, blob_chunks, source_hash,
+    SystemPatch, UiPatch, WindowGeometry, blob_chunks, source_hash,
 };
 
 pub use control::{Control, ControlCall, ControlDeliver, ControlReply};
@@ -197,6 +197,8 @@ pub struct DevSession {
     /// The event of the Rust build the app is restarting on, reported once
     /// the restart lands.
     restarting: Option<RebuildEvent>,
+    /// Where the app's windows were when it sent its snapshot.
+    windows: Vec<WindowGeometry>,
 }
 
 impl DevSession {
@@ -229,6 +231,7 @@ impl DevSession {
             held: None,
             restore_next: false,
             restarting: None,
+            windows: Vec::new(),
         }
     }
 
@@ -474,10 +477,15 @@ impl DevSession {
                     runtime.blobs.add(chunk);
                 }
             }
-            RuntimeMessage::Snapshot { blob, capture_us } => {
+            RuntimeMessage::Snapshot {
+                blob,
+                windows,
+                capture_us,
+            } => {
                 let Some(runtime) = &mut self.runtime else {
                     return;
                 };
+                self.windows = windows;
                 let bytes = runtime.blobs.take(blob);
                 runtime.blobs.clear();
                 let Some(bytes) = bytes else {
@@ -694,9 +702,16 @@ impl DevSession {
     /// runs to be asked.
     pub(crate) fn request_snapshot(&mut self) -> bool {
         self.held = None;
+        self.windows.clear();
         self.runtime
             .as_ref()
             .is_some_and(|runtime| runtime.writer.send(HostMessage::Snapshot).is_ok())
+    }
+
+    /// Where the next app's launch window opens: where the first window of
+    /// the app was when it sent its snapshot.
+    pub(crate) fn launch_window(&self) -> Option<WindowGeometry> {
+        self.windows.first().copied()
     }
 
     /// Whether the app sent the snapshot asked for.
@@ -2055,11 +2070,17 @@ mod tests {
         for chunk in blob_chunks(&bytes) {
             f.runtime(RuntimeMessage::Blob(chunk));
         }
+        let window = WindowGeometry {
+            size: (640.0, 480.0),
+            position: Some((90.0, 40.0)),
+        };
         f.runtime(RuntimeMessage::Snapshot {
             blob: BlobRef::of(&bytes),
+            windows: vec![window],
             capture_us: 800,
         });
         assert!(f.dev.has_snapshot());
+        assert_eq!(f.dev.launch_window(), Some(window));
 
         // The old app closes; the new build's connects, launched to restore.
         let old = f.launch();

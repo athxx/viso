@@ -1422,6 +1422,7 @@ fn to_platform_config(cfg: &WindowConfig) -> viso_platform::WindowConfig {
             WindowChrome::Native => viso_platform::WindowChrome::Native,
             WindowChrome::SelfDrawn => viso_platform::WindowChrome::SelfDrawn,
         },
+        position: None,
     }
 }
 
@@ -1568,7 +1569,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             .as_ref()
             .map(Application::window_config)
             .unwrap_or_default();
-        let Ok(id) = cx.create_window(to_platform_config(&cfg)) else {
+        let config = to_platform_config(&cfg);
+        #[cfg(feature = "hot-reload")]
+        let config = hot_reload::launch_window(config);
+        let Ok(id) = cx.create_window(config) else {
             return;
         };
         // Open the launch window through the shared bring-up path, authoring its
@@ -2061,9 +2065,20 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         match phase {
             FramePhase::FlushStateTransactions => {
                 // Commit the edits the watcher staged before the windows flush,
-                // so a reload's writes settle and paint this frame.
+                // so a reload's writes settle and paint this frame; a snapshot
+                // the host asked for takes where each window is.
                 #[cfg(feature = "hot-reload")]
-                self.hot_reload.reload(&mut self.windows, &mut self.assets);
+                {
+                    if self.hot_reload.snapshot_asked() {
+                        let positions = self
+                            .windows
+                            .iter()
+                            .map(|ws| (ws.window, cx.window_position(ws.window)))
+                            .collect();
+                        self.hot_reload.set_positions(positions);
+                    }
+                    self.hot_reload.reload(&mut self.windows, &mut self.assets);
+                }
                 // The faults the games raised last frame: to `viso run` when
                 // it is attached, to stderr otherwise.
                 let faults = viso_view::take_game_faults();

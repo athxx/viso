@@ -5,8 +5,9 @@
 //! check against its own build: per mounted view its state cells by durable
 //! key, its behavior's states by slot as plain data, and the focus, scroll
 //! offset, text and selection, and active child of each node that holds one,
-//! by its node in the view; per game its [`GameSnapshot`] bytes; per window
-//! its geometry; and the bytes each extension the app registered captured.
+//! by its node in the view; per game its [`GameSnapshot`] bytes; and the
+//! bytes each extension the app registered captured. Where the windows were
+//! travels beside it, for the host to launch the next process with.
 //! Never a pointer, handle, descriptor, socket, task or platform object: a
 //! closure or native handle a state holds is not captured, and that state
 //! restarts from its initializer.
@@ -42,7 +43,7 @@ pub const SNAPSHOT_VERSION: u32 = 1;
 
 const MAGIC: &[u8; 4] = b"VDS1";
 
-/// The most views, nodes, states, games, windows or extensions a snapshot
+/// The most views, nodes, states, games or extensions a snapshot
 /// lists, and the longest path or name it holds.
 const MAX_ENTRIES: usize = 1 << 20;
 const MAX_NAME: usize = 4096;
@@ -63,8 +64,6 @@ pub struct DevSnapshot {
     pub revision: Revision,
     pub views: Vec<ViewSnapshot>,
     pub games: Vec<GameEntry>,
-    /// Each window, in the order the app opened them.
-    pub windows: Vec<WindowGeometry>,
     pub extensions: Vec<Extension>,
 }
 
@@ -114,15 +113,6 @@ pub struct GameEntry {
     pub mount: MountRef,
     /// Its [`GameSnapshot`](viso_behavior::game::GameSnapshot), encoded.
     pub snapshot: Vec<u8>,
-}
-
-/// Where a window was and how large, in logical pixels.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WindowGeometry {
-    pub size: (f64, f64),
-    /// Its outer top-left corner on the desktop, where the platform reports
-    /// one.
-    pub position: Option<(f64, f64)>,
 }
 
 /// The bytes an extension the app registered captured.
@@ -311,19 +301,6 @@ impl DevSnapshot {
             write_mount(&mut enc, &game.mount);
             enc.write_bytes(&game.snapshot);
         }
-        enc.write_varint(self.windows.len() as u64);
-        for window in &self.windows {
-            enc.write_f64(window.size.0);
-            enc.write_f64(window.size.1);
-            match window.position {
-                Some((x, y)) => {
-                    enc.write_u8(1);
-                    enc.write_f64(x);
-                    enc.write_f64(y);
-                }
-                None => enc.write_u8(0),
-            }
-        }
         enc.write_varint(self.extensions.len() as u64);
         for extension in &self.extensions {
             write_string(&mut enc, &extension.name);
@@ -357,12 +334,6 @@ impl DevSnapshot {
                 snapshot: read_blob(dec, "game snapshot")?,
             })
         })?;
-        let windows = read_list(&mut dec, MAX_ENTRIES, "snapshot windows", |dec| {
-            Ok(WindowGeometry {
-                size: (dec.read_f64()?, dec.read_f64()?),
-                position: read_option(dec, |dec| Ok((dec.read_f64()?, dec.read_f64()?)))?,
-            })
-        })?;
         let extensions = read_list(&mut dec, MAX_ENTRIES, "snapshot extensions", |dec| {
             Ok(Extension {
                 name: read_string(dec, MAX_NAME, "extension name")?,
@@ -376,7 +347,6 @@ impl DevSnapshot {
             revision,
             views,
             games,
-            windows,
             extensions,
         })
     }

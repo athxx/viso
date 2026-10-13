@@ -51,9 +51,10 @@ const MARKERS: &[&str] = &[
     "DevLink",
     // The failure overlay.
     "Hot reload failed",
-    // The snapshot endpoint: the restore launch's environment, its refusal,
-    // and its wait.
+    // The snapshot endpoint: the restore launch's environment and window,
+    // its refusal, and its wait.
     "VISO_DEV_RESTORE",
+    "VISO_DEV_WINDOW",
     "NACK_UNRESTORABLE_SNAPSHOT",
     "no restore arrived in time",
 ];

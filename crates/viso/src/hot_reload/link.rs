@@ -33,8 +33,8 @@ use viso_view::dev::wire::{
     BlobRef, Blobs, BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
     DEV_TOKEN_ENV, DevSessionId, Domains, FileId, FrameError, GameQuery, HostMessage, Message,
     PatchBundle, PatchSection, Reject, RestoreBundle, Revision, RuntimeHello, RuntimeIdentity,
-    RuntimeMessage, RuntimeSessionId, RuntimeTarget, SchemaFingerprint, WireError, accept_host,
-    blob_chunks, read_body, read_frame, write_frame,
+    RuntimeMessage, RuntimeSessionId, RuntimeTarget, SchemaFingerprint, WindowGeometry, WireError,
+    accept_host, blob_chunks, read_body, read_frame, write_frame,
 };
 
 /// How long the thread waits for the CLI to accept, and then to answer.
@@ -69,9 +69,9 @@ pub(crate) enum Incoming {
 /// What the loop hands the writer.
 enum Outgoing {
     Message(RuntimeMessage),
-    /// A snapshot's bytes and how long capturing them took, written as blob
-    /// chunks and the message naming them.
-    Snapshot(Vec<u8>, u64),
+    /// A snapshot's bytes, its windows and how long capturing them took,
+    /// written as blob chunks and the message naming them.
+    Snapshot(Vec<u8>, Vec<WindowGeometry>, u64),
 }
 
 /// An asset a patch names, as its blob decoded.
@@ -179,11 +179,17 @@ impl DevLink {
         }
     }
 
-    /// Hands the writer the snapshot `bytes`, captured in `capture_us`: it is
-    /// never dropped, so this waits while the queue is full.
-    pub(crate) fn send_snapshot(&mut self, bytes: Vec<u8>, capture_us: u64) {
+    /// Hands the writer the snapshot `bytes` and the app's `windows`,
+    /// captured in `capture_us`: it is never dropped, so this waits while the
+    /// queue is full.
+    pub(crate) fn send_snapshot(
+        &mut self,
+        bytes: Vec<u8>,
+        windows: Vec<WindowGeometry>,
+        capture_us: u64,
+    ) {
         if let Some(outgoing) = &self.outgoing {
-            let _ = outgoing.send(Outgoing::Snapshot(bytes, capture_us));
+            let _ = outgoing.send(Outgoing::Snapshot(bytes, windows, capture_us));
         }
     }
 
@@ -328,11 +334,15 @@ fn write_all(mut stream: TcpStream, to_send: &Receiver<Outgoing>) {
     for outgoing in to_send {
         let written = match outgoing {
             Outgoing::Message(message) => write_frame(&mut stream, &message),
-            Outgoing::Snapshot(bytes, capture_us) => blob_chunks(&bytes)
+            Outgoing::Snapshot(bytes, windows, capture_us) => blob_chunks(&bytes)
                 .try_for_each(|chunk| write_frame(&mut stream, &RuntimeMessage::Blob(chunk)))
                 .and_then(|()| {
-                    let blob = BlobRef::of(&bytes);
-                    write_frame(&mut stream, &RuntimeMessage::Snapshot { blob, capture_us })
+                    let snapshot = RuntimeMessage::Snapshot {
+                        blob: BlobRef::of(&bytes),
+                        windows,
+                        capture_us,
+                    };
+                    write_frame(&mut stream, &snapshot)
                 }),
         };
         if written.is_err() {

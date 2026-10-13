@@ -935,7 +935,8 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
       data (a closure or handle is not captured), and the focus, scroll offset, text
       and selection, and active child of each node holding one, by `NodeRef` (with
       its `for` item keys for a region node); per game its `GameSnapshot` bytes; per
-      window its geometry; per extension its bytes. Never pointers, handles, fds,
+      extension its bytes (the windows' geometry travels beside it, in the
+      `Snapshot` message, for the host to launch with). Never pointers, handles, fds,
       sockets, task stacks or platform objects (§30). The states carry no schema: the
       host's plan from the old view knows their types.
 - [x] `commit::restore`: the commit with the snapshot as the last-good — the view
@@ -944,15 +945,14 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
       state carried by the plan's node map; what no node takes reported lost. A
       carried edit buffer keeps its text over the rebuilt field's seed (also for a
       patch's carry).
-- [x] Protocol 12: `HostMessage::{Snapshot, Restore}`, `RuntimeMessage::{Blob,
+- [x] Protocol 13: `HostMessage::{Snapshot, Restore}`, `RuntimeMessage::{Blob,
       Snapshot, Restored}` — the snapshot travels as blob chunks both ways (the
       runtime's writer thread cuts them, so the snapshot never fills or is dropped
       from the outgoing queue); the restore carries each view's package and plan
       from the view the old app ran to the one the new build embeds, the host's as
       for a patch. Blob totals bound at 256 MiB, assets still at 64 MiB.
 - [x] Capture at the frame boundary after the request, after the patches commit:
-      every window mounting a view (its logical size; its position once the platform
-      reports one), every view mount, every game session (`Scheduler::snapshot`),
+      every window's logical size and outer position, every view mount, every game session (`Scheduler::snapshot`),
       every extension the app registered (`AppCx::dev_state(name, capture,
       restore)`, kept with viso-ui's `hot-reload` feature, dropped without).
 - [x] Restore before the first frame of a process launched to restore
@@ -975,7 +975,7 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
 
 ### H6.3 — Desktop warm restart (§26)
 
-- [ ] Platform: a window's outer position and size read back, and a window created
+- [x] Platform: a window's outer position and size read back, and a window created
       at a given position (`WindowConfig::position`) on macOS, Windows and X11;
       Wayland places windows itself, so only the size carries there.
 - [x] Sequence: build success → request snapshot (3 s) → ask the old process to
@@ -984,7 +984,9 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
       restore → resume; the mounts re-report and the session plans the next edit
       against what the new build embeds. A newer build during the restart replaces
       it; the old connection's late messages are dropped by `RuntimeSessionId`.
-- [ ] Launch the new process with the old windows' geometry.
+- [x] Launch the new process with the old windows' geometry: the host passes the
+      first window's as `VISO_DEV_WINDOW=w,h[,x,y]`, the app opens its main window
+      with it; a position on no screen falls back to the platform's placement.
 - [x] `WARM_RESTART_REQUIRED` class for a Rust change: one `dev` event per restart,
       `outcome: warm_restarted`, once the restore lands (`rejected` when the new
       executable does not launch).

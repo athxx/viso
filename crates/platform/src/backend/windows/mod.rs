@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ::windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, POINT, RECT, WPARAM};
+use ::windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromPoint};
 use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use ::windows::Win32::System::Threading::GetCurrentThreadId;
 use ::windows::Win32::UI::HiDpi::{
@@ -32,9 +33,9 @@ use ::windows::Win32::UI::HiDpi::{
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE, GWL_STYLE,
-    GetClientRect, GetMenu, GetMessageW, GetWindowLongPtrW, MSG, MWMO_INPUTAVAILABLE,
-    MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostThreadMessageW, QS_ALLINPUT,
-    RegisterClassExW, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos,
+    GetClientRect, GetMenu, GetMessageW, GetWindowLongPtrW, GetWindowRect, MSG,
+    MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostThreadMessageW,
+    QS_ALLINPUT, RegisterClassExW, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos,
     SetWindowTextW, ShowWindow, TranslateAcceleratorW, TranslateMessage, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_QUIT, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
@@ -424,6 +425,19 @@ impl PlatformApp for WinApp {
         // The procedure adopts this count at `WM_NCCREATE` and releases it at
         // `WM_NCDESTROY`.
         let param = Rc::into_raw(state.clone());
+        // A position on a monitor puts the outer top-left there; the size is
+        // fitted to the client area once the window knows its DPI.
+        let (x, y) = config
+            .position
+            .map(|(x, y)| POINT {
+                x: x.round() as i32,
+                y: y.round() as i32,
+            })
+            // SAFETY: a plain query of a point.
+            .filter(|&point| {
+                !unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONULL) }.is_invalid()
+            })
+            .map_or((CW_USEDEFAULT, CW_USEDEFAULT), |point| (point.x, point.y));
         // SAFETY: the class is registered; `title` outlives the call; `param`
         // is a leaked `Rc<WindowState>` the procedure takes ownership of.
         let created = unsafe {
@@ -432,8 +446,8 @@ impl PlatformApp for WinApp {
                 CLASS_NAME,
                 PCWSTR(title.as_ptr()),
                 WS_OVERLAPPEDWINDOW,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
+                x,
+                y,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 None,
@@ -699,6 +713,13 @@ impl Window for WinWindow {
 
     fn inner_size(&self) -> (u32, u32) {
         self.state.client_size()
+    }
+
+    fn outer_position(&self) -> Option<(f64, f64)> {
+        let mut rect = RECT::default();
+        // SAFETY: `rect` is a valid out-parameter and the window is live.
+        unsafe { GetWindowRect(self.state.hwnd.get(), &mut rect) }.ok()?;
+        Some((f64::from(rect.left), f64::from(rect.top)))
     }
 
     fn raw_handle(&self) -> RawWindowHandle {

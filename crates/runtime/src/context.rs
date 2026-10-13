@@ -179,6 +179,13 @@ impl<'a> RuntimeCx<'a> {
         self.app.window(window).map(|w| w.inner_size())
     }
 
+    /// Where `window`'s outer top-left corner is on the desktop, where the
+    /// platform says (see
+    /// [`Window::outer_position`](viso_platform::Window::outer_position)).
+    pub fn window_position(&self, window: WindowId) -> Option<(f64, f64)> {
+        self.app.window(window).and_then(|w| w.outer_position())
+    }
+
     /// The OS-native handle for `window` (for GPU surface creation), if it
     /// exists. The facade passes this to [`viso_gpu::GpuBackend::create_surface`]
     /// on launch. The handle borrows the window; use it immediately.

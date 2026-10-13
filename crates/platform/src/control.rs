@@ -86,6 +86,12 @@ pub struct WindowConfig {
     pub logical_size: (f64, f64),
     /// Who draws the window chrome (title bar / caption). See [`WindowChrome`].
     pub chrome: WindowChrome,
+    /// Where the window's outer top-left corner goes on the desktop, in the
+    /// coordinates [`Window::outer_position`](crate::Window::outer_position)
+    /// reports; `None` lets the platform place it. A point on no screen is
+    /// ignored, and so is any point where the platform places windows itself
+    /// (Wayland, mobile, the browser).
+    pub position: Option<(f64, f64)>,
 }
 
 impl Default for WindowConfig {
@@ -94,6 +100,7 @@ impl Default for WindowConfig {
             title: "Viso".to_string(),
             logical_size: (800.0, 600.0),
             chrome: WindowChrome::Native,
+            position: None,
         }
     }
 }

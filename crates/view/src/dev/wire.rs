@@ -48,7 +48,7 @@ use super::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 12;
+pub const DEV_PROTOCOL_VERSION: u16 = 13;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -69,6 +69,11 @@ pub const DEV_BUILD_ENV: &str = "VISO_DEV_BUILD";
 /// take the snapshot of the process before it: the app waits for the
 /// restore, a bounded time, before its first frame.
 pub const DEV_RESTORE_ENV: &str = "VISO_DEV_RESTORE";
+
+/// The environment variable `viso run` passes the geometry of the old
+/// process's first window in, for the launch window of the process it
+/// launches to restore (see [`WindowGeometry::to_env`]).
+pub const DEV_WINDOW_ENV: &str = "VISO_DEV_WINDOW";
 
 /// The largest frame either side writes or reads.
 pub const MAX_FRAME: usize = 4 << 20;
@@ -716,6 +721,42 @@ pub struct RestoreBundle {
     pub ui: UiPatch,
 }
 
+/// Where a window was: its content size in logical points, and its outer
+/// top-left corner on the desktop where the platform reports one, in the
+/// platform's desktop coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowGeometry {
+    pub size: (f64, f64),
+    pub position: Option<(f64, f64)>,
+}
+
+impl WindowGeometry {
+    /// The geometry as the environment variable [`DEV_WINDOW_ENV`] spells
+    /// it: `width,height` or `width,height,x,y`.
+    pub fn to_env(self) -> String {
+        let (w, h) = self.size;
+        match self.position {
+            Some((x, y)) => format!("{w},{h},{x},{y}"),
+            None => format!("{w},{h}"),
+        }
+    }
+
+    /// The geometry `value` spells, `None` unless it is two or four finite
+    /// numbers with a positive size.
+    pub fn from_env(value: &str) -> Option<WindowGeometry> {
+        let numbers: Vec<f64> = value
+            .split(',')
+            .map(|n| n.trim().parse::<f64>().ok().filter(|n| n.is_finite()))
+            .collect::<Option<_>>()?;
+        let (size, position) = match numbers[..] {
+            [w, h] => ((w, h), None),
+            [w, h, x, y] => ((w, h), Some((x, y))),
+            _ => return None,
+        };
+        (size.0 > 0.0 && size.1 > 0.0).then_some(WindowGeometry { size, position })
+    }
+}
+
 /// What a restore carried.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RestoreReport {
@@ -796,7 +837,7 @@ pub enum HostMessage {
 }
 
 /// What the runtime sends.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeMessage {
     Hello(RuntimeHello),
     Ack(PatchAck),
@@ -816,9 +857,11 @@ pub enum RuntimeMessage {
     /// Bytes of the snapshot that follows.
     Blob(BlobChunk),
     /// The answer to a [`HostMessage::Snapshot`]: the snapshot, its bytes in
-    /// the blob sent ahead, and how long capturing it took.
+    /// the blob sent ahead; each window, in the order the app opened them;
+    /// and how long capturing it took.
     Snapshot {
         blob: BlobRef,
+        windows: Vec<WindowGeometry>,
         capture_us: u64,
     },
     /// The answer to a [`HostMessage::Restore`].
@@ -1613,9 +1656,26 @@ impl Message for RuntimeMessage {
                 enc.write_u8(RUNTIME_BLOB);
                 write_chunk(enc, chunk);
             }
-            RuntimeMessage::Snapshot { blob, capture_us } => {
+            RuntimeMessage::Snapshot {
+                blob,
+                windows,
+                capture_us,
+            } => {
                 enc.write_u8(RUNTIME_SNAPSHOT);
                 blob.write(enc);
+                enc.write_varint(windows.len() as u64);
+                for window in windows {
+                    enc.write_f64(window.size.0);
+                    enc.write_f64(window.size.1);
+                    match window.position {
+                        Some((x, y)) => {
+                            enc.write_u8(1);
+                            enc.write_f64(x);
+                            enc.write_f64(y);
+                        }
+                        None => enc.write_u8(0),
+                    }
+                }
                 enc.write_varint(*capture_us);
             }
             RuntimeMessage::Restored(report) => {
@@ -1756,6 +1816,12 @@ impl Message for RuntimeMessage {
             RUNTIME_BLOB => Ok(RuntimeMessage::Blob(read_chunk(dec)?)),
             RUNTIME_SNAPSHOT => Ok(RuntimeMessage::Snapshot {
                 blob: BlobRef::read(dec)?,
+                windows: read_list(dec, MAX_FILES, "snapshot windows", |dec| {
+                    Ok(WindowGeometry {
+                        size: (dec.read_f64()?, dec.read_f64()?),
+                        position: read_option(dec, |dec| Ok((dec.read_f64()?, dec.read_f64()?)))?,
+                    })
+                })?,
                 capture_us: dec.read_varint()?,
             }),
             RUNTIME_RESTORED => {
@@ -2206,6 +2272,16 @@ mod tests {
             }),
             RuntimeMessage::Snapshot {
                 blob: BlobRef::of(b"snap"),
+                windows: vec![
+                    WindowGeometry {
+                        size: (800.0, 600.5),
+                        position: Some((-1280.0, 44.0)),
+                    },
+                    WindowGeometry {
+                        size: (320.0, 240.0),
+                        position: None,
+                    },
+                ],
                 capture_us: 1200,
             },
             RuntimeMessage::Restored(RestoreReport::default()),
@@ -2273,6 +2349,33 @@ mod tests {
         let mut buf = Vec::new();
         let read: Option<M> = read_frame(&mut stream.as_slice(), &mut buf).unwrap();
         assert_eq!(read.as_ref(), Some(message));
+    }
+
+    #[test]
+    fn a_window_geometry_round_trips_through_the_environment() {
+        for geometry in [
+            WindowGeometry {
+                size: (1024.5, 768.0),
+                position: Some((-1440.0, 25.0)),
+            },
+            WindowGeometry {
+                size: (800.0, 600.0),
+                position: None,
+            },
+        ] {
+            assert_eq!(WindowGeometry::from_env(&geometry.to_env()), Some(geometry));
+        }
+        for bad in [
+            "",
+            "800",
+            "800,600,1",
+            "0,600",
+            "800,NaN",
+            "a,b",
+            "1,2,3,4,5",
+        ] {
+            assert_eq!(WindowGeometry::from_env(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

@@ -39,7 +39,8 @@ use viso_project::{
 };
 use viso_view::dev::wire::{
     self, DEV_BUILD_ENV, DEV_RESTORE_ENV, DEV_RUNTIME_ENV, DEV_SESSION_ENV, DEV_TOKEN_ENV,
-    DevSessionId, ProjectFingerprint as WireProject, SchemaFingerprint,
+    DEV_WINDOW_ENV, DevSessionId, ProjectFingerprint as WireProject, SchemaFingerprint,
+    WindowGeometry,
 };
 
 use super::check::{config_in_its_file, failure_code};
@@ -95,8 +96,13 @@ struct Launch<'a> {
 
 impl Launch<'_> {
     /// Starts `exe`, to restore the snapshot of the app before it when
-    /// `restore`.
-    fn spawn(&self, exe: &Path, restore: bool) -> std::io::Result<Child> {
+    /// `restore`, its launch window at `window`.
+    fn spawn(
+        &self,
+        exe: &Path,
+        restore: bool,
+        window: Option<WindowGeometry>,
+    ) -> std::io::Result<Child> {
         let mut launch = Command::new(exe);
         launch
             .args(self.args)
@@ -107,6 +113,9 @@ impl Launch<'_> {
             .env(DEV_BUILD_ENV, self.build_id);
         if restore {
             launch.env(DEV_RESTORE_ENV, "1");
+        }
+        if let Some(window) = window {
+            launch.env(DEV_WINDOW_ENV, window.to_env());
         }
         if self.piped {
             launch.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -320,7 +329,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         build_id: &build_id,
         piped: global.json,
     };
-    let mut child = match launch.spawn(&exe, false) {
+    let mut child = match launch.spawn(&exe, false, None) {
         Ok(child) => child,
         Err(error) => {
             out.failure(
@@ -433,7 +442,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
                     "launch",
                     &format!("restarting `{}`", relative(&root, &exe).display()),
                 );
-                match launch.spawn(&exe, restore) {
+                match launch.spawn(&exe, restore, dev.launch_window()) {
                     Ok(next) => {
                         child = next;
                         threads.extend(pipe_logs(&mut child, &tx));

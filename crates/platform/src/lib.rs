@@ -208,6 +208,15 @@ pub trait Window {
     /// The content area size in physical pixels.
     fn inner_size(&self) -> (u32, u32);
 
+    /// The window's outer top-left corner on the desktop: logical points from
+    /// the top-left of the primary screen on macOS, physical pixels on Windows
+    /// and X11, where a desktop spanning monitors of different scales has no
+    /// single logical unit. `None` where the platform does not say (Wayland,
+    /// headless, mobile, the browser).
+    fn outer_position(&self) -> Option<(f64, f64)> {
+        None
+    }
+
     /// The OS-native handle for GPU surface creation (a native handle).
     ///
     /// `viso-gpu` uses this to attach a swapchain/drawable layer to the window.

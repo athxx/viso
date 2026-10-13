@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::cursor::Handle as CursorTheme;
-use x11rb::properties::{WmHints, WmHintsState};
+use x11rb::properties::{WmHints, WmHintsState, WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::Event;
 use x11rb::protocol::randr;
 use x11rb::protocol::xinput::{self, XIEventMask};
@@ -238,6 +238,39 @@ impl Window for X11Window {
     fn inner_size(&self) -> (u32, u32) {
         let x11 = self.x11.borrow();
         x11.index(self.id).map_or((0, 0), |i| x11.windows[i].size)
+    }
+
+    fn outer_position(&self) -> Option<(f64, f64)> {
+        let x11 = self.x11.borrow();
+        let origin = self
+            .conn
+            .translate_coordinates(self.xid, x11.root, 0, 0)
+            .ok()?
+            .reply()
+            .ok()?;
+        // The frame the window manager drew around the window, which a
+        // position given at creation places.
+        let (left, top) = self
+            .conn
+            .get_property(
+                false,
+                self.xid,
+                x11.atoms._NET_FRAME_EXTENTS,
+                AtomEnum::CARDINAL,
+                0,
+                4,
+            )
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .and_then(|reply| {
+                let extents: Vec<u32> = reply.value32()?.collect();
+                Some((extents.first().copied()?, extents.get(2).copied()?))
+            })
+            .unwrap_or((0, 0));
+        Some((
+            f64::from(origin.dst_x) - f64::from(left),
+            f64::from(origin.dst_y) - f64::from(top),
+        ))
     }
 
     fn raw_handle(&self) -> RawWindowHandle {
@@ -556,10 +589,19 @@ impl X11 {
     ) -> Result<xproto::Window, PlatformError> {
         let conn = self.conn.clone();
         let screen = &conn.setup().roots[self.screen];
-        let scale = self.scale_at((
+        // A position on the root window puts the frame's top-left there.
+        let position = config
+            .position
+            .map(|(x, y)| (x.round() as i32, y.round() as i32))
+            .filter(|&(x, y)| {
+                (0..i32::from(screen.width_in_pixels)).contains(&x)
+                    && (0..i32::from(screen.height_in_pixels)).contains(&y)
+            });
+        let scale = self.scale_at(position.unwrap_or((
             i32::from(screen.width_in_pixels) / 2,
             i32::from(screen.height_in_pixels) / 2,
-        ));
+        )));
+        let (x, y) = position.unwrap_or((0, 0));
         let width = physical(config.logical_size.0, scale);
         let height = physical(config.logical_size.1, scale);
         let create = || -> Result<xproto::Window, Box<dyn std::error::Error>> {
@@ -568,8 +610,8 @@ impl X11 {
                 x11rb::COPY_DEPTH_FROM_PARENT,
                 xid,
                 self.root,
-                0,
-                0,
+                x as i16,
+                y as i16,
                 width,
                 height,
                 0,
@@ -633,6 +675,13 @@ impl X11 {
             hints.input = Some(true);
             hints.initial_state = Some(WmHintsState::Normal);
             hints.set(&*conn, xid)?;
+            if position.is_some() {
+                // Without a user-specified position the window manager
+                // places the window itself.
+                let mut size = WmSizeHints::new();
+                size.position = Some((WmSizeHintsSpecification::UserSpecified, x, y));
+                size.set_normal_hints(&*conn, xid)?;
+            }
             if config.chrome == WindowChrome::SelfDrawn {
                 // Motif hints: the decorations field is set, and says none.
                 conn.change_property32(
