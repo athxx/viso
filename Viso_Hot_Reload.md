@@ -875,6 +875,8 @@ keep current last-good pipeline
 
 画面不能因为编辑中的 shader syntax error 变成永久黑屏。
 
+已实现：Shader 声明在画它的 `.vs` 文件里（`view!` 单独编译其文件），所以 Shader 随该文件的 View Patch 走，没有单独的 Shader 文件或 Patch。Host 解析、类型检查并校验 Shader IR（错误以 `E8…` 报在 `shader-compile`，不发送），为 Runtime 生成其 Backend 的代码，与构建嵌入的一致（Runtime 报告的语言加参考解释器的 Program），随 View 一起打包。Package 不带 Source Span，所以只被编辑挪了位置的 Shader 字节不变，Runtime 加载出正在运行的同一个 Program（进程级弱引用缓存），什么都不重装。Runtime 暂存 Patch 时把每个窗口的 Renderer 尚未持有（按生成代码与 ABI）的 Program 连同该窗口 Backend 的 `program_compiler` 交给编译线程，Patch 等编译全部完成后在下一个帧边界提交：Renderer 在 View 提交之前接过编好的 Program（`adopt_program`），所以本帧安装它们不再编译，旧 Pipeline 经 Fence 退役。Renderer 画不了的 Program（没有其 Backend 语言的代码，或 Layout 无法携带/绑定）在暂存时以 `gpu-validate`、`NACK_UNBINDABLE_SHADER` 拒绝整个 Revision；Backend 编译失败在编译结束时以 `shader-compile`、`NACK_UNCOMPILABLE_SHADER` 拒绝，二者都先发一条 Error Log 写明文件、Shader 与驱动的消息，View、Game 与 Asset 一并保持 last-good，旧 Pipeline 继续画。暂存后才打开的窗口在其首帧同步时当场编译，与启动时一样。
+
 ---
 
 ## 20. Interface compatibility

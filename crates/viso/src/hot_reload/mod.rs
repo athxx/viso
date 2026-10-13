@@ -32,19 +32,29 @@
 //! refuses the revision with the old resource kept, and the commit — after
 //! the views, so a node a reloaded view adds takes the new resource too —
 //! hands each to the app's assets, which every window showing it takes.
+//! The shaders a patch's views paint with that no window's renderer holds
+//! compile off the loop, with each window's compiler, before the patch is
+//! committed: a program its layout cannot bind refuses the revision at
+//! staging (`gpu-validate`), one the backend refuses when its compile ends
+//! (`shader-compile`), and once all are built the commit hands them to the
+//! renderers before the views commit, so the frame installs them without
+//! compiling and the old pipelines retire through the fence.
 //! Without `viso run` there is no session: the mounts are dropped.
 //! Without the feature this module is not compiled and a `view!` records
 //! nothing.
 
+mod compile;
 mod link;
 pub(crate) mod overlay;
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use viso_behavior::game::PreparedSwap;
 use viso_behavior::{Module, Vm};
+use viso_gpu::GpuBackend;
 use viso_platform::{LoopWaker, WindowId};
 use viso_render::asset::{ResourceId, ResourceRevision};
 use viso_runtime::RuntimeCx;
@@ -57,10 +67,10 @@ use viso_view::dev::wire::{
     CommitCounts, DirtyCounts, Domain, Domains, FileCommit, FileId, GameAnswer, GameAsk,
     GameCommit, GameQuery, GameRefusal, GameReply, GameTier, LogLevel, MAX_FRAME, MAX_NOTICES,
     MAX_RECORD_TICKS, MAX_SCOPED_RESETS, MountEntry, NACK_REPLAYING, NACK_SYSTEM_FAULT,
-    NACK_UNKNOWN_FILE, NACK_UNLOADABLE_ASSET, NACK_UNLOADABLE_SYSTEM, NACK_UNLOADABLE_VIEW, Notice,
-    PatchAck, PatchBundle, PatchNack, PatchSection, PatchTimings, RESET_NOTICE, RecordSpan,
-    ReloadPlan, ResourceCommit, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint,
-    ScopedReset, Stage,
+    NACK_UNBINDABLE_SHADER, NACK_UNCOMPILABLE_SHADER, NACK_UNKNOWN_FILE, NACK_UNLOADABLE_ASSET,
+    NACK_UNLOADABLE_SYSTEM, NACK_UNLOADABLE_VIEW, Notice, PatchAck, PatchBundle, PatchNack,
+    PatchSection, PatchTimings, RESET_NOTICE, RecordSpan, ReloadPlan, ResourceCommit, Revision,
+    RuntimeIdentity, RuntimeMessage, SchemaFingerprint, ScopedReset, Stage,
 };
 use viso_view::{
     GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
@@ -68,6 +78,7 @@ use viso_view::{
 
 use crate::WindowState;
 use crate::assets::Assets;
+use compile::{Built, ShaderCompiles, Work};
 use link::{DevLink, Incoming, LoadedAsset};
 
 /// The domains this runtime applies.
@@ -100,6 +111,10 @@ pub(crate) struct HotReloadSession {
     queries: Vec<GameQuery>,
     /// The games being recorded for the host.
     recordings: Vec<Recording>,
+    /// What wakes the loop, kept from the first mount.
+    waker: Option<LoopWaker>,
+    /// The thread compiling staged patches' shaders, started with the first.
+    compiles: Option<ShaderCompiles>,
 }
 
 /// A game recorded for the host's query `id` until it ran `until` ticks.
@@ -119,6 +134,11 @@ struct StagedPatch {
     assets: Vec<StagedAsset>,
     decode: Duration,
     stage: Duration,
+    /// Whether its shaders are still compiling: it commits once they are not.
+    compiling: bool,
+    /// The programs its views paint with, built for the windows whose
+    /// renderers did not hold them.
+    programs: Vec<Built>,
 }
 
 /// An asset of a staged patch, decoded.
@@ -193,7 +213,9 @@ impl HotReloadSession {
         if !self.started {
             self.started = true;
             let schema = SchemaFingerprint(self.records[0].schema);
-            self.link = DevLink::from_env(waker(), schema, APPLIES);
+            let waker = waker();
+            self.waker = Some(waker.clone());
+            self.link = DevLink::from_env(waker, schema, APPLIES);
         }
         let Some(link) = &mut self.link else {
             self.records.clear();
@@ -248,10 +270,12 @@ impl HotReloadSession {
         }
     }
 
-    /// Takes what the dev channel delivered and requests a frame for each
-    /// window with a mount when a patch was staged or a failure changed.
-    pub(crate) fn wakeup(&mut self, cx: &mut RuntimeCx<'_>) {
-        if !self.receive() {
+    /// Takes what the dev channel delivered and what the shader compiles
+    /// finished, and requests a frame for each window with a mount when a
+    /// patch became ready to commit or a failure changed. `windows` compile
+    /// the shaders a patch brings.
+    pub(crate) fn wakeup(&mut self, cx: &mut RuntimeCx<'_>, windows: &[WindowState]) {
+        if !self.receive(windows) {
             return;
         }
         let mut asked: Vec<WindowId> = Vec::new();
@@ -265,9 +289,11 @@ impl HotReloadSession {
 
     /// Takes what the dev channel delivered: the host's acceptance, patches,
     /// each checked against the revision the runtime will match and loaded
-    /// before it is staged, and NACKed when either fails (§36, §38), and
-    /// failures. Returns whether a patch was staged or a failure changed.
-    fn receive(&mut self) -> bool {
+    /// before it is staged, its new shaders validated against and handed to
+    /// the compilers of `windows`, and NACKed when any fails (§36, §38), and
+    /// failures; then the patches whose compiles finished. Returns whether a
+    /// patch became ready to commit or a failure changed.
+    fn receive(&mut self, windows: &[WindowState]) -> bool {
         let Some(link) = &mut self.link else {
             return false;
         };
@@ -297,14 +323,36 @@ impl HotReloadSession {
                                 });
                             }
                         }
-                        stage(*bundle, &self.files, assets)
+                        let mut staged = stage(*bundle, &self.files, assets)?;
+                        let work = shader_work(&staged, windows, &self.files).map_err(
+                            |(nack, line)| {
+                                link.send(RuntimeMessage::Log {
+                                    level: LogLevel::Error,
+                                    line,
+                                });
+                                nack
+                            },
+                        )?;
+                        if !work.is_empty() {
+                            if self.compiles.is_none() {
+                                let waker = self.waker.clone().unwrap_or_else(LoopWaker::inert);
+                                self.compiles = ShaderCompiles::start(waker);
+                            }
+                            // Without a compile thread the frame compiles
+                            // them, as it does a window's first.
+                            staged.compiling = self
+                                .compiles
+                                .as_ref()
+                                .is_some_and(|c| c.submit(staged.next_revision, work));
+                        }
+                        Ok(staged)
                     });
                     match staged {
                         Ok(mut staged) => {
                             staged.decode = decode;
                             staged.stage = started.elapsed();
+                            changed |= !staged.compiling;
                             self.patches.push(staged);
-                            changed = true;
                         }
                         Err(mut nack) => {
                             nack.last_good_revision = identity.current_revision;
@@ -334,6 +382,47 @@ impl HotReloadSession {
                 }
             }
         }
+        let Some(compiles) = &self.compiles else {
+            return changed;
+        };
+        while let Some(finished) = compiles.poll() {
+            let Some(at) = self
+                .patches
+                .iter()
+                .position(|p| p.compiling && p.next_revision == finished.revision)
+            else {
+                continue;
+            };
+            match finished.built {
+                Ok(built) => {
+                    let staged = &mut self.patches[at];
+                    staged.compiling = false;
+                    staged.programs = built;
+                }
+                Err(refused) => {
+                    let staged = self.patches.remove(at);
+                    let last_good = self
+                        .identity
+                        .as_ref()
+                        .map_or(Revision::default(), |identity| identity.current_revision);
+                    link.send(RuntimeMessage::Log {
+                        level: LogLevel::Error,
+                        line: format!(
+                            "{}: {}; the app keeps the last good",
+                            self.files[refused.file].entry.path, refused.message
+                        ),
+                    });
+                    link.send(RuntimeMessage::Nack(PatchNack {
+                        base_revision: staged.base_revision,
+                        candidate_revision: staged.next_revision,
+                        stage: Stage::ShaderCompile,
+                        diagnostic_codes: vec![NACK_UNCOMPILABLE_SHADER.into()],
+                        last_good_revision: last_good,
+                    }));
+                }
+            }
+            changed = true;
+        }
         changed
     }
 
@@ -343,21 +432,23 @@ impl HotReloadSession {
     }
 
     /// Commits the staged patches in revision order at the frame boundary
-    /// before the windows flush, answering each, shows the failures that
-    /// changed, and answers the host's questions about games. A mount
-    /// recorded since the last adoption is not a window's build (a list row)
-    /// and is not tracked.
+    /// before the windows flush, answering each, up to the first whose
+    /// shaders still compile; shows the failures that changed, and answers the
+    /// host's questions about games. A mount recorded since the last adoption
+    /// is not a window's build (a list row) and is not tracked.
     pub(crate) fn reload(&mut self, windows: &mut [WindowState], assets: &mut Assets) {
         take_mounts(&mut self.records);
         self.records.clear();
-        if !self.patches.is_empty() {
+        let ready = self.patches.iter().take_while(|p| !p.compiling).count();
+        if ready > 0 {
             self.views.retain(|view| {
                 windows
                     .iter()
                     .any(|ws| ws.window == view.window && ws.store.arena().is_live(view.root))
             });
         }
-        for staged in std::mem::take(&mut self.patches) {
+        let ready: Vec<StagedPatch> = self.patches.drain(..ready).collect();
+        for staged in ready {
             let answer = self.commit_patch(staged, windows, assets);
             if let Some(link) = &mut self.link {
                 link.send(answer);
@@ -544,6 +635,18 @@ impl HotReloadSession {
                 });
             }
         };
+        // Nothing refuses the revision from here: the renderers take the
+        // programs its views paint with, which the frame installs.
+        for built in staged.programs {
+            if let Some(gpu) = windows
+                .iter_mut()
+                .find(|ws| ws.window == built.window)
+                .and_then(|ws| ws.gpu.as_mut())
+            {
+                gpu.renderer
+                    .adopt_program(&mut gpu.backend, &built.program, built.compiled);
+            }
+        }
         let Some(identity) = &mut self.identity else {
             unreachable!("checked above");
         };
@@ -859,7 +962,62 @@ fn stage(
         assets,
         decode: Duration::ZERO,
         stage: Duration::ZERO,
+        compiling: false,
+        programs: Vec::new(),
     })
+}
+
+/// The compiles `staged` waits for: each program its views paint with that
+/// the renderer of a window of `windows` does not hold, for that window. A
+/// program a window's renderer could not draw refuses the patch, with the
+/// line saying why.
+fn shader_work(
+    staged: &StagedPatch,
+    windows: &[WindowState],
+    files: &[ViewFile],
+) -> Result<Vec<Work>, (PatchNack, String)> {
+    let mut work: Vec<Work> = Vec::new();
+    for view in &staged.views {
+        for shader in &view.candidate.package.shaders {
+            let program = shader.program();
+            for ws in windows {
+                let Some(gpu) = &ws.gpu else {
+                    continue;
+                };
+                let renderer = &gpu.renderer;
+                if renderer.holds_program::<viso_gpu::Backend>(program)
+                    || work
+                        .iter()
+                        .any(|w| w.window == ws.window && Arc::ptr_eq(&w.program, program))
+                {
+                    continue;
+                }
+                let format = renderer.surface_format();
+                if let Err(error) = program.desc(viso_gpu::Backend::SHADER_LANG, format) {
+                    let nack = PatchNack {
+                        base_revision: staged.base_revision,
+                        candidate_revision: staged.next_revision,
+                        stage: Stage::GpuValidate,
+                        diagnostic_codes: vec![NACK_UNBINDABLE_SHADER.into()],
+                        last_good_revision: Revision::default(),
+                    };
+                    let line = format!(
+                        "{}: shader `{}`: {error}; the app keeps the last good",
+                        files[view.file].entry.path, program.name
+                    );
+                    return Err((nack, line));
+                }
+                work.push(Work {
+                    window: ws.window,
+                    compiler: gpu.backend.program_compiler(),
+                    format,
+                    program: Arc::clone(program),
+                    file: view.file,
+                });
+            }
+        }
+    }
+    Ok(work)
 }
 
 /// The inventory entry of file `index`, as the build recorded it.
@@ -980,6 +1138,9 @@ mod tests {
         source_hash,
     };
 
+    use viso_shader::program::PackedCode;
+    use viso_ui::shader::{PackedBrush, ShaderLang};
+
     use super::link::fake::{self, Host};
     use super::*;
 
@@ -988,6 +1149,7 @@ mod tests {
         <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG;
 
     const COUNTER: &str = include_str!("../../tests/fixtures/counter.vs");
+    const SHADER_CARD: &str = include_str!("../../tests/fixtures/shader_card.vs");
     const LOGGER: &str = include_str!("../../tests/fixtures/logger.vs");
     const SCROLLER: &str = include_str!("../../tests/fixtures/scroller.vs");
 
@@ -1042,7 +1204,7 @@ mod tests {
     fn until(session: &mut HotReloadSession, mut done: impl FnMut(&HotReloadSession) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !done(session) {
-            session.receive();
+            session.receive(&[]);
             assert!(Instant::now() < deadline, "the session never got there");
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -1091,7 +1253,8 @@ mod tests {
         fn section(&mut self, source: &str) -> PatchSection {
             let candidate = plan_view_for(source, &self.origin, self.profile.clone())
                 .expect("the edit compiles");
-            let view = view_patch(self.file, Some(&self.last_good), &candidate, &[LANG])
+            let langs = [LANG, ShaderLang::None];
+            let view = view_patch(self.file, Some(&self.last_good), &candidate, &langs)
                 .expect("the shaders build");
             self.sent = Some(candidate);
             PatchSection::Ui(UiPatch { views: vec![view] })
@@ -1164,7 +1327,7 @@ mod tests {
         patch: &HostMessage,
     ) -> RuntimeMessage {
         host.send(patch);
-        if let Some(answer) = answer_or_staged(session, host) {
+        if let Some(answer) = answer_or_ready(session, host, windows) {
             return answer;
         }
         session.reload(windows, assets);
@@ -1184,12 +1347,23 @@ mod tests {
     /// Receives until the session staged a patch (`None`) or answered the
     /// host (the answer).
     fn answer_or_staged(session: &mut HotReloadSession, host: &mut Host) -> Option<RuntimeMessage> {
+        answer_or_ready(session, host, &[])
+    }
+
+    /// Receives until the session holds patches ready to commit, their
+    /// shaders compiled for `windows` (`None`), or answered the host (the
+    /// answer).
+    fn answer_or_ready(
+        session: &mut HotReloadSession,
+        host: &mut Host,
+        windows: &[WindowState],
+    ) -> Option<RuntimeMessage> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let stream = host.stream.as_ref().unwrap();
         stream.set_nonblocking(true).unwrap();
         let answered = loop {
-            session.receive();
-            if !session.patches.is_empty() {
+            session.receive(windows);
+            if !session.patches.is_empty() && session.patches.iter().all(|p| !p.compiling) {
                 break false;
             }
             if matches!(stream.peek(&mut [0]), Ok(1)) {
@@ -1569,6 +1743,268 @@ mod tests {
             &COUNTER.replace("width: 120dp;", "width: 140dp;"),
         );
         assert_eq!(ack.revision, Revision(2));
+    }
+
+    /// A window mounting the shader card and drawing with a GPU, its shaders
+    /// installed.
+    fn shaded() -> WindowState {
+        let mut ws =
+            mounted(|cx| viso_ui_macros::view!("../../tests/fixtures/shader_card.vs")(cx).id());
+        let mut backend = viso_gpu::create_device();
+        let renderer =
+            viso_render::Renderer::new(&mut backend, viso_gpu::TextureFormat::Bgra8Unorm);
+        ws.gpu = Some(crate::GpuState {
+            backend,
+            renderer,
+            surface: None,
+            size: (200, 100),
+        });
+        install(&mut ws);
+        ws
+    }
+
+    /// Brings `ws`'s renderer to the programs its nodes paint with, as the
+    /// frame does after the settle.
+    fn install(ws: &mut WindowState) {
+        let gpu = ws.gpu.as_mut().expect("a GPU");
+        ws.shaders
+            .sync(ws.store.shaders(), &mut gpu.backend, &mut gpu.renderer);
+    }
+
+    /// The slot the card's shader view paints with.
+    fn painting(ws: &WindowState) -> viso_ui::shader::ProgramSlot {
+        let view = children(&ws.store, ws.root.unwrap())[0];
+        match ws.store.content_payload(view) {
+            Some(viso_ui::Content::Shader { program, .. }) => *program,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn renderer(ws: &WindowState) -> &viso_render::Renderer {
+        &ws.gpu.as_ref().expect("a GPU").renderer
+    }
+
+    /// The card, its shader filling with `fill`.
+    fn card(fill: &str) -> String {
+        SHADER_CARD.replace("Vec4F32(tint.r, tint.g, tint.b, 1.0)", fill)
+    }
+
+    #[test]
+    fn a_shader_edit_compiles_off_the_loop_and_the_frame_installs_it_without_compiling() {
+        let mut ws = shaded();
+        let (mut session, mut host, mut edits) = session(&mut ws, SHADER_CARD);
+        let compiles = renderer(&ws).program_compiles();
+        assert_eq!(compiles, 1, "the build's shader, at the first frame");
+        let (slot, pipeline) = (painting(&ws), renderer(&ws).program_pipeline(painting(&ws)));
+
+        // An edit leaving the shader as it was compiles nothing and keeps it.
+        let taller = SHADER_CARD.replace("height: 100dp;", "height: 120dp;");
+        let patch = edits.patch(&host, 1, 2, &taller);
+        assert!(matches!(
+            apply(&mut session, &mut host, &mut ws, &patch),
+            RuntimeMessage::Ack(_)
+        ));
+        edits.acked();
+        install(&mut ws);
+        assert_eq!(painting(&ws), slot);
+        assert_eq!(renderer(&ws).program_pipeline(slot), pipeline);
+        assert_eq!(renderer(&ws).program_compiles(), compiles);
+
+        // An edit of its code: the patch waits for the compile thread, the
+        // commit hands the program to the renderer, and the frame installs it
+        // without compiling, the old pipeline retired.
+        let dimmer = card("Vec4F32(tint.r * 0.5, tint.g * 0.5, tint.b * 0.5, 1.0)");
+        let patch = edits.patch(&host, 2, 3, &dimmer);
+        assert!(matches!(
+            apply(&mut session, &mut host, &mut ws, &patch),
+            RuntimeMessage::Ack(_)
+        ));
+        edits.acked();
+        install(&mut ws);
+        let now = renderer(&ws).program_pipeline(painting(&ws));
+        assert!(now.is_some() && now != pipeline, "the new program draws");
+        assert_eq!(
+            renderer(&ws).program_compiles(),
+            compiles,
+            "nothing on the frame"
+        );
+        assert_eq!(
+            renderer(&ws).frame_stats().programs,
+            1,
+            "the old slot emptied"
+        );
+
+        // An edit of its interface: the node's instance is encoded anew from
+        // the view's value, by the new layout.
+        let glowing = dimmer
+            .replace(
+                "instance rings: F32;",
+                "instance rings: F32;\n    instance glow: F32;",
+            )
+            .replace("rings: rings }", "rings: rings, glow: 0.25 }");
+        let patch = edits.patch(&host, 3, 4, &glowing);
+        assert!(matches!(
+            apply(&mut session, &mut host, &mut ws, &patch),
+            RuntimeMessage::Ack(_)
+        ));
+        install(&mut ws);
+        let view = children(&ws.store, ws.root.unwrap())[0];
+        let Some(viso_ui::Content::Shader {
+            program, params, ..
+        }) = ws.store.content_payload(view)
+        else {
+            unreachable!()
+        };
+        let layout = &ws.store.shaders().get(*program).unwrap().layout;
+        assert_eq!(params.len(), layout.stride as usize);
+        let glow = layout.params[layout.param("glow").unwrap()].offset as usize;
+        assert_eq!(
+            f32::from_le_bytes(params[glow..glow + 4].try_into().unwrap()),
+            0.25
+        );
+        assert!(renderer(&ws).program_pipeline(*program).is_some());
+    }
+
+    #[test]
+    fn a_shader_the_renderer_cannot_draw_refuses_the_revision_at_staging() {
+        let mut ws = shaded();
+        let (mut session, mut host, mut edits) = session(&mut ws, SHADER_CARD);
+        let (slot, root) = (painting(&ws), ws.root);
+        let dimmer = card("Vec4F32(tint.r * 0.5, tint.g * 0.5, tint.b * 0.5, 1.0)");
+        let mut patch = edits.patch(&host, 1, 2, &dimmer);
+        // Its code in a language the backend does not read.
+        let other = match LANG {
+            ShaderLang::Wgsl => ShaderLang::Msl,
+            _ => ShaderLang::Wgsl,
+        };
+        swap_code(&mut patch, |_| {
+            vec![PackedCode::Text(other, "fn main() {}".into())]
+        });
+        let (line, nack) = refused(&mut session, &mut host, &mut ws, &patch);
+        assert!(
+            line.contains("shader `Ripple`: the program carries no"),
+            "{line}"
+        );
+        assert_eq!(nack.stage, Stage::GpuValidate);
+        assert_eq!(nack.diagnostic_codes, [NACK_UNBINDABLE_SHADER]);
+        assert_eq!(nack.last_good_revision, Revision(1));
+        assert_eq!(revision(&session), 1);
+        assert_eq!((painting(&ws), ws.root), (slot, root), "the view kept");
+
+        let ack = accept(&mut session, &mut host, &mut ws, &mut edits, &dimmer);
+        assert_eq!(ack.revision, Revision(2));
+    }
+
+    /// Replaces the code of the first shader `patch`'s view paints with by
+    /// what `code` makes of it.
+    fn swap_code(patch: &mut HostMessage, code: impl FnOnce(Vec<PackedCode>) -> Vec<PackedCode>) {
+        use viso_ende::{Decode, Encode};
+
+        let HostMessage::Patch(patch) = patch else {
+            unreachable!()
+        };
+        let PatchSection::Ui(ui) = &mut patch.sections[0] else {
+            unreachable!("a ui section")
+        };
+        let shaders = &mut ui.views[0].package.shaders;
+        let mut brush = PackedBrush::decode_from_slice(shaders[0].bytes()).unwrap();
+        brush.code = code(brush.code);
+        shaders[0] = viso_view::ViewShader::new(brush.encode_to_vec()).unwrap();
+    }
+
+    /// Sends `patch` to a session that refuses it: the error line saying
+    /// why, and the NACK after it.
+    fn refused(
+        session: &mut HotReloadSession,
+        host: &mut Host,
+        ws: &mut WindowState,
+        patch: &HostMessage,
+    ) -> (String, PatchNack) {
+        let RuntimeMessage::Log {
+            level: LogLevel::Error,
+            line,
+        } = apply(session, host, ws, patch)
+        else {
+            panic!("not an error line");
+        };
+        match host.read() {
+            Some(RuntimeMessage::Nack(nack)) => (line, nack),
+            other => panic!("not a NACK: {other:?}"),
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn a_shader_the_backend_refuses_refuses_the_revision_with_its_view() {
+        let mut ws = shaded();
+        let (mut session, mut host, mut edits) = session(&mut ws, SHADER_CARD);
+        let (slot, root) = (painting(&ws), ws.root);
+        let pipeline = renderer(&ws).program_pipeline(slot);
+        let dimmer = card("Vec4F32(tint.r * 0.5, tint.g * 0.5, tint.b * 0.5, 1.0)");
+        let mut patch = edits.patch(&host, 1, 2, &dimmer);
+        swap_code(&mut patch, |code| {
+            code.into_iter()
+                .map(|code| match code {
+                    PackedCode::Text(ShaderLang::Msl, _) => {
+                        PackedCode::Text(ShaderLang::Msl, "not metal".into())
+                    }
+                    code => code,
+                })
+                .collect()
+        });
+        let (line, nack) = refused(&mut session, &mut host, &mut ws, &patch);
+        assert!(line.contains("shader `Ripple`: program_source"), "{line}");
+        assert_eq!(nack.stage, Stage::ShaderCompile);
+        assert_eq!(nack.diagnostic_codes, [NACK_UNCOMPILABLE_SHADER]);
+        assert_eq!(nack.last_good_revision, Revision(1));
+        assert_eq!(revision(&session), 1);
+        install(&mut ws);
+        assert_eq!((painting(&ws), ws.root), (slot, root), "the view kept");
+        assert_eq!(
+            renderer(&ws).program_pipeline(slot),
+            pipeline,
+            "and its pipeline"
+        );
+
+        let before = draw(&mut ws);
+        let ack = accept(&mut session, &mut host, &mut ws, &mut edits, &dimmer);
+        assert_eq!(ack.revision, Revision(2));
+        install(&mut ws);
+        assert_ne!(renderer(&ws).program_pipeline(painting(&ws)), pipeline);
+        // Metal draws the new program at the next frame: the tint at half.
+        let after = draw(&mut ws);
+        let blue = |picture: &[u8]| picture[((40 * 200 + 60) * 4) as usize];
+        assert!(blue(&before) >= 250, "{}", blue(&before));
+        assert!((120..=135).contains(&blue(&after)), "{}", blue(&after));
+    }
+
+    /// `ws`'s card drawn by its renderer into a 200×100 target, read back as
+    /// BGRA8.
+    #[cfg(target_vendor = "apple")]
+    fn draw(ws: &mut WindowState) -> Vec<u8> {
+        let root = ws.root.unwrap();
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 100.0,
+        };
+        ws.store.layout(root, surface, &mut Vec::new());
+        let mut prims = Vec::new();
+        viso_ui::paint_tree(&ws.store, root, &mut prims);
+        let gpu = ws.gpu.as_mut().unwrap();
+        gpu.renderer.set_surface_size([200.0, 100.0]);
+        gpu.renderer.upload(&mut gpu.backend, &prims);
+        let target = gpu.backend.create_texture(&viso_gpu::TextureDesc {
+            width: 200,
+            height: 100,
+            format: viso_gpu::TextureFormat::Bgra8Unorm,
+            render_target: true,
+            label: "card",
+        });
+        gpu.renderer
+            .render_to_texture(&mut gpu.backend, target, [1.0; 4], [200.0, 100.0]);
+        gpu.backend.read_texture(target)
     }
 
     #[test]
@@ -2247,7 +2683,7 @@ mod tests {
             let encoded = Instant::now();
             host.send_raw(&body);
             while session.patches.is_empty() {
-                session.receive();
+                session.receive(&[]);
                 std::hint::spin_loop();
             }
             let staged = Instant::now();
@@ -2395,7 +2831,7 @@ mod tests {
         let stream = host.stream.as_ref().unwrap();
         stream.set_nonblocking(true).unwrap();
         while !matches!(stream.peek(&mut [0]), Ok(1)) {
-            session.receive();
+            session.receive(&[]);
             assert!(Instant::now() < deadline, "no answer");
             std::thread::sleep(Duration::from_millis(1));
         }

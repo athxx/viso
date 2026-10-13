@@ -2474,6 +2474,7 @@ dependencies = [
  "ttf-parser",
  "viso-behavior",
  "viso-dsl",
+ "viso-ende",
  "viso-gpu",
  "viso-macros",
  "viso-platform",

@@ -8,7 +8,10 @@
 //! changed is installed (compiled from the code the build packed for this
 //! backend), one emptied is released through the backend's fence, so a frame
 //! in flight finishes with the old pipeline. A program the backend refuses is
-//! reported once and its slot draws nothing.
+//! reported once and its slot draws nothing. A hot reload compiles the
+//! programs its patch brings off the loop and hands them to the renderer
+//! before it commits, refusing the patch when one does not build, so the sync
+//! after it only installs.
 
 use std::sync::Arc;
 

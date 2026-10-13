@@ -38,10 +38,11 @@
 
 use viso_gpu::backend::{DrawCommand, Geometry, InlineUniforms};
 use viso_gpu::{
-    BindGroupDesc, BindGroupId, Binding, BufferUsage, GpuBackend, PipelineId, ProgramAbi,
-    ProgramCode, SamplerId, ShaderLang, TextureId,
+    BindGroupDesc, BindGroupId, Binding, BlendMode, BufferUsage, GpuBackend, PROGRAM_SAMPLERS,
+    PROGRAM_TEXTURES, PipelineId, ProgramAbi, ProgramCode, ProgramDesc, SamplerId, ShaderLang,
+    TextureFormat, TextureId,
 };
-use viso_shader::program::{BrushLayout, PackedBrush};
+use viso_shader::program::{BrushLayout, FRAGMENT_ENTRY, PackedBrush, VERTEX_ENTRY};
 
 use crate::batch::BatchKey;
 use crate::pool::InstancePool;
@@ -75,6 +76,42 @@ impl BrushProgram {
     pub fn code_for(&self, lang: ShaderLang) -> Option<&ProgramCode> {
         self.code.iter().find(|code| code.lang() == lang)
     }
+
+    /// What a backend reading `lang` builds it from to draw into `format`,
+    /// as a renderer of that surface format installs it: on any thread,
+    /// with the backend's [`program_compiler`](GpuBackend::program_compiler).
+    ///
+    /// # Errors
+    ///
+    /// No code in `lang`, or a layout a draw cannot carry or bind.
+    pub fn desc(
+        &self,
+        lang: ShaderLang,
+        format: TextureFormat,
+    ) -> Result<ProgramDesc<'_>, ProgramError> {
+        let code = self.code_for(lang).ok_or(ProgramError::NoCode(lang))?;
+        check_layout(&self.layout)?;
+        Ok(desc(&self.name, code, &self.layout, format))
+    }
+}
+
+/// What a backend builds `code`, laid out by `layout`, from to draw into
+/// `format`, premultiplied source-over.
+pub(crate) fn desc<'a>(
+    label: &'a str,
+    code: &'a ProgramCode,
+    layout: &BrushLayout,
+    format: TextureFormat,
+) -> ProgramDesc<'a> {
+    ProgramDesc {
+        label,
+        code,
+        vertex_entry: VERTEX_ENTRY,
+        fragment_entry: FRAGMENT_ENTRY,
+        color_format: format,
+        blend: BlendMode::PremultipliedOver,
+        abi: layout.abi(),
+    }
 }
 
 impl std::fmt::Debug for BrushProgram {
@@ -97,6 +134,8 @@ pub enum ProgramError {
     Uniforms { size: u32 },
     /// The instance stride is not whole 4-byte words.
     Stride { stride: u32 },
+    /// More textures or samplers than a program's bind group holds.
+    Bindings { textures: u32, samplers: u32 },
     /// The backend's compiler or driver refused the code.
     Compile(String),
     /// The program carries no code in the backend's language.
@@ -120,6 +159,11 @@ impl std::fmt::Display for ProgramError {
             ProgramError::Stride { stride } => {
                 write!(f, "an instance stride of {stride} bytes is not whole words")
             }
+            ProgramError::Bindings { textures, samplers } => write!(
+                f,
+                "{textures} textures and {samplers} samplers; a program binds at most \
+                 {PROGRAM_TEXTURES} and {PROGRAM_SAMPLERS}"
+            ),
             ProgramError::Compile(log) => f.write_str(log),
             ProgramError::NoCode(lang) => write!(f, "the program carries no {lang:?} code"),
         }
@@ -550,6 +594,19 @@ impl ProgramTable {
 fn check(slot: ProgramSlot, layout: &BrushLayout) -> Result<(), ProgramError> {
     if slot.0 >= BatchKey::PROGRAM_SLOTS {
         return Err(ProgramError::Slot(slot));
+    }
+    check_layout(layout)
+}
+
+/// Whether a draw can carry a program laid out by `layout` and a bind group
+/// bind what it samples.
+fn check_layout(layout: &BrushLayout) -> Result<(), ProgramError> {
+    let abi = layout.abi();
+    if abi.textures > PROGRAM_TEXTURES || abi.samplers > PROGRAM_SAMPLERS {
+        return Err(ProgramError::Bindings {
+            textures: abi.textures,
+            samplers: abi.samplers,
+        });
     }
     if layout.uniform_size as usize > InlineUniforms::MAX {
         return Err(ProgramError::Uniforms {

@@ -815,8 +815,8 @@ timers (§104–§111).
 ### Done
 
 - [x] §155 game acceptance list passes: headless in `crates/dsl/tests/game_acceptance.rs`,
-      the two shader items on Metal (`crates/viso/tests/shader_reload.rs`,
-      `shader_golden.rs`).
+      the two shader items on Metal (the hot reload session's shader tests in
+      `crates/viso/src/hot_reload/mod.rs`, `shader_golden.rs`).
   - [x] QuickGame ≡ split system; no frame callback or wall clock; seed + tape replay;
         60 Hz independent of the display; bounded catch-up; stable order and
         deterministic command merge.
@@ -831,7 +831,8 @@ timers (§104–§111).
         wasm32 (V8) and x86_64-linux-musl (Windows, Android, iOS not run).
   - [x] `@persist` across a restart and a migration (`game_persist.rs`, a real
         second process over a `DirStore`).
-  - [x] Shader reload keeps the current pipeline on failure (D6, `shader_reload.rs`).
+  - [x] Shader reload keeps the current pipeline on failure (D6, a patch whose shader
+        Metal refuses is NACKed with its view and pipeline kept, `hot_reload` tests).
   - [x] CPU reference vs one GPU backend golden within tolerance (D6, Metal,
         `shader_golden.rs`).
 

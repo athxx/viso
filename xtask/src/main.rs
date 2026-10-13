@@ -63,6 +63,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-text",
                     "viso-shader",
                     "viso-macros",
+                    "viso-ende",
                 ],
             },
         ),

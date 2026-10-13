@@ -682,6 +682,13 @@ pub const NACK_REPLAYING: &str = "NACK_REPLAYING";
 /// An asset of the patch does not load: its bytes did not arrive whole, or do
 /// not decode.
 pub const NACK_UNLOADABLE_ASSET: &str = "NACK_UNLOADABLE_ASSET";
+/// A shader a view of the patch paints with is one the runtime's renderer
+/// cannot draw: no code in its backend's language, or a layout a draw cannot
+/// carry or bind.
+pub const NACK_UNBINDABLE_SHADER: &str = "NACK_UNBINDABLE_SHADER";
+/// The runtime's backend refused to compile a shader a view of the patch
+/// paints with.
+pub const NACK_UNCOMPILABLE_SHADER: &str = "NACK_UNCOMPILABLE_SHADER";
 
 /// A log line's level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

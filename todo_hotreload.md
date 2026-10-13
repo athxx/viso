@@ -647,10 +647,9 @@ and a failure keeps the drawn pipeline.
 
 ### H5.1 — What exists
 
-- [x] `ProgramReload`: worker-thread compile, newest submission wins, `poll()` between
-      frames returns a swap with instance/uniform re-encode, failure keeps the live
-      pipeline (`shader/src/program/reload.rs`); backend rejection keeps the pipeline
-      on Metal (`viso/tests/shader_reload.rs`).
+- [x] `ProgramReload`: worker-thread compile from source, newest submission wins,
+      instance re-encode by member name, failure keeps the live pipeline — the
+      reduced in-app design, replaced by the patch path below and removed.
 - [x] Fence-based deferred destruction primitive (`gpu/src/retire.rs`).
 
 ### H5.2 — Remaining
@@ -833,39 +832,55 @@ reuse, drop the leak and the frame compile):
         (two slots of one code, 1000 edits bounded, an undo compiles nothing),
         `program::tests`, `dsl/tests/view_shaders.rs` (a moved shader keeps its
         program and slot), `viso::shaders::tests` (painted again, no compile).
-- [ ] Off-frame candidate compile and atomic commit: staging a patch hands each new
-      program (one no window's renderer holds) with each window's
-      `program_compiler` to a compile thread; the patch commits at the first frame
-      boundary after every compile finished, adopting the programs into the
-      renderers before the views commit, so the slots install without compiling
-      and the old pipelines retire through the fence (§21). A program the backend
-      refuses NACKs the whole revision at `shader-compile` with the driver's
-      message logged — view, games and assets with it, last good kept (§19, §40);
-      the ACK goes out only once the commit installed what it carries. A window
-      opened meanwhile compiles on its first sync, as at startup.
-- [ ] Host validation: the host checks every shader a candidate paints with
-      through the WGSL naga validates (a codegen fault is a host diagnostic, not a
-      device error), packs the runtime's languages and sends them with the view in
-      one revision. Shaders are declared in the `.vs` file that paints with them —
-      a view compiles its file alone — so there is no external shader file to
-      watch.
-- [ ] Interface change: a brush's parameters and images are re-encoded from the
-      view's values against the new layout at commit (`encode_shader`), the
-      record's shape checked against the shader at compile time (`E2103`); a
-      brush whose ABI the backend cannot bind (`ProgramDesc::check_abi`) or a
-      value its layout cannot encode is a `gpu-validate` NACK before anything
-      commits, never a node left on its old program (§20).
-- [ ] `ProgramReload` (the reduced in-app design: compile from source on the
-      runtime, migrate instance bytes by member name) removed with its test once
-      the patch path covers it — the runtime compiles no shader source.
-- [ ] Tests (§62 Shader): valid pipeline, invalid candidate → old pipeline drawn
-      and the revision NACKed; interface change re-encodes instances; retired
-      pipeline destroyed only after its fence; Metal end to end.
+- [x] Off-frame candidate compile and atomic commit (`viso/src/hot_reload/compile.rs`):
+      staging a patch hands each program its views paint with that a window's
+      renderer does not hold (`Renderer::holds_program`), with that window's
+      `program_compiler` and surface format (`BrushProgram::desc`), to one compile
+      thread; the patch commits at the first frame boundary after its compiles
+      finished — patches behind it wait in order — and the commit hands each
+      program to its renderer (`adopt_program`) before the views commit, so the
+      frame's sync installs without compiling and the old pipelines retire
+      through the fence (§21). A program the backend refuses NACKs the whole
+      revision at `shader-compile` (`NACK_UNCOMPILABLE_SHADER`) after an error
+      line naming the file, the shader and the driver's message — view, games and
+      assets with it, the old pipeline still drawing (§19, §40). The ACK goes out
+      at the commit, which nothing refuses after the compiles. A window opened
+      meanwhile compiles on its first sync, as at startup; without a compile
+      thread the frame compiles, as it does a window's first.
+- [x] Host side: the host parses, checks and validates a shader's IR (`E8…` at
+      `shader-compile`, nothing sent), generates the code the build embeds — the
+      runtime's backend language and the reference interpreter's program — and
+      sends it inside the view patch, one revision for the file's view, games and
+      shaders; the backend validation is the runtime's compile, per target (§43).
+      Shaders are declared in the `.vs` file that paints with them — a view
+      compiles its file alone — so no external shader file is watched and no
+      separate shader patch exists.
+- [x] Interface change: a brush's parameters and images are encoded anew from the
+      view's values by the new layout at commit (`encode_shader`), the record's
+      shape checked against the shader at compile time (`E2103`); a program the
+      runtime's renderer cannot draw — no code in its backend's language, a layout
+      a draw cannot carry, more textures or samplers than a bind group holds
+      (`ProgramError::Bindings`) — is a `gpu-validate` NACK at staging
+      (`NACK_UNBINDABLE_SHADER`), before anything compiles or commits (§20).
+- [x] `ProgramReload` (the reduced in-app design: compile from source on the
+      runtime, migrate instance bytes by member name) removed with its Metal test —
+      the runtime compiles no shader source.
+- [x] Tests (§62 Shader), in the hot reload session's tests: an edit leaving the
+      shader as it was compiles nothing and keeps its slot and pipeline; a code edit
+      compiles on the compile thread, the frame installs it without compiling, the
+      old slot empties; an interface edit encodes the node's instance by the new
+      layout; a shader the renderer cannot draw is NACKed at staging with the view
+      kept; on Metal, a shader the backend refuses is NACKed with the view and the
+      pipeline kept and still drawing the old tint, and the next valid edit draws
+      the new one. A retired pipeline outliving its fence is the retire queue's
+      (`gpu/src/retire.rs` tests); pipelines bounded over 1000 edits is
+      `render/tests/program_draw.rs`.
 
 ### Done
 
-- [ ] Editing a shader in a running app swaps it at a frame boundary; a syntax error
-      never blanks the screen.
+- [x] Editing a shader in a running app swaps it at a frame boundary; a syntax error
+      never blanks the screen: a front-end error never leaves the host, a backend
+      refusal NACKs the revision with the last good drawing.
 
 ---
 

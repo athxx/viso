@@ -1884,7 +1884,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // elapsed. Frame the windows with work, so the frame polls the tasks
         // and fires the timers.
         #[cfg(feature = "hot-reload")]
-        self.hot_reload.wakeup(cx);
+        self.hot_reload.wakeup(cx, &self.windows);
         let now = cx.frame_now();
         // A decoded asset frames the windows that show assets.
         let decoded = self.assets.receive();

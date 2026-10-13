@@ -19,7 +19,6 @@ pub mod interp;
 pub mod layout;
 pub mod ops;
 pub mod package;
-pub mod reload;
 pub mod ty;
 mod validate;
 pub mod value;
@@ -33,7 +32,6 @@ pub use layout::{
 };
 pub use ops::{BinaryOp, Intrinsic, StageUse, UnaryOp};
 pub use package::{PackedBrush, PackedCode, ProgramCode, ShaderLang};
-pub use reload::{Live, Migration, ProgramReload, ReloadError, ReloadEvent, Swap};
 pub use ty::{Scalar, Texel, Ty};
 pub use validate::ProgramError;
 pub use value::{EncodeError, Lane, Value};

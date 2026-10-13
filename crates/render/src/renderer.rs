@@ -18,13 +18,13 @@ use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, IndexFormat, InlineUniforms, RenderPass, RenderTarget,
 };
 use viso_gpu::{
-    BindGroupDesc, Binding, BlendMode, BufferUsage, ColorDomain, ColorSpace, GpuBackend, LoadOp,
-    PipelineDesc, PipelineId, ProgramCode, ProgramCompiler, ProgramDesc, SamplerDesc, SurfaceId,
-    TextureDesc, TextureFormat, TextureId,
+    BindGroupDesc, Binding, BufferUsage, ColorDomain, ColorSpace, GpuBackend, LoadOp, PipelineDesc,
+    PipelineId, ProgramCode, ProgramCompiler, ProgramDesc, SamplerDesc, SurfaceId, TextureDesc,
+    TextureFormat, TextureId,
 };
 use viso_gpu::{BindGroupId, ProgramOf, SamplerId};
 
-use viso_shader::program::{BrushLayout, FRAGMENT_ENTRY, VERTEX_ENTRY};
+use viso_shader::program::BrushLayout;
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
 use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
@@ -2073,15 +2073,7 @@ impl Renderer {
         code: &'a ProgramCode,
         layout: &BrushLayout,
     ) -> ProgramDesc<'a> {
-        ProgramDesc {
-            label,
-            code,
-            vertex_entry: VERTEX_ENTRY,
-            fragment_entry: FRAGMENT_ENTRY,
-            color_format: self.surface_format,
-            blend: BlendMode::PremultipliedOver,
-            abi: layout.abi(),
-        }
+        crate::program::desc(label, code, layout, self.surface_format)
     }
 
     /// Empties `slot`, destroying its program's pipeline and buffer once

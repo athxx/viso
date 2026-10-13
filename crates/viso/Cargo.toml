@@ -73,6 +73,8 @@ vulkan = ["viso-gpu/vulkan"]
 viso-dsl = { workspace = true }
 # The shader goldens draw a program on Vulkan from the SPIR-V its code writes.
 viso-shader = { workspace = true, features = ["spirv"] }
+# The hot reload tests rewrite a packed shader's code.
+viso-ende = { workspace = true }
 # The CoreText provider's sfnt-reassembly tests parse their output to prove the
 # reassembled directory is valid, and the system-font smoke tests shape through
 # the resolved face. Only used in tests, so they stay dev-dependencies.
