@@ -342,9 +342,15 @@ fn mount<'a>(
             if let Some(behavior) = &behavior
                 && behavior.slot(source.symbol).is_some()
             {
+                // The cell the state's revisions tick in, which no restart
+                // carries: the state's value is the behavior's.
                 let local = format_ident!("__viso_t{}", tracked.len());
-                allocations
-                    .extend(quote! { let #local = cx.state(::viso_ui::StateValue::Int(0)); });
+                allocations.extend(quote! {
+                    let #local = cx.__macro_state(
+                        ::viso_ui::StateValue::Int(0),
+                        ::core::option::Option::None,
+                    );
+                });
                 idents.insert(source.symbol, local);
                 tracked.insert(source.symbol);
                 continue;
@@ -366,7 +372,13 @@ fn mount<'a>(
             }
         };
         let local = format_ident!("__viso_s{}", states.len());
-        allocations.extend(quote! { let #local = cx.state(#value); });
+        let (hi, lo) = (source.symbol.hi, source.symbol.lo);
+        allocations.extend(quote! {
+            let #local = cx.__macro_state(
+                #value,
+                ::core::option::Option::Some(::viso_ui::state::StateKey::from_parts(#hi, #lo)),
+            );
+        });
         idents.insert(source.symbol, local.clone());
         states.push((field, local));
     }

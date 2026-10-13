@@ -5,8 +5,10 @@
 //! check against its own build: per mounted view its state cells by durable
 //! key, its behavior's states by slot as plain data, and the focus, scroll
 //! offset, text and selection, and active child of each node that holds one,
-//! by its node in the view; per game its [`GameSnapshot`] bytes; and the
-//! bytes each extension the app registered captured. Where the windows were
+//! by its node in the view; per game its [`GameSnapshot`] bytes; per window
+//! the state cells its build allocated outside any view, by the key of
+//! where they were allocated; and the bytes each extension the app
+//! registered captured. Where the windows were
 //! travels beside it, for the host to launch the next process with.
 //! Never a pointer, handle, descriptor, socket, task or platform object: a
 //! closure or native handle a state holds is not captured, and that state
@@ -39,7 +41,7 @@ use crate::package::{read_state_value, write_state_value};
 use crate::regions::ItemKey;
 
 /// The version of the snapshot's wire form.
-pub const SNAPSHOT_VERSION: u32 = 1;
+pub const SNAPSHOT_VERSION: u32 = 2;
 
 const MAGIC: &[u8; 4] = b"VDS1";
 
@@ -64,7 +66,28 @@ pub struct DevSnapshot {
     pub revision: Revision,
     pub views: Vec<ViewSnapshot>,
     pub games: Vec<GameEntry>,
+    pub cells: Vec<WindowCells>,
     pub extensions: Vec<Extension>,
+}
+
+/// The state cells one window's build allocated outside any view mount: a
+/// pure-Rust `BuildCx::state` or a `component!` state.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WindowCells {
+    /// The window, by the order the app opened its windows in.
+    pub window: u32,
+    /// Each cell in allocation order.
+    pub cells: Vec<RustCell>,
+}
+
+/// One state cell allocated in Rust.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RustCell {
+    /// Where it was allocated: its call site, or its component state.
+    pub key: StateKey,
+    /// Its ordinal among the window's cells of the same key.
+    pub nth: u32,
+    pub value: StateValue,
 }
 
 /// One mount of a `.vs` file, as the processes before and after a restart
@@ -301,6 +324,17 @@ impl DevSnapshot {
             write_mount(&mut enc, &game.mount);
             enc.write_bytes(&game.snapshot);
         }
+        enc.write_varint(self.cells.len() as u64);
+        for window in &self.cells {
+            enc.write_varint(u64::from(window.window));
+            enc.write_varint(window.cells.len() as u64);
+            for cell in &window.cells {
+                enc.write_u64(cell.key.hi);
+                enc.write_u64(cell.key.lo);
+                enc.write_varint(u64::from(cell.nth));
+                write_state_value(&mut enc, cell.value);
+            }
+        }
         enc.write_varint(self.extensions.len() as u64);
         for extension in &self.extensions {
             write_string(&mut enc, &extension.name);
@@ -334,6 +368,18 @@ impl DevSnapshot {
                 snapshot: read_blob(dec, "game snapshot")?,
             })
         })?;
+        let cells = read_list(&mut dec, MAX_ENTRIES, "snapshot windows", |dec| {
+            Ok(WindowCells {
+                window: read_u32(dec)?,
+                cells: read_list(dec, MAX_ENTRIES, "snapshot rust cells", |dec| {
+                    Ok(RustCell {
+                        key: StateKey::from_parts(dec.read_u64()?, dec.read_u64()?),
+                        nth: read_u32(dec)?,
+                        value: read_state_value(dec)?,
+                    })
+                })?,
+            })
+        })?;
         let extensions = read_list(&mut dec, MAX_ENTRIES, "snapshot extensions", |dec| {
             Ok(Extension {
                 name: read_string(dec, MAX_NAME, "extension name")?,
@@ -347,6 +393,7 @@ impl DevSnapshot {
             revision,
             views,
             games,
+            cells,
             extensions,
         })
     }

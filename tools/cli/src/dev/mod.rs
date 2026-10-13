@@ -883,8 +883,11 @@ impl DevSession {
             "tool",
             &format!(
                 "restored {mounts} view mounts ({migrated} states carried, {reset} reset, {} \
-                 lost), {games} games, {} extensions ({} lost) in {:.1} ms",
+                 lost), {} Rust state cells ({} lost), {games} games, {} extensions ({} lost) \
+                 in {:.1} ms",
                 report.views_lost,
+                report.cells,
+                report.cells_lost,
                 report.extensions,
                 report.extensions_lost,
                 report.restore_us as f64 / 1000.0

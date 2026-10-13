@@ -74,11 +74,12 @@ use viso_runtime::RuntimeCx;
 use viso_ui::NodeId;
 use viso_ui::context::DevState;
 use viso_ui::state::{StateId, StateKey};
+use viso_ui::state_origin;
 use viso_ui::{AssetBytes, AssetPayload};
 use viso_view::dev::commit::dirty_counts;
 use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, restore, static_nodes};
 use viso_view::dev::snapshot::{
-    DevSnapshot, Extension, GameEntry, MountRef, ViewSnapshot, capture_view,
+    DevSnapshot, Extension, GameEntry, MountRef, RustCell, ViewSnapshot, WindowCells, capture_view,
 };
 use viso_view::dev::wire::{
     CommitCounts, DEV_RESTORE_ENV, DEV_WINDOW_ENV, DirtyCounts, Domain, Domains, FileCommit,
@@ -171,6 +172,11 @@ pub(crate) struct HotReloadSession {
     dev_states: Vec<DevState>,
     /// The windows that mounted a view so far.
     windows_mounted: u32,
+    /// Each window's cells allocated in Rust, outside its views, by where
+    /// they were allocated, in the order the windows opened.
+    cells: Vec<(WindowId, Vec<(StateId, StateKey)>)>,
+    /// Scratch the allocation queue drains into.
+    allocated: Vec<(StateId, StateKey)>,
     /// Whether the launch window was adopted.
     launched: bool,
     /// Where each window is on the desktop, read for the snapshot asked for.
@@ -282,10 +288,8 @@ impl HotReloadSession {
     /// runs.
     pub(crate) fn adopt(&mut self, waker: impl FnOnce() -> LoopWaker, ws: &mut WindowState) {
         take_mounts(&mut self.records);
+        state_origin::take_allocations(&mut self.allocated);
         let launch = !std::mem::replace(&mut self.launched, true);
-        if self.records.is_empty() && !launch {
-            return;
-        }
         if !self.started {
             self.started = true;
             let waker = waker();
@@ -296,6 +300,7 @@ impl HotReloadSession {
         }
         let Some(link) = &mut self.link else {
             self.records.clear();
+            self.allocated.clear();
             return;
         };
         let first = self.views.len();
@@ -356,6 +361,53 @@ impl HotReloadSession {
             self.restore_window(ws, first);
             self.windows_mounted += 1;
         }
+        self.adopt_cells(ws, first);
+    }
+
+    /// Keeps the cells `ws`'s build allocated outside the views it mounted,
+    /// `self.views[first..]`, and, restoring, gives each the value of the
+    /// snapshot's cell of the same window, key and ordinal when it holds the
+    /// same kind of value.
+    fn adopt_cells(&mut self, ws: &mut WindowState, first: usize) {
+        let views = &self.views[first..];
+        let mut cells = std::mem::take(&mut self.allocated);
+        cells.retain(|&(id, _)| {
+            !views
+                .iter()
+                .any(|view| view.cells.iter().any(|&(_, cell)| cell == id))
+        });
+        if let Some(restoring) = &mut self.restoring {
+            let started = Instant::now();
+            let window = self.cells.len() as u32;
+            if let Some(old) = restoring
+                .snapshot
+                .cells
+                .iter()
+                .find(|old| old.window == window)
+            {
+                let mut ordinals: Vec<(StateKey, u32)> = Vec::new();
+                for &(id, key) in &cells {
+                    let nth = next_key_ordinal(&mut ordinals, key);
+                    let Some(now) = ws.states.get(id) else {
+                        continue;
+                    };
+                    let value = old
+                        .cells
+                        .iter()
+                        .find(|cell| cell.key == key && cell.nth == nth)
+                        .map(|cell| cell.value)
+                        .filter(|value| {
+                            std::mem::discriminant(value) == std::mem::discriminant(&now)
+                        });
+                    if let Some(value) = value {
+                        ws.states.set(id, value);
+                        restoring.report.cells += 1;
+                    }
+                }
+            }
+            restoring.spent += started.elapsed();
+        }
+        self.cells.push((ws.window, cells));
     }
 
     /// Whether the host asked for a snapshot, which the next frame boundary
@@ -601,6 +653,8 @@ impl HotReloadSession {
         };
         let mut report = restoring.report;
         report.views_lost = restoring.taken.iter().filter(|&&taken| !taken).count() as u32;
+        let held: usize = restoring.snapshot.cells.iter().map(|w| w.cells.len()).sum();
+        report.cells_lost = (held as u32).saturating_sub(report.cells);
         report.restore_us = micros(restoring.spent);
         if let Some(link) = &mut self.link {
             link.send(RuntimeMessage::Restored(report));
@@ -668,6 +722,30 @@ impl HotReloadSession {
             }
             if !ordinals.is_empty() {
                 window += 1;
+            }
+        }
+        // Each window's Rust cells, by its order among the windows open.
+        let open = windows
+            .iter()
+            .filter_map(|ws| Some((ws, &self.cells.iter().find(|(id, _)| *id == ws.window)?.1)));
+        for (window, (ws, cells)) in open.enumerate() {
+            let mut ordinals: Vec<(StateKey, u32)> = Vec::new();
+            let cells = cells
+                .iter()
+                .filter_map(|&(id, key)| {
+                    let nth = next_key_ordinal(&mut ordinals, key);
+                    Some(RustCell {
+                        key,
+                        nth,
+                        value: ws.states.get(id)?,
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !cells.is_empty() {
+                snapshot.cells.push(WindowCells {
+                    window: window as u32,
+                    cells,
+                });
             }
         }
         self.positions.clear();
@@ -879,6 +957,7 @@ impl HotReloadSession {
     /// Drops the mounts of a closed window.
     pub(crate) fn close(&mut self, window: WindowId) {
         self.views.retain(|view| view.window != window);
+        self.cells.retain(|&(cells, _)| cells != window);
     }
 
     /// Commits the staged patches in revision order at the frame boundary
@@ -889,6 +968,7 @@ impl HotReloadSession {
     pub(crate) fn reload(&mut self, windows: &mut [WindowState], assets: &mut Assets) {
         take_mounts(&mut self.records);
         self.records.clear();
+        state_origin::clear_allocations();
         self.finish_restore();
         let ready = self.patches.iter().take_while(|p| !p.compiling).count();
         if ready > 0 {
@@ -1505,6 +1585,21 @@ fn tally(
                 owner: reset.owner,
                 code: reset.code.to_owned(),
             });
+        }
+    }
+}
+
+/// The next ordinal of a cell of `key` among `ordinals`, the cells counted
+/// so far.
+fn next_key_ordinal(ordinals: &mut Vec<(StateKey, u32)>, key: StateKey) -> u32 {
+    match ordinals.iter_mut().find(|(k, _)| *k == key) {
+        Some((_, next)) => {
+            *next += 1;
+            *next - 1
+        }
+        None => {
+            ordinals.push((key, 1));
+            0
         }
     }
 }
@@ -3370,6 +3465,55 @@ mod tests {
             (0, 1, 0)
         );
         assert!(session.restoring.is_none(), "the first frame ends it");
+    }
+
+    #[test]
+    fn a_restarted_window_takes_back_the_cells_its_rust_allocated() {
+        // Two cells from one call site, one from another, beside a view whose
+        // own cells the view's restore carries.
+        let ids = RefCell::new(Vec::new());
+        let build = |cx: &mut BuildCx<'_>, flag: StateValue| {
+            let mut allocated = Vec::new();
+            for _ in 0..2 {
+                allocated.push(cx.state(StateValue::Int(0)));
+            }
+            allocated.push(cx.state(flag));
+            *ids.borrow_mut() = allocated;
+            mount_counter(cx)
+        };
+        let mut old = mounted(|cx| build(cx, StateValue::Bool(false)));
+        let (mut session, mut host, _) = linked(Some(&mut old));
+        let set = |ws: &mut WindowState, at: usize, value| {
+            let id = ids.borrow()[at];
+            ws.states.set(id, value);
+        };
+        set(&mut old, 0, StateValue::Int(5));
+        set(&mut old, 1, StateValue::Int(6));
+        set(&mut old, 2, StateValue::Bool(true));
+        let (bytes, _) = snapshot_of(&mut session, &mut host, std::slice::from_mut(&mut old));
+        let snapshot = DevSnapshot::decode(&bytes).expect("the snapshot decodes");
+        let [window] = &snapshot.cells[..] else {
+            panic!("{:?}", snapshot.cells);
+        };
+        assert_eq!(window.cells.len(), 3, "not the view's: {:?}", window.cells);
+        assert_eq!(
+            window.cells.iter().map(|cell| cell.nth).collect::<Vec<_>>(),
+            [0, 1, 0]
+        );
+
+        // The new build allocates its flag as a number: that one starts over.
+        let mut new = mounted(|cx| build(cx, StateValue::Int(0)));
+        let (mut session, mut host) =
+            restoring(&mut new, Some(&bytes), UiPatch::default(), Vec::new());
+        let value = |at: usize| new.states.get(ids.borrow()[at]);
+        assert_eq!(value(0), Some(StateValue::Int(5)));
+        assert_eq!(value(1), Some(StateValue::Int(6)));
+        assert_eq!(value(2), Some(StateValue::Int(0)), "another kind of value");
+        session.reload(std::slice::from_mut(&mut new), &mut Assets::default());
+        let Some(RuntimeMessage::Restored(report)) = host.read() else {
+            panic!("no restore report");
+        };
+        assert_eq!((report.cells, report.cells_lost), (2, 1));
     }
 
     #[test]

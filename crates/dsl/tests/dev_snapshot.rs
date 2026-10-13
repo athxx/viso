@@ -20,7 +20,9 @@ use viso_ui::{
 };
 use viso_view::ViewHost;
 use viso_view::dev::commit::{CommitReport, restore};
-use viso_view::dev::snapshot::{DevSnapshot, MountRef, ViewSnapshot, capture_view};
+use viso_view::dev::snapshot::{
+    DevSnapshot, MountRef, RustCell, ViewSnapshot, WindowCells, capture_view,
+};
 
 const SCROLLED: &str = "width: 100dp; height: 50dp;";
 const TALL: &str = "width: 100dp; height: 400dp;";
@@ -190,10 +192,19 @@ impl Live {
     }
 }
 
-/// `snapshot` as the bytes between the processes, read back.
+/// `snapshot` as the bytes between the processes, read back, beside a
+/// window's Rust cells.
 fn carried(snapshot: ViewSnapshot) -> ViewSnapshot {
     let whole = DevSnapshot {
         views: vec![snapshot],
+        cells: vec![WindowCells {
+            window: 1,
+            cells: vec![RustCell {
+                key: StateKey::from_parts(3, 4),
+                nth: 1,
+                value: StateValue::Float(2.5),
+            }],
+        }],
         ..DevSnapshot::default()
     };
     let bytes = whole.encode();

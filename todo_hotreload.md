@@ -1002,9 +1002,13 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
       (`__schema_fingerprint!`, no longer per mount record), the launch window
       reports its mounts even when empty, and a snapshot request asks every
       window for a frame.
-- [ ] Rust-side state cells (`ui!`, `component!`, `AppCx` states) carried across a
-      restart: they have no durable key yet, so a pure-Rust counter restarts from
-      its initializer.
+- [x] Rust-side state cells (`ui!`, `component!`, `AppCx` states) carried across a
+      restart: `BuildCx::state` keys a cell by its call site (`#[track_caller]` under
+      `hot-reload`), a `component!` state by its symbol, with its ordinal among the
+      window's cells of that key; the snapshot carries them per window (version 2)
+      and the new process gives each its value when the kind of value matches; a
+      moved call site starts over instead of taking another cell's value;
+      `Restored` counts them (protocol 14).
 - [x] Integration test (§62 Rust): app with state, edit Rust, assert old app runs
       until the build succeeds, warm restart, assert state restored; a failing build
       leaves the old app running (`tools/cli/tests/warm_restart.rs`, ignored: it
@@ -1021,7 +1025,7 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
 
 - [x] Editing Rust code in a running desktop app rebuilds in the background, then
       restarts it with its counters, text fields, focus and window geometry back
-      (the views' state; Rust-side state cells are the open item above).
+      (the views' state and the cells allocated in Rust).
 
 ---
 

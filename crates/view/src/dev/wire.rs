@@ -48,7 +48,7 @@ use super::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 13;
+pub const DEV_PROTOCOL_VERSION: u16 = 14;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -775,6 +775,11 @@ pub struct RestoreReport {
     /// longer registers.
     pub extensions: u32,
     pub extensions_lost: u32,
+    /// The state cells allocated in Rust that took their value back, and
+    /// those of the snapshot no cell took: its call site moved, its kind of
+    /// value changed, or the window it was in did not open.
+    pub cells: u32,
+    pub cells_lost: u32,
     pub restore_us: u64,
 }
 
@@ -1690,7 +1695,13 @@ impl Message for RuntimeMessage {
                     enc.write_varint(u64::from(game.reset));
                     enc.write_bool(game.degraded);
                 }
-                for count in [report.views_lost, report.extensions, report.extensions_lost] {
+                for count in [
+                    report.views_lost,
+                    report.extensions,
+                    report.extensions_lost,
+                    report.cells,
+                    report.cells_lost,
+                ] {
                     enc.write_varint(u64::from(count));
                 }
                 enc.write_varint(report.restore_us);
@@ -1844,6 +1855,8 @@ impl Message for RuntimeMessage {
                     views_lost: read_u32(dec)?,
                     extensions: read_u32(dec)?,
                     extensions_lost: read_u32(dec)?,
+                    cells: read_u32(dec)?,
+                    cells_lost: read_u32(dec)?,
                     restore_us: dec.read_varint()?,
                 }))
             }
@@ -2319,6 +2332,8 @@ mod tests {
                 views_lost: 1,
                 extensions: 2,
                 extensions_lost: 1,
+                cells: 3,
+                cells_lost: 1,
                 restore_us: 3400,
             }),
         ]

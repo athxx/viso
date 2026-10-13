@@ -33,6 +33,8 @@ pub mod reactive;
 pub mod semantics;
 pub mod shader;
 pub mod state;
+#[cfg(feature = "hot-reload")]
+pub mod state_origin;
 pub mod structure;
 pub mod style;
 pub mod suspend;

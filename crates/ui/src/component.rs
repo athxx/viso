@@ -29,7 +29,7 @@ use crate::node::{NodeArena, NodeId};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
 use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 use crate::shader::ShaderSlots;
-use crate::state::{StateId, StateStore, StateValue};
+use crate::state::{StateId, StateKey, StateStore, StateValue};
 use crate::style::{BoxStyle, InteractionStyle, StyleId};
 use crate::task::{Continuation, TaskFuture, TaskId, TaskOps};
 use crate::timer::TimerRequest;
@@ -3905,11 +3905,42 @@ impl<'a> BuildCx<'a> {
     /// with [`BuildCx::with_reactive`]; a node-only cx has no state store and
     /// this panics (a facade-construction invariant — a user only ever receives
     /// a reactive cx, through `Application::build`).
+    ///
+    /// Under `viso run` the cell carries across a Rust warm restart, keyed by
+    /// where it is allocated: one whose call site an edit moved starts from
+    /// `initial`.
+    #[cfg_attr(feature = "hot-reload", track_caller)]
     pub fn state(&mut self, initial: StateValue) -> StateId {
-        self.states
+        let id = self
+            .states
             .as_mut()
             .expect("state() requires a with_reactive BuildCx")
-            .alloc(initial)
+            .alloc(initial);
+        #[cfg(feature = "hot-reload")]
+        crate::state_origin::allocated(
+            id,
+            crate::state_origin::site_key(std::panic::Location::caller()),
+        );
+        id
+    }
+
+    /// A cell a `component!` or `view!` expansion allocates: one of the
+    /// component's states under its symbol's `key`, which carries across a
+    /// Rust warm restart, or, with `None`, a cell only the expansion reads.
+    #[doc(hidden)]
+    pub fn __macro_state(&mut self, initial: StateValue, key: Option<StateKey>) -> StateId {
+        let id = self
+            .states
+            .as_mut()
+            .expect("state() requires a with_reactive BuildCx")
+            .alloc(initial);
+        #[cfg(feature = "hot-reload")]
+        if let Some(key) = key {
+            crate::state_origin::allocated(id, key);
+        }
+        #[cfg(not(feature = "hot-reload"))]
+        let _ = key;
+        id
     }
 
     /// Wire a state cell to a node: when the cell changes, the frame's flush
