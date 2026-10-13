@@ -16,6 +16,11 @@
 //! against the pool's shadow like every built-in family: an unchanged frame
 //! uploads nothing.
 //!
+//! The clock a brush reads is a uniform, written into each draw as its command
+//! is built, so a frame that only moves the clock uploads no instance; the
+//! lowering counts the boxes of programs reading it, which is what keeps a
+//! window drawing frames.
+//!
 //! [`ShaderDraw`]: crate::primitive::ShaderDraw
 
 use viso_gpu::backend::{DrawCommand, Geometry, InlineUniforms};
@@ -122,6 +127,11 @@ pub(crate) struct ProgramTable {
     slots: Vec<Option<Installed>>,
     /// The backend's instance-offset alignment, in words.
     align_words: usize,
+    /// The seconds since the window opened, written into the draws of the
+    /// programs reading `time`.
+    time: f32,
+    /// This frame's boxes of programs reading `time`.
+    clock_instances: u32,
 }
 
 impl ProgramTable {
@@ -131,7 +141,19 @@ impl ProgramTable {
         ProgramTable {
             slots: Vec::new(),
             align_words: (align as usize / 4).max(1),
+            time: 0.0,
+            clock_instances: 0,
         }
+    }
+
+    /// Sets the clock the next frame's draws read.
+    pub(crate) fn set_time(&mut self, seconds: f32) {
+        self.time = seconds;
+    }
+
+    /// This frame's boxes of programs reading `time`.
+    pub(crate) fn clock_instances(&self) -> u32 {
+        self.clock_instances
     }
 
     /// Installs `pipeline`, laid out by `layout`, in `slot`, destroying the
@@ -208,6 +230,7 @@ impl ProgramTable {
         for installed in self.slots.iter_mut().flatten() {
             installed.scratch.clear();
         }
+        self.clock_instances = 0;
     }
 
     /// The byte offset where an instance goes in a buffer whose instances end
@@ -260,6 +283,7 @@ impl ProgramTable {
         scratch[word(layout.rect_pos, 1)] = bits(pos[1]);
         scratch[word(layout.rect_size, 0)] = bits(size[0]);
         scratch[word(layout.rect_size, 1)] = bits(size[1]);
+        self.clock_instances += u32::from(layout.reads_time());
         Some((base * 4) as u32)
     }
 
@@ -294,7 +318,9 @@ impl ProgramTable {
             .as_ref()
             .expect("a program segment names an installed program");
         let mut uniforms = [0u8; InlineUniforms::MAX];
-        installed.layout.write_uniforms(&mut uniforms, viewport);
+        installed
+            .layout
+            .write_uniforms(&mut uniforms, viewport, self.time);
         DrawCommand {
             pipeline: installed.pipeline,
             bind_group: None,
@@ -339,6 +365,7 @@ mod tests {
             rect_size: 8,
             uniform_size: 16,
             viewport_size: 0,
+            time: None,
             params: Vec::new(),
         }
     }

@@ -7,6 +7,10 @@
 //! - `instance rect_pos: Vec2F32` and `instance rect_size: Vec2F32` — the
 //!   box, in target pixels from the target's top-left corner.
 //!
+//! A brush may also declare `uniform time: F32`, the seconds since its window
+//! opened, which the renderer writes into every draw; a window keeps drawing
+//! frames while a brush reading it is on screen, and only then.
+//!
 //! Every other instance member is a parameter, of a kind a host value
 //! converts into ([`ParamKind`]). A brush declares no other uniform, since
 //! nothing on the host would write it, and binds no texture or sampler.
@@ -25,6 +29,8 @@ use super::{EncodeError, Program, ProgramError, Span, Ty};
 
 /// The uniform the renderer writes the target size into.
 pub const VIEWPORT_SIZE: &str = "viewport_size";
+/// The uniform the renderer writes the window's clock into.
+pub const TIME: &str = "time";
 /// The instance member the renderer writes the box's position into.
 pub const RECT_POS: &str = "rect_pos";
 /// The instance member the renderer writes the box's size into.
@@ -161,6 +167,9 @@ pub struct BrushLayout {
     pub uniform_size: u32,
     /// The byte offset of `viewport_size` in the uniform block.
     pub viewport_size: u32,
+    /// The byte offset of `time` in the uniform block, when the brush reads
+    /// the clock.
+    pub time: Option<u32>,
     /// The parameters, in declaration order.
     pub params: Vec<BrushParam>,
 }
@@ -189,13 +198,27 @@ impl BrushLayout {
         };
 
         let mut viewport_size = None;
+        let mut time = None;
         for (i, u) in program.uniforms.iter().enumerate() {
-            if &*u.name != VIEWPORT_SIZE {
+            if &*u.name == TIME {
+                if u.ty == Ty::F32 {
+                    time = leaf(&interface.uniforms.fields, i);
+                } else {
+                    error(
+                        u.span,
+                        format!(
+                            "`{TIME}` is the seconds since the window opened, an `F32`, not a \
+                             `{}`",
+                            program.spell(u.ty)
+                        ),
+                    );
+                }
+            } else if &*u.name != VIEWPORT_SIZE {
                 error(
                     u.span,
                     format!(
-                        "a brush declares no uniform but `{VIEWPORT_SIZE}`, which the renderer \
-                         writes; make `{}` an `instance` parameter",
+                        "a brush declares no uniform but `{VIEWPORT_SIZE}` and `{TIME}`, which \
+                         the renderer writes; make `{}` an `instance` parameter",
                         u.name
                     ),
                 );
@@ -306,6 +329,7 @@ impl BrushLayout {
                 rect_size,
                 uniform_size: interface.uniforms.size,
                 viewport_size,
+                time,
                 params,
             }),
             _ => Err(errors),
@@ -395,14 +419,23 @@ impl BrushLayout {
         ParamValue::Vec2F32(size).write(&mut instance[self.rect_size as usize..]);
     }
 
+    /// Whether the brush reads the clock, so what it draws moves with
+    /// nothing else changing.
+    pub fn reads_time(&self) -> bool {
+        self.time.is_some()
+    }
+
     /// Writes the uniform block of a draw into a target of `viewport`
-    /// pixels.
+    /// pixels, `time` seconds after its window opened.
     ///
     /// # Panics
     ///
     /// When `out` is shorter than [`uniform_size`](Self::uniform_size).
-    pub fn write_uniforms(&self, out: &mut [u8], viewport: [f32; 2]) {
+    pub fn write_uniforms(&self, out: &mut [u8], viewport: [f32; 2], time: f32) {
         ParamValue::Vec2F32(viewport).write(&mut out[self.viewport_size as usize..]);
+        if let Some(at) = self.time {
+            ParamValue::F32(time).write(&mut out[at as usize..]);
+        }
     }
 }
 
@@ -451,7 +484,7 @@ mod tests {
         );
         let l = layout(&p).expect("a brush");
         assert_eq!((l.stride, l.rect_pos, l.rect_size), (56, 16, 28));
-        assert_eq!((l.uniform_size, l.viewport_size), (16, 0));
+        assert_eq!((l.uniform_size, l.viewport_size, l.time), (16, 0, None));
         let kinds: Vec<_> = l
             .params
             .iter()
@@ -506,11 +539,36 @@ mod tests {
 
         assert_eq!(l.abi(), interface.abi());
         let mut uniforms = vec![0; l.uniform_size as usize];
-        l.write_uniforms(&mut uniforms, [640.0, 480.0]);
+        l.write_uniforms(&mut uniforms, [640.0, 480.0], 3.0);
         assert_eq!(
             interface.uniforms.decode(&p, &p.uniforms, &uniforms),
             [Value::floats(&[640.0, 480.0])]
         );
+    }
+
+    #[test]
+    fn a_brush_reading_the_clock_gets_it_written_beside_the_viewport() {
+        let p = brush(
+            vec![binding(TIME, Ty::F32), binding(VIEWPORT_SIZE, Ty::VEC2)],
+            vec![binding(RECT_POS, Ty::VEC2), binding(RECT_SIZE, Ty::VEC2)],
+        );
+        let l = layout(&p).expect("a brush");
+        assert!(l.reads_time());
+        let interface = p.interface();
+        let mut uniforms = vec![0; l.uniform_size as usize];
+        l.write_uniforms(&mut uniforms, [640.0, 480.0], 2.5);
+        assert_eq!(
+            interface.uniforms.decode(&p, &p.uniforms, &uniforms),
+            [Value::f32(2.5), Value::floats(&[640.0, 480.0])]
+        );
+
+        let wrong = brush(
+            vec![binding(VIEWPORT_SIZE, Ty::VEC2), binding(TIME, Ty::VEC2)],
+            vec![binding(RECT_POS, Ty::VEC2), binding(RECT_SIZE, Ty::VEC2)],
+        );
+        let errors = layout(&wrong).expect_err("not a brush");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].message.contains("an `F32`, not a `Vec2F32`"));
     }
 
     #[test]
@@ -530,7 +588,7 @@ mod tests {
         assert!(missing[1].1.contains("`instance rect_pos: Vec2F32;`"));
 
         let mut p = brush(
-            vec![binding(VIEWPORT_SIZE, Ty::VEC4), binding("time", Ty::F32)],
+            vec![binding(VIEWPORT_SIZE, Ty::VEC4), binding("scale", Ty::F32)],
             vec![
                 binding(RECT_POS, Ty::VEC2),
                 binding(RECT_SIZE, Ty::F32),
@@ -542,10 +600,10 @@ mod tests {
             .push(binding("image", Ty::Texture(Texel::Vec4F32)));
         let wrong = codes(&p);
         let at: Vec<u32> = wrong.iter().map(|(at, _)| *at).collect();
-        // viewport_size, time, rect_size, basis, mask, image; nothing missing.
-        assert_eq!(at, [13, 4, 9, 5, 4, 5], "{wrong:?}");
+        // viewport_size, scale, rect_size, basis, mask, image; nothing missing.
+        assert_eq!(at, [13, 5, 9, 5, 4, 5], "{wrong:?}");
         assert!(wrong[0].1.contains("not a `Vec4F32`"));
-        assert!(wrong[1].1.contains("make `time` an `instance` parameter"));
+        assert!(wrong[1].1.contains("make `scale` an `instance` parameter"));
         assert!(wrong[3].1.contains("`basis`, a `Mat2F32`"));
         assert!(wrong[4].1.contains("a `Vec2U32`"));
     }

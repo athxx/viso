@@ -1,9 +1,11 @@
 import viso::math::Vec2F32;
 
-// Rings of `tint` around `center`, `rings` of them across the box, fading
-// out toward its edge.
+// Rings of `tint` spreading out from `center`, `rings` of them across the
+// box, fading out toward its edge. Reading `time` keeps the window drawing
+// while the ripples are on screen.
 shader Ripple {
     uniform viewport_size: Vec2F32;
+    uniform time: F32;
     instance rect_pos: Vec2F32;
     instance rect_size: Vec2F32;
     instance tint: ColorLinear;
@@ -21,7 +23,7 @@ shader Ripple {
 
     fragment() -> ColorLinear {
         let d = distance(local, center);
-        let wave = 0.5 + 0.5 * cos(d * rings * 6.2831855);
+        let wave = 0.5 + 0.5 * cos((d * rings - time * 0.5) * 6.2831855);
         let fade = 1.0 - smoothstep(0.3, 0.5, d);
         let k = wave * fade;
         return ColorLinear(tint.r * k, tint.g * k, tint.b * k, 1.0);

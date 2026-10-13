@@ -1106,6 +1106,7 @@ mod tests {
                 rect_size: 8,
                 uniform_size: 16,
                 viewport_size: 0,
+                time: None,
                 params: Vec::new(),
             },
             code: Vec::new(),

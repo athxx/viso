@@ -447,7 +447,7 @@ export shader RoundedRect {
         instances.extend_from_slice(&instance);
     }
     let mut uniforms = vec![0; brush.uniform_size as usize];
-    brush.write_uniforms(&mut uniforms, [W as f32, H as f32]);
+    brush.write_uniforms(&mut uniforms, [W as f32, H as f32], 0.0);
     let encoded = Encoded {
         program,
         interface,

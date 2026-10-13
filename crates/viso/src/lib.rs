@@ -647,6 +647,12 @@ struct WindowState {
     /// What the window's renderer holds of the programs its nodes paint
     /// with.
     shaders: shaders::InstalledShaders,
+    /// The instant of the window's first submitted frame, which the clock
+    /// its brushes read counts from.
+    clock_origin: Option<viso_runtime::Instant>,
+    /// Whether the frame last uploaded draws a brush reading the clock, which
+    /// keeps the window drawing frames, as an animation does.
+    draws_clock: bool,
     /// The facade's font stack + glyph atlas. Shapes each node's `TextRequest`
     /// into a `Content::Text` payload (`viso-ui` holds no font stack). `None`
     /// until launch, when a GPU backend exists to allocate the atlas; the app's
@@ -786,6 +792,8 @@ impl WindowState {
             awaiting_first_frame: true,
             assets_served: 0,
             shaders: shaders::InstalledShaders::default(),
+            clock_origin: None,
+            draws_clock: false,
             text: None,
             text_scratch: Vec::new(),
             text_sources: std::collections::HashMap::new(),
@@ -1048,6 +1056,7 @@ impl WindowState {
         !self.animations.is_empty()
             || self.store.is_transitioning()
             || self.store.frame_clients_want_frame()
+            || self.draws_clock
     }
 
     /// Whether the text worker still owes results a later frame commits.
@@ -2363,6 +2372,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 for ws in &mut self.windows {
                     if let Some(gpu) = &mut ws.gpu {
                         gpu.renderer.upload(&mut gpu.backend, &ws.primitives);
+                        // A brush reading the clock on screen draws something
+                        // new every frame; one culled or gone stops the beat.
+                        ws.draws_clock = gpu.renderer.reads_time();
                     }
                 }
             }
@@ -2375,6 +2387,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // covered and fragments still rasterize at physical density.
                     let scale = ws.dpi.max(1.0);
                     if let Some(gpu) = &mut ws.gpu {
+                        // The clock brushes read: this frame's instant, from the
+                        // window's first frame, so a headless clock stays
+                        // deterministic and a reload keeps it running.
+                        let now = cx.frame_now();
+                        let origin = *ws.clock_origin.get_or_insert(now);
+                        gpu.renderer
+                            .set_time(now.saturating_duration_since(origin).as_secs_f32());
                         let (w, h) = gpu.size;
                         let viewport = [w as f32 / scale, h as f32 / scale];
                         // One-shot proof the first frame reached the GPU, gated on

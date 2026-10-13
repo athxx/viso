@@ -23,19 +23,25 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_gpu::{
-    GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureDesc, TextureFormat, TextureId,
+    GpuBackend, HeadlessRaster, RawWindowHandle, ShaderLang, SurfaceId, TextureDesc, TextureFormat,
+    TextureId,
 };
 use viso_render::{
     AnalyticCapsule, AnalyticCapsuleInstance, AnalyticEllipse, AnalyticEllipseInstance,
     AnalyticLine, AnalyticLineInstance, AnalyticRRect, AnalyticRRectInstance, AnalyticShadow,
     Blend, Border, ColorEffect, Corners, DashPattern, ExtendMode, FrameStats, GlyphLane,
     GlyphRunDraw, Gradient, GradientKind, GradientStop, ImageDraw, InterpolationSpace, LayerClip,
-    LineCap, LineJoin, Path, PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, ShadowShape,
-    SpriteRegion, Stroke, test_glyphs, test_scene, test_texture,
+    LineCap, LineJoin, Path, PathCmd, Point, Primitive, ProgramSlot, Quad, Rect, Renderer, Rgba,
+    ShaderDraw, ShadowShape, SpriteRegion, Stroke, test_glyphs, test_scene, test_texture,
+};
+use viso_shader::program::{
+    BinaryOp, Binding, Block, BrushLayout, Builtin, Expr, ExprKind, Function, Intrinsic, Local,
+    Program, Span, Stage, Stmt, Ty, code,
 };
 
 /// A global allocator that counts heap allocations while `ARMED`, so a steady
@@ -3497,8 +3503,155 @@ fn assert_steady_state_is_allocation_free() {
     assert!(instances > 0, "the test scene must emit instances");
 }
 
+/// Boxes of a brush reading the clock, beside a [`GRID_1K`] quad grid.
+const CLOCK_BOXES: usize = 64;
+
+/// A brush filling its box red as far as the clock reads: no parameter but
+/// the box, `uniform time: F32` beside the viewport.
+fn clock_brush() -> Program {
+    let e = Expr::new;
+    let binding = |name: &str, ty| Binding {
+        name: name.into(),
+        ty,
+        span: Span::default(),
+    };
+    let unit = e(
+        Ty::VEC2,
+        ExprKind::Intrinsic(Intrinsic::QuadVertex, vec![e(Ty::U32, ExprKind::Local(0))]),
+    );
+    let position = e(
+        Ty::VEC2,
+        ExprKind::Binary(
+            BinaryOp::Add,
+            Box::new(e(Ty::VEC2, ExprKind::Instance(0))),
+            Box::new(e(
+                Ty::VEC2,
+                ExprKind::Binary(
+                    BinaryOp::Mul,
+                    Box::new(unit),
+                    Box::new(e(Ty::VEC2, ExprKind::Instance(1))),
+                ),
+            )),
+        ),
+    );
+    let clip = e(
+        Ty::VEC4,
+        ExprKind::Intrinsic(
+            Intrinsic::ToClip,
+            vec![position, e(Ty::VEC2, ExprKind::Uniform(0))],
+        ),
+    );
+    let red = e(
+        Ty::VEC4,
+        ExprKind::Construct(vec![
+            e(Ty::F32, ExprKind::Uniform(1)),
+            e(Ty::F32, ExprKind::F32(0.0)),
+            e(Ty::F32, ExprKind::F32(0.0)),
+            e(Ty::F32, ExprKind::F32(1.0)),
+        ]),
+    );
+    let program = Program {
+        name: "Clock".into(),
+        uniforms: vec![binding("viewport_size", Ty::VEC2), binding("time", Ty::F32)],
+        instance: vec![
+            binding("rect_pos", Ty::VEC2),
+            binding("rect_size", Ty::VEC2),
+        ],
+        vertex: Some(Function {
+            name: "vertex".into(),
+            stage: Some(Stage::Vertex),
+            params: 1,
+            builtins: vec![Builtin::VertexId],
+            ret: Ty::VertexOutput,
+            locals: vec![Local {
+                name: "vertex_id".into(),
+                ty: Ty::U32,
+                mutable: false,
+            }],
+            body: Block(vec![Stmt::Return(Some(e(
+                Ty::VertexOutput,
+                ExprKind::Construct(vec![clip]),
+            )))]),
+            span: Span::default(),
+        }),
+        fragment: Some(Function {
+            name: "fragment".into(),
+            stage: Some(Stage::Fragment),
+            params: 0,
+            builtins: Vec::new(),
+            ret: Ty::VEC4,
+            locals: Vec::new(),
+            body: Block(vec![Stmt::Return(Some(red))]),
+            span: Span::default(),
+        }),
+        ..Program::default()
+    };
+    program.validate().expect("a valid program");
+    program
+}
+
+/// A [`GRID_1K`] quad grid with [`CLOCK_BOXES`] 4x4 boxes of [`clock_brush`]
+/// over it, installed in slot 0.
+fn setup_clock_scene() -> Harness {
+    let mut h = setup_grid(GRID_1K);
+    let program = clock_brush();
+    let interface = program.interface();
+    let layout = BrushLayout::new(&program, &interface).expect("a brush");
+    let cpu = code(&program, &interface, ShaderLang::None).expect("CPU code");
+    h.renderer
+        .install_program(&mut h.gpu, ProgramSlot(0), "Clock", &cpu, layout.clone())
+        .expect("installs");
+    let params: Arc<[u8]> = vec![0; layout.stride as usize].into();
+    for i in 0..CLOCK_BOXES {
+        let (col, row) = ((i % 8) as f32, (i / 8) as f32);
+        h.scene.push(Primitive::Shader(ShaderDraw {
+            rect: Rect {
+                x: col * 8.0,
+                y: row * 8.0,
+                w: 4.0,
+                h: 4.0,
+            },
+            program: ProgramSlot(0),
+            params: Arc::clone(&params),
+        }));
+    }
+    h
+}
+
+/// A frame that only moves the clock re-uploads nothing and allocates no
+/// GPU resource: the clock rides each draw's uniforms, and every box drawn
+/// counts toward keeping frames coming.
+fn assert_clock_frames_upload_nothing() {
+    let mut h = setup_clock_scene();
+    frame(&mut h);
+    frame(&mut h);
+    let buffers = h.gpu.buffer_count();
+    for i in 0..8 {
+        h.renderer.set_time(i as f32 / 60.0);
+        h.renderer.upload(&mut h.gpu, &h.scene);
+        let stats = h.renderer.frame_stats();
+        assert_eq!(
+            (
+                stats.uploaded_ranges,
+                stats.gpu_upload_bytes,
+                stats.dirty_primitives
+            ),
+            (0, 0, 0),
+            "frame {i}: a clock-only frame uploads nothing"
+        );
+        assert_eq!(stats.clock_instances, CLOCK_BOXES as u32);
+        assert!(h.renderer.reads_time());
+        h.renderer
+            .submit(&mut h.gpu, h.surface, CLEAR, [W as f32, H as f32]);
+        assert_eq!(h.gpu.buffer_count(), buffers, "frame {i}: no buffer grows");
+    }
+}
+
 fn bench_steady_state(c: &mut Criterion) {
     assert_steady_state_is_allocation_free();
+    // The clock a brush reads moves without an upload: a frame that only
+    // advances it costs what an unchanged frame costs.
+    assert_clock_frames_upload_nothing();
     // D0.4 gate: the persistent data path holds a local change to a local upload
     // (§9.1) and a scroll to the transform plane (§8.7), at 10k tiles.
     assert_hover_uploads_one_range();
@@ -3988,6 +4141,30 @@ fn bench_steady_state(c: &mut Criterion) {
     });
     c.bench_function("glass_screen_frame", |b| {
         b.iter(|| frame(black_box(&mut glass)));
+    });
+
+    // What a frame of brushes reading the clock costs on the CPU: the still
+    // row draws the same scene with the clock held, the moving row advances
+    // it every frame; the two match when the clock costs no upload.
+    let mut clock = setup_clock_scene();
+    frame(&mut clock);
+    frame(&mut clock);
+    c.bench_function("clock_brushes_upload_still", |b| {
+        b.iter(|| {
+            clock
+                .renderer
+                .upload(black_box(&mut clock.gpu), black_box(&clock.scene))
+        });
+    });
+    let mut t = 0.0f32;
+    c.bench_function("clock_brushes_upload_moving", |b| {
+        b.iter(|| {
+            t += 1.0 / 120.0;
+            clock.renderer.set_time(t);
+            clock
+                .renderer
+                .upload(black_box(&mut clock.gpu), black_box(&clock.scene))
+        });
     });
 }
 

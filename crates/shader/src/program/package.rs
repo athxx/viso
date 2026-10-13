@@ -634,6 +634,8 @@ impl Encode for BrushLayout {
         ] {
             enc.write_varint(v.into());
         }
+        // `0` for a brush that does not read the clock, else its offset + 1.
+        enc.write_varint(self.time.map_or(0, |at| u64::from(at) + 1));
         write_list(enc, &self.params, |enc, p| {
             enc.write_str(&p.name);
             enc.write_varint(tag(&KINDS, &p.kind));
@@ -652,6 +654,10 @@ impl Decode for BrushLayout {
             rect_size: u32_of(dec)?,
             uniform_size: u32_of(dec)?,
             viewport_size: u32_of(dec)?,
+            time: match u32_of(dec)? {
+                0 => None,
+                at => Some(at - 1),
+            },
             params: list(dec, |dec| {
                 Ok(BrushParam {
                     name: name(dec)?,

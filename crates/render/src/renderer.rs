@@ -804,6 +804,9 @@ pub struct FrameStats {
     pub glyph_instances: u32,
     /// User-program boxes retained this frame (§61).
     pub shader_instances: u32,
+    /// User-program boxes drawn this frame whose program reads `time`: while
+    /// any is drawn, the next frame differs with nothing else changing.
+    pub clock_instances: u32,
     /// User-program draws dropped this frame because their slot held no
     /// program for their parameters.
     pub program_draws_dropped: u32,
@@ -2021,6 +2024,20 @@ impl Renderer {
         released
     }
 
+    /// Sets the clock user programs read, the seconds since the window
+    /// opened, for the frames submitted from now on. A frame that only moves
+    /// it uploads nothing.
+    pub fn set_time(&mut self, seconds: f32) {
+        self.programs.set_time(seconds);
+    }
+
+    /// Whether the frame last uploaded draws a program reading `time`, so
+    /// the next frame differs with nothing else changing: a box culled,
+    /// clipped away or not painted does not count.
+    pub fn reads_time(&self) -> bool {
+        self.programs.clock_instances() > 0
+    }
+
     /// The pipeline installed in `slot`.
     pub fn program_pipeline(&self, slot: ProgramSlot) -> Option<PipelineId> {
         self.programs.get(slot).map(|(pipeline, _)| pipeline)
@@ -3124,6 +3141,10 @@ impl Renderer {
                     }
                 }
             }
+            if self.program_draw_unseen(entry) {
+                self.culled_this_frame += 1;
+                continue;
+            }
             self.lower_entry(backend, entry, clip, target, origin);
         }
 
@@ -3173,6 +3194,23 @@ impl Renderer {
         }
 
         self.scene.paint_order = record;
+    }
+
+    /// Whether `entry` is a user-program draw on the surface showing none of
+    /// its box, outside its clip or the surface: it is not lowered, so it
+    /// costs no draw and keeps no clock it reads running.
+    pub(crate) fn program_draw_unseen(&self, entry: &PaintEntry) -> bool {
+        if !matches!(entry.store, StoreRef::Shader(_)) || entry.context.offscreen.is_some() {
+            return false;
+        }
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: self.surface_size[0],
+            h: self.surface_size[1],
+        };
+        let seen = entry.bounds.clip.intersect(surface);
+        seen.w <= 0.0 || seen.h <= 0.0
     }
 
     /// Lower one paint-order entry into the instance scratch of its family and
@@ -3814,6 +3852,7 @@ impl Renderer {
             // Offscreen children the tight ROI excluded this frame (§16.2).
             culled_primitives: self.culled_this_frame,
             shader_instances: ingest.shader_instances,
+            clock_instances: self.programs.clock_instances(),
             program_draws_dropped: self.program_draws_dropped,
             programs: self.programs.installed() as u32,
             // Counters no stage below D0 lights up yet; meaning fixed, value 0.

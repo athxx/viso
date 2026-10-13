@@ -1,6 +1,7 @@
 //! A custom shader: `ripples.vs` declares a brush, `Ripple`, whose name heads
-//! the record of its parameters; a `ShaderView` paints its box with one, and a
-//! slider drives the `rings` parameter through a state. `view!` packs the
+//! the record of its parameters; a `ShaderView` paints its box with one, a
+//! slider drives the `rings` parameter through a state, and the rings spread
+//! with the window's clock. `view!` packs the
 //! shader at build time for the target's GPU backend, beside the program the
 //! reference interpreter runs headless.
 
@@ -139,11 +140,13 @@ mod tests {
             self.layout();
         }
 
-        /// The card drawn on `gpu`, each program its nodes paint with
-        /// installed from its code in the backend's language; its target.
-        fn draw<B: GpuBackend>(&self, gpu: &mut B) -> viso::gpu::TextureId {
+        /// The card drawn on `gpu` `time` seconds after its window opened,
+        /// each program its nodes paint with installed from its code in the
+        /// backend's language; its target.
+        fn draw<B: GpuBackend>(&self, gpu: &mut B, time: f32) -> viso::gpu::TextureId {
             let mut renderer = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
             renderer.set_surface_size([W as f32, H as f32]);
+            renderer.set_time(time);
             for (slot, program) in self.store.shaders().iter() {
                 renderer
                     .install_brush(gpu, slot, program)
@@ -152,6 +155,7 @@ mod tests {
             let mut prims = Vec::new();
             paint_tree(&self.store, self.root, &mut prims);
             renderer.upload(gpu, &prims);
+            assert!(renderer.reads_time(), "the ripples keep frames coming");
             let target = gpu.create_texture(&TextureDesc {
                 width: W,
                 height: H,
@@ -164,9 +168,9 @@ mod tests {
             target
         }
 
-        fn headless(&self) -> Vec<u8> {
+        fn headless(&self, time: f32) -> Vec<u8> {
             let mut gpu = HeadlessRaster::new();
-            let target = self.draw(&mut gpu);
+            let target = self.draw(&mut gpu, time);
             gpu.read_texture(target)
         }
     }
@@ -181,7 +185,7 @@ mod tests {
     fn the_ripples_paint_their_box_and_the_slider_moves_the_rings() {
         let mut card = Mounted::new();
         assert_eq!(card.param("rings"), 6.0);
-        let picture = card.headless();
+        let picture = card.headless(0.0);
         // The box spans 0..288 on both axes; its center is the tint at full
         // strength, the white canvas shows in the gap below it.
         let center = pixel(&picture, 144, 144);
@@ -194,16 +198,31 @@ mod tests {
         // the way across sets three quarters of its 1..16 range.
         card.click(288.0 * 0.75, 316.0);
         assert_eq!(card.param("rings"), 1.0 + 15.0 * 0.75);
-        assert_ne!(card.headless(), picture, "the rings moved");
+        assert_ne!(card.headless(0.0), picture, "the rings moved");
+    }
+
+    #[test]
+    fn the_rings_spread_with_the_clock() {
+        let card = Mounted::new();
+        let start = card.headless(0.0);
+        let later = card.headless(0.5);
+        assert_ne!(later, start);
+        // In half a second the crest moves a quarter of a ring out from the
+        // center, which falls to about half the tint.
+        let (b0, b1) = (pixel(&start, 144, 144)[0], pixel(&later, 144, 144)[0]);
+        assert!(b0 >= 250 && (115..=150).contains(&b1), "{b0} {b1}");
+        // A whole period, two seconds, later the picture is the same again.
+        let again = card.headless(2.0);
+        assert!(again.iter().zip(&start).all(|(a, b)| a.abs_diff(*b) <= 1));
     }
 
     #[cfg(target_vendor = "apple")]
     #[test]
     fn the_ripples_match_the_reference_interpreter_on_metal() {
         let card = Mounted::new();
-        let reference = card.headless();
+        let reference = card.headless(0.75);
         let mut metal = viso::gpu::MetalBackend::new();
-        let target = card.draw(&mut metal);
+        let target = card.draw(&mut metal, 0.75);
         let pixels = metal.read_texture(target);
         let over = pixels
             .as_chunks::<4>()

@@ -135,7 +135,7 @@ fn a_shader_view_takes_only_a_shaders_parameters() {
 /// the renderer does not write, a parameter of no host kind and a texture.
 const OFF_PROFILE: &str = "shader Glow {
     uniform viewport_size: Vec2F32;
-    uniform time: F32;
+    uniform scale: F32;
     instance rect_pos: Vec2F32;
     instance strength: F32;
     instance basis: Mat2F32;
@@ -143,7 +143,7 @@ const OFF_PROFILE: &str = "shader Glow {
     vertex(vertex_id: U32) -> VertexOutput {
         let unit = quad_vertex(vertex_id);
         return VertexOutput {
-            clip_position: to_clip(rect_pos + unit * basis[0] * time, viewport_size),
+            clip_position: to_clip(rect_pos + unit * basis[0] * scale, viewport_size),
         };
     }
     fragment() -> Vec4F32 {
@@ -163,7 +163,7 @@ fn a_shader_breaking_the_brush_profile_is_reported_only_where_it_paints() {
     assert_eq!(found_codes, ["E8107"; 4], "{found:#?}");
     let messages: Vec<&str> = found.iter().map(|d| d.message.as_str()).collect();
     for part in [
-        "`time`",
+        "`scale`",
         "`basis`",
         "`noise`",
         "instance rect_size: Vec2F32;",

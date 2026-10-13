@@ -1,7 +1,8 @@
 //! User programs through the renderer on the headless raster: a box painted by
 //! its program, adjacent boxes of one program merged into one draw, a
 //! parameter change uploaded as one range, a box inside a translucent layer
-//! drawn at its place and never folded, and a replaced or released program.
+//! drawn at its place and never folded, a replaced or released program, and a
+//! brush reading the clock redrawn as it moves with nothing uploaded.
 
 use std::sync::Arc;
 
@@ -104,6 +105,25 @@ fn fill(name: &str, constant: Option<[f32; 4]>) -> Program {
         }),
         ..Program::default()
     };
+    program.validate().expect("a valid program");
+    program
+}
+
+/// A brush filling its box red as far as the clock, `time` seconds, reads.
+fn clock(name: &str) -> Program {
+    let e = Expr::new;
+    let mut program = fill(name, None);
+    program.uniforms.push(binding("time", Ty::F32));
+    let red = e(
+        Ty::VEC4,
+        ExprKind::Construct(vec![
+            e(Ty::F32, ExprKind::Uniform(1)),
+            e(Ty::F32, ExprKind::F32(0.0)),
+            e(Ty::F32, ExprKind::F32(0.0)),
+            e(Ty::F32, ExprKind::F32(1.0)),
+        ]),
+    );
+    program.fragment.as_mut().unwrap().body = Block(vec![Stmt::Return(Some(red))]);
     program.validate().expect("a valid program");
     program
 }
@@ -522,4 +542,59 @@ fn a_brush_program_installs_from_its_code_in_the_backend_language() {
         .unwrap();
     f.draw(&[shaded(&layout, 0, rect(8.0, 8.0, 8.0, 8.0), GREEN)]);
     assert_eq!(f.pixel(10, 10), bgra(GREEN));
+}
+
+#[test]
+fn a_brush_reading_the_clock_redraws_as_it_moves_and_uploads_nothing() {
+    let mut f = Frame::new();
+    let clocked = f.install(0, &clock("Clock"));
+    assert!(clocked.reads_time());
+    let still = f.install(1, &fill("Fill", None));
+    let a = shaded(&clocked, 0, rect(2.0, 2.0, 10.0, 10.0), RED);
+    let b = shaded(&still, 1, rect(20.0, 2.0, 10.0, 10.0), GREEN);
+    let red = |f: &Frame| i32::from(f.pixel(6, 6)[2]);
+
+    f.renderer.set_time(0.25);
+    let first = f.draw(&[a.clone(), b.clone()]);
+    assert_eq!(first.clock_instances, 1);
+    assert!(f.renderer.reads_time());
+    assert!((red(&f) - 64).abs() <= 1, "{}", red(&f));
+
+    f.renderer.set_time(0.75);
+    let moved = f.draw(&[a.clone(), b.clone()]);
+    assert_eq!(
+        (
+            moved.gpu_upload_bytes,
+            moved.uploaded_ranges,
+            moved.dirty_primitives
+        ),
+        (0, 0, 0),
+        "the clock rides the draw's uniforms"
+    );
+    assert!((red(&f) - 191).abs() <= 1, "{}", red(&f));
+    assert_eq!(f.pixel(24, 6), bgra(GREEN));
+
+    // Off the target, clipped away, or gone, the box is not drawn and no
+    // longer keeps frames coming.
+    let away = shaded(&clocked, 0, rect(200.0, 200.0, 10.0, 10.0), RED);
+    let stats = f.draw(&[away, b.clone()]);
+    assert_eq!((stats.clock_instances, stats.culled_primitives), (0, 1));
+    assert_eq!(stats.draw_calls, 1);
+    assert!(!f.renderer.reads_time());
+    let clipped = [
+        Primitive::Layer(LayerClip {
+            clip: rect(40.0, 40.0, 8.0, 8.0),
+            opacity: 1.0,
+            blur_sigma: 0.0,
+            backdrop_sigma: 0.0,
+        }),
+        a.clone(),
+        Primitive::LayerEnd,
+    ];
+    assert_eq!(f.draw(&clipped).clock_instances, 0);
+    assert!(!f.renderer.reads_time());
+    f.draw(&[a, b.clone()]);
+    assert!(f.renderer.reads_time());
+    f.draw(&[b]);
+    assert!(!f.renderer.reads_time());
 }

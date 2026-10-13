@@ -754,9 +754,46 @@ on it.
       at the box's center, edge and the gap below it, a slider click repaints it,
       and Metal matches the interpreter within 2/255
       (`examples/10-custom-shader`).
-- [ ] `uniform time: F32` with continuous repaint while a time-reading shader is on
-      screen (makepad's `uses_time`), measured.
-- [ ] Texture and sampler parameters.
+- [x] `uniform time: F32` with continuous repaint while a time-reading shader is on
+      screen, measured. An optional reserved uniform of the brush profile
+      (`BrushLayout::time`, carried by the package codec), the seconds since the
+      window's first frame from the frame instant (deterministic headless, kept
+      across a reload); written into each draw's inline uniforms as its command is
+      built (`Renderer::set_time`), so a clock-only frame uploads nothing. The
+      lowering counts the clock-reading boxes it draws (`FrameStats::clock_instances`,
+      `Renderer::reads_time`) and the window keeps beating like an animation while
+      any is drawn; a program box missing its clip and the surface is culled before
+      lowering, so one scrolled away, off the target or gone stops the beat. Release
+      bench (1k quads + 64 clock boxes): `upload` 56.3 µs still, 55.6 µs moving,
+      zero bytes and no buffer growth per clock frame; a live window drawing the
+      example's ripples runs ~8% CPU where an idle one is at 0%. Tests:
+      `render/tests/program_draw.rs`, `shader::program::brush` tests, the example's
+      `the_rings_spread_with_the_clock` and Metal at a moved clock.
+- [ ] Texture and sampler parameters: a brush samples images its nodes name, through
+      samplers it declares.
+  - [ ] Shader: the brush profile admits `texture name: Texture2D<Vec4F32>` as a
+        texture parameter (at most `PROGRAM_TEXTURES`) and `sampler` members (at
+        most `PROGRAM_SAMPLERS`), each sampler's state static in the layout
+        (`BrushLayout::{textures, samplers}`, a `SamplerDesc` each, linear and
+        clamp by default); `abi()` counts them; the package codec carries them.
+  - [ ] DSL: `@sampler(filter: nearest | linear | trilinear, address: clamp |
+        repeat | mirror)` on a `sampler` member, checked (unknown label or value,
+        on another member, repeated); a texture parameter takes an `ImageAsset`
+        in the shader's record literal, an `SvgAsset` or other value `E2103`.
+  - [ ] UI and view: `Content::Shader` names each texture parameter's resource;
+        the store resolves it through the asset table as an asset node does — a
+        texture attached or replaced repaints only the nodes sampling it (`PAINT`)
+        — and a node with a texture not yet resident draws nothing; delivery
+        encodes an `ImageAsset` field into the node's resources, the macro embeds
+        the image, the release package and the dev patch carry it.
+  - [ ] Render: `ShaderDraw` carries its textures; a program draw binds one bind
+        group of its textures and the program's samplers (samplers interned per
+        descriptor, bind groups cached per program and texture set, released with
+        the texture or the program); the batch key carries the bind group, so
+        draws of one program merge only over the same textures.
+  - [ ] Example and tests: a textured brush in `10-custom-shader`, the headless
+        interpreter against Metal; a texture swap repaints one node and uploads no
+        instance; nearest against linear sampling differ as declared.
 
 Reload:
 

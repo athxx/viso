@@ -597,6 +597,17 @@ impl Renderer {
                     gradient_cursor += 1;
                     (BatchPipeline::Gradient, start, 1)
                 }
+                // A box showing nothing is not lowered: it draws no instance
+                // and leaves the batch state as it was.
+                StoreRef::Shader(_) if self.program_draw_unseen(entry) => {
+                    primitives.push(PrimitiveRange {
+                        id: entry.id,
+                        pipeline: BatchPipeline::Program,
+                        batch: BatchId(batch.max(0) as u32),
+                        range: (0, 0),
+                    });
+                    continue;
+                }
                 // Placed below, once the merge decision says whether it extends
                 // its program's run or opens an aligned one.
                 StoreRef::Shader(_) => (BatchPipeline::Program, 0, 1),
