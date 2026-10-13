@@ -1001,8 +1001,13 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
 - [ ] Integration test (§62 Rust): app with state, edit Rust, assert old app runs
       until the build succeeds, warm restart, assert state restored; a failing build
       leaves the old app running.
-- [ ] Measurements: Rust incremental build time, snapshot time, relaunch time,
-      restore time (§48), in the `warm-restart` event.
+- [x] Measurements: Rust incremental build time, snapshot time, relaunch time,
+      restore time (§48), in the `warm-restart` event: `build_ms`, `snapshot_ms`,
+      `close_ms`, `launch_ms`, `restore_ms`, `restart_ms`; the session polls the
+      old app every 1 ms while it closes (6 ms, was 64 ms at the 50 ms poll).
+- [ ] The new process's own startup is the restart (about 0.7 s of 0.8 s for the
+      debug `examples/persist`): profile the dev artifact's launch to its first
+      window.
 
 ### Done
 

@@ -111,6 +111,17 @@ pub struct RebuildEvent {
     pub codes: Vec<String>,
     /// Whether the restarted app took its snapshot back.
     pub restored: bool,
+    /// The phases of the restart, for a build the app restarted on: asking
+    /// the old app for its snapshot until it arrived, from then until the
+    /// new app launched (the old one closing), from its launch until it
+    /// reported its mounts, and its restore; `None` for a phase that did not
+    /// run.
+    pub snapshot_us: Option<u64>,
+    pub close_us: Option<u64>,
+    pub launch_us: Option<u64>,
+    pub restore_us: Option<u64>,
+    /// From asking for the snapshot until the restart landed.
+    pub restart_us: Option<u64>,
     /// How long Cargo took.
     pub build_us: u64,
 }

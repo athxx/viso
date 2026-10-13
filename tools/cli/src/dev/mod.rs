@@ -112,6 +112,24 @@ struct Runtime {
 }
 
 /// The snapshot of an app, kept for the app launched after it.
+/// When the phases of the restart under way ended.
+#[derive(Debug, Default)]
+struct RestartClock {
+    /// The old app was asked for its snapshot.
+    asked: Option<Instant>,
+    /// Its snapshot arrived.
+    held: Option<Instant>,
+    /// The new app launched.
+    launched: Option<Instant>,
+    /// The new app reported its mounts.
+    mounted: Option<Instant>,
+}
+
+/// The microseconds from `from` to `to`.
+fn micros(from: Instant, to: Instant) -> u64 {
+    u64::try_from(to.saturating_duration_since(from).as_micros()).unwrap_or(u64::MAX)
+}
+
 pub(crate) struct HeldSnapshot {
     bytes: Arc<[u8]>,
     /// The view each file of the app ran, by path: what the restore plans
@@ -202,6 +220,7 @@ pub struct DevSession {
     restarting: Option<RebuildEvent>,
     /// Where the app's windows were when it sent its snapshot.
     windows: Vec<WindowGeometry>,
+    clock: RestartClock,
 }
 
 impl DevSession {
@@ -236,6 +255,7 @@ impl DevSession {
             landing: false,
             restarting: None,
             windows: Vec::new(),
+            clock: RestartClock::default(),
         }
     }
 
@@ -335,6 +355,11 @@ impl DevSession {
             outcome,
             codes,
             restored: false,
+            snapshot_us: None,
+            close_us: None,
+            launch_us: None,
+            restore_us: None,
+            restart_us: None,
             build_us: u64::try_from(build.elapsed.as_micros()).unwrap_or(u64::MAX),
         };
         if outcome == Outcome::WarmRestarted {
@@ -360,6 +385,7 @@ impl DevSession {
     /// it runs fresh, which reports the restart now; otherwise the restore
     /// reports it.
     pub(crate) fn relaunched(&mut self, out: &mut Output) {
+        self.clock.launched = Some(Instant::now());
         if self.restore_next {
             self.landing = true;
         } else {
@@ -405,6 +431,18 @@ impl DevSession {
         };
         event.outcome = outcome;
         event.restored = restored;
+        let clock = std::mem::take(&mut self.clock);
+        if let Some(asked) = clock.asked {
+            let now = Instant::now();
+            let ready = clock.held.unwrap_or(asked);
+            event.snapshot_us = clock.held.map(|held| micros(asked, held));
+            event.close_us = clock.launched.map(|launched| micros(ready, launched));
+            event.launch_us = clock
+                .launched
+                .zip(clock.mounted)
+                .map(|(launched, mounted)| micros(launched, mounted));
+            event.restart_us = Some(micros(asked, now));
+        }
         event.codes.extend(codes);
         event.last_good_revision = match outcome {
             Outcome::Rejected => event.base_revision,
@@ -515,6 +553,9 @@ impl DevSession {
                 for &at in &mounted {
                     let _ = self.sources.baseline(at);
                 }
+                if (self.landing || self.restore_next) && self.clock.mounted.is_none() {
+                    self.clock.mounted = Some(Instant::now());
+                }
                 if std::mem::take(&mut self.restore_next) {
                     self.send_restore(&mounted, out);
                 }
@@ -533,6 +574,9 @@ impl DevSession {
                 let Some(runtime) = &mut self.runtime else {
                     return;
                 };
+                if self.clock.asked.is_some() {
+                    self.clock.held = Some(Instant::now());
+                }
                 self.windows = windows;
                 let bytes = runtime.blobs.take(blob);
                 runtime.blobs.clear();
@@ -751,6 +795,10 @@ impl DevSession {
     pub(crate) fn request_snapshot(&mut self) -> bool {
         self.held = None;
         self.windows.clear();
+        self.clock = RestartClock {
+            asked: Some(Instant::now()),
+            ..RestartClock::default()
+        };
         self.runtime
             .as_ref()
             .is_some_and(|runtime| runtime.writer.send(HostMessage::Snapshot).is_ok())
@@ -842,6 +890,9 @@ impl DevSession {
                 report.restore_us as f64 / 1000.0
             ),
         );
+        if let Some(event) = &mut self.restarting {
+            event.restore_us = Some(report.restore_us);
+        }
         self.finish_restart(Outcome::WarmRestarted, true, Vec::new(), out);
     }
 
@@ -2134,6 +2185,7 @@ mod tests {
         let old = f.launch();
         f.dev.link(LinkEvent::Closed(old), &mut f.out);
         assert!(f.dev.restore_next());
+        f.dev.relaunched(&mut f.out);
         let (writer, sent) = mpsc::channel();
         f.sent = sent;
         let hello = RuntimeHello {

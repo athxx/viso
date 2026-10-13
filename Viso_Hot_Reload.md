@@ -1582,6 +1582,19 @@ compile-to-pixels  min 1.265 ms  median 1.428 ms  p95 2.648 ms
 
 app 端（transport + commit + repaint）中位数约 0.08 ms；此前 app 为每个 patch 重新编译源码时为 1.27 ms。端到端（保存 → 像素）= 检测（约 6 ms + 5 ms coalesce）+ 上表。inotify 无静默窗口；Linux 与 Windows 的数值未在此测量。GPU 上传与呈现不在测量内。
 
+Rust warm restart（`examples/persist` 的 `main.rs` 编辑，debug dev artifact，Apple M4，连续 3 次，`dev` 事件的各段）：
+
+```text
+build     2.30–2.79 s     # cargo 增量 build
+snapshot  1.2–1.9 ms      # 请求到 150 B snapshot 到达（app 端采集 0.1–0.2 ms）
+close     5.5–6.3 ms      # 旧 app 收到 SIGTERM 到退出（run loop 此时每 1 ms 检查一次）
+launch    688–809 ms      # 新进程启动到第一个窗口建成、报告 mount
+restore   0.15–0.25 ms    # app 端恢复 1 个 view mount、2 个 state
+restart   696–817 ms      # 请求 snapshot 到 restart 完成
+```
+
+restart 几乎全部是新进程（debug build）自身的启动；连接之后到 `Restored` 约 8 ms。
+
 ---
 
 ## 49. Hot patch targets

@@ -99,8 +99,18 @@ pub(super) fn rebuild(event: &RebuildEvent) -> String {
         Outcome::Held => format!(
             "… {files} built in {s:.1} s, not restarted (--no-hot-reload); restart `viso run` to run it"
         ),
-        _ if event.restored => format!("✓ {files} warm restart   built in {s:.1} s"),
-        _ => format!("✓ {files} warm restart, state not restored   built in {s:.1} s"),
+        _ => {
+            let restart = event
+                .restart_us
+                .map(|us| format!(", restarted in {:.2} s", us as f64 / 1e6))
+                .unwrap_or_default();
+            let state = if event.restored {
+                ""
+            } else {
+                ", state not restored"
+            };
+            format!("✓ {files} warm restart{state}   built in {s:.1} s{restart}")
+        }
     }
 }
 

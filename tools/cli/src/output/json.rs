@@ -177,9 +177,22 @@ impl Stream {
             w.name("restored");
             w.bool(event.restored);
             w.name("elapsed_ms");
-            w.number(event.build_us as f64 / 1000.0);
+            w.number((event.build_us + event.restart_us.unwrap_or(0)) as f64 / 1000.0);
             w.name("build_ms");
             w.number(event.build_us as f64 / 1000.0);
+            for (name, us) in [
+                ("snapshot_ms", event.snapshot_us),
+                ("close_ms", event.close_us),
+                ("launch_ms", event.launch_us),
+                ("restore_ms", event.restore_us),
+                ("restart_ms", event.restart_us),
+            ] {
+                w.name(name);
+                match us {
+                    Some(us) => w.number(us as f64 / 1000.0),
+                    None => w.null(),
+                }
+            }
             w.end_object();
         });
     }

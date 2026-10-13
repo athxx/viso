@@ -62,6 +62,10 @@ use crate::output::Output;
 /// listener again.
 const POLL: Duration = Duration::from_millis(50);
 
+/// How often the session polls the old app while it closes for a restart:
+/// the new one starts as soon as it is gone.
+const CLOSING_POLL: Duration = Duration::from_millis(1);
+
 /// How long a warm restart waits for the old app's snapshot, then for it to
 /// close before it is killed.
 const SNAPSHOT_WAIT: Duration = Duration::from_secs(3);
@@ -373,12 +377,16 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
             }
             interrupts = caught;
         }
+        let poll = match restart {
+            Some(Restart::Closing { .. }) => CLOSING_POLL,
+            _ => POLL,
+        };
         let wait = [dev.deadline(), builds.deadline()]
             .into_iter()
             .flatten()
             .min()
-            .map_or(POLL, |due| {
-                due.saturating_duration_since(Instant::now()).min(POLL)
+            .map_or(poll, |due| {
+                due.saturating_duration_since(Instant::now()).min(poll)
             });
         match rx.recv_timeout(wait) {
             Ok(message) => {
