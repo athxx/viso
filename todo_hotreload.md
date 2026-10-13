@@ -1005,9 +1005,10 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
 - [ ] Rust-side state cells (`ui!`, `component!`, `AppCx` states) carried across a
       restart: they have no durable key yet, so a pure-Rust counter restarts from
       its initializer.
-- [ ] Integration test (§62 Rust): app with state, edit Rust, assert old app runs
+- [x] Integration test (§62 Rust): app with state, edit Rust, assert old app runs
       until the build succeeds, warm restart, assert state restored; a failing build
-      leaves the old app running.
+      leaves the old app running (`tools/cli/tests/warm_restart.rs`, ignored: it
+      builds a probe app and opens its window).
 - [x] Measurements: Rust incremental build time, snapshot time, relaunch time,
       restore time (§48), in the `warm-restart` event: `build_ms`, `snapshot_ms`,
       `close_ms`, `launch_ms`, `restore_ms`, `restart_ms`; the session polls the
@@ -1018,8 +1019,9 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
 
 ### Done
 
-- [ ] Editing Rust code in a running desktop app rebuilds in the background, then
-      restarts it with its counters, text fields, focus and window geometry back.
+- [x] Editing Rust code in a running desktop app rebuilds in the background, then
+      restarts it with its counters, text fields, focus and window geometry back
+      (the views' state; Rust-side state cells are the open item above).
 
 ---
 

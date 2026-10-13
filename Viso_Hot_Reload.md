@@ -2078,6 +2078,8 @@ backend-specific validation
 - typed DevSnapshot 恢复兼容状态；
 - raw OS/GPU/runtime handles不进入 snapshot。
 
+已实现：`viso-cli` 的 `tests/warm_restart.rs`（`#[ignore]`，`cargo test -p viso-cli --test warm_restart -- --ignored --nocapture`）生成一个依赖本仓库的 probe app 并以 `viso run --json` 运行：build 失败的 Rust 编辑输出 `rejected`，旧进程仍在运行；成功的编辑启动新进程，它在第一帧之前取回旧进程以 `AppCx::dev_state` 保存的状态（旧进程的 pid），`dev` 事件为 `warm_restarted`、`restored: true`，旧进程已退出；Ctrl-C 结束 session（退出码 130）时 app 一并退出。handle 不进入 snapshot 由 snapshot 的类型保证（只有 plain data，§31）。
+
 ### Mobile/Web
 
 - Android Emulator可 patch/restart/reconnect；
