@@ -3,125 +3,31 @@
 //!
 //! A Rust change starts a build once no change has arrived for the session's
 //! coalescing window, so the files of one edit build together. A change that
-//! arrives while a build runs kills it — `cargo` and every `rustc`, linker
-//! and build script under it, the process group on Unix and a job object on
-//! Windows — and the next build starts with the newest sources, so the
-//! newest build that succeeds is the one the app runs. A build that changed
-//! a `Cargo.toml` first reads the Rust scope again, as a path dependency may
-//! have come or gone. The old app is never stopped for a build: a failure
-//! keeps it, and a build that relinked nothing (an edit undone before it
-//! built) has nothing to run.
-//!
-//! Cargo's JSON messages give the executable and each compiler diagnostic,
-//! its code and its rendered text; the text and Cargo's progress go to the
-//! terminal, or each line as a log message under `--json`.
+//! arrives while a build runs kills it (`crate::build::cargo`), and the next
+//! build starts with the newest sources, so the newest build that succeeds is
+//! the one the app runs. A build that changed a `Cargo.toml` first reads the
+//! Rust scope again, as a path dependency may have come or gone. The old app
+//! is never stopped for a build: a failure keeps it, and a build that
+//! relinked nothing (an edit undone before it built) has nothing to run.
 
-use std::io::{BufRead, BufReader, Read, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
-use viso_ende::JsonValue;
-use viso_project::Profile;
-
 use super::cargo::RustScope;
 use super::{COALESCE, COALESCE_LIMIT};
-
-/// How long a build thread waits on its child between checks that it ended,
-/// when Cargo's output has not closed to say so.
-const EXIT_POLL: Duration = Duration::from_millis(100);
+use crate::build::cargo::{self, BuildCommand, BuildFailure, CargoEvent};
 
 /// Where a build hands its events.
 type Sink = Arc<dyn Fn(BuildEvent) -> bool + Send + Sync>;
 
-/// What wraps a built executable for the device it runs on — an `.app`, an
-/// APK, a web bundle — on the build's thread: the artifact to launch, or why
-/// there is none. It leaves an artifact it already made from the same
-/// executable as it is.
-pub(crate) type Package = Arc<dyn Fn(&Path) -> Result<PathBuf, String> + Send + Sync>;
-
-/// How the dev artifact is built.
-#[derive(Clone)]
-pub(crate) struct BuildCommand {
-    /// The `cargo` to run.
-    pub(crate) cargo: PathBuf,
-    /// The app package's manifest, a canonical path.
-    pub(crate) manifest: PathBuf,
-    /// Whether Cargo prints only its errors.
-    pub(crate) quiet: bool,
-    /// Whether Cargo's rendered output is read as log lines rather than
-    /// written to the terminal.
-    pub(crate) piped: bool,
-    /// Where Cargo builds, when not where it chooses.
-    pub(crate) target_dir: Option<PathBuf>,
-    /// The options every Cargo command runs with, `cargo metadata` too.
-    pub(crate) cargo_args: Vec<std::ffi::OsString>,
-    /// The options `cargo build` runs with besides those.
-    pub(crate) build_args: Vec<std::ffi::OsString>,
-    /// The Rust target, when not the host.
-    pub(crate) target: Option<String>,
-    /// The arguments after `cargo rustc --`; the build is `cargo build` when
-    /// there are none.
-    pub(crate) rustc_args: Vec<String>,
-    /// The variables Cargo runs with besides the dev profile's.
-    pub(crate) env: Vec<(String, std::ffi::OsString)>,
-    /// What wraps the executable; it runs as built when `None`.
-    pub(crate) package: Option<Package>,
-}
-
-impl BuildCommand {
-    /// The Cargo command line, for `--verbose`.
-    pub(crate) fn describe(&self) -> String {
-        let mut line = format!(
-            "{} {}",
-            self.cargo.display(),
-            if self.rustc_args.is_empty() {
-                "build"
-            } else {
-                "rustc"
-            }
-        );
-        for arg in self.cargo_args.iter().chain(&self.build_args) {
-            line.push(' ');
-            line.push_str(&arg.to_string_lossy());
-        }
-        line.push_str(&format!(
-            " --manifest-path {} --features viso/hot-reload",
-            self.manifest.display()
-        ));
-        if let Some(target) = &self.target {
-            line.push_str(&format!(" --target {target}"));
-        }
-        if let Some(dir) = &self.target_dir {
-            line.push_str(&format!(" (CARGO_TARGET_DIR={})", dir.display()));
-        }
-        if !self.rustc_args.is_empty() {
-            line.push_str(" -- ");
-            line.push_str(&self.rustc_args.join(" "));
-        }
-        line
-    }
-}
-
-impl std::fmt::Debug for BuildCommand {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BuildCommand")
-            .field("cargo", &self.cargo)
-            .field("manifest", &self.manifest)
-            .field("target", &self.target)
-            .field("packaged", &self.package.is_some())
-            .finish_non_exhaustive()
-    }
-}
-
 /// What the build threads hand the session.
 #[derive(Debug)]
 pub(crate) enum BuildEvent {
-    /// A line of Cargo's rendered output, at the level its prefix gives.
-    Log { level: &'static str, line: String },
+    /// What Cargo said.
+    Cargo(CargoEvent),
     /// The Rust scope read again before a build, or why it could not be.
     Rescoped(Result<RustScope, String>),
     /// A build ended.
@@ -135,22 +41,6 @@ pub(crate) struct Finished {
     pub(crate) result: Result<PathBuf, BuildFailure>,
     /// From the start of the build to its end.
     pub(crate) elapsed: Duration,
-}
-
-/// Why a build gave no executable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum BuildFailure {
-    /// `cargo` did not run.
-    Spawn(String),
-    /// Cargo reported failure: its exit status and the codes of its errors,
-    /// each once, in order.
-    Failed { status: String, codes: Vec<String> },
-    /// The package built no executable, or more than one.
-    Executables(Vec<PathBuf>),
-    /// The executable could not be packaged for its device.
-    Package(String),
-    /// A newer change, or the session's end, killed it.
-    Cancelled,
 }
 
 /// A build the session took: what it built and the files whose changes it
@@ -247,7 +137,11 @@ impl RustBuild {
                         &command.cargo_args,
                     )));
                 }
-                let result = build(&command, &cancelled, &sink);
+                let cargo_sink: cargo::Sink = {
+                    let sink = Arc::clone(&sink);
+                    Arc::new(move |event| sink(BuildEvent::Cargo(event)))
+                };
+                let result = cargo::build(&command, &cancelled, &cargo_sink);
                 sink(BuildEvent::Finished(Finished {
                     generation,
                     result,
@@ -356,353 +250,12 @@ impl Drop for RustBuild {
     }
 }
 
-/// Runs `cargo build` of the dev artifact until it ends or `cancelled`
-/// fires (or closes), its rendered lines handed to `sink`.
-fn build(
-    command: &BuildCommand,
-    cancelled: &mpsc::Receiver<()>,
-    sink: &Sink,
-) -> Result<PathBuf, BuildFailure> {
-    let mut cargo = Command::new(&command.cargo);
-    cargo
-        .arg(if command.rustc_args.is_empty() {
-            "build"
-        } else {
-            "rustc"
-        })
-        .args(&command.cargo_args)
-        .args(&command.build_args)
-        .arg("--manifest-path")
-        .arg(&command.manifest)
-        .args(["--features", "viso/hot-reload"])
-        // The facade's build script refuses `hot-reload` in a release or
-        // shipping artifact; this one is a dev artifact.
-        .env("VISO_PROFILE", Profile::Dev.as_str())
-        .arg("--message-format=json")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped());
-    if command.quiet {
-        cargo.arg("--quiet");
-    }
-    if command.piped {
-        cargo.stderr(Stdio::piped());
-    }
-    if let Some(dir) = &command.target_dir {
-        cargo.env("CARGO_TARGET_DIR", dir);
-    }
-    if let Some(target) = &command.target {
-        cargo.args(["--target", target]);
-    }
-    cargo.envs(command.env.iter().map(|(k, v)| (k, v)));
-    if !command.rustc_args.is_empty() {
-        cargo.arg("--").args(&command.rustc_args);
-    }
-    let mut tree = ProcessTree::spawn(&mut cargo).map_err(|error| {
-        BuildFailure::Spawn(format!("cannot run `{}`: {error}", command.cargo.display()))
-    })?;
-    // Cargo's JSON output closing says it is ending.
-    let (closed, wait) = mpsc::channel();
-    let messages = tree.child.stdout.take().map(|stdout| {
-        let sink = command.piped.then(|| Arc::clone(sink));
-        thread::spawn(move || {
-            let messages = Messages::read(stdout, sink.as_deref());
-            let _ = closed.send(());
-            messages
-        })
-    });
-    let rendered = tree.child.stderr.take().map(|stderr| {
-        let sink = Arc::clone(sink);
-        thread::spawn(move || lines(stderr, &*sink))
-    });
-    let status = loop {
-        if cancelled.try_recv() != Err(mpsc::TryRecvError::Empty) {
-            tree.kill();
-            break None;
-        }
-        match wait.recv_timeout(EXIT_POLL) {
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => match tree.child.wait() {
-                Ok(status) => break Some(status),
-                Err(error) => {
-                    tree.kill();
-                    return Err(BuildFailure::Spawn(format!(
-                        "cannot wait for `cargo build`: {error}"
-                    )));
-                }
-            },
-            Err(RecvTimeoutError::Timeout) => {
-                if let Ok(Some(status)) = tree.child.try_wait() {
-                    break Some(status);
-                }
-            }
-        }
-    };
-    let messages = messages
-        .and_then(|thread| thread.join().ok())
-        .unwrap_or_default();
-    if let Some(thread) = rendered {
-        let _ = thread.join();
-    }
-    let Some(status) = status else {
-        return Err(BuildFailure::Cancelled);
-    };
-    if !status.success() {
-        return Err(BuildFailure::Failed {
-            status: status.to_string(),
-            codes: messages.codes,
-        });
-    }
-    let exe = match <[PathBuf; 1]>::try_from(messages.executables) {
-        Ok([exe]) => exe,
-        Err(executables) => return Err(BuildFailure::Executables(executables)),
-    };
-    match &command.package {
-        Some(package) => package(&exe).map_err(BuildFailure::Package),
-        None => Ok(exe),
-    }
-}
-
-/// Hands each line of `input` to `sink` as a log line.
-fn lines(input: impl Read, sink: &(dyn Fn(BuildEvent) -> bool + Send + Sync)) {
-    for line in BufReader::new(input).lines() {
-        let Ok(line) = line else {
-            return;
-        };
-        let level = cargo_level(&line);
-        if !sink(BuildEvent::Log { level, line }) {
-            return;
-        }
-    }
-}
-
-/// The level of a line of Cargo's rendered output.
-pub(crate) fn cargo_level(line: &str) -> &'static str {
-    if line.starts_with("error") {
-        "error"
-    } else if line.starts_with("warning") {
-        "warn"
-    } else {
-        "info"
-    }
-}
-
-/// What Cargo's JSON messages said.
-#[derive(Debug, Default, PartialEq)]
-struct Messages {
-    /// The executable of each artifact that has one.
-    executables: Vec<PathBuf>,
-    /// The code of each error the compiler reported, each once.
-    codes: Vec<String>,
-}
-
-impl Messages {
-    /// Reads Cargo's JSON messages from `stdout` to its end, each
-    /// diagnostic's text handed to `sink` line by line, or written to
-    /// stderr without one.
-    fn read(
-        stdout: impl Read,
-        sink: Option<&(dyn Fn(BuildEvent) -> bool + Send + Sync)>,
-    ) -> Messages {
-        let mut messages = Messages::default();
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else {
-                break;
-            };
-            let Some((level, rendered)) = messages.take(&line) else {
-                continue;
-            };
-            match sink {
-                Some(sink) => {
-                    for line in rendered.lines() {
-                        let line = line.to_owned();
-                        sink(BuildEvent::Log { level, line });
-                    }
-                }
-                None => {
-                    let _ = std::io::stderr().lock().write_all(rendered.as_bytes());
-                }
-            }
-        }
-        messages
-    }
-
-    /// Takes one line of Cargo's JSON output; a compiler diagnostic gives
-    /// its level and rendered text.
-    fn take(&mut self, line: &str) -> Option<(&'static str, String)> {
-        let message = JsonValue::parse(line).ok()?;
-        match message.get("reason").and_then(JsonValue::as_str)? {
-            "compiler-artifact" => {
-                if let Some(exe) = message.get("executable").and_then(JsonValue::as_str) {
-                    self.executables.push(PathBuf::from(exe));
-                }
-                None
-            }
-            "compiler-message" => {
-                let diagnostic = message.get("message")?;
-                let level = diagnostic.get("level").and_then(JsonValue::as_str);
-                if level == Some("error")
-                    && let Some(code) = diagnostic
-                        .get("code")
-                        .and_then(|code| code.get("code"))
-                        .and_then(JsonValue::as_str)
-                    && !self.codes.iter().any(|c| c == code)
-                {
-                    self.codes.push(code.to_owned());
-                }
-                let rendered = diagnostic.get("rendered").and_then(JsonValue::as_str)?;
-                let level = match level {
-                    Some("error" | "error: internal compiler error") => "error",
-                    Some("warning") => "warn",
-                    _ => "info",
-                };
-                Some((level, rendered.to_owned()))
-            }
-            _ => None,
-        }
-    }
-}
-
-/// A child and every process it starts, killed together: its own process
-/// group on Unix, a job object on Windows.
-struct ProcessTree {
-    child: Child,
-    #[cfg(windows)]
-    job: Option<job::Job>,
-}
-
-impl ProcessTree {
-    #[cfg(unix)]
-    fn spawn(command: &mut Command) -> std::io::Result<ProcessTree> {
-        use std::os::unix::process::CommandExt;
-        // Its own group, which the terminal's Ctrl-C does not reach: the
-        // session kills it.
-        command.process_group(0);
-        Ok(ProcessTree {
-            child: command.spawn()?,
-        })
-    }
-
-    #[cfg(windows)]
-    fn spawn(command: &mut Command) -> std::io::Result<ProcessTree> {
-        let child = command.spawn()?;
-        let job = job::Job::holding(&child);
-        Ok(ProcessTree { child, job })
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn spawn(command: &mut Command) -> std::io::Result<ProcessTree> {
-        Ok(ProcessTree {
-            child: command.spawn()?,
-        })
-    }
-
-    /// Kills the tree and reaps the child.
-    fn kill(&mut self) {
-        #[cfg(unix)]
-        if let Ok(group) = libc::pid_t::try_from(self.child.id()) {
-            // SAFETY: a plain call; the child is not yet reaped, so its id
-            // still names its group.
-            unsafe { libc::kill(-group, libc::SIGKILL) };
-        }
-        #[cfg(windows)]
-        if let Some(job) = &self.job {
-            job.terminate();
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-#[cfg(windows)]
-mod job {
-    use std::os::windows::io::AsRawHandle;
-    use std::process::Child;
-
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject,
-    };
-    use windows_core::PCWSTR;
-
-    /// A job object holding a child and what it starts, which closing kills.
-    pub(super) struct Job(HANDLE);
-
-    impl Job {
-        /// A job holding `child`, `None` when the system gives none.
-        pub(super) fn holding(child: &Child) -> Option<Job> {
-            // SAFETY: no attributes and no name; the handle is owned below.
-            let job = Job(unsafe { CreateJobObjectW(None, PCWSTR::null()) }.ok()?);
-            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            // SAFETY: `limits` is the extended limit record the class names,
-            // of the length given, and lives across the call; the process
-            // handle is the child's, open while `child` lives.
-            unsafe {
-                SetInformationJobObject(
-                    job.0,
-                    JobObjectExtendedLimitInformation,
-                    (&raw const limits).cast(),
-                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                )
-                .ok()?;
-                AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())).ok()?;
-            }
-            Some(job)
-        }
-
-        /// Ends every process of the job.
-        pub(super) fn terminate(&self) {
-            // SAFETY: the job handle is open while `self` lives.
-            let _ = unsafe { TerminateJobObject(self.0, 1) };
-        }
-    }
-
-    impl Drop for Job {
-        fn drop(&mut self) {
-            // SAFETY: the handle is owned and closed once.
-            let _ = unsafe { CloseHandle(self.0) };
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+    use std::sync::mpsc::RecvTimeoutError;
 
     use super::*;
-
-    #[test]
-    fn cargo_messages_give_the_executable_and_the_error_codes() {
-        let mut messages = Messages::default();
-        let mut rendered = Vec::new();
-        for line in [
-            r#"{"reason":"compiler-artifact","executable":null,"fresh":true}"#,
-            r#"{"reason":"compiler-artifact","executable":"/t/debug/my \"app\"é","fresh":false}"#,
-            r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308","explanation":"…"},"rendered":"error[E0308]: mismatched types\n"}}"#,
-            r#"{"reason":"compiler-message","message":{"level":"warning","code":{"code":"W1"},"rendered":"warning: unused\n"}}"#,
-            r#"{"reason":"compiler-message","message":{"level":"error","code":null}}"#,
-            r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308"}}}"#,
-            r#"{"reason":"build-finished","success":false}"#,
-            "not json",
-        ] {
-            rendered.extend(messages.take(line));
-        }
-        assert_eq!(
-            rendered,
-            [
-                ("error", "error[E0308]: mismatched types\n".to_owned()),
-                ("warn", "warning: unused\n".to_owned())
-            ]
-        );
-        assert_eq!(
-            messages,
-            Messages {
-                executables: vec![PathBuf::from("/t/debug/my \"app\"é")],
-                codes: vec!["E0308".into()],
-            }
-        );
-    }
 
     /// A Cargo package `name` in a temporary directory, its binary's
     /// `main.rs` `main`.
@@ -743,10 +296,14 @@ mod tests {
             target_dir: Some(dir.join("target")),
             cargo_args: Vec::new(),
             build_args: Vec::new(),
+            profile: viso_project::Profile::Dev,
+            profile_args: Vec::new(),
+            hot_reload: true,
             target: None,
             rustc_args: Vec::new(),
             env: Vec::new(),
             package: None,
+            lock: None,
         };
         let builds = RustBuild::new(command, move |event| tx.lock().unwrap().send(event).is_ok());
         (builds, rx)
@@ -764,7 +321,10 @@ mod tests {
                 due.saturating_duration_since(Instant::now())
             });
             match rx.recv_timeout(wait) {
-                Ok(BuildEvent::Log { line, .. }) => lines.push(line),
+                Ok(BuildEvent::Cargo(CargoEvent::Log { line, .. })) => lines.push(line),
+                Ok(BuildEvent::Cargo(CargoEvent::Diagnostic(d))) => {
+                    lines.push(format!("{}[{}]: {}", d.severity, d.code, d.message))
+                }
                 Ok(BuildEvent::Rescoped(scope)) => scopes.push(scope.unwrap()),
                 Ok(BuildEvent::Finished(finished)) => {
                     if let Some(build) = builds.finished(finished) {

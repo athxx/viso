@@ -3,7 +3,7 @@
 //!
 //! The build keys (`profile`, `opt_level`, `source_maps`, `strip`) resolve
 //! through every layer; `profile.<name>.<key>` is what a build with that profile
-//! would get; every other key is the manifest's value or the framework's
+//! would get, `profile.<name>.web.<key>` what a browser build with it would; every other key is the manifest's value or the framework's
 //! default. A key with no default and no value is [`Value::Unset`], listed all
 //! the same, so the list is the whole schema.
 
@@ -93,12 +93,33 @@ pub const KEYS: &[&str] = &[
     "profile.dev.opt_level",
     "profile.dev.source_maps",
     "profile.dev.strip",
+    "profile.dev.web.optimize",
+    "profile.dev.web.strip",
+    "profile.dev.web.source_maps",
+    "profile.dev.web.brotli",
+    "profile.dev.web.gzip",
+    "profile.dev.web.split",
+    "profile.dev.web.threads",
     "profile.release.opt_level",
     "profile.release.source_maps",
     "profile.release.strip",
+    "profile.release.web.optimize",
+    "profile.release.web.strip",
+    "profile.release.web.source_maps",
+    "profile.release.web.brotli",
+    "profile.release.web.gzip",
+    "profile.release.web.split",
+    "profile.release.web.threads",
     "profile.shipping.opt_level",
     "profile.shipping.source_maps",
     "profile.shipping.strip",
+    "profile.shipping.web.optimize",
+    "profile.shipping.web.strip",
+    "profile.shipping.web.source_maps",
+    "profile.shipping.web.brotli",
+    "profile.shipping.web.gzip",
+    "profile.shipping.web.split",
+    "profile.shipping.web.threads",
     "web.default_target",
     "web.serve.port",
     "web.serve.open",
@@ -180,6 +201,26 @@ pub fn settings(project: &Project, config: &ResolvedConfig, env: &Env) -> Vec<En
             keys[2],
             Value::Bool(settings.strip.value),
             settings.strip.origin,
+        );
+        let web = &settings.web;
+        push(
+            keys[3],
+            text(&web.optimize.value.as_str()),
+            web.optimize.origin,
+        );
+        for (key, value) in [
+            (keys[4], web.strip),
+            (keys[5], web.source_maps),
+            (keys[6], web.brotli),
+            (keys[7], web.gzip),
+        ] {
+            push(key, Value::Bool(value.value), value.origin);
+        }
+        push(keys[8], text(&web.split.value.as_str()), web.split.origin);
+        push(
+            keys[9],
+            text(&web.threads.value.as_str()),
+            web.threads.origin,
         );
     }
 
@@ -279,21 +320,42 @@ pub fn setting(project: &Project, config: &ResolvedConfig, env: &Env, key: &str)
 }
 
 /// The keys of each profile's table, in [`Profile::ALL`] order.
-const PROFILE_KEYS: [[&str; 3]; 3] = [
+const PROFILE_KEYS: [[&str; 10]; 3] = [
     [
         "profile.dev.opt_level",
         "profile.dev.source_maps",
         "profile.dev.strip",
+        "profile.dev.web.optimize",
+        "profile.dev.web.strip",
+        "profile.dev.web.source_maps",
+        "profile.dev.web.brotli",
+        "profile.dev.web.gzip",
+        "profile.dev.web.split",
+        "profile.dev.web.threads",
     ],
     [
         "profile.release.opt_level",
         "profile.release.source_maps",
         "profile.release.strip",
+        "profile.release.web.optimize",
+        "profile.release.web.strip",
+        "profile.release.web.source_maps",
+        "profile.release.web.brotli",
+        "profile.release.web.gzip",
+        "profile.release.web.split",
+        "profile.release.web.threads",
     ],
     [
         "profile.shipping.opt_level",
         "profile.shipping.source_maps",
         "profile.shipping.strip",
+        "profile.shipping.web.optimize",
+        "profile.shipping.web.strip",
+        "profile.shipping.web.source_maps",
+        "profile.shipping.web.brotli",
+        "profile.shipping.web.gzip",
+        "profile.shipping.web.split",
+        "profile.shipping.web.threads",
     ],
 ];
 

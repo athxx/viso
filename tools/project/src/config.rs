@@ -28,7 +28,7 @@ use crate::diag::{ConfigCode, ConfigDiagnostic, Span};
 use crate::discovery::Project;
 use crate::fingerprint::{BuildId, Hash128, Hasher, ProjectFingerprint, Toolchain};
 use crate::manifest::{Manifest, Spanned};
-use crate::target::{ArtifactKind, DevRuntime, OptLevel, Profile, Target};
+use crate::target::{ArtifactKind, Auto, DevRuntime, OptLevel, Profile, Target, WebOptimize};
 
 /// Where a resolved value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,18 +200,131 @@ pub struct ProfileSettings {
     pub source_maps: Sourced<bool>,
     /// Whether symbols are stripped.
     pub strip: Sourced<bool>,
+    /// How a web build is optimized.
+    pub web: WebSettings,
+}
+
+/// How one profile builds for a browser: `[profile.X.web]` over the
+/// profile's own defaults, with `strip` and `source_maps` following the
+/// profile's unless the table names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebSettings {
+    /// How the module is optimized after linking.
+    pub optimize: Sourced<WebOptimize>,
+    /// Whether the name and producers sections and the debug info are removed.
+    pub strip: Sourced<bool>,
+    /// Whether the module keeps its debug info.
+    pub source_maps: Sourced<bool>,
+    /// Whether a `.br` is written beside each file.
+    pub brotli: Sourced<bool>,
+    /// Whether a `.gz` is written beside each file.
+    pub gzip: Sourced<bool>,
+    /// Whether the module is split into a startup and a lazy part.
+    pub split: Sourced<Auto>,
+    /// Whether the module is built shared-memory and threaded.
+    pub threads: Sourced<Auto>,
+}
+
+impl WebSettings {
+    fn resolve(
+        manifest: &Manifest,
+        profile: Profile,
+        strip: Sourced<bool>,
+        source_maps: Sourced<bool>,
+    ) -> Self {
+        let table = &manifest.profiles.get(profile).web;
+        let precompress = profile.default_web_precompress();
+        Self {
+            optimize: pick(
+                None,
+                None,
+                from_profile(profile, table.optimize),
+                None,
+                profile.default_web_optimize(),
+            ),
+            strip: inherit(profile, table.strip, strip),
+            source_maps: inherit(profile, table.source_maps, source_maps),
+            brotli: pick(
+                None,
+                None,
+                from_profile(profile, table.brotli),
+                None,
+                precompress,
+            ),
+            gzip: pick(
+                None,
+                None,
+                from_profile(profile, table.gzip),
+                None,
+                precompress,
+            ),
+            split: pick(
+                None,
+                None,
+                from_profile(profile, table.split),
+                None,
+                Auto::Auto,
+            ),
+            threads: pick(
+                None,
+                None,
+                from_profile(profile, table.threads),
+                None,
+                Auto::Auto,
+            ),
+        }
+    }
+
+    fn hash(&self, hasher: &mut Hasher) {
+        hasher.str(self.optimize.value.as_str());
+        hasher.u64(u64::from(self.strip.value));
+        hasher.u64(u64::from(self.source_maps.value));
+        hasher.u64(u64::from(self.brotli.value));
+        hasher.u64(u64::from(self.gzip.value));
+        hasher.str(self.split.value.as_str());
+        hasher.str(self.threads.value.as_str());
+    }
+}
+
+/// A web key that follows the profile's: a flag or the environment still
+/// wins, then the web table, then whatever the profile resolved to.
+fn inherit(profile: Profile, web: Option<Spanned<bool>>, base: Sourced<bool>) -> Sourced<bool> {
+    match (base.origin, web) {
+        (Origin::Flag | Origin::Env(_), _) | (_, None) => base,
+        (_, Some(web)) => Sourced::new(
+            web.value,
+            Origin::ManifestProfile {
+                profile,
+                span: web.span,
+            },
+        ),
+    }
 }
 
 impl ProfileSettings {
     /// The settings of `profile`: the environment over its `[profile.X]` table
     /// over its own defaults. An unparseable variable is recorded in `errors`.
-    pub(crate) fn resolve(
+    pub fn resolve(
         manifest: &Manifest,
         profile: Profile,
         env: &Env,
         errors: &mut Vec<ConfigDiagnostic>,
     ) -> Self {
         let table = manifest.profiles.get(profile);
+        let source_maps = pick(
+            None,
+            env_value(env, ENV_SOURCE_MAPS, parse_bool, errors),
+            from_profile(profile, table.source_maps),
+            None,
+            profile.default_source_maps(),
+        );
+        let strip = pick(
+            None,
+            env_value(env, ENV_STRIP, parse_bool, errors),
+            from_profile(profile, table.strip),
+            None,
+            profile.default_strip(),
+        );
         Self {
             opt_level: pick(
                 None,
@@ -220,20 +333,9 @@ impl ProfileSettings {
                 None,
                 profile.default_opt_level(),
             ),
-            source_maps: pick(
-                None,
-                env_value(env, ENV_SOURCE_MAPS, parse_bool, errors),
-                from_profile(profile, table.source_maps),
-                None,
-                profile.default_source_maps(),
-            ),
-            strip: pick(
-                None,
-                env_value(env, ENV_STRIP, parse_bool, errors),
-                from_profile(profile, table.strip),
-                None,
-                profile.default_strip(),
-            ),
+            source_maps,
+            strip,
+            web: WebSettings::resolve(manifest, profile, strip, source_maps),
         }
     }
 }
@@ -279,6 +381,10 @@ impl ResolvedConfig {
         hasher.str(self.settings.opt_level.value.as_str());
         hasher.u64(u64::from(self.settings.source_maps.value));
         hasher.u64(u64::from(self.settings.strip.value));
+        // Only a browser build reads the web settings.
+        if self.target.is_web() {
+            self.settings.web.hash(&mut hasher);
+        }
         hasher.str(self.artifact.as_str());
         hasher.finish()
     }

@@ -29,31 +29,34 @@ use std::hash::{BuildHasher, Hasher as _};
 use std::io::{BufRead, BufReader, Read};
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Child;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use viso_package::android::Sdk;
-use viso_project::{DeviceProfile, LockKind, Platform, ProjectFingerprint, Target, Toolchain};
+use viso_project::{DeviceProfile, LockKind, Platform, Profile, ProjectFingerprint, Target};
 use viso_view::dev::wire::{
     self, DevSessionId, ProjectFingerprint as WireProject, SchemaFingerprint,
 };
 
 use crate::args::{RunArgs, RunTarget};
+use crate::build::{
+    self,
+    cargo::{self, BuildCommand, BuildFailure, CargoEvent},
+};
 use crate::context::{Context, Loaded, in_its_file};
 use crate::deploy::{self, App, Deploy, Ended, Lines, Vars, web};
-use crate::dev::build::{BuildCommand, BuildEvent, BuildFailure, RustBuild};
+use crate::dev::build::{BuildEvent, RustBuild};
 use crate::dev::cargo::RustScope;
 use crate::dev::{
     self, Control, ControlCall, ControlDeliver, Deliver, DevSession, Expect, LinkEvent, WatchScope,
-    build_failure,
 };
 use crate::device::{self as devices, emulator, simulator};
 use crate::error::{
-    BUILD_FAILED, CLI_USAGE, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_DEV_CHANNEL, ENV_DEVICE,
-    ENV_NO_EXECUTABLE, INTERRUPTED, RUN_APP_FAILED, SUCCESS,
+    BUILD_FAILED, CLI_USAGE, ENV_BUILD_WRITE, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_DEV_CHANNEL,
+    ENV_DEVICE, ENV_LOCK_HELD, ENV_NO_EXECUTABLE, INTERRUPTED, RUN_APP_FAILED, SUCCESS,
 };
 use crate::interrupt;
 use crate::output::Output;
@@ -242,7 +245,7 @@ pub(super) fn session(
             return diagnostic.code.exit_code();
         }
     };
-    let build_identity = resolved.config.build_id(fingerprint, &toolchain());
+    let build_identity = resolved.config.build_id(fingerprint, &build::toolchain());
     let build_id = build_identity.to_hex();
     let token = random_hex();
     let session = random_hex();
@@ -262,13 +265,8 @@ pub(super) fn session(
     // `viso run` again.
     let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
     let manifest = canonical.join("Cargo.toml");
-    let triple = match platform {
-        Some(Platform::Ios) => Some(viso_package::apple::simulator_triple()),
-        Some(Platform::Android) => Some(viso_package::android::Abi::host().triple()),
-        None if target == Target::WebGpu => Some(viso_package::web::TRIPLE),
-        None => None,
-    };
-    let rust = match RustScope::read(&manifest, triple, &ctx.cargo_args()) {
+    let triple = build::rust_plan(target, Profile::Dev, None).target;
+    let rust = match RustScope::read(&manifest, triple.as_deref(), &ctx.cargo_args()) {
         Ok(rust) => rust,
         Err(why) => {
             out.log(
@@ -392,17 +390,22 @@ pub(super) fn session(
     let plan = deploy.plan();
     let built = Mutex::new(tx.clone());
     let build = BuildCommand {
-        cargo: std::env::var_os("CARGO").map_or_else(|| "cargo".into(), PathBuf::from),
+        cargo: cargo::program(),
         manifest,
         quiet: ctx.global.quiet,
         piped: ctx.global.json,
         target_dir: ctx.target_dir(),
         cargo_args: ctx.cargo_args(),
         build_args: ctx.cargo_build_args(),
-        target: plan.target,
-        rustc_args: plan.rustc_args,
-        env: plan.env,
+        profile: Profile::Dev,
+        profile_args: cargo::profile_args(Profile::Dev, &resolved.config.settings, target.is_web()),
+        hot_reload: true,
+        target: plan.rust.target,
+        rustc_args: plan.rust.rustc_args,
+        env: plan.rust.env,
         package: plan.package,
+        // `viso build` of the target waits while this one builds.
+        lock: Some((layout.clone(), target)),
     };
     out.verbose(|| build.describe());
     let mut builds = RustBuild::new(build, move |event| {
@@ -419,6 +422,9 @@ pub(super) fn session(
     builds.launched(&exe);
     if let Deploy::Emulator { device, .. } = &mut deploy {
         device.serial = serial;
+    }
+    if !out.human() {
+        dev_artifact(out, &deploy, &exe, &root, &layout, target, &build_id);
     }
 
     // A page's dev channel comes through the web dev server; any other app
@@ -740,7 +746,9 @@ fn launch_build(
                         BuildFailure::Spawn(_) => ENV_CARGO,
                         BuildFailure::Failed { .. } | BuildFailure::Cancelled => BUILD_FAILED,
                         BuildFailure::Executables(_) => ENV_NO_EXECUTABLE,
-                        BuildFailure::Package(_) => ENV_DEVICE,
+                        BuildFailure::Package(_) | BuildFailure::Tool(_) => ENV_DEVICE,
+                        BuildFailure::Lock(_) => ENV_LOCK_HELD,
+                        BuildFailure::Write(_) => ENV_BUILD_WRITE,
                     };
                     let notes = match &failure {
                         BuildFailure::Executables(executables) => executables
@@ -749,7 +757,7 @@ fn launch_build(
                             .collect(),
                         _ => Vec::new(),
                     };
-                    out.failure(code, &build_failure(&failure), &notes)
+                    out.failure(code, &failure.message(), &notes)
                 })?);
                 continue;
             }
@@ -798,20 +806,6 @@ fn snapshot(exe: PathBuf, dev: &mut DevSession, app: &App, out: &mut Output) -> 
         app.close();
         Restart::Closing { exe, since }
     }
-}
-
-/// The compiler identity of the build: `rustc -V`, or `unknown` when it does
-/// not run.
-fn toolchain() -> Toolchain {
-    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
-    let version = Command::new(rustc)
-        .arg("-V")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map_or_else(|| "unknown".to_string(), |v| v.trim().to_string());
-    Toolchain::new(version, Toolchain::current_host())
 }
 
 /// 128 bits from the process's randomly keyed hasher, as 32 hex digits. The
@@ -888,7 +882,12 @@ fn relay(
         Incoming::Link(event) => dev.link(event, out),
         Incoming::Control(call) => dev.control(call, out),
         Incoming::Booted(_) => {}
-        Incoming::Build(BuildEvent::Log { level, line }) => out.log(level, "tool", &line),
+        Incoming::Build(BuildEvent::Cargo(CargoEvent::Log { level, line })) => {
+            out.log(level, "tool", &line)
+        }
+        Incoming::Build(BuildEvent::Cargo(CargoEvent::Diagnostic(diagnostic))) => {
+            out.rust(dev.root(), &diagnostic)
+        }
         Incoming::Build(BuildEvent::Rescoped(Ok(rust))) => dev.rescope(rust),
         Incoming::Build(BuildEvent::Rescoped(Err(why))) => out.log(
             "warn",
@@ -921,6 +920,52 @@ fn exit_code(out: &mut Output, status: std::io::Result<Ended>) -> u8 {
             &[],
         ),
     }
+}
+
+/// Reports the dev artifact `exe` the session launches as an `artifact`
+/// event: the executable, the `.app`, the APK, or a page's module.
+fn dev_artifact(
+    out: &mut Output,
+    deploy: &Deploy,
+    exe: &Path,
+    root: &Path,
+    layout: &viso_project::Layout,
+    target: Target,
+    build_id: &str,
+) {
+    let (kind, path) = match deploy {
+        Deploy::Host { .. } => ("binary", exe.to_owned()),
+        Deploy::Simulator { .. } => ("app-bundle", exe.to_owned()),
+        Deploy::Emulator { .. } => ("apk", exe.to_owned()),
+        Deploy::Browser { .. } => {
+            let bin = exe.file_name().map(|n| n.to_string_lossy().into_owned());
+            (
+                "wasm",
+                exe.join(format!("{}_bg.wasm", bin.unwrap_or_default())),
+            )
+        }
+    };
+    let Ok((size, hash)) = build::hash(&path) else {
+        return;
+    };
+    let platform = build::platform(layout, target);
+    let name = relative(root, &path)
+        .iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    out.artifact(
+        &crate::output::Artifact {
+            kind,
+            path: &name,
+            target: &platform,
+            profile: Profile::Dev.as_str(),
+            build_id,
+            size,
+            hash: &hash,
+        },
+        String::new,
+    );
 }
 
 fn relative<'a>(root: &Path, path: &'a Path) -> &'a Path {

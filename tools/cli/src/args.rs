@@ -97,6 +97,8 @@ pub enum Command {
     /// Manage the Android Emulator profiles `viso run android` runs on.
     #[command(subcommand)]
     Android(AndroidCommand),
+    /// Build the app for a target and write it to `dist/`, without running it.
+    Build(BuildArgs),
     /// Check the project's `.vs` sources and `Viso.toml` without building.
     Check,
     /// Remove `target/viso/`: builds, caches and dev state, never `dist/`.
@@ -122,6 +124,49 @@ pub enum Command {
     Serve(ServeArgs),
     /// Run the project's headless tests of a domain.
     Test(TestArgs),
+}
+
+/// What `viso build` builds.
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    /// What to build for: this machine when omitted.
+    #[arg(value_enum)]
+    pub target: Option<BuildTarget>,
+    /// Build the release profile: `--profile release`.
+    #[arg(long)]
+    pub release: bool,
+}
+
+/// The targets `viso build` builds for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum BuildTarget {
+    /// No window and no device, for tests and tooling.
+    Headless,
+    /// The iOS Simulator.
+    Ios,
+    /// The Android Emulator.
+    Android,
+    /// A browser, the Viso renderer on WebGPU.
+    WebGpu,
+    /// A browser, DOM output.
+    WebDom,
+    /// A browser, DOM with WebGPU islands.
+    WebHybrid,
+}
+
+impl BuildTarget {
+    /// The target it names.
+    pub fn target(self) -> viso_project::Target {
+        use viso_project::Target;
+        match self {
+            BuildTarget::Headless => Target::Headless,
+            BuildTarget::Ios => Target::Ios,
+            BuildTarget::Android => Target::Android,
+            BuildTarget::WebGpu => Target::WebGpu,
+            BuildTarget::WebDom => Target::WebDom,
+            BuildTarget::WebHybrid => Target::WebHybrid,
+        }
+    }
 }
 
 /// What `viso fmt` formats.
@@ -422,6 +467,7 @@ impl Command {
                 DeviceCommand::Stop(_) => "android emulator stop",
                 DeviceCommand::Delete(_) => "android emulator delete",
             },
+            Command::Build(_) => "build",
             Command::Check => "check",
             Command::Clean => "clean",
             Command::Completion(_) => "completion",

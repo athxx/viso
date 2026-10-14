@@ -40,16 +40,18 @@ pub use cache::{
 };
 pub use config::{
     ENV_OPT_LEVEL, ENV_PROFILE, ENV_SOURCE_MAPS, ENV_STRIP, ENV_VARS, Env, Origin, Overrides,
-    ProfileSettings, Resolved, ResolvedConfig, Sourced, resolve,
+    ProfileSettings, Resolved, ResolvedConfig, Sourced, WebSettings, resolve,
 };
 pub use device::{DeviceProfile, DeviceStore, Platform, Preset, Selection};
 pub use diag::{ConfigCode, ConfigDiagnostic, Severity, Span};
 pub use discovery::{MANIFEST_NAME, Project, find_root};
 pub use fingerprint::{BuildId, FINGERPRINT_VERSION, Hash128, ProjectFingerprint, Toolchain};
 pub use format::format_manifest;
-pub use manifest::{CollisionDelivery, GameDeterminism, Manifest, ParseOutcome, Spanned, nearest};
+pub use manifest::{
+    CollisionDelivery, GameDeterminism, Manifest, ParseOutcome, Spanned, WebProfileConfig, nearest,
+};
 pub use settings::{Entry, KEYS, Value, setting, settings};
-pub use target::{ArtifactKind, DevRuntime, HostOs, OptLevel, Profile, Target};
+pub use target::{ArtifactKind, Auto, DevRuntime, HostOs, OptLevel, Profile, Target, WebOptimize};
 
 /// Locates a project and resolves its configuration in one step.
 ///

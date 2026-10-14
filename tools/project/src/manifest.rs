@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{Document, Item, TableLike};
 
 use crate::diag::{ConfigCode, ConfigDiagnostic, Span};
-use crate::target::{OptLevel, Profile, Target};
+use crate::target::{Auto, OptLevel, Profile, Target, WebOptimize};
 
 /// A value together with the position in `Viso.toml` it was read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +103,28 @@ pub struct ProfileConfig {
     pub source_maps: Option<Spanned<bool>>,
     /// Symbol-stripping override.
     pub strip: Option<Spanned<bool>>,
+    /// `[profile.X.web]`.
+    pub web: WebProfileConfig,
+}
+
+/// `[profile.X.web]`: how a web build of the profile is optimized. `strip`
+/// and `source_maps` fall back to the profile's own.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WebProfileConfig {
+    /// `optimize`: `none`, `speed` or `size`.
+    pub optimize: Option<Spanned<WebOptimize>>,
+    /// `strip`: the name and producers sections, and the debug info.
+    pub strip: Option<Spanned<bool>>,
+    /// `source_maps`: the module keeps its debug info.
+    pub source_maps: Option<Spanned<bool>>,
+    /// `brotli`: a `.br` beside each file.
+    pub brotli: Option<Spanned<bool>>,
+    /// `gzip`: a `.gz` beside each file.
+    pub gzip: Option<Spanned<bool>>,
+    /// `split`: the module split into a startup and a lazy part.
+    pub split: Option<Spanned<Auto>>,
+    /// `threads`: a shared-memory, threaded module.
+    pub threads: Option<Spanned<Auto>>,
 }
 
 /// The three `[profile.X]` tables.
@@ -714,7 +736,7 @@ impl<'a> Reader<'a> {
         let label = format!("profile.{profile}");
         self.deny_unknown_except(
             t,
-            &["opt_level", "source_maps", "strip"],
+            &["opt_level", "source_maps", "strip", "web"],
             HOT_RELOAD_SYNONYMS,
             &label,
         );
@@ -745,10 +767,68 @@ impl<'a> Reader<'a> {
             self.diags.push(diag);
         }
 
+        let web = match self.table(t, "web") {
+            Some(w) => {
+                let label = format!("{label}.web");
+                self.deny_unknown(
+                    w,
+                    &[
+                        "optimize",
+                        "strip",
+                        "source_maps",
+                        "brotli",
+                        "gzip",
+                        "split",
+                        "threads",
+                    ],
+                    &label,
+                );
+                let optimize = WebOptimize::ALL.map(|o| (o.as_str(), o));
+                let auto = Auto::ALL.map(|a| (a.as_str(), a));
+                WebProfileConfig {
+                    optimize: self.choice(w, "optimize", &label, &optimize),
+                    strip: self.boolean(w, "strip", &label),
+                    source_maps: self.boolean(w, "source_maps", &label),
+                    brotli: self.boolean(w, "brotli", &label),
+                    gzip: self.boolean(w, "gzip", &label),
+                    split: self.choice(w, "split", &label, &auto),
+                    threads: self.choice(w, "threads", &label, &auto),
+                }
+            }
+            None => WebProfileConfig::default(),
+        };
         ProfileConfig {
             opt_level: self.opt_level(t, "opt_level", &label),
             source_maps: self.boolean(t, "source_maps", &label),
             strip: self.boolean(t, "strip", &label),
+            web,
+        }
+    }
+
+    /// A string that names one of `options`, as the value it names.
+    fn choice<T: Copy>(
+        &mut self,
+        t: &dyn TableLike,
+        key: &str,
+        path: &str,
+        options: &[(&str, T)],
+    ) -> Option<Spanned<T>> {
+        let raw = self.string(t, key, path)?;
+        match options.iter().find(|(name, _)| *name == raw.value) {
+            Some((_, value)) => Some(Spanned::new(*value, raw.span)),
+            None => {
+                let names: Vec<String> = options.iter().map(|(n, _)| format!("`{n}`")).collect();
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!("`{path}.{key}` is not `{}`", raw.value),
+                    )
+                    .at(self.path)
+                    .span(raw.span)
+                    .note(format!("expected one of: {}", names.join(", "))),
+                );
+                None
+            }
         }
     }
 

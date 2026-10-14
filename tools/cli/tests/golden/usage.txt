@@ -24,6 +24,7 @@ MOBILE DEV ENVIRONMENT
 
 DEVELOP
   run         Build a dev artifact and run it, hot reloading edits as they are saved
+  build       Build the app for a target and write it to `dist/`, without running it
   serve       Build a dev artifact for a browser and serve it, hot reloading it
 
 LANGUAGE

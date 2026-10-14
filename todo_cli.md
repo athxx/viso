@@ -263,27 +263,31 @@ gap, and CI can run all of it headless.
 
 ### C1.6 — `viso build` (§14)
 
-- [ ] `build [<target>]` with profiles `dev`, `release`, `shipping` (`--release` is
-      `--profile release`); unknown profile C0009; `hot_reload` refused in
-      release/shipping (C0008, existing).
-- [ ] One Build Service shared by `run`, `build`, `package`, `test`: resolves profile
-      and target, computes the `BuildId`, runs cargo with the profile's flags, packs
-      for the target (`.app`, APK, web bundle) through `viso-package`, writes into
-      `target/viso/build/<build-id>/`; `run` keeps its dev features on top.
-- [ ] Build lock `build-<target>` (§44: non-blocking; a held lock is exit 3 with
-      holder pid, age and path; stale by age only, removed with a warning); `run`
-      and `build` of one target share it.
-- [ ] Artifact summary (§14.4): kind, path, size, profile, target, build id, stage
-      timings; `artifact` event (§36.2) for `build` and for `run` (`run` result also
-      reports `artifact` and `device`).
-- [ ] Web optimization policy `[profile.<name>.web]` (§14.3): `wasm-opt` level, strip,
-      split, brotli/gzip precompression, source maps — honoured by `build web-*`;
-      a missing optional tool (`wasm-opt`) is a warning in dev, an error in shipping.
-- [ ] Rust diagnostics from cargo's JSON become `diagnostic` events with spans
-      (existing in `run`, shared).
-- [ ] `run`/`serve` refusing a non-dev `--profile` names
-      `viso build --profile <name>` as its next command (`failure_next`) once
-      `build` exists; until then it is a note.
+- [x] `build [<target>]` with profiles `dev`, `release`, `shipping` (`--release` is
+      `--profile release`; `--release` with another `--profile` is a usage error);
+      unknown profile C0009; `hot_reload` refused in release/shipping (C0008).
+- [x] One Build Service (`tools/cli/src/build/`) shared by `run` and `build`
+      (`package` C5 and `test` C1.9 build through it): resolves profile and target,
+      computes the `BuildId`, runs cargo with the profile's flags (`shipping` is
+      Viso's own Cargo profile inheriting `release`), packs for the target (`.app`,
+      APK, web bundle) through `viso-package`, writes into
+      `target/viso/build/<build-id>/out/` and swaps it into `dist/<platform>/` whole
+      with its `artifact.json`; `run` keeps its dev features on top.
+- [x] Build lock `build-<target>` (§44: non-blocking for `build`; a held lock is
+      exit 3 with holder pid, age and path; stale by age only, taken over with a
+      warning); `run` waits for it before each of its builds.
+- [x] Artifact summary (§14.4): kind, path, size, profile, target, build id, hash;
+      stage timings under `--verbose`; `artifact` event (§36.2) for `build` and for
+      `run`'s launch build; `summary.artifact_count`.
+- [x] Web optimization policy `[profile.<name>.web]` (§14.3): `wasm-opt` level, strip,
+      brotli/gzip precompression, source maps — honoured by `build web-*`; a missing
+      `wasm-opt` is a warning in dev/release, `ENV_TOOL` in shipping.
+- [x] Rust diagnostics from cargo's JSON become `diagnostic` events with spans and
+      related labels under `--json`, in `build` and `run`.
+- [x] `run`/`serve` refusing a non-dev `--profile` names
+      `viso build --profile <name>` as its next command (`failure_next`).
+- [x] Ctrl-C kills cargo, `wasm-bindgen` and `wasm-opt` with their process trees,
+      removes the staging output, leaves `dist/` as it was, exits 130.
 
 ### C1.7 — `viso run` remaining options (§13.7)
 
@@ -462,8 +466,8 @@ service and the platform runtime backend stay separate.
 
 ### C3.5 — Mobile `build`, `test`, `logs`
 
-- [ ] `build ios|android` through the Build Service (C1.6): simulator `.app` /
-      emulator APK in dev; release builds unsigned unless C5 signing applies.
+- [x] `build ios|android` through the Build Service (C1.6): simulator `.app` (ad-hoc)
+      / emulator APK (dev APK in dev, release APK otherwise); device signing is C5.
 - [ ] `test --target ios|android --device <profile>`: UI tests on the simulator or
       emulator through the same runner protocol as headless (C1.9).
 - [ ] `ios logs [--device]`: the app's `log stream` as `log` events.
@@ -487,8 +491,12 @@ alternative.
 
 ### C4.2 — web-gpu remaining
 
-- [ ] `build web-gpu` through the Build Service with the optimization policy (C1.6),
-      output a static directory with hashed asset names and precompressed files.
+- [x] `build web-gpu` through the Build Service with the optimization policy (C1.6):
+      a static directory with precompressed files.
+- [ ] Hashed asset names in the web bundle (`app.<hash>.js`, `app_bg.<hash>.wasm`,
+      the page naming them) so a server can cache them forever.
+- [ ] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a
+      shared-memory threaded module (`auto` resolves to off until then).
 - [ ] `serve` security headers of §15.3 (COOP/COEP when threads are on, CSP, `nosniff`,
       correct MIME for `.wasm`), served precompressed when the client accepts it.
 - [ ] `serve --https`: self-signed loopback/LAN certificate generated and cached under
@@ -598,8 +606,8 @@ and traced from the CLI and from Studio over the same services.
 ### C7.1 — JSON protocol (§34–§37)
 
 - [x] Event envelope and stream; `diagnostic`, `progress`, `device`, `server`, `dev`,
-      `runtime`, `log`, `trace`, `test`, `result`, `summary`.
-- [ ] Remaining event types: `artifact` (C1.6), `profile` (C6), `doctor_check`
+      `runtime`, `log`, `trace`, `test`, `result`, `artifact`, `summary`.
+- [ ] Remaining event types: `profile` (C6), `doctor_check`
       (C1.3); every payload documented in `Viso_CLI.md` with an example.
 - [ ] Every command except `lsp`, `studio`, `completion` supports `--json`; a test
       runs each command with `--json` and checks the stream (C7.6).

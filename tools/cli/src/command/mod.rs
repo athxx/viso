@@ -1,6 +1,7 @@
 //! Command handlers. Each resolves what it needs, calls the owning service and
 //! returns the process exit code.
 
+mod build;
 mod check;
 mod clean;
 mod completion;
@@ -45,6 +46,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
         Command::Android(AndroidCommand::Emulator(command)) => {
             device::run(Platform::Android, command, out)
         }
+        Command::Build(args) => build::run(ctx, args, out),
         Command::Check => check::run(ctx, out),
         Command::Clean => clean::run(ctx, out),
         Command::Completion(args) => completion::run(ctx, args, out),

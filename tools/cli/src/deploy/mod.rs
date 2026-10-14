@@ -38,13 +38,15 @@ use std::time::{Duration, Instant};
 
 use viso_package::android::{self, Abi, Sdk, Shell};
 use viso_package::{apple, web as bundle};
-use viso_project::DeviceProfile;
+use viso_project::{DeviceProfile, Profile, Target};
 use viso_view::dev::wire::{
     DEV_BUILD_ENV, DEV_PREWARM_ENV, DEV_RESTORE_ENV, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
     DEV_TOKEN_ENV, DEV_WINDOW_ENV, WindowGeometry,
 };
 
-use crate::dev::build::{Package, Stamp, stamp};
+use crate::build::cargo::Package;
+use crate::build::{RustPlan, rust_plan};
+use crate::dev::build::{Stamp, stamp};
 use crate::device::emulator::{self, Device};
 use crate::device::simulator;
 
@@ -78,12 +80,8 @@ impl Vars<'_> {
 
 /// How the dev artifact is built for a deploy.
 pub(crate) struct BuildPlan {
-    /// The Rust target, when not the host.
-    pub(crate) target: Option<String>,
-    /// The arguments after `cargo rustc --`; `cargo build` when empty.
-    pub(crate) rustc_args: Vec<String>,
-    /// The variables Cargo runs with.
-    pub(crate) env: Vec<(String, OsString)>,
+    /// The Rust target, compiler arguments and environment.
+    pub(crate) rust: RustPlan,
     /// What wraps the executable.
     pub(crate) package: Option<Package>,
 }
@@ -342,18 +340,11 @@ impl Deploy {
     pub(crate) fn plan(&self) -> BuildPlan {
         match self {
             Deploy::Host { .. } => BuildPlan {
-                target: None,
-                rustc_args: Vec::new(),
-                env: Vec::new(),
+                rust: rust_plan(Target::Host, Profile::Dev, None),
                 package: None,
             },
             Deploy::Simulator { .. } => BuildPlan {
-                target: Some(apple::simulator_triple().to_owned()),
-                rustc_args: Vec::new(),
-                env: vec![(
-                    "IPHONEOS_DEPLOYMENT_TARGET".to_owned(),
-                    apple::MIN_IOS.into(),
-                )],
+                rust: rust_plan(Target::Ios, Profile::Dev, None),
                 package: Some(once_per_executable(|exe, bin, dir| {
                     let app = apple::bundle(exe, dir, bin, true)?;
                     apple::sign(&app.path, None, None, &dir.join("sign"))?;
@@ -362,19 +353,9 @@ impl Deploy {
             },
             Deploy::Emulator { sdk, shell, .. } => {
                 let abi = Abi::host();
-                let mut env: Vec<(String, OsString)> = sdk
-                    .cargo_env(abi)
-                    .into_iter()
-                    .map(|(k, v)| (k, v.into_os_string()))
-                    .collect();
-                // The debug info stays on the host: the APK carries the
-                // code only, so it installs in seconds.
-                env.push(("CARGO_PROFILE_DEV_STRIP".to_owned(), "debuginfo".into()));
                 let (sdk, shell) = (sdk.clone(), shell.clone());
                 BuildPlan {
-                    target: Some(abi.triple().to_owned()),
-                    rustc_args: android::RUSTC_ARGS.iter().map(|&a| a.to_owned()).collect(),
-                    env,
+                    rust: rust_plan(Target::Android, Profile::Dev, Some(&sdk)),
                     package: Some(once_per_executable(move |exe, bin, dir| {
                         sdk.package(exe, abi, dir, bin, &shell, android::Flavor::Dev)
                             .map(|apk| apk.path)
@@ -386,9 +367,7 @@ impl Deploy {
                 // while the next is written.
                 let turn = std::sync::atomic::AtomicBool::new(false);
                 BuildPlan {
-                    target: Some(bundle::TRIPLE.to_owned()),
-                    rustc_args: Vec::new(),
-                    env: Vec::new(),
+                    rust: rust_plan(Target::WebGpu, Profile::Dev, None),
                     package: Some(once_per_executable(move |exe, bin, dir| {
                         let slot = if turn.fetch_xor(true, std::sync::atomic::Ordering::Relaxed) {
                             "web-b"

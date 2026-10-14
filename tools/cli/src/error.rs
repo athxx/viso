@@ -73,8 +73,11 @@ codes! {
     ENV_SOURCE_WRITE = ENVIRONMENT, "A source file the command rewrites could not be written.";
     ENV_LOCK_HELD = ENVIRONMENT, "Another viso process holds a lock the command needs free.";
     ENV_REMOVE = ENVIRONMENT, "A file or directory the command removes could not be removed.";
+    ENV_BUILD_WRITE = ENVIRONMENT, "The build's output could not be written.";
+    ENV_TOOL = ENVIRONMENT, "A tool the build needs is not installed or could not be run.";
 
     BUILD_FAILED = BUILD, "`cargo build` failed.";
+    BUILD_PACKAGE = BUILD, "The built app could not be packaged for its target.";
     RUN_APP_FAILED = RUNTIME, "The app could not be launched, crashed, or exited with a failure.";
 
     TEST_INPUT_INVALID = DIAGNOSTICS, "A test scenario or tape does not parse or fit the build.";

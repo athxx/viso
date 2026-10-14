@@ -86,8 +86,9 @@ pub use control::{Control, ControlCall, ControlDeliver, ControlReply};
 pub use link::{Deliver, Expect, LinkEvent, Traffic};
 pub use watch::Change;
 
+use crate::build::cargo::BuildFailure;
 use crate::output::{DevIds, Output, Source};
-use build::{Build, BuildFailure};
+use build::Build;
 use cargo::RustScope;
 use report::{
     Outcome, PatchStatus, RebuildEvent, ReloadEvent, RuntimeStatus, RustState, intern_code,
@@ -391,7 +392,7 @@ impl DevSession {
                 out.log(
                     "error",
                     "tool",
-                    &format!("{}; the app keeps running", build_failure(failure)),
+                    &format!("{}; the app keeps running", failure.message()),
                 );
                 let codes = match failure {
                     BuildFailure::Failed { codes, .. } => codes.clone(),
@@ -1115,6 +1116,11 @@ impl DevSession {
         self.finish_restart(Outcome::WarmRestarted, true, Vec::new(), out);
     }
 
+    /// The project root, canonical.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
     /// The lock this session holds, to publish its control endpoint in.
     pub fn lock_mut(&mut self) -> &mut LockGuard {
         &mut self._lock
@@ -1733,20 +1739,6 @@ fn quoted(names: &[String]) -> String {
         .map(|name| format!("`{name}`"))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// What a build that gave no executable says of it.
-pub(crate) fn build_failure(failure: &BuildFailure) -> String {
-    match failure {
-        BuildFailure::Spawn(why) => why.clone(),
-        BuildFailure::Failed { status, .. } => format!("`cargo build` failed ({status})"),
-        BuildFailure::Executables(executables) if executables.is_empty() => {
-            "the package builds no executable".to_owned()
-        }
-        BuildFailure::Executables(_) => "the package builds more than one executable".to_owned(),
-        BuildFailure::Package(why) => format!("cannot package the app: {why}"),
-        BuildFailure::Cancelled => "the build was cancelled".to_owned(),
-    }
 }
 
 fn elapsed_us(since: Instant) -> u64 {

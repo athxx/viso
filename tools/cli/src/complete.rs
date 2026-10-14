@@ -144,7 +144,14 @@ mod tests {
             [
                 "profile.release.opt_level",
                 "profile.release.source_maps",
-                "profile.release.strip"
+                "profile.release.strip",
+                "profile.release.web.optimize",
+                "profile.release.web.strip",
+                "profile.release.web.source_maps",
+                "profile.release.web.brotli",
+                "profile.release.web.gzip",
+                "profile.release.web.split",
+                "profile.release.web.threads",
             ]
         );
     }

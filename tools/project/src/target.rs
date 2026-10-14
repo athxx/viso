@@ -91,6 +91,11 @@ impl Target {
         )
     }
 
+    /// Whether the target runs in a browser.
+    pub const fn is_web(self) -> bool {
+        matches!(self, Target::WebGpu | Target::WebDom | Target::WebHybrid)
+    }
+
     /// The diagnostic for asking for an unavailable target.
     ///
     /// Exit code 3 (environment), not 1 — nothing in the user's project is wrong.
@@ -270,6 +275,21 @@ impl Profile {
         matches!(self, Profile::Dev)
     }
 
+    /// How the profile optimizes a web module by default.
+    pub const fn default_web_optimize(self) -> WebOptimize {
+        match self {
+            Profile::Dev => WebOptimize::None,
+            Profile::Release => WebOptimize::Speed,
+            Profile::Shipping => WebOptimize::Size,
+        }
+    }
+
+    /// Whether the profile writes precompressed copies of a web bundle by
+    /// default.
+    pub const fn default_web_precompress(self) -> bool {
+        matches!(self, Profile::Shipping)
+    }
+
     /// Every profile, in increasing-optimization order.
     pub const ALL: &'static [Profile] = &[Profile::Dev, Profile::Release, Profile::Shipping];
 }
@@ -307,6 +327,53 @@ impl fmt::Display for DevRuntime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// How a web build's module is optimized after it is linked (`wasm-opt`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WebOptimize {
+    /// Not at all.
+    None,
+    /// For speed.
+    Speed,
+    /// For size.
+    Size,
+}
+
+impl WebOptimize {
+    /// The name `[profile.X.web] optimize` takes.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            WebOptimize::None => "none",
+            WebOptimize::Speed => "speed",
+            WebOptimize::Size => "size",
+        }
+    }
+
+    /// Every value, for parsing and messages.
+    pub const ALL: [WebOptimize; 3] = [WebOptimize::None, WebOptimize::Speed, WebOptimize::Size];
+}
+
+/// A web build feature the build turns on where the target supports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Auto {
+    /// On where supported.
+    Auto,
+    /// Off.
+    Off,
+}
+
+impl Auto {
+    /// The name the manifest takes.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Auto::Auto => "auto",
+            Auto::Off => "off",
+        }
+    }
+
+    /// Every value, for parsing and messages.
+    pub const ALL: [Auto; 2] = [Auto::Auto, Auto::Off];
 }
 
 /// Optimization level, mapping onto the backend's own scale.

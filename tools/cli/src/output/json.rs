@@ -15,7 +15,7 @@ use crate::dev::report::{RebuildEvent, ReloadEvent, RuntimeStatus};
 use viso_ende::JsonWriter;
 use viso_view::dev::wire::Stage;
 
-use super::{DevIds, Location, Report, Source};
+use super::{Artifact, DevIds, Location, Report, Source};
 
 /// The envelope's schema name.
 const SCHEMA: &str = "viso.cli.event";
@@ -77,6 +77,28 @@ impl Stream {
             w.string(name);
             w.name("state");
             w.string(state);
+            w.end_object();
+        });
+    }
+
+    /// Writes an `artifact` event.
+    pub(super) fn artifact(&mut self, artifact: &Artifact<'_>) {
+        self.event("artifact", |w| {
+            w.begin_object();
+            for (name, value) in [
+                ("kind", artifact.kind),
+                ("path", artifact.path),
+                ("target", artifact.target),
+                ("profile", artifact.profile),
+                ("build_id", artifact.build_id),
+            ] {
+                w.name(name);
+                w.string(value);
+            }
+            w.name("size");
+            w.uint(artifact.size);
+            w.name("hash");
+            w.string(artifact.hash);
             w.end_object();
         });
     }
@@ -223,6 +245,7 @@ impl Stream {
         code: u8,
         errors: usize,
         warnings: usize,
+        artifacts: usize,
         checked: Option<(&str, usize)>,
     ) {
         let elapsed = self.started.elapsed().as_millis() as u64;
@@ -243,7 +266,7 @@ impl Stream {
             w.name("error_count");
             w.uint(errors as u64);
             w.name("artifact_count");
-            w.uint(0);
+            w.uint(artifacts as u64);
             if let Some((package, files)) = checked {
                 w.name("package");
                 w.string(package);

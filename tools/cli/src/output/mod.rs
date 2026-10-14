@@ -9,7 +9,7 @@ pub mod json;
 
 use std::borrow::Cow;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use viso_dsl::diag::Fix;
 use viso_dsl::{Diagnostic, LineIndex, Severity, TextSize};
@@ -17,6 +17,7 @@ use viso_ende::JsonWriter;
 use viso_project::ConfigDiagnostic;
 
 use crate::args::{ColorChoice, Global};
+use crate::build::cargo::RustDiagnostic;
 use crate::dev::report::{RebuildEvent, ReloadEvent, RuntimeStatus};
 use crate::error::Code;
 
@@ -204,6 +205,22 @@ pub struct Test<'a> {
     pub message: Option<&'a str>,
 }
 
+/// One artifact a build wrote.
+pub struct Artifact<'a> {
+    /// `binary`, `app-bundle`, `apk`, `wasm`, `js`, `html`, `brotli`,
+    /// `gzip`, `manifest`.
+    pub kind: &'a str,
+    /// Relative to the project root, with `/` separators.
+    pub path: &'a str,
+    /// The platform the host target resolves to, or the target.
+    pub target: &'a str,
+    pub profile: &'a str,
+    pub build_id: &'a str,
+    pub size: u64,
+    /// `sha256:<hex>`.
+    pub hash: &'a str,
+}
+
 /// The output of one command run.
 pub struct Output {
     form: Form,
@@ -213,6 +230,7 @@ pub struct Output {
     color: bool,
     errors: usize,
     warnings: usize,
+    artifacts: usize,
     checked: Option<(String, usize)>,
 }
 
@@ -235,6 +253,7 @@ impl Output {
             color: !global.json && colored(global.color),
             errors: 0,
             warnings: 0,
+            artifacts: 0,
             checked: None,
         }
     }
@@ -285,6 +304,80 @@ impl Output {
                 fixes: Vec::new(),
             },
         );
+    }
+
+    /// Reports a compiler diagnostic of the Rust build, with the lines its
+    /// spans point at when their files can be read; names are relative to
+    /// `root`.
+    pub fn rust(&mut self, root: &Path, diagnostic: &RustDiagnostic) {
+        let mut texts: Vec<(&PathBuf, String)> = Vec::new();
+        for span in &diagnostic.spans {
+            if !texts.iter().any(|(path, _)| *path == &span.file)
+                && let Ok(text) = std::fs::read_to_string(&span.file)
+            {
+                texts.push((&span.file, text));
+            }
+        }
+        let sources: Vec<Source<'_>> = texts
+            .iter()
+            .map(|(path, text)| Source::new(path, root, text))
+            .collect();
+        let find = |file: &Path| sources.iter().find(|source| source.path == file);
+        let location = match diagnostic.spans.first() {
+            Some(span) => match find(&span.file) {
+                Some(source) => Location::Span(source, span.byte_start..span.byte_end),
+                None => Location::Point {
+                    file: Source::new(&span.file, root, "").name,
+                    line: span.line,
+                    column: span.column,
+                },
+            },
+            None => Location::None,
+        };
+        let related = diagnostic
+            .spans
+            .iter()
+            .skip(1)
+            .filter_map(|span| {
+                Some(Secondary {
+                    source: find(&span.file)?,
+                    range: span.byte_start..span.byte_end,
+                    label: span.label.as_deref()?,
+                })
+            })
+            .collect();
+        // The primary span's label says what is wrong there.
+        let notes: Vec<String> = diagnostic
+            .spans
+            .first()
+            .and_then(|span| span.label.clone())
+            .into_iter()
+            .chain(diagnostic.notes.iter().cloned())
+            .collect();
+        self.emit(
+            diagnostic.severity == "error",
+            &Report {
+                severity: diagnostic.severity,
+                code: &diagnostic.code,
+                message: &diagnostic.message,
+                location,
+                related,
+                expected: &[],
+                actual: None,
+                notes: &notes,
+                fixes: Vec::new(),
+            },
+        );
+    }
+
+    /// Reports an artifact a build wrote: an `artifact` event, or the human
+    /// row `text` builds on stdout.
+    pub fn artifact(&mut self, artifact: &Artifact<'_>, text: impl FnOnce() -> String) {
+        self.artifacts += 1;
+        match &mut self.form {
+            Form::Json(stream) => stream.artifact(artifact),
+            Form::Human => print!("{}", text()),
+        }
     }
 
     /// Reports an error the CLI itself raised, under its own `code`, and
@@ -487,7 +580,7 @@ impl Output {
                 }
             }
             Form::Json(mut stream) => {
-                stream.summary(code, self.errors, self.warnings, checked);
+                stream.summary(code, self.errors, self.warnings, self.artifacts, checked);
             }
         }
         code

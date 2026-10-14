@@ -17,6 +17,7 @@ MOBILE DEV ENVIRONMENT
 
 DEVELOP
   run         Build a dev artifact and run it, hot reloading edits as they are saved
+  build       Build the app for a target and write it to `dist/`, without running it
   serve       Build a dev artifact for a browser and serve it, hot reloading it
 
 LANGUAGE
@@ -616,6 +617,40 @@ Notes:
   `viso ios simulator list` and `viso android emulator list`. The web targets
   build for a browser and serve it as `viso serve` does. The app's own arguments
   follow `--`.
+
+$ viso build --help
+Build the app for a target and write it to `dist/`, without running it
+
+Usage: viso build [OPTIONS] [TARGET]
+
+Examples:
+  viso build                             # build the app for this machine into `dist/`
+  viso build web-gpu --profile shipping  # the smallest web bundle, precompressed
+  viso build ios --release --json        # a release `.app`, as JSON events
+
+Arguments:
+  [TARGET]  What to build for: this machine when omitted [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+
+Options:
+      --release  Build the release profile: `--profile release`
+  -h, --help     Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  The sources are checked first. The output replaces `dist/<platform>/` whole, with
+  its `artifact.json`; `ios` builds for the Simulator and `android` for the Emulator.
+  `[profile.<name>.web]` in `Viso.toml` shapes a web bundle.
 
 $ viso serve --help
 Build a dev artifact for a browser and serve it, hot reloading it

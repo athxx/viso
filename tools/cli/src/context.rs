@@ -86,6 +86,21 @@ impl<'a> Context<'a> {
         self.load_with(target, artifact, &flags, out)
     }
 
+    /// As [`load`](Self::load), with the profile the command line named in
+    /// its own way: `viso build --release`.
+    pub fn load_as(
+        &self,
+        target: Target,
+        artifact: ArtifactKind,
+        profile: Option<Profile>,
+        out: &mut Output,
+    ) -> Result<Loaded, u8> {
+        let flags = Overrides {
+            profile: profile.or(self.global.profile.map(|p| p.profile())),
+        };
+        self.load_with(target, artifact, &flags, out)
+    }
+
     /// As [`load`](Self::load), for a command that only ever builds the dev
     /// profile: another `--profile` is a usage error, and the environment's
     /// is not consulted.
@@ -102,12 +117,11 @@ impl<'a> Context<'a> {
     pub fn dev_only(&self, command: &str, out: &mut Output) -> Result<(), u8> {
         match self.global.profile.map(|p| p.profile()) {
             None | Some(Profile::Dev) => Ok(()),
-            Some(profile) => Err(out.failure(
+            Some(profile) => Err(out.failure_next(
                 CLI_USAGE,
                 &format!("`viso {command}` builds the dev profile, not `{profile}`"),
-                &[format!(
-                    "a {profile} artifact is built by `viso build --profile {profile}`"
-                )],
+                &[format!("a {profile} artifact is built by `viso build`")],
+                &[format!("viso build --profile {profile}")],
             )),
         }
     }

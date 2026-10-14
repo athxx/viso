@@ -701,7 +701,7 @@ viso config set arbitrary.deep.key ...
 
 `show`/`get`/`path` 各输出一条 `result`（`show`：`{key: {value, origin, from?}}` 映射，key 顺序固定；`get`：`{key, value, origin, from?}`；`path`：`{path}`）。`value` 带 JSON 类型（字符串、数字、布尔、字符串数组；未设置且无默认值为 `null`）；`origin` 为 provenance 名，`from` 在 `env`/`profile`/`manifest` 时给出具体位置（`env VISO_OPT_LEVEL`、`Viso.toml [profile.release]:5:9`、`Viso.toml:2:8`）。`validate` 每个问题一条 `diagnostic`（C0001–C0012，manifest 与环境变量的问题一次报全），全部通过时一条 `result{path}`。`get` 未知 key 为 `CLI_USAGE`（exit 2，note 给出最接近的 key）。Exit code 按 §7 的 config 诊断映射；`validate` 无 error 时 0。
 
-Key 集合是完整的 schema：`profile`、`opt_level`、`source_maps`、`strip`（当前 profile 的值，经全部层解析）、`dev_runtime`（由 profile 决定），`package.*`，`profile.<dev|release|shipping>.<opt_level|source_maps|strip>`（以该 profile 构建时得到的值，环境变量同样作用），以及 `web.*`、`target.*`、`export.*`、`game.*`、`i18n.source`、`workspace.members`（manifest 值或框架默认值）。`--profile` 决定"当前 profile"。
+Key 集合是完整的 schema：`profile`、`opt_level`、`source_maps`、`strip`（当前 profile 的值，经全部层解析）、`dev_runtime`（由 profile 决定），`package.*`，`profile.<dev|release|shipping>.<opt_level|source_maps|strip>` 与 `profile.<…>.web.<optimize|strip|source_maps|brotli|gzip|split|threads>`（以该 profile 构建时得到的值，环境变量同样作用），以及 `web.*`、`target.*`、`export.*`、`game.*`、`i18n.source`、`workspace.members`（manifest 值或框架默认值）。`--profile` 决定"当前 profile"。
 
 ---
 
@@ -1157,7 +1157,8 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
   - Rust 改动的 warm restart 在新 artifact 打包完成后才停止旧 app；
   - `web-dom`/`web-hybrid` 以 `TargetUnavailable` 退出；
 - `viso ios simulator` / `viso android emulator` 的 `list|create|start|stop|delete`（§11.4、§12.4）：profile 存于 `~/.viso/ios/simulators/<id>.toml` / `~/.viso/android/emulators/<id>.toml`（`preset`、`system`、`device`，`$VISO_HOME` 可改 root）；iOS 以最新已安装 runtime 与对应 iPhone/iPad 机型创建 Simulator，Android 不依赖 `avdmanager`，直接按最新（或 `--api` 指定）已安装 system image 写出 AVD `viso_<id>`；`start --no-window` 无窗口启动 emulator；`list` 列出 `NAME PROFILE STATUS SYSTEM`；
-- 尚未实现：`viso android|ios list|use|doctor`、`viso serve --https`、§13.7 中 `--no-hot-reload`、`--device`、`--browser` 之外的 options、`artifact` 事件。
+- Dev artifact 与 `viso build` 共用 Build Service（§14.5）：以 dev profile 的 `--profile dev` 与 `[profile.dev]` 设置构建；每次 build 前取 `build-<target>.lock`，被 `viso build` 占用时等待（输出一条 `log`）而不失败；`--json` 下 launch build 之后输出一条 `artifact`（host `binary`、iOS `app-bundle`、Android `apk`、web `wasm`，`path` 相对 project root），Rust 编译诊断为带 span 的 `diagnostic`；
+- 尚未实现：`viso android|ios list|use|doctor`、`viso serve --https`、§13.7 中 `--no-hot-reload`、`--device`、`--browser` 之外的 options。
 
 ---
 
@@ -1218,19 +1219,55 @@ source_maps = false
 
 高级用户可通过显式 config/flag 覆盖 policy。
 
+`[profile.<name>.web]` 的 key 与默认值（`viso config show` 中为 `profile.<name>.web.<key>`）：
+
+```text
+optimize     none|speed|size   dev none，release speed，shipping size
+strip        bool              默认随该 profile 的 strip（及其来源）
+source_maps  bool              默认随该 profile 的 source_maps（及其来源）
+brotli       bool              shipping true，其余 false
+gzip         bool              shipping true，其余 false
+split        auto|off          auto
+threads      auto|off          auto
+```
+
+- `VISO_STRIP`/`VISO_SOURCE_MAPS` 仍优先于 web 子表（§10 的层序）；
+- `source_maps` 让 `wasm-bindgen` 保留 DWARF（`--keep-debug`）并让 Cargo 生成 debug info；`strip` 去掉 name 与 producers section；
+- `optimize` 经 `wasm-opt`（`-O3`/`-Oz`，启用 Rust 默认产生的 bulk-memory、mutable-globals、nontrapping-float-to-int、sign-ext、reference-types、multivalue）；保留 names/debug info 时加 `-g`。`wasm-opt` 缺失：dev/release 输出 `log{level:"warn"}` 并保留未优化模块，shipping 以 `ENV_TOOL`（exit 3）失败；
+- `brotli`/`gzip` 在每个 `.wasm`/`.js`/`.html` 旁写 `.br`（quality 11、window 24）与 `.gz`（level 9），各文件并行压缩；
+- `split`/`threads` 的 `auto` 当前解析为不拆分、单线程（拆分与 shared-memory 线程模块见 C4.2）。
+
 ### 14.4 Artifact summary
 
 Human output：
 
 ```text
-Built web-gpu (shipping)
-  wasm      dist/app.wasm       1.82 MiB
-  js        dist/app.js         18 KiB
-  assets    dist/assets/        6 files
-  brotli    dist/app.wasm.br    612 KiB
+Built web-gpu (shipping) in 41.3 s
+  js         dist/web/app.js              18.0 KiB
+  brotli     dist/web/app.js.br           4.1 KiB
+  gzip       dist/web/app.js.gz           5.0 KiB
+  wasm       dist/web/app_bg.wasm         1.82 MiB
+  brotli     dist/web/app_bg.wasm.br      612 KiB
+  gzip       dist/web/app_bg.wasm.gz      744 KiB
+  html       dist/web/index.html          402 B
+  brotli     dist/web/index.html.br       233 B
+  gzip       dist/web/index.html.gz       281 B
+  manifest   dist/web/artifact.json       1.1 KiB
 ```
 
-`--json` 事件：`progress`、`diagnostic`、每个产物一条 `artifact`、`summary`。Exit code：1（source/config diagnostics）、3（target/SDK unavailable、lock 被占用）、4（compile/link）。
+表头与各行写 stdout（`--quiet` 保留）；`--verbose` 另给出各阶段耗时（compile、package、publish）。`--json` 事件：`progress`、`diagnostic`（含 Rust 编译诊断，带 span）、每个产物一条 `artifact`（§36.2）、`summary`（`artifact_count`）。Exit code：1（source/config diagnostics）、3（target/SDK/工具不可用、lock 被占用、输出写不出）、4（compile/link 失败 `BUILD_FAILED`，打包失败 `BUILD_PACKAGE`）、130（Ctrl-C）。
+
+### 14.5 Build Service
+
+`viso build` 与 `viso run` 共用同一 Build Service：
+
+1. 先做 `viso check` 的全部检查（manifest、`.vs`、catalog、assets）；有 error 时 exit 1，Cargo 不运行；
+2. 取 `build-<target>.lock`（§44，不等待）；
+3. Cargo profile：`dev`→`--profile dev`，`release`→`--profile release`，`shipping`→ Viso 自有的 Cargo profile（`--config profile.shipping.inherits="release" --profile shipping`）；`VISO_PROFILE` 为该 profile，dev profile 带 `--features viso/hot-reload`。Viso 设置以 `--config profile.<p>.opt-level|debug|strip` 交给 Cargo，只传与 Cargo 该 profile 默认不同、或被某一层显式命名的值（shipping 默认 `opt-level="s"`、`strip=true`）；web target 的 debug 随 web 子表、strip 交给 `wasm-bindgen`；
+4. target：host/headless 原生可执行文件；`ios` 为 simulator triple 的 `.app`（ad-hoc 签名）；`android` 为 emulator ABI 的 `cdylib` 打成 APK（dev 为 dev APK，release/shipping 为 release APK，debug keystore 签名）；`web-gpu` 为 `wasm32-unknown-unknown` 经 §14.3 的 bundle；
+5. 打包输出写入 `target/viso/build/<build-id>/out/`（不同 BuildId 互不覆盖），再整体复制（文件系统支持时 clone）为 `dist/` 下的同级临时目录，写入 `artifact.json`，以一次 rename 交换进 `dist/<platform>/`（macOS `renamex_np(RENAME_SWAP)`、Linux `renameat2(RENAME_EXCHANGE)`，不支持时先移开旧目录），旧输出随后删除——`dist/<platform>/` 只会是旧的完整输出或新的完整输出；
+6. `artifact.json`：`project`、`version`、`target`、`profile`、`build_id`、`toolchain`（`rustc -V`）、`signing`（`none|ad-hoc|debug-keystore`）、`artifacts[{kind, path（相对 artifact.json 所在目录）, size, hash}]`；
+7. Ctrl-C：杀掉 Cargo 与其下全部进程（及进行中的 `wasm-bindgen`/`wasm-opt`），删除 `out/`，`dist/` 不变，exit 130。
 
 ---
 
@@ -2338,17 +2375,24 @@ CLI_USAGE               命令行无法解析或请求命令不做的事（如�
 INTERNAL_PANIC          CLI 自身 panic；仍以 summary 结束 stream   exit 7
 ENV_CURRENT_DIR         当前目录不可读                           exit 3
 ENV_SOURCE_UNREADABLE   命令需要的源文件不可读                   exit 3
-ENV_CARGO_MANIFEST      `run` 的 project root 下没有 Cargo.toml  exit 3
+ENV_CARGO_MANIFEST      project root 下没有要构建的 Cargo.toml    exit 3
 ENV_CARGO               cargo 无法启动                           exit 3
 ENV_NO_EXECUTABLE       构建没有产出、或产出多个可执行文件       exit 3
 ENV_DEV_CHANNEL         loopback dev transport 无法建立          exit 3
 ENV_DEVICE              simulator/emulator 工具链缺失或失败       exit 3
+ENV_STDOUT              stdout 写不出                            exit 3
+ENV_SOURCE_WRITE        命令改写的源文件写不出                   exit 3
+ENV_LOCK_HELD           命令需要的 lock 被其他 viso 进程持有      exit 3
+ENV_REMOVE              要删除的文件/目录删不掉                  exit 3
+ENV_BUILD_WRITE         build 输出写不出                         exit 3
+ENV_TOOL                build 需要的工具未安装或无法运行         exit 3
 ENV_NO_DEV_SESSION      没有可连的 `viso run` session             exit 3
 ENV_TAPE_WRITE          录制的 Tape 无法写出                      exit 3
 ENV_TEST_INPUT          测试 Scenario 或 Tape 缺失或不可读        exit 3
 TEST_INPUT_INVALID      Scenario/Tape 无法解析或与 Build 不符     exit 1
 TEST_EXPECTATION        游戏测试期望未满足                       exit 1
 BUILD_FAILED            cargo build 失败                         exit 4
+BUILD_PACKAGE           构建产物无法为 target 打包               exit 4
 RUN_APP_FAILED          app 无法启动、crash 或非零退出           exit 5
 DEVICE_MISSING          没有 simulator/emulator profile           exit 3
 DEVICE_UNKNOWN          `--device` 或默认值不是已有 profile        exit 2
@@ -2367,13 +2411,13 @@ GAME_ANSWER_INVALID     session 的回答不可解码或超出 dev frame     exi
 ### 36.2 Artifact
 
 ```text
-kind      binary|app-bundle|apk|aab|wasm|js|asset-dir|archive|manifest|snapshot|trace|export-dir
+kind      binary|app-bundle|apk|aab|wasm|js|html|brotli|gzip|asset-dir|archive|manifest|snapshot|trace|export-dir
 path      相对 project root
 target    host 解析后的实际平台名（macos|windows|linux）或逻辑 target
 profile   dev|release|shipping；export 为 null
 build_id  §46
-size      bytes
-hash      "sha256:<hex>"
+size      bytes（目录为其全部文件之和）
+hash      "sha256:<hex>"；目录按路径序对每个文件的「相对路径（`/` 分隔）、NUL、该文件 SHA-256」求 SHA-256
 ```
 
 ### 36.3 Summary

@@ -50,8 +50,12 @@ impl Checked {
 /// Locates the project, reads its manifest and loads its package, reporting
 /// every diagnostic on the way; the exit code when the project did not load.
 pub(super) fn load(ctx: &Context<'_>, out: &mut Output) -> Result<Checked, u8> {
-    let project = ctx.project(out)?;
+    package(ctx.project(out)?, out)
+}
 
+/// Loads and checks the package of `project`, located already, reporting
+/// every diagnostic on the way; the exit code when it did not load.
+pub(super) fn package(project: Project, out: &mut Output) -> Result<Checked, u8> {
     // The manifest parsed a moment ago; its text is read again only to show the
     // lines its diagnostics point at, so a failed read just drops the snippets.
     let manifest_path = project.manifest_path();

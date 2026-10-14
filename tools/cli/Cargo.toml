@@ -34,6 +34,11 @@ clap = { version = "4.6", default-features = false, features = [
     "suggestions",
     "derive",
 ] }
+# What `viso build` writes: each artifact's SHA-256, and the Brotli and gzip
+# copies a web bundle is served precompressed from.
+sha2 = "0.10"
+brotli = { version = "8", default-features = false, features = ["std"] }
+flate2 = "1"
 # Shell completion from the same grammar: `viso completion <shell>` writes a
 # script that asks `viso` itself for candidates, so targets, profiles,
 # configuration keys and device profile IDs complete as they are now.

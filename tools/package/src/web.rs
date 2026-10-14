@@ -10,17 +10,29 @@ use crate::{io, run};
 /// The Rust target.
 pub const TRIPLE: &str = "wasm32-unknown-unknown";
 
+/// How the `wasm-bindgen` CLI is installed, for a message about its absence.
+pub const BINDGEN_INSTALL: &str = "cargo install wasm-bindgen-cli";
+
 /// Generates the glue of the module `wasm` into `dir` as `<bin>.js` and
 /// `<bin>_bg.wasm`, replacing what was there.
 pub fn bindgen(wasm: &Path, dir: &Path, bin: &str) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(dir);
     io(dir, std::fs::create_dir_all(dir))?;
-    run(Command::new("wasm-bindgen")
+    run(&mut bindgen_command(wasm, dir, bin))
+        .map_err(|e| format!("{e} (install the CLI: {BINDGEN_INSTALL})"))
+}
+
+/// The `wasm-bindgen` command that generates the glue of `wasm` into `dir`
+/// as `<bin>.js` and `<bin>_bg.wasm`, for a caller that adds its own options
+/// and runs it; `dir` is to exist.
+pub fn bindgen_command(wasm: &Path, dir: &Path, bin: &str) -> Command {
+    let mut command = Command::new("wasm-bindgen");
+    command
         .args(["--target", "web", "--no-typescript", "--out-name", bin])
         .arg("--out-dir")
         .arg(dir)
-        .arg(wasm))
-    .map_err(|e| format!("{e} (install the CLI: cargo install wasm-bindgen-cli)"))
+        .arg(wasm);
+    command
 }
 
 /// Writes the page that loads `<bin>.js` as `<dir>/index.html`.

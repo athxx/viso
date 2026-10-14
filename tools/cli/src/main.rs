@@ -6,6 +6,7 @@
 
 mod args;
 mod atomic;
+mod build;
 mod command;
 mod complete;
 mod context;

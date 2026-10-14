@@ -15,7 +15,7 @@ use clap::{Arg, ArgAction, Command};
 const GROUPS: &[(&str, &[&str])] = &[
     ("PROJECT", &["config"]),
     ("MOBILE DEV ENVIRONMENT", &["android", "ios"]),
-    ("DEVELOP", &["run", "serve"]),
+    ("DEVELOP", &["run", "build", "serve"]),
     ("LANGUAGE", &["fmt", "check", "schema"]),
     ("TEST / DEBUG", &["test", "game"]),
     ("DELIVERY", &[]),
@@ -102,6 +102,20 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             (
                 "viso android emulator delete pixel --json",
                 "as JSON events",
+            ),
+        ],
+    ),
+    (
+        "build",
+        &[
+            ("viso build", "build the app for this machine into `dist/`"),
+            (
+                "viso build web-gpu --profile shipping",
+                "the smallest web bundle, precompressed",
+            ),
+            (
+                "viso build ios --release --json",
+                "a release `.app`, as JSON events",
             ),
         ],
     ),
@@ -356,6 +370,12 @@ const NOTES: &[(&str, &str)] = &[
         "android",
         "Profiles are kept in `~/.viso/` (`$VISO_HOME`); `viso run android --device <id>`\n\
          runs on one.",
+    ),
+    (
+        "build",
+        "The sources are checked first. The output replaces `dist/<platform>/` whole, with\n\
+         its `artifact.json`; `ios` builds for the Simulator and `android` for the Emulator.\n\
+         `[profile.<name>.web]` in `Viso.toml` shapes a web bundle.",
     ),
     (
         "clean",
