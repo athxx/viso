@@ -253,13 +253,21 @@ gap, and CI can run all of it headless.
 
 ### C1.5 — `viso check` (§17)
 
-- [ ] `check <target>`: target capability checks (a GPU-only node on `web-dom`, a
+- [x] `check <target>`: target capability checks (a GPU-only node on `web-dom`, a
       platform-gated API on a target that lacks it) on top of the fast default (§17.1).
-- [ ] `--watch`: reuses the dev session watcher; re-checks on change, prints a
+      (The target's configuration and availability, and the input its devices have;
+      `web-dom`/`web-hybrid` are unavailable, so their DOM rules are C4.4's.)
+- [x] `--watch`: reuses the dev session watcher; re-checks on change, prints a
       per-batch summary, emits one `summary` per batch under `--json`, Ctrl-C exits
-      130.
-- [ ] Optional Rust side: `--cargo` runs `cargo check` for the project (default off,
+      130. (Per §17.3: `progress{phase:"idle"}` ends each round; one `summary`, at
+      the end, with the last round's counts.)
+- [x] Optional Rust side: `--cargo` runs `cargo check` for the project (default off,
       §17.2 keeps check fast).
+- [x] `--a11y strict` and `--i18n strict` (DSL §U8.2, §U10) make those findings
+      errors.
+- [ ] A platform-gated native on a target that lacks it: natives declare no target
+      availability yet (every capability they require exists on every available
+      target).
 - [ ] A schema-enum property value names a variant of its enum: `semantics.role:
       Role::bogus` or `justify: Justify::bogus` passes `viso check` today (the schema
       enums `Role`, `Justify`, `LiveRegion`, … have no registered variants); only the

@@ -123,8 +123,14 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
         "check",
         &[
             ("viso check", "check the project here"),
-            ("viso check --project apps/demo", "check another project"),
-            ("viso check --json", "as JSON events"),
+            (
+                "viso check ios --cargo",
+                "for the iOS Simulator, the Rust code too",
+            ),
+            (
+                "viso check --watch --json",
+                "again after every change, as JSON events",
+            ),
         ],
     ),
     (
@@ -373,6 +379,11 @@ const NOTES: &[(&str, &str)] = &[
         "The sources are checked first. The output replaces `dist/<platform>/` whole, with\n\
          its `artifact.json`; `ios` builds for the Simulator and `android` for the Emulator.\n\
          `[profile.<name>.web]` in `Viso.toml` shapes a web bundle.",
+    ),
+    (
+        "check",
+        "A named target is checked as its build would be: its configuration, and the input\n\
+         its devices have. `--a11y strict` and `--i18n strict` make those findings errors.",
     ),
     (
         "clean",

@@ -96,7 +96,7 @@ impl BuildCommand {
     /// The Cargo command line, for `--verbose`.
     pub(crate) fn describe(&self) -> String {
         let mut line = format!("VISO_PROFILE={} {}", self.profile, self.cargo.display());
-        for arg in self.args() {
+        for arg in self.args(false) {
             line.push(' ');
             line.push_str(&arg.to_string_lossy());
         }
@@ -106,13 +106,15 @@ impl BuildCommand {
         line
     }
 
-    /// Every argument of the Cargo command line.
-    fn args(&self) -> Vec<OsString> {
+    /// Every argument of the Cargo command line: `cargo check` when
+    /// `check`, which takes no `rustc` arguments.
+    fn args(&self, check: bool) -> Vec<OsString> {
+        let rustc = !check && !self.rustc_args.is_empty();
         let mut args: Vec<OsString> = vec![
-            if self.rustc_args.is_empty() {
-                "build"
-            } else {
-                "rustc"
+            match (check, rustc) {
+                (true, _) => "check",
+                (false, true) => "rustc",
+                (false, false) => "build",
             }
             .into(),
         ];
@@ -131,7 +133,7 @@ impl BuildCommand {
         if self.quiet {
             args.push("--quiet".into());
         }
-        if !self.rustc_args.is_empty() {
+        if rustc {
             args.push("--".into());
             args.extend(self.rustc_args.iter().map(OsString::from));
         }
@@ -283,9 +285,39 @@ pub(crate) fn build(
         Some((layout, target)) => Some(wait_for_lock(layout, *target, cancelled, sink)?),
         None => None,
     };
+    let messages = cargo(command, false, cancelled, sink)?;
+    let exe = match <[PathBuf; 1]>::try_from(messages.executables) {
+        Ok([exe]) => exe,
+        Err(executables) => return Err(BuildFailure::Executables(executables)),
+    };
+    match &command.package {
+        Some(package) => package(&exe).map_err(BuildFailure::Package),
+        None => Ok(exe),
+    }
+}
+
+/// Checks the app `command` builds with `cargo check`, compiling nothing it
+/// would run, until it is done or `cancelled` fires; what Cargo says goes to
+/// `sink` as for a build.
+pub(crate) fn check(
+    command: &BuildCommand,
+    cancelled: &mpsc::Receiver<()>,
+    sink: &Sink,
+) -> Result<(), BuildFailure> {
+    cargo(command, true, cancelled, sink).map(|_| ())
+}
+
+/// Runs Cargo for `command` (`cargo check` when `check`) and reads its
+/// messages to their end.
+fn cargo(
+    command: &BuildCommand,
+    check: bool,
+    cancelled: &mpsc::Receiver<()>,
+    sink: &Sink,
+) -> Result<Messages, BuildFailure> {
     let mut cargo = Command::new(&command.cargo);
     cargo
-        .args(command.args())
+        .args(command.args(check))
         .env("VISO_PROFILE", command.profile.as_str())
         .envs(command.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
@@ -325,7 +357,7 @@ pub(crate) fn build(
                 Err(error) => {
                     tree.kill();
                     return Err(BuildFailure::Spawn(format!(
-                        "cannot wait for `cargo build`: {error}"
+                        "cannot wait for `cargo`: {error}"
                     )));
                 }
             },
@@ -351,14 +383,7 @@ pub(crate) fn build(
             codes: messages.codes,
         });
     }
-    let exe = match <[PathBuf; 1]>::try_from(messages.executables) {
-        Ok([exe]) => exe,
-        Err(executables) => return Err(BuildFailure::Executables(executables)),
-    };
-    match &command.package {
-        Some(package) => package(&exe).map_err(BuildFailure::Package),
-        None => Ok(exe),
-    }
+    Ok(messages)
 }
 
 /// Takes the build cache's lock of `target`, waiting while another command

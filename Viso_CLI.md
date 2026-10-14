@@ -1436,13 +1436,17 @@ mobile permission declaration missing
 invalid signing metadata shape
 ```
 
+当前实现：`viso check <target>`（`headless`、`ios`、`android`、`web-gpu`、`web-dom`、`web-hybrid`）按该 target 的构建解析配置（`Viso.toml`、`VISO_*`，target 不可用为 `C0011`，exit 3），并以该 target 设备具有的输入检查源码：desktop host 有键盘、鼠标与手柄，iOS、Android 与浏览器另有触摸，headless 只有键盘与指针（Input Action 缺少某设备的绑定为 `E9107` 警告）。不写 target 时为 host 加上 `Viso.toml` 配置的移动 target 的设备。`--target <t>` 是 usage error，提示写成位置参数（`build` 同此）。`--a11y strict` 使 `E3704`/`E3708` 成为错误，`--i18n strict` 使 `E3705` 成为错误并覆盖字面量文本（DSL §U8.2、§U10）。
+
 ### 17.2 Fast default
 
-`viso check` 不应该默认执行完整 package/signing。
+`viso check` 不应该默认执行完整 package/signing。Rust 代码默认不检查；`--cargo` 以该 target 构建所用的 Rust target、features 与 profile 运行 `cargo check`（不产出可执行文件），编译器诊断作为 `diagnostic`（带 span）报告，失败为 `BUILD_FAILED`（exit 4）。
 
 ### 17.3 Watch
 
 普通开发用 `viso run`。编辑器/CI 需要连续静态检查时可用 `viso check --watch`；每轮输出完整 diagnostic 集合后接一条 `progress{phase:"idle"}`，只有退出时输出 `summary`。
+
+当前实现：watcher 与 `viso run` 的相同（`.vs`、`i18n/*.toml`、`assets/`、`Viso.toml`；`--cargo` 时另加 app 链接的 Rust 包）；一次保存写出的多个文件合并为一轮，每轮前有一条 `progress{phase:"check"}` 说明哪个文件变了。人类输出每轮末行为该轮的 `checked …` 摘要。Ctrl-C 结束，exit 130，`summary{status:"cancelled"}` 带最后一轮的计数。
 
 ### 17.4 JSON / exit codes
 

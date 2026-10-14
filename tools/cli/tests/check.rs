@@ -1,6 +1,8 @@
 //! `viso check` end to end: the built binary against scratch projects, asserting
 //! the exit code and what reaches stdout and stderr.
 
+mod stand_in;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -393,4 +395,184 @@ fn tr_checks_against_the_catalogs_and_a_catalog_error_points_into_its_file() {
     let err = stderr(&out);
     assert!(err.contains("i18n/de.toml:2:9"), "{err}");
     assert!(err.contains("`other`"), "{err}");
+}
+
+/// A game whose one action is bound to a key alone.
+const KEYS_ONLY: &str = "import viso::game::{InputAction, InputMap, Key};\n\
+     @derive(InputAction) enum Act { Jump; }\n\
+     system Host {}\n\
+     const C: InputMap<Act> = InputMap::new().key(Key::Space, Act::Jump);\n";
+
+/// The codes of the diagnostics of a `--json` run.
+fn codes(output: &Output) -> Vec<String> {
+    events(output)
+        .iter()
+        .filter(|line| line.contains("\"type\":\"diagnostic\""))
+        .filter_map(|line| {
+            let at = line.find("\"code\":\"")? + 8;
+            Some(line[at..].split('"').next()?.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn a_target_is_checked_for_the_input_its_devices_have() {
+    let s = Scratch::new("target");
+    s.write("Viso.toml", MANIFEST)
+        .write("src/game.vs", KEYS_ONLY);
+    let host = viso(&s.0, &["check", "--json"]);
+    assert_eq!(code(&host), 0, "{}", stdout(&host));
+    assert_eq!(codes(&host), ["E9107"], "a desktop has gamepads");
+    let headless = viso(&s.0, &["check", "headless", "--json"]);
+    assert_eq!(code(&headless), 0);
+    assert!(codes(&headless).is_empty(), "{}", stdout(&headless));
+    let phone = viso(&s.0, &["check", "ios", "--json"]);
+    assert_eq!(codes(&phone), ["E9107", "E9107"], "gamepads and touch");
+
+    let dom = viso(&s.0, &["check", "web-dom"]);
+    assert_eq!(code(&dom), 3);
+    assert!(stderr(&dom).contains("error[C0011]"), "{}", stderr(&dom));
+    let flag = viso(&s.0, &["check", "--target", "ios"]);
+    assert_eq!(code(&flag), 2);
+    assert!(
+        stderr(&flag).contains("`viso check` names its target as an argument"),
+        "{}",
+        stderr(&flag)
+    );
+}
+
+#[test]
+fn strict_makes_accessibility_and_localization_findings_errors() {
+    let s = Scratch::new("strict");
+    s.write("Viso.toml", MANIFEST).write(
+        "src/app.vs",
+        "component App {\n    state n = 0;\n    view { Row { on click { n += 1; } } }\n}\n",
+    );
+    let lenient = viso(&s.0, &["check"]);
+    assert_eq!(code(&lenient), 0, "{}", stderr(&lenient));
+    assert!(
+        stderr(&lenient).contains("warning[E3704]"),
+        "{}",
+        stderr(&lenient)
+    );
+    let strict = viso(&s.0, &["check", "--a11y", "strict"]);
+    assert_eq!(code(&strict), 1);
+    assert!(
+        stderr(&strict).contains("error[E3704]"),
+        "{}",
+        stderr(&strict)
+    );
+
+    s.write(
+        "src/app.vs",
+        "component App {\n    view { Text { text: \"Hello\"; } }\n}\n",
+    );
+    assert_eq!(code(&viso(&s.0, &["check"])), 0);
+    let strict = viso(&s.0, &["check", "--i18n", "strict"]);
+    assert_eq!(code(&strict), 1);
+    assert!(
+        stderr(&strict).contains("error[E3705]"),
+        "{}",
+        stderr(&strict)
+    );
+}
+
+#[test]
+fn cargo_checks_the_rust_code_too() {
+    let root = stand_in::project("check-cargo");
+    fs::write(root.join("Viso.toml"), MANIFEST).unwrap();
+    let out = stand_in::viso(&root, &["check", "--cargo", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stdout(&out));
+    fs::write(
+        root.join("src/main.rs"),
+        "fn main() {\n    let x: u8 = \"no\";\n}\n",
+    )
+    .unwrap();
+    let out = stand_in::viso(&root, &["check", "--cargo", "--json"]);
+    assert_eq!(code(&out), 4, "{}", stdout(&out));
+    let codes = codes(&out);
+    assert!(codes.contains(&"E0308".to_owned()), "{codes:?}");
+    assert!(codes.contains(&"BUILD_FAILED".to_owned()), "{codes:?}");
+    assert!(
+        !root.join("target/debug/probe").exists(),
+        "nothing is built"
+    );
+    // Without `--cargo` the Rust code is not looked at.
+    assert_eq!(code(&stand_in::viso(&root, &["check"])), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn watch_checks_again_after_each_change_until_interrupted() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let s = Scratch::new("watch");
+    s.write("Viso.toml", MANIFEST)
+        .write("src/app.vs", "component App { view { } }");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_viso"))
+        .args(["check", "--watch", "--json"])
+        .current_dir(&s.0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let stdout = child.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    // The lines of a round, through its `idle`.
+    let round = || {
+        let mut lines = Vec::new();
+        loop {
+            let line = rx
+                .recv_timeout(Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("no idle after {lines:#?}"));
+            let idle = line.contains("\"phase\":\"idle\"");
+            lines.push(line);
+            if idle {
+                return lines;
+            }
+        }
+    };
+    let first = round();
+    assert_eq!(first.len(), 1, "a clean round: {first:#?}");
+
+    s.write("src/app.vs", "component App { view { Text { txet: 1; } } }");
+    let second = round();
+    assert!(
+        second.iter().any(|l| l.contains("\"severity\":\"error\"")),
+        "{second:#?}"
+    );
+    s.write("src/app.vs", "component App { view { } }");
+    let third = round();
+    assert!(
+        !third.iter().any(|l| l.contains("\"type\":\"diagnostic\"")),
+        "{third:#?}"
+    );
+
+    let pid = child.id().to_string();
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(130));
+    let rest: Vec<String> = rx.try_iter().collect();
+    let summary = rest.last().expect("a summary");
+    assert!(summary.contains("\"type\":\"summary\""), "{rest:#?}");
+    assert!(summary.contains("\"status\":\"cancelled\""), "{summary}");
+    assert!(
+        summary.contains("\"error_count\":0"),
+        "the last round's: {summary}"
+    );
 }

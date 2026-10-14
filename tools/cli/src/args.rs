@@ -100,7 +100,7 @@ pub enum Command {
     /// Build the app for a target and write it to `dist/`, without running it.
     Build(BuildArgs),
     /// Check the project's `.vs` sources and `Viso.toml` without building.
-    Check,
+    Check(CheckArgs),
     /// Remove `target/viso/`: builds, caches and dev state, never `dist/`.
     Clean,
     /// Write the script that completes `viso` commands in a shell.
@@ -167,6 +167,38 @@ impl BuildTarget {
             BuildTarget::WebHybrid => Target::WebHybrid,
         }
     }
+}
+
+/// What `viso check` checks.
+#[derive(Debug, Args)]
+pub struct CheckArgs {
+    /// The target the sources are checked for: its configuration and the
+    /// input its devices have. The host and the targets `Viso.toml`
+    /// configures when none is named.
+    #[arg(value_enum)]
+    pub target: Option<BuildTarget>,
+    /// Check again after every change to the sources, until Ctrl-C.
+    #[arg(long)]
+    pub watch: bool,
+    /// Check the Cargo package's Rust code too, with `cargo check`.
+    #[arg(long)]
+    pub cargo: bool,
+    /// Report accessibility findings as errors (`strict`) or warnings.
+    #[arg(long, value_enum, value_name = "LEVEL")]
+    pub a11y: Option<Strictness>,
+    /// Report localization findings as errors, literal text too (`strict`),
+    /// or as warnings.
+    #[arg(long, value_enum, value_name = "LEVEL")]
+    pub i18n: Option<Strictness>,
+}
+
+/// How a class of findings reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Strictness {
+    /// As warnings, which leave the exit code alone.
+    Warn,
+    /// As errors.
+    Strict,
 }
 
 /// What `viso fmt` formats.
@@ -573,7 +605,7 @@ impl Command {
                 DeviceCommand::Delete(_) => "android emulator delete",
             },
             Command::Build(_) => "build",
-            Command::Check => "check",
+            Command::Check(_) => "check",
             Command::Clean => "clean",
             Command::Completion(_) => "completion",
             Command::Fmt(_) => "fmt",
@@ -615,7 +647,7 @@ pub fn parse() -> Result<Cli, clap::Error> {
 /// Whether `command` names its target as a positional argument, so a
 /// `--target` there is the other commands' spelling.
 pub fn takes_positional_target(command: &str) -> bool {
-    matches!(command, "run" | "serve")
+    matches!(command, "build" | "check" | "run" | "serve")
 }
 
 /// Whether `--json` appears among `args` (the arguments after the program name)

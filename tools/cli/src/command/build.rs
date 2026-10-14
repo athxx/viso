@@ -190,7 +190,7 @@ pub(super) fn stage(
     // Nothing is compiled from sources that do not check.
     let project = match check {
         Check::Run => {
-            let checked = check::package(project, out)?;
+            let checked = check::package_for(project, &check::Options::target(target), out)?;
             let code = checked.code(out);
             if code != SUCCESS {
                 return Err(code);

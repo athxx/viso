@@ -639,6 +639,35 @@ impl Output {
         self.checked = Some((package.to_string(), files));
     }
 
+    /// Starts a round of a command that repeats its work, `check --watch`:
+    /// what it reports from now on is counted afresh, so the summary tells
+    /// of its last round.
+    pub fn round(&mut self) {
+        self.errors = 0;
+        self.warnings = 0;
+        self.checked = None;
+    }
+
+    /// Ends a round with what it covered, and says the command waits for
+    /// the next: a `progress{phase:"idle"}` event, which `--quiet` keeps as
+    /// the end of the round, or the round's summary line and `message`.
+    pub fn idle(&mut self, message: &str) {
+        match &mut self.form {
+            Form::Json(stream) => stream.progress("idle", message),
+            Form::Human => {
+                if let Some((package, files)) = &self.checked {
+                    println!(
+                        "{}",
+                        human::summary(package, *files, self.errors, self.warnings)
+                    );
+                }
+                if !self.quiet {
+                    eprintln!("{message}");
+                }
+            }
+        }
+    }
+
     /// Ends the output with its summary and returns `code`, the process exit
     /// code the summary reports.
     pub fn finish(self, code: u8) -> u8 {

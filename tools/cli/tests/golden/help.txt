@@ -726,15 +726,22 @@ Notes:
 $ viso check --help
 Check the project's `.vs` sources and `Viso.toml` without building
 
-Usage: viso check [OPTIONS]
+Usage: viso check [OPTIONS] [TARGET]
 
 Examples:
-  viso check                      # check the project here
-  viso check --project apps/demo  # check another project
-  viso check --json               # as JSON events
+  viso check                 # check the project here
+  viso check ios --cargo     # for the iOS Simulator, the Rust code too
+  viso check --watch --json  # again after every change, as JSON events
+
+Arguments:
+  [TARGET]  The target the sources are checked for: its configuration and the input its devices have. The host and the targets `Viso.toml` configures when none is named [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
 
 Options:
-  -h, --help  Print help
+      --watch         Check again after every change to the sources, until Ctrl-C
+      --cargo         Check the Cargo package's Rust code too, with `cargo check`
+      --a11y <LEVEL>  Report accessibility findings as errors (`strict`) or warnings [possible values: warn, strict]
+      --i18n <LEVEL>  Report localization findings as errors, literal text too (`strict`), or as warnings [possible values: warn, strict]
+  -h, --help          Print help
 
 Global options:
       --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
@@ -747,6 +754,10 @@ Global options:
       --jobs <N>           Run at most N jobs at once
       --profile <NAME>     The build profile [possible values: dev, release, shipping]
       --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  A named target is checked as its build would be: its configuration, and the input
+  its devices have. `--a11y strict` and `--i18n strict` make those findings errors.
 
 $ viso schema --help
 Show the typed schema of a widget, native library, function or type

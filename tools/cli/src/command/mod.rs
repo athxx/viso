@@ -47,7 +47,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
             device::run(Platform::Android, command, out)
         }
         Command::Build(args) => build::run(ctx, args, out),
-        Command::Check => check::run(ctx, out),
+        Command::Check(args) => check::run(ctx, args, out),
         Command::Clean => clean::run(ctx, out),
         Command::Completion(args) => completion::run(ctx, args, out),
         Command::Config(command) => config::run(ctx, command, out),

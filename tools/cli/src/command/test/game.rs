@@ -38,7 +38,7 @@ pub(super) fn run(checked: &Checked, run: &Run<'_>, out: &mut Output) -> u8 {
         }
         Err(Nothing::Unreadable(why)) => return out.failure(ENV_TEST_INPUT, &why, &[]),
     };
-    let tick_rate = check::profile(&checked.project).tick_rate;
+    let tick_rate = check::profile(&checked.project, &check::Options::default()).tick_rate;
     let mut code = SUCCESS;
     for planned in &planned {
         match scenario(root, planned, run, tick_rate, checked, out) {

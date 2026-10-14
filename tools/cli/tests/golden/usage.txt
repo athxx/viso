@@ -95,7 +95,8 @@ Notes:
 
 $ viso check --bogus
 error[CLI_USAGE]: unexpected argument '--bogus' found
- = note: usage: viso check [OPTIONS]
+ = note: to pass '--bogus' as a value, use '-- --bogus'
+ = note: usage: viso check [OPTIONS] [TARGET]
  = help: run `viso check --help`
 
 
