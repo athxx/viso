@@ -87,6 +87,17 @@ jobs:
       - name: Release absence
         run: cargo xtask check-release-absence ${{ matrix.args }}
 
+  # What the dev layer costs the frame loop of a dev build: alternating release
+  # runs of the frame-loop bench with and without `hot-reload`, best against
+  # best.
+  frame-tax:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Frame tax
+        run: cargo xtask check-frame-tax
+
   # `viso run ios|android|web-gpu` end to end: boot, install,
   # connect, a `.vs` patch, a Rust warm restart with state restored, Ctrl-C.
   # Each test creates its own simulator or emulator profile and deletes it.

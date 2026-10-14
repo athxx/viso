@@ -1185,7 +1185,9 @@ Goal: one source graph serves several running runtimes with per-runtime revision
       locally: no crash.
 - [x] §71 Definition of Done checklist, one test per item: the table in
       `Viso_Hot_Reload.md` §71 names each item's test.
-- [ ] A frame-loop benchmark gate for the release branch tax (the bench compares with
-      and without `hot-reload` but has no threshold).
+- [x] A frame-loop benchmark gate for the release branch tax: `cargo xtask
+      check-frame-tax` alternates the bench with and without `hot-reload` (5 rounds
+      each), compares the best rounds, allows 10% plus 250 ns; CI job `frame-tax`.
+      Locally: 3799 ns as is, 4332 ns with hot-reload at best, within.
 - [ ] UI input tapes record the code revisions they ran across (game tapes do). Waits
       for UI input tapes: nothing records or replays one yet (tests script raw events).

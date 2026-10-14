@@ -135,7 +135,7 @@ if hot_reload_enabled { ... }
 
 作为每帧固定路径。dev 层整体由 `#[cfg(feature = "hot-reload")]` 编入或去除，release 帧循环里没有它的分支。
 
-测量（`cargo bench -p viso --bench frame_loop`，挂载 `view!` 的 app，每帧切换一个 `if` 分支，release、Apple Silicon）：不开 feature 每帧 3.83 µs，开 feature（session 空闲）每帧 3.78 µs，差在噪声内（H1.2 时的测量，当时 session 还在 app 内启动 watcher；app 不再监听文件之后 dev 层只剩挂载记录与 dev channel，未重测）。
+测量（`cargo bench -p viso --bench frame_loop`，挂载 `view!` 的 app，每帧切换一个 `if` 分支，release、Apple Silicon）：不开 feature 每帧 3.83 µs，开 feature（session 空闲）每帧 3.78 µs，差在噪声内（H1.2 时的测量）。重测（dev 层只剩挂载记录与 dev channel，机器负载高、单次运行波动约 ±25%）：不开 feature 每帧 3.80–4.68 µs，开 feature 3.87–5.44 µs，两组区间重叠、无可分辨的差。`cargo xtask check-frame-tax` 把它作为门：两种构建交替各跑 5 轮，比较各自最好的一轮，开 feature 的帧至多贵 10% 加 250 ns，CI 的 `frame-tax` job 运行它。
 
 Release 不保留：
 

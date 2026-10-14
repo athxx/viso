@@ -2,17 +2,19 @@
 //! frame loop (`Viso_Hot_Reload.md` §1.2, §71).
 //!
 //! ```text
-//! cargo xtask check-frame-tax [--tolerance <percent>] [--floor <ns>]
+//! cargo xtask check-frame-tax [--rounds <n>] [--tolerance <percent>] [--floor <ns>]
 //! ```
 //!
-//! Runs `viso`'s `frame_loop` bench in release twice — as is and with
-//! `--features hot-reload` — and reads each run's median from criterion's
-//! estimates. A frame's cost is the 240-frame run's less the startup run's,
-//! over 240, so the dev session's startup (its mount records, the link that
-//! finds no host) is not counted against a frame. The dev frame may cost at
-//! most `tolerance` percent (default 10) more than the plain one, plus
-//! `floor` nanoseconds (default 250) of measurement noise; a release
-//! artifact compiles neither path, which `check-release-absence` proves.
+//! Runs `viso`'s `frame_loop` bench in release as is and with `--features
+//! hot-reload`, alternating, `rounds` times each (default 5), and reads each
+//! run's median from criterion's estimates. A frame's cost is the 240-frame
+//! run's less the startup run's, over 240, so the dev session's startup (its
+//! mount records, the link that finds no host) is not counted against a
+//! frame. Each build's best round is compared — what else the machine runs
+//! only ever slows a round, by a quarter on a busy one — and the dev frame
+//! may cost at most `tolerance` percent (default 10) more than the plain
+//! one, plus `floor` nanoseconds (default 250); a release artifact compiles
+//! neither path, which `check-release-absence` proves.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -22,15 +24,18 @@ const FRAMES: f64 = 240.0;
 /// Where criterion writes the bench's estimates, under the target directory.
 const GROUP_DIR: &str = "criterion/frame_loop_view";
 
-const USAGE: &str = "cargo xtask check-frame-tax [--tolerance <percent>] [--floor <ns>]";
+const USAGE: &str =
+    "cargo xtask check-frame-tax [--rounds <n>] [--tolerance <percent>] [--floor <ns>]";
 
 struct Options {
+    rounds: u32,
     tolerance: f64,
     floor_ns: f64,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let mut options = Options {
+        rounds: 5,
         tolerance: 10.0,
         floor_ns: 250.0,
     };
@@ -43,6 +48,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 .ok_or_else(|| format!("{arg} needs {what}\nusage: {USAGE}"))
         };
         match arg.as_str() {
+            "--rounds" => {
+                let rounds = number("a count")?;
+                if rounds < 1.0 || rounds.fract() != 0.0 {
+                    return Err(format!(
+                        "--rounds needs a count of at least 1\nusage: {USAGE}"
+                    ));
+                }
+                options.rounds = rounds as u32;
+            }
             "--tolerance" => options.tolerance = number("a percentage")?,
             "--floor" => options.floor_ns = number("nanoseconds")?,
             other => return Err(format!("unknown argument {other:?}\nusage: {USAGE}")),
@@ -68,11 +82,17 @@ fn check(o: &Options) -> Result<(), String> {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::workspace_root().join("target"));
-    let plain = frame_ns(&target, "plain", false)?;
-    let dev = frame_ns(&target, "dev", true)?;
+    let (mut plain, mut dev) = (f64::INFINITY, f64::INFINITY);
+    for round in 1..=o.rounds {
+        let p = frame_ns(&target, "plain", false)?;
+        let d = frame_ns(&target, "dev", true)?;
+        println!("round {round}: {p:.0} ns as is, {d:.0} ns with hot-reload");
+        plain = plain.min(p);
+        dev = dev.min(d);
+    }
     let allowed = plain * (1.0 + o.tolerance / 100.0) + o.floor_ns;
     println!(
-        "frame: {plain:.0} ns as is, {dev:.0} ns with hot-reload ({:+.1}%), at most {allowed:.0} ns",
+        "best frame: {plain:.0} ns as is, {dev:.0} ns with hot-reload ({:+.1}%), at most {allowed:.0} ns",
         (dev / plain - 1.0) * 100.0
     );
     if dev > allowed {
@@ -141,9 +161,11 @@ mod tests {
     fn parses_its_arguments() {
         let args = |a: &[&str]| parse(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let o = args(&[]).unwrap();
-        assert_eq!((o.tolerance, o.floor_ns), (10.0, 250.0));
-        let o = args(&["--tolerance", "5", "--floor", "100"]).unwrap();
-        assert_eq!((o.tolerance, o.floor_ns), (5.0, 100.0));
+        assert_eq!((o.rounds, o.tolerance, o.floor_ns), (5, 10.0, 250.0));
+        let o = args(&["--rounds", "5", "--tolerance", "5", "--floor", "100"]).unwrap();
+        assert_eq!((o.rounds, o.tolerance, o.floor_ns), (5, 5.0, 100.0));
+        assert!(args(&["--rounds", "0"]).is_err());
+        assert!(args(&["--rounds", "1.5"]).is_err());
         assert!(args(&["--tolerance"]).is_err());
         assert!(args(&["--floor", "-1"]).is_err());
         assert!(args(&["--fast"]).is_err());
