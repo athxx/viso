@@ -11,7 +11,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use viso_project::{
-    ArtifactKind, ConfigDiagnostic, Env, Layout, Overrides, Profile, Project, Resolved, Target,
+    ArtifactKind, ConfigDiagnostic, Env, Layout, LockGuard, LockKind, Overrides, Profile, Project,
+    Resolved, Target,
 };
 
 use crate::args::{ColorChoice, Global};
@@ -147,6 +148,31 @@ impl<'a> Context<'a> {
             resolved,
             layout,
         })
+    }
+
+    /// Takes the lock `kind` of `layout`, warning when it took over a stale
+    /// one; a held lock is reported, with its holder, as the failure.
+    pub fn lock(&self, layout: &Layout, kind: LockKind, out: &mut Output) -> Result<LockGuard, u8> {
+        match LockGuard::acquire(layout, kind) {
+            Ok(lock) => {
+                if let Some(stale) = lock.replaced() {
+                    out.log(
+                        "warn",
+                        "tool",
+                        &format!(
+                            "took over the stale lock of the {} ({stale}), whose holder stopped refreshing it",
+                            kind.description()
+                        ),
+                    );
+                }
+                Ok(lock)
+            }
+            Err(error) => {
+                let diagnostic = error.diagnostic();
+                out.config(None, &diagnostic);
+                Err(diagnostic.code.exit_code())
+            }
+        }
     }
 
     /// The paths of the project at `root`, `target/` where `--target-dir`

@@ -70,6 +70,8 @@ codes! {
     ENV_NO_DEV_SESSION = ENVIRONMENT, "No `viso run` session is running for the project, or it cannot be reached.";
     ENV_TAPE_WRITE = ENVIRONMENT, "A recorded tape could not be written.";
     ENV_TEST_INPUT = ENVIRONMENT, "A test scenario or tape could not be found or read.";
+    ENV_LOCK_HELD = ENVIRONMENT, "Another viso process holds a lock the command needs free.";
+    ENV_REMOVE = ENVIRONMENT, "A file or directory the command removes could not be removed.";
 
     BUILD_FAILED = BUILD, "`cargo build` failed.";
     RUN_APP_FAILED = RUNTIME, "The app could not be launched, crashed, or exited with a failure.";

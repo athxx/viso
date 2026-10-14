@@ -1140,7 +1140,7 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
 
 已实现的是 desktop host 上 `.vs` 的 hot reload：host 监听、编译并对每个挂载所运行的 last-good 算出 typed patch，app 只提交、不含编译器（`Viso_Hot_Reload.md` §9、§35）：
 
-- CLI 先取 dev session lock（`.viso/locks/`，同一 project 已有 `viso run` 时以 `TargetUnavailable` 退出，exit 3），再在 build 之前启动 project watcher（`Viso_Hot_Reload.md` §4、§6、§7）；
+- CLI 先取 dev session lock（`target/viso/locks/`，§44；同一 project 已有 `viso run` 时以 `TargetUnavailable` 退出，exit 3），再在 build 之前启动 project watcher（`Viso_Hot_Reload.md` §4、§6、§7）；
 - project root 须是一个 Cargo package（root 下有 `Cargo.toml`，否则 `ENV_CARGO_MANIFEST`）；CLI 以 `VISO_PROFILE=dev cargo build --features viso/hot-reload --message-format=json-render-diagnostics` 构建 Dev artifact（facade 的 build script 拒绝 `hot-reload` 与 `VISO_PROFILE=release|shipping` 同时出现，见 `Viso_Hot_Reload.md` §58），构建须恰好产出一个可执行文件（否则 `ENV_NO_EXECUTABLE`）。`$CARGO` 覆盖 cargo 路径；
 - app 以 project root 为工作目录启动，`--` 之后的参数原样传入；
 - Dev Runtime transport 是 loopback TCP：CLI 绑定 `127.0.0.1` 的临时端口，经 `VISO_DEV_RUNTIME`（地址）、`VISO_DEV_TOKEN`（每 session 随机 128-bit token）、`VISO_DEV_SESSION`（dev session id）与 `VISO_DEV_BUILD`（所启动 artifact 的 build id）交给 app。app 只连 loopback 地址，先发 `RuntimeHello`（`Viso_Hot_Reload.md` §34）；token 不符、首帧不是 hello 或 5 秒内没有首帧的连接被丢弃且不回应，protocol version、session、build 或编译器 schema 不符的连接收到带原因的 `Reject`；两种情况都记一条 `log{level:"warn", source:"tool"}`（protocol/build/schema 不符时提示 rebuild）。接受时 CLI 回 `HostHello`；app 报告它挂载的文件（mount inventory），CLI 按所报 `source_hash` 找到 build 编译的版本并编译为 last-good，在 host 上编译每个 batch 的编辑，输出 `diagnostic` 与 `dev`，把编译通过的对 last-good 算出 typed patch 发送（ACK 后它成为新的 last-good）、把被拒编辑的错误行发给 app 显示，app 回 ACK/NACK；app 的 log 与丢弃计数也经此 channel；帧为 u32 LE 长度 + ende 二进制 body，上限 4 MiB；
@@ -2707,7 +2707,8 @@ dev-<target>[-<device>].lock       dev session，按 target/device
 - 获取：`create_new` 原子创建；文件内容记录 holder `pid`、`acquired_unix`、description，以及可选的第 4 行 endpoint：持有者接收请求之处（dev session 的 control endpoint `<地址> <token>`，§22.3），发布时整体替换文件（写临时文件再 rename），读者看到的是旧内容或新内容，不会是半截。
 - 不阻塞等待：锁被占用时立即失败，diagnostic 给出 holder pid、age 与锁路径，exit 3。
 - 释放：持有者退出时删除（含 §43 取消路径）。
-- Stale：只按 age 判定（不探测 pid 存活，pid 可能被复用）；阈值由调用命令给定，移除 stale lock 时输出 warning。
+- 刷新：持有者每 20 秒更新锁文件的修改时间（不改内容）。
+- Stale：只按 age 判定——修改时间超过 90 秒未刷新即 stale（不探测 pid 存活，pid 可能被复用）；崩溃的持有者留下的锁 90 秒内失效，任意长的 build/session 不会被误判。获取时遇到 stale lock 直接接管并输出 `log{level:"warn"}`，诊断中的 note 说明这一点。
 - 不同 target 的 build/package 可以并发；同一 target 的 `run` 与 `build` 共享 `build-<target>.lock`。
 
 ---
@@ -2744,7 +2745,7 @@ dist/
 viso clean
 ```
 
-删除 `target/viso/`（build、cache、dev、generated、traces、locks），不删除 `dist/` 与 `~/.viso/`。存在未 stale 的 lock 时拒绝执行并 exit 3。`--json`：一条 `result`（`payload: {removed: [path], freed_bytes}`）+ `summary`。
+删除 `target/viso/`（build、cache、dev、generated、traces、locks），不删除 `dist/` 与 `~/.viso/`。存在未 stale 的 lock 时什么都不删，以 `ENV_LOCK_HELD`（exit 3）拒绝，note 列出每个 holder 与锁路径。删除不跟随 symlink：`target/viso/` 内指向外部的链接只删链接本身。`--target-dir` 下清理该 `target/` 的 `viso/`。`--json`：一条 `result`（`payload: {removed: [path], freed_bytes}`）+ `summary`；human 输出 `removed <path> (<size>)`，无可清理时 `nothing to clean`。
 
 ---
 

@@ -34,7 +34,9 @@ pub mod target;
 #[cfg(test)]
 mod scratch;
 
-pub use cache::{CacheKind, Layout, LockError, LockGuard, LockHolder, LockKind};
+pub use cache::{
+    CacheKind, HeldLock, LOCK_STALE, Layout, LockError, LockGuard, LockHolder, LockKind,
+};
 pub use config::{
     ENV_OPT_LEVEL, ENV_PROFILE, ENV_SOURCE_MAPS, ENV_STRIP, ENV_VARS, Env, Origin, Overrides,
     ProfileSettings, Resolved, ResolvedConfig, Sourced, resolve,

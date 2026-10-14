@@ -28,6 +28,7 @@ TEST / DEBUG
   game        Read a state of, or record input from, the game `viso run` is playing
 
 MAINTENANCE
+  clean       Remove `target/viso/`: builds, caches and dev state, never `dist/`
   completion  Write the script that completes `viso` commands in a shell
 
 Options:
@@ -829,6 +830,34 @@ Global options:
       --jobs <N>           Run at most N jobs at once
       --profile <NAME>     The build profile [possible values: dev, release, shipping]
       --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso clean --help
+Remove `target/viso/`: builds, caches and dev state, never `dist/`
+
+Usage: viso clean [OPTIONS]
+
+Examples:
+  viso clean                        # remove the project's `target/viso/`
+  viso clean --target-dir /tmp/out  # the one under another `target/`
+  viso clean --json                 # as JSON events
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  A lock a running `viso` holds stops it before anything is removed.
 
 $ viso completion --help
 Write the script that completes `viso` commands in a shell

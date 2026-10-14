@@ -36,9 +36,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use viso_package::android::Sdk;
-use viso_project::{
-    DeviceProfile, LockGuard, LockKind, Platform, ProjectFingerprint, Target, Toolchain,
-};
+use viso_project::{DeviceProfile, LockKind, Platform, ProjectFingerprint, Target, Toolchain};
 use viso_view::dev::wire::{
     self, DevSessionId, ProjectFingerprint as WireProject, SchemaFingerprint,
 };
@@ -226,19 +224,16 @@ pub(super) fn session(
     };
 
     // One dev session per project, target and device at a time.
-    let lock = match LockGuard::acquire(
+    let lock = match ctx.lock(
         &layout,
         LockKind::DevSession {
             target,
             device: profile.as_ref().map(|p| p.id.as_str()),
         },
+        out,
     ) {
         Ok(lock) => lock,
-        Err(error) => {
-            let diagnostic = error.diagnostic();
-            out.config(None, &diagnostic);
-            return diagnostic.code.exit_code();
-        }
+        Err(code) => return code,
     };
     let fingerprint = match ProjectFingerprint::compute(&root) {
         Ok(fingerprint) => fingerprint,

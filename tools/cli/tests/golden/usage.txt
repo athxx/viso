@@ -35,6 +35,7 @@ TEST / DEBUG
   game        Read a state of, or record input from, the game `viso run` is playing
 
 MAINTENANCE
+  clean       Remove `target/viso/`: builds, caches and dev state, never `dist/`
   completion  Write the script that completes `viso` commands in a shell
 
 Options:

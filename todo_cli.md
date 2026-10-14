@@ -314,13 +314,16 @@ gap, and CI can run all of it headless.
 
 ### C1.10 — `viso clean` (§45.1)
 
-- [ ] `clean` removes `target/viso/` (build, cache, dev, generated, traces, locks),
-      never `dist/` or `~/.viso/`; refuses with exit 3 while a lock that is not stale
-      is held; JSON `result{removed: [path], freed_bytes}`; human output prints the
-      freed size. `Layout::cleanable` follows §45.1 (it leaves `dev/` and `locks/`
-      today).
-- [ ] Never deletes outside the layout's `cleanable()` set (test with a symlink
-      pointing outside).
+- [x] `clean` removes `target/viso/` (build, cache, dev, generated, traces, locks),
+      never `dist/` or `~/.viso/`; refuses with `ENV_LOCK_HELD` (exit 3), listing
+      each holder, while a lock that is not stale is held; JSON
+      `result{removed: [path], freed_bytes}`; human output prints the freed size
+      (`human::size`). `Layout::cleanable` is `target/viso/` whole.
+- [x] Locks refreshed by their holder every 20 s (a thread per guard, file mtime);
+      stale after 90 s unrefreshed; `acquire` takes over a stale lock and the
+      command warns (`Context::lock`); `LockGuard::held` lists the live ones.
+- [x] Never deletes outside the layout's `cleanable()` set: links are removed, not
+      followed (`tests/clean.rs`, with a symlink pointing outside).
 
 ---
 

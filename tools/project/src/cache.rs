@@ -22,11 +22,19 @@
 //! be *reported* — "held by pid 4123, 40 seconds old" — where a kernel lock can only
 //! block or fail. For a developer tool where the common failure is a second terminal
 //! or an abandoned dev server, the diagnosis is the feature.
+//!
+//! A holder refreshes its file's modification time every [`LOCK_REFRESH`] while it
+//! holds the lock, so a lock is stale when nobody has refreshed it for
+//! [`LOCK_STALE`]: a process that died without releasing frees it within that, and a
+//! build or session of any length keeps it. Staleness is the file's age alone,
+//! never a probe of the pid, which may have been reused.
 
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::diag::{ConfigCode, ConfigDiagnostic};
@@ -211,19 +219,15 @@ impl Layout {
         Ok(())
     }
 
-    /// What `viso clean` removes, in the order it should remove it.
+    /// What `viso clean` removes: `target/viso/` whole — builds, caches, dev
+    /// state, generated sources, traces and locks, all of it rebuildable.
     ///
-    /// `dist/` is not in the list. Removing a user's shipped output because they asked
-    /// to clean the build cache is the kind of surprise that is only discovered after
-    /// it has cost someone something; `viso clean --dist` will ask for it by name.
+    /// `dist/` is not in the list, nor anything outside `target/viso/`. Removing a
+    /// user's shipped output because they asked to clean the build cache is the kind
+    /// of surprise that is only discovered after it has cost someone something. Live
+    /// sessions are protected by their locks, which `clean` checks first.
     pub fn cleanable(&self) -> Vec<PathBuf> {
-        let mut dirs = vec![self.builds()];
-        dirs.extend(CacheKind::ALL.iter().map(|k| self.cache(*k)));
-        dirs.push(self.generated());
-        dirs.push(self.traces());
-        // `dev/` and `locks/` are live session state, not cache: removing them under a
-        // running dev server would strand it.
-        dirs
+        vec![self.viso_dir()]
     }
 }
 
@@ -268,7 +272,7 @@ impl LockKind<'_> {
     }
 
     /// The human name used in diagnostics.
-    fn description(self) -> String {
+    pub fn description(self) -> String {
         match self {
             LockKind::BuildCache { target } => format!("build cache for `{}`", target.as_str()),
             LockKind::PackageOutput { target } => {
@@ -376,10 +380,10 @@ impl LockError {
                 format!("{} is already in use ({holder})", holder.description),
             )
             .at(path)
-            .note("another viso process is probably running")
+            .note("another viso process is running")
             .note(format!(
-                "if it is not, remove `{}` and try again",
-                path.display()
+                "a lock its holder stopped refreshing is taken over after {} s",
+                LOCK_STALE.as_secs()
             )),
             LockError::Io(diag) => diag.clone(),
         }
@@ -402,14 +406,64 @@ impl fmt::Display for LockError {
 pub struct LockGuard {
     path: PathBuf,
     holder: LockHolder,
+    /// The stale lock this one took over, to be reported.
+    replaced: Option<LockHolder>,
+    /// Ends the refresh thread when dropped.
+    refresh: Option<(mpsc::Sender<()>, JoinHandle<()>)>,
+}
+
+/// How often a holder refreshes its lock file.
+pub const LOCK_REFRESH: Duration = Duration::from_secs(20);
+
+/// How long a lock goes unrefreshed before it is stale.
+pub const LOCK_STALE: Duration = Duration::from_secs(90);
+
+/// A lock some process holds, as [`LockGuard::held`] finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldLock {
+    /// The lock file.
+    pub path: PathBuf,
+    /// Who holds it.
+    pub holder: LockHolder,
 }
 
 impl LockGuard {
-    /// Takes the lock, or reports who has it.
+    /// Takes the lock, or reports who has it. A stale lock is taken over, and
+    /// [`replaced`](Self::replaced) names its holder for the caller to warn about.
     pub fn acquire(layout: &Layout, kind: LockKind) -> Result<Self, LockError> {
         let dir = layout.locks();
         create_dir_all(&dir).map_err(LockError::Io)?;
         let path = dir.join(kind.file_name());
+        let mut replaced = None;
+        loop {
+            match Self::create(&path, kind) {
+                Ok(mut guard) => {
+                    guard.replaced = replaced;
+                    return Ok(guard);
+                }
+                Err(LockError::Held { path, holder }) if replaced.is_none() && is_stale(&path) => {
+                    // Taken over once: a second contender that won the race in
+                    // between is a holder like any other.
+                    match fs::remove_file(&path) {
+                        Ok(()) => replaced = Some(holder),
+                        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                            replaced = Some(holder);
+                        }
+                        Err(err) => {
+                            return Err(LockError::Io(io_diagnostic(
+                                &path,
+                                "remove stale lock",
+                                &err,
+                            )));
+                        }
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn create(path: &Path, kind: LockKind) -> Result<Self, LockError> {
         let holder = LockHolder {
             pid: std::process::id(),
             acquired_unix: unix_seconds(),
@@ -419,20 +473,25 @@ impl LockGuard {
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&path)
+            .open(path)
         {
             Ok(mut file) => {
                 use io::Write;
                 // A failed write leaves a lock file that names nobody, so remove it and
                 // report rather than holding a lock we cannot explain.
                 if let Err(err) = file.write_all(holder.encode().as_bytes()) {
-                    let _ = fs::remove_file(&path);
-                    return Err(LockError::Io(io_diagnostic(&path, "write lock file", &err)));
+                    let _ = fs::remove_file(path);
+                    return Err(LockError::Io(io_diagnostic(path, "write lock file", &err)));
                 }
-                Ok(Self { path, holder })
+                Ok(Self {
+                    path: path.to_owned(),
+                    holder,
+                    replaced: None,
+                    refresh: Some(refresh(path.to_owned())),
+                })
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                let holder = fs::read_to_string(&path)
+                let holder = fs::read_to_string(path)
                     .map(|text| LockHolder::decode(&text))
                     .unwrap_or(LockHolder {
                         pid: 0,
@@ -440,14 +499,37 @@ impl LockGuard {
                         description: kind.description(),
                         endpoint: None,
                     });
-                Err(LockError::Held { path, holder })
+                Err(LockError::Held {
+                    path: path.to_owned(),
+                    holder,
+                })
             }
-            Err(err) => Err(LockError::Io(io_diagnostic(
-                &path,
-                "create lock file",
-                &err,
-            ))),
+            Err(err) => Err(LockError::Io(io_diagnostic(path, "create lock file", &err))),
         }
+    }
+
+    /// The stale lock this one took over, if it did.
+    pub fn replaced(&self) -> Option<&LockHolder> {
+        self.replaced.as_ref()
+    }
+
+    /// Every lock of `layout` that is held and not stale.
+    pub fn held(layout: &Layout) -> Vec<HeldLock> {
+        let Ok(entries) = fs::read_dir(layout.locks()) else {
+            return Vec::new();
+        };
+        let mut held: Vec<HeldLock> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "lock"))
+            .filter(|path| !is_stale(path))
+            .filter_map(|path| {
+                let holder = LockHolder::decode(&fs::read_to_string(&path).ok()?);
+                Some(HeldLock { path, holder })
+            })
+            .collect();
+        held.sort_by(|a, b| a.path.cmp(&b.path));
+        held
     }
 
     /// Who holds this lock, without trying to take it.
@@ -455,30 +537,6 @@ impl LockGuard {
         fs::read_to_string(layout.locks().join(kind.file_name()))
             .ok()
             .map(|text| LockHolder::decode(&text))
-    }
-
-    /// Removes a lock older than `older_than`, reporting whether it did.
-    ///
-    /// Age, not liveness: asking the OS whether a pid is alive needs a platform call,
-    /// and a recycled pid answers "yes" for the wrong process. An explicit age
-    /// threshold chosen by the caller is both portable and honest about what it knows.
-    pub fn remove_stale(
-        layout: &Layout,
-        kind: LockKind,
-        older_than: Duration,
-    ) -> Result<bool, ConfigDiagnostic> {
-        let path = layout.locks().join(kind.file_name());
-        let Some(holder) = Self::holder(layout, kind) else {
-            return Ok(false);
-        };
-        match holder.age() {
-            Some(age) if age >= older_than => match fs::remove_file(&path) {
-                Ok(()) => Ok(true),
-                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-                Err(err) => Err(io_diagnostic(&path, "remove stale lock", &err)),
-            },
-            _ => Ok(false),
-        }
     }
 
     /// Names `endpoint` in the lock file as where this holder takes
@@ -507,11 +565,45 @@ impl LockGuard {
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
+        if let Some((stop, thread)) = self.refresh.take() {
+            drop(stop);
+            let _ = thread.join();
+        }
         // Nothing useful can be done about a failed release, and panicking in a drop
         // during unwinding aborts the process. A lock file left behind is recoverable;
         // an abort is not.
         let _ = fs::remove_file(&self.path);
     }
+}
+
+/// Refreshes the lock file at `path` every [`LOCK_REFRESH`] until the sender is
+/// dropped.
+fn refresh(path: PathBuf) -> (mpsc::Sender<()>, JoinHandle<()>) {
+    let (stop, stopped) = mpsc::channel::<()>();
+    let thread = std::thread::Builder::new()
+        .name("viso-lock".into())
+        .spawn(move || {
+            while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(LOCK_REFRESH) {
+                // A refresh that fails leaves the lock to go stale, which is what a
+                // holder that cannot write its own file should come to.
+                let _ = fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .and_then(|file| file.set_modified(SystemTime::now()));
+            }
+        })
+        .expect("a thread for the lock");
+    (stop, thread)
+}
+
+/// Whether the lock file at `path` has gone [`LOCK_STALE`] without a refresh.
+/// A file whose time cannot be read is not stale: it is not taken over blind.
+fn is_stale(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age >= LOCK_STALE)
 }
 
 fn unix_seconds() -> u64 {
@@ -671,21 +763,19 @@ mod tests {
         assert!(!layout.dist_root().exists());
     }
 
-    /// `clean` must not remove shipped output or live session state. Both mistakes
-    /// are only noticed after they have cost someone something.
+    /// `clean` removes `target/viso/` and nothing beside it.
     #[test]
-    fn clean_covers_the_caches_and_spares_output_and_sessions() {
+    fn clean_covers_target_viso_and_spares_dist() {
         let layout = Layout::new("/p");
-        let cleanable = layout.cleanable();
-        assert!(cleanable.contains(&layout.builds()));
-        assert!(cleanable.contains(&layout.generated()));
-        assert!(cleanable.contains(&layout.traces()));
-        for kind in CacheKind::ALL {
-            assert!(cleanable.contains(&layout.cache(*kind)), "{kind}");
+        assert_eq!(layout.cleanable(), [layout.viso_dir()]);
+        for kept in [layout.dist_root(), layout.target_dir().to_owned()] {
+            assert!(
+                layout
+                    .cleanable()
+                    .iter()
+                    .all(|path| !kept.starts_with(path))
+            );
         }
-        assert!(!cleanable.contains(&layout.dist_root()));
-        assert!(!cleanable.contains(&layout.dev()));
-        assert!(!cleanable.contains(&layout.locks()));
     }
 
     #[test]
@@ -827,10 +917,10 @@ mod tests {
         assert!(LockGuard::holder(&layout, kind).is_none(), "released");
     }
 
-    /// A lock file is never stolen implicitly: removal is a separate, age-gated call,
-    /// so a slow build is never sabotaged by an impatient second process.
+    /// A lock nobody refreshed for the stale period is taken over, and the
+    /// guard names whom it replaced; a refreshed one never is.
     #[test]
-    fn a_stale_lock_is_removed_only_when_asked_and_only_when_old() {
+    fn a_stale_lock_is_taken_over_and_a_live_one_is_not() {
         let s = Scratch::new("lock-stale");
         let layout = Layout::new(s.path());
         let kind = LockKind::DevSession {
@@ -839,17 +929,26 @@ mod tests {
         };
         let guard = LockGuard::acquire(&layout, kind).unwrap();
         let path = guard.path().to_path_buf();
-        std::mem::forget(guard); // simulate a process that died without releasing
+        assert_eq!(LockGuard::held(&layout).len(), 1);
+        drop(guard);
 
-        assert!(!LockGuard::remove_stale(&layout, kind, Duration::from_secs(3600)).unwrap());
-        assert!(path.is_file(), "a fresh lock is left alone");
-
-        assert!(LockGuard::remove_stale(&layout, kind, Duration::from_secs(0)).unwrap());
-        assert!(!path.exists());
-        // Removing what is not there is not an error.
-        assert!(!LockGuard::remove_stale(&layout, kind, Duration::from_secs(0)).unwrap());
-
-        let _retaken = LockGuard::acquire(&layout, kind).unwrap();
+        // A process that died holding it: the file stays, unrefreshed.
+        fs::write(&path, "4123\n1700000000\ndev session for `host`\n").unwrap();
+        assert!(LockGuard::acquire(&layout, kind).is_err(), "fresh is held");
+        let old = SystemTime::now() - LOCK_STALE - Duration::from_secs(1);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert!(LockGuard::held(&layout).is_empty(), "stale is not held");
+        let retaken = LockGuard::acquire(&layout, kind).unwrap();
+        assert_eq!(retaken.replaced().map(|h| h.pid), Some(4123));
+        assert_eq!(
+            LockGuard::holder(&layout, kind).unwrap().pid,
+            std::process::id()
+        );
     }
 
     /// A truncated or hand-edited lock file must still produce a report. Failing to

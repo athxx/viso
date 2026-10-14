@@ -19,7 +19,7 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("LANGUAGE", &["check", "schema"]),
     ("TEST / DEBUG", &["test", "game"]),
     ("DELIVERY", &[]),
-    ("MAINTENANCE", &["completion"]),
+    ("MAINTENANCE", &["clean", "completion"]),
 ];
 
 /// Each command's examples: the command line and what it does.
@@ -111,6 +111,17 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             ("viso check", "check the project here"),
             ("viso check --project apps/demo", "check another project"),
             ("viso check --json", "as JSON events"),
+        ],
+    ),
+    (
+        "clean",
+        &[
+            ("viso clean", "remove the project's `target/viso/`"),
+            (
+                "viso clean --target-dir /tmp/out",
+                "the one under another `target/`",
+            ),
+            ("viso clean --json", "as JSON events"),
         ],
     ),
     (
@@ -334,6 +345,10 @@ const NOTES: &[(&str, &str)] = &[
         "android",
         "Profiles are kept in `~/.viso/` (`$VISO_HOME`); `viso run android --device <id>`\n\
          runs on one.",
+    ),
+    (
+        "clean",
+        "A lock a running `viso` holds stops it before anything is removed.",
     ),
     (
         "completion",

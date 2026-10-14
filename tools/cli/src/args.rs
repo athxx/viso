@@ -99,6 +99,8 @@ pub enum Command {
     Android(AndroidCommand),
     /// Check the project's `.vs` sources and `Viso.toml` without building.
     Check,
+    /// Remove `target/viso/`: builds, caches and dev state, never `dist/`.
+    Clean,
     /// Write the script that completes `viso` commands in a shell.
     Completion(CompletionArgs),
     /// Show where each configuration value comes from, or validate it.
@@ -407,6 +409,7 @@ impl Command {
                 DeviceCommand::Delete(_) => "android emulator delete",
             },
             Command::Check => "check",
+            Command::Clean => "clean",
             Command::Completion(_) => "completion",
             Command::Config(ConfigCommand::Show) => "config show",
             Command::Config(ConfigCommand::Get(_)) => "config get",

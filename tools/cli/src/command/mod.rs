@@ -2,6 +2,7 @@
 //! returns the process exit code.
 
 mod check;
+mod clean;
 mod completion;
 mod config;
 mod device;
@@ -44,6 +45,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
             device::run(Platform::Android, command, out)
         }
         Command::Check => check::run(ctx, out),
+        Command::Clean => clean::run(ctx, out),
         Command::Completion(args) => completion::run(ctx, args, out),
         Command::Config(command) => config::run(ctx, command, out),
         Command::Ios(IosCommand::Simulator(command)) => device::run(Platform::Ios, command, out),

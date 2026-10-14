@@ -304,6 +304,29 @@ fn snippet(
 }
 
 /// The one-line summary of a check.
+/// A byte count in binary units: `612 B`, `18 KiB`, `1.82 MiB`; three
+/// significant digits from a kibibyte up.
+pub fn size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let decimals = if value >= 100.0 {
+        0
+    } else if value >= 10.0 {
+        1
+    } else {
+        2
+    };
+    format!("{value:.decimals$} {}", UNITS[unit])
+}
+
 pub(super) fn summary(package: &str, files: usize, errors: usize, warnings: usize) -> String {
     let count = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
     let mut line = format!("checked `{package}`: {}", count(files, "file"));
@@ -558,6 +581,15 @@ mod tests {
             dev("view.vs", &event),
             "… view.vs candidate       compiled, not applied (--no-hot-reload)"
         );
+    }
+
+    #[test]
+    fn a_size_has_three_significant_digits_in_binary_units() {
+        assert_eq!(size(612), "612 B");
+        assert_eq!(size(18 * 1024), "18.0 KiB");
+        assert_eq!(size(1_908_408), "1.82 MiB");
+        assert_eq!(size(612 * 1024), "612 KiB");
+        assert_eq!(size(1023), "1023 B");
     }
 
     #[test]
