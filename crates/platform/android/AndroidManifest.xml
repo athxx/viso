@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The manifest `cargo xtask bundle` fills in: {package}, {label}, {lib}. -->
+<!-- The manifest the packager fills in: {package}, {label}, {lib}, and
+     {dev_permissions}, what a dev build adds for its dev channel. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="{package}"
     android:versionCode="1"
@@ -9,6 +10,7 @@
     <uses-feature android:name="android.hardware.vulkan.version"
         android:version="0x400003" android:required="true" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    {dev_permissions}
 
     <application
         android:label="{label}"

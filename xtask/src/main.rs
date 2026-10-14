@@ -258,6 +258,16 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 deps: &[],
             },
         ),
+        // The packager: an iOS `.app`, an Android APK, a web bundle around a
+        // built app. It runs the platform toolchains and depends on nothing
+        // internal.
+        (
+            "viso-package",
+            Allowed {
+                dir: "tools/package",
+                deps: &[],
+            },
+        ),
         // The `viso` command: argument parsing, output and exit codes over the
         // project model and the compiler it orchestrates (CLI sections 39-41).
         // A dev session decodes each changed asset as the app would before it
@@ -269,6 +279,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 dir: "tools/cli",
                 deps: &[
                     "viso-project",
+                    "viso-package",
                     "viso-dsl",
                     "viso-view",
                     "viso-ende",

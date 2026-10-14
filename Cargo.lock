@@ -2464,6 +2464,7 @@ name = "viso"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "js-sys",
  "libc",
  "naga",
  "objc2-core-foundation",
@@ -2488,7 +2489,9 @@ dependencies = [
  "viso-ui-macros",
  "viso-view",
  "viso-widgets",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
  "windows",
  "windows-core",
 ]
@@ -2514,6 +2517,7 @@ dependencies = [
  "libc",
  "viso-dsl",
  "viso-ende",
+ "viso-package",
  "viso-project",
  "viso-svg",
  "viso-text",
@@ -2643,6 +2647,10 @@ version = "0.0.0"
 dependencies = [
  "criterion",
 ]
+
+[[package]]
+name = "viso-package"
+version = "0.0.0"
 
 [[package]]
 name = "viso-platform"
@@ -3306,6 +3314,9 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 [[package]]
 name = "xtask"
 version = "0.0.0"
+dependencies = [
+ "viso-package",
+]
 
 [[package]]
 name = "yoke"

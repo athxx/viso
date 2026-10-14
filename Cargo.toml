@@ -22,6 +22,7 @@ members = [
     "crates/lsp",
     "crates/services",
     "tools/project",
+    "tools/package",
     "tools/cli",
     "xtask",
     "libs/woff2",
@@ -74,6 +75,7 @@ viso-services = { path = "crates/services", version = "0.0.0" }
 # crate may depend on a framework crate, never the reverse. `check-deps` enforces
 # both halves of that.
 viso-project = { path = "tools/project", version = "0.0.0" }
+viso-package = { path = "tools/package", version = "0.0.0" }
 
 # ---------------------------------------------------------------------------
 # Third-party crates. These are not viso* edges, so `cargo xtask check-deps`

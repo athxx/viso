@@ -8,3 +8,6 @@ publish = false
 # Build/CI automation. `cargo xtask check-deps` enforces the architecture DAG
 # (section 10) so a forbidden dependency edge fails CI rather than review.
 [dependencies]
+# `cargo xtask bundle` packages a release build with the packager `viso run`
+# packages each dev build with.
+viso-package = { workspace = true }

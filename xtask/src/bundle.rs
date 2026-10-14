@@ -29,6 +29,8 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use viso_package::{android, apple, web};
+
 struct Options {
     target: String,
     package: String,
@@ -128,24 +130,6 @@ fn output(cmd: &mut Command) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The entry of `dir` whose name sorts last by its numeric parts (the
-/// newest version), among those `keep` accepts.
-fn newest(dir: &Path, keep: impl Fn(&str) -> bool) -> Option<PathBuf> {
-    let key = |name: &str| -> Vec<u64> {
-        name.split(|c: char| !c.is_ascii_digit())
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| s.parse().ok())
-            .collect()
-    };
-    std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| keep(n))
-        .max_by_key(|n| key(n))
-        .map(|n| dir.join(n))
-}
-
 /// The executable path of the `--bin` artifact in cargo's JSON messages.
 fn executable(messages: &str) -> Option<PathBuf> {
     messages
@@ -159,93 +143,44 @@ fn executable(messages: &str) -> Option<PathBuf> {
         .next_back()
 }
 
-/// The lowest iOS version the bundle supports (the Info.plist's
-/// `MinimumOSVersion`).
-const IOS_MIN_VERSION: &str = "15.0";
-
-/// A bundle identifier for `bin`: letters, digits, `-` and `.` only.
-fn ios_bundle_id(bin: &str) -> String {
-    let name: String = bin
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    format!("dev.viso.{name}")
-}
-
-/// The app's Info.plist: one full-screen scene, portrait and landscape, on
-/// iPhone and iPad.
-fn info_plist(bin: &str, id: &str, simulator: bool) -> String {
-    let platform = if simulator {
-        "iPhoneSimulator"
-    } else {
-        "iPhoneOS"
-    };
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>CFBundleDevelopmentRegion</key>
-	<string>en</string>
-	<key>CFBundleExecutable</key>
-	<string>{bin}</string>
-	<key>CFBundleIdentifier</key>
-	<string>{id}</string>
-	<key>CFBundleInfoDictionaryVersion</key>
-	<string>6.0</string>
-	<key>CFBundleName</key>
-	<string>{bin}</string>
-	<key>CFBundlePackageType</key>
-	<string>APPL</string>
-	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
-	<key>CFBundleVersion</key>
-	<string>1</string>
-	<key>CFBundleSupportedPlatforms</key>
-	<array>
-		<string>{platform}</string>
-	</array>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
-	<key>MinimumOSVersion</key>
-	<string>{IOS_MIN_VERSION}</string>
-	<key>UIDeviceFamily</key>
-	<array>
-		<integer>1</integer>
-		<integer>2</integer>
-	</array>
-	<key>UILaunchScreen</key>
-	<dict/>
-	<key>UIApplicationSceneManifest</key>
-	<dict>
-		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
-	</dict>
-	<key>UISupportedInterfaceOrientations</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>UISupportedInterfaceOrientations~ipad</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-</dict>
-</plist>
-"#
-    )
+/// `cargo build` (or `cargo rustc` with `rustc_args`) of the `--bin` of the
+/// package for `triple`: the executable it built and the target directory.
+fn cargo(
+    o: &Options,
+    bin: &str,
+    triple: &str,
+    rustc_args: &[&str],
+    env: &[(String, PathBuf)],
+) -> Result<(PathBuf, PathBuf), String> {
+    let mut cargo = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    cargo
+        .current_dir(crate::workspace_root())
+        .arg(if rustc_args.is_empty() {
+            "build"
+        } else {
+            "rustc"
+        })
+        .arg("--message-format=json-render-diagnostics")
+        .args(["-p", &o.package, "--bin", bin, "--target", triple])
+        .args(o.release.then_some("--release"));
+    if !rustc_args.is_empty() {
+        cargo.arg("--").args(rustc_args);
+    }
+    cargo.envs(env.iter().map(|(k, v)| (k, v)));
+    let built = executable(&output(&mut cargo)?).ok_or("cargo reported no executable")?;
+    let target_dir = built
+        .ancestors()
+        .nth(3)
+        .ok_or("unexpected artifact path")?
+        .to_path_buf();
+    Ok((built, target_dir))
 }
 
 fn ios(o: &Options, simulator: bool) -> Result<PathBuf, String> {
-    let root = crate::workspace_root();
     let (target, triple) = if simulator {
-        ("ios-sim", "aarch64-apple-ios-sim")
+        ("ios-sim", apple::simulator_triple())
     } else {
-        ("ios", "aarch64-apple-ios")
+        ("ios", apple::DEVICE_TRIPLE)
     };
     if o.run && !simulator {
         return Err(
@@ -255,340 +190,74 @@ fn ios(o: &Options, simulator: bool) -> Result<PathBuf, String> {
         );
     }
     let bin = o.bin.clone().unwrap_or_else(|| o.package.clone());
-    let mut cargo = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    cargo
-        .current_dir(&root)
-        .args(["build", "--message-format=json-render-diagnostics"])
-        .args(["-p", &o.package, "--bin", &bin, "--target", triple])
-        .args(o.release.then_some("--release"));
-    let built = executable(&output(&mut cargo)?).ok_or("cargo reported no executable")?;
-
-    let target_dir = built.ancestors().nth(3).ok_or("unexpected artifact path")?;
+    let (built, target_dir) = cargo(o, &bin, triple, &[], &[])?;
     let out = target_dir.join("bundle").join(target);
-    let app = out.join(format!("{bin}.app"));
-    let _ = std::fs::remove_dir_all(&app);
-    std::fs::create_dir_all(&app).map_err(|e| format!("{}: {e}", app.display()))?;
-    let exe = app.join(&bin);
-    std::fs::copy(&built, &exe).map_err(|e| format!("{}: {e}", exe.display()))?;
-    let id = ios_bundle_id(&bin);
-    let plist = app.join("Info.plist");
-    std::fs::write(&plist, info_plist(&bin, &id, simulator))
-        .map_err(|e| format!("{}: {e}", plist.display()))?;
-
-    let mut codesign = Command::new("codesign");
-    codesign
-        .args(["--force", "--timestamp=none", "--sign"])
-        .arg(o.sign.as_deref().unwrap_or("-"));
-    if let Some(profile) = o.profile.as_deref().filter(|_| !simulator) {
-        std::fs::copy(profile, app.join("embedded.mobileprovision"))
-            .map_err(|e| format!("{}: {e}", profile.display()))?;
-        let decoded = out.join(format!("{bin}.mobileprovision.plist"));
-        let text = output(
-            Command::new("security")
-                .args(["cms", "-D", "-i"])
-                .arg(profile),
-        )?;
-        std::fs::write(&decoded, text).map_err(|e| format!("{}: {e}", decoded.display()))?;
-        let entitlements = out.join(format!("{bin}.entitlements"));
-        run(Command::new("plutil")
-            .args(["-extract", "Entitlements", "xml1", "-o"])
-            .arg(&entitlements)
-            .arg(&decoded))?;
-        codesign.arg("--entitlements").arg(&entitlements);
-    }
-    run(codesign.arg(&app))?;
+    let app = apple::bundle(&built, &out, &bin, simulator)?;
+    let profile = o.profile.as_deref().filter(|_| !simulator);
+    apple::sign(
+        &app.path,
+        o.sign.as_deref(),
+        profile,
+        &out.join(format!("{bin}.sign")),
+    )?;
 
     if o.run {
         run(Command::new("xcrun")
             .args(["simctl", "install", "booted"])
-            .arg(&app))
+            .arg(&app.path))
         .map_err(|e| format!("{e} (boot a simulator first: xcrun simctl boot <device>)"))?;
-        run(Command::new("xcrun").args(["simctl", "launch", "booted", &id]))?;
+        run(Command::new("xcrun").args(["simctl", "launch", "booted", &app.id]))?;
     }
-    Ok(app)
+    Ok(app.path)
 }
-
-struct AndroidSdk {
-    ndk_bin: PathBuf,
-    build_tools: PathBuf,
-    platform_jar: PathBuf,
-    adb: PathBuf,
-}
-
-fn android_sdk() -> Result<AndroidSdk, String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let sdk = ["ANDROID_HOME", "ANDROID_SDK_ROOT"]
-        .iter()
-        .find_map(std::env::var_os)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join("Library/Android/sdk"));
-    if !sdk.is_dir() {
-        return Err(format!(
-            "no Android SDK at {} (set ANDROID_HOME)",
-            sdk.display()
-        ));
-    }
-    let ndk = std::env::var_os("ANDROID_NDK_HOME")
-        .map(PathBuf::from)
-        .or_else(|| newest(&sdk.join("ndk"), |_| true))
-        .ok_or("no NDK under $ANDROID_HOME/ndk (set ANDROID_NDK_HOME)")?;
-    let prebuilt = newest(&ndk.join("toolchains/llvm/prebuilt"), |_| true)
-        .ok_or("NDK has no LLVM toolchain")?;
-    let build_tools =
-        newest(&sdk.join("build-tools"), |_| true).ok_or("no SDK build-tools installed")?;
-    let platform = newest(&sdk.join("platforms"), |n| {
-        n.strip_prefix("android-")
-            .is_some_and(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.'))
-    })
-    .ok_or("no SDK platform installed")?;
-    Ok(AndroidSdk {
-        ndk_bin: prebuilt.join("bin"),
-        build_tools,
-        platform_jar: platform.join("android.jar"),
-        adb: sdk.join("platform-tools/adb"),
-    })
-}
-
-/// The lowest API level the bundle supports (the manifest's `minSdkVersion`).
-const ANDROID_MIN_API: u32 = 26;
 
 fn android(o: &Options) -> Result<PathBuf, String> {
     let root = crate::workspace_root();
-    let sdk = android_sdk()?;
-    let triple = "aarch64-linux-android";
-    let clang = sdk.ndk_bin.join(format!("{triple}{ANDROID_MIN_API}-clang"));
+    let sdk = android::Sdk::locate()?;
     let bin = o.bin.clone().unwrap_or_else(|| o.package.clone());
-    let lib = bin.replace('-', "_");
-
-    // The app, linked as a shared library the activity loads. `main` and
-    // `JNI_OnLoad` stay exported (and kept) for the loader and the VM;
-    // 16 KiB segments keep it loadable on 16 KiB-page devices.
-    let mut cargo = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    cargo
-        .current_dir(&root)
-        .args(["rustc", "--message-format=json-render-diagnostics"])
-        .args(["-p", &o.package, "--bin", &bin, "--target", triple])
-        .args(o.release.then_some("--release"))
-        .args(["--", "-A", "linker_messages"])
-        .args([
-            "-Clink-arg=-shared",
-            "-Clink-arg=-Wl,--export-dynamic-symbol=main",
-            "-Clink-arg=-Wl,--export-dynamic-symbol=JNI_OnLoad",
-            "-Clink-arg=-Wl,-u,JNI_OnLoad",
-            "-Clink-arg=-Wl,-z,max-page-size=16384",
-        ])
-        .env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", &clang)
-        .env("CC_aarch64_linux_android", &clang)
-        .env("AR_aarch64_linux_android", sdk.ndk_bin.join("llvm-ar"));
-    let built = executable(&output(&mut cargo)?).ok_or("cargo reported no executable")?;
-
-    let target_dir = built
-        .ancestors()
-        .nth(3)
-        .ok_or("unexpected artifact path")?
-        .to_path_buf();
+    let abi = android::Abi::Arm64;
+    let (built, target_dir) = cargo(
+        o,
+        &bin,
+        abi.triple(),
+        android::RUSTC_ARGS,
+        &sdk.cargo_env(abi),
+    )?;
     let out = target_dir.join("bundle/android").join(&bin);
-    let _ = std::fs::remove_dir_all(&out);
-    let (classes, dex, stage) = (out.join("classes"), out.join("dex"), out.join("apk"));
-    for dir in [&classes, &dex, &stage.join("lib/arm64-v8a")] {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
-    let so = stage.join(format!("lib/arm64-v8a/lib{lib}.so"));
-    std::fs::copy(&built, &so).map_err(|e| format!("{}: {e}", so.display()))?;
-
     // The Java shell, and the services' Java half.
-    let shell = root.join("crates/platform/android");
-    let mut sources = java_files(&shell.join("java"))?;
-    sources.extend(java_files(&root.join("crates/services/android/java"))?);
-    run(Command::new("javac")
-        .args([
-            "-source",
-            "8",
-            "-target",
-            "8",
-            "-Xlint:-options",
-            "-encoding",
-            "UTF-8",
-        ])
-        .arg("-classpath")
-        .arg(&sdk.platform_jar)
-        .arg("-d")
-        .arg(&classes)
-        .args(&sources))?;
-    let mut class_files = Vec::new();
-    files_under(&classes, "class", &mut class_files)?;
-    run(Command::new(sdk.build_tools.join("d8"))
-        .args(["--min-api", &ANDROID_MIN_API.to_string()])
-        .args(o.release.then_some("--release"))
-        .arg("--lib")
-        .arg(&sdk.platform_jar)
-        .arg("--output")
-        .arg(&dex)
-        .args(&class_files))?;
-    std::fs::copy(dex.join("classes.dex"), stage.join("classes.dex")).map_err(|e| e.to_string())?;
-
-    // Manifest, resource table, then the payload.
-    let package = format!("dev.viso.{lib}");
-    let manifest = std::fs::read_to_string(shell.join("AndroidManifest.xml"))
-        .map_err(|e| e.to_string())?
-        .replace("{package}", &package)
-        .replace("{label}", &bin)
-        .replace("{lib}", &lib);
-    let manifest_path = out.join("AndroidManifest.xml");
-    std::fs::write(&manifest_path, manifest).map_err(|e| e.to_string())?;
-    let unaligned = out.join("unaligned.apk");
-    run(Command::new(sdk.build_tools.join("aapt2"))
-        .arg("link")
-        .arg("-I")
-        .arg(&sdk.platform_jar)
-        .arg("--manifest")
-        .arg(&manifest_path)
-        .arg("-o")
-        .arg(&unaligned))?;
-    // The native library is stored, so it can be mapped from the APK.
-    run(Command::new("zip")
-        .current_dir(&stage)
-        .args(["-q", "-0", "-r"])
-        .arg(&unaligned)
-        .arg("lib"))?;
-    run(Command::new("zip")
-        .current_dir(&stage)
-        .arg("-q")
-        .arg(&unaligned)
-        .arg("classes.dex"))?;
-    let apk = out.join(format!("{bin}.apk"));
-    run(Command::new(sdk.build_tools.join("zipalign"))
-        .args(["-P", "16", "-f", "4"])
-        .arg(&unaligned)
-        .arg(&apk))?;
-    let keystore = debug_keystore()?;
-    run(Command::new(sdk.build_tools.join("apksigner"))
-        .args(["sign", "--ks"])
-        .arg(&keystore)
-        .args([
-            "--ks-pass",
-            "pass:android",
-            "--ks-key-alias",
-            "androiddebugkey",
-        ])
-        .arg(&apk))?;
+    let shell = android::Shell {
+        java: vec![
+            root.join("crates/platform/android/java"),
+            root.join("crates/services/android/java"),
+        ],
+        manifest: root.join("crates/platform/android/AndroidManifest.xml"),
+    };
+    let flavor = if o.release {
+        android::Flavor::Release
+    } else {
+        android::Flavor::Dev
+    };
+    let apk = sdk.package(&built, abi, &out, &bin, &shell, flavor)?;
 
     if o.run {
-        run(Command::new(&sdk.adb).args(["install", "-r"]).arg(&apk))?;
-        run(Command::new(&sdk.adb).args([
-            "shell",
-            "am",
-            "start",
-            "-n",
-            &format!("{package}/dev.viso.VisoActivity"),
-        ]))?;
+        run(Command::new(&sdk.adb)
+            .args(["install", "-r"])
+            .arg(&apk.path))?;
+        run(Command::new(&sdk.adb).args(["shell", "am", "start", "-n", &apk.component()]))?;
     }
-    Ok(apk)
-}
-
-/// The page that loads the app: the canvas fills it edge to edge (the
-/// backend keeps content inside the safe area) and nothing scrolls.
-/// The Java sources under `dir`, at any depth.
-fn java_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut found = Vec::new();
-    files_under(dir, "java", &mut found)?;
-    Ok(found)
-}
-
-/// Collect the files under `dir` with `extension`, at any depth.
-fn files_under(dir: &Path, extension: &str, found: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        if path.is_dir() {
-            files_under(&path, extension, found)?;
-        } else if path.extension().is_some_and(|x| x == extension) {
-            found.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn index_html(bin: &str) -> String {
-    format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>{bin}</title>
-<style>html, body {{ height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }}</style>
-</head>
-<body>
-<script type="module">import init from "./{bin}.js"; init();</script>
-</body>
-</html>
-"#
-    )
+    Ok(apk.path)
 }
 
 fn web(o: &Options) -> Result<PathBuf, String> {
-    let root = crate::workspace_root();
     let bin = o.bin.clone().unwrap_or_else(|| o.package.clone());
-    let mut cargo = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    cargo
-        .current_dir(&root)
-        .args(["build", "--message-format=json-render-diagnostics"])
-        .args([
-            "-p",
-            &o.package,
-            "--bin",
-            &bin,
-            "--target",
-            "wasm32-unknown-unknown",
-        ])
-        .args(o.release.then_some("--release"));
-    let built = executable(&output(&mut cargo)?).ok_or("cargo reported no executable")?;
-
-    let target_dir = built.ancestors().nth(3).ok_or("unexpected artifact path")?;
+    let (built, target_dir) = cargo(o, &bin, web::TRIPLE, &[], &[])?;
     let out = target_dir.join("bundle/web").join(&bin);
-    let _ = std::fs::remove_dir_all(&out);
-    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    run(Command::new("wasm-bindgen")
-        .args(["--target", "web", "--no-typescript", "--out-name", &bin])
-        .arg("--out-dir")
-        .arg(&out)
-        .arg(&built))
-    .map_err(|e| format!("{e} (install the CLI: cargo install wasm-bindgen-cli)"))?;
-    let index = out.join("index.html");
-    std::fs::write(&index, index_html(&bin)).map_err(|e| format!("{}: {e}", index.display()))?;
-
+    web::bindgen(&built, &out, &bin)?;
+    let index = web::write_index(&out, &bin)?;
     if o.run {
         serve(&out)?;
     }
     Ok(index)
-}
-
-/// The `Content-Type` of a bundle file (`.wasm` must be `application/wasm`
-/// for streaming compilation).
-fn mime(path: &Path) -> &'static str {
-    match path.extension().and_then(|x| x.to_str()) {
-        Some("html") => "text/html; charset=utf-8",
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("wasm") => "application/wasm",
-        Some("css") => "text/css; charset=utf-8",
-        Some("png") => "image/png",
-        Some("json") => "application/json",
-        _ => "application/octet-stream",
-    }
-}
-
-/// The file under `dir` a request target names: `/` is the index; anything
-/// that could leave `dir` is refused.
-fn resolve(dir: &Path, target: &str) -> Option<PathBuf> {
-    let path = target.split(['?', '#']).next()?.trim_start_matches('/');
-    let path = if path.is_empty() { "index.html" } else { path };
-    let safe = path
-        .split('/')
-        .all(|part| !part.is_empty() && part != "." && part != ".." && !part.contains('\\'));
-    safe.then(|| dir.join(path))
 }
 
 /// Serve `dir` on the first free localhost port from 8000, one request at
@@ -611,11 +280,11 @@ fn respond(dir: &Path, mut stream: TcpStream) -> std::io::Result<()> {
     let mut words = request.split_whitespace();
     let (method, target) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
     let file = (method == "GET" || method == "HEAD")
-        .then(|| resolve(dir, target))
+        .then(|| web::resolve(dir, target))
         .flatten()
         .and_then(|path| std::fs::read(&path).ok().map(|body| (path, body)));
     let (status, kind, body) = match file {
-        Some((path, body)) => ("200 OK", mime(&path), body),
+        Some((path, body)) => ("200 OK", web::mime(&path), body),
         None => ("404 Not Found", "text/plain", b"not found".to_vec()),
     };
     write!(
@@ -627,39 +296,6 @@ fn respond(dir: &Path, mut stream: TcpStream) -> std::io::Result<()> {
         stream.write_all(&body)?;
     }
     stream.flush()
-}
-
-/// The standard Android debug keystore, created if missing.
-fn debug_keystore() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("HOME is not set")?;
-    let dir = home.join(".android");
-    let keystore = dir.join("debug.keystore");
-    if keystore.exists() {
-        return Ok(keystore);
-    }
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    run(Command::new("keytool")
-        .args(["-genkeypair", "-keystore"])
-        .arg(&keystore)
-        .args([
-            "-storepass",
-            "android",
-            "-keypass",
-            "android",
-            "-alias",
-            "androiddebugkey",
-            "-keyalg",
-            "RSA",
-            "-keysize",
-            "2048",
-            "-validity",
-            "10000",
-            "-dname",
-            "CN=Android Debug,O=Android,C=US",
-        ]))?;
-    Ok(keystore)
 }
 
 #[cfg(test)]
@@ -696,37 +332,6 @@ mod tests {
     }
 
     #[test]
-    fn the_ios_bundle_names_its_executable_and_platform() {
-        assert_eq!(ios_bundle_id("hello_world"), "dev.viso.hello-world");
-        let plist = info_plist("hello_world", "dev.viso.hello-world", true);
-        assert!(plist.contains("<string>hello_world</string>"));
-        assert!(plist.contains("<string>dev.viso.hello-world</string>"));
-        assert!(plist.contains("<string>iPhoneSimulator</string>"));
-        assert!(info_plist("a", "dev.viso.a", false).contains("<string>iPhoneOS</string>"));
-    }
-
-    #[test]
-    fn the_page_loads_the_generated_module() {
-        let html = index_html("demo");
-        assert!(html.contains(r#"import init from "./demo.js"; init();"#));
-        assert!(html.contains("viewport-fit=cover"));
-    }
-
-    #[test]
-    fn served_files_have_their_types_and_stay_in_the_bundle() {
-        assert_eq!(mime(Path::new("a/app_bg.wasm")), "application/wasm");
-        assert_eq!(mime(Path::new("app.js")), "text/javascript; charset=utf-8");
-        assert_eq!(mime(Path::new("index.html")), "text/html; charset=utf-8");
-        assert_eq!(mime(Path::new("blob")), "application/octet-stream");
-        let dir = Path::new("/b");
-        assert_eq!(resolve(dir, "/"), Some(dir.join("index.html")));
-        assert_eq!(resolve(dir, "/app.js?v=1"), Some(dir.join("app.js")));
-        assert_eq!(resolve(dir, "/../secret"), None);
-        assert_eq!(resolve(dir, "/a//b"), None);
-        assert_eq!(resolve(dir, "/a\\..\\b"), None);
-    }
-
-    #[test]
     fn finds_the_last_executable() {
         let messages = concat!(
             "{\"reason\":\"compiler-artifact\",\"executable\":null}\n",
@@ -737,20 +342,5 @@ mod tests {
             executable(messages),
             Some(PathBuf::from("/t/aarch64-linux-android/debug/app"))
         );
-    }
-
-    #[test]
-    fn newest_orders_versions_numerically() {
-        let dir = std::env::temp_dir().join(format!("xtask-newest-{}", std::process::id()));
-        for v in ["9.0.0", "36.1.0", "37.0.0", "android-36", "android-36.1"] {
-            std::fs::create_dir_all(dir.join(v)).unwrap();
-        }
-        let digits = |n: &str| n.starts_with(|c: char| c.is_ascii_digit());
-        assert_eq!(newest(&dir, digits), Some(dir.join("37.0.0")));
-        assert_eq!(
-            newest(&dir, |n| n.starts_with("android-")),
-            Some(dir.join("android-36.1"))
-        );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
