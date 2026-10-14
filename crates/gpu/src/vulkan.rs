@@ -310,9 +310,11 @@ impl VulkanBackend {
     /// Create the backend on the best available Vulkan device.
     ///
     /// # Panics
-    /// Panics if there is no Vulkan loader or no device with a graphics queue.
+    /// Panics if there is no Vulkan loader or no device with a graphics queue,
+    /// saying which step failed.
     pub fn new() -> Self {
-        Self::try_new().expect("no usable Vulkan device")
+        let validation = std::env::var_os("VISO_VULKAN_VALIDATION").is_some();
+        Self::open(validation).unwrap_or_else(|why| panic!("no usable Vulkan device: {why}"))
     }
 
     /// Create the backend, or `None` if Vulkan is unavailable. Enables the
@@ -326,20 +328,29 @@ impl VulkanBackend {
     /// layer is installed. Errors it reports are counted by
     /// [`validation_errors`](Self::validation_errors).
     pub fn try_new_with(validation: bool) -> Option<Self> {
+        Self::open(validation).ok()
+    }
+
+    /// Create the backend, or say which step failed.
+    fn open(validation: bool) -> Result<Self, String> {
         // SAFETY: loading the system Vulkan loader runs its initialisers, which
         // is the documented way to reach Vulkan; nothing else is loaded.
-        let entry = unsafe { ash::Entry::load() }.ok().or_else(|| {
-            // On macOS the loader that reaches MoltenVK is installed outside
-            // the default library search path (Homebrew, the Vulkan SDK).
-            MACOS_LOADERS.iter().find_map(|path| {
-                // SAFETY: as above, a Vulkan loader at a fixed location.
-                unsafe { ash::Entry::load_from(path) }.ok()
+        let entry = unsafe { ash::Entry::load() }
+            .ok()
+            .or_else(|| {
+                // On macOS the loader that reaches MoltenVK is installed outside
+                // the default library search path (Homebrew, the Vulkan SDK).
+                MACOS_LOADERS.iter().find_map(|path| {
+                    // SAFETY: as above, a Vulkan loader at a fixed location.
+                    unsafe { ash::Entry::load_from(path) }.ok()
+                })
             })
-        })?;
+            .ok_or("no Vulkan loader")?;
 
         // SAFETY: `entry` is a loaded Vulkan entry; enumeration has no
         // preconditions.
-        let extensions = unsafe { entry.enumerate_instance_extension_properties(None) }.ok()?;
+        let extensions = unsafe { entry.enumerate_instance_extension_properties(None) }
+            .map_err(|e| format!("cannot enumerate the instance extensions: {e}"))?;
         let has_ext = |name: &CStr| {
             extensions
                 .iter()
@@ -401,20 +412,21 @@ impl VulkanBackend {
             // SAFETY: every extension and layer name was enumerated as
             // available and is a 'static NUL-terminated string; `info` borrows
             // live locals.
-            unsafe { entry.create_instance(&info, None) }.ok()
+            unsafe { entry.create_instance(&info, None) }
         };
         let instance = if validation {
             // A layer that is listed but whose library does not load (a
             // manifest off the library search path) fails the whole instance:
             // run without it.
-            create(&enabled, &layer_names).or_else(|| {
+            create(&enabled, &layer_names).or_else(|_| {
                 validation = false;
                 enabled.retain(|&name| name != ext::debug_utils::NAME.as_ptr());
                 create(&enabled, &[])
             })
         } else {
             create(&enabled, &[])
-        }?;
+        }
+        .map_err(|e| format!("cannot create the instance: {e}"))?;
 
         let validation_errors = Box::new(AtomicU32::new(0));
         let debug = validation.then(|| {
@@ -439,21 +451,24 @@ impl VulkanBackend {
             (loader, messenger)
         });
 
-        let Some((physical, queue_family)) = pick_physical_device(&instance) else {
-            // SAFETY: nothing was created from `instance` except the messenger,
-            // which is destroyed first.
-            unsafe {
-                if let Some((loader, messenger)) = &debug {
-                    loader.destroy_debug_utils_messenger(*messenger, None);
+        let (physical, queue_family) = match pick_physical_device(&instance) {
+            Ok(picked) => picked,
+            Err(why) => {
+                // SAFETY: nothing was created from `instance` except the messenger,
+                // which is destroyed first.
+                unsafe {
+                    if let Some((loader, messenger)) = &debug {
+                        loader.destroy_debug_utils_messenger(*messenger, None);
+                    }
+                    instance.destroy_instance(None);
                 }
-                instance.destroy_instance(None);
+                return Err(why);
             }
-            return None;
         };
 
         // SAFETY: `physical` was enumerated from `instance`.
-        let device_exts =
-            unsafe { instance.enumerate_device_extension_properties(physical) }.ok()?;
+        let device_exts = unsafe { instance.enumerate_device_extension_properties(physical) }
+            .map_err(|e| format!("cannot enumerate the device extensions: {e}"))?;
         let has_device_ext = |name: &CStr| {
             device_exts
                 .iter()
@@ -476,7 +491,8 @@ impl VulkanBackend {
             .enabled_extension_names(&device_enabled);
         // SAFETY: `queue_family` has a graphics queue on `physical`, and every
         // extension was enumerated as supported by it.
-        let device = unsafe { instance.create_device(physical, &device_info, None) }.ok()?;
+        let device = unsafe { instance.create_device(physical, &device_info, None) }
+            .map_err(|e| format!("cannot create the device: {e}"))?;
         // SAFETY: queue 0 of `queue_family` was requested above.
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
         // SAFETY: `physical` belongs to `instance`.
@@ -493,7 +509,7 @@ impl VulkanBackend {
         let (set_layout, pipeline_layout, pipeline_cache) = create_layouts(&device);
         let slots = std::array::from_fn(|_| create_frame_slot(&device, queue_family));
 
-        Some(Self {
+        Ok(Self {
             entry,
             instance,
             surface_fn,
@@ -2432,9 +2448,11 @@ impl Drop for VulkanBackend {
 
 /// The best physical device with a graphics queue: discrete over integrated
 /// over anything else.
-fn pick_physical_device(instance: &ash::Instance) -> Option<(vk::PhysicalDevice, u32)> {
+fn pick_physical_device(instance: &ash::Instance) -> Result<(vk::PhysicalDevice, u32), String> {
     // SAFETY: `instance` is live; the queries have no other preconditions.
-    let devices = unsafe { instance.enumerate_physical_devices() }.ok()?;
+    let devices = unsafe { instance.enumerate_physical_devices() }
+        .map_err(|e| format!("cannot enumerate the devices: {e}"))?;
+    let count = devices.len();
     devices
         .into_iter()
         .filter_map(|pd| {
@@ -2458,6 +2476,7 @@ fn pick_physical_device(instance: &ash::Instance) -> Option<(vk::PhysicalDevice,
         })
         .max_by_key(|&(rank, ..)| rank)
         .map(|(_, pd, family)| (pd, family))
+        .ok_or_else(|| format!("none of the {count} devices has a graphics queue"))
 }
 
 /// The shared descriptor-set layout, pipeline layout and pipeline cache.
