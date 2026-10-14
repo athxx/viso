@@ -2669,6 +2669,21 @@ mod tests {
         true
     }
 
+    /// Writes every sample message, encoded, as a seed of the `dev_wire`
+    /// fuzz target's corpus.
+    #[test]
+    #[ignore = "writes the fuzz corpus's seeds"]
+    fn fuzz_seeds() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/dev_wire");
+        std::fs::create_dir_all(&dir).unwrap();
+        let host = host_messages().iter().map(encode).collect::<Vec<_>>();
+        let runtime = runtime_messages().iter().map(encode).collect::<Vec<_>>();
+        for (n, body) in host.iter().chain(&runtime).enumerate() {
+            std::fs::write(dir.join(format!("seed-{n:03}")), body).unwrap();
+        }
+    }
+
     #[test]
     fn mutated_and_random_frames_never_panic_and_what_decodes_is_whole() {
         let host: Vec<Vec<u8>> = host_messages().iter().map(encode).collect();

@@ -12,6 +12,7 @@
 
 mod absence;
 mod bundle;
+mod frame_tax;
 mod targets;
 
 use std::collections::BTreeMap;
@@ -299,9 +300,10 @@ fn main() -> ExitCode {
         "bundle" => bundle::bundle(&args[1..]),
         "check-targets" => targets::check_targets(&args[1..]),
         "check-release-absence" => absence::check_release_absence(&args[1..]),
+        "check-frame-tax" => frame_tax::check_frame_tax(&args[1..]),
         other => {
             eprintln!(
-                "unknown xtask: {other:?}\nusage: cargo xtask check-deps | check-targets | check-release-absence | bundle"
+                "unknown xtask: {other:?}\nusage: cargo xtask check-deps | check-targets | check-release-absence | check-frame-tax | bundle"
             );
             ExitCode::FAILURE
         }

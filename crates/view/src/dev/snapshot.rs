@@ -620,6 +620,17 @@ mod tests {
         }
     }
 
+    /// Writes the sample snapshot as the seed of the `dev_snapshot` fuzz
+    /// target's corpus.
+    #[test]
+    #[ignore = "writes the fuzz corpus's seeds"]
+    fn fuzz_seeds() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/dev_snapshot");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("seed-000"), snapshot().encode()).unwrap();
+    }
+
     #[test]
     fn a_snapshot_round_trips_and_names_its_build_and_compiler() {
         let snapshot = snapshot();

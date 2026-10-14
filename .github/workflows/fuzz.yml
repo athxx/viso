@@ -1,0 +1,37 @@
+name: viso-fuzz
+
+# Coverage-guided fuzzing of the decoders that read outside bytes, nightly and
+# on demand. The corpus starts from the sample messages the tests encode and
+# grows from run to run through the cache.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [dev_wire, dev_snapshot, game_snapshot, input_tape]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Seeds
+        run: cargo test -p viso-view --features hot-reload --lib fuzz_seeds -- --ignored
+      - name: Fuzz
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=600
+      - name: Crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}

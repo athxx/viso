@@ -1898,6 +1898,8 @@ snapshot schema
 
 Fuzz（确定性 xorshift，随 `cargo test` 运行）：`dev::wire::mutated_and_random_frames_never_panic_and_what_decodes_is_whole`（host 与 runtime 两个方向各 4 万次多点变异——翻转、边界字节、插入、删除、重复、拼接——加 2 万个随机 frame；能解码的必须重新编码后解码为同样的字节），facade `mutated_patch_frames_are_refused_whole_or_applied_whole`（变异的 patch frame 经真实 session 与 commit 路径：被拒时 revision、节点树与所有 state 不变，被接受时整体提交，最后原 patch 仍然提交），`dev::snapshot`、`GameSnapshot` 与 `viso game` control 消息各自的变异测试。
 
+Coverage-guided fuzz（`fuzz/`，`cargo +nightly fuzz run <target>`）：`dev_wire`（两个方向的 frame body 及同一字节作为 frame 流）、`dev_snapshot`、`game_snapshot`、`input_tape`，每个都要求解码不 panic、能解码的重新编码后解码得到相同编码；corpus 以测试的样例消息为种子（`fuzz_seeds`，ignored 测试写入），CI 每晚各跑 10 分钟（`.github/workflows/fuzz.yml`），corpus 经 cache 在运行之间累积。
+
 ---
 
 ## 62. Integration tests

@@ -372,7 +372,8 @@ resets only its own scope.
       multi-file module resolution in the hot-reload compile pipeline (`compile_unit`
       builds a `ModuleGraph` from exactly one `SourceUnit`, `crates/dsl/src/frontend.rs`)
       — an unrelated architectural capability from this slice's node-identity/patch
-      mechanics (AGENTS §40). A future slice's own item.
+      mechanics (AGENTS §40). A future slice's own item. The DSL itself refuses a
+      component of another file (`E3711`, `todo_dsl.md`), at build time as well.
 - [x] Unit tests (§61): scoped reset planning (`commit.rs`'s `migrate_states` tests,
       `state_retype.rs`), SymbolId preservation across reorder/insert (`diff.rs`'s
       `a_node_under_a_replaced_ancestor_is_not_its_own_insert_or_remove`,
@@ -1097,7 +1098,14 @@ differ.
       `wasm32-unknown-unknown`, so they need a `viso` log path that writes the page's
       console (and stdout/stderr natively).
 - [ ] `view!` builds the host platform stack for every cross build (the proc macro
-      reaches `viso-platform` through `viso-dsl` → `viso-ui`); cut that edge.
+      reaches `viso-platform` through `viso-dsl` → `viso-ui`); cut that edge. Measured:
+      the macro's host graph is 124 crates, 23 of them native (objc2/AppKit/Metal,
+      accesskit). Gating the native backends behind a feature the macro leaves off
+      would make every cold desktop build compile dsl/ui/render/gpu/platform twice
+      (resolver 2 resolves proc-macro features apart), so the cut is splitting the
+      compiler's schema and AOT types (`viso_ui::aot`, `StateKey`, `DirtyClass`, the
+      layout terms, `viso_gpu::InstanceSchema`) out of the runtime crates: a crate
+      dependency change, which needs its ADR first.
 - [x] Android fake: `deploy::android_fake` drives the deploy layer against scripted
       `emulator`/`adb` (boot, install, reverse, launch with the dev extras, logcat,
       clean stop, panic exit status, one forward per port, unreverse).
@@ -1132,7 +1140,8 @@ Goal: one source graph serves several running runtimes with per-runtime revision
       `dev` events carry `target`; human lines are prefixed `[target]` with more than
       one runtime.
 - [ ] Accept runtimes of several builds in one session (the link checks one build id):
-      Studio launching desktop and web builds side by side.
+      Studio launching desktop and web builds side by side. Waits for Studio: CLI 1.0
+      launches one target per session (§43), so nothing would join a second build.
 - [ ] Studio Device Matrix over the `runtime` stream.
 
 ### Done
@@ -1169,10 +1178,14 @@ Goal: one source graph serves several running runtimes with per-runtime revision
       mutations, splices, random frames; what decodes re-encodes canonically), mutated
       patch frames through a live session and commit (refused: revision, tree and states
       unchanged; accepted: whole), DevSnapshot, GameSnapshot and control messages.
-- [ ] A coverage-guided `cargo fuzz` target over the same decoders, run in CI on a
-      schedule.
+- [x] A coverage-guided `cargo fuzz` target over the same decoders, run in CI on a
+      schedule: `fuzz/` (`dev_wire`, `dev_snapshot`, `game_snapshot`, `input_tape`),
+      seeded from the tests' sample messages (`fuzz_seeds`, ignored), nightly in
+      `.github/workflows/fuzz.yml` with the corpus cached between runs. A minute each
+      locally: no crash.
 - [x] §71 Definition of Done checklist, one test per item: the table in
       `Viso_Hot_Reload.md` §71 names each item's test.
 - [ ] A frame-loop benchmark gate for the release branch tax (the bench compares with
       and without `hot-reload` but has no threshold).
-- [ ] UI input tapes record the code revisions they ran across (game tapes do).
+- [ ] UI input tapes record the code revisions they ran across (game tapes do). Waits
+      for UI input tapes: nothing records or replays one yet (tests script raw events).

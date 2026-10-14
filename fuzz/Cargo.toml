@@ -1,0 +1,48 @@
+# Coverage-guided fuzzing of the decoders that read bytes from outside the
+# process: dev frames both ways, the dev and game snapshots, input tapes.
+# `cargo +nightly fuzz run <target>`; outside the workspace, as cargo-fuzz
+# builds it with its own flags.
+[package]
+name = "viso-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+viso-view = { path = "../crates/view", features = ["hot-reload"] }
+viso-behavior = { path = "../crates/behavior" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "dev_wire"
+path = "fuzz_targets/dev_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dev_snapshot"
+path = "fuzz_targets/dev_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "game_snapshot"
+path = "fuzz_targets/game_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "input_tape"
+path = "fuzz_targets/input_tape.rs"
+test = false
+doc = false
+bench = false
