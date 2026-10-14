@@ -379,6 +379,9 @@ pub enum RunTarget {
     WebDom,
     /// A browser, DOM with WebGPU islands.
     WebHybrid,
+    /// Not a place to run: taken only to say what runs headless.
+    #[value(hide = true)]
+    Headless,
 }
 
 /// What `viso run` runs, and passes on.
@@ -759,7 +762,16 @@ mod tests {
             })
         ));
         assert!(Cli::try_parse_from(["viso", "run", "host"]).is_err());
-        assert!(Cli::try_parse_from(["viso", "run", "headless"]).is_err());
+        // Parsed only for the command to say where headless runs.
+        assert!(matches!(
+            Cli::try_parse_from(["viso", "run", "headless"])
+                .unwrap()
+                .command,
+            Command::Run(RunArgs {
+                target: Some(RunTarget::Headless),
+                ..
+            })
+        ));
         assert!(Cli::try_parse_from(["viso", "run", "--target", "ios"]).is_err());
         let cli =
             Cli::try_parse_from(["viso", "run", "android", "--device", "pixel-local"]).unwrap();

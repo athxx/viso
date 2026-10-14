@@ -1,6 +1,6 @@
 //! `viso run` options over a stand-in app that prints what it was launched
 //! with and exits: `--env` reaches it, `--cwd` is where it runs, and the
-//! options a target does not take are usage errors.
+//! options a target does not take, and `headless`, are usage errors.
 
 mod stand_in;
 
@@ -79,6 +79,7 @@ fn an_option_the_target_does_not_take_is_a_usage_error() {
             &["run", "--profile", "release"],
             "viso build --profile release",
         ),
+        (&["run", "headless"], "viso test ui"),
     ] {
         let out = viso(&root, args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");

@@ -304,12 +304,15 @@ gap, and CI can run all of it headless.
 
 ### C1.8 — Headless target (§3.4)
 
-- [ ] `headless` builds and runs on the headless platform backend and headless GPU
+- [x] `headless` builds and runs on the headless platform backend and headless GPU
       (`viso-platform::backend::headless`, `viso-gpu::headless`); no window, no
       device; usable only by test/tooling commands (`run headless` is a usage error
       pointing at `test`).
-- [ ] Deterministic clock, fixed DPI and surface size from `[test]` in `Viso.toml`
+- [x] Deterministic clock, fixed DPI and surface size from `[test]` in `Viso.toml`
       (default 1280×720 @1x); fonts from the project plus the bundled fallback only.
+      (The framework bundles no fallback face, so a headless build reads the
+      project's fonts only; `[test.surface]` reaches the build through
+      `VISO_HEADLESS_SURFACE`, which `viso test` passes — C1.9.)
 
 ### C1.9 — `viso test` (§22)
 
@@ -396,6 +399,10 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
 - [ ] `snapshot capture <scenario|component>`: render headless at the test surface,
       write `tests/snapshots/<name>.<target>.png` plus a sidecar (tree hash, build id,
       renderer, size).
+- [ ] The software raster's CPU shader programs run without an allocation per
+      intrinsic call (compiled to closures or a flat register program): a custom
+      shader at 1280×720 now takes ~80 ms a frame with the raster crates optimized
+      (they are, in an unoptimized headless build), ~0.7 s without.
 - [ ] `snapshot compare`: perceptual + exact compare with a per-snapshot tolerance,
       diff image into `target/viso/snapshots/`, exit 1 on mismatch, `test`-shaped
       events.

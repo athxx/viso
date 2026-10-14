@@ -47,6 +47,12 @@ pub(crate) enum CargoEvent {
     Diagnostic(RustDiagnostic),
 }
 
+/// The facade's feature that compiles the Dev Runtime's hot reload in.
+pub(crate) const HOT_RELOAD: &str = "viso/hot-reload";
+
+/// The facade's feature that makes the build headless.
+pub(crate) const HEADLESS: &str = "viso/headless";
+
 /// How the app is built.
 #[derive(Clone)]
 pub(crate) struct BuildCommand {
@@ -69,8 +75,9 @@ pub(crate) struct BuildCommand {
     pub(crate) profile: Profile,
     /// The Cargo profile and its settings: [`profile_args`].
     pub(crate) profile_args: Vec<String>,
-    /// Whether the Dev Runtime's hot reload is compiled in.
-    pub(crate) hot_reload: bool,
+    /// The features of the app's dependencies turned on: [`HOT_RELOAD`],
+    /// [`HEADLESS`].
+    pub(crate) features: Vec<&'static str>,
     /// The Rust target, when not the host.
     pub(crate) target: Option<String>,
     /// The arguments after `cargo rustc --`; the build is `cargo build` when
@@ -114,8 +121,8 @@ impl BuildCommand {
         args.push("--manifest-path".into());
         args.push(self.manifest.clone().into_os_string());
         args.extend(self.profile_args.iter().map(OsString::from));
-        if self.hot_reload {
-            args.extend(["--features".into(), "viso/hot-reload".into()]);
+        if !self.features.is_empty() {
+            args.extend(["--features".into(), self.features.join(",").into()]);
         }
         if let Some(target) = &self.target {
             args.extend(["--target".into(), target.into()]);
@@ -148,8 +155,15 @@ impl std::fmt::Debug for BuildCommand {
 /// gives it: `--profile` and a `--config` per setting that is not already
 /// Cargo's own for that profile. `shipping` is a Cargo profile of Viso's,
 /// inheriting `release`. A web build's debug info follows its web
-/// settings, and its symbols are stripped by `wasm-bindgen`.
-pub(crate) fn profile_args(profile: Profile, settings: &ProfileSettings, web: bool) -> Vec<String> {
+/// settings, and its symbols are stripped by `wasm-bindgen`. An unoptimized
+/// headless build still optimizes the crates that draw its frames in
+/// software ([`RASTER`]), which would otherwise take most of a second each.
+pub(crate) fn profile_args(
+    profile: Profile,
+    settings: &ProfileSettings,
+    target: Target,
+) -> Vec<String> {
+    let web = target.is_web();
     let name = profile.as_str();
     let mut args = vec!["--profile".to_owned(), name.to_owned()];
     let mut config = |key: &str, value: String| {
@@ -174,6 +188,11 @@ pub(crate) fn profile_args(profile: Profile, settings: &ProfileSettings, web: bo
         };
         config("opt-level", value);
     }
+    if target == Target::Headless && opt.value == OptLevel::Zero {
+        for package in RASTER {
+            config(&format!("package.{package}.opt-level"), "3".to_owned());
+        }
+    }
     let debug = if web {
         settings.web.source_maps
     } else {
@@ -188,6 +207,10 @@ pub(crate) fn profile_args(profile: Profile, settings: &ProfileSettings, web: bo
     }
     args
 }
+
+/// The crates of a headless build's software raster: the backend, the CPU
+/// shader programs it runs, and the renderer feeding it.
+const RASTER: [&str; 3] = ["viso-gpu", "viso-shader", "viso-render"];
 
 /// Whether a configuration layer named the value, rather than Viso's
 /// default giving it.
@@ -795,18 +818,22 @@ mod tests {
     fn a_profile_passes_only_what_differs_from_cargo() {
         let plain = "[package]\nname = \"app\"\n";
         assert_eq!(
-            profile_args(Profile::Dev, &settings(Profile::Dev, plain), false),
+            profile_args(Profile::Dev, &settings(Profile::Dev, plain), Target::Host),
             ["--profile", "dev"]
         );
         assert_eq!(
-            profile_args(Profile::Release, &settings(Profile::Release, plain), false),
+            profile_args(
+                Profile::Release,
+                &settings(Profile::Release, plain),
+                Target::Host
+            ),
             ["--profile", "release"]
         );
         assert_eq!(
             profile_args(
                 Profile::Shipping,
                 &settings(Profile::Shipping, plain),
-                false
+                Target::Host
             ),
             [
                 "--profile",
@@ -821,14 +848,44 @@ mod tests {
         );
         // A web build strips with its glue, not with Cargo.
         assert_eq!(
-            profile_args(Profile::Shipping, &settings(Profile::Shipping, plain), true)[4..],
+            profile_args(
+                Profile::Shipping,
+                &settings(Profile::Shipping, plain),
+                Target::WebGpu
+            )[4..],
             ["--config", "profile.shipping.opt-level=\"s\""]
+        );
+        // An unoptimized headless build optimizes its software raster.
+        assert_eq!(
+            profile_args(
+                Profile::Dev,
+                &settings(Profile::Dev, plain),
+                Target::Headless
+            ),
+            [
+                "--profile",
+                "dev",
+                "--config",
+                "profile.dev.package.viso-gpu.opt-level=3",
+                "--config",
+                "profile.dev.package.viso-shader.opt-level=3",
+                "--config",
+                "profile.dev.package.viso-render.opt-level=3",
+            ]
+        );
+        assert_eq!(
+            profile_args(
+                Profile::Release,
+                &settings(Profile::Release, plain),
+                Target::Headless
+            ),
+            ["--profile", "release"]
         );
         let named = "[package]\nname = \"app\"\n[profile.release]\nopt_level = 3\nsource_maps = true\n\
                      [profile.release.web]\nsource_maps = false\n";
         let release = settings(Profile::Release, named);
         assert_eq!(
-            profile_args(Profile::Release, &release, false),
+            profile_args(Profile::Release, &release, Target::Host),
             [
                 "--profile",
                 "release",
@@ -839,7 +896,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            profile_args(Profile::Release, &release, true),
+            profile_args(Profile::Release, &release, Target::WebGpu),
             [
                 "--profile",
                 "release",

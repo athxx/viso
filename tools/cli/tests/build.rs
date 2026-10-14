@@ -154,6 +154,44 @@ fn what_stops_a_build_before_cargo_runs() {
     assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
 }
 
+#[test]
+fn a_headless_build_is_apart_from_the_host_build() {
+    let root = project("headless");
+    fs::write(
+        root.join("src/main.rs"),
+        "fn main() {\n    println!(\"{} {} {}\", option_env!(\"VISO_PROFILE\").unwrap_or(\"-\"), \
+         viso::HOT_RELOAD, viso::HEADLESS);\n}\n",
+    )
+    .unwrap();
+    let out = viso(&root, &["build", "headless", "--json"]);
+    let stdout = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}{}", text(&out.stderr));
+    let binary = events(&stdout, "artifact")[0];
+    assert_eq!(field(binary, "target"), Some("headless"));
+    let path = field(binary, "path").unwrap();
+    assert_eq!(path, "dist/headless/probe");
+    assert_eq!(
+        ran(&root, path),
+        "dev false true",
+        "headless, and with nothing to reload"
+    );
+
+    let out = viso(&root, &["build"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let host = fs::read_dir(root.join("dist"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .find(|name| name != "headless")
+        .unwrap();
+    assert_eq!(ran(&root, &format!("dist/{host}/probe")), "dev true false");
+    assert_eq!(
+        ran(&root, path),
+        "dev false true",
+        "the host build left it as it was"
+    );
+}
+
 /// Whether `program` runs here.
 fn installed(program: &str) -> bool {
     Command::new(program)

@@ -11,7 +11,7 @@ use std::fmt;
 
 use crate::config::{Env, Origin, ProfileSettings, ResolvedConfig};
 use crate::discovery::Project;
-use crate::manifest::Spanned;
+use crate::manifest::{Spanned, SurfaceScale, TestSurface};
 use crate::target::Profile;
 
 /// The framework's defaults for keys whose consumers live outside this crate.
@@ -33,12 +33,14 @@ pub mod defaults {
 }
 
 /// A configuration value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     /// A string or a name.
     Text(String),
     /// A number.
     Integer(i64),
+    /// A number with a fraction; never NaN.
+    Number(f64),
     /// A boolean.
     Bool(bool),
     /// A list of strings.
@@ -53,12 +55,16 @@ impl fmt::Display for Value {
         match self {
             Value::Text(text) => f.write_str(text),
             Value::Integer(n) => write!(f, "{n}"),
+            Value::Number(n) => write!(f, "{n}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::List(items) => write!(f, "[{}]", items.join(", ")),
             Value::Unset => f.write_str("(unset)"),
         }
     }
 }
+
+// No value is NaN, so equality is total.
+impl Eq for Value {}
 
 /// One key of `viso config show`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +137,9 @@ pub const KEYS: &[&str] = &[
     "game.determinism",
     "game.tick_rate",
     "game.collision_delivery",
+    "test.surface.width",
+    "test.surface.height",
+    "test.surface.scale",
     "i18n.source",
     "workspace.members",
 ];
@@ -299,6 +308,25 @@ pub fn settings(project: &Project, config: &ResolvedConfig, env: &Env) -> Vec<En
             .collision_delivery
             .map(|d| d.map(|d| text(&d.as_str()))),
         Value::Text(crate::CollisionDelivery::default().as_str().into()),
+    );
+    let surface = &m.test.surface;
+    push_value(
+        &mut push,
+        "test.surface.width",
+        surface.width.map(|w| w.map(|w| Value::Integer(w.into()))),
+        Value::Integer(TestSurface::WIDTH.into()),
+    );
+    push_value(
+        &mut push,
+        "test.surface.height",
+        surface.height.map(|h| h.map(|h| Value::Integer(h.into()))),
+        Value::Integer(TestSurface::HEIGHT.into()),
+    );
+    push_value(
+        &mut push,
+        "test.surface.scale",
+        surface.scale.map(|s| s.map(|s| Value::Number(s.get()))),
+        Value::Number(SurfaceScale::ONE.get()),
     );
     push_text(
         &mut push,

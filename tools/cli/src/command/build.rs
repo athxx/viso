@@ -133,6 +133,11 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
         }
         None => None,
     };
+    // A headless build is for tests and tooling, which reload nothing.
+    let mut features = plan.features;
+    if config.dev_runtime() == viso_project::DevRuntime::Present && target != Target::Headless {
+        features.push(cargo::HOT_RELOAD);
+    }
     let job = Job {
         cargo: BuildCommand {
             cargo: cargo::program(),
@@ -143,8 +148,8 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
             cargo_args: ctx.cargo_args(),
             build_args: ctx.cargo_build_args(),
             profile,
-            profile_args: cargo::profile_args(profile, &config.settings, target.is_web()),
-            hot_reload: config.dev_runtime() == viso_project::DevRuntime::Present,
+            profile_args: cargo::profile_args(profile, &config.settings, target),
+            features,
             target: plan.target,
             rustc_args: plan.rustc_args,
             env: plan.env,

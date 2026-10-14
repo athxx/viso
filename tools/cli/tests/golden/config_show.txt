@@ -50,5 +50,8 @@ export.solid.package_manager      (unset)      default
 game.determinism                  same_binary  default
 game.tick_rate                    60           default
 game.collision_delivery           event_major  default
+test.surface.width                1280         default
+test.surface.height               720          default
+test.surface.scale                1            default
 i18n.source                       en           default
 workspace.members                 []           default

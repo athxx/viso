@@ -43,6 +43,9 @@ pub struct HeadlessApp {
     woken: Arc<AtomicBool>,
     /// The beats left when the run is bounded ([`HeadlessApp::frame_budget`]).
     frames_left: Option<u32>,
+    /// Every window's logical size and scale, whatever it asks for
+    /// ([`HeadlessApp::fixed_surface`]).
+    surface: Option<((f64, f64), f64)>,
 }
 
 impl HeadlessApp {
@@ -60,6 +63,7 @@ impl HeadlessApp {
             framed_windows: true,
             woken: Arc::new(AtomicBool::new(false)),
             frames_left: None,
+            surface: None,
         }
     }
 
@@ -79,6 +83,13 @@ impl HeadlessApp {
     /// redraws requested once the budget is spent are dropped.
     pub fn frame_budget(&mut self, frames: u32) {
         self.frames_left = Some(frames);
+    }
+
+    /// Gives every window `width × height` logical pixels at `scale` device
+    /// pixels each, whatever size it asks for: a run that measures the same
+    /// on every machine.
+    pub fn fixed_surface(&mut self, width: u32, height: u32, scale: f64) {
+        self.surface = Some(((f64::from(width), f64::from(height)), scale));
     }
 
     /// Set the appearance [`PlatformApp::appearance`] reports. Scripts that
@@ -183,12 +194,12 @@ impl PlatformApp for HeadlessApp {
     fn create_window(&mut self, config: WindowConfig) -> Result<WindowId, PlatformError> {
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
-        let (w, h) = config.logical_size;
+        let ((w, h), scale) = self.surface.unwrap_or((config.logical_size, 1.0));
         self.windows.push(HeadlessWindow {
             id,
             title: config.title,
-            scale: 1.0,
-            physical_size: (w as u32, h as u32),
+            scale,
+            physical_size: ((w * scale).round() as u32, (h * scale).round() as u32),
             cursor: CursorIcon::Default,
             ime_area: None,
             soft_keyboard: false,
@@ -369,6 +380,20 @@ mod tests {
             self.0.push(event);
             ControlFlow::Wait
         }
+    }
+
+    #[test]
+    fn a_fixed_surface_sizes_every_window() {
+        let mut app = HeadlessApp::new();
+        app.fixed_surface(1280, 720, 1.5);
+        let id = app.create_window(WindowConfig::default()).unwrap();
+        let window = app.window(id).unwrap();
+        assert_eq!(window.inner_size(), (1920, 1080));
+        assert_eq!(window.scale_factor(), 1.5);
+
+        let mut app = HeadlessApp::new();
+        let id = app.create_window(WindowConfig::default()).unwrap();
+        assert_eq!(app.window(id).unwrap().inner_size(), (800, 600));
     }
 
     #[test]

@@ -215,6 +215,69 @@ pub struct Game {
     pub collision_delivery: Option<Spanned<CollisionDelivery>>,
 }
 
+/// Device pixels per logical pixel: finite, above 0 and at most
+/// [`SurfaceScale::MAX`].
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct SurfaceScale(f64);
+
+// A scale is never NaN, so equality is total.
+impl Eq for SurfaceScale {}
+
+impl SurfaceScale {
+    /// The largest scale.
+    pub const MAX: f64 = 8.0;
+
+    /// 1x.
+    pub const ONE: SurfaceScale = SurfaceScale(1.0);
+
+    /// `value` as a scale, when it is one.
+    pub fn new(value: f64) -> Option<SurfaceScale> {
+        (value > 0.0 && value <= Self::MAX).then_some(SurfaceScale(value))
+    }
+
+    /// The scale as a number.
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+}
+
+/// `[test.surface]`: the surface every window of a headless run gets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TestSurface {
+    /// `width`, in logical pixels, 1 to [`TestSurface::MAX_EDGE`]; 1280 when
+    /// absent.
+    pub width: Option<Spanned<u32>>,
+    /// `height`, likewise; 720 when absent.
+    pub height: Option<Spanned<u32>>,
+    /// `scale`; 1 when absent.
+    pub scale: Option<Spanned<SurfaceScale>>,
+}
+
+impl TestSurface {
+    /// The largest edge, in logical pixels.
+    pub const MAX_EDGE: u32 = 16384;
+    /// The width when none is set.
+    pub const WIDTH: u32 = 1280;
+    /// The height when none is set.
+    pub const HEIGHT: u32 = 720;
+
+    /// The size and scale in effect.
+    pub fn resolved(&self) -> (u32, u32, SurfaceScale) {
+        (
+            self.width.map_or(Self::WIDTH, |w| w.value),
+            self.height.map_or(Self::HEIGHT, |h| h.value),
+            self.scale.map_or(SurfaceScale::ONE, |s| s.value),
+        )
+    }
+}
+
+/// `[test]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Test {
+    /// `[test.surface]`.
+    pub surface: TestSurface,
+}
+
 /// `[i18n]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct I18n {
@@ -312,6 +375,8 @@ pub struct Manifest {
     pub workspace: Workspace,
     /// `[game]`.
     pub game: Game,
+    /// `[test]`.
+    pub test: Test,
     /// `[i18n]`.
     pub i18n: I18n,
 }
@@ -526,6 +591,7 @@ impl<'a> Reader<'a> {
                 "export",
                 "workspace",
                 "game",
+                "test",
                 "i18n",
             ],
             "",
@@ -699,6 +765,25 @@ impl<'a> Reader<'a> {
             None => Game::default(),
         };
 
+        let test = match self.table(root, "test") {
+            Some(t) => {
+                self.deny_unknown(t, &["surface"], "test");
+                let surface = match self.table(t, "surface") {
+                    Some(s) => {
+                        self.deny_unknown(s, &["width", "height", "scale"], "test.surface");
+                        TestSurface {
+                            width: self.edge(s, "width", "test.surface"),
+                            height: self.edge(s, "height", "test.surface"),
+                            scale: self.scale(s, "scale", "test.surface"),
+                        }
+                    }
+                    None => TestSurface::default(),
+                };
+                Test { surface }
+            }
+            None => Test::default(),
+        };
+
         let i18n = match self.table(root, "i18n") {
             Some(t) => {
                 self.deny_unknown(t, &["source"], "i18n");
@@ -718,6 +803,7 @@ impl<'a> Reader<'a> {
             export,
             workspace,
             game,
+            test,
             i18n,
         }
     }
@@ -937,6 +1023,57 @@ impl<'a> Reader<'a> {
                     )
                     .at(self.path)
                     .span(raw.span),
+                );
+                None
+            }
+        }
+    }
+
+    fn edge(&mut self, t: &dyn TableLike, key: &str, path: &str) -> Option<Spanned<u32>> {
+        let raw = self.integer(t, key, path)?;
+        match u32::try_from(raw.value) {
+            Ok(edge @ 1..=TestSurface::MAX_EDGE) => Some(Spanned::new(edge, raw.span)),
+            _ => {
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!(
+                            "`{path}.{key}` is from 1 to {} logical pixels",
+                            TestSurface::MAX_EDGE
+                        ),
+                    )
+                    .at(self.path)
+                    .span(raw.span),
+                );
+                None
+            }
+        }
+    }
+
+    /// A scale, written as an integer or a float.
+    fn scale(&mut self, t: &dyn TableLike, key: &str, path: &str) -> Option<Spanned<SurfaceScale>> {
+        let item = t.get(key)?;
+        let span = self.value_span(t, key, item);
+        let Some(value) = item
+            .as_float()
+            .or_else(|| item.as_integer().map(|n| n as f64))
+        else {
+            self.wrong_type(t, key, item, "a number", path);
+            return None;
+        };
+        match SurfaceScale::new(value) {
+            Some(scale) => Some(Spanned::new(scale, span)),
+            None => {
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!(
+                            "`{path}.{key}` is above 0 and at most {}",
+                            SurfaceScale::MAX
+                        ),
+                    )
+                    .at(self.path)
+                    .span(span),
                 );
                 None
             }
@@ -1602,6 +1739,31 @@ members = ["apps/one", "apps/two"]
             nearest("package_manger", &["out_dir", "package_manager"]),
             Some("package_manager")
         );
+    }
+
+    #[test]
+    fn the_test_surface_is_a_size_and_a_scale() {
+        let (m, _) = parse(
+            "[package]\nname = \"g\"\n[test.surface]\nwidth = 390\nheight = 844\nscale = 3\n",
+        );
+        let (w, h, scale) = m.test.surface.resolved();
+        assert_eq!((w, h, scale.get()), (390, 844, 3.0));
+        let (m, _) = parse("[package]\nname = \"g\"\n[test.surface]\nscale = 2.625\n");
+        let (w, h, scale) = m.test.surface.resolved();
+        assert_eq!((w, h, scale.get()), (1280, 720, 2.625));
+        let (m, _) = parse("[package]\nname = \"g\"\n");
+        assert_eq!(m.test.surface.resolved().2, SurfaceScale::ONE);
+        for bad in [
+            "width = 0",
+            "height = 20000",
+            "scale = 0",
+            "scale = 9.5",
+            "scale = \"2\"",
+            "depth = 1",
+        ] {
+            let diags = errors(&format!("[package]\nname = \"g\"\n[test.surface]\n{bad}\n"));
+            assert_eq!(diags.len(), 1, "{bad}: {diags:?}");
+        }
     }
 
     #[test]

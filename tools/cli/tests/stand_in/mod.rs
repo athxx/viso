@@ -1,5 +1,5 @@
 //! A small Cargo package whose `viso` is a stand-in with the `hot-reload`
-//! feature, and `viso` run over it with its own `target/`: what the tests
+//! and `headless` features, and `viso` run over it with its own `target/`: what the tests
 //! of `viso build` and `viso run` drive without building the framework.
 
 #![allow(dead_code, reason = "each test file uses its part")]
@@ -34,7 +34,7 @@ pub fn text(bytes: &[u8]) -> String {
 pub const MAIN: &str = "fn main() {\n    println!(\"{} {}\", option_env!(\"VISO_PROFILE\").unwrap_or(\"-\"), viso::HOT_RELOAD);\n}\n";
 
 /// A project `label`: a Cargo package and its `Viso.toml`, its `viso` a
-/// path package with the `hot-reload` feature, in a directory of its own.
+/// path package with the `hot-reload` and `headless` features, in a directory of its own.
 pub fn project(label: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("stand-in-{label}"));
     let _ = fs::remove_dir_all(&dir);
@@ -43,12 +43,13 @@ pub fn project(label: &str) -> PathBuf {
     fs::write(
         dir.join("viso/Cargo.toml"),
         "[package]\nname = \"viso\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-         [features]\nhot-reload = []\n",
+         [features]\nhot-reload = []\nheadless = []\n",
     )
     .unwrap();
     fs::write(
         dir.join("viso/src/lib.rs"),
-        "pub const HOT_RELOAD: bool = cfg!(feature = \"hot-reload\");\n",
+        "pub const HOT_RELOAD: bool = cfg!(feature = \"hot-reload\");\n\
+         pub const HEADLESS: bool = cfg!(feature = \"headless\");\n",
     )
     .unwrap();
     fs::write(

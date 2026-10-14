@@ -856,11 +856,14 @@ impl std::fmt::Debug for TextWorker {
 impl TextWorker {
     /// Start the worker thread with a span cache of `span_budget_bytes`. A
     /// target that cannot spawn threads runs the same state inline instead, on
-    /// the sending thread.
+    /// the sending thread, and so does a headless build, whose every layout
+    /// lands on the frame that asked for it.
     pub(crate) fn spawn(span_budget_bytes: u64) -> Self {
         let (to, inbox) = mpsc::channel::<Vec<ToWorker>>();
         let (outbox, from) = mpsc::channel();
-        let spawned = {
+        let spawned = if cfg!(feature = "headless") {
+            None
+        } else {
             let outbox = outbox.clone();
             thread::Builder::new()
                 .name("viso-text".into())

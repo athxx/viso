@@ -292,6 +292,15 @@ viso test ui                              # test/snapshot 默认 target 即 head
 viso snapshot capture HomePage --target headless
 ```
 
+headless 构建：
+
+- 以 facade 的 `headless` feature 编译（`--features viso/headless`），并以本机 Rust target 显式传给 Cargo（`--target <host triple>`），产物在 `target/<host triple>/<profile>/`，与 host 构建互不覆盖；不编入 hot reload；
+- 没有窗口与设备：platform 为 headless backend，GPU 为软件光栅（`viso-gpu` 的 `HeadlessRaster`，`headless` feature 下即该构建的 `Backend`，内嵌 shader 选其 CPU 版本）；全部 service 为 unsupported；
+- 每个窗口的 surface 固定，取自启动变量 `VISO_HEADLESS_SURFACE=<width>x<height>@<scale>`（逻辑像素；缺省 `1280x720@1`），由 `viso test` / `viso snapshot` 按 `Viso.toml [test.surface]`（`width`、`height` 为 1–16384，缺省 1280×720；`scale` 大于 0、至多 8，缺省 1）传入；
+- 时钟每帧固定前进 1/60 s；文本在请求它的帧内排版与提交（不经后台线程、不受帧预算影响），帧数与机器快慢无关；
+- 字体只来自 project（`assets/fonts/` 与 `load_font`），不读系统字体；框架不内置默认字体；
+- 运行到 app 不再请求帧为止，或到 `VISO_HEADLESS_FRAMES=<n>` 帧为止。
+
 ### 3.5 Target 选择语法
 
 - 以 target 为操作对象的命令（`run`、`build`、`serve`、`package`、`check`、`doctor`、`profile`）使用**可选 positional target**；省略时为当前 desktop host（`serve` 省略时见 §15）。
@@ -701,7 +710,7 @@ viso config set arbitrary.deep.key ...
 
 `show`/`get`/`path` 各输出一条 `result`（`show`：`{key: {value, origin, from?}}` 映射，key 顺序固定；`get`：`{key, value, origin, from?}`；`path`：`{path}`）。`value` 带 JSON 类型（字符串、数字、布尔、字符串数组；未设置且无默认值为 `null`）；`origin` 为 provenance 名，`from` 在 `env`/`profile`/`manifest` 时给出具体位置（`env VISO_OPT_LEVEL`、`Viso.toml [profile.release]:5:9`、`Viso.toml:2:8`）。`validate` 每个问题一条 `diagnostic`（C0001–C0012，manifest 与环境变量的问题一次报全），全部通过时一条 `result{path}`。`get` 未知 key 为 `CLI_USAGE`（exit 2，note 给出最接近的 key）。Exit code 按 §7 的 config 诊断映射；`validate` 无 error 时 0。
 
-Key 集合是完整的 schema：`profile`、`opt_level`、`source_maps`、`strip`（当前 profile 的值，经全部层解析）、`dev_runtime`（由 profile 决定），`package.*`，`profile.<dev|release|shipping>.<opt_level|source_maps|strip>` 与 `profile.<…>.web.<optimize|strip|source_maps|brotli|gzip|split|threads>`（以该 profile 构建时得到的值，环境变量同样作用），以及 `web.*`、`target.*`、`export.*`、`game.*`、`i18n.source`、`workspace.members`（manifest 值或框架默认值）。`--profile` 决定"当前 profile"。
+Key 集合是完整的 schema：`profile`、`opt_level`、`source_maps`、`strip`（当前 profile 的值，经全部层解析）、`dev_runtime`（由 profile 决定），`package.*`，`profile.<dev|release|shipping>.<opt_level|source_maps|strip>` 与 `profile.<…>.web.<optimize|strip|source_maps|brotli|gzip|split|threads>`（以该 profile 构建时得到的值，环境变量同样作用），以及 `web.*`、`target.*`、`export.*`、`game.*`、`test.surface.<width|height|scale>`、`i18n.source`、`workspace.members`（manifest 值或框架默认值）。`--profile` 决定"当前 profile"。
 
 ---
 
@@ -985,7 +994,7 @@ Dev Runtime transport
 structured diagnostics/logs
 ```
 
-`viso run host|macos|windows|linux|headless` 与 `viso run --target ...` 均为 usage error（§1、§3.5）。
+`viso run host|macos|windows|linux|headless` 与 `viso run --target ...` 均为 usage error（§1、§3.5）；`viso run headless` 建议 `viso test ui` 与 `viso build headless`。
 
 ### 13.2 iOS / Android emulator development
 
@@ -1268,7 +1277,7 @@ Built web-gpu (shipping) in 41.3 s
 
 1. 先做 `viso check` 的全部检查（manifest、`.vs`、catalog、assets）；有 error 时 exit 1，Cargo 不运行；
 2. 取 `build-<target>.lock`（§44，不等待）；
-3. Cargo profile：`dev`→`--profile dev`，`release`→`--profile release`，`shipping`→ Viso 自有的 Cargo profile（`--config profile.shipping.inherits="release" --profile shipping`）；`VISO_PROFILE` 为该 profile，dev profile 带 `--features viso/hot-reload`。Viso 设置以 `--config profile.<p>.opt-level|debug|strip` 交给 Cargo，只传与 Cargo 该 profile 默认不同、或被某一层显式命名的值（shipping 默认 `opt-level="s"`、`strip=true`）；web target 的 debug 随 web 子表、strip 交给 `wasm-bindgen`；
+3. Cargo profile：`dev`→`--profile dev`，`release`→`--profile release`，`shipping`→ Viso 自有的 Cargo profile（`--config profile.shipping.inherits="release" --profile shipping`）；`VISO_PROFILE` 为该 profile，dev profile 带 `--features viso/hot-reload`（headless 除外），headless 带 `--features viso/headless` 与 `--target <host triple>`（§3.4）。Viso 设置以 `--config profile.<p>.opt-level|debug|strip` 交给 Cargo，只传与 Cargo 该 profile 默认不同、或被某一层显式命名的值（shipping 默认 `opt-level="s"`、`strip=true`）；web target 的 debug 随 web 子表、strip 交给 `wasm-bindgen`；
 4. target：host/headless 原生可执行文件；`ios` 为 simulator triple 的 `.app`（ad-hoc 签名）；`android` 为 emulator ABI 的 `cdylib` 打成 APK（dev 为 dev APK，release/shipping 为 release APK，debug keystore 签名）；`web-gpu` 为 `wasm32-unknown-unknown` 经 §14.3 的 bundle；
 5. 打包输出写入 `target/viso/build/<build-id>/out/`（不同 BuildId 互不覆盖），再整体复制（文件系统支持时 clone）为 `dist/` 下的同级临时目录，写入 `artifact.json`，以一次 rename 交换进 `dist/<platform>/`（macOS `renamex_np(RENAME_SWAP)`、Linux `renameat2(RENAME_EXCHANGE)`，不支持时先移开旧目录），旧输出随后删除——`dist/<platform>/` 只会是旧的完整输出或新的完整输出；
 6. `artifact.json`：`project`、`version`、`target`、`profile`、`build_id`、`toolchain`（`rustc -V`）、`signing`（`none|ad-hoc|debug-keystore`）、`artifacts[{kind, path（相对 artifact.json 所在目录）, size, hash}]`；
@@ -2498,6 +2507,8 @@ bundle_id = "com.example.hello"
 未知 key 报 C0004，类型错误 C0005（exit 1）。`Viso.toml` 不提供改变默认 run/build/package target 的 key（§3.5）。
 
 `[package] capabilities = ["storage.persist"]` 是包被授予的 Capability（DSL §95）：编译期检查据此判定（如 `@persist` 需要 `storage.persist`，否则 `E9106`），运行时由宿主在链接 Native Import 时授予同一集合。
+
+`[test.surface]` 是 headless 运行（`viso test`、`viso snapshot`）中每个窗口的 surface：`width`、`height` 为逻辑像素（整数 1–16384，缺省 1280、720），`scale` 为每逻辑像素的设备像素（整数或小数，大于 0、至多 8，缺省 1），越界为 C0007（§3.4）。
 
 `[i18n] source = "en"` 是声明全部消息的源 Locale（缺省 `en`）；消息目录是 `Viso.toml` 旁的 `i18n/<locale>.toml`（DSL §U10.3）。`viso check` 编译目录并报告其问题（`E3706`，指向目录文件的行列），`tr` 与 `MessageKey` 字面量据此检查；`i18n/` 无法读取是环境错误。
 

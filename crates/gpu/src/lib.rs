@@ -53,33 +53,47 @@ pub use webgpu::{WebGpuBackend, WebGpuCompiler, WebGpuProgram};
 /// no `dyn GpuBackend` dispatch. On macOS and iOS it is the native
 /// [`MetalBackend`]; on Windows the [`D3D12Backend`]; on Linux and Android the
 /// [`VulkanBackend`]; on the web the [`WebGpuBackend`]; on targets
-/// without a native backend it is the software [`HeadlessRaster`], which always
-/// compiles and needs no GPU.
-#[cfg(target_vendor = "apple")]
+/// without a native backend, and in a build with the `headless` feature, it is
+/// the software [`HeadlessRaster`], which always compiles and needs no GPU.
+#[cfg(all(target_vendor = "apple", not(feature = "headless")))]
 pub type Backend = MetalBackend;
 /// The concrete GPU backend for this target.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "headless")))]
 pub type Backend = D3D12Backend;
 /// The concrete GPU backend for this target.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    not(feature = "headless")
+))]
 pub type Backend = VulkanBackend;
 /// The concrete GPU backend for this target.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "headless")
+))]
 pub type Backend = WebGpuBackend;
-/// The concrete GPU backend for this target (software raster: no native
-/// backend is selected here).
-#[cfg(not(any(
-    target_vendor = "apple",
-    target_os = "windows",
-    target_os = "linux",
-    target_os = "android",
-    all(target_arch = "wasm32", target_os = "unknown")
-)))]
+/// The concrete GPU backend for this target (software raster: the build is
+/// headless, or no native backend is selected here).
+#[cfg(any(
+    feature = "headless",
+    not(any(
+        target_vendor = "apple",
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "android",
+        all(target_arch = "wasm32", target_os = "unknown")
+    ))
+))]
 pub type Backend = HeadlessRaster;
 
 /// The one of its expressions for this target's [`Backend`], the others
 /// compiled out: how code built ahead of time for every backend embeds only
 /// what this target's reads. `none` is the software raster's.
+///
+/// The choice is made where this crate compiles, so a crate expanding it
+/// follows this crate's `headless` feature.
+#[cfg(not(feature = "headless"))]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __per_backend {
@@ -102,6 +116,17 @@ macro_rules! __per_backend {
         let chosen = $none;
         chosen
     }};
+}
+
+/// The one of its expressions for this target's [`Backend`]: in a headless
+/// build, the software raster's.
+#[cfg(feature = "headless")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __per_backend {
+    (msl: $msl:expr, hlsl: $hlsl:expr, spirv: $spirv:expr, wgsl: $wgsl:expr, none: $none:expr $(,)?) => {
+        $none
+    };
 }
 
 /// Create the GPU device/backend for this target (ADR 0029 cfg static select).

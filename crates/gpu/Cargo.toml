@@ -29,6 +29,9 @@ ash = { version = "0.38", optional = true }
 
 [features]
 vulkan = ["dep:ash"]
+# The software raster as this build's backend on every target: a headless
+# build draws to memory, with no device and no window.
+headless = []
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 ash = "0.38"

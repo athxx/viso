@@ -174,7 +174,13 @@ pub fn run<A: Application>() {
     if viso_platform::launch_var(viso_view::dev::wire::DEV_PREWARM_ENV).is_some() {
         return;
     }
+    #[cfg(feature = "headless")]
+    {
+        run_headless::<A>();
+        return;
+    }
     // A headless fallback has no OS behind its services.
+    #[cfg_attr(feature = "headless", allow(unreachable_code))]
     let (platform_app, services) = match viso_platform::create_app() {
         Ok(app) => (app, None),
         Err(_) => (
@@ -196,6 +202,33 @@ pub fn run<A: Application>() {
     Scheduler::new(platform_app, driver).run_detached();
     #[cfg(not(target_arch = "wasm32"))]
     Scheduler::new(platform_app, driver).run();
+}
+
+/// The run of a headless build: every window gets the surface the launch
+/// names (1280 × 720 at 1x when it names none) and draws through the
+/// software raster, each frame steps the clock by one frame of 60 Hz, and
+/// the run ends when the app settles or after the frames the launch bounds
+/// it to. No service has an OS behind it.
+#[cfg(feature = "headless")]
+fn run_headless<A: Application>() {
+    use viso_view::headless::{FRAMES_ENV, HeadlessSurface, SURFACE_ENV};
+
+    let surface = viso_platform::launch_var(SURFACE_ENV)
+        .and_then(|value| HeadlessSurface::from_env(&value))
+        .unwrap_or_default();
+    let mut app = Box::new(viso_platform::backend::headless::HeadlessApp::new());
+    app.fixed_surface(surface.width, surface.height, surface.scale);
+    if let Some(frames) =
+        viso_platform::launch_var(FRAMES_ENV).and_then(|value| value.trim().parse().ok())
+    {
+        app.frame_budget(frames);
+    }
+    let driver = AppDriver::<A>::new(Some(services::Services::unsupported()));
+    let clock = viso_runtime::FixedStepClock::new(
+        viso_platform::Instant::now(),
+        std::time::Duration::from_nanos(1_000_000_000 / 60),
+    );
+    Scheduler::with_clock(app, driver, clock).run();
 }
 
 /// Deterministic headless-loop harness for facade integration tests.
@@ -870,6 +903,11 @@ impl WindowState {
         // is built and driven regardless; this is section 66's headless backend
         // as a first-class path, not a degraded one.
         let native_handle = match cx.raw_handle(window) {
+            // A headless build draws every window through the software raster,
+            // which takes the headless handle.
+            Some(RawWindowHandle::Headless) if cfg!(feature = "headless") => {
+                Some(RawWindowHandle::Headless)
+            }
             Some(RawWindowHandle::Headless) | None => None,
             Some(handle) => Some(handle),
         };
@@ -1025,11 +1063,14 @@ impl WindowState {
         if !text.has_pending_work() {
             return;
         }
-        text.pump(
-            &mut gpu.backend,
-            text_content::text_commit_budget(text_content::DEFAULT_FRAME_INTERVAL),
-            &mut self.text_updated,
-        );
+        // A headless build commits everything the worker finished, so the
+        // frames a run takes never depend on how fast the machine is.
+        let budget = if cfg!(feature = "headless") {
+            std::time::Duration::MAX
+        } else {
+            text_content::text_commit_budget(text_content::DEFAULT_FRAME_INTERVAL)
+        };
+        text.pump(&mut gpu.backend, budget, &mut self.text_updated);
         let dpi = self.dpi;
         for slot in self.text_updated.drain(..) {
             let Some(id) = self

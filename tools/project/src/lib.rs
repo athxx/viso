@@ -48,7 +48,8 @@ pub use discovery::{MANIFEST_NAME, Project, find_root};
 pub use fingerprint::{BuildId, FINGERPRINT_VERSION, Hash128, ProjectFingerprint, Toolchain};
 pub use format::format_manifest;
 pub use manifest::{
-    CollisionDelivery, GameDeterminism, Manifest, ParseOutcome, Spanned, WebProfileConfig, nearest,
+    CollisionDelivery, GameDeterminism, Manifest, ParseOutcome, Spanned, SurfaceScale, TestSurface,
+    WebProfileConfig, nearest,
 };
 pub use settings::{Entry, KEYS, Value, setting, settings};
 pub use target::{ArtifactKind, Auto, DevRuntime, HostOs, OptLevel, Profile, Target, WebOptimize};

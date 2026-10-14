@@ -2451,6 +2451,8 @@ mod tests {
         assert_eq!(resident.promotion, None);
     }
 
+    /// A headless build shapes on the main thread by design.
+    #[cfg(not(feature = "headless"))]
     #[test]
     fn an_edit_cadence_shapes_nothing_on_the_main_thread() {
         let mut shaper = tiny_shaper();
@@ -2816,7 +2818,7 @@ mod tests {
     /// Runs on every target with a system-font provider: the provider resolves a
     /// color emoji face and the platform or portable color raster fills the RGBA
     /// pool from it.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "headless")))]
     #[test]
     fn filling_the_color_pool_reclaims_nothing_from_the_coverage_pool() {
         let mut gpu = headless();
@@ -2974,7 +2976,7 @@ mod tests {
     ///
     /// Runs on every target with a system-font provider; the host must have CJK,
     /// Devanagari and color emoji faces installed.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "headless")))]
     #[test]
     fn multilingual_sample_rasterizes_cjk_devanagari_emoji() {
         let mut gpu = HeadlessRaster::new();
@@ -3095,7 +3097,7 @@ mod tests {
     /// refusal regressed, the static path would return `Some` and this fails.
     ///
     /// Apple-only: depends on the CoreText provider resolving `.SFDevanagari`.
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), not(feature = "headless")))]
     #[test]
     fn cff2_devanagari_routes_through_live_raster_not_static_parser() {
         let mut gpu = HeadlessRaster::new();

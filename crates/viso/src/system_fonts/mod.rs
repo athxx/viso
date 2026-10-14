@@ -11,6 +11,7 @@
 //! | Linux / BSD (not Android)       | fontconfig, loaded at runtime  | `fontconfig`   |
 //! | Android                         | `AFontMatcher`, else `fonts.xml` | `android`    |
 //! | everything else (WASM)          | none — the application's fonts | —              |
+//! | a `headless` build              | none — the application's fonts | —              |
 //!
 //! Every resolver answers the same question — a face for a role, style,
 //! language and sample run — with the face's own file bytes and collection
@@ -19,57 +20,71 @@
 //! rasterize glyphs through the platform ([`PlatformColorRaster`]); elsewhere color glyphs
 //! are painted from the face's `COLR` / `CBDT` / `sbix` tables and the platform
 //! raster declines.
+//!
+//! A headless build reads no system font on any target, so what it draws
+//! depends on the project alone.
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(feature = "headless")))]
 mod android;
 #[cfg(any(target_os = "android", test))]
 mod android_config;
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(feature = "headless")))]
 mod coretext;
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "headless")))]
 mod directwrite;
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios")),
+    not(feature = "headless")
+))]
 mod dylib;
 #[cfg(all(
     unix,
-    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+    not(any(target_os = "macos", target_os = "ios", target_os = "android")),
+    not(feature = "headless")
 ))]
 mod fontconfig;
 #[cfg(any(
-    target_os = "windows",
-    all(unix, not(any(target_os = "macos", target_os = "ios"))),
+    all(
+        any(
+            target_os = "windows",
+            all(unix, not(any(target_os = "macos", target_os = "ios")))
+        ),
+        not(feature = "headless")
+    ),
     test
 ))]
 mod sample;
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(feature = "headless")))]
 pub use coretext::{
     CoreTextColorRaster as PlatformColorRaster, CoreTextProvider as PlatformFontProvider,
     LiveFontRegistry,
 };
 
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(any(not(any(target_os = "macos", target_os = "ios")), feature = "headless"))]
 pub use declining::{LiveFontRegistry, NoColorRaster as PlatformColorRaster};
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "headless")))]
 pub use directwrite::DirectWriteProvider as PlatformFontProvider;
 
 #[cfg(all(
     unix,
-    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+    not(any(target_os = "macos", target_os = "ios", target_os = "android")),
+    not(feature = "headless")
 ))]
 pub use fontconfig::FontconfigProvider as PlatformFontProvider;
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(feature = "headless")))]
 pub use android::AndroidFontProvider as PlatformFontProvider;
 
-#[cfg(not(any(target_os = "windows", unix)))]
+#[cfg(any(not(any(target_os = "windows", unix)), feature = "headless"))]
 pub use no_system::NoSystemFonts as PlatformFontProvider;
 
 /// The shared pieces for targets whose platform raster has nothing to add:
 /// no live font handles to share, and a color raster that always declines so
 /// color glyphs come from the portable raster alone.
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(any(not(any(target_os = "macos", target_os = "ios")), feature = "headless"))]
 mod declining {
     /// A zero-sized, cheap-to-clone stand-in for the Apple registry of live
     /// CoreText handles, so the shaper is built the same way on every target.
@@ -125,8 +140,8 @@ mod declining {
     }
 }
 
-/// A target with no system-font source.
-#[cfg(not(any(target_os = "windows", unix)))]
+/// A target with no system-font source, or a headless build.
+#[cfg(any(not(any(target_os = "windows", unix)), feature = "headless"))]
 mod no_system {
     use super::LiveFontRegistry;
 

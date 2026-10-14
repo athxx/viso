@@ -139,6 +139,7 @@ fn target_of(args: &RunArgs) -> (Target, Option<Platform>) {
         Some(RunTarget::WebGpu) => (Target::WebGpu, None),
         Some(RunTarget::WebDom) => (Target::WebDom, None),
         Some(RunTarget::WebHybrid) => (Target::WebHybrid, None),
+        Some(RunTarget::Headless) => (Target::Headless, None),
     }
 }
 
@@ -214,6 +215,14 @@ pub(super) fn session(
     out: &mut Output,
 ) -> u8 {
     let (target, platform) = target_of(args);
+    if target == Target::Headless {
+        return out.failure_next(
+            CLI_USAGE,
+            "`headless` is not a target `viso run` runs on",
+            &["a headless build runs under `viso test` and the tools".to_owned()],
+            &["viso test ui".to_owned(), "viso build headless".to_owned()],
+        );
+    }
     if let Some(why) = misplaced(args, platform, target) {
         return out.failure(CLI_USAGE, &why, &[]);
     }
@@ -465,8 +474,8 @@ pub(super) fn session(
         cargo_args: ctx.cargo_args(),
         build_args: ctx.cargo_build_args(),
         profile: Profile::Dev,
-        profile_args: cargo::profile_args(Profile::Dev, &resolved.config.settings, target.is_web()),
-        hot_reload: true,
+        profile_args: cargo::profile_args(Profile::Dev, &resolved.config.settings, target),
+        features: vec![cargo::HOT_RELOAD],
         target: plan.rust.target,
         rustc_args: plan.rust.rustc_args,
         env: plan.rust.env,

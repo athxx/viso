@@ -73,6 +73,11 @@ inspector = ["viso-text/inspector"]
 # The Vulkan backend where another is native (MoltenVK on macOS): the second
 # GPU backend the shader cross-backend tests draw on.
 vulkan = ["viso-gpu/vulkan"]
+# The headless build `viso build headless` and `viso test` make: no window and
+# no device; every window draws through the software raster at a fixed
+# surface, frames step a fixed clock, text resolves through the app's own
+# fonts only and shapes on the frame that asks for it.
+headless = ["viso-gpu/headless"]
 
 [dev-dependencies]
 # The DSL tests compile `.vs` sources themselves, with or without `hot-reload`.

@@ -150,6 +150,7 @@ fn value(w: &mut JsonWriter, value: &Value) {
     match value {
         Value::Text(text) => w.string(text),
         Value::Integer(n) => w.int(*n),
+        Value::Number(n) => w.number(*n),
         Value::Bool(b) => w.bool(*b),
         Value::List(items) => {
             w.begin_array();

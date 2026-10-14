@@ -36,8 +36,11 @@ use cargo::{BuildCommand, BuildFailure, Sink, is_cancelled};
 /// How the app is compiled for a target.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RustPlan {
-    /// The Rust target, when not the host.
+    /// The Rust target Cargo is given: none for the host, the host's own for
+    /// a headless build, so its output lies apart from the host build's.
     pub(crate) target: Option<String>,
+    /// The features of the app's dependencies the target turns on.
+    pub(crate) features: Vec<&'static str>,
     /// The arguments after `cargo rustc --`; `cargo build` when empty.
     pub(crate) rustc_args: Vec<String>,
     /// The variables Cargo runs with.
@@ -48,9 +51,15 @@ pub(crate) struct RustPlan {
 /// links with the NDK of `sdk`.
 pub(crate) fn rust_plan(target: Target, profile: Profile, sdk: Option<&Sdk>) -> RustPlan {
     match target {
-        Target::Host | Target::Headless => RustPlan::default(),
+        Target::Host => RustPlan::default(),
+        Target::Headless => RustPlan {
+            target: host_triple(),
+            features: vec![cargo::HEADLESS],
+            ..RustPlan::default()
+        },
         Target::Ios => RustPlan {
             target: Some(apple::simulator_triple().to_owned()),
+            features: Vec::new(),
             rustc_args: Vec::new(),
             env: vec![(
                 "IPHONEOS_DEPLOYMENT_TARGET".to_owned(),
@@ -72,6 +81,7 @@ pub(crate) fn rust_plan(target: Target, profile: Profile, sdk: Option<&Sdk>) -> 
             }
             RustPlan {
                 target: Some(abi.triple().to_owned()),
+                features: Vec::new(),
                 rustc_args: android::RUSTC_ARGS.iter().map(|&a| a.to_owned()).collect(),
                 env,
             }
@@ -81,6 +91,16 @@ pub(crate) fn rust_plan(target: Target, profile: Profile, sdk: Option<&Sdk>) -> 
             ..RustPlan::default()
         },
     }
+}
+
+/// The Rust target of this machine, as `rustc -vV` names it.
+fn host_triple() -> Option<String> {
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
+    let output = Command::new(rustc).arg("-vV").output().ok()?;
+    let text = String::from_utf8(output.stdout).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .map(|host| host.trim().to_owned())
 }
 
 /// The compiler identity of the build: `rustc -V`, or `unknown` when it does
@@ -469,6 +489,11 @@ mod tests {
             rust_plan(Target::Host, Profile::Release, None),
             RustPlan::default()
         );
+        // Headless builds for this machine, apart from its host build.
+        let headless = rust_plan(Target::Headless, Profile::Dev, None);
+        let host = headless.target.expect("rustc names its host");
+        assert!(host.contains(std::env::consts::ARCH), "{host}");
+        assert_eq!(headless.features, [cargo::HEADLESS]);
         let web = rust_plan(Target::WebGpu, Profile::Dev, None);
         assert_eq!(web.target.as_deref(), Some("wasm32-unknown-unknown"));
         let ios = rust_plan(Target::Ios, Profile::Dev, None);
