@@ -253,7 +253,7 @@ pub enum WebTarget {
     Hybrid,
 }
 
-/// What `viso serve` serves, and where (section 15).
+/// What `viso serve` serves, and where.
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     /// The web target: `[web] default_target` when omitted.

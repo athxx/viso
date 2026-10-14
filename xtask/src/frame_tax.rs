@@ -1,5 +1,5 @@
 //! `cargo xtask check-frame-tax`: the gate on what the dev layer costs the
-//! frame loop (`Viso_Hot_Reload.md` §1.2, §71).
+//! frame loop.
 //!
 //! ```text
 //! cargo xtask check-frame-tax [--rounds <n>] [--tolerance <percent>] [--floor <ns>]

@@ -370,7 +370,7 @@ fn runtime(w: &mut JsonWriter, ids: &DevIds<'_>, status: &RuntimeStatus<'_>) {
     w.end_object();
 }
 
-/// The section 36.4 `dev` payload, then what the commit kept and lost.
+/// The `dev` payload, then what the commit kept and lost.
 fn dev(w: &mut JsonWriter, file: &str, ids: &DevIds<'_>, event: &ReloadEvent) {
     w.begin_object();
     dev_ids(w, ids);
