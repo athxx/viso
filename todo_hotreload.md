@@ -1080,12 +1080,12 @@ differ.
 - [x] The app never watches files on mobile/web (the in-app watcher is already gone
       after H1).
 - [ ] Web: LAN opt-in for the dev server (`viso serve web-* --lan`, §46).
-- [ ] Web: a page that crashed before its dev channel opened is not reloaded when a
-      newer build is served (nothing to close); reload it from the page itself.
+- [x] Web: a page that crashed before its dev channel opened reloads when a newer
+      build is served (the page's own channel at `/__viso/page`).
 - [ ] iOS simulator: an app that panics ends the session with exit 5 (check what
       `simctl launch --console-pty` exits with).
-- [ ] Web: the page's stdout/stderr reach the session as `log` (they go nowhere on
-      `wasm32-unknown-unknown` today; only the dev channel's logs arrive).
+- [x] Web: the page's console, uncaught errors and rejections reach the session as
+      `log` over the page's own channel.
 - [ ] `view!` builds the host platform stack for every cross build (the proc macro
       reaches `viso-platform` through `viso-dsl` → `viso-ui`); cut that edge.
 - [x] Android fake: `deploy::android_fake` drives the deploy layer against scripted

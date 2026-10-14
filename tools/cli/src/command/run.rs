@@ -315,7 +315,18 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
                 .port
                 .as_ref()
                 .map_or(web::DEFAULT_PORT, |port| port.value);
-            match web::WebServer::bind(port, expect.clone(), Arc::clone(&deliver)) {
+            let log: web::PageLog = {
+                let tx = tx.clone();
+                Arc::new(move |level, line| {
+                    tx.send(Incoming::Log {
+                        level,
+                        source: "app",
+                        line,
+                    })
+                    .is_ok()
+                })
+            };
+            match web::WebServer::bind(port, expect.clone(), Arc::clone(&deliver), log) {
                 Ok(server) => Deploy::Browser {
                     server,
                     browser: args.browser.clone().filter(|b| b != "none"),

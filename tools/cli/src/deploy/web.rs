@@ -11,6 +11,13 @@
 //! open page's channel is closed with [`WEB_RELOAD_CLOSE`] and the page loads
 //! it.
 //!
+//! Each page also opens a channel of its own at [`PAGE_PATH`] from a script
+//! that runs before the app: what the page writes to its console, and its
+//! uncaught errors and rejections — a panic's message among them — reach the
+//! session as the app's `log` lines, and a newer build reloads it even when
+//! the app died before its dev channel opened. It carries text only: a
+//! level, a tab and the line, each line at most [`MAX_LOG`] bytes.
+//!
 //! Each connection is served on a thread of its own; nothing is cached by the
 //! browser (`Cache-Control: no-store`).
 
@@ -24,7 +31,7 @@ use std::time::Duration;
 
 use viso_ende::JsonWriter;
 use viso_package::web;
-use viso_view::dev::wire::{DEV_RESTORE_ENV, MAX_FRAME, WEB_DEV_PATH, WEB_RELOAD_CLOSE};
+use viso_view::dev::wire::{DEV_RESTORE_ENV, MAX_FRAME, MAX_LOG, WEB_DEV_PATH, WEB_RELOAD_CLOSE};
 
 use crate::dev::link::{self, Deliver, DevStream, Expect};
 
@@ -36,6 +43,13 @@ const PORT_TRIES: u16 = 100;
 /// hold.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HEAD: usize = 16 << 10;
+
+/// Where a page's own channel opens.
+const PAGE_PATH: &str = "/__viso/page";
+
+/// Where the server hands each line a page logged: its level and text;
+/// `false` once nobody listens.
+pub(crate) type PageLog = Arc<dyn Fn(&'static str, String) -> bool + Send + Sync>;
 
 /// The GUID RFC 6455 hashes a WebSocket key with.
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -49,8 +63,9 @@ struct Served {
     vars: Vec<(&'static str, String)>,
     /// Whether the next page restores the app before it.
     restore: bool,
-    /// The write halves of the open dev channels.
+    /// The write halves of the open dev channels, and of the pages' own.
     sockets: Vec<Weak<Mutex<TcpStream>>>,
+    pages: Vec<Weak<Mutex<TcpStream>>>,
 }
 
 /// The web dev server.
@@ -62,8 +77,14 @@ pub(crate) struct WebServer {
 impl WebServer {
     /// Binds the loopback interface at `port`, or the next free port after
     /// it, and serves on a thread; a dev channel's connection is checked
-    /// against `expect` and delivered to `deliver`.
-    pub(crate) fn bind(port: u16, expect: Expect, deliver: Deliver) -> io::Result<WebServer> {
+    /// against `expect` and delivered to `deliver`, and what a page logs is
+    /// handed to `log`.
+    pub(crate) fn bind(
+        port: u16,
+        expect: Expect,
+        deliver: Deliver,
+        log: PageLog,
+    ) -> io::Result<WebServer> {
         let listener = (0..PORT_TRIES)
             .filter_map(|n| port.checked_add(n))
             .find_map(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, port)).ok())
@@ -86,9 +107,10 @@ impl WebServer {
                     let state = Arc::clone(&state);
                     let expect = expect.clone();
                     let deliver = Arc::clone(&deliver);
+                    let log = Arc::clone(&log);
                     let _ = thread::Builder::new()
                         .name("viso-web-request".into())
-                        .spawn(move || respond(stream, addr, &state, &expect, &deliver));
+                        .spawn(move || respond(stream, addr, &state, &expect, &deliver, &log));
                 }
             })?;
         Ok(WebServer { addr, served })
@@ -119,15 +141,25 @@ impl WebServer {
         served.restore = restore;
     }
 
-    /// Ends every open page's dev channel with [`WEB_RELOAD_CLOSE`], so it
-    /// loads what is served now.
+    /// Ends every open page's dev channel with [`WEB_RELOAD_CLOSE`] and
+    /// tells every page to reload, so it loads what is served now — a page
+    /// whose app died before its dev channel opened too.
     pub(crate) fn reload_pages(&self) {
-        let sockets = std::mem::take(&mut lock(&self.served).sockets);
+        let (sockets, pages) = {
+            let mut served = lock(&self.served);
+            (
+                std::mem::take(&mut served.sockets),
+                std::mem::take(&mut served.pages),
+            )
+        };
         for socket in sockets.iter().filter_map(Weak::upgrade) {
             let mut socket = lock(&socket);
             let mut payload = WEB_RELOAD_CLOSE.to_be_bytes().to_vec();
             payload.extend_from_slice(b"reload");
             let _ = write_ws_frame(&mut *socket, 0x8, &payload);
+        }
+        for page in pages.iter().filter_map(Weak::upgrade) {
+            let _ = write_ws_frame(&mut *lock(&page), 0x1, b"reload");
         }
     }
 }
@@ -190,6 +222,7 @@ fn respond(
     served: &Arc<Mutex<Served>>,
     expect: &Expect,
     deliver: &Deliver,
+    log: &PageLog,
 ) {
     let _ = stream.set_read_timeout(Some(REQUEST_TIMEOUT));
     let Ok(read_half) = stream.try_clone() else {
@@ -203,6 +236,9 @@ fn respond(
     let path = web::request_path(&request.target).unwrap_or("");
     if format!("/{path}") == WEB_DEV_PATH {
         return dev_channel(stream, reader, &request, addr, served, expect, deliver);
+    }
+    if format!("/{path}") == PAGE_PATH {
+        return page_channel(stream, reader, &request, addr, served, log);
     }
     if request.method != "GET" && request.method != "HEAD" {
         let _ = answer(
@@ -230,7 +266,8 @@ fn respond(
                 if std::mem::take(&mut served.restore) && !head {
                     vars.push((DEV_RESTORE_ENV, "1".to_owned()));
                 }
-                let page = web::index_html(&bin, &launch_script(&vars));
+                let head = format!("{}{PAGE_SCRIPT}", launch_script(&vars));
+                let page = web::index_html(&bin, &head);
                 (
                     "200 OK",
                     web::mime(std::path::Path::new("index.html")),
@@ -282,17 +319,43 @@ fn launch_script(vars: &[(&str, String)]) -> String {
     format!("<script>globalThis.visoLaunch = {object};</script>\n")
 }
 
-/// Upgrades the connection to the dev channel's WebSocket when the page
-/// asking is one this server served, and serves the channel on it.
-fn dev_channel(
-    mut stream: TcpStream,
-    reader: BufReader<TcpStream>,
-    request: &Request,
-    addr: SocketAddr,
-    served: &Arc<Mutex<Served>>,
-    expect: &Expect,
-    deliver: &Deliver,
-) {
+/// The script a page runs before the app: its console, uncaught errors and
+/// rejections go to the session over the page's own channel (queued until it
+/// opens, at most a thousand lines), and `reload` loads the page again. It
+/// reconnects while the server runs.
+const PAGE_SCRIPT: &str = r#"<script>(() => {
+const queue = [];
+let socket;
+const text = (value) => {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.stack || String(value);
+  try { return JSON.stringify(value); } catch { return String(value); }
+};
+const send = (level, values) => {
+  const line = level + "\t" + values.map(text).join(" ");
+  if (socket && socket.readyState === 1) socket.send(line);
+  else if (queue.length < 1000) queue.push(line);
+};
+for (const [name, level] of [["log", "info"], ["info", "info"], ["debug", "info"], ["warn", "warn"], ["error", "error"]]) {
+  const original = console[name].bind(console);
+  console[name] = (...values) => { original(...values); send(level, values); };
+}
+addEventListener("error", (e) => send("error", [e.error || e.message]));
+addEventListener("unhandledrejection", (e) => send("error", [e.reason]));
+let wait = 250;
+const open = () => {
+  socket = new WebSocket("ws://" + location.host + "/__viso/page");
+  socket.onopen = () => { wait = 250; for (const line of queue.splice(0)) socket.send(line); };
+  socket.onmessage = (e) => { if (e.data === "reload") location.reload(); };
+  socket.onclose = () => { socket = undefined; setTimeout(open, wait); wait = Math.min(wait * 2, 5000); };
+};
+open();
+})();</script>
+"#;
+
+/// Answers a WebSocket upgrade from a page this server served; the stream
+/// switched to it, or `None` when it was refused.
+fn upgrade(mut stream: TcpStream, request: &Request, addr: SocketAddr) -> Option<TcpStream> {
     let origin_ok = request.header("origin").is_some_and(|origin| {
         origin == format!("http://{addr}") || origin == format!("http://localhost:{}", addr.port())
     });
@@ -302,7 +365,7 @@ fn dev_channel(
     let key = request.header("sec-websocket-key");
     let (Some(key), true, true) = (key, origin_ok, upgrade) else {
         let _ = answer(&mut stream, "403 Forbidden", "text/plain", b"", false);
-        return;
+        return None;
     };
     let accept = base64(&sha1(format!("{key}{WEBSOCKET_GUID}").as_bytes()));
     let switched = write!(
@@ -312,8 +375,73 @@ fn dev_channel(
     )
     .and_then(|()| stream.flush());
     if switched.is_err() || stream.set_read_timeout(None).is_err() {
-        return;
+        return None;
     }
+    Some(stream)
+}
+
+/// Serves a page's own channel: each text message a line it logged.
+fn page_channel(
+    stream: TcpStream,
+    mut reader: BufReader<TcpStream>,
+    request: &Request,
+    addr: SocketAddr,
+    served: &Arc<Mutex<Served>>,
+    log: &PageLog,
+) {
+    let Some(stream) = upgrade(stream, request, addr) else {
+        return;
+    };
+    let writer = Arc::new(Mutex::new(stream));
+    lock(served).pages.push(Arc::downgrade(&writer));
+    while let Ok(Some((opcode, payload))) = read_ws_frame(&mut reader) {
+        match opcode {
+            0x1 => {
+                if let Some((level, line)) = page_line(&payload)
+                    && !log(level, line)
+                {
+                    return;
+                }
+            }
+            0x9 if write_ws_frame(&mut *lock(&writer), 0xA, &payload).is_err() => return,
+            0x8 => return,
+            _ => {}
+        }
+    }
+}
+
+/// A page's line: its level (`info`, `warn` or `error`), a tab and its
+/// text, cut to [`MAX_LOG`] bytes on a character boundary.
+fn page_line(payload: &[u8]) -> Option<(&'static str, String)> {
+    let text = std::str::from_utf8(payload).ok()?;
+    let (level, line) = text.split_once('\t')?;
+    let level = match level {
+        "info" => "info",
+        "warn" => "warn",
+        "error" => "error",
+        _ => return None,
+    };
+    let mut end = line.len().min(MAX_LOG);
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some((level, line[..end].to_owned()))
+}
+
+/// Upgrades the connection to the dev channel's WebSocket when the page
+/// asking is one this server served, and serves the channel on it.
+fn dev_channel(
+    stream: TcpStream,
+    reader: BufReader<TcpStream>,
+    request: &Request,
+    addr: SocketAddr,
+    served: &Arc<Mutex<Served>>,
+    expect: &Expect,
+    deliver: &Deliver,
+) {
+    let Some(stream) = upgrade(stream, request, addr) else {
+        return;
+    };
     let writer = Arc::new(Mutex::new(stream));
     lock(served).sockets.push(Arc::downgrade(&writer));
     let socket = WebSocket {
@@ -629,6 +757,91 @@ mod tests {
         let script = launch_script(&[("VISO_DEV_TOKEN", "</script>".into())]);
         assert!(script.starts_with("<script>globalThis.visoLaunch = {\"VISO_DEV_TOKEN\":"));
         assert_eq!(script.matches("</script>").count(), 1);
+    }
+
+    #[test]
+    fn a_page_line_is_a_level_and_its_text_cut_to_the_log_bound() {
+        assert_eq!(
+            page_line(b"warn\tslow frame"),
+            Some(("warn", "slow frame".to_owned()))
+        );
+        assert_eq!(
+            page_line(b"error\ta\tb"),
+            Some(("error", "a\tb".to_owned()))
+        );
+        assert_eq!(page_line(b"trace\tx"), None);
+        assert_eq!(page_line(b"no tab"), None);
+        assert_eq!(page_line(&[b'i', b'n', b'f', b'o', b'\t', 0xFF]), None);
+        let long = format!("info\t{}", "é".repeat(MAX_LOG));
+        let (_, cut) = page_line(long.as_bytes()).unwrap();
+        assert!(cut.len() <= MAX_LOG && cut.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn the_page_script_opens_the_page_channel() {
+        assert!(PAGE_SCRIPT.contains(PAGE_PATH));
+        assert_eq!(PAGE_SCRIPT.matches("</script>").count(), 1);
+    }
+
+    /// A page's own channel opened on `server` from `origin`: the stream
+    /// switched to it, or `None` when it was refused.
+    fn open_page(server: &WebServer, origin: &str) -> Option<TcpStream> {
+        let mut stream = TcpStream::connect(server.addr()).unwrap();
+        write!(
+            stream,
+            "GET {PAGE_PATH} HTTP/1.1\r\nHost: {}\r\nOrigin: {origin}\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            server.addr()
+        )
+        .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut status = String::new();
+        reader.read_line(&mut status).unwrap();
+        if !status.contains(" 101 ") {
+            return None;
+        }
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap() > 2 {
+            line.clear();
+        }
+        Some(stream)
+    }
+
+    #[test]
+    fn a_page_logs_through_its_channel_and_reloads_on_a_new_build() {
+        use viso_view::dev::wire::{BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint};
+
+        let expect = Expect {
+            token: "token".into(),
+            dev_session: DevSessionId(1),
+            build_id: BuildId(2),
+            project: ProjectFingerprint(3),
+            schema: SchemaFingerprint(4),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let log: PageLog = Arc::new(move |level, line| tx.send((level, line)).is_ok());
+        let server = WebServer::bind(0, expect, Arc::new(|_| true), log).unwrap();
+
+        assert!(
+            open_page(&server, "http://example.com").is_none(),
+            "another origin"
+        );
+        let mut page = open_page(&server, &format!("http://{}", server.addr())).expect("it opens");
+
+        let line = b"error\tpanicked at src/main.rs";
+        let mask = [1u8, 2, 3, 4];
+        let mut frame = vec![0x81, 0x80 | line.len() as u8];
+        frame.extend_from_slice(&mask);
+        frame.extend(line.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        page.write_all(&frame).unwrap();
+        let logged = rx.recv_timeout(Duration::from_secs(5)).expect("it logs");
+        assert_eq!(logged, ("error", "panicked at src/main.rs".to_owned()));
+
+        server.reload_pages();
+        page.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reload = [0u8; 8];
+        page.read_exact(&mut reload).unwrap();
+        assert_eq!(reload, *b"\x81\x06reload");
     }
 
     #[test]
