@@ -25,6 +25,9 @@
 
 pub(crate) mod web;
 
+#[cfg(all(test, unix))]
+mod android_fake;
+
 use std::cell::Cell;
 use std::ffi::OsString;
 use std::io::Read;

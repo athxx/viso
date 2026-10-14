@@ -1950,6 +1950,8 @@ warm restart
 assert compatible state restored
 ```
 
+已覆盖：UI、invalid `.vs`、shader 与 game 由 facade 的测试驱动真实的 `HotReloadSession`（经真实 TCP 连到 fake host，挂载由 `view!` 构建的 view，在 frame boundary commit）：`a_property_edit_dirties_exactly_its_property_on_its_node`（同一 root、只有该属性的 dirty class）、`a_property_edit_keeps_state_focus_and_scroll_offset`、`a_host_rejection_is_shown_until_cleared_and_changes_nothing`、`a_patch_that_does_not_load_is_nacked_and_the_next_one_applies`、`a_shader_the_backend_refuses_refuses_the_revision_with_its_view`（pipeline 不变）、`a_patch_arriving_during_a_tick_applies_from_the_next_with_the_world_kept`（旧代码跑完 tick N、新代码从 N+1、entity 保留）。Rust 由 `viso-cli` `tests/warm_restart.rs` 以 `viso run --json` 驱动真实 app（`--ignored`，需要窗口）；`.vs` 与字体 patch 的端到端由 `tests/font_patch.rs` 与 `tests/device.rs` 覆盖。
+
 ---
 
 ## 63. Simulator/emulator tests
@@ -1968,6 +1970,8 @@ reconnect
 iOS Simulator on macOS CI覆盖同样流程。
 
 不要求 physical device 才能完成 Viso 1.0 dev-runtime DoD。
+
+已实现：Android fake 是 `viso-cli` 的 `deploy::android_fake` 测试（Unix，随 `cargo test` 运行）：以 shell 脚本替代 SDK 的 `emulator` 与 `adb`，扮演一台会启动、安装、转发端口、以独立进程运行 app、经 logcat 输出其日志、并像 `dumpsys activity exit-info` 那样记录其结束方式的设备；真实的 deploy 层对它跑完 session 的整套设备流程——boot（AVD 稍后出现在 `adb devices`，已运行的不再启动）、install、`adb reverse`、带 dev 变量 extras 的 launch、logcat 按优先级读取、session 停止为干净结束（`user requested`）、app panic 以 `exit status: 101` 结束、同端口 relaunch 不重复转发、session 结束撤销转发。真实 emulator 与 simulator 的流程由 `viso-cli` `tests/device.rs`（`--ignored`）与 CI job `ios-simulator`、`android-emulator`、`web` 覆盖。
 
 ---
 
@@ -1990,6 +1994,7 @@ no hot-reload runtime configuration key
 - 同一组 marker（dev channel 的 env 名 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD`、patch 检查与 candidate stage 的 NACK code、dev link 的线程名与类型名、失败 overlay 的文案、snapshot endpoint 的 `VISO_DEV_RESTORE`、`VISO_DEV_WINDOW`、`VISO_DEV_PREWARM`、`NACK_UNRESTORABLE_SNAPSHOT` 与等待 restore 的文案）先在 `--release --features viso/hot-reload`、`VISO_PROFILE=dev` 的对照 artifact 中必须全部出现——marker 失效时在这里失败，而不是让 release 扫描空过；release artifact（`VISO_PROFILE=release`、无 feature）中必须一个都不出现。`viso_dsl` 符号在两个 artifact 中都不得出现（§1.3：app 不含编译器）。符号从可执行文件本身读取，所以扫描只在符号留在其中的平台（macOS、Linux）上运行；
 - 同一构建在 `VISO_PROFILE=shipping` 下必须被 facade build script 拒绝（§58）；
 - launch：两个 artifact 都以 dev channel 的全部环境变量（`VISO_DEV_RUNTIME` 指向 loopback listener，以及 token、session、build）启动；对照 artifact 必须连上，release artifact 必须持续运行对照连接耗时的 3 倍（至少 5 秒）且从不连接，提前退出也算失败；
+- `--target ios-sim|android|web` 对该 target 的 artifact 做同样的扫描（不启动）：iOS simulator 的可执行文件、Android 链接为 shell 共享库的那个文件、web 的 wasm module；web 的 dev link 在 loop 线程上运行、module 不保留符号，所以 web 的 marker 不含 link 线程名与类型名。CI 的 `release-absence` 在 macOS 上跑 host（带 launch）、`ios-sim` 与 `web`，在 Linux 上跑 host（`--no-launch`）与 `android`（runner 的 SDK 带 NDK）；
 - 以后的 dev 层落地时各自把 marker 加入列表。
 
 ---

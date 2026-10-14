@@ -1088,10 +1088,12 @@ differ.
       `wasm32-unknown-unknown` today; only the dev channel's logs arrive).
 - [ ] `view!` builds the host platform stack for every cross build (the proc macro
       reaches `viso-platform` through `viso-dsl` → `viso-ui`); cut that edge.
-- [ ] CI: Android fake + emulator job and iOS simulator job covering boot, install,
-      connect, hot patch, Rust warm restart, reconnect (§63). The `device` e2e tests
-      and the `ios-simulator`, `android-emulator` and `web` jobs exist; not yet run
-      on CI; no Android fake.
+- [x] Android fake: `deploy::android_fake` drives the deploy layer against scripted
+      `emulator`/`adb` (boot, install, reverse, launch with the dev extras, logcat,
+      clean stop, panic exit status, one forward per port, unreverse).
+- [ ] CI: emulator job and iOS simulator job covering boot, install, connect, hot
+      patch, Rust warm restart, reconnect (§63). The `device` e2e tests and the
+      `ios-simulator`, `android-emulator` and `web` jobs exist; not yet run on CI.
 
 ### Done
 
@@ -1142,11 +1144,16 @@ Goal: one source graph serves several running runtimes with per-runtime revision
       golden bytes and `dev::snapshot` unit tests (magic, version, every cut, cell order).
 - [x] A restore checks the snapshot's `app_schema` and `source_build` against its own
       and refuses another's (`NACK_UNRESTORABLE_SNAPSHOT`, the app runs fresh).
-- [ ] §62 integration suite under a test host driving a real dev app: UI, invalid
-      `.vs`, shader, game, Rust.
-- [ ] §63 simulator/emulator suite.
-- [ ] §64 release absence suite in CI, including the web, Android and iOS
+- [x] §62 integration suite under a test host driving a real dev app: UI, invalid
+      `.vs`, shader, game, Rust. Mapped in `Viso_Hot_Reload.md` §62: the facade's real
+      session over TCP for UI/invalid/shader/game, `tests/warm_restart.rs` for Rust.
+- [ ] §63 simulator/emulator suite: the Android fake runs with `cargo test`; the real
+      simulator, emulator and browser runs (`tests/device.rs`) wait for their CI jobs.
+- [x] §64 release absence suite in CI, including the web, Android and iOS
       simulator dev/release artifacts (per-target markers: no link thread on web).
+      `check-release-absence --target ios-sim|android|web`; the web drops the link
+      thread and type names (no symbols in the module). Passed locally for all three;
+      CI matrix rows added.
 - [x] Fuzz: random and mutated dev frames never panic the runtime decoder and never
       change last-good. Deterministic in `cargo test`: wire frames both ways (multi-point
       mutations, splices, random frames; what decodes re-encodes canonically), mutated
