@@ -549,3 +549,163 @@ fn read_node_state(dec: &mut Decoder<'_>) -> Result<NodeState, WireError> {
         active_child,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use viso_behavior::native::{NativeObject, NativeValue, Obj};
+
+    use super::*;
+
+    /// A native object no snapshot may hold.
+    struct Socket;
+
+    impl NativeObject for Socket {
+        const PATH: &'static str = "test::Socket";
+    }
+
+    fn snapshot() -> DevSnapshot {
+        let mount = MountRef {
+            path: "/p/src/view.vs".into(),
+            window: 0,
+            mount: 1,
+        };
+        DevSnapshot {
+            source_build: BuildId(7),
+            app_schema: SchemaFingerprint(8),
+            revision: Revision(3),
+            views: vec![ViewSnapshot {
+                mount: mount.clone(),
+                cells: vec![
+                    (StateKey::from_parts(1, 2), StateValue::Int(5)),
+                    (StateKey::from_parts(1, 3), StateValue::Bool(true)),
+                ],
+                states: vec![
+                    Some(Value::Int(4)),
+                    None,
+                    Some(Value::Str(Rc::new("note".into()))),
+                ],
+                nodes: vec![NodeState {
+                    node: NodeRef::Static(2),
+                    path: None,
+                    focus: true,
+                    scroll: Some(Vec2 { x: 0.0, y: 50.0 }),
+                    text: Some((
+                        "draft".into(),
+                        Selection::caret(TextPosition {
+                            offset: TextOffset(3),
+                            affinity: CaretAffinity::Downstream,
+                        }),
+                    )),
+                    active_child: Some(1),
+                }],
+            }],
+            games: vec![GameEntry {
+                mount,
+                snapshot: vec![1, 2, 3],
+            }],
+            cells: vec![WindowCells {
+                window: 0,
+                cells: vec![RustCell {
+                    key: StateKey::from_parts(9, 9),
+                    nth: 0,
+                    value: StateValue::Float(1.5),
+                }],
+            }],
+            extensions: vec![Extension {
+                name: "route".into(),
+                bytes: b"settings".to_vec(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_snapshot_round_trips_and_names_its_build_and_compiler() {
+        let snapshot = snapshot();
+        let bytes = snapshot.encode();
+        assert_eq!(&bytes[..4], b"VDS1");
+        assert_eq!(DevSnapshot::decode(&bytes), Ok(snapshot));
+    }
+
+    #[test]
+    fn another_magic_version_or_a_cut_is_refused() {
+        let bytes = snapshot().encode();
+        let mut magic = bytes.clone();
+        magic[0] = b'X';
+        assert!(DevSnapshot::decode(&magic).is_err());
+        let mut version = bytes.clone();
+        version[4] = SNAPSHOT_VERSION as u8 + 1;
+        assert_eq!(
+            DevSnapshot::decode(&version),
+            Err(WireError::Bound {
+                what: "snapshot version"
+            })
+        );
+        for cut in 0..bytes.len() {
+            assert!(DevSnapshot::decode(&bytes[..cut]).is_err(), "at {cut}");
+        }
+        let mut long = bytes;
+        long.push(0);
+        assert!(DevSnapshot::decode(&long).is_err(), "trailing bytes");
+    }
+
+    #[test]
+    fn cells_out_of_key_order_are_refused() {
+        let mut snapshot = snapshot();
+        snapshot.views[0].cells.reverse();
+        assert!(DevSnapshot::decode(&snapshot.encode()).is_err());
+    }
+
+    #[test]
+    fn mutated_snapshots_never_panic_and_what_decodes_is_whole() {
+        let bytes = snapshot().encode();
+        let mut rng: u64 = 0xD1B5_4A32_D192_ED03;
+        let mut next = |n: usize| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % n.max(1) as u64) as usize
+        };
+        for _ in 0..20_000 {
+            let mut mutated = bytes.clone();
+            for _ in 0..1 + next(3) {
+                if mutated.is_empty() {
+                    break;
+                }
+                let at = next(mutated.len());
+                match next(4) {
+                    0 => mutated[at] ^= 1 << next(8),
+                    1 => mutated[at] = [0x00, 0x7F, 0x80, 0xFF][next(4)],
+                    2 => mutated.insert(at, next(256) as u8),
+                    _ => mutated.truncate(at),
+                }
+            }
+            if let Ok(decoded) = DevSnapshot::decode(&mutated) {
+                let encoded = decoded.encode();
+                let again = DevSnapshot::decode(&encoded).expect("its own encoding decodes");
+                assert_eq!(again.encode(), encoded);
+            }
+        }
+    }
+
+    #[test]
+    fn a_closure_or_native_handle_is_never_plain_data() {
+        let handle = Obj::new(Socket).into_value();
+        assert!(matches!(handle, Value::Handle(_)));
+        assert!(!plain(&handle));
+        assert!(!plain(&Value::List(Rc::new(vec![
+            Value::Int(1),
+            handle.clone()
+        ]))));
+        assert!(!plain(&Value::Agg(Rc::new(viso_behavior::Aggregate {
+            tag: 0,
+            fields: vec![Value::Nil, handle].into_boxed_slice(),
+        }))));
+        assert!(plain(&Value::List(Rc::new(vec![
+            Value::Int(1),
+            Value::Float(2.0),
+            Value::Str(Rc::new("s".into())),
+        ]))));
+    }
+}

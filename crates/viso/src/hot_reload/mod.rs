@@ -620,6 +620,13 @@ impl HotReloadSession {
                 format!("the snapshot does not decode: {error}"),
             )
         })?;
+        // Its values are typed by the compiler and build that took it.
+        if snapshot.app_schema != SCHEMA || snapshot.source_build != identity.build_id {
+            return Err((
+                NACK_UNRESTORABLE_SNAPSHOT,
+                "the snapshot was taken by an app of another build or compiler".into(),
+            ));
+        }
         let mut views = Vec::with_capacity(bundle.ui.views.len());
         for view in &bundle.ui.views {
             let file = view.file.0 as usize;
@@ -3800,6 +3807,37 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_of_another_build_or_compiler_is_refused_and_the_app_runs_fresh() {
+        let mut old = counter();
+        let (mut session, mut host, _) = session(&mut old, COUNTER);
+        let (_, cell) = session.views[0].cells[0];
+        old.states.set(cell, StateValue::Int(5));
+        let (bytes, _) = snapshot_of(&mut session, &mut host, std::slice::from_mut(&mut old));
+        drop((session, host, old));
+        let taken = DevSnapshot::decode(&bytes).expect("the snapshot decodes");
+        assert_eq!(taken.app_schema, SCHEMA);
+        let edits: [fn(&mut DevSnapshot); 2] = [
+            |snapshot| snapshot.app_schema.0 ^= 1,
+            |snapshot| snapshot.source_build.0 ^= 1,
+        ];
+        for edit in edits {
+            let mut other = taken.clone();
+            edit(&mut other);
+            let mut ws = counter();
+            let bytes = other.encode();
+            let (mut session, mut host) =
+                restoring(&mut ws, Some(&bytes), UiPatch::default(), Vec::new());
+            assert!(matches!(host.read(), Some(RuntimeMessage::Log { .. })));
+            let Some(RuntimeMessage::Nack(nack)) = host.read() else {
+                panic!("not refused");
+            };
+            assert_eq!(nack.diagnostic_codes, [NACK_UNRESTORABLE_SNAPSHOT]);
+            session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
+            assert_eq!(count(&ws, &session), Some(StateValue::Int(0)), "fresh");
+        }
+    }
+
+    #[test]
     fn a_mount_whose_window_closed_is_dropped() {
         let mut ws = counter();
         let (mut session, _host, _) = linked(Some(&mut ws));
@@ -3891,6 +3929,101 @@ mod tests {
         stage_all(&mut session, &mut host, &[patch]);
         session.reload(&mut [], &mut Assets::default());
         assert!(matches!(host.read(), Some(RuntimeMessage::Ack(a)) if a.revision == Revision(2)));
+    }
+
+    /// A counter window linked to a fake host, and the frame body of a
+    /// structural edit of it from the launch revision.
+    fn fuzzed() -> (WindowState, HotReloadSession, Host, Vec<u8>) {
+        let mut ws = counter();
+        let (session, host, mut edits) = session(&mut ws, COUNTER);
+        let edited = COUNTER.replace(
+            "Text { visible: enabled; }",
+            "Text { visible: enabled; }\n            Text { width: 40dp; }",
+        );
+        let body = viso_view::dev::wire::encode(&edits.patch(&host, 1, 2, &edited));
+        (ws, session, host, body)
+    }
+
+    #[test]
+    fn mutated_patch_frames_are_refused_whole_or_applied_whole() {
+        let (mut ws, mut session, mut host, mut body) = fuzzed();
+        let mut rng: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move |n: usize| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % n.max(1) as u64) as usize
+        };
+        let (mut sent, mut refused, mut attempts) = (0, 0, 0);
+        while sent < 120 && attempts < 200_000 {
+            attempts += 1;
+            let mut frame = body.clone();
+            for _ in 0..1 + next(3) {
+                let at = next(frame.len());
+                match next(3) {
+                    0 => frame[at] ^= 1 << next(8),
+                    1 => frame[at] = [0x00, 0x01, 0x7F, 0x80, 0xFF][next(5)],
+                    _ => frame.truncate(at.max(1)),
+                }
+            }
+            // Frames that do not decode are refused by the decoder alone;
+            // every 64th is sent to check the session refuses it too.
+            let patch = matches!(
+                <HostMessage as viso_view::dev::wire::Message>::from_frame(&frame),
+                Ok(HostMessage::Patch(_))
+            );
+            if !patch && attempts % 64 != 0 {
+                continue;
+            }
+            sent += 1;
+            let root = ws.root.unwrap();
+            let before = (
+                revision(&session),
+                subtree(&ws.store, root),
+                values(&ws, &session),
+            );
+            host.send_raw(&frame);
+            let answer = match answer_or_ready(&mut session, &mut host, std::slice::from_ref(&ws)) {
+                Some(answer) => answer,
+                None => {
+                    session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
+                    host.read().expect("an answer")
+                }
+            };
+            match answer {
+                RuntimeMessage::Nack(nack) => {
+                    refused += 1;
+                    assert_eq!(nack.last_good_revision, Revision(before.0));
+                    let root = ws.root.unwrap();
+                    let after = (
+                        revision(&session),
+                        subtree(&ws.store, root),
+                        values(&ws, &session),
+                    );
+                    assert_eq!(after, before, "a refused frame changes nothing");
+                }
+                RuntimeMessage::Ack(ack) => {
+                    // A mutation the patch's checks cannot tell from an
+                    // edit: it applied whole, and the next frames start from
+                    // a fresh app.
+                    assert_eq!(ack.revision, Revision(2));
+                    assert!(ws.store.arena().is_live(ws.root.unwrap()));
+                    (ws, session, host, body) = fuzzed();
+                }
+                other => panic!("not an answer: {other:?}"),
+            }
+        }
+        assert!(sent >= 120 && refused > 0, "{sent} sent, {refused} refused");
+        // The app still applies the edit it was sent whole.
+        host.send_raw(&body);
+        let answer = match answer_or_ready(&mut session, &mut host, std::slice::from_ref(&ws)) {
+            Some(answer) => answer,
+            None => {
+                session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
+                host.read().expect("an answer")
+            }
+        };
+        assert!(matches!(answer, RuntimeMessage::Ack(a) if a.revision == Revision(2)));
     }
 
     /// Receives until the session answered the host, and the answer.

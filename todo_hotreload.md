@@ -1136,14 +1136,26 @@ Goal: one source graph serves several running runtimes with per-runtime revision
 
 ## H9 — Acceptance (§61–§64, §71)
 
-- [ ] §61 unit suite: semantic diff, SymbolId preservation, compatibility matrix,
+- [x] §61 unit suite: semantic diff, SymbolId preservation, compatibility matrix,
       revision ordering, PatchBundle bounds, ACK/NACK, scoped reset planning,
-      snapshot schema.
+      snapshot schema. Mapped item by item in `Viso_Hot_Reload.md` §61; added ACK/NACK
+      golden bytes and `dev::snapshot` unit tests (magic, version, every cut, cell order).
+- [x] A restore checks the snapshot's `app_schema` and `source_build` against its own
+      and refuses another's (`NACK_UNRESTORABLE_SNAPSHOT`, the app runs fresh).
 - [ ] §62 integration suite under a test host driving a real dev app: UI, invalid
       `.vs`, shader, game, Rust.
 - [ ] §63 simulator/emulator suite.
 - [ ] §64 release absence suite in CI, including the web, Android and iOS
       simulator dev/release artifacts (per-target markers: no link thread on web).
-- [ ] Fuzz: random and mutated dev frames never panic the runtime decoder and never
-      change last-good.
-- [ ] §71 Definition of Done checklist test, one test per item.
+- [x] Fuzz: random and mutated dev frames never panic the runtime decoder and never
+      change last-good. Deterministic in `cargo test`: wire frames both ways (multi-point
+      mutations, splices, random frames; what decodes re-encodes canonically), mutated
+      patch frames through a live session and commit (refused: revision, tree and states
+      unchanged; accepted: whole), DevSnapshot, GameSnapshot and control messages.
+- [ ] A coverage-guided `cargo fuzz` target over the same decoders, run in CI on a
+      schedule.
+- [x] §71 Definition of Done checklist, one test per item: the table in
+      `Viso_Hot_Reload.md` §71 names each item's test.
+- [ ] A frame-loop benchmark gate for the release branch tax (the bench compares with
+      and without `hot-reload` but has no threshold).
+- [ ] UI input tapes record the code revisions they ran across (game tapes do).

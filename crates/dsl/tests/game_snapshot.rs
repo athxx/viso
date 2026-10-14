@@ -243,6 +243,40 @@ fn a_corrupt_snapshot_is_an_error() {
 }
 
 #[test]
+fn mutated_snapshots_never_panic_and_what_decodes_is_whole() {
+    let mut game = scheduler(module(WALKER));
+    game.step(3);
+    let bytes = game.snapshot().encode();
+    let mut rng: u64 = 0x94D0_49BB_1331_11EB;
+    let mut next = |n: usize| {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng % n.max(1) as u64) as usize
+    };
+    for _ in 0..20_000 {
+        let mut mutated = bytes.clone();
+        for _ in 0..1 + next(3) {
+            if mutated.is_empty() {
+                break;
+            }
+            let at = next(mutated.len());
+            match next(4) {
+                0 => mutated[at] ^= 1 << next(8),
+                1 => mutated[at] = [0x00, 0x7F, 0x80, 0xFF][next(4)],
+                2 => mutated.insert(at, next(256) as u8),
+                _ => mutated.truncate(at),
+            }
+        }
+        if let Ok(decoded) = GameSnapshot::decode(&mutated) {
+            let encoded = decoded.encode();
+            let again = GameSnapshot::decode(&encoded).expect("its own encoding decodes");
+            assert_eq!(again.encode(), encoded);
+        }
+    }
+}
+
+#[test]
 fn a_frame_interpolates_by_its_share_of_the_next_tick() {
     let mut game = scheduler(module(WALKER));
     assert_eq!(game.frame(0.375), 1);

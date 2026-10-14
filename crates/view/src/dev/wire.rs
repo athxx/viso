@@ -2607,6 +2607,142 @@ mod tests {
         assert!(RuntimeMessage::from_frame(&ack).is_err());
     }
 
+    /// A xorshift generator: the fuzz below is the same on every run.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n.max(1) as u64) as usize
+        }
+    }
+
+    /// `body` with one to four random edits: a bit flipped, a byte set to an
+    /// edge value, bytes inserted or removed, a span repeated, or the tail
+    /// spliced from `other`.
+    fn mutate(rng: &mut Rng, body: &[u8], other: &[u8]) -> Vec<u8> {
+        let mut out = body.to_vec();
+        for _ in 0..1 + rng.below(4) {
+            let at = rng.below(out.len() + 1);
+            match rng.below(6) {
+                0 if at < out.len() => out[at] ^= 1 << rng.below(8),
+                1 if at < out.len() => out[at] = [0x00, 0x01, 0x7F, 0x80, 0xFF][rng.below(5)],
+                2 => {
+                    let byte = rng.next() as u8;
+                    out.insert(at, byte);
+                }
+                3 if at < out.len() => {
+                    let end = (at + 1 + rng.below(8)).min(out.len());
+                    out.drain(at..end);
+                }
+                4 if at < out.len() => {
+                    let end = (at + 1 + rng.below(16)).min(out.len());
+                    let span = out[at..end].to_vec();
+                    out.splice(at..at, span);
+                }
+                _ => {
+                    let from = rng.below(other.len() + 1);
+                    out.truncate(at);
+                    out.extend_from_slice(&other[from..]);
+                }
+            }
+        }
+        out
+    }
+
+    /// Whatever decodes from `body` encodes to bytes that decode to it again:
+    /// a mutation that decodes is a well-formed message, not a half-read one.
+    fn decodes_canonically<M: Message>(body: &[u8]) -> bool {
+        let Ok(message) = M::from_frame(body) else {
+            return false;
+        };
+        // Compared encoded, so a float the mutation made NaN still matches.
+        let encoded = encode(&message);
+        let again = M::from_frame(&encoded).expect("its own encoding decodes");
+        assert_eq!(encode(&again), encoded, "from {body:?}");
+        true
+    }
+
+    #[test]
+    fn mutated_and_random_frames_never_panic_and_what_decodes_is_whole() {
+        let host: Vec<Vec<u8>> = host_messages().iter().map(encode).collect();
+        let runtime: Vec<Vec<u8>> = runtime_messages().iter().map(encode).collect();
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        let mut decoded = 0;
+        for round in 0..40_000 {
+            let (bodies, others) = if round % 2 == 0 {
+                (&host, &runtime)
+            } else {
+                (&runtime, &host)
+            };
+            let body = &bodies[rng.below(bodies.len())];
+            let other = &others[rng.below(others.len())];
+            let mutated = mutate(&mut rng, body, other);
+            decoded += usize::from(decodes_canonically::<HostMessage>(&mutated));
+            decoded += usize::from(decodes_canonically::<RuntimeMessage>(&mutated));
+        }
+        for _ in 0..20_000 {
+            let len = rng.below(64);
+            let noise: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+            decodes_canonically::<HostMessage>(&noise);
+            decodes_canonically::<RuntimeMessage>(&noise);
+        }
+        assert!(decoded > 0, "some mutations stay well formed");
+    }
+
+    /// `bytes` as lowercase hex.
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn ack_and_nack_bytes_are_stable() {
+        // A host of another build reads these: their layout changes only
+        // with the protocol version.
+        let ack = RuntimeMessage::Ack(PatchAck {
+            revision: Revision(5),
+            applied_domains: Domains::NONE.with(Domain::Ui),
+            files: vec![FileCommit {
+                file: FileId(1),
+                counts: CommitCounts {
+                    mounts: 1,
+                    migrated: 2,
+                    ..CommitCounts::default()
+                },
+            }],
+            notices: Vec::new(),
+            state_resets: Vec::new(),
+            games: Vec::new(),
+            resources: Vec::new(),
+            timings: PatchTimings {
+                decode_us: 1,
+                stage_us: 2,
+                commit_us: 3,
+            },
+        });
+        let nack = RuntimeMessage::Nack(PatchNack {
+            base_revision: Revision(4),
+            candidate_revision: Revision(5),
+            stage: Stage::ShaderCompile,
+            diagnostic_codes: vec![NACK_REVISION_MISMATCH.into()],
+            last_good_revision: Revision(4),
+        });
+        assert_eq!(
+            hex(&encode(&ack)),
+            "0105010101010200000000000000000000000000000000010203"
+        );
+        assert_eq!(
+            hex(&encode(&nack)),
+            "0204050701164e41434b5f5245564953494f4e5f4d49534d4154434804"
+        );
+    }
+
     #[test]
     fn another_protocol_version_is_named_not_guessed() {
         // A runtime of the next version, with a layout this build does not

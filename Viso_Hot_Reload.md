@@ -1885,6 +1885,19 @@ scoped reset planning
 snapshot schema
 ```
 
+已覆盖（每项的代表测试）：
+
+- semantic diff：`viso-dsl` `hotreload::diff` 的 14 个单元测试（属性编辑保留结构、原位换类型即替换、兄弟交换、region 按形与 arm 对齐等）；
+- SymbolId 保持：`hotreload::plan::same_name_mints_the_same_identity_across_compiles`、`hotreload::migrate` 的 symbol 保留/新增/删除测试；
+- state compatibility matrix：`viso-dsl` `tests/state_retype.rs`（整数→浮点保留、收窄重置、record 按名字段与默认、enum 按名、`@migrate`、migrate fault 重置、`E3712`），`viso-ui` `state` 与 `viso-behavior` `retype` 的转换测试；
+- revision ordering：`dev::wire::a_patch_applies_only_from_the_current_revision_forward`，facade `patches_commit_in_revision_order_at_the_frame_boundary`、`an_out_of_order_or_foreign_patch_is_nacked_and_last_good_kept`；
+- PatchBundle bounds：`dev::wire` 的 bound 测试（每个 bound 在读之前检查、超过上限的 frame 不读、inventory/ui/system/game query/asset/blob 的上限）；
+- ACK/NACK：`dev::wire::every_message_round_trips`，以及 `ack_and_nack_bytes_are_stable` 固定两者的字节；
+- scoped reset planning：`tests/hot_reload.rs::a_new_states_scoped_reset_names_its_own_key_not_a_kept_sibling`，facade `insert_remove_reorder_and_a_scoped_reset_each_apply_without_disturbing_the_rest`；
+- snapshot schema：`dev::snapshot` 单元测试（round trip、magic、版本、每个截断点、cell 顺序、变异），facade `a_snapshot_of_another_build_or_compiler_is_refused_and_the_app_runs_fresh`（restore 检查 snapshot 的 `app_schema` 与 `source_build`，不同则 `NACK_UNRESTORABLE_SNAPSHOT`，app 全新运行）。
+
+Fuzz（确定性 xorshift，随 `cargo test` 运行）：`dev::wire::mutated_and_random_frames_never_panic_and_what_decodes_is_whole`（host 与 runtime 两个方向各 4 万次多点变异——翻转、边界字节、插入、删除、重复、拼接——加 2 万个随机 frame；能解码的必须重新编码后解码为同样的字节），facade `mutated_patch_frames_are_refused_whole_or_applied_whole`（变异的 patch frame 经真实 session 与 commit 路径：被拒时 revision、节点树与所有 state 不变，被接受时整体提交，最后原 patch 仍然提交），`dev::snapshot`、`GameSnapshot` 与 `viso game` control 消息各自的变异测试。
+
 ---
 
 ## 62. Integration tests
@@ -2122,6 +2135,29 @@ backend-specific validation
 - protocol/schema不兼容明确拒绝；
 - ACK/NACK稳定；
 - malformed patch不能破坏 last-good runtime。
+
+### 验收对照
+
+| 项 | 测试 |
+|---|---|
+| Hot Reload 只在 Dev artifact、Release 无 dev transport/patch apply/DevSnapshot endpoint | `cargo xtask check-release-absence`（§64） |
+| Release 热路径零 Hot Reload 分支税 | 由 release absence 保证（release artifact 不含 dev 层代码）；`viso` `benches/frame_loop.rs` 对比有无 `hot-reload` 的帧循环 |
+| property patch 不重启 process | facade `a_property_edit_dirties_exactly_its_property_on_its_node` |
+| structural patch 使用 stable identity | `tests/hot_reload.rs` `an_inserted_sibling_keeps_every_other_node_s_live_identity`、`a_removed_sibling_keeps_the_rest_s_live_identity` |
+| invalid candidate 保持 last-good | facade `a_host_rejection_is_shown_until_cleared_and_changes_nothing`、`a_patch_that_does_not_load_is_nacked_and_the_next_one_applies` |
+| focus/scroll/state preservation | facade `a_property_edit_keeps_state_focus_and_scroll_offset`，`tests/hot_reload.rs` `focus_and_scroll_follow_their_nodes_past_an_inserted_sibling` |
+| shader 后台验证、GPU-safe boundary 切换 | facade `a_shader_edit_compiles_off_the_loop_and_the_frame_installs_it_without_compiling` |
+| shader 失败保留旧 pipeline | facade `a_shader_the_backend_refuses_refuses_the_revision_with_its_view`，`viso-shader` `reload::invalid_reload_keeps_last_good_field_for_field` |
+| System patch 只在 Fixed Tick boundary 切换、World 保留 | facade `a_patch_arriving_during_a_tick_applies_from_the_next_with_the_world_kept`，`tests/game_acceptance.rs` `a_logic_reload_swaps_at_a_tick_boundary_and_keeps_timers` |
+| replay 记录/禁止 code revision event | `tests/game_reload.rs` `a_recorded_run_replays_its_live_patches_at_the_same_ticks`，facade `a_game_replaying_a_tape_takes_no_live_patch` |
+| 资源独立更新、不清空全 UI cache | facade `an_asset_patch_swaps_the_resource_and_dirties_only_the_nodes_showing_it`、`a_font_patch_replaces_the_packaged_file_and_a_broken_font_refuses`，`viso-cli` `tests/font_patch.rs` |
+| Rust 编译期间旧 App 运行、成功后 Warm Restart、typed DevSnapshot 恢复 | `viso-cli` `tests/warm_restart.rs`（`--ignored`），`dev::tests::a_snapshot_is_held_and_restored_with_plans_into_the_app_launched_after_it`，facade `a_restarted_app_takes_its_state_back_before_its_first_frame` |
+| raw handles 不进入 snapshot | `dev::snapshot::a_closure_or_native_handle_is_never_plain_data`，`tests/dev_snapshot.rs` `a_closure_a_state_holds_is_not_captured` |
+| Mobile/Web patch/restart/reconnect | `viso-cli` `tests/device.rs`（`--ignored`；CI job `ios-simulator`、`android-emulator`、`web`） |
+| bounded decode | `viso-ende` 的随机字节与 overlong varint 测试，`dev::wire` bound 测试 |
+| revision ordered、ACK/NACK 稳定 | §61 对应测试，`ack_and_nack_bytes_are_stable` |
+| protocol/schema 不兼容明确拒绝 | `dev::wire::another_protocol_version_is_named_not_guessed`、`the_handshake_binds_token_session_and_build`，`viso-cli` `dev::link` `another_protocol_session_build_or_schema_is_refused_with_the_reason`，snapshot 的 schema 检查 |
+| malformed patch 不破坏 last-good | facade `mutated_patch_frames_are_refused_whole_or_applied_whole` |
 
 ---
 

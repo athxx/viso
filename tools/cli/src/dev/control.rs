@@ -449,6 +449,53 @@ mod tests {
     }
 
     #[test]
+    fn mutated_control_frames_never_panic() {
+        let bodies = [
+            viso_view::dev::wire::encode(&ControlRequest {
+                token: "t".into(),
+                game: "src/a.vs".into(),
+                ask: GameAsk::Peek {
+                    system: "S".into(),
+                    state: "s".into(),
+                },
+            }),
+            viso_view::dev::wire::encode(&ControlReply::Refused {
+                code: GAME_BUSY.into(),
+                message: "busy".into(),
+                notes: vec!["n".into()],
+            }),
+            viso_view::dev::wire::encode(&ControlReply::Tape {
+                file: "a.vs".into(),
+                tape: vec![1, 2, 3],
+            }),
+        ];
+        let mut rng: u64 = 0xBF58_476D_1CE4_E5B9;
+        let mut next = |n: usize| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % n.max(1) as u64) as usize
+        };
+        for _ in 0..20_000 {
+            let mut mutated = bodies[next(bodies.len())].clone();
+            for _ in 0..1 + next(3) {
+                if mutated.is_empty() {
+                    break;
+                }
+                let at = next(mutated.len());
+                match next(4) {
+                    0 => mutated[at] ^= 1 << next(8),
+                    1 => mutated[at] = [0x00, 0x7F, 0x80, 0xFF][next(4)],
+                    2 => mutated.insert(at, next(256) as u8),
+                    _ => mutated.truncate(at),
+                }
+            }
+            let _ = ControlRequest::from_frame(&mutated);
+            let _ = ControlReply::from_frame(&mutated);
+        }
+    }
+
+    #[test]
     fn every_message_round_trips_and_bounds_hold() {
         for request in [
             ControlRequest {
