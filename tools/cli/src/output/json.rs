@@ -1,8 +1,8 @@
-//! The JSON event stream (`Viso_CLI.md` sections 34–36): one compact JSON object
+//! The JSON event stream: one compact JSON object
 //! per stdout line, each in the common envelope, ending with exactly one
 //! `summary`.
 //!
-//! A `diagnostic` payload is the `Viso_DSL_1.0.md` section 138 object, for
+//! A `diagnostic` payload is the language's diagnostic object, for
 //! compiler, configuration and CLI diagnostics alike. Lines and columns are
 //! 1-based; columns count UTF-16 code units, and every range is also given in
 //! bytes.
@@ -21,7 +21,7 @@ use super::{DevIds, Location, Report, Source};
 const SCHEMA: &str = "viso.cli.event";
 /// The envelope version, shared by every payload but the diagnostic.
 const SCHEMA_VERSION: u64 = 1;
-/// The section 138 diagnostic object's own version.
+/// The diagnostic object's own version.
 const DIAGNOSTIC_SCHEMA_VERSION: &str = "1.0";
 
 /// One command run's event stream.
@@ -231,7 +231,7 @@ impl Stream {
             w.name("status");
             w.string(match code {
                 0 => "success",
-                crate::command::INTERRUPTED => "cancelled",
+                crate::error::INTERRUPTED => "cancelled",
                 _ => "failure",
             });
             w.name("exit_code");
@@ -452,7 +452,7 @@ fn dev(w: &mut JsonWriter, file: &str, ids: &DevIds<'_>, event: &ReloadEvent) {
     w.end_object();
 }
 
-/// The section 138 diagnostic object.
+/// The diagnostic object.
 fn diagnostic(w: &mut JsonWriter, report: &Report<'_>) {
     w.begin_object();
     w.name("schema_version");

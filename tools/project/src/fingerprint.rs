@@ -1,7 +1,6 @@
-//! Content-addressed identity: [`ProjectFingerprint`] and [`BuildId`]
-//! (`Viso_CLI.md` section 46).
+//! Content-addressed identity: [`ProjectFingerprint`] and [`BuildId`].
 //!
-//! A [`BuildId`] answers "is this artifact the one I think it is". The T5 handshake
+//! A [`BuildId`] answers "is this artifact the one I think it is". The dev handshake
 //! compares it across a process boundary before accepting a patch, the cache uses
 //! it to decide reuse, and traces are filed under it — so it must be derived from
 //! content, never from a clock. A timestamp would make two identical builds
@@ -215,8 +214,7 @@ impl fmt::Display for ProjectFingerprint {
 ///
 /// Plain data supplied by the caller rather than something this crate detects: a
 /// resolution library that shells out to `rustc` would make `viso config show`
-/// depend on a subprocess, and the CLI already knows its own toolchain
-/// (`Viso_CLI.md` section 64).
+/// depend on a subprocess, and the CLI already knows its own toolchain.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Toolchain {
     /// The compiler version string, e.g. `rustc 1.98.1 (abcdef 2026-01-01)`.
@@ -253,7 +251,7 @@ impl fmt::Display for Toolchain {
     }
 }
 
-/// The identity of one build or dev session (`Viso_CLI.md` section 46).
+/// The identity of one build or dev session.
 ///
 /// Binds the five inputs that can make two artifacts behave differently: the
 /// source graph, the target, the profile, the toolchain, and the resolved
@@ -300,8 +298,8 @@ impl fmt::Display for BuildId {
 
 /// Source-file extensions that participate in the fingerprint.
 ///
-/// The two first-class source formats (AGENTS 32). Assets are deliberately out:
-/// they are hot-reloadable independently (T7) and a large binary asset should not
+/// The two first-class source formats. Assets are deliberately out:
+/// they are hot-reloadable independently and a large binary asset should not
 /// invalidate the code identity that the handshake compares.
 const SOURCE_EXTENSIONS: &[&str] = &["rs", "vs"];
 
@@ -524,7 +522,7 @@ mod tests {
 
     /// Every one of the five [`BuildId`] inputs must move the id — an input that did
     /// not would let two artifacts that behave differently share an identity, which
-    /// is precisely the mismatch the T5 handshake exists to catch.
+    /// is precisely the mismatch the dev handshake exists to catch.
     #[test]
     fn every_build_id_input_changes_the_id() {
         let fp = ProjectFingerprint::from_sources([("a.rs", b"one".as_slice())]);

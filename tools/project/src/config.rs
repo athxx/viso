@@ -1,4 +1,4 @@
-//! Configuration precedence and provenance (`Viso_CLI.md` section 5).
+//! Configuration precedence and provenance.
 //!
 //! ```text
 //! CLI flag
@@ -81,7 +81,7 @@ impl Origin {
 }
 
 impl fmt::Display for Origin {
-    /// The human form: `flag`, `env VISO_TARGET`, `Viso.toml [profile.dev]:5:13`,
+    /// The human form: `flag`, `env VISO_PROFILE`, `Viso.toml [profile.dev]:5:13`,
     /// `Viso.toml:3:18`, `default`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -125,16 +125,8 @@ impl<T: fmt::Display> fmt::Display for Sourced<T> {
 /// always win.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Overrides {
-    /// `--target`.
-    pub target: Option<Target>,
     /// `--profile`.
     pub profile: Option<Profile>,
-    /// `--opt-level`.
-    pub opt_level: Option<OptLevel>,
-    /// `--source-maps` / `--no-source-maps`.
-    pub source_maps: Option<bool>,
-    /// `--strip` / `--no-strip`.
-    pub strip: Option<bool>,
 }
 
 /// The `VISO_*` environment, captured.
@@ -143,8 +135,6 @@ pub struct Env {
     vars: BTreeMap<String, String>,
 }
 
-/// `VISO_TARGET`.
-pub const ENV_TARGET: &str = "VISO_TARGET";
 /// `VISO_PROFILE`.
 pub const ENV_PROFILE: &str = "VISO_PROFILE";
 /// `VISO_OPT_LEVEL`.
@@ -155,13 +145,7 @@ pub const ENV_SOURCE_MAPS: &str = "VISO_SOURCE_MAPS";
 pub const ENV_STRIP: &str = "VISO_STRIP";
 
 /// Every variable this crate reads, in resolution order.
-pub const ENV_VARS: &[&str] = &[
-    ENV_TARGET,
-    ENV_PROFILE,
-    ENV_OPT_LEVEL,
-    ENV_SOURCE_MAPS,
-    ENV_STRIP,
-];
+pub const ENV_VARS: &[&str] = &[ENV_PROFILE, ENV_OPT_LEVEL, ENV_SOURCE_MAPS, ENV_STRIP];
 
 impl Env {
     /// An empty environment.
@@ -195,8 +179,8 @@ impl Env {
 
     /// The value of one variable, ignoring an empty one.
     ///
-    /// An empty `VISO_TARGET=` is treated as unset: in a shell, that is how a
-    /// variable gets cleared, and reading it as a target named `""` would turn a
+    /// An empty `VISO_PROFILE=` is treated as unset: in a shell, that is how a
+    /// variable gets cleared, and reading it as a profile named `""` would turn a
     /// cleared variable into an error.
     pub fn get(&self, name: &str) -> Option<&str> {
         self.vars
@@ -206,22 +190,68 @@ impl Env {
     }
 }
 
-/// A fully resolved configuration.
-///
-/// Total: every field has a value and an origin, so no consumer has to re-apply a
-/// default and risk applying a different one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedConfig {
-    /// Where the output runs.
-    pub target: Sourced<Target>,
-    /// How it is compiled.
-    pub profile: Sourced<Profile>,
+/// How one profile builds: the values a build with it gets, each with the
+/// layer it won from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfileSettings {
     /// Optimization level.
     pub opt_level: Sourced<OptLevel>,
     /// Whether source maps are emitted.
     pub source_maps: Sourced<bool>,
     /// Whether symbols are stripped.
     pub strip: Sourced<bool>,
+}
+
+impl ProfileSettings {
+    /// The settings of `profile`: the environment over its `[profile.X]` table
+    /// over its own defaults. An unparseable variable is recorded in `errors`.
+    pub(crate) fn resolve(
+        manifest: &Manifest,
+        profile: Profile,
+        env: &Env,
+        errors: &mut Vec<ConfigDiagnostic>,
+    ) -> Self {
+        let table = manifest.profiles.get(profile);
+        Self {
+            opt_level: pick(
+                None,
+                env_value(env, ENV_OPT_LEVEL, OptLevel::parse, errors),
+                from_profile(profile, table.opt_level),
+                None,
+                profile.default_opt_level(),
+            ),
+            source_maps: pick(
+                None,
+                env_value(env, ENV_SOURCE_MAPS, parse_bool, errors),
+                from_profile(profile, table.source_maps),
+                None,
+                profile.default_source_maps(),
+            ),
+            strip: pick(
+                None,
+                env_value(env, ENV_STRIP, parse_bool, errors),
+                from_profile(profile, table.strip),
+                None,
+                profile.default_strip(),
+            ),
+        }
+    }
+}
+
+/// A fully resolved build configuration.
+///
+/// Total: every field has a value and an origin, so no consumer has to re-apply a
+/// default and risk applying a different one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedConfig {
+    /// Where the output runs: what the command line named, the host when it
+    /// named nothing. No configuration layer chooses it, so it carries no
+    /// origin.
+    pub target: Target,
+    /// How it is compiled.
+    pub profile: Sourced<Profile>,
+    /// What the profile builds with.
+    pub settings: ProfileSettings,
     /// What shape the output has — chosen by the command, not configurable.
     pub artifact: ArtifactKind,
 }
@@ -230,8 +260,8 @@ impl ResolvedConfig {
     /// Whether the Dev Runtime is compiled in.
     ///
     /// Derived from the profile and carrying no [`Origin`], because there is no
-    /// layer that could have named it: `Viso_CLI.md` section 38.2 fixes it, and a
-    /// provenance field would imply it was negotiable.
+    /// layer that could have named it: the profile fixes it, and a provenance
+    /// field would imply it was negotiable.
     pub const fn dev_runtime(&self) -> DevRuntime {
         self.profile.value.dev_runtime()
     }
@@ -239,16 +269,16 @@ impl ResolvedConfig {
     /// A hash over the resolved *values*, one of the [`BuildId`] inputs.
     ///
     /// Origins are excluded on purpose. Two builds that resolved the same values by
-    /// different routes — one from a flag, one from the manifest — produce byte-
-    /// identical output, so they must share a [`BuildId`] and reuse each other's
-    /// cache.
+    /// different routes — one from the environment, one from the manifest —
+    /// produce byte-identical output, so they must share a [`BuildId`] and reuse
+    /// each other's cache.
     pub fn hash(&self) -> Hash128 {
         let mut hasher = Hasher::new();
-        hasher.str(self.target.value.as_str());
+        hasher.str(self.target.as_str());
         hasher.str(self.profile.value.as_str());
-        hasher.str(self.opt_level.value.as_str());
-        hasher.u64(u64::from(self.source_maps.value));
-        hasher.u64(u64::from(self.strip.value));
+        hasher.str(self.settings.opt_level.value.as_str());
+        hasher.u64(u64::from(self.settings.source_maps.value));
+        hasher.u64(u64::from(self.settings.strip.value));
         hasher.str(self.artifact.as_str());
         hasher.finish()
     }
@@ -257,66 +287,11 @@ impl ResolvedConfig {
     pub fn build_id(&self, fingerprint: ProjectFingerprint, toolchain: &Toolchain) -> BuildId {
         BuildId::compute(
             fingerprint,
-            self.target.value,
+            self.target,
             self.profile.value,
             toolchain,
             self.hash(),
         )
-    }
-
-    /// Every resolved key, in a stable order — the body of `viso config show`.
-    pub fn entries(&self) -> Vec<Entry> {
-        vec![
-            Entry::new("target", self.target.value, self.target.origin),
-            Entry::new("profile", self.profile.value, self.profile.origin),
-            Entry::new("opt_level", self.opt_level.value, self.opt_level.origin),
-            Entry::new(
-                "source_maps",
-                self.source_maps.value,
-                self.source_maps.origin,
-            ),
-            Entry::new("strip", self.strip.value, self.strip.origin),
-            // Derived, so its origin is the framework's: nothing else may claim it.
-            Entry::new("dev_runtime", self.dev_runtime(), Origin::FrameworkDefault),
-            Entry::new("artifact", self.artifact, Origin::FrameworkDefault),
-        ]
-    }
-
-    /// One resolved key by name — the body of `viso config get <key>`.
-    pub fn get(&self, key: &str) -> Option<Entry> {
-        self.entries().into_iter().find(|e| e.key == key)
-    }
-
-    /// Every key name, for diagnostics and shell completion.
-    pub fn keys(&self) -> Vec<&'static str> {
-        self.entries().into_iter().map(|e| e.key).collect()
-    }
-}
-
-/// One line of `viso config show`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Entry {
-    /// The key name.
-    pub key: &'static str,
-    /// The resolved value, printed.
-    pub value: String,
-    /// Where it came from.
-    pub origin: Origin,
-}
-
-impl Entry {
-    fn new(key: &'static str, value: impl fmt::Display, origin: Origin) -> Self {
-        Self {
-            key,
-            value: value.to_string(),
-            origin,
-        }
-    }
-}
-
-impl fmt::Display for Entry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} = {} ({})", self.key, self.value, self.origin)
     }
 }
 
@@ -329,46 +304,26 @@ pub struct Resolved {
     pub warnings: Vec<ConfigDiagnostic>,
 }
 
-/// Resolves a configuration for a located project.
+/// Resolves the configuration of a build of a located project for `target`.
 ///
 /// Fails only on a value that cannot be honored: an unparseable environment
 /// variable, or a target this build cannot produce. Everything else resolves,
 /// possibly with warnings.
 pub fn resolve(
     project: &Project,
+    target: Target,
     artifact: ArtifactKind,
     flags: &Overrides,
     env: &Env,
 ) -> Result<Resolved, Vec<ConfigDiagnostic>> {
     let mut warnings = project.warnings.clone();
     let mut errors = Vec::new();
-    let manifest = &project.manifest;
 
     let profile = resolve_profile(flags, env, &mut errors);
-    let target = resolve_target(manifest, flags, env, &mut errors);
-    let table = manifest.profiles.get(profile.value);
-
-    let opt_level = pick(
-        flags.opt_level,
-        env_value(env, ENV_OPT_LEVEL, OptLevel::parse, &mut errors),
-        from_profile(profile.value, table.opt_level),
-        None,
-        profile.value.default_opt_level(),
-    );
-    let source_maps = pick(
-        flags.source_maps,
-        env_value(env, ENV_SOURCE_MAPS, parse_bool, &mut errors),
-        from_profile(profile.value, table.source_maps),
-        None,
-        profile.value.default_source_maps(),
-    );
-    let strip = pick(
-        flags.strip,
-        env_value(env, ENV_STRIP, parse_bool, &mut errors),
-        from_profile(profile.value, table.strip),
-        None,
-        profile.value.default_strip(),
-    );
+    let settings = ProfileSettings::resolve(&project.manifest, profile.value, env, &mut errors);
+    if let Err(diag) = target.require_available() {
+        errors.push(diag);
+    }
 
     if !errors.is_empty() {
         warnings.extend(errors);
@@ -379,9 +334,7 @@ pub fn resolve(
         config: ResolvedConfig {
             target,
             profile,
-            opt_level,
-            source_maps,
-            strip,
+            settings,
             artifact,
         },
         warnings,
@@ -393,7 +346,7 @@ pub fn resolve(
 /// Writing it as one function rather than a chain per field is what keeps the five
 /// layers in one order everywhere: a hand-rolled `if let` chain per key is how one
 /// key ends up letting the manifest beat the environment.
-fn pick<T>(
+pub(crate) fn pick<T>(
     flag: Option<T>,
     env: Option<(T, &'static str)>,
     profile: Option<(T, Profile, Span)>,
@@ -463,33 +416,6 @@ fn resolve_profile(
     )
 }
 
-/// Resolves the target and checks that this build can produce it.
-///
-/// `[web] default_target` is parsed ([`crate::manifest::Web`]) but deliberately not
-/// consulted here: it is the default for the web *commands*, which are deferred, and
-/// inventing a rule now — "use it when the target is already a web target" — would
-/// be circular and would have to be unpicked when those commands land.
-fn resolve_target(
-    manifest: &Manifest,
-    flags: &Overrides,
-    env: &Env,
-    errors: &mut Vec<ConfigDiagnostic>,
-) -> Sourced<Target> {
-    let resolved = pick(
-        flags.target,
-        env_value(env, ENV_TARGET, Target::parse, errors),
-        None,
-        manifest.build.default_target.map(|t| (t.value, t.span)),
-        Target::Host,
-    );
-    if let Err(diag) = resolved.value.require_available() {
-        // Name the layer that chose it: "target `ios` is not available" is useful,
-        // and "...and it came from Viso.toml line 6" is what makes it fixable.
-        errors.push(diag.note(format!("selected by: {}", resolved.origin)));
-    }
-    resolved
-}
-
 /// `VISO_*` booleans. Accepts the shell spellings people actually type.
 fn parse_bool(raw: &str) -> Result<bool, ConfigDiagnostic> {
     match raw {
@@ -517,9 +443,15 @@ mod tests {
 
     fn resolved(manifest: &str, flags: &Overrides, env: &Env) -> ResolvedConfig {
         let (_s, project) = project(manifest);
-        resolve(&project, ArtifactKind::Build, flags, env)
+        resolve(&project, Target::Host, ArtifactKind::Build, flags, env)
             .unwrap()
             .config
+    }
+
+    fn release() -> Overrides {
+        Overrides {
+            profile: Some(Profile::Release),
+        }
     }
 
     const MINIMAL: &str = "[package]\nname = \"app\"\n";
@@ -530,65 +462,82 @@ mod tests {
     #[test]
     fn an_empty_project_resolves_entirely_to_framework_defaults() {
         let config = resolved(MINIMAL, &Overrides::default(), &Env::empty());
-        assert_eq!(config.target.value, Target::Host);
-        assert_eq!(config.profile.value, Profile::Dev);
-        assert_eq!(config.opt_level.value, OptLevel::Zero);
-        assert!(config.source_maps.value);
-        assert!(!config.strip.value);
+        assert_eq!(config.target, Target::Host);
+        assert_eq!(
+            config.profile,
+            Sourced::new(Profile::Dev, Origin::FrameworkDefault)
+        );
+        let settings = config.settings;
+        assert_eq!(
+            settings.opt_level,
+            Sourced::new(OptLevel::Zero, Origin::FrameworkDefault)
+        );
+        assert_eq!(
+            settings.source_maps,
+            Sourced::new(true, Origin::FrameworkDefault)
+        );
+        assert_eq!(
+            settings.strip,
+            Sourced::new(false, Origin::FrameworkDefault)
+        );
         assert_eq!(config.dev_runtime(), DevRuntime::Present);
-        for entry in config.entries() {
-            assert_eq!(entry.origin, Origin::FrameworkDefault, "{}", entry.key);
-        }
     }
 
-    /// The whole ladder, with all four namable layers in play at once and each one
-    /// winning exactly where section 5 says it should.
+    /// The whole ladder, with every namable layer in play at once and each one
+    /// winning exactly where the documented order says it should.
     #[test]
-    fn all_four_layers_compete_and_the_documented_order_wins() {
+    fn every_layer_competes_and_the_documented_order_wins() {
         let manifest = "\
 [package]
 name = \"app\"
-
-[build]
-default_target = \"headless\"
 
 [profile.release]
 opt_level = 2
 source_maps = true
 strip = false
 ";
-        let flags = Overrides {
-            profile: Some(Profile::Release),
-            strip: Some(true),
-            ..Overrides::default()
-        };
-        let env = Env::from_pairs([(ENV_OPT_LEVEL, "1"), (ENV_SOURCE_MAPS, "false")]);
-        let config = resolved(manifest, &flags, &env);
+        let env = Env::from_pairs([
+            (ENV_PROFILE, "shipping"),
+            (ENV_OPT_LEVEL, "1"),
+            (ENV_SOURCE_MAPS, "false"),
+        ]);
+        let config = resolved(manifest, &release(), &env);
 
-        // A flag beats everything below it.
-        assert!(config.strip.value);
-        assert_eq!(config.strip.origin, Origin::Flag);
-        assert_eq!(config.profile.value, Profile::Release);
-        assert_eq!(config.profile.origin, Origin::Flag);
+        // A flag beats the environment.
+        assert_eq!(config.profile, Sourced::new(Profile::Release, Origin::Flag));
 
-        // The environment beats the manifest: the release table says `1` for
+        // The environment beats the profile table: the release table says `2` for
         // opt_level and `true` for source_maps, and the environment overrules both.
-        assert_eq!(config.opt_level.value, OptLevel::One);
-        assert_eq!(config.opt_level.origin, Origin::Env(ENV_OPT_LEVEL));
-        assert!(!config.source_maps.value);
-        assert_eq!(config.source_maps.origin, Origin::Env(ENV_SOURCE_MAPS));
+        let settings = config.settings;
+        assert_eq!(
+            settings.opt_level,
+            Sourced::new(OptLevel::One, Origin::Env(ENV_OPT_LEVEL))
+        );
+        assert_eq!(
+            settings.source_maps,
+            Sourced::new(false, Origin::Env(ENV_SOURCE_MAPS))
+        );
 
-        // The manifest beats the framework default, and points at its own line.
-        assert_eq!(config.target.value, Target::Headless);
-        match config.target.origin {
-            Origin::ManifestDefault { span } => assert_eq!(span.line, 5),
-            other => panic!("expected a manifest origin, got {other:?}"),
+        // The profile table beats the default, and points at its own line.
+        assert!(!settings.strip.value);
+        match settings.strip.origin {
+            Origin::ManifestProfile { profile, span } => {
+                assert_eq!((profile, span.line), (Profile::Release, 7));
+            }
+            other => panic!("expected the release table, got {other:?}"),
         }
+
+        // Without the flag the environment names the profile.
+        let config = resolved(manifest, &Overrides::default(), &env);
+        assert_eq!(
+            config.profile,
+            Sourced::new(Profile::Shipping, Origin::Env(ENV_PROFILE))
+        );
     }
 
-    /// The profile table is a distinct layer from the project defaults, and the
-    /// origin has to say *which* profile spoke — with two profiles configured, the
-    /// wrong answer is indistinguishable from the right one without it.
+    /// The profile table is chosen by the resolved profile, and the origin has to
+    /// say *which* profile spoke — with two profiles configured, the wrong answer
+    /// is indistinguishable from the right one without it.
     #[test]
     fn the_resolved_profile_selects_which_profile_table_applies() {
         let manifest = "\
@@ -601,21 +550,14 @@ opt_level = 1
 [profile.release]
 opt_level = 2
 ";
-        let dev = resolved(manifest, &Overrides::default(), &Env::empty());
+        let dev = resolved(manifest, &Overrides::default(), &Env::empty()).settings;
         assert_eq!(dev.opt_level.value, OptLevel::One);
         let Origin::ManifestProfile { profile, span } = dev.opt_level.origin else {
             panic!("expected a profile origin, got {:?}", dev.opt_level.origin);
         };
         assert_eq!((profile, span.line, span.column), (Profile::Dev, 5, 13));
 
-        let release = resolved(
-            manifest,
-            &Overrides {
-                profile: Some(Profile::Release),
-                ..Overrides::default()
-            },
-            &Env::empty(),
-        );
+        let release = resolved(manifest, &release(), &Env::empty()).settings;
         assert_eq!(release.opt_level.value, OptLevel::Two);
         match release.opt_level.origin {
             Origin::ManifestProfile { profile, span } => {
@@ -631,90 +573,50 @@ opt_level = 2
             manifest,
             &Overrides {
                 profile: Some(Profile::Shipping),
-                ..Overrides::default()
             },
             &Env::empty(),
+        )
+        .settings;
+        assert_eq!(
+            shipping.opt_level,
+            Sourced::new(OptLevel::Size, Origin::FrameworkDefault)
         );
-        assert_eq!(shipping.opt_level.value, OptLevel::Size);
-        assert_eq!(shipping.opt_level.origin, Origin::FrameworkDefault);
     }
 
-    /// Every origin variant must be reachable, and each one must print a form a
-    /// reader can act on. An origin that never occurs is a lie in the type; an
-    /// origin that prints without its location is useless in a large manifest.
+    /// Each origin prints a form a reader can act on: an origin that prints
+    /// without its location is useless in a large manifest.
     #[test]
-    fn every_origin_is_reachable_and_prints_its_location() {
-        let manifest = "\
-[package]
-name = \"app\"
-
-[build]
-default_target = \"headless\"
-
-[profile.dev]
-strip = true
-";
-        let config = resolved(
-            manifest,
-            &Overrides {
-                opt_level: Some(OptLevel::Three),
-                ..Overrides::default()
-            },
-            &Env::from_pairs([(ENV_SOURCE_MAPS, "off")]),
-        );
-
-        let by_key: BTreeMap<&str, Entry> =
-            config.entries().into_iter().map(|e| (e.key, e)).collect();
-        assert_eq!(by_key["opt_level"].origin.layer(), "flag");
-        assert_eq!(by_key["opt_level"].origin.to_string(), "flag");
-        assert_eq!(by_key["source_maps"].origin.layer(), "env");
-        assert_eq!(
-            by_key["source_maps"].origin.to_string(),
-            "env VISO_SOURCE_MAPS"
-        );
-        assert_eq!(by_key["strip"].origin.layer(), "profile");
-        assert_eq!(
-            by_key["strip"].origin.to_string(),
-            "Viso.toml [profile.dev]:8:9"
-        );
-        assert_eq!(by_key["target"].origin.layer(), "manifest");
-        assert_eq!(by_key["target"].origin.to_string(), "Viso.toml:5:18");
-        assert_eq!(by_key["profile"].origin.layer(), "default");
-        assert_eq!(by_key["profile"].origin.to_string(), "default");
-
-        // Ranks exist only to state the documented order in one place; assert they
-        // match the order the resolver actually implements above.
-        let ranks: Vec<u8> = ["opt_level", "source_maps", "strip", "target", "profile"]
-            .iter()
-            .map(|k| by_key[*k].origin.rank())
-            .collect();
-        assert_eq!(ranks, [0, 1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn config_show_and_get_agree_and_cover_every_key() {
-        let config = resolved(MINIMAL, &Overrides::default(), &Env::empty());
-        let keys = config.keys();
-        assert_eq!(
-            keys,
-            [
-                "target",
+    fn every_origin_prints_its_location() {
+        let span = Span {
+            start: 0,
+            end: 1,
+            line: 8,
+            column: 9,
+        };
+        let printed = [
+            (Origin::Flag, "flag", "flag"),
+            (Origin::Env(ENV_SOURCE_MAPS), "env", "env VISO_SOURCE_MAPS"),
+            (
+                Origin::ManifestProfile {
+                    profile: Profile::Dev,
+                    span,
+                },
                 "profile",
-                "opt_level",
-                "source_maps",
-                "strip",
-                "dev_runtime",
-                "artifact"
-            ]
-        );
-        for key in keys {
-            assert_eq!(config.get(key).unwrap().key, key);
+                "Viso.toml [profile.dev]:8:9",
+            ),
+            (
+                Origin::ManifestDefault { span },
+                "manifest",
+                "Viso.toml:8:9",
+            ),
+            (Origin::FrameworkDefault, "default", "default"),
+        ];
+        for (rank, (origin, layer, text)) in printed.into_iter().enumerate() {
+            assert_eq!(origin.layer(), layer);
+            assert_eq!(origin.to_string(), text);
+            // Ranks exist only to state the documented order in one place.
+            assert_eq!(usize::from(origin.rank()), rank);
         }
-        assert!(config.get("nope").is_none());
-        assert_eq!(
-            config.get("target").unwrap().to_string(),
-            "target = host (default)"
-        );
     }
 
     /// A bad `VISO_*` value is an error, not a skipped layer: the user set it
@@ -722,24 +624,36 @@ strip = true
     /// something they did not ask for.
     #[test]
     fn an_unparseable_environment_variable_is_an_error_that_names_the_variable() {
-        let (_s, project) = project("[package]\nname = \"app\"\n");
-        let env = Env::from_pairs([(ENV_TARGET, "playstation")]);
-        let diags =
-            resolve(&project, ArtifactKind::Build, &Overrides::default(), &env).unwrap_err();
+        let (_s, project) = project(MINIMAL);
+        let env = Env::from_pairs([(ENV_PROFILE, "fast")]);
+        let diags = resolve(
+            &project,
+            Target::Host,
+            ArtifactKind::Build,
+            &Overrides::default(),
+            &env,
+        )
+        .unwrap_err();
         let diag = diags
             .iter()
             .find(|d| d.code == ConfigCode::EnvInvalid)
             .expect("expected an env diagnostic");
-        assert!(diag.message.contains("VISO_TARGET"));
-        assert!(diag.message.contains("playstation"));
-        assert!(diag.notes.iter().any(|n| n.contains("unset VISO_TARGET")));
+        assert!(diag.message.contains("VISO_PROFILE"));
+        assert!(diag.message.contains("fast"));
+        assert!(diag.notes.iter().any(|n| n.contains("unset VISO_PROFILE")));
         // The valid values come forward from the inner parse error.
-        assert!(diag.notes.iter().any(|n| n.contains("headless")));
+        assert!(diag.notes.iter().any(|n| n.contains("shipping")));
 
-        for var in [ENV_PROFILE, ENV_OPT_LEVEL, ENV_SOURCE_MAPS, ENV_STRIP] {
+        for var in [ENV_OPT_LEVEL, ENV_SOURCE_MAPS, ENV_STRIP] {
             let env = Env::from_pairs([(var, "nonsense")]);
-            let diags =
-                resolve(&project, ArtifactKind::Build, &Overrides::default(), &env).unwrap_err();
+            let diags = resolve(
+                &project,
+                Target::Host,
+                ArtifactKind::Build,
+                &Overrides::default(),
+                &env,
+            )
+            .unwrap_err();
             assert!(
                 diags.iter().any(|d| d.code == ConfigCode::EnvInvalid),
                 "{var} was accepted"
@@ -749,10 +663,10 @@ strip = true
 
     #[test]
     fn an_empty_environment_variable_counts_as_unset() {
-        let env = Env::from_pairs([(ENV_TARGET, ""), (ENV_PROFILE, "   ")]);
+        let env = Env::from_pairs([(ENV_PROFILE, "   "), (ENV_STRIP, "")]);
         let config = resolved(MINIMAL, &Overrides::default(), &env);
-        assert_eq!(config.target.origin, Origin::FrameworkDefault);
         assert_eq!(config.profile.origin, Origin::FrameworkDefault);
+        assert_eq!(config.settings.strip.origin, Origin::FrameworkDefault);
     }
 
     #[test]
@@ -766,15 +680,13 @@ strip = true
         assert!(parse_bool("maybe").is_err());
     }
 
-    /// An unavailable target fails with the environment exit code *and* names the
-    /// layer that chose it — without that, a `Viso.toml` default and a stale
-    /// environment variable produce the same unhelpful message.
+    /// An unavailable target fails with the environment exit code.
     #[test]
-    fn an_unavailable_target_says_which_layer_selected_it() {
-        let (_s, project) =
-            project("[package]\nname = \"app\"\n\n[build]\ndefault_target = \"web-dom\"\n");
+    fn an_unavailable_target_is_an_environment_failure() {
+        let (_s, project) = project(MINIMAL);
         let diags = resolve(
             &project,
+            Target::WebDom,
             ArtifactKind::Build,
             &Overrides::default(),
             &Env::empty(),
@@ -785,38 +697,17 @@ strip = true
             .find(|d| d.code == ConfigCode::TargetUnavailable)
             .expect("expected a target diagnostic");
         assert_eq!(diag.code.exit_code(), 3);
-        assert!(
-            diag.notes.iter().any(|n| n.contains("Viso.toml:5")),
-            "{:?}",
-            diag.notes
-        );
-
-        // The same target from a flag names the flag instead.
-        let diags = resolve(
-            &project,
-            ArtifactKind::Build,
-            &Overrides {
-                target: Some(Target::WebHybrid),
-                ..Overrides::default()
-            },
-            &Env::empty(),
-        )
-        .unwrap_err();
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.notes.iter().any(|n| n == "selected by: flag")),
-            "{diags:?}"
-        );
     }
 
-    /// Manifest warnings survive resolution. Dropping them here would mean a typo'd
-    /// key is reported by `viso check` and silently ignored by `viso build`.
+    /// Manifest warnings survive resolution. Dropping them here would mean a
+    /// warning is reported by `viso check` and silently ignored by `viso build`.
     #[test]
     fn manifest_warnings_are_carried_through_resolution() {
-        let (_s, project) = project("[package]\nname = \"app\"\nnaem = \"typo\"\n");
+        let (_s, project) =
+            project("[package]\nname = \"app\"\n\n[profile.dev]\nhot_reload = true\n");
         let resolved = resolve(
             &project,
+            Target::Host,
             ArtifactKind::Build,
             &Overrides::default(),
             &Env::empty(),
@@ -831,14 +722,6 @@ strip = true
     /// they must share a `BuildId` and reuse each other's cache.
     #[test]
     fn the_config_hash_tracks_values_not_provenance() {
-        let from_flag = resolved(
-            MINIMAL,
-            &Overrides {
-                opt_level: Some(OptLevel::Two),
-                ..Overrides::default()
-            },
-            &Env::empty(),
-        );
         let from_env = resolved(
             MINIMAL,
             &Overrides::default(),
@@ -849,75 +732,65 @@ strip = true
             &Overrides::default(),
             &Env::empty(),
         );
-
-        assert_ne!(from_flag.opt_level.origin, from_env.opt_level.origin);
-        assert_eq!(from_flag.hash(), from_env.hash());
-        assert_eq!(from_flag.hash(), from_manifest.hash());
+        assert_ne!(
+            from_env.settings.opt_level.origin,
+            from_manifest.settings.opt_level.origin
+        );
+        assert_eq!(from_env.hash(), from_manifest.hash());
 
         // A different value is a different hash.
         let other = resolved(MINIMAL, &Overrides::default(), &Env::empty());
-        assert_ne!(from_flag.hash(), other.hash());
+        assert_ne!(from_env.hash(), other.hash());
     }
 
     #[test]
     fn every_config_field_moves_the_hash() {
         let base = resolved(MINIMAL, &Overrides::default(), &Env::empty());
-        let variants = [
-            Overrides {
-                target: Some(Target::Headless),
-                ..Overrides::default()
-            },
-            Overrides {
-                profile: Some(Profile::Release),
-                ..Overrides::default()
-            },
-            Overrides {
-                opt_level: Some(OptLevel::Three),
-                ..Overrides::default()
-            },
-            Overrides {
-                source_maps: Some(false),
-                ..Overrides::default()
-            },
-            Overrides {
-                strip: Some(true),
-                ..Overrides::default()
-            },
-        ];
-        for flags in variants {
-            let variant = resolved(MINIMAL, &flags, &Env::empty());
-            assert_ne!(base.hash(), variant.hash(), "{flags:?}");
-        }
-
-        // The artifact kind is part of the identity too: a package is not a build.
         let (_s, project) = project(MINIMAL);
-        let package = resolve(
-            &project,
-            ArtifactKind::Package,
-            &Overrides::default(),
-            &Env::empty(),
-        )
-        .unwrap()
-        .config;
-        assert_ne!(base.hash(), package.hash());
+        let with = |target: Target, artifact: ArtifactKind, flags: &Overrides, env: &Env| {
+            resolve(&project, target, artifact, flags, env)
+                .unwrap()
+                .config
+        };
+        let build = ArtifactKind::Build;
+        let none = Overrides::default();
+        let variants = [
+            with(Target::Headless, build, &none, &Env::empty()),
+            with(Target::Host, build, &release(), &Env::empty()),
+            with(
+                Target::Host,
+                build,
+                &none,
+                &Env::from_pairs([(ENV_OPT_LEVEL, "3")]),
+            ),
+            with(
+                Target::Host,
+                build,
+                &none,
+                &Env::from_pairs([(ENV_SOURCE_MAPS, "0")]),
+            ),
+            with(
+                Target::Host,
+                build,
+                &none,
+                &Env::from_pairs([(ENV_STRIP, "1")]),
+            ),
+            // The artifact kind is part of the identity too: a package is not a
+            // build.
+            with(Target::Host, ArtifactKind::Package, &none, &Env::empty()),
+        ];
+        for variant in variants {
+            assert_ne!(base.hash(), variant.hash(), "{variant:?}");
+        }
     }
 
-    /// Section 38.2 again, from the resolved side: no combination of flags,
-    /// environment and manifest can put a Dev Runtime in a release build, because
-    /// the profile is the only input.
+    /// No combination of flags, environment and manifest can put a Dev Runtime in
+    /// a release build, because the profile is the only input.
     #[test]
     fn no_layer_can_give_a_release_build_a_dev_runtime() {
         let manifest = "[package]\nname = \"app\"\n\n[profile.release]\nsource_maps = true\n";
         for env in [Env::empty(), Env::from_pairs([(ENV_SOURCE_MAPS, "1")])] {
-            let config = resolved(
-                manifest,
-                &Overrides {
-                    profile: Some(Profile::Release),
-                    source_maps: Some(true),
-                    ..Overrides::default()
-                },
-                &env,
-            );
+            let config = resolved(manifest, &release(), &env);
             assert_eq!(config.dev_runtime(), DevRuntime::Absent);
         }
     }
@@ -928,14 +801,7 @@ strip = true
         let toolchain = Toolchain::new("rustc 1.98.1", Toolchain::current_host());
 
         let dev = resolved(MINIMAL, &Overrides::default(), &Env::empty());
-        let release = resolved(
-            MINIMAL,
-            &Overrides {
-                profile: Some(Profile::Release),
-                ..Overrides::default()
-            },
-            &Env::empty(),
-        );
+        let release = resolved(MINIMAL, &release(), &Env::empty());
         assert_ne!(
             dev.build_id(fingerprint, &toolchain),
             release.build_id(fingerprint, &toolchain)

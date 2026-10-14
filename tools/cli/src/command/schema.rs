@@ -1,14 +1,13 @@
-//! `viso schema` (`Viso_CLI.md` section 18): the typed schema of a widget, native
-//! library, function or handle type, or a search over every symbol and member.
-//! The schema model and its section 139 JSON object come from `viso-dsl`; this
-//! command only picks the form.
+//! `viso schema`: the typed schema of a widget, native library, function or
+//! handle type, or a search over every symbol and member. The schema model and
+//! its JSON object come from `viso-dsl`; this command only picks the form.
 
 use std::fmt::Write as _;
 
 use viso_dsl::schema::{self, FunctionSchema, Natives, Schema, SchemaKind, SearchHit};
 
-use super::{DIAGNOSTICS, SUCCESS};
 use crate::args::SchemaArgs;
+use crate::error::{DIAGNOSTICS, SUCCESS};
 use crate::output::Output;
 
 pub fn run(args: &SchemaArgs, out: &mut Output) -> u8 {
@@ -60,7 +59,7 @@ fn hits_text(term: &str, hits: &[SearchHit]) -> String {
     table(&rows, "")
 }
 
-/// The human form of a schema, in the section 18 layout.
+/// The human form of a schema.
 fn schema_text(schema: &Schema) -> String {
     let mut text = schema.symbol.clone();
     if let Some(member) = &schema.member {

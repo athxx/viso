@@ -1,4 +1,4 @@
-//! The web dev server (`Viso_CLI.md`, `Viso_Hot_Reload.md`): it serves the dev build's web
+//! The web dev server: it serves the dev build's web
 //! bundle on the loopback interface — on the network too only when asked
 //! ([`Listen`]) — and carries the page's dev channel as a WebSocket at
 //! [`WEB_DEV_PATH`] of the address the page was loaded from.
@@ -43,7 +43,7 @@ use viso_view::dev::wire::{
 use crate::dev::link::{self, Deliver, DevStream, Expect};
 
 /// The port tried first, and how many after it.
-pub(crate) const DEFAULT_PORT: u16 = 8000;
+pub(crate) const DEFAULT_PORT: u16 = viso_project::settings::defaults::SERVE_PORT;
 const PORT_TRIES: u16 = 100;
 
 /// How long a request has to arrive whole, and the most a request head may

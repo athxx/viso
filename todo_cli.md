@@ -80,50 +80,71 @@ one stable exit code and one stable diagnostic code.
 
 ### C0.2 — Parser and globals
 
-- [ ] The full top-level tree of §1 registered (unimplemented commands absent, not
-      stubbed — a command lands with its section), grouped in help as PROJECT /
-      MOBILE / DEVELOP / LANGUAGE / TEST & DEBUG / DELIVERY / MAINTENANCE (§52).
-- [ ] Remaining globals (§6): `--verbose`/`-v` (repeatable: stage timings, external
-      commands, cache decisions; §6.3), `--color auto|always|never` (`NO_COLOR`,
-      non-TTY → never), `--offline`, `--locked`, `--jobs <N>`, `--profile <name>`,
-      `--target-dir <path>`; `--quiet` and `--verbose` conflict (exit 2).
-- [ ] `--profile` and `--target-dir` feed `config::resolve` as the flag layer;
-      `--offline`/`--locked` reach every network and lockfile consumer (cargo
-      `--offline`/`--locked`, SDK downloads, template fetches).
-- [ ] Positional target vs `--target` exactly as §3.5: positional for
-      run/build/serve/package/check/doctor/profile, `--target` for
-      test/snapshot/inspect/studio; the wrong form is a usage error with the right
-      spelling in its note.
-- [ ] Aliases only `-h -V -v -q` (§68); a parser test asserts no other short flag or
-      command alias exists.
-- [ ] `context.rs`: one `Context` built once per invocation (globals, resolved
-      project or its absence, layout, output, interrupt handle, env) and passed to
-      every command; commands never re-read `std::env` or re-discover the project.
-- [ ] `error.rs`: one `CliError { code, exit, message, notes, suggested }` that every
-      command returns; the exit-code table of §7 lives in one `match` with a test per
-      row; `summary.payload.exit_code` is the process exit code by construction.
-- [ ] Exit codes 6 (package/signing/export) and 7 (internal protocol/tooling service);
-      a CLI panic is caught at `main`, reported as `INTERNAL_PANIC` (exit 7) with the
-      panic message and a "please report" note, and under `--json` still ends with a
-      `summary`.
-- [ ] Split the files §39 lists: `run.rs` → `run.rs` + `serve.rs`; `device.rs` →
-      `android.rs` + `ios.rs`; device and deploy helpers stay in `device/`, `deploy/`.
-- [ ] Strip section/ADR numbers and version notes from existing CLI and
-      `viso-project` comments as part of the split (rule above).
+- [x] Config model aligned with §3.5/§5/§38: the target is the command's positional
+      only (no `VISO_TARGET`, no `[build] default_target`), the flag layer is
+      `--profile`, `[target.android] backend` removed (backends are fixed per
+      target), an unknown key is an error (C0004, exit 1).
+- [ ] The full top-level tree of §1 grouped in help as PROJECT / MOBILE / DEVELOP /
+      LANGUAGE / TEST & DEBUG / DELIVERY / MAINTENANCE (§52) — moved to C0.5; each
+      command still lands with its own section, never as a stub.
+- [x] Remaining globals (§6): `--verbose`/`-v` (resolved config, the Cargo command
+      line; `log{level:"debug"}` under `--json`), `--color auto|always|never`
+      (`NO_COLOR`, `TERM=dumb`, non-terminal stderr → plain; colors human
+      diagnostics and is passed to Cargo), `--offline`, `--locked`, `--jobs <N>`
+      (N ≥ 1), `--profile dev|release|shipping`, `--target-dir <path>`; `--quiet`
+      with `--verbose` is exit 2.
+- [x] `--profile` is the flag layer of `config::resolve`; a dev-only command
+      (`run`, `serve`) refuses another profile (`CLI_USAGE`); `--target-dir` moves
+      `Layout`'s `target/` (relative to the current directory) and Cargo's
+      `CARGO_TARGET_DIR`; `--offline`/`--locked` reach `cargo metadata` and
+      `cargo build`, `--jobs`/`--color` reach `cargo build`. SDK downloads and
+      templates take `--offline` when they land (C1.2, C3.2).
+- [x] Positional target vs `--target` (§3.5): `--target` on a positional-target
+      command is `CLI_USAGE` with the positional spelling in its note
+      (`args::takes_positional_target`; each such command joins the list as it
+      lands).
+- [x] Aliases only `-h -V -v -q` (§68): `game record -o` became `--output`; a parser
+      test walks the command tree for short options and aliases.
+- [x] `context.rs`: one `Context` per invocation (globals, the `VISO_*`
+      environment captured once); `project`, `load`, `load_dev`, `layout`,
+      `cargo_args` give every command the same project, configuration, paths and
+      Cargo options, diagnostics reported once in their file.
+- [x] `error.rs`: every exit code and every CLI diagnostic code declared once, each
+      code bound to its exit (`Code { name, exit, summary }`, `ALL`, `by_name`);
+      `Output::failure(code, …)` returns the exit, so a failure cannot take another;
+      a code under another service's name (`E*`, runtime faults) goes through
+      `Output::error`. Tests: one exit class per prefix, unique names.
+- [x] Exit codes 6 (`PACKAGE`) and 7 (`INTERNAL`); a panic in a command is caught,
+      reported as `INTERNAL_PANIC` (exit 7) with its message and a "please report"
+      note, and the stream still ends with its `summary`. `GAME_ANSWER_INVALID`
+      (an undecodable answer) is a protocol violation, exit 7.
+- [x] `run.rs` → `run.rs` + `serve.rs`. `command/device.rs` stays the shared profile
+      manager; `android.rs` and `ios.rs` arrive with `list/use/doctor` (C3.2, C3.4).
+- [x] Section, ADR, AGENTS and phase references stripped from CLI, `viso-project`
+      and test comments.
 
 ### C0.3 — `viso config` (§10)
 
-- [ ] `config show`: every resolved key, value and origin (`flag`, `env VISO_PROFILE`,
-      `Viso.toml:12`, `profile.release (Viso.toml:20)`, `default`), human table and
-      JSON `result{entries:[{key,value,origin,span?}]}`; `--profile`/`--target`
-      change what is resolved.
-- [ ] `config get <key>`: the value alone on stdout (scriptable), unknown key C0004
-      with did-you-mean.
-- [ ] `config path`: manifest, project root, target dir, viso dir, dist, local config
-      (`.viso/local.toml`), user config (`~/.viso/…`, `$VISO_HOME`).
-- [ ] `config validate`: full manifest validation (all C diagnostics at once, not the
-      first), exit 1 on any error.
-- [ ] No write subcommand (§10.5); a test asserts `config set` is a usage error.
+- [x] `viso-project::settings`: every key of the schema in a fixed order (`KEYS`) —
+      the build keys through every layer, `profile.<name>.*` as a build with that
+      profile gets them, every other key the manifest's value or the framework's
+      default (`settings::defaults`, checked against the DSL's and the packager's own
+      constants), `Value::Unset` where neither exists.
+- [x] `config show`: aligned human table (key, value, origin with its place:
+      `env VISO_OPT_LEVEL`, `Viso.toml [profile.release]:5:9`, `Viso.toml:2:8`);
+      JSON `result{key: {value, origin, from?}}` with typed values; `--profile`
+      chooses the current profile.
+- [x] `config get <key>`: `key = value (origin)`, JSON `{key, value, origin, from?}`;
+      an unknown key is `CLI_USAGE` with the nearest key.
+- [x] `config path`: the `Viso.toml` in use, as §10.3 defines it.
+- [x] `config validate`: every manifest and environment problem at once (C0001–C0012),
+      exit of the first error, `result{path}` when valid. Manifest checks added:
+      bundle ID, version, team ID, minimum OS, export directories, package manager,
+      web-only `web.default_target` (C0007 at the value).
+- [x] No write subcommand (§10.5); a parser test asserts `config set` is a usage error.
+- [x] Integration test (`tests/config.rs`): flag, environment, profile table and
+      manifest in play at once, each key's origin; `get` of an unknown key; `path`
+      from a nested directory; `validate` with manifest and environment errors.
 
 ### C0.4 — `viso completion` (§42.1)
 
@@ -134,8 +155,11 @@ one stable exit code and one stable diagnostic code.
 
 ### C0.5 — Help and errors (§52, §53)
 
-- [ ] Help style: one-line about, usage line, grouped options, two or three examples
-      per command (`after_help`), no color unless `--color always`.
+- [ ] The top-level command list grouped as PROJECT / MOBILE / DEVELOP / LANGUAGE /
+      TEST & DEBUG / DELIVERY / MAINTENANCE (§1, §52), generated from the parser so a
+      new command cannot be left out of its group.
+- [ ] Help style (§52): purpose, usage, examples, arguments, options, notes, in that
+      order; two or three examples per command.
 - [ ] Error format of §53 everywhere: `error[CODE]: message`, location, `= note:`,
       `= help: run <command>`; the suggested command is also in the JSON diagnostic
       (`suggested_command`).
@@ -144,8 +168,8 @@ one stable exit code and one stable diagnostic code.
 
 - [ ] `viso --help`, `viso --version` (version, git hash, compiler schema version,
       protocol version) and `viso config show` pass parser golden tests (C7.6).
-- [ ] `viso config show --json` in a project with flag, env, profile and manifest
-      layers in play reports the winning layer for each key (integration test).
+- [x] `viso config show --json` in a project with flag, env, profile and manifest
+      layers in play reports the winning layer for each key (`tests/config.rs`).
 
 ---
 
@@ -225,8 +249,9 @@ gap, and CI can run all of it headless.
       and target, computes the `BuildId`, runs cargo with the profile's flags, packs
       for the target (`.app`, APK, web bundle) through `viso-package`, writes into
       `target/viso/build/<build-id>/`; `run` keeps its dev features on top.
-- [ ] Build lock `build-<target>` (non-blocking; held lock is exit 3 with owner pid and
-      age; stale lock by dead pid or age is taken over with a warning).
+- [ ] Build lock `build-<target>` (§44: non-blocking; a held lock is exit 3 with
+      holder pid, age and path; stale by age only, removed with a warning); `run`
+      and `build` of one target share it.
 - [ ] Artifact summary (§14.4): kind, path, size, profile, target, build id, stage
       timings; `artifact` event (§36.2) for `build` and for `run` (`run` result also
       reports `artifact` and `device`).
@@ -272,9 +297,11 @@ gap, and CI can run all of it headless.
 
 ### C1.10 — `viso clean` (§45.1)
 
-- [ ] `clean` removes `target/viso/` contents except held locks, `--dist` also
-      `dist/`, `--all` also cargo's target dir; refuses while a lock is held (exit 3)
-      unless `--force`; prints freed size; `--dry-run` lists what would go.
+- [ ] `clean` removes `target/viso/` (build, cache, dev, generated, traces, locks),
+      never `dist/` or `~/.viso/`; refuses with exit 3 while a lock that is not stale
+      is held; JSON `result{removed: [path], freed_bytes}`; human output prints the
+      freed size. `Layout::cleanable` follows §45.1 (it leaves `dev/` and `locks/`
+      today).
 - [ ] Never deletes outside the layout's `cleanable()` set (test with a symlink
       pointing outside).
 

@@ -1,6 +1,5 @@
 //! The record of one candidate revision of a `.vs` file, which `viso run`
-//! reports as a `dev` event (`Viso_CLI.md` §36.4; `Viso_Hot_Reload.md` §37,
-//! §51): built on the host from its own compile and the runtime's ACK or
+//! reports as a `dev` event: built on the host from its own compile and the runtime's ACK or
 //! NACK, the diagnostics reported before it from the source the host
 //! compiled.
 
@@ -188,8 +187,8 @@ pub struct RuntimeStatus<'a> {
     pub patch: Option<&'a PatchStatus>,
 }
 
-/// The §51 stage a candidate rejected with `diagnostics` failed at: that of
-/// its first error, by the code ranges of Viso_DSL_1.0.md appendix C.
+/// The stage a candidate rejected with `diagnostics` failed at: that of
+/// its first error, by the language's code ranges.
 pub fn rejection_stage(diagnostics: &[Diagnostic]) -> Stage {
     let Some(code) = diagnostics
         .iter()

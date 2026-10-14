@@ -1,5 +1,4 @@
-//! `viso test` (`Viso_CLI.md` section 22). The `game` domain (section 22.3)
-//! runs each scenario under `tests/game/` headless on the package's systems:
+//! `viso test`. The `game` domain runs each scenario under `tests/game/` headless on the package's systems:
 //! its input tape, or the one `--tape` names, for `--frames` frames on a world
 //! seeded with the tape's seed or `--seed`, each tick's `@probe` states traced
 //! and checked against the scenario's expectations.
@@ -13,10 +12,9 @@ use viso_dsl::{Diagnostic, TextRange, TextSize};
 use viso_ende::JsonWriter;
 
 use super::check::{self, Checked};
-use super::{
-    DIAGNOSTICS, ENV_TEST_INPUT, ENVIRONMENT, SUCCESS, TEST_EXPECTATION, TEST_INPUT_INVALID,
-};
-use crate::args::{Global, TestArgs, TestDomain};
+use crate::args::{TestArgs, TestDomain};
+use crate::context::Context;
+use crate::error::{DIAGNOSTICS, ENV_TEST_INPUT, SUCCESS, TEST_EXPECTATION, TEST_INPUT_INVALID};
 use crate::output::{Output, Source, Test};
 
 /// The directory below the project root that holds game scenarios.
@@ -28,8 +26,8 @@ const TAPE: &str = "tape";
 /// The faults of one run reported one by one; the rest are counted.
 const FAULTS_SHOWN: usize = 8;
 
-pub fn run(global: &Global, args: &TestArgs, out: &mut Output) -> u8 {
-    let checked = match check::load(global, out) {
+pub fn run(ctx: &Context<'_>, args: &TestArgs, out: &mut Output) -> u8 {
+    let checked = match check::load(ctx, out) {
         Ok(checked) => checked,
         Err(code) => return code,
     };
@@ -53,8 +51,7 @@ fn game(checked: &Checked, args: &TestArgs, out: &mut Output) -> u8 {
     let planned = match plan(root, args) {
         Ok(planned) => planned,
         Err(message) => {
-            out.failure(ENV_TEST_INPUT, &message, &[]);
-            return ENVIRONMENT;
+            return out.failure(ENV_TEST_INPUT, &message, &[]);
         }
     };
     let tick_rate = check::profile(&checked.project).tick_rate;
@@ -139,8 +136,7 @@ fn scenario(
         Some(path) => match read(path) {
             Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
             Err(message) => {
-                out.failure(ENV_TEST_INPUT, &message, &[]);
-                return Err(ENVIRONMENT);
+                return Err(out.failure(ENV_TEST_INPUT, &message, &[]));
             }
         },
         None => None,
@@ -165,8 +161,7 @@ fn scenario(
         let bytes = match read(path) {
             Ok(bytes) => bytes,
             Err(message) => {
-                out.failure(ENV_TEST_INPUT, &message, &[]);
-                return Err(ENVIRONMENT);
+                return Err(out.failure(ENV_TEST_INPUT, &message, &[]));
             }
         };
         match read_tape(&bytes, DEFAULT_SEED, tick_rate) {
@@ -202,7 +197,7 @@ fn scenario(
         Err(error) => {
             let message = error.to_string();
             match &error {
-                RunError::Start(fault) => out.failure(fault.code, &message, &[]),
+                RunError::Start(fault) => out.error(fault.code, &message, &[]),
                 RunError::UnknownProbe(e) => {
                     let at = text.as_deref().map(|t| line_range(t, e.line));
                     invalid(out, source.as_ref(), at, &message);
@@ -224,11 +219,11 @@ fn scenario(
             "system `{system}` faulted at tick {}: {}",
             fault.tick, fault.fault.message
         );
-        out.failure(fault.code, &message, &[]);
+        out.error(fault.code, &message, &[]);
     }
     if run.faults.len() > FAULTS_SHOWN {
         let message = format!("{} more faults", run.faults.len() - FAULTS_SHOWN);
-        out.failure(run.faults[FAULTS_SHOWN].code, &message, &[]);
+        out.error(run.faults[FAULTS_SHOWN].code, &message, &[]);
     }
     let mut first = None;
     for failure in &run.failures {
@@ -251,7 +246,7 @@ fn scenario(
         out.source(
             source.as_ref(),
             &[],
-            &Diagnostic::error(TEST_EXPECTATION, at, message.clone()),
+            &Diagnostic::error(TEST_EXPECTATION.name, at, message.clone()),
         );
         first.get_or_insert(message);
     }
@@ -361,9 +356,11 @@ fn invalid(out: &mut Output, source: Option<&Source<'_>>, at: Option<TextRange>,
         (Some(source), Some(at)) => out.source(
             Some(source),
             &[],
-            &Diagnostic::error(TEST_INPUT_INVALID, at, message),
+            &Diagnostic::error(TEST_INPUT_INVALID.name, at, message),
         ),
-        _ => out.failure(TEST_INPUT_INVALID, message, &[]),
+        _ => {
+            out.failure(TEST_INPUT_INVALID, message, &[]);
+        }
     }
 }
 

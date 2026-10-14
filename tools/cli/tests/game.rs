@@ -103,7 +103,7 @@ fn without_a_session_there_is_nothing_to_ask() {
     s.lock(None);
     let out = viso(
         &s.0,
-        &["game", "record", "main", "-o", "run.tape", "--json"],
+        &["game", "record", "main", "--output", "run.tape", "--json"],
     );
     assert_eq!(code(&out), 3);
     assert!(
@@ -157,7 +157,7 @@ fn a_recording_without_patches_is_written_as_text() {
             "game",
             "record",
             "main",
-            "-o",
+            "--output",
             "runs/jump.tape",
             "--ticks",
             "3",

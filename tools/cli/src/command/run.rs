@@ -1,4 +1,4 @@
-//! `viso run` (`Viso_CLI.md`) on the desktop host, an iOS Simulator, an
+//! `viso run` on the desktop host, an iOS Simulator, an
 //! Android Emulator or a browser page: take the dev session's lock, read the
 //! Rust scope from Cargo, start the watcher, build the project's Cargo
 //! package as a dev artifact (packaged for the device, which boots while it
@@ -17,11 +17,11 @@
 //! The app connects back to a listener bound to `127.0.0.1` on a free port and
 //! must open with a hello carrying the token it was launched with; a connection
 //! that does not is dropped. Under `--json` the app's stdout and stderr, and the
-//! build's stderr, reach the stream only as `log` events (section 37).
+//! build's stderr, reach the stream only as `log` events.
 //!
 //! A second loopback listener, the control endpoint, is named with its own
 //! token in the session lock: `viso game peek` and `viso game record` reach
-//! the running app through it (section 22.3).
+//! the running app through it.
 
 use std::collections::hash_map::RandomState;
 use std::ffi::OsString;
@@ -37,20 +37,14 @@ use std::time::{Duration, Instant};
 
 use viso_package::android::Sdk;
 use viso_project::{
-    ArtifactKind, DeviceProfile, Layout, LockGuard, LockKind, Overrides, Platform, Profile,
-    ProjectFingerprint, Target, Toolchain,
+    DeviceProfile, LockGuard, LockKind, Platform, ProjectFingerprint, Target, Toolchain,
 };
 use viso_view::dev::wire::{
     self, DevSessionId, ProjectFingerprint as WireProject, SchemaFingerprint,
 };
 
-use super::check::{config_in_its_file, failure_code};
-use super::{
-    BUILD, BUILD_FAILED, CLI_USAGE, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_CURRENT_DIR,
-    ENV_DEV_CHANNEL, ENV_NO_EXECUTABLE, ENVIRONMENT, INTERRUPTED, RUN_APP_FAILED, RUNTIME, SUCCESS,
-    USAGE,
-};
-use crate::args::{Global, RunArgs, RunTarget, ServeArgs, WebTarget};
+use crate::args::{RunArgs, RunTarget};
+use crate::context::{Context, Loaded, in_its_file};
 use crate::deploy::{self, App, Deploy, Ended, Lines, Vars, web};
 use crate::dev::build::{BuildCommand, BuildEvent, BuildFailure, RustBuild};
 use crate::dev::cargo::RustScope;
@@ -58,7 +52,11 @@ use crate::dev::{
     self, Control, ControlCall, ControlDeliver, Deliver, DevSession, Expect, LinkEvent, WatchScope,
     build_failure,
 };
-use crate::device::{self as devices, ENV_DEVICE, emulator, simulator};
+use crate::device::{self as devices, emulator, simulator};
+use crate::error::{
+    BUILD_FAILED, CLI_USAGE, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_DEV_CHANNEL, ENV_DEVICE,
+    ENV_NO_EXECUTABLE, INTERRUPTED, RUN_APP_FAILED, SUCCESS,
+};
 use crate::interrupt;
 use crate::output::Output;
 
@@ -155,88 +153,14 @@ fn misplaced(args: &RunArgs, platform: Option<Platform>, target: Target) -> Opti
     None
 }
 
-pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
-    session(global, args, web::Listen::loopback(), None, out)
-}
-
-/// `viso serve`: the session `viso run` holds with a web target, its page
-/// served where `--host`, `--lan` and `--port` ask, and opened only with
-/// `--open`.
-pub fn serve(global: &Global, args: &ServeArgs, out: &mut Output) -> u8 {
-    let listen = match web::Listen::new(args.host, args.lan, args.port) {
-        Ok(listen) => listen,
-        Err(web::ListenError::Usage(why)) => {
-            out.failure(CLI_USAGE, &why, &[]);
-            return USAGE;
-        }
-        Err(web::ListenError::Environment(why)) => {
-            out.failure(ENV_DEV_CHANNEL, &why, &[]);
-            return ENVIRONMENT;
-        }
-    };
-    let target = match args.target {
-        Some(target) => target,
-        None => match default_web_target(global, out) {
-            Ok(target) => target,
-            Err(code) => return code,
-        },
-    };
-    let run = RunArgs {
-        target: Some(match target {
-            WebTarget::Gpu => RunTarget::WebGpu,
-            WebTarget::Dom => RunTarget::WebDom,
-            WebTarget::Hybrid => RunTarget::WebHybrid,
-        }),
-        device: None,
-        browser: None,
-        no_hot_reload: args.no_hot_reload,
-        app_args: Vec::new(),
-    };
-    session(global, &run, listen, Some(args.open), out)
-}
-
-/// The project's `[web] default_target`, for a `viso serve` that names none.
-fn default_web_target(global: &Global, out: &mut Output) -> Result<WebTarget, u8> {
-    let cwd = std::env::current_dir().map_err(|error| {
-        out.failure(
-            ENV_CURRENT_DIR,
-            &format!("cannot read the current directory: {error}"),
-            &[],
-        );
-        ENVIRONMENT
-    })?;
-    let flags = Overrides {
-        profile: Some(Profile::Dev),
-        ..Overrides::default()
-    };
-    let (project, _) =
-        viso_project::load(global.project.as_deref(), &cwd, ArtifactKind::Build, &flags).map_err(
-            |diagnostics| {
-                for diagnostic in &diagnostics {
-                    config_in_its_file(out, diagnostic);
-                }
-                failure_code(&diagnostics)
-            },
-        )?;
-    match project.manifest.web.default_target.map(|t| t.value) {
-        Some(Target::WebGpu) => Ok(WebTarget::Gpu),
-        Some(Target::WebDom) => Ok(WebTarget::Dom),
-        Some(Target::WebHybrid) => Ok(WebTarget::Hybrid),
-        _ => {
-            out.failure(
-                CLI_USAGE,
-                "`viso serve` serves a web target: name one, or set `[web] default_target`",
-                &["`viso serve web-gpu`".to_string()],
-            );
-            Err(USAGE)
-        }
-    }
+pub fn run(ctx: &Context<'_>, args: &RunArgs, out: &mut Output) -> u8 {
+    session(ctx, args, web::Listen::loopback(), None, out)
 }
 
 /// The session of `viso run` and `viso serve`: a page's server listens as
 /// `listen` asks and is opened as `open` says, by `--browser` when `None`.
-fn session(
-    global: &Global,
+pub(super) fn session(
+    ctx: &Context<'_>,
     args: &RunArgs,
     listen: web::Listen,
     open: Option<bool>,
@@ -244,59 +168,37 @@ fn session(
 ) -> u8 {
     let (target, platform) = target_of(args);
     if let Some(why) = misplaced(args, platform, target) {
-        out.failure(CLI_USAGE, &why, &[]);
-        return USAGE;
+        return out.failure(CLI_USAGE, &why, &[]);
     }
     if let Err(diagnostic) = target.require_available() {
         out.config(None, &diagnostic);
         return diagnostic.code.exit_code();
     }
     if platform == Some(Platform::Ios) && !cfg!(target_os = "macos") {
-        out.failure(ENV_DEVICE, "the iOS Simulator runs on macOS only", &[]);
-        return ENVIRONMENT;
+        return out.failure(ENV_DEVICE, "the iOS Simulator runs on macOS only", &[]);
     }
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(error) => {
-            out.failure(
-                ENV_CURRENT_DIR,
-                &format!("cannot read the current directory: {error}"),
-                &[],
-            );
-            return ENVIRONMENT;
-        }
+    let command = if open.is_some() { "serve" } else { "run" };
+    let Loaded {
+        project,
+        resolved,
+        layout,
+    } = match ctx.load_dev(command, target, out) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
     };
-    // `viso run` always builds a dev artifact.
-    let flags = Overrides {
-        target: Some(target),
-        profile: Some(Profile::Dev),
-        ..Overrides::default()
-    };
-    let (project, resolved) =
-        match viso_project::load(global.project.as_deref(), &cwd, ArtifactKind::Build, &flags) {
-            Ok(loaded) => loaded,
-            Err(diagnostics) => {
-                for diagnostic in &diagnostics {
-                    config_in_its_file(out, diagnostic);
-                }
-                return failure_code(&diagnostics);
-            }
-        };
-    for warning in &resolved.warnings {
-        config_in_its_file(out, warning);
-    }
     let root = project.root.clone();
     let cargo_manifest = root.join("Cargo.toml");
     if !cargo_manifest.is_file() {
-        out.failure(
+        return out.failure(
             ENV_CARGO_MANIFEST,
             &format!(
                 "no `Cargo.toml` next to `{}`",
                 project.manifest_path().display()
             ),
-            &["`viso run` builds the Cargo package at the project root".to_string()],
+            &[format!(
+                "`viso {command}` builds the Cargo package at the project root"
+            )],
         );
-        return ENVIRONMENT;
     }
     // The simulator or emulator profile, by `--device`, the default or the
     // only one.
@@ -317,8 +219,7 @@ fn session(
         Some(Platform::Android) => match Sdk::locate() {
             Ok(sdk) => Some(sdk),
             Err(why) => {
-                out.failure(ENV_DEVICE, &why, &[]);
-                return ENVIRONMENT;
+                return out.failure(ENV_DEVICE, &why, &[]);
             }
         },
         _ => None,
@@ -326,7 +227,7 @@ fn session(
 
     // One dev session per project, target and device at a time.
     let lock = match LockGuard::acquire(
-        &Layout::new(&root),
+        &layout,
         LockKind::DevSession {
             target,
             device: profile.as_ref().map(|p| p.id.as_str()),
@@ -342,7 +243,7 @@ fn session(
     let fingerprint = match ProjectFingerprint::compute(&root) {
         Ok(fingerprint) => fingerprint,
         Err(diagnostic) => {
-            config_in_its_file(out, &diagnostic);
+            in_its_file(out, &diagnostic);
             return diagnostic.code.exit_code();
         }
     };
@@ -372,7 +273,7 @@ fn session(
         None if target == Target::WebGpu => Some(viso_package::web::TRIPLE),
         None => None,
     };
-    let rust = match RustScope::read(&manifest, triple) {
+    let rust = match RustScope::read(&manifest, triple, &ctx.cargo_args()) {
         Ok(rust) => rust,
         Err(why) => {
             out.log(
@@ -418,17 +319,16 @@ fn session(
                     browser: args.browser.clone().filter(|b| b != "none"),
                     open: open.unwrap_or_else(|| {
                         args.browser.as_deref() != Some("none")
-                            && (!global.json || args.browser.is_some())
+                            && (!ctx.global.json || args.browser.is_some())
                     }),
                     launched: false,
                 },
                 Err(error) => {
-                    out.failure(
+                    return out.failure(
                         ENV_DEV_CHANNEL,
                         &format!("cannot open the web dev server: {error}"),
                         &[],
                     );
-                    return ENVIRONMENT;
                 }
             }
         }
@@ -447,8 +347,7 @@ fn session(
                 reversed: None,
             },
             Err(why) => {
-                out.failure(ENV_DEVICE, &why, &[]);
-                return ENVIRONMENT;
+                return out.failure(ENV_DEVICE, &why, &[]);
             }
         },
         (Some(_), None) => unreachable!("an emulator profile has its SDK"),
@@ -497,24 +396,25 @@ fn session(
 
     let plan = deploy.plan();
     let built = Mutex::new(tx.clone());
-    let mut builds = RustBuild::new(
-        BuildCommand {
-            cargo: std::env::var_os("CARGO").map_or_else(|| "cargo".into(), PathBuf::from),
-            manifest,
-            quiet: global.quiet,
-            piped: global.json,
-            target_dir: None,
-            target: plan.target,
-            rustc_args: plan.rustc_args,
-            env: plan.env,
-            package: plan.package,
-        },
-        move |event| {
-            built
-                .lock()
-                .is_ok_and(|tx| tx.send(Incoming::Build(event)).is_ok())
-        },
-    );
+    let build = BuildCommand {
+        cargo: std::env::var_os("CARGO").map_or_else(|| "cargo".into(), PathBuf::from),
+        manifest,
+        quiet: ctx.global.quiet,
+        piped: ctx.global.json,
+        target_dir: ctx.target_dir(),
+        cargo_args: ctx.cargo_args(),
+        build_args: ctx.cargo_build_args(),
+        target: plan.target,
+        rustc_args: plan.rustc_args,
+        env: plan.env,
+        package: plan.package,
+    };
+    out.verbose(|| build.describe());
+    let mut builds = RustBuild::new(build, move |event| {
+        built
+            .lock()
+            .is_ok_and(|tx| tx.send(Incoming::Build(event)).is_ok())
+    });
     out.progress("build", "building the dev artifact");
     builds.start();
     let (exe, serial) = match launch_build(out, &mut dev, &mut builds, &rx, profile.as_ref()) {
@@ -535,12 +435,11 @@ fn session(
         {
             Ok(listener) => Some(listener),
             Err(error) => {
-                out.failure(
+                return out.failure(
                     ENV_DEV_CHANNEL,
                     &format!("cannot open the dev channel on the loopback interface: {error}"),
                     &[],
                 );
-                return ENVIRONMENT;
             }
         },
     };
@@ -552,12 +451,11 @@ fn session(
     let address = match address {
         Ok(address) => address,
         Err(error) => {
-            out.failure(
+            return out.failure(
                 ENV_DEV_CHANNEL,
                 &format!("cannot read the dev channel's address: {error}"),
                 &[],
             );
-            return ENVIRONMENT;
         }
     };
     out.progress(
@@ -580,12 +478,11 @@ fn session(
             );
         }
     };
-    let mut app = match deploy.launch(&exe, &args.app_args, &vars, false, None, global.json) {
+    let mut app = match deploy.launch(&exe, &args.app_args, &vars, false, None, ctx.global.json) {
         Ok(app) => app,
         Err(why) => {
             deploy.ended();
-            out.failure(RUN_APP_FAILED, &why, &[]);
-            return RUNTIME;
+            return out.failure(RUN_APP_FAILED, &why, &[]);
         }
     };
     device_event(out, "launched");
@@ -727,7 +624,7 @@ fn session(
                     &vars,
                     restore,
                     dev.launch_window(),
-                    global.json,
+                    ctx.global.json,
                 ) {
                     Ok(next) => {
                         app = next;
@@ -835,8 +732,7 @@ fn launch_build(
                         out.device(platform, id, &profile.device, "ready");
                     }
                     Err(why) => {
-                        out.failure(ENV_DEVICE, &why, &[]);
-                        return Err(ENVIRONMENT);
+                        return Err(out.failure(ENV_DEVICE, &why, &[]));
                     }
                 }
             }
@@ -858,12 +754,7 @@ fn launch_build(
                             .collect(),
                         _ => Vec::new(),
                     };
-                    out.failure(code, &build_failure(&failure), &notes);
-                    if code == BUILD_FAILED {
-                        BUILD
-                    } else {
-                        ENVIRONMENT
-                    }
+                    out.failure(code, &build_failure(&failure), &notes)
                 })?);
                 continue;
             }
@@ -1020,26 +911,20 @@ fn relay(
 }
 
 /// The exit code of an app that ended with `status`: 0 for a normal exit, 5
-/// for a crash or a non-zero exit (section 13.9).
+/// for a crash or a non-zero exit.
 fn exit_code(out: &mut Output, status: std::io::Result<Ended>) -> u8 {
     match status {
         Ok(status) if status.success() => SUCCESS,
-        Ok(status) => {
-            out.failure(
-                RUN_APP_FAILED,
-                &format!("the app exited with {status}"),
-                &[],
-            );
-            RUNTIME
-        }
-        Err(error) => {
-            out.failure(
-                RUN_APP_FAILED,
-                &format!("cannot wait for the app: {error}"),
-                &[],
-            );
-            RUNTIME
-        }
+        Ok(status) => out.failure(
+            RUN_APP_FAILED,
+            &format!("the app exited with {status}"),
+            &[],
+        ),
+        Err(error) => out.failure(
+            RUN_APP_FAILED,
+            &format!("cannot wait for the app: {error}"),
+            &[],
+        ),
     }
 }
 

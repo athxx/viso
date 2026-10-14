@@ -1,19 +1,18 @@
-//! `viso ios simulator …` and `viso android emulator …` (`Viso_CLI.md`):
+//! `viso ios simulator …` and `viso android emulator …`:
 //! the profiles `viso run ios|android --device` takes, each with the virtual
 //! device it names.
 
 use viso_package::android::Sdk;
 use viso_project::{DeviceProfile, DeviceStore, Platform, Preset};
 
-use super::{ENVIRONMENT, RUNTIME, SUCCESS, USAGE};
 use crate::args::{CreateArgs, DeviceCommand, PresetArg};
-use crate::device::{self, DEVICE_UNKNOWN, ENV_DEVICE, emulator, simulator};
+use crate::device::{self, emulator, simulator};
+use crate::error::{DEVICE_UNKNOWN, ENV_DEVICE, SUCCESS};
 use crate::output::Output;
 
 pub fn run(platform: Platform, command: &DeviceCommand, out: &mut Output) -> u8 {
     if platform == Platform::Ios && !cfg!(target_os = "macos") {
-        out.failure(ENV_DEVICE, "the iOS Simulator runs on macOS only", &[]);
-        return ENVIRONMENT;
+        return out.failure(ENV_DEVICE, "the iOS Simulator runs on macOS only", &[]);
     }
     let store = match device::store(out) {
         Ok(store) => store,
@@ -44,8 +43,7 @@ pub fn run(platform: Platform, command: &DeviceCommand, out: &mut Output) -> u8 
                         .map(drop)
                         .map_err(|e| e.to_string())
                 }) {
-                    out.failure(ENV_DEVICE, &why, &[]);
-                    return ENVIRONMENT;
+                    return out.failure(ENV_DEVICE, &why, &[]);
                 }
                 out.device(platform.as_str(), &profile.id, &profile.device, "deleted");
                 SUCCESS
@@ -70,8 +68,7 @@ fn with_profile(
                 DEVICE_UNKNOWN,
                 &format!("no {platform} {kind} profile is named `{id}`"),
                 &[format!("list them: `viso {platform} {kind} list`")],
-            );
-            USAGE
+            )
         }
     }
 }
@@ -170,10 +167,7 @@ fn start(profile: &DeviceProfile, window: bool, out: &mut Output) -> u8 {
             out.device(platform, &profile.id, &profile.device, "ready");
             SUCCESS
         }
-        Err(why) => {
-            out.failure(ENV_DEVICE, &why, &[]);
-            RUNTIME
-        }
+        Err(why) => out.failure(ENV_DEVICE, &why, &[]),
     }
 }
 
@@ -197,9 +191,6 @@ fn stop(profile: &DeviceProfile, out: &mut Output) -> u8 {
             );
             SUCCESS
         }
-        Err(why) => {
-            out.failure(ENV_DEVICE, &why, &[]);
-            ENVIRONMENT
-        }
+        Err(why) => out.failure(ENV_DEVICE, &why, &[]),
     }
 }

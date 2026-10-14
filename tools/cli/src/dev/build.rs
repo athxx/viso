@@ -57,6 +57,10 @@ pub(crate) struct BuildCommand {
     pub(crate) piped: bool,
     /// Where Cargo builds, when not where it chooses.
     pub(crate) target_dir: Option<PathBuf>,
+    /// The options every Cargo command runs with, `cargo metadata` too.
+    pub(crate) cargo_args: Vec<std::ffi::OsString>,
+    /// The options `cargo build` runs with besides those.
+    pub(crate) build_args: Vec<std::ffi::OsString>,
     /// The Rust target, when not the host.
     pub(crate) target: Option<String>,
     /// The arguments after `cargo rustc --`; the build is `cargo build` when
@@ -66,6 +70,40 @@ pub(crate) struct BuildCommand {
     pub(crate) env: Vec<(String, std::ffi::OsString)>,
     /// What wraps the executable; it runs as built when `None`.
     pub(crate) package: Option<Package>,
+}
+
+impl BuildCommand {
+    /// The Cargo command line, for `--verbose`.
+    pub(crate) fn describe(&self) -> String {
+        let mut line = format!(
+            "{} {}",
+            self.cargo.display(),
+            if self.rustc_args.is_empty() {
+                "build"
+            } else {
+                "rustc"
+            }
+        );
+        for arg in self.cargo_args.iter().chain(&self.build_args) {
+            line.push(' ');
+            line.push_str(&arg.to_string_lossy());
+        }
+        line.push_str(&format!(
+            " --manifest-path {} --features viso/hot-reload",
+            self.manifest.display()
+        ));
+        if let Some(target) = &self.target {
+            line.push_str(&format!(" --target {target}"));
+        }
+        if let Some(dir) = &self.target_dir {
+            line.push_str(&format!(" (CARGO_TARGET_DIR={})", dir.display()));
+        }
+        if !self.rustc_args.is_empty() {
+            line.push_str(" -- ");
+            line.push_str(&self.rustc_args.join(" "));
+        }
+        line
+    }
 }
 
 impl std::fmt::Debug for BuildCommand {
@@ -206,6 +244,7 @@ impl RustBuild {
                     sink(BuildEvent::Rescoped(RustScope::read(
                         &command.manifest,
                         command.target.as_deref(),
+                        &command.cargo_args,
                     )));
                 }
                 let result = build(&command, &cancelled, &sink);
@@ -331,6 +370,8 @@ fn build(
         } else {
             "rustc"
         })
+        .args(&command.cargo_args)
+        .args(&command.build_args)
         .arg("--manifest-path")
         .arg(&command.manifest)
         .args(["--features", "viso/hot-reload"])
@@ -700,6 +741,8 @@ mod tests {
             quiet: false,
             piped: true,
             target_dir: Some(dir.join("target")),
+            cargo_args: Vec::new(),
+            build_args: Vec::new(),
             target: None,
             rustc_args: Vec::new(),
             env: Vec::new(),

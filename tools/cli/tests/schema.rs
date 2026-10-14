@@ -1,5 +1,5 @@
 //! `viso schema` end to end: the built binary's text and JSON forms and exit
-//! codes (`Viso_CLI.md` section 18).
+//! codes.
 
 use std::process::{Command, Output};
 

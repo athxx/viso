@@ -12,23 +12,11 @@ use std::process::{Command, Stdio};
 use viso_package::android::{Abi, Sdk};
 use viso_project::{DeviceProfile, DeviceStore, Platform, Preset, Selection, device::valid_id};
 
-use crate::command::{ENVIRONMENT, USAGE};
+use crate::error::{
+    CLI_USAGE, DEVICE_AMBIGUOUS, DEVICE_EXISTS, DEVICE_ID_INVALID, DEVICE_MISSING, DEVICE_SYSTEM,
+    DEVICE_UNKNOWN, ENV_DEVICE,
+};
 use crate::output::Output;
-
-/// No simulator or emulator profile exists.
-pub(crate) const DEVICE_MISSING: &str = "DEVICE_MISSING";
-/// `--device` or a configured default names no profile.
-pub(crate) const DEVICE_UNKNOWN: &str = "DEVICE_UNKNOWN";
-/// Several profiles exist and none is the default.
-pub(crate) const DEVICE_AMBIGUOUS: &str = "DEVICE_AMBIGUOUS";
-/// The simulator or emulator toolchain is missing or failed.
-pub(crate) const ENV_DEVICE: &str = "ENV_DEVICE";
-/// A profile ID that is not one.
-const DEVICE_ID_INVALID: &str = "DEVICE_ID_INVALID";
-/// A profile of that ID exists.
-const DEVICE_EXISTS: &str = "DEVICE_EXISTS";
-/// No installed system image or runtime fits.
-const DEVICE_SYSTEM: &str = "DEVICE_SYSTEM";
 
 /// The profile a run creates when there is none and the user agrees.
 const STANDARD_PROFILE: &str = "phone";
@@ -76,8 +64,7 @@ pub(crate) fn store(out: &mut Output) -> Result<DeviceStore, u8> {
             ENV_DEVICE,
             "no home directory for the device profiles (set VISO_HOME)",
             &[],
-        );
-        ENVIRONMENT
+        )
     })
 }
 
@@ -93,30 +80,23 @@ pub(crate) fn create(
     out: &mut Output,
 ) -> Result<DeviceProfile, u8> {
     if !valid_id(id) {
-        out.failure(
+        return Err(out.failure(
             DEVICE_ID_INVALID,
             &format!("`{id}` is not a profile ID"),
             &["use lowercase letters, digits and `-`, at most 40".into()],
-        );
-        return Err(USAGE);
+        ));
     }
     if store.get(platform, id).is_some() {
-        out.failure(
+        return Err(out.failure(
             DEVICE_EXISTS,
             &format!("a {platform} profile is already named `{id}`"),
             &[],
-        );
-        return Err(USAGE);
+        ));
     }
     let made = match platform {
         Platform::Ios => {
             if api.is_some() {
-                out.failure(
-                    crate::command::CLI_USAGE,
-                    "`--api` is an Android option",
-                    &[],
-                );
-                return Err(USAGE);
+                return Err(out.failure(CLI_USAGE, "`--api` is an Android option", &[]));
             }
             simulator::newest_runtime(preset)
                 .and_then(|(runtime, device_type, model)| {
@@ -130,10 +110,7 @@ pub(crate) fn create(
     };
     let (system, device) = match made {
         Ok(made) => made,
-        Err((code, why)) => {
-            out.failure(code, &why, &[]);
-            return Err(ENVIRONMENT);
-        }
+        Err((code, why)) => return Err(out.failure(code, &why, &[])),
     };
     let profile = DeviceProfile {
         id: id.to_owned(),
@@ -143,12 +120,11 @@ pub(crate) fn create(
         device,
     };
     if let Err(error) = store.save(&profile) {
-        out.failure(
+        return Err(out.failure(
             ENV_DEVICE,
             &format!("cannot write the profile: {error}"),
             &[],
-        );
-        return Err(ENVIRONMENT);
+        ));
     }
     out.device(platform.as_str(), &profile.id, &profile.device, "created");
     Ok(profile)
@@ -160,7 +136,7 @@ fn create_avd(
     id: &str,
     api: Option<&str>,
     preset: Preset,
-) -> Result<(String, String), (&'static str, String)> {
+) -> Result<(String, String), (crate::error::Code, String)> {
     let sdk = Sdk::locate().map_err(|why| (ENV_DEVICE, why))?;
     let abi = Abi::host();
     let images = emulator::system_images(&sdk, abi);
@@ -306,17 +282,14 @@ pub(crate) fn select(
                 None => ambiguous(out, platform, &ids),
             }
         }
-        Selection::Unknown(id) => {
-            out.failure(
-                DEVICE_UNKNOWN,
-                &format!("no {platform} {kind} profile is named `{id}`"),
-                &[
-                    format!("list them: `viso {platform} {kind} list`"),
-                    format!("or create it: `viso {platform} {kind} create {id}`"),
-                ],
-            );
-            Err(USAGE)
-        }
+        Selection::Unknown(id) => Err(out.failure(
+            DEVICE_UNKNOWN,
+            &format!("no {platform} {kind} profile is named `{id}`"),
+            &[
+                format!("list them: `viso {platform} {kind} list`"),
+                format!("or create it: `viso {platform} {kind} create {id}`"),
+            ],
+        )),
         Selection::Ambiguous(ids) => ambiguous(out, platform, &ids),
     }
 }
@@ -324,18 +297,17 @@ pub(crate) fn select(
 /// `DEVICE_MISSING`, with the command that creates a profile.
 fn missing(out: &mut Output, platform: Platform, create: &str) -> Result<DeviceProfile, u8> {
     let kind = platform.device_kind();
-    out.failure(
+    Err(out.failure(
         DEVICE_MISSING,
         &format!("there is no {platform} {kind} profile"),
         &[format!("create one: `{create}`")],
-    );
-    Err(ENVIRONMENT)
+    ))
 }
 
 /// `DEVICE_AMBIGUOUS`, with the commands that choose among `ids`.
 fn ambiguous(out: &mut Output, platform: Platform, ids: &[String]) -> Result<DeviceProfile, u8> {
     let kind = platform.device_kind();
-    out.failure(
+    Err(out.failure(
         DEVICE_AMBIGUOUS,
         &format!("several {platform} {kind} profiles and no default"),
         &[
@@ -346,8 +318,7 @@ fn ambiguous(out: &mut Output, platform: Platform, ids: &[String]) -> Result<Dev
                 ids[0]
             ),
         ],
-    );
-    Err(USAGE)
+    ))
 }
 
 #[cfg(test)]

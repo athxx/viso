@@ -1,4 +1,4 @@
-//! The host's end of the dev channel (`Viso_Hot_Reload.md` §34, §46): accept
+//! The host's end of the dev channel: accept
 //! each connection the launched app opens on the loopback listener, check its
 //! [`RuntimeHello`] against the session, and once accepted carry what the
 //! runtime sends to the session and what the session sends to the runtime.

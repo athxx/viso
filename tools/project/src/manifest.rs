@@ -5,20 +5,19 @@
 //! **Total.** Every key the schema defines is listed in one place per table, and a
 //! key that is not in that list is a diagnostic
 //! ([`ConfigCode::UnknownKey`]) with a suggestion. Silence is the failure mode
-//! this avoids: a typo'd `defualt_target` that a lenient parser skips means the
+//! this avoids: a typo'd `opt_levle` that a lenient parser skips means the
 //! user's setting never took effect and nothing said so.
 //!
 //! **Span-carrying.** Every accepted value keeps the byte position it was parsed
 //! from, wrapped in [`Spanned`]. That is the reason this crate parses with
 //! `toml_edit` instead of deserializing: `viso config show` must report *where*
-//! each resolved value came from (`Viso_CLI.md` section 5), and a
+//! each resolved value came from, and a
 //! deserialize-into-struct throws the position away at exactly the moment it is
 //! cheapest to keep.
 //!
-//! Tables for deferred phases (`[web]`, `[target.android]`, `[target.ios]`,
-//! `[export.*]`) are parsed and typed *now*. Their commands do not exist yet, but a
-//! project configured for them must not produce unknown-key noise that a user
-//! would fix by deleting configuration the next phase needs.
+//! Tables whose commands are still to come (`[target.android]`, `[target.ios]`,
+//! `[export.*]`) are parsed and typed already: a project configured for them must
+//! not be told its configuration is unknown.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -66,7 +65,7 @@ impl<T: fmt::Display> fmt::Display for Spanned<T> {
     }
 }
 
-/// `[package]` — identity (`Viso_CLI.md` section 38).
+/// `[package]` — identity.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Package {
     /// The project name. The one required key in the whole file: everything that
@@ -80,7 +79,7 @@ pub struct Package {
     /// The Viso language version the package's `.vs` sources are written in; a
     /// source file never restates it.
     pub language: Option<Spanned<String>>,
-    /// `[package.ios]` signing identity (section 38.4). Kept here rather than
+    /// `[package.ios]` signing identity. Kept here rather than
     /// under `[target.ios]` because it is delivery configuration, not a build
     /// property.
     pub ios_team_id: Option<Spanned<String>>,
@@ -88,14 +87,7 @@ pub struct Package {
     pub capabilities: Vec<Spanned<String>>,
 }
 
-/// `[build]` — build-wide defaults.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Build {
-    /// The target used when the command line names none.
-    pub default_target: Option<Spanned<Target>>,
-}
-
-/// One `[profile.X]` table (`Viso_CLI.md` section 38.2).
+/// One `[profile.X]` table.
 ///
 /// Every field is optional: absent means "use the profile's own default"
 /// ([`Profile::default_opt_level`] and friends), which is what keeps the resolved
@@ -139,7 +131,7 @@ impl Profiles {
     }
 }
 
-/// `[web.serve]` (`Viso_CLI.md` section 38.1).
+/// `[web.serve]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WebServe {
     /// Dev-server port.
@@ -158,6 +150,16 @@ pub enum GameDeterminism {
     CrossPlatform,
 }
 
+impl GameDeterminism {
+    /// The spelling `Viso.toml` uses.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            GameDeterminism::SameBinary => "same_binary",
+            GameDeterminism::CrossPlatform => "cross_platform",
+        }
+    }
+}
+
 /// `[game] collision_delivery`: the order a tick hands its contacts to the
 /// `CollisionListener`s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -169,7 +171,17 @@ pub enum CollisionDelivery {
     ListenerMajor,
 }
 
-/// `[game]` (DSL sections 106.1, 106.5).
+impl CollisionDelivery {
+    /// The spelling `Viso.toml` uses.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CollisionDelivery::EventMajor => "event_major",
+            CollisionDelivery::ListenerMajor => "listener_major",
+        }
+    }
+}
+
+/// `[game]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Game {
     /// `determinism`.
@@ -181,7 +193,7 @@ pub struct Game {
     pub collision_delivery: Option<Spanned<CollisionDelivery>>,
 }
 
-/// `[i18n]` (DSL section U10.3).
+/// `[i18n]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct I18n {
     /// `source`: the BCP 47 locale whose catalog (`i18n/<source>.toml`)
@@ -189,7 +201,7 @@ pub struct I18n {
     pub source: Option<Spanned<String>>,
 }
 
-/// `[web]` (section 38.1). Parsed now, honored by a deferred phase.
+/// `[web]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Web {
     /// Default web target, one of the three `web-*` variants.
@@ -198,16 +210,15 @@ pub struct Web {
     pub serve: WebServe,
 }
 
-/// `[target.android]` (section 38.3).
+/// `[target.android]`. The GPU backend is not configuration: each target's is
+/// fixed at compile time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Android {
     /// Minimum Android SDK level.
     pub min_sdk: Option<Spanned<u32>>,
-    /// GPU backend name.
-    pub backend: Option<Spanned<String>>,
 }
 
-/// `[target.ios]` (section 38.4).
+/// `[target.ios]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ios {
     /// Minimum OS version, as written (`"17.0"`).
@@ -223,14 +234,14 @@ pub struct Targets {
     pub ios: Ios,
 }
 
-/// `[export.html]` (section 38.5).
+/// `[export.html]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExportHtml {
     /// Output directory.
     pub out_dir: Option<Spanned<String>>,
 }
 
-/// `[export.solid]` (section 38.5).
+/// `[export.solid]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExportSolid {
     /// Output directory.
@@ -251,7 +262,7 @@ pub struct Export {
 /// `[workspace]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Workspace {
-    /// Member directory paths, relative to the root (`Viso_CLI.md` section 4).
+    /// Member directory paths, relative to the root.
     pub members: Vec<Spanned<String>>,
 }
 
@@ -267,8 +278,6 @@ pub struct Manifest {
     pub path: PathBuf,
     /// `[package]`.
     pub package: Package,
-    /// `[build]`.
-    pub build: Build,
     /// `[profile.*]`.
     pub profiles: Profiles,
     /// `[web]`.
@@ -289,10 +298,9 @@ impl Manifest {
     /// Parses manifest text.
     ///
     /// Returns the manifest *and* its warnings on success, and the errors on
-    /// failure. Warnings never block: an unknown key in a table that is otherwise
-    /// fine is worth saying and not worth refusing to build over — except where
-    /// acting on the misunderstanding would ship something wrong, which is why
-    /// [`ConfigCode::HotReloadInRelease`] is an error and a stray key is not.
+    /// failure. An unknown key is an error: a setting that never takes effect is
+    /// a build other than the one its author asked for. The one warning is a key
+    /// that is known and redundant, `hot_reload` under the dev profile.
     pub fn parse(path: impl Into<PathBuf>, text: &str) -> ParseOutcome {
         let path = path.into();
         // `Document`, not `DocumentMut`: only the immutable parse retains byte spans,
@@ -358,6 +366,91 @@ impl Manifest {
     }
 }
 
+/// A bundle identifier both iOS and Android accept.
+fn bundle_id(id: &str) -> Result<(), &'static str> {
+    let parts: Vec<&str> = id.split('.').collect();
+    let part = |p: &&str| {
+        p.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && p.chars().all(|c| c.is_ascii_alphanumeric())
+    };
+    if parts.len() >= 2 && parts.iter().all(part) {
+        Ok(())
+    } else {
+        Err(
+            "a reverse-DNS name such as `com.example.app`: two or more parts of letters and \
+             digits, each starting with a letter",
+        )
+    }
+}
+
+/// `1`, `1.2` or `1.2.3`, with an optional `-pre` or `+build` suffix.
+fn version(version: &str) -> Result<(), &'static str> {
+    let core = version.split(['-', '+']).next().unwrap_or_default();
+    let suffix_ok = version.len() == core.len() || version.len() > core.len() + 1;
+    if suffix_ok && dotted_numbers(core) {
+        Ok(())
+    } else {
+        Err(
+            "one to three dot-separated numbers such as `1.4.0`, optionally followed by \
+             `-pre` or `+build`",
+        )
+    }
+}
+
+/// An Apple Developer team ID.
+fn team_id(id: &str) -> Result<(), &'static str> {
+    if id.len() == 10
+        && id
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    {
+        Ok(())
+    } else {
+        Err("ten uppercase letters and digits, as the Apple Developer account shows it")
+    }
+}
+
+/// An OS version such as `17.0`.
+fn os_version(version: &str) -> Result<(), &'static str> {
+    if dotted_numbers(version) {
+        Ok(())
+    } else {
+        Err("one to three dot-separated numbers such as `17.0`")
+    }
+}
+
+fn dotted_numbers(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('.').collect();
+    (1..=3).contains(&parts.len())
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// A directory inside the project, relative to its root.
+fn out_dir(dir: &str) -> Result<(), &'static str> {
+    let path = Path::new(dir);
+    let inside = path.components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    });
+    if !dir.is_empty() && path.is_relative() && inside {
+        Ok(())
+    } else {
+        Err("a directory relative to the project root that stays inside it, such as `dist-html`")
+    }
+}
+
+/// A package manager the generated project can name.
+fn package_manager(name: &str) -> Result<(), &'static str> {
+    match name {
+        "npm" | "pnpm" | "yarn" | "bun" => Ok(()),
+        _ => Err("expected one of: npm, pnpm, yarn, bun"),
+    }
+}
+
 /// The result of parsing a manifest.
 ///
 /// The success variant is much larger than the failure one, which clippy flags. Boxing
@@ -405,7 +498,6 @@ impl<'a> Reader<'a> {
             root,
             &[
                 "package",
-                "build",
                 "profile",
                 "web",
                 "target",
@@ -433,13 +525,13 @@ impl<'a> Reader<'a> {
                 );
                 Package {
                     name: self.string(t, "name", "package"),
-                    bundle_id: self.string(t, "bundle_id", "package"),
-                    version: self.string(t, "version", "package"),
+                    bundle_id: self.checked(t, "bundle_id", "package", bundle_id),
+                    version: self.checked(t, "version", "package", version),
                     language: self.string(t, "language", "package"),
                     ios_team_id: match self.table(t, "ios") {
                         Some(ios) => {
                             self.deny_unknown(ios, &["team_id"], "package.ios");
-                            self.string(ios, "team_id", "package.ios")
+                            self.checked(ios, "team_id", "package.ios", team_id)
                         }
                         None => None,
                     },
@@ -447,16 +539,6 @@ impl<'a> Reader<'a> {
                 }
             }
             None => Package::default(),
-        };
-
-        let build = match self.table(root, "build") {
-            Some(t) => {
-                self.deny_unknown(t, &["default_target"], "build");
-                Build {
-                    default_target: self.target(t, "default_target", "build"),
-                }
-            }
-            None => Build::default(),
         };
 
         let profiles = match self.table(root, "profile") {
@@ -493,7 +575,7 @@ impl<'a> Reader<'a> {
             Some(t) => {
                 self.deny_unknown(t, &["default_target", "serve"], "web");
                 Web {
-                    default_target: self.target(t, "default_target", "web"),
+                    default_target: self.web_target(t, "default_target", "web"),
                     serve: match self.table(t, "serve") {
                         Some(s) => {
                             self.deny_unknown(s, &["port", "open"], "web.serve");
@@ -515,10 +597,9 @@ impl<'a> Reader<'a> {
                 Targets {
                     android: match self.table(t, "android") {
                         Some(a) => {
-                            self.deny_unknown(a, &["min_sdk", "backend"], "target.android");
+                            self.deny_unknown(a, &["min_sdk"], "target.android");
                             Android {
                                 min_sdk: self.sdk_level(a, "min_sdk", "target.android"),
-                                backend: self.string(a, "backend", "target.android"),
                             }
                         }
                         None => Android::default(),
@@ -527,7 +608,7 @@ impl<'a> Reader<'a> {
                         Some(i) => {
                             self.deny_unknown(i, &["minimum_os"], "target.ios");
                             Ios {
-                                minimum_os: self.string(i, "minimum_os", "target.ios"),
+                                minimum_os: self.checked(i, "minimum_os", "target.ios", os_version),
                             }
                         }
                         None => Ios::default(),
@@ -545,7 +626,7 @@ impl<'a> Reader<'a> {
                         Some(h) => {
                             self.deny_unknown(h, &["out_dir"], "export.html");
                             ExportHtml {
-                                out_dir: self.string(h, "out_dir", "export.html"),
+                                out_dir: self.checked(h, "out_dir", "export.html", out_dir),
                             }
                         }
                         None => ExportHtml::default(),
@@ -554,8 +635,13 @@ impl<'a> Reader<'a> {
                         Some(s) => {
                             self.deny_unknown(s, &["out_dir", "package_manager"], "export.solid");
                             ExportSolid {
-                                out_dir: self.string(s, "out_dir", "export.solid"),
-                                package_manager: self.string(s, "package_manager", "export.solid"),
+                                out_dir: self.checked(s, "out_dir", "export.solid", out_dir),
+                                package_manager: self.checked(
+                                    s,
+                                    "package_manager",
+                                    "export.solid",
+                                    package_manager,
+                                ),
                             }
                         }
                         None => ExportSolid::default(),
@@ -604,7 +690,6 @@ impl<'a> Reader<'a> {
         Manifest {
             path: path.to_path_buf(),
             package,
-            build,
             profiles,
             web,
             targets,
@@ -619,7 +704,7 @@ impl<'a> Reader<'a> {
     ///
     /// The hot-reload check lives here rather than in a generic key check because
     /// the *same spelling* means two different things depending on the profile: an
-    /// error under release/shipping (`Viso_CLI.md` section 38.2), and a
+    /// error under release/shipping, and a
     /// redundant-but-harmless warning under dev, where the Dev Runtime is present
     /// regardless.
     fn profile(&mut self, profiles: &dyn TableLike, profile: Profile) -> ProfileConfig {
@@ -685,6 +770,33 @@ impl<'a> Reader<'a> {
             Some(s) => Some(Spanned::new(s.to_string(), self.value_span(t, key, item))),
             None => {
                 self.wrong_type(t, key, item, "a string", path);
+                None
+            }
+        }
+    }
+
+    /// A string `check` accepts, or an [`ConfigCode::InvalidValue`] with the
+    /// note `check` gives.
+    fn checked(
+        &mut self,
+        t: &dyn TableLike,
+        key: &str,
+        path: &str,
+        check: fn(&str) -> Result<(), &'static str>,
+    ) -> Option<Spanned<String>> {
+        let value = self.string(t, key, path)?;
+        match check(&value.value) {
+            Ok(()) => Some(value),
+            Err(expected) => {
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!("`{path}.{key}` cannot be `{}`", value.value),
+                    )
+                    .at(self.path)
+                    .span(value.span)
+                    .note(expected),
+                );
                 None
             }
         }
@@ -823,10 +935,25 @@ impl<'a> Reader<'a> {
         Some(Spanned::new(value, raw.span))
     }
 
-    fn target(&mut self, t: &dyn TableLike, key: &str, path: &str) -> Option<Spanned<Target>> {
+    /// One of the three web targets.
+    fn web_target(&mut self, t: &dyn TableLike, key: &str, path: &str) -> Option<Spanned<Target>> {
         let raw = self.string(t, key, path)?;
         match Target::parse(&raw.value) {
-            Ok(target) => Some(Spanned::new(target, raw.span)),
+            Ok(target @ (Target::WebGpu | Target::WebDom | Target::WebHybrid)) => {
+                Some(Spanned::new(target, raw.span))
+            }
+            Ok(_) => {
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!("`{path}.{key}` must be a web target, not `{}`", raw.value),
+                    )
+                    .at(self.path)
+                    .span(raw.span)
+                    .note("expected one of: web-gpu, web-dom, web-hybrid"),
+                );
+                None
+            }
             Err(diag) => {
                 self.diags.push(diag.at(self.path).span(raw.span));
                 None
@@ -834,8 +961,8 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// `opt_level` accepts both `0` and `"size"` (`Viso_CLI.md` section 38.2 uses
-    /// each form in the same example), so the integer is normalized to its name
+    /// `opt_level` accepts both `0` and `"size"` (the documented example uses
+    /// each form), so the integer is normalized to its name
     /// and both spellings land on one [`OptLevel`].
     fn opt_level(&mut self, t: &dyn TableLike, key: &str, path: &str) -> Option<Spanned<OptLevel>> {
         let item = t.get(key)?;
@@ -916,7 +1043,7 @@ impl<'a> Reader<'a> {
                 format!("`{path}.{name}`")
             };
             let mut diag =
-                ConfigDiagnostic::warning(ConfigCode::UnknownKey, format!("unknown key {where_}"))
+                ConfigDiagnostic::error(ConfigCode::UnknownKey, format!("unknown key {where_}"))
                     .at(self.path);
             if let Some(span) = span {
                 diag = diag.span(span);
@@ -993,7 +1120,7 @@ const HOT_RELOAD_SYNONYMS: &[&str] = &[
 /// three-letter key while `package_manager` still absorbs a slip or two. A guess
 /// that is not close is worse than no guess: it sends the reader to fix the wrong
 /// key.
-fn nearest<'k>(name: &str, allowed: &[&'k str]) -> Option<&'k str> {
+pub fn nearest<'k>(name: &str, allowed: &[&'k str]) -> Option<&'k str> {
     let budget = (name.len() / 4).clamp(1, 3);
     allowed
         .iter()
@@ -1063,7 +1190,7 @@ mod tests {
         }
     }
 
-    /// The minimal manifest from `Viso_CLI.md` section 38, verbatim.
+    /// The minimal documented manifest, verbatim.
     #[test]
     fn the_minimal_manifest_parses_with_no_diagnostics() {
         let (manifest, warnings) = parse(
@@ -1071,9 +1198,6 @@ mod tests {
 [package]
 name = "hello-viso"
 bundle_id = "com.example.hello"
-
-[build]
-default_target = "host"
 "#,
         );
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -1082,13 +1206,11 @@ default_target = "host"
             manifest.package.bundle_id.as_ref().unwrap().value,
             "com.example.hello"
         );
-        assert_eq!(manifest.build.default_target.unwrap().value, Target::Host);
     }
 
-    /// Every table from section 38 in one file, including the ones whose commands
-    /// are deferred. The assertion that matters most is `warnings.is_empty()`: a
-    /// project configured for a later phase must not be told its configuration is
-    /// unknown.
+    /// Every documented table in one file, including the ones whose commands are
+    /// still to come. The assertion that matters most is `warnings.is_empty()`: a
+    /// project configured for them must not be told its configuration is unknown.
     #[test]
     fn every_documented_table_parses_including_deferred_ones() {
         let (m, warnings) = parse(
@@ -1102,9 +1224,6 @@ capabilities = ["storage.persist"]
 
 [package.ios]
 team_id = "ABCDE12345"
-
-[build]
-default_target = "host"
 
 [profile.dev]
 opt_level = 0
@@ -1126,7 +1245,6 @@ open = true
 
 [target.android]
 min_sdk = 26
-backend = "vulkan"
 
 [target.ios]
 minimum_os = "17.0"
@@ -1164,7 +1282,6 @@ members = ["apps/one", "apps/two"]
         assert!(m.web.serve.open.unwrap().value);
 
         assert_eq!(m.targets.android.min_sdk.unwrap().value, 26);
-        assert_eq!(m.targets.android.backend.as_ref().unwrap().value, "vulkan");
         assert_eq!(m.targets.ios.minimum_os.as_ref().unwrap().value, "17.0");
 
         assert_eq!(m.export.html.out_dir.as_ref().unwrap().value, "dist-html");
@@ -1188,13 +1305,13 @@ members = ["apps/one", "apps/two"]
     /// would notice.
     #[test]
     fn every_value_carries_the_line_it_was_written_on() {
-        let text = "[package]\nname = \"app\"\n\n[build]\ndefault_target = \"headless\"\n";
+        let text = "[package]\nname = \"app\"\n\n[web]\ndefault_target = \"web-gpu\"\n";
         let (m, _) = parse(text);
         assert_eq!(m.package.name.as_ref().unwrap().span.line, 2);
-        assert_eq!(m.build.default_target.unwrap().span.line, 5);
+        assert_eq!(m.web.default_target.unwrap().span.line, 5);
     }
 
-    /// Section 38.2's hard rule. This is the one configuration mistake that must be
+    /// The hard rule of profiles. This is the one configuration mistake that must be
     /// an error rather than a warning: silently honoring it produces a shipped
     /// binary that accepts remote patches.
     #[test]
@@ -1233,29 +1350,38 @@ members = ["apps/one", "apps/two"]
     }
 
     #[test]
-    fn an_unknown_key_warns_and_suggests_the_nearest_real_one() {
-        let (_, warnings) = parse("[package]\nnaem = \"app\"\n");
-        let warning = &warnings[0];
-        assert_eq!(warning.code, ConfigCode::UnknownKey);
-        assert_eq!(warning.span.unwrap().line, 2);
-        assert!(warning.notes[0].contains("`name`"), "{:?}", warning.notes);
+    fn an_unknown_key_is_an_error_that_suggests_the_nearest_real_one() {
+        let diags = errors("[package]\nnaem = \"app\"\n");
+        let diag = &diags[0];
+        assert_eq!(diag.code, ConfigCode::UnknownKey);
+        assert!(diag.is_error());
+        assert_eq!(diag.span.unwrap().line, 2);
+        assert!(diag.notes[0].contains("`name`"), "{:?}", diag.notes);
 
         // A key that resembles nothing gets the full list instead of a bad guess.
-        let (_, warnings) = parse("[package]\nname = \"app\"\nzzzzzzzz = 1\n");
+        let diags = errors("[package]\nname = \"app\"\nzzzzzzzz = 1\n");
         assert!(
-            warnings[0].notes[0].contains("known keys here"),
+            diags[0].notes[0].contains("known keys here"),
             "{:?}",
-            warnings[0].notes
+            diags[0].notes
         );
 
         // Unknown *top-level* tables are caught too, with no `path.` prefix.
-        let (_, warnings) = parse("[package]\nname = \"a\"\n\n[pacakge]\nx = 1\n");
+        let diags = errors("[package]\nname = \"a\"\n\n[pacakge]\nx = 1\n");
         assert!(
-            warnings
+            diags
                 .iter()
                 .any(|d| d.message == "unknown key `pacakge`" && d.notes[0].contains("`package`")),
-            "{warnings:?}"
+            "{diags:?}"
         );
+
+        // No key chooses the target a command builds for when it names none.
+        for text in [
+            "[build]\ndefault_target = \"ios\"\n",
+            "[target.android]\nbackend = \"vulkan\"\n",
+        ] {
+            assert_eq!(errors(text)[0].code, ConfigCode::UnknownKey, "{text}");
+        }
     }
 
     #[test]
@@ -1277,10 +1403,14 @@ members = ["apps/one", "apps/two"]
 
     #[test]
     fn an_invalid_value_is_an_error_that_lists_the_valid_ones() {
-        let diags = errors("[build]\ndefault_target = \"playstation\"\n");
+        let diags = errors("[web]\ndefault_target = \"playstation\"\n");
         assert_eq!(diags[0].code, ConfigCode::InvalidValue);
         assert!(diags[0].notes[0].contains("headless"));
         assert_eq!(diags[0].span.unwrap().line, 2);
+
+        let diags = errors("[web]\ndefault_target = \"ios\"\n");
+        assert_eq!(diags[0].code, ConfigCode::InvalidValue);
+        assert!(diags[0].notes[0].contains("web-gpu"));
 
         let diags = errors("[profile.dev]\nopt_level = 9\n");
         assert_eq!(diags[0].code, ConfigCode::InvalidValue);
@@ -1288,6 +1418,32 @@ members = ["apps/one", "apps/two"]
         let diags = errors("[web.serve]\nport = 99999\n");
         assert_eq!(diags[0].code, ConfigCode::InvalidValue);
         assert!(diags[0].message.contains("65535"));
+    }
+
+    #[test]
+    fn identity_signing_and_export_values_are_checked_where_written() {
+        for (text, line) in [
+            ("[package]\nbundle_id = \"app\"\n", 2),
+            ("[package]\nbundle_id = \"com.my-app\"\n", 2),
+            ("[package]\nversion = \"v1\"\n", 2),
+            ("[package]\nversion = \"1.2.3-\"\n", 2),
+            ("[package.ios]\nteam_id = \"abc\"\n", 2),
+            ("[target.ios]\nminimum_os = \"latest\"\n", 2),
+            ("[export.html]\nout_dir = \"../site\"\n", 2),
+            ("[export.html]\nout_dir = \"/tmp/site\"\n", 2),
+            ("[export.solid]\npackage_manager = \"pip\"\n", 2),
+        ] {
+            let diags = errors(text);
+            assert_eq!(diags[0].code, ConfigCode::InvalidValue, "{text}");
+            assert_eq!(diags[0].span.unwrap().line, line, "{text}");
+            assert!(!diags[0].notes.is_empty(), "{text}");
+        }
+        let (m, warnings) = parse(
+            "[package]\nbundle_id = \"com.example.App2\"\nversion = \"1.4.0-beta.1\"\n\n\
+             [export.html]\nout_dir = \"./web/html\"\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(m.package.version.unwrap().value, "1.4.0-beta.1");
     }
 
     #[test]
@@ -1314,7 +1470,7 @@ members = ["apps/one", "apps/two"]
     fn absence_is_absence_not_a_default() {
         let (m, warnings) = parse("[package]\nname = \"a\"\n");
         assert!(warnings.is_empty());
-        assert!(m.build.default_target.is_none());
+        assert!(m.web.default_target.is_none());
         assert!(m.profiles.release.opt_level.is_none());
         assert!(m.profiles.dev.strip.is_none());
         assert!(m.web.serve.port.is_none());
@@ -1323,7 +1479,7 @@ members = ["apps/one", "apps/two"]
 
     #[test]
     fn a_missing_name_is_reported_where_it_is_needed() {
-        let (m, _) = parse("[build]\ndefault_target = \"host\"\n");
+        let (m, _) = parse("[web]\ndefault_target = \"web-gpu\"\n");
         let diag = m.require_name().unwrap_err();
         assert_eq!(diag.code, ConfigCode::MissingRequired);
         assert_eq!(diag.code.exit_code(), 1);

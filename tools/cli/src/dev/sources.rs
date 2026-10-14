@@ -1,4 +1,4 @@
-//! The host's source graph of a dev session (`Viso_Hot_Reload.md`): every
+//! The host's source graph of a dev session: every
 //! `.vs` file, message catalog and asset of the watch scope as it is on disk,
 //! shared by every runtime of the session; and, per runtime ([`Mounts`]), what
 //! it reported of the files it mounts, the compiled view each mount runs and

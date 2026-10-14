@@ -1,5 +1,4 @@
-//! How results reach the user: human text (`Viso_CLI.md` section 37) or the JSON
-//! event stream (sections 34–36).
+//! How results reach the user: human text or the JSON event stream.
 //!
 //! Both forms render one [`Report`] model, so a diagnostic says the same thing in
 //! either, and [`Output`] counts what it reports so the summary and the exit code
@@ -16,8 +15,9 @@ use viso_dsl::{Diagnostic, LineIndex, Severity, TextSize};
 use viso_ende::JsonWriter;
 use viso_project::ConfigDiagnostic;
 
-use crate::args::Global;
+use crate::args::{ColorChoice, Global};
 use crate::dev::report::{RebuildEvent, ReloadEvent, RuntimeStatus};
+use crate::error::Code;
 
 /// Whom a dev session's event is about: the session, the runtime it
 /// concerns and the build.
@@ -194,6 +194,9 @@ pub struct Test<'a> {
 pub struct Output {
     form: Form,
     quiet: bool,
+    verbose: bool,
+    /// Whether human diagnostics are colored.
+    color: bool,
     errors: usize,
     warnings: usize,
     checked: Option<(String, usize)>,
@@ -214,6 +217,8 @@ impl Output {
                 Form::Human
             },
             quiet: global.quiet,
+            verbose: global.verbose,
+            color: !global.json && colored(global.color),
             errors: 0,
             warnings: 0,
             checked: None,
@@ -268,8 +273,16 @@ impl Output {
         );
     }
 
-    /// Reports an error the CLI itself raised, under its own `code`.
-    pub fn failure(&mut self, code: &str, message: &str, notes: &[String]) {
+    /// Reports an error the CLI itself raised, under its own `code`, and
+    /// returns the exit code the failure ends the command with.
+    pub fn failure(&mut self, code: Code, message: &str, notes: &[String]) -> u8 {
+        self.error(code.name, message, notes);
+        code.exit
+    }
+
+    /// Reports an error under a code a service owns, such as a runtime fault
+    /// of the game a test runs; the caller decides what it ends.
+    pub fn error(&mut self, code: &str, message: &str, notes: &[String]) {
         self.emit(
             true,
             &Report {
@@ -284,6 +297,18 @@ impl Output {
                 fixes: Vec::new(),
             },
         );
+    }
+
+    /// Reports what `--verbose` asks to see: a line on stderr, or a `log`
+    /// event at `debug`. Nothing without `--verbose`.
+    pub fn verbose(&mut self, message: impl FnOnce() -> String) {
+        if !self.verbose {
+            return;
+        }
+        match &mut self.form {
+            Form::Json(stream) => stream.log("debug", "tool", &message()),
+            Form::Human => eprintln!("[viso] {}", message()),
+        }
     }
 
     /// Reports the command's result: a `result` event whose payload `payload`
@@ -443,10 +468,24 @@ impl Output {
         }
         match &mut self.form {
             // Quiet keeps diagnostics in the event stream; it only drops progress
-            // and log events there (section 6.2).
+            // and log events there.
             Form::Json(stream) => stream.diagnostic(report),
             Form::Human if !error && self.quiet => {}
-            Form::Human => human::print(report),
+            Form::Human => human::print(report, self.color),
+        }
+    }
+}
+
+/// Whether human output to stderr is colored under `choice`.
+fn colored(choice: ColorChoice) -> bool {
+    use std::io::IsTerminal;
+    match choice {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => {
+            std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+                && std::env::var_os("TERM").is_none_or(|term| term != "dumb")
+                && std::io::stderr().is_terminal()
         }
     }
 }

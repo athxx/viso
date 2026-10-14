@@ -1,4 +1,4 @@
-//! The dev session service of `viso run` (`Viso_Hot_Reload.md`): for the
+//! The dev session service of `viso run`: for the
 //! lifetime of the command it owns the session's identity and lock, the
 //! project watcher, the source graph and its compiler, and the connections to
 //! the running apps, and turns each settled batch of edits into one candidate
@@ -25,11 +25,11 @@
 //! host exactly as the build compiled it; a view that does not compile is
 //! reported with its diagnostics, its failure is sent to the app to show over
 //! the last-good UI, and it is not sent. Each view that compiles is planned
-//! against the compiled view its mounts run (§11): the patch carries the
+//! against the compiled view its mounts run: the patch carries the
 //! candidate in its release form and the typed plan that moves the mounts
 //! onto it, so the app applies it with no compiler present. A view whose
 //! module declares systems is also classified against the game its mounts
-//! run (§16–§17): the tier is reported as an `E5103` note and sent as the
+//! run: the tier is reported as an `E5103` note and sent as the
 //! file's `system` entry beside its view, so the game swaps with the view in
 //! one revision. The views that compile are sent as one patch, and the
 //! runtime's ACK or NACK closes the candidate; an ACK makes each candidate the
@@ -37,12 +37,12 @@
 //! runtime at a time: what is saved meanwhile waits for its answer and goes
 //! to it as the next batch.
 //!
-//! With `--no-hot-reload` (§2.1) the session still watches, compiles and
+//! With `--no-hot-reload` the session still watches, compiles and
 //! reports each candidate, but sends the app nothing: a candidate that
 //! compiles is `held`.
 //!
 //! Across a Rust warm restart the session asks the old app for its
-//! snapshot and keeps it in memory, never written, printed or logged (§32),
+//! snapshot and keeps it in memory, never written, printed or logged,
 //! with the view each file of the old app ran. When the app launched to
 //! restore reports its first mounts, each file's view as the new build
 //! embeds it is planned from the one the old app ran — the plan a patch
@@ -98,7 +98,7 @@ pub(crate) use watch::WatchScope;
 use watch::Watcher;
 
 /// How long the session waits after the latest change of a batch before it
-/// takes the batch (§7.1): five times the widest arrival spread measured for
+/// takes the batch: five times the widest arrival spread measured for
 /// 16 files written back to back (`watch::tests::multi_file_save_spread`),
 /// and what a single save waits for it.
 pub const COALESCE: Duration = Duration::from_millis(5);
@@ -1496,7 +1496,7 @@ impl DevSession {
                 }
                 Err(error) => {
                     if pass.reported_assets.insert((asset.clone(), hash)) {
-                        out.failure(
+                        out.error(
                             ASSET_ERROR,
                             &format!("`{name}` does not decode: {error}"),
                             &["the app keeps showing its last good version".to_owned()],
@@ -1551,7 +1551,7 @@ impl DevSession {
             match view_patch(mount.file, mount.last_good.as_ref(), &candidate, &langs) {
                 Ok(view) => ui.views.push(view),
                 Err(error) => {
-                    out.failure(
+                    out.error(
                         "E3711",
                         &format!(
                             "`{name}`: internal: a shader it paints with does not build for \
@@ -1830,9 +1830,9 @@ mod tests {
             };
             let mut dev = DevSession::start(scope, &expect, lock, apply, |_| true);
             let global = Global {
-                project: None,
                 quiet: true,
                 json: true,
+                ..Global::default()
             };
             let mut out = Output::new(&global, Some("run"));
             let sent = connect(

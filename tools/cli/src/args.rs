@@ -1,4 +1,4 @@
-//! The command grammar (`Viso_CLI.md` sections 1 and 6).
+//! The command grammar.
 
 use std::ffi::OsString;
 use std::net::IpAddr;
@@ -16,20 +16,77 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// Options every project command takes, before or after the subcommand
-/// (section 4.1).
-#[derive(Debug, Args)]
+/// Options every command takes where they apply, before or after the
+/// subcommand.
+#[derive(Debug, Default, Args)]
 pub struct Global {
     /// Use the project at PATH (a directory or its `Viso.toml`) instead of
     /// searching upward from the current directory.
     #[arg(long, global = true, value_name = "PATH")]
     pub project: Option<PathBuf>,
-    /// Print only errors and the final summary.
-    #[arg(long, short, global = true)]
-    pub quiet: bool,
     /// Write a stream of JSON events to stdout, one per line, instead of text.
     #[arg(long, global = true)]
     pub json: bool,
+    /// Print only errors, requested paths and the final summary.
+    #[arg(long, short, global = true, conflicts_with = "verbose")]
+    pub quiet: bool,
+    /// Also print the resolved configuration, the tools run, cache decisions
+    /// and how long each stage took.
+    #[arg(long, short, global = true)]
+    pub verbose: bool,
+    /// When to color human output; `auto` colors a terminal unless `NO_COLOR`
+    /// is set. JSON is never colored.
+    #[arg(long, global = true, value_enum, value_name = "WHEN", default_value_t)]
+    pub color: ColorChoice,
+    /// Use no network: Cargo and every download work from what is on disk.
+    #[arg(long, global = true)]
+    pub offline: bool,
+    /// Require `Cargo.lock` to be up to date rather than updating it.
+    #[arg(long, global = true)]
+    pub locked: bool,
+    /// Run at most N jobs at once.
+    #[arg(long, global = true, value_name = "N", value_parser = clap::value_parser!(u16).range(1..))]
+    pub jobs: Option<u16>,
+    /// The build profile.
+    #[arg(long, global = true, value_enum, value_name = "NAME")]
+    pub profile: Option<ProfileArg>,
+    /// Put build output under PATH instead of the project's `target/`.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub target_dir: Option<PathBuf>,
+}
+
+/// When human output is colored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ColorChoice {
+    /// On a terminal, unless `NO_COLOR` is set.
+    #[default]
+    Auto,
+    /// Always.
+    Always,
+    /// Never.
+    Never,
+}
+
+/// The build profiles `--profile` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ProfileArg {
+    /// Unoptimized, with the Dev Runtime and hot reload.
+    Dev,
+    /// Optimized, without the Dev Runtime.
+    Release,
+    /// Optimized for delivery: smallest, stripped.
+    Shipping,
+}
+
+impl ProfileArg {
+    /// The profile it names.
+    pub fn profile(self) -> viso_project::Profile {
+        match self {
+            ProfileArg::Dev => viso_project::Profile::Dev,
+            ProfileArg::Release => viso_project::Profile::Release,
+            ProfileArg::Shipping => viso_project::Profile::Shipping,
+        }
+    }
 }
 
 /// The subcommands.
@@ -40,6 +97,9 @@ pub enum Command {
     Android(AndroidCommand),
     /// Check the project's `.vs` sources and `Viso.toml` without building.
     Check,
+    /// Show where each configuration value comes from, or validate it.
+    #[command(subcommand)]
+    Config(ConfigCommand),
     /// Read a state of, or record a tape from, a game the running `viso run`
     /// session's app plays.
     #[command(subcommand)]
@@ -58,6 +118,28 @@ pub enum Command {
     Serve(ServeArgs),
     /// Run the project's headless tests of a domain.
     Test(TestArgs),
+}
+
+/// What `viso config` shows.
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Every configuration key, its value and the layer it came from.
+    Show,
+    /// One configuration key, its value and the layer it came from.
+    Get(ConfigGetArgs),
+    /// The path of the `Viso.toml` in use.
+    Path,
+    /// Check `Viso.toml` and the `VISO_*` environment, reporting every
+    /// problem.
+    Validate,
+}
+
+/// The key `viso config get` looks up.
+#[derive(Debug, Args)]
+pub struct ConfigGetArgs {
+    /// The dotted key, as `viso config show` lists it: `package.name`,
+    /// `profile.release.opt_level`.
+    pub key: String,
 }
 
 /// What `viso android` manages.
@@ -130,7 +212,7 @@ pub struct DeviceArgs {
     pub id: String,
 }
 
-/// What `viso game` does with a running game (section 22.3).
+/// What `viso game` does with a running game.
 #[derive(Debug, Subcommand)]
 pub enum GameCommand {
     /// Print a state of the running game as JSON.
@@ -159,7 +241,7 @@ pub struct RecordArgs {
     pub game: String,
     /// Where to write the tape: its text form, or its binary form when the
     /// run took live patches.
-    #[arg(long, short, value_name = "PATH")]
+    #[arg(long, value_name = "PATH")]
     pub output: PathBuf,
     /// How many seconds of play to record.
     #[arg(
@@ -174,14 +256,14 @@ pub struct RecordArgs {
     pub ticks: Option<u64>,
 }
 
-/// The test domains `viso test` runs (section 22).
+/// The test domains `viso test` runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TestDomain {
-    /// Deterministic game scenarios under `tests/game/` (section 22.3).
+    /// Deterministic game scenarios under `tests/game/`.
     Game,
 }
 
-/// What `viso test` runs (section 22).
+/// What `viso test` runs.
 #[derive(Debug, Args)]
 pub struct TestArgs {
     /// The test domain.
@@ -279,7 +361,7 @@ pub struct ServeArgs {
     pub no_hot_reload: bool,
 }
 
-/// What `viso schema` looks up (section 18.1).
+/// What `viso schema` looks up.
 #[derive(Debug, Args)]
 pub struct SchemaArgs {
     /// The symbol, by full path or a `::`-suffix of it, optionally with
@@ -304,6 +386,10 @@ impl Command {
                 DeviceCommand::Delete(_) => "android emulator delete",
             },
             Command::Check => "check",
+            Command::Config(ConfigCommand::Show) => "config show",
+            Command::Config(ConfigCommand::Get(_)) => "config get",
+            Command::Config(ConfigCommand::Path) => "config path",
+            Command::Config(ConfigCommand::Validate) => "config validate",
             Command::Game(GameCommand::Peek(_)) => "game peek",
             Command::Game(GameCommand::Record(_)) => "game record",
             Command::Ios(IosCommand::Simulator(command)) => match command {
@@ -319,6 +405,12 @@ impl Command {
             Command::Test(_) => "test",
         }
     }
+}
+
+/// Whether `command` names its target as a positional argument, so a
+/// `--target` there is the other commands' spelling.
+pub fn takes_positional_target(command: &str) -> bool {
+    matches!(command, "run" | "serve")
 }
 
 /// Whether `--json` appears among `args` (the arguments after the program name)
@@ -352,6 +444,93 @@ mod tests {
     #[test]
     fn the_grammar_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn global_options_parse_on_either_side_of_the_subcommand() {
+        let argv = [
+            "viso",
+            "-v",
+            "--color",
+            "never",
+            "check",
+            "--offline",
+            "--locked",
+            "--jobs",
+            "4",
+            "--profile",
+            "release",
+            "--target-dir",
+            "out",
+        ];
+        let g = Cli::try_parse_from(argv).unwrap().global;
+        assert!(g.verbose && g.offline && g.locked && !g.quiet);
+        assert_eq!(g.color, ColorChoice::Never);
+        assert_eq!(g.jobs, Some(4));
+        assert_eq!(g.profile, Some(ProfileArg::Release));
+        assert_eq!(g.target_dir, Some(PathBuf::from("out")));
+        assert_eq!(
+            Cli::try_parse_from(["viso", "check"]).unwrap().global.color,
+            ColorChoice::Auto
+        );
+        for bad in [
+            &["viso", "-q", "-v", "check"][..],
+            &["viso", "check", "--profile", "fast"],
+            &["viso", "check", "--jobs", "0"],
+            &["viso", "check", "--color", "sometimes"],
+        ] {
+            let error = Cli::try_parse_from(bad).unwrap_err();
+            assert_eq!(error.exit_code(), 2, "{bad:?}");
+        }
+    }
+
+    /// Short options are `-h`, `-V`, `-v` and `-q` only, and no command or
+    /// option has an alias: a script reads the same as its documentation.
+    #[test]
+    fn the_only_short_options_are_help_version_verbose_and_quiet() {
+        fn walk(command: &clap::Command, path: &str, shorts: &mut Vec<(String, char)>) {
+            assert!(
+                command.get_all_aliases().next().is_none(),
+                "`{path}` has an alias"
+            );
+            for arg in command.get_arguments() {
+                if let Some(short) = arg.get_short() {
+                    shorts.push((path.to_owned(), short));
+                }
+                assert!(
+                    arg.get_all_aliases().is_none_or(|a| a.is_empty()),
+                    "`{path} --{}` has an alias",
+                    arg.get_id()
+                );
+            }
+            for sub in command.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), shorts);
+            }
+        }
+        let mut command = Cli::command();
+        command.build();
+        let mut shorts = Vec::new();
+        walk(&command, "viso", &mut shorts);
+        for (path, short) in shorts {
+            assert!(
+                matches!(short, 'h' | 'V' | 'v' | 'q'),
+                "`{path}` has `-{short}`"
+            );
+        }
+    }
+
+    #[test]
+    fn config_shows_gets_paths_and_validates() {
+        for (argv, name) in [
+            (&["viso", "config", "show"][..], "config show"),
+            (&["viso", "config", "get", "package.name"], "config get"),
+            (&["viso", "config", "path"], "config path"),
+            (&["viso", "config", "validate", "--json"], "config validate"),
+        ] {
+            assert_eq!(Cli::try_parse_from(argv).unwrap().command.name(), name);
+        }
+        assert!(Cli::try_parse_from(["viso", "config", "get"]).is_err());
+        assert!(Cli::try_parse_from(["viso", "config", "set", "a", "b"]).is_err());
     }
 
     #[test]
@@ -525,22 +704,30 @@ mod tests {
         assert_eq!((&*args.game, &*args.state), ("movement", "Player.score"));
         assert_eq!(cli.command.name(), "game peek");
 
-        let cli =
-            Cli::try_parse_from(["viso", "game", "record", "movement", "-o", "runs/jump.tape"])
-                .unwrap();
+        let cli = Cli::try_parse_from([
+            "viso",
+            "game",
+            "record",
+            "movement",
+            "--output",
+            "runs/jump.tape",
+        ])
+        .unwrap();
         let Command::Game(GameCommand::Record(args)) = cli.command else {
             panic!("a recording");
         };
         assert_eq!(args.output, PathBuf::from("runs/jump.tape"));
         assert_eq!((args.seconds, args.ticks), (10.0, None));
-        let ticks = ["viso", "game", "record", "m", "-o", "t", "--ticks", "600"];
+        let ticks = [
+            "viso", "game", "record", "m", "--output", "t", "--ticks", "600",
+        ];
         assert!(Cli::try_parse_from(ticks).is_ok());
         let both = [
             "viso",
             "game",
             "record",
             "m",
-            "-o",
+            "--output",
             "t",
             "--ticks",
             "6",
@@ -550,7 +737,7 @@ mod tests {
         assert!(Cli::try_parse_from(both).is_err());
         assert!(
             Cli::try_parse_from(["viso", "game", "record", "m"]).is_err(),
-            "-o is needed"
+            "--output is needed"
         );
     }
 }

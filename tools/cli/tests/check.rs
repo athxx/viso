@@ -1,5 +1,5 @@
 //! `viso check` end to end: the built binary against scratch projects, asserting
-//! the exit code (`Viso_CLI.md` section 7) and what reaches stdout and stderr.
+//! the exit code and what reaches stdout and stderr.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -140,8 +140,11 @@ fn no_manifest_is_a_config_diagnostic() {
 #[test]
 fn quiet_drops_warnings_but_keeps_the_summary() {
     let s = Scratch::new("quiet");
-    s.write("Viso.toml", "[package]\nname = \"demo\"\npackge = 1\n")
-        .write("src/app.vs", "component App { view { } }");
+    s.write(
+        "Viso.toml",
+        "[package]\nname = \"demo\"\n\n[profile.dev]\nhot_reload = true\n",
+    )
+    .write("src/app.vs", "component App { view { } }");
     let loud = viso(&s.0, &["check"]);
     assert_eq!(code(&loud), 0);
     assert!(
@@ -150,7 +153,7 @@ fn quiet_drops_warnings_but_keeps_the_summary() {
         stderr(&loud)
     );
     assert!(
-        stderr(&loud).contains("3 | packge = 1\n"),
+        stderr(&loud).contains("5 | hot_reload = true\n"),
         "{}",
         stderr(&loud)
     );
@@ -281,8 +284,11 @@ fn an_import_of_a_private_record_points_into_its_file_and_fixes_it_there() {
 #[test]
 fn json_quiet_still_streams_warnings() {
     let s = Scratch::new("json-quiet");
-    s.write("Viso.toml", "[package]\nname = \"demo\"\npackge = 1\n")
-        .write("src/app.vs", "component App { view { } }");
+    s.write(
+        "Viso.toml",
+        "[package]\nname = \"demo\"\n\n[profile.dev]\nhot_reload = true\n",
+    )
+    .write("src/app.vs", "component App { view { } }");
     let out = viso(&s.0, &["--json", "-q", "check"]);
     assert_eq!(code(&out), 0);
     let lines = events(&out);

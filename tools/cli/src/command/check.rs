@@ -1,4 +1,4 @@
-//! `viso check` (`Viso_CLI.md` section 17): locate the project, read its manifest,
+//! `viso check`: locate the project, read its manifest,
 //! and compile the package's `.vs` sources through parse, resolution and type
 //! checking, with no build output.
 
@@ -10,14 +10,14 @@ use viso_dsl::hir::{CapabilitySet, CollisionDelivery, Determinism, InputDevices,
 use viso_dsl::i18n::{CatalogIssue, Messages};
 use viso_dsl::package::{LoadedPackage, PackageManifest, load_package};
 use viso_dsl::{Diagnostic, TextRange, TextSize};
-use viso_project::{ConfigDiagnostic, GameDeterminism, Project, Span};
+use viso_project::{GameDeterminism, Project, Span};
 
-use super::{DIAGNOSTICS, ENV_CURRENT_DIR, ENV_SOURCE_UNREADABLE, ENVIRONMENT, SUCCESS};
-use crate::args::Global;
+use crate::context::Context;
+use crate::error::{DIAGNOSTICS, ENV_SOURCE_UNREADABLE, ENVIRONMENT, SUCCESS};
 use crate::output::{Output, Source};
 
-pub fn run(global: &Global, out: &mut Output) -> u8 {
-    let checked = match load(global, out) {
+pub fn run(ctx: &Context<'_>, out: &mut Output) -> u8 {
+    let checked = match load(ctx, out) {
         Ok(checked) => checked,
         Err(code) => return code,
     };
@@ -49,27 +49,8 @@ impl Checked {
 
 /// Locates the project, reads its manifest and loads its package, reporting
 /// every diagnostic on the way; the exit code when the project did not load.
-pub(super) fn load(global: &Global, out: &mut Output) -> Result<Checked, u8> {
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(error) => {
-            out.failure(
-                ENV_CURRENT_DIR,
-                &format!("cannot read the current directory: {error}"),
-                &[],
-            );
-            return Err(ENVIRONMENT);
-        }
-    };
-    let project = match Project::locate(global.project.as_deref(), &cwd) {
-        Ok(project) => project,
-        Err(diagnostics) => {
-            for diagnostic in &diagnostics {
-                config_in_its_file(out, diagnostic);
-            }
-            return Err(failure_code(&diagnostics));
-        }
-    };
+pub(super) fn load(ctx: &Context<'_>, out: &mut Output) -> Result<Checked, u8> {
+    let project = ctx.project(out)?;
 
     // The manifest parsed a moment ago; its text is read again only to show the
     // lines its diagnostics point at, so a failed read just drops the snippets.
@@ -78,9 +59,6 @@ pub(super) fn load(global: &Global, out: &mut Output) -> Result<Checked, u8> {
     let manifest = manifest_text
         .as_deref()
         .map(|text| Source::new(&manifest_path, &project.root, text));
-    for warning in &project.warnings {
-        out.config(manifest.as_ref(), warning);
-    }
     let name = match project.name() {
         Ok(name) => name.to_owned(),
         Err(diagnostic) => {
@@ -102,15 +80,14 @@ pub(super) fn load(global: &Global, out: &mut Output) -> Result<Checked, u8> {
     let catalogs = match Messages::read_dir(&catalog_dir) {
         Ok(files) => files,
         Err(error) => {
-            out.failure(
+            return Err(out.failure(
                 ENV_SOURCE_UNREADABLE,
                 &format!(
                     "cannot read `{}`: {error}",
                     relative(&project.root, &catalog_dir).display()
                 ),
                 &[],
-            );
-            return Err(ENVIRONMENT);
+            ));
         }
     };
     let messages = (!catalogs.is_empty()).then(|| Messages::compile(source_locale, &catalogs));
@@ -136,15 +113,14 @@ pub(super) fn load(global: &Global, out: &mut Output) -> Result<Checked, u8> {
     let assets = match viso_dsl::assets::AssetCatalog::scan(&asset_dir) {
         Ok(assets) => assets,
         Err(error) => {
-            out.failure(
+            return Err(out.failure(
                 ENV_SOURCE_UNREADABLE,
                 &format!(
                     "cannot read `{}`: {error}",
                     relative(&project.root, &asset_dir).display()
                 ),
                 &[],
-            );
-            return Err(ENVIRONMENT);
+            ));
         }
     };
     let mut profile = profile(&project);
@@ -241,27 +217,6 @@ pub(super) fn profile(project: &Project) -> TargetProfile {
         assets: None,
         shader_langs: TargetProfile::default().shader_langs,
     }
-}
-
-/// Reports a diagnostic from a project that failed to load, reading the file it
-/// points into so the report can show the line.
-pub(super) fn config_in_its_file(out: &mut Output, diagnostic: &ConfigDiagnostic) {
-    if let (Some(path), Some(_)) = (&diagnostic.path, diagnostic.span)
-        && let Ok(text) = fs::read_to_string(path)
-    {
-        let root = path.parent().unwrap_or(Path::new(""));
-        out.config(Some(&Source::new(path, root, &text)), diagnostic);
-    } else {
-        out.config(None, diagnostic);
-    }
-}
-
-/// The exit code of the first error that stopped the command.
-pub(super) fn failure_code(diagnostics: &[ConfigDiagnostic]) -> u8 {
-    diagnostics
-        .iter()
-        .find(|d| d.is_error())
-        .map_or(DIAGNOSTICS, |d| d.code.exit_code())
 }
 
 /// A manifest span as the compiler's range into `Viso.toml`.

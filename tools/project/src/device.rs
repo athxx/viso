@@ -1,5 +1,5 @@
 //! Simulator and emulator profiles: the developer machine's virtual devices,
-//! by the IDs `viso run ios|android --device` takes (`Viso_CLI.md`).
+//! by the IDs `viso run ios|android --device` takes.
 //!
 //! A profile is machine state, never project configuration: it lives in one
 //! file per profile under `~/.viso/ios/simulators/` or

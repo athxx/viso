@@ -2,87 +2,93 @@
 //! returns the process exit code.
 
 mod check;
+mod config;
 mod device;
 mod game;
 mod run;
 mod schema;
+mod serve;
 mod test;
 
 use viso_project::Platform;
 
 use crate::args::{AndroidCommand, Cli, Command, Global, IosCommand};
+use crate::context::Context;
+use crate::error::{CLI_USAGE, INTERNAL_PANIC};
 use crate::output::Output;
 
-/// Nothing failed.
-pub const SUCCESS: u8 = 0;
-/// A source, check or test diagnostic failed.
-pub const DIAGNOSTICS: u8 = 1;
-/// The command line did not parse.
-pub const USAGE: u8 = 2;
-/// The environment could not provide what the command needs.
-pub const ENVIRONMENT: u8 = 3;
-/// The build failed.
-pub const BUILD: u8 = 4;
-/// The app crashed or exited with a failure.
-pub const RUNTIME: u8 = 5;
-/// The user interrupted the command.
-pub const INTERRUPTED: u8 = 130;
-
-/// The code of a command line that did not parse.
-pub const CLI_USAGE: &str = "CLI_USAGE";
-/// The current directory could not be read.
-pub const ENV_CURRENT_DIR: &str = "ENV_CURRENT_DIR";
-/// A source file the command needs could not be read.
-pub const ENV_SOURCE_UNREADABLE: &str = "ENV_SOURCE_UNREADABLE";
-/// The project root has no `Cargo.toml` to build.
-pub const ENV_CARGO_MANIFEST: &str = "ENV_CARGO_MANIFEST";
-/// Cargo could not be run.
-pub const ENV_CARGO: &str = "ENV_CARGO";
-/// The build produced no executable, or more than one.
-pub const ENV_NO_EXECUTABLE: &str = "ENV_NO_EXECUTABLE";
-/// The dev channel could not be opened on the loopback interface.
-pub const ENV_DEV_CHANNEL: &str = "ENV_DEV_CHANNEL";
-/// A test scenario or tape could not be found or read.
-pub const ENV_TEST_INPUT: &str = "ENV_TEST_INPUT";
-/// A test scenario or tape does not parse or fit the build.
-pub const TEST_INPUT_INVALID: &str = "TEST_INPUT_INVALID";
-/// A game test's expectation was not met.
-pub const TEST_EXPECTATION: &str = "TEST_EXPECTATION";
-/// `cargo build` failed.
-pub const BUILD_FAILED: &str = "BUILD_FAILED";
-/// The app could not be launched, crashed, or exited with a failure.
-pub const RUN_APP_FAILED: &str = "RUN_APP_FAILED";
-
 /// Runs the parsed command, ends its output with the summary, and returns its exit
-/// code.
+/// code. A panic in the command is reported as the CLI's own failure, so the
+/// event stream still ends with its summary.
 pub fn run(cli: &Cli) -> u8 {
+    let ctx = Context::new(&cli.global);
     let mut out = Output::new(&cli.global, Some(cli.command.name()));
-    let code = match &cli.command {
-        Command::Android(AndroidCommand::Emulator(command)) => {
-            device::run(Platform::Android, command, &mut out)
-        }
-        Command::Check => check::run(&cli.global, &mut out),
-        Command::Ios(IosCommand::Simulator(command)) => {
-            device::run(Platform::Ios, command, &mut out)
-        }
-        Command::Game(command) => game::run(&cli.global, command, &mut out),
-        Command::Run(args) => run::run(&cli.global, args, &mut out),
-        Command::Schema(args) => schema::run(args, &mut out),
-        Command::Serve(args) => run::serve(&cli.global, args, &mut out),
-        Command::Test(args) => test::run(&cli.global, args, &mut out),
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dispatch(&ctx, &cli.command, &mut out)
+    }));
+    let code = match ran {
+        Ok(code) => code,
+        Err(panic) => out.failure(
+            INTERNAL_PANIC,
+            &format!("the CLI failed: {}", panic_message(&*panic)),
+            &["this is a bug in Viso; please report it with the command line".to_owned()],
+        ),
     };
     out.finish(code)
 }
 
-/// Reports a usage error as JSON events for `command`, when the command line
-/// names one, and returns its exit code.
-pub fn usage_failure(command: Option<&str>, message: &str, notes: &[String]) -> u8 {
+fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
+    match command {
+        Command::Android(AndroidCommand::Emulator(command)) => {
+            device::run(Platform::Android, command, out)
+        }
+        Command::Check => check::run(ctx, out),
+        Command::Config(command) => config::run(ctx, command, out),
+        Command::Ios(IosCommand::Simulator(command)) => device::run(Platform::Ios, command, out),
+        Command::Game(command) => game::run(ctx, command, out),
+        Command::Run(args) => run::run(ctx, args, out),
+        Command::Schema(args) => schema::run(args, out),
+        Command::Serve(args) => serve::run(ctx, args, out),
+        Command::Test(args) => test::run(ctx, args, out),
+    }
+}
+
+/// Reports a usage error for `command`, when the command line names one, as
+/// JSON events or human text, and returns its exit code.
+pub fn usage_failure(json: bool, command: Option<&str>, message: &str, notes: &[String]) -> u8 {
     let global = Global {
-        project: None,
-        quiet: false,
-        json: true,
+        json,
+        ..Global::default()
     };
     let mut out = Output::new(&global, command);
-    out.failure(CLI_USAGE, message, notes);
-    out.finish(USAGE)
+    let code = out.failure(CLI_USAGE, message, notes);
+    out.finish(code)
+}
+
+/// What a panic said.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("a panic with no message")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_reports_what_it_said() {
+        let caught = |f: fn()| std::panic::catch_unwind(f).unwrap_err();
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let literal = caught(|| panic!("index out of range"));
+        let formatted = caught(|| panic!("{} out of range", 7));
+        let other = caught(|| std::panic::panic_any(7u8));
+        std::panic::set_hook(hook);
+        assert_eq!(panic_message(&*literal), "index out of range");
+        assert_eq!(panic_message(&*formatted), "7 out of range");
+        assert_eq!(panic_message(&*other), "a panic with no message");
+    }
 }

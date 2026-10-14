@@ -1,4 +1,4 @@
-//! Cache layout (`Viso_CLI.md` section 45) and advisory locks (section 44).
+//! Cache layout and advisory locks.
 //!
 //! Everything Viso writes lives under two directories of the project root:
 //!
@@ -33,7 +33,7 @@ use crate::diag::{ConfigCode, ConfigDiagnostic};
 use crate::fingerprint::BuildId;
 use crate::target::{HostOs, Target};
 
-/// The per-language caches of section 45.
+/// The per-language caches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CacheKind {
     /// Resolved DSL output.
@@ -79,6 +79,8 @@ impl fmt::Display for CacheKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
     root: PathBuf,
+    /// `target/`, the project root's unless `--target-dir` named another.
+    target: PathBuf,
     /// `None` on a host Viso does not name, which only affects the `dist/host`
     /// directory name. An unnamed host is not a reason to refuse to compute paths.
     host: Option<HostOs>,
@@ -87,18 +89,26 @@ pub struct Layout {
 impl Layout {
     /// The layout for a project root, on this host.
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
         Self {
-            root: root.into(),
+            target: root.join("target"),
+            root,
             host: HostOs::current(),
         }
+    }
+
+    /// This layout with `target/` at `dir` instead; `dist/` stays at the root.
+    pub fn with_target_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.target = dir.into();
+        self
     }
 
     /// The layout as it would be on another host — how the cross-platform `dist/`
     /// naming is tested without a second machine.
     pub fn with_host(root: impl Into<PathBuf>, host: HostOs) -> Self {
         Self {
-            root: root.into(),
             host: Some(host),
+            ..Self::new(root)
         }
     }
 
@@ -108,8 +118,8 @@ impl Layout {
     }
 
     /// `target/`.
-    pub fn target_dir(&self) -> PathBuf {
-        self.root.join("target")
+    pub fn target_dir(&self) -> &Path {
+        &self.target
     }
 
     /// `target/viso/`.
@@ -217,7 +227,7 @@ impl Layout {
     }
 }
 
-/// What a lock protects (`Viso_CLI.md` section 44).
+/// What a lock protects.
 ///
 /// Three granularities, each keyed by the thing that would actually collide. The
 /// keying matters more than the count: a single project-wide lock would serialize
@@ -543,6 +553,14 @@ mod tests {
     /// The layout is pinned relative to the project root, because these paths appear
     /// in scripts, `.gitignore` files and CI caches: moving one later is a breaking
     /// change for users who never called an API.
+    #[test]
+    fn a_target_dir_moves_target_and_keeps_dist_at_the_root() {
+        let layout = Layout::new("/p").with_target_dir("/tmp/t");
+        assert_eq!(layout.target_dir(), Path::new("/tmp/t"));
+        assert_eq!(layout.locks(), Path::new("/tmp/t/viso/locks"));
+        assert_eq!(layout.dist_root(), Path::new("/p/dist"));
+    }
+
     #[test]
     fn every_documented_directory_sits_where_the_specification_says() {
         let layout = Layout::new("/p");

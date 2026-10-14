@@ -682,6 +682,8 @@ viso config validate
 - invalid resource path；
 - signing config shape。
 
+这些检查在 manifest 解析时进行，因此每个读取项目的命令都报告同样的问题；`validate` 额外解析 `VISO_*` 环境变量（C0010）。具体规则：`package.bundle_id` 为 iOS 与 Android 都接受的反向域名（两段以上，每段字母开头、只含字母数字）；`package.version` 为 1–3 段数字加可选 `-pre`/`+build`；`package.ios.team_id` 为 10 位大写字母数字；`target.ios.minimum_os` 为 1–3 段数字；`export.*.out_dir` 为留在 project 内的相对路径；`export.solid.package_manager` ∈ `npm|pnpm|yarn|bun`；`web.default_target` 只能是 `web-*`。违反者为 C0007，指向所在行。
+
 ### 10.5 不提供隐式 magic write
 
 不设计：
@@ -696,7 +698,9 @@ viso config set arbitrary.deep.key ...
 
 ### 10.6 JSON / exit codes
 
-`show`/`get`/`path` 各输出一条 `result`（`show`：`{key: {value, origin}}` 映射；`get`：`{key, value, origin}`；`path`：`{path}`）；`validate` 每个问题一条 `diagnostic`（C0001–C0012）。Exit code 按 §7 的 config 诊断映射；`validate` 无 error 时 0。
+`show`/`get`/`path` 各输出一条 `result`（`show`：`{key: {value, origin, from?}}` 映射，key 顺序固定；`get`：`{key, value, origin, from?}`；`path`：`{path}`）。`value` 带 JSON 类型（字符串、数字、布尔、字符串数组；未设置且无默认值为 `null`）；`origin` 为 provenance 名，`from` 在 `env`/`profile`/`manifest` 时给出具体位置（`env VISO_OPT_LEVEL`、`Viso.toml [profile.release]:5:9`、`Viso.toml:2:8`）。`validate` 每个问题一条 `diagnostic`（C0001–C0012，manifest 与环境变量的问题一次报全），全部通过时一条 `result{path}`。`get` 未知 key 为 `CLI_USAGE`（exit 2，note 给出最接近的 key）。Exit code 按 §7 的 config 诊断映射；`validate` 无 error 时 0。
+
+Key 集合是完整的 schema：`profile`、`opt_level`、`source_maps`、`strip`（当前 profile 的值，经全部层解析）、`dev_runtime`（由 profile 决定），`package.*`，`profile.<dev|release|shipping>.<opt_level|source_maps|strip>`（以该 profile 构建时得到的值，环境变量同样作用），以及 `web.*`、`target.*`、`export.*`、`game.*`、`i18n.source`、`workspace.members`（manifest 值或框架默认值）。`--profile` 决定"当前 profile"。
 
 ---
 
@@ -1596,9 +1600,9 @@ replay
 ```
 
 ```bash
-viso test game movement --tape runs/jump.tape      # 回放 Tape，对 @probe 断言
-viso game record movement -o runs/jump.tape        # 运行中录制 Input Tape
-viso game peek movement Player.score               # 读取运行中 System State
+viso test game movement --tape runs/jump.tape        # 回放 Tape，对 @probe 断言
+viso game record movement --output runs/jump.tape    # 运行中录制 Input Tape
+viso game peek movement Player.score                 # 读取运行中 System State
 ```
 
 输出包含每 Tick `@probe` Trace、最终 Snapshot Hash、Entity Snapshot，以及可选的 Headless 帧截图 Sheet（`--sheet <png>`）。同一 Build + Tape 在所选 determinism 档位下 Snapshot Hash 逐字节一致（DSL §110.5）。
@@ -1609,10 +1613,10 @@ viso game peek movement Player.score               # 读取运行中 System Stat
 - `--tape <path>` 用给定 Tape（二进制或文本）替换 Scenario 的输入、保留其期望；单独使用时以文件名为 Scenario 名、无期望；`--seed` 覆盖 Tape 的 Seed（缺省 Seed 为 `0x5eed5eed5eed5eed`）；`--frames` 缺省为 Tape 覆盖的 Tick 数与最后一个期望之后的较大者；一帧运行一个 Fixed Tick，再运行全部 `FrameUpdate`；Tick Rate 与 determinism 档位取自 `Viso.toml [game]`；
 - `--json` 下每个 Tick 输出一条 `trace`（`scenario, tick, probes{"System.state": 值}`），每个 Scenario 一条 `test`（§36，另带 `seed, frames, build, snapshot_hash`（16 位十六进制）、`entities[{id[index, generation], kind, tags, model, position, half_extents}], failures, faults`）；未满足的期望是指向 Scenario 行的 `TEST_EXPECTATION` 诊断，System 故障以其故障码报告；人类输出每个 Scenario 一行 `test game <name> ... ok|FAILED (<n> frames, seed <s>, snapshot <hash>)`，末行 `test result: …`；
 - 任一 Scenario 失败退出 1，Scenario 或 Tape 文件缺失或不可读退出 3；
-- `viso game peek <game> <System.state>` 与 `viso game record <game> -o <path> [--seconds S | --ticks N]`（缺省 10 秒）询问本 project 正在运行的 `viso run` session 的 app：`viso run` 另开一个 loopback control endpoint，把 `<地址> <token>` 写入 dev session lock（§44，第 4 行）；`viso game` 读 lock、连上 endpoint、带 token 发出请求，token 不符的连接不回应。`<game>` 按 app 挂载的 `.vs` 文件选取：相对 project root 的路径（可省 `.vs`）或文件名 stem，多个匹配时 `GAME_AMBIGUOUS`（exit 2）。`viso run` 经 dev channel 转给 runtime（`HostMessage::Game` / `RuntimeMessage::Game`，`Viso_Hot_Reload.md` §34），由运行该文件的第一个 Game Session 在帧边界回答；
+- `viso game peek <game> <System.state>` 与 `viso game record <game> --output <path> [--seconds S | --ticks N]`（缺省 10 秒）询问本 project 正在运行的 `viso run` session 的 app：`viso run` 另开一个 loopback control endpoint，把 `<地址> <token>` 写入 dev session lock（§44，第 4 行）；`viso game` 读 lock、连上 endpoint、带 token 发出请求，token 不符的连接不回应。`<game>` 按 app 挂载的 `.vs` 文件选取：相对 project root 的路径（可省 `.vs`）或文件名 stem，多个匹配时 `GAME_AMBIGUOUS`（exit 2）。`viso run` 经 dev channel 转给 runtime（`HostMessage::Game` / `RuntimeMessage::Game`，`Viso_Hot_Reload.md` §34），由运行该文件的第一个 Game Session 在帧边界回答；
 - `peek` 可读 System 的任意 State（不限 `@probe`），host 按该文件 last-good 的类型写成 JSON（无 last-good 时按结构）；人类输出 `<System>.<state> = <JSON> (<file> at tick <n>)`，`--json` 为一条 `result`（`game, system, state, value, tick, sessions`）；
 - `record` 先以 `Rebuild::Fresh` 重启该游戏的 World（时钟回到 tick 0、以其 seed 重跑 start），再录制所要求的 Tick 数（`--seconds` 按游戏 Tick Rate 向上取整），录满后 runtime 回传 Tape：未经 live patch 的写成文本形式（可直接作 `viso test game --tape` 输入或补上期望行成为 Scenario），带 live patch 的写成二进制形式（只有二进制携带 patch）；人类输出 `recorded <n> ticks of <file> to <path> (text|binary[, n live patches])`，`--json` 为一条 `result`（`game, path, form, ticks, seed, patches`）。游戏暂停时录制随之暂停；
-- 失败码：没有 session 或连不上 `ENV_NO_DEV_SESSION`（exit 3）；文件未挂载、app 未连上或不运行游戏 `GAME_NOT_RUNNING`（3）；没有该 System/State `GAME_UNKNOWN_STATE`（1，note 列出已有 State）；正在回放 Tape 或已在录制 `GAME_BUSY`（3）；World 重启时故障 `GAME_FAULT`、录制完成前游戏结束 `GAME_ENDED`（5）；Tape 超过 dev frame 上限或回答不可解码 `GAME_ANSWER_INVALID`；写 Tape 失败 `ENV_TAPE_WRITE`（3）；
+- 失败码：没有 session 或连不上 `ENV_NO_DEV_SESSION`（exit 3）；文件未挂载、app 未连上或不运行游戏 `GAME_NOT_RUNNING`（3）；没有该 System/State `GAME_UNKNOWN_STATE`（1，note 列出已有 State）；正在回放 Tape 或已在录制 `GAME_BUSY`（3）；World 重启时故障 `GAME_FAULT`、录制完成前游戏结束 `GAME_ENDED`（5）；Tape 超过 dev frame 上限或回答不可解码 `GAME_ANSWER_INVALID`（7，协议违约）；写 Tape 失败 `ENV_TAPE_WRITE`（3）；
 - `--sheet` 需要 Headless 游戏渲染，尚未实现；`viso test` 目前只有 `game` 域。
 
 ### 22.4 Test filters
@@ -2317,21 +2321,40 @@ summary       见 §36.3
 
 `payload` 即 `Viso_DSL_1.0.md` §138 对象：`schema_version, severity, code, message, primary{file, byte_start, byte_end, line, column_utf16, end_line, end_column_utf16}, related[{…位置字段, message}], expected[], actual, notes[], fixes[{title, applicability, edits[{file, byte_start, byte_end, replacement}]}]`。CLI 不定义第二套 diagnostic 形状。Config 诊断（`C0001`–`C0012`）、环境诊断（如 `ENV_ANDROID_SDK`）、exporter 诊断与 CLI 自身诊断使用同一形状；无源码位置时 `primary` 为 `null`，Viso.toml 诊断的 `primary.file` 指向 `Viso.toml`。
 
-CLI 自身诊断 code：
+CLI 自身诊断 code 各自绑定一个 exit code（CLI 内只有一张表，失败按其 code 取 exit，不另行选择）；前缀即失败类别：`CLI_*` 2、`ENV_*` 3、`BUILD_*` 4、`RUN_*` 5、`TEST_*` 1、`INTERNAL_*` 7，`DEVICE_*`/`GAME_*` 按各自含义：
 
 ```text
-CLI_USAGE               命令行无法解析（--json 已识别时，§37）   exit 2
+CLI_USAGE               命令行无法解析或请求命令不做的事（如对    exit 2
+                        positional-target 命令写 `--target`、
+                        `config get` 未知 key、只构建 dev 的命令
+                        收到其他 `--profile`）
+INTERNAL_PANIC          CLI 自身 panic；仍以 summary 结束 stream   exit 7
 ENV_CURRENT_DIR         当前目录不可读                           exit 3
 ENV_SOURCE_UNREADABLE   命令需要的源文件不可读                   exit 3
 ENV_CARGO_MANIFEST      `run` 的 project root 下没有 Cargo.toml  exit 3
 ENV_CARGO               cargo 无法启动                           exit 3
 ENV_NO_EXECUTABLE       构建没有产出、或产出多个可执行文件       exit 3
 ENV_DEV_CHANNEL         loopback dev transport 无法建立          exit 3
+ENV_DEVICE              simulator/emulator 工具链缺失或失败       exit 3
+ENV_NO_DEV_SESSION      没有可连的 `viso run` session             exit 3
+ENV_TAPE_WRITE          录制的 Tape 无法写出                      exit 3
 ENV_TEST_INPUT          测试 Scenario 或 Tape 缺失或不可读        exit 3
 TEST_INPUT_INVALID      Scenario/Tape 无法解析或与 Build 不符     exit 1
 TEST_EXPECTATION        游戏测试期望未满足                       exit 1
 BUILD_FAILED            cargo build 失败                         exit 4
 RUN_APP_FAILED          app 无法启动、crash 或非零退出           exit 5
+DEVICE_MISSING          没有 simulator/emulator profile           exit 3
+DEVICE_UNKNOWN          `--device` 或默认值不是已有 profile        exit 2
+DEVICE_AMBIGUOUS        多个 profile 且无默认                     exit 2
+DEVICE_ID_INVALID       profile ID 不合法                         exit 2
+DEVICE_EXISTS           同名 profile 已存在                       exit 2
+DEVICE_SYSTEM           没有合适的已装 system image/runtime        exit 3
+GAME_NOT_RUNNING        §22.3                                     exit 3
+GAME_AMBIGUOUS          §22.3                                     exit 2
+GAME_UNKNOWN_STATE      §22.3                                     exit 1
+GAME_BUSY               §22.3                                     exit 3
+GAME_ENDED / GAME_FAULT §22.3                                     exit 5
+GAME_ANSWER_INVALID     session 的回答不可解码或超出 dev frame     exit 7
 ```
 
 ### 36.2 Artifact

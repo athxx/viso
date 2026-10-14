@@ -1,4 +1,4 @@
-//! The control endpoint of `viso run` (`Viso_CLI.md` §22.3): a loopback
+//! The control endpoint of `viso run`: a loopback
 //! listener, named with its token in the dev session's lock, through which
 //! `viso game peek` and `viso game record` ask the running app about a game.
 //!
@@ -22,6 +22,8 @@ use viso_view::dev::wire::{
     same_token, write_frame,
 };
 
+use crate::error;
+
 /// How long a control connection has to send its request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -31,23 +33,16 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// The longest token, game name and state name a request carries.
 const MAX_FIELD: usize = 4096;
 
-/// No `viso run` session is running for the project, or it cannot be
-/// reached.
-pub const ENV_NO_DEV_SESSION: &str = "ENV_NO_DEV_SESSION";
-/// No mounted view of the named file runs a game.
-pub const GAME_NOT_RUNNING: &str = "GAME_NOT_RUNNING";
-/// The name matches more than one mounted view.
-pub const GAME_AMBIGUOUS: &str = "GAME_AMBIGUOUS";
-/// The game has no such system or state.
-pub const GAME_UNKNOWN_STATE: &str = "GAME_UNKNOWN_STATE";
-/// The game replays a tape, or is being recorded already.
-pub const GAME_BUSY: &str = "GAME_BUSY";
-/// The game ended before the recording did.
-pub const GAME_ENDED: &str = "GAME_ENDED";
-/// The World did not restart for the recording.
-pub const GAME_FAULT: &str = "GAME_FAULT";
-/// The tape outgrew a dev frame, or the answer did not decode.
-pub const GAME_ANSWER_INVALID: &str = "GAME_ANSWER_INVALID";
+// The codes a refusal carries over the wire, by name; their exits are the
+// registry's.
+pub const ENV_NO_DEV_SESSION: &str = error::ENV_NO_DEV_SESSION.name;
+pub const GAME_NOT_RUNNING: &str = error::GAME_NOT_RUNNING.name;
+pub const GAME_AMBIGUOUS: &str = error::GAME_AMBIGUOUS.name;
+pub const GAME_UNKNOWN_STATE: &str = error::GAME_UNKNOWN_STATE.name;
+pub const GAME_BUSY: &str = error::GAME_BUSY.name;
+pub const GAME_ENDED: &str = error::GAME_ENDED.name;
+pub const GAME_FAULT: &str = error::GAME_FAULT.name;
+pub const GAME_ANSWER_INVALID: &str = error::GAME_ANSWER_INVALID.name;
 
 /// What a control connection asks.
 #[derive(Debug, Clone, PartialEq, Eq)]

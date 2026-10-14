@@ -1,4 +1,4 @@
-//! `viso game` (`Viso_CLI.md` section 22.3): ask the game the running
+//! `viso game`: ask the game the running
 //! `viso run` session's app plays. The session is found by its lock, which
 //! names its control endpoint; the game by its `.vs` file among the views the
 //! app mounts.
@@ -14,60 +14,36 @@ use std::fs;
 use std::time::Duration;
 
 use viso_dsl::scenario::read_tape;
-use viso_project::{ArtifactKind, Layout, LockGuard, LockKind, Overrides, Profile, Target};
+use viso_project::{LockGuard, LockKind, Target};
 use viso_view::dev::wire::{GameAsk, MAX_RECORD_TICKS, RecordSpan};
 
-use super::check::{config_in_its_file, failure_code};
-use super::{CLI_USAGE, DIAGNOSTICS, ENV_CURRENT_DIR, ENVIRONMENT, RUNTIME, SUCCESS, USAGE};
-use crate::args::{GameCommand, Global, PeekArgs, RecordArgs};
+use crate::args::{GameCommand, PeekArgs, RecordArgs};
+use crate::context::Context;
 use crate::dev::ControlReply;
-use crate::dev::control::{
-    self, ENV_NO_DEV_SESSION, GAME_AMBIGUOUS, GAME_ENDED, GAME_FAULT, GAME_UNKNOWN_STATE,
+use crate::dev::control;
+use crate::error::{
+    self, CLI_USAGE, ENV_NO_DEV_SESSION, ENV_TAPE_WRITE, GAME_ANSWER_INVALID, SUCCESS,
 };
 use crate::output::Output;
 
 /// How long a peek waits for the app: it answers at its next frame.
 const PEEK_WAIT: Duration = Duration::from_secs(10);
 
-/// A tape could not be written.
-pub const ENV_TAPE_WRITE: &str = "ENV_TAPE_WRITE";
-
-pub fn run(global: &Global, command: &GameCommand, out: &mut Output) -> u8 {
+pub fn run(ctx: &Context<'_>, command: &GameCommand, out: &mut Output) -> u8 {
     match command {
-        GameCommand::Peek(args) => peek(global, args, out),
-        GameCommand::Record(args) => record(global, args, out),
+        GameCommand::Peek(args) => peek(ctx, args, out),
+        GameCommand::Record(args) => record(ctx, args, out),
     }
 }
 
 /// The control endpoint the project's `viso run` session named in its lock.
-fn endpoint(global: &Global, out: &mut Output) -> Result<String, u8> {
-    let cwd = std::env::current_dir().map_err(|error| {
-        out.failure(
-            ENV_CURRENT_DIR,
-            &format!("cannot read the current directory: {error}"),
-            &[],
-        );
-        ENVIRONMENT
-    })?;
-    let flags = Overrides {
-        target: Some(Target::Host),
-        profile: Some(Profile::Dev),
-        ..Overrides::default()
-    };
-    let (project, _) =
-        viso_project::load(global.project.as_deref(), &cwd, ArtifactKind::Build, &flags).map_err(
-            |diagnostics| {
-                for diagnostic in &diagnostics {
-                    config_in_its_file(out, diagnostic);
-                }
-                failure_code(&diagnostics)
-            },
-        )?;
+fn endpoint(ctx: &Context<'_>, out: &mut Output) -> Result<String, u8> {
+    let project = ctx.project(out)?;
     let kind = LockKind::DevSession {
         target: Target::Host,
         device: None,
     };
-    match LockGuard::holder(&Layout::new(&project.root), kind) {
+    match LockGuard::holder(&ctx.layout(&project.root), kind) {
         Some(holder) => holder.endpoint.clone().ok_or_else(|| {
             out.failure(
                 ENV_NO_DEV_SESSION,
@@ -75,34 +51,29 @@ fn endpoint(global: &Global, out: &mut Output) -> Result<String, u8> {
                 &[format!(
                     "it is starting, or failed to open its control endpoint ({holder})"
                 )],
-            );
-            ENVIRONMENT
+            )
         }),
-        None => {
-            out.failure(
-                ENV_NO_DEV_SESSION,
-                "no `viso run` session is running for this project",
-                &["`viso game` asks the app a `viso run` session runs: start one".to_owned()],
-            );
-            Err(ENVIRONMENT)
-        }
+        None => Err(out.failure(
+            ENV_NO_DEV_SESSION,
+            "no `viso run` session is running for this project",
+            &["`viso game` asks the app a `viso run` session runs: start one".to_owned()],
+        )),
     }
 }
 
-fn peek(global: &Global, args: &PeekArgs, out: &mut Output) -> u8 {
+fn peek(ctx: &Context<'_>, args: &PeekArgs, out: &mut Output) -> u8 {
     let Some((system, state)) = args
         .state
         .split_once('.')
         .filter(|(system, state)| !system.is_empty() && !state.is_empty())
     else {
-        out.failure(
+        return out.failure(
             CLI_USAGE,
             &format!("`{}` is not `System.state`", args.state),
             &["name the state as `Player.score`".to_owned()],
         );
-        return USAGE;
     };
-    let endpoint = match endpoint(global, out) {
+    let endpoint = match endpoint(ctx, out) {
         Ok(endpoint) => endpoint,
         Err(code) => return code,
     };
@@ -146,31 +117,27 @@ fn peek(global: &Global, args: &PeekArgs, out: &mut Output) -> u8 {
             SUCCESS
         }
         Ok(reply) => refused(reply, out),
-        Err(message) => {
-            out.failure(ENV_NO_DEV_SESSION, &message, &[]);
-            ENVIRONMENT
-        }
+        Err(message) => out.failure(ENV_NO_DEV_SESSION, &message, &[]),
     }
 }
 
-fn record(global: &Global, args: &RecordArgs, out: &mut Output) -> u8 {
+fn record(ctx: &Context<'_>, args: &RecordArgs, out: &mut Output) -> u8 {
     let span = match args.ticks {
         Some(ticks) if (1..=MAX_RECORD_TICKS).contains(&ticks) => RecordSpan::Ticks(ticks),
         None if args.seconds.is_finite() && args.seconds > 0.0 => {
             RecordSpan::Millis((args.seconds * 1000.0).ceil() as u64)
         }
         _ => {
-            out.failure(
+            return out.failure(
                 CLI_USAGE,
                 "a recording runs at least one tick",
                 &[format!(
                     "`--ticks` is 1 to {MAX_RECORD_TICKS}, `--seconds` above 0"
                 )],
             );
-            return USAGE;
         }
     };
-    let endpoint = match endpoint(global, out) {
+    let endpoint = match endpoint(ctx, out) {
         Ok(endpoint) => endpoint,
         Err(code) => return code,
     };
@@ -191,19 +158,17 @@ fn record(global: &Global, args: &RecordArgs, out: &mut Output) -> u8 {
         Ok(ControlReply::Tape { file, tape }) => (file, tape),
         Ok(reply) => return refused(reply, out),
         Err(message) => {
-            out.failure(ENV_NO_DEV_SESSION, &message, &[]);
-            return ENVIRONMENT;
+            return out.failure(ENV_NO_DEV_SESSION, &message, &[]);
         }
     };
     let tape = match read_tape(&bytes, 0, 0) {
         Ok(tape) => tape,
         Err(error) => {
-            out.failure(
-                control::GAME_ANSWER_INVALID,
+            return out.failure(
+                GAME_ANSWER_INVALID,
                 &format!("the app sent a malformed tape: {error}"),
                 &[],
             );
-            return RUNTIME;
         }
     };
     // The text form carries no patch.
@@ -220,12 +185,11 @@ fn record(global: &Global, args: &RecordArgs, out: &mut Output) -> u8 {
         .map_or(Ok(()), fs::create_dir_all)
         .and_then(|()| fs::write(path, &written));
     if let Err(error) = wrote {
-        out.failure(
+        return out.failure(
             ENV_TAPE_WRITE,
             &format!("cannot write `{}`: {error}", path.display()),
             &[],
         );
-        return ENVIRONMENT;
     }
     let form = if binary { "binary" } else { "text" };
     out.result(
@@ -269,18 +233,18 @@ fn refused(reply: ControlReply, out: &mut Output) -> u8 {
         notes,
     } = reply
     else {
-        out.failure(
-            control::GAME_ANSWER_INVALID,
+        return out.failure(
+            GAME_ANSWER_INVALID,
             "`viso run` answered another question",
             &[],
         );
-        return RUNTIME;
     };
-    out.failure(&code, &message, &notes);
-    match &*code {
-        GAME_UNKNOWN_STATE => DIAGNOSTICS,
-        GAME_AMBIGUOUS => USAGE,
-        GAME_FAULT | GAME_ENDED => RUNTIME,
-        _ => ENVIRONMENT,
+    match error::by_name(&code) {
+        Some(code) => out.failure(code, &message, &notes),
+        None => out.failure(
+            GAME_ANSWER_INVALID,
+            &format!("`viso run` refused with an unknown code `{code}`: {message}"),
+            &notes,
+        ),
     }
 }

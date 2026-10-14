@@ -39,11 +39,17 @@ impl RustScope {
     /// # Errors
     ///
     /// Cargo or `rustc` not running, or Cargo's answer not being metadata.
-    pub(crate) fn read(manifest: &Path, target: Option<&str>) -> Result<RustScope, String> {
+    pub(crate) fn read(
+        manifest: &Path,
+        target: Option<&str>,
+        cargo_args: &[OsString],
+    ) -> Result<RustScope, String> {
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
         let mut command = Command::new(&cargo);
         command
-            .args(["metadata", "--format-version", "1", "--manifest-path"])
+            .args(["metadata", "--format-version", "1"])
+            .args(cargo_args)
+            .arg("--manifest-path")
             .arg(manifest);
         if let Some(platform) = target.map(str::to_owned).or_else(host_triple) {
             command.args(["--filter-platform", &platform]);
@@ -295,7 +301,7 @@ mod tests {
             .join("Cargo.toml")
             .canonicalize()
             .unwrap();
-        let scope = RustScope::read(&manifest, None).unwrap();
+        let scope = RustScope::read(&manifest, None, &[]).unwrap();
         assert_eq!(scope.packages[0], manifest.parent().unwrap());
         let dsl = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../crates/dsl")

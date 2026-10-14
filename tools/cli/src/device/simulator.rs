@@ -1,6 +1,6 @@
 //! The Apple Simulator through `xcrun simctl`: the simulators Viso creates
 //! for its profiles, their boot state, and the app installed, launched and
-//! stopped on one (`Viso_CLI.md`, `Viso_Hot_Reload.md`).
+//! stopped on one.
 //!
 //! A simulator shares the host's network, so the app reaches the dev channel
 //! on the host's loopback address as a desktop app does; `simctl launch`

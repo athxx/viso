@@ -1,6 +1,6 @@
 //! Targets, profiles and artifact kinds — the three axes of "what am I building".
 //!
-//! These are separate types on purpose (`Viso_CLI.md` sections 2 and 3). A target says
+//! These are separate types on purpose. A target says
 //! *where* the output runs, a profile says *how* it was compiled, and an artifact
 //! kind says *what shape* the output has. The type system must not let one be
 //! mistaken for another, because the three combine into different directories,
@@ -18,9 +18,9 @@ use crate::diag::{ConfigCode, ConfigDiagnostic};
 /// Where the built application runs.
 ///
 /// [`Target::Host`] is resolved from the current OS and is never a name the user
-/// types (`Viso_CLI.md` section 1): `viso run` on macOS means macOS, and spelling
+/// types: `viso run` on macOS means macOS, and spelling
 /// it out would create two ways to say one thing. [`Target::Headless`] is the
-/// deterministic test target (section 3.4).
+/// deterministic test target.
 ///
 /// The mobile and web variants exist in the enum now, before their commands do, so
 /// a `Viso.toml` written for them parses cleanly and `--target ios` produces
@@ -32,15 +32,15 @@ pub enum Target {
     Host,
     /// Deterministic, no window, no adapter — the test and CI target.
     Headless,
-    /// iOS device or simulator (`Viso_CLI.md` section 3.2).
+    /// iOS device or simulator.
     Ios,
-    /// Android device or emulator (section 3.2).
+    /// Android device or emulator.
     Android,
-    /// Browser, WebGPU canvas (section 3.3).
+    /// Browser, WebGPU canvas.
     WebGpu,
-    /// Browser, DOM output (section 3.3).
+    /// Browser, DOM output.
     WebDom,
-    /// Browser, WebGPU with a DOM overlay (section 3.3).
+    /// Browser, WebGPU with a DOM overlay.
     WebHybrid,
 }
 
@@ -93,8 +93,7 @@ impl Target {
 
     /// The diagnostic for asking for an unavailable target.
     ///
-    /// Exit code 3 (environment), not 1 — nothing in the user's project is wrong
-    /// (`Viso_CLI.md` section 7).
+    /// Exit code 3 (environment), not 1 — nothing in the user's project is wrong.
     pub fn unavailable(self) -> ConfigDiagnostic {
         ConfigDiagnostic::error(
             ConfigCode::TargetUnavailable,
@@ -161,7 +160,7 @@ pub enum HostOs {
 
 impl HostOs {
     /// The OS this binary was compiled for, or `None` on an OS Viso has no
-    /// Tier-1 path for (AGENTS 65.1).
+    /// Tier-1 path for.
     pub const fn current() -> Option<Self> {
         #[cfg(target_os = "macos")]
         {
@@ -202,7 +201,7 @@ impl fmt::Display for HostOs {
 /// Three profiles, not an open set: each one fixes a dev-runtime decision
 /// ([`Profile::dev_runtime`]) that must not be configurable, so a fourth profile
 /// would have to answer that question too and there is no fourth answer worth
-/// having (`Viso_CLI.md` section 38.2).
+/// having.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Profile {
     /// Fast rebuild, full diagnostics, Dev Runtime present.
@@ -240,8 +239,7 @@ impl Profile {
 
     /// Whether the Dev Runtime is compiled in.
     ///
-    /// Fixed by the profile and *not* configurable (`Viso_CLI.md` section 38.2,
-    /// AGENTS 60). A release build that could be patched at runtime is a release
+    /// Fixed by the profile and *not* configurable. A release build that could be patched at runtime is a release
     /// build that carries the whole dev surface — the watcher, the connection, the
     /// staging buffers — into a shipped binary. Making this a function rather than
     /// a config key is what makes that impossible to ask for.
@@ -340,9 +338,9 @@ impl OptLevel {
 
     /// Parses an optimization level, or produces the diagnostic for an unknown one.
     ///
-    /// `"size"` is accepted alongside the canonical `"s"` because `Viso_CLI.md`
-    /// section 38.2 writes it that way; rejecting the spelling in the spec's own
-    /// example would be a worse contract than carrying one alias.
+    /// `"size"` is accepted alongside the canonical `"s"` because that is how
+    /// `Viso.toml` examples write it; rejecting the documented spelling would be a
+    /// worse contract than carrying one alias.
     pub fn parse(name: &str) -> Result<Self, ConfigDiagnostic> {
         if name == "size" {
             return Ok(OptLevel::Size);
@@ -376,7 +374,7 @@ impl fmt::Display for OptLevel {
     }
 }
 
-/// What shape the output has (`Viso_CLI.md` section 2).
+/// What shape the output has.
 ///
 /// Three different outputs with three different meanings, and the reason they are
 /// one enum rather than three booleans: a command takes exactly one of them, and
@@ -467,7 +465,7 @@ mod tests {
         }
     }
 
-    /// The linkage from `Viso_CLI.md` section 38.2. There is deliberately no setter
+    /// The profile-to-runtime linkage. There is deliberately no setter
     /// and no config key: this test exists to pin that the mapping is total and
     /// that release never gains a dev runtime.
     #[test]

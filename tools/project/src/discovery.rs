@@ -1,4 +1,4 @@
-//! Finding the project root (`Viso_CLI.md` section 4).
+//! Finding the project root.
 //!
 //! Walk up from the working directory to the first `Viso.toml`; stop at the
 //! filesystem root; `--project <path>` overrides the walk entirely. The override
@@ -26,7 +26,7 @@ pub struct Project {
     /// Empty for a single-project repository.
     pub members: Vec<PathBuf>,
     /// Non-fatal problems found while parsing. Carried rather than printed: this
-    /// crate does not own output (`Viso_CLI.md` section 40).
+    /// crate does not own output.
     pub warnings: Vec<ConfigDiagnostic>,
 }
 
@@ -131,12 +131,6 @@ impl Project {
     /// The manifest path.
     pub fn manifest_path(&self) -> PathBuf {
         self.root.join(MANIFEST_NAME)
-    }
-
-    /// The build directory (`target/`), the parent of everything in
-    /// [`crate::cache`].
-    pub fn target_dir(&self) -> PathBuf {
-        self.root.join("target")
     }
 
     /// The project name, or the diagnostic for its absence.
@@ -314,23 +308,24 @@ mod tests {
         );
     }
 
-    /// Warnings travel with the project instead of blocking it — an unknown key is
-    /// worth reporting and not worth refusing to build over.
+    /// Warnings travel with the project instead of blocking it.
     #[test]
     fn warnings_are_carried_not_fatal() {
         let s = Scratch::new("warnings");
-        s.write("Viso.toml", "[package]\nname = \"app\"\nnaem = \"typo\"\n");
+        s.write(
+            "Viso.toml",
+            "[package]\nname = \"app\"\n\n[profile.dev]\nhot_reload = true\n",
+        );
         let project = Project::discover(s.path()).unwrap();
         assert_eq!(project.warnings.len(), 1);
         assert_eq!(project.warnings[0].code, ConfigCode::UnknownKey);
     }
 
     #[test]
-    fn the_target_directory_hangs_off_the_root() {
-        let s = Scratch::new("target-dir");
+    fn the_manifest_is_at_the_root() {
+        let s = Scratch::new("manifest-path");
         s.write("Viso.toml", MINIMAL);
         let project = Project::discover(s.path()).unwrap();
-        assert_eq!(project.target_dir(), s.path().join("target"));
         assert_eq!(project.manifest_path(), s.path().join(MANIFEST_NAME));
     }
 }

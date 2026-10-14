@@ -1,7 +1,6 @@
 //! The Android Emulator through the SDK's `emulator` and `adb`: the virtual
 //! devices (AVDs) Viso creates for its profiles, the adb serial of the one
-//! running a profile, and the app installed, launched and stopped on it
-//! (`Viso_CLI.md`, `Viso_Hot_Reload.md`).
+//! running a profile, and the app installed, launched and stopped on it.
 //!
 //! The app reaches the dev channel on its own loopback address: `adb
 //! reverse` forwards the emulator's port to the host's loopback listener, so

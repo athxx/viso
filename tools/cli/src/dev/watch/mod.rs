@@ -820,7 +820,7 @@ mod tests {
         }
     }
 
-    /// The coalescing workload (`Viso_Hot_Reload.md` §7.1): a tool writing
+    /// The coalescing workload: a tool writing
     /// `n` related files back to back, as an AI agent applies a multi-file
     /// edit, and the spread of their arrivals, first to last, which the
     /// session's coalescing window must cover. A release measurement:

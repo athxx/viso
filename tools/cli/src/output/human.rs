@@ -1,5 +1,4 @@
-//! Human-readable output (`Viso_CLI.md` section 37): diagnostics to stderr, the
-//! summary to stdout.
+//! Human-readable output: diagnostics to stderr, the summary to stdout.
 //!
 //! A diagnostic prints its header, its location and the source line under a caret
 //! underline, then its related spans, notes and fix titles. A related span in
@@ -27,14 +26,14 @@ use crate::dev::report::{Outcome, RebuildEvent, ReloadEvent};
 
 use super::{Location, Report, Source};
 
-/// Writes `report` to stderr, followed by a blank line.
-pub(super) fn print(report: &Report<'_>) {
-    let mut text = render(report);
+/// Writes `report` to stderr, followed by a blank line, in color when `color`.
+pub(super) fn print(report: &Report<'_>, color: bool) {
+    let mut text = render_with(report, Paint(color));
     text.push('\n');
     let _ = std::io::stderr().lock().write_all(text.as_bytes());
 }
 
-/// The line a hot reload attempt of `file` prints (`Viso_Hot_Reload.md` §53).
+/// The line a hot reload attempt of `file` prints.
 pub(super) fn dev(file: &str, event: &ReloadEvent) -> String {
     let ms = event.elapsed_us as f64 / 1000.0;
     match event.outcome {
@@ -128,18 +127,54 @@ fn dirty_summary(dirty: &viso_view::dev::wire::DirtyCounts) -> String {
         .join(", ")
 }
 
+/// ANSI styling, or none.
+#[derive(Clone, Copy)]
+struct Paint(bool);
+
+impl Paint {
+    /// `text` in the SGR style `sgr`.
+    fn style(self, sgr: &str, text: &str) -> String {
+        if self.0 {
+            format!("\x1b[{sgr}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
+    }
+
+    /// The color of a severity, and of its primary underline.
+    fn severity(severity: &str) -> &'static str {
+        match severity {
+            "error" => "1;31",
+            "warning" => "1;33",
+            _ => "1;36",
+        }
+    }
+
+    /// The gutter, arrows and `=`.
+    fn frame(self, text: &str) -> String {
+        self.style("1;34", text)
+    }
+}
+
+#[cfg(test)]
 fn render(report: &Report<'_>) -> String {
+    render_with(report, Paint(false))
+}
+
+fn render_with(report: &Report<'_>, paint: Paint) -> String {
     let mut out = String::new();
     // Writing to a `String` cannot fail.
-    let _ = write(&mut out, report);
+    let _ = write(&mut out, report, paint);
     out
 }
 
-fn write(out: &mut String, report: &Report<'_>) -> fmt::Result {
+fn write(out: &mut String, report: &Report<'_>, paint: Paint) -> fmt::Result {
+    let severity = Paint::severity(report.severity);
     writeln!(
         out,
-        "{}[{}]: {}",
-        report.severity, report.code, report.message
+        "{}{}",
+        paint.style(severity, &format!("{}[{}]", report.severity, report.code)),
+        paint.style("1", &format!(": {}", report.message))
     )?;
     let mut gutter = 0;
     match &report.location {
@@ -155,31 +190,81 @@ fn write(out: &mut String, report: &Report<'_>) -> fmt::Result {
                 .unwrap_or(1);
             gutter = last.to_string().len();
             let (line, column) = source.position(range.start);
-            writeln!(out, "{:gutter$}--> {}:{line}:{column}", "", source.name)?;
-            writeln!(out, "{:gutter$} |", "")?;
-            snippet(out, source, range, '^', "", gutter)?;
+            let bar = paint.frame("|");
+            writeln!(
+                out,
+                "{:gutter$}{} {}:{line}:{column}",
+                "",
+                paint.frame("-->"),
+                source.name
+            )?;
+            writeln!(out, "{:gutter$} {bar}", "")?;
+            let primary = Mark {
+                char: '^',
+                sgr: severity,
+            };
+            snippet(out, source, range, primary, "", gutter, paint)?;
             let mut shown: &Source<'_> = source;
             for related in &report.related {
                 if !std::ptr::eq(related.source, shown) {
                     shown = related.source;
                     let (line, column) = shown.position(related.range.start);
-                    writeln!(out, "{:gutter$} |", "")?;
-                    writeln!(out, "{:gutter$}::: {}:{line}:{column}", "", shown.name)?;
-                    writeln!(out, "{:gutter$} |", "")?;
+                    writeln!(out, "{:gutter$} {bar}", "")?;
+                    writeln!(
+                        out,
+                        "{:gutter$}{} {}:{line}:{column}",
+                        "",
+                        paint.frame(":::"),
+                        shown.name
+                    )?;
+                    writeln!(out, "{:gutter$} {bar}", "")?;
                 }
-                snippet(out, shown, &related.range, '-', related.label, gutter)?;
+                let secondary = Mark {
+                    char: '-',
+                    sgr: "1;34",
+                };
+                snippet(
+                    out,
+                    shown,
+                    &related.range,
+                    secondary,
+                    related.label,
+                    gutter,
+                    paint,
+                )?;
             }
         }
-        Location::Point { file, line, column } => writeln!(out, " --> {file}:{line}:{column}")?,
+        Location::Point { file, line, column } => {
+            writeln!(out, " {} {file}:{line}:{column}", paint.frame("-->"))?
+        }
         Location::None => {}
     }
+    let equals = paint.frame("=");
     for note in report.notes {
-        writeln!(out, "{:gutter$} = note: {note}", "")?;
+        writeln!(
+            out,
+            "{:gutter$} {equals} {}: {note}",
+            "",
+            paint.style("1", "note")
+        )?;
     }
     for fix in &report.fixes {
-        writeln!(out, "{:gutter$} = help: {}", "", fix.title)?;
+        writeln!(
+            out,
+            "{:gutter$} {equals} {}: {}",
+            "",
+            paint.style("1", "help"),
+            fix.title
+        )?;
     }
     Ok(())
+}
+
+/// How a snippet underlines its range: the character, and its color.
+#[derive(Clone, Copy)]
+struct Mark {
+    char: char,
+    sgr: &'static str,
 }
 
 /// One source line with `range` underlined by `mark`, and an optional label after
@@ -188,9 +273,10 @@ fn snippet(
     out: &mut String,
     source: &Source<'_>,
     range: &Range<usize>,
-    mark: char,
+    mark: Mark,
     label: &str,
     gutter: usize,
+    paint: Paint,
 ) -> fmt::Result {
     let start = source.clamp(range.start);
     let (text, line_start) = source.line_at(start);
@@ -204,14 +290,17 @@ fn snippet(
         .map(|c| if c == '\t' { '\t' } else { ' ' })
         .collect();
     let width = source.text[start.min(line_end)..end].chars().count().max(1);
-    let underline: String = std::iter::repeat_n(mark, width).collect();
-    writeln!(out, "{line:>gutter$} | {text}")?;
+    let underline: String = std::iter::repeat_n(mark.char, width).collect();
+    let bar = paint.frame("|");
+    let number = paint.frame(&format!("{line:>gutter$}"));
+    writeln!(out, "{number} {bar} {text}")?;
     let label = if label.is_empty() {
         String::new()
     } else {
         format!(" {label}")
     };
-    writeln!(out, "{:gutter$} | {pad}{underline}{label}", "")
+    let underline = paint.style(mark.sgr, &format!("{underline}{label}"));
+    writeln!(out, "{:gutter$} {bar} {pad}{underline}", "")
 }
 
 /// The one-line summary of a check.
@@ -281,6 +370,29 @@ mod tests {
              = note: names are case-sensitive\n  \
              = help: replace with `Point`\n"
         );
+    }
+
+    #[test]
+    fn color_styles_the_header_frame_and_marks_and_nothing_else() {
+        let text = "let x = y;\n";
+        let source = Source::new(Path::new("/p/a.vs"), Path::new("/p"), text);
+        let mut error = Diagnostic::error("E2001", range(text, "y"), "unresolved `y`");
+        error.notes.push("names are case-sensitive".to_string());
+        let report = compiler_report(Some(&source), &[], &error);
+        let colored = render_with(&report, Paint(true));
+        assert!(
+            colored.starts_with("\x1b[1;31merror[E2001]\x1b[0m\x1b[1m: unresolved `y`\x1b[0m\n")
+        );
+        assert!(colored.contains("\x1b[1;31m^\x1b[0m"), "{colored:?}");
+        // Without the escapes it is the plain rendering.
+        let mut plain = String::new();
+        let mut rest = colored.as_str();
+        while let Some(at) = rest.find('\x1b') {
+            plain.push_str(&rest[..at]);
+            rest = &rest[at + rest[at..].find('m').unwrap() + 1..];
+        }
+        plain.push_str(rest);
+        assert_eq!(plain, render(&report));
     }
 
     #[test]

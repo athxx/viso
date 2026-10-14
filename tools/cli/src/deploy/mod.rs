@@ -1,5 +1,5 @@
 //! Where `viso run` runs the dev artifact, and how it is started, asked to
-//! close, stopped and heard from there (`Viso_Hot_Reload.md`): only the
+//! close, stopped and heard from there: only the
 //! deploy differs between the desktop, the simulator and
 //! the emulator; the dev session and its patches are the same.
 //!

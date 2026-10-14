@@ -1,9 +1,9 @@
 //! Configuration diagnostics — stable codes, spans, and actionable notes.
 //!
 //! A configuration problem is a user error, not an internal invariant failure, so
-//! it never panics and never degrades to a generic message (AGENTS 30). Every
+//! it never panics and never degrades to a generic message. Every
 //! diagnostic carries a stable code the CLI can print, machine-emit, and explain
-//! (`viso explain <code>`, `Viso_CLI.md` section 19), a primary span into the
+//! (`viso explain <code>`), a primary span into the
 //! manifest where one exists, and notes that say what to do.
 //!
 //! The codes are a published contract: once a code names a condition it keeps
@@ -172,8 +172,7 @@ impl ConfigCode {
         }
     }
 
-    /// The exit code a command uses when this diagnostic is fatal
-    /// (`Viso_CLI.md` section 7).
+    /// The exit code a command uses when this diagnostic is fatal.
     ///
     /// Configuration problems are source-shaped (`1`) except the two that are
     /// really about the environment (`3`): a target this build cannot produce,
@@ -281,7 +280,7 @@ impl fmt::Display for ConfigDiagnostic {
     /// The human one-line form: `error[C0004]: unknown key `packge` (Viso.toml:3:1)`.
     ///
     /// Notes are the caller's to render — the CLI indents them under the line and
-    /// the JSON writer emits them as an array (`Viso_CLI.md` section 36.1).
+    /// the JSON writer emits them as an array.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -326,8 +325,8 @@ mod tests {
         }
     }
 
-    /// The two environment-shaped conditions exit 3; everything else is 1
-    /// (`Viso_CLI.md` section 7). A diagnostic that exited 2 would be claiming the
+    /// The two environment-shaped conditions exit 3; everything else is 1.
+    /// A diagnostic that exited 2 would be claiming the
     /// user's *command line* was malformed, which a manifest problem never is.
     #[test]
     fn exit_codes_separate_environment_from_source() {
