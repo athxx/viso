@@ -148,10 +148,14 @@ one stable exit code and one stable diagnostic code.
 
 ### C0.4 — `viso completion` (§42.1)
 
-- [ ] `completion bash|zsh|fish|powershell` from the clap command (`clap_complete`),
-      written to stdout; no project needed; unsupported shell is exit 2.
-- [ ] Dynamic values where cheap and offline: targets, profiles from the nearest
-      `Viso.toml`, device profile ids from `~/.viso/<platform>/`; never spawns a build.
+- [x] `completion bash|zsh|fish|powershell` (`clap_complete` dynamic engine): the
+      script calls `viso` back with `VISO_COMPLETE` set, answered first thing in
+      `main`; no project read; `--json` is `CLI_USAGE`; an unknown shell exit 2.
+- [x] Candidates from the grammar (subcommands, options, targets, profiles, colors,
+      presets) and, from disk at completion time, configuration keys, device
+      profile IDs (`--device`, `start|stop|delete`) and `tests/game/` scenarios;
+      path hints on `--project`, `--target-dir`, `--tape`, `--output`. Never builds,
+      boots or reaches the network.
 
 ### C0.5 — Help and errors (§52, §53)
 

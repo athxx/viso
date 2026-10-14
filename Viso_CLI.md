@@ -2652,6 +2652,8 @@ viso completion bash|zsh|fish|powershell
 
 把由 parser metadata 生成的 completion script 写到 stdout；不读取项目、不接受 `--json`。未知 shell：exit 2。
 
+Script 在补全时以 `VISO_COMPLETE=<shell>` 回调 `viso` 本身（`viso` 启动时先检查该变量，未设置时只多一次环境变量读取），候选因此与 parser 同源：subcommand、option、target、profile 等枚举值来自 grammar；configuration key（`config get`）、simulator/emulator profile ID（`--device`、`emulator|simulator start|stop|delete`）与 `tests/game/` 下的 scenario（`test game`）按当时磁盘内容给出；路径参数按文件/目录补全。补全从不构建、启动设备或访问网络。安装方式：bash/zsh `source <(viso completion zsh)`，fish `viso completion fish | source`，PowerShell `viso completion powershell | Out-String | Invoke-Expression`；升级 `viso` 后应重新生成。
+
 ---
 
 ## 43. Cancellation

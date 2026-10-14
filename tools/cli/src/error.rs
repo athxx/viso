@@ -60,6 +60,7 @@ codes! {
     INTERNAL_PANIC = INTERNAL, "The CLI failed on its own; this is a bug in Viso.";
 
     ENV_CURRENT_DIR = ENVIRONMENT, "The current directory could not be read.";
+    ENV_STDOUT = ENVIRONMENT, "Standard output could not be written.";
     ENV_SOURCE_UNREADABLE = ENVIRONMENT, "A source file the command needs could not be read.";
     ENV_CARGO_MANIFEST = ENVIRONMENT, "The project root has no `Cargo.toml` to build.";
     ENV_CARGO = ENVIRONMENT, "Cargo could not be run.";

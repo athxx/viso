@@ -6,6 +6,7 @@
 
 mod args;
 mod command;
+mod complete;
 mod context;
 mod deploy;
 mod dev;
@@ -20,6 +21,8 @@ use clap::Parser;
 use clap::error::ErrorKind;
 
 fn main() -> ExitCode {
+    // A shell asking for completions is answered, and the run ends, here.
+    complete::answer();
     // A usage error exits 2 and `--help`/`--version` exit 0 before any project or
     // compiler work.
     let cli = match args::Cli::try_parse() {

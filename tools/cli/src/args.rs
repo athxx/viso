@@ -4,7 +4,10 @@ use std::ffi::OsString;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueHint};
+use clap_complete::ArgValueCandidates;
+
+use crate::complete;
 
 /// Build, check and run Viso applications.
 #[derive(Debug, Parser)]
@@ -22,7 +25,7 @@ pub struct Cli {
 pub struct Global {
     /// Use the project at PATH (a directory or its `Viso.toml`) instead of
     /// searching upward from the current directory.
-    #[arg(long, global = true, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH", value_hint = ValueHint::AnyPath)]
     pub project: Option<PathBuf>,
     /// Write a stream of JSON events to stdout, one per line, instead of text.
     #[arg(long, global = true)]
@@ -51,7 +54,7 @@ pub struct Global {
     #[arg(long, global = true, value_enum, value_name = "NAME")]
     pub profile: Option<ProfileArg>,
     /// Put build output under PATH instead of the project's `target/`.
-    #[arg(long, global = true, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH", value_hint = ValueHint::DirPath)]
     pub target_dir: Option<PathBuf>,
 }
 
@@ -97,6 +100,8 @@ pub enum Command {
     Android(AndroidCommand),
     /// Check the project's `.vs` sources and `Viso.toml` without building.
     Check,
+    /// Write the script that completes `viso` commands in a shell.
+    Completion(CompletionArgs),
     /// Show where each configuration value comes from, or validate it.
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -120,6 +125,23 @@ pub enum Command {
     Test(TestArgs),
 }
 
+/// What `viso completion` writes.
+#[derive(Debug, Args)]
+pub struct CompletionArgs {
+    /// The shell.
+    #[arg(value_enum)]
+    pub shell: Shell,
+}
+
+/// The shells `viso completion` writes for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+    Powershell,
+}
+
 /// What `viso config` shows.
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
@@ -139,6 +161,7 @@ pub enum ConfigCommand {
 pub struct ConfigGetArgs {
     /// The dotted key, as `viso config show` lists it: `package.name`,
     /// `profile.release.opt_level`.
+    #[arg(add = ArgValueCandidates::new(complete::config_keys))]
     pub key: String,
 }
 
@@ -199,6 +222,7 @@ pub struct CreateArgs {
 #[derive(Debug, Args)]
 pub struct StartArgs {
     /// The profile ID.
+    #[arg(add = ArgValueCandidates::new(complete::device_ids))]
     pub id: String,
     /// Boot the emulator without its window (Android only).
     #[arg(long)]
@@ -209,6 +233,7 @@ pub struct StartArgs {
 #[derive(Debug, Args)]
 pub struct DeviceArgs {
     /// The profile ID.
+    #[arg(add = ArgValueCandidates::new(complete::device_ids))]
     pub id: String,
 }
 
@@ -241,7 +266,7 @@ pub struct RecordArgs {
     pub game: String,
     /// Where to write the tape: its text form, or its binary form when the
     /// run took live patches.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
     pub output: PathBuf,
     /// How many seconds of play to record.
     #[arg(
@@ -270,6 +295,7 @@ pub struct TestArgs {
     pub domain: TestDomain,
     /// The scenario, `tests/game/<SCENARIO>.tape`; every scenario there when
     /// omitted.
+    #[arg(add = ArgValueCandidates::new(complete::scenarios))]
     pub scenario: Option<String>,
     /// The frames to run, one fixed tick each; by default through the tape
     /// and the scenario's last expectation.
@@ -280,7 +306,7 @@ pub struct TestArgs {
     pub seed: Option<u64>,
     /// Replay the input tape at PATH, binary or text, instead of the
     /// scenario's.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
     pub tape: Option<PathBuf>,
 }
 
@@ -306,7 +332,7 @@ pub struct RunArgs {
     #[arg(value_enum)]
     pub target: Option<RunTarget>,
     /// The simulator or emulator profile (`ios` and `android` only).
-    #[arg(long, value_name = "ID")]
+    #[arg(long, value_name = "ID", add = ArgValueCandidates::new(complete::device_ids))]
     pub device: Option<String>,
     /// The browser to open (`web-*` only): `chrome`, `safari`, `firefox`, or
     /// `none` to only serve.
@@ -386,6 +412,7 @@ impl Command {
                 DeviceCommand::Delete(_) => "android emulator delete",
             },
             Command::Check => "check",
+            Command::Completion(_) => "completion",
             Command::Config(ConfigCommand::Show) => "config show",
             Command::Config(ConfigCommand::Get(_)) => "config get",
             Command::Config(ConfigCommand::Path) => "config path",
@@ -407,6 +434,11 @@ impl Command {
     }
 }
 
+/// The grammar, as the parser and the completion engine both read it.
+pub fn command() -> clap::Command {
+    Cli::command()
+}
+
 /// Whether `command` names its target as a positional argument, so a
 /// `--target` there is the other commands' spelling.
 pub fn takes_positional_target(command: &str) -> bool {
@@ -425,8 +457,7 @@ pub fn wants_json<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> bool {
 /// The first of `args` that names a subcommand, for a command line too broken to
 /// parse.
 pub fn named_command<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Option<String> {
-    use clap::CommandFactory;
-    let grammar = Cli::command();
+    let grammar = command();
     args.iter()
         .map(AsRef::as_ref)
         .take_while(|arg| *arg != "--")

@@ -6,9 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
-# The `viso` command (Viso_CLI.md section 39). Command handlers only orchestrate:
-# the project model comes from `viso-project`, the compiler from `viso-dsl`, and
-# this crate owns argument parsing, output and exit codes (section 40). The JSON
+# The `viso` command. Command handlers only orchestrate: the project model comes
+# from `viso-project`, the compiler from `viso-dsl`, and this crate owns argument
+# parsing, output and exit codes. The JSON
 # event stream is written with `viso-ende`'s writer, the one JSON emitter.
 [dependencies]
 viso-dsl = { workspace = true }
@@ -23,9 +23,9 @@ viso-project = { workspace = true }
 # A dev build for a simulator, an emulator or a browser is packaged as the
 # release build is.
 viso-package = { workspace = true }
-# A mature parser rather than a hand-rolled one (section 42): subcommands, global
-# options accepted before or after the subcommand, generated help and stable usage
-# errors. Color and terminal detection stay off; human output is plain text.
+# A mature parser rather than a hand-rolled one: subcommands, global options
+# accepted before or after the subcommand, generated help and stable usage
+# errors. Its own color and terminal detection stay off: `--color` is the CLI's.
 clap = { version = "4.6", default-features = false, features = [
     "std",
     "help",
@@ -34,6 +34,10 @@ clap = { version = "4.6", default-features = false, features = [
     "suggestions",
     "derive",
 ] }
+# Shell completion from the same grammar: `viso completion <shell>` writes a
+# script that asks `viso` itself for candidates, so targets, profiles,
+# configuration keys and device profile IDs complete as they are now.
+clap_complete = { version = "4.6", default-features = false, features = ["unstable-dynamic"] }
 
 # The dev session's project watcher: kqueue (macOS, FreeBSD) and inotify
 # (Linux) file events, and `ReadDirectoryChangesW` on Windows. A build is
