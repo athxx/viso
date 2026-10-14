@@ -1,8 +1,9 @@
-//! The host's source graph of a dev session (`Viso_Hot_Reload.md` §3, §10,
-//! §11, §22): every `.vs` file, message catalog and asset of the watch scope as
-//! it is on disk, what the runtime reported of the files it mounts, the
-//! compiled view each mount runs, and the compile of an edit exactly as the
-//! build compiled the file.
+//! The host's source graph of a dev session (`Viso_Hot_Reload.md`): every
+//! `.vs` file, message catalog and asset of the watch scope as it is on disk,
+//! shared by every runtime of the session; and, per runtime ([`Mounts`]), what
+//! it reported of the files it mounts, the compiled view each mount runs and
+//! the assets it holds; and the compile of an edit exactly as the build
+//! compiled the file for a mount.
 //!
 //! A `view!` compiles its file alone, against its package's catalogs, assets
 //! and grants, so a file's candidate depends on its own text, its catalogs and
@@ -17,11 +18,15 @@
 //! app was building is simply a file whose text the runtime does not run
 //! yet.
 //!
-//! An asset is taken to run as first read — the build embedded it after the
-//! watcher read it — and as each patch carrying it left it. A changed asset
-//! goes to the app when the app holds it (a mount embedded it, or a patch
-//! carried it) or a candidate view names it; at worst an asset edited while
-//! the app built is sent once more than it needed.
+//! An asset is taken to run as the build embedded it — as first read, then as
+//! read when the app last restarted on a new build — and as each patch
+//! carrying it left it, per runtime. A changed asset goes to a runtime when it
+//! holds it (a mount embedded it, or a patch carried it) or a candidate view
+//! names it; at worst an asset edited while the app built is sent once more
+//! than it needed.
+//!
+//! Runtimes that mount a file alike — the same origin, grants, catalogs and
+//! assets — share one compile of each of its edits ([`Memo`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -50,8 +55,6 @@ pub(super) struct View {
     parse: Option<(String, IncrementalParse)>,
     /// The latest distinct versions the watcher read, newest last.
     versions: Vec<(u64, String)>,
-    /// What the runtime reported, while it mounts the file.
-    pub mount: Option<Mount>,
 }
 
 impl View {
@@ -61,7 +64,6 @@ impl View {
             text: None,
             parse: None,
             versions: Vec::new(),
-            mount: None,
         }
     }
 
@@ -71,7 +73,7 @@ impl View {
     }
 }
 
-/// A file the runtime mounts.
+/// A file a runtime mounts.
 pub(super) struct Mount {
     pub file: FileId,
     origin: Origin,
@@ -123,9 +125,6 @@ pub(super) struct AssetDir {
     dir: PathBuf,
     /// Each file, by its path under the directory.
     pub files: BTreeMap<String, AssetFile>,
-    /// The resources the app holds: those its mounts embed, and those a patch
-    /// carried.
-    held: BTreeSet<ResourceId>,
     /// The files in an asset format, as candidates compile against them.
     catalog: Rc<AssetCatalog>,
     /// Counts each change of the catalog.
@@ -140,12 +139,44 @@ pub(super) struct AssetFile {
     /// Whether it is a font, told by its sfnt header: the app may draw with
     /// it though no view names it.
     pub font: bool,
-    /// The hash of the content the app runs, when it holds the resource.
-    pub running: u64,
+    /// The hash of the content the build embedded.
+    built: u64,
+}
+
+/// What one runtime runs of the source graph: the files it mounts, by their
+/// view's index, and the assets it holds and runs.
+#[derive(Default)]
+pub(super) struct Mounts {
+    pub views: BTreeMap<usize, Mount>,
+    /// The resources it holds, by asset directory: those its mounts embed,
+    /// and those a patch carried.
+    held: BTreeMap<usize, BTreeSet<ResourceId>>,
+    /// The assets a patch carried, or that were a candidate for it.
+    assets: BTreeMap<AssetRef, AssetRun>,
+}
+
+/// An asset as one runtime has it.
+#[derive(Default, Clone, Copy)]
+struct AssetRun {
+    /// The hash of the content it runs, once a patch carried it.
+    running: Option<u64>,
     /// The hash of the latest content that was a candidate (sent, or
     /// rejected), so the same content is not a candidate twice.
-    pub settled: Option<u64>,
+    settled: Option<u64>,
 }
+
+/// How a mount compiles its file: what the build compiled it against.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct ProfileKey {
+    origin: Origin,
+    capabilities: Vec<String>,
+    catalog: Option<usize>,
+    assets: Option<usize>,
+}
+
+/// The compiles of one pass over the runtimes, by view and profile.
+#[derive(Default)]
+pub(super) struct Memo(Vec<(usize, ProfileKey, Result<CandidatePlan, Vec<Diagnostic>>)>);
 
 /// An asset a patch is to carry: its directory, by index, and its path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -243,8 +274,7 @@ impl Sources {
                         hash,
                         format,
                         font,
-                        running: hash,
-                        settled: None,
+                        built: hash,
                     },
                 );
                 format.is_some()
@@ -271,7 +301,6 @@ impl Sources {
         self.assets.push(AssetDir {
             dir: dir.to_owned(),
             files: BTreeMap::new(),
-            held: BTreeSet::new(),
             catalog: Rc::new(AssetCatalog::of(dir.to_owned(), [])),
             revision: 0,
         });
@@ -305,8 +334,8 @@ impl Sources {
         at
     }
 
-    /// Records a file the runtime mounts, and returns its index.
-    pub fn mount(&mut self, entry: &MountEntry) -> usize {
+    /// Records a file `mounts`' runtime mounts, and returns its index.
+    pub fn mount(&mut self, mounts: &mut Mounts, entry: &MountEntry) -> usize {
         let catalog = entry.catalog.as_ref().map(|(locale, dir)| {
             let canonical = Path::new(dir)
                 .canonicalize()
@@ -315,7 +344,11 @@ impl Sources {
         });
         let assets = entry.assets.as_ref().map(|(dir, held)| {
             let at = self.asset_dir(&canonical_dir(Path::new(dir)));
-            self.assets[at].held.extend(held.iter().copied());
+            mounts
+                .held
+                .entry(at)
+                .or_default()
+                .extend(held.iter().copied());
             at
         });
         let path = PathBuf::from(&entry.path);
@@ -344,25 +377,41 @@ impl Sources {
                 self.views.len() - 1
             }
         };
-        self.views[at].mount = Some(mount);
+        mounts.views.insert(at, mount);
         at
     }
 
-    /// Forgets what the runtime reported.
-    pub fn unmount(&mut self) {
-        for view in &mut self.views {
-            view.mount = None;
+    /// The app restarted on a new build, which embeds every asset as it is
+    /// now; the runtimes of `others`, which did not restart, run each asset
+    /// a patch has not carried to them as their build embedded it.
+    pub fn rebuilt<'a>(&mut self, others: impl IntoIterator<Item = &'a mut Mounts>) {
+        let mut others: Vec<&mut Mounts> = others.into_iter().collect();
+        for (dir, assets) in self.assets.iter_mut().enumerate() {
+            for (path, file) in &mut assets.files {
+                if file.built == file.hash {
+                    continue;
+                }
+                for mounts in others.iter_mut() {
+                    let asset = AssetRef {
+                        dir,
+                        path: path.clone(),
+                    };
+                    let run = mounts.assets.entry(asset).or_default();
+                    run.running.get_or_insert(file.built);
+                }
+                file.built = file.hash;
+            }
         }
     }
 
-    /// Compiles the version of view `at` its mount runs as the last-good its
-    /// edits are planned against, once. `Err` with the reason when that
-    /// version is not one the watcher read lately, or does not compile on the
-    /// host.
-    pub fn baseline(&mut self, at: usize) -> Result<(), String> {
+    /// Compiles the version of view `at` its mount in `mounts` runs as the
+    /// last-good its edits are planned against, once. `Err` with the reason
+    /// when that version is not one the watcher read lately, or does not
+    /// compile on the host.
+    pub fn baseline(&self, mounts: &mut Mounts, at: usize) -> Result<(), String> {
         let catalogs = &self.catalogs;
-        let view = &mut self.views[at];
-        let Some(mount) = view.mount.as_mut() else {
+        let view = &self.views[at];
+        let Some(mount) = mounts.views.get_mut(&at) else {
             return Ok(());
         };
         if mount.last_good.is_some() {
@@ -447,30 +496,32 @@ impl Sources {
             catalog.messages = messages.map(Rc::new);
             catalog.revision += 1;
         }
-        // A file the runtime runs as built was checked against the catalogs
-        // of its build: their first compile is not a change to it.
-        for view in &mut self.views {
-            let hash = view.hash();
-            if let Some(mount) = view.mount.as_mut()
-                && mount.checked == 0
-                && hash == Some(mount.running)
+        failed
+    }
+
+    /// Marks the files `mounts`' runtime runs as built checked against the
+    /// catalogs as first compiled: the build checked them against those.
+    pub fn catalogs_checked(&self, mounts: &mut Mounts) {
+        for (&at, mount) in &mut mounts.views {
+            if mount.checked == 0
+                && self.views[at].hash() == Some(mount.running)
                 && let Some(c) = mount.catalog
             {
                 mount.checked = self.catalogs[c].revision;
             }
         }
-        failed
     }
 
-    /// The mounted views that are candidates: their latest content is not
-    /// what the runtime runs and was not a candidate already, their catalogs
-    /// changed since they were checked, or they did not compile and an asset
-    /// appeared since.
-    pub fn candidates(&self) -> Vec<usize> {
-        (0..self.views.len())
-            .filter(|&at| {
-                let view = &self.views[at];
-                let (Some(mount), Some(hash)) = (&view.mount, view.hash()) else {
+    /// The views `mounts` mounts that are candidates: their latest content
+    /// is not what the runtime runs and was not a candidate already, their
+    /// catalogs changed since they were checked, or they did not compile and
+    /// an asset appeared since.
+    pub fn candidates(&self, mounts: &Mounts) -> Vec<usize> {
+        mounts
+            .views
+            .iter()
+            .filter(|&(&at, mount)| {
+                let Some(hash) = self.views[at].hash() else {
                     return false;
                 };
                 let catalog_changed = mount
@@ -484,35 +535,44 @@ impl Sources {
                     || assets_appeared
                     || (hash != mount.running && mount.settled != Some(hash))
             })
+            .map(|(&at, _)| at)
             .collect()
     }
 
-    /// The assets a patch is to carry: each the app holds whose content is
-    /// not what the app runs, and each `named` (by a candidate view of a mount
-    /// of directory `dir`) that the app does not hold yet — neither a
-    /// candidate already at this content.
-    pub fn asset_candidates(&self, named: &[AssetRef]) -> Vec<AssetRef> {
+    /// The assets a patch to `mounts`' runtime is to carry: each it holds
+    /// whose content is not what it runs, and each `named` (by a candidate
+    /// view of a mount of directory `dir`) that it does not hold yet —
+    /// neither a candidate already at this content.
+    pub fn asset_candidates(&self, mounts: &Mounts, named: &[AssetRef]) -> Vec<AssetRef> {
         let mut out = BTreeSet::new();
         for (dir, assets) in self.assets.iter().enumerate() {
+            let held = mounts.held.get(&dir);
             for (path, file) in &assets.files {
-                if file.hash != file.running
-                    && file.settled != Some(file.hash)
-                    && (file.font || assets.held.contains(&ResourceId::of(path)))
+                let asset = AssetRef {
+                    dir,
+                    path: path.clone(),
+                };
+                let run = mounts.run(&asset);
+                if run.running.unwrap_or(file.built) != file.hash
+                    && run.settled != Some(file.hash)
+                    && (file.font || held.is_some_and(|h| h.contains(&ResourceId::of(path))))
                 {
-                    out.insert(AssetRef {
-                        dir,
-                        path: path.clone(),
-                    });
+                    out.insert(asset);
                 }
             }
         }
         for named in named {
-            let assets = &self.assets[named.dir];
-            let Some(file) = assets.files.get(&named.path) else {
+            let Some(file) = self.assets[named.dir].files.get(&named.path) else {
                 continue;
             };
-            let held = assets.held.contains(&ResourceId::of(&named.path));
-            if (!held || file.hash != file.running) && file.settled != Some(file.hash) {
+            let held = mounts
+                .held
+                .get(&named.dir)
+                .is_some_and(|h| h.contains(&ResourceId::of(&named.path)));
+            let run = mounts.run(named);
+            if (!held || run.running.unwrap_or(file.built) != file.hash)
+                && run.settled != Some(file.hash)
+            {
                 out.insert(named.clone());
             }
         }
@@ -524,38 +584,31 @@ impl Sources {
         &self.assets[asset.dir].files[&asset.path]
     }
 
-    /// Records that the app runs `asset` at `hash`, a patch having carried it.
-    pub fn asset_applied(&mut self, asset: &AssetRef, hash: u64) {
-        let assets = &mut self.assets[asset.dir];
-        assets.held.insert(ResourceId::of(&asset.path));
-        if let Some(file) = assets.files.get_mut(&asset.path) {
-            file.running = hash;
-            file.settled = Some(hash);
-        }
-    }
-
-    /// Records that `asset` at `hash` was a candidate the app does not run:
-    /// it does not decode, or a patch carrying it was refused.
-    pub fn asset_settled(&mut self, asset: &AssetRef, hash: u64) {
-        if let Some(file) = self.assets[asset.dir].files.get_mut(&asset.path) {
-            file.settled = Some(hash);
-        }
-    }
-
     /// The path of `asset` on disk.
     pub fn asset_path(&self, asset: &AssetRef) -> PathBuf {
         self.assets[asset.dir].dir.join(&asset.path)
     }
 
-    /// Compiles view `at`'s latest content as the build would, reparsing
-    /// only what changed since its last compile, into its candidate; its
-    /// errors when it does not plan.
-    pub fn compile(&mut self, at: usize) -> Option<Result<CandidatePlan, Vec<Diagnostic>>> {
+    /// Compiles view `at`'s latest content as the build would for `mount`,
+    /// reparsing only what changed since its last compile, into its
+    /// candidate; its errors when it does not plan. A compile `memo` holds
+    /// for a mount alike is taken from it.
+    pub fn compile(
+        &mut self,
+        at: usize,
+        mount: &mut Mount,
+        memo: &mut Memo,
+    ) -> Option<Result<CandidatePlan, Vec<Diagnostic>>> {
         let catalogs = &self.catalogs;
         let view = &mut self.views[at];
-        let (Some(text), Some(mount)) = (view.text.as_deref(), view.mount.as_mut()) else {
-            return None;
-        };
+        let text = view.text.as_deref()?;
+        let key = mount.key();
+        mount.checked = mount.catalog.map_or(0, |c| catalogs[c].revision);
+        mount.checked_assets = mount.assets.map_or(0, |a| self.assets[a].revision);
+        if let Some((_, _, planned)) = memo.0.iter().find(|(v, k, _)| *v == at && *k == key) {
+            mount.rejected = planned.is_err();
+            return Some(planned.clone());
+        }
         let parse = match view.parse.take() {
             Some((old, mut parse)) if old != text => {
                 parse.edit(&edit_between(&old, text), text);
@@ -566,15 +619,48 @@ impl Sources {
         };
         let profile = mount.profile(catalogs, &self.assets);
         let planned = plan_view_parsed(text, parse.parse().clone(), &mount.origin, profile);
-        mount.checked = mount.catalog.map_or(0, |c| catalogs[c].revision);
-        mount.checked_assets = mount.assets.map_or(0, |a| self.assets[a].revision);
         mount.rejected = planned.is_err();
+        memo.0.push((at, key, planned.clone()));
         view.parse = Some((text.to_owned(), parse));
         Some(planned)
     }
 }
 
+impl Mounts {
+    /// How it has `asset`.
+    fn run(&self, asset: &AssetRef) -> AssetRun {
+        self.assets.get(asset).copied().unwrap_or_default()
+    }
+
+    /// Records that it runs `asset` at `hash`, a patch having carried it.
+    pub fn asset_applied(&mut self, asset: &AssetRef, hash: u64) {
+        self.held
+            .entry(asset.dir)
+            .or_default()
+            .insert(ResourceId::of(&asset.path));
+        let run = self.assets.entry(asset.clone()).or_default();
+        run.running = Some(hash);
+        run.settled = Some(hash);
+    }
+
+    /// Records that `asset` at `hash` was a candidate it does not run: it
+    /// does not decode, or a patch carrying it was refused.
+    pub fn asset_settled(&mut self, asset: &AssetRef, hash: u64) {
+        self.assets.entry(asset.clone()).or_default().settled = Some(hash);
+    }
+}
+
 impl Mount {
+    /// How it compiles its file.
+    fn key(&self) -> ProfileKey {
+        ProfileKey {
+            origin: self.origin.clone(),
+            capabilities: self.capabilities.clone(),
+            catalog: self.catalog,
+            assets: self.assets,
+        }
+    }
+
     /// The profile the build compiled the file with: its grants, its
     /// package's catalogs as last compiled and its package's assets as they
     /// are.
@@ -691,8 +777,9 @@ mod tests {
 
     const VIEW: &str = "component Counter {\n    state count = 0;\n    view {\n        Column {\n            Text { width: 120dp; }\n        }\n    }\n}\n";
 
-    fn mounted(text: &str) -> Sources {
+    fn mounted(text: &str) -> (Sources, Mounts) {
         let mut sources = Sources::default();
+        let mut mounts = Mounts::default();
         assert!(matches!(
             sources.change(Path::new("/p/src/view.vs"), text.to_owned()),
             Changed::View
@@ -708,20 +795,32 @@ mod tests {
             source_hash: source_hash(text),
             assets: None,
         };
-        assert_eq!(sources.mount(&entry), 0);
-        sources
+        assert_eq!(sources.mount(&mut mounts, &entry), 0);
+        (sources, mounts)
+    }
+
+    fn compile(
+        sources: &mut Sources,
+        mounts: &mut Mounts,
+        at: usize,
+    ) -> Result<CandidatePlan, Vec<Diagnostic>> {
+        let mount = mounts.views.get_mut(&at).unwrap();
+        sources.compile(at, mount, &mut Memo::default()).unwrap()
     }
 
     #[test]
     fn an_edit_is_a_candidate_until_it_settles_and_reparses_incrementally() {
-        let mut sources = mounted(VIEW);
-        assert!(sources.candidates().is_empty(), "the runtime runs it");
-        assert!(sources.compile(0).unwrap().is_ok());
+        let (mut sources, mut mounts) = mounted(VIEW);
+        assert!(
+            sources.candidates(&mounts).is_empty(),
+            "the runtime runs it"
+        );
+        assert!(compile(&mut sources, &mut mounts, 0).is_ok());
 
         let edited = VIEW.replace("120dp", "140dp");
         sources.change(Path::new("/p/src/view.vs"), edited.clone());
-        assert_eq!(sources.candidates(), [0]);
-        assert!(sources.compile(0).unwrap().is_ok());
+        assert_eq!(sources.candidates(&mounts), [0]);
+        assert!(compile(&mut sources, &mut mounts, 0).is_ok());
         let (text, parse) = sources.views[0].parse.as_ref().unwrap();
         assert_eq!(*text, edited);
         let fresh = parse_entry(&tokenize(&edited), &edited, Entry::CompilationUnit);
@@ -730,15 +829,15 @@ mod tests {
             format!("{:?}", fresh.root),
             "the incremental parse is the fresh one"
         );
-        sources.views[0].mount.as_mut().unwrap().settled = Some(source_hash(&edited));
+        mounts.views.get_mut(&0).unwrap().settled = Some(source_hash(&edited));
         assert!(
-            sources.candidates().is_empty(),
+            sources.candidates(&mounts).is_empty(),
             "a settled edit is not resent"
         );
 
         let broken = VIEW.replace("state count = 0;", "state count = ;");
         sources.change(Path::new("/p/src/view.vs"), broken.clone());
-        let errors = sources.compile(0).unwrap().unwrap_err();
+        let errors = compile(&mut sources, &mut mounts, 0).unwrap_err();
         assert!(
             errors.iter().any(|d| d.code.starts_with("E1")),
             "{errors:?}"
@@ -748,7 +847,7 @@ mod tests {
 
         // Reverted to what the runtime runs: no candidate.
         sources.change(Path::new("/p/src/view.vs"), VIEW.to_owned());
-        assert!(sources.candidates().is_empty());
+        assert!(sources.candidates(&mounts).is_empty());
     }
 
     /// Full versus incremental parse of a one-property edit in a large file,
@@ -832,38 +931,43 @@ mod tests {
         let i18n = i18n.canonicalize().unwrap();
         let view = "import viso::i18n::tr;\ncomponent Title {\n    view { Text { text: tr(\"title\"); } }\n}\n";
         let mut sources = Sources::default();
+        let mut mounts = Mounts::default();
         sources.change(&i18n.join("en.toml"), "title = \"Title\"\n".into());
-        sources.mount(&MountEntry {
-            file: FileId(0),
-            path: "/p/src/title.vs".into(),
-            package: "app".into(),
-            module: vec!["title".into()],
-            language: None,
-            catalog: Some(("en".into(), i18n.display().to_string())),
-            capabilities: Vec::new(),
-            source_hash: source_hash(view),
-            assets: None,
-        });
+        sources.mount(
+            &mut mounts,
+            &MountEntry {
+                file: FileId(0),
+                path: "/p/src/title.vs".into(),
+                package: "app".into(),
+                module: vec!["title".into()],
+                language: None,
+                catalog: Some(("en".into(), i18n.display().to_string())),
+                capabilities: Vec::new(),
+                source_hash: source_hash(view),
+                assets: None,
+            },
+        );
         sources.change(Path::new("/p/src/title.vs"), view.into());
         assert!(sources.compile_catalogs().is_empty());
+        sources.catalogs_checked(&mut mounts);
         assert!(
-            sources.candidates().is_empty(),
+            sources.candidates(&mounts).is_empty(),
             "the build checked the file against the catalogs"
         );
 
         sources.change(&i18n.join("en.toml"), "title = \"Title\nbroken".into());
         let failed = sources.compile_catalogs();
         assert_eq!(failed.len(), 1, "an error keeps the last good catalogs");
-        assert!(sources.candidates().is_empty());
+        assert!(sources.candidates(&mounts).is_empty());
 
         sources.change(&i18n.join("en.toml"), "headline = \"H\"\n".into());
         assert!(sources.compile_catalogs().is_empty());
         assert_eq!(
-            sources.candidates(),
+            sources.candidates(&mounts),
             [0],
             "a catalog change rechecks the view"
         );
-        let errors = sources.compile(0).unwrap().unwrap_err();
+        let errors = compile(&mut sources, &mut mounts, 0).unwrap_err();
         assert!(
             !errors.is_empty(),
             "the view uses a key the catalogs dropped"
@@ -874,6 +978,7 @@ mod tests {
     fn the_last_good_is_the_version_the_build_compiled() {
         // Saved before the build read it, then edited while it built.
         let mut sources = Sources::default();
+        let mut mounts = Mounts::default();
         let path = Path::new("/p/src/view.vs");
         sources.change(path, VIEW.to_owned());
         let edited = VIEW.replace("120dp", "130dp");
@@ -889,8 +994,8 @@ mod tests {
             source_hash: source_hash(text),
             assets: None,
         };
-        let at = sources.mount(&entry(VIEW));
-        assert_eq!(sources.baseline(at), Ok(()));
+        let at = sources.mount(&mut mounts, &entry(VIEW));
+        assert_eq!(sources.baseline(&mut mounts, at), Ok(()));
         let package = |text: &str| {
             let origin = Origin {
                 package: "app".into(),
@@ -899,25 +1004,92 @@ mod tests {
             };
             emit_view_package(&plan_view_for(text, &origin, TargetProfile::default()).unwrap())
         };
-        let last_good = sources.views[at].mount.as_ref().unwrap().last_good.as_ref();
+        let last_good = mounts.views[&at].last_good.as_ref();
         let last_good = emit_view_package(last_good.unwrap());
         assert_eq!(last_good, package(VIEW), "the built version compiled");
         assert_ne!(last_good, package(&edited));
-        assert_eq!(sources.candidates(), [at], "the later edit is a candidate");
+        assert_eq!(
+            sources.candidates(&mounts),
+            [at],
+            "the later edit is a candidate"
+        );
 
         // An app built from a version the session never read.
-        let at = sources.mount(&entry(
-            "component Other { view { Text {} } }
+        let mut mounts = Mounts::default();
+        let at = sources.mount(
+            &mut mounts,
+            &entry(
+                "component Other { view { Text {} } }
 ",
-        ));
-        assert!(sources.baseline(at).is_err());
-        assert!(
-            sources.views[at]
-                .mount
-                .as_ref()
-                .unwrap()
-                .last_good
-                .is_none()
+            ),
         );
+        assert!(sources.baseline(&mut mounts, at).is_err());
+        assert!(mounts.views[&at].last_good.is_none());
+    }
+
+    #[test]
+    fn runtimes_that_mount_a_file_alike_share_its_compile() {
+        let (mut sources, mut first) = mounted(VIEW);
+        let mut second = Mounts::default();
+        let entry = MountEntry {
+            file: FileId(0),
+            path: "/p/src/view.vs".into(),
+            package: "app".into(),
+            module: vec!["view".into()],
+            language: None,
+            catalog: None,
+            capabilities: Vec::new(),
+            source_hash: source_hash(VIEW),
+            assets: None,
+        };
+        sources.mount(&mut second, &entry);
+        let mut granted = Mounts::default();
+        sources.mount(
+            &mut granted,
+            &MountEntry {
+                capabilities: vec!["clipboard.write".into()],
+                ..entry
+            },
+        );
+        sources.change(Path::new("/p/src/view.vs"), VIEW.replace("120dp", "140dp"));
+        let mut memo = Memo::default();
+        for mounts in [&mut first, &mut second, &mut granted] {
+            assert_eq!(sources.candidates(mounts), [0]);
+            let mount = mounts.views.get_mut(&0).unwrap();
+            assert!(sources.compile(0, mount, &mut memo).unwrap().is_ok());
+        }
+        assert_eq!(memo.0.len(), 2, "one compile per profile");
+    }
+
+    #[test]
+    fn a_runtime_that_did_not_restart_keeps_the_assets_its_build_embedded() {
+        let dir = std::env::temp_dir().join(format!("viso-assets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let mut sources = Sources::default();
+        sources.change_asset(&dir, &dir.join("logo.svg"), b"<svg/>".to_vec());
+        let entry = MountEntry {
+            file: FileId(0),
+            path: "/p/src/view.vs".into(),
+            package: "app".into(),
+            module: vec!["view".into()],
+            language: None,
+            catalog: None,
+            capabilities: Vec::new(),
+            source_hash: 0,
+            assets: Some((dir.display().to_string(), vec![ResourceId::of("logo.svg")])),
+        };
+        let (mut restarted, mut other) = (Mounts::default(), Mounts::default());
+        sources.mount(&mut restarted, &entry);
+        sources.mount(&mut other, &entry);
+        sources.change_asset(&dir, &dir.join("logo.svg"), b"<svg></svg>".to_vec());
+        assert_eq!(sources.asset_candidates(&restarted, &[]).len(), 1);
+        assert_eq!(sources.asset_candidates(&other, &[]).len(), 1);
+
+        // The restarted app embeds the asset as it is now; the other runs
+        // what its build embedded.
+        sources.rebuilt([&mut other]);
+        assert!(sources.asset_candidates(&restarted, &[]).is_empty());
+        assert_eq!(sources.asset_candidates(&other, &[]).len(), 1);
     }
 }

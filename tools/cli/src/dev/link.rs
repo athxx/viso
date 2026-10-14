@@ -8,11 +8,13 @@
 //! with a [`Reject`] naming the reason. An accepted runtime gets a writer
 //! thread fed by a channel, so the session never blocks on a runtime that
 //! reads slowly; the writer ends when the session lets the runtime go or a
-//! write fails.
+//! write fails. Each accepted connection counts the bytes it carries each
+//! way, for the session's status of the runtime.
 
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -36,11 +38,58 @@ pub struct Expect {
     pub schema: SchemaFingerprint,
 }
 
-/// An accepted runtime: its hello, and the channel its writer sends from.
+/// An accepted runtime: its hello, the channel its writer sends from, and
+/// what its connection carried.
 #[derive(Debug)]
 pub struct Connection {
     pub hello: RuntimeHello,
     pub writer: Sender<HostMessage>,
+    pub traffic: Arc<Traffic>,
+}
+
+/// The bytes a dev connection carried since it was accepted.
+#[derive(Debug, Default)]
+pub struct Traffic {
+    sent: AtomicU64,
+    received: AtomicU64,
+}
+
+impl Traffic {
+    /// The bytes written to the runtime.
+    pub fn sent(&self) -> u64 {
+        self.sent.load(Ordering::Relaxed)
+    }
+
+    /// The bytes read from the runtime.
+    pub fn received(&self) -> u64 {
+        self.received.load(Ordering::Relaxed)
+    }
+}
+
+/// A half of a connection that adds what it carries to its [`Traffic`].
+struct Counted<T> {
+    inner: T,
+    traffic: Arc<Traffic>,
+}
+
+impl<T: Write> Write for Counted<T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.traffic.sent.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<T: Read> Read for Counted<T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.traffic.received.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
 }
 
 /// What the connection threads hand the session.
@@ -158,8 +207,13 @@ pub fn serve(mut stream: impl DevStream, expect: &Expect, deliver: &dyn Fn(LinkE
     if write_frame(&mut stream, &accepted).is_err() || stream.set_read_timeout(None).is_err() {
         return;
     }
-    let Ok(mut write_half) = stream.writer() else {
+    let Ok(write_half) = stream.writer() else {
         return;
+    };
+    let traffic = Arc::new(Traffic::default());
+    let mut write_half = Counted {
+        inner: write_half,
+        traffic: Arc::clone(&traffic),
     };
     let launch = hello.runtime_session;
     let (writer, to_send) = mpsc::channel::<HostMessage>();
@@ -172,9 +226,18 @@ pub fn serve(mut stream: impl DevStream, expect: &Expect, deliver: &dyn Fn(LinkE
                 }
             }
         });
-    if spawned.is_err() || !deliver(LinkEvent::Connected(Connection { hello, writer })) {
+    let connection = Connection {
+        hello,
+        writer,
+        traffic: Arc::clone(&traffic),
+    };
+    if spawned.is_err() || !deliver(LinkEvent::Connected(connection)) {
         return;
     }
+    let mut stream = Counted {
+        inner: &mut stream,
+        traffic,
+    };
     loop {
         match read_frame::<RuntimeMessage>(&mut stream, &mut buf) {
             Ok(Some(RuntimeMessage::Hello(_))) | Err(FrameError::Wire(_)) => {

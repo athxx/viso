@@ -1,8 +1,19 @@
-//! The dev session service of `viso run` (`Viso_Hot_Reload.md` §3, §4): for the
+//! The dev session service of `viso run` (`Viso_Hot_Reload.md`): for the
 //! lifetime of the command it owns the session's identity and lock, the
-//! project watcher, the source graph and its compiler, and the connection to
-//! the running app, and turns each settled batch of edits into one candidate
+//! project watcher, the source graph and its compiler, and the connections to
+//! the running apps, and turns each settled batch of edits into one candidate
 //! revision.
+//!
+//! One source graph serves every runtime connected: the parse, the module
+//! graph and the type check of an edit are shared, and runtimes that mount a
+//! file alike — the same grants, catalogs and assets — share its compile;
+//! the plan, the shader packing for its GPU backend, the assets it can take
+//! and the answer are each runtime's own. Each runtime has its own revision
+//! and its own patch in flight, so a target that refuses an edit stays on its
+//! last good while the others advance, and each one's status — revisions,
+//! connection, transport, the latest patch, the Rust edits — is reported as a
+//! `runtime` event whenever it changes. The first runtime connected is the
+//! app the session launched, which a Rust edit restarts.
 //!
 //! The watcher starts before the build, so the session knows every file of
 //! the scope as it was when the build read it, and an edit saved while the
@@ -20,10 +31,11 @@
 //! module declares systems is also classified against the game its mounts
 //! run (§16–§17): the tier is reported as an `E5103` note and sent as the
 //! file's `system` entry beside its view, so the game swaps with the view in
-//! one revision. The views that compile are sent as one patch, and the runtime's ACK or NACK closes the
-//! candidate; an ACK makes each candidate the last-good its next edit is
-//! planned against. One patch is in flight at a time: what is saved meanwhile
-//! waits for the answer and goes as the next batch.
+//! one revision. The views that compile are sent as one patch, and the
+//! runtime's ACK or NACK closes the candidate; an ACK makes each candidate the
+//! last-good its next edit is planned against. One patch is in flight to a
+//! runtime at a time: what is saved meanwhile waits for its answer and goes
+//! to it as the next batch.
 //!
 //! With `--no-hot-reload` (§2.1) the session still watches, compiles and
 //! reports each candidate, but sends the app nothing: a candidate that
@@ -50,6 +62,7 @@ pub mod report;
 mod sources;
 pub mod watch;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -63,20 +76,24 @@ use viso_project::LockGuard;
 use viso_text::font_format;
 use viso_view::dev::wire::{
     BlobRef, Blobs, CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply,
-    HostMessage, PatchBundle, PatchSection, Rebuild, ResourceAsset, ResourcePatch, RestoreBundle,
-    RestoreReport, Revision, RuntimeHello, RuntimeMessage, RuntimeSessionId, ShaderLang, Stage,
-    SystemPatch, UiPatch, WindowGeometry, blob_chunks, source_hash,
+    HostMessage, PatchAck, PatchBundle, PatchNack, PatchSection, Rebuild, ResourceAsset,
+    ResourcePatch, RestoreBundle, RestoreReport, Revision, RuntimeHello, RuntimeMessage,
+    RuntimeSessionId, RuntimeTarget, ShaderLang, Stage, SystemPatch, UiPatch, WindowGeometry,
+    blob_chunks, source_hash,
 };
 
 pub use control::{Control, ControlCall, ControlDeliver, ControlReply};
-pub use link::{Deliver, Expect, LinkEvent};
+pub use link::{Deliver, Expect, LinkEvent, Traffic};
 pub use watch::Change;
 
-use crate::output::{Output, Source};
+use crate::output::{DevIds, Output, Source};
 use build::{Build, BuildFailure};
 use cargo::RustScope;
-use report::{Outcome, RebuildEvent, ReloadEvent, intern_code, rejection_stage};
-use sources::{AssetRef, Changed, Sources, failure_lines};
+use report::{
+    Outcome, PatchStatus, RebuildEvent, ReloadEvent, RuntimeStatus, RustState, intern_code,
+    rejection_stage,
+};
+use sources::{AssetRef, Changed, Memo, Mounts, Sources, failure_lines};
 pub(crate) use watch::WatchScope;
 use watch::Watcher;
 
@@ -99,10 +116,14 @@ struct Batch {
     last: Instant,
 }
 
-/// The running app the session patches.
+/// A running app connected to the session.
 struct Runtime {
     hello: RuntimeHello,
+    /// Its `RuntimeSessionId` as the events spell it.
+    id: String,
     writer: Sender<HostMessage>,
+    /// What its connection carried.
+    traffic: Arc<Traffic>,
     /// The revision it matches.
     revision: Revision,
     in_flight: Option<InFlight>,
@@ -110,6 +131,10 @@ struct Runtime {
     asked: Vec<Asked>,
     /// The chunks of the snapshot it is sending.
     blobs: Blobs,
+    /// What it runs of the source graph.
+    mounts: Mounts,
+    /// How the latest patch it answered went.
+    patch: Option<PatchStatus>,
 }
 
 /// The snapshot of an app, kept for the app launched after it.
@@ -152,7 +177,7 @@ impl Drop for Runtime {
     }
 }
 
-/// A question of `viso game` relayed to the runtime.
+/// A question of `viso game` relayed to a runtime.
 struct Asked {
     id: u32,
     /// The view of the game asked about, by its index in the source graph.
@@ -168,6 +193,11 @@ struct InFlight {
     views: Vec<SentView>,
     assets: Vec<SentAsset>,
     started: Instant,
+    /// When it was sent, and its compile and plan before.
+    sent: Instant,
+    compile_us: u64,
+    /// What the connection had carried to the runtime before it.
+    bytes_before: u64,
 }
 
 /// An asset a patch carries.
@@ -189,6 +219,20 @@ struct SentView {
     notes: Vec<String>,
 }
 
+/// What one pass over the runtimes shares: the revision its candidates take,
+/// the compiles and asset decodes of runtimes alike, and what it reported.
+#[derive(Default)]
+struct Pass {
+    next: Option<Revision>,
+    memo: Memo,
+    decoded: BTreeMap<(AssetRef, u64), Result<(), String>>,
+    /// The views and assets, at their content, whose errors or notes were
+    /// reported.
+    reported: BTreeSet<(usize, u64)>,
+    reported_notes: BTreeSet<(usize, u64)>,
+    reported_assets: BTreeSet<(AssetRef, u64)>,
+}
+
 /// The dev session.
 pub struct DevSession {
     root: PathBuf,
@@ -200,9 +244,11 @@ pub struct DevSession {
     sources: Sources,
     /// The hash of `Viso.toml` as the build read it.
     manifest: Option<u64>,
-    runtime: Option<Runtime>,
+    /// The runtimes connected, in the order they connected: the first is the
+    /// app the session launched, which a Rust edit restarts.
+    runtimes: Vec<Runtime>,
     batch: Option<Batch>,
-    /// Whether a batch is to be taken now: the runtime reported its mounts
+    /// Whether a batch is to be taken now: a runtime reported its mounts
     /// or answered a patch.
     ready: bool,
     /// The revision the next candidate takes.
@@ -211,10 +257,19 @@ pub struct DevSession {
     apply: bool,
     /// The id the next question of `viso game` takes.
     next_query: u32,
+    /// Where the Rust edits are.
+    rust: RustState,
     /// The latest snapshot the app sent.
     held: Option<HeldSnapshot>,
-    /// Whether the next app to connect was launched to restore it.
+    /// The runtime asked for the snapshot, and the target the restart
+    /// relaunches.
+    snapshot_from: Option<RuntimeSessionId>,
+    restart_target: Option<RuntimeTarget>,
+    /// Whether the next app of that target to report its mounts was launched
+    /// to restore it.
     restore_next: bool,
+    /// The runtime the snapshot was sent to.
+    restoring: Option<RuntimeSessionId>,
     /// Whether the app launched to restore has yet to: from its launch until
     /// its restore lands, or it is refused, closes or exits first.
     landing: bool,
@@ -247,14 +302,18 @@ impl DevSession {
             _watcher: watcher,
             sources: Sources::default(),
             manifest: None,
-            runtime: None,
+            runtimes: Vec::new(),
             batch: None,
             ready: false,
             next_revision: Revision::LAUNCH.0 + 1,
             apply,
             next_query: 0,
+            rust: RustState::Idle,
             held: None,
+            snapshot_from: None,
+            restart_target: None,
             restore_next: false,
+            restoring: None,
             landing: false,
             restarting: None,
             windows: Vec::new(),
@@ -309,6 +368,11 @@ impl DevSession {
         self._watcher.rescope(rust);
     }
 
+    /// A Rust source changed: a build of it is due.
+    pub(crate) fn rust_changed(&mut self, out: &mut Output) {
+        self.set_rust(RustState::Building, out);
+    }
+
     /// Reports `build`, a build of the Rust sources after the launch: a
     /// failure keeps the app running; one that relinked nothing changes
     /// nothing. Whether the app is to restart on the new executable: its
@@ -316,6 +380,7 @@ impl DevSession {
     pub(crate) fn rebuilt(&mut self, build: &Build, out: &mut Output) -> bool {
         if build.unchanged {
             out.log("info", "tool", "the Rust edit changed nothing the app runs");
+            self.set_rust(RustState::Idle, out);
             return false;
         }
         let (outcome, codes) = match &build.result {
@@ -336,8 +401,8 @@ impl DevSession {
             }
         };
         let revision = self
-            .runtime
-            .as_ref()
+            .runtimes
+            .first()
             .map_or(Revision::LAUNCH, |r| r.revision);
         let candidate = self.next_revision;
         self.next_revision += 1;
@@ -346,10 +411,6 @@ impl DevSession {
             .iter()
             .map(|path| Source::new(path, &self.root, "").name().to_owned())
             .collect();
-        let runtime_session = self
-            .runtime
-            .as_ref()
-            .map_or_else(String::new, |r| r.hello.runtime_session.to_hex());
         let event = RebuildEvent {
             files,
             base_revision: revision.0,
@@ -379,9 +440,11 @@ impl DevSession {
                 }
             }
             self.restarting = Some(event);
+            self.set_rust(RustState::Restarting, out);
             return true;
         }
-        out.rebuild(&self.session, &runtime_session, &self.build, &event);
+        out.rebuild(&self.ids_of(self.runtimes.first()), &event);
+        self.set_rust(RustState::Idle, out);
         false
     }
 
@@ -390,11 +453,23 @@ impl DevSession {
     /// reports it.
     pub(crate) fn relaunched(&mut self, out: &mut Output) {
         self.clock.launched = Some(Instant::now());
-        // The old app's channel may outlive it (a page's closes once the new
-        // build is served): it is no longer the session's.
-        if self.runtime.take().is_some() {
-            self.sources.unmount();
+        self.snapshot_from = None;
+        // The old app's channels may outlive it (a page's closes once the
+        // new build is served): they are no longer the session's.
+        let target = self.restart_target;
+        let mut at = 0;
+        while at < self.runtimes.len() {
+            if target.is_none_or(|t| t == self.runtimes[at].hello.target) {
+                let runtime = self.runtimes.remove(at);
+                self.report_status(&runtime, false, out);
+            } else {
+                at += 1;
+            }
         }
+        // The new build embeds every asset as it is now; the runtimes of
+        // other targets keep what theirs embedded.
+        self.sources
+            .rebuilt(self.runtimes.iter_mut().map(|runtime| &mut runtime.mounts));
         if self.restore_next {
             self.landing = true;
         } else {
@@ -435,6 +510,8 @@ impl DevSession {
         out: &mut Output,
     ) {
         self.landing = false;
+        let restoring = self.restoring.take();
+        self.restart_target = None;
         let Some(mut event) = self.restarting.take() else {
             return;
         };
@@ -461,11 +538,14 @@ impl DevSession {
             Outcome::Rejected => event.base_revision,
             _ => Revision::LAUNCH.0,
         };
-        let runtime_session = self
-            .runtime
-            .as_ref()
-            .map_or_else(String::new, |r| r.hello.runtime_session.to_hex());
-        out.rebuild(&self.session, &runtime_session, &self.build, &event);
+        let runtime = restoring
+            .and_then(|id| self.index(id))
+            .or((!self.runtimes.is_empty()).then_some(0))
+            .map(|at| &self.runtimes[at]);
+        out.rebuild(&self.ids_of(runtime), &event);
+        if self.rust == RustState::Restarting {
+            self.set_rust(RustState::Idle, out);
+        }
     }
 
     /// Adds a change at `now` to the batch being coalesced.
@@ -495,40 +575,46 @@ impl DevSession {
                         hello.target.as_str()
                     ),
                 );
-                self.sources.unmount();
-                self.runtime = Some(Runtime {
+                self.runtimes.push(Runtime {
+                    id: hello.runtime_session.to_hex(),
                     revision: hello.current_revision,
                     hello,
                     writer: connection.writer,
+                    traffic: connection.traffic,
                     in_flight: None,
                     asked: Vec::new(),
                     blobs: Blobs::default(),
+                    mounts: Mounts::default(),
+                    patch: None,
                 });
+                self.status(self.runtimes.len() - 1, out);
             }
             LinkEvent::Runtime(from, message) => {
-                if self.runs(from) {
-                    self.runtime_message(message, out);
+                if let Some(at) = self.index(from) {
+                    self.runtime_message(at, message, out);
                 }
             }
             LinkEvent::Closed(from) => {
-                if self.runs(from) {
-                    self.runtime = None;
-                    self.sources.unmount();
-                    if self.landing {
-                        out.log(
-                            "warn",
-                            "tool",
-                            "the restarted app closed its dev channel before restoring its state",
-                        );
-                        self.finish_restart(Outcome::WarmRestarted, false, Vec::new(), out);
-                    }
+                let Some(at) = self.index(from) else {
+                    return;
+                };
+                let runtime = self.runtimes.remove(at);
+                self.report_status(&runtime, false, out);
+                if self.landing && self.restarts(runtime.hello.target) {
+                    out.log(
+                        "warn",
+                        "tool",
+                        "the restarted app closed its dev channel before restoring its state",
+                    );
+                    self.finish_restart(Outcome::WarmRestarted, false, Vec::new(), out);
                 }
             }
             LinkEvent::Refused(reason) => {
                 out.log("warn", "tool", &reason);
                 // The app launched to restore is the one refused: it runs
                 // the new build fresh, out of the session's reach.
-                if self.landing && self.runtime.is_none() {
+                let connected = self.runtimes.iter().any(|r| self.restarts(r.hello.target));
+                if self.landing && !connected {
                     self.restore_next = false;
                     self.finish_restart(Outcome::WarmRestarted, false, Vec::new(), out);
                 }
@@ -536,11 +622,67 @@ impl DevSession {
         }
     }
 
-    /// Whether `launch` is the runtime connected.
-    fn runs(&self, launch: RuntimeSessionId) -> bool {
-        self.runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.hello.runtime_session == launch)
+    /// The index of the runtime `launch` names.
+    fn index(&self, launch: RuntimeSessionId) -> Option<usize> {
+        self.runtimes
+            .iter()
+            .position(|runtime| runtime.hello.runtime_session == launch)
+    }
+
+    /// Whether a runtime of `target` runs the app the restart under way
+    /// relaunches.
+    fn restarts(&self, target: RuntimeTarget) -> bool {
+        self.restart_target.is_none_or(|t| t == target)
+    }
+
+    /// Whom an event about `runtime` names.
+    fn ids_of<'a>(&'a self, runtime: Option<&'a Runtime>) -> DevIds<'a> {
+        let runtime = runtime.map(|r| (r.id.as_str(), r.hello.target));
+        ids(&self.session, &self.build, runtime, self.runtimes.len() > 1)
+    }
+
+    /// Reports the status of runtime `at`.
+    fn status(&self, at: usize, out: &mut Output) {
+        self.report_status(&self.runtimes[at], true, out);
+    }
+
+    /// Reports the status of `runtime`, connected or let go.
+    fn report_status(&self, runtime: &Runtime, connected: bool, out: &mut Output) {
+        let failing = runtime
+            .mounts
+            .views
+            .iter()
+            .filter(|(_, mount)| mount.failing)
+            .map(|(&at, _)| self.name(&self.sources.views[at].path))
+            .collect();
+        let status = RuntimeStatus {
+            connected,
+            revision: runtime.revision.0,
+            candidate_revision: runtime.in_flight.as_ref().map(|sent| sent.next.0),
+            failing,
+            rust: self.rust,
+            bytes_sent: runtime.traffic.sent(),
+            bytes_received: runtime.traffic.received(),
+            patch: runtime.patch.as_ref(),
+        };
+        out.runtime(&self.ids_of(Some(runtime)), &status);
+    }
+
+    /// Moves the Rust edits to `state`, reporting each runtime when it is a
+    /// change.
+    fn set_rust(&mut self, state: RustState, out: &mut Output) {
+        if self.rust == state {
+            return;
+        }
+        self.rust = state;
+        for at in 0..self.runtimes.len() {
+            self.status(at, out);
+        }
+    }
+
+    /// `path` as the project names it.
+    fn name(&self, path: &std::path::Path) -> String {
+        Source::new(path, &self.root, "").name().to_owned()
     }
 
     /// Takes the batch when it is due.
@@ -553,44 +695,50 @@ impl DevSession {
         self.flush(out);
     }
 
-    fn runtime_message(&mut self, message: RuntimeMessage, out: &mut Output) {
+    fn runtime_message(&mut self, at: usize, message: RuntimeMessage, out: &mut Output) {
+        let launch = self.runtimes[at].hello.runtime_session;
         match message {
             RuntimeMessage::Mounts(entries) => {
+                let runtime = &mut self.runtimes[at];
                 let mounted: Vec<usize> = entries
                     .iter()
-                    .map(|entry| self.sources.mount(entry))
+                    .map(|entry| self.sources.mount(&mut runtime.mounts, entry))
                     .collect();
                 // Each mount's last-good compiles now, off the first edit's
                 // path; one that cannot is retried, and reported, then.
                 self.compile_catalogs(out);
-                for &at in &mounted {
-                    let _ = self.sources.baseline(at);
+                let runtime = &mut self.runtimes[at];
+                self.sources.catalogs_checked(&mut runtime.mounts);
+                for &view in &mounted {
+                    let _ = self.sources.baseline(&mut runtime.mounts, view);
                 }
-                if (self.landing || self.restore_next) && self.clock.mounted.is_none() {
+                let target = runtime.hello.target;
+                if self.restore_next && self.restarts(target) {
+                    if self.clock.mounted.is_none() {
+                        self.clock.mounted = Some(Instant::now());
+                    }
+                    self.restore_next = false;
+                    self.restoring = Some(launch);
+                    self.send_restore(at, &mounted, out);
+                } else if self.landing && self.clock.mounted.is_none() {
                     self.clock.mounted = Some(Instant::now());
-                }
-                if std::mem::take(&mut self.restore_next) {
-                    self.send_restore(&mounted, out);
                 }
                 self.ready = true;
             }
-            RuntimeMessage::Blob(chunk) => {
-                if let Some(runtime) = &mut self.runtime {
-                    runtime.blobs.add(chunk);
-                }
-            }
+            RuntimeMessage::Blob(chunk) => self.runtimes[at].blobs.add(chunk),
             RuntimeMessage::Snapshot {
                 blob,
                 windows,
                 capture_us,
             } => {
-                let Some(runtime) = &mut self.runtime else {
+                if self.snapshot_from != Some(launch) {
                     return;
-                };
+                }
                 if self.clock.asked.is_some() {
                     self.clock.held = Some(Instant::now());
                 }
                 self.windows = windows;
+                let runtime = &mut self.runtimes[at];
                 let bytes = runtime.blobs.take(blob);
                 runtime.blobs.clear();
                 let Some(bytes) = bytes else {
@@ -600,13 +748,13 @@ impl DevSession {
                         "the app's snapshot did not arrive whole: the next launch runs fresh",
                     );
                 };
-                let views = self
-                    .sources
+                let views = runtime
+                    .mounts
                     .views
                     .iter()
-                    .filter_map(|view| {
-                        let last_good = view.mount.as_ref()?.last_good.as_ref()?;
-                        Some((view.path.clone(), last_good.clone()))
+                    .filter_map(|(&view, mount)| {
+                        let last_good = mount.last_good.as_ref()?;
+                        Some((self.sources.views[view].path.clone(), last_good.clone()))
                     })
                     .collect();
                 out.log(
@@ -620,105 +768,16 @@ impl DevSession {
                 );
                 self.held = Some(HeldSnapshot { bytes, views });
             }
-            RuntimeMessage::Restored(report) => self.restored(&report, out),
-            RuntimeMessage::Ack(ack) => {
-                let Some(sent) = self.answered(ack.revision) else {
-                    return out.log(
-                        "warn",
-                        "tool",
-                        &format!("the app applied r{} unasked", ack.revision.0),
-                    );
-                };
-                let elapsed = elapsed_us(sent.started);
-                let runtime_session = self
-                    .runtime
-                    .as_ref()
-                    .map_or_else(String::new, |r| r.hello.runtime_session.to_hex());
-                for SentView {
-                    at,
-                    text,
-                    candidate,
-                    notes,
-                    ..
-                } in sent.views
-                {
-                    let view = &mut self.sources.views[at];
-                    let Some(mount) = view.mount.as_mut() else {
-                        continue;
-                    };
-                    let hash = source_hash(&text);
-                    mount.running = hash;
-                    mount.settled = Some(hash);
-                    mount.failing = false;
-                    mount.last_good = Some(candidate);
-                    let file = mount.file;
-                    let counts = ack
-                        .files
-                        .iter()
-                        .find(|commit| commit.file == file)
-                        .map_or_else(CommitCounts::default, |commit| commit.counts);
-                    let source = Source::new(&view.path, &self.root, &text);
-                    let mut codes = notes;
-                    for notice in ack.notices.iter().filter(|n| n.file == file) {
-                        let Some(code) = intern_code(&notice.code) else {
-                            continue;
-                        };
-                        let range =
-                            viso_dsl::TextRange::new(notice.start.into(), notice.end.into());
-                        let diagnostic = Diagnostic::warning(code, range, notice.message.clone());
-                        if range.end().to_usize() <= text.len() {
-                            out.source(Some(&source), &[], &diagnostic);
-                        }
-                        codes.push(notice.code.clone());
-                    }
-                    let event = ReloadEvent {
-                        base_revision: sent.base.0,
-                        candidate_revision: sent.next.0,
-                        last_good_revision: ack.revision.0,
-                        outcome: Outcome::of_commit(&counts),
-                        stage: Stage::RuntimeCommit,
-                        elapsed_us: elapsed,
-                        counts,
-                        codes,
-                        game: ack.games.iter().find(|game| game.file == file).copied(),
-                    };
-                    out.dev(
-                        source.name(),
-                        &self.session,
-                        &runtime_session,
-                        &self.build,
-                        &event,
-                    );
-                }
-                for SentAsset { asset, hash, .. } in sent.assets {
-                    self.sources.asset_applied(&asset, hash);
-                    let id = ResourceId::of(&asset.path);
-                    let dirty = ack
-                        .resources
-                        .iter()
-                        .find(|commit| commit.id == id)
-                        .map(|commit| commit.dirty)
-                        .unwrap_or_default();
-                    let event = ReloadEvent {
-                        base_revision: sent.base.0,
-                        candidate_revision: sent.next.0,
-                        last_good_revision: ack.revision.0,
-                        outcome: Outcome::Applied,
-                        stage: Stage::RuntimeCommit,
-                        elapsed_us: elapsed,
-                        counts: CommitCounts {
-                            dirty,
-                            ..CommitCounts::default()
-                        },
-                        codes: Vec::new(),
-                        game: None,
-                    };
-                    let path = self.sources.asset_path(&asset);
-                    let name = Source::new(&path, &self.root, "").name().to_owned();
-                    out.dev(&name, &self.session, &runtime_session, &self.build, &event);
+            RuntimeMessage::Restored(report) => {
+                if self.restoring == Some(launch) {
+                    self.restored(&report, out);
                 }
             }
+            RuntimeMessage::Ack(ack) => self.acked(at, &ack, out),
             RuntimeMessage::Nack(nack) if nack.stage == Stage::SnapshotRestore => {
+                if self.restoring != Some(launch) {
+                    return;
+                }
                 out.log(
                     "warn",
                     "tool",
@@ -729,78 +788,209 @@ impl DevSession {
                 );
                 self.finish_restart(Outcome::WarmRestarted, false, nack.diagnostic_codes, out);
             }
-            RuntimeMessage::Nack(nack) => {
-                let Some(sent) = self.answered(nack.candidate_revision) else {
-                    return out.log(
-                        "warn",
-                        "tool",
-                        &format!(
-                            "the app refused a frame at {}: {}",
-                            nack.stage.as_str(),
-                            nack.diagnostic_codes.join(", ")
-                        ),
-                    );
-                };
-                let runtime_session = match &mut self.runtime {
-                    Some(runtime) => {
-                        runtime.revision = nack.last_good_revision;
-                        runtime.hello.runtime_session.to_hex()
-                    }
-                    None => String::new(),
-                };
-                let elapsed = elapsed_us(sent.started);
-                for sent_view in &sent.views {
-                    let view = &mut self.sources.views[sent_view.at];
-                    // Its mounts still run their last-good: the next edit is
-                    // planned against it.
-                    if let Some(mount) = view.mount.as_mut() {
-                        mount.settled = Some(source_hash(&sent_view.text));
-                    }
-                    let mut codes = sent_view.notes.clone();
-                    codes.extend(nack.diagnostic_codes.iter().cloned());
-                    let event = ReloadEvent {
-                        base_revision: sent.base.0,
-                        candidate_revision: sent.next.0,
-                        last_good_revision: nack.last_good_revision.0,
-                        outcome: Outcome::Rejected,
-                        stage: nack.stage,
-                        elapsed_us: elapsed,
-                        counts: CommitCounts::default(),
-                        codes,
-                        game: None,
-                    };
-                    let name = Source::new(&view.path, &self.root, "").name().to_owned();
-                    out.dev(&name, &self.session, &runtime_session, &self.build, &event);
-                }
-                for SentAsset { asset, hash, .. } in &sent.assets {
-                    // It runs its last good: the next edit of it goes again.
-                    self.sources.asset_settled(asset, *hash);
-                    let event = ReloadEvent {
-                        base_revision: sent.base.0,
-                        candidate_revision: sent.next.0,
-                        last_good_revision: nack.last_good_revision.0,
-                        outcome: Outcome::Rejected,
-                        stage: nack.stage,
-                        elapsed_us: elapsed,
-                        counts: CommitCounts::default(),
-                        codes: nack.diagnostic_codes.clone(),
-                        game: None,
-                    };
-                    let path = self.sources.asset_path(asset);
-                    let name = Source::new(&path, &self.root, "").name().to_owned();
-                    out.dev(&name, &self.session, &runtime_session, &self.build, &event);
-                }
-            }
+            RuntimeMessage::Nack(nack) => self.nacked(at, &nack, out),
             RuntimeMessage::Log { level, line } => out.log(level.as_str(), "app", &line),
             RuntimeMessage::Dropped { count } => out.log(
                 "warn",
                 "tool",
                 &format!("the app dropped {count} dev messages: `viso run` read too slowly"),
             ),
-            RuntimeMessage::Game(answer) => self.answer(answer),
+            RuntimeMessage::Game(answer) => self.answer(at, answer),
             // The link thread delivers no second hello.
             RuntimeMessage::Hello(_) => {}
         }
+    }
+
+    /// Takes runtime `at`'s ACK: each candidate it carried is the last good
+    /// its next edit is planned against.
+    fn acked(&mut self, at: usize, ack: &PatchAck, out: &mut Output) {
+        let Some(sent) = self.answered(at, ack.revision) else {
+            return out.log(
+                "warn",
+                "tool",
+                &format!("the app applied r{} unasked", ack.revision.0),
+            );
+        };
+        let elapsed = elapsed_us(sent.started);
+        let named = self.runtimes.len() > 1;
+        let runtime = &mut self.runtimes[at];
+        let id = runtime.id.clone();
+        let ids = ids(
+            &self.session,
+            &self.build,
+            Some((&id, runtime.hello.target)),
+            named,
+        );
+        for SentView {
+            at: view,
+            text,
+            candidate,
+            notes,
+        } in sent.views
+        {
+            let Some(mount) = runtime.mounts.views.get_mut(&view) else {
+                continue;
+            };
+            let hash = source_hash(&text);
+            mount.running = hash;
+            mount.settled = Some(hash);
+            mount.failing = false;
+            mount.last_good = Some(candidate);
+            let file = mount.file;
+            let counts = ack
+                .files
+                .iter()
+                .find(|commit| commit.file == file)
+                .map_or_else(CommitCounts::default, |commit| commit.counts);
+            let path = &self.sources.views[view].path;
+            let source = Source::new(path, &self.root, &text);
+            let mut codes = notes;
+            for notice in ack.notices.iter().filter(|n| n.file == file) {
+                let Some(code) = intern_code(&notice.code) else {
+                    continue;
+                };
+                let range = viso_dsl::TextRange::new(notice.start.into(), notice.end.into());
+                let diagnostic = Diagnostic::warning(code, range, notice.message.clone());
+                if range.end().to_usize() <= text.len() {
+                    out.source(Some(&source), &[], &diagnostic);
+                }
+                codes.push(notice.code.clone());
+            }
+            let event = ReloadEvent {
+                base_revision: sent.base.0,
+                candidate_revision: sent.next.0,
+                last_good_revision: ack.revision.0,
+                outcome: Outcome::of_commit(&counts),
+                stage: Stage::RuntimeCommit,
+                elapsed_us: elapsed,
+                counts,
+                codes,
+                game: ack.games.iter().find(|game| game.file == file).copied(),
+            };
+            out.dev(source.name(), &ids, &event);
+        }
+        for SentAsset { asset, hash, .. } in &sent.assets {
+            runtime.mounts.asset_applied(asset, *hash);
+            let id = ResourceId::of(&asset.path);
+            let dirty = ack
+                .resources
+                .iter()
+                .find(|commit| commit.id == id)
+                .map(|commit| commit.dirty)
+                .unwrap_or_default();
+            let event = ReloadEvent {
+                base_revision: sent.base.0,
+                candidate_revision: sent.next.0,
+                last_good_revision: ack.revision.0,
+                outcome: Outcome::Applied,
+                stage: Stage::RuntimeCommit,
+                elapsed_us: elapsed,
+                counts: CommitCounts {
+                    dirty,
+                    ..CommitCounts::default()
+                },
+                codes: Vec::new(),
+                game: None,
+            };
+            let path = self.sources.asset_path(asset);
+            let name = Source::new(&path, &self.root, "").name().to_owned();
+            out.dev(&name, &ids, &event);
+        }
+        let resets = ack.scoped_resets();
+        runtime.patch = Some(PatchStatus {
+            candidate_revision: sent.next.0,
+            outcome: if resets > 0 {
+                Outcome::ScopedReset
+            } else {
+                Outcome::Applied
+            },
+            stage: Stage::RuntimeCommit,
+            scoped_resets: resets,
+            compile_us: sent.compile_us,
+            commit_us: Some(ack.timings.commit_us),
+            round_trip_us: elapsed_us(sent.sent),
+            bytes: runtime.traffic.sent().saturating_sub(sent.bytes_before),
+        });
+        self.status(at, out);
+    }
+
+    /// Takes runtime `at`'s NACK: it keeps its last good, and the candidates
+    /// it refused are not sent to it again.
+    fn nacked(&mut self, at: usize, nack: &PatchNack, out: &mut Output) {
+        let Some(sent) = self.answered(at, nack.candidate_revision) else {
+            return out.log(
+                "warn",
+                "tool",
+                &format!(
+                    "the app refused a frame at {}: {}",
+                    nack.stage.as_str(),
+                    nack.diagnostic_codes.join(", ")
+                ),
+            );
+        };
+        let named = self.runtimes.len() > 1;
+        let runtime = &mut self.runtimes[at];
+        runtime.revision = nack.last_good_revision;
+        let id = runtime.id.clone();
+        let ids = ids(
+            &self.session,
+            &self.build,
+            Some((&id, runtime.hello.target)),
+            named,
+        );
+        let elapsed = elapsed_us(sent.started);
+        for sent_view in &sent.views {
+            // Its mounts still run their last-good: the next edit is
+            // planned against it.
+            if let Some(mount) = runtime.mounts.views.get_mut(&sent_view.at) {
+                mount.settled = Some(source_hash(&sent_view.text));
+            }
+            let mut codes = sent_view.notes.clone();
+            codes.extend(nack.diagnostic_codes.iter().cloned());
+            let event = ReloadEvent {
+                base_revision: sent.base.0,
+                candidate_revision: sent.next.0,
+                last_good_revision: nack.last_good_revision.0,
+                outcome: Outcome::Rejected,
+                stage: nack.stage,
+                elapsed_us: elapsed,
+                counts: CommitCounts::default(),
+                codes,
+                game: None,
+            };
+            let path = &self.sources.views[sent_view.at].path;
+            let name = Source::new(path, &self.root, "").name().to_owned();
+            out.dev(&name, &ids, &event);
+        }
+        for SentAsset { asset, hash, .. } in &sent.assets {
+            // It runs its last good: the next edit of it goes again.
+            runtime.mounts.asset_settled(asset, *hash);
+            let event = ReloadEvent {
+                base_revision: sent.base.0,
+                candidate_revision: sent.next.0,
+                last_good_revision: nack.last_good_revision.0,
+                outcome: Outcome::Rejected,
+                stage: nack.stage,
+                elapsed_us: elapsed,
+                counts: CommitCounts::default(),
+                codes: nack.diagnostic_codes.clone(),
+                game: None,
+            };
+            let path = self.sources.asset_path(asset);
+            let name = Source::new(&path, &self.root, "").name().to_owned();
+            out.dev(&name, &ids, &event);
+        }
+        runtime.patch = Some(PatchStatus {
+            candidate_revision: sent.next.0,
+            outcome: Outcome::Rejected,
+            stage: nack.stage,
+            scoped_resets: 0,
+            compile_us: sent.compile_us,
+            commit_us: None,
+            round_trip_us: elapsed_us(sent.sent),
+            bytes: runtime.traffic.sent().saturating_sub(sent.bytes_before),
+        });
+        self.status(at, out);
     }
 
     /// Asks the app for its snapshot, dropping the one held; whether an app
@@ -813,9 +1003,12 @@ impl DevSession {
             asked: Some(Instant::now()),
             ..RestartClock::default()
         };
-        self.runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.writer.send(HostMessage::Snapshot).is_ok())
+        let Some(app) = self.runtimes.first() else {
+            return false;
+        };
+        self.snapshot_from = Some(app.hello.runtime_session);
+        self.restart_target = Some(app.hello.target);
+        app.writer.send(HostMessage::Snapshot).is_ok()
     }
 
     /// Where the next app's launch window opens: where the first window of
@@ -845,28 +1038,28 @@ impl DevSession {
         self.restore_next
     }
 
-    /// Sends the held snapshot to the app, with a view for each file of it
-    /// the app just reported mounting that the old app ran: the view the
-    /// build embeds and the plan to it from the old one.
-    fn send_restore(&mut self, mounted: &[usize], out: &mut Output) {
-        let (Some(runtime), Some(held)) = (&self.runtime, &self.held) else {
+    /// Sends the held snapshot to runtime `at`, with a view for each file of
+    /// it the runtime just reported mounting that the old app ran: the view
+    /// the build embeds and the plan to it from the old one.
+    fn send_restore(&mut self, at: usize, mounted: &[usize], out: &mut Output) {
+        let (runtime, Some(held)) = (&self.runtimes[at], &self.held) else {
             return;
         };
         let langs = [runtime.hello.shader_lang, ShaderLang::None];
         let mut ui = UiPatch::default();
-        for &at in mounted {
-            let view = &self.sources.views[at];
-            let Some(mount) = &view.mount else {
+        for view in mounted {
+            let Some(mount) = runtime.mounts.views.get(view) else {
                 continue;
             };
-            let old = held.views.iter().find(|(path, _)| *path == view.path);
+            let path = &self.sources.views[*view].path;
+            let old = held.views.iter().find(|(old, _)| old == path);
             let (Some((_, old)), Some(new)) = (old, &mount.last_good) else {
                 continue;
             };
             match view_patch(mount.file, Some(old), new, &langs) {
                 Ok(patch) => ui.views.push(patch),
                 Err(error) => {
-                    let name = Source::new(&view.path, &self.root, "").name().to_owned();
+                    let name = Source::new(path, &self.root, "").name().to_owned();
                     out.log(
                         "warn",
                         "tool",
@@ -928,34 +1121,50 @@ impl DevSession {
     }
 
     /// Relays what `viso game` asks about the game `call.game` names to the
-    /// app, or refuses it.
+    /// first runtime that runs it, or refuses it.
     pub fn control(&mut self, call: ControlCall, out: &mut Output) {
         let refuse = |code: &str, message: String| {
             let _ = call.reply.send(ControlReply::refused(code, message));
         };
-        let Some(runtime) = &self.runtime else {
+        if self.runtimes.is_empty() {
             return refuse(
                 control::GAME_NOT_RUNNING,
                 "the app is not connected to `viso run`".into(),
             );
-        };
-        if !runtime.hello.capabilities.contains(Domain::System) {
-            return refuse(
-                control::GAME_NOT_RUNNING,
-                "the app runs no game sessions".into(),
-            );
         }
-        let at = match self.find_game(&call.game) {
-            Ok(at) => at,
-            Err(reply) => {
-                let _ = call.reply.send(reply);
-                return;
+        let mut found = None;
+        let mut refusal = None;
+        for (at, runtime) in self.runtimes.iter().enumerate() {
+            if !runtime.hello.capabilities.contains(Domain::System) {
+                continue;
             }
+            match self.find_game(&runtime.mounts, &call.game) {
+                Ok(view) => {
+                    found = Some((at, view));
+                    break;
+                }
+                Err(reply) => {
+                    refusal.get_or_insert(reply);
+                }
+            }
+        }
+        let Some((at, view)) = found else {
+            return match refusal {
+                Some(reply) => {
+                    let _ = call.reply.send(reply);
+                }
+                None => refuse(
+                    control::GAME_NOT_RUNNING,
+                    "the app runs no game sessions".into(),
+                ),
+            };
         };
-        let view = &self.sources.views[at];
-        let file = view.mount.as_ref().expect("a mounted view").file;
+        let runtime = &mut self.runtimes[at];
+        let file = runtime.mounts.views[&view].file;
         if let GameAsk::Record { .. } = call.ask {
-            let name = Source::new(&view.path, &self.root, "").name().to_owned();
+            let name = Source::new(&self.sources.views[view].path, &self.root, "")
+                .name()
+                .to_owned();
             out.log(
                 "info",
                 "tool",
@@ -964,7 +1173,6 @@ impl DevSession {
         }
         let id = self.next_query;
         self.next_query = self.next_query.wrapping_add(1);
-        let runtime = self.runtime.as_mut().expect("connected");
         let query = GameQuery {
             id,
             file,
@@ -978,23 +1186,20 @@ impl DevSession {
         }
         runtime.asked.push(Asked {
             id,
-            at,
+            at: view,
             ask: call.ask,
             reply: call.reply,
         });
     }
 
-    /// The mounted view `game` names: its path from the project root, with
-    /// or without the extension, or its file's stem.
-    fn find_game(&self, game: &str) -> Result<usize, ControlReply> {
+    /// The view of `mounts` that `game` names: its path from the project
+    /// root, with or without the extension, or its file's stem.
+    fn find_game(&self, mounts: &Mounts, game: &str) -> Result<usize, ControlReply> {
         let game = game.trim_start_matches("./").replace('\\', "/");
         let mut named = Vec::new();
         let mut mounted = Vec::new();
-        for (at, view) in self.sources.views.iter().enumerate() {
-            if view.mount.is_none() {
-                continue;
-            }
-            let name = Source::new(&view.path, &self.root, "").name().to_owned();
+        for &at in mounts.views.keys() {
+            let name = self.name(&self.sources.views[at].path);
             let bare = name.strip_suffix(".vs").unwrap_or(&name);
             let stem = bare.rsplit('/').next().unwrap_or(bare);
             if name == game || bare == game || stem == game {
@@ -1024,20 +1229,18 @@ impl DevSession {
         }
     }
 
-    /// Hands the runtime's answer to the `viso game` that asked.
-    fn answer(&mut self, answer: GameAnswer) {
-        let Some(runtime) = &mut self.runtime else {
-            return;
-        };
+    /// Hands runtime `at`'s answer to the `viso game` that asked.
+    fn answer(&mut self, at: usize, answer: GameAnswer) {
+        let runtime = &mut self.runtimes[at];
         let Some(index) = runtime.asked.iter().position(|a| a.id == answer.id) else {
             return;
         };
         let asked = runtime.asked.swap_remove(index);
-        let view = &self.sources.views[asked.at];
-        let file = Source::new(&view.path, &self.root, "").name().to_owned();
-        let program = view
-            .mount
-            .as_ref()
+        let file = self.name(&self.sources.views[asked.at].path);
+        let program = self.runtimes[at]
+            .mounts
+            .views
+            .get(&asked.at)
             .and_then(|m| m.last_good.as_ref())
             .and_then(|plan| plan.game.as_ref());
         let reply = match (answer.reply, &asked.ask) {
@@ -1071,10 +1274,11 @@ impl DevSession {
         };
         let _ = asked.reply.send(reply);
     }
-    /// Closes the patch in flight if it is the one moving to `next`, and
-    /// takes the next batch now.
-    fn answered(&mut self, next: Revision) -> Option<InFlight> {
-        let runtime = self.runtime.as_mut()?;
+
+    /// Closes runtime `at`'s patch in flight if it is the one moving to
+    /// `next`, and takes the next batch now.
+    fn answered(&mut self, at: usize, next: Revision) -> Option<InFlight> {
+        let runtime = &mut self.runtimes[at];
         if runtime.in_flight.as_ref()?.next != next {
             return None;
         }
@@ -1092,57 +1296,99 @@ impl DevSession {
                 out.source(Some(&Source::new(path, &self.root, text)), &[], diagnostic);
             }
         }
+        for runtime in &mut self.runtimes {
+            self.sources.catalogs_checked(&mut runtime.mounts);
+        }
     }
 
-    /// Compiles the batch and sends what compiled.
+    /// Compiles the batch for each runtime with no patch in flight and sends
+    /// it what compiled for it. Runtimes that mount a file alike share its
+    /// compile; each is planned, packed and answered on its own, so one
+    /// whose target refuses an edit stays on its last good while the others
+    /// advance.
     fn flush(&mut self, out: &mut Output) {
         self.compile_catalogs(out);
-        let Some(runtime) = &mut self.runtime else {
-            return;
-        };
-        if runtime.in_flight.is_some() {
-            return;
+        let mut pass = Pass::default();
+        for at in 0..self.runtimes.len() {
+            if self.runtimes[at].in_flight.is_none() {
+                self.flush_runtime(at, &mut pass, out);
+            }
         }
-        let runtime_session = runtime.hello.runtime_session.to_hex();
+    }
+
+    /// Compiles the batch for runtime `at` and sends it what compiled.
+    fn flush_runtime(&mut self, at: usize, pass: &mut Pass, out: &mut Output) {
+        let named = self.runtimes.len() > 1;
+        let runtime = &mut self.runtimes[at];
+        let id = runtime.id.clone();
+        let ids = ids(
+            &self.session,
+            &self.build,
+            Some((&id, runtime.hello.target)),
+            named,
+        );
+        let app = match ids.target {
+            Some(target) if named => format!("the {target} app"),
+            _ => "the app".to_owned(),
+        };
         // A rejected edit reverted to what the runtime runs: clear its failure.
-        for view in &mut self.sources.views {
-            let hash = view.hash();
-            if let Some(mount) = view.mount.as_mut()
-                && mount.failing
-                && hash == Some(mount.running)
-            {
+        let mut cleared = false;
+        for (&view, mount) in &mut runtime.mounts.views {
+            if mount.failing && self.sources.views[view].hash() == Some(mount.running) {
                 mount.failing = false;
                 mount.settled = None;
+                cleared = true;
                 let _ = runtime.writer.send(HostMessage::Failure {
                     file: mount.file,
                     lines: Vec::new(),
                 });
             }
         }
-        let candidates = self.sources.candidates();
-        if candidates.is_empty() && self.sources.asset_candidates(&[]).is_empty() {
+        let candidates = self.sources.candidates(&runtime.mounts);
+        if candidates.is_empty()
+            && self
+                .sources
+                .asset_candidates(&runtime.mounts, &[])
+                .is_empty()
+        {
+            if cleared {
+                self.status(at, out);
+            }
             return;
         }
         let started = Instant::now();
+        let bytes_before = runtime.traffic.sent();
         let base = runtime.revision;
-        let next = Revision(self.next_revision);
-        self.next_revision += 1;
+        let next = match pass.next {
+            Some(next) => next,
+            None => {
+                let next = Revision(self.next_revision);
+                self.next_revision += 1;
+                pass.next = Some(next);
+                next
+            }
+        };
         let mut views = Vec::new();
-        for at in candidates {
-            let Some(compiled) = self.sources.compile(at) else {
+        let mut failed = cleared;
+        for view in candidates {
+            let Some(mount) = runtime.mounts.views.get_mut(&view) else {
                 continue;
             };
-            let view = &mut self.sources.views[at];
-            let (Some(text), Some(mount)) = (view.text.clone(), view.mount.as_mut()) else {
+            let Some(compiled) = self.sources.compile(view, mount, &mut pass.memo) else {
                 continue;
             };
+            let path = &self.sources.views[view].path;
+            let Some(text) = self.sources.views[view].text.clone() else {
+                continue;
+            };
+            let hash = source_hash(&text);
             let diagnostics = match compiled {
                 Ok(candidate) if self.apply => {
-                    views.push((at, text, candidate));
+                    views.push((view, text, candidate));
                     continue;
                 }
                 Ok(_) => {
-                    mount.settled = Some(source_hash(&text));
+                    mount.settled = Some(hash);
                     let event = ReloadEvent {
                         base_revision: base.0,
                         candidate_revision: next.0,
@@ -1154,19 +1400,22 @@ impl DevSession {
                         codes: Vec::new(),
                         game: None,
                     };
-                    let name = Source::new(&view.path, &self.root, "").name().to_owned();
-                    out.dev(&name, &self.session, &runtime_session, &self.build, &event);
+                    let name = Source::new(path, &self.root, "").name().to_owned();
+                    out.dev(&name, &ids, &event);
                     continue;
                 }
                 Err(diagnostics) => diagnostics,
             };
-            mount.settled = Some(source_hash(&text));
-            let source = Source::new(&view.path, &self.root, &text);
-            for diagnostic in &diagnostics {
-                out.source(Some(&source), &[], diagnostic);
+            mount.settled = Some(hash);
+            let source = Source::new(path, &self.root, &text);
+            if pass.reported.insert((view, hash)) {
+                for diagnostic in &diagnostics {
+                    out.source(Some(&source), &[], diagnostic);
+                }
             }
             if self.apply {
                 mount.failing = true;
+                failed = true;
                 let _ = runtime.writer.send(HostMessage::Failure {
                     file: mount.file,
                     lines: failure_lines(source.name(), &text, &diagnostics),
@@ -1183,26 +1432,17 @@ impl DevSession {
                 codes: diagnostics.iter().map(|d| d.code.to_owned()).collect(),
                 game: None,
             };
-            out.dev(
-                source.name(),
-                &self.session,
-                &runtime_session,
-                &self.build,
-                &event,
-            );
+            out.dev(source.name(), &ids, &event);
         }
-        // The assets to send: each the app holds that changed, each font that
-        // changed, and each a candidate names that it does not hold yet. Each is decoded here as
-        // the app would: one that does not decode is reported against its
-        // path and not sent, and the app keeps the last good.
-        let mut named = Vec::new();
-        for (at, _, candidate) in &views {
-            if let Some(dir) = self.sources.views[*at]
-                .mount
-                .as_ref()
-                .and_then(|m| m.assets)
-            {
-                named.extend(candidate.assets.iter().map(|asset| AssetRef {
+        // The assets to send: each the runtime holds that changed, each font
+        // that changed, and each a candidate names that it does not hold yet.
+        // Each is decoded here as the app would: one that does not decode is
+        // reported against its path and not sent, and the app keeps the last
+        // good.
+        let mut named_assets = Vec::new();
+        for (view, _, candidate) in &views {
+            if let Some(dir) = runtime.mounts.views.get(view).and_then(|m| m.assets) {
+                named_assets.extend(candidate.assets.iter().map(|asset| AssetRef {
                     dir,
                     path: asset.path.clone(),
                 }));
@@ -1210,22 +1450,30 @@ impl DevSession {
         }
         let replaces_assets = runtime.hello.capabilities.contains(Domain::Resource);
         let mut assets = Vec::new();
-        for asset in self.sources.asset_candidates(&named) {
+        for asset in self
+            .sources
+            .asset_candidates(&runtime.mounts, &named_assets)
+        {
             let file = self.sources.asset(&asset);
             let hash = file.hash;
             let path = self.sources.asset_path(&asset);
             let name = Source::new(&path, &self.root, "").name().to_owned();
-            let decoded = if file.font {
-                font_format::parses(&file.bytes)
-                    .then_some(())
-                    .ok_or_else(|| "a face of it does not parse".to_owned())
-            } else {
-                viso_svg::decode_asset(&file.bytes)
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            };
+            let decoded = pass
+                .decoded
+                .entry((asset.clone(), hash))
+                .or_insert_with(|| {
+                    if file.font {
+                        font_format::parses(&file.bytes)
+                            .then_some(())
+                            .ok_or_else(|| "a face of it does not parse".to_owned())
+                    } else {
+                        viso_svg::decode_asset(&file.bytes)
+                            .map(drop)
+                            .map_err(|error| error.to_string())
+                    }
+                });
             let (outcome, stage, codes) = match decoded {
-                Ok(_) if self.apply && replaces_assets => {
+                Ok(()) if self.apply && replaces_assets => {
                     assets.push(SentAsset {
                         asset,
                         hash,
@@ -1233,13 +1481,13 @@ impl DevSession {
                     });
                     continue;
                 }
-                Ok(_) => {
+                Ok(()) => {
                     if self.apply {
                         out.log(
                             "warn",
                             "tool",
                             &format!(
-                                "`{name}`: the app does not replace assets, so it keeps the \
+                                "`{name}`: {app} does not replace assets, so it keeps the \
                                  one it was built with"
                             ),
                         );
@@ -1247,11 +1495,13 @@ impl DevSession {
                     (Outcome::Held, Stage::Transport, Vec::new())
                 }
                 Err(error) => {
-                    out.failure(
-                        ASSET_ERROR,
-                        &format!("`{name}` does not decode: {error}"),
-                        &["the app keeps showing its last good version".to_owned()],
-                    );
+                    if pass.reported_assets.insert((asset.clone(), hash)) {
+                        out.failure(
+                            ASSET_ERROR,
+                            &format!("`{name}` does not decode: {error}"),
+                            &["the app keeps showing its last good version".to_owned()],
+                        );
+                    }
                     (
                         Outcome::Rejected,
                         Stage::ResourceBuild,
@@ -1259,7 +1509,7 @@ impl DevSession {
                     )
                 }
             };
-            self.sources.asset_settled(&asset, hash);
+            runtime.mounts.asset_settled(&asset, hash);
             let event = ReloadEvent {
                 base_revision: base.0,
                 candidate_revision: next.0,
@@ -1271,44 +1521,41 @@ impl DevSession {
                 codes,
                 game: None,
             };
-            out.dev(&name, &self.session, &runtime_session, &self.build, &event);
+            out.dev(&name, &ids, &event);
         }
         if views.is_empty() && assets.is_empty() {
+            if failed {
+                self.status(at, out);
+            }
             return;
         }
         let swaps_games = runtime.hello.capabilities.contains(Domain::System);
+        // What the build embeds: the runtime's backend's and the reference
+        // interpreter's, so a shader the edit left as it was packs to the
+        // bytes of the program the app runs and loads as it.
+        let langs = [runtime.hello.shader_lang, ShaderLang::None];
         let mut ui = UiPatch::default();
         let mut systems = SystemPatch::default();
         let mut sent = Vec::with_capacity(views.len());
-        for (at, text, candidate) in views {
-            let name = Source::new(&self.sources.views[at].path, &self.root, "")
-                .name()
-                .to_owned();
-            if let Err(reason) = self.sources.baseline(at) {
+        for (view, text, candidate) in views {
+            let path = &self.sources.views[view].path;
+            let name = Source::new(path, &self.root, "").name().to_owned();
+            if let Err(reason) = self.sources.baseline(&mut runtime.mounts, view) {
                 out.log(
                     "warn",
                     "tool",
                     &format!("`{name}`: {reason}, so its mounts rebuild with fresh state"),
                 );
             }
-            let mount = self.sources.views[at]
-                .mount
-                .as_ref()
-                .expect("a candidate is mounted");
-            // What the build embeds: the runtime's backend's and the
-            // reference interpreter's, so a shader the edit left as it was
-            // packs to the bytes of the program the app runs and loads as it.
-            let langs = [
-                runtime.hello.shader_lang,
-                viso_view::dev::wire::ShaderLang::None,
-            ];
+            let mount = &runtime.mounts.views[&view];
             match view_patch(mount.file, mount.last_good.as_ref(), &candidate, &langs) {
                 Ok(view) => ui.views.push(view),
                 Err(error) => {
                     out.failure(
                         "E3711",
                         &format!(
-                            "`{name}`: internal: a shader it paints with does not build: {error}"
+                            "`{name}`: internal: a shader it paints with does not build for \
+                             {app}: {error}"
                         ),
                         &["the app keeps showing its last good version".to_owned()],
                     );
@@ -1320,8 +1567,10 @@ impl DevSession {
                 game_patch(mount.file, mount.last_good.as_ref(), &candidate, KEEP)
             {
                 if let Some(note) = reload.as_ref().and_then(|r| r.diagnostic()) {
-                    let source = Source::new(&self.sources.views[at].path, &self.root, &text);
-                    out.source(Some(&source), &[], &note);
+                    let source = Source::new(path, &self.root, &text);
+                    if pass.reported_notes.insert((view, source_hash(&text))) {
+                        out.source(Some(&source), &[], &note);
+                    }
                     notes.push(note.code.to_owned());
                 }
                 if swaps_games {
@@ -1331,14 +1580,14 @@ impl DevSession {
                         "warn",
                         "tool",
                         &format!(
-                            "`{name}`: the app does not swap game systems, so its game keeps \
+                            "`{name}`: {app} does not swap game systems, so its game keeps \
                              running the systems it started with"
                         ),
                     );
                 }
             }
             sent.push(SentView {
-                at,
+                at: view,
                 text,
                 candidate,
                 notes,
@@ -1385,6 +1634,7 @@ impl DevSession {
             build_id: runtime.hello.build_id,
             sections,
         };
+        let compile_us = elapsed_us(started);
         if runtime
             .writer
             .send(HostMessage::Patch(Box::new(patch)))
@@ -1398,7 +1648,29 @@ impl DevSession {
             views: sent,
             assets,
             started,
+            sent: Instant::now(),
+            compile_us,
+            bytes_before,
         });
+        self.status(at, out);
+    }
+}
+
+/// Whom an event about `runtime` (its id and target) of the session
+/// `session` running build `build` names; `named` when the session serves
+/// more than one runtime.
+fn ids<'a>(
+    session: &'a str,
+    build: &'a str,
+    runtime: Option<(&'a str, RuntimeTarget)>,
+    named: bool,
+) -> DevIds<'a> {
+    DevIds {
+        session,
+        runtime_session: runtime.map_or("", |(id, _)| id),
+        target: runtime.map(|(_, target)| target.as_str()),
+        build_id: build,
+        named,
     }
 }
 
@@ -1483,14 +1755,14 @@ fn elapsed_us(since: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::mpsc::{self, Receiver};
 
     use viso_dsl::aot::emit_view_package;
     use viso_project::{Layout, LockKind, Target};
     use viso_view::dev::wire::{
-        BLOB_CHUNK, BuildId, DevSessionId, Domains, FileCommit, FileId, MountEntry, PatchAck,
-        PatchNack, PatchTimings, ProjectFingerprint, ReloadPlan, RuntimeTarget, SchemaFingerprint,
-        ViewPatch,
+        BLOB_CHUNK, BuildId, DevSessionId, Domains, FileCommit, FileId, MountEntry, PatchTimings,
+        ProjectFingerprint, ReloadPlan, SchemaFingerprint, ViewPatch,
     };
 
     use super::link::Connection;
@@ -1563,20 +1835,11 @@ mod tests {
                 json: true,
             };
             let mut out = Output::new(&global, Some("run"));
-            let (writer, sent) = mpsc::channel();
-            let hello = RuntimeHello {
-                protocol_version: viso_view::dev::wire::DEV_PROTOCOL_VERSION,
-                token: "t".into(),
-                dev_session: DevSessionId(1),
-                runtime_session: RuntimeSessionId(9),
-                build_id: BuildId(2),
-                current_revision: Revision::LAUNCH,
-                schema_fingerprint: SchemaFingerprint(4),
-                capabilities,
-                target: RuntimeTarget::DesktopHost,
-                shader_lang: viso_view::dev::wire::ShaderLang::Msl,
-            };
-            dev.link(LinkEvent::Connected(Connection { hello, writer }), &mut out);
+            let sent = connect(
+                &mut dev,
+                &mut out,
+                hello(9, RuntimeTarget::DesktopHost, capabilities),
+            );
             let path = root.join("view.vs");
             let mut fixture = Fixture {
                 dev,
@@ -1628,11 +1891,11 @@ mod tests {
             self.dev.change(change, &mut self.out);
         }
 
-        /// The launch connected.
+        /// The app the session launched: the runtime connected first.
         fn launch(&self) -> RuntimeSessionId {
             self.dev
-                .runtime
-                .as_ref()
+                .runtimes
+                .first()
                 .expect("a runtime connected")
                 .hello
                 .runtime_session
@@ -1671,6 +1934,42 @@ mod tests {
                 timings: PatchTimings::default(),
             }));
         }
+    }
+
+    /// The hello of runtime `id` of `target`, applying `capabilities`.
+    fn hello(id: u128, target: RuntimeTarget, capabilities: Domains) -> RuntimeHello {
+        RuntimeHello {
+            protocol_version: viso_view::dev::wire::DEV_PROTOCOL_VERSION,
+            token: "t".into(),
+            dev_session: DevSessionId(1),
+            runtime_session: RuntimeSessionId(id),
+            build_id: BuildId(2),
+            current_revision: Revision::LAUNCH,
+            schema_fingerprint: SchemaFingerprint(4),
+            capabilities,
+            target,
+            shader_lang: match target {
+                RuntimeTarget::Web => viso_view::dev::wire::ShaderLang::Wgsl,
+                RuntimeTarget::AndroidEmulator => viso_view::dev::wire::ShaderLang::SpirV,
+                _ => viso_view::dev::wire::ShaderLang::Msl,
+            },
+        }
+    }
+
+    /// Connects the runtime `hello` describes, and returns what it is sent.
+    fn connect(
+        dev: &mut DevSession,
+        out: &mut Output,
+        hello: RuntimeHello,
+    ) -> Receiver<HostMessage> {
+        let (writer, sent) = mpsc::channel();
+        let connection = Connection {
+            hello,
+            writer,
+            traffic: Arc::default(),
+        };
+        dev.link(LinkEvent::Connected(connection), out);
+        sent
     }
 
     /// `text` compiled as the build compiles `view.vs`.
@@ -2250,23 +2549,10 @@ mod tests {
         f.dev.link(LinkEvent::Closed(old), &mut f.out);
         assert!(f.dev.restore_next());
         f.dev.relaunched(&mut f.out);
-        let (writer, sent) = mpsc::channel();
-        f.sent = sent;
-        let hello = RuntimeHello {
-            protocol_version: viso_view::dev::wire::DEV_PROTOCOL_VERSION,
-            token: "t".into(),
-            dev_session: DevSessionId(1),
-            runtime_session: RuntimeSessionId(10),
-            build_id: BuildId(2),
-            current_revision: Revision::LAUNCH,
-            schema_fingerprint: SchemaFingerprint(4),
-            capabilities: Domains::NONE,
-            target: RuntimeTarget::DesktopHost,
-            shader_lang: viso_view::dev::wire::ShaderLang::Msl,
-        };
-        f.dev.link(
-            LinkEvent::Connected(Connection { hello, writer }),
+        f.sent = connect(
+            &mut f.dev,
             &mut f.out,
+            hello(10, RuntimeTarget::DesktopHost, Domains::NONE),
         );
         // What the old app said last is not the new one's.
         f.dev.link(
@@ -2411,5 +2697,229 @@ mod tests {
         f.dev.link(LinkEvent::Closed(launch), &mut f.out);
         f.save(&VIEW.replace("120dp", "190dp"));
         assert!(f.settle().is_empty());
+    }
+
+    /// The mount of `view.vs` at `path` as the build of `built` reports it,
+    /// with `catalog` its package's catalogs.
+    fn mount_entry(path: &Path, built: &str, catalog: Option<(String, String)>) -> MountEntry {
+        MountEntry {
+            file: FileId(0),
+            path: path.display().to_string(),
+            package: "app".into(),
+            module: vec!["view".into()],
+            language: None,
+            catalog,
+            capabilities: Vec::new(),
+            source_hash: source_hash(built),
+            assets: None,
+        }
+    }
+
+    /// `f` with a web runtime connected beside its desktop one, mounting
+    /// `view.vs` as built; returns what the web runtime is sent.
+    fn with_web(f: &mut Fixture) -> Receiver<HostMessage> {
+        let sent = connect(
+            &mut f.dev,
+            &mut f.out,
+            hello(11, RuntimeTarget::Web, Domains::NONE),
+        );
+        let entry = mount_entry(&f.path, VIEW, None);
+        f.dev.link(
+            LinkEvent::Runtime(RuntimeSessionId(11), RuntimeMessage::Mounts(vec![entry])),
+            &mut f.out,
+        );
+        sent
+    }
+
+    fn ack_of(revision: u64) -> RuntimeMessage {
+        RuntimeMessage::Ack(PatchAck {
+            revision: Revision(revision),
+            applied_domains: Domains::NONE.with(Domain::Ui),
+            files: vec![FileCommit {
+                file: FileId(0),
+                counts: CommitCounts {
+                    mounts: 1,
+                    ..CommitCounts::default()
+                },
+            }],
+            notices: Vec::new(),
+            state_resets: Vec::new(),
+            games: Vec::new(),
+            resources: Vec::new(),
+            timings: PatchTimings::default(),
+        })
+    }
+
+    #[test]
+    fn one_edit_reaches_every_runtime_and_a_refusal_keeps_only_that_one_on_its_last_good() {
+        let mut f = Fixture::new("matrix");
+        let web = with_web(&mut f);
+        assert!(f.settle().is_empty() && web.try_iter().next().is_none());
+        let (desktop, page) = (RuntimeSessionId(9), RuntimeSessionId(11));
+
+        // One edit, one candidate revision, a patch to each runtime packed
+        // for its own GPU backend.
+        let first = VIEW.replace("120dp", "140dp");
+        f.save(&first);
+        let to_desktop = f.settle();
+        let to_web: Vec<_> = web.try_iter().collect();
+        patches(&to_desktop[0], (1, 2), VIEW, &first);
+        let (base, next, view) = patch(&to_web[0]);
+        assert_eq!((base, next), (1, 2), "the same candidate revision");
+        assert_eq!(
+            *view,
+            view_patch(
+                FileId(0),
+                Some(&compiled(VIEW)),
+                &compiled(&first),
+                &[viso_view::dev::wire::ShaderLang::Wgsl],
+            )
+            .unwrap()
+        );
+
+        // The page's GPU refuses it; the desktop app commits it.
+        f.dev
+            .link(LinkEvent::Runtime(desktop, ack_of(2)), &mut f.out);
+        f.dev.link(
+            LinkEvent::Runtime(
+                page,
+                RuntimeMessage::Nack(PatchNack {
+                    base_revision: Revision(1),
+                    candidate_revision: Revision(2),
+                    stage: Stage::ShaderCompile,
+                    diagnostic_codes: vec!["E3701".into()],
+                    last_good_revision: Revision(1),
+                }),
+            ),
+            &mut f.out,
+        );
+        let [d, w] = &f.dev.runtimes[..] else {
+            panic!("two runtimes");
+        };
+        assert_eq!((d.revision, w.revision), (Revision(2), Revision(1)));
+        assert_eq!(
+            w.patch.as_ref().map(|p| (p.outcome, p.stage)),
+            Some((Outcome::Rejected, Stage::ShaderCompile))
+        );
+        assert_eq!(d.patch.as_ref().map(|p| p.outcome), Some(Outcome::Applied));
+        assert!(f.settle().is_empty(), "nothing is resent");
+        assert!(
+            web.try_iter().next().is_none(),
+            "the refused edit is settled"
+        );
+
+        // The next edit moves each from what it runs.
+        let second = VIEW.replace("120dp", "160dp");
+        f.save(&second);
+        let to_desktop = f.settle();
+        let to_web: Vec<_> = web.try_iter().collect();
+        patches(&to_desktop[0], (2, 3), &first, &second);
+        let (base, next, view) = patch(&to_web[0]);
+        assert_eq!((base, next), (1, 3));
+        assert_eq!(
+            *view,
+            view_patch(
+                FileId(0),
+                Some(&compiled(VIEW)),
+                &compiled(&second),
+                &[viso_view::dev::wire::ShaderLang::Wgsl],
+            )
+            .unwrap(),
+            "planned from the page's last good"
+        );
+    }
+
+    #[test]
+    fn a_runtime_whose_patch_is_in_flight_takes_later_edits_after_its_answer() {
+        let mut f = Fixture::new("staggered");
+        let web = with_web(&mut f);
+        let _ = f.settle();
+        let first = VIEW.replace("120dp", "140dp");
+        f.save(&first);
+        let _ = f.settle();
+        let _ = web.try_iter().count();
+        // Only the desktop app answers before the next edit.
+        f.ack(2);
+        let second = VIEW.replace("120dp", "150dp");
+        f.save(&second);
+        patches(&f.settle()[0], (2, 3), &first, &second);
+        assert!(
+            web.try_iter().next().is_none(),
+            "the page's patch is in flight"
+        );
+        f.dev.link(
+            LinkEvent::Runtime(RuntimeSessionId(11), ack_of(2)),
+            &mut f.out,
+        );
+        let _ = f.settle();
+        let (base, next, _) = patch(&web.try_recv().expect("the page's next patch"));
+        assert_eq!(
+            (base, next),
+            (2, 4),
+            "the page catches up at the next revision"
+        );
+    }
+
+    #[test]
+    fn a_failure_a_runtime_alone_compiles_to_is_shown_on_it_alone() {
+        // The desktop build bundles the catalogs the view names; the page's
+        // does not.
+        let mut f = Fixture::new("profiles");
+        let i18n = f.path.parent().unwrap().join("i18n");
+        std::fs::create_dir_all(&i18n).unwrap();
+        let i18n = i18n.canonicalize().unwrap();
+        let view = "import viso::i18n::tr;\ncomponent Counter {\n    view { Text { text: tr(\"title\"); } }\n}\n";
+        let catalog = Some(("en".to_owned(), i18n.display().to_string()));
+        f.dev.change(
+            Change {
+                path: i18n.join("en.toml"),
+                bytes: b"title = \"Title\"\n".to_vec(),
+                rust: false,
+            },
+            &mut f.out,
+        );
+        f.runtime(RuntimeMessage::Mounts(vec![mount_entry(
+            &f.path, VIEW, catalog,
+        )]));
+        let web = with_web(&mut f);
+        let _ = f.settle();
+        f.save(view);
+        let to_desktop = f.settle();
+        let to_web: Vec<_> = web.try_iter().collect();
+        assert!(
+            matches!(to_desktop.last(), Some(HostMessage::Patch(_))),
+            "{to_desktop:?}"
+        );
+        let [HostMessage::Failure { lines, .. }] = &to_web[..] else {
+            panic!("{to_web:?}");
+        };
+        assert!(!lines.is_empty());
+        let [d, w] = &f.dev.runtimes[..] else {
+            panic!("two runtimes");
+        };
+        assert!(!d.mounts.views[&0].failing && w.mounts.views[&0].failing);
+    }
+
+    #[test]
+    fn a_restart_lets_go_of_the_runtimes_of_its_target_alone() {
+        let mut f = Fixture::new("restart-matrix");
+        let web = with_web(&mut f);
+        let built = Build {
+            result: Ok(PathBuf::from("app")),
+            elapsed: Duration::from_millis(1),
+            files: Vec::new(),
+            unchanged: false,
+        };
+        assert!(f.dev.rebuilt(&built, &mut f.out));
+        assert_eq!(f.dev.rust, RustState::Restarting);
+        assert!(f.dev.request_snapshot(), "the app launched is asked");
+        assert!(matches!(f.sent.try_recv(), Ok(HostMessage::Snapshot)));
+        assert!(web.try_iter().next().is_none(), "the page is not");
+        f.dev.relaunched(&mut f.out);
+        let [only] = &f.dev.runtimes[..] else {
+            panic!("one runtime");
+        };
+        assert_eq!(only.hello.target, RuntimeTarget::Web);
+        assert_eq!(f.dev.rust, RustState::Idle, "it restarted fresh");
     }
 }

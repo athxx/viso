@@ -1104,18 +1104,33 @@ differ.
 
 Goal: one source graph serves several running runtimes with per-runtime revisions.
 
-- [ ] Connection manager holding several runtimes; shared parse/module graph/type
+- [x] Connection manager holding several runtimes; shared parse/module graph/type
       check, target-specific shader validation, capabilities and resources.
-- [ ] Per-runtime revision and status; a target whose shader fails stays on its last
-      good while others advance (§44).
-- [ ] Status surface for Studio (§52): running/candidate/last-good revision, target,
+      `DevSession.runtimes`, each with its own `Mounts` (mounts, last goods, held
+      assets); runtimes mounting a file with one profile share its compile (`Memo`),
+      asset decodes once per content; shaders packed per runtime's `shader_lang`.
+- [x] Per-runtime revision and status; a target whose shader fails stays on its last
+      good while others advance (§44). One candidate revision per pass, one patch in
+      flight per runtime; a refused edit is not resent to that runtime and its next edit
+      plans from its own last good; a restart replaces only its target's runtimes, the
+      others keep the assets their build embedded.
+- [x] Status surface for Studio (§52): running/candidate/last-good revision, target,
       patch class, scoped resets, compile time, transport bytes, commit time, Rust
-      rebuild state, connection state — as a stable JSON stream.
+      rebuild state, connection state — as a stable JSON stream. `runtime` event;
+      `dev` events carry `target`; human lines are prefixed `[target]` with more than
+      one runtime.
+- [ ] Accept runtimes of several builds in one session (the link checks one build id):
+      Studio launching desktop and web builds side by side.
+- [ ] Studio Device Matrix over the `runtime` stream.
 
 ### Done
 
-- [ ] Desktop and web runtimes of one project receive one edit; a target-specific
+- [x] Desktop and web runtimes of one project receive one edit; a target-specific
       failure leaves only that runtime on its last good, shown per runtime.
+      `one_edit_reaches_every_runtime_and_a_refusal_keeps_only_that_one_on_its_last_good`
+      (web NACK at shader compile), `a_failure_a_runtime_alone_compiles_to_is_shown_on_it_alone`
+      (host compile against the page's profile), at the session layer; an end-to-end
+      run with a real desktop app and page needs the multi-build link above.
 
 ---
 

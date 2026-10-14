@@ -2298,6 +2298,7 @@ trace         scenario, tick, probes（`viso test game` 每 Tick 一条，§22.3
 profile       frames, duration_ms, metrics（§25）
 server        url, host, port, lan
 dev           见下
+runtime       dev_session_id, runtime_session_id, target, build_id, connection(connected|closed), running_revision, candidate_revision?, last_good_revision, failing[], rust(idle|building|restarting), bytes_sent, bytes_received, patch?（`Viso_Hot_Reload.md` §52）
 doctor_check  name, status(ok|warn|missing|error), code?, message?, suggestion?
 result        查询型命令的数据载荷（形状由各命令定义）
 log           level, source(app|device|tool), message
@@ -2363,7 +2364,7 @@ artifact_count
 `viso run`/`serve` 的每个 candidate revision 的每个文件输出一条 `dev`（一个 batch 的多个文件共用一个 candidate revision），字段取自 `Viso_Hot_Reload.md`（§4.1 identity、§8 patch class、§37 ACK/NACK、§51 stage）：
 
 ```text
-dev_session_id, runtime_session_id, build_id
+dev_session_id, runtime_session_id, target, build_id
 base_revision, candidate_revision
 patch_class     PATCH|PATCH_WITH_SCOPED_RESET|WARM_RESTART_REQUIRED
 outcome         applied|scoped_reset|warm_restarted|rejected|held
@@ -2375,7 +2376,7 @@ elapsed_ms
 
 Rust candidate（一个 batch 的 Rust 改动触发的一次 build）输出一条 `dev`：`file` 为 `null`，`files[]` 是它带的 Rust 文件（project 内相对 root，其外为绝对路径），`stage` 为 `warm-restart`，`diagnostic_codes` 是 rustc 的错误码（或 restore 被拒时的 NACK code），`build_ms` 是 cargo 用时，restart 的各段为 `prewarm_ms`（新的可执行文件先运行一次、在 `viso::run` 开头退出，供 OS 做首次启动检查，旧 app 照常运行）、`snapshot_ms`（请旧 app 给出 snapshot 到收到）、`close_ms`（之后到新进程启动，旧 app 退出）、`launch_ms`（新进程启动到报告 mount）、`restore_ms`（新进程的恢复）与 `restart_ms`（请 snapshot 到 restart 完成），没有运行的段为 `null`；`elapsed_ms` 为 `build_ms + prewarm_ms + restart_ms`；没有 `.vs` 的 commit 计数。human 输出为 `✓ rust warm restart   built in 2.4 s, restarted in 0.81 s`。它在 restart 完成时输出：`outcome` 为 `warm_restarted`、`patch_class` 为 `WARM_RESTART_REQUIRED`、`last_good_revision` 为新进程的 `0`，`restored` 表示新进程是否取回了 snapshot（旧 app 没有给出 snapshot、restore 被拒、新进程握手被拒——例如 session 中途换了 Viso 版本——或在恢复之前关闭 dev channel 或退出时为 `false`，human 输出写明 state not restored）；build 失败、新的可执行文件起不来或 session 在旧 app 关闭之前结束时为 `rejected`，`--no-hot-reload` 下为 `held`。
 
-`.vs` patch 另带：`file`（相对 project root）、`mounts`（该文件被提交到的 mount 数）以及 commit report 计数 `migrated, reset, focus_lost, scroll_lost, handlers_lost`（rejected 时全为 0）、`dirty`（嵌套 object，§11 八个 dirty class 各一个 node 计数：`structure, style, measure, layout, transform, paint, hit_test, semantics`；rejected 时全为 0）、`game`（该文件的游戏随 patch 切换时为嵌套 object `tier`（`presentation-only|logic-only|logic+state-migration|world-rebuild`）、`sessions`、`tick`（新 Build 运行的首个 Tick）、`carried`、`reset`、`characters`，否则 `null`；游戏层级的 `E5103` 计入 `diagnostic_codes`）。`runtime_session_id` 是已连接 runtime 的 `RuntimeSessionId`（§4.1）的十六进制，没有已连接 runtime 时为空字符串。`patch_class` 在 rejected 与 held 时为 `null`。每条 `dev` 之前先输出该 candidate 的 `diagnostic`。字段均为 revision/计数/stage 名/诊断码，不携带任何可能是密钥的内容（`Viso_Hot_Reload.md` §47）。
+`.vs` patch 另带：`file`（相对 project root）、`mounts`（该文件被提交到的 mount 数）以及 commit report 计数 `migrated, reset, focus_lost, scroll_lost, handlers_lost`（rejected 时全为 0）、`dirty`（嵌套 object，§11 八个 dirty class 各一个 node 计数：`structure, style, measure, layout, transform, paint, hit_test, semantics`；rejected 时全为 0）、`game`（该文件的游戏随 patch 切换时为嵌套 object `tier`（`presentation-only|logic-only|logic+state-migration|world-rebuild`）、`sessions`、`tick`（新 Build 运行的首个 Tick）、`carried`、`reset`、`characters`，否则 `null`；游戏层级的 `E5103` 计入 `diagnostic_codes`）。`runtime_session_id` 是该 event 所涉 runtime 的 `RuntimeSessionId`（§4.1）的十六进制，`target` 是它的 target（`desktop|ios-simulator|android-emulator|web`），没有已连接 runtime 时分别为空字符串与 `null`；session 服务多个 runtime 时每个 runtime 各有自己的 `dev` event 与 revision。`patch_class` 在 rejected 与 held 时为 `null`。每条 `dev` 之前先输出该 candidate 的 `diagnostic`。字段均为 revision/计数/stage 名/诊断码，不携带任何可能是密钥的内容（`Viso_Hot_Reload.md` §47）。
 
 ---
 

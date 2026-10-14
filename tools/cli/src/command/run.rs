@@ -880,7 +880,10 @@ fn relay(
             source,
             line,
         } => out.log(level, source, &line),
-        Incoming::Change(change) if change.rust => builds.change(change.path, Instant::now()),
+        Incoming::Change(change) if change.rust => {
+            builds.change(change.path, Instant::now());
+            dev.rust_changed(out);
+        }
         Incoming::Change(change) => dev.change(change, out),
         Incoming::Link(event) => dev.link(event, out),
         Incoming::Control(call) => dev.control(call, out),

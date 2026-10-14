@@ -1497,6 +1497,8 @@ DOM/WebGPU lowering
 
 这为 Studio Device Matrix 留出架构空间，但不要求 CLI 1.0 一条命令同时启动所有平台。
 
+已实现（`tools/cli/src/dev/`）：`DevSession` 持有所有已连接的 runtime（按连接顺序，第一个是 session 启动的 app，Rust warm restart 只重启它的 target）；source graph（文本、增量 parse、catalog、asset 内容）全 session 共享，每个 runtime 有自己的 `Mounts`：它挂载的文件、各自的 running/last-good 编译结果、它持有的资源及其运行内容。一次 batch 的 pass 中，挂载同一文件且 profile 相同（origin、capability 授权、catalog、asset 目录）的 runtime 共用一次编译（`Memo`），asset decode 也每内容一次；plan、按 runtime GPU backend 打包 shader（`shader_lang`）、它是否接受资源/游戏 system、patch 与 ACK/NACK 都是每个 runtime 自己的。同一诊断每个 pass 只报告一次；`dev` event 与 failure overlay 每个 runtime 一份。新 build 只替换重启的 target 的 runtime；其他 target 的 runtime 继续把未被 patch 过的资源当作它们的 build 嵌入的内容。连接层仍只接受 session 自己的 build id，所以 CLI 下多个 runtime 是同一 build 的多个实例（多个页面、多个进程）；不同 target 的 build 同时接入留给 Studio。
+
 ---
 
 ## 44. Runtime-specific revisions
@@ -1509,6 +1511,8 @@ Android revision may remain last-good
 ```
 
 Studio/CLI 必须清楚显示每个 runtime 的 revision/status，不能假装所有 target 永远同步。
+
+已实现：一个 pass 中的所有 runtime 共用一个 candidate revision；patch 的 base 是该 runtime 自己的 revision，一次只有一个 patch 在途。某 runtime 拒绝（host 侧对它的 profile 编译失败，或它 NACK）时它停在 last good、该内容不再重发，其他 runtime 照常前进；它的下一个 edit 从它自己运行的 last good 规划。在途的 runtime 在应答后以下一个 revision 赶上。多于一个 runtime 时 human 输出的每行以 `[target]` 开头。
 
 ---
 
@@ -1700,6 +1704,8 @@ commit time
 Rust rebuild state
 connection state
 ```
+
+已实现：`viso run --json` 在 runtime 连接、关闭（或被 restart 替换）、patch 发出、ACK/NACK、failure overlay 变化以及 Rust 编辑状态变化时输出 `runtime` event（`Viso_CLI.md` §36）：`running_revision`、`candidate_revision`（在途 patch，否则 `null`）、`last_good_revision`、`target`、`connection`、`failing[]`（显示 failure 的文件）、`rust`（`idle|building|restarting`）、`bytes_sent`/`bytes_received`（连接两个方向累计字节），以及最近一次应答的 `patch`：`candidate_revision`、`outcome`、`patch_class`、`stage`、`scoped_resets`、`compile_ms`（host 为该 runtime 编译与规划）、`commit_ms`（runtime 的 frame boundary commit，拒绝时 `null`）、`round_trip_ms`、`bytes`。
 
 ---
 

@@ -11,11 +11,11 @@ use std::io::Write as _;
 use std::ops::Range;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::dev::report::{RebuildEvent, ReloadEvent};
+use crate::dev::report::{RebuildEvent, ReloadEvent, RuntimeStatus};
 use viso_ende::JsonWriter;
 use viso_view::dev::wire::Stage;
 
-use super::{Location, Report, Source};
+use super::{DevIds, Location, Report, Source};
 
 /// The envelope's schema name.
 const SCHEMA: &str = "viso.cli.event";
@@ -148,35 +148,15 @@ impl Stream {
     }
 
     /// Writes the `dev` event of a hot reload attempt of `file`.
-    pub(super) fn dev(
-        &mut self,
-        file: &str,
-        session: &str,
-        runtime_session: &str,
-        build_id: &str,
-        event: &ReloadEvent,
-    ) {
-        self.event("dev", |w| {
-            dev(w, file, session, runtime_session, build_id, event)
-        });
+    pub(super) fn dev(&mut self, file: &str, ids: &DevIds<'_>, event: &ReloadEvent) {
+        self.event("dev", |w| dev(w, file, ids, event));
     }
 
     /// Writes the `dev` event of a build of the Rust sources.
-    pub(super) fn rebuild(
-        &mut self,
-        session: &str,
-        runtime_session: &str,
-        build_id: &str,
-        event: &RebuildEvent,
-    ) {
+    pub(super) fn rebuild(&mut self, ids: &DevIds<'_>, event: &RebuildEvent) {
         self.event("dev", |w| {
             w.begin_object();
-            w.name("dev_session_id");
-            w.string(session);
-            w.name("runtime_session_id");
-            w.string(runtime_session);
-            w.name("build_id");
-            w.string(build_id);
+            dev_ids(w, ids);
             w.name("file");
             w.null();
             w.name("files");
@@ -229,6 +209,11 @@ impl Stream {
             }
             w.end_object();
         });
+    }
+
+    /// Writes the `runtime` event of one runtime of a dev session.
+    pub(super) fn runtime(&mut self, ids: &DevIds<'_>, status: &RuntimeStatus<'_>) {
+        self.event("runtime", |w| runtime(w, ids, status));
     }
 
     /// Writes the closing `summary` event. `checked` is the package and file count
@@ -302,22 +287,93 @@ impl Stream {
     }
 }
 
-/// The section 36.4 `dev` payload, then what the commit kept and lost.
-fn dev(
-    w: &mut JsonWriter,
-    file: &str,
-    session: &str,
-    runtime_session: &str,
-    build_id: &str,
-    event: &ReloadEvent,
-) {
-    w.begin_object();
+/// The identity fields of a dev session's event.
+fn dev_ids(w: &mut JsonWriter, ids: &DevIds<'_>) {
     w.name("dev_session_id");
-    w.string(session);
+    w.string(ids.session);
     w.name("runtime_session_id");
-    w.string(runtime_session);
+    w.string(ids.runtime_session);
+    w.name("target");
+    match ids.target {
+        Some(target) => w.string(target),
+        None => w.null(),
+    }
     w.name("build_id");
-    w.string(build_id);
+    w.string(ids.build_id);
+}
+
+/// The `runtime` payload: one runtime's revisions, connection, transport and
+/// latest patch.
+fn runtime(w: &mut JsonWriter, ids: &DevIds<'_>, status: &RuntimeStatus<'_>) {
+    w.begin_object();
+    dev_ids(w, ids);
+    w.name("connection");
+    w.string(if status.connected {
+        "connected"
+    } else {
+        "closed"
+    });
+    w.name("running_revision");
+    w.uint(status.revision);
+    w.name("candidate_revision");
+    match status.candidate_revision {
+        Some(revision) => w.uint(revision),
+        None => w.null(),
+    }
+    w.name("last_good_revision");
+    w.uint(status.revision);
+    w.name("failing");
+    w.begin_array();
+    for file in &status.failing {
+        w.string(file);
+    }
+    w.end_array();
+    w.name("rust");
+    w.string(status.rust.as_str());
+    w.name("bytes_sent");
+    w.uint(status.bytes_sent);
+    w.name("bytes_received");
+    w.uint(status.bytes_received);
+    w.name("patch");
+    match status.patch {
+        Some(patch) => {
+            let ms = |us: u64| us as f64 / 1000.0;
+            w.begin_object();
+            w.name("candidate_revision");
+            w.uint(patch.candidate_revision);
+            w.name("outcome");
+            w.string(patch.outcome.as_str());
+            w.name("patch_class");
+            match patch.outcome.patch_class() {
+                Some(class) => w.string(class),
+                None => w.null(),
+            }
+            w.name("stage");
+            w.string(patch.stage.as_str());
+            w.name("scoped_resets");
+            w.uint(u64::from(patch.scoped_resets));
+            w.name("compile_ms");
+            w.number(ms(patch.compile_us));
+            w.name("commit_ms");
+            match patch.commit_us {
+                Some(us) => w.number(ms(us)),
+                None => w.null(),
+            }
+            w.name("round_trip_ms");
+            w.number(ms(patch.round_trip_us));
+            w.name("bytes");
+            w.uint(patch.bytes);
+            w.end_object();
+        }
+        None => w.null(),
+    }
+    w.end_object();
+}
+
+/// The section 36.4 `dev` payload, then what the commit kept and lost.
+fn dev(w: &mut JsonWriter, file: &str, ids: &DevIds<'_>, event: &ReloadEvent) {
+    w.begin_object();
+    dev_ids(w, ids);
     w.name("file");
     w.string(file);
     w.name("base_revision");
@@ -627,11 +683,19 @@ mod tests {
             game: None,
         };
         let mut w = JsonWriter::new();
-        dev(&mut w, "src/view.vs", "s1", "r1", "b1", &event);
+        let ids = DevIds {
+            session: "s1",
+            runtime_session: "r1",
+            target: Some("web"),
+            build_id: "b1",
+            named: false,
+        };
+        dev(&mut w, "src/view.vs", &ids, &event);
         assert_eq!(
             w.into_string(),
             concat!(
-                r#"{"dev_session_id":"s1","runtime_session_id":"r1","build_id":"b1","#,
+                r#"{"dev_session_id":"s1","runtime_session_id":"r1","target":"web","#,
+                r#""build_id":"b1","#,
                 r#""file":"src/view.vs","#,
                 r#""base_revision":2,"candidate_revision":3,"patch_class":null,"#,
                 r#""outcome":"rejected","stage":"parse","diagnostic_codes":["E1001"],"#,
@@ -639,6 +703,53 @@ mod tests {
                 r#""reset":0,"focus_lost":0,"scroll_lost":0,"handlers_lost":0,"#,
                 r#""dirty":{"structure":0,"style":0,"measure":0,"layout":0,"#,
                 r#""transform":0,"paint":0,"hit_test":0,"semantics":0},"game":null}"#,
+            )
+        );
+    }
+
+    #[test]
+    fn a_runtime_status_names_its_revisions_transport_and_latest_patch() {
+        use crate::dev::report::{Outcome, PatchStatus, RustState};
+        let patch = PatchStatus {
+            candidate_revision: 4,
+            outcome: Outcome::Rejected,
+            stage: viso_view::dev::wire::Stage::ShaderCompile,
+            scoped_resets: 0,
+            compile_us: 2500,
+            commit_us: None,
+            round_trip_us: 4000,
+            bytes: 900,
+        };
+        let status = RuntimeStatus {
+            connected: true,
+            revision: 3,
+            candidate_revision: None,
+            failing: vec!["src/view.vs".into()],
+            rust: RustState::Building,
+            bytes_sent: 1200,
+            bytes_received: 300,
+            patch: Some(&patch),
+        };
+        let ids = DevIds {
+            session: "s1",
+            runtime_session: "r1",
+            target: Some("web"),
+            build_id: "b1",
+            named: true,
+        };
+        let mut w = JsonWriter::new();
+        runtime(&mut w, &ids, &status);
+        assert_eq!(
+            w.into_string(),
+            concat!(
+                r#"{"dev_session_id":"s1","runtime_session_id":"r1","target":"web","#,
+                r#""build_id":"b1","connection":"connected","running_revision":3,"#,
+                r#""candidate_revision":null,"last_good_revision":3,"#,
+                r#""failing":["src/view.vs"],"rust":"building","bytes_sent":1200,"#,
+                r#""bytes_received":300,"patch":{"candidate_revision":4,"#,
+                r#""outcome":"rejected","patch_class":null,"stage":"shader-compile","#,
+                r#""scoped_resets":0,"compile_ms":2.5,"commit_ms":null,"#,
+                r#""round_trip_ms":4,"bytes":900}}"#,
             )
         );
     }

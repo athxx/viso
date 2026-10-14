@@ -17,7 +17,32 @@ use viso_ende::JsonWriter;
 use viso_project::ConfigDiagnostic;
 
 use crate::args::Global;
-use crate::dev::report::{RebuildEvent, ReloadEvent};
+use crate::dev::report::{RebuildEvent, ReloadEvent, RuntimeStatus};
+
+/// Whom a dev session's event is about: the session, the runtime it
+/// concerns and the build.
+#[derive(Debug, Clone, Copy)]
+pub struct DevIds<'a> {
+    pub session: &'a str,
+    /// The runtime's `RuntimeSessionId` in hex; empty with none connected.
+    pub runtime_session: &'a str,
+    /// The runtime's target; `None` with none connected.
+    pub target: Option<&'a str>,
+    pub build_id: &'a str,
+    /// Whether human text names the target: the session serves more than
+    /// one runtime.
+    pub named: bool,
+}
+
+impl DevIds<'_> {
+    /// What a human line starts with: the target, when it is named.
+    fn prefix(&self) -> String {
+        match self.target {
+            Some(target) if self.named => format!("[{target}] "),
+            _ => String::new(),
+        }
+    }
+}
 
 /// A file diagnostics can point into: where it is, how to name it, and its text.
 pub struct Source<'a> {
@@ -316,36 +341,30 @@ impl Output {
         }
     }
 
-    /// Reports a hot reload attempt of `file` in the dev session `session`,
-    /// the connected runtime `runtime_session`, of the build `build_id`: a
+    /// Reports a hot reload attempt of `file` on the runtime `ids` name: a
     /// `dev` event, or one line on stderr. Its diagnostics are reported on
     /// their own.
-    pub fn dev(
-        &mut self,
-        file: &str,
-        session: &str,
-        runtime_session: &str,
-        build_id: &str,
-        event: &ReloadEvent,
-    ) {
+    pub fn dev(&mut self, file: &str, ids: &DevIds<'_>, event: &ReloadEvent) {
         match &mut self.form {
-            Form::Json(stream) => stream.dev(file, session, runtime_session, build_id, event),
-            Form::Human => eprintln!("{}", human::dev(file, event)),
+            Form::Json(stream) => stream.dev(file, ids, event),
+            Form::Human => eprintln!("{}{}", ids.prefix(), human::dev(file, event)),
         }
     }
 
-    /// Reports a build of the Rust sources in the dev session `session`: a
-    /// `dev` event naming its files, or one line on stderr.
-    pub fn rebuild(
-        &mut self,
-        session: &str,
-        runtime_session: &str,
-        build_id: &str,
-        event: &RebuildEvent,
-    ) {
+    /// Reports a build of the Rust sources the app `ids` names restarted on,
+    /// or did not: a `dev` event naming its files, or one line on stderr.
+    pub fn rebuild(&mut self, ids: &DevIds<'_>, event: &RebuildEvent) {
         match &mut self.form {
-            Form::Json(stream) => stream.rebuild(session, runtime_session, build_id, event),
-            Form::Human => eprintln!("{}", human::rebuild(event)),
+            Form::Json(stream) => stream.rebuild(ids, event),
+            Form::Human => eprintln!("{}{}", ids.prefix(), human::rebuild(event)),
+        }
+    }
+
+    /// Reports the status of the runtime `ids` names: a `runtime` event,
+    /// which human text leaves out — each change of it has its own line.
+    pub fn runtime(&mut self, ids: &DevIds<'_>, status: &RuntimeStatus<'_>) {
+        if let Form::Json(stream) = &mut self.form {
+            stream.runtime(ids, status);
         }
     }
 

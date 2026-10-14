@@ -128,6 +128,66 @@ pub struct RebuildEvent {
     pub build_us: u64,
 }
 
+/// Where the session's Rust edits are: none waiting, a build running or
+/// due, or the app restarting on a new build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RustState {
+    Idle,
+    Building,
+    Restarting,
+}
+
+impl RustState {
+    /// The `runtime` event spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RustState::Idle => "idle",
+            RustState::Building => "building",
+            RustState::Restarting => "restarting",
+        }
+    }
+}
+
+/// How the latest patch a runtime answered went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchStatus {
+    pub candidate_revision: u64,
+    /// `Applied`, `ScopedReset` or `Rejected`, over every file it carried.
+    pub outcome: Outcome,
+    /// Where it was refused; `runtime-commit` for one committed.
+    pub stage: Stage,
+    /// The states reset, and the focus, scroll offsets and handlers lost.
+    pub scoped_resets: u32,
+    /// The host's compile and plan of it for this runtime.
+    pub compile_us: u64,
+    /// The runtime's commit at its frame boundary; `None` when refused.
+    pub commit_us: Option<u64>,
+    /// From sending it until the answer arrived.
+    pub round_trip_us: u64,
+    /// What the session wrote to the runtime for it.
+    pub bytes: u64,
+}
+
+/// One runtime of the session as Studio shows it: a `runtime` event, each
+/// time something of it changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeStatus<'a> {
+    /// `false` once its connection closed or the session let it go.
+    pub connected: bool,
+    /// The revision it runs, which is its last good.
+    pub revision: u64,
+    /// The revision of the patch sent to it and not yet answered.
+    pub candidate_revision: Option<u64>,
+    /// The files whose latest edit it was shown failing, which run their
+    /// last good.
+    pub failing: Vec<String>,
+    pub rust: RustState,
+    /// What its connection carried each way.
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub patch: Option<&'a PatchStatus>,
+}
+
 /// The §51 stage a candidate rejected with `diagnostics` failed at: that of
 /// its first error, by the code ranges of Viso_DSL_1.0.md appendix C.
 pub fn rejection_stage(diagnostics: &[Diagnostic]) -> Stage {
