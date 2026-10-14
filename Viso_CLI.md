@@ -1118,6 +1118,11 @@ Release / Shipping artifact:
 --cwd <path>
 ```
 
+- `--open`：web target 打开浏览器（`--json` 下同样打开）；非 web target 或与 `--browser none` 同时出现为 usage error；
+- `--env KEY=VALUE`：可重复；KEY 为可移植变量名（字母、数字、`_`，不以数字开头），`VISO_DEV_*` 保留给 dev session；desktop 为进程环境变量，iOS/Android/web 经 launch 变量（§13.10），app 一律以 `viso_platform::launch_var` 读取；名字像 secret（含 TOKEN、SECRET、PASSWORD、KEY、CREDENTIAL、AUTH、PRIVATE、COOKIE、SESSION）的值在 `--verbose` 中显示为 `<hidden>`（§49）；
+- `--cwd <path>`：desktop app 的工作目录，相对调用 `viso` 的目录，默认 project root；非 host target 或不是目录为 usage error；
+- `--inspect`、`--profile-frame` 随 inspector channel 与 frame profiler 提供。
+
 `viso run` 不提供 `--release`。Release/Shipping 验证使用 `viso build --profile release`、`viso package`、benchmark/profile 工具，而不是把开发主命令变成 delivery frontend。
 
 ### 13.8 Ctrl-C
@@ -1158,7 +1163,7 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
   - `web-dom`/`web-hybrid` 以 `TargetUnavailable` 退出；
 - `viso ios simulator` / `viso android emulator` 的 `list|create|start|stop|delete`（§11.4、§12.4）：profile 存于 `~/.viso/ios/simulators/<id>.toml` / `~/.viso/android/emulators/<id>.toml`（`preset`、`system`、`device`，`$VISO_HOME` 可改 root）；iOS 以最新已安装 runtime 与对应 iPhone/iPad 机型创建 Simulator，Android 不依赖 `avdmanager`，直接按最新（或 `--api` 指定）已安装 system image 写出 AVD `viso_<id>`；`start --no-window` 无窗口启动 emulator；`list` 列出 `NAME PROFILE STATUS SYSTEM`；
 - Dev artifact 与 `viso build` 共用 Build Service（§14.5）：以 dev profile 的 `--profile dev` 与 `[profile.dev]` 设置构建；每次 build 前取 `build-<target>.lock`，被 `viso build` 占用时等待（输出一条 `log`）而不失败；`--json` 下 launch build 之后输出一条 `artifact`（host `binary`、iOS `app-bundle`、Android `apk`、web `wasm`，`path` 相对 project root），Rust 编译诊断为带 span 的 `diagnostic`；
-- 尚未实现：`viso android|ios list|use|doctor`、`viso serve --https`、§13.7 中 `--no-hot-reload`、`--device`、`--browser` 之外的 options。
+- 尚未实现：`viso android|ios list|use|doctor`、`viso serve --https`、§13.7 中的 `--inspect` 与 `--profile-frame`。
 
 ---
 

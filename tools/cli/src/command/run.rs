@@ -144,14 +144,60 @@ fn target_of(args: &RunArgs) -> (Target, Option<Platform>) {
 
 /// The usage error of an option the target does not take.
 fn misplaced(args: &RunArgs, platform: Option<Platform>, target: Target) -> Option<String> {
-    let web = matches!(target, Target::WebGpu | Target::WebDom | Target::WebHybrid);
+    let web = target.is_web();
     if args.device.is_some() && platform.is_none() {
         return Some("`--device` takes a simulator or emulator profile: `viso run ios|android --device <id>`".into());
     }
     if args.browser.is_some() && !web {
         return Some("`--browser` is a web option: `viso run web-gpu --browser <name>`".into());
     }
+    if args.open && !web {
+        return Some("`--open` is a web option: `viso run web-gpu --open`".into());
+    }
+    if args.open && args.browser.as_deref() == Some("none") {
+        return Some("`--open` and `--browser none` ask for opposite things".into());
+    }
+    if args.cwd.is_some() && target != Target::Host {
+        return Some(
+            "`--cwd` is the working directory of an app on this machine: `viso run --cwd <dir>`"
+                .into(),
+        );
+    }
     None
+}
+
+/// Whether a variable's name says its value is a secret, which is then
+/// never printed.
+fn secret(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    [
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "KEY",
+        "CREDENTIAL",
+        "AUTH",
+        "PRIVATE",
+        "COOKIE",
+        "SESSION",
+    ]
+    .iter()
+    .any(|word| name.contains(word))
+}
+
+/// The `--env` variables as `--verbose` shows them, secret values hidden.
+fn shown(env: &[(String, String)]) -> String {
+    env.iter()
+        .map(|(name, value)| {
+            if secret(name) {
+                format!("{name}=<hidden>")
+            } else {
+                format!("{name}={value}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn run(ctx: &Context<'_>, args: &RunArgs, out: &mut Output) -> u8 {
@@ -178,6 +224,24 @@ pub(super) fn session(
     if platform == Some(Platform::Ios) && !cfg!(target_os = "macos") {
         return out.failure(ENV_DEVICE, "the iOS Simulator runs on macOS only", &[]);
     }
+    // `--cwd` is taken from where `viso` runs, as a shell would.
+    let cwd = match &args.cwd {
+        Some(dir) => {
+            let dir = match ctx.cwd(out) {
+                Ok(here) => here.join(dir),
+                Err(code) => return code,
+            };
+            if !dir.is_dir() {
+                return out.failure(
+                    CLI_USAGE,
+                    &format!("`--cwd {}` is not a directory", dir.display()),
+                    &[],
+                );
+            }
+            Some(dir)
+        }
+        None => None,
+    };
     let command = if open.is_some() { "serve" } else { "run" };
     let Loaded {
         project,
@@ -311,8 +375,9 @@ pub(super) fn session(
                     server,
                     browser: args.browser.clone().filter(|b| b != "none"),
                     open: open.unwrap_or_else(|| {
-                        args.browser.as_deref() != Some("none")
-                            && (!ctx.global.json || args.browser.is_some())
+                        args.open
+                            || (args.browser.as_deref() != Some("none")
+                                && (!ctx.global.json || args.browser.is_some()))
                     }),
                     launched: false,
                 },
@@ -325,7 +390,9 @@ pub(super) fn session(
                 }
             }
         }
-        (None, _) => Deploy::Host { root: root.clone() },
+        (None, _) => Deploy::Host {
+            cwd: cwd.unwrap_or_else(|| root.clone()),
+        },
         (Some(profile), _) if profile.platform == Platform::Ios => Deploy::Simulator {
             profile: profile.clone(),
         },
@@ -468,7 +535,11 @@ pub(super) fn session(
         token: &token,
         session: &session,
         build_id: &build_id,
+        env: &args.env,
     };
+    if !args.env.is_empty() {
+        out.verbose(|| format!("the app's variables: {}", shown(&args.env)));
+    }
     let device_event = |out: &mut Output, state: &str| {
         if let Some(profile) = &profile {
             out.device(
@@ -977,6 +1048,19 @@ mod tests {
     use viso_view::dev::wire::same_token;
 
     use super::*;
+
+    #[test]
+    fn a_secret_value_is_never_shown() {
+        let env = [
+            ("GREETING".to_owned(), "hi".to_owned()),
+            ("API_TOKEN".to_owned(), "t0p".to_owned()),
+            ("db_password".to_owned(), "pw".to_owned()),
+        ];
+        assert_eq!(
+            shown(&env),
+            "GREETING=hi API_TOKEN=<hidden> db_password=<hidden>"
+        );
+    }
 
     #[test]
     fn tokens_are_distinct_hex() {

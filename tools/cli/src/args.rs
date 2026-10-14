@@ -398,9 +398,45 @@ pub struct RunArgs {
     /// and reported, not sent.
     #[arg(long)]
     pub no_hot_reload: bool,
+    /// Open the page in a browser (`web-*` only), under `--json` too.
+    #[arg(long)]
+    pub open: bool,
+    /// A variable the app is launched with; repeatable. A value whose name
+    /// looks secret is never printed.
+    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_env)]
+    pub env: Vec<(String, String)>,
+    /// The app's working directory (this machine only): the project root when
+    /// omitted.
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::DirPath)]
+    pub cwd: Option<PathBuf>,
     /// Arguments for the app, after `--`.
     #[arg(last = true, value_name = "APP_ARGS")]
     pub app_args: Vec<OsString>,
+}
+
+/// A `--env` variable: a portable name (letters, digits and `_`, not
+/// starting with a digit) outside the dev session's own `VISO_DEV_*`, `=`,
+/// and its value.
+fn parse_env(text: &str) -> Result<(String, String), String> {
+    let (name, value) = text
+        .split_once('=')
+        .ok_or_else(|| format!("`{text}` is not `KEY=VALUE`"))?;
+    let portable = name
+        .chars()
+        .enumerate()
+        .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()));
+    if name.is_empty() || !portable {
+        return Err(format!(
+            "`{name}` is not a variable name: letters, digits and `_`, not starting with a digit"
+        ));
+    }
+    if name.starts_with("VISO_DEV_") {
+        return Err(format!("`{name}` is the dev session's own variable"));
+    }
+    if value.contains('\0') {
+        return Err(format!("the value of `{name}` holds a NUL"));
+    }
+    Ok((name.to_owned(), value.to_owned()))
 }
 
 /// The web targets `viso serve` serves.
@@ -547,6 +583,18 @@ mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    #[test]
+    fn an_env_variable_is_a_portable_name_and_a_value() {
+        assert_eq!(
+            parse_env("GREETING=hi=there"),
+            Ok(("GREETING".to_owned(), "hi=there".to_owned()))
+        );
+        assert_eq!(parse_env("_X1="), Ok(("_X1".to_owned(), String::new())));
+        for bad in ["GREETING", "=x", "1X=y", "A-B=c", "VISO_DEV_TOKEN=t"] {
+            assert!(parse_env(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn the_grammar_is_consistent() {

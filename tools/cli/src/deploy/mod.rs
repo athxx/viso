@@ -56,18 +56,25 @@ pub(crate) struct Vars<'a> {
     pub(crate) token: &'a str,
     pub(crate) session: &'a str,
     pub(crate) build_id: &'a str,
+    /// The variables `--env` names, before the dev variables.
+    pub(crate) env: &'a [(String, String)],
 }
 
-impl Vars<'_> {
+impl<'a> Vars<'a> {
     /// The variables of a launch that restores the app before it when
     /// `restore`, its window at `window`.
-    fn of(&self, restore: bool, window: Option<WindowGeometry>) -> Vec<(&'static str, String)> {
-        let mut vars = vec![
+    fn of(&self, restore: bool, window: Option<WindowGeometry>) -> Vec<(&'a str, String)> {
+        let mut vars: Vec<(&'a str, String)> = self
+            .env
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.clone()))
+            .collect();
+        vars.extend([
             (DEV_RUNTIME_ENV, self.address.clone()),
             (DEV_TOKEN_ENV, self.token.to_owned()),
             (DEV_SESSION_ENV, self.session.to_owned()),
             (DEV_BUILD_ENV, self.build_id.to_owned()),
-        ];
+        ]);
         if restore {
             vars.push((DEV_RESTORE_ENV, "1".to_owned()));
         }
@@ -88,8 +95,8 @@ pub(crate) struct BuildPlan {
 
 /// Where the app runs.
 pub(crate) enum Deploy {
-    /// This machine; the app runs in `root`.
-    Host { root: PathBuf },
+    /// This machine; the app runs in `cwd`.
+    Host { cwd: PathBuf },
     /// The simulator of `profile`.
     Simulator { profile: DeviceProfile },
     /// The emulator `device`; `reversed` is the port forwarded to the host.
@@ -391,13 +398,13 @@ impl Deploy {
         artifact: &Path,
         args: &[OsString],
     ) -> Option<std::io::Result<Child>> {
-        let Deploy::Host { root } = self else {
+        let Deploy::Host { cwd } = self else {
             return None;
         };
         Some(
             Command::new(artifact)
                 .args(args)
-                .current_dir(root)
+                .current_dir(cwd)
                 .env(DEV_PREWARM_ENV, "1")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -419,9 +426,9 @@ impl Deploy {
         piped: bool,
     ) -> Result<App, String> {
         match self {
-            Deploy::Host { root } => {
+            Deploy::Host { cwd } => {
                 let mut launch = Command::new(artifact);
-                launch.args(args).current_dir(&*root);
+                launch.args(args).current_dir(&*cwd);
                 launch.envs(vars.of(restore, window));
                 if piped {
                     launch.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -487,7 +494,12 @@ impl Deploy {
                 launched,
             } => {
                 let bin = artifact_name(artifact, "")?;
-                server.serve(artifact.to_owned(), bin, vars.of(false, None), restore);
+                let page = vars
+                    .of(false, None)
+                    .into_iter()
+                    .map(|(name, value)| (name.to_owned(), value))
+                    .collect();
+                server.serve(artifact.to_owned(), bin, page, restore);
                 if std::mem::replace(launched, true) {
                     // The open pages load the new build.
                     server.reload_pages();
@@ -585,6 +597,7 @@ mod tests {
             token: "t",
             session: "s",
             build_id: "b",
+            env: &[],
         };
         let plain = vars.of(false, None);
         assert_eq!(plain[0], (DEV_RUNTIME_ENV, "127.0.0.1:4242".into()));

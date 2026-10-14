@@ -175,6 +175,7 @@ fn vars() -> Vars<'static> {
         token: "t0k",
         session: "5e55",
         build_id: "b111d",
+        env: &[],
     }
 }
 

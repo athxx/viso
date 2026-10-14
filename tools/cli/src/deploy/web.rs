@@ -224,7 +224,7 @@ struct Served {
     /// The bundle's directory and the app's name, once a build is served.
     bundle: Option<(PathBuf, String)>,
     /// The launch variables of the page.
-    vars: Vec<(&'static str, String)>,
+    vars: Vec<(String, String)>,
     /// Whether the next page restores the app before it.
     restore: bool,
     /// The write halves of the open dev channels, and of the pages' own.
@@ -356,7 +356,7 @@ impl WebServer {
         &self,
         dir: PathBuf,
         bin: String,
-        vars: Vec<(&'static str, String)>,
+        vars: Vec<(String, String)>,
         restore: bool,
     ) {
         let mut served = lock(&self.served);
@@ -495,12 +495,12 @@ fn respond(stream: TcpStream, cx: &Context) {
                 let mut vars: Vec<_> = served
                     .vars
                     .iter()
-                    .filter(|(name, _)| *name != DEV_RUNTIME_ENV)
+                    .filter(|(name, _)| name != DEV_RUNTIME_ENV)
                     .cloned()
                     .collect();
                 // The restore is for the first page after the restart.
                 if std::mem::take(&mut served.restore) && !head {
-                    vars.push((DEV_RESTORE_ENV, "1".to_owned()));
+                    vars.push((DEV_RESTORE_ENV.to_owned(), "1".to_owned()));
                 }
                 let head = format!("{}{PAGE_SCRIPT}", launch_script(&vars));
                 let page = web::index_html(&bin, &head);
@@ -542,7 +542,7 @@ fn answer(
 }
 
 /// The script that sets the page's launch variables before the app loads.
-fn launch_script(vars: &[(&str, String)]) -> String {
+fn launch_script(vars: &[(String, String)]) -> String {
     let mut w = JsonWriter::new();
     w.begin_object();
     for (name, value) in vars {
@@ -984,7 +984,7 @@ mod tests {
 
     #[test]
     fn the_launch_script_cannot_end_its_element() {
-        let script = launch_script(&[("VISO_DEV_TOKEN", "</script>".into())]);
+        let script = launch_script(&[("VISO_DEV_TOKEN".into(), "</script>".into())]);
         assert!(script.starts_with("<script>globalThis.visoLaunch = {\"VISO_DEV_TOKEN\":"));
         assert_eq!(script.matches("</script>").count(), 1);
     }

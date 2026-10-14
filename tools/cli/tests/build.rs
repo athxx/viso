@@ -3,78 +3,13 @@
 //! profile reaching the build, compile errors as diagnostics with their
 //! spans, and what stops a build before Cargo runs.
 
+mod stand_in;
+
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::path::Path;
+use std::process::Command;
 
-fn viso(cwd: &Path, args: &[&str]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_viso"));
-    command.args(args).current_dir(cwd);
-    for name in [
-        "VISO_PROFILE",
-        "VISO_OPT_LEVEL",
-        "VISO_SOURCE_MAPS",
-        "VISO_STRIP",
-    ] {
-        command.env_remove(name);
-    }
-    // Each project builds in its own `target/`, whatever Cargo is
-    // configured with.
-    command.env("CARGO_TARGET_DIR", cwd.join("target"));
-    command.output().unwrap()
-}
-
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8(bytes.to_vec()).unwrap()
-}
-
-/// The app's `main`: the profile it was built as and whether the Dev
-/// Runtime's hot reload is in it.
-const MAIN: &str = "fn main() {\n    println!(\"{} {}\", option_env!(\"VISO_PROFILE\").unwrap_or(\"-\"), viso::HOT_RELOAD);\n}\n";
-
-/// A project `label`: a Cargo package and its `Viso.toml`, its `viso` a
-/// path package with the `hot-reload` feature, in a directory of its own.
-fn project(label: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("build-{label}"));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(dir.join("src")).unwrap();
-    fs::create_dir_all(dir.join("viso/src")).unwrap();
-    fs::write(
-        dir.join("viso/Cargo.toml"),
-        "[package]\nname = \"viso\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-         [features]\nhot-reload = []\n",
-    )
-    .unwrap();
-    fs::write(
-        dir.join("viso/src/lib.rs"),
-        "pub const HOT_RELOAD: bool = cfg!(feature = \"hot-reload\");\n",
-    )
-    .unwrap();
-    fs::write(
-        dir.join("Cargo.toml"),
-        "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-         [dependencies]\nviso = { path = \"viso\" }\n[workspace]\n",
-    )
-    .unwrap();
-    fs::write(dir.join("src/main.rs"), MAIN).unwrap();
-    fs::write(
-        dir.join("Viso.toml"),
-        "[package]\nname = \"probe\"\nversion = \"1.2.0\"\n",
-    )
-    .unwrap();
-    dir
-}
-
-/// The value of `"key":"…"` in `line`.
-fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-    let at = line.find(&format!("\"{key}\":\""))? + key.len() + 4;
-    line[at..].split('"').next()
-}
-
-fn events<'a>(stdout: &'a str, kind: &str) -> Vec<&'a str> {
-    let tag = format!("\"type\":\"{kind}\"");
-    stdout.lines().filter(|line| line.contains(&tag)).collect()
-}
+use stand_in::{events, field, project, text, viso};
 
 /// Runs the built app at `path` under `root`, and what it printed.
 fn ran(root: &Path, path: &str) -> String {

@@ -291,12 +291,16 @@ gap, and CI can run all of it headless.
 
 ### C1.7 — `viso run` remaining options (§13.7)
 
-- [ ] `--inspect` (attach the inspector channel, C6), `--profile-frame` (C6),
-      `--open` (web: open the browser; host: no-op warning), `--env KEY=VALUE`
-      (repeatable, passed to the app; never echoed when the key looks secret, §49),
-      `--cwd <dir>` (app working directory, default project root).
-- [ ] `run --release`/`--profile release` runs a release artifact without the dev
-      session (no hot reload; a dev-only flag is a usage error with the reason).
+- [x] `--open` (web: open the browser, under `--json` too; elsewhere, or with
+      `--browser none`, a usage error), `--env KEY=VALUE` (repeatable, a portable
+      name outside `VISO_DEV_*`, passed to the app through its launch variables on
+      every target; a value whose name looks secret is shown as `<hidden>`, §49),
+      `--cwd <dir>` (host only; taken from the invocation directory; default the
+      project root).
+- [x] No `run --release` (§13.7): a non-dev `--profile` is a usage error naming
+      `viso build --profile <name>`; release verification is `viso build`/`package`.
+- [ ] `--inspect` and `--profile-frame` land with the inspector channel and frame
+      profiler (C6).
 
 ### C1.8 — Headless target (§3.4)
 
@@ -593,6 +597,8 @@ and traced from the CLI and from Studio over the same services.
 - [ ] Trace output (§25.3): `--output trace.ende` (Ende binary trace), `--chrome`
       (Chrome trace JSON); traces under `target/viso/traces/`.
 - [ ] `run --profile-frame` overlay and per-frame `profile` events.
+- [ ] `run --inspect`: the session opens the inspector channel to the app it
+      launches, the same one `inspect --attach` uses.
 - [ ] Device profiles for mobile performance (simulator vs emulator caveats reported
       in the result).
 - [ ] `viso studio [--target]` (§26): launches Studio against the project, sharing the

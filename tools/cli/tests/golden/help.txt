@@ -595,10 +595,13 @@ Arguments:
   [APP_ARGS]...  Arguments for the app, after `--`
 
 Options:
-      --device <ID>     The simulator or emulator profile (`ios` and `android` only)
-      --browser <NAME>  The browser to open (`web-*` only): `chrome`, `safari`, `firefox`, or `none` to only serve
-      --no-hot-reload   Keep the dev session up but apply no edit to the app: each is compiled and reported, not sent
-  -h, --help            Print help
+      --device <ID>      The simulator or emulator profile (`ios` and `android` only)
+      --browser <NAME>   The browser to open (`web-*` only): `chrome`, `safari`, `firefox`, or `none` to only serve
+      --no-hot-reload    Keep the dev session up but apply no edit to the app: each is compiled and reported, not sent
+      --open             Open the page in a browser (`web-*` only), under `--json` too
+      --env <KEY=VALUE>  A variable the app is launched with; repeatable. A value whose name looks secret is never printed
+      --cwd <PATH>       The app's working directory (this machine only): the project root when omitted
+  -h, --help             Print help
 
 Global options:
       --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
