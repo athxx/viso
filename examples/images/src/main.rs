@@ -25,12 +25,12 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use viso::render::Rect;
+    use viso::ui::resource::ResourceId;
     use viso::ui::{
         AssetDraw, AssetFit, BindingTable, BuildCx, Content, EffectStore, NodeId, NodeStore,
         PointerButtons, PointerEvent, PointerPhase, PointerRouter, SemanticProjector, StateStore,
         TextEdits, VirtualLists, run_structure_hooks,
     };
-    use viso_ui::resource::ResourceId;
 
     struct Mounted {
         store: NodeStore,
@@ -189,8 +189,8 @@ mod tests {
 
     #[test]
     fn rust_code_embeds_an_asset_with_the_macro() {
+        use viso::ui::resource::AssetKind;
         use viso::ui::{Component, Role};
-        use viso_ui::resource::AssetKind;
 
         let star = viso::asset!("icons/star.svg");
         assert_eq!(star.id, ResourceId::of("icons/star.svg"));

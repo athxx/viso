@@ -205,6 +205,9 @@ gap, and CI can run all of it headless.
 
 ### C1.2 — `viso new` (§8)
 
+- [x] `ui!`, `component!`, `view!` and `asset!` expand to paths through the facade
+      (`viso::__private`), so a project that depends only on `viso` builds its
+      views; the examples drop their internal-crate dependencies.
 - [ ] Templates `app`, `game`, `web`, `library` embedded in the binary (no network);
       each a Cargo package plus `Viso.toml`, `src/main.rs`, `ui/*.vs`, `tests/ui/`,
       `.gitignore`; `library` has no binary.

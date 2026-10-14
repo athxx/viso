@@ -9,9 +9,10 @@
 //! view is a static `viso_ui` builder expression: no runtime parse, no per-frame
 //! rebuild (section 59).
 //!
-//! The emitted tokens name `::viso_ui::…` paths; this crate does not depend on
-//! `viso-ui`. The facade `viso` re-exports the macros and depends on `viso-ui`, so
-//! the emitted paths resolve at the call site.
+//! The emitted tokens name `::viso::__private::viso_ui::…` and
+//! `::viso::__private::viso_view::…` paths: the facade `viso` re-exports the
+//! macros and the crates their expansion builds with, so an app that depends
+//! on `viso` alone expands them. This crate depends on neither.
 //!
 //! A compiler-known typed binding never silently falls back to dynamic tracking
 //! (section 10.3): each reactive read becomes a static `cx.bind` edge.

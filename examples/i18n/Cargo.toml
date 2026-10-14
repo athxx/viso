@@ -9,7 +9,3 @@ publish = false
 # checked against them at compile time and shown in the reader's locale.
 [dependencies]
 viso = { workspace = true }
-# `view!` expands to paths in these crates; the facade does not re-export
-# them under the names the expansion uses yet.
-viso-ui = { workspace = true }
-viso-view = { workspace = true }

@@ -9,7 +9,7 @@ publish = false
 # `storage.persist`, and the facade keeps them in the app's data directory.
 [dependencies]
 viso = { workspace = true }
-# `view!` and `component!` expand to paths in these crates; the facade does
-# not re-export them under the names the expansion uses yet.
-viso-ui = { workspace = true }
+
+# The tests swap the store the facade keeps the values in for one in memory.
+[dev-dependencies]
 viso-view = { workspace = true }

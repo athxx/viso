@@ -53,7 +53,7 @@ pub fn ui(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let root = emit_view(&compiled.tree, &compiled.bindings, &idents, None, None)
             .map_err(|message| report.at(None, message))?;
         Ok(quote! {
-            |cx: &mut ::viso_ui::BuildCx<'_>| -> ::viso_ui::Handle { #root }
+            |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle { #root }
         })
     })();
     finish(expansion, true)
@@ -81,7 +81,7 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let doc = format!("The `{name}` component's state ids.");
         let fields = states
             .iter()
-            .map(|(field, _)| quote! { pub #field: ::viso_ui::StateId });
+            .map(|(field, _)| quote! { pub #field: ::viso::__private::viso_ui::StateId });
         let values = states
             .iter()
             .map(|(field, local)| quote! { #field: #local });
@@ -96,7 +96,7 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             impl #name {
                 /// Allocates the component's states and mounts its view, returning the
                 /// state ids and the root handle.
-                pub fn build(cx: &mut ::viso_ui::BuildCx<'_>) -> (Self, ::viso_ui::Handle) {
+                pub fn build(cx: &mut ::viso::__private::viso_ui::BuildCx<'_>) -> (Self, ::viso::__private::viso_ui::Handle) {
                     #allocations
                     let __viso_root = #root;
                     (Self { #(#values,)* }, __viso_root)
@@ -151,7 +151,7 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 quote! {
                     ::core::option::Option::Some((
                         #dir,
-                        &[#(::viso_ui::resource::ResourceId(#ids)),*],
+                        &[#(::viso::__private::viso_ui::resource::ResourceId(#ids)),*],
                     ))
                 }
             }
@@ -182,7 +182,7 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             {
                 const _: &str = ::core::include_str!(#dependency);
                 #catalogs
-                |cx: &mut ::viso_ui::BuildCx<'_>| -> ::viso_ui::Handle {
+                |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle {
                     #allocations
                     #root
                 }
@@ -234,10 +234,10 @@ pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             AssetKind::Vector => quote! { Vector },
         };
         Ok(quote! {
-            ::viso_ui::Asset {
-                id: ::viso_ui::resource::ResourceId(#id),
-                kind: ::viso_ui::resource::AssetKind::#kind,
-                bytes: ::viso_ui::AssetBytes::Static(::core::include_bytes!(#file)),
+            ::viso::__private::viso_ui::Asset {
+                id: ::viso::__private::viso_ui::resource::ResourceId(#id),
+                kind: ::viso::__private::viso_ui::resource::AssetKind::#kind,
+                bytes: ::viso::__private::viso_ui::AssetBytes::Static(::core::include_bytes!(#file)),
             }
         })
     })();
@@ -347,7 +347,7 @@ fn mount<'a>(
                 let local = format_ident!("__viso_t{}", tracked.len());
                 allocations.extend(quote! {
                     let #local = cx.__macro_state(
-                        ::viso_ui::StateValue::Int(0),
+                        ::viso::__private::viso_ui::StateValue::Int(0),
                         ::core::option::Option::None,
                     );
                 });
@@ -376,7 +376,7 @@ fn mount<'a>(
         allocations.extend(quote! {
             let #local = cx.__macro_state(
                 #value,
-                ::core::option::Option::Some(::viso_ui::state::StateKey::from_parts(#hi, #lo)),
+                ::core::option::Option::Some(::viso::__private::viso_ui::state::StateKey::from_parts(#hi, #lo)),
             );
         });
         idents.insert(source.symbol, local.clone());
@@ -450,13 +450,13 @@ fn host_tokens(
         })
     });
     quote! {
-        let __viso_host = ::viso_view::__embedded(#bytes, #component);
+        let __viso_host = ::viso::__private::viso_view::__embedded(#bytes, #component);
         {
             let mut __viso_view = __viso_host.borrow_mut();
             #(#mirrors)*
             #assets
         }
-        ::viso_view::__load_persisted(cx, &__viso_host);
+        ::viso::__private::viso_view::__load_persisted(cx, &__viso_host);
     }
 }
 
@@ -484,8 +484,8 @@ fn embedded_assets(compiled: &Compiled, dir: Option<&Path>) -> Result<TokenStrea
         let id = Literal::u64_suffixed(asset.id.0);
         entries.push(quote! {
             (
-                ::viso_ui::resource::ResourceId(#id),
-                ::viso_ui::AssetBytes::Static(::core::include_bytes!(#path)),
+                ::viso::__private::viso_ui::resource::ResourceId(#id),
+                ::viso::__private::viso_ui::AssetBytes::Static(::core::include_bytes!(#path)),
             )
         });
     }
@@ -517,7 +517,7 @@ fn embedded_shaders(behavior: &ViewBehavior) -> Result<TokenStream, String> {
             pack(ShaderLang::None)?,
         );
         entries.push(quote! {
-            ::viso_view::__embedded_shader(::viso_view::__per_backend!(
+            ::viso::__private::viso_view::__embedded_shader(::viso::__private::viso_view::__per_backend!(
                 msl: #msl,
                 hlsl: #hlsl,
                 spirv: #spirv,
@@ -550,7 +550,7 @@ fn record_tokens(
     cells.sort_unstable_by_key(|(symbol, _)| (symbol.hi, symbol.lo));
     let cells = cells.into_iter().map(|(symbol, local)| {
         let (hi, lo) = (symbol.hi, symbol.lo);
-        quote! { (::viso_ui::state::StateKey::from_parts(#hi, #lo), #local) }
+        quote! { (::viso::__private::viso_ui::state::StateKey::from_parts(#hi, #lo), #local) }
     });
     let host = if behavior {
         quote! { ::core::option::Option::Some(::std::rc::Rc::clone(&__viso_host)) }
@@ -585,17 +585,17 @@ fn declared_at(component: &HirComponent, source: &Source) -> Option<TextRange> {
 /// A state initializer as the `StateValue` the store starts from.
 fn state_value(initial: &ConstValue) -> Option<TokenStream> {
     Some(match initial {
-        ConstValue::Bool(value) => quote! { ::viso_ui::StateValue::Bool(#value) },
+        ConstValue::Bool(value) => quote! { ::viso::__private::viso_ui::StateValue::Bool(#value) },
         ConstValue::Int(value, _) => {
             let value = i32::try_from(*value).ok()?;
-            quote! { ::viso_ui::StateValue::Int(#value) }
+            quote! { ::viso::__private::viso_ui::StateValue::Int(#value) }
         }
         ConstValue::Float(value, _) => {
             let value = *value as f32;
             if !value.is_finite() {
                 return None;
             }
-            quote! { ::viso_ui::StateValue::Float(#value) }
+            quote! { ::viso::__private::viso_ui::StateValue::Float(#value) }
         }
         ConstValue::Str(_) => return None,
     })

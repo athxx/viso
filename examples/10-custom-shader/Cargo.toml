@@ -10,7 +10,3 @@ publish = false
 # through a state. The build packs the shader for the target's backend.
 [dependencies]
 viso = { workspace = true }
-# `view!` expands to paths in these crates; the facade does not re-export
-# them under the names the expansion uses yet.
-viso-ui = { workspace = true }
-viso-view = { workspace = true }

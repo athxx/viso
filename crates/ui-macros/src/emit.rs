@@ -5,8 +5,8 @@
 //! [`BindingIr`] of compiled `StateId -> (node, DirtyClass)` edges. This module
 //! lowers those *data* structures into the builder expression every entry point
 //! expands around: it mounts the retained tree once through a `cx` of type
-//! `&mut ::viso_ui::BuildCx<'_>`, records each reactive binding against the
-//! retained node it targets, and evaluates to the root's `::viso_ui::Handle`.
+//! `&mut ::viso::__private::viso_ui::BuildCx<'_>`, records each reactive binding against the
+//! retained node it targets, and evaluates to the root's `::viso::__private::viso_ui::Handle`.
 //!
 //! No runtime parse, no per-frame rebuild (section 59): every node is a direct
 //! `cx.flex` / `cx.leaf` / … call, and every static [`BindingEdge`] becomes one
@@ -111,7 +111,7 @@ pub fn emit_view(
         let link = if behavior.env.is_empty() {
             quote! {}
         } else {
-            quote! { ::viso_view::__link_env(cx, &__viso_host, &__viso_ids, &[#(#reads),*]); }
+            quote! { ::viso::__private::viso_view::__link_env(cx, &__viso_host, &__viso_ids, &[#(#reads),*]); }
         };
         let mount = regions.map(|behavior| {
             let bytes = Literal::byte_string(&behavior.region_bytes());
@@ -119,10 +119,10 @@ pub fn emit_view(
             cells.sort_unstable_by_key(|(symbol, _)| (symbol.hi, symbol.lo));
             let cells = cells.into_iter().map(|(symbol, local)| {
                 let (hi, lo) = (symbol.hi, symbol.lo);
-                quote! { (::viso_ui::state::StateKey::from_parts(#hi, #lo), #local) }
+                quote! { (::viso::__private::viso_ui::state::StateKey::from_parts(#hi, #lo), #local) }
             });
             quote! {
-                ::viso_view::__mount_embedded(
+                ::viso::__private::viso_view::__mount_embedded(
                     cx,
                     #bytes,
                     &__viso_host,
@@ -133,7 +133,7 @@ pub fn emit_view(
         });
         let mounted = record.take().map(|record| {
             quote! {
-                ::viso_view::__record_mount! {
+                ::viso::__private::viso_view::__record_mount! {
                     root: __viso_root.id(),
                     #record
                     nodes: __viso_ids.to_vec(),
@@ -142,7 +142,7 @@ pub fn emit_view(
         });
         root = quote! {
             {
-                let mut __viso_ids: [::core::option::Option<::viso_ui::NodeId>; #count] =
+                let mut __viso_ids: [::core::option::Option<::viso::__private::viso_ui::NodeId>; #count] =
                     [::core::option::Option::None; #count];
                 let __viso_root = #root;
                 #link
@@ -157,10 +157,10 @@ pub fn emit_view(
         let controls = &ctx.shown;
         root = quote! {
             {
-                let mut __viso_shown: [::core::option::Option<::viso_ui::NodeId>; #count] =
+                let mut __viso_shown: [::core::option::Option<::viso::__private::viso_ui::NodeId>; #count] =
                     [::core::option::Option::None; #count];
                 let __viso_root = #root;
-                ::viso_view::__mount_values(cx, &__viso_host, &__viso_shown, &[#(#controls),*]);
+                ::viso::__private::viso_view::__mount_values(cx, &__viso_host, &__viso_shown, &[#(#controls),*]);
                 __viso_root
             }
         };
@@ -169,7 +169,7 @@ pub fn emit_view(
         root = quote! {
             {
                 let __viso_root = #root;
-                ::viso_view::__mount_effects(cx, &__viso_host, __viso_root.id());
+                ::viso::__private::viso_view::__mount_effects(cx, &__viso_host, __viso_root.id());
                 __viso_root
             }
         };
@@ -178,7 +178,7 @@ pub fn emit_view(
         root = quote! {
             {
                 let __viso_root = #root;
-                ::viso_view::__record_mount! {
+                ::viso::__private::viso_view::__record_mount! {
                     root: __viso_root.id(),
                     #record
                     nodes: ::std::vec::Vec::new(),
@@ -374,7 +374,7 @@ impl Emit<'_> {
                             };
                             quote! {
                                 cx.avoiding(
-                                    ::viso_ui::adaptive::Avoid::#avoid,
+                                    ::viso::__private::viso_ui::adaptive::Avoid::#avoid,
                                     #style,
                                     |cx| { #child_block },
                                 )
@@ -394,7 +394,7 @@ impl Emit<'_> {
                 });
                 quote! {
                     cx.grid(
-                        ::viso_ui::grid::GridStyle {
+                        ::viso::__private::viso_ui::grid::GridStyle {
                             #padding
                             ..::core::default::Default::default()
                         },
@@ -407,7 +407,7 @@ impl Emit<'_> {
                 let size = size_tokens(&node.style);
                 quote! {
                     cx.scroll(
-                        ::viso_ui::ScrollStyle {
+                        ::viso::__private::viso_ui::ScrollStyle {
                             axis: #axis,
                             size: #size,
                             ..::core::default::Default::default()
@@ -421,7 +421,7 @@ impl Emit<'_> {
                 let size = size_tokens(&node.style);
                 quote! {
                     cx.virtual_list(
-                        ::viso_ui::VirtualListStyle {
+                        ::viso::__private::viso_ui::VirtualListStyle {
                             axis: #axis,
                             size: #size,
                             ..::core::default::Default::default()
@@ -469,7 +469,7 @@ impl Emit<'_> {
 }
 
 impl Emit<'_> {
-    /// The `::viso_view::attach` call installing `key`'s handler routes and
+    /// The `::viso::__private::viso_view::attach` call installing `key`'s handler routes and
     /// native control response, if it has any.
     fn emit_attach(&self, key: NodeKey) -> TokenStream {
         let Some(behavior) = self.behavior else {
@@ -484,8 +484,8 @@ impl Emit<'_> {
             let variant = Ident::new(route.event.variant(), Span::call_site());
             let (handler, capture) = (route.handler, route.capture);
             quote! {
-                ::viso_view::Route {
-                    event: ::viso_view::EventRoute::#variant,
+                ::viso::__private::viso_view::Route {
+                    event: ::viso::__private::viso_view::EventRoute::#variant,
                     handler: #handler,
                     capture: #capture,
                 }
@@ -499,12 +499,12 @@ impl Emit<'_> {
             None => quote! { ::core::option::Option::None },
         };
         quote! {
-            ::viso_view::attach(cx, &__viso_host, #handle_ident, &[#(#routes),*], #control, &::viso_view::Scope::EMPTY);
+            ::viso::__private::viso_view::attach(cx, &__viso_host, #handle_ident, &[#(#routes),*], #control, &::viso::__private::viso_view::Scope::EMPTY);
         }
     }
 }
 
-/// The `::viso_view::Control` expression of `control`.
+/// The `::viso::__private::viso_view::Control` expression of `control`.
 fn control_tokens(control: Control) -> TokenStream {
     let kind = Ident::new(control.kind.variant(), Span::call_site());
     let entry = |entry: Option<u32>| match entry {
@@ -526,7 +526,7 @@ fn control_tokens(control: Control) -> TokenStream {
     let role = match control.role {
         Some(role) => {
             let role = Ident::new(&format!("{role:?}"), Span::call_site());
-            quote! { ::core::option::Option::Some(::viso_ui::Role::#role) }
+            quote! { ::core::option::Option::Some(::viso::__private::viso_ui::Role::#role) }
         }
         None => quote! { ::core::option::Option::None },
     };
@@ -544,25 +544,25 @@ fn control_tokens(control: Control) -> TokenStream {
         let when = arm.when.iter().map(|step| match *step {
             When::State(state) => {
                 let state = Ident::new(&format!("{state:?}"), Span::call_site());
-                quote! { ::viso_view::When::State(::viso_ui::Interaction::#state) }
+                quote! { ::viso::__private::viso_view::When::State(::viso::__private::viso_ui::Interaction::#state) }
             }
-            When::Entry(entry) => quote! { ::viso_view::When::Entry(#entry) },
-            When::Not => quote! { ::viso_view::When::Not },
-            When::And => quote! { ::viso_view::When::And },
-            When::Or => quote! { ::viso_view::When::Or },
+            When::Entry(entry) => quote! { ::viso::__private::viso_view::When::Entry(#entry) },
+            When::Not => quote! { ::viso::__private::viso_view::When::Not },
+            When::And => quote! { ::viso::__private::viso_view::When::And },
+            When::Or => quote! { ::viso::__private::viso_view::When::Or },
         });
         let entry = arm.entry;
         quote! {
-            ::viso_view::LookArm {
-                input: ::viso_view::ControlInput::#input,
+            ::viso::__private::viso_view::LookArm {
+                input: ::viso::__private::viso_view::ControlInput::#input,
                 when: ::std::boxed::Box::new([#(#when),*]),
                 entry: #entry,
             }
         }
     });
     quote! {
-        ::viso_view::Control {
-            kind: ::viso_view::ControlKind::#kind,
+        ::viso::__private::viso_view::Control {
+            kind: ::viso::__private::viso_view::ControlKind::#kind,
             value: #value,
             min: #min,
             max: #max,
@@ -570,7 +570,7 @@ fn control_tokens(control: Control) -> TokenStream {
             fit: #fit,
             tint: #tint,
             shader: #shader,
-            look: ::viso_view::Look {
+            look: ::viso::__private::viso_view::Look {
                 background: #background,
                 opacity: #opacity,
                 background_transition: #background_transition,
@@ -589,7 +589,7 @@ fn node_handle_ident(key: NodeKey) -> Ident {
     Ident::new(&format!("__viso_n{}", key.0), Span::call_site())
 }
 
-/// `::viso_ui::FlexStyle { axis, gap?, size?, .. }` from a folded [`StyleIr`].
+/// `::viso::__private::viso_ui::FlexStyle { axis, gap?, size?, .. }` from a folded [`StyleIr`].
 fn flex_style_tokens(style: &StyleIr) -> TokenStream {
     let mut fields = Vec::new();
     if let Some(axis) = style.axis {
@@ -608,19 +608,19 @@ fn flex_style_tokens(style: &StyleIr) -> TokenStream {
         fields.push(quote! { size: #size });
     }
     quote! {
-        ::viso_ui::FlexStyle {
+        ::viso::__private::viso_ui::FlexStyle {
             #( #fields, )*
             ..::core::default::Default::default()
         }
     }
 }
 
-/// `::viso_ui::LeafStyle { size?, .. }` from a folded [`StyleIr`].
+/// `::viso::__private::viso_ui::LeafStyle { size?, .. }` from a folded [`StyleIr`].
 fn leaf_style_tokens(style: &StyleIr) -> TokenStream {
     if has_size(style) {
         let size = size_tokens(style);
         quote! {
-            ::viso_ui::LeafStyle {
+            ::viso::__private::viso_ui::LeafStyle {
                 size: #size,
                 ..::core::default::Default::default()
             }
@@ -638,7 +638,7 @@ fn has_size(style: &StyleIr) -> bool {
         || style.lengths().height.is_some()
 }
 
-/// `cx.bind_lengths(handle, ::viso_ui::NodeLengths { .. });` for a node with
+/// `cx.bind_lengths(handle, ::viso::__private::viso_ui::NodeLengths { .. });` for a node with
 /// environment lengths, and nothing otherwise.
 fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
     if lengths.is_empty() {
@@ -657,7 +657,7 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
         }) => {
             let [top, end, bottom, start] = [top, end, bottom, start].map(one_terms_tokens);
             quote! {
-                ::core::option::Option::Some(::viso_ui::EdgeTerms {
+                ::core::option::Option::Some(::viso::__private::viso_ui::EdgeTerms {
                     top: #top, end: #end, bottom: #bottom, start: #start,
                 })
             }
@@ -665,7 +665,7 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
         None => quote! { ::core::option::Option::None },
     };
     quote! {
-        cx.bind_lengths(#handle, ::viso_ui::NodeLengths {
+        cx.bind_lengths(#handle, ::viso::__private::viso_ui::NodeLengths {
             width: #width,
             height: #height,
             gap: #gap,
@@ -675,7 +675,7 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
     }
 }
 
-/// `::viso_ui::Inset { .. }` from a folded [`InsetIr`].
+/// `::viso::__private::viso_ui::Inset { .. }` from a folded [`InsetIr`].
 fn inset_tokens(inset: InsetIr) -> TokenStream {
     let InsetIr {
         left,
@@ -683,10 +683,10 @@ fn inset_tokens(inset: InsetIr) -> TokenStream {
         right,
         bottom,
     } = inset;
-    quote! { ::viso_ui::Inset { left: #left, top: #top, right: #right, bottom: #bottom } }
+    quote! { ::viso::__private::viso_ui::Inset { left: #left, top: #top, right: #right, bottom: #bottom } }
 }
 
-/// `::viso_ui::LengthTerms { .. }` from [`TermsIr`].
+/// `::viso::__private::viso_ui::LengthTerms { .. }` from [`TermsIr`].
 fn one_terms_tokens(terms: TermsIr) -> TokenStream {
     let TermsIr {
         dp,
@@ -695,10 +695,10 @@ fn one_terms_tokens(terms: TermsIr) -> TokenStream {
         em,
         pct,
     } = terms;
-    quote! { ::viso_ui::LengthTerms { dp: #dp, px: #px, sp: #sp, em: #em, pct: #pct } }
+    quote! { ::viso::__private::viso_ui::LengthTerms { dp: #dp, px: #px, sp: #sp, em: #em, pct: #pct } }
 }
 
-/// `Option<::viso_ui::LengthTerms>` from optional [`TermsIr`].
+/// `Option<::viso::__private::viso_ui::LengthTerms>` from optional [`TermsIr`].
 fn terms_tokens(terms: Option<TermsIr>) -> TokenStream {
     match terms {
         Some(terms) => {
@@ -709,35 +709,37 @@ fn terms_tokens(terms: Option<TermsIr>) -> TokenStream {
     }
 }
 
-/// `::viso_ui::Size { width, height }` from a folded [`StyleIr`]. A missing axis
+/// `::viso::__private::viso_ui::Size { width, height }` from a folded [`StyleIr`]. A missing axis
 /// length defaults to `Length::Fit` (shrink to natural size), the neutral request.
 fn size_tokens(style: &StyleIr) -> TokenStream {
     let width = length_tokens(style.width);
     let height = length_tokens(style.height);
-    quote! { ::viso_ui::Size { width: #width, height: #height } }
+    quote! { ::viso::__private::viso_ui::Size { width: #width, height: #height } }
 }
 
-/// `::viso_ui::Length::…` from an optional folded [`LengthIr`]; `None` -> `Fit`.
+/// `::viso::__private::viso_ui::Length::…` from an optional folded [`LengthIr`]; `None` -> `Fit`.
 fn length_tokens(length: Option<LengthIr>) -> TokenStream {
     match length {
-        Some(LengthIr::Fixed(dp)) => quote! { ::viso_ui::Length::Fixed(#dp) },
+        Some(LengthIr::Fixed(dp)) => quote! { ::viso::__private::viso_ui::Length::Fixed(#dp) },
         Some(LengthIr::Relative { fixed, pct }) => {
-            quote! { ::viso_ui::Length::Relative { fixed: #fixed, pct: #pct } }
+            quote! { ::viso::__private::viso_ui::Length::Relative { fixed: #fixed, pct: #pct } }
         }
-        Some(LengthIr::Fill { weight }) => quote! { ::viso_ui::Length::Fill { weight: #weight } },
-        Some(LengthIr::Fit) | None => quote! { ::viso_ui::Length::Fit },
+        Some(LengthIr::Fill { weight }) => {
+            quote! { ::viso::__private::viso_ui::Length::Fill { weight: #weight } }
+        }
+        Some(LengthIr::Fit) | None => quote! { ::viso::__private::viso_ui::Length::Fit },
     }
 }
 
-/// `::viso_ui::Axis::…` from a folded [`AxisIr`].
+/// `::viso::__private::viso_ui::Axis::…` from a folded [`AxisIr`].
 fn axis_tokens(axis: AxisIr) -> TokenStream {
     match axis {
-        AxisIr::Row => quote! { ::viso_ui::Axis::Row },
-        AxisIr::Column => quote! { ::viso_ui::Axis::Column },
+        AxisIr::Row => quote! { ::viso::__private::viso_ui::Axis::Row },
+        AxisIr::Column => quote! { ::viso::__private::viso_ui::Axis::Column },
     }
 }
 
-/// Decomposes a [`DirtyClass`] bitset into a `::viso_ui::DirtyClass` `|` chain.
+/// Decomposes a [`DirtyClass`] bitset into a `::viso::__private::viso_ui::DirtyClass` `|` chain.
 ///
 /// The dsl and runtime `DirtyClass` bit layouts are byte-identical (pinned by
 /// `dirty_class_bit_positions_are_stable` on the dsl side and the runtime consts),
@@ -761,14 +763,14 @@ fn dirty_class_tokens(class: DirtyClass) -> TokenStream {
     for (bit, name) in BITS {
         if class.contains(*bit) {
             let ident = Ident::new(name, Span::call_site());
-            terms.push(quote! { ::viso_ui::DirtyClass::#ident });
+            terms.push(quote! { ::viso::__private::viso_ui::DirtyClass::#ident });
         }
     }
 
     if terms.is_empty() {
         // property_dirty_class never returns EMPTY, but be explicit rather than emit
         // an empty expression if a future class is all-zero.
-        quote! { ::viso_ui::DirtyClass::EMPTY }
+        quote! { ::viso::__private::viso_ui::DirtyClass::EMPTY }
     } else {
         quote! { #( #terms )|* }
     }

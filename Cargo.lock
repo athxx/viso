@@ -2696,8 +2696,6 @@ name = "viso-example-10-custom-shader"
 version = "0.0.0"
 dependencies = [
  "viso",
- "viso-ui",
- "viso-view",
 ]
 
 [[package]]
@@ -2712,8 +2710,6 @@ name = "viso-example-i18n"
 version = "0.0.0"
 dependencies = [
  "viso",
- "viso-ui",
- "viso-view",
 ]
 
 [[package]]
@@ -2721,8 +2717,6 @@ name = "viso-example-images"
 version = "0.0.0"
 dependencies = [
  "viso",
- "viso-ui",
- "viso-view",
 ]
 
 [[package]]
@@ -2730,7 +2724,6 @@ name = "viso-example-persist"
 version = "0.0.0"
 dependencies = [
  "viso",
- "viso-ui",
  "viso-view",
 ]
 

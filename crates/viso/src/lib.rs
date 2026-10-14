@@ -92,11 +92,21 @@ pub use viso_ui::{InspectSnapshot, snapshot_ui};
 pub use viso_ui::{WindowChrome, WindowConfig};
 
 // The DSL entry points `ui!`, `component!` and `view!` live in the compile-time-only
-// `viso-ui-macros` crate; they emit `::viso_ui::…` builder tokens but do not
-// themselves depend on `viso-ui`. The facade re-exports them and already depends on
-// `viso-ui`, so those emitted paths resolve at the call site — the same
-// reverse-re-export shape `viso-gpu` uses for `viso_macros::GpuPod`.
+// `viso-ui-macros` crate, which depends on neither crate its expansion builds
+// with; the expansion names them through `viso::__private`, so an app that
+// depends on `viso` alone expands them.
 pub use viso_ui_macros::{asset, component, ui, view};
+
+/// The crates the expansion of `ui!`, `component!`, `view!` and `asset!`
+/// builds with. Not an API: its paths change with the macros.
+#[doc(hidden)]
+pub mod __private {
+    pub use viso_ui;
+    pub use viso_view;
+}
+
+// The facade's own code and tests expand the macros too.
+extern crate self as viso;
 
 // The SVG input lane (§13), re-exported as `viso::svg` so an app that has SVG
 // bytes calls `viso::svg::parse_svg(..)` without naming the internal
