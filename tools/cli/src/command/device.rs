@@ -2,20 +2,13 @@
 //! the profiles `viso run ios|android --device` takes, each with the virtual
 //! device it names.
 
-use viso_package::android::{Abi, Sdk};
-use viso_project::{DeviceProfile, DeviceStore, Platform, Preset, device::valid_id};
+use viso_package::android::Sdk;
+use viso_project::{DeviceProfile, DeviceStore, Platform, Preset};
 
 use super::{ENVIRONMENT, RUNTIME, SUCCESS, USAGE};
 use crate::args::{CreateArgs, DeviceCommand, PresetArg};
 use crate::device::{self, DEVICE_UNKNOWN, ENV_DEVICE, emulator, simulator};
 use crate::output::Output;
-
-/// A profile ID that is not one.
-const DEVICE_ID_INVALID: &str = "DEVICE_ID_INVALID";
-/// A profile of that ID exists.
-const DEVICE_EXISTS: &str = "DEVICE_EXISTS";
-/// No installed system image or runtime fits.
-const DEVICE_SYSTEM: &str = "DEVICE_SYSTEM";
 
 pub fn run(platform: Platform, command: &DeviceCommand, out: &mut Output) -> u8 {
     if platform == Platform::Ios && !cfg!(target_os = "macos") {
@@ -151,108 +144,16 @@ fn list(platform: Platform, store: &DeviceStore, out: &mut Output) -> u8 {
     SUCCESS
 }
 
+/// Creates the profile `create` names, with its virtual device.
 fn create(platform: Platform, store: &DeviceStore, args: &CreateArgs, out: &mut Output) -> u8 {
-    if !valid_id(&args.id) {
-        out.failure(
-            DEVICE_ID_INVALID,
-            &format!("`{}` is not a profile ID", args.id),
-            &["use lowercase letters, digits and `-`, at most 40".into()],
-        );
-        return USAGE;
-    }
-    if store.get(platform, &args.id).is_some() {
-        out.failure(
-            DEVICE_EXISTS,
-            &format!("a {platform} profile is already named `{}`", args.id),
-            &[],
-        );
-        return USAGE;
-    }
     let preset = match args.preset {
         PresetArg::Phone => Preset::Phone,
         PresetArg::Tablet => Preset::Tablet,
     };
-    let made = match platform {
-        Platform::Ios => {
-            if args.api.is_some() {
-                out.failure(super::CLI_USAGE, "`--api` is an Android option", &[]);
-                return USAGE;
-            }
-            simulator::newest_runtime(preset)
-                .and_then(|(runtime, device_type, model)| {
-                    let udid = simulator::create(
-                        &format!("Viso {} ({model})", args.id),
-                        &device_type,
-                        &runtime,
-                    )?;
-                    Ok((runtime, udid))
-                })
-                .map_err(|why| (ENV_DEVICE, why))
-        }
-        Platform::Android => create_avd(&args.id, args.api.as_deref(), preset),
-    };
-    let (system, device) = match made {
-        Ok(made) => made,
-        Err((code, why)) => {
-            out.failure(code, &why, &[]);
-            return ENVIRONMENT;
-        }
-    };
-    let profile = DeviceProfile {
-        id: args.id.clone(),
-        platform,
-        preset,
-        system,
-        device,
-    };
-    if let Err(error) = store.save(&profile) {
-        out.failure(
-            ENV_DEVICE,
-            &format!("cannot write the profile: {error}"),
-            &[],
-        );
-        return ENVIRONMENT;
+    match device::create(platform, store, &args.id, preset, args.api.as_deref(), out) {
+        Ok(_) => SUCCESS,
+        Err(code) => code,
     }
-    out.device(platform.as_str(), &profile.id, &profile.device, "created");
-    SUCCESS
-}
-
-/// Creates the AVD of the profile `id` on the image of `api` (the newest
-/// when `None`): its API level and AVD name.
-fn create_avd(
-    id: &str,
-    api: Option<&str>,
-    preset: Preset,
-) -> Result<(String, String), (&'static str, String)> {
-    let sdk = Sdk::locate().map_err(|why| (ENV_DEVICE, why))?;
-    let abi = Abi::host();
-    let images = emulator::system_images(&sdk, abi);
-    let image = images
-        .iter()
-        .find(|image| {
-            api.is_none_or(|api| image.api == api || image.api.split('.').next() == Some(api))
-        })
-        .ok_or_else(|| {
-            let installed: Vec<&str> = images.iter().map(|i| i.api.as_str()).collect();
-            (
-                DEVICE_SYSTEM,
-                match api {
-                    Some(api) => format!(
-                        "no {} system image of API {api} is installed (installed: {})",
-                        abi.as_str(),
-                        if installed.is_empty() {
-                            "none".into()
-                        } else {
-                            installed.join(", ")
-                        }
-                    ),
-                    None => format!("no {} system image is installed", abi.as_str()),
-                },
-            )
-        })?;
-    let name = emulator::avd_name(id);
-    emulator::create(&name, image, abi, preset).map_err(|why| (ENV_DEVICE, why))?;
-    Ok((image.api.clone(), name))
 }
 
 fn start(profile: &DeviceProfile, window: bool, out: &mut Output) -> u8 {

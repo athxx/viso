@@ -1064,8 +1064,8 @@ differ.
       intent extras, the page's `visoLaunch`.
 - [x] The device boots during the launch build and a boot failure ends the session
       at once.
-- [ ] TTY prompt to pick or create a profile when `--device` is ambiguous or missing
-      (`Viso_CLI.md` §13.2); `--json` keeps the diagnostics.
+- [x] TTY prompt to pick or create a profile when `--device` is ambiguous or missing
+      (`Viso_CLI.md` §13.2); `--json`, non-TTY and CI keep the diagnostics.
 - [ ] Android emulator: profile → adb serial mapping, `adb reverse` for the dev port
       (no LAN exposure), dev APK build/install/launch, warm restart delays stopping
       the old process until the candidate is built (§27). Built, installed, launched
