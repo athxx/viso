@@ -13,7 +13,7 @@ use clap::{Arg, ArgAction, Command};
 
 /// The top-level groups in order, each with its commands in order.
 const GROUPS: &[(&str, &[&str])] = &[
-    ("PROJECT", &["config"]),
+    ("PROJECT", &["doctor", "config"]),
     ("MOBILE DEV ENVIRONMENT", &["android", "ios"]),
     ("DEVELOP", &["run", "build", "serve"]),
     ("LANGUAGE", &["fmt", "check", "schema"]),
@@ -130,6 +130,20 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             (
                 "viso check --watch --json",
                 "again after every change, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "doctor",
+        &[
+            (
+                "viso doctor",
+                "the host's tools, and a word on each target's",
+            ),
+            ("viso doctor web-gpu", "what a web build needs"),
+            (
+                "viso doctor android --fix",
+                "add the Rust Android target if it is missing",
             ),
         ],
     ),
@@ -402,6 +416,11 @@ const NOTES: &[(&str, &str)] = &[
         "`Viso.toml` is the source of truth: `viso config` reads it and never writes it.\n\
          A value comes from the first of: a flag, a `VISO_*` variable, the profile's\n\
          table, the manifest, the default.",
+    ),
+    (
+        "doctor",
+        "It changes nothing but what `--fix` says it runs, and installs no SDK. A check\n\
+         that is `missing` or `error` exits 3.",
     ),
     (
         "fmt",

@@ -509,6 +509,23 @@ impl Output {
         }
     }
 
+    /// Reports one check of `viso doctor`: a `doctor_check` event, or the
+    /// line `text` gives on stdout.
+    pub fn doctor_check(
+        &mut self,
+        name: &str,
+        status: &str,
+        code: Option<&str>,
+        message: &str,
+        suggestion: Option<&str>,
+        text: impl FnOnce() -> String,
+    ) {
+        match &mut self.form {
+            Form::Json(stream) => stream.doctor_check(name, status, code, message, suggestion),
+            Form::Human => print!("{}", text()),
+        }
+    }
+
     /// Whether the output is for a person rather than a `--json` stream.
     pub fn human(&self) -> bool {
         matches!(self.form, Form::Human)

@@ -103,6 +103,8 @@ pub enum Command {
     Check(CheckArgs),
     /// Remove `target/viso/`: builds, caches and dev state, never `dist/`.
     Clean,
+    /// Examine this machine for developing Viso apps: toolchains, the project, a target's SDK.
+    Doctor(DoctorArgs),
     /// Write the script that completes `viso` commands in a shell.
     Completion(CompletionArgs),
     /// Lay out `.vs` sources in the one canonical format.
@@ -167,6 +169,19 @@ impl BuildTarget {
             BuildTarget::WebHybrid => Target::WebHybrid,
         }
     }
+}
+
+/// What `viso doctor` examines.
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// A target whose toolchain is examined, beside Rust and the project; the
+    /// host's tools and a word on each target's when none is named.
+    #[arg(value_enum)]
+    pub target: Option<BuildTarget>,
+    /// Make the local, reversible fixes the checks name (a Rust target added
+    /// with `rustup`), each said before it runs; nothing else is installed.
+    #[arg(long)]
+    pub fix: bool,
 }
 
 /// What `viso check` checks.
@@ -607,6 +622,7 @@ impl Command {
             Command::Build(_) => "build",
             Command::Check(_) => "check",
             Command::Clean => "clean",
+            Command::Doctor(_) => "doctor",
             Command::Completion(_) => "completion",
             Command::Fmt(_) => "fmt",
             Command::Config(ConfigCommand::Show) => "config show",
@@ -647,7 +663,7 @@ pub fn parse() -> Result<Cli, clap::Error> {
 /// Whether `command` names its target as a positional argument, so a
 /// `--target` there is the other commands' spelling.
 pub fn takes_positional_target(command: &str) -> bool {
-    matches!(command, "build" | "check" | "run" | "serve")
+    matches!(command, "build" | "check" | "doctor" | "run" | "serve")
 }
 
 /// Whether `--json` appears among `args` (the arguments after the program name)

@@ -221,17 +221,22 @@ gap, and CI can run all of it headless.
 
 ### C1.3 — `viso doctor` (§9)
 
-- [ ] A `Check { id, title, status: ok|warn|error|skip, detail, fix? }` list built
+- [x] A `Check { id, title, status: ok|warn|error|skip, detail, fix? }` list built
       from probes: Rust toolchain and targets, cargo, the project (manifest, members,
       language version), GPU backend availability on the host, git; one
-      `doctor_check` event each, human table, exit 3 on any error.
-- [ ] `doctor <target>` adds that target's probes (delegating to `android doctor`,
-      `ios doctor`, the web probes of C4) and nothing else.
-- [ ] `--fix` performs only fixes that are local and reversible (`rustup target add`,
+      `doctor_check` event each, human table, exit 3 on any error. (Statuses are
+      §9.4's `ok|warn|missing|error`; a check that does not apply is left out.)
+- [x] `doctor <target>` adds that target's probes (delegating to `android doctor`,
+      `ios doctor`, the web probes of C4) and nothing else. (The probes live in the
+      doctor; `android doctor`/`ios doctor` (C3.2, C3.4) reuse them.)
+- [x] `--fix` performs only fixes that are local and reversible (`rustup target add`,
       creating `target/viso/`), prints each before running it, and never downloads an
-      SDK (that is `android use` / `ios use`; §9.3).
-- [ ] Probes run in parallel with a per-probe timeout; a hung tool is `error` with the
+      SDK (that is `android use` / `ios use`; §9.3). (`target/viso/` needs no fix:
+      every command creates it; the doctor checks that it can be written.)
+- [x] Probes run in parallel with a per-probe timeout; a hung tool is `error` with the
       timeout, not a hung doctor.
+- [ ] Point `android-sdk` and `ios-runtime` gaps at `viso android use` / `viso ios use`
+      once C3.2 and C3.4 land; until then the message says what to install.
 
 ### C1.4 — `viso fmt` (§16)
 

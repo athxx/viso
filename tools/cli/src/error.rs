@@ -76,6 +76,10 @@ codes! {
     ENV_BUILD_WRITE = ENVIRONMENT, "The build's output could not be written.";
     ENV_TOOL = ENVIRONMENT, "A tool the build needs is not installed or could not be run.";
     ENV_TEST_TARGET = ENVIRONMENT, "The test domain does not run on that target here.";
+    ENV_RUST_TOOLCHAIN = ENVIRONMENT, "The Rust toolchain is not installed, or older than Viso builds with.";
+    ENV_RUST_TARGET = ENVIRONMENT, "The Rust standard library of a target the build needs is not installed.";
+    ENV_GPU = ENVIRONMENT, "The host has no GPU backend Viso renders with.";
+    ENV_ANDROID_SDK = ENVIRONMENT, "No Android SDK, with its NDK, build tools and a platform, is found.";
 
     BUILD_FAILED = BUILD, "`cargo build` failed.";
     BUILD_PACKAGE = BUILD, "The built app could not be packaged for its target.";

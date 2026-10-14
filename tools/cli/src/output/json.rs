@@ -65,6 +65,35 @@ impl Stream {
         });
     }
 
+    /// Writes a `doctor_check` event.
+    pub(super) fn doctor_check(
+        &mut self,
+        name: &str,
+        status: &str,
+        code: Option<&str>,
+        message: &str,
+        suggestion: Option<&str>,
+    ) {
+        self.event("doctor_check", |w| {
+            w.begin_object();
+            w.name("name");
+            w.string(name);
+            w.name("status");
+            w.string(status);
+            if let Some(code) = code {
+                w.name("code");
+                w.string(code);
+            }
+            w.name("message");
+            w.string(message);
+            if let Some(suggestion) = suggestion {
+                w.name("suggestion");
+                w.string(suggestion);
+            }
+            w.end_object();
+        });
+    }
+
     /// Writes a `device` event.
     pub(super) fn device(&mut self, platform: &str, id: &str, name: &str, state: &str) {
         self.event("device", |w| {

@@ -16,6 +16,7 @@ Examples:
   viso check --json  # check the sources, as JSON events
 
 PROJECT
+  doctor      Examine this machine for developing Viso apps: toolchains, the project, a target's SDK
   config      Show where each configuration value comes from, or validate it
 
 MOBILE DEV ENVIRONMENT

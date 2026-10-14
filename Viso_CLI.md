@@ -644,6 +644,14 @@ viso doctor --json
 
 `status ∈ ok|warn|missing|error`。任一 check 为 `missing|error` 时 exit 3，只有 `warn` 时 exit 0。
 
+### 9.5 当前实现
+
+- `viso doctor` 的 check（`name`）：`rust`（`rustc -vV`，早于框架的 `rust-version` 为 `ENV_RUST_TOOLCHAIN` error）、`cargo`、`rustup`、`project`（`Viso.toml`、language 版本、配置解析、根目录的 `Cargo.toml`；不在 project 中为 warn，建议 `viso new <name>`）、`framework`（project 的 `Cargo.lock` 中 `viso` 的版本与 CLI 相同）、`linker`（`cc`，Windows 为 Visual Studio Build Tools）、`gpu`（macOS Metal、Windows Direct3D 12、Linux Vulkan loader 与 ICD；没有为 `ENV_GPU` error）、`wasm32`、`wasm-bindgen`（与 `Cargo.lock` 锁定的版本一致）、`wasm-opt`、`filesystem`（project 的 `target/` 与 `~/.viso` 可写）、`git`、`android-sdk`、`ios-runtime`；host doctor 中 target 工具的缺口只是 warn。
+- `viso doctor <target>` 为 `rust`、`cargo`、`project` 加上该 target 的 check，缺口为 `missing`：`ios` — `xcode`、`ios-runtime`、`ios-rust`、`ios-profiles`、`gpu`；`android` — `android-sdk`（`ENV_ANDROID_SDK`）、`android-tools`、`android-rust`、`android-profiles`；`web-gpu` — `wasm32`、`wasm-bindgen`、`wasm-opt`；`headless` — `linker`、`filesystem`；`web-dom`/`web-hybrid` — `target`（`C0011`）。不适用的 check（没有 project 时的 `framework`）不输出。
+- 各 check 同时运行，单个工具最多 15 s、单个 check 最多 20 s，超时为 error 并说明超时，不会挂住 doctor。
+- `--fix` 只做本地可逆的修复：缺少的 Rust target 以 `rustup target add <triple>` 加上，运行前先说出命令（human 为 stderr 一行，JSON 为 `progress{phase:"fix"}`），之后重新检查；不安装 SDK、runtime 或工具。
+- 人类输出：`Viso Doctor`、每个 check 一行 `[status] <title>: <message>`、`Suggested actions:` 列出未通过 check 的建议命令。
+
 ---
 
 ## 10. `viso config`
@@ -2443,6 +2451,10 @@ ENV_NO_DEV_SESSION      没有可连的 `viso run` session             exit 3
 ENV_TAPE_WRITE          录制的 Tape 无法写出                      exit 3
 ENV_TEST_INPUT          测试 Scenario 或 Tape 缺失或不可读        exit 3
 ENV_TEST_TARGET         测试域在此不能于该 target 上运行          exit 3
+ENV_RUST_TOOLCHAIN      Rust toolchain 未安装或早于 Viso 所需     exit 3
+ENV_RUST_TARGET         构建需要的 Rust target 未安装             exit 3
+ENV_GPU                 host 没有 Viso 渲染所用的 GPU backend     exit 3
+ENV_ANDROID_SDK         找不到带 NDK、build tools 与 platform 的 Android SDK  exit 3
 TEST_INPUT_INVALID      Scenario/Tape 无法解析或与 Build 不符     exit 1
 TEST_EXPECTATION        测试期望未满足                           exit 1
 BUILD_FAILED            cargo build 失败                         exit 4

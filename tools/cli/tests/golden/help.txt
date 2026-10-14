@@ -9,6 +9,7 @@ Examples:
   viso check --json  # check the sources, as JSON events
 
 PROJECT
+  doctor      Examine this machine for developing Viso apps: toolchains, the project, a target's SDK
   config      Show where each configuration value comes from, or validate it
 
 MOBILE DEV ENVIRONMENT
@@ -49,6 +50,39 @@ Options:
 
 Notes:
   Run `viso <command> --help` for a command's arguments and options.
+
+$ viso doctor --help
+Examine this machine for developing Viso apps: toolchains, the project, a target's SDK
+
+Usage: viso doctor [OPTIONS] [TARGET]
+
+Examples:
+  viso doctor                # the host's tools, and a word on each target's
+  viso doctor web-gpu        # what a web build needs
+  viso doctor android --fix  # add the Rust Android target if it is missing
+
+Arguments:
+  [TARGET]  A target whose toolchain is examined, beside Rust and the project; the host's tools and a word on each target's when none is named [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+
+Options:
+      --fix   Make the local, reversible fixes the checks name (a Rust target added with `rustup`), each said before it runs; nothing else is installed
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  It changes nothing but what `--fix` says it runs, and installs no SDK. A check
+  that is `missing` or `error` exits 3.
 
 $ viso config --help
 Show where each configuration value comes from, or validate it
