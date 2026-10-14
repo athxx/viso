@@ -235,14 +235,21 @@ gap, and CI can run all of it headless.
 
 ### C1.4 — `viso fmt` (§16)
 
-- [ ] Move the formatter out of the LSP server into a shared place (`viso-dsl` or a
-      small `viso-fmt` crate decided by dependency edges) so CLI and `viso-lsp` call
-      one function; `check-deps` edge added.
-- [ ] `viso fmt [<path>...]` formats every project `.vs` (or the given files), writes
-      only files whose text changed, atomically.
-- [ ] `--check`: no writes, lists unformatted files, exit 1; JSON `diagnostic` per
-      file (`FMT_UNFORMATTED`) with the first differing line.
-- [ ] A file that does not parse is reported (exit 1) and left untouched (§16.3).
+- [x] The formatter moved out of the LSP server into `viso_dsl::format` (no new
+      edge; ADR 0018 amended); `viso-lsp` re-exports it, its tests moved with it.
+- [x] `viso fmt [<path>...]` formats every project `.vs` under `src/` and `tests/`
+      (or the given files and directories), writes only files whose text changed,
+      atomically (`atomic::write`: sibling file, rename, permissions kept).
+- [x] `--check`: no writes, lists unformatted files with the first differing line,
+      exit 1; JSON `result{file, changed, line}` per file (§16.4).
+- [x] A file that does not parse is reported (exit 1) and left untouched
+      (`try_format`); lexical errors count, and are now folded into every parse's
+      diagnostics (`Parse::diagnostics`) — `viso check` used to accept an invalid
+      escape silently.
+- [x] `Viso.toml` normalization (§16, `viso_project::format_manifest`): spacing
+      around `=`, trailing whitespace, trailing-comment spacing, blank runs, final
+      newline; comments, order, arrays, inline tables and indentation kept; the
+      result is checked to hold the same document before it is written.
 
 ### C1.5 — `viso check` (§17)
 

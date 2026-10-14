@@ -31,13 +31,13 @@
 //! re-parsing the formatted text yields the same significant tokens: the
 //! formatter only ever changes whitespace.
 //!
-//! Cold-path tooling (architecture section 7.2): one format pass per editor
-//! request, over a small document — `String` building throughout is the right
+//! Cold-path tooling: one format pass per editor request or file, over a
+//! small document — `String` building throughout is the right
 //! choice.
 
-use viso_dsl::syntax::SyntaxNode;
-use viso_dsl::syntax::grammar::parse;
-use viso_dsl::{LexError, SyntaxKind, Token, tokenize};
+use crate::syntax::SyntaxNode;
+use crate::syntax::grammar::parse;
+use crate::{Diagnostic, LexError, Parse, Severity, SyntaxKind, Token, tokenize};
 
 /// One indentation level: four spaces.
 const INDENT: &str = "    ";
@@ -114,6 +114,29 @@ impl Tok {
 pub fn format(source: &str) -> String {
     let lexed = tokenize(source);
     let parsed = parse(&lexed, source);
+    layout(source, &lexed, &parsed)
+}
+
+/// Formats `source` when it parses, or returns its syntax errors: a file
+/// that does not parse is left as its author wrote it, since a re-layout
+/// around a recovery guess could move text the author has yet to fix.
+pub fn try_format(source: &str) -> Result<String, Vec<Diagnostic>> {
+    let lexed = tokenize(source);
+    let parsed = parse(&lexed, source);
+    let errors: Vec<Diagnostic> = parsed
+        .diagnostics()
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    if errors.is_empty() {
+        Ok(layout(source, &lexed, &parsed))
+    } else {
+        Err(errors)
+    }
+}
+
+/// The layout pass over a parse of `source`.
+fn layout(source: &str, lexed: &[Token], parsed: &Parse) -> String {
     // A token left open as the last one runs to the end of the source (a raw
     // string or block comment) or of its line (a string or char, whatever
     // whitespace follows it): trimming after it would cut its text, a final
@@ -550,7 +573,7 @@ impl<'t> Printer<'t> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viso_dsl::{SyntaxKind, tokenize};
+    use crate::{SyntaxKind, tokenize};
 
     /// The non-trivia token kinds of a source, in order — the semantic token stream
     /// the formatter must preserve.

@@ -79,13 +79,13 @@ impl<'a> Source<'a> {
         }
     }
 
-    /// This source as the file of the module `module` (`::`-joined, `""` for the
-    /// root module), so diagnostics of other files can point into it.
     /// The name diagnostics use for the file.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// This source as the file of the module `module` (`::`-joined, `""` for the
+    /// root module), so diagnostics of other files can point into it.
     pub fn of_module(mut self, module: String) -> Self {
         self.module = Some(module);
         self

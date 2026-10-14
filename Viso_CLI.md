@@ -1328,11 +1328,17 @@ viso fmt --check
 
 ### 16.3 Parser requirement
 
-Formatter 基于 Lossless CST/AST，不使用正则批量重写。实现复用 `viso-lsp` 同一 formatter（ADR-0018）。
+Formatter 基于 Lossless CST/AST，不使用正则批量重写。CLI 与 `viso-lsp` 调用同一个 `viso_dsl::format`（ADR-0018 修订）。无法解析（含词法错误）的文件输出其 syntax diagnostic，不改写。
+
+- 无路径参数时格式化 project 的 `src/`、`tests/` 下全部 `.vs` 与 `Viso.toml`；给出路径时为这些文件与目录（目录取其下 `.vs`），可在 project 之外；名字相对 project root（无 project 时相对当前目录）。
+- 只写出文本有变化的文件，经临时文件 + rename 原子替换，保留权限。
+- human：stdout 每个改写的文件一行 `formatted <file>`（`--check` 为 `<file>: not formatted from line <n>`），stderr 末行 `<n> of <m> files formatted|to format[, <k> not parsed]`。
+- 读不到文件 `ENV_SOURCE_UNREADABLE`、写不出 `ENV_SOURCE_WRITE`（exit 3）。
+- `Viso.toml`（project 的 manifest，或路径中名为 `Viso.toml` 的文件）只规范化 TOML 不赋予意义、也不含注释的空白：`=` 两侧各一个空格、行尾无空白、尾随注释前一个空格、连续空行折为一行、文件以一个换行结束；键、值、顺序、全部注释、数组与 inline table 的排版、缩进原样保留。写出前校验新旧文本是同一文档（同样的键、顺序与值），否则不改写。无法解析为 `C0003`。
 
 ### 16.4 JSON / exit codes
 
-`--json`：每个需要改写（`--check` 时为未格式化）的文件一条 `result`（`payload: {file, changed}`），无法解析的文件输出 `diagnostic`，最后 `summary`。Exit code：`--check` 发现未格式化文件或存在 parse diagnostic 时 1。
+`--json`：每个需要改写（`--check` 时为未格式化）的文件一条 `result`（`payload: {file, changed, line}`，`line` 为第一处不同的行），无法解析的文件输出 `diagnostic`，最后 `summary`。Exit code：`--check` 发现未格式化文件或存在 parse diagnostic 时 1（不带 `--check` 时 parse diagnostic 同样 1）。
 
 ---
 

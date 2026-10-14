@@ -21,7 +21,7 @@ use viso_dsl::{SyntaxKind, tokenize};
 
 use crate::source_map::OpenDoc;
 
-pub use crate::format::format;
+pub use viso_dsl::format::format;
 
 /// A resolved source location: just a byte range within the document. (The document
 /// identity is implicit — the engine works on one [`OpenDoc`] at a time; the

@@ -20,6 +20,7 @@ DEVELOP
   serve       Build a dev artifact for a browser and serve it, hot reloading it
 
 LANGUAGE
+  fmt         Lay out `.vs` sources in the one canonical format
   check       Check the project's `.vs` sources and `Viso.toml` without building
   schema      Show the typed schema of a widget, native library, function or type
 
@@ -651,6 +652,38 @@ Global options:
 
 Notes:
   `viso run web-gpu` serves the same and opens a browser too.
+
+$ viso fmt --help
+Lay out `.vs` sources in the one canonical format
+
+Usage: viso fmt [OPTIONS] [PATH]...
+
+Examples:
+  viso fmt             # format the project's sources
+  viso fmt src/app.vs  # one file
+  viso fmt --check     # fail on an unformatted file, writing nothing
+
+Arguments:
+  [PATH]...  The files and directories to format: the project's `src/` and `tests/` when none is named
+
+Options:
+      --check  Write nothing; fail when a file is not formatted
+  -h, --help   Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  A file that does not parse is reported and left as it is. Rust is `cargo fmt`'s.
 
 $ viso check --help
 Check the project's `.vs` sources and `Viso.toml` without building

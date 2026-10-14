@@ -171,6 +171,22 @@ pub struct Parse {
     pub errors: Vec<Diagnostic>,
 }
 
+impl Parse {
+    /// Every syntax diagnostic of the source in source order: the lexical
+    /// errors and warnings its tokens carry, and the structural errors.
+    pub fn diagnostics(&self) -> Vec<Diagnostic> {
+        let mut all: Vec<Diagnostic> = self
+            .root
+            .errors()
+            .into_iter()
+            .map(|(range, error)| error.to_diagnostic(range))
+            .collect();
+        all.extend(self.errors.iter().cloned());
+        all.sort_by_key(|d| d.primary.start());
+        all
+    }
+}
+
 /// Parses `tokens` (the full stream from the lexer, including trivia and the
 /// final [`SyntaxKind::Eof`]) over `source` into a lossless CST.
 pub fn parse(tokens: &[Token], source: &str) -> Parse {

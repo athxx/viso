@@ -3,10 +3,10 @@
 //! compilation unit, the formatted text parses to the same tree — node kinds
 //! and significant tokens — and formats to itself.
 
+use viso_dsl::format::format;
 use viso_dsl::syntax::SyntaxNode;
 use viso_dsl::syntax::grammar::{Entry, parse_entry};
 use viso_dsl::{SyntaxKind, tokenize};
-use viso_lsp::format::format;
 
 const SPEC: &str = include_str!("../../../Viso_DSL_1.0.md");
 const RATIONALE: &str = include_str!("../../../Viso_DSL_Rationale.md");

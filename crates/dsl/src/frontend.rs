@@ -216,7 +216,7 @@ impl Compiled {
 pub fn compile_fragment(source: &str) -> Compiled {
     let parse = parse_entry(&tokenize(source), source, Entry::ViewFragment);
     let root = SyntaxNode::new_root(parse.root.clone());
-    let mut diagnostics = parse.errors.clone();
+    let mut diagnostics = parse.diagnostics();
     let fragment =
         ViewFragment::cast(root.clone()).expect("the view-fragment entry roots a ViewFragment");
 
@@ -331,7 +331,7 @@ fn compile_unit(
     natives: Arc<Natives>,
     profile: TargetProfile,
 ) -> Compiled {
-    let mut diagnostics = parse.errors.clone();
+    let mut diagnostics = parse.diagnostics();
     if let Some(error) = origin
         .language
         .as_deref()
@@ -798,6 +798,15 @@ mod tests {
 
     fn codes(compiled: &Compiled) -> Vec<&'static str> {
         compiled.errors().map(|d| d.code).collect()
+    }
+
+    /// A lexical error the parse recovers from is still an error of the file.
+    #[test]
+    fn a_lexical_error_is_reported_even_when_the_file_parses() {
+        let source = "component App {\n    view {\n        Text { text: \"a\\q\"; }\n    }\n}\n";
+        let compiled = compile_file(source, &origin(&["app"]));
+        let escape = crate::syntax::LexError::InvalidEscape.code();
+        assert_eq!(codes(&compiled), [escape]);
     }
 
     #[test]

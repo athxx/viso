@@ -26,7 +26,6 @@
 
 pub mod actions;
 pub mod engine;
-pub mod format;
 pub mod index;
 pub mod position;
 pub mod rpc;

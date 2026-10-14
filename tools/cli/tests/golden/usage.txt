@@ -27,6 +27,7 @@ DEVELOP
   serve       Build a dev artifact for a browser and serve it, hot reloading it
 
 LANGUAGE
+  fmt         Lay out `.vs` sources in the one canonical format
   check       Check the project's `.vs` sources and `Viso.toml` without building
   schema      Show the typed schema of a widget, native library, function or type
 

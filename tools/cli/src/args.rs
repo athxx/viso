@@ -103,6 +103,8 @@ pub enum Command {
     Clean,
     /// Write the script that completes `viso` commands in a shell.
     Completion(CompletionArgs),
+    /// Lay out `.vs` sources in the one canonical format.
+    Fmt(FmtArgs),
     /// Show where each configuration value comes from, or validate it.
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -120,6 +122,18 @@ pub enum Command {
     Serve(ServeArgs),
     /// Run the project's headless tests of a domain.
     Test(TestArgs),
+}
+
+/// What `viso fmt` formats.
+#[derive(Debug, Args)]
+pub struct FmtArgs {
+    /// The files and directories to format: the project's `src/` and `tests/`
+    /// when none is named.
+    #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
+    pub paths: Vec<PathBuf>,
+    /// Write nothing; fail when a file is not formatted.
+    #[arg(long)]
+    pub check: bool,
 }
 
 /// What `viso completion` writes.
@@ -411,6 +425,7 @@ impl Command {
             Command::Check => "check",
             Command::Clean => "clean",
             Command::Completion(_) => "completion",
+            Command::Fmt(_) => "fmt",
             Command::Config(ConfigCommand::Show) => "config show",
             Command::Config(ConfigCommand::Get(_)) => "config get",
             Command::Config(ConfigCommand::Path) => "config path",

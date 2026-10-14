@@ -5,6 +5,7 @@
 //! renders the result and picks the exit code. It never reimplements a service.
 
 mod args;
+mod atomic;
 mod command;
 mod complete;
 mod context;

@@ -118,7 +118,7 @@ pub fn load_package_in(
             path,
             module,
             source,
-            diagnostics: parse.errors,
+            diagnostics: parse.diagnostics(),
         });
     }
 
@@ -169,8 +169,13 @@ pub fn load_package_in(
 }
 
 /// Appends every `.vs` file below `dir` to `out`, in path order, skipping hidden
-/// entries.
-fn collect_sources(dir: &Path, out: &mut Vec<PathBuf>, unreadable: &mut Vec<(PathBuf, io::Error)>) {
+/// entries; a directory that cannot be read goes to `unreadable`, one that does
+/// not exist nowhere.
+pub fn collect_sources(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    unreadable: &mut Vec<(PathBuf, io::Error)>,
+) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return,

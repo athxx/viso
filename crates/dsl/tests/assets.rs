@@ -147,10 +147,13 @@ fn every_misuse_of_an_asset_is_reported() {
         code == "E3713" && message.contains("string literal"),
         "{message}"
     );
-    let (code, message, _) = misuse("asset(\"\\{name}\")", none());
-    assert!(
-        code == "E3713" && message.contains("string literal"),
-        "{message}"
+    // Not interpolation, which the language does not have: an invalid escape,
+    // and a path that is not the literal it reads as.
+    let source = "export component C { state name = \"logo.png\"; view { Image { source: asset(\"\\{name}\"); } } }";
+    let compiled = compile_with(source, none());
+    assert_eq!(
+        compiled.errors().map(|d| d.code).collect::<Vec<_>>(),
+        ["E1205", "E3713"]
     );
     let (code, message, _) = misuse("asset(\"a.png\", \"b.png\")", none());
     assert!(code == "E3713" && message.contains("one path"), "{message}");

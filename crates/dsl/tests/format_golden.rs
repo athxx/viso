@@ -2,12 +2,12 @@
 //! idempotent, keeps the semantic token stream, and leaves the parse's diagnostic
 //! codes unchanged, broken input included.
 
+use viso_dsl::format::format;
 use viso_dsl::syntax::SyntaxNode;
 use viso_dsl::syntax::grammar::{Entry, parse_entry};
 use viso_dsl::{SyntaxKind, tokenize};
-use viso_lsp::format::format;
 
-#[path = "../../dsl/tests/golden/parser_cases.rs"]
+#[path = "golden/parser_cases.rs"]
 mod cases;
 
 use cases::CASES;

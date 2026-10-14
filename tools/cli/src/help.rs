@@ -16,7 +16,7 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("PROJECT", &["config"]),
     ("MOBILE DEV ENVIRONMENT", &["android", "ios"]),
     ("DEVELOP", &["run", "serve"]),
-    ("LANGUAGE", &["check", "schema"]),
+    ("LANGUAGE", &["fmt", "check", "schema"]),
     ("TEST / DEBUG", &["test", "game"]),
     ("DELIVERY", &[]),
     ("MAINTENANCE", &["clean", "completion"]),
@@ -130,6 +130,17 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             ("viso completion zsh", "the zsh script"),
             ("viso completion bash", "the bash script"),
             ("viso completion fish", "the fish script"),
+        ],
+    ),
+    (
+        "fmt",
+        &[
+            ("viso fmt", "format the project's sources"),
+            ("viso fmt src/app.vs", "one file"),
+            (
+                "viso fmt --check",
+                "fail on an unformatted file, writing nothing",
+            ),
         ],
     ),
     (
@@ -363,6 +374,10 @@ const NOTES: &[(&str, &str)] = &[
         "`Viso.toml` is the source of truth: `viso config` reads it and never writes it.\n\
          A value comes from the first of: a flag, a `VISO_*` variable, the profile's\n\
          table, the manifest, the default.",
+    ),
+    (
+        "fmt",
+        "A file that does not parse is reported and left as it is. Rust is `cargo fmt`'s.",
     ),
     (
         "game",

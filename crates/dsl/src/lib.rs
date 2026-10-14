@@ -22,6 +22,7 @@ pub mod ast;
 pub mod behavior;
 pub mod diag;
 pub mod edit;
+pub mod format;
 pub mod frontend;
 pub mod hir;
 pub mod hotreload;

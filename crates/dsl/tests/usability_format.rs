@@ -2,7 +2,7 @@
 //! formatter leaves each unchanged, so formatting a sample a person just
 //! wrote from them moves nothing they did not type.
 
-use viso_lsp::format::format;
+use viso_dsl::format::format;
 
 const SAMPLES: [(&str, &str); 11] = [
     (
