@@ -1,6 +1,7 @@
 //! The command grammar (`Viso_CLI.md` sections 1 and 6).
 
 use std::ffi::OsString;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
@@ -52,6 +53,9 @@ pub enum Command {
     Run(RunArgs),
     /// Show the typed schema of a widget, native library, function or type.
     Schema(SchemaArgs),
+    /// Build the project as a dev artifact for a browser and serve it,
+    /// hot reloading it as `viso run` does, without a browser of its own.
+    Serve(ServeArgs),
     /// Run the project's headless tests of a domain.
     Test(TestArgs),
 }
@@ -235,6 +239,46 @@ pub struct RunArgs {
     pub app_args: Vec<OsString>,
 }
 
+/// The web targets `viso serve` serves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum WebTarget {
+    /// The Viso renderer on WebGPU.
+    #[value(name = "web-gpu")]
+    Gpu,
+    /// DOM output.
+    #[value(name = "web-dom")]
+    Dom,
+    /// DOM with WebGPU islands.
+    #[value(name = "web-hybrid")]
+    Hybrid,
+}
+
+/// What `viso serve` serves, and where (section 15).
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    /// The web target: `[web] default_target` when omitted.
+    #[arg(value_enum)]
+    pub target: Option<WebTarget>,
+    /// The address to listen at; one off the loopback interface needs
+    /// `--lan`, and `0.0.0.0` with it listens at every interface.
+    #[arg(long, value_name = "IP")]
+    pub host: Option<IpAddr>,
+    /// The port, which alone will do; `[web.serve] port` or the next free
+    /// one after it when omitted.
+    #[arg(long, value_name = "N")]
+    pub port: Option<u16>,
+    /// Open the page in the system's browser.
+    #[arg(long)]
+    pub open: bool,
+    /// Serve the network too: other devices load the page, and connect to
+    /// the session, at this machine's private address.
+    #[arg(long)]
+    pub lan: bool,
+    /// Keep the dev session up but apply no edit to the app.
+    #[arg(long)]
+    pub no_hot_reload: bool,
+}
+
 /// What `viso schema` looks up (section 18.1).
 #[derive(Debug, Args)]
 pub struct SchemaArgs {
@@ -271,6 +315,7 @@ impl Command {
             },
             Command::Run(_) => "run",
             Command::Schema(_) => "schema",
+            Command::Serve(_) => "serve",
             Command::Test(_) => "test",
         }
     }
@@ -307,6 +352,34 @@ mod tests {
     #[test]
     fn the_grammar_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn serve_takes_a_web_target_and_where_to_listen() {
+        let cli = Cli::try_parse_from([
+            "viso",
+            "serve",
+            "web-gpu",
+            "--host",
+            "192.168.1.5",
+            "--lan",
+            "--port",
+            "9000",
+        ])
+        .unwrap();
+        assert!(matches!(
+            &cli.command,
+            Command::Serve(ServeArgs {
+                target: Some(WebTarget::Gpu),
+                host: Some(_),
+                port: Some(9000),
+                lan: true,
+                open: false,
+                ..
+            })
+        ));
+        assert!(Cli::try_parse_from(["viso", "serve", "ios"]).is_err());
+        assert!(Cli::try_parse_from(["viso", "serve", "--host", "lan.example"]).is_err());
     }
 
     #[test]

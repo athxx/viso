@@ -1,6 +1,11 @@
 //! The web dev server (`Viso_CLI.md`, `Viso_Hot_Reload.md`): it serves the dev build's web
-//! bundle on the loopback interface and carries the page's dev channel as a
-//! WebSocket at [`WEB_DEV_PATH`].
+//! bundle on the loopback interface — on the network too only when asked
+//! ([`Listen`]) — and carries the page's dev channel as a WebSocket at
+//! [`WEB_DEV_PATH`] of the address the page was loaded from.
+//!
+//! Every request must name, in its `Host`, an address the server listens at:
+//! an IP literal or `localhost`, never a domain name, so a page of another
+//! site cannot reach it by rebinding its name to this machine.
 //!
 //! The page that loads the app is written per request: the bundle's page
 //! with the launch variables (`visoLaunch`) the app reads before it starts —
@@ -22,7 +27,7 @@
 //! browser (`Cache-Control: no-store`).
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
@@ -31,7 +36,9 @@ use std::time::Duration;
 
 use viso_ende::JsonWriter;
 use viso_package::web;
-use viso_view::dev::wire::{DEV_RESTORE_ENV, MAX_FRAME, MAX_LOG, WEB_DEV_PATH, WEB_RELOAD_CLOSE};
+use viso_view::dev::wire::{
+    DEV_RESTORE_ENV, DEV_RUNTIME_ENV, MAX_FRAME, MAX_LOG, WEB_DEV_PATH, WEB_RELOAD_CLOSE,
+};
 
 use crate::dev::link::{self, Deliver, DevStream, Expect};
 
@@ -54,6 +61,163 @@ pub(crate) type PageLog = Arc<dyn Fn(&'static str, String) -> bool + Send + Sync
 /// The GUID RFC 6455 hashes a WebSocket key with.
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+/// Where the web dev server listens: the loopback interface alone unless the
+/// network was asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Listen {
+    /// The addresses bound, the one the session's own browser loads first.
+    ips: Vec<IpAddr>,
+    /// The address other devices load the page at, when the network was
+    /// asked for.
+    lan: Option<IpAddr>,
+    /// The port asked for, which alone will do; without one the configured
+    /// port or the next free one after it is taken.
+    port: Option<u16>,
+}
+
+/// Why a [`Listen`] cannot be had: the command line asked for something
+/// unsafe or contradictory, or this machine has no network to offer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ListenError {
+    Usage(String),
+    Environment(String),
+}
+
+impl Listen {
+    /// The loopback interface.
+    pub(crate) fn loopback() -> Listen {
+        Listen {
+            ips: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            lan: None,
+            port: None,
+        }
+    }
+
+    /// What `--host`, `--lan` and `--port` ask for. An address off the
+    /// loopback interface needs `--lan`; `--lan` alone binds the private
+    /// address this machine reaches its network by, beside the loopback one.
+    pub(crate) fn new(
+        host: Option<IpAddr>,
+        lan: bool,
+        port: Option<u16>,
+    ) -> Result<Listen, ListenError> {
+        let mut listen = Listen {
+            port,
+            ..Listen::loopback()
+        };
+        match (host, lan) {
+            (None, false) => {}
+            (Some(ip), false) if ip.is_loopback() => listen.ips = vec![ip],
+            (Some(ip), false) => {
+                return Err(ListenError::Usage(format!(
+                    "`--host {ip}` serves the network: add `--lan` to mean it"
+                )));
+            }
+            (Some(ip), true) if ip.is_loopback() => {
+                return Err(ListenError::Usage(format!(
+                    "`--lan` serves the network, but `--host {ip}` is a loopback address"
+                )));
+            }
+            (Some(ip), true) if ip.is_unspecified() => {
+                listen.ips = vec![ip];
+                listen.lan = Some(route_address().ok_or_else(|| {
+                    ListenError::Environment("this machine is on no network".into())
+                })?);
+            }
+            (Some(ip), true) => {
+                listen.ips = vec![loopback_of(ip), ip];
+                listen.lan = Some(ip);
+            }
+            (None, true) => {
+                let ip = route_address().ok_or_else(|| {
+                    ListenError::Environment("this machine is on no network".into())
+                })?;
+                if !is_private(ip) {
+                    return Err(ListenError::Environment(format!(
+                        "the address this machine reaches its network by, {ip}, is not a \
+                         private one; name the interface to serve with `--host <ip> --lan`"
+                    )));
+                }
+                listen.ips = vec![loopback_of(ip), ip];
+                listen.lan = Some(ip);
+            }
+        }
+        Ok(listen)
+    }
+
+    /// Whether a request's `Host` names an address the server listens at on
+    /// `port`: an IP literal bound (any, when all of them are), or
+    /// `localhost` when loopback is.
+    fn serves(&self, host: &str, port: u16) -> bool {
+        let Some((name, named_port)) = split_host(host) else {
+            return false;
+        };
+        if named_port != port {
+            return false;
+        }
+        if name.eq_ignore_ascii_case("localhost") {
+            return self
+                .ips
+                .iter()
+                .any(|ip| ip.is_loopback() || ip.is_unspecified());
+        }
+        let Ok(ip) = name.parse::<IpAddr>() else {
+            return false;
+        };
+        self.ips
+            .iter()
+            .any(|bound| *bound == ip || bound.is_unspecified())
+    }
+}
+
+/// A `Host` header's name and port (80 when it names none); IPv6 literals
+/// are bracketed.
+fn split_host(host: &str) -> Option<(&str, u16)> {
+    if let Some(rest) = host.strip_prefix('[') {
+        let (name, after) = rest.split_once(']')?;
+        return match after {
+            "" => Some((name, 80)),
+            port => Some((name, port.strip_prefix(':')?.parse().ok()?)),
+        };
+    }
+    match host.split_once(':') {
+        None => Some((host, 80)),
+        Some((name, port)) => Some((name, port.parse().ok()?)),
+    }
+}
+
+/// The loopback address of `ip`'s family.
+fn loopback_of(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+    }
+}
+
+/// The address this machine's route to a private network leaves from:
+/// connecting a UDP socket picks the interface and sends nothing.
+fn route_address() -> Option<IpAddr> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(10, 254, 254, 254), 9)).ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// Whether `ip` is a private, shared, link-local or unique-local address,
+/// one no other network routes to.
+fn is_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_private() || v4.is_link_local() || (a == 100 && (64..128).contains(&b))
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
+
 /// What the server serves.
 #[derive(Default)]
 struct Served {
@@ -70,60 +234,120 @@ struct Served {
 
 /// The web dev server.
 pub(crate) struct WebServer {
-    addr: SocketAddr,
+    listen: Arc<Listen>,
+    port: u16,
     served: Arc<Mutex<Served>>,
 }
 
+/// What every connection is answered with.
+struct Context {
+    listen: Arc<Listen>,
+    port: u16,
+    served: Arc<Mutex<Served>>,
+    expect: Expect,
+    deliver: Deliver,
+    log: PageLog,
+}
+
 impl WebServer {
-    /// Binds the loopback interface at `port`, or the next free port after
-    /// it, and serves on a thread; a dev channel's connection is checked
-    /// against `expect` and delivered to `deliver`, and what a page logs is
-    /// handed to `log`.
+    /// Binds every address of `listen` at its port, or at `configured` or
+    /// the next port after it free on all of them, and serves each on a
+    /// thread; a dev channel's connection is checked against `expect` and
+    /// delivered to `deliver`, and what a page logs is handed to `log`.
     pub(crate) fn bind(
-        port: u16,
+        listen: Listen,
+        configured: u16,
         expect: Expect,
         deliver: Deliver,
         log: PageLog,
     ) -> io::Result<WebServer> {
-        let listener = (0..PORT_TRIES)
-            .filter_map(|n| port.checked_add(n))
-            .find_map(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, port)).ok())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::AddrInUse,
-                    format!(
-                        "no free port from {port} to {}",
-                        port.saturating_add(PORT_TRIES - 1)
-                    ),
-                )
-            })?;
-        let addr = listener.local_addr()?;
-        let served = Arc::new(Mutex::new(Served::default()));
-        let state = Arc::clone(&served);
-        thread::Builder::new()
-            .name("viso-web-serve".into())
-            .spawn(move || {
-                for stream in listener.incoming().filter_map(Result::ok) {
-                    let state = Arc::clone(&state);
-                    let expect = expect.clone();
-                    let deliver = Arc::clone(&deliver);
-                    let log = Arc::clone(&log);
-                    let _ = thread::Builder::new()
-                        .name("viso-web-request".into())
-                        .spawn(move || respond(stream, addr, &state, &expect, &deliver, &log));
+        let (first, tries) = listen
+            .port
+            .map_or((configured, PORT_TRIES), |port| (port, 1));
+        let mut last = None;
+        let mut bound = None;
+        for port in (0..tries).filter_map(|n| first.checked_add(n)) {
+            // The first address picks the port when it is 0; the rest follow.
+            let all = TcpListener::bind((listen.ips[0], port)).and_then(|first| {
+                let port = first.local_addr()?.port();
+                let mut listeners = vec![first];
+                for ip in &listen.ips[1..] {
+                    listeners.push(TcpListener::bind((*ip, port))?);
                 }
-            })?;
-        Ok(WebServer { addr, served })
+                Ok((port, listeners))
+            });
+            match all {
+                Ok(all) => {
+                    bound = Some(all);
+                    break;
+                }
+                Err(error) => last = Some(error),
+            }
+        }
+        let Some((port, listeners)) = bound else {
+            let error = last.unwrap_or_else(|| io::ErrorKind::AddrInUse.into());
+            let at = if listen.port.is_some() {
+                format!("port {first}")
+            } else {
+                format!(
+                    "a port from {first} to {}",
+                    first.saturating_add(PORT_TRIES - 1)
+                )
+            };
+            return Err(io::Error::new(
+                error.kind(),
+                format!("cannot listen at {at}: {error}"),
+            ));
+        };
+        let listen = Arc::new(listen);
+        let served = Arc::new(Mutex::new(Served::default()));
+        for listener in listeners {
+            let cx = Arc::new(Context {
+                listen: Arc::clone(&listen),
+                port,
+                served: Arc::clone(&served),
+                expect: expect.clone(),
+                deliver: Arc::clone(&deliver),
+                log: Arc::clone(&log),
+            });
+            thread::Builder::new()
+                .name("viso-web-serve".into())
+                .spawn(move || {
+                    for stream in listener.incoming().filter_map(Result::ok) {
+                        let cx = Arc::clone(&cx);
+                        let _ = thread::Builder::new()
+                            .name("viso-web-request".into())
+                            .spawn(move || respond(stream, &cx));
+                    }
+                })?;
+        }
+        Ok(WebServer {
+            listen,
+            port,
+            served,
+        })
     }
 
-    /// Where it listens.
+    /// The address the session's own browser loads the page at.
     pub(crate) fn addr(&self) -> SocketAddr {
-        self.addr
+        let ip = self.listen.ips[0];
+        let ip = if ip.is_unspecified() {
+            loopback_of(ip)
+        } else {
+            ip
+        };
+        SocketAddr::new(ip, self.port)
     }
 
-    /// The page's address.
+    /// The page's address for the session's own browser.
     pub(crate) fn url(&self) -> String {
-        format!("http://{}/", self.addr)
+        format!("http://{}/", self.addr())
+    }
+
+    /// The address other devices load the page at, when the network was
+    /// asked for.
+    pub(crate) fn network_addr(&self) -> Option<SocketAddr> {
+        self.listen.lan.map(|ip| SocketAddr::new(ip, self.port))
     }
 
     /// Serves the bundle in `dir` of the app `bin`, its page launched with
@@ -216,14 +440,7 @@ fn read_head(reader: &mut impl BufRead) -> Option<Request> {
 }
 
 /// Answers one connection.
-fn respond(
-    stream: TcpStream,
-    addr: SocketAddr,
-    served: &Arc<Mutex<Served>>,
-    expect: &Expect,
-    deliver: &Deliver,
-    log: &PageLog,
-) {
+fn respond(stream: TcpStream, cx: &Context) {
     let _ = stream.set_read_timeout(Some(REQUEST_TIMEOUT));
     let Ok(read_half) = stream.try_clone() else {
         return;
@@ -233,13 +450,25 @@ fn respond(
         return;
     };
     let mut stream = stream;
+    let host = request.header("host").unwrap_or("");
+    if !cx.listen.serves(host, cx.port) {
+        let _ = answer(
+            &mut stream,
+            "421 Misdirected Request",
+            "text/plain",
+            b"",
+            false,
+        );
+        return;
+    }
     let path = web::request_path(&request.target).unwrap_or("");
     if format!("/{path}") == WEB_DEV_PATH {
-        return dev_channel(stream, reader, &request, addr, served, expect, deliver);
+        return dev_channel(stream, reader, &request, cx);
     }
     if format!("/{path}") == PAGE_PATH {
-        return page_channel(stream, reader, &request, addr, served, log);
+        return page_channel(stream, reader, &request, cx);
     }
+    let served = &cx.served;
     if request.method != "GET" && request.method != "HEAD" {
         let _ = answer(
             &mut stream,
@@ -261,7 +490,14 @@ fn respond(
             ),
             Some((_, bin)) if path.is_empty() || path == "index.html" => {
                 let bin = bin.clone();
-                let mut vars = served.vars.clone();
+                // The page's dev channel is at the address it was loaded
+                // from, not at one it is told.
+                let mut vars: Vec<_> = served
+                    .vars
+                    .iter()
+                    .filter(|(name, _)| *name != DEV_RUNTIME_ENV)
+                    .cloned()
+                    .collect();
                 // The restore is for the first page after the restart.
                 if std::mem::take(&mut served.restore) && !head {
                     vars.push((DEV_RESTORE_ENV, "1".to_owned()));
@@ -353,12 +589,14 @@ open();
 })();</script>
 "#;
 
-/// Answers a WebSocket upgrade from a page this server served; the stream
-/// switched to it, or `None` when it was refused.
-fn upgrade(mut stream: TcpStream, request: &Request, addr: SocketAddr) -> Option<TcpStream> {
-    let origin_ok = request.header("origin").is_some_and(|origin| {
-        origin == format!("http://{addr}") || origin == format!("http://localhost:{}", addr.port())
-    });
+/// Answers a WebSocket upgrade from a page this server served — its
+/// `Origin` the address the request names, which the server listens at; the
+/// stream switched to it, or `None` when it was refused.
+fn upgrade(mut stream: TcpStream, request: &Request) -> Option<TcpStream> {
+    let origin_ok = request
+        .header("origin")
+        .zip(request.header("host"))
+        .is_some_and(|(origin, host)| origin.strip_prefix("http://") == Some(host));
     let upgrade = request
         .header("upgrade")
         .is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
@@ -385,15 +623,14 @@ fn page_channel(
     stream: TcpStream,
     mut reader: BufReader<TcpStream>,
     request: &Request,
-    addr: SocketAddr,
-    served: &Arc<Mutex<Served>>,
-    log: &PageLog,
+    cx: &Context,
 ) {
-    let Some(stream) = upgrade(stream, request, addr) else {
+    let Some(stream) = upgrade(stream, request) else {
         return;
     };
     let writer = Arc::new(Mutex::new(stream));
-    lock(served).pages.push(Arc::downgrade(&writer));
+    lock(&cx.served).pages.push(Arc::downgrade(&writer));
+    let log = &cx.log;
     while let Ok(Some((opcode, payload))) = read_ws_frame(&mut reader) {
         match opcode {
             0x1 => {
@@ -430,20 +667,13 @@ fn page_line(payload: &[u8]) -> Option<(&'static str, String)> {
 
 /// Upgrades the connection to the dev channel's WebSocket when the page
 /// asking is one this server served, and serves the channel on it.
-fn dev_channel(
-    stream: TcpStream,
-    reader: BufReader<TcpStream>,
-    request: &Request,
-    addr: SocketAddr,
-    served: &Arc<Mutex<Served>>,
-    expect: &Expect,
-    deliver: &Deliver,
-) {
-    let Some(stream) = upgrade(stream, request, addr) else {
+fn dev_channel(stream: TcpStream, reader: BufReader<TcpStream>, request: &Request, cx: &Context) {
+    let Some(stream) = upgrade(stream, request) else {
         return;
     };
     let writer = Arc::new(Mutex::new(stream));
-    lock(served).sockets.push(Arc::downgrade(&writer));
+    lock(&cx.served).sockets.push(Arc::downgrade(&writer));
+    let (expect, deliver) = (&cx.expect, &cx.deliver);
     let socket = WebSocket {
         reader,
         writer,
@@ -808,6 +1038,62 @@ mod tests {
     }
 
     #[test]
+    fn the_network_is_served_only_when_asked_for() {
+        let v4 = |a, b, c, d| IpAddr::V4(Ipv4Addr::new(a, b, c, d));
+        let local = Listen::new(None, false, None).unwrap();
+        assert_eq!(local, Listen::loopback());
+        assert_eq!(local.lan, None);
+        assert!(matches!(
+            Listen::new(Some(v4(192, 168, 1, 5)), false, None),
+            Err(ListenError::Usage(_))
+        ));
+        assert!(matches!(
+            Listen::new(Some(v4(127, 0, 0, 1)), true, None),
+            Err(ListenError::Usage(_))
+        ));
+        let lan = Listen::new(Some(v4(192, 168, 1, 5)), true, Some(9000)).unwrap();
+        assert_eq!(lan.ips, [v4(127, 0, 0, 1), v4(192, 168, 1, 5)]);
+        assert_eq!((lan.port, lan.lan), (Some(9000), Some(v4(192, 168, 1, 5))));
+
+        assert!(lan.serves("127.0.0.1:9000", 9000));
+        assert!(lan.serves("localhost:9000", 9000));
+        assert!(lan.serves("192.168.1.5:9000", 9000));
+        assert!(
+            !lan.serves("192.168.1.6:9000", 9000),
+            "an address not bound"
+        );
+        assert!(!lan.serves("192.168.1.5:9001", 9000), "another port");
+        assert!(!lan.serves("dev.example:9000", 9000), "a name");
+        assert!(!lan.serves("", 9000));
+        assert!(
+            !local.serves("[::1]:8000", 8000),
+            "IPv6 loopback is not bound"
+        );
+        let mut any = Listen::loopback();
+        any.ips = vec![IpAddr::V6(Ipv6Addr::UNSPECIFIED)];
+        assert!(any.serves("[fd00::1]", 80) && any.serves("10.0.0.2", 80));
+        assert!(!any.serves("rebound.example", 80));
+    }
+
+    #[test]
+    fn private_addresses_are_the_ones_no_other_network_routes_to() {
+        for private in [
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.0.9",
+            "169.254.1.1",
+            "100.64.0.1",
+            "fd12::1",
+            "fe80::1",
+        ] {
+            assert!(is_private(private.parse().unwrap()), "{private}");
+        }
+        for public in ["8.8.8.8", "172.32.0.1", "100.128.0.1", "2001:db8::1"] {
+            assert!(!is_private(public.parse().unwrap()), "{public}");
+        }
+    }
+
+    #[test]
     fn a_page_logs_through_its_channel_and_reloads_on_a_new_build() {
         use viso_view::dev::wire::{BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint};
 
@@ -820,12 +1106,23 @@ mod tests {
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let log: PageLog = Arc::new(move |level, line| tx.send((level, line)).is_ok());
-        let server = WebServer::bind(0, expect, Arc::new(|_| true), log).unwrap();
+        let server =
+            WebServer::bind(Listen::loopback(), 0, expect, Arc::new(|_| true), log).unwrap();
 
         assert!(
             open_page(&server, "http://example.com").is_none(),
             "another origin"
         );
+        let mut rebound = TcpStream::connect(server.addr()).unwrap();
+        write!(
+            rebound,
+            "GET / HTTP/1.1\r\nHost: rebound.example:{}\r\n\r\n",
+            server.addr().port()
+        )
+        .unwrap();
+        let mut status = String::new();
+        BufReader::new(rebound).read_line(&mut status).unwrap();
+        assert!(status.contains(" 421 "), "a name, not an address: {status}");
         let mut page = open_page(&server, &format!("http://{}", server.addr())).expect("it opens");
 
         let line = b"error\tpanicked at src/main.rs";
@@ -842,6 +1139,70 @@ mod tests {
         let mut reload = [0u8; 8];
         page.read_exact(&mut reload).unwrap();
         assert_eq!(reload, *b"\x81\x06reload");
+    }
+
+    /// A page in a headless Chrome: its console and uncaught error reach the
+    /// log, and a new build reloads it although its app never opened a dev
+    /// channel.
+    #[test]
+    #[ignore = "opens the page in a headless Chrome"]
+    fn a_browser_page_forwards_its_console_and_reloads_without_an_app() {
+        use viso_view::dev::wire::{BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint};
+
+        let dir = std::env::temp_dir().join(format!("viso-page-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("chrome")).unwrap();
+        // An app that logs, then dies before it opens a dev channel.
+        std::fs::write(
+            dir.join("probe.js"),
+            "export default function init() { console.warn(\"page\", { n: 1 }); \
+             throw new Error(\"boom\"); }",
+        )
+        .unwrap();
+        let expect = Expect {
+            token: "token".into(),
+            dev_session: DevSessionId(1),
+            build_id: BuildId(2),
+            project: ProjectFingerprint(3),
+            schema: SchemaFingerprint(4),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let log: PageLog = Arc::new(move |level, line| tx.send((level, line)).is_ok());
+        let server =
+            WebServer::bind(Listen::loopback(), 0, expect, Arc::new(|_| true), log).unwrap();
+        server.serve(dir.clone(), "probe".into(), Vec::new(), false);
+
+        let chrome = std::env::var_os("VISO_E2E_CHROME").map_or_else(
+            || {
+                if cfg!(target_os = "macos") {
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".into()
+                } else {
+                    "google-chrome".into()
+                }
+            },
+            PathBuf::from,
+        );
+        let mut page = Command::new(chrome)
+            .args(["--headless=new", "--no-first-run"])
+            .arg(format!("--user-data-dir={}", dir.join("chrome").display()))
+            .arg(server.url())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Chrome runs");
+        let next = || rx.recv_timeout(Duration::from_secs(60)).expect("a line");
+        let lines = [next(), next()];
+        server.reload_pages();
+        let again = next();
+        let _ = page.kill();
+        let _ = page.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(lines[0], ("warn", "page {\"n\":1}".to_owned()));
+        assert_eq!(lines[1].0, "error");
+        assert!(lines[1].1.contains("boom"), "{:?}", lines[1]);
+        assert_eq!(again, lines[0], "the page loaded again");
     }
 
     #[test]

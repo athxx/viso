@@ -68,6 +68,7 @@ pub fn run(cli: &Cli) -> u8 {
         Command::Game(command) => game::run(&cli.global, command, &mut out),
         Command::Run(args) => run::run(&cli.global, args, &mut out),
         Command::Schema(args) => schema::run(args, &mut out),
+        Command::Serve(args) => run::serve(&cli.global, args, &mut out),
         Command::Test(args) => test::run(&cli.global, args, &mut out),
     };
     out.finish(code)

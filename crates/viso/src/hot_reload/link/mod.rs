@@ -21,6 +21,7 @@
 use std::collections::hash_map::RandomState;
 #[cfg(not(target_arch = "wasm32"))]
 use std::hash::{BuildHasher, Hasher};
+#[cfg(not(target_arch = "wasm32"))]
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,13 +40,15 @@ use viso_render::asset::ResourceId;
 use viso_text::font_format;
 use viso_ui::{AssetBytes, AssetPayload};
 use viso_view::dev::wire::{
-    BlobRef, Blobs, BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
-    DEV_TOKEN_ENV, DevSessionId, Domains, FileId, GameQuery, HostMessage, Message, PatchBundle,
-    PatchSection, RestoreBundle, Revision, RuntimeHello, RuntimeIdentity, RuntimeMessage,
-    RuntimeSessionId, RuntimeTarget, SchemaFingerprint, WindowGeometry, WireError, blob_chunks,
+    BlobRef, Blobs, BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_SESSION_ENV, DEV_TOKEN_ENV,
+    DevSessionId, Domains, FileId, GameQuery, HostMessage, Message, PatchBundle, PatchSection,
+    RestoreBundle, Revision, RuntimeHello, RuntimeIdentity, RuntimeMessage, RuntimeSessionId,
+    RuntimeTarget, SchemaFingerprint, WindowGeometry, WireError, blob_chunks,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use viso_view::dev::wire::{FrameError, Reject, accept_host, read_body, read_frame, write_frame};
+use viso_view::dev::wire::{
+    DEV_RUNTIME_ENV, FrameError, Reject, accept_host, read_body, read_frame, write_frame,
+};
 
 /// What this runtime runs on, for the host's per-target work.
 const RUNTIME_TARGET: RuntimeTarget = if cfg!(target_os = "ios") {
@@ -124,6 +127,7 @@ pub(crate) use web::DevLink;
 /// The address and hello of the link `viso run` asked for through the launch
 /// variables, if any, for a runtime compiled against `schema` that applies
 /// `capabilities`. An address that is not loopback is refused.
+#[cfg(not(target_arch = "wasm32"))]
 fn launch_hello(
     schema: SchemaFingerprint,
     capabilities: Domains,
@@ -132,7 +136,13 @@ fn launch_hello(
     if !addr.ip().is_loopback() {
         return None;
     }
-    let hello = RuntimeHello {
+    Some((addr, launch_identity(schema, capabilities)?))
+}
+
+/// The hello of the launch `viso run` asked for through the launch
+/// variables, if any: its token, session and build.
+fn launch_identity(schema: SchemaFingerprint, capabilities: Domains) -> Option<RuntimeHello> {
+    Some(RuntimeHello {
         protocol_version: DEV_PROTOCOL_VERSION,
         token: launch_var(DEV_TOKEN_ENV)?,
         dev_session: DevSessionId::from_hex(&launch_var(DEV_SESSION_ENV)?)?,
@@ -143,8 +153,7 @@ fn launch_hello(
         capabilities,
         target: RUNTIME_TARGET,
         shader_lang: <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG,
-    };
-    Some((addr, hello))
+    })
 }
 
 /// The identity the host accepted `hello` under.

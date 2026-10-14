@@ -55,10 +55,15 @@ pub struct Run {
 impl Run {
     /// `viso run <args> --json` with `envs` set.
     pub fn start(app: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Run {
+        Run::command(app, "run", args, envs)
+    }
+
+    /// `viso <subcommand> <args> --json` with `envs` set.
+    pub fn command(app: &Path, subcommand: &str, args: &[&str], envs: &[(&str, &Path)]) -> Run {
         let target = app.parent().expect("the scratch directory").join("target");
         let mut command = Command::new(env!("CARGO_BIN_EXE_viso"));
         command
-            .arg("run")
+            .arg(subcommand)
             .args(args)
             .arg("--json")
             .current_dir(app)

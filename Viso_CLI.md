@@ -1152,7 +1152,7 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
   - Rust 改动的 warm restart 在新 artifact 打包完成后才停止旧 app；
   - `web-dom`/`web-hybrid` 以 `TargetUnavailable` 退出；
 - `viso ios simulator` / `viso android emulator` 的 `list|create|start|stop|delete`（§11.4、§12.4）：profile 存于 `~/.viso/ios/simulators/<id>.toml` / `~/.viso/android/emulators/<id>.toml`（`preset`、`system`、`device`，`$VISO_HOME` 可改 root）；iOS 以最新已安装 runtime 与对应 iPhone/iPad 机型创建 Simulator，Android 不依赖 `avdmanager`，直接按最新（或 `--api` 指定）已安装 system image 写出 AVD `viso_<id>`；`start --no-window` 无窗口启动 emulator；`list` 列出 `NAME PROFILE STATUS SYSTEM`；
-- 尚未实现：`viso android|ios list|use|doctor`、`viso serve`、web LAN 暴露、§13.7 中 `--no-hot-reload`、`--device`、`--browser` 之外的 options、`artifact` 事件。
+- 尚未实现：`viso android|ios list|use|doctor`、`viso serve --https`、§13.7 中 `--no-hot-reload`、`--device`、`--browser` 之外的 options、`artifact` 事件。
 
 ---
 
@@ -1271,13 +1271,15 @@ print local/network URL
 
 `serve` 与 `viso run web-*` 共用 Web Serve Service 与 Dev Session；区别是 `serve` 不启动浏览器开发 session（`--open` 只打开 URL），用于 LAN/HTTPS/外部浏览器访问。
 
+已实现（`--https`/`--cert`/`--key` 除外）：`--lan` 不给 `--host` 时绑定 loopback 与本机通往网络的那个私有地址（10/8、172.16/12、192.168/16、100.64/10、169.254/16、fc00::/7、fe80::/10）；该地址不是私有地址时 exit 3，要求以 `--host <ip> --lan` 指明接口；`--host 0.0.0.0 --lan` 监听全部接口；`--lan` 配 loopback `--host` 是 usage error。每个请求的 `Host` 必须是 server 所绑定的 IP 字面量或 `localhost`（`0.0.0.0` 时任一 IP 字面量）且端口一致，否则 `421`，域名一律拒绝，以挡 DNS rebinding；WebSocket 的 `Origin` 必须等于 `http://` 加该 `Host`。页面的 dev channel 连接页面自己的来源地址，不再经 launch 变量给出地址。LAN 下 human 输出两个地址并警告：网络上任何设备都能加载页面、驱动该 session；web-gpu 另警告其他设备的浏览器只对 secure context 提供 WebGPU，纯 HTTP 页面不是。`--json` 的 `server` event 在 LAN 下给网络地址与 `lan:true`。
+
 ### 15.2 Port selection
 
 若默认端口被占用：
 
 - human mode：自动选择相邻空闲端口并提示；
 - `--json`：同样自动选择，并输出一条 `server` event（`url`、`host`、`port`）；
-- 显式 `--port` 被占用：报错（exit 3），不静默改端口。
+- 显式 `--port` 被占用：报错（exit 3），不静默改端口；`[web.serve] port` 与默认端口从该端口起取后续 100 个中第一个在所有绑定地址上都空闲的。
 
 `--json` 事件：`progress`、`diagnostic`、`artifact`、`server`、`dev`、`log`、`summary`。Exit code 同 §13.9（无 app crash 分支）。
 

@@ -237,7 +237,7 @@ fn android_emulator() {
 struct Page(Child);
 
 impl Page {
-    fn open(url: &str, profile: &Path) -> Page {
+    fn open(url: &str, profile: &Path, args: &[String]) -> Page {
         let chrome = std::env::var_os("VISO_E2E_CHROME").map_or_else(
             || {
                 if cfg!(target_os = "macos") {
@@ -251,6 +251,7 @@ impl Page {
         let child = Command::new(chrome)
             .args(["--headless=new", "--enable-unsafe-webgpu", "--no-first-run"])
             .arg(format!("--user-data-dir={}", profile.display()))
+            .args(args)
             .arg(url)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -280,6 +281,33 @@ fn web() {
     let at = server.find("\"url\":\"").expect("a url") + "\"url\":\"".len();
     let url = server[at..].split('"').next().expect("the url").to_owned();
     let scratch = app.parent().expect("the scratch directory").join("chrome");
-    let _page = Page::open(&url, &scratch);
+    let _page = Page::open(&url, &scratch, &[]);
+    hot_reload(run, &app, false);
+}
+
+/// `viso serve web-gpu --lan`: a page loaded at this machine's network
+/// address, as another device would, connects and takes the patch. Chrome
+/// treats that origin as secure, which plain HTTP is not, for WebGPU.
+#[test]
+#[ignore = "builds for the browser and drives Chrome over the machine's network address"]
+fn web_lan() {
+    let app = project("device_web_lan");
+    let run = Run::command(&app, "serve", &["web-gpu", "--lan"], &[]);
+    let server = run.until(Duration::from_secs(1800), "the dev server", |line| {
+        line.contains("\"type\":\"server\"")
+    });
+    assert!(server.contains("\"lan\":true"), "{server}");
+    let at = server.find("\"url\":\"").expect("a url") + "\"url\":\"".len();
+    let url = server[at..].split('"').next().expect("the url").to_owned();
+    assert!(!url.contains("127.0.0.1"), "the network address: {url}");
+    let scratch = app.parent().expect("the scratch directory").join("chrome");
+    let origin = url.trim_end_matches('/');
+    let _page = Page::open(
+        &url,
+        &scratch,
+        &[format!(
+            "--unsafely-treat-insecure-origin-as-secure={origin}"
+        )],
+    );
     hot_reload(run, &app, false);
 }

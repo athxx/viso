@@ -319,12 +319,23 @@ impl Output {
         }
     }
 
-    /// Reports the dev server's address: a `server` event, or a line on
-    /// stderr.
-    pub fn server(&mut self, url: &str, host: &str, port: u16, lan: bool) {
+    /// Whether the output is for a person rather than a `--json` stream.
+    pub fn human(&self) -> bool {
+        matches!(self.form, Form::Human)
+    }
+
+    /// Reports the dev server's addresses, its own and the one other devices
+    /// load the page at: a `server` event naming the latter when there is
+    /// one, or a line on stderr.
+    pub fn server(&mut self, local: std::net::SocketAddr, network: Option<std::net::SocketAddr>) {
         match &mut self.form {
-            Form::Json(stream) => stream.server(url, host, port, lan),
-            Form::Human => eprintln!("[viso] serving at {url}"),
+            Form::Json(stream) => stream.server(network.unwrap_or(local), network.is_some()),
+            Form::Human => match network {
+                None => eprintln!("[viso] serving at http://{local}/"),
+                Some(network) => {
+                    eprintln!("[viso] serving at http://{local}/ and http://{network}/")
+                }
+            },
         }
     }
 

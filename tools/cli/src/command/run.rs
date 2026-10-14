@@ -50,7 +50,7 @@ use super::{
     ENV_DEV_CHANNEL, ENV_NO_EXECUTABLE, ENVIRONMENT, INTERRUPTED, RUN_APP_FAILED, RUNTIME, SUCCESS,
     USAGE,
 };
-use crate::args::{Global, RunArgs, RunTarget};
+use crate::args::{Global, RunArgs, RunTarget, ServeArgs, WebTarget};
 use crate::deploy::{self, App, Deploy, Ended, Lines, Vars, web};
 use crate::dev::build::{BuildCommand, BuildEvent, BuildFailure, RustBuild};
 use crate::dev::cargo::RustScope;
@@ -156,6 +156,92 @@ fn misplaced(args: &RunArgs, platform: Option<Platform>, target: Target) -> Opti
 }
 
 pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
+    session(global, args, web::Listen::loopback(), None, out)
+}
+
+/// `viso serve`: the session `viso run` holds with a web target, its page
+/// served where `--host`, `--lan` and `--port` ask, and opened only with
+/// `--open`.
+pub fn serve(global: &Global, args: &ServeArgs, out: &mut Output) -> u8 {
+    let listen = match web::Listen::new(args.host, args.lan, args.port) {
+        Ok(listen) => listen,
+        Err(web::ListenError::Usage(why)) => {
+            out.failure(CLI_USAGE, &why, &[]);
+            return USAGE;
+        }
+        Err(web::ListenError::Environment(why)) => {
+            out.failure(ENV_DEV_CHANNEL, &why, &[]);
+            return ENVIRONMENT;
+        }
+    };
+    let target = match args.target {
+        Some(target) => target,
+        None => match default_web_target(global, out) {
+            Ok(target) => target,
+            Err(code) => return code,
+        },
+    };
+    let run = RunArgs {
+        target: Some(match target {
+            WebTarget::Gpu => RunTarget::WebGpu,
+            WebTarget::Dom => RunTarget::WebDom,
+            WebTarget::Hybrid => RunTarget::WebHybrid,
+        }),
+        device: None,
+        browser: None,
+        no_hot_reload: args.no_hot_reload,
+        app_args: Vec::new(),
+    };
+    session(global, &run, listen, Some(args.open), out)
+}
+
+/// The project's `[web] default_target`, for a `viso serve` that names none.
+fn default_web_target(global: &Global, out: &mut Output) -> Result<WebTarget, u8> {
+    let cwd = std::env::current_dir().map_err(|error| {
+        out.failure(
+            ENV_CURRENT_DIR,
+            &format!("cannot read the current directory: {error}"),
+            &[],
+        );
+        ENVIRONMENT
+    })?;
+    let flags = Overrides {
+        profile: Some(Profile::Dev),
+        ..Overrides::default()
+    };
+    let (project, _) =
+        viso_project::load(global.project.as_deref(), &cwd, ArtifactKind::Build, &flags).map_err(
+            |diagnostics| {
+                for diagnostic in &diagnostics {
+                    config_in_its_file(out, diagnostic);
+                }
+                failure_code(&diagnostics)
+            },
+        )?;
+    match project.manifest.web.default_target.map(|t| t.value) {
+        Some(Target::WebGpu) => Ok(WebTarget::Gpu),
+        Some(Target::WebDom) => Ok(WebTarget::Dom),
+        Some(Target::WebHybrid) => Ok(WebTarget::Hybrid),
+        _ => {
+            out.failure(
+                CLI_USAGE,
+                "`viso serve` serves a web target: name one, or set `[web] default_target`",
+                &["`viso serve web-gpu`".to_string()],
+            );
+            Err(USAGE)
+        }
+    }
+}
+
+/// The session of `viso run` and `viso serve`: a page's server listens as
+/// `listen` asks and is opened as `open` says, by `--browser` when `None`.
+fn session(
+    global: &Global,
+    args: &RunArgs,
+    listen: web::Listen,
+    open: Option<bool>,
+    out: &mut Output,
+) -> u8 {
     let (target, platform) = target_of(args);
     if let Some(why) = misplaced(args, platform, target) {
         out.failure(CLI_USAGE, &why, &[]);
@@ -326,12 +412,14 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
                     .is_ok()
                 })
             };
-            match web::WebServer::bind(port, expect.clone(), Arc::clone(&deliver), log) {
+            match web::WebServer::bind(listen, port, expect.clone(), Arc::clone(&deliver), log) {
                 Ok(server) => Deploy::Browser {
                     server,
                     browser: args.browser.clone().filter(|b| b != "none"),
-                    open: args.browser.as_deref() != Some("none")
-                        && (!global.json || args.browser.is_some()),
+                    open: open.unwrap_or_else(|| {
+                        args.browser.as_deref() != Some("none")
+                            && (!global.json || args.browser.is_some())
+                    }),
                     launched: false,
                 },
                 Err(error) => {
@@ -502,8 +590,23 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     };
     device_event(out, "launched");
     if let Deploy::Browser { server, .. } = &deploy {
-        let addr = server.addr();
-        out.server(&server.url(), &addr.ip().to_string(), addr.port(), false);
+        out.server(server.addr(), server.network_addr());
+        if server.network_addr().is_some() {
+            out.log(
+                "warn",
+                "tool",
+                "the page is served to the network: any device on it can load it and \
+                 drive this session",
+            );
+            if target == Target::WebGpu {
+                out.log(
+                    "warn",
+                    "tool",
+                    "another device's browser offers WebGPU only to a secure context, which \
+                     a page over plain HTTP is not",
+                );
+            }
+        }
     }
 
     let mut threads = pipe_logs(&mut app, &tx);

@@ -1,7 +1,8 @@
 //! The dev channel of a runtime in a browser: a WebSocket to the web dev
-//! server that served the page, at [`WEB_DEV_PATH`] on the dev channel's
-//! loopback address, carrying the frames the TCP channel carries, one or
-//! more per binary message.
+//! server that served the page, at [`WEB_DEV_PATH`] of the address the page
+//! was loaded from — loopback, or the network the server was asked to serve —
+//! carrying the frames the TCP channel carries, one or more per binary
+//! message.
 //!
 //! The browser has no threads to read or write on: the socket's callbacks
 //! run on the loop's thread, assemble frames, decode each as the TCP reader
@@ -26,7 +27,7 @@ use viso_view::dev::wire::{
     write_frame,
 };
 
-use super::{Frame, Incoming, Outgoing, host_frame, identity, launch_hello, write_outgoing};
+use super::{Frame, Incoming, Outgoing, host_frame, identity, launch_identity, write_outgoing};
 
 /// What the socket's callbacks and the loop share.
 struct Shared {
@@ -61,8 +62,9 @@ impl DevLink {
         schema: SchemaFingerprint,
         capabilities: Domains,
     ) -> Option<Self> {
-        let (addr, hello) = launch_hello(schema, capabilities)?;
-        let socket = WebSocket::new(&format!("ws://{addr}{WEB_DEV_PATH}")).ok()?;
+        let hello = launch_identity(schema, capabilities)?;
+        let host = web_sys::window()?.location().host().ok()?;
+        let socket = WebSocket::new(&format!("ws://{host}{WEB_DEV_PATH}")).ok()?;
         socket.set_binary_type(BinaryType::Arraybuffer);
         let shared = Rc::new(RefCell::new(Shared {
             hello,

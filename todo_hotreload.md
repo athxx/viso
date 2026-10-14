@@ -1079,13 +1079,21 @@ differ.
       Rust/wasm change rebuilds and restores from a snapshot.
 - [x] The app never watches files on mobile/web (the in-app watcher is already gone
       after H1).
-- [ ] Web: LAN opt-in for the dev server (`viso serve web-* --lan`, §46).
+- [x] Web: LAN opt-in for the dev server (`viso serve web-* --lan`, §46): `viso serve`
+      with `--host`/`--port`/`--open`/`--lan`/`--no-hot-reload`, loopback plus the
+      machine's private address, `Host` checked against what is bound, the page's dev
+      channel at its own origin.
+- [ ] Web: `viso serve --https --cert --key` (another device's browser offers WebGPU
+      only to a secure context; a LAN page over plain HTTP gets none).
 - [x] Web: a page that crashed before its dev channel opened reloads when a newer
       build is served (the page's own channel at `/__viso/page`).
 - [ ] iOS simulator: an app that panics ends the session with exit 5 (check what
       `simctl launch --console-pty` exits with).
 - [x] Web: the page's console, uncaught errors and rejections reach the session as
       `log` over the page's own channel.
+- [ ] Web: the app's own `print!`/`eprintln!` reach the session: std discards them on
+      `wasm32-unknown-unknown`, so they need a `viso` log path that writes the page's
+      console (and stdout/stderr natively).
 - [ ] `view!` builds the host platform stack for every cross build (the proc macro
       reaches `viso-platform` through `viso-dsl` → `viso-ui`); cut that edge.
 - [x] Android fake: `deploy::android_fake` drives the deploy layer against scripted

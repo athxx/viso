@@ -1547,7 +1547,7 @@ control inspector
 - malformed Ende payload bounded decode；
 - Release artifact 根本没有此 endpoint。
 
-当前实现：`viso run` 在 `127.0.0.1` 临时端口监听，经 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD` 交给 app；app 拒绝非 loopback 地址；handshake（§34）绑定 token、dev session、runtime session、build 与编译器 schema，host 的 `HostHello` 带 project fingerprint；host 为每个接受的 runtime 起一条 writer 线程，session 从不阻塞在读得慢的 app 上；每个 patch 再按 session、launch 与 build 检查（§36）；所有解码有界（§35），帧长上限 4 MiB。Android emulator 经 `adb reverse` 连同一 loopback listener；web 的 dev server 同样只绑定 `127.0.0.1`，WebSocket 只接受它自己页面的 `Origin`，LAN 暴露尚未提供（须显式 opt-in）。
+当前实现：`viso run` 在 `127.0.0.1` 临时端口监听，经 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD` 交给 app；app 拒绝非 loopback 地址；handshake（§34）绑定 token、dev session、runtime session、build 与编译器 schema，host 的 `HostHello` 带 project fingerprint；host 为每个接受的 runtime 起一条 writer 线程，session 从不阻塞在读得慢的 app 上；每个 patch 再按 session、launch 与 build 检查（§36）；所有解码有界（§35），帧长上限 4 MiB。Android emulator 经 `adb reverse` 连同一 loopback listener；web 的 dev server 默认同样只绑定 `127.0.0.1`；LAN 只经 `viso serve --lan` 显式 opt-in（绑定 loopback 与本机私有地址，非私有地址须 `--host` 指明），每个请求的 `Host` 必须是所绑定的 IP 字面量或 `localhost`（挡 DNS rebinding），WebSocket 只接受 `Origin` 与该 `Host` 一致的页面；页面中带有 session token，LAN 下网络上任何设备都能加载页面并以 runtime 身份连入该 session，CLI 对此给出警告。
 
 ---
 
