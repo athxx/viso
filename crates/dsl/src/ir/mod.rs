@@ -461,6 +461,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let mut children = Vec::new();
         // Where the node's own `padding` is written, for the diagnostics.
         let mut padding_at = None;
+        let mut role = None;
         let own: Vec<ViewItem> = body.iter().flat_map(|b| b.members()).collect();
         let styled = self.styled(&type_name, &own, instance, &mut style, &mut pending);
         // The caller's overrides replace the node's own bindings of the same
@@ -484,6 +485,12 @@ impl<'a, 'l> Lowering<'a, 'l> {
                         let at = value.syntax().text_range();
                         if name == "padding" {
                             padding_at = Some(at);
+                        }
+                        if name == "semantics.role" {
+                            match authored_role(&value) {
+                                Ok(authored) => role = Some(authored),
+                                Err(reason) => self.unmount((at, reason)),
+                            }
                         }
                         if control.input(&name).is_some() {
                             control_reads.push((name, at, instance));
@@ -586,6 +593,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             handlers,
             control_reads,
             styled,
+            role,
             children,
             origin,
             instance: self.instance(),
@@ -650,6 +658,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             handlers: Vec::new(),
             control_reads: Vec::new(),
             styled: None,
+            role: None,
             children: Vec::new(),
             origin,
             instance: self.instance(),
@@ -1165,6 +1174,25 @@ fn fold_axis(value: &Expr) -> Option<AxisIr> {
         "column" | "col" => Some(AxisIr::Column),
         _ => None,
     }
+}
+
+/// The role a `semantics.role` value names: a constant `Role::<variant>`.
+fn authored_role(value: &Expr) -> Result<viso_ui::Role, String> {
+    let segments: Vec<String> = PathExpr::cast(value.syntax().clone())
+        .map(|path| path.segments().map(|t| t.text()).collect())
+        .unwrap_or_default();
+    let [owner, variant] = segments.as_slice() else {
+        return Err("`semantics.role` is a constant `Role::…`".to_string());
+    };
+    if owner != "Role" {
+        return Err("`semantics.role` is a constant `Role::…`".to_string());
+    }
+    viso_view::source_role(variant).ok_or_else(|| {
+        format!(
+            "`Role` has no variant `{variant}`; it is one of {}",
+            viso_view::SOURCE_ROLES.join(", ")
+        )
+    })
 }
 
 /// The single identifier a path expression names (`row`, `fill`), or `None` when

@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 
 use viso_ende::JsonWriter;
 use viso_package::android::Sdk;
-use viso_project::{ArtifactKind, LockKind, Profile, ProjectFingerprint, Target};
+use viso_project::{
+    ArtifactKind, Layout, LockGuard, LockKind, Profile, Project, ProjectFingerprint, Target,
+};
 
 use super::check;
 use crate::args::{BuildArgs, BuildTarget};
@@ -55,130 +57,20 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
         (true, _) => Some(Profile::Release),
         (false, _) => None,
     };
-    if let Err(diagnostic) = target.require_available() {
-        out.config(None, &diagnostic);
-        return diagnostic.code.exit_code();
-    }
-    if target == Target::Ios && !cfg!(target_os = "macos") {
-        return out.failure(ENV_DEVICE, "the iOS Simulator SDK is on macOS only", &[]);
-    }
-    let Loaded {
+    let Built {
+        staged,
         project,
-        resolved,
         layout,
-    } = match ctx.load_as(target, ArtifactKind::Build, profile, out) {
-        Ok(loaded) => loaded,
-        Err(code) => return code,
-    };
-    let config = resolved.config;
-    let profile = config.profile.value;
-
-    // Nothing is compiled from sources that do not check.
-    let checked = match check::package(project, out) {
-        Ok(checked) => checked,
-        Err(code) => return code,
-    };
-    let code = checked.code(out);
-    if code != SUCCESS {
-        return code;
-    }
-    let project = checked.project;
-    let root = project.root.clone();
-    if !root.join("Cargo.toml").is_file() {
-        return out.failure(
-            ENV_CARGO_MANIFEST,
-            &format!(
-                "no `Cargo.toml` next to `{}`",
-                project.manifest_path().display()
-            ),
-            &["`viso build` builds the Cargo package at the project root".to_owned()],
-        );
-    }
-    let sdk = match target {
-        Target::Android => match Sdk::locate() {
-            Ok(sdk) => Some(sdk),
-            Err(why) => return out.failure(ENV_DEVICE, &why, &[]),
-        },
-        _ => None,
-    };
-
-    let _lock = match ctx.lock(&layout, LockKind::BuildCache { target }, out) {
-        Ok(lock) => lock,
-        Err(code) => return code,
-    };
-    let fingerprint = match ProjectFingerprint::compute(&root) {
-        Ok(fingerprint) => fingerprint,
-        Err(diagnostic) => {
-            in_its_file(out, &diagnostic);
-            return diagnostic.code.exit_code();
-        }
-    };
-    let toolchain = build::toolchain();
-    let identity = config.build_id(fingerprint, &toolchain);
-    let build_id = identity.to_hex();
-    let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-    let manifest = canonical.join("Cargo.toml");
-    let plan = build::rust_plan(target, profile, sdk.as_ref());
-    let android = match sdk {
-        Some(sdk) => {
-            let scope = match RustScope::read(&manifest, plan.target.as_deref(), &ctx.cargo_args())
-            {
-                Ok(scope) => scope,
-                Err(why) => return out.failure(ENV_CARGO, &why, &[]),
-            };
-            match deploy::android_shell(&scope.linked) {
-                Ok(shell) => Some((sdk, shell)),
-                Err(why) => return out.failure(ENV_DEVICE, &why, &[]),
-            }
-        }
-        None => None,
-    };
-    // A headless build is for tests and tooling, which reload nothing.
-    let mut features = plan.features;
-    if config.dev_runtime() == viso_project::DevRuntime::Present && target != Target::Headless {
-        features.push(cargo::HOT_RELOAD);
-    }
-    let job = Job {
-        cargo: BuildCommand {
-            cargo: cargo::program(),
-            manifest,
-            quiet: ctx.global.quiet,
-            piped: ctx.global.json,
-            target_dir: ctx.target_dir(),
-            cargo_args: ctx.cargo_args(),
-            build_args: ctx.cargo_build_args(),
-            profile,
-            profile_args: cargo::profile_args(profile, &config.settings, target),
-            features,
-            target: plan.target,
-            rustc_args: plan.rustc_args,
-            env: plan.env,
-            package: None,
-            lock: None,
-        },
-        target,
         profile,
-        web: config.settings.web,
-        dir: layout.build(identity),
-        android,
+        build_id,
+        toolchain,
+        started,
+        _lock,
+    } = match stage(ctx, target, profile, Check::Run, out) {
+        Ok(built) => built,
+        Err(code) => return code,
     };
-    out.verbose(|| job.cargo.describe());
-    out.progress("build", &format!("building {target} ({profile})"));
-
-    interrupt::catch();
-    let started = Instant::now();
-    let staging = job.dir.join("out");
-    let staged = match produce(job, &canonical, out) {
-        Ok(staged) => staged,
-        Err(failure) => {
-            // A failed or cancelled build leaves no output that looks whole.
-            let _ = std::fs::remove_dir_all(&staging);
-            return failed(out, &failure);
-        }
-    };
-    if interrupt::count() > 0 {
-        return INTERRUPTED;
-    }
+    let root = project.root.clone();
 
     let dist = layout.dist(target);
     let platform = build::platform(&layout, target);
@@ -197,7 +89,7 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
             target: &platform,
             profile: profile.as_str(),
             build_id: &build_id,
-            toolchain: &toolchain.rustc,
+            toolchain: &toolchain,
             signing: staged.signing,
             dist: &dist,
             artifacts,
@@ -246,6 +138,170 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
         );
     }
     SUCCESS
+}
+
+/// Whether [`stage`] checks the project's sources first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Check {
+    Run,
+    /// The command checked them already.
+    Done,
+}
+
+/// A build compiled and packaged into its build directory, with the build
+/// cache's lock still held.
+pub(super) struct Built {
+    pub(super) staged: Staged,
+    pub(super) project: Project,
+    pub(super) layout: Layout,
+    pub(super) profile: Profile,
+    pub(super) build_id: String,
+    /// `rustc -V`.
+    pub(super) toolchain: String,
+    pub(super) started: Instant,
+    pub(super) _lock: LockGuard,
+}
+
+/// Compiles and packages the project for `target` with `profile` (the
+/// configured one when `None`) into its build directory, reporting what the
+/// build says as it says it.
+pub(super) fn stage(
+    ctx: &Context<'_>,
+    target: Target,
+    profile: Option<Profile>,
+    check: Check,
+    out: &mut Output,
+) -> Result<Built, u8> {
+    if let Err(diagnostic) = target.require_available() {
+        out.config(None, &diagnostic);
+        return Err(diagnostic.code.exit_code());
+    }
+    if target == Target::Ios && !cfg!(target_os = "macos") {
+        return Err(out.failure(ENV_DEVICE, "the iOS Simulator SDK is on macOS only", &[]));
+    }
+    let Loaded {
+        project,
+        resolved,
+        layout,
+    } = ctx.load_as(target, ArtifactKind::Build, profile, out)?;
+    let config = resolved.config;
+    let profile = config.profile.value;
+
+    // Nothing is compiled from sources that do not check.
+    let project = match check {
+        Check::Run => {
+            let checked = check::package(project, out)?;
+            let code = checked.code(out);
+            if code != SUCCESS {
+                return Err(code);
+            }
+            checked.project
+        }
+        Check::Done => project,
+    };
+    let root = project.root.clone();
+    if !root.join("Cargo.toml").is_file() {
+        return Err(out.failure(
+            ENV_CARGO_MANIFEST,
+            &format!(
+                "no `Cargo.toml` next to `{}`",
+                project.manifest_path().display()
+            ),
+            &["`viso build` builds the Cargo package at the project root".to_owned()],
+        ));
+    }
+    let sdk = match target {
+        Target::Android => match Sdk::locate() {
+            Ok(sdk) => Some(sdk),
+            Err(why) => return Err(out.failure(ENV_DEVICE, &why, &[])),
+        },
+        _ => None,
+    };
+
+    let lock = ctx.lock(&layout, LockKind::BuildCache { target }, out)?;
+    let fingerprint = match ProjectFingerprint::compute(&root) {
+        Ok(fingerprint) => fingerprint,
+        Err(diagnostic) => {
+            in_its_file(out, &diagnostic);
+            return Err(diagnostic.code.exit_code());
+        }
+    };
+    let toolchain = build::toolchain();
+    let identity = config.build_id(fingerprint, &toolchain);
+    let build_id = identity.to_hex();
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let manifest = canonical.join("Cargo.toml");
+    let plan = build::rust_plan(target, profile, sdk.as_ref());
+    let android = match sdk {
+        Some(sdk) => {
+            let scope = match RustScope::read(&manifest, plan.target.as_deref(), &ctx.cargo_args())
+            {
+                Ok(scope) => scope,
+                Err(why) => return Err(out.failure(ENV_CARGO, &why, &[])),
+            };
+            match deploy::android_shell(&scope.linked) {
+                Ok(shell) => Some((sdk, shell)),
+                Err(why) => return Err(out.failure(ENV_DEVICE, &why, &[])),
+            }
+        }
+        None => None,
+    };
+    // A headless build is for tests and tooling, which reload nothing.
+    let mut features = plan.features;
+    if config.dev_runtime() == viso_project::DevRuntime::Present && target != Target::Headless {
+        features.push(cargo::HOT_RELOAD);
+    }
+    let job = Job {
+        cargo: BuildCommand {
+            cargo: cargo::program(),
+            manifest,
+            quiet: ctx.global.quiet,
+            piped: ctx.global.json,
+            target_dir: ctx.target_dir(),
+            cargo_args: ctx.cargo_args(),
+            build_args: ctx.cargo_build_args(),
+            profile,
+            profile_args: cargo::profile_args(profile, &config.settings, target),
+            features,
+            target: plan.target,
+            rustc_args: plan.rustc_args,
+            env: plan.env,
+            package: None,
+            lock: None,
+        },
+        target,
+        profile,
+        web: config.settings.web,
+        dir: layout.build(identity),
+        android,
+    };
+    out.verbose(|| job.cargo.describe());
+    out.progress("build", &format!("building {target} ({profile})"));
+
+    interrupt::catch();
+    let started = Instant::now();
+    let staging = job.dir.join("out");
+    let staged = match produce(job, &canonical, out) {
+        Ok(staged) => staged,
+        Err(failure) => {
+            // A failed or cancelled build leaves no output that looks whole.
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(failed(out, &failure));
+        }
+    };
+    if interrupt::count() > 0 {
+        return Err(INTERRUPTED);
+    }
+    Ok(Built {
+        staged,
+        project,
+        layout,
+        profile,
+        build_id,
+        toolchain: toolchain.rustc,
+        started,
+        _lock: lock,
+    })
 }
 
 /// `viso build` of `target` with `profile`, as typed.

@@ -522,6 +522,14 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(control.tint),
         entry(control.shader),
     );
+    let label = entry(control.label);
+    let role = match control.role {
+        Some(role) => {
+            let role = Ident::new(&format!("{role:?}"), Span::call_site());
+            quote! { ::core::option::Option::Some(::viso_ui::Role::#role) }
+        }
+        None => quote! { ::core::option::Option::None },
+    };
     let look = control.look;
     let (background, opacity) = (entry(look.background), entry(look.opacity));
     let (background_transition, opacity_transition) = (
@@ -569,6 +577,8 @@ fn control_tokens(control: Control) -> TokenStream {
                 opacity_transition: #opacity_transition,
             },
             arms: ::std::boxed::Box::new([#(#arms),*]),
+            role: #role,
+            label: #label,
         }
     }
 }

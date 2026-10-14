@@ -260,6 +260,10 @@ gap, and CI can run all of it headless.
       130.
 - [ ] Optional Rust side: `--cargo` runs `cargo check` for the project (default off,
       §17.2 keeps check fast).
+- [ ] A schema-enum property value names a variant of its enum: `semantics.role:
+      Role::bogus` or `justify: Justify::bogus` passes `viso check` today (the schema
+      enums `Role`, `Justify`, `LiveRegion`, … have no registered variants); only the
+      mount of a view rejects an unknown role.
 
 ### C1.6 — `viso build` (§14)
 
@@ -316,19 +320,30 @@ gap, and CI can run all of it headless.
 
 ### C1.9 — `viso test` (§22)
 
-- [ ] Domains `unit` (cargo test of the project), `ui` (headless UI scenarios under
+- [x] Domains `unit` (cargo test of the project), `ui` (headless UI scenarios under
       `tests/ui/`), `game` (existing), `web` (C4), `all` (every available domain;
       unavailable ones are `skip` with the reason).
-- [ ] Headless UI tests (§22.2): load the app headless, drive input from a scenario
+- [x] Headless UI tests (§22.2): load the app headless, drive input from a scenario
       (`*.vs` test blocks or tape files — decided with `Viso_DSL_1.0.md`), assert on
-      the inspector tree and on snapshots (C2.5).
-- [ ] Filters (§22.4): `--filter <pattern>`, `--exact`, `--fail-fast`, `--nocapture`,
-      `--update-snapshots`, `--target <t>`, `--device <profile>` (C3).
-- [ ] One `test` event per case (`name`, `domain`, `status`, `duration_ms`, failure
+      the inspector tree and on snapshots (C2.5). (Tape files `tests/ui/*.tape`:
+      click/hover/scroll/type/key/wait/expect on the semantics tree; snapshots are
+      C2.6.)
+- [x] `.vs` native nodes carry their semantics, which scenarios select by: the role
+      `semantics.role` names (a constant `Role::<variant>`) or the widget's, the name
+      `semantics.label` gives or the text a `Text`/`Button` shows, re-projected when
+      a state they read changes; roles `heading`, `list`, `list_item` added.
+- [ ] The rest of `.vs` semantics: `semantics.hint`, `value`, `live`, `hidden`,
+      `heading_level`, the `tab`/`radio` roles of `Tabs` pages and `RadioGroup`
+      items, and the default roles of `Modal`/`Sheet`/`Toast`/`NavigationStack`.
+- [x] Filters (§22.4): `--filter <pattern>`, `--exact`, `--fail-fast`, `--nocapture`,
+      `--update-snapshots`, `--target <t>`, `--device <profile>` (C3). (`--target`
+      takes `headless`; `--update-snapshots` lands with C2.6, `--device` with C3.5.)
+- [x] One `test` event per case (`name`, `domain`, `status`, `duration_ms`, failure
       with location), a tally in `summary`; exit 1 on a failed assertion, 5 on a
       crashed runner (§7).
-- [ ] Tests run in parallel up to `--jobs`, each case isolated (own runtime, own
-      temp dir); output of a passing case is captured.
+- [x] Tests run in parallel up to `--jobs`, each case isolated (own runtime, own
+      temp dir); output of a passing case is captured. (UI cases; game scenarios run
+      one after another in one process, each on its own world.)
 
 ### C1.10 — `viso clean` (§45.1)
 
@@ -407,6 +422,8 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
       diff image into `target/viso/snapshots/`, exit 1 on mismatch, `test`-shaped
       events.
 - [ ] `snapshot update [--filter]`: rewrites only mismatched snapshots, reports each.
+- [ ] `expect snapshot "<name>"` steps in UI scenarios and `test ui
+      --update-snapshots`, through the same compare.
 - [ ] `--target headless` default; other targets come with C3/C4.
 
 ### C2.7 — `viso inspect query` (§24.3)

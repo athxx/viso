@@ -86,7 +86,7 @@ pub fn device_ids() -> Vec<CompletionCandidate> {
         .collect()
 }
 
-/// The game scenarios of the project the current directory lies in.
+/// The UI and game scenarios of the project the current directory lies in.
 pub fn scenarios() -> Vec<CompletionCandidate> {
     let Some(root) = std::env::current_dir()
         .ok()
@@ -94,16 +94,17 @@ pub fn scenarios() -> Vec<CompletionCandidate> {
     else {
         return Vec::new();
     };
-    let Ok(entries) = std::fs::read_dir(root.join("tests/game")) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
+    let mut names: Vec<String> = ["tests/ui", "tests/game"]
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(root.join(dir)).ok())
+        .flatten()
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|e| e == "tape"))
         .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
         .collect();
     names.sort();
+    names.dedup();
     names.into_iter().map(CompletionCandidate::new).collect()
 }
 

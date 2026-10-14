@@ -1,8 +1,9 @@
 //! Delivering the values a view's nodes show: a label's text, a text field's
 //! seeded buffer, a control's value and range as its semantic state, an
-//! image's asset (its bytes offered to the store the first time it shows), and
-//! any node's look (its `background` and `opacity`). A text field with no `value`
-//! is never seeded: its text is what its user types.
+//! image's asset (its bytes offered to the store the first time it shows), any
+//! node's look (its `background` and `opacity`), and its role and accessible
+//! name. A text field with no `value` is never seeded: its text is what its
+//! user types.
 //!
 //! A look value with a `transition.*` entry moves to each new value over the
 //! transition that entry evaluates to when the value changes; the first value
@@ -27,8 +28,8 @@ use viso_behavior::Value;
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
 use viso_ui::{
-    AssetFit, BuildCx, Easing, LookValue, NodeId, NodeStore, Rgba, SemanticState, Srgb, StateId,
-    StructureCx, TextRequest, Timing,
+    AssetFit, BuildCx, Easing, LookValue, NodeId, NodeStore, Rgba, Role, SemanticState, Semantics,
+    Srgb, StateId, StructureCx, TextRequest, Timing,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, When};
@@ -153,6 +154,7 @@ pub(crate) fn control_cells(
         control.tint,
         look.background,
         look.opacity,
+        control.label,
     ]
     .into_iter()
     .flatten()
@@ -163,12 +165,15 @@ pub(crate) fn control_cells(
 }
 
 /// How many values a node shows: its value, the two entries beside it (a
-/// slider's bounds, an image's fit and tint) and its look's background and
-/// opacity.
-const SHOWN: usize = 7;
+/// slider's bounds, an image's fit and tint), its look's background and
+/// opacity, and its `semantics.label`.
+const SHOWN: usize = 8;
 
 /// Where its background and opacity sit among the values a node shows.
 const LOOK: usize = 5;
+
+/// Where its `semantics.label` sits among the values a node shows.
+const LABEL: usize = 7;
 
 /// A node showing a value of the view.
 pub(crate) struct Shown {
@@ -181,8 +186,8 @@ pub(crate) struct Shown {
     scope: Scope,
     /// The cells its entries read, ascending.
     deps: Box<[StateId]>,
-    /// The value, lower bound, upper bound, fit, tint, background and opacity
-    /// it shows, `None` before the first delivery.
+    /// The value, lower bound, upper bound, fit, tint, background, opacity
+    /// and label it shows, `None` before the first delivery.
     shows: Option<[Value; SHOWN]>,
     /// Whether [`shows`](Self::shows) is what the node showed before a hot
     /// reload mounted it again: the next delivery skips the values equal to
@@ -263,6 +268,7 @@ impl Shown {
             control.tint,
             background,
             opacity,
+            control.label,
         ]) {
             let Some(entry) = entry else { continue };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
@@ -292,8 +298,18 @@ impl Shown {
         let shown_background =
             (background.is_some() || styled(ControlInput::Background)).then_some(());
         let shown_opacity = (opacity.is_some() || styled(ControlInput::Opacity)).then_some(());
-        let [value, min, max, fit, tint, background, opacity] = &shows;
+        let [value, min, max, fit, tint, background, opacity, label] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
+        if let Some(role) = control.role
+            && (changed(LABEL) || (control.kind == ControlKind::Label && changed(0)))
+        {
+            let name = match (label.as_str(), control.kind) {
+                (Some(label), _) => Some(label),
+                (None, ControlKind::Label) => value.as_str(),
+                (None, _) => None,
+            };
+            name_node(cx.store, self.node, role, name);
+        }
         let mut moves: [Option<Timing>; 2] = [None; 2];
         for (at, (shown, transition)) in [
             (LOOK, (shown_background, look.background_transition)),
@@ -413,6 +429,29 @@ impl Shown {
         }
         Ok(base)
     }
+}
+
+/// Gives `node` its role and accessible name `name`, unless it has them. An
+/// image without a name is decoration: a mute group.
+fn name_node(store: &mut NodeStore, node: NodeId, role: Role, name: Option<&str>) {
+    let role = match (role, name) {
+        (Role::Image, None) => Role::Group,
+        (role, _) => role,
+    };
+    let unchanged = store
+        .semantics(node)
+        .is_some_and(|s| s.role == role && s.label.as_deref() == name);
+    if unchanged {
+        return;
+    }
+    let semantics = Semantics::role(role);
+    store.set_semantics(
+        node,
+        match name {
+            Some(name) => semantics.with_label(name),
+            None => semantics,
+        },
+    );
 }
 
 /// Marks the child of `node` at `selected` selected and each other child not.

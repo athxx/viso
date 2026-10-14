@@ -6,6 +6,10 @@
 //! A node reads its current value and range from pure entries of the view's
 //! handler table, evaluated against the states when a sample arrives, so the
 //! change a control reports is always relative to what the view holds.
+//!
+//! A node's role and accessible name are its semantics: the role its
+//! `semantics.role` names, else its widget's; the name its `semantics.label`
+//! gives, else the text it shows.
 
 use std::rc::Rc;
 
@@ -13,7 +17,7 @@ use viso_behavior::{Aggregate, Fault, FaultKind, Value};
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder};
 use viso_ui::{
     DispatchPhase, EditIntent, EventCx, ImeEvent, Interaction, Key, KeyEvent, Motion, NodeId,
-    NodeStore, PointerButtons, PointerPhase, TextOffset,
+    NodeStore, PointerButtons, PointerPhase, Role, TextOffset,
 };
 
 use crate::host::ViewHost;
@@ -117,6 +121,7 @@ impl ControlKind {
             (_, "opacity") => ControlInput::Opacity,
             (_, "transition.background") => ControlInput::BackgroundTransition,
             (_, "transition.opacity") => ControlInput::OpacityTransition,
+            (_, "semantics.label") => ControlInput::Label,
             (ControlKind::Toggle, "checked")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
@@ -153,6 +158,77 @@ impl ControlKind {
     }
 }
 
+/// The role a node of native widget `widget` has when its `semantics.role`
+/// names none; `None` for a container, which is a mute group. An image's
+/// role holds only while it has a label: one without is decoration.
+pub fn widget_role(widget: &str) -> Option<Role> {
+    Some(match widget {
+        "Button" => Role::Button,
+        "Toggle" | "CheckBox" => Role::CheckBox,
+        "Slider" => Role::Slider,
+        "TextInput" => Role::TextField,
+        "Tabs" => Role::TabList,
+        "Text" => Role::Label,
+        "Image" | "Svg" => Role::Image,
+        "VirtualList" => Role::List,
+        _ => return None,
+    })
+}
+
+/// The role a `Role::<variant>` of the source names.
+pub fn source_role(variant: &str) -> Option<Role> {
+    Some(match variant {
+        "group" => Role::Group,
+        "button" => Role::Button,
+        "check_box" => Role::CheckBox,
+        "slider" => Role::Slider,
+        "radio" => Role::Radio,
+        "label" => Role::Label,
+        "image" => Role::Image,
+        "text_field" => Role::TextField,
+        "tab" => Role::Tab,
+        "tab_list" => Role::TabList,
+        "navigation" => Role::Navigation,
+        "dialog" => Role::Dialog,
+        "status" => Role::Status,
+        "region" => Role::Region,
+        "tree" => Role::Tree,
+        "tree_item" => Role::TreeItem,
+        "heading" => Role::Heading,
+        "list" => Role::List,
+        "list_item" => Role::ListItem,
+        _ => return None,
+    })
+}
+
+/// The `Role::<variant>` of the source naming `role`.
+pub fn source_name(role: Role) -> &'static str {
+    SOURCE_ROLES[usize::from(role_tag(role))]
+}
+
+/// Every variant [`source_role`] takes, in the order of [`Role::ALL`].
+pub const SOURCE_ROLES: [&str; 19] = [
+    "group",
+    "button",
+    "check_box",
+    "slider",
+    "radio",
+    "label",
+    "image",
+    "text_field",
+    "tab",
+    "tab_list",
+    "navigation",
+    "dialog",
+    "status",
+    "region",
+    "tree",
+    "tree_item",
+    "heading",
+    "list",
+    "list_item",
+];
+
 /// A value a control reads from the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlInput {
@@ -177,6 +253,8 @@ pub enum ControlInput {
     BackgroundTransition,
     /// The node's `transition.opacity`.
     OpacityTransition,
+    /// The node's `semantics.label`: its accessible name.
+    Label,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -206,6 +284,11 @@ pub struct Control {
     /// The look values its styles' `when` blocks select, the first that holds
     /// winning over the others and over [`look`](Self::look).
     pub arms: Box<[LookArm]>,
+    /// Its role, `None` for a node with no semantics of its own.
+    pub role: Option<Role>,
+    /// The entry of its `semantics.label`; without one, a label's name is the
+    /// text it shows.
+    pub label: Option<u32>,
 }
 
 /// A look value a style's `when` selects: while `when` holds, `input` shows
@@ -332,6 +415,8 @@ impl Control {
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
+            role: None,
+            label: None,
         }
     }
 
@@ -353,6 +438,7 @@ impl Control {
             ControlInput::Opacity => self.look.opacity,
             ControlInput::BackgroundTransition => self.look.background_transition,
             ControlInput::OpacityTransition => self.look.opacity_transition,
+            ControlInput::Label => self.label,
         }
     }
 
@@ -369,6 +455,7 @@ impl Control {
             ControlInput::Opacity => &mut self.look.opacity,
             ControlInput::BackgroundTransition => &mut self.look.background_transition,
             ControlInput::OpacityTransition => &mut self.look.opacity_transition,
+            ControlInput::Label => &mut self.label,
         };
         *slot = Some(entry);
     }
@@ -515,6 +602,7 @@ impl Control {
 impl Encode for Control {
     fn encode(&self, enc: &mut Encoder) {
         enc.write_u8(self.kind as u8);
+        enc.write_u8(self.role.map_or(0, |role| role_tag(role) + 1));
         let look = self.look;
         for entry in [
             self.value,
@@ -528,6 +616,7 @@ impl Encode for Control {
             look.opacity,
             look.background_transition,
             look.opacity_transition,
+            self.label,
         ] {
             enc.write_varint(entry.map_or(0, |e| u64::from(e) + 1));
         }
@@ -559,6 +648,15 @@ impl Decode for Control {
     fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         let offset = dec.position();
         let kind = ControlKind::from_u8(dec.read_u8()?).ok_or(DecodeError::Malformed { offset })?;
+        let offset = dec.position();
+        let role = match dec.read_u8()? {
+            0 => None,
+            tag => Some(
+                *Role::ALL
+                    .get(usize::from(tag - 1))
+                    .ok_or(DecodeError::Malformed { offset })?,
+            ),
+        };
         let mut entry = || -> Result<Option<u32>, DecodeError> {
             let offset = dec.position();
             let raw =
@@ -581,6 +679,8 @@ impl Decode for Control {
                 opacity_transition: entry()?,
             },
             arms: Box::new([]),
+            role,
+            label: entry()?,
         };
         let index = |dec: &mut Decoder<'_>| -> Result<u32, DecodeError> {
             let offset = dec.position();
@@ -623,6 +723,11 @@ impl Decode for Control {
         control.arms = decoded.into();
         Ok(control)
     }
+}
+
+/// The wire tag of `role`: its place in [`Role::ALL`].
+fn role_tag(role: Role) -> u8 {
+    Role::ALL.iter().position(|r| *r == role).unwrap_or(0) as u8
 }
 
 /// A text field's response: pointer placement and drag selection, caret
@@ -791,6 +896,25 @@ mod tests {
             Some(EventRoute::SelectedChanged)
         );
         assert_eq!(ControlKind::Select.route("changed"), None);
+        assert_eq!(
+            ControlKind::Plain.input("semantics.label"),
+            Some(ControlInput::Label)
+        );
+    }
+
+    #[test]
+    fn every_source_role_names_a_role_and_widgets_have_theirs() {
+        let roles: Vec<Role> = SOURCE_ROLES
+            .iter()
+            .map(|name| source_role(name).expect(name))
+            .collect();
+        assert_eq!(roles, Role::ALL);
+        assert_eq!(source_role("checkbox"), None);
+        assert_eq!(source_name(Role::TextField), "text_field");
+        assert_eq!(widget_role("Button"), Some(Role::Button));
+        assert_eq!(widget_role("CheckBox"), Some(Role::CheckBox));
+        assert_eq!(widget_role("Text"), Some(Role::Label));
+        assert_eq!(widget_role("Column"), None);
     }
 
     #[test]
@@ -820,12 +944,17 @@ mod tests {
                 ]),
                 entry: 6,
             }]),
+            role: Some(Role::Slider),
+            label: Some(9),
         };
         let bytes = control.encode_to_vec();
         assert_eq!(Control::decode_from_slice(&bytes), Ok(control));
         let mut bad = bytes.clone();
         bad[0] = 9;
         assert!(Control::decode_from_slice(&bad).is_err());
+        let mut bad = bytes.clone();
+        bad[1] = 99;
+        assert!(Control::decode_from_slice(&bad).is_err(), "no such role");
         let mut bad = bytes;
         let state = bad.len() - 6;
         bad[state] = 9;

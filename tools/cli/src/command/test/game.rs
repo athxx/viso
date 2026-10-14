@@ -1,7 +1,8 @@
-//! `viso test`. The `game` domain runs each scenario under `tests/game/` headless on the package's systems:
-//! its input tape, or the one `--tape` names, for `--frames` frames on a world
-//! seeded with the tape's seed or `--seed`, each tick's `@probe` states traced
-//! and checked against the scenario's expectations.
+//! The `game` domain: each scenario under `tests/game/` run headless on the
+//! package's systems: its input tape, or the one `--tape` names, for
+//! `--frames` frames on a world seeded with the tape's seed or `--seed`, each
+//! tick's `@probe` states traced and checked against the scenario's
+//! expectations.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,34 +12,16 @@ use viso_dsl::scenario::{self, DEFAULT_SEED, GameRun, RunError, Scenario, read_t
 use viso_dsl::{Diagnostic, TextRange, TextSize};
 use viso_ende::JsonWriter;
 
-use super::check::{self, Checked};
-use crate::args::{TestArgs, TestDomain};
-use crate::context::Context;
+use super::{Run, TAPE, invalid, line_range, relative, report, scenarios};
+use crate::command::check::{self, Checked};
 use crate::error::{DIAGNOSTICS, ENV_TEST_INPUT, SUCCESS, TEST_EXPECTATION, TEST_INPUT_INVALID};
-use crate::output::{Output, Source, Test};
+use crate::output::{Output, Source, TestStatus};
 
 /// The directory below the project root that holds game scenarios.
 const SCENARIOS: &str = "tests/game";
 
-/// The extension of a scenario or tape file.
-const TAPE: &str = "tape";
-
 /// The faults of one run reported one by one; the rest are counted.
 const FAULTS_SHOWN: usize = 8;
-
-pub fn run(ctx: &Context<'_>, args: &TestArgs, out: &mut Output) -> u8 {
-    let checked = match check::load(ctx, out) {
-        Ok(checked) => checked,
-        Err(code) => return code,
-    };
-    let code = checked.code(out);
-    if code != SUCCESS {
-        return code;
-    }
-    match args.domain {
-        TestDomain::Game => game(&checked, args, out),
-    }
-}
 
 /// A scenario to run: its name and its file, if it has one.
 struct Planned {
@@ -46,44 +29,49 @@ struct Planned {
     file: Option<PathBuf>,
 }
 
-fn game(checked: &Checked, args: &TestArgs, out: &mut Output) -> u8 {
+pub(super) fn run(checked: &Checked, run: &Run<'_>, out: &mut Output) -> u8 {
     let root = &checked.project.root;
-    let planned = match plan(root, args) {
+    let planned = match plan(root, run) {
         Ok(planned) => planned,
-        Err(message) => {
-            return out.failure(ENV_TEST_INPUT, &message, &[]);
+        Err(Nothing::Missing(why)) => {
+            return run.nothing(out, "game", ENV_TEST_INPUT, &why);
         }
+        Err(Nothing::Unreadable(why)) => return out.failure(ENV_TEST_INPUT, &why, &[]),
     };
     let tick_rate = check::profile(&checked.project).tick_rate;
-    let (mut passed, mut failed) = (0, 0);
     let mut code = SUCCESS;
     for planned in &planned {
-        match scenario(root, planned, args, tick_rate, checked, out) {
-            Ok(true) => passed += 1,
-            Ok(false) => {
-                failed += 1;
-                code = code.max(DIAGNOSTICS);
-            }
-            Err(environment) => {
-                failed += 1;
-                code = code.max(environment);
-            }
+        match scenario(root, planned, run, tick_rate, checked, out) {
+            Ok(true) => {}
+            Ok(false) => code = code.max(DIAGNOSTICS),
+            Err(environment) => code = code.max(environment),
+        }
+        if run.stopped(out) {
+            break;
         }
     }
-    out.tally(passed, failed);
     code
 }
 
+/// Why the domain runs no scenario.
+enum Nothing {
+    /// There is none to run, or none by that name.
+    Missing(String),
+    /// The directory cannot be read.
+    Unreadable(String),
+}
+
 /// The scenarios the command line asks for.
-fn plan(root: &Path, args: &TestArgs) -> Result<Vec<Planned>, String> {
+fn plan(root: &Path, run: &Run<'_>) -> Result<Vec<Planned>, Nothing> {
+    let args = run.args;
     let dir = root.join(SCENARIOS);
     let named = |name: &str| dir.join(format!("{name}.{TAPE}"));
     if let Some(name) = &args.scenario {
         let file = named(name);
         if !file.is_file() && args.tape.is_none() {
-            return Err(format!(
+            return Err(Nothing::Missing(format!(
                 "no scenario `{name}`: `{SCENARIOS}/{name}.{TAPE}` does not exist"
-            ));
+            )));
         }
         let file = file.is_file().then_some(file);
         return Ok(vec![Planned {
@@ -97,24 +85,24 @@ fn plan(root: &Path, args: &TestArgs) -> Result<Vec<Planned>, String> {
             .map_or_else(|| "tape".to_owned(), |s| s.to_string_lossy().into_owned());
         return Ok(vec![Planned { name, file: None }]);
     }
-    let entries =
-        fs::read_dir(&dir).map_err(|error| format!("cannot read `{SCENARIOS}`: {error}"))?;
-    let mut planned: Vec<Planned> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|e| e == TAPE))
-        .filter_map(|path| {
-            let name = path.file_stem()?.to_string_lossy().into_owned();
-            Some(Planned {
-                name,
-                file: Some(path),
-            })
+    if !dir.is_dir() {
+        return Err(Nothing::Missing(format!("no `{SCENARIOS}` directory")));
+    }
+    let planned: Vec<Planned> = scenarios(&dir)
+        .map_err(|error| Nothing::Unreadable(format!("cannot read `{SCENARIOS}`: {error}")))?
+        .into_iter()
+        .filter(|(name, _)| run.filter.keeps(name))
+        .map(|(name, path)| Planned {
+            name,
+            file: Some(path),
         })
         .collect();
     if planned.is_empty() {
-        return Err(format!("`{SCENARIOS}` holds no `.{TAPE}` scenario"));
+        return Err(Nothing::Missing(match &run.filter.pattern {
+            Some(pattern) => format!("no scenario in `{SCENARIOS}` matches `{pattern}`"),
+            None => format!("`{SCENARIOS}` holds no `.{TAPE}` scenario"),
+        }));
     }
-    planned.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(planned)
 }
 
@@ -123,11 +111,12 @@ fn plan(root: &Path, args: &TestArgs) -> Result<Vec<Planned>, String> {
 fn scenario(
     root: &Path,
     planned: &Planned,
-    args: &TestArgs,
+    run: &Run<'_>,
     tick_rate: u32,
     checked: &Checked,
     out: &mut Output,
 ) -> Result<bool, u8> {
+    let args = run.args;
     let read = |path: &Path| {
         fs::read(path)
             .map_err(|error| format!("cannot read `{}`: {error}", relative(root, path).display()))
@@ -206,7 +195,7 @@ fn scenario(
                     out.failure(TEST_INPUT_INVALID, &message, &[]);
                 }
             }
-            report(out, name, false, duration_ms, Some(&message), None);
+            report_run(out, name, false, duration_ms, Some(&message), None);
             return Ok(false);
         }
     };
@@ -256,7 +245,7 @@ fn scenario(
             .first()
             .map(|f| format!("a system faulted at tick {}", f.tick))
     });
-    report(
+    report_run(
         out,
         name,
         passed,
@@ -268,7 +257,7 @@ fn scenario(
 }
 
 /// Reports a scenario's `test` event.
-fn report(
+fn report_run(
     out: &mut Output,
     name: &str,
     passed: bool,
@@ -276,31 +265,36 @@ fn report(
     message: Option<&str>,
     run: Option<&GameRun>,
 ) {
-    let test = Test {
-        name,
-        domain: "game",
-        passed,
-        duration_ms,
-        message,
+    let status = if passed {
+        TestStatus::Pass
+    } else {
+        TestStatus::Fail
     };
-    out.test(
-        &test,
-        |w| {
-            if let Some(run) = run {
-                game_fields(w, run);
-            }
-        },
-        || {
-            let status = if passed { "ok" } else { "FAILED" };
-            match run {
-                Some(run) => format!(
-                    "test game {name} ... {status} ({} frames, seed {}, snapshot {:016x})\n",
-                    run.ticks, run.seed, run.snapshot_hash
-                ),
-                None => format!("test game {name} ... {status}\n"),
-            }
-        },
-    );
+    match run {
+        Some(run) => {
+            let test = crate::output::Test {
+                name,
+                domain: "game",
+                status,
+                duration_ms,
+                message,
+            };
+            out.test(
+                &test,
+                |w| game_fields(w, run),
+                || {
+                    format!(
+                        "test game {name} ... {} ({} frames, seed {}, snapshot {:016x})\n",
+                        status.word(),
+                        run.ticks,
+                        run.seed,
+                        run.snapshot_hash
+                    )
+                },
+            );
+        }
+        None => report(out, "game", name, status, duration_ms, message, |_| {}),
+    }
 }
 
 /// The game domain's fields of a `test` event: the run's shape, its snapshot
@@ -347,39 +341,4 @@ fn game_fields(w: &mut JsonWriter, run: &GameRun) {
     w.uint(run.failures.len() as u64);
     w.name("faults");
     w.uint(run.faults.len() as u64);
-}
-
-/// Reports a scenario that does not parse or names no probe, at `at` in
-/// `source` when known.
-fn invalid(out: &mut Output, source: Option<&Source<'_>>, at: Option<TextRange>, message: &str) {
-    match (source, at) {
-        (Some(source), Some(at)) => out.source(
-            Some(source),
-            &[],
-            &Diagnostic::error(TEST_INPUT_INVALID.name, at, message),
-        ),
-        _ => {
-            out.failure(TEST_INPUT_INVALID, message, &[]);
-        }
-    }
-}
-
-/// The byte range of 1-based line `line` of `text`, without its terminator.
-fn line_range(text: &str, line: u32) -> TextRange {
-    let mut start = 0;
-    for (n, content) in text.split('\n').enumerate() {
-        if n + 1 == line as usize {
-            let content = content.strip_suffix('\r').unwrap_or(content);
-            return TextRange::new(
-                TextSize::new(start as u32),
-                TextSize::new((start + content.len()) as u32),
-            );
-        }
-        start += content.len() + 1;
-    }
-    TextRange::empty(TextSize::new(text.len() as u32))
-}
-
-fn relative<'a>(root: &Path, path: &'a Path) -> &'a Path {
-    path.strip_prefix(root).unwrap_or(path)
 }

@@ -157,7 +157,7 @@ impl Stream {
             w.name("domain");
             w.string(test.domain);
             w.name("status");
-            w.string(if test.passed { "pass" } else { "fail" });
+            w.string(test.status.as_str());
             w.name("duration_ms");
             w.uint(test.duration_ms);
             if let Some(message) = test.message {
@@ -246,6 +246,7 @@ impl Stream {
         errors: usize,
         warnings: usize,
         artifacts: usize,
+        tests: Option<super::TestCounts>,
         checked: Option<(&str, usize)>,
     ) {
         let elapsed = self.started.elapsed().as_millis() as u64;
@@ -267,6 +268,19 @@ impl Stream {
             w.uint(errors as u64);
             w.name("artifact_count");
             w.uint(artifacts as u64);
+            if let Some(tests) = tests {
+                w.name("test_counts");
+                w.begin_object();
+                for (status, count) in [
+                    ("pass", tests.pass),
+                    ("fail", tests.fail),
+                    ("skip", tests.skip),
+                ] {
+                    w.name(status);
+                    w.uint(count);
+                }
+                w.end_object();
+            }
             if let Some((package, files)) = checked {
                 w.name("package");
                 w.string(package);

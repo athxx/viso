@@ -26,7 +26,7 @@ LANGUAGE
   schema      Show the typed schema of a widget, native library, function or type
 
 TEST / DEBUG
-  test        Run the project's headless tests of a domain
+  test        Run the project's tests: unit, UI, game
   game        Read a state of, or record input from, the game `viso run` is playing
 
 MAINTENANCE
@@ -778,24 +778,29 @@ Global options:
       --target-dir <PATH>  Put build output under PATH instead of `target/`
 
 $ viso test --help
-Run the project's headless tests of a domain
+Run the project's tests: unit, UI, game
 
-Usage: viso test [OPTIONS] <DOMAIN> [SCENARIO]
+Usage: viso test [OPTIONS] [DOMAIN] [SCENARIO]
 
 Examples:
-  viso test game                                    # every scenario under `tests/game/`
-  viso test game movement --frames 600 --seed 1234  # one, for 600 ticks with seed 1234
-  viso test game movement --tape runs/jump.tape     # one, replaying a recorded tape
+  viso test                                      # every domain
+  viso test ui                                   # every scenario under `tests/ui/`, headless
+  viso test game movement --tape runs/jump.tape  # one game scenario, replaying a recorded tape
 
 Arguments:
-  <DOMAIN>    The test domain [possible values: game]
-  [SCENARIO]  The scenario, `tests/game/<SCENARIO>.tape`; every scenario there when omitted
+  [DOMAIN]    The test domain; every domain when omitted [possible values: unit, ui, game, web, all]
+  [SCENARIO]  One scenario of the `ui` or `game` domain, `tests/<domain>/<NAME>.tape`
 
 Options:
-      --frames <N>   The frames to run, one fixed tick each; by default through the tape and the scenario's last expectation
-      --seed <SEED>  The world's random seed, over the tape's
-      --tape <PATH>  Replay the input tape at PATH, binary or text, instead of the scenario's
-  -h, --help         Print help
+      --filter <PATTERN>  Run only the cases whose name contains PATTERN (is PATTERN, with `--exact`)
+      --exact             `--filter` names a case exactly
+      --fail-fast         Stop at the first failed case
+      --nocapture         Show what every case writes, not only a failed case's
+      --target <TARGET>   Where the cases run: `headless` by default [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+      --frames <N>        The frames a game scenario runs, one fixed tick each; by default through the tape and the scenario's last expectation
+      --seed <SEED>       A game world's random seed, over the tape's
+      --tape <PATH>       Replay the game input tape at PATH, binary or text, instead of the scenario's
+  -h, --help              Print help
 
 Global options:
       --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
@@ -810,7 +815,7 @@ Global options:
       --target-dir <PATH>  Put build output under PATH instead of `target/`
 
 Notes:
-  A scenario is `tests/game/<name>.tape`; a failed expectation exits 1.
+  A scenario is `tests/ui/<name>.tape` or `tests/game/<name>.tape`; a failed case exits 1, a crashed runner 5.
 
 $ viso game --help
 Read a state of, or record input from, the game `viso run` is playing

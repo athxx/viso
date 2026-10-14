@@ -116,9 +116,45 @@ pub enum Role {
     /// control's structural reconcile step from its warm flattened-row model — not a
     /// reactive scalar cell, so the write is direct rather than projected.
     TreeItem,
+    /// A heading: text that titles the section after it, which an assistive
+    /// technology lists for navigation (WAI-ARIA `role=heading`).
+    Heading,
+    /// A list of [`ListItem`](Role::ListItem)s, announced with its item count
+    /// (WAI-ARIA `role=list`).
+    List,
+    /// One item in a [`List`](Role::List) (WAI-ARIA `role=listitem`).
+    ListItem,
 }
 
 impl Role {
+    /// Every role, in declaration order.
+    pub const ALL: [Role; 19] = [
+        Role::Group,
+        Role::Button,
+        Role::CheckBox,
+        Role::Slider,
+        Role::Radio,
+        Role::Label,
+        Role::Image,
+        Role::TextField,
+        Role::Tab,
+        Role::TabList,
+        Role::Navigation,
+        Role::Dialog,
+        Role::Status,
+        Role::Region,
+        Role::Tree,
+        Role::TreeItem,
+        Role::Heading,
+        Role::List,
+        Role::ListItem,
+    ];
+
+    /// The role whose [`label`](Self::label) is `label`.
+    pub fn from_label(label: &str) -> Option<Role> {
+        Role::ALL.into_iter().find(|role| role.label() == label)
+    }
+
     /// The lowercase label used in an inspector dump / JSON snapshot (`group`,
     /// `button`, …), the readable discriminator for the role. A cold-path
     /// readout only, mirroring `InspectKind::label` and `BatchPipeline::label`.
@@ -140,6 +176,9 @@ impl Role {
             Role::Region => "region",
             Role::Tree => "tree",
             Role::TreeItem => "treeitem",
+            Role::Heading => "heading",
+            Role::List => "list",
+            Role::ListItem => "listitem",
         }
     }
 }
@@ -300,6 +339,14 @@ impl SemanticsTree {
 mod tests {
     use super::*;
     use crate::node::NodeArena;
+
+    #[test]
+    fn a_role_is_found_by_its_label() {
+        for role in Role::ALL {
+            assert_eq!(Role::from_label(role.label()), Some(role));
+        }
+        assert_eq!(Role::from_label("Button"), None);
+    }
 
     const ZERO_RECT: Rect = Rect {
         x: 0.0,

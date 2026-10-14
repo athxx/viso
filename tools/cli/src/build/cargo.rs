@@ -452,7 +452,7 @@ impl RustDiagnostic {
     /// The diagnostic of Cargo's `message` object, its files found from
     /// `manifest`, the package's manifest: Rust names a file relative to the
     /// workspace root, which is the package's directory or one above it.
-    fn read(message: &JsonValue, manifest: &Path) -> Option<RustDiagnostic> {
+    pub(crate) fn read(message: &JsonValue, manifest: &Path) -> Option<RustDiagnostic> {
         let severity = match message.get("level").and_then(JsonValue::as_str)? {
             "error" | "error: internal compiler error" => "error",
             "warning" => "warning",

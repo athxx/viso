@@ -1641,6 +1641,32 @@ paint primitives
 snapshot
 ```
 
+当前实现：
+
+- Scenario 是 `tests/ui/<scenario>.tape`，一行一步，`#` 起注释：
+
+  ```text
+  # 计数器每点一次加一。
+  surface 390x844@3            # 可选头部：覆盖 [test.surface]
+  settle 30                    # 可选头部：每步之前最多等待的帧数（缺省 120）
+  expect "Count: 0"
+  click button "Increment"
+  expect "Count: 1"
+  type "hello"                 # 提交文本到焦点节点
+  key Primary+Shift+Z          # Primary 在 Apple 上是 Command，其他平台是 Control
+  scroll "List" 0 240          # 在节点上方滚动（逻辑像素）
+  hover "Help"
+  wait 30                      # 让 30 帧运行
+  expect no "Error"
+  expect checkbox "Agree" checked
+  expect slider "Volume" value 0.5
+  ```
+
+  节点由 selector 找到：`"<label>"` 或 `<role> "<label>"`——accessible label 完全相等（role 为 `.vs` 的 `Role` Variant：`button`、`check_box`、`slider`、`label`、`text_field`……，也接受 inspector 的写法 `checkbox`、`textfield`），取当前显示（不在隐藏子树中、有面积）的第一个（树序）；状态为 `focused`、`checked`、`unchecked`、`selected`、`expanded`、`collapsed`、`value <number>`；键名为字母、数字、`F1`–`F12` 与 `Enter`、`Escape`、`Tab`、`Space`、`Backspace`、`Delete`、方向键、`Home`、`End`、`PageUp`、`PageDown`，修饰键 `Shift`、`Ctrl`、`Alt`、`Logo`、`Primary`；
+- 运行：先解析全部 Scenario（解析失败即该用例失败，`TEST_INPUT_INVALID` 指向其行，不构建），再以 headless 构建 app（§3.4），每个 Scenario 一个独立进程、一个独立的新目录（`target/viso/test/<pid>/ui/<name>/`，进程的工作目录），并行至多 `--jobs` 个；surface、Scenario 路径与报告路径经 `VISO_HEADLESS_SURFACE`、`VISO_HEADLESS_SCRIPT`、`VISO_HEADLESS_REPORT` 传入；
+- 回放：针对第一个窗口；每步在 app 安定（无动画、无待提交文本）或已过 settle 帧数后执行；输入经 platform 送入，与真实设备相同（点击为指针移到节点中心、按下、松开）；`expect` 读该窗口的 semantics；每步结果写成报告的一行（JSON），第一个失败的步骤结束该次运行，全部结束后关闭窗口；
+- 结果：报告以全部通过结束为 pass；有失败步骤为 fail，`TEST_EXPECTATION` 指向该行（message 列出窗口当前显示的 label）；进程在报告结束前退出为 runner 崩溃（`RUN_TEST_CRASHED`，exit 5）。失败用例的输出（stdout/stderr）随后显示，`--nocapture` 时通过的也显示；通过用例的目录随即删除。
+
 ### 22.3 Game deterministic test
 
 ```bash
@@ -1675,7 +1701,7 @@ viso game peek movement Player.score                 # 读取运行中 System St
 - `peek` 可读 System 的任意 State（不限 `@probe`），host 按该文件 last-good 的类型写成 JSON（无 last-good 时按结构）；人类输出 `<System>.<state> = <JSON> (<file> at tick <n>)`，`--json` 为一条 `result`（`game, system, state, value, tick, sessions`）；
 - `record` 先以 `Rebuild::Fresh` 重启该游戏的 World（时钟回到 tick 0、以其 seed 重跑 start），再录制所要求的 Tick 数（`--seconds` 按游戏 Tick Rate 向上取整），录满后 runtime 回传 Tape：未经 live patch 的写成文本形式（可直接作 `viso test game --tape` 输入或补上期望行成为 Scenario），带 live patch 的写成二进制形式（只有二进制携带 patch）；人类输出 `recorded <n> ticks of <file> to <path> (text|binary[, n live patches])`，`--json` 为一条 `result`（`game, path, form, ticks, seed, patches`）。游戏暂停时录制随之暂停；
 - 失败码：没有 session 或连不上 `ENV_NO_DEV_SESSION`（exit 3）；文件未挂载、app 未连上或不运行游戏 `GAME_NOT_RUNNING`（3）；没有该 System/State `GAME_UNKNOWN_STATE`（1，note 列出已有 State）；正在回放 Tape 或已在录制 `GAME_BUSY`（3）；World 重启时故障 `GAME_FAULT`、录制完成前游戏结束 `GAME_ENDED`（5）；Tape 超过 dev frame 上限或回答不可解码 `GAME_ANSWER_INVALID`（7，协议违约）；写 Tape 失败 `ENV_TAPE_WRITE`（3）；
-- `--sheet` 需要 Headless 游戏渲染，尚未实现；`viso test` 目前只有 `game` 域。
+- `--sheet` 需要 Headless 游戏渲染，尚未实现。
 
 ### 22.4 Test filters
 
@@ -1691,9 +1717,18 @@ viso game peek movement Player.score                 # 读取运行中 System St
 
 并行度使用 global `--jobs`。
 
+当前实现：
+
+- 省略测试域即 `all`：依次 `unit`、`ui`、`game`、`web`；某域在此无可运行的内容（没有 `Cargo.toml`、没有 `tests/ui` 或 `tests/game`、`web`）时以该域名记一个 `skip` 用例并给出原因；显式指定的域无内容时为 `ENV_TEST_INPUT` / `ENV_CARGO_MANIFEST` / `ENV_TEST_TARGET`（exit 3）；
+- `unit`：`cargo test`（带 `--no-fail-fast`，`--fail-fast` 时去掉），`--filter`/`--exact`/`--nocapture` 交给 test harness，`--jobs` 同时作为 `--test-threads`；编译诊断与 `viso build` 相同，harness 报告的每个测试一个用例（`ignored` 为 `skip`），失败用例带其输出；编译失败 `BUILD_FAILED`（exit 4）；
+- `ui` 只在 `headless` 上运行，`--target` 为其他 target 时 `ENV_TEST_TARGET`（exit 3）；`web` 尚未实现（`ENV_TEST_TARGET`）；`--target` 不用于 `unit`/`game`（usage error）；`--frames`/`--seed`/`--tape` 只用于 `game`，Scenario 名只用于 `ui`/`game`；
+- `--filter <pattern>` 按名字包含（`--exact` 时相等）筛选每个域的用例；`--fail-fast` 在第一个失败用例后停止（进行中的 ui 用例被终止、不报告）；
+- `--device` 随 device target（C3）、`--update-snapshots` 随 `viso snapshot`（§23）加入；
+- 人类输出每个用例一行 `test <domain> <name> ... ok|FAILED|skipped`（被跳过的整个域为 `test <domain> ... skipped (<原因>)`），末行 `test result: ok|FAILED. <n> passed; <n> failed; <n> skipped`。
+
 ### 22.5 JSON / exit codes
 
-`--json`：`progress`、`diagnostic`、每个用例一条 `test`（`payload: {name, domain, status: pass|fail|skip, duration_ms, message?}`）、`summary`（含 pass/fail/skip 计数）。Exit code：有失败用例 1；source diagnostics 1；target/device 不可用 3；runner 崩溃 5。
+`--json`：`progress`、`diagnostic`、每个用例一条 `test`（`payload: {name, domain, status: pass|fail|skip, duration_ms, message?}`）、`summary`（`test_counts: {pass, fail, skip}`）。Exit code：有失败用例 1；source diagnostics 1；target/device 不可用 3；构建失败 4；runner 崩溃 5。
 
 ---
 
@@ -2403,11 +2438,13 @@ ENV_TOOL                build 需要的工具未安装或无法运行         ex
 ENV_NO_DEV_SESSION      没有可连的 `viso run` session             exit 3
 ENV_TAPE_WRITE          录制的 Tape 无法写出                      exit 3
 ENV_TEST_INPUT          测试 Scenario 或 Tape 缺失或不可读        exit 3
+ENV_TEST_TARGET         测试域在此不能于该 target 上运行          exit 3
 TEST_INPUT_INVALID      Scenario/Tape 无法解析或与 Build 不符     exit 1
-TEST_EXPECTATION        游戏测试期望未满足                       exit 1
+TEST_EXPECTATION        测试期望未满足                           exit 1
 BUILD_FAILED            cargo build 失败                         exit 4
 BUILD_PACKAGE           构建产物无法为 target 打包               exit 4
 RUN_APP_FAILED          app 无法启动、crash 或非零退出           exit 5
+RUN_TEST_CRASHED        测试用例的 runner 无法启动、crash 或未报告结束 exit 5
 DEVICE_MISSING          没有 simulator/emulator profile           exit 3
 DEVICE_UNKNOWN          `--device` 或默认值不是已有 profile        exit 2
 DEVICE_AMBIGUOUS        多个 profile 且无默认                     exit 2
@@ -2793,6 +2830,7 @@ target/
     ├── dev/
     ├── generated/
     ├── traces/
+    ├── test/<pid>/           # 一次 `viso test` 的用例目录，通过的用例随即删除
     └── locks/
 
 dist/

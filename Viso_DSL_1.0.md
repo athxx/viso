@@ -4889,7 +4889,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | `semantics.hidden`        | `Bool`           | `false`                         |
 | `semantics.heading_level` | `Option<U8>`     | `Option::None`                  |
 
-- `Role { group; button; check_box; slider; radio; label; text_field; tab; tab_list; navigation; dialog; status; region; tree; tree_item; heading; image; list; list_item; }`，其中 `heading`、`image`、`list`、`list_item` 为 **[Runtime 待实现]**；
+- `Role { group; button; check_box; slider; radio; label; text_field; tab; tab_list; navigation; dialog; status; region; tree; tree_item; heading; image; list; list_item; }`；
 - `LiveRegion { off; polite; assertive; }`；
 - 默认角色：`Button` → `button`；`Toggle`、`CheckBox` → `check_box`；`Slider` → `slider`；`TextInput` → `text_field`；`Tabs` → `tab_list`，每页为 `tab`；`RadioGroup` 每项为 `radio`；`Text` → `label`；`Modal`、`Sheet` → `dialog`；`Toast` → `status`（隐含 `polite`）；`NavigationStack` → `navigation`；`VirtualList` → `list`；容器 → `group`。
 
@@ -4902,7 +4902,9 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 - **隐藏**：`semantics.hidden: true` 把子树从语义树移除但保留绘制，用于纯装饰；`visible: false` 同时移除绘制与语义；
 - **辅助技术动作**：Focus、Click、Increment、Decrement 走普通输入路径（ADR 0030），触发同一套 Handler。
 
-当前实现：标准交互 Widget 是 `Button`、`Toggle`、`CheckBox`、`Slider`、`TextInput`、`Tabs`、`RadioGroup`（Widget Schema 的 `interactive` 标记）。其他原生 Widget 的节点（包括用户 Component 视图的根节点）处理 `click`、`tap`、`long_press`、`drag_*` 或 `key_down` 时：未绑定 `semantics.role`、或绑定为 `Role::group`，报 `E3704`；节点及其子树中没有 `semantics.label` 或 `text` 绑定，报 `E3704`；没有 `focusable`（或其值为字面量 `false`）、或不处理 `click`，报 `E3708`。均为警告，构建配置的 `a11y_strict`（`--a11y strict`）使之成为错误。调用方在用户 Component 节点上转发的 Handler 尚不检查。
+当前实现：View 的原生节点投影 `semantics.role` 与 `semantics.label`。`semantics.role` 是常量 `Role::<variant>`，其他值或未知 Variant 使视图无法挂载（消息列出全部 Variant）；未写时取上表的 Widget 默认角色（`Image`、`Svg` 无名称时为装饰）。可访问名称取 `semantics.label`，否则 `Text`、`Button` 取其 `text`；两者随所读 State 变化重新投影，只标记 `SEMANTICS`。`semantics.hint`、`semantics.value`、`semantics.live`、`semantics.hidden`、`semantics.heading_level` 以及 `Tabs` 每页的 `tab`、`RadioGroup` 每项的 `radio`、`Modal`/`Sheet`/`Toast`/`NavigationStack` 的默认角色尚未投影。
+
+标准交互 Widget 是 `Button`、`Toggle`、`CheckBox`、`Slider`、`TextInput`、`Tabs`、`RadioGroup`（Widget Schema 的 `interactive` 标记）。其他原生 Widget 的节点（包括用户 Component 视图的根节点）处理 `click`、`tap`、`long_press`、`drag_*` 或 `key_down` 时：未绑定 `semantics.role`、或绑定为 `Role::group`，报 `E3704`；节点及其子树中没有 `semantics.label` 或 `text` 绑定，报 `E3704`；没有 `focusable`（或其值为字面量 `false`）、或不处理 `click`，报 `E3708`。均为警告，构建配置的 `a11y_strict`（`--a11y strict`）使之成为错误。调用方在用户 Component 节点上转发的 Handler 尚不检查。
 
 ---
 

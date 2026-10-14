@@ -192,6 +192,9 @@ fn access_role(role: Role, named: bool) -> ak::Role {
         Role::Region => ak::Role::Region,
         Role::Tree => ak::Role::Tree,
         Role::TreeItem => ak::Role::TreeItem,
+        Role::Heading => ak::Role::Heading,
+        Role::List => ak::Role::List,
+        Role::ListItem => ak::Role::ListItem,
     }
 }
 

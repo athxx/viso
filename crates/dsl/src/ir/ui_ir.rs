@@ -113,6 +113,8 @@ pub struct UiNode {
     pub control_reads: Vec<(String, TextRange, u32)>,
     /// The look the node's styles give it, beyond what it binds itself.
     pub styled: Option<UiStyled>,
+    /// The role its `semantics.role` names, `None` when it names none.
+    pub role: Option<viso_ui::Role>,
     /// The node's children, in source order.
     pub children: Vec<UiItem>,
     /// The node declaration's source span.

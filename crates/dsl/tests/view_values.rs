@@ -11,8 +11,8 @@ use viso_dsl::hotreload::plan_view;
 use viso_dsl::ir::binding_ir::NodeKey;
 
 use viso_ui::{
-    BindingTable, BuildCx, EffectStore, LeafStyle, NodeId, NodeStore, SemanticState, StateStore,
-    StateValue, StructureCx, TextRequest, run_structure_hooks,
+    BindingTable, BuildCx, EffectStore, LeafStyle, NodeId, NodeStore, Role, SemanticState,
+    StateStore, StateValue, StructureCx, TextRequest, run_structure_hooks,
 };
 use viso_view::{ControlKind, Scope, Value, ViewHost, mount_values};
 
@@ -237,4 +237,104 @@ fn controls_project_their_value_and_range_into_semantic_state() {
     assert_eq!(state(&store, toggle), SemanticState::checked(false));
     assert_eq!(state(&store, slider).range, Some((0.0, 20.0)));
     assert_eq!(state(&store, second).selected, Some(true));
+}
+
+const NAMED: &str = r#"
+export component Named {
+    state count = 1;
+    view {
+        Column {
+            semantics.role: Role::region;
+            semantics.label: Option::Some("Totals");
+            Text { text: format("{}", count); }
+            Button { text: "Add"; semantics.label: Option::Some(format("Add to {}", count)); }
+            Image { opacity: 1.0; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn nodes_take_their_role_and_the_name_they_show() {
+    let plan = plan_view(NAMED, &origin()).expect("the view compiles");
+    let view = plan.view.expect("the view has behavior");
+    let host = ViewHost::new(Rc::clone(&view.module), &view.component).expect("mounts");
+    let host = Rc::new(RefCell::new(host));
+    let mut store = NodeStore::new();
+    let mut states = StateStore::default();
+    let mut bindings = BindingTable::default();
+    let mut effects = EffectStore::default();
+    let count = states.alloc(StateValue::Int(1));
+    {
+        let mut host = host.borrow_mut();
+        let slot = host.state_slot("count").expect("a state");
+        assert!(host.mirror(slot, count));
+    }
+    let mut cx = BuildCx::new(&mut store);
+    let ids: Vec<NodeId> = (0..4).map(|_| cx.leaf(LeafStyle::default()).id()).collect();
+    cx.root();
+    let nodes: Vec<(NodeId, viso_view::Control)> = (0..4)
+        .filter_map(|key| Some((ids[key], view.control(NodeKey(key as u32))?)))
+        .collect();
+    let mut structure = StructureCx {
+        store: &mut store,
+        states: &mut states,
+        bindings: &mut bindings,
+        effects: &mut effects,
+    };
+    mount_values(&mut structure, &host, &nodes);
+
+    let named = |store: &NodeStore, id| {
+        store
+            .semantics(id)
+            .map(|s| (s.role, s.label.clone().unwrap_or_default()))
+    };
+    assert_eq!(named(&store, ids[0]), Some((Role::Region, "Totals".into())));
+    assert_eq!(named(&store, ids[1]), Some((Role::Label, "1".into())));
+    assert_eq!(
+        named(&store, ids[2]),
+        Some((Role::Button, "Add to 1".into()))
+    );
+    assert_eq!(
+        named(&store, ids[3]),
+        Some((Role::Group, String::new())),
+        "an image without a label is decoration"
+    );
+
+    states.set(count, StateValue::Int(4));
+    let mut changed = Vec::new();
+    states.take_pending(&mut changed);
+    run_structure_hooks(
+        &mut store,
+        &mut states,
+        &mut bindings,
+        &mut effects,
+        &changed,
+    );
+    assert_eq!(named(&store, ids[1]), Some((Role::Label, "4".into())));
+    assert_eq!(
+        named(&store, ids[2]),
+        Some((Role::Button, "Add to 4".into()))
+    );
+}
+
+#[test]
+fn a_role_is_a_constant_variant_of_role() {
+    for (role, says) in [
+        ("Role::heading_one", "`Role` has no variant `heading_one`"),
+        ("Role::button", ""),
+        ("Justify::start", "a constant `Role::…`"),
+    ] {
+        let source = format!(
+            "export component C {{\n    view {{ Column {{ semantics.role: {role}; Text {{ text: \"x\"; }} }} }}\n}}\n"
+        );
+        let planned = plan_view(&source, &origin());
+        match planned {
+            Ok(_) => assert!(says.is_empty(), "{role} is rejected"),
+            Err(errors) => {
+                let all = format!("{errors:?}");
+                assert!(!says.is_empty() && all.contains(says), "{role}: {all}");
+            }
+        }
+    }
 }

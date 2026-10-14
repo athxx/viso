@@ -280,6 +280,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     let mut shaders: Vec<(SymbolId, ViewBrush)> = Vec::new();
     for (key, kind, node) in nodes {
         let mut control = Control::new(kind);
+        control.role = node_role(node);
         for (property, at, instance) in &node.control_reads {
             let Some(input) = kind.input(property) else {
                 continue;
@@ -550,7 +551,11 @@ impl<'a> Walk<'a> {
             self.roots.push((node.instance, own));
         }
         let kind = ControlKind::of(&node.type_name);
-        if kind.responds() || !node.control_reads.is_empty() || node.styled.is_some() {
+        if kind.responds()
+            || !node.control_reads.is_empty()
+            || node.styled.is_some()
+            || node.role.is_some()
+        {
             self.nodes.push((own, kind, node));
         }
         for handler in &node.handlers {
@@ -569,6 +574,12 @@ impl<'a> Walk<'a> {
         }
         self.items(&node.children);
     }
+}
+
+/// The role of `node`: the one its `semantics.role` names, else its widget's.
+fn node_role(node: &UiNode) -> Option<viso_ui::Role> {
+    node.role
+        .or_else(|| viso_view::widget_role(&node.type_name))
 }
 
 /// A state initializer as the UI cell value it starts from: `None` for a value

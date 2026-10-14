@@ -168,6 +168,11 @@ impl Layout {
         self.viso_dir().join("traces")
     }
 
+    /// `target/viso/test/`: what `viso test` runs its cases in.
+    pub fn tests(&self) -> PathBuf {
+        self.viso_dir().join("test")
+    }
+
     /// `target/viso/locks/`.
     pub fn locks(&self) -> PathBuf {
         self.viso_dir().join("locks")

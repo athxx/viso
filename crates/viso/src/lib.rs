@@ -59,6 +59,8 @@ mod accessibility;
 mod assets;
 pub mod audio;
 mod environment;
+#[cfg(feature = "headless")]
+mod headless;
 mod persist;
 pub mod services;
 mod shaders;
@@ -176,7 +178,7 @@ pub fn run<A: Application>() {
     }
     #[cfg(feature = "headless")]
     {
-        run_headless::<A>();
+        headless::run::<A>();
         return;
     }
     // A headless fallback has no OS behind its services.
@@ -202,33 +204,6 @@ pub fn run<A: Application>() {
     Scheduler::new(platform_app, driver).run_detached();
     #[cfg(not(target_arch = "wasm32"))]
     Scheduler::new(platform_app, driver).run();
-}
-
-/// The run of a headless build: every window gets the surface the launch
-/// names (1280 × 720 at 1x when it names none) and draws through the
-/// software raster, each frame steps the clock by one frame of 60 Hz, and
-/// the run ends when the app settles or after the frames the launch bounds
-/// it to. No service has an OS behind it.
-#[cfg(feature = "headless")]
-fn run_headless<A: Application>() {
-    use viso_view::headless::{FRAMES_ENV, HeadlessSurface, SURFACE_ENV};
-
-    let surface = viso_platform::launch_var(SURFACE_ENV)
-        .and_then(|value| HeadlessSurface::from_env(&value))
-        .unwrap_or_default();
-    let mut app = Box::new(viso_platform::backend::headless::HeadlessApp::new());
-    app.fixed_surface(surface.width, surface.height, surface.scale);
-    if let Some(frames) =
-        viso_platform::launch_var(FRAMES_ENV).and_then(|value| value.trim().parse().ok())
-    {
-        app.frame_budget(frames);
-    }
-    let driver = AppDriver::<A>::new(Some(services::Services::unsupported()));
-    let clock = viso_runtime::FixedStepClock::new(
-        viso_platform::Instant::now(),
-        std::time::Duration::from_nanos(1_000_000_000 / 60),
-    );
-    Scheduler::with_clock(app, driver, clock).run();
 }
 
 /// Deterministic headless-loop harness for facade integration tests.
@@ -511,6 +486,9 @@ struct AppDriver<A: Application> {
     /// the reloads staged for the next frame.
     #[cfg(feature = "hot-reload")]
     hot_reload: hot_reload::HotReloadSession,
+    /// The UI scenario a headless run plays.
+    #[cfg(feature = "headless")]
+    script: Option<headless::ScriptRunner>,
 }
 
 /// The fonts an app registered at init, installed into every window's shaper.
@@ -775,6 +753,8 @@ impl<A: Application> AppDriver<A> {
             assets: assets::Assets::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload: hot_reload::HotReloadSession::default(),
+            #[cfg(feature = "headless")]
+            script: None,
         }
     }
 
@@ -2615,6 +2595,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if ws.is_animating() || ws.text_work_pending() {
                         cx.request_redraw(ws.window);
                     }
+                }
+                #[cfg(feature = "headless")]
+                if let (Some(script), Some(ws)) = (&mut self.script, self.windows.first()) {
+                    script.after_frame(ws, cx);
                 }
             }
             _ => {}

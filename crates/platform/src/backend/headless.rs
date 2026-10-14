@@ -12,7 +12,9 @@
 //! that keeps asking to redraw runs frames just like it would under a real
 //! display link.
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -46,6 +48,24 @@ pub struct HeadlessApp {
     /// Every window's logical size and scale, whatever it asks for
     /// ([`HeadlessApp::fixed_surface`]).
     surface: Option<((f64, f64), f64)>,
+    /// Events handed in while the app runs ([`HeadlessApp::feed`]).
+    feed: Option<HeadlessFeed>,
+}
+
+/// Where a driver hands a running [`HeadlessApp`] input, as the user's
+/// device would: each event is delivered ahead of the next frame beat.
+#[derive(Clone, Default)]
+pub struct HeadlessFeed(Rc<RefCell<VecDeque<RawEvent>>>);
+
+impl HeadlessFeed {
+    /// Queues `event`.
+    pub fn push(&self, event: RawEvent) {
+        self.0.borrow_mut().push_back(event);
+    }
+
+    fn pop(&self) -> Option<RawEvent> {
+        self.0.borrow_mut().pop_front()
+    }
 }
 
 impl HeadlessApp {
@@ -64,6 +84,7 @@ impl HeadlessApp {
             woken: Arc::new(AtomicBool::new(false)),
             frames_left: None,
             surface: None,
+            feed: None,
         }
     }
 
@@ -90,6 +111,11 @@ impl HeadlessApp {
     /// on every machine.
     pub fn fixed_surface(&mut self, width: u32, height: u32, scale: f64) {
         self.surface = Some(((f64::from(width), f64::from(height)), scale));
+    }
+
+    /// The feed events reach this app through while it runs.
+    pub fn feed(&mut self) -> HeadlessFeed {
+        self.feed.get_or_insert_with(HeadlessFeed::default).clone()
     }
 
     /// Set the appearance [`PlatformApp::appearance`] reports. Scripts that
@@ -159,6 +185,9 @@ impl HeadlessApp {
     }
 
     fn next_event(&mut self) -> Option<RawEvent> {
+        if let Some(event) = self.feed.as_ref().and_then(HeadlessFeed::pop) {
+            return Some(event);
+        }
         if let Some(left) = &mut self.frames_left {
             if let Some(event) = self.script.pop_front() {
                 return Some(event);
@@ -380,6 +409,49 @@ mod tests {
             self.0.push(event);
             ControlFlow::Wait
         }
+    }
+
+    #[test]
+    fn fed_input_lands_ahead_of_the_next_beat() {
+        struct Feeder {
+            feed: HeadlessFeed,
+            seen: Vec<RawEvent>,
+            window: WindowId,
+            fed: bool,
+        }
+        impl AppHandler for Feeder {
+            fn handle(&mut self, event: RawEvent) -> ControlFlow {
+                if let RawEvent::RedrawRequested { .. } = event
+                    && !self.fed
+                {
+                    self.fed = true;
+                    self.feed.push(RawEvent::Text(crate::event::RawText {
+                        window: self.window,
+                        text: "a".into(),
+                    }));
+                }
+                self.seen.push(event);
+                ControlFlow::Wait
+            }
+        }
+        let mut app = HeadlessApp::new();
+        let window = app.create_window(WindowConfig::default()).unwrap();
+        app.request_redraw(window);
+        let mut feeder = Feeder {
+            feed: app.feed(),
+            seen: Vec::new(),
+            window,
+            fed: false,
+        };
+        app.run(&mut feeder);
+        assert!(matches!(
+            feeder.seen[..],
+            [
+                RawEvent::AppLaunched,
+                RawEvent::RedrawRequested { .. },
+                RawEvent::Text(_)
+            ]
+        ));
     }
 
     #[test]

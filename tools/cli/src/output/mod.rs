@@ -197,12 +197,48 @@ struct Report<'a> {
 /// One test's outcome.
 pub struct Test<'a> {
     pub name: &'a str,
-    /// `game`, `ui`, ...
+    /// `unit`, `ui`, `game`, `web`.
     pub domain: &'a str,
-    pub passed: bool,
+    pub status: TestStatus,
     pub duration_ms: u64,
-    /// Why it failed.
+    /// Why it failed, or was skipped.
     pub message: Option<&'a str>,
+}
+
+/// How a test case ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestStatus {
+    Pass,
+    Fail,
+    Skip,
+}
+
+impl TestStatus {
+    /// The status as an event names it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TestStatus::Pass => "pass",
+            TestStatus::Fail => "fail",
+            TestStatus::Skip => "skip",
+        }
+    }
+
+    /// The status as a line of human output ends.
+    pub fn word(self) -> &'static str {
+        match self {
+            TestStatus::Pass => "ok",
+            TestStatus::Fail => "FAILED",
+            TestStatus::Skip => "skipped",
+        }
+    }
+}
+
+/// How many test cases passed, failed and were skipped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TestCounts {
+    pub pass: u64,
+    pub fail: u64,
+    pub skip: u64,
 }
 
 /// One artifact a build wrote.
@@ -231,6 +267,8 @@ pub struct Output {
     errors: usize,
     warnings: usize,
     artifacts: usize,
+    /// The test cases reported, when any is.
+    tests: Option<TestCounts>,
     checked: Option<(String, usize)>,
 }
 
@@ -254,6 +292,7 @@ impl Output {
             errors: 0,
             warnings: 0,
             artifacts: 0,
+            tests: None,
             checked: None,
         }
     }
@@ -503,6 +542,23 @@ impl Output {
         }
     }
 
+    /// Shows what the test case `name` wrote: each line a `log` event from
+    /// `test`, or the whole under a header on stderr.
+    pub fn case_output(&mut self, name: &str, text: &str) {
+        let text = text.trim_end();
+        if text.is_empty() {
+            return;
+        }
+        match &mut self.form {
+            Form::Json(stream) => {
+                for line in text.lines() {
+                    stream.log("info", "test", line);
+                }
+            }
+            Form::Human => eprintln!("---- {name} output ----\n{text}"),
+        }
+    }
+
     /// Reports a hot reload attempt of `file` on the runtime `ids` name: a
     /// `dev` event, or one line on stderr. Its diagnostics are reported on
     /// their own.
@@ -546,18 +602,35 @@ impl Output {
         extra: impl FnOnce(&mut JsonWriter),
         text: impl FnOnce() -> String,
     ) {
+        let counts = self.tests.get_or_insert_with(TestCounts::default);
+        match test.status {
+            TestStatus::Pass => counts.pass += 1,
+            TestStatus::Fail => counts.fail += 1,
+            TestStatus::Skip => counts.skip += 1,
+        }
         match &mut self.form {
             Form::Json(stream) => stream.test(test, extra),
             Form::Human => print!("{}", text()),
         }
     }
 
-    /// Reports how many tests passed and failed: a line of human text; the
-    /// event stream has a `test` event for each.
-    pub fn tally(&mut self, passed: u64, failed: u64) {
+    /// How many test cases were reported in all.
+    pub fn test_counts(&self) -> TestCounts {
+        self.tests.unwrap_or_default()
+    }
+
+    /// Reports how many tests passed, failed and were skipped, and whether
+    /// the run as a whole `succeeded`: a line of human text; the summary
+    /// event carries the counts.
+    pub fn tally(&mut self, succeeded: bool) {
         if let Form::Human = self.form {
-            let status = if failed == 0 { "ok" } else { "FAILED" };
-            println!("test result: {status}. {passed} passed; {failed} failed");
+            let TestCounts { pass, fail, skip } = self.test_counts();
+            let status = if succeeded && fail == 0 {
+                "ok"
+            } else {
+                "FAILED"
+            };
+            println!("test result: {status}. {pass} passed; {fail} failed; {skip} skipped");
         }
     }
 
@@ -580,7 +653,14 @@ impl Output {
                 }
             }
             Form::Json(mut stream) => {
-                stream.summary(code, self.errors, self.warnings, self.artifacts, checked);
+                stream.summary(
+                    code,
+                    self.errors,
+                    self.warnings,
+                    self.artifacts,
+                    self.tests,
+                    checked,
+                );
             }
         }
         code

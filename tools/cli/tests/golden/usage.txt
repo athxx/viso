@@ -33,7 +33,7 @@ LANGUAGE
   schema      Show the typed schema of a widget, native library, function or type
 
 TEST / DEBUG
-  test        Run the project's headless tests of a domain
+  test        Run the project's tests: unit, UI, game
   game        Read a state of, or record input from, the game `viso run` is playing
 
 MAINTENANCE

@@ -361,6 +361,9 @@ pub(crate) fn aria_role(role: Role) -> Option<&'static str> {
         Role::Navigation => "navigation",
         Role::Dialog => "dialog",
         Role::Status => "status",
+        Role::Heading => "heading",
+        Role::List => "list",
+        Role::ListItem => "listitem",
         _ => return None,
     })
 }

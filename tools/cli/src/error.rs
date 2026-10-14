@@ -75,13 +75,15 @@ codes! {
     ENV_REMOVE = ENVIRONMENT, "A file or directory the command removes could not be removed.";
     ENV_BUILD_WRITE = ENVIRONMENT, "The build's output could not be written.";
     ENV_TOOL = ENVIRONMENT, "A tool the build needs is not installed or could not be run.";
+    ENV_TEST_TARGET = ENVIRONMENT, "The test domain does not run on that target here.";
 
     BUILD_FAILED = BUILD, "`cargo build` failed.";
     BUILD_PACKAGE = BUILD, "The built app could not be packaged for its target.";
     RUN_APP_FAILED = RUNTIME, "The app could not be launched, crashed, or exited with a failure.";
+    RUN_TEST_CRASHED = RUNTIME, "A test case's runner could not start, crashed, or ended without its report.";
 
     TEST_INPUT_INVALID = DIAGNOSTICS, "A test scenario or tape does not parse or fit the build.";
-    TEST_EXPECTATION = DIAGNOSTICS, "A game test's expectation was not met.";
+    TEST_EXPECTATION = DIAGNOSTICS, "A test's expectation was not met.";
 
     DEVICE_MISSING = ENVIRONMENT, "No simulator or emulator profile exists.";
     DEVICE_UNKNOWN = USAGE, "`--device` or a configured default names no profile.";

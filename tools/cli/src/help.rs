@@ -346,14 +346,11 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
     (
         "test",
         &[
-            ("viso test game", "every scenario under `tests/game/`"),
-            (
-                "viso test game movement --frames 600 --seed 1234",
-                "one, for 600 ticks with seed 1234",
-            ),
+            ("viso test", "every domain"),
+            ("viso test ui", "every scenario under `tests/ui/`, headless"),
             (
                 "viso test game movement --tape runs/jump.tape",
-                "one, replaying a recorded tape",
+                "one game scenario, replaying a recorded tape",
             ),
         ],
     ),
@@ -421,7 +418,7 @@ const NOTES: &[(&str, &str)] = &[
     ),
     (
         "test",
-        "A scenario is `tests/game/<name>.tape`; a failed expectation exits 1.",
+        "A scenario is `tests/ui/<name>.tape` or `tests/game/<name>.tape`; a failed case exits 1, a crashed runner 5.",
     ),
 ];
 

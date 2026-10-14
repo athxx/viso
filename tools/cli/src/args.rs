@@ -122,7 +122,7 @@ pub enum Command {
     Schema(SchemaArgs),
     /// Build a dev artifact for a browser and serve it, hot reloading it.
     Serve(ServeArgs),
-    /// Run the project's headless tests of a domain.
+    /// Run the project's tests: unit, UI, game.
     Test(TestArgs),
 }
 
@@ -340,27 +340,93 @@ pub struct RecordArgs {
 /// The test domains `viso test` runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TestDomain {
+    /// The Cargo package's own tests (`cargo test`).
+    Unit,
+    /// UI scenarios under `tests/ui/`, played on a headless build.
+    Ui,
     /// Deterministic game scenarios under `tests/game/`.
     Game,
+    /// Tests in a browser.
+    Web,
+    /// Every domain; one that has nothing to run here is skipped.
+    All,
+}
+
+impl TestDomain {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TestDomain::Unit => "unit",
+            TestDomain::Ui => "ui",
+            TestDomain::Game => "game",
+            TestDomain::Web => "web",
+            TestDomain::All => "all",
+        }
+    }
+}
+
+/// Where `viso test` runs its cases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TestTarget {
+    /// In this machine's memory, drawn by the software raster.
+    Headless,
+    /// An iOS Simulator.
+    Ios,
+    /// An Android Emulator.
+    Android,
+    /// A browser, the Viso renderer on WebGPU.
+    WebGpu,
+    /// A browser, DOM output.
+    WebDom,
+    /// A browser, DOM with WebGPU islands.
+    WebHybrid,
+}
+
+impl TestTarget {
+    pub fn target(self) -> viso_project::Target {
+        use viso_project::Target;
+        match self {
+            TestTarget::Headless => Target::Headless,
+            TestTarget::Ios => Target::Ios,
+            TestTarget::Android => Target::Android,
+            TestTarget::WebGpu => Target::WebGpu,
+            TestTarget::WebDom => Target::WebDom,
+            TestTarget::WebHybrid => Target::WebHybrid,
+        }
+    }
 }
 
 /// What `viso test` runs.
 #[derive(Debug, Args)]
 pub struct TestArgs {
-    /// The test domain.
-    pub domain: TestDomain,
-    /// The scenario, `tests/game/<SCENARIO>.tape`; every scenario there when
-    /// omitted.
+    /// The test domain; every domain when omitted.
+    pub domain: Option<TestDomain>,
+    /// One scenario of the `ui` or `game` domain, `tests/<domain>/<NAME>.tape`.
     #[arg(add = ArgValueCandidates::new(complete::scenarios))]
     pub scenario: Option<String>,
-    /// The frames to run, one fixed tick each; by default through the tape
-    /// and the scenario's last expectation.
+    /// Run only the cases whose name contains PATTERN (is PATTERN, with
+    /// `--exact`).
+    #[arg(long, value_name = "PATTERN")]
+    pub filter: Option<String>,
+    /// `--filter` names a case exactly.
+    #[arg(long, requires = "filter")]
+    pub exact: bool,
+    /// Stop at the first failed case.
+    #[arg(long)]
+    pub fail_fast: bool,
+    /// Show what every case writes, not only a failed case's.
+    #[arg(long)]
+    pub nocapture: bool,
+    /// Where the cases run: `headless` by default.
+    #[arg(long, value_enum, value_name = "TARGET")]
+    pub target: Option<TestTarget>,
+    /// The frames a game scenario runs, one fixed tick each; by default
+    /// through the tape and the scenario's last expectation.
     #[arg(long, value_name = "N")]
     pub frames: Option<u64>,
-    /// The world's random seed, over the tape's.
+    /// A game world's random seed, over the tape's.
     #[arg(long, value_name = "SEED")]
     pub seed: Option<u64>,
-    /// Replay the input tape at PATH, binary or text, instead of the
+    /// Replay the game input tape at PATH, binary or text, instead of the
     /// scenario's.
     #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
     pub tape: Option<PathBuf>,
@@ -857,12 +923,31 @@ mod tests {
         let Command::Test(args) = cli.command else {
             panic!("a test command");
         };
-        assert_eq!(args.domain, TestDomain::Game);
+        assert_eq!(args.domain, Some(TestDomain::Game));
         assert_eq!(args.scenario.as_deref(), Some("movement"));
         assert_eq!((args.frames, args.seed), (Some(600), Some(1234)));
         assert_eq!(args.tape, Some(PathBuf::from("runs/jump.tape")));
         assert!(Cli::try_parse_from(["viso", "test", "game"]).is_ok());
-        assert!(Cli::try_parse_from(["viso", "test", "web"]).is_err());
+        let cli = Cli::try_parse_from([
+            "viso",
+            "test",
+            "--filter",
+            "count",
+            "--exact",
+            "--fail-fast",
+            "--target",
+            "headless",
+        ])
+        .unwrap();
+        let Command::Test(args) = cli.command else {
+            panic!("a test command");
+        };
+        assert_eq!(args.domain, None);
+        assert_eq!(args.filter.as_deref(), Some("count"));
+        assert!(args.exact && args.fail_fast);
+        assert_eq!(args.target, Some(TestTarget::Headless));
+        assert!(Cli::try_parse_from(["viso", "test", "--exact"]).is_err());
+        assert!(Cli::try_parse_from(["viso", "test", "movement"]).is_err());
     }
 
     #[test]

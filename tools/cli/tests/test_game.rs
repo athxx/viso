@@ -97,7 +97,7 @@ fn a_passing_scenario_reports_ok_with_its_snapshot_hash() {
         "{text}"
     );
     assert!(
-        text.ends_with("test result: ok. 1 passed; 0 failed\n"),
+        text.ends_with("test result: ok. 1 passed; 0 failed; 0 skipped\n"),
         "{text}"
     );
 
@@ -150,7 +150,7 @@ fn an_unmet_expectation_fails_at_its_line() {
         "{err}"
     );
     assert!(err.contains(" --> tests/game/jump.tape:5:1"), "{err}");
-    assert!(stdout(&out).ends_with("test result: FAILED. 0 passed; 1 failed\n"));
+    assert!(stdout(&out).ends_with("test result: FAILED. 0 passed; 1 failed; 0 skipped\n"));
 
     let out = viso(&s.0, &["test", "game", "--json"]);
     let json = stdout(&out);
