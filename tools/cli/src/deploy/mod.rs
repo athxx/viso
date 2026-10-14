@@ -151,8 +151,13 @@ impl Lines {
 enum Stop {
     /// A termination request to the process.
     Signal,
-    /// `simctl terminate`.
-    Simulator { udid: String, id: String },
+    /// `simctl terminate`; the simulator's record of how the app ended,
+    /// when its log streams.
+    Simulator {
+        udid: String,
+        id: String,
+        exits: Option<simulator::ExitWatch>,
+    },
     /// `am force-stop`; the app's pid, to read how it ended.
     Emulator {
         device: Device,
@@ -229,22 +234,26 @@ impl App {
         let Some(status) = process.try_wait()? else {
             return Ok(None);
         };
-        if let Stop::Emulator {
-            device,
-            package,
-            pid,
-        } = &self.stop
-        {
-            let since = Instant::now();
-            loop {
-                if let Some((clean, how)) = device.exit(package, *pid) {
-                    return Ok(Some(Ended::Recorded { clean, how }));
-                }
-                if since.elapsed() >= RECORD_WAIT {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(100));
+        let recorded: Box<dyn Fn() -> Option<(bool, String)>> = match &self.stop {
+            Stop::Emulator {
+                device,
+                package,
+                pid,
+            } => Box::new(|| device.exit(package, *pid)),
+            Stop::Simulator {
+                exits: Some(exits), ..
+            } => Box::new(|| exits.record()),
+            _ => return Ok(Some(Ended::Status(status))),
+        };
+        let since = Instant::now();
+        loop {
+            if let Some((clean, how)) = recorded() {
+                return Ok(Some(Ended::Recorded { clean, how }));
             }
+            if since.elapsed() >= RECORD_WAIT {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
         Ok(Some(Ended::Status(status)))
     }
@@ -257,7 +266,7 @@ impl App {
                     signal(process);
                 }
             }
-            Stop::Simulator { udid, id } => simulator::terminate(udid, id),
+            Stop::Simulator { udid, id, .. } => simulator::terminate(udid, id),
             Stop::Emulator {
                 device, package, ..
             } => device.force_stop(package),
@@ -269,7 +278,7 @@ impl App {
     pub(crate) fn kill(&mut self) {
         match &self.stop {
             Stop::Signal => {}
-            Stop::Simulator { udid, id } => simulator::terminate(udid, id),
+            Stop::Simulator { udid, id, .. } => simulator::terminate(udid, id),
             Stop::Emulator {
                 device, package, ..
             } => device.force_stop(package),
@@ -447,9 +456,16 @@ impl Deploy {
                 let udid = profile.device.clone();
                 let id = apple::bundle_id(&artifact_name(artifact, ".app")?);
                 simulator::install(&udid, artifact)?;
+                // Without its log the session still runs; the app's end then
+                // reads as `simctl`'s.
+                let exits = simulator::ExitWatch::start(&udid, &id).ok();
                 let process = simulator::launch(&udid, &id, args, &vars.of(restore, None), piped)
                     .map_err(|e| format!("cannot run `xcrun simctl launch`: {e}"))?;
-                Ok(App::of(process, Vec::new(), Stop::Simulator { udid, id }))
+                Ok(App::of(
+                    process,
+                    Vec::new(),
+                    Stop::Simulator { udid, id, exits },
+                ))
             }
             Deploy::Emulator {
                 device, reversed, ..

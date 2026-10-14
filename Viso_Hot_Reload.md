@@ -1084,7 +1084,7 @@ restore
 
 这是 Simulator-only development path，不涉及 physical-device signing/provisioning contract。
 
-已实现：Dev build 为 simulator triple（`aarch64-apple-ios-sim` / `x86_64-apple-ios`）构建，在 build 线程上打包为 `.app`（不签名）；旧 app 在新 build 完成且 snapshot 交出后经 `simctl terminate` 停止，`simctl install` 后以 `simctl launch --console-pty --terminate-running-process` 启动，console 输出成为 app 的 `log`。
+已实现：Dev build 为 simulator triple（`aarch64-apple-ios-sim` / `x86_64-apple-ios`）构建，在 build 线程上打包为 `.app`（不签名）；旧 app 在新 build 完成且 snapshot 交出后经 `simctl terminate` 停止，`simctl install` 后以 `simctl launch --console-pty --terminate-running-process` 启动，console 输出成为 app 的 `log`。`simctl launch` 无论 app 如何结束都以 0 退出，simulator 也不保留 app 自行退出的 exit code，只记录它如何被结束；session 在 launch 前开始读 simulator 的 log（`log stream`），取 launch 之后 spawn 的那个实例（runningboardd 的托管记录给出 pid）的 SpringBoard 退出记录：自行退出与 force quit（`simctl terminate`）为正常结束，signal（如 `signal: 6 (SIGABRT)`）、jetsam 等为失败，session 以 exit 5 结束；log 读不到时退回 `simctl` 的状态。iOS 上每一帧都在 UIKit callback 中运行，callback 捕获到的 panic 不再被吞掉，app 随即 abort，从而被记录为 SIGABRT。
 
 ---
 

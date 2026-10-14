@@ -1087,8 +1087,10 @@ differ.
       only to a secure context; a LAN page over plain HTTP gets none).
 - [x] Web: a page that crashed before its dev channel opened reloads when a newer
       build is served (the page's own channel at `/__viso/page`).
-- [ ] iOS simulator: an app that panics ends the session with exit 5 (check what
-      `simctl launch --console-pty` exits with).
+- [x] iOS simulator: an app that panics ends the session with exit 5: `simctl launch`
+      exits 0 however the app ends, so the end is read from the simulator's log (the
+      instance spawned after the launch, its SpringBoard exit record); a panic caught
+      in a UIKit callback aborts the app instead of being swallowed.
 - [x] Web: the page's console, uncaught errors and rejections reach the session as
       `log` over the page's own channel.
 - [ ] Web: the app's own `print!`/`eprintln!` reach the session: std discards them on

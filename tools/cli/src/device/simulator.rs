@@ -7,10 +7,19 @@
 //! hands it the dev variables as its environment (each `SIMCTL_CHILD_` name
 //! with the prefix taken off). Nothing is signed beyond ad-hoc and nothing is
 //! provisioned.
+//!
+//! `simctl launch` ends with 0 however the app ended, and the simulator keeps
+//! no exit code of an app that exits on its own; it records only how the app
+//! was ended — by a signal, by a force quit, or on its own. [`ExitWatch`]
+//! reads that record from the simulator's log, so an app that aborts — a
+//! panic does — ends the session as a failure.
 
 use std::ffi::OsString;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use viso_ende::JsonValue;
 use viso_project::{DeviceProfile, Preset};
@@ -218,9 +227,196 @@ pub(crate) fn terminate(udid: &str, id: &str) {
         .status();
 }
 
+/// How long the simulator's log has to start streaming.
+const WATCH_START: Duration = Duration::from_secs(10);
+
+/// What the simulator records of how the app ends: of the instance spawned
+/// last since the watch began, so a stale instance a launch stops is not
+/// taken for it.
+pub(crate) struct ExitWatch {
+    stream: Child,
+    record: Arc<Mutex<Option<(bool, String)>>>,
+}
+
+impl ExitWatch {
+    /// Watches the app `id` on the simulator `udid`, once the log streams.
+    pub(crate) fn start(udid: &str, id: &str) -> Result<ExitWatch, String> {
+        let predicate = format!(
+            "(process == \"runningboardd\" AND eventMessage CONTAINS \"[app<{id}(\" \
+             AND eventMessage ENDSWITH \"This process will be managed.\") \
+             OR (process == \"SpringBoard\" AND eventMessage CONTAINS \"[app<{id}>:\" \
+             AND eventMessage CONTAINS \"Process exited:\")"
+        );
+        let mut stream = simctl()
+            .args([
+                "spawn",
+                udid,
+                "log",
+                "stream",
+                "--style",
+                "compact",
+                "--predicate",
+            ])
+            .arg(predicate)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("cannot read the simulator's log: {e}"))?;
+        let stdout = stream.stdout.take().expect("piped");
+        let record = Arc::new(Mutex::new(None));
+        let (started, ready) = std::sync::mpsc::channel();
+        let shared = Arc::clone(&record);
+        let id = id.to_owned();
+        std::thread::Builder::new()
+            .name("viso-simulator-exits".into())
+            .spawn(move || {
+                let mut spawned = None;
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    // The stream's header comes first.
+                    let _ = started.send(());
+                    if let Some(pid) = spawned_pid(&line, &id) {
+                        spawned = Some(pid);
+                    } else if let Some((pid, ended)) = exit_record(&line, &id)
+                        && Some(pid) == spawned
+                    {
+                        *shared.lock().unwrap_or_else(|e| e.into_inner()) = Some(ended);
+                    }
+                }
+            })
+            .map_err(|e| format!("cannot read the simulator's log: {e}"))?;
+        if ready.recv_timeout(WATCH_START).is_err() {
+            let _ = stream.kill();
+            let _ = stream.wait();
+            return Err("the simulator's log does not stream".into());
+        }
+        Ok(ExitWatch { stream, record })
+    }
+
+    /// How the app ended — whether cleanly, and how that reads — once the
+    /// simulator recorded it.
+    pub(crate) fn record(&self) -> Option<(bool, String)> {
+        self.record
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+impl Drop for ExitWatch {
+    fn drop(&mut self) {
+        let _ = self.stream.kill();
+        let _ = self.stream.wait();
+    }
+}
+
+/// The pid of `runningboardd`'s record that it manages the app `id`, a
+/// process just spawned.
+fn spawned_pid(line: &str, id: &str) -> Option<u32> {
+    if !line.ends_with("This process will be managed.") {
+        return None;
+    }
+    let rest = &line[line.find(&format!("[app<{id}("))?..];
+    rest[rest.find(">:")? + 2..].split(']').next()?.parse().ok()
+}
+
+/// The pid and end of SpringBoard's record that the app `id` exited: on its
+/// own, or force quit (as `simctl terminate` does), is clean; a signal or
+/// any other status is not.
+fn exit_record(line: &str, id: &str) -> Option<(u32, (bool, String))> {
+    let marker = format!("[app<{id}>:");
+    let rest = &line[line.find(&marker)? + marker.len()..];
+    let (pid, rest) = rest.split_once(']')?;
+    let pid = pid.parse().ok()?;
+    let context = rest
+        .trim_start()
+        .strip_prefix("Process exited: <RBSProcessExitContext| ")?;
+    if context.starts_with("voluntary") {
+        return Some((pid, (true, "exited".into())));
+    }
+    let status = context.split("RBSProcessExitStatus| ").nth(1)?;
+    let status = status.split('>').next()?.trim();
+    let field = |name: &str| {
+        status
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix(name))
+            .map(str::to_owned)
+    };
+    let domain = field("domain:")?;
+    let code = field("code:").unwrap_or_default();
+    let ended = if domain.starts_with("signal(") {
+        // `SIGABRT(6)` reads as the host's `signal: 6 (SIGABRT)`.
+        let (name, number) = code.split_once('(').unwrap_or((&code, ""));
+        let number = number.trim_end_matches(')');
+        (false, format!("signal: {number} ({name})"))
+    } else if domain.starts_with("frontboard(") && code.starts_with("force-quit") {
+        (true, "terminated".into())
+    } else {
+        (false, format!("{domain} {code}"))
+    };
+    Some((pid, ended))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_simulator_log_names_the_spawn_and_how_the_app_ended() {
+        let spawn = "2026-10-15 00:30:03.687 Df runningboardd[36419:dc169f] \
+                     [com.apple.runningboard:process] [app<dev.viso.probe((null))>:38774] \
+                     This process will be managed.";
+        assert_eq!(spawned_pid(spawn, "dev.viso.probe"), Some(38774));
+        assert_eq!(spawned_pid(spawn, "dev.viso.other"), None);
+        assert_eq!(
+            spawned_pid(
+                &spawn.replace("will be managed.", "is gone."),
+                "dev.viso.probe"
+            ),
+            None
+        );
+
+        let exit = |context: &str| {
+            format!(
+                "2026-10-15 00:30:03.735 Df SpringBoard[36416:dc16a8] \
+                 [com.apple.FrontBoard:Process] [app<dev.viso.probe>:36931] \
+                 Process exited: {context}."
+            )
+        };
+        let read = |context: &str| exit_record(&exit(context), "dev.viso.probe");
+        assert_eq!(
+            read("<RBSProcessExitContext| voluntary>"),
+            Some((36931, (true, "exited".into())))
+        );
+        assert_eq!(
+            read(
+                "<RBSProcessExitContext| specific, status:<RBSProcessExitStatus| \
+                 domain:signal(2) code:SIGABRT(6)>>"
+            ),
+            Some((36931, (false, "signal: 6 (SIGABRT)".into())))
+        );
+        assert_eq!(
+            read(
+                "<RBSProcessExitContext| specific, status:<RBSProcessExitStatus| \
+                 domain:frontboard(10) code:force-quit(0xfbfbfbfb)>>"
+            ),
+            Some((36931, (true, "terminated".into())))
+        );
+        assert_eq!(
+            read(
+                "<RBSProcessExitContext| specific, status:<RBSProcessExitStatus| \
+                 domain:jetsam(6) code:per-process-limit(7)>>"
+            ),
+            Some((36931, (false, "jetsam(6) per-process-limit(7)".into())))
+        );
+        assert_eq!(
+            exit_record(
+                &exit("<RBSProcessExitContext| voluntary>"),
+                "dev.viso.other"
+            ),
+            None
+        );
+    }
 
     #[test]
     fn a_phone_is_the_newest_plain_iphone_and_a_tablet_an_ipad_pro() {

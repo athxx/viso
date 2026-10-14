@@ -320,9 +320,15 @@ fn set_focused(focused: bool) {
     }
 }
 
-/// Run `f` without letting a panic unwind into UIKit.
+/// Runs `f` without letting a panic unwind into UIKit. Every frame of the
+/// app runs inside a UIKit callback, so a panic ends the app as an unwind
+/// out of `main` would — its message already written by the panic hook — by
+/// aborting: the system records the signal, which is how the app is known to
+/// have failed.
 fn guarded(f: impl FnOnce()) {
-    let _ = catch_unwind(AssertUnwindSafe(f));
+    if catch_unwind(AssertUnwindSafe(f)).is_err() {
+        std::process::abort();
+    }
 }
 
 /// The native iOS application.
