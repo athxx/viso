@@ -104,7 +104,28 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
         lastAppearance = appearance(config);
         lastFontScale = config.fontScale;
         lastLocale = locale(config);
-        nativeStart(this, lastDensity, lastAppearance, lastFontScale, lastLocale);
+        nativeStart(this, lastDensity, lastAppearance, lastFontScale, lastLocale,
+                launchExtras());
+    }
+
+    /**
+     * The launch intent's string extras, as names and values in turn: the
+     * app's launch variables.
+     */
+    private String[] launchExtras() {
+        Bundle extras = getIntent() == null ? null : getIntent().getExtras();
+        if (extras == null) {
+            return new String[0];
+        }
+        java.util.ArrayList<String> pairs = new java.util.ArrayList<>();
+        for (String key : extras.keySet()) {
+            String value = extras.getString(key);
+            if (value != null) {
+                pairs.add(key);
+                pairs.add(value);
+            }
+        }
+        return pairs.toArray(new String[0]);
     }
 
     private String libraryName() {
@@ -376,7 +397,7 @@ public class VisoActivity extends Activity implements SurfaceHolder.Callback2 {
     // The native loop.
 
     static native void nativeStart(VisoActivity activity, float density, int appearance,
-            float fontScale, String locale);
+            float fontScale, String locale, String[] launchExtras);
 
     static native void nativeDestroy();
 

@@ -34,19 +34,96 @@ pub struct Global {
 /// The subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Manage the Android Emulator profiles `viso run android` runs on.
+    #[command(subcommand)]
+    Android(AndroidCommand),
     /// Check the project's `.vs` sources and `Viso.toml` without building.
     Check,
     /// Read a state of, or record a tape from, a game the running `viso run`
     /// session's app plays.
     #[command(subcommand)]
     Game(GameCommand),
-    /// Build the project as a dev artifact and run it on this machine, hot
-    /// reloading its `.vs` views and `assets/` files as they are saved.
+    /// Manage the iOS Simulator profiles `viso run ios` runs on.
+    #[command(subcommand)]
+    Ios(IosCommand),
+    /// Build the project as a dev artifact and run it on this machine, a
+    /// simulator, an emulator or a browser, hot reloading its `.vs` views,
+    /// assets and Rust code as they are saved.
     Run(RunArgs),
     /// Show the typed schema of a widget, native library, function or type.
     Schema(SchemaArgs),
     /// Run the project's headless tests of a domain.
     Test(TestArgs),
+}
+
+/// What `viso android` manages.
+#[derive(Debug, Subcommand)]
+pub enum AndroidCommand {
+    /// The emulator profiles.
+    #[command(subcommand)]
+    Emulator(DeviceCommand),
+}
+
+/// What `viso ios` manages.
+#[derive(Debug, Subcommand)]
+pub enum IosCommand {
+    /// The simulator profiles.
+    #[command(subcommand)]
+    Simulator(DeviceCommand),
+}
+
+/// What is done with a simulator or emulator profile.
+#[derive(Debug, Subcommand)]
+pub enum DeviceCommand {
+    /// List the profiles and whether each is booted.
+    List,
+    /// Create a profile and its virtual device.
+    Create(CreateArgs),
+    /// Boot a profile's device.
+    Start(StartArgs),
+    /// Shut a profile's device down.
+    Stop(DeviceArgs),
+    /// Delete a profile and its virtual device.
+    Delete(DeviceArgs),
+}
+
+/// The form factor of a new profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum PresetArg {
+    #[default]
+    Phone,
+    Tablet,
+}
+
+/// What `create` makes.
+#[derive(Debug, Args)]
+pub struct CreateArgs {
+    /// The profile ID: lowercase letters, digits and `-`.
+    pub id: String,
+    /// The device's form factor.
+    #[arg(long, value_enum, default_value_t)]
+    pub preset: PresetArg,
+    /// The Android API level of its system image (the newest installed when
+    /// omitted); Android only.
+    #[arg(long, value_name = "LEVEL")]
+    pub api: Option<String>,
+}
+
+/// What `start` boots.
+#[derive(Debug, Args)]
+pub struct StartArgs {
+    /// The profile ID.
+    pub id: String,
+    /// Boot the emulator without its window (Android only).
+    #[arg(long)]
+    pub no_window: bool,
+}
+
+/// The profile a command acts on.
+#[derive(Debug, Args)]
+pub struct DeviceArgs {
+    /// The profile ID.
+    pub id: String,
 }
 
 /// What `viso game` does with a running game (section 22.3).
@@ -121,9 +198,34 @@ pub struct TestArgs {
     pub tape: Option<PathBuf>,
 }
 
-/// What `viso run` passes on (section 13.4).
+/// Where `viso run` runs the app besides this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum RunTarget {
+    /// An iOS Simulator.
+    Ios,
+    /// An Android Emulator.
+    Android,
+    /// A browser, the Viso renderer on WebGPU.
+    WebGpu,
+    /// A browser, DOM output.
+    WebDom,
+    /// A browser, DOM with WebGPU islands.
+    WebHybrid,
+}
+
+/// What `viso run` runs, and passes on.
 #[derive(Debug, Args)]
 pub struct RunArgs {
+    /// Where to run: this machine when omitted.
+    #[arg(value_enum)]
+    pub target: Option<RunTarget>,
+    /// The simulator or emulator profile (`ios` and `android` only).
+    #[arg(long, value_name = "ID")]
+    pub device: Option<String>,
+    /// The browser to open (`web-*` only): `chrome`, `safari`, `firefox`, or
+    /// `none` to only serve.
+    #[arg(long, value_name = "NAME")]
+    pub browser: Option<String>,
     /// Keep the dev session up but apply no edit to the app: each is compiled
     /// and reported, not sent.
     #[arg(long)]
@@ -150,9 +252,23 @@ impl Command {
     /// The command path the JSON envelope reports.
     pub fn name(&self) -> &'static str {
         match self {
+            Command::Android(AndroidCommand::Emulator(command)) => match command {
+                DeviceCommand::List => "android emulator list",
+                DeviceCommand::Create(_) => "android emulator create",
+                DeviceCommand::Start(_) => "android emulator start",
+                DeviceCommand::Stop(_) => "android emulator stop",
+                DeviceCommand::Delete(_) => "android emulator delete",
+            },
             Command::Check => "check",
             Command::Game(GameCommand::Peek(_)) => "game peek",
             Command::Game(GameCommand::Record(_)) => "game record",
+            Command::Ios(IosCommand::Simulator(command)) => match command {
+                DeviceCommand::List => "ios simulator list",
+                DeviceCommand::Create(_) => "ios simulator create",
+                DeviceCommand::Start(_) => "ios simulator start",
+                DeviceCommand::Stop(_) => "ios simulator stop",
+                DeviceCommand::Delete(_) => "ios simulator delete",
+            },
             Command::Run(_) => "run",
             Command::Schema(_) => "schema",
             Command::Test(_) => "test",
@@ -221,7 +337,7 @@ mod tests {
             Cli::try_parse_from(["viso", "run", "--json", "--", "--open", "demo.vs"]).unwrap();
         assert!(cli.global.json);
         assert!(
-            matches!(&cli.command, Command::Run(RunArgs { app_args, no_hot_reload: false }) if app_args == &["--open", "demo.vs"])
+            matches!(&cli.command, Command::Run(RunArgs { app_args, no_hot_reload: false, target: None, .. }) if app_args == &["--open", "demo.vs"])
         );
         let cli = Cli::try_parse_from(["viso", "run", "--no-hot-reload"]).unwrap();
         assert!(matches!(
@@ -232,7 +348,53 @@ mod tests {
             })
         ));
         assert!(Cli::try_parse_from(["viso", "run", "host"]).is_err());
+        assert!(Cli::try_parse_from(["viso", "run", "headless"]).is_err());
+        assert!(Cli::try_parse_from(["viso", "run", "--target", "ios"]).is_err());
+        let cli =
+            Cli::try_parse_from(["viso", "run", "android", "--device", "pixel-local"]).unwrap();
+        assert!(matches!(
+            &cli.command,
+            Command::Run(RunArgs { target: Some(RunTarget::Android), device: Some(d), .. }) if d == "pixel-local"
+        ));
+        let cli = Cli::try_parse_from(["viso", "run", "web-gpu", "--browser", "none"]).unwrap();
+        assert!(matches!(
+            &cli.command,
+            Command::Run(RunArgs {
+                target: Some(RunTarget::WebGpu),
+                browser: Some(_),
+                ..
+            })
+        ));
         assert!(!wants_json(&["run", "--", "--json"]));
+    }
+
+    #[test]
+    fn device_profiles_are_managed_per_platform() {
+        let cli = Cli::try_parse_from([
+            "viso", "android", "emulator", "create", "pixel35", "--api", "35",
+        ])
+        .unwrap();
+        assert_eq!(cli.command.name(), "android emulator create");
+        let Command::Android(AndroidCommand::Emulator(DeviceCommand::Create(args))) = cli.command
+        else {
+            panic!("a create");
+        };
+        assert_eq!((&*args.id, args.api.as_deref()), ("pixel35", Some("35")));
+        assert_eq!(args.preset, PresetArg::Phone);
+        let cli = Cli::try_parse_from([
+            "viso",
+            "ios",
+            "simulator",
+            "create",
+            "ipad-local",
+            "--preset",
+            "tablet",
+        ])
+        .unwrap();
+        assert_eq!(cli.command.name(), "ios simulator create");
+        let cli = Cli::try_parse_from(["viso", "ios", "simulator", "list", "--json"]).unwrap();
+        assert_eq!(cli.command.name(), "ios simulator list");
+        assert!(Cli::try_parse_from(["viso", "ios", "emulator", "list"]).is_err());
     }
 
     #[test]

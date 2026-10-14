@@ -20,6 +20,9 @@ viso-svg = { workspace = true }
 viso-text = { workspace = true }
 viso-ende = { workspace = true }
 viso-project = { workspace = true }
+# A dev build for a simulator, an emulator or a browser is packaged as the
+# release build is.
+viso-package = { workspace = true }
 # A mature parser rather than a hand-rolled one (section 42): subcommands, global
 # options accepted before or after the subcommand, generated help and stable usage
 # errors. Color and terminal detection stay off; human output is plain text.

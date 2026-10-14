@@ -281,6 +281,28 @@ impl Output {
         }
     }
 
+    /// Reports where the virtual device `id` (`name`, as the platform
+    /// calls it) of `platform` is: a `device` event, or a line on stderr.
+    pub fn device(&mut self, platform: &str, id: &str, name: &str, state: &str) {
+        match &mut self.form {
+            Form::Json(stream) => stream.device(platform, id, name, state),
+            Form::Human => {
+                if !self.quiet {
+                    eprintln!("[viso] {platform} {id}: {state}");
+                }
+            }
+        }
+    }
+
+    /// Reports the dev server's address: a `server` event, or a line on
+    /// stderr.
+    pub fn server(&mut self, url: &str, host: &str, port: u16, lan: bool) {
+        match &mut self.form {
+            Form::Json(stream) => stream.server(url, host, port, lan),
+            Form::Human => eprintln!("[viso] serving at {url}"),
+        }
+    }
+
     /// Reports a line from `source` (`app`, `device` or `tool`) at `level`: a
     /// `log` event, which `--quiet` drops, or a line on stderr.
     pub fn log(&mut self, level: &str, source: &str, message: &str) {

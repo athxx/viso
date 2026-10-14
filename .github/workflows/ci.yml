@@ -71,3 +71,51 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Release absence
         run: cargo xtask check-release-absence ${{ matrix.args }}
+
+  # `viso run ios|android|web-gpu` end to end: boot, install,
+  # connect, a `.vs` patch, a Rust warm restart with state restored, Ctrl-C.
+  # Each test creates its own simulator or emulator profile and deletes it.
+  ios-simulator:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - name: Simulator session
+        run: cargo test -p viso-cli --test device -- --ignored --nocapture ios_simulator
+
+  android-emulator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install the emulator and a system image
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --licenses > /dev/null
+          "$sdkmanager" emulator platform-tools "system-images;android-35;google_apis;x86_64"
+      # No display: the emulator boots without a window, on SwiftShader.
+      - name: Emulator session
+        run: cargo test -p viso-cli --test device -- --ignored --nocapture android_emulator
+
+  web:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-bindgen
+        run: |
+          version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/"/, "", $3); print $3; exit }' Cargo.lock)
+          cargo install wasm-bindgen-cli --locked --version "$version"
+      - name: Browser session
+        run: cargo test -p viso-cli --test device -- --ignored --nocapture web

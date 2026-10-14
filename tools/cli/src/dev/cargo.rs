@@ -26,23 +26,27 @@ pub(crate) struct RustScope {
     /// The files beside them Cargo reads: the workspace's lock file, and each
     /// configuration and toolchain pin it looks for, existing or not.
     pub(crate) files: Vec<PathBuf>,
+    /// The directory of every package the app links, a registry or git one
+    /// as well: where a platform shell the app is packaged with is found.
+    pub(crate) linked: Vec<PathBuf>,
 }
 
 impl RustScope {
     /// The scope of the package whose manifest is `manifest`, a canonical
-    /// path, as `cargo metadata` resolves it for the host.
+    /// path, as `cargo metadata` resolves it for the Rust `target` (the host
+    /// when `None`).
     ///
     /// # Errors
     ///
     /// Cargo or `rustc` not running, or Cargo's answer not being metadata.
-    pub(crate) fn read(manifest: &Path) -> Result<RustScope, String> {
+    pub(crate) fn read(manifest: &Path, target: Option<&str>) -> Result<RustScope, String> {
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
         let mut command = Command::new(&cargo);
         command
             .args(["metadata", "--format-version", "1", "--manifest-path"])
             .arg(manifest);
-        if let Some(host) = host_triple() {
-            command.args(["--filter-platform", &host]);
+        if let Some(platform) = target.map(str::to_owned).or_else(host_triple) {
+            command.args(["--filter-platform", &platform]);
         }
         let output = command
             .output()
@@ -120,6 +124,9 @@ impl RustScope {
             };
             if let Some(dir) = path_package(package) {
                 scope.packages.push(dir.to_owned());
+            }
+            if let Some(dir) = manifest_of(package).and_then(|m| Path::new(m).parent()) {
+                scope.linked.push(dir.to_owned());
             }
         }
         for package in packages {
@@ -288,7 +295,7 @@ mod tests {
             .join("Cargo.toml")
             .canonicalize()
             .unwrap();
-        let scope = RustScope::read(&manifest).unwrap();
+        let scope = RustScope::read(&manifest, None).unwrap();
         assert_eq!(scope.packages[0], manifest.parent().unwrap());
         let dsl = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../crates/dsl")

@@ -171,7 +171,7 @@ pub fn run<A: Application>() {
     // `viso run` executes a new build once before restarting on it, for the
     // OS to check the executable while the old app runs on.
     #[cfg(feature = "hot-reload")]
-    if std::env::var_os(viso_view::dev::wire::DEV_PREWARM_ENV).is_some() {
+    if viso_platform::launch_var(viso_view::dev::wire::DEV_PREWARM_ENV).is_some() {
         return;
     }
     // A headless fallback has no OS behind its services.

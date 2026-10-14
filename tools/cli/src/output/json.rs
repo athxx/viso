@@ -65,6 +65,38 @@ impl Stream {
         });
     }
 
+    /// Writes a `device` event.
+    pub(super) fn device(&mut self, platform: &str, id: &str, name: &str, state: &str) {
+        self.event("device", |w| {
+            w.begin_object();
+            w.name("platform");
+            w.string(platform);
+            w.name("id");
+            w.string(id);
+            w.name("name");
+            w.string(name);
+            w.name("state");
+            w.string(state);
+            w.end_object();
+        });
+    }
+
+    /// Writes a `server` event.
+    pub(super) fn server(&mut self, url: &str, host: &str, port: u16, lan: bool) {
+        self.event("server", |w| {
+            w.begin_object();
+            w.name("url");
+            w.string(url);
+            w.name("host");
+            w.string(host);
+            w.name("port");
+            w.uint(u64::from(port));
+            w.name("lan");
+            w.bool(lan);
+            w.end_object();
+        });
+    }
+
     /// Writes a `log` event.
     pub(super) fn log(&mut self, level: &str, source: &str, message: &str) {
         self.event("log", |w| {

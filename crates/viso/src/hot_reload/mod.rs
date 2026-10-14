@@ -63,12 +63,12 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use viso_behavior::game::{GameSnapshot, PreparedSwap};
 use viso_behavior::{Module, Vm};
 use viso_gpu::GpuBackend;
-use viso_platform::{LoopWaker, WindowId};
+use viso_platform::{Instant, LoopWaker, WindowId};
 use viso_render::asset::{ResourceId, ResourceRevision};
 use viso_runtime::RuntimeCx;
 use viso_text::{PackagedFonts, ReplacedFiles};
@@ -107,8 +107,7 @@ use link::{DevLink, Incoming, Loaded, LoadedAsset};
 pub(crate) fn launch_window(
     mut config: viso_platform::WindowConfig,
 ) -> viso_platform::WindowConfig {
-    let geometry = std::env::var(DEV_WINDOW_ENV)
-        .ok()
+    let geometry = viso_platform::launch_var(DEV_WINDOW_ENV)
         .and_then(|value| WindowGeometry::from_env(&value));
     if let Some(geometry) = geometry {
         config.logical_size = geometry.size;
@@ -166,6 +165,10 @@ pub(crate) struct HotReloadSession {
     awaiting_restore: bool,
     /// The restore being applied, until the first frame boundary.
     restoring: Option<Restoring>,
+    /// In a browser, which cannot wait: the launch window's adoption held
+    /// for the restore.
+    #[cfg(target_arch = "wasm32")]
+    held: Option<HeldLaunch>,
     /// What the host delivered while the loop waited for the restore, taken
     /// with the next wakeup.
     deferred: VecDeque<Incoming>,
@@ -282,6 +285,20 @@ struct ViewFile {
     failure: Option<Vec<String>>,
 }
 
+/// The rest of the launch window's adoption, held in a browser until the
+/// restore arrives or [`RESTORE_WAIT`] passes: the window, its first view,
+/// the cells its build allocated, and the restore and its snapshot's bytes
+/// once they arrived.
+#[cfg(target_arch = "wasm32")]
+struct HeldLaunch {
+    window: WindowId,
+    first: usize,
+    cells: Vec<(StateId, StateKey)>,
+    deadline: Instant,
+    restore: Option<Box<RestoreBundle>>,
+    bytes: Option<Arc<[u8]>>,
+}
+
 /// One mount of a file in a window.
 struct LiveView {
     window: WindowId,
@@ -309,9 +326,9 @@ impl HotReloadSession {
             self.started = true;
             let waker = waker();
             self.waker = Some(waker.clone());
-            self.link = DevLink::from_env(waker, SCHEMA, APPLIES);
+            self.link = DevLink::from_launch(waker, SCHEMA, APPLIES);
             self.awaiting_restore =
-                self.link.is_some() && std::env::var_os(DEV_RESTORE_ENV).is_some();
+                self.link.is_some() && viso_platform::launch_var(DEV_RESTORE_ENV).is_some();
         }
         let Some(link) = &mut self.link else {
             self.records.clear();
@@ -375,6 +392,22 @@ impl HotReloadSession {
             link.send(RuntimeMessage::Mounts(mounted));
         }
         if std::mem::take(&mut self.awaiting_restore) {
+            // A page cannot wait for the restore: the rest of the adoption
+            // waits for it instead, and the first frame boundary after it
+            // arrives restores the window (`resume_restore`).
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.held = Some(HeldLaunch {
+                    window: ws.window,
+                    first,
+                    cells: std::mem::take(&mut self.allocated),
+                    deadline: Instant::now() + RESTORE_WAIT,
+                    restore: None,
+                    bytes: None,
+                });
+                return;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             self.await_restore();
         }
         if self.views.len() > first {
@@ -454,6 +487,7 @@ impl HotReloadSession {
     /// Waits, at most [`RESTORE_WAIT`], for the restore the host sends once
     /// it has the first mounts, keeping what else arrives for the next
     /// wakeup; without one the app runs fresh.
+    #[cfg(not(target_arch = "wasm32"))]
     fn await_restore(&mut self) {
         let Some(link) = &self.link else {
             return;
@@ -477,6 +511,35 @@ impl HotReloadSession {
                 "no restore arrived in time: the app runs fresh".into(),
             ),
         }
+    }
+
+    /// Restores the launch window held for the restore once it arrived, or
+    /// adopts it fresh once [`RESTORE_WAIT`] passed without one.
+    #[cfg(target_arch = "wasm32")]
+    fn resume_restore(&mut self, windows: &mut [WindowState]) {
+        let Some(held) = &self.held else {
+            return;
+        };
+        if held.restore.is_none() && Instant::now() < held.deadline {
+            return;
+        }
+        let mut held = self.held.take().expect("held");
+        match held.restore.take() {
+            Some(bundle) => self.load_restore(*bundle, held.bytes.take()),
+            None => self.log(
+                LogLevel::Warn,
+                "no restore arrived in time: the app runs fresh".into(),
+            ),
+        }
+        let Some(ws) = windows.iter_mut().find(|ws| ws.window == held.window) else {
+            return;
+        };
+        if self.views.len() > held.first {
+            self.restore_window(ws, held.first);
+            self.windows_mounted += 1;
+        }
+        self.allocated = held.cells;
+        self.adopt_cells(ws, held.first);
     }
 
     /// Takes the restore `bundle` and its snapshot's `bytes`, for the
@@ -910,6 +973,15 @@ impl HotReloadSession {
                     self.snapshot_asked = true;
                     changed = true;
                 }
+                // The launch window waits for it in a browser.
+                #[cfg(target_arch = "wasm32")]
+                Incoming::Restore(bundle, bytes) if self.held.is_some() => {
+                    if let Some(held) = &mut self.held {
+                        held.restore = Some(bundle);
+                        held.bytes = bytes;
+                    }
+                    changed = true;
+                }
                 // The app runs already: the state it would restore is not
                 // the state it shows.
                 Incoming::Restore(..) => {
@@ -991,6 +1063,8 @@ impl HotReloadSession {
     /// host's questions about games. A mount recorded since the last adoption
     /// is not a window's build (a list row) and is not tracked.
     pub(crate) fn reload(&mut self, windows: &mut [WindowState], assets: &mut Assets) {
+        #[cfg(target_arch = "wasm32")]
+        self.resume_restore(windows);
         take_mounts(&mut self.records);
         self.records.clear();
         state_origin::clear_allocations();

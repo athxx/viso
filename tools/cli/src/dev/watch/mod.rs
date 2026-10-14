@@ -647,6 +647,7 @@ mod tests {
             packages: vec![root.clone(), dep.clone()],
             unlinked: Vec::new(),
             files: vec![root.join("Cargo.lock"), root.join(".cargo/config.toml")],
+            linked: Vec::new(),
         };
         let (_watcher, seen) = watching_rust(&root, rust);
         let mut taken = 0;
@@ -714,6 +715,7 @@ mod tests {
             packages: vec![root.clone(), dep.to_owned()],
             unlinked: Vec::new(),
             files: Vec::new(),
+            linked: Vec::new(),
         };
         let (watcher, seen) = watching_rust(&root, rust(&old));
         let mut taken = 0;

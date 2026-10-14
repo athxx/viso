@@ -1084,3 +1084,14 @@ impl Window for WebWindow {
         }
     }
 }
+
+/// The member `name` of the page's `visoLaunch` object, when it is a string.
+pub(crate) fn launch_var(name: &str) -> Option<String> {
+    let launch = Reflect::get(&js_sys::global(), &JsValue::from_str("visoLaunch")).ok()?;
+    if launch.is_undefined() || launch.is_null() {
+        return None;
+    }
+    Reflect::get(&launch, &JsValue::from_str(name))
+        .ok()?
+        .as_string()
+}

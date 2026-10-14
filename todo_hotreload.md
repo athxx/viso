@@ -1051,20 +1051,47 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
 Goal: the same patches reach emulator, simulator and browser; only transport and deploy
 differ.
 
-- [ ] `viso run ios` / `viso run android` / `viso run web-*` targets and `--device`
-      in the CLI (`Viso_CLI.md` §3, §2).
+- [x] `viso run ios` / `viso run android` / `viso run web-*` targets and `--device`
+      in the CLI (`Viso_CLI.md` §3, §2): one deploy layer (build target, packaging on
+      the build thread, install, launch, logs, stop) under the same dev session;
+      `web-dom`/`web-hybrid` stay unavailable.
+- [x] Shared packager crate (`viso-package`) for `xtask bundle` and the CLI: `.app`,
+      dev/release APK with cached dex and base APK, wasm-bindgen bundle.
+- [x] Device profiles: `viso ios simulator` / `viso android emulator`
+      `list|create|start|stop|delete`, `~/.viso` store, default from
+      `.viso/local.toml` or the machine config; AVDs written without `avdmanager`.
+- [x] Launch variables through `viso_platform::launch_var`: env, `SIMCTL_CHILD_*`,
+      intent extras, the page's `visoLaunch`.
+- [x] The device boots during the launch build and a boot failure ends the session
+      at once.
+- [ ] TTY prompt to pick or create a profile when `--device` is ambiguous or missing
+      (`Viso_CLI.md` §13.2); `--json` keeps the diagnostics.
 - [ ] Android emulator: profile → adb serial mapping, `adb reverse` for the dev port
       (no LAN exposure), dev APK build/install/launch, warm restart delays stopping
-      the old process until the candidate is built (§27).
-- [ ] iOS simulator: `simctl` install/launch, host-reachable loopback transport, no
+      the old process until the candidate is built (§27). Built, installed, launched
+      and logged on an emulator, with its exit status from `ApplicationExitInfo`;
+      the patch and restart are unverified: the local emulator (36.4.10) cannot
+      create a Vulkan instance on the only installed image (API 37 preview).
+- [x] iOS simulator: `simctl` install/launch, host-reachable loopback transport, no
       signing or provisioning (§28).
-- [ ] Web: dev server with a WebSocket dev channel bound to loopback (LAN opt-in),
+- [x] Web: dev server with a WebSocket dev channel bound to loopback (LAN opt-in),
       the web dev runtime only in the dev build, patches applied in the browser;
       Rust/wasm change rebuilds and restores from a snapshot.
-- [ ] The app never watches files on mobile/web (the in-app watcher is already gone
+- [x] The app never watches files on mobile/web (the in-app watcher is already gone
       after H1).
+- [ ] Web: LAN opt-in for the dev server (`viso serve web-* --lan`, §46).
+- [ ] Web: a page that crashed before its dev channel opened is not reloaded when a
+      newer build is served (nothing to close); reload it from the page itself.
+- [ ] iOS simulator: an app that panics ends the session with exit 5 (check what
+      `simctl launch --console-pty` exits with).
+- [ ] Web: the page's stdout/stderr reach the session as `log` (they go nowhere on
+      `wasm32-unknown-unknown` today; only the dev channel's logs arrive).
+- [ ] `view!` builds the host platform stack for every cross build (the proc macro
+      reaches `viso-platform` through `viso-dsl` → `viso-ui`); cut that edge.
 - [ ] CI: Android fake + emulator job and iOS simulator job covering boot, install,
-      connect, hot patch, Rust warm restart, reconnect (§63).
+      connect, hot patch, Rust warm restart, reconnect (§63). The `device` e2e tests
+      and the `ios-simulator`, `android-emulator` and `web` jobs exist; not yet run
+      on CI; no Android fake.
 
 ### Done
 
@@ -1100,7 +1127,8 @@ Goal: one source graph serves several running runtimes with per-runtime revision
 - [ ] §62 integration suite under a test host driving a real dev app: UI, invalid
       `.vs`, shader, game, Rust.
 - [ ] §63 simulator/emulator suite.
-- [ ] §64 release absence suite in CI.
+- [ ] §64 release absence suite in CI, including the web, Android and iOS
+      simulator dev/release artifacts (per-target markers: no link thread on web).
 - [ ] Fuzz: random and mutated dev frames never panic the runtime decoder and never
       change last-good.
 - [ ] §71 Definition of Done checklist test, one test per item.

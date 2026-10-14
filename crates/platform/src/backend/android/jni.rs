@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use jni_sys::{
     JNI_ERR, JNI_OK, JNI_VERSION_1_6, JNIEnv, JNINativeMethod, JavaVM, jboolean, jclass, jfloat,
-    jfloatArray, jint, jintArray, jmethodID, jobject, jstring, jvalue,
+    jfloatArray, jint, jintArray, jmethodID, jobject, jobjectArray, jstring, jvalue,
 };
 
 use super::ndk;
@@ -69,6 +69,8 @@ pub(super) struct Launch {
     pub appearance: i32,
     pub font_scale: f32,
     pub locale: String,
+    /// The launch intent's string extras, by name.
+    pub vars: Vec<(String, String)>,
 }
 
 static LAUNCH: OnceLock<Launch> = OnceLock::new();
@@ -212,6 +214,48 @@ unsafe fn read_string(env: *mut JNIEnv, s: jstring) -> Option<String> {
     }
 }
 
+/// The `(name, value)` pairs of the `String[]` `pairs`, which alternates
+/// them; an empty list for null.
+///
+/// # Safety
+///
+/// `env` is the calling thread's `JNIEnv` and `pairs` a live `String[]` or
+/// null.
+unsafe fn read_pairs(env: *mut JNIEnv, pairs: jobjectArray) -> Vec<(String, String)> {
+    if pairs.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: the caller's contract; each element read is within the array
+    // and its local reference is deleted once read.
+    unsafe {
+        let len = env_call!(env, GetArrayLength, pairs);
+        let mut strings = Vec::with_capacity(len.max(0) as usize);
+        for i in 0..len {
+            let element = env_call!(env, GetObjectArrayElement, pairs, i);
+            strings.push(read_string(env, element).unwrap_or_default());
+            if !element.is_null() {
+                env_call!(env, DeleteLocalRef, element);
+            }
+        }
+        let mut strings = strings.into_iter();
+        let mut vars = Vec::with_capacity(strings.len() / 2);
+        while let (Some(name), Some(value)) = (strings.next(), strings.next()) {
+            vars.push((name, value));
+        }
+        vars
+    }
+}
+
+/// The launch intent's string extra `name`.
+pub(crate) fn launch_var(name: &str) -> Option<String> {
+    LAUNCH
+        .get()?
+        .vars
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, value)| value.clone())
+}
+
 pub(super) fn set_soft_keyboard(show: bool) {
     call_void(|m| m.set_soft_keyboard, &[jvalue { z: show }]);
 }
@@ -320,6 +364,31 @@ pub(super) fn detach_current_thread() {
     }
 }
 
+/// Fires once the logcat reader forwarded the last of stdout and stderr.
+static LOG_DRAINED: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>> =
+    std::sync::Mutex::new(None);
+
+/// Ends the process with `code` once stdout and stderr reached logcat,
+/// without the exit handlers: the activity's threads still run and would
+/// race the handlers' teardown.
+pub(super) fn exit(code: c_int) -> ! {
+    // SAFETY: `/dev/null` replaces descriptors 1 and 2, closing the pipe's
+    // last write ends, so the reader sees its end once it read the rest.
+    unsafe {
+        let null = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
+        if null >= 0 {
+            libc::dup2(null, 1);
+            libc::dup2(null, 2);
+            libc::close(null);
+        }
+    }
+    if let Some(drained) = LOG_DRAINED.lock().ok().and_then(|mut d| d.take()) {
+        let _ = drained.recv_timeout(Duration::from_secs(1));
+    }
+    // SAFETY: ends the process at once; nothing runs after it.
+    unsafe { libc::_exit(code) }
+}
+
 /// Route stdout and stderr to logcat, so panics and prints are visible.
 fn redirect_output_to_logcat() {
     let mut fds = [0 as c_int; 2];
@@ -335,6 +404,10 @@ fn redirect_output_to_logcat() {
     }
     // SAFETY: `fds[0]` is the pipe's read end, owned from here by the file.
     let reader = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+    let (drained, done) = std::sync::mpsc::channel();
+    if let Ok(mut slot) = LOG_DRAINED.lock() {
+        *slot = Some(done);
+    }
     let _ = std::thread::Builder::new()
         .name("viso-log".into())
         .spawn(move || {
@@ -349,6 +422,7 @@ fn redirect_output_to_logcat() {
                     ndk::__android_log_write(ndk::ANDROID_LOG_INFO, tag.as_ptr(), text.as_ptr())
                 };
             }
+            let _ = drained.send(());
         });
 }
 
@@ -423,7 +497,7 @@ unsafe fn register_natives(env: *mut JNIEnv, class: jclass) -> bool {
     let natives: [(&CStr, &CStr, *mut c_void); 17] = [
         (
             c"nativeStart",
-            c"(Ldev/viso/VisoActivity;FIFLjava/lang/String;)V",
+            c"(Ldev/viso/VisoActivity;FIFLjava/lang/String;[Ljava/lang/String;)V",
             native_start as *mut c_void,
         ),
         (c"nativeDestroy", c"()V", native_destroy as *mut c_void),
@@ -503,10 +577,13 @@ extern "system" fn native_start(
     appearance: jint,
     font_scale: jfloat,
     locale: jstring,
+    extras: jobjectArray,
 ) {
     let Some(java) = JAVA.get() else { return };
     // SAFETY: `locale` is a live string or null.
     let locale = unsafe { read_string(env, locale) }.unwrap_or_default();
+    // SAFETY: `extras` is a live `String[]` of names and values, or null.
+    let vars = unsafe { read_pairs(env, extras) };
     // SAFETY: `activity` is a live local reference; the global reference
     // made from it replaces (and deletes) the previous activity's.
     unsafe {
@@ -523,6 +600,7 @@ extern "system" fn native_start(
             appearance,
             font_scale,
             locale: locale.clone(),
+            vars,
         })
         .is_ok();
     if !first {

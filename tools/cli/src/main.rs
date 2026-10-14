@@ -7,7 +7,9 @@
 
 mod args;
 mod command;
+mod deploy;
 mod dev;
+mod device;
 mod interrupt;
 mod output;
 

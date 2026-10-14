@@ -10,6 +10,7 @@
 //! reads slowly; the writer ends when the session lets the runtime go or a
 //! write fails.
 
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
@@ -60,6 +61,31 @@ pub enum LinkEvent {
 /// Where the connection threads deliver; `false` once nobody listens.
 pub type Deliver = Arc<dyn Fn(LinkEvent) -> bool + Send + Sync>;
 
+/// The bytes of a dev connection: a TCP stream, or the messages of a
+/// WebSocket the web dev server accepted.
+pub trait DevStream: Read + Write + Send + 'static {
+    /// The half a writer thread writes to.
+    type Writer: Write + Send + 'static;
+
+    /// Bounds how long a read waits.
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+
+    /// A writer onto the same connection.
+    fn writer(&self) -> io::Result<Self::Writer>;
+}
+
+impl DevStream for TcpStream {
+    type Writer = TcpStream;
+
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        TcpStream::set_read_timeout(self, timeout)
+    }
+
+    fn writer(&self) -> io::Result<TcpStream> {
+        self.try_clone()
+    }
+}
+
 /// Accepts every connection waiting on `listener`, each read by its own
 /// thread.
 pub fn accept(
@@ -69,9 +95,12 @@ pub fn accept(
     threads: &mut Vec<JoinHandle<()>>,
 ) {
     while let Ok((stream, _)) = listener.accept() {
+        if stream.set_nonblocking(false).is_err() {
+            continue;
+        }
         let expect = expect.clone();
         let deliver = Arc::clone(deliver);
-        threads.push(thread::spawn(move || read_dev(stream, &expect, &*deliver)));
+        threads.push(thread::spawn(move || serve(stream, &expect, &*deliver)));
     }
 }
 
@@ -79,12 +108,10 @@ pub fn accept(
 /// session — a wrong token is dropped unanswered, another protocol, session,
 /// build or schema is refused with the reason — then what the runtime sends
 /// until it closes the connection.
-fn read_dev(mut stream: TcpStream, expect: &Expect, deliver: &dyn Fn(LinkEvent) -> bool) {
+pub fn serve(mut stream: impl DevStream, expect: &Expect, deliver: &dyn Fn(LinkEvent) -> bool) {
     // A connection that never says hello must not hold the session open
     // after the app exits.
-    if stream.set_nonblocking(false).is_err()
-        || stream.set_read_timeout(Some(HELLO_TIMEOUT)).is_err()
-    {
+    if stream.set_read_timeout(Some(HELLO_TIMEOUT)).is_err() {
         return;
     }
     let refuse = |reason: String| {
@@ -131,7 +158,7 @@ fn read_dev(mut stream: TcpStream, expect: &Expect, deliver: &dyn Fn(LinkEvent) 
     if write_frame(&mut stream, &accepted).is_err() || stream.set_read_timeout(None).is_err() {
         return;
     }
-    let Ok(mut write_half) = stream.try_clone() else {
+    let Ok(mut write_half) = stream.writer() else {
         return;
     };
     let launch = hello.runtime_session;
@@ -167,7 +194,6 @@ fn read_dev(mut stream: TcpStream, expect: &Expect, deliver: &dyn Fn(LinkEvent) 
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
     use std::net::Ipv4Addr;
     use std::sync::Mutex;
 
@@ -209,7 +235,7 @@ mod tests {
         let got = Arc::new(Mutex::new(Vec::new()));
         let into = Arc::clone(&got);
         let host = thread::spawn(move || {
-            read_dev(stream, &expect(), &move |event| {
+            serve(stream, &expect(), &move |event| {
                 into.lock().unwrap().push(event);
                 true
             })
@@ -271,9 +297,8 @@ mod tests {
         let mut app = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (stream, _) = listener.accept().unwrap();
         let (tx, rx) = mpsc::channel();
-        let host = thread::spawn(move || {
-            read_dev(stream, &expect(), &move |event| tx.send(event).is_ok())
-        });
+        let host =
+            thread::spawn(move || serve(stream, &expect(), &move |event| tx.send(event).is_ok()));
         write_frame(&mut app, &RuntimeMessage::Hello(hello())).unwrap();
         let mut buf = Vec::new();
         assert!(matches!(

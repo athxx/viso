@@ -37,8 +37,14 @@ const EXIT_POLL: Duration = Duration::from_millis(100);
 /// Where a build hands its events.
 type Sink = Arc<dyn Fn(BuildEvent) -> bool + Send + Sync>;
 
+/// What wraps a built executable for the device it runs on — an `.app`, an
+/// APK, a web bundle — on the build's thread: the artifact to launch, or why
+/// there is none. It leaves an artifact it already made from the same
+/// executable as it is.
+pub(crate) type Package = Arc<dyn Fn(&Path) -> Result<PathBuf, String> + Send + Sync>;
+
 /// How the dev artifact is built.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct BuildCommand {
     /// The `cargo` to run.
     pub(crate) cargo: PathBuf,
@@ -51,6 +57,26 @@ pub(crate) struct BuildCommand {
     pub(crate) piped: bool,
     /// Where Cargo builds, when not where it chooses.
     pub(crate) target_dir: Option<PathBuf>,
+    /// The Rust target, when not the host.
+    pub(crate) target: Option<String>,
+    /// The arguments after `cargo rustc --`; the build is `cargo build` when
+    /// there are none.
+    pub(crate) rustc_args: Vec<String>,
+    /// The variables Cargo runs with besides the dev profile's.
+    pub(crate) env: Vec<(String, std::ffi::OsString)>,
+    /// What wraps the executable; it runs as built when `None`.
+    pub(crate) package: Option<Package>,
+}
+
+impl std::fmt::Debug for BuildCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BuildCommand")
+            .field("cargo", &self.cargo)
+            .field("manifest", &self.manifest)
+            .field("target", &self.target)
+            .field("packaged", &self.package.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the build threads hand the session.
@@ -83,6 +109,8 @@ pub(crate) enum BuildFailure {
     Failed { status: String, codes: Vec<String> },
     /// The package built no executable, or more than one.
     Executables(Vec<PathBuf>),
+    /// The executable could not be packaged for its device.
+    Package(String),
     /// A newer change, or the session's end, killed it.
     Cancelled,
 }
@@ -134,9 +162,9 @@ pub(crate) struct RustBuild {
 
 /// What tells two builds of an executable apart: its length and
 /// modification time.
-type Stamp = Option<(u64, SystemTime)>;
+pub(crate) type Stamp = Option<(u64, SystemTime)>;
 
-fn stamp(path: &Path) -> Stamp {
+pub(crate) fn stamp(path: &Path) -> Stamp {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.len(), meta.modified().ok()?))
 }
@@ -175,7 +203,10 @@ impl RustBuild {
             .spawn(move || {
                 let started = Instant::now();
                 if rescope {
-                    sink(BuildEvent::Rescoped(RustScope::read(&command.manifest)));
+                    sink(BuildEvent::Rescoped(RustScope::read(
+                        &command.manifest,
+                        command.target.as_deref(),
+                    )));
                 }
                 let result = build(&command, &cancelled, &sink);
                 sink(BuildEvent::Finished(Finished {
@@ -295,7 +326,11 @@ fn build(
 ) -> Result<PathBuf, BuildFailure> {
     let mut cargo = Command::new(&command.cargo);
     cargo
-        .arg("build")
+        .arg(if command.rustc_args.is_empty() {
+            "build"
+        } else {
+            "rustc"
+        })
         .arg("--manifest-path")
         .arg(&command.manifest)
         .args(["--features", "viso/hot-reload"])
@@ -313,6 +348,13 @@ fn build(
     }
     if let Some(dir) = &command.target_dir {
         cargo.env("CARGO_TARGET_DIR", dir);
+    }
+    if let Some(target) = &command.target {
+        cargo.args(["--target", target]);
+    }
+    cargo.envs(command.env.iter().map(|(k, v)| (k, v)));
+    if !command.rustc_args.is_empty() {
+        cargo.arg("--").args(&command.rustc_args);
     }
     let mut tree = ProcessTree::spawn(&mut cargo).map_err(|error| {
         BuildFailure::Spawn(format!("cannot run `{}`: {error}", command.cargo.display()))
@@ -368,9 +410,13 @@ fn build(
             codes: messages.codes,
         });
     }
-    match <[PathBuf; 1]>::try_from(messages.executables) {
-        Ok([exe]) => Ok(exe),
-        Err(executables) => Err(BuildFailure::Executables(executables)),
+    let exe = match <[PathBuf; 1]>::try_from(messages.executables) {
+        Ok([exe]) => exe,
+        Err(executables) => return Err(BuildFailure::Executables(executables)),
+    };
+    match &command.package {
+        Some(package) => package(&exe).map_err(BuildFailure::Package),
+        None => Ok(exe),
     }
 }
 
@@ -654,6 +700,10 @@ mod tests {
             quiet: false,
             piped: true,
             target_dir: Some(dir.join("target")),
+            target: None,
+            rustc_args: Vec::new(),
+            env: Vec::new(),
+            package: None,
         };
         let builds = RustBuild::new(command, move |event| tx.lock().unwrap().send(event).is_ok());
         (builds, rx)

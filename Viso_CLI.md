@@ -1143,7 +1143,16 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
 - `--no-hot-reload`：session 照常建立、watch、编译并报告诊断，但不向 app 发送 patch 与失败 overlay；编译通过的 candidate 输出 `dev{outcome:"held"}`；
 - Rust 改动在后台重新 build Dev artifact（`Viso_Hot_Reload.md` §6、§25），旧 app 保持运行：失败输出 `dev{outcome:"rejected", stage:"warm-restart"}`；成功则 warm restart：旧 app 交出 DevSnapshot 后退出，新 build 以 `VISO_DEV_RESTORE` 启动并在第一帧之前恢复状态，输出 `dev{outcome:"warm_restarted", patch_class:"WARM_RESTART_REQUIRED"}`；`--no-hot-reload` 下输出 `dev{outcome:"held"}`、不重启；
 - Ctrl-C/SIGTERM：第一次杀掉进行中的 build（整棵进程树）并请 app 退出（Unix 上 SIGTERM），第二次强制结束 app；exit 130，`summary{status:"cancelled"}`；
-- 尚未实现：mobile/web target、§13.7 中 `--no-hot-reload` 之外的 options、`artifact` 事件。
+- `viso run ios|android|web-gpu`（§13.2、§13.3）走同一 dev session，只有 build target、打包、部署与 transport 不同（`Viso_Hot_Reload.md` §5、§27、§28）：
+  - device 选择按 `--device`、`.viso/local.toml` 的 `[ios]`/`[android] device`、`~/.viso/<platform>/config.toml` 的 `device`、唯一 profile 的顺序；没有 profile 时 `DEVICE_MISSING`（exit 3），有多个且无默认时 `DEVICE_AMBIGUOUS`、名字不存在时 `DEVICE_UNKNOWN`（exit 2），均附 suggested command；尚不做 TTY 交互选择或创建；
+  - 所选 device 在 launch build 期间 boot，输出 `device{state:"booting"|"ready"|"launched"}`；boot 失败立即以 `ENV_DEVICE`（exit 3）结束；Ctrl-C 不关闭 simulator/emulator；
+  - session lock 带 device id；
+  - iOS 构建 simulator triple 并打包为未签名 `.app`；Android 构建 emulator ABI 的 `cdylib` 并打包为 dev APK，需要 Android SDK（`ANDROID_HOME`/`ANDROID_SDK_ROOT` 或默认位置）、NDK 与 build-tools，缺失时 `ENV_DEVICE`；web-gpu 构建 `wasm32-unknown-unknown` 并经 `wasm-bindgen` 生成 bundle，打开浏览器（`--browser chrome|safari|firefox|none`，省略为系统默认），输出 `server{url,host,port,lan:false}`；
+  - launch 变量在 iOS 上经 `SIMCTL_CHILD_*`、Android 上经 intent extras、web 上经页面的 `visoLaunch`，app 一律用 `viso_platform::launch_var` 读取；`--` 之后的参数只交给 desktop 与 iOS，其它 target 给出 warning；
+  - Rust 改动的 warm restart 在新 artifact 打包完成后才停止旧 app；
+  - `web-dom`/`web-hybrid` 以 `TargetUnavailable` 退出；
+- `viso ios simulator` / `viso android emulator` 的 `list|create|start|stop|delete`（§11.4、§12.4）：profile 存于 `~/.viso/ios/simulators/<id>.toml` / `~/.viso/android/emulators/<id>.toml`（`preset`、`system`、`device`，`$VISO_HOME` 可改 root）；iOS 以最新已安装 runtime 与对应 iPhone/iPad 机型创建 Simulator，Android 不依赖 `avdmanager`，直接按最新（或 `--api` 指定）已安装 system image 写出 AVD `viso_<id>`；`start --no-window` 无窗口启动 emulator；`list` 列出 `NAME PROFILE STATUS SYSTEM`；
+- 尚未实现：`viso android|ios list|use|doctor`、`viso serve`、web LAN 暴露、§13.7 中 `--no-hot-reload`、`--device`、`--browser` 之外的 options、`artifact` 事件。
 
 ---
 

@@ -79,12 +79,16 @@ impl Target {
 
     /// Whether this build can produce the target.
     ///
-    /// Only the two native paths are available today. This is a property of the
-    /// *build*, not of the machine: it is what separates "you asked for something
-    /// that does not exist yet" from "you asked for something your machine cannot
-    /// do", and only the first is honest right now.
+    /// The host, headless, the iOS Simulator, the Android Emulator and the
+    /// WebGPU browser target are; the DOM targets are not yet. This is a
+    /// property of the *build*, not of the machine: it is what separates "you
+    /// asked for something that does not exist yet" from "you asked for
+    /// something your machine cannot do".
     pub const fn available(self) -> bool {
-        matches!(self, Target::Host | Target::Headless)
+        matches!(
+            self,
+            Target::Host | Target::Headless | Target::Ios | Target::Android | Target::WebGpu
+        )
     }
 
     /// The diagnostic for asking for an unavailable target.
@@ -450,7 +454,7 @@ mod tests {
         for target in Target::ALL {
             let parsed = Target::parse(target.as_str()).expect("declared targets parse");
             match parsed.require_available() {
-                Ok(t) => assert!(matches!(t, Target::Host | Target::Headless)),
+                Ok(t) => assert!(!matches!(t, Target::WebDom | Target::WebHybrid)),
                 Err(d) => {
                     assert_eq!(d.code, ConfigCode::TargetUnavailable);
                     assert_eq!(d.code.exit_code(), 3);

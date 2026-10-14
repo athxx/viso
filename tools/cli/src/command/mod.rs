@@ -2,12 +2,15 @@
 //! returns the process exit code.
 
 mod check;
+mod device;
 mod game;
 mod run;
 mod schema;
 mod test;
 
-use crate::args::{Cli, Command, Global};
+use viso_project::Platform;
+
+use crate::args::{AndroidCommand, Cli, Command, Global, IosCommand};
 use crate::output::Output;
 
 /// Nothing failed.
@@ -55,7 +58,13 @@ pub const RUN_APP_FAILED: &str = "RUN_APP_FAILED";
 pub fn run(cli: &Cli) -> u8 {
     let mut out = Output::new(&cli.global, Some(cli.command.name()));
     let code = match &cli.command {
+        Command::Android(AndroidCommand::Emulator(command)) => {
+            device::run(Platform::Android, command, &mut out)
+        }
         Command::Check => check::run(&cli.global, &mut out),
+        Command::Ios(IosCommand::Simulator(command)) => {
+            device::run(Platform::Ios, command, &mut out)
+        }
         Command::Game(command) => game::run(&cli.global, command, &mut out),
         Command::Run(args) => run::run(&cli.global, args, &mut out),
         Command::Schema(args) => schema::run(args, &mut out),

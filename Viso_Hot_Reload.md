@@ -352,11 +352,15 @@ or host-reachable local transport
 
 Viso CLI 负责 emulator ID → adb serial → connection mapping。
 
+已实现：CLI 按 AVD 名在 `adb devices` 中找到 emulator 的 serial（`adb -s <serial> emu avd name`），以 `adb reverse tcp:<port> tcp:<port>` 把 emulator 内的 loopback 端口接到 host 的 dev listener，app 仍只连 `127.0.0.1`，不经 LAN；session 结束时撤销该 reverse。
+
 ### iOS Simulator
 
 通过 host 可达的 simulator development transport 建立连接。
 
 不需要 signing/provisioning/physical-device tunnel。
+
+已实现：Simulator app 与 host 共享 loopback，直接连 host 的 dev listener；launch 变量经 `simctl launch` 的 `SIMCTL_CHILD_*` 环境传入。
 
 ### Web
 
@@ -367,6 +371,8 @@ WebSocket / equivalent dev channel
 ```
 
 Web Dev Runtime 同样只存在于 dev build。
+
+已实现：`viso run web-gpu` 的 dev server 只绑定 `127.0.0.1`（`[web.serve] port`，默认 8000 起第一个空闲端口），按请求生成 `index.html`，在 app 启动前以 `globalThis.visoLaunch` 交出 launch 变量；dev channel 是同一端口 `/__viso/dev` 上的 WebSocket（只接受该 server 自己页面的 `Origin`），binary message 承载与 TCP 相同的 u32 LE + ende 帧，handshake 与 token 检查不变。页面不能阻塞等待，launch window 的 restore 在 loop 中等到 restore 到达或 5 秒超时。新 build 交付后 server 以 close code 4000 关闭所有页面的 channel，页面随之重新加载新 bundle（两个 bundle 目录轮换，旧页面读到的 bundle 不被覆盖）；旧页面的 channel 在新 build 交付之后才关闭，session 在 relaunch 时即不再把它当作当前 runtime。页面的 stdout/stderr 不到达 session，只有经 dev channel 的 log。
 
 ---
 
@@ -1062,6 +1068,8 @@ Viso CLI 负责 emulator profile → adb serial。
 
 如果安装过程需要停止旧 process，尽量延迟到 candidate 完全 build 成功之后。
 
+已实现：Dev build 为 emulator ABI（host 为 arm64 时 `aarch64-linux-android`，否则 `x86_64-linux-android`）构建 `cdylib`，在 build 线程上打包成 dev APK（debug keystore 签名，dex 与 `base.apk` 按输入缓存，dev 额外声明 `INTERNET`）；旧 app 只在 build、打包与 snapshot 都完成后才被停止，之后 `adb install -r`，`am start -W -S` 以 intent string extras 传入 launch 变量（`viso_platform::launch_var` 在 Android 上读它们），`pidof` 取得 pid；`logcat --pid` 的输出按优先级成为 `log`，app 退出由轮询 `/proc/<pid>` 的 adb shell 观察，退出状态取自 `dumpsys activity exit-info` 记录的 `ApplicationExitInfo`（`main` 返回非零时——panic 为 101——进程以该值结束）；在被看到之前就结束的 app，错误附上它启动以来的 `viso` log。AVD 使用 `hw.gpu.mode=auto`（有 GPU 用 host，否则 SwiftShader），无 display 的 host 上 emulator 不开窗口。
+
 ---
 
 ## 28. iOS Simulator warm restart
@@ -1075,6 +1083,8 @@ restore
 ```
 
 这是 Simulator-only development path，不涉及 physical-device signing/provisioning contract。
+
+已实现：Dev build 为 simulator triple（`aarch64-apple-ios-sim` / `x86_64-apple-ios`）构建，在 build 线程上打包为 `.app`（不签名）；旧 app 在新 build 完成且 snapshot 交出后经 `simctl terminate` 停止，`simctl install` 后以 `simctl launch --console-pty --terminate-running-process` 启动，console 输出成为 app 的 `log`。
 
 ---
 
@@ -1533,7 +1543,7 @@ control inspector
 - malformed Ende payload bounded decode；
 - Release artifact 根本没有此 endpoint。
 
-当前实现：`viso run` 在 `127.0.0.1` 临时端口监听，经 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD` 交给 app；app 拒绝非 loopback 地址；handshake（§34）绑定 token、dev session、runtime session、build 与编译器 schema，host 的 `HostHello` 带 project fingerprint；host 为每个接受的 runtime 起一条 writer 线程，session 从不阻塞在读得慢的 app 上；每个 patch 再按 session、launch 与 build 检查（§36）；所有解码有界（§35），帧长上限 4 MiB。
+当前实现：`viso run` 在 `127.0.0.1` 临时端口监听，经 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD` 交给 app；app 拒绝非 loopback 地址；handshake（§34）绑定 token、dev session、runtime session、build 与编译器 schema，host 的 `HostHello` 带 project fingerprint；host 为每个接受的 runtime 起一条 writer 线程，session 从不阻塞在读得慢的 app 上；每个 patch 再按 session、launch 与 build 检查（§36）；所有解码有界（§35），帧长上限 4 MiB。Android emulator 经 `adb reverse` 连同一 loopback listener；web 的 dev server 同样只绑定 `127.0.0.1`，WebSocket 只接受它自己页面的 `Origin`，LAN 暴露尚未提供（须显式 opt-in）。
 
 ---
 

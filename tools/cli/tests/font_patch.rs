@@ -62,7 +62,7 @@ fn an_edited_font_lays_out_again_only_the_text_drawing_with_it() {
             ("src/main.rs", MAIN.as_bytes()),
         ],
     );
-    let run = Run::start(&app);
+    let run = Run::start(&app, &[], &[]);
     run.connected();
 
     // Trailing bytes change the file, not its faces: the text drawing with

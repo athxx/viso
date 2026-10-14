@@ -772,7 +772,7 @@ strip = true
     #[test]
     fn an_unavailable_target_says_which_layer_selected_it() {
         let (_s, project) =
-            project("[package]\nname = \"app\"\n\n[build]\ndefault_target = \"ios\"\n");
+            project("[package]\nname = \"app\"\n\n[build]\ndefault_target = \"web-dom\"\n");
         let diags = resolve(
             &project,
             ArtifactKind::Build,
@@ -796,7 +796,7 @@ strip = true
             &project,
             ArtifactKind::Build,
             &Overrides {
-                target: Some(Target::WebGpu),
+                target: Some(Target::WebHybrid),
                 ..Overrides::default()
             },
             &Env::empty(),

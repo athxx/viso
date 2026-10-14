@@ -27,6 +27,7 @@ pub mod backend;
 pub mod control;
 pub mod event;
 pub mod handler;
+mod launch;
 mod locale;
 pub mod menu;
 pub mod time;
@@ -44,6 +45,7 @@ pub use event::{
     clipboard_shortcut,
 };
 pub use handler::AppHandler;
+pub use launch::launch_var;
 pub use menu::{Accel, Menu, MenuCommandId, SystemAction};
 pub use time::Instant;
 pub use wake::LoopWaker;

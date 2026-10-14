@@ -99,7 +99,7 @@ fn dev_event(line: &str, outcome: &str) -> bool {
 #[ignore = "builds a probe app and opens its window"]
 fn a_rust_edit_restarts_the_app_with_its_state_and_a_broken_one_keeps_it() {
     let app = project();
-    let run = Run::start(&app);
+    let run = Run::start(&app, &[], &[]);
     let first = probe(&run, Duration::from_secs(900), "launched");
     run.connected();
 

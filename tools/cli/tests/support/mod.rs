@@ -28,9 +28,13 @@ pub fn project(name: &str, files: &[(&str, &[u8])]) -> PathBuf {
         name = name.replace('_', "-"),
     );
     let viso_toml: &[u8] = b"[package]\nname = \"probe\"\n";
+    // The repository's lock, so the probe builds against the versions the
+    // repository does (and the `wasm-bindgen` its CLI matches).
+    let lock = std::fs::read(repo.join("Cargo.lock")).expect("the repository's lock");
     for (path, bytes) in [
         ("Cargo.toml", manifest.as_bytes()),
         ("Viso.toml", viso_toml),
+        ("Cargo.lock", &lock),
     ]
     .into_iter()
     .chain(files.iter().copied())
@@ -49,12 +53,20 @@ pub struct Run {
 }
 
 impl Run {
-    pub fn start(app: &Path) -> Run {
+    /// `viso run <args> --json` with `envs` set.
+    pub fn start(app: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Run {
         let target = app.parent().expect("the scratch directory").join("target");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_viso"))
-            .args(["run", "--json"])
+        let mut command = Command::new(env!("CARGO_BIN_EXE_viso"));
+        command
+            .arg("run")
+            .args(args)
+            .arg("--json")
             .current_dir(app)
-            .env("CARGO_TARGET_DIR", target)
+            .env("CARGO_TARGET_DIR", target);
+        for (name, value) in envs {
+            command.env(name, value);
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

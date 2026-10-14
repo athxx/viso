@@ -25,6 +25,7 @@ mod access;
 mod jni;
 mod ndk;
 
+pub(crate) use jni::launch_var;
 pub use jni::with_activity;
 
 use std::cell::{Cell, RefCell};
@@ -262,7 +263,13 @@ pub(super) fn loop_thread() {
                 // SAFETY: `main` is the app's C entry point; `argv` is a
                 // NULL-terminated array of NUL-terminated strings that
                 // outlives the call.
-                unsafe { main(1, argv.as_ptr()) };
+                let code = unsafe { main(1, argv.as_ptr()) };
+                if code != 0 {
+                    // The app failed (a panic returns 101): the process ends
+                    // with its code, as a desktop app's does, not through the
+                    // activity's clean finish.
+                    jni::exit(code);
+                }
             }
             None => jni::log_warning("the app library exports no `main`"),
         }

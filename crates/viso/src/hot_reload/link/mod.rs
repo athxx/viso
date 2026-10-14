@@ -17,34 +17,58 @@
 //! connect, handshake or write ends the threads, and later messages are
 //! dropped. An address that is not loopback is refused.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::hash_map::RandomState;
+#[cfg(not(target_arch = "wasm32"))]
 use std::hash::{BuildHasher, Hasher};
-use std::io::Write;
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{
+    io::Write,
+    net::TcpStream,
+    sync::mpsc::{self, Receiver, SyncSender, TrySendError},
+    thread::{self, JoinHandle},
+};
 
+#[cfg(not(target_arch = "wasm32"))]
 use viso_platform::LoopWaker;
+use viso_platform::{Instant, launch_var};
 use viso_render::asset::ResourceId;
 use viso_text::font_format;
 use viso_ui::{AssetBytes, AssetPayload};
 use viso_view::dev::wire::{
     BlobRef, Blobs, BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
-    DEV_TOKEN_ENV, DevSessionId, Domains, FileId, FrameError, GameQuery, HostMessage, Message,
-    PatchBundle, PatchSection, Reject, RestoreBundle, Revision, RuntimeHello, RuntimeIdentity,
-    RuntimeMessage, RuntimeSessionId, RuntimeTarget, SchemaFingerprint, WindowGeometry, WireError,
-    accept_host, blob_chunks, read_body, read_frame, write_frame,
+    DEV_TOKEN_ENV, DevSessionId, Domains, FileId, GameQuery, HostMessage, Message, PatchBundle,
+    PatchSection, RestoreBundle, Revision, RuntimeHello, RuntimeIdentity, RuntimeMessage,
+    RuntimeSessionId, RuntimeTarget, SchemaFingerprint, WindowGeometry, WireError, blob_chunks,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use viso_view::dev::wire::{FrameError, Reject, accept_host, read_body, read_frame, write_frame};
+
+/// What this runtime runs on, for the host's per-target work.
+const RUNTIME_TARGET: RuntimeTarget = if cfg!(target_os = "ios") {
+    RuntimeTarget::IosSimulator
+} else if cfg!(target_os = "android") {
+    RuntimeTarget::AndroidEmulator
+} else if cfg!(target_arch = "wasm32") {
+    RuntimeTarget::Web
+} else {
+    RuntimeTarget::DesktopHost
 };
 
 /// How long the thread waits for the CLI to accept, and then to answer.
+#[cfg(not(target_arch = "wasm32"))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(not(target_arch = "wasm32"))]
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How many host frames wait for the loop, and how many messages wait for the
 /// writer.
+#[cfg(not(target_arch = "wasm32"))]
 const INCOMING: usize = 8;
+#[cfg(not(target_arch = "wasm32"))]
 const OUTGOING: usize = 64;
 
 /// What the reader hands the loop.
@@ -92,6 +116,106 @@ pub(crate) enum Loaded {
     Font(Arc<[u8]>),
 }
 
+#[cfg(target_arch = "wasm32")]
+mod web;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use web::DevLink;
+
+/// The address and hello of the link `viso run` asked for through the launch
+/// variables, if any, for a runtime compiled against `schema` that applies
+/// `capabilities`. An address that is not loopback is refused.
+fn launch_hello(
+    schema: SchemaFingerprint,
+    capabilities: Domains,
+) -> Option<(SocketAddr, RuntimeHello)> {
+    let addr: SocketAddr = launch_var(DEV_RUNTIME_ENV)?.parse().ok()?;
+    if !addr.ip().is_loopback() {
+        return None;
+    }
+    let hello = RuntimeHello {
+        protocol_version: DEV_PROTOCOL_VERSION,
+        token: launch_var(DEV_TOKEN_ENV)?,
+        dev_session: DevSessionId::from_hex(&launch_var(DEV_SESSION_ENV)?)?,
+        runtime_session: RuntimeSessionId(random_u128()),
+        build_id: BuildId::from_hex(&launch_var(DEV_BUILD_ENV)?)?,
+        current_revision: Revision::LAUNCH,
+        schema_fingerprint: schema,
+        capabilities,
+        target: RUNTIME_TARGET,
+        shader_lang: <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG,
+    };
+    Some((addr, hello))
+}
+
+/// The identity the host accepted `hello` under.
+fn identity(hello: &RuntimeHello) -> RuntimeIdentity {
+    RuntimeIdentity {
+        dev_session: hello.dev_session,
+        runtime_session: hello.runtime_session,
+        build_id: hello.build_id,
+        capabilities: hello.capabilities,
+        current_revision: hello.current_revision,
+    }
+}
+
+/// What one host frame after the handshake comes to.
+enum Frame {
+    /// A message for the loop.
+    Deliver(Incoming),
+    /// A blob kept for the patch or restore it comes ahead of.
+    Kept,
+    /// A second hello or a reject: the link ends.
+    End,
+}
+
+/// What the host frame `body` comes to, the blobs ahead of a patch or a
+/// restore kept in `blobs` until it arrives.
+fn host_frame(body: &[u8], blobs: &mut Blobs) -> Frame {
+    let started = Instant::now();
+    Frame::Deliver(match HostMessage::from_frame(body) {
+        Ok(HostMessage::Blob(chunk)) => {
+            blobs.add(chunk);
+            return Frame::Kept;
+        }
+        Ok(HostMessage::Patch(patch)) => {
+            let assets = load_assets(&patch, blobs);
+            Incoming::Patch(patch, assets, started.elapsed())
+        }
+        Ok(HostMessage::Failure { file, lines }) => Incoming::Failure { file, lines },
+        Ok(HostMessage::Game(query)) => Incoming::Game(query),
+        Ok(HostMessage::Snapshot) => Incoming::Snapshot,
+        Ok(HostMessage::Restore(restore)) => {
+            let snapshot = blobs.take(restore.snapshot);
+            blobs.clear();
+            Incoming::Restore(restore, snapshot)
+        }
+        Ok(HostMessage::Hello(_) | HostMessage::Reject(_)) => return Frame::End,
+        Err(error) => Incoming::Undecodable(error),
+    })
+}
+
+/// Writes `outgoing` with `write`, one message at a time: a snapshot as
+/// its blob chunks, then the message naming them.
+fn write_outgoing<E>(
+    outgoing: Outgoing,
+    mut write: impl FnMut(&RuntimeMessage) -> Result<(), E>,
+) -> Result<(), E> {
+    match outgoing {
+        Outgoing::Message(message) => write(&message),
+        Outgoing::Snapshot(bytes, windows, capture_us) => {
+            for chunk in blob_chunks(&bytes) {
+                write(&RuntimeMessage::Blob(chunk))?;
+            }
+            write(&RuntimeMessage::Snapshot {
+                blob: BlobRef::of(&bytes),
+                windows,
+                capture_us,
+            })
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// The app's end of the dev channel.
 pub(crate) struct DevLink {
     outgoing: Option<SyncSender<Outgoing>>,
@@ -102,32 +226,17 @@ pub(crate) struct DevLink {
     link: Option<JoinHandle<()>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl DevLink {
-    /// The link `viso run` asked for through the environment, if any, for a
-    /// runtime compiled against `schema` that applies `capabilities`; `wake`
-    /// kicks the loop when a host frame arrives.
-    pub(crate) fn from_env(
+    /// The link `viso run` asked for through the launch variables, if any,
+    /// for a runtime compiled against `schema` that applies `capabilities`;
+    /// `wake` kicks the loop when a host frame arrives.
+    pub(crate) fn from_launch(
         wake: LoopWaker,
         schema: SchemaFingerprint,
         capabilities: Domains,
     ) -> Option<Self> {
-        let var = |name| std::env::var(name).ok();
-        let addr: SocketAddr = var(DEV_RUNTIME_ENV)?.parse().ok()?;
-        if !addr.ip().is_loopback() {
-            return None;
-        }
-        let hello = RuntimeHello {
-            protocol_version: DEV_PROTOCOL_VERSION,
-            token: var(DEV_TOKEN_ENV)?,
-            dev_session: DevSessionId::from_hex(&var(DEV_SESSION_ENV)?)?,
-            runtime_session: RuntimeSessionId(random_u128()),
-            build_id: BuildId::from_hex(&var(DEV_BUILD_ENV)?)?,
-            current_revision: Revision::LAUNCH,
-            schema_fingerprint: schema,
-            capabilities,
-            target: RuntimeTarget::DesktopHost,
-            shader_lang: <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG,
-        };
+        let (addr, hello) = launch_hello(schema, capabilities)?;
         Some(Self::connect(addr, hello, wake))
     }
 
@@ -215,6 +324,7 @@ impl DevLink {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for DevLink {
     /// Closes the outgoing queue and waits for the writer to send what is
     /// left; the reader ends when the host closes the connection.
@@ -228,6 +338,7 @@ impl Drop for DevLink {
 
 /// Connects and shakes hands; the stream and the accepted identity, or `None`
 /// (a refusal is reported on stderr).
+#[cfg(not(target_arch = "wasm32"))]
 fn handshake(addr: SocketAddr, hello: &RuntimeHello) -> Option<(TcpStream, RuntimeIdentity)> {
     let mut stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).ok()?;
     let _ = stream.set_nodelay(true);
@@ -252,22 +363,14 @@ fn handshake(addr: SocketAddr, hello: &RuntimeHello) -> Option<(TcpStream, Runti
         _ => return None,
     }
     stream.set_read_timeout(None).ok()?;
-    Some((
-        stream,
-        RuntimeIdentity {
-            dev_session: hello.dev_session,
-            runtime_session: hello.runtime_session,
-            build_id: hello.build_id,
-            capabilities: hello.capabilities,
-            current_revision: hello.current_revision,
-        },
-    ))
+    Some((stream, identity(hello)))
 }
 
 /// Delivers each host frame to the loop until the host closes the connection
 /// or the loop drops the link. A frame that does not decode is delivered as
 /// such — its length kept the stream in step — but a second hello is a
 /// protocol violation that ends the link.
+#[cfg(not(target_arch = "wasm32"))]
 fn read_all(mut stream: TcpStream, deliver: &SyncSender<Incoming>, wake: &LoopWaker) {
     let mut buf = Vec::new();
     let mut blobs = Blobs::default();
@@ -283,26 +386,10 @@ fn read_all(mut stream: TcpStream, deliver: &SyncSender<Incoming>, wake: &LoopWa
                 return;
             }
         }
-        let started = Instant::now();
-        let incoming = match HostMessage::from_frame(&buf) {
-            Ok(HostMessage::Blob(chunk)) => {
-                blobs.add(chunk);
-                continue;
-            }
-            Ok(HostMessage::Patch(patch)) => {
-                let assets = load_assets(&patch, &mut blobs);
-                Incoming::Patch(patch, assets, started.elapsed())
-            }
-            Ok(HostMessage::Failure { file, lines }) => Incoming::Failure { file, lines },
-            Ok(HostMessage::Game(query)) => Incoming::Game(query),
-            Ok(HostMessage::Snapshot) => Incoming::Snapshot,
-            Ok(HostMessage::Restore(restore)) => {
-                let snapshot = blobs.take(restore.snapshot);
-                blobs.clear();
-                Incoming::Restore(restore, snapshot)
-            }
-            Ok(HostMessage::Hello(_) | HostMessage::Reject(_)) => return,
-            Err(error) => Incoming::Undecodable(error),
+        let incoming = match host_frame(&buf, &mut blobs) {
+            Frame::Deliver(incoming) => incoming,
+            Frame::Kept => continue,
+            Frame::End => return,
         };
         if deliver.send(incoming).is_err() {
             return;
@@ -347,22 +434,10 @@ fn load_assets(patch: &PatchBundle, blobs: &mut Blobs) -> Vec<LoadedAsset> {
 
 /// Writes every queued message until the loop closes the queue or a write
 /// fails.
+#[cfg(not(target_arch = "wasm32"))]
 fn write_all(mut stream: TcpStream, to_send: &Receiver<Outgoing>) {
     for outgoing in to_send {
-        let written = match outgoing {
-            Outgoing::Message(message) => write_frame(&mut stream, &message),
-            Outgoing::Snapshot(bytes, windows, capture_us) => blob_chunks(&bytes)
-                .try_for_each(|chunk| write_frame(&mut stream, &RuntimeMessage::Blob(chunk)))
-                .and_then(|()| {
-                    let snapshot = RuntimeMessage::Snapshot {
-                        blob: BlobRef::of(&bytes),
-                        windows,
-                        capture_us,
-                    };
-                    write_frame(&mut stream, &snapshot)
-                }),
-        };
-        if written.is_err() {
+        if write_outgoing(outgoing, |message| write_frame(&mut stream, message)).is_err() {
             return;
         }
     }
@@ -371,6 +446,7 @@ fn write_all(mut stream: TcpStream, to_send: &Receiver<Outgoing>) {
 }
 
 /// A random 128-bit launch id.
+#[cfg(not(target_arch = "wasm32"))]
 fn random_u128() -> u128 {
     let state = RandomState::new();
     let word = |salt: u8| {
@@ -379,6 +455,15 @@ fn random_u128() -> u128 {
         hasher.finish()
     };
     (u128::from(word(0)) << 64) | u128::from(word(1))
+}
+
+/// A page's: its hasher keys are fixed, so `Math.random`, which tells
+/// launches apart (the session's secret is the CLI's token).
+#[cfg(target_arch = "wasm32")]
+fn random_u128() -> u128 {
+    (0..4).fold(0, |id, _| {
+        (id << 32) | (js_sys::Math::random() * f64::from(u32::MAX)) as u128
+    })
 }
 
 /// A host end of the dev channel for tests: a loopback listener that accepts
@@ -406,7 +491,7 @@ pub(crate) mod fake {
             current_revision: Revision::LAUNCH,
             schema_fingerprint: SchemaFingerprint(0),
             capabilities: super::super::APPLIES,
-            target: RuntimeTarget::DesktopHost,
+            target: RUNTIME_TARGET,
             shader_lang: <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG,
         }
     }

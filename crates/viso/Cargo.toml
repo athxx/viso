@@ -60,7 +60,13 @@ mobile = []
 # The development session: every `view!` mount is recorded and reported to
 # `viso run`, and each edit the host accepts commits as one hot reload
 # transaction.
-hot-reload = ["viso-view/hot-reload", "viso-ui/hot-reload"]
+hot-reload = [
+    "viso-view/hot-reload",
+    "viso-ui/hot-reload",
+    "dep:wasm-bindgen",
+    "dep:js-sys",
+    "dep:web-sys",
+]
 # Text runtime explanations — every fallback walk, cache miss and eviction —
 # for the Inspector; compiled out otherwise.
 inspector = ["viso-text/inspector"]
@@ -90,6 +96,18 @@ naga = { version = "30", features = ["wgsl-in", "spv-out"] }
 # Web: the WebGPU device opens asynchronously before the scheduler starts.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wasm-bindgen-futures = "0.4"
+# A dev build in a browser reaches `viso run` over a WebSocket.
+wasm-bindgen = { version = "0.2.128", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "BinaryType",
+    "CloseEvent",
+    "Location",
+    "MessageEvent",
+    "WebSocket",
+    "Window",
+    "console",
+] }
 
 # Native measurements: criterion does not build for wasm32.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

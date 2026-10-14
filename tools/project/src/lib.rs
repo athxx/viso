@@ -24,6 +24,7 @@
 
 pub mod cache;
 pub mod config;
+pub mod device;
 pub mod diag;
 pub mod discovery;
 pub mod fingerprint;
@@ -38,6 +39,7 @@ pub use config::{
     ENV_OPT_LEVEL, ENV_PROFILE, ENV_SOURCE_MAPS, ENV_STRIP, ENV_TARGET, ENV_VARS, Entry, Env,
     Origin, Overrides, Resolved, ResolvedConfig, Sourced, resolve,
 };
+pub use device::{DeviceProfile, DeviceStore, Platform, Preset, Selection};
 pub use diag::{ConfigCode, ConfigDiagnostic, Severity, Span};
 pub use discovery::{MANIFEST_NAME, Project, find_root};
 pub use fingerprint::{BuildId, FINGERPRINT_VERSION, Hash128, ProjectFingerprint, Toolchain};

@@ -83,6 +83,15 @@ pub const DEV_PREWARM_ENV: &str = "VISO_DEV_PREWARM";
 /// The largest frame either side writes or reads.
 pub const MAX_FRAME: usize = 4 << 20;
 
+/// Where on the web dev server a browser runtime opens its dev channel: a
+/// WebSocket at `ws://<dev channel address><WEB_DEV_PATH>`, each binary
+/// message carrying frames as the TCP channel does.
+pub const WEB_DEV_PATH: &str = "/__viso/dev";
+
+/// The close code the web dev server ends a page's dev channel with once it
+/// serves a newer build of the app: the page loads it.
+pub const WEB_RELOAD_CLOSE: u16 = 4000;
+
 /// The longest session token a hello may carry.
 pub const MAX_TOKEN: usize = 64;
 

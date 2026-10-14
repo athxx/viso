@@ -224,7 +224,7 @@ impl Layout {
 /// `viso build --target host` against `viso build --target headless`, which are
 /// independent builds a developer runs side by side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LockKind {
+pub enum LockKind<'a> {
     /// Writes to the build cache for one target.
     BuildCache {
         /// The target being built.
@@ -240,11 +240,11 @@ pub enum LockKind {
         /// The target being run.
         target: Target,
         /// The device, for targets that have several. `None` is the default device.
-        device: Option<&'static str>,
+        device: Option<&'a str>,
     },
 }
 
-impl LockKind {
+impl LockKind<'_> {
     /// The lock file name.
     fn file_name(self) -> String {
         match self {
@@ -391,7 +391,6 @@ impl fmt::Display for LockError {
 #[derive(Debug)]
 pub struct LockGuard {
     path: PathBuf,
-    kind: LockKind,
     holder: LockHolder,
 }
 
@@ -420,7 +419,7 @@ impl LockGuard {
                     let _ = fs::remove_file(&path);
                     return Err(LockError::Io(io_diagnostic(&path, "write lock file", &err)));
                 }
-                Ok(Self { path, kind, holder })
+                Ok(Self { path, holder })
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 let holder = fs::read_to_string(&path)
@@ -493,11 +492,6 @@ impl LockGuard {
     /// The lock file.
     pub fn path(&self) -> &Path {
         &self.path
-    }
-
-    /// What this lock protects.
-    pub const fn kind(&self) -> LockKind {
-        self.kind
     }
 }
 

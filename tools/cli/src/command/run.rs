@@ -1,7 +1,9 @@
-//! `viso run` (`Viso_CLI.md` section 13) on the desktop host: take the dev
-//! session's lock, read the Rust scope from Cargo, start the watcher, build
-//! the project's Cargo package as a dev artifact, launch it with the dev
-//! channel's loopback address and session identity, and run the dev session
+//! `viso run` (`Viso_CLI.md`) on the desktop host, an iOS Simulator, an
+//! Android Emulator or a browser page: take the dev session's lock, read the
+//! Rust scope from Cargo, start the watcher, build the project's Cargo
+//! package as a dev artifact (packaged for the device, which boots while it
+//! builds), launch it with the dev channel's loopback address and session
+//! identity (`crate::deploy`), and run the dev session
 //! (`crate::dev`) until the app exits: each batch of edits is compiled on the
 //! host, reported as `diagnostic` and `dev` events, and what compiles is
 //! patched into the running app. A Rust edit rebuilds the artifact in the
@@ -27,34 +29,36 @@ use std::hash::{BuildHasher, Hasher as _};
 use std::io::{BufRead, BufReader, Read};
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use viso_package::android::Sdk;
 use viso_project::{
-    ArtifactKind, Layout, LockGuard, LockKind, Overrides, Profile, ProjectFingerprint, Target,
-    Toolchain,
+    ArtifactKind, DeviceProfile, Layout, LockGuard, LockKind, Overrides, Platform, Profile,
+    ProjectFingerprint, Target, Toolchain,
 };
 use viso_view::dev::wire::{
-    self, DEV_BUILD_ENV, DEV_PREWARM_ENV, DEV_RESTORE_ENV, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
-    DEV_TOKEN_ENV, DEV_WINDOW_ENV, DevSessionId, ProjectFingerprint as WireProject,
-    SchemaFingerprint, WindowGeometry,
+    self, DevSessionId, ProjectFingerprint as WireProject, SchemaFingerprint,
 };
 
 use super::check::{config_in_its_file, failure_code};
 use super::{
-    BUILD, BUILD_FAILED, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_CURRENT_DIR, ENV_DEV_CHANNEL,
-    ENV_NO_EXECUTABLE, ENVIRONMENT, INTERRUPTED, RUN_APP_FAILED, RUNTIME, SUCCESS,
+    BUILD, BUILD_FAILED, CLI_USAGE, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_CURRENT_DIR,
+    ENV_DEV_CHANNEL, ENV_NO_EXECUTABLE, ENVIRONMENT, INTERRUPTED, RUN_APP_FAILED, RUNTIME, SUCCESS,
+    USAGE,
 };
-use crate::args::{Global, RunArgs};
+use crate::args::{Global, RunArgs, RunTarget};
+use crate::deploy::{self, App, Deploy, Ended, Lines, Vars, web};
 use crate::dev::build::{BuildCommand, BuildEvent, BuildFailure, RustBuild};
 use crate::dev::cargo::RustScope;
 use crate::dev::{
     self, Control, ControlCall, ControlDeliver, Deliver, DevSession, Expect, LinkEvent, WatchScope,
     build_failure,
 };
+use crate::device::{self as devices, ENV_DEVICE, emulator, simulator};
 use crate::interrupt;
 use crate::output::Output;
 
@@ -105,59 +109,6 @@ impl Restart {
     }
 }
 
-/// How the app is launched: the first time and on each warm restart.
-struct Launch<'a> {
-    root: &'a Path,
-    args: &'a [OsString],
-    address: String,
-    token: &'a str,
-    session: &'a str,
-    build_id: &'a str,
-    piped: bool,
-}
-
-impl Launch<'_> {
-    /// Starts `exe`, to restore the snapshot of the app before it when
-    /// `restore`, its launch window at `window`.
-    fn spawn(
-        &self,
-        exe: &Path,
-        restore: bool,
-        window: Option<WindowGeometry>,
-    ) -> std::io::Result<Child> {
-        let mut launch = Command::new(exe);
-        launch
-            .args(self.args)
-            .current_dir(self.root)
-            .env(DEV_RUNTIME_ENV, &self.address)
-            .env(DEV_TOKEN_ENV, self.token)
-            .env(DEV_SESSION_ENV, self.session)
-            .env(DEV_BUILD_ENV, self.build_id);
-        if restore {
-            launch.env(DEV_RESTORE_ENV, "1");
-        }
-        if let Some(window) = window {
-            launch.env(DEV_WINDOW_ENV, window.to_env());
-        }
-        if self.piped {
-            launch.stdout(Stdio::piped()).stderr(Stdio::piped());
-        }
-        launch.spawn()
-    }
-
-    /// Runs `exe` once to exit as it starts (see [`Restart::Prewarm`]).
-    fn prewarm(&self, exe: &Path) -> std::io::Result<Child> {
-        Command::new(exe)
-            .args(self.args)
-            .current_dir(self.root)
-            .env(DEV_PREWARM_ENV, "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-    }
-}
-
 /// What the session's threads hand the main loop.
 enum Incoming {
     /// A line the build or the app wrote.
@@ -174,9 +125,50 @@ enum Incoming {
     Link(LinkEvent),
     /// What `viso game` asked through the control endpoint.
     Control(ControlCall),
+    /// The device booted: the emulator's adb serial, empty for a simulator;
+    /// or why it did not.
+    Booted(Result<String, String>),
+}
+
+/// Where a run goes, as the command line asks: the target, and the device
+/// platform of a simulator or emulator target.
+fn target_of(args: &RunArgs) -> (Target, Option<Platform>) {
+    match args.target {
+        None => (Target::Host, None),
+        Some(RunTarget::Ios) => (Target::Ios, Some(Platform::Ios)),
+        Some(RunTarget::Android) => (Target::Android, Some(Platform::Android)),
+        Some(RunTarget::WebGpu) => (Target::WebGpu, None),
+        Some(RunTarget::WebDom) => (Target::WebDom, None),
+        Some(RunTarget::WebHybrid) => (Target::WebHybrid, None),
+    }
+}
+
+/// The usage error of an option the target does not take.
+fn misplaced(args: &RunArgs, platform: Option<Platform>, target: Target) -> Option<String> {
+    let web = matches!(target, Target::WebGpu | Target::WebDom | Target::WebHybrid);
+    if args.device.is_some() && platform.is_none() {
+        return Some("`--device` takes a simulator or emulator profile: `viso run ios|android --device <id>`".into());
+    }
+    if args.browser.is_some() && !web {
+        return Some("`--browser` is a web option: `viso run web-gpu --browser <name>`".into());
+    }
+    None
 }
 
 pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
+    let (target, platform) = target_of(args);
+    if let Some(why) = misplaced(args, platform, target) {
+        out.failure(CLI_USAGE, &why, &[]);
+        return USAGE;
+    }
+    if let Err(diagnostic) = target.require_available() {
+        out.config(None, &diagnostic);
+        return diagnostic.code.exit_code();
+    }
+    if platform == Some(Platform::Ios) && !cfg!(target_os = "macos") {
+        out.failure(ENV_DEVICE, "the iOS Simulator runs on macOS only", &[]);
+        return ENVIRONMENT;
+    }
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(error) => {
@@ -188,9 +180,9 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
             return ENVIRONMENT;
         }
     };
-    // `viso run` always builds the host dev artifact (sections 13.1 and 13.6).
+    // `viso run` always builds a dev artifact.
     let flags = Overrides {
-        target: Some(Target::Host),
+        target: Some(target),
         profile: Some(Profile::Dev),
         ..Overrides::default()
     };
@@ -220,13 +212,38 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         );
         return ENVIRONMENT;
     }
+    // The simulator or emulator profile, by `--device`, the default or the
+    // only one.
+    let profile = match platform {
+        Some(platform) => {
+            let store = match devices::store(out) {
+                Ok(store) => store,
+                Err(code) => return code,
+            };
+            match devices::select(out, &store, platform, args.device.as_deref(), &root) {
+                Ok(profile) => Some(profile),
+                Err(code) => return code,
+            }
+        }
+        None => None,
+    };
+    let sdk = match platform {
+        Some(Platform::Android) => match Sdk::locate() {
+            Ok(sdk) => Some(sdk),
+            Err(why) => {
+                out.failure(ENV_DEVICE, &why, &[]);
+                return ENVIRONMENT;
+            }
+        },
+        _ => None,
+    };
 
-    // One dev session per project and target at a time (§4.1).
+    // One dev session per project, target and device at a time.
     let lock = match LockGuard::acquire(
         &Layout::new(&root),
         LockKind::DevSession {
-            target: Target::Host,
-            device: None,
+            target,
+            device: profile.as_ref().map(|p| p.id.as_str()),
         },
     ) {
         Ok(lock) => lock,
@@ -257,21 +274,97 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     };
 
     interrupt::catch();
-    // The Rust the artifact is built from, as Cargo resolves it; without it
-    // the session still runs, and a Rust edit needs `viso run` again.
+
+    // The Rust the artifact is built from, as Cargo resolves it for the
+    // device; without it the session still runs, and a Rust edit needs
+    // `viso run` again.
     let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
     let manifest = canonical.join("Cargo.toml");
-    let rust = RustScope::read(&manifest).unwrap_or_else(|why| {
+    let triple = match platform {
+        Some(Platform::Ios) => Some(viso_package::apple::simulator_triple()),
+        Some(Platform::Android) => Some(viso_package::android::Abi::host().triple()),
+        None if target == Target::WebGpu => Some(viso_package::web::TRIPLE),
+        None => None,
+    };
+    let rust = match RustScope::read(&manifest, triple) {
+        Ok(rust) => rust,
+        Err(why) => {
+            out.log(
+                "warn",
+                "tool",
+                &format!("Rust edits do not rebuild the app: {why}"),
+            );
+            RustScope::default()
+        }
+    };
+    let (tx, rx) = mpsc::channel();
+    // The device boots while the app builds.
+    if let Some(profile) = &profile {
+        boot(profile.clone(), sdk.clone(), tx.clone(), out);
+    }
+    let deliver: Deliver = {
+        let tx = tx.clone();
+        Arc::new(move |event| tx.send(Incoming::Link(event)).is_ok())
+    };
+    let mut deploy = match (&profile, sdk) {
+        (None, _) if target == Target::WebGpu => {
+            let port = project
+                .manifest
+                .web
+                .serve
+                .port
+                .as_ref()
+                .map_or(web::DEFAULT_PORT, |port| port.value);
+            match web::WebServer::bind(port, expect.clone(), Arc::clone(&deliver)) {
+                Ok(server) => Deploy::Browser {
+                    server,
+                    browser: args.browser.clone().filter(|b| b != "none"),
+                    open: args.browser.as_deref() != Some("none")
+                        && (!global.json || args.browser.is_some()),
+                    launched: false,
+                },
+                Err(error) => {
+                    out.failure(
+                        ENV_DEV_CHANNEL,
+                        &format!("cannot open the web dev server: {error}"),
+                        &[],
+                    );
+                    return ENVIRONMENT;
+                }
+            }
+        }
+        (None, _) => Deploy::Host { root: root.clone() },
+        (Some(profile), _) if profile.platform == Platform::Ios => Deploy::Simulator {
+            profile: profile.clone(),
+        },
+        (Some(_), Some(sdk)) => match deploy::android_shell(&rust.linked) {
+            Ok(shell) => Deploy::Emulator {
+                device: emulator::Device {
+                    adb: sdk.adb.clone(),
+                    serial: String::new(),
+                },
+                sdk,
+                shell,
+                reversed: None,
+            },
+            Err(why) => {
+                out.failure(ENV_DEVICE, &why, &[]);
+                return ENVIRONMENT;
+            }
+        },
+        (Some(_), None) => unreachable!("an emulator profile has its SDK"),
+    };
+    if matches!(deploy, Deploy::Emulator { .. } | Deploy::Browser { .. })
+        && !args.app_args.is_empty()
+    {
         out.log(
             "warn",
             "tool",
-            &format!("Rust edits do not rebuild the app: {why}"),
+            "an Android or web app takes no command-line arguments; those after `--` are not passed",
         );
-        RustScope::default()
-    });
+    }
     // The watcher starts before the build, so an edit saved while the app
     // builds reaches the session.
-    let (tx, rx) = mpsc::channel();
     let watched = tx.clone();
     let scope = WatchScope {
         project: canonical,
@@ -303,6 +396,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         }
     };
 
+    let plan = deploy.plan();
     let built = Mutex::new(tx.clone());
     let mut builds = RustBuild::new(
         BuildCommand {
@@ -311,6 +405,10 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
             quiet: global.quiet,
             piped: global.json,
             target_dir: None,
+            target: plan.target,
+            rustc_args: plan.rustc_args,
+            env: plan.env,
+            package: plan.package,
         },
         move |event| {
             built
@@ -320,26 +418,39 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     );
     out.progress("build", "building the dev artifact");
     builds.start();
-    let exe = match launch_build(out, &mut dev, &mut builds, &rx) {
-        Ok(exe) => exe,
+    let (exe, serial) = match launch_build(out, &mut dev, &mut builds, &rx, profile.as_ref()) {
+        Ok(launch) => launch,
         Err(code) => return code,
     };
     builds.launched(&exe);
+    if let Deploy::Emulator { device, .. } = &mut deploy {
+        device.serial = serial;
+    }
 
-    let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
-    {
-        Ok(listener) => listener,
-        Err(error) => {
-            out.failure(
-                ENV_DEV_CHANNEL,
-                &format!("cannot open the dev channel on the loopback interface: {error}"),
-                &[],
-            );
-            return ENVIRONMENT;
-        }
+    // A page's dev channel comes through the web dev server; any other app
+    // connects to a loopback listener of its own.
+    let listener = match &deploy {
+        Deploy::Browser { .. } => None,
+        _ => match TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
+        {
+            Ok(listener) => Some(listener),
+            Err(error) => {
+                out.failure(
+                    ENV_DEV_CHANNEL,
+                    &format!("cannot open the dev channel on the loopback interface: {error}"),
+                    &[],
+                );
+                return ENVIRONMENT;
+            }
+        },
     };
-    let address = match listener.local_addr() {
+    let address = match (&listener, &deploy) {
+        (Some(listener), _) => listener.local_addr(),
+        (None, Deploy::Browser { server, .. }) => Ok(server.addr()),
+        (None, _) => unreachable!("only a page has no listener"),
+    };
+    let address = match address {
         Ok(address) => address,
         Err(error) => {
             out.failure(
@@ -354,32 +465,37 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         "launch",
         &format!("launching `{}`", relative(&root, &exe).display()),
     );
-    let launch = Launch {
-        root: &root,
-        args: &args.app_args,
+    let vars = Vars {
         address: address.to_string(),
         token: &token,
         session: &session,
         build_id: &build_id,
-        piped: global.json,
     };
-    let mut child = match launch.spawn(&exe, false, None) {
-        Ok(child) => child,
-        Err(error) => {
-            out.failure(
-                RUN_APP_FAILED,
-                &format!("cannot launch `{}`: {error}", exe.display()),
-                &[],
+    let device_event = |out: &mut Output, state: &str| {
+        if let Some(profile) = &profile {
+            out.device(
+                profile.platform.as_str(),
+                &profile.id,
+                &profile.device,
+                state,
             );
+        }
+    };
+    let mut app = match deploy.launch(&exe, &args.app_args, &vars, false, None, global.json) {
+        Ok(app) => app,
+        Err(why) => {
+            deploy.ended();
+            out.failure(RUN_APP_FAILED, &why, &[]);
             return RUNTIME;
         }
     };
+    device_event(out, "launched");
+    if let Deploy::Browser { server, .. } = &deploy {
+        let addr = server.addr();
+        out.server(&server.url(), &addr.ip().to_string(), addr.port(), false);
+    }
 
-    let mut threads = pipe_logs(&mut child, &tx);
-    let deliver: Deliver = {
-        let tx = tx.clone();
-        Arc::new(move |event| tx.send(Incoming::Link(event)).is_ok())
-    };
+    let mut threads = pipe_logs(&mut app, &tx);
     let ask: ControlDeliver = {
         let tx = tx.clone();
         Arc::new(move |call| tx.send(Incoming::Control(call)).is_ok())
@@ -390,7 +506,9 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     let mut interrupts = 0;
     let mut restart: Option<Restart> = None;
     let status = loop {
-        dev::link::accept(&listener, &expect, &deliver, &mut threads);
+        if let Some(listener) = &listener {
+            dev::link::accept(listener, &expect, &deliver, &mut threads);
+        }
         if let Some(control) = &control {
             control.accept(&ask, &mut asking);
         }
@@ -400,10 +518,10 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
                 out.progress("cancel", "stopping the session");
                 builds.stop();
                 restart = None;
-                close(&child);
+                app.close();
             }
             if caught >= 2 {
-                let _ = child.kill();
+                app.kill();
             }
             interrupts = caught;
         }
@@ -429,11 +547,11 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
                         Some(Restart::Prewarm { mut run, .. }) => {
                             let _ = run.kill();
                             let _ = run.wait();
-                            prewarm(&launch, exe, &mut dev, &child, out)
+                            prewarm(&deploy, &args.app_args, exe, &mut dev, &app, out)
                         }
                         Some(Restart::Snapshot { since, .. }) => Restart::Snapshot { exe, since },
                         Some(Restart::Closing { since, .. }) => Restart::Closing { exe, since },
-                        None => prewarm(&launch, exe, &mut dev, &child, out),
+                        None => prewarm(&deploy, &args.app_args, exe, &mut dev, &app, out),
                     });
                 }
             }
@@ -455,7 +573,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
                 if done || since.elapsed() >= PREWARM_WAIT {
                     let _ = run.kill();
                     let _ = run.wait();
-                    Some(snapshot(exe, &mut dev, &child, out))
+                    Some(snapshot(exe, &mut dev, &app, out))
                 } else {
                     Some(Restart::Prewarm { exe, run, since })
                 }
@@ -463,7 +581,7 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
             Some(Restart::Snapshot { exe, since })
                 if dev.has_snapshot() || since.elapsed() >= SNAPSHOT_WAIT =>
             {
-                close(&child);
+                app.close();
                 Some(Restart::Closing {
                     exe,
                     since: Instant::now(),
@@ -471,13 +589,13 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
             }
             Some(Restart::Closing { exe, since }) => {
                 if since.elapsed() >= CLOSE_WAIT {
-                    let _ = child.kill();
+                    app.kill();
                 }
                 Some(Restart::Closing { exe, since })
             }
             other => other,
         };
-        match child.try_wait() {
+        match app.try_wait() {
             Ok(Some(status)) => {
                 // The old app closed for the restart: the new one starts.
                 let Some(restart) = restart.take().filter(|_| interrupts == 0) else {
@@ -489,18 +607,23 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
                     "launch",
                     &format!("restarting `{}`", relative(&root, &exe).display()),
                 );
-                match launch.spawn(&exe, restore, dev.launch_window()) {
+                match deploy.launch(
+                    &exe,
+                    &args.app_args,
+                    &vars,
+                    restore,
+                    dev.launch_window(),
+                    global.json,
+                ) {
                     Ok(next) => {
-                        child = next;
-                        threads.extend(pipe_logs(&mut child, &tx));
+                        app = next;
+                        threads.extend(pipe_logs(&mut app, &tx));
                         builds.launched(&exe);
+                        device_event(out, "launched");
                         dev.relaunched(out);
                     }
-                    Err(error) => {
-                        dev.restart_failed(
-                            &format!("cannot launch `{}`: {error}", exe.display()),
-                            out,
-                        );
+                    Err(why) => {
+                        dev.restart_failed(&why, out);
                         break Ok(status);
                     }
                 }
@@ -514,9 +637,13 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
         restart.into_exe();
     }
     builds.stop();
+    deploy.ended();
     // The app is gone: a connection it opened is waiting in the listener's
     // backlog or being read to its end, and its pipes are at their end.
-    dev::link::accept(&listener, &expect, &deliver, &mut threads);
+    if let Some(listener) = &listener {
+        dev::link::accept(listener, &expect, &deliver, &mut threads);
+    }
+    drop(app);
     drop(deliver);
     drop(tx);
     for thread in threads {
@@ -538,32 +665,77 @@ pub fn run(global: &Global, args: &RunArgs, out: &mut Output) -> u8 {
     exit_code(out, status)
 }
 
+/// Boots the device of `profile` on a thread, saying so, and hands the
+/// session [`Incoming::Booted`] once it is ready.
+fn boot(profile: DeviceProfile, sdk: Option<Sdk>, tx: Sender<Incoming>, out: &mut Output) {
+    out.device(
+        profile.platform.as_str(),
+        &profile.id,
+        &profile.device,
+        "booting",
+    );
+    thread::spawn(move || {
+        let booted = match (profile.platform, sdk) {
+            (Platform::Ios, _) => simulator::boot(&profile).map(|()| String::new()),
+            (Platform::Android, Some(sdk)) => emulator::boot(&sdk, &profile, true),
+            (Platform::Android, None) => Err("no Android SDK".into()),
+        };
+        let _ = tx.send(Incoming::Booted(booted));
+    });
+}
+
 /// Waits for the launch build, which a Rust edit while it runs starts again,
-/// and returns its executable, or the exit code of the failure it reported.
-/// The edits of the other domains wait for the app.
+/// and for the boot of the device of `booting`, and returns the build's
+/// executable and the device's serial, or the exit code of the failure it
+/// reported. The edits of the other domains wait for the app.
 fn launch_build(
     out: &mut Output,
     dev: &mut DevSession,
     builds: &mut RustBuild,
     rx: &Receiver<Incoming>,
-) -> Result<PathBuf, u8> {
+    mut booting: Option<&DeviceProfile>,
+) -> Result<(PathBuf, String), u8> {
+    let mut built = None;
+    let mut serial = String::new();
     loop {
         if interrupt::count() > 0 {
             return Err(INTERRUPTED);
+        }
+        if booting.is_none()
+            && let Some(exe) = built.take()
+        {
+            return Ok((exe, serial));
         }
         let wait = builds.deadline().map_or(POLL, |due| {
             due.saturating_duration_since(Instant::now()).min(POLL)
         });
         match rx.recv_timeout(wait) {
+            Ok(Incoming::Booted(booted)) => {
+                let Some(profile) = booting.take() else {
+                    continue;
+                };
+                match booted {
+                    Ok(booted) => {
+                        serial = booted;
+                        let (platform, id) = (profile.platform.as_str(), &profile.id);
+                        out.device(platform, id, &profile.device, "ready");
+                    }
+                    Err(why) => {
+                        out.failure(ENV_DEVICE, &why, &[]);
+                        return Err(ENVIRONMENT);
+                    }
+                }
+            }
             Ok(Incoming::Build(BuildEvent::Finished(finished))) => {
                 let Some(build) = builds.finished(finished) else {
                     continue;
                 };
-                return build.result.map_err(|failure| {
+                built = Some(build.result.map_err(|failure| {
                     let code = match &failure {
                         BuildFailure::Spawn(_) => ENV_CARGO,
                         BuildFailure::Failed { .. } | BuildFailure::Cancelled => BUILD_FAILED,
                         BuildFailure::Executables(_) => ENV_NO_EXECUTABLE,
+                        BuildFailure::Package(_) => ENV_DEVICE,
                     };
                     let notes = match &failure {
                         BuildFailure::Executables(executables) => executables
@@ -578,7 +750,8 @@ fn launch_build(
                     } else {
                         ENVIRONMENT
                     }
-                });
+                })?);
+                continue;
             }
             Ok(message) => {
                 let _ = relay(out, dev, builds, message);
@@ -590,19 +763,18 @@ fn launch_build(
     }
 }
 
-/// Asks the app to close: a termination request, which it handles as a
-/// close of its windows.
-/// Starts the restart on `exe`: its prewarm run while the old app `child`
-/// runs on, or, when that does not start, the snapshot right away.
+/// Starts the restart on `exe`: its prewarm run while the old app runs on,
+/// or, where there is none or it does not start, the snapshot right away.
 fn prewarm(
-    launch: &Launch<'_>,
+    deploy: &Deploy,
+    args: &[OsString],
     exe: PathBuf,
     dev: &mut DevSession,
-    child: &Child,
+    app: &App,
     out: &mut Output,
 ) -> Restart {
-    match launch.prewarm(&exe) {
-        Ok(run) => {
+    match deploy.prewarm(&exe, args) {
+        Some(Ok(run)) => {
             dev.prewarm_started();
             out.progress("restart", "starting the new build once");
             Restart::Prewarm {
@@ -611,33 +783,21 @@ fn prewarm(
                 since: Instant::now(),
             }
         }
-        Err(_) => snapshot(exe, dev, child, out),
+        Some(Err(_)) | None => snapshot(exe, dev, app, out),
     }
 }
 
-/// Asks the old app `child` for its snapshot before the restart on `exe`;
-/// with no app connected to ask, asks it to close.
-fn snapshot(exe: PathBuf, dev: &mut DevSession, child: &Child, out: &mut Output) -> Restart {
+/// Asks the old app for its snapshot before the restart on `exe`; with no
+/// app connected to ask, asks it to close.
+fn snapshot(exe: PathBuf, dev: &mut DevSession, app: &App, out: &mut Output) -> Restart {
     out.progress("restart", "taking the app's snapshot");
     let since = Instant::now();
     if dev.request_snapshot() {
         Restart::Snapshot { exe, since }
     } else {
-        close(child);
+        app.close();
         Restart::Closing { exe, since }
     }
-}
-
-fn close(child: &Child) {
-    #[cfg(unix)]
-    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
-        // SAFETY: a plain call; the child is not yet reaped, so its id names
-        // it.
-        unsafe { libc::kill(pid, libc::SIGTERM) };
-    }
-    // The console's Ctrl-C reaches the app itself.
-    #[cfg(not(unix))]
-    let _ = child;
 }
 
 /// The compiler identity of the build: `rustc -V`, or `unknown` when it does
@@ -669,23 +829,19 @@ fn random_hex() -> String {
 
 /// Starts a thread per piped output of the app, turning each line into a `log`
 /// message.
-fn pipe_logs(child: &mut Child, tx: &Sender<Incoming>) -> Vec<JoinHandle<()>> {
-    let mut threads = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        threads.push(line_reader(stdout, "app", |_| "info", tx.clone()));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        threads.push(line_reader(stderr, "app", |_| "warn", tx.clone()));
-    }
-    threads
+fn pipe_logs(app: &mut App, tx: &Sender<Incoming>) -> Vec<JoinHandle<()>> {
+    app.outputs()
+        .into_iter()
+        .map(|(output, lines)| line_reader(output, "app", lines, tx.clone()))
+        .collect()
 }
 
 /// Starts a thread that sends each line of `input` as a `log` message from
-/// `source`, at the level `level` gives it.
+/// `source`, read as `lines` reads it.
 fn line_reader(
     input: impl Read + Send + 'static,
     source: &'static str,
-    level: fn(&str) -> &'static str,
+    lines: Lines,
     tx: Sender<Incoming>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -693,7 +849,9 @@ fn line_reader(
             let Ok(line) = line else {
                 return;
             };
-            let level = level(&line);
+            let Some((level, line)) = lines.read(line) else {
+                continue;
+            };
             if tx
                 .send(Incoming::Log {
                     level,
@@ -726,6 +884,7 @@ fn relay(
         Incoming::Change(change) => dev.change(change, out),
         Incoming::Link(event) => dev.link(event, out),
         Incoming::Control(call) => dev.control(call, out),
+        Incoming::Booted(_) => {}
         Incoming::Build(BuildEvent::Log { level, line }) => out.log(level, "tool", &line),
         Incoming::Build(BuildEvent::Rescoped(Ok(rust))) => dev.rescope(rust),
         Incoming::Build(BuildEvent::Rescoped(Err(why))) => out.log(
@@ -745,7 +904,7 @@ fn relay(
 
 /// The exit code of an app that ended with `status`: 0 for a normal exit, 5
 /// for a crash or a non-zero exit (section 13.9).
-fn exit_code(out: &mut Output, status: std::io::Result<ExitStatus>) -> u8 {
+fn exit_code(out: &mut Output, status: std::io::Result<Ended>) -> u8 {
     match status {
         Ok(status) if status.success() => SUCCESS,
         Ok(status) => {

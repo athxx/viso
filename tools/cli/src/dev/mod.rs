@@ -390,6 +390,11 @@ impl DevSession {
     /// reports it.
     pub(crate) fn relaunched(&mut self, out: &mut Output) {
         self.clock.launched = Some(Instant::now());
+        // The old app's channel may outlive it (a page's closes once the new
+        // build is served): it is no longer the session's.
+        if self.runtime.take().is_some() {
+            self.sources.unmount();
+        }
         if self.restore_next {
             self.landing = true;
         } else {
@@ -1467,6 +1472,7 @@ pub(crate) fn build_failure(failure: &BuildFailure) -> String {
             "the package builds no executable".to_owned()
         }
         BuildFailure::Executables(_) => "the package builds more than one executable".to_owned(),
+        BuildFailure::Package(why) => format!("cannot package the app: {why}"),
         BuildFailure::Cancelled => "the build was cancelled".to_owned(),
     }
 }
@@ -2367,6 +2373,35 @@ mod tests {
         assert!(f.dev.rebuilt(&built, &mut f.out));
         f.dev.ended(&mut f.out);
         assert!(f.dev.restarting.is_none());
+    }
+
+    #[test]
+    fn an_old_channel_closing_after_the_relaunch_leaves_the_restart_landing() {
+        // A page's channel closes once the new build is served, after the
+        // session relaunched it.
+        let mut f = Fixture::new("page");
+        let built = Build {
+            result: Ok(PathBuf::from("app")),
+            elapsed: Duration::from_millis(1),
+            files: Vec::new(),
+            unchanged: false,
+        };
+        assert!(f.dev.rebuilt(&built, &mut f.out));
+        assert!(f.dev.request_snapshot());
+        let bytes = [1, 2, 3];
+        for chunk in blob_chunks(&bytes) {
+            f.runtime(RuntimeMessage::Blob(chunk));
+        }
+        f.runtime(RuntimeMessage::Snapshot {
+            blob: BlobRef::of(&bytes),
+            windows: Vec::new(),
+            capture_us: 1,
+        });
+        let old = f.launch();
+        assert!(f.dev.restore_next());
+        f.dev.relaunched(&mut f.out);
+        f.dev.link(LinkEvent::Closed(old), &mut f.out);
+        assert!(f.dev.landing && f.dev.restarting.is_some(), "still landing");
     }
 
     #[test]
