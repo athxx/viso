@@ -10,8 +10,9 @@
 //! built for the target (default the host) three ways, each checked against
 //! the same marker list — the dev layer's env names, its thread name, its
 //! patch checks and the failure overlay's text; on the web, where the dev
-//! link runs on the loop's thread and the module keeps no symbols, there is
-//! no link thread or type to name:
+//! link runs on the loop's thread, connects to the page's own origin and the
+//! module keeps no symbols, there is no link thread, type or address
+//! variable to name:
 //!
 //! 1. a dev artifact (`--release --features viso/hot-reload`, `VISO_PROFILE=dev`)
 //!    must contain every marker, so a marker that stopped matching fails here
@@ -47,11 +48,14 @@ use viso_package::{android, apple, web};
 /// of, and its type, whose name a wasm module keeps no symbol for.
 const LINK_THREAD: &str = "viso-dev-link";
 const LINK_TYPE: &str = "DevLink";
+/// The dev channel's address, which a page is not told: its channel is at
+/// the origin it was loaded from.
+const LINK_ADDRESS: &str = "VISO_DEV_RUNTIME";
 
 /// What only the dev layer puts in a binary.
 const MARKERS: &[&str] = &[
     // The dev channel's environment, read only by the dev link.
-    "VISO_DEV_RUNTIME",
+    LINK_ADDRESS,
     "VISO_DEV_TOKEN",
     "VISO_DEV_SESSION",
     "VISO_DEV_BUILD",
@@ -110,7 +114,9 @@ impl Target {
         MARKERS
             .iter()
             .copied()
-            .filter(|&m| self != Target::Web || (m != LINK_THREAD && m != LINK_TYPE))
+            .filter(|&m| {
+                self != Target::Web || ![LINK_THREAD, LINK_TYPE, LINK_ADDRESS].contains(&m)
+            })
             .collect()
     }
 }
@@ -331,7 +337,7 @@ fn launch(binary: &Path, dir: &Path, wait: Wait) -> Result<Duration, String> {
     let addr = listener.local_addr().map_err(|e| e.to_string())?;
     let mut child = Command::new(binary)
         .current_dir(dir)
-        .env("VISO_DEV_RUNTIME", addr.to_string())
+        .env(LINK_ADDRESS, addr.to_string())
         .env("VISO_DEV_TOKEN", "00000000000000000000000000000000")
         .env("VISO_DEV_SESSION", "00000000000000000000000000000001")
         .env("VISO_DEV_BUILD", "00000000000000000000000000000002")
@@ -402,11 +408,16 @@ mod tests {
     }
 
     #[test]
-    fn the_web_names_no_link_thread_or_type() {
+    fn the_web_names_no_link_thread_type_or_address() {
         assert!(Target::Host.markers().contains(&LINK_THREAD));
+        assert!(Target::Host.markers().contains(&LINK_ADDRESS));
         let web = Target::Web.markers();
-        assert!(!web.contains(&LINK_THREAD) && !web.contains(&LINK_TYPE));
-        assert_eq!(web.len(), MARKERS.len() - 2);
+        assert!(
+            ![LINK_THREAD, LINK_TYPE, LINK_ADDRESS]
+                .iter()
+                .any(|m| web.contains(m))
+        );
+        assert_eq!(web.len(), MARKERS.len() - 3);
     }
 
     #[test]
