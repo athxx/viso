@@ -84,8 +84,7 @@ one stable exit code and one stable diagnostic code.
       only (no `VISO_TARGET`, no `[build] default_target`), the flag layer is
       `--profile`, `[target.android] backend` removed (backends are fixed per
       target), an unknown key is an error (C0004, exit 1).
-- [ ] The full top-level tree of §1 grouped in help as PROJECT / MOBILE / DEVELOP /
-      LANGUAGE / TEST & DEBUG / DELIVERY / MAINTENANCE (§52) — moved to C0.5; each
+- [x] The full top-level tree of §1 grouped in help (§52) — done in C0.5; each
       command still lands with its own section, never as a stub.
 - [x] Remaining globals (§6): `--verbose`/`-v` (resolved config, the Cargo command
       line; `log{level:"debug"}` under `--json`), `--color auto|always|never`
@@ -159,19 +158,30 @@ one stable exit code and one stable diagnostic code.
 
 ### C0.5 — Help and errors (§52, §53)
 
-- [ ] The top-level command list grouped as PROJECT / MOBILE / DEVELOP / LANGUAGE /
-      TEST & DEBUG / DELIVERY / MAINTENANCE (§1, §52), generated from the parser so a
-      new command cannot be left out of its group.
-- [ ] Help style (§52): purpose, usage, examples, arguments, options, notes, in that
-      order; two or three examples per command.
-- [ ] Error format of §53 everywhere: `error[CODE]: message`, location, `= note:`,
-      `= help: run <command>`; the suggested command is also in the JSON diagnostic
-      (`suggested_command`).
+- [x] The top-level command list grouped as PROJECT / MOBILE DEV ENVIRONMENT /
+      DEVELOP / LANGUAGE / TEST / DEBUG / DELIVERY / MAINTENANCE (§1, §52; `game`
+      added to §1 under TEST / DEBUG), names and purposes read from the parser; a
+      test holds every top-level command in exactly one group (`help.rs`).
+- [x] Help style (§52): purpose, usage, examples, arguments, options, global
+      options, notes, in that order, one template for every page; two or three
+      examples per command at every level, each parsed by a test; `--help` is the
+      `-h` page (values inline); no `help` subcommand; global options under
+      `Global options:` after the command's own.
+- [x] Error format of §53 everywhere: `error[CODE]: message`, location, `= note:`,
+      `= help: run `<command>``; in JSON the next command is a fix without edits
+      (`applicability: maybe-incorrect`), the one §138 shape (`Output::failure_next`).
+      Usage errors too: the parser's message, tips, possible values and usage
+      become a `CLI_USAGE` diagnostic in human text as in JSON, the command's
+      `--help` next; device, serve, game and config suggestions moved from notes.
 
 ### C0.6 — Acceptance
 
-- [ ] `viso --help`, `viso --version` (version, git hash, compiler schema version,
-      protocol version) and `viso config show` pass parser golden tests (C7.6).
+- [x] Golden tests (`tests/golden.rs`, `tests/golden/`, `BLESS=1` rewrites): every
+      help page reached through the pages themselves, one usage error of each kind
+      (each exit 2), `viso config show` of a fixed project; `viso --version` by
+      shape: version and commit (`build.rs`), language, event schema, diagnostic
+      schema and dev protocol versions, constants only (§64), `result` under
+      `--json`.
 - [x] `viso config show --json` in a project with flag, env, profile and manifest
       layers in play reports the winning layer for each key (`tests/config.rs`).
 
@@ -264,6 +274,9 @@ gap, and CI can run all of it headless.
       a missing optional tool (`wasm-opt`) is a warning in dev, an error in shipping.
 - [ ] Rust diagnostics from cargo's JSON become `diagnostic` events with spans
       (existing in `run`, shared).
+- [ ] `run`/`serve` refusing a non-dev `--profile` names
+      `viso build --profile <name>` as its next command (`failure_next`) once
+      `build` exists; until then it is a note.
 
 ### C1.7 — `viso run` remaining options (§13.7)
 

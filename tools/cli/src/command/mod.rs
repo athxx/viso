@@ -15,7 +15,7 @@ use viso_project::Platform;
 
 use crate::args::{AndroidCommand, Cli, Command, Global, IosCommand};
 use crate::context::Context;
-use crate::error::{CLI_USAGE, INTERNAL_PANIC};
+use crate::error::{CLI_USAGE, INTERNAL_PANIC, SUCCESS};
 use crate::output::Output;
 
 /// Runs the parsed command, ends its output with the summary, and returns its exit
@@ -56,15 +56,35 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
 }
 
 /// Reports a usage error for `command`, when the command line names one, as
-/// JSON events or human text, and returns its exit code.
-pub fn usage_failure(json: bool, command: Option<&str>, message: &str, notes: &[String]) -> u8 {
-    let global = Global {
+/// JSON events or human text, with the commands to run next, and returns its
+/// exit code.
+pub fn usage_failure(
+    json: bool,
+    command: Option<&str>,
+    message: &str,
+    notes: &[String],
+    next: &[String],
+) -> u8 {
+    let mut out = Output::new(&bare(json), command);
+    let code = out.failure_next(CLI_USAGE, message, notes, next);
+    out.finish(code)
+}
+
+/// Answers `--version`: its text, or a `result` under `--json`.
+pub fn version(json: bool) -> u8 {
+    let mut out = Output::new(&bare(json), None);
+    let version = &crate::help::VERSION;
+    out.result(|w| version.write(w), || version.text());
+    out.finish(SUCCESS)
+}
+
+/// The global options of a command line that did not parse: only `--json`
+/// is known.
+fn bare(json: bool) -> Global {
+    Global {
         json,
         ..Global::default()
-    };
-    let mut out = Output::new(&global, command);
-    let code = out.failure(CLI_USAGE, message, notes);
-    out.finish(code)
+    }
 }
 
 /// What a panic said.

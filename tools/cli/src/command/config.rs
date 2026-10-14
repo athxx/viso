@@ -52,14 +52,15 @@ fn show(ctx: &Context<'_>, out: &mut Output) -> u8 {
 
 fn get(ctx: &Context<'_>, args: &ConfigGetArgs, out: &mut Output) -> u8 {
     if !KEYS.contains(&args.key.as_str()) {
-        let note = match nearest(&args.key, KEYS) {
-            Some(key) => format!("did you mean `{key}`?"),
-            None => "`viso config show` lists every key".to_owned(),
+        let notes = match nearest(&args.key, KEYS) {
+            Some(key) => vec![format!("did you mean `{key}`?")],
+            None => Vec::new(),
         };
-        return out.failure(
+        return out.failure_next(
             CLI_USAGE,
             &format!("`{}` is not a configuration key", args.key),
-            &[note],
+            &notes,
+            &["viso config show".to_owned()],
         );
     }
     let entries = match entries(ctx, out) {

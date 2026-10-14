@@ -20,9 +20,9 @@ use super::{DevIds, Location, Report, Source};
 /// The envelope's schema name.
 const SCHEMA: &str = "viso.cli.event";
 /// The envelope version, shared by every payload but the diagnostic.
-const SCHEMA_VERSION: u64 = 1;
+pub(crate) const SCHEMA_VERSION: u64 = 1;
 /// The diagnostic object's own version.
-const DIAGNOSTIC_SCHEMA_VERSION: &str = "1.0";
+pub(crate) const DIAGNOSTIC_SCHEMA_VERSION: &str = "1.0";
 
 /// One command run's event stream.
 pub(super) struct Stream {
@@ -506,7 +506,7 @@ fn diagnostic(w: &mut JsonWriter, report: &Report<'_>) {
     for fix in &report.fixes {
         w.begin_object();
         w.name("title");
-        w.string(fix.title);
+        w.string(&fix.title);
         w.name("applicability");
         w.string(fix.applicability);
         w.name("edits");
@@ -578,7 +578,7 @@ mod tests {
     use viso_dsl::{Diagnostic, TextRange, TextSize};
 
     use super::*;
-    use crate::output::compiler_report;
+    use crate::output::{Suggestion, compiler_report};
 
     fn range(start: usize, end: usize) -> TextRange {
         TextRange::new(TextSize::new(start as u32), TextSize::new(end as u32))
@@ -769,11 +769,15 @@ mod tests {
             expected: &[],
             actual: None,
             notes: &[],
-            fixes: Vec::new(),
+            fixes: vec![Suggestion::command("viso config validate")],
         };
         assert_eq!(
             written(&report),
-            r#"{"schema_version":"1.0","severity":"warning","code":"C0004","message":"unknown key","primary":null,"related":[],"expected":[],"actual":null,"notes":[],"fixes":[]}"#
+            concat!(
+                r#"{"schema_version":"1.0","severity":"warning","code":"C0004","message":"unknown key","#,
+                r#""primary":null,"related":[],"expected":[],"actual":null,"notes":[],"#,
+                r#""fixes":[{"title":"run `viso config validate`","applicability":"maybe-incorrect","edits":[]}]}"#
+            )
         );
     }
 }

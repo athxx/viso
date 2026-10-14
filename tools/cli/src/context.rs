@@ -105,7 +105,7 @@ impl<'a> Context<'a> {
                 CLI_USAGE,
                 &format!("`viso {command}` builds the dev profile, not `{profile}`"),
                 &[format!(
-                    "build a {profile} artifact with `viso build --profile {profile}`"
+                    "a {profile} artifact is built by `viso build --profile {profile}`"
                 )],
             )),
         }

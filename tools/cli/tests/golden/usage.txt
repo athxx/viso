@@ -1,0 +1,145 @@
+$ viso chekc
+error[CLI_USAGE]: unrecognized subcommand 'chekc'
+ = note: some similar subcommands exist: 'schema', 'check'
+ = note: usage: viso [OPTIONS] <COMMAND>
+ = help: run `viso --help`
+
+
+$ viso 
+Build, check and run Viso applications
+
+Usage: viso [OPTIONS] <COMMAND>
+
+Examples:
+  viso run           # build and run the app here, hot reloading it
+  viso run ios       # the same on an iOS Simulator
+  viso check --json  # check the sources, as JSON events
+
+PROJECT
+  config      Show where each configuration value comes from, or validate it
+
+MOBILE DEV ENVIRONMENT
+  android     Manage the Android Emulator profiles `viso run android` runs on
+  ios         Manage the iOS Simulator profiles `viso run ios` runs on
+
+DEVELOP
+  run         Build a dev artifact and run it, hot reloading edits as they are saved
+  serve       Build a dev artifact for a browser and serve it, hot reloading it
+
+LANGUAGE
+  check       Check the project's `.vs` sources and `Viso.toml` without building
+  schema      Show the typed schema of a widget, native library, function or type
+
+TEST / DEBUG
+  test        Run the project's headless tests of a domain
+  game        Read a state of, or record input from, the game `viso run` is playing
+
+MAINTENANCE
+  completion  Write the script that completes `viso` commands in a shell
+
+Options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+  -h, --help               Print help
+  -V, --version            Print version
+
+Notes:
+  Run `viso <command> --help` for a command's arguments and options.
+
+$ viso config
+Show where each configuration value comes from, or validate it
+
+Usage: viso config [OPTIONS] <COMMAND>
+
+Examples:
+  viso config show                           # every key, its value and its origin
+  viso config get profile.release.opt_level  # one key
+  viso config validate                       # every problem of the configuration
+
+Commands:
+  show      Every configuration key, its value and the layer it came from
+  get       One configuration key, its value and the layer it came from
+  path      The path of the `Viso.toml` in use
+  validate  Check `Viso.toml` and the `VISO_*` environment, reporting every problem
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  `Viso.toml` is the source of truth: `viso config` reads it and never writes it.
+  A value comes from the first of: a flag, a `VISO_*` variable, the profile's
+  table, the manifest, the default.
+
+$ viso check --bogus
+error[CLI_USAGE]: unexpected argument '--bogus' found
+ = note: usage: viso check [OPTIONS]
+ = help: run `viso check --help`
+
+
+$ viso run macos
+error[CLI_USAGE]: invalid value 'macos' for '[TARGET]' [possible values: ios, android, web-gpu, web-dom, web-hybrid]
+ = help: run `viso run --help`
+
+
+$ viso run --target ios
+error[CLI_USAGE]: `viso run` names its target as an argument, not with `--target`
+ = note: write `viso run <target>`, as in `viso run web-gpu`
+ = help: run `viso run --help`
+
+
+$ viso config get
+error[CLI_USAGE]: the following required arguments were not provided: <KEY>
+ = note: usage: viso config get <KEY>
+ = help: run `viso config get --help`
+
+
+$ viso config set a b
+error[CLI_USAGE]: unrecognized subcommand 'set'
+ = note: a similar subcommand exists: 'get'
+ = note: usage: viso config [OPTIONS] <COMMAND>
+ = help: run `viso config --help`
+
+
+$ viso -q -v check
+error[CLI_USAGE]: the argument '--quiet' cannot be used with '--verbose'
+ = note: usage: viso --quiet <COMMAND>
+ = help: run `viso check --help`
+
+
+$ viso check --jobs 0
+error[CLI_USAGE]: invalid value '0' for '--jobs <N>': 0 is not in 1..=65535
+ = help: run `viso check --help`
+
+
+$ viso schema Button --search x
+error[CLI_USAGE]: the argument '[SYMBOL]' cannot be used with '--search <TERM>'
+ = note: usage: viso schema <SYMBOL>
+ = help: run `viso schema --help`
+
+
+$ viso completion tcsh
+error[CLI_USAGE]: invalid value 'tcsh' for '<SHELL>' [possible values: bash, zsh, fish, powershell]
+ = note: a similar value exists: 'zsh'
+ = help: run `viso completion --help`
+
+

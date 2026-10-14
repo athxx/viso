@@ -1,0 +1,867 @@
+$ viso --help
+Build, check and run Viso applications
+
+Usage: viso [OPTIONS] <COMMAND>
+
+Examples:
+  viso run           # build and run the app here, hot reloading it
+  viso run ios       # the same on an iOS Simulator
+  viso check --json  # check the sources, as JSON events
+
+PROJECT
+  config      Show where each configuration value comes from, or validate it
+
+MOBILE DEV ENVIRONMENT
+  android     Manage the Android Emulator profiles `viso run android` runs on
+  ios         Manage the iOS Simulator profiles `viso run ios` runs on
+
+DEVELOP
+  run         Build a dev artifact and run it, hot reloading edits as they are saved
+  serve       Build a dev artifact for a browser and serve it, hot reloading it
+
+LANGUAGE
+  check       Check the project's `.vs` sources and `Viso.toml` without building
+  schema      Show the typed schema of a widget, native library, function or type
+
+TEST / DEBUG
+  test        Run the project's headless tests of a domain
+  game        Read a state of, or record input from, the game `viso run` is playing
+
+MAINTENANCE
+  completion  Write the script that completes `viso` commands in a shell
+
+Options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+  -h, --help               Print help
+  -V, --version            Print version
+
+Notes:
+  Run `viso <command> --help` for a command's arguments and options.
+
+$ viso config --help
+Show where each configuration value comes from, or validate it
+
+Usage: viso config [OPTIONS] <COMMAND>
+
+Examples:
+  viso config show                           # every key, its value and its origin
+  viso config get profile.release.opt_level  # one key
+  viso config validate                       # every problem of the configuration
+
+Commands:
+  show      Every configuration key, its value and the layer it came from
+  get       One configuration key, its value and the layer it came from
+  path      The path of the `Viso.toml` in use
+  validate  Check `Viso.toml` and the `VISO_*` environment, reporting every problem
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  `Viso.toml` is the source of truth: `viso config` reads it and never writes it.
+  A value comes from the first of: a flag, a `VISO_*` variable, the profile's
+  table, the manifest, the default.
+
+$ viso config show --help
+Every configuration key, its value and the layer it came from
+
+Usage: viso config show [OPTIONS]
+
+Examples:
+  viso config show                    # as a dev build sees it
+  viso config show --profile release  # as a release build sees it
+  viso config show --json             # as JSON events
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso config get --help
+One configuration key, its value and the layer it came from
+
+Usage: viso config get [OPTIONS] <KEY>
+
+Examples:
+  viso config get package.name                  # the package name
+  viso config get opt_level --profile shipping  # a shipping build's optimization level
+
+Arguments:
+  <KEY>  The dotted key, as `viso config show` lists it: `package.name`, `profile.release.opt_level`
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso config path --help
+The path of the `Viso.toml` in use
+
+Usage: viso config path [OPTIONS]
+
+Examples:
+  viso config path                      # the `Viso.toml` in use here
+  viso config path --project apps/demo  # the one of another project
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso config validate --help
+Check `Viso.toml` and the `VISO_*` environment, reporting every problem
+
+Usage: viso config validate [OPTIONS]
+
+Examples:
+  viso config validate         # report every problem
+  viso config validate --json  # as JSON events
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso android --help
+Manage the Android Emulator profiles `viso run android` runs on
+
+Usage: viso android [OPTIONS] <COMMAND>
+
+Examples:
+  viso android emulator list          # list the emulator profiles
+  viso android emulator create pixel  # create a phone profile
+
+Commands:
+  emulator  The emulator profiles
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  Profiles are kept in `~/.viso/` (`$VISO_HOME`); `viso run android --device <id>`
+  runs on one.
+
+$ viso android emulator --help
+The emulator profiles
+
+Usage: viso android emulator [OPTIONS] <COMMAND>
+
+Examples:
+  viso android emulator list                     # list the profiles
+  viso android emulator start pixel --no-window  # boot one without its window
+
+Commands:
+  list    List the profiles and whether each is booted
+  create  Create a profile and its virtual device
+  start   Boot a profile's device
+  stop    Shut a profile's device down
+  delete  Delete a profile and its virtual device
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso android emulator list --help
+List the profiles and whether each is booted
+
+Usage: viso android emulator list [OPTIONS]
+
+Examples:
+  viso android emulator list         # each profile and whether it is booted
+  viso android emulator list --json  # as JSON events
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso android emulator create --help
+Create a profile and its virtual device
+
+Usage: viso android emulator create [OPTIONS] <ID>
+
+Examples:
+  viso android emulator create pixel                         # a phone on the newest installed system
+  viso android emulator create tab --preset tablet --api 35  # a tablet on API 35
+
+Arguments:
+  <ID>  The profile ID: lowercase letters, digits and `-`
+
+Options:
+      --preset <PRESET>  The device's form factor [default: phone] [possible values: phone, tablet]
+      --api <LEVEL>      The Android API level of its system image (the newest installed when omitted); Android only
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso android emulator start --help
+Boot a profile's device
+
+Usage: viso android emulator start [OPTIONS] <ID>
+
+Examples:
+  viso android emulator start pixel              # boot `pixel`
+  viso android emulator start pixel --no-window  # boot it without its window
+
+Arguments:
+  <ID>  The profile ID
+
+Options:
+      --no-window  Boot the emulator without its window (Android only)
+  -h, --help       Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso android emulator stop --help
+Shut a profile's device down
+
+Usage: viso android emulator stop [OPTIONS] <ID>
+
+Examples:
+  viso android emulator stop pixel         # shut `pixel` down
+  viso android emulator stop pixel --json  # as JSON events
+
+Arguments:
+  <ID>  The profile ID
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso android emulator delete --help
+Delete a profile and its virtual device
+
+Usage: viso android emulator delete [OPTIONS] <ID>
+
+Examples:
+  viso android emulator delete pixel         # delete `pixel` and its device
+  viso android emulator delete pixel --json  # as JSON events
+
+Arguments:
+  <ID>  The profile ID
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso ios --help
+Manage the iOS Simulator profiles `viso run ios` runs on
+
+Usage: viso ios [OPTIONS] <COMMAND>
+
+Examples:
+  viso ios simulator list           # list the simulator profiles
+  viso ios simulator create iphone  # create a phone profile
+
+Commands:
+  simulator  The simulator profiles
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  Profiles are kept in `~/.viso/` (`$VISO_HOME`); `viso run ios --device <id>`
+  runs on one.
+
+$ viso ios simulator --help
+The simulator profiles
+
+Usage: viso ios simulator [OPTIONS] <COMMAND>
+
+Examples:
+  viso ios simulator list          # list the profiles
+  viso ios simulator start iphone  # boot one
+
+Commands:
+  list    List the profiles and whether each is booted
+  create  Create a profile and its virtual device
+  start   Boot a profile's device
+  stop    Shut a profile's device down
+  delete  Delete a profile and its virtual device
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso ios simulator list --help
+List the profiles and whether each is booted
+
+Usage: viso ios simulator list [OPTIONS]
+
+Examples:
+  viso ios simulator list         # each profile and whether it is booted
+  viso ios simulator list --json  # as JSON events
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso ios simulator create --help
+Create a profile and its virtual device
+
+Usage: viso ios simulator create [OPTIONS] <ID>
+
+Examples:
+  viso ios simulator create iphone                # a phone on the newest installed system
+  viso ios simulator create ipad --preset tablet  # a tablet
+
+Arguments:
+  <ID>  The profile ID: lowercase letters, digits and `-`
+
+Options:
+      --preset <PRESET>  The device's form factor [default: phone] [possible values: phone, tablet]
+      --api <LEVEL>      The Android API level of its system image (the newest installed when omitted); Android only
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso ios simulator start --help
+Boot a profile's device
+
+Usage: viso ios simulator start [OPTIONS] <ID>
+
+Examples:
+  viso ios simulator start iphone         # boot `iphone`
+  viso ios simulator start iphone --json  # as JSON events
+
+Arguments:
+  <ID>  The profile ID
+
+Options:
+      --no-window  Boot the emulator without its window (Android only)
+  -h, --help       Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso ios simulator stop --help
+Shut a profile's device down
+
+Usage: viso ios simulator stop [OPTIONS] <ID>
+
+Examples:
+  viso ios simulator stop iphone         # shut `iphone` down
+  viso ios simulator stop iphone --json  # as JSON events
+
+Arguments:
+  <ID>  The profile ID
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso ios simulator delete --help
+Delete a profile and its virtual device
+
+Usage: viso ios simulator delete [OPTIONS] <ID>
+
+Examples:
+  viso ios simulator delete iphone         # delete `iphone` and its device
+  viso ios simulator delete iphone --json  # as JSON events
+
+Arguments:
+  <ID>  The profile ID
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso run --help
+Build a dev artifact and run it, hot reloading edits as they are saved
+
+Usage: viso run [OPTIONS] [TARGET] [-- <APP_ARGS>...]
+
+Examples:
+  viso run                         # on this machine
+  viso run ios --device iphone     # on the simulator profile `iphone`
+  viso run web-gpu --browser none  # serve it, opening no browser
+
+Arguments:
+  [TARGET]       Where to run: this machine when omitted [possible values: ios, android, web-gpu, web-dom, web-hybrid]
+  [APP_ARGS]...  Arguments for the app, after `--`
+
+Options:
+      --device <ID>     The simulator or emulator profile (`ios` and `android` only)
+      --browser <NAME>  The browser to open (`web-*` only): `chrome`, `safari`, `firefox`, or `none` to only serve
+      --no-hot-reload   Keep the dev session up but apply no edit to the app: each is compiled and reported, not sent
+  -h, --help            Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  `ios` and `android` run on a simulator or emulator profile: see
+  `viso ios simulator list` and `viso android emulator list`. The web targets
+  build for a browser and serve it as `viso serve` does. The app's own arguments
+  follow `--`.
+
+$ viso serve --help
+Build a dev artifact for a browser and serve it, hot reloading it
+
+Usage: viso serve [OPTIONS] [TARGET]
+
+Examples:
+  viso serve                            # the target `[web] default_target` names
+  viso serve web-gpu --open             # and open it in the browser
+  viso serve web-gpu --lan --port 9000  # to the other devices of the network
+
+Arguments:
+  [TARGET]  The web target: `[web] default_target` when omitted [possible values: web-gpu, web-dom, web-hybrid]
+
+Options:
+      --host <IP>      The address to listen at; one off the loopback interface needs `--lan`, and `0.0.0.0` with it listens at every interface
+      --port <N>       The port, which alone will do; `[web.serve] port` or the next free one after it when omitted
+      --open           Open the page in the system's browser
+      --lan            Serve the network too: other devices load the page, and connect to the session, at this machine's private address
+      --no-hot-reload  Keep the dev session up but apply no edit to the app
+  -h, --help           Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  `viso run web-gpu` serves the same and opens a browser too.
+
+$ viso check --help
+Check the project's `.vs` sources and `Viso.toml` without building
+
+Usage: viso check [OPTIONS]
+
+Examples:
+  viso check                      # check the project here
+  viso check --project apps/demo  # check another project
+  viso check --json               # as JSON events
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso schema --help
+Show the typed schema of a widget, native library, function or type
+
+Usage: viso schema [OPTIONS] [SYMBOL]
+
+Examples:
+  viso schema Button              # a widget's properties and events
+  viso schema Button.text --json  # one member, as JSON events
+  viso schema --search text       # every symbol whose path has `text`
+
+Arguments:
+  [SYMBOL]  The symbol, by full path or a `::`-suffix of it, optionally with `.member`: `Button`, `viso::widgets::Button`, `Button.text`, `text::upper`
+
+Options:
+      --search <TERM>  List every symbol and member whose path contains TERM, ignoring case
+  -h, --help           Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso test --help
+Run the project's headless tests of a domain
+
+Usage: viso test [OPTIONS] <DOMAIN> [SCENARIO]
+
+Examples:
+  viso test game                                    # every scenario under `tests/game/`
+  viso test game movement --frames 600 --seed 1234  # one, for 600 ticks with seed 1234
+  viso test game movement --tape runs/jump.tape     # one, replaying a recorded tape
+
+Arguments:
+  <DOMAIN>    The test domain [possible values: game]
+  [SCENARIO]  The scenario, `tests/game/<SCENARIO>.tape`; every scenario there when omitted
+
+Options:
+      --frames <N>   The frames to run, one fixed tick each; by default through the tape and the scenario's last expectation
+      --seed <SEED>  The world's random seed, over the tape's
+      --tape <PATH>  Replay the input tape at PATH, binary or text, instead of the scenario's
+  -h, --help         Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  A scenario is `tests/game/<name>.tape`; a failed expectation exits 1.
+
+$ viso game --help
+Read a state of, or record input from, the game `viso run` is playing
+
+Usage: viso game [OPTIONS] <COMMAND>
+
+Examples:
+  viso game peek movement Player.score               # read a state of the running game
+  viso game record movement --output runs/jump.tape  # record ten seconds of play
+
+Commands:
+  peek    Print a state of the running game as JSON
+  record  Restart the running game's World and record the next stretch of play as an input tape
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  Both ask the app of this project's running `viso run` session: start one first.
+
+$ viso game peek --help
+Print a state of the running game as JSON
+
+Usage: viso game peek [OPTIONS] <GAME> <SYSTEM.STATE>
+
+Examples:
+  viso game peek movement Player.score               # a state, by the game's file stem
+  viso game peek src/levels/one Player.lives --json  # by its path, as JSON events
+
+Arguments:
+  <GAME>          The game, by its `.vs` file: a path from the project root, with or without the extension, or the file's stem
+  <SYSTEM.STATE>  The state, as `System.state`
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso game record --help
+Restart the running game's World and record the next stretch of play as an input tape
+
+Usage: viso game record [OPTIONS] --output <PATH> <GAME>
+
+Examples:
+  viso game record movement --output runs/jump.tape               # ten seconds of play
+  viso game record movement --output runs/long.tape --seconds 30  # thirty seconds
+  viso game record movement --output runs/short.tape --ticks 600  # 600 fixed ticks
+
+Arguments:
+  <GAME>  The game, by its `.vs` file: a path from the project root, with or without the extension, or the file's stem
+
+Options:
+      --output <PATH>  Where to write the tape: its text form, or its binary form when the run took live patches
+      --seconds <S>    How many seconds of play to record [default: 10]
+      --ticks <N>      How many fixed ticks to record, instead of `--seconds`
+  -h, --help           Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso completion --help
+Write the script that completes `viso` commands in a shell
+
+Usage: viso completion [OPTIONS] <SHELL>
+
+Examples:
+  viso completion zsh   # the zsh script
+  viso completion bash  # the bash script
+  viso completion fish  # the fish script
+
+Arguments:
+  <SHELL>  The shell [possible values: bash, zsh, fish, powershell]
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  Install it from the shell's startup file:
+    bash        source <(viso completion bash)
+    zsh         source <(viso completion zsh)
+    fish        viso completion fish | source
+    powershell  viso completion powershell | Out-String | Invoke-Expression
+

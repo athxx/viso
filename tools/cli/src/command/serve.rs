@@ -45,10 +45,11 @@ fn default_web_target(ctx: &Context<'_>, out: &mut Output) -> Result<WebTarget, 
         Some(Target::WebGpu) => Ok(WebTarget::Gpu),
         Some(Target::WebDom) => Ok(WebTarget::Dom),
         Some(Target::WebHybrid) => Ok(WebTarget::Hybrid),
-        _ => Err(out.failure(
+        _ => Err(out.failure_next(
             CLI_USAGE,
             "`viso serve` serves a web target: name one, or set `[web] default_target`",
-            &["`viso serve web-gpu`".to_string()],
+            &[],
+            &["viso serve web-gpu".to_owned()],
         )),
     }
 }

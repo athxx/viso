@@ -7,6 +7,7 @@
 pub mod human;
 pub mod json;
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::path::Path;
 
@@ -146,11 +147,24 @@ struct Secondary<'a> {
     label: &'a str,
 }
 
-/// A suggested fix, each edit resolved to the source it changes.
+/// A suggested fix, each edit resolved to the source it changes. One with no
+/// edit is a command to run next, its title `run `<command>``.
 struct Suggestion<'a> {
-    title: &'a str,
+    title: Cow<'a, str>,
     applicability: &'static str,
     edits: Vec<Edit<'a>>,
+}
+
+impl<'a> Suggestion<'a> {
+    /// The suggestion to run `command` next. Running it is the user's call:
+    /// it may change the machine, so it is never applied unattended.
+    fn command(command: &str) -> Self {
+        Self {
+            title: Cow::Owned(format!("run `{command}`")),
+            applicability: "maybe-incorrect",
+            edits: Vec::new(),
+        }
+    }
 }
 
 /// One edit of a [`Suggestion`]; `source` is `None` when the file it changes is
@@ -276,13 +290,29 @@ impl Output {
     /// Reports an error the CLI itself raised, under its own `code`, and
     /// returns the exit code the failure ends the command with.
     pub fn failure(&mut self, code: Code, message: &str, notes: &[String]) -> u8 {
-        self.error(code.name, message, notes);
+        self.failure_next(code, message, notes, &[])
+    }
+
+    /// As [`failure`](Self::failure), with the commands to run next: `= help:`
+    /// lines in human text, fixes without edits in the event stream.
+    pub fn failure_next(
+        &mut self,
+        code: Code,
+        message: &str,
+        notes: &[String],
+        next: &[String],
+    ) -> u8 {
+        self.report_error(code.name, message, notes, next);
         code.exit
     }
 
     /// Reports an error under a code a service owns, such as a runtime fault
     /// of the game a test runs; the caller decides what it ends.
     pub fn error(&mut self, code: &str, message: &str, notes: &[String]) {
+        self.report_error(code, message, notes, &[]);
+    }
+
+    fn report_error(&mut self, code: &str, message: &str, notes: &[String], next: &[String]) {
         self.emit(
             true,
             &Report {
@@ -294,7 +324,10 @@ impl Output {
                 expected: &[],
                 actual: None,
                 notes,
-                fixes: Vec::new(),
+                fixes: next
+                    .iter()
+                    .map(|command| Suggestion::command(command))
+                    .collect(),
             },
         );
     }
@@ -527,7 +560,7 @@ fn compiler_report<'a>(
         .fixes
         .iter()
         .map(|fix: &'a Fix| Suggestion {
-            title: &fix.title,
+            title: Cow::Borrowed(&fix.title),
             applicability: fix.applicability.as_str(),
             edits: fix
                 .edits

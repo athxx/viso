@@ -241,7 +241,7 @@ pub(crate) fn select(
     root: &std::path::Path,
 ) -> Result<DeviceProfile, u8> {
     let kind = platform.device_kind();
-    let create_hint = format!("viso {platform} {kind} create <id>");
+    let create_hint = format!("viso {platform} {kind} create {STANDARD_PROFILE}");
     match store.select(platform, requested, root) {
         Selection::Profile(profile) => Ok(profile),
         Selection::Missing if can_ask(out) => {
@@ -282,12 +282,13 @@ pub(crate) fn select(
                 None => ambiguous(out, platform, &ids),
             }
         }
-        Selection::Unknown(id) => Err(out.failure(
+        Selection::Unknown(id) => Err(out.failure_next(
             DEVICE_UNKNOWN,
             &format!("no {platform} {kind} profile is named `{id}`"),
+            &[],
             &[
-                format!("list them: `viso {platform} {kind} list`"),
-                format!("or create it: `viso {platform} {kind} create {id}`"),
+                format!("viso {platform} {kind} list"),
+                format!("viso {platform} {kind} create {id}"),
             ],
         )),
         Selection::Ambiguous(ids) => ambiguous(out, platform, &ids),
@@ -297,27 +298,28 @@ pub(crate) fn select(
 /// `DEVICE_MISSING`, with the command that creates a profile.
 fn missing(out: &mut Output, platform: Platform, create: &str) -> Result<DeviceProfile, u8> {
     let kind = platform.device_kind();
-    Err(out.failure(
+    Err(out.failure_next(
         DEVICE_MISSING,
         &format!("there is no {platform} {kind} profile"),
-        &[format!("create one: `{create}`")],
+        &[],
+        &[create.to_owned()],
     ))
 }
 
 /// `DEVICE_AMBIGUOUS`, with the commands that choose among `ids`.
 fn ambiguous(out: &mut Output, platform: Platform, ids: &[String]) -> Result<DeviceProfile, u8> {
     let kind = platform.device_kind();
-    Err(out.failure(
+    Err(out.failure_next(
         DEVICE_AMBIGUOUS,
         &format!("several {platform} {kind} profiles and no default"),
         &[
             format!("profiles: {}", ids.join(", ")),
-            format!("choose one: `viso run {platform} --device {}`", ids[0]),
             format!(
-                "or set a default: `[{platform}] device = \"{}\"` in `.viso/local.toml`",
+                "set a default with `[{platform}] device = \"{}\"` in `.viso/local.toml`",
                 ids[0]
             ),
         ],
+        &[format!("viso run {platform} --device {}", ids[0])],
     ))
 }
 

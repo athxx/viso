@@ -53,10 +53,11 @@ fn endpoint(ctx: &Context<'_>, out: &mut Output) -> Result<String, u8> {
                 )],
             )
         }),
-        None => Err(out.failure(
+        None => Err(out.failure_next(
             ENV_NO_DEV_SESSION,
             "no `viso run` session is running for this project",
-            &["`viso game` asks the app a `viso run` session runs: start one".to_owned()],
+            &["`viso game` asks the app a `viso run` session runs".to_owned()],
+            &["viso run".to_owned()],
         )),
     }
 }

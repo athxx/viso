@@ -11,7 +11,7 @@ use crate::complete;
 
 /// Build, check and run Viso applications.
 #[derive(Debug, Parser)]
-#[command(name = "viso", version)]
+#[command(name = "viso", version, disable_help_subcommand = true)]
 pub struct Cli {
     #[command(flatten)]
     pub global: Global,
@@ -22,29 +22,28 @@ pub struct Cli {
 /// Options every command takes where they apply, before or after the
 /// subcommand.
 #[derive(Debug, Default, Args)]
+#[command(next_help_heading = "Global options")]
 pub struct Global {
-    /// Use the project at PATH (a directory or its `Viso.toml`) instead of
-    /// searching upward from the current directory.
+    /// Use the project at PATH, a directory or its `Viso.toml`, not the one
+    /// found upward.
     #[arg(long, global = true, value_name = "PATH", value_hint = ValueHint::AnyPath)]
     pub project: Option<PathBuf>,
-    /// Write a stream of JSON events to stdout, one per line, instead of text.
+    /// Write JSON events to stdout, one per line, instead of text.
     #[arg(long, global = true)]
     pub json: bool,
-    /// Print only errors, requested paths and the final summary.
+    /// Print only errors, requested paths and the summary.
     #[arg(long, short, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
-    /// Also print the resolved configuration, the tools run, cache decisions
-    /// and how long each stage took.
+    /// Also print the resolved configuration, the tools run and stage times.
     #[arg(long, short, global = true)]
     pub verbose: bool,
-    /// When to color human output; `auto` colors a terminal unless `NO_COLOR`
-    /// is set. JSON is never colored.
+    /// When to color human output; `auto` is a terminal without `NO_COLOR`.
     #[arg(long, global = true, value_enum, value_name = "WHEN", default_value_t)]
     pub color: ColorChoice,
-    /// Use no network: Cargo and every download work from what is on disk.
+    /// Use no network: Cargo and downloads work from what is on disk.
     #[arg(long, global = true)]
     pub offline: bool,
-    /// Require `Cargo.lock` to be up to date rather than updating it.
+    /// Require `Cargo.lock` to be up to date.
     #[arg(long, global = true)]
     pub locked: bool,
     /// Run at most N jobs at once.
@@ -53,7 +52,7 @@ pub struct Global {
     /// The build profile.
     #[arg(long, global = true, value_enum, value_name = "NAME")]
     pub profile: Option<ProfileArg>,
-    /// Put build output under PATH instead of the project's `target/`.
+    /// Put build output under PATH instead of `target/`.
     #[arg(long, global = true, value_name = "PATH", value_hint = ValueHint::DirPath)]
     pub target_dir: Option<PathBuf>,
 }
@@ -105,21 +104,17 @@ pub enum Command {
     /// Show where each configuration value comes from, or validate it.
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// Read a state of, or record a tape from, a game the running `viso run`
-    /// session's app plays.
+    /// Read a state of, or record input from, the game `viso run` is playing.
     #[command(subcommand)]
     Game(GameCommand),
     /// Manage the iOS Simulator profiles `viso run ios` runs on.
     #[command(subcommand)]
     Ios(IosCommand),
-    /// Build the project as a dev artifact and run it on this machine, a
-    /// simulator, an emulator or a browser, hot reloading its `.vs` views,
-    /// assets and Rust code as they are saved.
+    /// Build a dev artifact and run it, hot reloading edits as they are saved.
     Run(RunArgs),
     /// Show the typed schema of a widget, native library, function or type.
     Schema(SchemaArgs),
-    /// Build the project as a dev artifact for a browser and serve it,
-    /// hot reloading it as `viso run` does, without a browser of its own.
+    /// Build a dev artifact for a browser and serve it, hot reloading it.
     Serve(ServeArgs),
     /// Run the project's headless tests of a domain.
     Test(TestArgs),
@@ -434,9 +429,18 @@ impl Command {
     }
 }
 
-/// The grammar, as the parser and the completion engine both read it.
+/// The grammar, as the parser and the completion engine both read it, with
+/// its help pages.
 pub fn command() -> clap::Command {
-    Cli::command()
+    crate::help::decorate(Cli::command())
+}
+
+/// Parses this process's command line.
+pub fn parse() -> Result<Cli, clap::Error> {
+    use clap::FromArgMatches;
+    let mut command = command();
+    let matches = command.try_get_matches_from_mut(std::env::args_os())?;
+    Cli::from_arg_matches(&matches).map_err(|error| error.format(&mut command))
 }
 
 /// Whether `command` names its target as a positional argument, so a
@@ -454,16 +458,24 @@ pub fn wants_json<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> bool {
         .any(|arg| arg == "--json")
 }
 
-/// The first of `args` that names a subcommand, for a command line too broken to
-/// parse.
+/// The command path `args` name, `config get` say, for a command line too
+/// broken to parse: each subcommand of the one before, wherever it stands
+/// among the options; `None` when `args` name no command.
 pub fn named_command<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Option<String> {
-    let grammar = command();
-    args.iter()
+    let mut grammar = Cli::command();
+    let mut path: Vec<&str> = Vec::new();
+    for arg in args
+        .iter()
         .map(AsRef::as_ref)
         .take_while(|arg| *arg != "--")
         .filter_map(|arg| arg.to_str())
-        .find(|arg| grammar.find_subcommand(arg).is_some())
-        .map(str::to_string)
+    {
+        if let Some(sub) = grammar.find_subcommand(arg) {
+            grammar = sub.clone();
+            path.push(arg);
+        }
+    }
+    (!path.is_empty()).then(|| path.join(" "))
 }
 
 #[cfg(test)]
@@ -474,7 +486,7 @@ mod tests {
 
     #[test]
     fn the_grammar_is_consistent() {
-        Cli::command().debug_assert();
+        command().debug_assert();
     }
 
     #[test]
@@ -612,6 +624,10 @@ mod tests {
             Some("check")
         );
         assert_eq!(named_command(&["chekc"]), None);
+        assert_eq!(
+            named_command(&["--json", "config", "get"]).as_deref(),
+            Some("config get")
+        );
     }
 
     #[test]

@@ -329,7 +329,7 @@ mod tests {
     use viso_dsl::{Diagnostic, TextRange, TextSize};
 
     use super::*;
-    use crate::output::compiler_report;
+    use crate::output::{Suggestion, compiler_report};
 
     fn range(text: &str, needle: &str) -> TextRange {
         let start = text.find(needle).unwrap();
@@ -443,8 +443,8 @@ mod tests {
     }
 
     #[test]
-    fn a_diagnostic_without_a_location_is_its_header_and_notes() {
-        let notes = ["try `--help`".to_string()];
+    fn a_diagnostic_without_a_location_is_its_header_notes_and_next_commands() {
+        let notes = ["`--bogus` is not an option of `viso check`".to_string()];
         let text = render(&Report {
             severity: "error",
             code: "CLI_USAGE",
@@ -454,11 +454,13 @@ mod tests {
             expected: &[],
             actual: None,
             notes: &notes,
-            fixes: Vec::new(),
+            fixes: vec![Suggestion::command("viso check --help")],
         });
         assert_eq!(
             text,
-            "error[CLI_USAGE]: unexpected argument\n = note: try `--help`\n"
+            "error[CLI_USAGE]: unexpected argument\n \
+             = note: `--bogus` is not an option of `viso check`\n \
+             = help: run `viso check --help`\n"
         );
     }
 

@@ -64,10 +64,11 @@ fn with_profile(
         Some(profile) => action(&profile, out),
         None => {
             let kind = platform.device_kind();
-            out.failure(
+            out.failure_next(
                 DEVICE_UNKNOWN,
                 &format!("no {platform} {kind} profile is named `{id}`"),
-                &[format!("list them: `viso {platform} {kind} list`")],
+                &[],
+                &[format!("viso {platform} {kind} list")],
             )
         }
     }

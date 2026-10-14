@@ -97,6 +97,7 @@ LANGUAGE
 
 TEST / DEBUG
     viso test
+    viso game peek|record
     viso snapshot
     viso inspect
     viso profile
@@ -2319,7 +2320,7 @@ summary       见 §36.3
 
 ### 36.1 Diagnostic
 
-`payload` 即 `Viso_DSL_1.0.md` §138 对象：`schema_version, severity, code, message, primary{file, byte_start, byte_end, line, column_utf16, end_line, end_column_utf16}, related[{…位置字段, message}], expected[], actual, notes[], fixes[{title, applicability, edits[{file, byte_start, byte_end, replacement}]}]`。CLI 不定义第二套 diagnostic 形状。Config 诊断（`C0001`–`C0012`）、环境诊断（如 `ENV_ANDROID_SDK`）、exporter 诊断与 CLI 自身诊断使用同一形状；无源码位置时 `primary` 为 `null`，Viso.toml 诊断的 `primary.file` 指向 `Viso.toml`。
+`payload` 即 `Viso_DSL_1.0.md` §138 对象（`edits` 为空的 fix 是下一步要运行的命令，§53）：`schema_version, severity, code, message, primary{file, byte_start, byte_end, line, column_utf16, end_line, end_column_utf16}, related[{…位置字段, message}], expected[], actual, notes[], fixes[{title, applicability, edits[{file, byte_start, byte_end, replacement}]}]`。CLI 不定义第二套 diagnostic 形状。Config 诊断（`C0001`–`C0012`）、环境诊断（如 `ENV_ANDROID_SDK`）、exporter 诊断与 CLI 自身诊断使用同一形状；无源码位置时 `primary` 为 `null`，Viso.toml 诊断的 `primary.file` 指向 `Viso.toml`。
 
 CLI 自身诊断 code 各自绑定一个 exit code（CLI 内只有一张表，失败按其 code 取 exit，不另行选择）；前缀即失败类别：`CLI_*` 2、`ENV_*` 3、`BUILD_*` 4、`RUN_*` 5、`TEST_*` 1、`INTERNAL_*` 7，`DEVICE_*`/`GAME_*` 按各自含义：
 
@@ -2882,6 +2883,25 @@ links/next commands
 
 不要先输出几十行内部实现解释。
 
+- `viso --help` 的命令列表按 §1 分组（PROJECT、MOBILE DEV ENVIRONMENT、DEVELOP、LANGUAGE、TEST / DEBUG、DELIVERY、MAINTENANCE），组内按 §1 顺序；尚无命令的组不显示。分组表与 parser 一一对应：每个顶层命令恰在一组，测试保证。
+- 每一层命令（含 `viso android emulator`、`viso config get` 等）都有 2–3 个 examples，每行 `命令  # 作用`；example 必须能被 parser 接受，测试逐条解析。
+- 命令自身的 options 在 `Options:`，§6 global options 在其后 `Global options:`；顶层页只有 `Options:`。
+- `-h` 与 `--help` 输出同一页（无 long help 变体）：取值列在 option 行尾 `[possible values: …]`。
+- 没有 `viso help <command>` 子命令；写 `viso <command> --help`。
+- `viso` 或命令组（如 `viso config`）缺子命令时：human 模式在 stderr 打印该层 help，exit 2；`--json` 下为 `CLI_USAGE` 诊断。
+
+`viso --version`（与 `-V` 相同）不加载任何服务，只输出常量：
+
+```text
+viso 0.1.0 (4c0177cbeff8)     CLI 版本与构建 commit（12 位，git 外为 unknown）
+language 1.0                  DSL language version
+event schema 1                §34 envelope schema_version
+diagnostic schema 1.0         §36.1 diagnostic schema_version
+dev protocol 14               dev channel protocol version
+```
+
+`--json` 下为一条 `result`（`payload: {version, commit, language, event_schema, diagnostic_schema, dev_protocol}`）+ `summary`。
+
 ---
 
 ## 53. Error message
@@ -2911,6 +2931,17 @@ Try:
   viso android use 36
   viso android doctor
 ```
+
+CLI 的 human 诊断与编译器诊断同形：
+
+```text
+error[DEVICE_UNKNOWN]: no ios simulator profile is named `iphon`
+ = note: …
+ = help: run `viso ios simulator list`
+ = help: run `viso ios simulator create iphon`
+```
+
+"What to do next" 是要运行的命令：human 为 `= help: run `<command>``，JSON 为一条无 edit 的 fix（`{title: "run `<command>`", applicability: "maybe-incorrect", edits: []}`）——命令可能改变机器状态，从不无人值守执行。只建议当前存在的命令。usage error 同样是 `CLI_USAGE` 诊断：parser 的 tip、可选值与 usage 行成为 notes，next 为该命令的 `--help`。
 
 ---
 

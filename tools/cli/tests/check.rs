@@ -177,9 +177,10 @@ fn usage_errors_exit_2_and_help_and_version_exit_0() {
     assert!(stdout(&help).contains("check"), "{}", stdout(&help));
     let version = viso(&cwd, &["--version"]);
     assert_eq!(code(&version), 0);
-    assert_eq!(
-        stdout(&version),
-        format!("viso {}\n", env!("CARGO_PKG_VERSION"))
+    assert!(
+        stdout(&version).starts_with(&format!("viso {} (", env!("CARGO_PKG_VERSION"))),
+        "{}",
+        stdout(&version)
     );
 }
 
@@ -325,10 +326,14 @@ fn json_reports_a_usage_error_as_events() {
         lines[1]
     );
 
-    // Without `--json` clap's own message goes to stderr.
+    // Without `--json` the same diagnostic goes to stderr as text.
     let plain = viso(&cwd, &["check", "--no-such-flag"]);
     assert_eq!(stdout(&plain), "");
-    assert!(stderr(&plain).starts_with("error: "), "{}", stderr(&plain));
+    assert!(
+        stderr(&plain).starts_with("error[CLI_USAGE]: unexpected argument '--no-such-flag'"),
+        "{}",
+        stderr(&plain)
+    );
 }
 
 #[test]
