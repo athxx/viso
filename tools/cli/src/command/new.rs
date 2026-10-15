@@ -5,9 +5,10 @@
 //! system on the fixed tick, its HUD and a game test), `web` (the app with
 //! the browser's DOM as its first target) and `library` (components for
 //! other apps, no binary). Each is a Cargo package depending on `viso` at
-//! this CLI's version, a `Viso.toml`, a message catalog its views take their
-//! text from, and its tests: as created it passes `viso check` and
-//! `viso test`.
+//! this CLI's version, or on the framework at `--framework`'s path (a
+//! checkout, or its `crates/viso`), a `Viso.toml`, a message catalog its
+//! views take their text from, and its tests: as created it passes
+//! `viso check` and `viso test`.
 //!
 //! The package is named after the directory unless `--name` names it, and
 //! the name must be one Cargo accepts. A directory that has files is
@@ -25,7 +26,9 @@ use std::process::{Command, Stdio};
 use crate::args::{NewArgs, Template};
 use crate::atomic;
 use crate::context::Context;
-use crate::error::{INTERRUPTED, NEW_GIT, NEW_NAME_INVALID, NEW_PATH_TAKEN, NEW_WRITE, SUCCESS};
+use crate::error::{
+    INTERRUPTED, NEW_FRAMEWORK, NEW_GIT, NEW_NAME_INVALID, NEW_PATH_TAKEN, NEW_WRITE, SUCCESS,
+};
 use crate::interrupt;
 use crate::output::Output;
 
@@ -41,8 +44,9 @@ struct File {
     /// Where it goes, below the project root.
     path: &'static str,
     text: &'static str,
-    /// Whether it names the package, its edition and the versions it is
-    /// written for: `{name}`, `{edition}`, `{viso}`, `{language}`.
+    /// Whether it names the package, its edition, the framework it depends
+    /// on and the language version it is written for: `{name}`, `{edition}`,
+    /// `{viso}` (a TOML value), `{language}`.
     filled: bool,
 }
 
@@ -166,6 +170,19 @@ pub fn run(ctx: &Context<'_>, args: &NewArgs, out: &mut Output) -> u8 {
     if let Some(why) = invalid_name(&name) {
         return name_failure(&name, &why, given, &args.path, out);
     }
+    let viso = match &args.framework {
+        Some(path) => match framework(&normalized(&cwd.join(path))) {
+            Ok(dir) => format!("{{ path = {} }}", toml_path(&relative(&root, &dir))),
+            Err(why) => {
+                return out.failure(
+                    NEW_FRAMEWORK,
+                    &format!("`{}` is not the framework: {why}", path.display()),
+                    &["`--framework` names a Viso checkout or its `crates/viso`".to_owned()],
+                );
+            }
+        },
+        None => toml_string(VISO_VERSION),
+    };
     let files = files(args.template);
     if let Err(code) = vacant(&root, files, args, out) {
         return code;
@@ -178,7 +195,7 @@ pub fn run(ctx: &Context<'_>, args: &NewArgs, out: &mut Output) -> u8 {
         file.text
             .replace("{name}", &name)
             .replace("{edition}", args.edition.as_str())
-            .replace("{viso}", VISO_VERSION)
+            .replace("{viso}", &viso)
             .replace("{language}", viso_dsl::frontend::LANGUAGE_VERSION)
     };
     out.progress(
@@ -271,6 +288,77 @@ fn shell_word(path: &Path) -> String {
 
 /// `path` with `.` and `..` resolved by its components alone, so the name a
 /// project takes is the one its path ends in.
+/// The directory of the `viso` crate `path` names: the crate itself, or the
+/// checkout holding it as `crates/viso`; why not, when it names neither.
+fn framework(path: &Path) -> Result<PathBuf, String> {
+    let checkout = path.join("crates").join("viso");
+    let mut why = None;
+    for dir in [path, checkout.as_path()] {
+        let manifest = dir.join("Cargo.toml");
+        let text = match fs::read_to_string(&manifest) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("cannot read `{}`: {error}", manifest.display())),
+        };
+        let name = text
+            .parse::<toml_edit::DocumentMut>()
+            .ok()
+            .and_then(|doc| doc.get("package")?.get("name")?.as_str().map(str::to_owned));
+        match name {
+            Some(name) if name == "viso" => return Ok(dir.to_path_buf()),
+            Some(name) => why.get_or_insert(format!("its `Cargo.toml` is the package `{name}`")),
+            None => why.get_or_insert("its `Cargo.toml` names no package".to_owned()),
+        };
+    }
+    Err(why.unwrap_or_else(|| "it holds no `Cargo.toml`".to_owned()))
+}
+
+/// `to` as a path from the directory `from`, both normalized and absolute;
+/// `to` itself when they share no root.
+fn relative(from: &Path, to: &Path) -> PathBuf {
+    let (from, to): (Vec<_>, Vec<_>) = (from.components().collect(), to.components().collect());
+    if from.first() != to.first() {
+        return to.iter().collect();
+    }
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut path: PathBuf = from[common..]
+        .iter()
+        .map(|_| Component::ParentDir)
+        .collect();
+    path.extend(&to[common..]);
+    if path.as_os_str().is_empty() {
+        path.push(".");
+    }
+    path
+}
+
+/// `path` as a TOML basic string, its separators written `/`, which Cargo
+/// reads on every host.
+fn toml_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        toml_string(&text.replace('\\', "/"))
+    } else {
+        toml_string(&text)
+    }
+}
+
+/// `text` as a TOML basic string.
+fn toml_string(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            c if c.is_control() => quoted.push_str(&format!("\\u{:04X}", c as u32)),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 fn normalized(path: &Path) -> PathBuf {
     let mut resolved = PathBuf::new();
     for component in path.components() {

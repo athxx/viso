@@ -23,6 +23,8 @@ viso-project = { workspace = true }
 # A dev build for a simulator, an emulator or a browser is packaged as the
 # release build is.
 viso-package = { workspace = true }
+# `viso new --framework` reads the named crate's manifest to tell it is `viso`.
+toml_edit = { workspace = true }
 # A mature parser rather than a hand-rolled one: subcommands, global options
 # accepted before or after the subcommand, generated help and stable usage
 # errors. Its own color and terminal detection stay off: `--color` is the CLI's.

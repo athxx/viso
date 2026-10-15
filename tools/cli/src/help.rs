@@ -434,7 +434,8 @@ const NOTES: &[(&str, &str)] = &[
     (
         "new",
         "The templates are built in, so it needs no network. A directory with files is\n\
-         refused unless `--force-empty-dir`, which still replaces none of them.",
+         refused unless `--force-empty-dir`, which still replaces none of them.\n\
+         `--framework <path>` depends on a checkout of the framework instead of a release.",
     ),
     (
         "doctor",

@@ -66,12 +66,13 @@ Arguments:
   <PATH>  The directory to create the project in, made with its parents when missing; `.` for the current one
 
 Options:
-      --template <NAME>  What the project starts as [default: app] [possible values: app, game, web, library]
-      --name <NAME>      The package name; the directory's name when omitted
-      --edition <YEAR>   The Rust edition the package is written in [default: 2024] [possible values: 2021, 2024]
-      --no-git           Do not make the directory a Git repository
-      --force-empty-dir  Create the project in a directory that has files already; none of them is replaced, and one the project would write is an error
-  -h, --help             Print help
+      --template <NAME>   What the project starts as [default: app] [possible values: app, game, web, library]
+      --name <NAME>       The package name; the directory's name when omitted
+      --edition <YEAR>    The Rust edition the package is written in [default: 2024] [possible values: 2021, 2024]
+      --no-git            Do not make the directory a Git repository
+      --force-empty-dir   Create the project in a directory that has files already; none of them is replaced, and one the project would write is an error
+      --framework <PATH>  Depend on the framework at this path (a checkout, or its `crates/viso`) rather than on the release of this CLI's version
+  -h, --help              Print help
 
 Global options:
       --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
@@ -88,6 +89,7 @@ Global options:
 Notes:
   The templates are built in, so it needs no network. A directory with files is
   refused unless `--force-empty-dir`, which still replaces none of them.
+  `--framework <path>` depends on a checkout of the framework instead of a release.
 
 $ viso doctor --help
 Examine this machine for developing Viso apps: toolchains, the project, a target's SDK

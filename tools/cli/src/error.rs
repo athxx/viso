@@ -91,6 +91,7 @@ codes! {
 
     NEW_NAME_INVALID = USAGE, "The package name is not one Cargo accepts.";
     NEW_PATH_TAKEN = USAGE, "The project's directory is a file, or holds files and `--force-empty-dir` is not given, or holds a file the project would write.";
+    NEW_FRAMEWORK = USAGE, "The `--framework` path is not the `viso` crate or a checkout holding it.";
     NEW_GIT = ENVIRONMENT, "Git could not make the new project a repository.";
     NEW_WRITE = INTERNAL, "The project's files could not be written; nothing was left behind.";
 

@@ -234,9 +234,10 @@ gap, and CI can run all of it headless.
 - [x] Headless backend: a closed window takes no more redraws, so a view running a
       game (a frame client asking for a frame every frame) ends its UI scenario
       instead of spinning forever.
-- [ ] A published `viso` to depend on: until then a new project builds only with
-      a `[patch]` or path to the framework's source; `viso new` could offer
-      `--framework <path>` for development checkouts.
+- [x] `--framework <path>`: a new project depends on a checkout's `crates/viso` (or
+      the crate itself) by a path relative to it; another path is `NEW_FRAMEWORK`.
+- [ ] A published `viso` on a registry: until then a project made without
+      `--framework` resolves only with a `[patch]` to the framework's source.
 
 ### C1.3 — `viso doctor` (§9)
 

@@ -2652,6 +2652,7 @@ dependencies = [
  "flate2",
  "libc",
  "sha2",
+ "toml_edit",
  "viso-dsl",
  "viso-ende",
  "viso-package",

@@ -1,7 +1,8 @@
 //! `viso new` end to end: the files each template writes, the directories it
 //! refuses and the ones it fills without replacing a file, the name it takes,
-//! Git, and a failed write leaving nothing behind. The acceptance test builds
-//! and tests each template against the workspace's framework.
+//! the framework it depends on, Git, and a failed write leaving nothing
+//! behind. The acceptance test builds and tests each template against the
+//! workspace's framework through `--framework`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -277,26 +278,68 @@ fn a_failed_write_leaves_nothing_behind() {
     assert_eq!(fs::read_dir(&locked).unwrap().count(), 0);
 }
 
+#[test]
+fn a_framework_path_is_the_dependency_and_must_be_the_viso_crate() {
+    let s = Scratch::new("framework");
+    let checkout = s.0.join("viso");
+    fs::create_dir_all(checkout.join("crates/viso")).unwrap();
+    fs::write(checkout.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+    fs::write(
+        checkout.join("crates/viso/Cargo.toml"),
+        "[package]\nname = \"viso\"\n",
+    )
+    .unwrap();
+    let out = viso(
+        &s.0,
+        &["new", "apps/one", "--no-git", "--framework", "viso"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let cargo = fs::read_to_string(s.0.join("apps/one/Cargo.toml")).unwrap();
+    assert!(
+        cargo.contains("viso = { path = \"../../viso/crates/viso\" }"),
+        "a checkout names its crate, from the project: {cargo}"
+    );
+
+    fs::write(s.0.join("Cargo.toml"), "[package]\nname = \"other\"\n").unwrap();
+    let out = viso(
+        &s.0,
+        &["new", "two", "--no-git", "--framework", ".", "--json"],
+    );
+    assert_eq!(code(&out), 2);
+    let json = stdout(&out);
+    assert!(json.contains("\"code\":\"NEW_FRAMEWORK\""), "{json}");
+    assert!(json.contains("the package `other`"), "{json}");
+    assert!(!s.0.join("two").exists(), "nothing is written");
+
+    let out = viso(&s.0, &["new", "three", "--no-git", "--framework", "apps"]);
+    assert_eq!(code(&out), 2);
+    assert!(
+        stderr(&out).contains("it holds no `Cargo.toml`"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 /// `new → check → build headless → test` for every template, against the
-/// workspace's framework through a `[patch]` beside the projects, offline.
+/// workspace's framework through `--framework`, offline.
 #[test]
 fn every_template_builds_and_passes_its_tests() {
     let s = Scratch::new("accept");
-    let framework = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/viso");
-    let framework = framework.canonicalize().unwrap();
-    fs::create_dir_all(s.0.join(".cargo")).unwrap();
-    fs::write(
-        s.0.join(".cargo/config.toml"),
-        format!(
-            "[patch.crates-io]\nviso = {{ path = {:?} }}\n",
-            framework.display().to_string()
-        ),
-    )
-    .unwrap();
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("new-acceptance");
     let env = [("CARGO_TARGET_DIR", target.as_os_str())];
     for template in TEMPLATES {
-        let out = viso(&s.0, &["new", template, "--template", template, "--no-git"]);
+        let framework = checkout.to_str().unwrap();
+        let args = [
+            "new",
+            template,
+            "--template",
+            template,
+            "--no-git",
+            "--framework",
+            framework,
+        ];
+        let out = viso(&s.0, &args);
         assert_eq!(code(&out), 0, "{template}: {}", stderr(&out));
         let root = s.0.join(template);
         let out = viso_with(&root, &["--offline", "check"], &env);

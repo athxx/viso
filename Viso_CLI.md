@@ -558,13 +558,14 @@ viso test ui        # 默认 --target headless
   - `game`：同样的 Rust 入口，`src/app.vs` 是一个 `FixedUpdate` System（`@probe state jumps`）和它的 HUD，`Viso.toml` 加 `[game] tick_rate = 60`，`tests/game/jump.tape` 与 `tests/ui/hint.tape`；
   - `web`：`app` 加 `[web] default_target = "web-dom"`；
   - `library`：没有 binary，`src/lib.rs` 导出 `pub fn counter(cx: &mut BuildCx)`（挂载 `src/counter.vs`），没有 `tests/ui/`（UI Scenario 需要可执行文件）。
+- `--framework <path>` 改为依赖该路径上的框架：路径是 `viso` crate 本身，或包含 `crates/viso` 的 checkout；依赖写成 `viso = { path = "…" }`，相对项目目录（无共同根时为绝对路径，分隔符写作 `/`）。路径不是 `viso` crate 时为 `NEW_FRAMEWORK`（exit 2，不写任何文件）。
 - `ui!`、`component!`、`view!`、`asset!` 展开为经由 facade 的路径，所以只依赖 `viso` 的项目可以编译它的 View。
 - Package name 默认取目录名（`.` 取当前目录名），按 Cargo 规则校验：ASCII 字母、数字、`-`、`_`，以字母或 `_` 开头，至多 64 个字符，不是 Rust 关键字、标准库 crate、`viso` 或 Windows 保留设备名；否则 `NEW_NAME_INVALID`（exit 2），名字来自目录时附带一个可用的 `--name`。
 - 路径不存在时连同父目录一起创建；路径上有文件、目录非空且未给 `--force-empty-dir`（note 列出已有内容，fix 为加上该 flag 的命令），或 `--force-empty-dir` 下已有项目要写的文件（note 列出它们），为 `NEW_PATH_TAKEN`（exit 2）。`--force-empty-dir` 从不替换文件。
 - 写出是原子的：新目录先在同级的 staging 目录写全，再一次 rename；已有目录（如 `.`）在其内部的 staging 目录写全，再逐个文件移入。失败或 Ctrl-C 时删除已写的文件与新建的目录（含新建的父目录），exit 7（`NEW_WRITE`）或 130。
 - 不给 `--no-git` 时，目录不在已有 Git work tree 中则 `git init`；没有 Git 或 `git init` 失败是 `NEW_GIT` warning，项目照常创建。
 - 人类输出为 `Created the app `<name>` in <path>` 加下一步命令（`cd`，然后 `viso run`/`viso serve`/`viso check` 与 `viso test`）。
-- 验收测试（`tools/cli/tests/new.rs`）对每个模板运行 `new → check → build headless（library 除外）→ test`：在项目旁的 `.cargo/config.toml` 中以 `[patch.crates-io]` 指向 workspace 的 `crates/viso`，离线。
+- 验收测试（`tools/cli/tests/new.rs`）对每个模板运行 `new --framework <workspace> → check → build headless（library 除外）→ test`，离线。
 
 ---
 
@@ -2480,6 +2481,7 @@ RUN_APP_FAILED          app 无法启动、crash 或非零退出           exit 
 RUN_TEST_CRASHED        测试用例的 runner 无法启动、crash 或未报告结束 exit 5
 NEW_NAME_INVALID        package name 不是 Cargo 接受的名字         exit 2
 NEW_PATH_TAKEN          目录是文件、非空且无 `--force-empty-dir`，或已有项目要写的文件 exit 2
+NEW_FRAMEWORK           `--framework` 路径不是 `viso` crate 或包含它的 checkout exit 2
 NEW_GIT                 Git 无法把新项目建成仓库（warning）         —
 NEW_WRITE               项目文件写不出，未留下任何文件             exit 7
 DEVICE_MISSING          没有 simulator/emulator profile           exit 3

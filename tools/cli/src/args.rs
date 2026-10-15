@@ -209,6 +209,10 @@ pub struct NewArgs {
     /// them is replaced, and one the project would write is an error.
     #[arg(long)]
     pub force_empty_dir: bool,
+    /// Depend on the framework at this path (a checkout, or its `crates/viso`)
+    /// rather than on the release of this CLI's version.
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::DirPath)]
+    pub framework: Option<PathBuf>,
 }
 
 /// The templates `viso new` creates a project from.
