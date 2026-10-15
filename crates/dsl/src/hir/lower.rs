@@ -3459,6 +3459,49 @@ mod tests {
     }
 
     #[test]
+    fn an_enum_property_takes_a_variant_of_its_enum() {
+        assert_clean(
+            "component C {\n\
+             \x20 state wide = false\n\
+             \x20 view { Column {\n\
+             \x20   justify: if wide { Justify::end } else { Justify::start };\n\
+             \x20   align: Align::stretch;\n\
+             \x20   width: Sizing::fill {};\n\
+             \x20   semantics.role: Role::list;\n\
+             \x20   semantics.live: LiveRegion::polite;\n\
+             \x20   Text { text: \"a\"; font_weight: FontWeight::bold; align: TextAlign::center; width: 40dp; }\n\
+             \x20   Stack { content_align: Alignment2D::bottom_end; Text { text: \"b\"; } }\n\
+             \x20   Grid { columns: [Track::fr(1.0), Track::fixed(40dp)]; Text { text: \"c\"; } }\n\
+             \x20 } }\n\
+             }",
+        );
+        let pkg = lower_src("component C {\n  view { Column { justify: Justify::middle; } }\n}");
+        let d = pkg
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E2001")
+            .expect("an unknown variant is E2001");
+        assert!(d.message.contains("`middle`"), "{d:?}");
+        assert_eq!(
+            codes("component C {\n  view { Column { align: Justify::center; } }\n}"),
+            ["E2103"],
+            "a variant of another enum"
+        );
+        assert_eq!(
+            codes("component C {\n  view { Text { text: \"a\"; font_weight: 700; } }\n}"),
+            ["E2103"]
+        );
+        assert_eq!(
+            codes("component C {\n  view { Column { semantics.role: Role::bogus; } }\n}"),
+            ["E2001"]
+        );
+        assert_eq!(
+            codes("component C {\n  view { Column { width: Sizing::fixed(true); } }\n}"),
+            ["E2103"]
+        );
+    }
+
+    #[test]
     fn a_percent_component_flows_through_values() {
         let decls = "record At { x: MixedLength; y: MixedLength; }\n";
         let flagged = |body: &str| codes(&format!("{decls}component C {{\n{body}\n}}"));

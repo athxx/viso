@@ -4362,6 +4362,8 @@ mouse+keyboard vs touch input
 
 一次绑定中 §76.1 拓宽与上述提升至多各发生一次（如 `Dp` → `MixedLength` → `Option<MixedLength>`）；提升不适用于函数实参与 `let`。
 
+当前实现：本部分的 Schema Enum（`Sizing`、`Track`、`TrackMax`、`AutoRepeat`、`Axis`、`Justify`、`Align`、`GridAlign`、`Alignment2D`、`FontWeight`、`TextOverflow`、`TextAlign`、`LiveRegion`、`Role`）与 Record `Border`、`AdaptiveColumns` 声明在 Prelude 中，无需 Import；以它们（或其 `Option`、`List`）为类型的 Property 按该类型检查绑定：未知 Variant 是 `E2001`（附最近候选），另一个 Enum 的 Variant 或其他类型的值是 `E2103`，`Head::variant` 的 `Head` 不是任何类型时也是 `E2001`。`Offset`、`Transition` 等其余 Record 类型的 Property 尚不按类型检查。
+
 ### U1.4 明确推迟
 
 Flex 换行；`space_between`/`space_around`；单子节点 `align_self`；Row Baseline 对齐；滚动条外观、惯性、Scroll Snap（ADR 0007）；单个 `VirtualList` 多 Item Template；物理方向（`left`/`right`）Edge 写法；显式段落基础方向 Property；Grid Subgrid 与 Line Name 的 DSL 写法；共享元素转场与路由动画；自定义 Gesture Recognizer 声明；富文本 Span 树。

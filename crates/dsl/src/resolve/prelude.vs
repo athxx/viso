@@ -125,6 +125,50 @@ export record ImageAsset { resource: I64; }
 export record SvgAsset { resource: I64; }
 export enum ImageFit { contain; cover; fill; }
 
+// The layout schema: an axis's sizing (a length stands for `fixed` of it),
+// a grid's tracks and a box's border.
+export enum Sizing {
+    fixed(MixedLength);
+    fill { weight: F32 = 1.0; };
+    fit;
+    min_content;
+    max_content;
+}
+export enum Track {
+    fixed(MixedLength);
+    fr(F32);
+    auto;
+    minmax(MixedLength, TrackMax);
+    fit_content(MixedLength);
+}
+export enum TrackMax { length(MixedLength); fr(F32); }
+export enum AutoRepeat { fill; fit; }
+export record AdaptiveColumns {
+    mode: AutoRepeat = AutoRepeat::fill;
+    min: MixedLength;
+    max: TrackMax = TrackMax::fr(1.0);
+}
+export record Border { width: Dp = 1dp; color: Color; }
+
+// The values of the standard widgets' enum properties.
+export enum Axis { row; column; }
+export enum Justify { start; center; end; }
+export enum Align { start; center; end; stretch; }
+export enum GridAlign { stretch; start; center; end; }
+export enum Alignment2D {
+    top_start; top; top_end;
+    start; center; end;
+    bottom_start; bottom; bottom_end;
+}
+export enum FontWeight { thin; light; regular; medium; semibold; bold; heavy; }
+export enum TextOverflow { clip; ellipsis; }
+export enum TextAlign { start; center; end; }
+export enum LiveRegion { off; polite; assertive; }
+export enum Role {
+    group; button; check_box; slider; radio; label; image; text_field; tab; tab_list;
+    navigation; dialog; status; region; tree; tree_item; heading; list; list_item;
+}
+
 export record Environment {
     window: WindowMetrics;
     constraints: LocalConstraints;

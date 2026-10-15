@@ -2142,9 +2142,22 @@ impl<'a> ModulePass<'a> {
             return;
         }
         // `S::idle` names a variant of the type `S`: a qualified head that is no
-        // value resolves in the type namespace.
+        // value resolves in the type namespace, and one that names no type
+        // either is an unresolved type, as it is where a type is written.
         if path.segments().nth(1).is_some() {
-            self.resolve_type_token(&head);
+            let text = head.text();
+            if !self.resolve_type_token(&head)
+                && is_user_type_name(&text)
+                && !self.defer_unresolved_types
+                && !self.imports.unresolved.contains(&name)
+            {
+                let at = head.text_range();
+                let mut diagnostic =
+                    ResolveErrorKind::UnresolvedType.to_diagnostic(Some(at), &text);
+                let suggestions = self.nearest_types(&text);
+                suggest::attach(&mut diagnostic, at, &suggestions);
+                self.errors.push(diagnostic);
+            }
             return;
         }
         let text = head.text();
@@ -2712,6 +2725,25 @@ mod tests {
                 .flat_map(|m| m.errors.iter())
                 .any(|d| d.code == "E2001" && d.message.contains("`Missing`")),
             "an unknown PascalCase type is E2001"
+        );
+
+        // Where a value is written too: `Missing::x` names a variant of a type
+        // nothing declares, with the nearest type as its fix.
+        let app = unit(
+            &mut interner,
+            &["app"],
+            "component A { view { Column { justify: Justfy::start; } } }",
+        );
+        let mods = resolve_all(vec![app], &mut interner);
+        let error = mods
+            .iter()
+            .flat_map(|m| m.errors.iter())
+            .find(|d| d.code == "E2001")
+            .expect("an unknown qualified head is E2001");
+        assert!(error.message.contains("`Justfy`"), "{error:?}");
+        assert!(
+            error.fixes.iter().any(|f| f.title.contains("Justify")),
+            "{error:?}"
         );
     }
 

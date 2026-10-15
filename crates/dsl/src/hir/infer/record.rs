@@ -489,7 +489,7 @@ impl InferCx<'_> {
     /// type, with the implicit promotions such a slot allows (§U1.3): a `T`
     /// initializes an `Option<T>`, and a length an `EdgeInsets` as `all` of it.
     pub(crate) fn infer_promoted(&mut self, value: &Expr, target: &Ty) -> Ty {
-        if is_edge_insets(target) {
+        if takes_length(target) {
             let mark = self.diagnostics.len();
             let ty = self.infer_expr(value, Some(target));
             if self.diagnostics.len() == mark {
@@ -527,7 +527,7 @@ impl InferCx<'_> {
         {
             return;
         }
-        if is_edge_insets(target) && compatible(&ty, &Ty::MixedLength) {
+        if takes_length(target) && compatible(&ty, &Ty::MixedLength) {
             return;
         }
         let _ = self.check_against(ty, Some(target), node);
@@ -535,9 +535,13 @@ impl InferCx<'_> {
 }
 
 /// Whether `ty` is the prelude's `EdgeInsets`.
-fn is_edge_insets(ty: &Ty) -> bool {
+/// Whether a length stands for a value of `ty`: `all` of an `EdgeInsets`,
+/// `fixed` of a `Sizing`.
+fn takes_length(ty: &Ty) -> bool {
     matches!(ty, Ty::Named(id, args)
-        if *id == crate::resolve::prelude::edge_insets_record() && args.is_empty())
+        if (*id == crate::resolve::prelude::edge_insets_record()
+            || *id == crate::resolve::prelude::sizing_enum())
+            && args.is_empty())
 }
 
 /// The suggestion candidates for a record's fields.

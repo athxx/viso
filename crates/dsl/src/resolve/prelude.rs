@@ -51,6 +51,17 @@ pub(crate) fn edge_insets_record() -> SymbolId {
     })
 }
 
+/// The prelude enum of an axis's sizing, which a length stands for as
+/// `fixed` of it.
+pub(crate) fn sizing_enum() -> SymbolId {
+    fingerprint(SymbolIdentity {
+        package: PRELUDE_MODULE,
+        module_path: PRELUDE_MODULE,
+        kind: SymbolKind::Enum,
+        decl_path: "Sizing",
+    })
+}
+
 /// The prelude record of a raster asset, which only `asset("…")` makes.
 pub(crate) fn image_record() -> SymbolId {
     fingerprint(SymbolIdentity {

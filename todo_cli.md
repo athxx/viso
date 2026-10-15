@@ -292,10 +292,19 @@ gap, and CI can run all of it headless.
 - [ ] A platform-gated native on a target that lacks it: natives declare no target
       availability yet (every capability they require exists on every available
       target).
-- [ ] A schema-enum property value names a variant of its enum: `semantics.role:
-      Role::bogus` or `justify: Justify::bogus` passes `viso check` today (the schema
-      enums `Role`, `Justify`, `LiveRegion`, … have no registered variants); only the
-      mount of a view rejects an unknown role.
+- [x] A schema-enum property value names a variant of its enum: the widget enums
+      (`Sizing`, `Track`, `Axis`, `Justify`, `Align`, `GridAlign`, `Alignment2D`,
+      `FontWeight`, `TextOverflow`, `TextAlign`, `LiveRegion`, `Role`, …) and the
+      records `Border`, `AdaptiveColumns` are prelude declarations, so a binding is
+      typed against them (`E2001` unknown variant with the nearest, `E2103` another
+      enum's or another type's value; a length still stands for `Sizing::fixed`); a
+      `Head::x` whose head names no type is `E2001` with the nearest type.
+- [ ] Bindings the view lowering does not apply yet (`justify`, `align`,
+      `font_weight`, `semantics.live`, `Sizing` and `Track` variants, …) are dropped
+      at mount without a word; `viso check` should say so (`E3711`, as an
+      unlowerable `padding` does) until each lands.
+- [ ] `Offset` and `Transition` properties are typed too (a literal of another
+      type is accepted today), with the promotions the schema gives them.
 
 ### C1.6 — `viso build` (§14)
 

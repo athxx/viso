@@ -531,6 +531,31 @@ struct ViewWalk<'a> {
 }
 
 impl<'a> ViewWalk<'a> {
+    /// The type a binding of a property whose schema type is `name` is
+    /// checked against: a type the checker models, a prelude enum
+    /// (`Justify`, `Role`, `Sizing`) or one of [`widget::PRELUDE_RECORDS`],
+    /// each also in an `Option` or a `List`; `None` for a schema type the
+    /// checker does not model yet (`Offset`, `Transition`).
+    fn schema_value_ty(&self, name: &str) -> Option<Ty> {
+        if let Some(ty) = value_ty(name) {
+            return Some(ty);
+        }
+        let generic = |outer: &str| {
+            name.strip_prefix(outer)
+                .and_then(|rest| rest.strip_prefix('<'))
+                .and_then(|rest| rest.strip_suffix('>'))
+        };
+        if let Some(inner) = generic("Option") {
+            return Some(Ty::Option(Box::new(self.schema_value_ty(inner)?)));
+        }
+        if let Some(inner) = generic("List") {
+            return Some(Ty::List(Box::new(self.schema_value_ty(inner)?)));
+        }
+        let id = self.env.standard_type(name)?;
+        let is_enum = self.cx.env().enum_variants(id).is_some();
+        (is_enum || widget::PRELUDE_RECORDS.contains(&name)).then(|| Ty::named(id))
+    }
+
     /// Walks the items of one block or node body.
     fn items(&mut self, items: impl Iterator<Item = ViewItem>, scope: Scope<'_, 'a>) {
         let mut bound: HashMap<String, TextRange> = HashMap::new();
@@ -656,7 +681,7 @@ impl<'a> ViewWalk<'a> {
                 PartValue::Look { property, value } => {
                     let segments: Vec<&str> = property.split('.').collect();
                     let want = match owner.schema.lookup(&segments) {
-                        PropLookup::Known(spec) => value_ty(spec.ty),
+                        PropLookup::Known(spec) => self.schema_value_ty(spec.ty),
                         PropLookup::Unknown => None,
                     };
                     let mark = self.cx.diagnostics().len();
@@ -1742,12 +1767,7 @@ impl<'a> ViewWalk<'a> {
         let names: Vec<&str> = segments.iter().map(String::as_str).collect();
         match owner.schema.lookup(&names) {
             PropLookup::Known(spec) => Some(Declared {
-                ty: value_ty(spec.ty).or_else(|| {
-                    widget::PRELUDE_TYS
-                        .contains(&spec.ty)
-                        .then(|| self.env.standard_type(spec.ty).map(Ty::named))
-                        .flatten()
-                }),
+                ty: self.schema_value_ty(spec.ty),
                 two_way: spec.two_way,
                 basis: Basis::of(spec.percent_basis),
                 localizable: spec.localizable,
@@ -1819,7 +1839,7 @@ impl<'a> ViewWalk<'a> {
                 };
                 if let Some(spec) = spec {
                     return Some(Declared {
-                        ty: value_ty(spec.ty),
+                        ty: self.schema_value_ty(spec.ty),
                         two_way: spec.two_way,
                         basis: Basis::of(spec.percent_basis),
                         localizable: spec.localizable,
