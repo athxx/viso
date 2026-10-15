@@ -15,10 +15,13 @@ mod game;
 mod lsp;
 mod new;
 mod run;
+mod scenario;
 mod schema;
 mod serve;
+mod snapshot;
 mod test;
 
+pub(crate) use snapshot::SNAPSHOT_VERSION;
 use viso_project::Platform;
 
 use crate::args::{AndroidCommand, Cli, Command, Global, IosCommand};
@@ -67,6 +70,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
         Command::Run(args) => run::run(ctx, args, out),
         Command::Schema(args) => schema::run(ctx, args, out),
         Command::Serve(args) => serve::run(ctx, args, out),
+        Command::Snapshot(command) => snapshot::run(ctx, command, out),
         Command::Test(args) => test::run(ctx, args, out),
     }
 }

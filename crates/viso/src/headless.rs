@@ -11,11 +11,14 @@
 //! text owed — or for the scenario's settle bound, then runs: input goes in
 //! through the platform as the user's device would deliver it, aimed at the
 //! center of the node its selector finds; an expectation reads the window's
-//! semantics. Each step's outcome is a line of the report; the first failed
-//! step ends the run.
+//! semantics; a snapshot step writes the window's last frame, read back from
+//! the raster, as a PNG with its tree, layout and paint as text beside it,
+//! for the launching tool to hold to a golden. Each step's outcome is a line
+//! of the report; the first failed step ends the run.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 
 use viso_platform::backend::headless::{HeadlessApp, HeadlessFeed};
 use viso_platform::{
@@ -27,8 +30,9 @@ use viso_ui::NodeId;
 use viso_ui::semantics::SemanticsNode;
 use viso_view::headless::{
     Action, Chord, Expectation, FRAMES_ENV, HeadlessSurface, Key, REPORT_ENV, Reported, SCRIPT_ENV,
-    SURFACE_ENV, Script, Selector, State,
+    SNAPSHOT_ENV, SURFACE_ENV, Script, Selector, State,
 };
+use viso_view::snapshot::Image;
 
 use crate::{AppDriver, Application, WindowState, services};
 
@@ -49,7 +53,8 @@ pub(crate) fn run<A: Application>() {
     let mut driver = AppDriver::<A>::new(Some(services::Services::unsupported()));
     if let Some(path) = viso_platform::launch_var(SCRIPT_ENV) {
         let report = viso_platform::launch_var(REPORT_ENV);
-        match ScriptRunner::open(&path, report.as_deref(), app.feed()) {
+        let snapshots = viso_platform::launch_var(SNAPSHOT_ENV).map(PathBuf::from);
+        match ScriptRunner::open(&path, report.as_deref(), snapshots, app.feed()) {
             Ok(runner) => driver.script = Some(runner),
             Err(why) => {
                 eprintln!("viso: {why}");
@@ -77,11 +82,18 @@ pub(crate) struct ScriptRunner {
     frames: u64,
     finished: bool,
     report: Option<BufWriter<File>>,
+    /// Where snapshot steps write their captures.
+    snapshots: Option<PathBuf>,
     feed: HeadlessFeed,
 }
 
 impl ScriptRunner {
-    fn open(path: &str, report: Option<&str>, feed: HeadlessFeed) -> Result<Self, String> {
+    fn open(
+        path: &str,
+        report: Option<&str>,
+        snapshots: Option<PathBuf>,
+        feed: HeadlessFeed,
+    ) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|error| format!("cannot read the scenario `{path}`: {error}"))?;
         let script = Script::parse(&text)
@@ -102,6 +114,7 @@ impl ScriptRunner {
             frames: 0,
             finished: false,
             report,
+            snapshots,
             feed,
         })
     }
@@ -127,6 +140,18 @@ impl ScriptRunner {
             self.next += 1;
             let outcome = match &step.action {
                 Action::Expect(expectation) => expect(ws, expectation),
+                Action::Snapshot(name) => match capture(ws, self.snapshots.as_deref(), name) {
+                    Ok((width, height)) => {
+                        self.write(Reported::Snapshot {
+                            line,
+                            name: name.clone(),
+                            width,
+                            height,
+                        });
+                        continue;
+                    }
+                    Err(message) => Err(message),
+                },
                 Action::Wait(frames) => {
                     self.waiting = *frames - 1;
                     self.write(Reported::Passed { line });
@@ -172,6 +197,51 @@ impl ScriptRunner {
             let _ = report.flush();
         }
     }
+}
+
+/// Writes the last frame of `ws` as the snapshot `name` into `dir`: the
+/// image and, beside it, the tree, layout, paint and batches that drew it;
+/// its size in device pixels.
+fn capture(ws: &WindowState, dir: Option<&Path>, name: &str) -> Result<(u32, u32), String> {
+    let dir = dir.ok_or_else(|| {
+        format!("the run was given no directory to write the snapshot `{name}` to ({SNAPSHOT_ENV})")
+    })?;
+    let gpu = ws
+        .gpu
+        .as_ref()
+        .ok_or_else(|| "the window has no surface to capture".to_owned())?;
+    let surface = gpu
+        .surface
+        .ok_or_else(|| "the window has no surface to capture".to_owned())?;
+    let (width, height) = gpu.size;
+    let bgra = gpu.backend.read_pixels_bgra8(surface);
+    if bgra.len() != width as usize * height as usize * 4 {
+        return Err(format!(
+            "the surface read back {} bytes for {width} × {height} pixels",
+            bgra.len()
+        ));
+    }
+    let image = Image::from_bgra8(width, height, &bgra);
+    let tree = match ws.root {
+        Some(root) => viso_ui::snapshot_ui(
+            &ws.store,
+            root,
+            gpu.renderer.inspect_batches(),
+            gpu.renderer.frame_stats(),
+        )
+        .dump(),
+        None => String::new(),
+    };
+    let write = |file: String, bytes: &[u8]| {
+        let path = dir.join(&file);
+        std::fs::write(&path, bytes)
+            .map_err(|error| format!("cannot write the snapshot `{}`: {error}", path.display()))
+    };
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("cannot create `{}`: {error}", dir.display()))?;
+    write(format!("{name}.png"), &image.to_png())?;
+    write(format!("{name}.tree"), tree.as_bytes())?;
+    Ok((width, height))
 }
 
 /// A node of the window as a scenario sees it.
@@ -369,7 +439,7 @@ fn events(ws: &WindowState, action: &Action) -> Result<Vec<RawEvent>, String> {
                 }));
             }
         }
-        Action::Wait(_) | Action::Expect(_) => {}
+        Action::Wait(_) | Action::Expect(_) | Action::Snapshot(_) => {}
     }
     Ok(events)
 }

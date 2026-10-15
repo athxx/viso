@@ -28,6 +28,11 @@ pub const SCRIPT_ENV: &str = "VISO_HEADLESS_SCRIPT";
 /// passed in.
 pub const REPORT_ENV: &str = "VISO_HEADLESS_REPORT";
 
+/// The environment variable the directory a run writes the snapshots its
+/// scenario takes to is passed in: `<name>.png`, the image, and
+/// `<name>.tree`, the window's tree, layout, paint and batches as text.
+pub const SNAPSHOT_ENV: &str = "VISO_HEADLESS_SNAPSHOTS";
+
 /// How many frames a step waits for the app to settle by default: two
 /// seconds of its clock.
 pub const SETTLE_FRAMES: u32 = 120;
@@ -124,6 +129,19 @@ pub enum Action {
     Wait(u32),
     /// `expect …`.
     Expect(Expectation),
+    /// `expect snapshot "<name>"`: capture the window as the snapshot
+    /// `name`, which the tool that launched the run holds to its golden.
+    Snapshot(String),
+}
+
+/// Whether `name` can name a snapshot: letters, digits, `_` and `-`, as its
+/// files are named after it.
+pub fn is_snapshot_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 100
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// A node, by its accessible label and, optionally, role: the first such
@@ -312,6 +330,24 @@ impl Script {
                 "type" => Action::Type(words.quoted("the text to type").map_err(fail)?),
                 "key" => Action::Key(words.chord().map_err(fail)?),
                 "wait" => Action::Wait(words.frames().map_err(fail)?),
+                "expect" if words.snapshot().map_err(fail)? => {
+                    let name = words.quoted("the snapshot's name").map_err(fail)?;
+                    if !is_snapshot_name(&name) {
+                        return Err(fail(format!(
+                            "`{name}` cannot name a snapshot: letters, digits, `_` and `-`"
+                        )));
+                    }
+                    let taken = script
+                        .steps
+                        .iter()
+                        .any(|step| step.action == Action::Snapshot(name.clone()));
+                    if taken {
+                        return Err(fail(format!(
+                            "the scenario takes a snapshot `{name}` already"
+                        )));
+                    }
+                    Action::Snapshot(name)
+                }
                 "expect" => Action::Expect(words.expectation().map_err(fail)?),
                 other => {
                     return Err(fail(format!(
@@ -475,6 +511,19 @@ impl<'a> Words<'a> {
         Ok(chord)
     }
 
+    /// Whether the next word is `snapshot`, taking it if so.
+    fn snapshot(&mut self) -> Result<bool, String> {
+        if self.at_quote() {
+            return Ok(false);
+        }
+        let save = self.rest;
+        if self.word()?.as_deref() == Some("snapshot") {
+            return Ok(true);
+        }
+        self.rest = save;
+        Ok(false)
+    }
+
     fn expectation(&mut self) -> Result<Expectation, String> {
         let absent = if self.at_quote() {
             false
@@ -520,6 +569,14 @@ pub enum Reported {
     Passed { line: u32 },
     /// The step on `line` failed, and why; no step after it runs.
     Failed { line: u32, message: String },
+    /// The step on `line` captured the snapshot `name`, `width` × `height`
+    /// device pixels, into the snapshot directory.
+    Snapshot {
+        line: u32,
+        name: String,
+        width: u32,
+        height: u32,
+    },
     /// The run played every step it could, in `frames` frames.
     Done { frames: u64 },
 }
@@ -544,6 +601,23 @@ impl Reported {
                 w.name("message");
                 w.string(message);
             }
+            Reported::Snapshot {
+                line,
+                name,
+                width,
+                height,
+            } => {
+                w.name("line");
+                w.uint(u64::from(*line));
+                w.name("status");
+                w.string("snapshot");
+                w.name("name");
+                w.string(name);
+                w.name("width");
+                w.uint(u64::from(*width));
+                w.name("height");
+                w.uint(u64::from(*height));
+            }
             Reported::Done { frames } => {
                 w.name("done");
                 w.uint(*frames);
@@ -567,6 +641,12 @@ impl Reported {
             "fail" => Some(Reported::Failed {
                 line,
                 message: value.get("message")?.as_str()?.to_owned(),
+            }),
+            "snapshot" => Some(Reported::Snapshot {
+                line,
+                name: value.get("name")?.as_str()?.to_owned(),
+                width: value.get("width")?.as_f64()? as u32,
+                height: value.get("height")?.as_f64()? as u32,
             }),
             _ => None,
         }
@@ -634,7 +714,9 @@ mod tests {
              wait 10\n\
              expect no \"Error\"\n\
              expect checkbox \"Agree\" checked\n\
-             expect slider \"Volume\" value 0.5\n",
+             expect slider \"Volume\" value 0.5\n\
+             expect snapshot \"home-wide\"\n\
+             expect \"snapshot\"\n",
         )
         .unwrap();
         assert_eq!(
@@ -703,6 +785,11 @@ mod tests {
                         State::Value(0.5)
                     ))
                 ),
+                (16, Action::Snapshot("home-wide".into())),
+                (
+                    17,
+                    Action::Expect(Expectation::Shown(selector(None, "snapshot")))
+                ),
             ]
         );
         assert_eq!(Script::parse("").unwrap().settle, SETTLE_FRAMES);
@@ -724,6 +811,17 @@ mod tests {
             ("expect \"x\" pressed", 1, "unknown state `pressed`"),
             ("click \"x\"\nsurface 1x1@1", 2, "before the first step"),
             ("surface 1280x720", 1, "is not a surface"),
+            (
+                "expect snapshot",
+                1,
+                "the snapshot's name is a quoted string",
+            ),
+            ("expect snapshot \"a b\"", 1, "cannot name a snapshot"),
+            (
+                "expect snapshot \"a\"\nexpect snapshot \"a\"",
+                2,
+                "takes a snapshot `a` already",
+            ),
         ] {
             let error = Script::parse(text).unwrap_err();
             assert_eq!(error.line, line, "{text:?}");
@@ -738,6 +836,12 @@ mod tests {
             Reported::Failed {
                 line: 7,
                 message: "no node labeled \"Save\"".into(),
+            },
+            Reported::Snapshot {
+                line: 9,
+                name: "home".into(),
+                width: 2560,
+                height: 1440,
             },
             Reported::Done { frames: 412 },
         ] {

@@ -7,8 +7,9 @@
 //! other apps, no binary). Each is a Cargo package depending on `viso` at
 //! this CLI's version, or on the framework at `--framework`'s path (a
 //! checkout, or its `crates/viso`), a `Viso.toml`, a message catalog its
-//! views take their text from, and its tests: as created it passes
-//! `viso check` and `viso test`.
+//! views take their text from, an app's font in `assets/fonts/` (so its text
+//! looks the same everywhere, headless snapshots included), and its tests:
+//! as created it passes `viso check` and `viso test`.
 //!
 //! The package is named after the directory unless `--name` names it, and
 //! the name must be one Cargo accepts. A directory that has files is
@@ -18,6 +19,7 @@
 //! directory becomes a Git repository unless `--no-git` says otherwise or it
 //! lies in one already; without Git that is a warning.
 
+use std::borrow::Cow;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -43,27 +45,37 @@ const LISTED: usize = 8;
 struct File {
     /// Where it goes, below the project root.
     path: &'static str,
-    text: &'static str,
-    /// Whether it names the package, its edition, the framework it depends
-    /// on and the language version it is written for: `{name}`, `{edition}`,
+    body: Body,
+}
+
+enum Body {
+    /// Written as it is.
+    Verbatim(&'static [u8]),
+    /// Text naming the package, its edition, the framework it depends on and
+    /// the language version it is written for: `{name}`, `{edition}`,
     /// `{viso}` (a TOML value), `{language}`.
-    filled: bool,
+    Filled(&'static str),
 }
 
 impl File {
     const fn verbatim(path: &'static str, text: &'static str) -> File {
         File {
             path,
-            text,
-            filled: false,
+            body: Body::Verbatim(text.as_bytes()),
+        }
+    }
+
+    const fn binary(path: &'static str, bytes: &'static [u8]) -> File {
+        File {
+            path,
+            body: Body::Verbatim(bytes),
         }
     }
 
     const fn filled(path: &'static str, text: &'static str) -> File {
         File {
             path,
-            text,
-            filled: true,
+            body: Body::Filled(text),
         }
     }
 }
@@ -73,6 +85,23 @@ macro_rules! template {
         include_str!(concat!("../../templates/", $path))
     };
 }
+
+macro_rules! template_bytes {
+    ($path:literal) => {
+        include_bytes!(concat!("../../templates/", $path))
+    };
+}
+
+/// The face an app renders its text with, the same on every platform and in
+/// headless snapshots, and its license.
+const FONT: File = File::binary(
+    "assets/fonts/NotoSans-Regular.ttf",
+    template_bytes!("app/assets/fonts/NotoSans-Regular.ttf"),
+);
+const FONT_LICENSE: File = File::verbatim(
+    "assets/fonts/OFL.txt",
+    template!("app/assets/fonts/OFL.txt"),
+);
 
 const CARGO: File = File::filled("Cargo.toml", template!("app/Cargo.toml.in"));
 const GITIGNORE: File = File::verbatim(".gitignore", template!("app/gitignore"));
@@ -87,6 +116,8 @@ const APP_FILES: &[File] = &[
     APP,
     File::verbatim("src/app.vs", template!("app/src/app.vs")),
     File::verbatim("i18n/en.toml", template!("app/i18n/en.toml")),
+    FONT,
+    FONT_LICENSE,
     File::verbatim(
         "tests/ui/clicks.tape",
         template!("app/tests/ui/clicks.tape"),
@@ -101,6 +132,8 @@ const GAME_FILES: &[File] = &[
     APP,
     File::verbatim("src/app.vs", template!("game/src/app.vs")),
     File::verbatim("i18n/en.toml", template!("game/i18n/en.toml")),
+    FONT,
+    FONT_LICENSE,
     File::verbatim(
         "tests/game/jump.tape",
         template!("game/tests/game/jump.tape"),
@@ -116,6 +149,8 @@ const WEB_FILES: &[File] = &[
     APP,
     File::verbatim("src/app.vs", template!("app/src/app.vs")),
     File::verbatim("i18n/en.toml", template!("app/i18n/en.toml")),
+    FONT,
+    FONT_LICENSE,
     File::verbatim(
         "tests/ui/clicks.tape",
         template!("app/tests/ui/clicks.tape"),
@@ -172,7 +207,10 @@ pub fn run(ctx: &Context<'_>, args: &NewArgs, out: &mut Output) -> u8 {
     }
     let viso = match &args.framework {
         Some(path) => match framework(&normalized(&cwd.join(path))) {
-            Ok(dir) => format!("{{ path = {} }}", toml_path(&relative(&root, &dir))),
+            Ok(dir) => format!(
+                "{{ path = {} }}",
+                toml_path(&relative(&resolved(&root), &resolved(&dir)))
+            ),
             Err(why) => {
                 return out.failure(
                     NEW_FRAMEWORK,
@@ -188,15 +226,17 @@ pub fn run(ctx: &Context<'_>, args: &NewArgs, out: &mut Output) -> u8 {
         return code;
     }
 
-    let filled = |file: &File| -> String {
-        if !file.filled {
-            return file.text.to_owned();
+    let filled = |file: &File| -> Cow<'static, [u8]> {
+        match file.body {
+            Body::Verbatim(bytes) => Cow::Borrowed(bytes),
+            Body::Filled(text) => Cow::Owned(
+                text.replace("{name}", &name)
+                    .replace("{edition}", args.edition.as_str())
+                    .replace("{viso}", &viso)
+                    .replace("{language}", viso_dsl::frontend::LANGUAGE_VERSION)
+                    .into_bytes(),
+            ),
         }
-        file.text
-            .replace("{name}", &name)
-            .replace("{edition}", args.edition.as_str())
-            .replace("{viso}", &viso)
-            .replace("{language}", viso_dsl::frontend::LANGUAGE_VERSION)
     };
     out.progress(
         "new",
@@ -286,8 +326,6 @@ fn shell_word(path: &Path) -> String {
     }
 }
 
-/// `path` with `.` and `..` resolved by its components alone, so the name a
-/// project takes is the one its path ends in.
 /// The directory of the `viso` crate `path` names: the crate itself, or the
 /// checkout holding it as `crates/viso`; why not, when it names neither.
 fn framework(path: &Path) -> Result<PathBuf, String> {
@@ -311,6 +349,27 @@ fn framework(path: &Path) -> Result<PathBuf, String> {
         };
     }
     Err(why.unwrap_or_else(|| "it holds no `Cargo.toml`".to_owned()))
+}
+
+/// `path` with its links resolved: those of the longest part of it that
+/// exists, the rest as it is. A relative path between two directories holds
+/// only between their resolved forms, as `..` steps out of where a link
+/// leads, not of the link.
+fn resolved(path: &Path) -> PathBuf {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(real) = existing.canonicalize() {
+            return rest.iter().rev().fold(real, |path, part| path.join(part));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return path.to_owned(),
+        }
+    }
 }
 
 /// `to` as a path from the directory `from`, both normalized and absolute;
@@ -359,6 +418,8 @@ fn toml_string(text: &str) -> String {
     quoted
 }
 
+/// `path` with `.` and `..` resolved by its components alone, so the name a
+/// project takes is the one its path ends in.
 fn normalized(path: &Path) -> PathBuf {
     let mut resolved = PathBuf::new();
     for component in path.components() {
@@ -556,10 +617,13 @@ fn listed(lead: &str, names: &[String]) -> String {
     text
 }
 
+/// A file's bytes as the project has them.
+type Fill<'f> = dyn Fn(&File) -> Cow<'static, [u8]> + 'f;
+
 /// Writes `files` and [`DIRECTORIES`] to a staging directory and moves them
 /// to `root`; on failure, or Ctrl-C (an `Interrupted` error), nothing it
 /// made is left.
-fn create(root: &Path, files: &[File], filled: &dyn Fn(&File) -> String) -> io::Result<()> {
+fn create(root: &Path, files: &[File], filled: &Fill<'_>) -> io::Result<()> {
     if root.exists() {
         // A directory that is there already, `.` say, stays the one it is:
         // the staging directory is inside it, and its files move up one by
@@ -604,7 +668,7 @@ fn interrupted() -> io::Result<()> {
 }
 
 /// Writes the project to `staging`, made afresh.
-fn stage(staging: &Path, files: &[File], filled: &dyn Fn(&File) -> String) -> io::Result<()> {
+fn stage(staging: &Path, files: &[File], filled: &Fill<'_>) -> io::Result<()> {
     let _ = fs::remove_dir_all(staging);
     fs::create_dir(staging)?;
     for directory in DIRECTORIES {
@@ -717,6 +781,26 @@ fn git(root: &Path, out: &mut Output) {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn a_framework_path_is_related_through_links() {
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("viso-new-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("real/projects")).unwrap();
+        fs::create_dir_all(base.join("framework")).unwrap();
+        std::os::unix::fs::symlink(base.join("real/projects"), base.join("link")).unwrap();
+        let root = base.join("link/app");
+        assert_eq!(resolved(&root), base.join("real/projects/app"));
+        assert_eq!(
+            relative(&resolved(&root), &resolved(&base.join("framework"))),
+            PathBuf::from("../../../framework")
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn package_names_follow_cargo() {
         for name in ["app", "my_app", "my-app", "_app", "a1", "Viso2"] {
@@ -762,7 +846,14 @@ mod tests {
                 );
             }
             for file in files(template) {
-                assert_eq!(file.filled, file.text.contains("{name}"), "{}", file.path);
+                let filled = match file.body {
+                    Body::Filled(text) => text.contains("{name}"),
+                    Body::Verbatim(bytes) => bytes.windows(6).any(|w| w == b"{name}"),
+                };
+                assert_eq!(filled, matches!(file.body, Body::Filled(_)), "{}", file.path);
+            }
+            if binary {
+                assert!(paths.iter().any(|p| p.starts_with("assets/fonts/")), "{template:?}");
             }
         }
     }

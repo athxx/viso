@@ -132,6 +132,9 @@ pub enum Command {
     Schema(SchemaArgs),
     /// Build a dev artifact for a browser and serve it, hot reloading it.
     Serve(ServeArgs),
+    /// Take the snapshots UI scenarios take, and hold them to their goldens.
+    #[command(subcommand)]
+    Snapshot(SnapshotCommand),
     /// Run the project's tests: unit, UI, game.
     Test(TestArgs),
 }
@@ -546,6 +549,10 @@ pub struct TestArgs {
     /// Show what every case writes, not only a failed case's.
     #[arg(long)]
     pub nocapture: bool,
+    /// Rewrite the golden of each snapshot a UI scenario takes that is
+    /// missing or no longer matches, instead of failing the case.
+    #[arg(long)]
+    pub update_snapshots: bool,
     /// Where the cases run: `headless` by default.
     #[arg(long, value_enum, value_name = "TARGET")]
     pub target: Option<TestTarget>,
@@ -718,6 +725,48 @@ pub enum DumpKind {
     ModuleGraph,
 }
 
+/// What `viso snapshot` does.
+#[derive(Debug, Subcommand)]
+pub enum SnapshotCommand {
+    /// Render the scenarios headless and write each snapshot as its golden.
+    Capture(CaptureArgs),
+    /// Hold each snapshot to its golden; what departs goes to `target/viso/snapshots/`.
+    Compare(SnapshotArgs),
+    /// Rewrite only the goldens that are missing or no longer match.
+    Update(UpdateArgs),
+}
+
+/// Which scenarios `viso snapshot` plays, and where.
+#[derive(Debug, Args)]
+pub struct SnapshotArgs {
+    /// One scenario, `tests/ui/<NAME>.tape`; every one when omitted.
+    #[arg(add = ArgValueCandidates::new(complete::scenarios))]
+    pub scenario: Option<String>,
+    /// Where the snapshots are taken: `headless`, the default.
+    #[arg(long, value_enum, value_name = "TARGET")]
+    pub target: Option<TestTarget>,
+}
+
+/// What `viso snapshot capture` captures.
+#[derive(Debug, Args)]
+pub struct CaptureArgs {
+    #[command(flatten)]
+    pub common: SnapshotArgs,
+    /// Write the snapshots into DIR instead of `tests/snapshots/`.
+    #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
+    pub output: Option<PathBuf>,
+}
+
+/// What `viso snapshot update` rewrites.
+#[derive(Debug, Args)]
+pub struct UpdateArgs {
+    #[command(flatten)]
+    pub common: SnapshotArgs,
+    /// Rewrite only the snapshots whose name contains PATTERN.
+    #[arg(long, value_name = "PATTERN")]
+    pub filter: Option<String>,
+}
+
 /// How `viso lsp` starts the language server.
 #[derive(Debug, Args)]
 pub struct LspArgs {
@@ -806,6 +855,9 @@ impl Command {
             Command::Run(_) => "run",
             Command::Schema(_) => "schema",
             Command::Serve(_) => "serve",
+            Command::Snapshot(SnapshotCommand::Capture(_)) => "snapshot capture",
+            Command::Snapshot(SnapshotCommand::Compare(_)) => "snapshot compare",
+            Command::Snapshot(SnapshotCommand::Update(_)) => "snapshot update",
             Command::Test(_) => "test",
         }
     }

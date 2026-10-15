@@ -32,6 +32,7 @@ LANGUAGE
 
 TEST / DEBUG
   test        Run the project's tests: unit, UI, game
+  snapshot    Take the snapshots UI scenarios take, and hold them to their goldens
   game        Read a state of, or record input from, the game `viso run` is playing
 
 MAINTENANCE
@@ -970,6 +971,7 @@ Options:
       --exact             `--filter` names a case exactly
       --fail-fast         Stop at the first failed case
       --nocapture         Show what every case writes, not only a failed case's
+      --update-snapshots  Rewrite the golden of each snapshot a UI scenario takes that is missing or no longer matches, instead of failing the case
       --target <TARGET>   Where the cases run: `headless` by default [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
       --frames <N>        The frames a game scenario runs, one fixed tick each; by default through the tape and the scenario's last expectation
       --seed <SEED>       A game world's random seed, over the tape's
@@ -990,6 +992,131 @@ Global options:
 
 Notes:
   A scenario is `tests/ui/<name>.tape` or `tests/game/<name>.tape`; a failed case exits 1, a crashed runner 5.
+
+$ viso snapshot --help
+Take the snapshots UI scenarios take, and hold them to their goldens
+
+Usage: viso snapshot [OPTIONS] <COMMAND>
+
+Examples:
+  viso snapshot compare                          # hold every snapshot to its golden
+  viso snapshot capture home                     # write the snapshots of `tests/ui/home.tape` as goldens
+  viso snapshot update --filter settings --json  # rewrite the departed goldens named `*settings*`, as JSON events
+
+Commands:
+  capture  Render the scenarios headless and write each snapshot as its golden
+  compare  Hold each snapshot to its golden; what departs goes to `target/viso/snapshots/`
+  update   Rewrite only the goldens that are missing or no longer match
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  A snapshot is an `expect snapshot "<name>"` step of a scenario under `tests/ui/`, or
+  the end of one named after a golden; goldens are `tests/snapshots/<name>.headless.png`
+  with a `.json` sidecar, whose `tolerance` a rewrite keeps. A golden is rewritten only
+  by `capture` or `update`; what departs is left in `target/viso/snapshots/`.
+
+$ viso snapshot capture --help
+Render the scenarios headless and write each snapshot as its golden
+
+Usage: viso snapshot capture [OPTIONS] [SCENARIO]
+
+Examples:
+  viso snapshot capture                         # write every snapshot the scenarios take as its golden
+  viso snapshot capture home                    # the snapshots of `tests/ui/home.tape`, or its end
+  viso snapshot capture home --output out/home  # into `out/home/` instead of `tests/snapshots/`
+
+Arguments:
+  [SCENARIO]  One scenario, `tests/ui/<NAME>.tape`; every one when omitted
+
+Options:
+      --target <TARGET>  Where the snapshots are taken: `headless`, the default [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+      --output <DIR>     Write the snapshots into DIR instead of `tests/snapshots/`
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso snapshot compare --help
+Hold each snapshot to its golden; what departs goes to `target/viso/snapshots/`
+
+Usage: viso snapshot compare [OPTIONS] [SCENARIO]
+
+Examples:
+  viso snapshot compare         # hold every snapshot to its golden
+  viso snapshot compare home    # only those `home.tape` takes
+  viso snapshot compare --json  # one `test` event a golden, as JSON events
+
+Arguments:
+  [SCENARIO]  One scenario, `tests/ui/<NAME>.tape`; every one when omitted
+
+Options:
+      --target <TARGET>  Where the snapshots are taken: `headless`, the default [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso snapshot update --help
+Rewrite only the goldens that are missing or no longer match
+
+Usage: viso snapshot update [OPTIONS] [SCENARIO]
+
+Examples:
+  viso snapshot update                    # rewrite the goldens missing or departed from
+  viso snapshot update home               # only those `home.tape` takes
+  viso snapshot update --filter settings  # only the snapshots named `*settings*`
+
+Arguments:
+  [SCENARIO]  One scenario, `tests/ui/<NAME>.tape`; every one when omitted
+
+Options:
+      --target <TARGET>   Where the snapshots are taken: `headless`, the default [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+      --filter <PATTERN>  Rewrite only the snapshots whose name contains PATTERN
+  -h, --help              Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
 
 $ viso game --help
 Read a state of, or record input from, the game `viso run` is playing

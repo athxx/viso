@@ -554,7 +554,7 @@ viso test ui        # 默认 --target headless
 ### 8.6 当前实现
 
 - 模板编译进 CLI，不需要网络（`--offline` 下同样可用）。四个模板都是一个 Cargo package，依赖与本 CLI 同版本的 `viso`（`viso = "<CLI version>"`，dev 协议双方一致），外加 `Viso.toml`（`[package] name`、`language`，`[i18n] source = "en"`）、`i18n/en.toml`、空的 `assets/` 与 `.gitignore`（`/target`、`/dist`）。View 的文本都取自 `tr`，因此新项目在 `viso check --a11y strict --i18n strict` 下也没有诊断：
-  - `app`：`src/main.rs` 只有 `viso::run::<App>()`，`src/app.rs` 用 `view!("app.vs")` 挂载 `src/app.vs`（一个 state、一个 Button、一个 plural 文本），`tests/ui/clicks.tape`；
+  - `app`：`src/main.rs` 只有 `viso::run::<App>()`，`src/app.rs` 用 `view!("app.vs")` 挂载 `src/app.vs`（一个 state、一个 Button、一个 plural 文本），`tests/ui/clicks.tape`；`assets/fonts/` 带一个字体（Noto Sans Regular 与它的 OFL），`App::new` 调 `cx.use_packaged_fonts(viso::packaged_fonts!())`，所以文本在各平台与 headless snapshot 中一致（headless 只用项目字体）。`game`、`web` 同样带它；
   - `game`：同样的 Rust 入口，`src/app.vs` 是一个 `FixedUpdate` System（`@probe state jumps`）和它的 HUD，`Viso.toml` 加 `[game] tick_rate = 60`，`tests/game/jump.tape` 与 `tests/ui/hint.tape`；
   - `web`：`app` 加 `[web] default_target = "web-dom"`；
   - `library`：没有 binary，`src/lib.rs` 导出 `pub fn counter(cx: &mut BuildCx)`（挂载 `src/counter.vs`），没有 `tests/ui/`（UI Scenario 需要可执行文件）。
@@ -1730,12 +1730,14 @@ snapshot
   expect no "Error"
   expect checkbox "Agree" checked
   expect slider "Volume" value 0.5
+  expect snapshot "home-wide"  # 截取此刻的帧，与 golden 比较（§23）
   ```
 
   节点由 selector 找到：`"<label>"` 或 `<role> "<label>"`——accessible label 完全相等（role 为 `.vs` 的 `Role` Variant：`button`、`check_box`、`slider`、`label`、`text_field`……，也接受 inspector 的写法 `checkbox`、`textfield`），取当前显示（不在隐藏子树中、有面积）的第一个（树序）；状态为 `focused`、`checked`、`unchecked`、`selected`、`expanded`、`collapsed`、`value <number>`；键名为字母、数字、`F1`–`F12` 与 `Enter`、`Escape`、`Tab`、`Space`、`Backspace`、`Delete`、方向键、`Home`、`End`、`PageUp`、`PageDown`，修饰键 `Shift`、`Ctrl`、`Alt`、`Logo`、`Primary`；
-- 运行：先解析全部 Scenario（解析失败即该用例失败，`TEST_INPUT_INVALID` 指向其行，不构建），再以 headless 构建 app（§3.4），每个 Scenario 一个独立进程、一个独立的新目录（`target/viso/test/<pid>/ui/<name>/`，进程的工作目录），并行至多 `--jobs` 个；surface、Scenario 路径与报告路径经 `VISO_HEADLESS_SURFACE`、`VISO_HEADLESS_SCRIPT`、`VISO_HEADLESS_REPORT` 传入；
+- 运行：先解析全部 Scenario（解析失败即该用例失败，`TEST_INPUT_INVALID` 指向其行，不构建；两个 Scenario 取同名 snapshot 亦然），再以 headless 构建 app（§3.4），每个 Scenario 一个独立进程、一个独立的新目录（`target/viso/test/<pid>/ui/<name>/`，进程的工作目录），并行至多 `--jobs` 个；surface、Scenario 路径、报告路径与 snapshot 目录经 `VISO_HEADLESS_SURFACE`、`VISO_HEADLESS_SCRIPT`、`VISO_HEADLESS_REPORT`、`VISO_HEADLESS_SNAPSHOTS` 传入；
 - 回放：针对第一个窗口；每步在 app 安定（无动画、无待提交文本）或已过 settle 帧数后执行；输入经 platform 送入，与真实设备相同（点击为指针移到节点中心、按下、松开）；`expect` 读该窗口的 semantics；每步结果写成报告的一行（JSON），第一个失败的步骤结束该次运行，全部结束后关闭窗口；
-- 结果：报告以全部通过结束为 pass；有失败步骤为 fail，`TEST_EXPECTATION` 指向该行（message 列出窗口当前显示的 label）；进程在报告结束前退出为 runner 崩溃（`RUN_TEST_CRASHED`，exit 5）。失败用例的输出（stdout/stderr）随后显示，`--nocapture` 时通过的也显示；通过用例的目录随即删除。
+- Snapshot：`expect snapshot "<name>"`（名字为字母、数字、`_`、`-`，至多 100 字符，同一 Scenario 内不重复）在安定后从 software raster 读回该窗口最后一帧，写 `<name>.png` 与 `<name>.tree`（tree、layout、paint、batches 与计数的稳定文本），报告一行 `snapshot`；没有 snapshot 步骤的 Scenario 若有以其名命名的 golden，则在末尾取一张同名 snapshot。每张 snapshot 按 `viso snapshot compare`（§23）与 golden 比较：缺 golden `TEST_SNAPSHOT_MISSING`、不一致 `TEST_SNAPSHOT_MISMATCH`、golden 不可读 `TEST_SNAPSHOT_INVALID`，均指向该步骤行并使用例失败（exit 1）；`--update-snapshots` 时，走完全部步骤的用例把缺失或不一致的 golden 写回（每个文件一条 `artifact`），用例通过；读帧或写文件失败 `RUN_SNAPSHOT_FAILED`（exit 5）；
+- 结果：报告以全部通过结束且每张 snapshot 与 golden 一致为 pass；有失败步骤为 fail，`TEST_EXPECTATION` 指向该行（message 列出窗口当前显示的 label）；进程在报告结束前退出为 runner 崩溃（`RUN_TEST_CRASHED`，exit 5）。失败用例的输出（stdout/stderr）随后显示，`--nocapture` 时通过的也显示；通过用例的目录随即删除。
 
 ### 22.3 Game deterministic test
 
@@ -1793,7 +1795,7 @@ viso game peek movement Player.score                 # 读取运行中 System St
 - `unit`：`cargo test`（带 `--no-fail-fast`，`--fail-fast` 时去掉），`--filter`/`--exact`/`--nocapture` 交给 test harness，`--jobs` 同时作为 `--test-threads`；编译诊断与 `viso build` 相同，harness 报告的每个测试一个用例（`ignored` 为 `skip`），失败用例带其输出；编译失败 `BUILD_FAILED`（exit 4）；
 - `ui` 只在 `headless` 上运行，`--target` 为其他 target 时 `ENV_TEST_TARGET`（exit 3）；`web` 尚未实现（`ENV_TEST_TARGET`）；`--target` 不用于 `unit`/`game`（usage error）；`--frames`/`--seed`/`--tape` 只用于 `game`，Scenario 名只用于 `ui`/`game`；
 - `--filter <pattern>` 按名字包含（`--exact` 时相等）筛选每个域的用例；`--fail-fast` 在第一个失败用例后停止（进行中的 ui 用例被终止、不报告）；
-- `--device` 随 device target（C3）、`--update-snapshots` 随 `viso snapshot`（§23）加入；
+- `--update-snapshots` 只用于 `ui`（及省略测试域时的 `ui`），见 §22.2；`--device` 随 device target（C3）加入；
 - 人类输出每个用例一行 `test <domain> <name> ... ok|FAILED|skipped`（被跳过的整个域为 `test <domain> ... skipped (<原因>)`），末行 `test result: ok|FAILED. <n> passed; <n> failed; <n> skipped`。
 
 ### 22.5 JSON / exit codes
@@ -1850,6 +1852,16 @@ viso snapshot capture HomePage --target ios --device iphone-local
 ### 23.5 JSON / exit codes
 
 `--json`：`capture` 每个产物一条 `artifact`；`compare` 每个 golden 一条 `test`（`status: pass|fail`，失败时附 diff artifact path）；`update` 每个写回文件一条 `artifact`；最后 `summary`。Exit code：compare 不一致 1；target/device 不可用 3；capture 渲染失败 5。
+
+### 23.6 当前实现
+
+- Snapshot 是 `tests/ui/` 下 Scenario 的 `expect snapshot "<name>"` 步骤（§22.2）；没有 snapshot 步骤的 Scenario 若有以其名命名的 golden，或被 `capture` 按名指定，则在末尾取一张同名 snapshot。`<scenario>` 选一个 Scenario，省略时为全部；两个 Scenario 取同名 snapshot 时后者 `TEST_INPUT_INVALID`；任一 Scenario 解析失败即在构建前结束（exit 1）；`<component>` 形式需要组件 harness，尚未实现；
+- Golden 为 `tests/snapshots/<name>.<target>.png`（8-bit RGBA，自适应行滤波 + deflate）与 sidecar `<name>.<target>.json`：`snapshot_version`（`viso --version` 报告）、`name`、`target`、`renderer`（`software`）、`surface`（`WxH@S`）、`size [w, h]`（device pixel）、`tree_hash`（tree 文本的 `sha256:`）、`build_id`、`tolerance {threshold, pixels}`（缺省 `0.05`、`0`），一键一行；写回时保留原 sidecar 的 `tolerance`；
+- 比较：尺寸不同即不一致；字节相同即一致；否则逐像素计算合成到白底后的 YIQ 感知距离（`0`–`1`），距离高于 `threshold` 的像素多于 `pixels` 即不一致。不一致时在 `target/viso/snapshots/` 写 `<name>.<target>.png`（本次）、`.tree`（本次的 tree）与 `.diff.png`（golden 淡化为浅灰，超阈值像素红、低于阈值的差异黄、只一边有的区域品红）；
+- `capture`：走完全部步骤的 Scenario，其每张 snapshot 无条件写成 golden（`--output <dir>` 时写入该目录），每个文件一条 `artifact`（`kind: snapshot|manifest`）；
+- `compare`：每张 snapshot 一条 `test`（`domain: snapshot`；附 `golden`，不一致时另附 `diff, actual, tree, same_size, differing_pixels, largest_distance, tree_changed`），并以指向步骤行的 `TEST_SNAPSHOT_MISMATCH` / `TEST_SNAPSHOT_MISSING` / `TEST_SNAPSHOT_INVALID` 诊断说明；未取到（Scenario 先失败）的 snapshot 记 fail；省略 `<scenario>` 时，没有 Scenario 取的 golden 亦为 fail（`TEST_SNAPSHOT_MISSING`）；末行 `test result: …`；
+- `update [--filter <pattern>]`：只写回缺失或不一致的 golden（名字包含 pattern 的），每个写回文件一条 `artifact`；没有 Scenario 取的 golden 为 warning；人类输出末行 `<n> snapshots updated; <m> unchanged`；
+- Scenario 的失败步骤 `TEST_EXPECTATION`（exit 1）、snapshot 步骤本身失败 `RUN_SNAPSHOT_FAILED`（5）、runner 崩溃 `RUN_TEST_CRASHED`（5），该 Scenario 不写 golden；没有 Scenario 取 snapshot `ENV_TEST_INPUT`（3）；`--target` 非 `headless` `ENV_SNAPSHOT_TARGET`（3）；写 golden 或比较结果失败 `ENV_SNAPSHOT_WRITE`（3）。
 
 ---
 
@@ -3083,10 +3095,11 @@ event schema 1                §34 envelope schema_version
 diagnostic schema 1.0         §36.1 diagnostic schema_version
 schema object 1.0             §18 schema object schema_version
 dump 1                        §20 dump JSON dump_version
+snapshot 1                    §23 golden sidecar snapshot_version
 dev protocol 14               dev channel protocol version
 ```
 
-`--json` 下为一条 `result`（`payload: {version, commit, language, event_schema, diagnostic_schema, schema_object, dump_version, dev_protocol}`）+ `summary`。
+`--json` 下为一条 `result`（`payload: {version, commit, language, event_schema, diagnostic_schema, schema_object, dump_version, snapshot_version, dev_protocol}`）+ `summary`。
 
 ---
 

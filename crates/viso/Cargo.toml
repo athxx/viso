@@ -77,7 +77,7 @@ vulkan = ["viso-gpu/vulkan"]
 # no device; every window draws through the software raster at a fixed
 # surface, frames step a fixed clock, text resolves through the app's own
 # fonts only and shapes on the frame that asks for it.
-headless = ["viso-gpu/headless"]
+headless = ["viso-gpu/headless", "viso-view/snapshot"]
 
 [dev-dependencies]
 # The DSL tests compile `.vs` sources themselves, with or without `hot-reload`.

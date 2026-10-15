@@ -16,17 +16,14 @@ mod game;
 mod ui;
 mod unit;
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::check;
+use super::scenario::{TAPE, scenarios};
 use crate::args::{TestArgs, TestDomain, TestTarget};
 use crate::context::Context;
 use crate::error::{CLI_USAGE, ENV_TEST_TARGET, SUCCESS, TEST_INPUT_INVALID};
 use crate::output::{Output, Source, Test, TestStatus};
-
-/// The extension of a scenario or tape file.
-const TAPE: &str = "tape";
 
 pub fn run(ctx: &Context<'_>, args: &TestArgs, out: &mut Output) -> u8 {
     let domain = args.domain.unwrap_or(TestDomain::All);
@@ -119,6 +116,12 @@ fn misplaced(args: &TestArgs, domain: TestDomain) -> Option<String> {
             ));
         }
     }
+    if args.update_snapshots && !matches!(domain, TestDomain::Ui | TestDomain::All) {
+        return Some(
+            "`--update-snapshots` rewrites the goldens of UI scenarios: `viso test ui --update-snapshots`"
+                .into(),
+        );
+    }
     if args.scenario.is_some() && !matches!(domain, TestDomain::Ui | TestDomain::Game) {
         return Some(
             "a scenario is named in the `ui` or `game` domain: `viso test ui <name>`".into(),
@@ -180,7 +183,7 @@ fn skip(out: &mut Output, domain: &str, why: &str) {
 }
 
 /// Reports one case: its `test` event, or its line of human output.
-fn report(
+pub(super) fn report(
     out: &mut Output,
     domain: &str,
     name: &str,
@@ -207,21 +210,9 @@ fn report(
     });
 }
 
-/// The `.tape` scenarios under `dir`, by name.
-fn scenarios(dir: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
-    let mut found: Vec<(String, PathBuf)> = fs::read_dir(dir)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|e| e == TAPE))
-        .filter_map(|path| Some((path.file_stem()?.to_string_lossy().into_owned(), path)))
-        .collect();
-    found.sort();
-    Ok(found)
-}
-
 /// Reports a scenario that does not parse or does not fit the build, at `at`
 /// in `source` when known.
-fn invalid(
+pub(super) fn invalid(
     out: &mut Output,
     source: Option<&Source<'_>>,
     at: Option<viso_dsl::TextRange>,
@@ -240,12 +231,12 @@ fn invalid(
 }
 
 /// `path` relative to `root`, when it lies under it.
-fn relative<'a>(root: &Path, path: &'a Path) -> &'a Path {
+pub(super) fn relative<'a>(root: &Path, path: &'a Path) -> &'a Path {
     path.strip_prefix(root).unwrap_or(path)
 }
 
 /// The byte range of 1-based line `line` of `text`, without its terminator.
-fn line_range(text: &str, line: u32) -> viso_dsl::TextRange {
+pub(super) fn line_range(text: &str, line: u32) -> viso_dsl::TextRange {
     use viso_dsl::{TextRange, TextSize};
     let mut start = 0;
     for (n, content) in text.split('\n').enumerate() {

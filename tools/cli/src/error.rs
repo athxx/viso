@@ -152,6 +152,18 @@ codes! {
         fix: "Check the path and its permissions; `viso test --filter` selects scenarios by name.",
         commands: ["viso test --help"],
     }
+    ENV_SNAPSHOT_TARGET = ENVIRONMENT {
+        summary: "Snapshots are not taken on that target here.",
+        explanation: "`viso snapshot` renders each scenario in a headless build of the app, drawn by the software raster; this build of viso takes snapshots on no other target.",
+        fix: "Take them on the headless target, the default.",
+        commands: ["viso snapshot compare --target headless"],
+    }
+    ENV_SNAPSHOT_WRITE = ENVIRONMENT {
+        summary: "A golden snapshot, or what a comparison found, could not be written.",
+        explanation: "Capturing and updating write goldens under `tests/snapshots/` (or `--output`); a comparison that departs writes the image taken, its tree and a diff under `target/viso/snapshots/`. Creating or writing one of them failed: its directory is read-only, or the disk is full.",
+        fix: "Make the directory writable, or free disk space, and rerun.",
+        commands: [],
+    }
     ENV_LSP = ENVIRONMENT {
         summary: "The language server `viso-lsp` was not found or could not be started.",
         explanation: "`viso lsp` runs the `viso-lsp` binary installed next to `viso`, or else the first on `PATH`, handing it the editor's stdin and stdout. Neither place has one, or starting it failed.",
@@ -249,6 +261,12 @@ codes! {
         fix: "Run the case alone with `--nocapture` to see its output.",
         commands: ["viso test --filter <name> --nocapture"],
     }
+    RUN_SNAPSHOT_FAILED = RUNTIME {
+        summary: "A scenario's snapshot could not be taken.",
+        explanation: "A snapshot step reads the frame back from the headless surface and writes it with its tree; the run had no surface to read, or could not write the files.",
+        fix: "Run the scenario alone with `--nocapture` to see the run's output.",
+        commands: ["viso test ui <scenario> --nocapture"],
+    }
 
     EXPLAIN_UNKNOWN = DIAGNOSTICS {
         summary: "No diagnostic code has that name.",
@@ -262,6 +280,24 @@ codes! {
         explanation: "A scenario or tape has a syntax error, names a node, action or state the app does not have, or was recorded for another build.",
         fix: "Fix the step the diagnostic points at, or record the tape again.",
         commands: [],
+    }
+    TEST_SNAPSHOT_MISMATCH = DIAGNOSTICS {
+        summary: "A snapshot differs from its golden.",
+        explanation: "The image a scenario's snapshot step took has another size than its golden under `tests/snapshots/`, or more pixels departing from it than the golden's tolerance allows. A pixel departs when its perceptual distance from the golden's is above the tolerance's threshold. The image taken, its tree and a diff are under `target/viso/snapshots/`.",
+        fix: "Look at the diff: fix the app, or rewrite the golden with `viso snapshot update` if the change is meant. The sidecar's `tolerance` loosens the comparison of one snapshot.",
+        commands: ["viso snapshot update"],
+    }
+    TEST_SNAPSHOT_MISSING = DIAGNOSTICS {
+        summary: "A snapshot has no golden, or a golden no snapshot.",
+        explanation: "A scenario takes a snapshot that has no golden under `tests/snapshots/`, or a golden there is taken by no scenario. A golden is written only on request, never because a comparison failed.",
+        fix: "Write the missing golden with `viso snapshot update`; remove a golden no scenario takes.",
+        commands: ["viso snapshot update"],
+    }
+    TEST_SNAPSHOT_INVALID = DIAGNOSTICS {
+        summary: "A golden snapshot or its sidecar does not read.",
+        explanation: "The golden's image is not a PNG, or its JSON sidecar does not parse or gives a tolerance out of range: a threshold from 0 to 1 and a count of pixels.",
+        fix: "Fix the sidecar, or capture the golden again.",
+        commands: ["viso snapshot capture <scenario>"],
     }
     TEST_EXPECTATION = DIAGNOSTICS {
         summary: "A test's expectation was not met.",

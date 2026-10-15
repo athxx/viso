@@ -133,6 +133,7 @@ icu_normalizer = "2.3"
 # ttf-parser hands back as raw bytes). Same decoder family makepad's color-emoji
 # path uses; decoded RGBA is premultiplied into the color glyph atlas.
 zune-png = "0.5"
+miniz_oxide = "0.9"
 zune-jpeg = "0.5"
 zune-core = "0.5"
 # WOFF2 web fonts embed their sfnt tables as one brotli stream (WOFF2 §4).

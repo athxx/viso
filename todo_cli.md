@@ -483,20 +483,31 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
 
 ### C2.6 — `viso snapshot` headless (§23)
 
-- [ ] `snapshot capture <scenario|component>`: render headless at the test surface,
-      write `tests/snapshots/<name>.<target>.png` plus a sidecar (tree hash, build id,
-      renderer, size).
-- [ ] The software raster's CPU shader programs run without an allocation per
-      intrinsic call (compiled to closures or a flat register program): a custom
-      shader at 1280×720 now takes ~80 ms a frame with the raster crates optimized
-      (they are, in an unoptimized headless build), ~0.7 s without.
-- [ ] `snapshot compare`: perceptual + exact compare with a per-snapshot tolerance,
-      diff image into `target/viso/snapshots/`, exit 1 on mismatch, `test`-shaped
-      events.
-- [ ] `snapshot update [--filter]`: rewrites only mismatched snapshots, reports each.
-- [ ] `expect snapshot "<name>"` steps in UI scenarios and `test ui
+- [x] `snapshot capture <scenario>`: render headless at the test surface, write
+      `tests/snapshots/<name>.<target>.png` plus a sidecar (tree hash, build id,
+      renderer, surface, size, tolerance); a scenario without snapshot steps captured
+      by name takes its end; `--output <dir>` writes elsewhere.
+- [ ] `snapshot capture <component>`: a component alone, mounted by a harness the
+      headless build carries, at the test surface.
+- [x] The software raster's CPU shader programs compile once into a flat register
+      program run on a quad's four lanes at once, allocating nothing per instance or
+      pixel: a full-screen custom shader at 1280×720 (release, `cpu_shader` bench)
+      went from 1.15–1.30 s to 160–180 ms a frame.
+- [x] `snapshot compare`: perceptual (YIQ over white) + exact compare with a
+      per-snapshot tolerance from the sidecar, diff, image taken and tree into
+      `target/viso/snapshots/`, exit 1 on mismatch, one `test` event a golden, a
+      golden no scenario takes fails.
+- [x] `snapshot update [--filter]`: rewrites only missing or mismatched snapshots,
+      keeping their tolerance, one `artifact` each.
+- [x] `expect snapshot "<name>"` steps in UI scenarios and `test ui
       --update-snapshots`, through the same compare.
-- [ ] `--target headless` default; other targets come with C3/C4.
+- [x] `--target headless` default; other targets exit 3 (`ENV_SNAPSHOT_TARGET`) until
+      C3/C4.
+- [x] The app template packages a font from `assets/fonts/` (`use_packaged_fonts`),
+      so the headless snapshots of a new app show its text: headless resolves only
+      the project's fonts.
+- [x] `viso new --framework` relates the framework's path through links (`/tmp` is
+      `/private/tmp` on macOS).
 
 ### C2.7 — `viso inspect query` (§24.3)
 

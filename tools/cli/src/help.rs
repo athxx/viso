@@ -20,7 +20,7 @@ const GROUPS: &[(&str, &[&str])] = &[
         "LANGUAGE",
         &["fmt", "check", "schema", "explain", "dump", "lsp"],
     ),
-    ("TEST / DEBUG", &["test", "game"]),
+    ("TEST / DEBUG", &["test", "snapshot", "game"]),
     ("DELIVERY", &[]),
     ("MAINTENANCE", &["clean", "completion"]),
 ];
@@ -416,6 +416,62 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "snapshot",
+        &[
+            ("viso snapshot compare", "hold every snapshot to its golden"),
+            (
+                "viso snapshot capture home",
+                "write the snapshots of `tests/ui/home.tape` as goldens",
+            ),
+            (
+                "viso snapshot update --filter settings --json",
+                "rewrite the departed goldens named `*settings*`, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "snapshot capture",
+        &[
+            (
+                "viso snapshot capture",
+                "write every snapshot the scenarios take as its golden",
+            ),
+            (
+                "viso snapshot capture home",
+                "the snapshots of `tests/ui/home.tape`, or its end",
+            ),
+            (
+                "viso snapshot capture home --output out/home",
+                "into `out/home/` instead of `tests/snapshots/`",
+            ),
+        ],
+    ),
+    (
+        "snapshot compare",
+        &[
+            ("viso snapshot compare", "hold every snapshot to its golden"),
+            ("viso snapshot compare home", "only those `home.tape` takes"),
+            (
+                "viso snapshot compare --json",
+                "one `test` event a golden, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "snapshot update",
+        &[
+            (
+                "viso snapshot update",
+                "rewrite the goldens missing or departed from",
+            ),
+            ("viso snapshot update home", "only those `home.tape` takes"),
+            (
+                "viso snapshot update --filter settings",
+                "only the snapshots named `*settings*`",
+            ),
+        ],
+    ),
+    (
         "test",
         &[
             ("viso test", "every domain"),
@@ -505,6 +561,13 @@ const NOTES: &[(&str, &str)] = &[
         "`viso run web-gpu` serves the same and opens a browser too.",
     ),
     (
+        "snapshot",
+        "A snapshot is an `expect snapshot \"<name>\"` step of a scenario under `tests/ui/`, or\n\
+         the end of one named after a golden; goldens are `tests/snapshots/<name>.headless.png`\n\
+         with a `.json` sidecar, whose `tolerance` a rewrite keeps. A golden is rewritten only\n\
+         by `capture` or `update`; what departs is left in `target/viso/snapshots/`.",
+    ),
+    (
         "test",
         "A scenario is `tests/ui/<name>.tape` or `tests/game/<name>.tape`; a failed case exits 1, a crashed runner 5.",
     ),
@@ -522,6 +585,7 @@ pub struct Version {
     pub diagnostic_schema: &'static str,
     pub schema_object: &'static str,
     pub dump_version: u32,
+    pub snapshot_version: u32,
     pub dev_protocol: u16,
 }
 
@@ -534,6 +598,7 @@ pub const VERSION: Version = Version {
     diagnostic_schema: crate::output::json::DIAGNOSTIC_SCHEMA_VERSION,
     schema_object: viso_dsl::schema::SCHEMA_VERSION,
     dump_version: viso_dsl::dump::DUMP_VERSION,
+    snapshot_version: crate::command::SNAPSHOT_VERSION,
     dev_protocol: viso_view::dev::wire::DEV_PROTOCOL_VERSION,
 };
 
@@ -547,6 +612,7 @@ event schema {}
 diagnostic schema {}
 schema object {}
 dump {}
+snapshot {}
 dev protocol {}
 ",
             self.version,
@@ -556,6 +622,7 @@ dev protocol {}
             self.diagnostic_schema,
             self.schema_object,
             self.dump_version,
+            self.snapshot_version,
             self.dev_protocol
         )
     }
@@ -577,6 +644,8 @@ dev protocol {}
         w.string(self.schema_object);
         w.name("dump_version");
         w.uint(u64::from(self.dump_version));
+        w.name("snapshot_version");
+        w.uint(u64::from(self.snapshot_version));
         w.name("dev_protocol");
         w.uint(u64::from(self.dev_protocol));
         w.end_object();

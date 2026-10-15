@@ -79,6 +79,9 @@ fn an_app_has_its_files_and_says_what_to_run_next() {
     assert!(manifest.contains("name = \"hello\""), "{manifest}");
     assert!(manifest.contains("language = \"1.0\""), "{manifest}");
     assert!(root.join("assets").is_dir());
+    let font = fs::read(root.join("assets/fonts/NotoSans-Regular.ttf")).unwrap();
+    assert_eq!(font[..4], [0, 1, 0, 0], "a TrueType face, as it was");
+    assert!(root.join("assets/fonts/OFL.txt").is_file());
     assert!(!root.join(".git").exists(), "`--no-git`");
     // Nothing is left beside it.
     let beside: Vec<_> = fs::read_dir(&s.0).unwrap().collect();

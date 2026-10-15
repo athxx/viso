@@ -191,6 +191,7 @@ fn version_names_the_build_and_what_it_speaks() {
             "diagnostic schema",
             "schema object",
             "dump",
+            "snapshot",
             "dev protocol"
         ]
     );
@@ -206,6 +207,7 @@ fn version_names_the_build_and_what_it_speaks() {
         "diagnostic_schema",
         "schema_object",
         "dump_version",
+        "snapshot_version",
         "dev_protocol",
     ] {
         assert!(

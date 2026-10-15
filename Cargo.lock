@@ -2935,9 +2935,12 @@ dependencies = [
 name = "viso-view"
 version = "0.0.0"
 dependencies = [
+ "miniz_oxide",
  "viso-behavior",
  "viso-ende",
  "viso-ui",
+ "zune-core",
+ "zune-png",
 ]
 
 [[package]]

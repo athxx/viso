@@ -39,6 +39,8 @@ mod resources;
 mod route;
 mod scope;
 mod shaders;
+#[cfg(feature = "snapshot")]
+pub mod snapshot;
 mod tasks;
 mod theme;
 mod values;

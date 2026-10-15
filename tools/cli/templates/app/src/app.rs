@@ -4,7 +4,10 @@ use viso::prelude::*;
 pub struct App;
 
 impl Application for App {
-    fn new(_cx: &mut AppCx) -> Self {
+    fn new(cx: &mut AppCx) -> Self {
+        // Text renders with the faces in `assets/fonts/`, the same on every
+        // platform and in headless snapshots.
+        cx.use_packaged_fonts(viso::packaged_fonts!());
         App
     }
 

@@ -13,7 +13,7 @@ repository.workspace = true
 [dependencies]
 viso-dsl = { workspace = true }
 # The dev channel's wire protocol, shared with the running app.
-viso-view = { workspace = true, features = ["hot-reload"] }
+viso-view = { workspace = true, features = ["hot-reload", "snapshot"] }
 # A changed asset is decoded as the app would before it is sent: an image
 # through the SVG lane's asset decoder, a font through the text runtime's.
 viso-svg = { workspace = true }

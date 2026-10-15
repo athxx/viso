@@ -130,9 +130,13 @@ impl Value {
         }
     }
 
-    /// Its `F32` lanes.
-    pub fn to_floats(&self) -> Vec<f32> {
-        self.lanes().iter().map(|l| l.f32()).collect()
+    /// Its lanes as `F32`, zero past the last.
+    pub fn to_floats(&self) -> [f32; 4] {
+        let mut out = [0.0; 4];
+        for (o, l) in out.iter_mut().zip(self.lanes()) {
+            *o = l.f32();
+        }
+        out
     }
 }
 

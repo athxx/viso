@@ -36,7 +36,7 @@ pub use package::{PackedBrush, PackedCode, ProgramCode, ShaderLang};
 pub use ty::{Scalar, Texel, Ty};
 pub use validate::ProgramError;
 pub use value::{EncodeError, Lane, Value};
-pub use viso_gpu::{AddressMode, FilterMode, SamplerDesc};
+pub use viso_gpu::{AddressMode, BlendMode, CpuTexture, FilterMode, SamplerDesc};
 
 /// A byte range of the source a program was built from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
