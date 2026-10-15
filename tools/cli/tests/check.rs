@@ -96,6 +96,27 @@ fn a_source_error_points_at_its_file_line_and_column() {
 }
 
 #[test]
+fn a_view_that_does_not_mount_is_an_error_its_file_points_at() {
+    let s = Scratch::new("unmounted");
+    s.write("Viso.toml", MANIFEST)
+        .write(
+            "src/app.vs",
+            "export component App {\n    view {\n        Column { margin: 4dp; }\n    }\n}\n",
+        )
+        .write(
+            "src/parts.vs",
+            "record Size { w: I32; }\nconst GAP: MixedLength = 8dp;\n",
+        );
+    let out = viso(&s.0, &["check"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.starts_with("error[E3711]: "), "{err}");
+    assert!(err.contains("`margin` does not lay out yet"), "{err}");
+    assert!(err.contains(" --> src/app.vs:3:26\n"), "{err}");
+    assert_eq!(stdout(&out), "checked `demo`: 2 files, 1 error\n");
+}
+
+#[test]
 fn an_unsupported_language_version_points_into_the_manifest() {
     let s = Scratch::new("language");
     s.write(

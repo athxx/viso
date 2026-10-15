@@ -360,6 +360,8 @@ pub(crate) fn aot_kind(kind: NodeKind) -> AotNodeKind {
 pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
     AotStyle {
         axis: style.axis.map(aot_axis),
+        justify: style.justify,
+        align: style.align,
         width: style.width.map(aot_length),
         height: style.height.map(aot_length),
         gap: style.gap,

@@ -983,6 +983,36 @@ impl NodeStore {
             .then(|| self.layout[id.index() as usize].size())
     }
 
+    /// Rewrite a Flex container's axis, main-axis placement and cross-axis
+    /// alignment in place, marking it `LAYOUT | PAINT`, and `MEASURE` too when
+    /// its axis turns. A no-op for a stale handle, an unchanged arrangement or
+    /// a node that is not a Flex container.
+    pub fn set_flex_arrangement(&mut self, id: NodeId, to: (Axis, Justify, Align)) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let LayoutInput::Flex {
+            axis,
+            justify,
+            align,
+            ..
+        } = &mut self.layout[id.index() as usize]
+        else {
+            return;
+        };
+        let measures = *axis != to.0;
+        if (*axis, *justify, *align) == to {
+            return;
+        }
+        (*axis, *justify, *align) = to;
+        let class = if measures {
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT
+        } else {
+            DirtyClass::LAYOUT | DirtyClass::PAINT
+        };
+        self.mark_dirty(id, class);
+    }
+
     /// Rewrite a Flex container's main-axis gap, or both of a Grid's gaps, in
     /// place, marking it `MEASURE | LAYOUT | PAINT`. A no-op for a stale handle,
     /// an unchanged gap or a node with no gap.
@@ -1968,20 +1998,27 @@ impl NodeStore {
         self.hidden[id.index() as usize]
     }
 
-    /// Set whether a node (and its subtree) is folded out of layout and paint. A
-    /// live-guarded write, so a stale handle is a no-op.
+    /// Set whether a node (and its subtree) is folded out of layout, paint and
+    /// the semantics tree. A live-guarded write, so a stale handle is a no-op.
     ///
-    /// Hiding a node changes both its parent's main-axis measure sum (a hidden
-    /// subtree contributes zero) and what paints, so this marks the node
-    /// LAYOUT | PAINT dirty; the incremental passes re-measure/re-lay-out the
-    /// affected subtree and repaint. Flipping the flag needs no structural
+    /// Hiding a node changes its parent's main-axis measure sum (a hidden
+    /// subtree contributes zero), what paints and what assistive technology
+    /// reads, so a change marks the node LAYOUT | PAINT | SEMANTICS dirty; the
+    /// incremental passes re-measure/re-lay-out the affected subtree and
+    /// repaint. Flipping the flag needs no structural
     /// rebuild — every panel is built once and shown or hidden on demand.
     pub fn set_hidden(&mut self, id: NodeId, hidden: bool) {
         if !self.arena.is_live(id) {
             return;
         }
+        if self.hidden[id.index() as usize] == hidden {
+            return;
+        }
         self.hidden[id.index() as usize] = hidden;
-        self.mark_dirty(id, DirtyClass::LAYOUT | DirtyClass::PAINT);
+        self.mark_dirty(
+            id,
+            DirtyClass::LAYOUT | DirtyClass::PAINT | DirtyClass::SEMANTICS,
+        );
     }
 
     /// A node's opacity (default `1.0`).
@@ -2953,8 +2990,9 @@ impl NodeStore {
         });
         let mut child = self.arena.links(id).and_then(|l| l.first_child);
         while let Some(c) = child {
-            // A subtree authored hidden is shown but not read.
-            if !self.semantics(c).is_some_and(|s| s.hidden) {
+            // A subtree authored hidden is shown but not read; one folded out
+            // of layout is neither.
+            if !self.hidden[c.index() as usize] && !self.semantics(c).is_some_and(|s| s.hidden) {
                 let ci = self.derive_into(c, tree);
                 tree.nodes[my_index].children.push(ci);
             }

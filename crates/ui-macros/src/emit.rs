@@ -30,8 +30,8 @@ use syn::Ident;
 use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
 use viso_dsl::ir::ui_ir::{
-    Avoid, AxisIr, EdgeTermsIr, InsetIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem,
-    UiNode, UiTree,
+    Align, Avoid, AxisIr, EdgeTermsIr, InsetIr, Justify, LengthIr, LengthsIr, NodeKind, StyleIr,
+    TermsIr, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::{Control, ControlInput, ViewBehavior, When};
@@ -385,17 +385,21 @@ impl Emit<'_> {
                 }
             }
             NodeKind::Grid => {
-                // Grid style beyond the shared padding is a consuming-slice concern;
-                // the folded StyleIr carries no grid track sizing yet, so a default
-                // GridStyle with the node's padding mounts the container and its
-                // children.
+                // The folded StyleIr carries no grid tracks yet: a default
+                // GridStyle with the node's padding and size mounts the
+                // container and its children.
                 let padding = node.style.padding.map(inset_tokens).map(|padding| {
                     quote! { padding: #padding, }
+                });
+                let size = has_size(&node.style).then(|| {
+                    let size = size_tokens(&node.style);
+                    quote! { size: #size, }
                 });
                 quote! {
                     cx.grid(
                         ::viso::__private::viso_ui::grid::GridStyle {
                             #padding
+                            #size
                             ..::core::default::Default::default()
                         },
                         |cx| { #child_block },
@@ -537,6 +541,8 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(semantics.value),
     );
     let (hidden, heading_level) = (entry(semantics.hidden), entry(semantics.heading_level));
+    let (visible, focusable) = (entry(control.node.visible), entry(control.node.focusable));
+    let (text_color, soft_wrap) = (entry(control.text.color), entry(control.text.soft_wrap));
     let look = control.look;
     let (background, opacity) = (entry(look.background), entry(look.opacity));
     let (background_transition, opacity_transition) = (
@@ -584,6 +590,14 @@ fn control_tokens(control: Control) -> TokenStream {
                 opacity_transition: #opacity_transition,
             },
             arms: ::std::boxed::Box::new([#(#arms),*]),
+            node: ::viso::__private::viso_view::NodeEntries {
+                visible: #visible,
+                focusable: #focusable,
+            },
+            text: ::viso::__private::viso_view::TextEntries {
+                color: #text_color,
+                soft_wrap: #soft_wrap,
+            },
             semantics: ::viso::__private::viso_view::SemanticEntries {
                 role: #role,
                 live: ::viso::__private::viso_ui::LiveRegion::#live,
@@ -609,6 +623,23 @@ fn flex_style_tokens(style: &StyleIr) -> TokenStream {
     if let Some(axis) = style.axis {
         let axis = axis_tokens(axis);
         fields.push(quote! { axis: #axis });
+    }
+    if let Some(justify) = style.justify {
+        let justify = match justify {
+            Justify::Start => quote! { Start },
+            Justify::Center => quote! { Center },
+            Justify::End => quote! { End },
+        };
+        fields.push(quote! { justify: ::viso::__private::viso_ui::Justify::#justify });
+    }
+    if let Some(align) = style.align {
+        let align = match align {
+            Align::Start => quote! { Start },
+            Align::Center => quote! { Center },
+            Align::End => quote! { End },
+            Align::Stretch => quote! { Stretch },
+        };
+        fields.push(quote! { align: ::viso::__private::viso_ui::Align::#align });
     }
     if let Some(gap) = style.gap {
         fields.push(quote! { gap: #gap });

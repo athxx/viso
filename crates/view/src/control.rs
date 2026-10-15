@@ -126,6 +126,10 @@ impl ControlKind {
             (_, "semantics.value") => ControlInput::SpokenValue,
             (_, "semantics.hidden") => ControlInput::Hidden,
             (_, "semantics.heading_level") => ControlInput::HeadingLevel,
+            (_, "visible") => ControlInput::Visible,
+            (_, "focusable") => ControlInput::Focusable,
+            (ControlKind::Label | ControlKind::TextInput, "color") => ControlInput::TextColor,
+            (ControlKind::Label | ControlKind::TextInput, "soft_wrap") => ControlInput::SoftWrap,
             (ControlKind::Toggle, "checked")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
@@ -268,6 +272,15 @@ pub enum ControlInput {
     Hidden,
     /// The node's `semantics.heading_level`.
     HeadingLevel,
+    /// The node's `visible`: whether it and its subtree lay out, paint and
+    /// are read.
+    Visible,
+    /// The node's `focusable`.
+    Focusable,
+    /// A text's `color`.
+    TextColor,
+    /// A text's `soft_wrap`.
+    SoftWrap,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -297,9 +310,34 @@ pub struct Control {
     /// The look values its styles' `when` blocks select, the first that holds
     /// winning over the others and over [`look`](Self::look).
     pub arms: Box<[LookArm]>,
+    /// Whether it shows and takes focus.
+    pub node: NodeEntries,
+    /// The style of the text it shows.
+    pub text: TextEntries,
     /// What it tells assistive technology beside the state its kind
     /// projects.
     pub semantics: SemanticEntries,
+}
+
+/// The handler-table entries of whether a node shows and takes focus: an
+/// absent entry leaves it as it was built (shown, and focusable when its kind
+/// is).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NodeEntries {
+    /// The entry of its `visible`.
+    pub visible: Option<u32>,
+    /// The entry of its `focusable`.
+    pub focusable: Option<u32>,
+}
+
+/// The handler-table entries of the style of a text a node shows: an absent
+/// entry reads the default (the view's text color, no wrapping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TextEntries {
+    /// The entry of its `color`.
+    pub color: Option<u32>,
+    /// The entry of its `soft_wrap`.
+    pub soft_wrap: Option<u32>,
 }
 
 /// What a control tells assistive technology beside the state its kind
@@ -467,6 +505,8 @@ impl Control {
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
+            node: NodeEntries::default(),
+            text: TextEntries::default(),
             semantics: SemanticEntries::default(),
         }
     }
@@ -494,6 +534,10 @@ impl Control {
             ControlInput::SpokenValue => self.semantics.value,
             ControlInput::Hidden => self.semantics.hidden,
             ControlInput::HeadingLevel => self.semantics.heading_level,
+            ControlInput::Visible => self.node.visible,
+            ControlInput::Focusable => self.node.focusable,
+            ControlInput::TextColor => self.text.color,
+            ControlInput::SoftWrap => self.text.soft_wrap,
         }
     }
 
@@ -515,6 +559,10 @@ impl Control {
             ControlInput::SpokenValue => &mut self.semantics.value,
             ControlInput::Hidden => &mut self.semantics.hidden,
             ControlInput::HeadingLevel => &mut self.semantics.heading_level,
+            ControlInput::Visible => &mut self.node.visible,
+            ControlInput::Focusable => &mut self.node.focusable,
+            ControlInput::TextColor => &mut self.text.color,
+            ControlInput::SoftWrap => &mut self.text.soft_wrap,
         };
         *slot = Some(entry);
     }
@@ -682,6 +730,10 @@ impl Encode for Control {
             semantics.value,
             semantics.hidden,
             semantics.heading_level,
+            self.node.visible,
+            self.node.focusable,
+            self.text.color,
+            self.text.soft_wrap,
         ] {
             enc.write_varint(entry.map_or(0, |e| u64::from(e) + 1));
         }
@@ -757,6 +809,16 @@ impl Decode for Control {
                 hidden: entry()?,
                 heading_level: entry()?,
             },
+            node: NodeEntries::default(),
+            text: TextEntries::default(),
+        };
+        control.node = NodeEntries {
+            visible: entry()?,
+            focusable: entry()?,
+        };
+        control.text = TextEntries {
+            color: entry()?,
+            soft_wrap: entry()?,
         };
         let index = |dec: &mut Decoder<'_>| -> Result<u32, DecodeError> {
             let offset = dec.position();
@@ -991,6 +1053,15 @@ mod tests {
             ControlKind::Plain.input("semantics.label"),
             Some(ControlInput::Label)
         );
+        assert_eq!(
+            ControlKind::Plain.input("visible"),
+            Some(ControlInput::Visible)
+        );
+        assert_eq!(
+            ControlKind::Label.input("color"),
+            Some(ControlInput::TextColor)
+        );
+        assert_eq!(ControlKind::Plain.input("color"), None);
     }
 
     #[test]
@@ -1043,6 +1114,14 @@ mod tests {
                 value: None,
                 hidden: Some(11),
                 heading_level: None,
+            },
+            node: NodeEntries {
+                visible: Some(12),
+                focusable: None,
+            },
+            text: TextEntries {
+                color: None,
+                soft_wrap: Some(13),
             },
         };
         let bytes = control.encode_to_vec();

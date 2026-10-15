@@ -30,6 +30,14 @@ fn diagnostics(src: &str) -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// `diagnostics` of `src` but the `E3711` of an unapplied `translate`.
+fn checked(src: &str) -> Vec<(&'static str, String)> {
+    diagnostics(src)
+        .into_iter()
+        .filter(|(code, message)| !(*code == "E3711" && message.contains("`translate`")))
+        .collect()
+}
+
 fn codes(src: &str) -> Vec<&'static str> {
     diagnostics(src).into_iter().map(|(c, _)| c).collect()
 }
@@ -316,6 +324,9 @@ fn mixed_lengths_scale_but_neither_compare_nor_multiply_nor_narrow() {
 }
 
 /// A view binding `translate`, which has no percent basis, to `x`.
+/// A `Text` translated by `x`, its declarations `decls` beside it. A
+/// `translate` does not reach its node yet (`E3711`), which these tests,
+/// about the percent basis, leave out.
 fn translate(decls: &str, x: &str) -> String {
     format!(
         "{decls}\ncomponent C {{\n    view {{ Text {{ translate: Offset {{ x: {x}, y: 0dp }}; }} }}\n}}\n"
@@ -334,15 +345,19 @@ fn a_percent_reaching_a_property_without_a_basis_is_rejected() {
         ),
         ("record Pad { x: MixedLength = 50%; }", "Pad {}.x"),
     ] {
-        one(
-            &translate(decls, x),
-            "E3104",
-            &["`translate`", "percent basis"],
-        );
+        let found = checked(&translate(decls, x));
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert_eq!(found[0].0, "E3104");
+        assert!(found[0].1.contains("`translate`") && found[0].1.contains("percent basis"));
     }
     // A call's result carries only what its type says.
-    clean(&translate("fn pct() -> MixedLength { 50% }", "pct()"));
-    clean(&translate("const D: MixedLength = 10dp + 2px;", "D"));
+    for (decls, x) in [
+        ("fn pct() -> MixedLength { 50% }", "pct()"),
+        ("const D: MixedLength = 10dp + 2px;", "D"),
+    ] {
+        let found = checked(&translate(decls, x));
+        assert!(found.is_empty(), "{found:#?}");
+    }
     // A property with a basis takes it.
     clean("const P: Percent = 50%;\ncomponent C { view { Column { width: P; } } }");
 }

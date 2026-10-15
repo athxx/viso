@@ -299,10 +299,12 @@ gap, and CI can run all of it headless.
       typed against them (`E2001` unknown variant with the nearest, `E2103` another
       enum's or another type's value; a length still stands for `Sizing::fixed`); a
       `Head::x` whose head names no type is `E2001` with the nearest type.
-- [ ] Bindings the view lowering does not apply yet (`justify`, `align`,
-      `font_weight`, `semantics.live`, `Sizing` and `Track` variants, …) are dropped
-      at mount without a word; `viso check` should say so (`E3711`, as an
-      unlowerable `padding` does) until each lands.
+- [x] `check` lowers the view each file mounts as its `view!` does, so what does not
+      mount (`E3711`, `E9106`) is reported before a build.
+- [x] A binding no path applies is `E3711` naming it, never dropped at mount; the
+      constant `justify`, `align`, qualified `Axis`, `Sizing` variants and `const`
+      values lay out, and `visible`, `focusable` and text `color`/`font_size`/
+      `soft_wrap` reach the node (DSL D2.5 lists the rest).
 - [ ] `Offset` and `Transition` properties are typed too (a literal of another
       type is accepted today), with the promotions the schema gives them.
 

@@ -305,7 +305,7 @@ fn a_hot_reload_restyles_the_kept_nodes() {
     rt.reload(&SOURCE.replace("background: #ff0000;", "background: #00ffff;"));
     pointer(&mut rt, 0, PointerPhase::Move);
     assert_eq!(look(&rt, 0).0, rgba(0x00ff_ffff));
-    rt.reload(&SOURCE.replace("styles: [Dim]; enabled", "enabled"));
+    rt.reload(&SOURCE.replace("styles: [Dim]; enabled: !off; ", ""));
     assert_eq!(look(&rt, 0).1, 1.0, "no style, no look");
 }
 

@@ -14,7 +14,7 @@
 //! caller passed in). The proc-macros and the hot-reload planner are thin callers
 //! over these three functions; none re-implements a stage.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Component, Path};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -33,12 +33,13 @@ use crate::hir::{
     TargetProfile, Ty, TypeSchemas, persists, write_backs,
 };
 use crate::ir::{
-    BindingIr, ComponentLibrary, InstanceSources, KeyIr, LibraryComponent, UiTree, analyze_keys,
-    lower_bindings, lower_component_view, lower_fragment_items, lower_view_bindings,
+    BindingIr, ComponentLibrary, Consts, InstanceSources, KeyIr, LibraryComponent, LoweredView,
+    UiTree, analyze_keys, lower_bindings, lower_component_view, lower_fragment_items,
+    lower_view_bindings,
 };
 use crate::resolve::{
-    ModuleGraph, ModulePath, NameInterner, SourceUnit, SymbolId, SymbolIdentity, SymbolKind,
-    fingerprint, resolve, resolve_fragment,
+    ModuleGraph, ModulePath, NameInterner, ResolvedModule, SourceUnit, SymbolId, SymbolIdentity,
+    SymbolKind, fingerprint, resolve, resolve_fragment,
 };
 use crate::syntax::grammar::{Entry, Parse, parse_entry};
 use crate::syntax::{GreenNode, SyntaxKind, SyntaxNode, TextRange, TextSize, tokenize};
@@ -385,33 +386,7 @@ fn compile_unit(
             .find(|d| d.syntax().text_range() == c.source_origin)
             .cloned()
     };
-    let library = ComponentLibrary::new(
-        &module.refs,
-        components
-            .iter()
-            .filter_map(|c| {
-                let decl = decl_of(c)?;
-                Some(LibraryComponent {
-                    schema: &c.schema,
-                    write_backs: write_backs(&decl),
-                    persists: persists(&decl),
-                    decl,
-                })
-            })
-            .collect(),
-    )
-    .with_styles(StyleBook::new(
-        cu.items(),
-        |style| {
-            let name = style.name()?.text_range();
-            module
-                .decls
-                .iter()
-                .find(|d| d.name_range == name)
-                .map(|d| d.id)
-        },
-        &module.refs,
-    ));
+    let library = unit_library(&cu, &module, &decls, components.iter());
     let root_symbol = components[mounted].schema.symbol;
     let lowered_view = decl
         .view()
@@ -421,19 +396,7 @@ fn compile_unit(
     // The view checker has already reported every unregistered node type.
     let tree = match lowered_view {
         Some(view) => {
-            for (at, name) in view.persisting {
-                diagnostics.push(Diagnostic::error(
-                    "E9106",
-                    at,
-                    format!(
-                        "`{name}` persists a state under one key, so it mounts only as a view's \
-                         own component, not inside another's view"
-                    ),
-                ));
-            }
-            for unmounted in &view.unmounted {
-                diagnostics.push(unmounted_diagnostic(unmounted));
-            }
+            diagnostics.extend(view_diagnostics(&view));
             view.tree
         }
         None => UiTree::default(),
@@ -526,6 +489,70 @@ fn compile_unit(
     }
 }
 
+/// The library a view of the unit `cu`, resolved as `module`, inlines: the
+/// components among `components` it declares as `decls`, its styles and
+/// its constants.
+pub(crate) fn unit_library<'a>(
+    cu: &CompilationUnit,
+    module: &ResolvedModule,
+    decls: &[ComponentDecl],
+    components: impl Iterator<Item = &'a HirComponent>,
+) -> ComponentLibrary<'a> {
+    let library = components.filter_map(|c| {
+        let decl = decls
+            .iter()
+            .find(|d| d.syntax().text_range() == c.source_origin)?
+            .clone();
+        Some(LibraryComponent {
+            schema: &c.schema,
+            write_backs: write_backs(&decl),
+            persists: persists(&decl),
+            decl,
+        })
+    });
+    let symbol = |name: TextRange| {
+        module
+            .decls
+            .iter()
+            .find(|d| d.name_range == name)
+            .map(|d| d.id)
+    };
+    let values: HashMap<SymbolId, Expr> = cu
+        .items()
+        .filter_map(|item| match item {
+            Item::Export(export) => export.declaration(),
+            other => Some(other),
+        })
+        .filter_map(|item| match item {
+            Item::Const(decl) => Some((symbol(decl.name()?.text_range())?, decl.value()?)),
+            _ => None,
+        })
+        .collect();
+    ComponentLibrary::new(&module.refs, library.collect())
+        .with_styles(StyleBook::new(
+            cu.items(),
+            |style| symbol(style.name()?.text_range()),
+            &module.refs,
+        ))
+        .with_consts(Consts::new(&module.refs, &values))
+}
+
+/// What lowering a view raises: what it cannot mount (`E3711`) and each
+/// component with `@persist` state it inlines (`E9106`).
+pub(crate) fn view_diagnostics(view: &LoweredView) -> impl Iterator<Item = Diagnostic> + '_ {
+    let persisting = view.persisting.iter().map(|(at, name)| {
+        Diagnostic::error(
+            "E9106",
+            *at,
+            format!(
+                "`{name}` persists a state under one key, so it mounts only as a view's own \
+                 component, not inside another's view"
+            ),
+        )
+    });
+    persisting.chain(view.unmounted.iter().map(unmounted_diagnostic))
+}
+
 /// The `E3711` of what a view cannot mount, related to the node or `use`
 /// placing the view it is in.
 fn unmounted_diagnostic(unmounted: &crate::ir::Unmounted) -> Diagnostic {
@@ -543,7 +570,7 @@ fn unmounted_diagnostic(unmounted: &crate::ir::Unmounted) -> Diagnostic {
 }
 
 /// Every component and template the unit declares, exported or not.
-fn component_decls(cu: &CompilationUnit) -> Vec<ComponentDecl> {
+pub(crate) fn component_decls(cu: &CompilationUnit) -> Vec<ComponentDecl> {
     cu.items()
         .filter_map(|item| match item {
             Item::Export(export) => export.declaration(),
@@ -603,7 +630,7 @@ fn declares_system(cu: &CompilationUnit) -> bool {
 /// The component a unit mounts: its single exported component, else its single
 /// component. A unit of systems or shaders without a component mounts nothing. Anything
 /// else is ambiguous or empty and reported.
-fn mounted_component(
+pub(crate) fn mounted_component(
     cu: &CompilationUnit,
     source: &str,
     diagnostics: &mut Vec<Diagnostic>,

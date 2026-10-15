@@ -22,6 +22,7 @@ use crate::syntax::span::TextRange;
 use viso_behavior::native::MigratableState;
 use viso_ui::Interaction;
 pub use viso_ui::adaptive::Avoid;
+pub use viso_ui::{Align, Justify};
 
 /// The retained-tree template a view fragment or component view lowers to.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -199,6 +200,11 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
+    /// Whether this kind has a content box its `padding` insets.
+    pub fn pads(self) -> bool {
+        matches!(self, NodeKind::Flex | NodeKind::Grid)
+    }
+
     /// Whether this kind hosts a child region the emitter descends into.
     pub fn is_container(self) -> bool {
         matches!(
@@ -298,6 +304,12 @@ pub struct StyleIr {
     /// The container arrangement axis, when the node type or an `axis` property
     /// fixes one.
     pub axis: Option<AxisIr>,
+    /// Where a flex container packs its children along its axis, when a
+    /// constant `justify` places them.
+    pub justify: Option<Justify>,
+    /// How a flex container places its children across its axis, when a
+    /// constant `align` places them.
+    pub align: Option<Align>,
     /// The folded width, when a constant `width`/`size` property set one.
     pub width: Option<LengthIr>,
     /// The folded height, when a constant `height`/`size` property set one.
@@ -329,6 +341,8 @@ impl StyleIr {
     /// Whether nothing was folded — the node takes the runtime default style.
     pub fn is_empty(&self) -> bool {
         self.axis.is_none()
+            && self.justify.is_none()
+            && self.align.is_none()
             && self.width.is_none()
             && self.height.is_none()
             && self.gap.is_none()

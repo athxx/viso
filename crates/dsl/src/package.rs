@@ -14,12 +14,17 @@ use std::sync::Arc;
 
 use viso_behavior::native::Natives;
 
+use crate::ast::{AstNode, CompilationUnit};
 use crate::diag::Diagnostic;
-use crate::frontend::{check_language_version, module_path};
-use crate::hir::{LoweredPackage, TargetProfile, lower};
-use crate::resolve::{ModuleGraph, ModulePath, NameInterner, SourceUnit, resolve};
-use crate::syntax::grammar::{Entry, parse_entry};
-use crate::syntax::{TextRange, tokenize};
+use crate::frontend::{
+    check_language_version, component_decls, module_path, mounted_component, unit_library,
+    view_diagnostics,
+};
+use crate::hir::{HirComponent, LoweredPackage, TargetProfile, lower};
+use crate::ir::lower_component_view;
+use crate::resolve::{ModuleGraph, ModulePath, NameInterner, ResolvedModule, SourceUnit, resolve};
+use crate::syntax::grammar::{Entry, Parse, parse_entry};
+use crate::syntax::{SyntaxNode, TextRange, tokenize};
 
 /// The directory below a package root that holds its `.vs` sources.
 pub const SOURCE_ROOT: &str = "src";
@@ -80,7 +85,8 @@ impl LoadedPackage {
 }
 
 /// Loads the package rooted at `root`: every `.vs` file below its source root,
-/// resolved and lowered as one module graph.
+/// resolved and lowered as one module graph, and the view each file mounts
+/// lowered as its `view!` lowers it.
 pub fn load_package(root: &Path, manifest: PackageManifest<'_>) -> LoadedPackage {
     load_package_in(root, manifest, Natives::standard())
 }
@@ -147,6 +153,15 @@ pub fn load_package_in(
         else {
             continue;
         };
+        let view = resolved.get(i).map(|module| {
+            mounted_view_diagnostics(
+                &units[file].parse,
+                &files[file].source,
+                module,
+                &hir,
+                graph.natives(),
+            )
+        });
         let diagnostics = &mut files[file].diagnostics;
         if let Some(index) = graph.index_of(&text, &interner) {
             diagnostics.extend(graph.module_errors(index).cloned());
@@ -157,6 +172,7 @@ pub fn load_package_in(
         if let Some(range) = hir.module_diagnostics.get(i) {
             diagnostics.extend(hir.diagnostics[range.clone()].iter().cloned());
         }
+        diagnostics.extend(view.into_iter().flatten());
     }
 
     LoadedPackage {
@@ -166,6 +182,42 @@ pub fn load_package_in(
         unreadable,
         hir,
     }
+}
+
+/// What lowering the view the file `parse` of `source` mounts raises, as its
+/// `view!` would: nothing for a file that mounts no component (a module of
+/// declarations, or of systems).
+fn mounted_view_diagnostics(
+    parse: &Parse,
+    source: &str,
+    module: &ResolvedModule,
+    hir: &LoweredPackage,
+    natives: &Natives,
+) -> Vec<Diagnostic> {
+    let root = SyntaxNode::new_root(parse.root.clone());
+    let Some(cu) = CompilationUnit::cast(root) else {
+        return Vec::new();
+    };
+    let Some(decl) = mounted_component(&cu, source, &mut Vec::new()) else {
+        return Vec::new();
+    };
+    let Some(block) = decl.view().and_then(|view| view.block()) else {
+        return Vec::new();
+    };
+    let own = |c: &&HirComponent| module.decls.iter().any(|d| d.id == c.schema.symbol);
+    let range = decl.syntax().text_range();
+    let Some(mounted) = hir
+        .components
+        .iter()
+        .filter(own)
+        .find(|c| c.source_origin == range)
+    else {
+        return Vec::new();
+    };
+    let decls = component_decls(&cu);
+    let library = unit_library(&cu, module, &decls, hir.components.iter().filter(own));
+    let view = lower_component_view(&block, natives, &library, mounted.schema.symbol);
+    view_diagnostics(&view).collect()
 }
 
 /// Appends every `.vs` file below `dir` to `out`, in path order, skipping hidden

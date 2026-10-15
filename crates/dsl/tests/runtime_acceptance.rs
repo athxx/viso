@@ -42,12 +42,12 @@ fn capture_runs_first_from_the_release_package_too() {
 }
 
 /// Two 20dp rows: the first writes a state only the `background` of the
-/// panel reads, the second one its width reads.
-const LOOK: &str = "export component C {\n    state lit = false;\n    state wide = false;\n    \
+/// panel reads, the second one whether it shows.
+const LOOK: &str = "export component C {\n    state lit = false;\n    state gone = false;\n    \
     view {\n        Column {\n            width: 400dp; height: 100dp;\n            \
     Text { width: 20dp; height: 20dp; on click { lit = !lit; } }\n            \
-    Text { width: 20dp; height: 20dp; on click { wide = !wide; } }\n            \
-    Column {\n                width: if wide { 300dp } else { 100dp }; height: 20dp;\n                \
+    Text { width: 20dp; height: 20dp; on click { gone = !gone; } }\n            \
+    Column {\n                width: 100dp; height: 20dp; visible: !gone;\n                \
     background: if lit { #ff0000 } else { #00ff00 };\n                Text { text: \"x\"; }\n            }\n        }\n    }\n}\n";
 
 #[test]
@@ -64,7 +64,10 @@ fn a_paint_only_write_lays_nothing_out() {
     rt.press(1);
     rt.settle();
     let (measured, laid_out) = rt.relayout();
-    assert!(measured > 0 && laid_out > 0, "a width write relays out");
+    assert!(
+        measured > 0 && laid_out > 0,
+        "hiding the panel relays out its parent"
+    );
 }
 
 /// Keyed rows, each an instance that starts a task on mount: the first

@@ -864,20 +864,30 @@ fn opening_traps_tab_inside_the_content_while_sliding_and_when_settled() {
 
 #[test]
 fn sheet_derives_a_group_root_over_a_dialog_content() {
-    // The a11y tree does not depend on open/closed; build the scene and derive it.
+    // A closed sheet's content is folded out, so it is not read; an open one's is.
     let count = Rc::new(Cell::new(0u32));
-    let ix = Sheeted::new(count);
+    let mut ix = Sheeted::new(count);
     let content = ix.content();
 
-    let tree = ix.store.derive_semantics(ix.root);
-    let node = tree.root().expect("the derived tree has a root");
-    assert_eq!(node.role, Role::Group, "the sheet is a Group container");
+    let roles = |ix: &Sheeted| {
+        let tree = ix.store.derive_semantics(ix.root);
+        let node = tree.root().expect("the derived tree has a root");
+        assert_eq!(node.role, Role::Group, "the sheet is a Group container");
+        node.children
+            .iter()
+            .map(|&i| tree.nodes[i].role)
+            .collect::<Vec<Role>>()
+    };
+    assert!(
+        !roles(&ix).contains(&Role::Dialog),
+        "a closed sheet's content is not read"
+    );
 
     // The content node is a Dialog; the scrim is a plain fill leaf and the spacer has no
     // semantics, so the Dialog under the root is the content.
-    let child_roles: Vec<Role> = node.children.iter().map(|&i| tree.nodes[i].role).collect();
+    ix.drive(|h, ev| h.open(ev));
     assert!(
-        child_roles.contains(&Role::Dialog),
+        roles(&ix).contains(&Role::Dialog),
         "the content is a Dialog under the sheet root"
     );
 

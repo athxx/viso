@@ -1,7 +1,8 @@
 //! Delivering the values a view's nodes show: a label's text, a text field's
 //! seeded buffer, a control's value and range as its semantic state, an
 //! image's asset (its bytes offered to the store the first time it shows), any
-//! node's look (its `background` and `opacity`), and its role and accessible
+//! node's look (its `background` and `opacity`), whether it shows and takes
+//! focus, a text's color, size and wrapping, and its role and accessible
 //! name. A text field with no `value` is never seeded: its text is what its
 //! user types.
 //!
@@ -37,10 +38,10 @@ use crate::host::ViewHost;
 use crate::scope::Scope;
 use crate::shaders::encode_shader;
 
-/// The font size of the text a view shows, in logical pixels.
+/// The font size of a text whose node resolves none, in logical pixels.
 const FONT_SIZE: f32 = 14.0;
 
-/// The color of the text a view shows.
+/// The color of a text whose node binds no `color`.
 const COLOR: Rgba = Rgba {
     r: 0.05,
     g: 0.05,
@@ -160,6 +161,10 @@ pub(crate) fn control_cells(
         semantics.value,
         semantics.hidden,
         semantics.heading_level,
+        control.node.visible,
+        control.node.focusable,
+        control.text.color,
+        control.text.soft_wrap,
     ]
     .into_iter()
     .flatten()
@@ -171,15 +176,23 @@ pub(crate) fn control_cells(
 
 /// How many values a node shows: its value, the two entries beside it (a
 /// slider's bounds, an image's fit and tint), its look's background and
-/// opacity, and its `semantics.label`, `hint`, `value`, `hidden` and
-/// `heading_level`.
-const SHOWN: usize = 12;
+/// opacity, its `semantics.label`, `hint`, `value`, `hidden` and
+/// `heading_level`, its `visible` and `focusable`, and its text's `color`
+/// and `soft_wrap`.
+const SHOWN: usize = 16;
 
 /// Where its background and opacity sit among the values a node shows.
 const LOOK: usize = 5;
 
 /// Where its `semantics.*` values start among the values a node shows.
 const SEMANTICS: usize = 7;
+
+/// Where its `visible` and `focusable` sit among the values a node shows.
+const NODE: usize = 12;
+
+/// Where its text's `color` and `soft_wrap` sit among the values a node
+/// shows.
+const TEXT: usize = 14;
 
 /// A node showing a value of the view.
 pub(crate) struct Shown {
@@ -192,8 +205,9 @@ pub(crate) struct Shown {
     scope: Scope,
     /// The cells its entries read, ascending.
     deps: Box<[StateId]>,
-    /// The value, lower bound, upper bound, fit, tint, background, opacity
-    /// and `semantics.*` values it shows, `None` before the first delivery.
+    /// The value, lower bound, upper bound, fit, tint, background, opacity,
+    /// `semantics.*`, presence and text style values it shows, `None` before
+    /// the first delivery.
     shows: Option<[Value; SHOWN]>,
     /// Whether [`shows`](Self::shows) is what the node showed before a hot
     /// reload mounted it again: the next delivery skips the values equal to
@@ -202,6 +216,9 @@ pub(crate) struct Shown {
     /// The program a shader view paints with, as last delivered: a reload
     /// that changes it repaints the node even when its parameters hold.
     program: Option<Arc<BrushProgram>>,
+    /// The font size its text was last requested at: a reload that resizes
+    /// it requests the text again.
+    font_size: f32,
 }
 
 impl Shown {
@@ -225,6 +242,7 @@ impl Shown {
             shows: None,
             seeded: false,
             program: None,
+            font_size: 0.0,
         };
         shown.rescope(scope, host);
         shown
@@ -280,6 +298,10 @@ impl Shown {
             semantics.value,
             semantics.hidden,
             semantics.heading_level,
+            control.node.visible,
+            control.node.focusable,
+            control.text.color,
+            control.text.soft_wrap,
         ]) {
             let Some(entry) = entry else { continue };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
@@ -298,9 +320,12 @@ impl Shown {
             (Some(next), Some(prior)) => !Arc::ptr_eq(next, prior),
             (next, prior) => next.is_some() != prior.is_some(),
         };
+        let font_size = cx.store.resolved_font_size(self.node).unwrap_or(FONT_SIZE);
+        let resized = font_size != self.font_size
+            && matches!(control.kind, ControlKind::Label | ControlKind::TextInput);
         let prior = self.shows.as_ref();
         let first = prior.is_none() || std::mem::take(&mut self.seeded);
-        if prior == Some(&shows) && !repaint {
+        if prior == Some(&shows) && !repaint && !resized {
             return;
         }
         // A look value shows when an entry or an arm gives it; with arms and no
@@ -322,10 +347,14 @@ impl Shown {
             spoken,
             hidden,
             level,
+            visible,
+            focusable,
+            text_color,
+            soft_wrap,
         ] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
         if semantics.says_anything()
-            && ((SEMANTICS..SHOWN).any(changed)
+            && ((SEMANTICS..NODE).any(changed)
                 || (control.kind == ControlKind::Label && changed(0)))
         {
             let name = match (label.as_str(), control.kind) {
@@ -364,6 +393,12 @@ impl Shown {
             }
         }
         let store = &mut *cx.store;
+        if control.node.visible.is_some() && changed(NODE) {
+            store.set_hidden(self.node, !truth(visible, true));
+        }
+        if control.node.focusable.is_some() && changed(NODE + 1) {
+            store.set_focusable(self.node, truth(focusable, false));
+        }
         for (at, entry, value) in [
             (LOOK, shown_background, LookValue::Fill(color(background))),
             (
@@ -384,12 +419,19 @@ impl Shown {
         }
         let text = || TextRequest {
             text: value.as_str().unwrap_or_default().to_owned(),
-            font_size: FONT_SIZE,
-            color: COLOR,
-            soft_wrap: false,
+            font_size,
+            color: match control.text.color {
+                Some(_) => color(text_color),
+                None => COLOR,
+            },
+            soft_wrap: truth(soft_wrap, false),
             locale: None,
         };
-        if prior.is_some() && (0..LOOK).all(|at| !changed(at)) && !repaint {
+        if prior.is_some()
+            && (0..LOOK).chain(TEXT..SHOWN).all(|at| !changed(at))
+            && !repaint
+            && !resized
+        {
             self.shows = Some(shows);
             return;
         }
@@ -437,6 +479,7 @@ impl Shown {
         }
         self.shows = Some(shows);
         self.program = program;
+        self.font_size = font_size;
     }
 }
 
@@ -597,6 +640,11 @@ fn timing(spec: &Value, reduced_motion: bool) -> Timing {
 }
 
 /// A `Float` value as `f32`, `default` for any other.
+/// A `Bool` value, `default` when it is none.
+fn truth(value: &Value, default: bool) -> bool {
+    value.as_int().map_or(default, |v| v != 0)
+}
+
 fn float(value: &Value, default: f32) -> f32 {
     value.as_float().map_or(default, |v| v as f32)
 }

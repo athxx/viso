@@ -326,9 +326,36 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         box, padding on an avoiding region (folded or not), and `margin`.
 - [ ] Bound layout values: a `width`/`height`/`gap`/`padding` that reads state, an input
       or `theme` writes its value to the node (the behavior VM carries `MixedLength` as
-      terms, delivered as `NodeLengths`). Today a bound `width`/`height`/`gap` only marks
-      its node dirty — that silence becomes `E3711` until the value path lands; a bound
-      `padding` is already `E3711`.
+      terms, delivered as `NodeLengths`).
+  - [x] Until then a bound `width`/`height`/`gap`/`justify`/`align`/`axis`, like a
+        bound `padding`, is `E3711`.
+- [x] Constant arrangement and sizing: a flex container's `justify` and `align`, a
+      qualified `Axis::row`/`Axis::column`, `Sizing::fixed(..)`/`fill`/`fill { weight }`/
+      `fit`, and a `Grid`'s `width`/`height` lay out across the macros, hot reload (in
+      place, `set_flex_arrangement`) and the release package; a value may be a `const`
+      of the file, through a chain of them.
+- [x] `visible` (out of layout, paint and the semantics tree), `focusable`, and a
+      text's `color`, `soft_wrap` and resolved `font_size` reach the node as values.
+- [x] A binding no path applies is `E3711` naming it, never dropped: the properties
+      below, `Sizing::min_content`/`max_content`, and `enabled` that no style's
+      selector reads.
+- [ ] Text style beyond color, size and wrapping: `font_weight`, `font_family`,
+      `line_height`, `max_lines`, `overflow`, text `align` (`E3711` today).
+- [ ] `TextInput` `placeholder` and `secure`, `CheckBox` `label` (`E3711` today).
+- [ ] `Grid` tracks and alignment (`columns`, `rows`, `auto_rows`, `column_gap`,
+      `row_gap`, `align_items`, `areas`, `adaptive_columns`) and the `grid.*`,
+      `stack.*`, `absolute.*` child placement; `Stack`'s `content_align` (`E3711`
+      today).
+- [ ] `min_width`/`max_width`/`min_height`/`max_height`, `Sizing::min_content`/
+      `max_content`, `corner_radius`, `border`, `clip`, `autofocus`, and `enabled`
+      disabling a node beyond its styles' selectors (`E3711` today).
+- [ ] `fill` on the cross axis fills the available extent under any `align` (U3.2);
+      the runtime fills it only under `Align::Stretch`, and stretches a `fit` child
+      too.
+- [ ] A text's font size follows the environment (text scale, an ancestor's
+      `font_size` that reads `sp`) after it mounts: today its request is resized only
+      when its own values or a reload deliver again.
+- [ ] A `const` imported from another file folds into style as one of the file does.
 - [ ] `%` padding against the parent's content box (`start`/`end` its width,
       `top`/`bottom` its height), resolved when the parent places the node.
 - [ ] `margin` (§U3.3) in layout.
@@ -349,7 +376,7 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 
 ### D2.7 — Semantics
 
-- [ ] `semantics.*` (`role`, `label`, `hint`, `value`, `live`, `hidden`) reach the
+- [x] `semantics.*` (`role`, `label`, `hint`, `value`, `live`, `hidden`) reach the
       node through all three targets (today they are checked, `E3704`, and dropped);
       the prelude's `Role` enum mirrors `viso_ui::Role`, `image` included. An
       `Image`/`Svg` with a `semantics.label` is `Role::Image` named by it, one

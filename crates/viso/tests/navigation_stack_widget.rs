@@ -428,12 +428,13 @@ fn navigation_stack_derives_a_navigation_over_group_pages() {
     let node = tree.root().expect("the derived tree has a root");
     assert_eq!(node.role, Role::Navigation, "the control is a Navigation");
 
-    // Each page is a Group; the derived children of the Navigation root are pages.
+    // Each page is a Group; only the top one shows, so it alone is read under the
+    // Navigation root.
     let page_roles: Vec<Role> = node.children.iter().map(|&i| tree.nodes[i].role).collect();
     assert_eq!(
         page_roles,
-        vec![Role::Group, Role::Group],
-        "each page is a Group under the Navigation root"
+        vec![Role::Group],
+        "the shown page is a Group under the Navigation root"
     );
 
     // The stack root is interactive: focusable with a key handler for the back

@@ -1465,6 +1465,8 @@ invalid signing metadata shape
 
 `viso check` 不应该默认执行完整 package/signing。Rust 代码默认不检查；`--cargo` 以该 target 构建所用的 Rust target、features 与 profile 运行 `cargo check`（不产出可执行文件），编译器诊断作为 `diagnostic`（带 span）报告，失败为 `BUILD_FAILED`（exit 4）。
 
+当前实现：`.vs` 包整体解析、类型检查，并且每个文件挂载的视图按其 `view!` 的方式降级，所以视图无法挂载之处（`E3711`，如尚无运行时路径的 Property；`E9106`）在构建前报告，位置指向该文件。
+
 ### 17.3 Watch
 
 普通开发用 `viso run`。编辑器/CI 需要连续静态检查时可用 `viso check --watch`；每轮输出完整 diagnostic 集合后接一条 `progress{phase:"idle"}`，只有退出时输出 `summary`。

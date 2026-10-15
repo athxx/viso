@@ -15,8 +15,80 @@
 use crate::ast::{
     AstNode, BinaryExpr, CallExpr, Expr, LiteralExpr, ParenExpr, PathExpr, UnaryExpr,
 };
+use std::cell::Cell;
+use std::collections::HashMap;
+
 use crate::ir::ui_ir::{EdgeTermsIr, InsetIr, LengthIr, TermsIr};
+use crate::resolve::{Resolution, ResolvedRef, SymbolId};
+use crate::syntax::span::TextRange;
 use crate::syntax::{SyntaxKind, SyntaxNode};
+
+/// The constants of the file a view lowers in, each reference to one by the
+/// span of its name, standing for the value it declares.
+#[derive(Debug, Default)]
+pub struct Consts {
+    values: HashMap<TextRange, Expr>,
+    /// How deep the constants being folded nest, so a cycle (an error the
+    /// checker reports) ends.
+    depth: Cell<u32>,
+}
+
+/// How deep constants fold through one another.
+const CONST_DEPTH: u32 = 32;
+
+impl Consts {
+    /// The constants each reference of `refs` names, from `values`, the
+    /// value of each by its symbol.
+    pub(crate) fn new(refs: &[ResolvedRef], values: &HashMap<SymbolId, Expr>) -> Self {
+        let values = refs
+            .iter()
+            .filter_map(|r| match r.to {
+                Resolution::Symbol(id) => Some((r.range, values.get(&id)?.clone())),
+                _ => None,
+            })
+            .collect();
+        Consts {
+            values,
+            depth: Cell::new(0),
+        }
+    }
+
+    /// `value` with each reference to a constant replaced by its value, as
+    /// far as one leads to another: `None` when `value` names no constant.
+    pub(super) fn value_of(&self, value: &Expr) -> Option<Expr> {
+        let mut at = self.named(value)?;
+        for _ in 0..CONST_DEPTH {
+            match self.named(&at) {
+                Some(next) => at = next,
+                None => return Some(at),
+            }
+        }
+        None
+    }
+
+    /// What `f` folds of the value of the constant `path` names.
+    fn with<T>(&self, path: &Expr, f: impl FnOnce(&Expr) -> Option<T>) -> Option<T> {
+        let value = self.named(path)?;
+        if self.depth.get() >= CONST_DEPTH {
+            return None;
+        }
+        self.depth.set(self.depth.get() + 1);
+        let folded = f(&value);
+        self.depth.set(self.depth.get() - 1);
+        folded
+    }
+
+    /// The value of the constant the one-segment path `value` names.
+    fn named(&self, value: &Expr) -> Option<Expr> {
+        let path = PathExpr::cast(value.syntax().clone())?;
+        let mut segments = path.segments();
+        let name = segments.next()?;
+        if segments.next().is_some() {
+            return None;
+        }
+        self.values.get(&name.text_range()).cloned()
+    }
+}
 
 /// The five coefficients of a length-family constant.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -96,8 +168,8 @@ enum Folded {
 /// the basis is known; one with an environment term keeps its terms. Anything
 /// else — a non-constant, a scalar, a non-length unit, a non-finite result —
 /// yields `None`.
-pub(super) fn fold_size(value: &Expr) -> Option<Lowered> {
-    let t = fold_length(value)?;
+pub(super) fn fold_size(value: &Expr, consts: &Consts) -> Option<Lowered> {
+    let t = fold_length(value, consts)?;
     if t.needs_env() {
         return Some(Lowered::Env(t.lower()));
     }
@@ -111,11 +183,93 @@ pub(super) fn fold_size(value: &Expr) -> Option<Lowered> {
     }))
 }
 
+/// Folds a `Sizing` property (`width`, `height`): a length, which stands for
+/// `Sizing::fixed` of it, `Sizing::fixed(len)`, `Sizing::fill` (weight `1`),
+/// `Sizing::fill { weight: w }` or `Sizing::fit`. `Some(Err)` is a constant
+/// layout does not size by, and why; `None` is not a constant.
+pub(super) fn fold_sizing(value: &Expr, consts: &Consts) -> Option<Result<Lowered, String>> {
+    if let Some(length) = fold_size(value, consts) {
+        return Some(Ok(length));
+    }
+    let node = value.syntax();
+    match node.kind() {
+        SyntaxKind::ParenExpr => fold_sizing(&ParenExpr::cast(node.clone())?.inner()?, consts),
+        SyntaxKind::PathExpr => {
+            let path = PathExpr::cast(node.clone())?;
+            let segments: Vec<String> = path.segments().map(|t| t.text()).collect();
+            let [ty, variant] = segments.as_slice() else {
+                return None;
+            };
+            if ty != "Sizing" {
+                return None;
+            }
+            Some(match variant.as_str() {
+                "fill" => Ok(Lowered::Layout(LengthIr::Fill { weight: 1.0 })),
+                "fit" => Ok(Lowered::Layout(LengthIr::Fit)),
+                "min_content" | "max_content" => Err(format!(
+                    "`Sizing::{variant}` does not lay out yet; `fixed`, `fill` and `fit` do"
+                )),
+                _ => return None,
+            })
+        }
+        SyntaxKind::CallExpr => {
+            let call = CallExpr::cast(node.clone())?;
+            let callee = PathExpr::cast(call.callee()?.syntax().clone())?;
+            let path: Vec<String> = callee.segments().map(|t| t.text().to_string()).collect();
+            if path != ["Sizing", "fixed"] {
+                return None;
+            }
+            match arguments(node)?.as_slice() {
+                [(None, length)] => fold_size(length, consts).map(Ok),
+                _ => None,
+            }
+        }
+        SyntaxKind::RecordExpr => {
+            if record_head(node) != ["Sizing", "fill"] {
+                return None;
+            }
+            let mut weight = 1.0;
+            for field in node.children() {
+                if field.kind() != SyntaxKind::RecordExprField {
+                    continue;
+                }
+                let value = field.children().into_iter().find_map(Expr::cast)?;
+                weight = match fold(&value, consts)? {
+                    Folded::Scalar(w) if w.is_finite() && w > 0.0 => w,
+                    _ => {
+                        return Some(Err(
+                            "a `Sizing::fill` weight is a positive number".to_string()
+                        ));
+                    }
+                };
+            }
+            Some(Ok(Lowered::Layout(LengthIr::Fill { weight })))
+        }
+        _ => None,
+    }
+}
+
+/// The names a record literal's head spells (`EdgeInsets`, `Sizing::fill`).
+fn record_head(node: &SyntaxNode) -> Vec<String> {
+    let mut head = Vec::new();
+    for element in node.descendants_with_tokens() {
+        let Some(token) = element.as_token() else {
+            continue;
+        };
+        match token.kind() {
+            SyntaxKind::LBrace => break,
+            SyntaxKind::Ident | SyntaxKind::RawIdent => head.push(token.text().to_string()),
+            _ => {}
+        }
+    }
+    head
+}
+
 /// Folds a gap property. Only a constant without a `%` term folds: a pure-`dp`
 /// one to its extent, clamped non-negative (§19.8), one with an environment
 /// term to its terms.
-pub(super) fn fold_gap(value: &Expr) -> Option<Lowered> {
-    let t = fold_length(value)?;
+pub(super) fn fold_gap(value: &Expr, consts: &Consts) -> Option<Lowered> {
+    let t = fold_length(value, consts)?;
     if t.pct != 0.0 {
         return None;
     }
@@ -128,8 +282,8 @@ pub(super) fn fold_gap(value: &Expr) -> Option<Lowered> {
 
 /// Folds a `font_size` property to its terms: every unit, `em` and `%` reading
 /// the parent's font size, resolves in the typography context at layout.
-pub(super) fn fold_font_size(value: &Expr) -> Option<TermsIr> {
-    fold_length(value).map(Terms::lower)
+pub(super) fn fold_font_size(value: &Expr, consts: &Consts) -> Option<TermsIr> {
+    fold_length(value, consts).map(Terms::lower)
 }
 
 /// A constant padding as it lowers.
@@ -149,8 +303,8 @@ pub(super) enum Padding {
 /// being `0dp`. Each edge is clamped non-negative (§19.8). A `%` term — its
 /// basis is the parent's box, which layout does not pad against yet — or a
 /// value that is not a constant yields `None`.
-pub(super) fn fold_padding(value: &Expr) -> Option<Padding> {
-    let edges = padding_edges(value)?;
+pub(super) fn fold_padding(value: &Expr, consts: &Consts) -> Option<Padding> {
+    let edges = padding_edges(value, consts)?;
     let all = [edges.top, edges.end, edges.bottom, edges.start];
     if all.iter().any(|t| t.pct != 0.0) {
         return None;
@@ -202,13 +356,13 @@ impl Edges {
     }
 }
 
-fn padding_edges(value: &Expr) -> Option<Edges> {
-    if let Some(all) = fold_length(value) {
+fn padding_edges(value: &Expr, consts: &Consts) -> Option<Edges> {
+    if let Some(all) = fold_length(value, consts) {
         return Some(Edges::all(all));
     }
     let node = value.syntax();
     match node.kind() {
-        SyntaxKind::ParenExpr => padding_edges(&ParenExpr::cast(node.clone())?.inner()?),
+        SyntaxKind::ParenExpr => padding_edges(&ParenExpr::cast(node.clone())?.inner()?, consts),
         SyntaxKind::CallExpr => {
             let call = CallExpr::cast(node.clone())?;
             let callee = PathExpr::cast(call.callee()?.syntax().clone())?;
@@ -222,14 +376,14 @@ fn padding_edges(value: &Expr) -> Option<Edges> {
             let args = arguments(node)?;
             match (ctor.as_str(), args.as_slice()) {
                 ("zero", []) => Some(Edges::default()),
-                ("all", [(None, v)]) => Some(Edges::all(fold_length(v)?)),
+                ("all", [(None, v)]) => Some(Edges::all(fold_length(v, consts)?)),
                 ("axes", [(inline, a), (block, b)]) => {
                     let (a, b) = match (inline.as_deref(), block.as_deref()) {
                         (None | Some("inline"), None | Some("block")) => (a, b),
                         (Some("block"), Some("inline")) => (b, a),
                         _ => return None,
                     };
-                    let (inline, block) = (fold_length(a)?, fold_length(b)?);
+                    let (inline, block) = (fold_length(a, consts)?, fold_length(b, consts)?);
                     Some(Edges {
                         top: block,
                         end: inline,
@@ -264,7 +418,7 @@ fn padding_edges(value: &Expr) -> Option<Edges> {
                     .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))?;
                 // A `..base` or a shorthand reads a value, not a constant.
                 let value = field.children().into_iter().find_map(Expr::cast)?;
-                let terms = fold_length(&value)?;
+                let terms = fold_length(&value, consts)?;
                 match label.text().to_string().as_str() {
                     "top" => edges.top = terms,
                     "end" => edges.end = terms,
@@ -309,29 +463,30 @@ fn arguments(call: &SyntaxNode) -> Option<Vec<(Option<String>, Expr)>> {
 }
 
 /// A finite length-family constant's terms.
-fn fold_length(value: &Expr) -> Option<Terms> {
-    match fold(value)? {
+fn fold_length(value: &Expr, consts: &Consts) -> Option<Terms> {
+    match fold(value, consts)? {
         Folded::Length(t) if t.is_finite() => Some(t),
         _ => None,
     }
 }
 
-fn fold(expr: &Expr) -> Option<Folded> {
+fn fold(expr: &Expr, consts: &Consts) -> Option<Folded> {
     let node = expr.syntax();
     match node.kind() {
         SyntaxKind::LiteralExpr => literal(&LiteralExpr::cast(node.clone())?),
-        SyntaxKind::ParenExpr => fold(&ParenExpr::cast(node.clone())?.inner()?),
+        SyntaxKind::ParenExpr => fold(&ParenExpr::cast(node.clone())?.inner()?, consts),
         SyntaxKind::UnaryExpr => {
             let unary = UnaryExpr::cast(node.clone())?;
             if unary.op()?.kind() != SyntaxKind::Minus {
                 return None;
             }
-            Some(match fold(&unary.operand()?)? {
+            Some(match fold(&unary.operand()?, consts)? {
                 Folded::Scalar(v) => Folded::Scalar(-v),
                 Folded::Length(t) => Folded::Length(t.map(|v| -v)),
             })
         }
-        SyntaxKind::BinaryExpr => binary(&BinaryExpr::cast(node.clone())?),
+        SyntaxKind::BinaryExpr => binary(&BinaryExpr::cast(node.clone())?, consts),
+        SyntaxKind::PathExpr => consts.with(expr, |value| fold(value, consts)),
         _ => None,
     }
 }
@@ -339,10 +494,10 @@ fn fold(expr: &Expr) -> Option<Folded> {
 /// The §19.3 arithmetic over folded constants. Length ± scalar, length × length
 /// and length / length are not lengths and do not fold; neither does a division
 /// by a constant zero (`E2109` belongs to the type checker).
-fn binary(bin: &BinaryExpr) -> Option<Folded> {
+fn binary(bin: &BinaryExpr, consts: &Consts) -> Option<Folded> {
     use Folded::{Length, Scalar};
-    let lhs = fold(&bin.lhs()?)?;
-    let rhs = fold(&bin.rhs()?)?;
+    let lhs = fold(&bin.lhs()?, consts)?;
+    let rhs = fold(&bin.rhs()?, consts)?;
     match (bin.op()?.kind(), lhs, rhs) {
         (SyntaxKind::Plus, Scalar(a), Scalar(b)) => Some(Scalar(a + b)),
         (SyntaxKind::Minus, Scalar(a), Scalar(b)) => Some(Scalar(a - b)),

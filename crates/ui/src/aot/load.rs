@@ -169,6 +169,7 @@ pub fn restyle_aot_node(
     let (mut size, gap, padding) = match node.kind {
         AotNodeKind::Flex => {
             let built = flex_style(style);
+            store.set_flex_arrangement(live, (built.axis, built.justify, built.align));
             (built.size, Some(built.gap), Some(built.padding))
         }
         AotNodeKind::Grid => {
@@ -280,6 +281,12 @@ fn flex_style(style: &AotStyle) -> FlexStyle {
     if let Some(axis) = style.axis {
         out.axis = axis_of(axis);
     }
+    if let Some(justify) = style.justify {
+        out.justify = justify;
+    }
+    if let Some(align) = style.align {
+        out.align = align;
+    }
     if let Some(gap) = style.gap {
         out.gap = gap;
     }
@@ -292,13 +299,18 @@ fn flex_style(style: &AotStyle) -> FlexStyle {
     out
 }
 
-/// The grid builder style for a packaged grid: its padding; the rest of a
-/// grid's style is the builder default.
+/// The grid builder style for a packaged grid: its padding and, when the
+/// node authored one, its size; the rest of a grid's style is the builder
+/// default.
 fn grid_style(style: &AotStyle) -> GridStyle {
-    GridStyle {
+    let mut out = GridStyle {
         padding: style.padding.unwrap_or_default(),
         ..GridStyle::default()
+    };
+    if has_size(style) {
+        out.size = size_of(style);
     }
+    out
 }
 
 /// The scroll builder style, mirroring the commit's `scroll_style`: the authored

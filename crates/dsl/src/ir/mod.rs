@@ -36,9 +36,9 @@ pub use binding_ir::{
 pub use dirty_map::{DirtyClass, property_dirty_class};
 pub use keys::{KEYLESS_STATEFUL_FOR, KeyIr, KeyedFor, analyze_keys};
 pub use ui_ir::{
-    Avoid, AxisIr, LengthIr, LengthsIr, NodeKind, PendingProperty, ScopeIr, StyleIr, TermsIr,
-    UiFor, UiHandler, UiIf, UiIfArm, UiInstance, UiItem, UiLook, UiLookArm, UiMatch, UiMatchArm,
-    UiNode, UiStyled, UiTree, UiWhen,
+    Align, Avoid, AxisIr, Justify, LengthIr, LengthsIr, NodeKind, PendingProperty, ScopeIr,
+    StyleIr, TermsIr, UiFor, UiHandler, UiIf, UiIfArm, UiInstance, UiItem, UiLook, UiLookArm,
+    UiMatch, UiMatchArm, UiNode, UiStyled, UiTree, UiWhen,
 };
 
 use std::collections::HashMap;
@@ -54,6 +54,7 @@ use crate::hir::ComponentSchema;
 use crate::hir::style::{self, StyleBook};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::span::TextRange;
+pub use length::Consts;
 use length::{Lowered, Padding};
 
 /// A lowered view: its template, every node type name it wrote that neither a
@@ -95,6 +96,8 @@ pub struct ComponentLibrary<'a> {
     components: Vec<LibraryComponent<'a>>,
     /// The styles of the unit, which its nodes apply.
     styles: StyleBook,
+    /// The constants of the unit, which fold into its nodes' style.
+    consts: Consts,
 }
 
 /// One component of a [`ComponentLibrary`].
@@ -129,12 +132,19 @@ impl<'a> ComponentLibrary<'a> {
             heads,
             components,
             styles: StyleBook::default(),
+            consts: Consts::default(),
         }
     }
 
     /// The library with the unit's styles `styles`.
     pub(crate) fn with_styles(mut self, styles: StyleBook) -> Self {
         self.styles = styles;
+        self
+    }
+
+    /// The library with the unit's constants `consts`.
+    pub(crate) fn with_consts(mut self, consts: Consts) -> Self {
+        self.consts = consts;
         self
     }
 
@@ -463,8 +473,16 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let mut padding_at = None;
         let mut role = None;
         let mut live = None;
+        // Each binding left to a runtime value, by property and value span.
+        let mut bound = Vec::new();
         let own: Vec<ViewItem> = body.iter().flat_map(|b| b.members()).collect();
-        let styled = self.styled(&type_name, &own, instance, &mut style, &mut pending);
+        let styled = self.styled(
+            &type_name,
+            kind,
+            &own,
+            instance,
+            (&mut style, &mut pending, &mut bound),
+        );
         // The caller's overrides replace the node's own bindings of the same
         // property and its own handlers of the same event.
         let members: Vec<(ViewItem, u32)> = match overriding {
@@ -482,37 +500,48 @@ impl<'a, 'l> Lowering<'a, 'l> {
             match member {
                 ViewItem::Property(prop) if dotted(prop.path()).as_deref() == Some("styles") => {}
                 ViewItem::Property(prop) => {
-                    if let (Some(name), Some(value)) = (dotted(prop.path()), prop.value()) {
-                        let at = value.syntax().text_range();
-                        if name == "padding" {
-                            padding_at = Some(at);
-                        }
-                        if name == "semantics.role" {
-                            match authored_role(&value) {
-                                Ok(authored) => role = Some(authored),
-                                Err(reason) => self.unmount((at, reason)),
-                            }
-                        }
-                        if name == "semantics.live" {
-                            match authored_live(&value) {
-                                Ok(authored) => live = Some(authored),
-                                Err(reason) => self.unmount((at, reason)),
-                            }
-                        }
-                        if control.input(&name).is_some() {
-                            control_reads.push((name, at, instance));
-                        } else if let Some(member) = name.strip_prefix("transition.")
-                            && widget
-                                .group("transition")
-                                .is_some_and(|g| g.member(member).is_some())
-                        {
-                            self.unmount((
-                                at,
-                                format!("`{name}` does not play yet; `transition.background` and `transition.opacity` do"),
-                            ));
+                    let (Some(name), Some(value)) = (dotted(prop.path()), prop.value()) else {
+                        continue;
+                    };
+                    let at = value.syntax().text_range();
+                    if name == "padding" {
+                        padding_at = Some(at);
+                    }
+                    if name == "semantics.role" {
+                        match authored_role(&value) {
+                            Ok(authored) => role = Some(authored),
+                            Err(reason) => self.unmount((at, reason)),
                         }
                     }
-                    fold_property(&prop, instance, &mut style, &mut pending)
+                    if name == "semantics.live" {
+                        match authored_live(&value) {
+                            Ok(authored) => live = Some(authored),
+                            Err(reason) => self.unmount((at, reason)),
+                        }
+                    }
+                    if control.input(&name).is_some() {
+                        control_reads.push((name.clone(), at, instance));
+                    } else if let Some(member) = name.strip_prefix("transition.")
+                        && widget
+                            .group("transition")
+                            .is_some_and(|g| g.member(member).is_some())
+                    {
+                        self.unmount((
+                            at,
+                            format!("`{name}` does not play yet; `transition.background` and `transition.opacity` do"),
+                        ));
+                    }
+                    match fold_property(
+                        &prop,
+                        (kind, &self.library.consts),
+                        instance,
+                        &mut style,
+                        &mut pending,
+                    ) {
+                        Fold::Folded => {}
+                        Fold::Pending => bound.push((name, at)),
+                        Fold::Unsupported(reason) => self.unmount((at, reason)),
+                    }
                 }
                 ViewItem::Handler(h) => handlers.push(UiHandler {
                     event: h.event().map(|t| t.text()).unwrap_or_default(),
@@ -560,7 +589,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 Some(format!(
                     "a `{type_name}`'s padding is the area it avoids; pad its content instead"
                 ))
-            } else if !matches!(kind, NodeKind::Flex | NodeKind::Grid) {
+            } else if !kind.pads() {
                 Some(format!(
                     "a `{type_name}` has no content box to pad; pad a container around it"
                 ))
@@ -591,6 +620,15 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 "`margin` does not lay out yet; pad the parent instead".to_string(),
             ));
         }
+        for (name, at) in bound {
+            // A binding a check above took out was reported there.
+            if !pending.iter().any(|p| p.value == at) {
+                continue;
+            }
+            if let Some(reason) = unapplied(&name, &type_name, kind, control, styled.as_ref()) {
+                self.unmount((at, reason));
+            }
+        }
         out.push(UiItem::Node(UiNode {
             type_name,
             local_name,
@@ -616,10 +654,14 @@ impl<'a, 'l> Lowering<'a, 'l> {
     fn styled(
         &mut self,
         type_name: &str,
+        kind: NodeKind,
         members: &[ViewItem],
         instance: u32,
-        style: &mut StyleIr,
-        pending: &mut Vec<PendingProperty>,
+        (style, pending, bound): (
+            &mut StyleIr,
+            &mut Vec<PendingProperty>,
+            &mut Vec<(String, TextRange)>,
+        ),
     ) -> Option<UiStyled> {
         let value = styles_value(members)?;
         let uses = style::uses(&self.library.styles, &value).ok()?;
@@ -629,7 +671,21 @@ impl<'a, 'l> Lowering<'a, 'l> {
         }
         let plan = style::plan(&self.library.styles, &list, &style::own_bindings(members));
         for binding in &plan.constants {
-            fold_property(binding, instance, style, pending);
+            let (Some(name), Some(value)) = (dotted(binding.path()), binding.value()) else {
+                continue;
+            };
+            let at = value.syntax().text_range();
+            match fold_property(
+                binding,
+                (kind, &self.library.consts),
+                instance,
+                style,
+                pending,
+            ) {
+                Fold::Folded => {}
+                Fold::Pending => bound.push((name, at)),
+                Fold::Unsupported(reason) => self.unmount((at, reason)),
+            }
         }
         for unmounted in plan.unmounted {
             self.unmount(unmounted);
@@ -991,8 +1047,35 @@ impl<'a, 'l> Lowering<'a, 'l> {
         if !forwarded.is_empty() || !forwarded_handlers.is_empty() {
             match inner.as_mut_slice() {
                 [UiItem::Node(root)] => {
+                    let control = ControlKind::of(&root.type_name);
                     for prop in &forwarded {
-                        fold_property(prop, parent, &mut root.style, &mut root.pending);
+                        let (Some(name), Some(value)) = (dotted(prop.path()), prop.value()) else {
+                            continue;
+                        };
+                        let at = value.syntax().text_range();
+                        if control.input(&name).is_some() {
+                            root.control_reads.push((name.clone(), at, parent));
+                        }
+                        let fold =
+                            fold_property(
+                            prop,
+                            (root.kind, &library.consts),
+                            parent,
+                            &mut root.style,
+                            &mut root.pending,
+                        );
+                        let reason = match fold {
+                            Fold::Folded if name == "padding" && !root.kind.pads() => Some(format!(
+                                "a `{}` has no content box to pad; pad a container around it",
+                                root.type_name
+                            )),
+                            Fold::Folded => None,
+                            Fold::Pending => unapplied(&name, &root.type_name, root.kind, control, root.styled.as_ref()),
+                            Fold::Unsupported(reason) => Some(reason),
+                        };
+                        if let Some(reason) = reason {
+                            self.unmount((at, reason));
+                        }
                     }
                     for h in &forwarded_handlers {
                         root.handlers.push(UiHandler {
@@ -1012,6 +1095,44 @@ impl<'a, 'l> Lowering<'a, 'l> {
             }
         }
         out.extend(inner);
+    }
+}
+
+/// Why the binding of property `name` on a native node of type `type_name`
+/// and kind `kind` reaches no path that applies it, or `None` when one does:
+/// the control values `control` delivers, the role and live setting the
+/// node is built with, the transitions that play (the others are reported
+/// where they are read), and the node's own `enabled`, `checked` and
+/// `invalid` its styles' selectors read.
+fn unapplied(
+    name: &str,
+    type_name: &str,
+    kind: NodeKind,
+    control: ControlKind,
+    styled: Option<&UiStyled>,
+) -> Option<String> {
+    let selected = || {
+        styled.is_some_and(|styled| {
+            styled
+                .looks
+                .iter()
+                .flat_map(|look| &look.arms)
+                .any(|arm| arm.when.iter().any(|w| matches!(w, UiWhen::Part(_))))
+        })
+    };
+    if control.input(name).is_some() || name.starts_with("transition.") {
+        return None;
+    }
+    match name {
+        "semantics.role" | "semantics.live" => None,
+        "enabled" | "checked" | "invalid" if selected() => None,
+        "width" | "height" | "gap" | "spacing" => Some(format!(
+            "a `{name}` that reads a value does not lay out yet; a constant one does"
+        )),
+        "justify" | "align" | "axis" | "direction" if kind == NodeKind::Flex => Some(format!(
+            "a `{name}` that reads a value does not lay out yet; a constant one does"
+        )),
+        _ => Some(format!("`{name}` does not reach a `{type_name}` yet")),
     }
 }
 
@@ -1053,25 +1174,47 @@ fn single_segment(path: Option<PropertyPath>) -> Option<String> {
 /// anything else becomes a [`PendingProperty`] for the Binding IR pass.
 fn fold_property(
     prop: &PropertyBinding,
+    (kind, consts): (NodeKind, &Consts),
     instance: u32,
     style: &mut StyleIr,
     pending: &mut Vec<PendingProperty>,
-) {
-    let Some(path) = prop.path() else { return };
+) -> Fold {
+    let Some(path) = prop.path() else {
+        return Fold::Folded;
+    };
     // The bound property is the path's leading segment (`width`, `axis`, `text`).
     let Some(name) = path.segments().next().map(|t| t.text()) else {
-        return;
+        return Fold::Folded;
     };
-    let Some(value) = prop.value() else { return };
-
-    if fold_static(&name, &value, style) {
-        return;
+    let Some(value) = prop.value() else {
+        return Fold::Folded;
+    };
+    let fold = if path.segments().nth(1).is_some() {
+        Fold::Pending
+    } else {
+        fold_static(&name, kind, &value, consts, style)
+    };
+    if let Fold::Pending = fold {
+        pending.push(PendingProperty::new(
+            name,
+            value.syntax().text_range(),
+            instance,
+        ));
     }
-    pending.push(PendingProperty::new(
-        name,
-        value.syntax().text_range(),
-        instance,
-    ));
+    fold
+}
+
+/// What lowering a property binding made of it.
+#[derive(Debug)]
+enum Fold {
+    /// A constant folded into the node's style.
+    Folded,
+    /// Left to a binding: the value is not a constant, or the property is
+    /// not one the style models.
+    Pending,
+    /// A constant of a property the style models that layout does not take
+    /// yet, and why.
+    Unsupported(String),
 }
 
 /// The value of the `styles` property among a node's `members`.
@@ -1082,42 +1225,43 @@ fn styles_value(members: &[ViewItem]) -> Option<Expr> {
     })
 }
 
-/// Attempts to fold a property value into static style. Returns `true` when the
-/// value was a compile-time constant this property recognizes and folded it;
-/// `false` leaves the property to become a pending binding.
-fn fold_static(name: &str, value: &Expr, style: &mut StyleIr) -> bool {
+/// Folds a constant property value into static style, when the property is
+/// one the style models and the value is a constant it takes.
+fn fold_static(
+    name: &str,
+    kind: NodeKind,
+    value: &Expr,
+    consts: &Consts,
+    style: &mut StyleIr,
+) -> Fold {
+    let named = consts.value_of(value);
+    let value = named.as_ref().unwrap_or(value);
+    let folded = |done: bool| if done { Fold::Folded } else { Fold::Pending };
     match name {
-        "width" => match length::fold_size(value) {
-            Some(Lowered::Layout(len)) => {
-                style.width = Some(len);
-                if let Some(lengths) = &mut style.lengths {
-                    lengths.width = None;
+        "width" | "height" => {
+            let lowered = match length::fold_sizing(value, consts) {
+                Some(Ok(lowered)) => lowered,
+                Some(Err(reason)) => return Fold::Unsupported(reason),
+                None => return Fold::Pending,
+            };
+            let (layout, env) = match lowered {
+                Lowered::Layout(len) => (Some(len), None),
+                Lowered::Env(terms) => (None, Some(terms)),
+            };
+            if name == "width" {
+                style.width = layout;
+                if env.is_some() || style.lengths.is_some() {
+                    style.lengths_mut().width = env;
                 }
-                true
-            }
-            Some(Lowered::Env(terms)) => {
-                style.width = None;
-                style.lengths_mut().width = Some(terms);
-                true
-            }
-            None => false,
-        },
-        "height" => match length::fold_size(value) {
-            Some(Lowered::Layout(len)) => {
-                style.height = Some(len);
-                if let Some(lengths) = &mut style.lengths {
-                    lengths.height = None;
+            } else {
+                style.height = layout;
+                if env.is_some() || style.lengths.is_some() {
+                    style.lengths_mut().height = env;
                 }
-                true
             }
-            Some(Lowered::Env(terms)) => {
-                style.height = None;
-                style.lengths_mut().height = Some(terms);
-                true
-            }
-            None => false,
-        },
-        "gap" | "spacing" => match length::fold_gap(value) {
+            Fold::Folded
+        }
+        "gap" | "spacing" => folded(match length::fold_gap(value, consts) {
             Some(Lowered::Layout(LengthIr::Fixed(n))) => {
                 style.gap = Some(n);
                 if let Some(lengths) = &mut style.lengths {
@@ -1131,8 +1275,8 @@ fn fold_static(name: &str, value: &Expr, style: &mut StyleIr) -> bool {
                 true
             }
             _ => false,
-        },
-        "padding" => match length::fold_padding(value) {
+        }),
+        "padding" => folded(match length::fold_padding(value, consts) {
             Some(Padding::Fixed(inset)) => {
                 style.padding = Some(inset);
                 if let Some(lengths) = &mut style.lengths {
@@ -1146,39 +1290,66 @@ fn fold_static(name: &str, value: &Expr, style: &mut StyleIr) -> bool {
                 true
             }
             None => false,
-        },
-        "font_size" => match length::fold_font_size(value) {
+        }),
+        "font_size" => folded(match length::fold_font_size(value, consts) {
             Some(terms) => {
                 style.lengths_mut().font_size = Some(terms);
                 true
             }
             None => false,
-        },
-        "basis" if style.scope.is_some() => match length::fold_gap(value) {
+        }),
+        "basis" if style.scope.is_some() => folded(match length::fold_gap(value, consts) {
             Some(Lowered::Layout(LengthIr::Fixed(n))) => {
                 style.scope = Some(ScopeIr { basis: Some(n) });
                 true
             }
             _ => false,
-        },
-        "axis" | "direction" => match fold_axis(value) {
+        }),
+        "axis" | "direction" => folded(match fold_axis(value) {
             Some(axis) => {
                 style.axis = Some(axis);
                 true
             }
             None => false,
-        },
-        // Any other property with a constant value is still a static property,
-        // but StyleIr models only the load-bearing layout fields today; other
-        // constants are left to the emitter via a pending record so nothing is
-        // silently dropped. Returning false routes them to `pending`.
-        _ => false,
+        }),
+        "justify" if kind == NodeKind::Flex => {
+            style.justify = Some(match enum_constant(value, "Justify").as_deref() {
+                Some("start") => Justify::Start,
+                Some("center") => Justify::Center,
+                Some("end") => Justify::End,
+                _ => return Fold::Pending,
+            });
+            Fold::Folded
+        }
+        "align" if kind == NodeKind::Flex => {
+            style.align = Some(match enum_constant(value, "Align").as_deref() {
+                Some("start") => Align::Start,
+                Some("center") => Align::Center,
+                Some("end") => Align::End,
+                Some("stretch") => Align::Stretch,
+                _ => return Fold::Pending,
+            });
+            Fold::Folded
+        }
+        _ => Fold::Pending,
     }
 }
 
-/// Folds an expression into an [`AxisIr`], if it is the `row`/`column` identifier.
+/// The variant a constant `Owner::variant` path names, for enum `owner`.
+fn enum_constant(value: &Expr, owner: &str) -> Option<String> {
+    let path = PathExpr::cast(value.syntax().clone())?;
+    let segments: Vec<String> = path.segments().map(|t| t.text()).collect();
+    match segments.as_slice() {
+        [head, variant] if head == owner => Some(variant.clone()),
+        _ => None,
+    }
+}
+
+/// Folds an expression into an [`AxisIr`]: a constant `Axis::row` or
+/// `Axis::column`, or the bare `row`/`column` identifier.
 fn fold_axis(value: &Expr) -> Option<AxisIr> {
-    match path_ident(value)?.as_str() {
+    let variant = enum_constant(value, "Axis").or_else(|| path_ident(value))?;
+    match variant.as_str() {
         "row" => Some(AxisIr::Row),
         "column" | "col" => Some(AxisIr::Column),
         _ => None,

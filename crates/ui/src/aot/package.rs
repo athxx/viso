@@ -33,7 +33,7 @@
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
 use crate::adaptive::Avoid;
-use crate::layout::Inset;
+use crate::layout::{Align, Inset, Justify};
 use crate::length::{EdgeTerms, LengthTerms, NodeLengths};
 use crate::state::StateKey;
 
@@ -125,6 +125,12 @@ impl AotNodeKind {
 pub struct AotStyle {
     /// The container arrangement axis, when the node fixed one.
     pub axis: Option<AotAxis>,
+    /// Where a flex container packs its children along its axis, when the
+    /// node placed them.
+    pub justify: Option<Justify>,
+    /// How a flex container places its children across its axis, when the
+    /// node placed them.
+    pub align: Option<Align>,
     /// The folded width, when a constant property set one.
     pub width: Option<AotLength>,
     /// The folded height, when a constant property set one.
@@ -209,7 +215,9 @@ const STYLE_IS_SCOPE: u16 = 1 << 5;
 const STYLE_HAS_BASIS: u16 = 1 << 6;
 const STYLE_AVOIDS: u16 = 1 << 7;
 const STYLE_HAS_PADDING: u16 = 1 << 8;
-const STYLE_BITS: u16 = (1 << 9) - 1;
+const STYLE_HAS_JUSTIFY: u16 = 1 << 9;
+const STYLE_HAS_ALIGN: u16 = 1 << 10;
+const STYLE_BITS: u16 = (1 << 11) - 1;
 
 // An inset is a byte naming its non-zero edges, then their values.
 const EDGE_LEFT: u8 = 1 << 0;
@@ -454,6 +462,12 @@ impl Encode for AotStyle {
         if self.padding.is_some() {
             mask |= STYLE_HAS_PADDING;
         }
+        if self.justify.is_some() {
+            mask |= STYLE_HAS_JUSTIFY;
+        }
+        if self.align.is_some() {
+            mask |= STYLE_HAS_ALIGN;
+        }
         enc.write_varint(u64::from(mask));
         if let Some(axis) = self.axis {
             enc.write_u8(match axis {
@@ -483,6 +497,21 @@ impl Encode for AotStyle {
             enc.write_u8(match avoid {
                 Avoid::SafeArea => 0,
                 Avoid::Keyboard => 1,
+            });
+        }
+        if let Some(justify) = self.justify {
+            enc.write_u8(match justify {
+                Justify::Start => 0,
+                Justify::Center => 1,
+                Justify::End => 2,
+            });
+        }
+        if let Some(align) = self.align {
+            enc.write_u8(match align {
+                Align::Start => 0,
+                Align::Center => 1,
+                Align::End => 2,
+                Align::Stretch => 3,
             });
         }
     }
@@ -553,8 +582,33 @@ impl Decode for AotStyle {
         } else {
             None
         };
+        let justify = if mask & STYLE_HAS_JUSTIFY != 0 {
+            let offset = dec.position();
+            Some(match dec.read_u8()? {
+                0 => Justify::Start,
+                1 => Justify::Center,
+                2 => Justify::End,
+                _ => return Err(DecodeError::Malformed { offset }),
+            })
+        } else {
+            None
+        };
+        let align = if mask & STYLE_HAS_ALIGN != 0 {
+            let offset = dec.position();
+            Some(match dec.read_u8()? {
+                0 => Align::Start,
+                1 => Align::Center,
+                2 => Align::End,
+                3 => Align::Stretch,
+                _ => return Err(DecodeError::Malformed { offset }),
+            })
+        } else {
+            None
+        };
         Ok(AotStyle {
             axis,
+            justify,
+            align,
             width,
             height,
             gap,
@@ -683,6 +737,8 @@ mod tests {
                     kind: AotNodeKind::Flex,
                     style: AotStyle {
                         axis: Some(AotAxis::Column),
+                        justify: Some(Justify::End),
+                        align: Some(Align::Stretch),
                         width: Some(AotLength::Fixed(320.0)),
                         height: Some(AotLength::Relative {
                             fixed: -16.0,
@@ -704,6 +760,8 @@ mod tests {
                     kind: AotNodeKind::Scroll,
                     style: AotStyle {
                         axis: Some(AotAxis::Row),
+                        justify: None,
+                        align: None,
                         width: Some(AotLength::Fill { weight: 2.0 }),
                         height: Some(AotLength::Fit),
                         gap: None,

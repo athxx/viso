@@ -104,7 +104,7 @@ fn localizable_text_is_no_concatenation_or_literal_format() {
     assert_eq!(lenient("Text { text: format(\"{} new\", n); }"), ["E3705"]);
     assert_eq!(lenient("Text { text: format(\"{}{}\", n, n); }"), ["E3705"]);
     assert_eq!(
-        lenient("TextInput { placeholder: \"Name: \" + name; }"),
+        lenient("Button { text: \"Name: \" + name; on click { n += 1; } }"),
         ["E3705"]
     );
     assert_eq!(
