@@ -16,7 +16,7 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("PROJECT", &["new", "doctor", "config"]),
     ("MOBILE DEV ENVIRONMENT", &["android", "ios"]),
     ("DEVELOP", &["run", "build", "serve"]),
-    ("LANGUAGE", &["fmt", "check", "schema"]),
+    ("LANGUAGE", &["fmt", "check", "schema", "explain"]),
     ("TEST / DEBUG", &["test", "game"]),
     ("DELIVERY", &[]),
     ("MAINTENANCE", &["clean", "completion"]),
@@ -350,6 +350,20 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
                 "viso run web-gpu --browser none",
                 "serve it, opening no browser",
             ),
+        ],
+    ),
+    (
+        "explain",
+        &[
+            (
+                "viso explain E3101",
+                "what a compiler code means and its fix",
+            ),
+            (
+                "viso explain ENV_LOCK_HELD --json",
+                "a CLI code, as JSON events",
+            ),
+            ("viso explain --list", "every code with its title"),
         ],
     ),
     (

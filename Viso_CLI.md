@@ -1568,7 +1568,18 @@ Suggested actions:
 
 Diagnostic code 的说明应来自 compiler diagnostics registry，而不是 CLI 自己维护副本。
 
-`--json`：一条 `result`（`payload: {code, title, explanation, suggested_commands[]}`）+ `summary`。未知 code：exit 1。
+当前实现：三处来源各自持有自己的码——编译器及其 Runtime 的 `E####` 在 `viso_dsl::diag::codes`（标题、解释、触发示例、修复与修复后的源码、建议命令，`docs/diagnostics.md` 由它生成），配置的 `C####` 在 `viso-project`（`ConfigCode` 的标题、解释、修复），CLI 自身的码（`CLI_*`、`ENV_*`、`BUILD_*`、`TEST_*`、`DEVICE_*`、`GAME_*`、`NEW_*` …）在 CLI 的码表中；`viso explain` 只查找与渲染，不需要项目。码不区分大小写。
+
+```text
+viso explain E3101          # 编译器码：解释、示例、修复与建议命令
+viso explain C0004          # 配置码
+viso explain ENV_LOCK_HELD  # CLI 码
+viso explain --list         # 全部码与标题，reserved 码标出
+```
+
+`--json`：一条 `result`（`payload: {code, producer, severity?, stage?, title, explanation, example, example_kind?, fix, fixed, suggested_commands[], reserved?}`）+ `summary`；`producer` 为 `compiler`、`config` 或 `cli`，`severity`/`stage` 只有编译器码有（CLI 与配置码的 Severity 取决于触发处），`example_kind` 为 `source`（单个 `.vs` 文件，测试保证其编译产生该码）或 `text`（Manifest、热重载、运行时情形的示意）。`--list --json`：`payload: {codes: [{code, producer, severity?, title, reserved?}]}`。
+
+未知 code：`EXPLAIN_UNKNOWN` 诊断并 exit 1，附编辑距离最近的码；`E0XXX` 形式的码是 Rust 编译器的，提示 `rustc --explain`。
 
 ---
 

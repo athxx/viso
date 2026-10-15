@@ -8,6 +8,7 @@ mod completion;
 mod config;
 mod device;
 mod doctor;
+mod explain;
 mod fmt;
 mod game;
 mod new;
@@ -53,6 +54,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
         Command::Clean => clean::run(ctx, out),
         Command::Doctor(args) => doctor::run(ctx, args, out),
         Command::Completion(args) => completion::run(ctx, args, out),
+        Command::Explain(args) => explain::run(args, out),
         Command::Config(command) => config::run(ctx, command, out),
         Command::Fmt(args) => fmt::run(ctx, args, out),
         Command::Ios(IosCommand::Simulator(command)) => device::run(Platform::Ios, command, out),

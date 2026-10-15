@@ -107,6 +107,8 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Write the script that completes `viso` commands in a shell.
     Completion(CompletionArgs),
+    /// Explain a diagnostic code: why it is raised and how to fix it.
+    Explain(ExplainArgs),
     /// Lay out `.vs` sources in the one canonical format.
     Fmt(FmtArgs),
     /// Show where each configuration value comes from, or validate it.
@@ -122,7 +124,7 @@ pub enum Command {
     New(NewArgs),
     /// Build a dev artifact and run it, hot reloading edits as they are saved.
     Run(RunArgs),
-    /// Show the typed schema of a widget, native library, function or type.
+    /// Show the typed schema of a widget, component, native library, function or type.
     Schema(SchemaArgs),
     /// Build a dev artifact for a browser and serve it, hot reloading it.
     Serve(ServeArgs),
@@ -672,6 +674,17 @@ pub struct ServeArgs {
     pub no_hot_reload: bool,
 }
 
+/// What `viso explain` explains.
+#[derive(Debug, Args)]
+pub struct ExplainArgs {
+    /// The diagnostic code: `E3101`, `C0004`, `ENV_LOCK_HELD`.
+    #[arg(required_unless_present = "list", conflicts_with = "list")]
+    pub code: Option<String>,
+    /// List every code with its title.
+    #[arg(long)]
+    pub list: bool,
+}
+
 /// What `viso schema` looks up.
 #[derive(Debug, Args)]
 pub struct SchemaArgs {
@@ -720,6 +733,7 @@ impl Command {
             Command::Clean => "clean",
             Command::Doctor(_) => "doctor",
             Command::Completion(_) => "completion",
+            Command::Explain(_) => "explain",
             Command::Fmt(_) => "fmt",
             Command::Config(ConfigCommand::Show) => "config show",
             Command::Config(ConfigCommand::Get(_)) => "config get",

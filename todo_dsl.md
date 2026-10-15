@@ -68,6 +68,10 @@ the three source entries share one frontend.
 - [x] Name interner, durable 128-bit `SymbolId`, three namespaces, deterministic module
       graph (`resolve/`).
 - [x] `E2001`–`E2003`.
+- [ ] `E2003` for a `const` initialization cycle (`const A: I64 = B + 1; const B: I64
+      = A + 1;` raises nothing), not only theme and style base cycles.
+- [ ] `E2002` for the same name imported twice (`import viso::math::{clamp};` written
+      twice raises nothing).
 - [x] `E2001` carries the nearest candidates in `related` and a `fixes` entry, ranked by
       edit distance and filtered by namespace (§105.2, §138; `resolve/suggest.rs`, types
       and module paths).

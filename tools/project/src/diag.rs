@@ -172,6 +172,76 @@ impl ConfigCode {
         }
     }
 
+    /// Why it happens, for `viso explain`.
+    pub const fn explanation(self) -> &'static str {
+        match self {
+            ConfigCode::ManifestNotFound => {
+                "A project is the directory holding `Viso.toml`; none was found in the starting directory or any of its ancestors."
+            }
+            ConfigCode::ManifestUnreadable => {
+                "`Viso.toml` exists but could not be read: its permissions, a broken link, or bytes that are not UTF-8."
+            }
+            ConfigCode::ManifestSyntax => {
+                "`Viso.toml` does not parse as TOML; the diagnostic points at the first token that breaks it."
+            }
+            ConfigCode::UnknownKey => {
+                "The manifest names a table or key the configuration schema does not define, often a misspelling. It is an error: a setting that never takes effect would build something other than what its author asked for."
+            }
+            ConfigCode::WrongType => {
+                "A known key holds a TOML value of another type, such as a string where a number is expected."
+            }
+            ConfigCode::MissingRequired => {
+                "A key the configuration needs is absent: `[package] name` everywhere, and the keys a packaging step needs when it runs."
+            }
+            ConfigCode::InvalidValue => {
+                "A key has the right type but a value outside the accepted set or range, such as an unknown target or a malformed version."
+            }
+            ConfigCode::HotReloadInRelease => {
+                "The dev runtime, and with it hot reload, is fixed by the profile: dev has it, release and shipping do not, so a manifest cannot turn it on for them."
+            }
+            ConfigCode::UnknownProfile => {
+                "A `[profile.<name>]` table, `--profile` or `VISO_PROFILE` names a profile other than the known ones."
+            }
+            ConfigCode::EnvInvalid => {
+                "A `VISO_*` environment variable is set to a value that does not parse for its setting."
+            }
+            ConfigCode::TargetUnavailable => {
+                "The target named on the command line or in the configuration is not one this CLI build or host can produce."
+            }
+            ConfigCode::MemberMissing => {
+                "A `[workspace] members` path has no `Viso.toml`, so the workspace does not describe the repository."
+            }
+        }
+    }
+
+    /// How to resolve it.
+    pub const fn fix(self) -> &'static str {
+        match self {
+            ConfigCode::ManifestNotFound => {
+                "Run the command inside a project, name one with `--project <path>`, or create one with `viso new`."
+            }
+            ConfigCode::ManifestUnreadable => "Fix the file's permissions or encoding.",
+            ConfigCode::ManifestSyntax => "Correct the TOML at the reported position.",
+            ConfigCode::UnknownKey => {
+                "Remove the key, or correct its spelling to the key the diagnostic suggests."
+            }
+            ConfigCode::WrongType => "Give the key a value of the type the diagnostic names.",
+            ConfigCode::MissingRequired => "Add the key to `Viso.toml`.",
+            ConfigCode::InvalidValue => "Use one of the values the diagnostic lists.",
+            ConfigCode::HotReloadInRelease => {
+                "Remove the key from that profile, and build with `--profile dev` to develop."
+            }
+            ConfigCode::UnknownProfile => "Use `dev`, `release` or `shipping`.",
+            ConfigCode::EnvInvalid => {
+                "Correct or unset the variable; `viso config show` reports where each value comes from."
+            }
+            ConfigCode::TargetUnavailable => {
+                "Pick an available target; `viso doctor` lists what this machine can build."
+            }
+            ConfigCode::MemberMissing => "Correct the member path, or remove it from the list.",
+        }
+    }
+
     /// The exit code a command uses when this diagnostic is fatal.
     ///
     /// Configuration problems are source-shaped (`1`) except the two that are
@@ -322,6 +392,8 @@ mod tests {
         for code in ConfigCode::ALL {
             assert!(!code.title().is_empty(), "{code} has no title");
             assert!(code.title().len() > 8, "{code} title is a stub");
+            assert!(code.explanation().ends_with('.'), "{code}");
+            assert!(code.fix().ends_with('.'), "{code}");
         }
     }
 

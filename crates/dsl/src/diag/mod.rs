@@ -1,18 +1,18 @@
-//! The shared diagnostic type every frontend phase emits into (doc sections 30
-//! and 138).
+//! The shared diagnostic type every frontend phase emits into, and the
+//! registry of every code ([`codes`]).
 //!
 //! The lexer, parser, and resolver each keep a *kind* enum — the single source of
-//! the stable diagnostic-code and message string tables — but they no longer carry
-//! their own wrapper structs. Instead each family lifts a kind (plus a span and,
-//! where relevant, a subject) into one uniform [`Diagnostic`], so every consumer
-//! downstream (Typed HIR, UI/Binding IR, LSP, Studio, the CLI renderer) reads a
-//! single type. The shape mirrors the section 138 JSON schema: a severity, a stable
-//! `E####`/`Lex####`/`Parse####` code, a primary span, optional related spans with
-//! labels, and free-form notes.
+//! the stable diagnostic-code and message string tables — and lift a kind (plus a
+//! span and, where relevant, a subject) into one uniform [`Diagnostic`], so every
+//! consumer downstream (Typed HIR, UI/Binding IR, LSP, Studio, the CLI renderer)
+//! reads a single type. The shape mirrors the JSON diagnostic object: a severity,
+//! a stable `E####` code, a primary span, optional related spans with labels, and
+//! free-form notes.
 //!
 //! This is a cold-path structure — diagnostics are assembled once per build, never
-//! on a frame path — so owned `String`/`Vec` fields are appropriate (AGENTS section
-//! 7.2).
+//! on a frame path — so owned `String`/`Vec` fields are appropriate.
+
+pub mod codes;
 
 use crate::syntax::span::TextRange;
 

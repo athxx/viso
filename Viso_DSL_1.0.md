@@ -8744,7 +8744,7 @@ RecordPatternField
 | E2202  | Trait Impl 重叠或歧义                                   |
 | E2203  | Generic 实例化无界：深度、实例数或实参类型规模超限        |
 | E2301  | 非穷尽 Match                                            |
-| E2302  | 不可达 Pattern                                          |
+| E2302  | 不可达 Pattern（警告）                                  |
 | E2303  | `let`/`for`/Closure 参数使用 Refutable Pattern（§70.1） |
 | E2401  | Closure 参数无法推断                                    |
 | E2501  | Effect Kind 调用违规                                    |
@@ -8770,7 +8770,7 @@ RecordPatternField
 | E3202  | 未知 Event 或错误 Payload                               |
 | E3301  | Conditional Preserve 必须是静态字符串，且在 Component 中唯一 |
 | E3401  | View For 缺少 Key                                       |
-| E3402  | Key Expression 不稳定                                   |
+| E3402  | Key Expression 不稳定（警告）                           |
 | E3501  | 未知 Slot/Part                                          |
 | E3502  | Slot Cardinality 冲突                                   |
 | E3601  | Template 无限递归，或 Template / `use` 体含不允许的项      |
@@ -8828,6 +8828,8 @@ RecordPatternField
 | E9109  | System 声明 `view`、`event`、`slot`、`effect` 或 `resource` 成员，执行 `start` 或调用 `tr`（§105） |
 | E9110  | `@probe` 误用：只能标在 System 的 Simulation `state` 上（§110.5） |
 | E9111  | 持久化状态加载、转换或写入失败（运行时，使用 Initializer，§106.8） |
+
+每个码的标题、解释、触发示例与修复记录在编译器的诊断注册表（`viso_dsl::diag::codes`）中：`viso explain <code>`、Language Server 的 Hover 与生成的 `docs/diagnostics.md` 都读它。测试保证本表与注册表的码集一致、注册表与编译器及其 Runtime 实际产生的码一致（尚未产生的码在注册表中标为 reserved：E2702、E3002、E3707、E3709），并逐个编译 `.vs` 示例确认其产生对应的码与默认 Severity。
 
 错误码文案可以改进，但错误码语义不得在同一 Major 版本中复用。
 

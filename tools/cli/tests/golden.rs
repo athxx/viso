@@ -282,6 +282,32 @@ fn schema_objects() {
     golden("schema_card.txt", &text(&out.stdout));
 }
 
+/// `viso explain` of a code of each producer, and the list.
+#[test]
+fn explanations() {
+    let cwd = scratch("explain");
+    let mut report = String::new();
+    for args in [
+        &["E3101"][..],
+        &["E2302"],
+        &["E5101"],
+        &["C0004"],
+        &["ENV_LOCK_HELD"],
+        &["--list"],
+    ] {
+        let mut full = vec!["explain"];
+        full.extend(args);
+        let out = viso(&cwd, &full);
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        report.push_str(&format!(
+            "$ viso explain {}\n{}\n",
+            args.join(" "),
+            text(&out.stdout)
+        ));
+    }
+    golden("explain.txt", &report);
+}
+
 #[test]
 fn config_show() {
     let dir = scratch("config");

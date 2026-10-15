@@ -38,16 +38,33 @@ pub struct Code {
     pub exit: u8,
     /// What it means, in a sentence.
     pub summary: &'static str,
+    /// Why it happens, for `viso explain`.
+    pub explanation: &'static str,
+    /// How to resolve it.
+    pub fix: &'static str,
+    /// Commands that help.
+    pub commands: &'static [&'static str],
 }
 
 macro_rules! codes {
-    ($($(#[$doc:meta])* $name:ident = $exit:ident, $summary:literal;)*) => {
+    ($(
+        $(#[$doc:meta])*
+        $name:ident = $exit:ident {
+            summary: $summary:literal,
+            explanation: $explanation:literal,
+            fix: $fix:literal,
+            commands: [$($command:literal),* $(,)?],
+        }
+    )*) => {
         $(
             $(#[$doc])*
             pub const $name: Code = Code {
                 name: stringify!($name),
                 exit: $exit,
                 summary: $summary,
+                explanation: $explanation,
+                fix: $fix,
+                commands: &[$($command),*],
             };
         )*
         /// Every code, in declaration order.
@@ -56,59 +73,301 @@ macro_rules! codes {
 }
 
 codes! {
-    CLI_USAGE = USAGE, "The command line did not parse or asks for something the command does not do.";
-    INTERNAL_PANIC = INTERNAL, "The CLI failed on its own; this is a bug in Viso.";
+    CLI_USAGE = USAGE {
+        summary: "The command line did not parse or asks for something the command does not do.",
+        explanation: "The arguments name an unknown command or option, miss a required value, combine options that exclude each other, or ask a command for a target or profile it does not build. Nothing ran.",
+        fix: "Read the command's help page and correct the command line; the diagnostic names the next command to run.",
+        commands: ["viso <command> --help"],
+    }
+    INTERNAL_PANIC = INTERNAL {
+        summary: "The CLI failed on its own; this is a bug in Viso.",
+        explanation: "The CLI hit an internal invariant failure and stopped. Its output up to that point is valid; the failure is not caused by the project.",
+        fix: "Report the command line and the message to the Viso issue tracker. Rerunning with `--json` records the full event stream to attach.",
+        commands: [],
+    }
 
-    ENV_CURRENT_DIR = ENVIRONMENT, "The current directory could not be read.";
-    ENV_STDOUT = ENVIRONMENT, "Standard output could not be written.";
-    ENV_SOURCE_UNREADABLE = ENVIRONMENT, "A source file the command needs could not be read.";
-    ENV_CARGO_MANIFEST = ENVIRONMENT, "The project root has no `Cargo.toml` to build.";
-    ENV_CARGO = ENVIRONMENT, "Cargo could not be run.";
-    ENV_NO_EXECUTABLE = ENVIRONMENT, "The build produced no executable, or more than one.";
-    ENV_DEV_CHANNEL = ENVIRONMENT, "The dev channel could not be opened on the loopback interface.";
-    ENV_DEVICE = ENVIRONMENT, "The simulator or emulator toolchain is missing or failed.";
-    ENV_NO_DEV_SESSION = ENVIRONMENT, "No `viso run` session is running for the project, or it cannot be reached.";
-    ENV_TAPE_WRITE = ENVIRONMENT, "A recorded tape could not be written.";
-    ENV_TEST_INPUT = ENVIRONMENT, "A test scenario or tape could not be found or read.";
-    ENV_SOURCE_WRITE = ENVIRONMENT, "A source file the command rewrites could not be written.";
-    ENV_LOCK_HELD = ENVIRONMENT, "Another viso process holds a lock the command needs free.";
-    ENV_REMOVE = ENVIRONMENT, "A file or directory the command removes could not be removed.";
-    ENV_BUILD_WRITE = ENVIRONMENT, "The build's output could not be written.";
-    ENV_TOOL = ENVIRONMENT, "A tool the build needs is not installed or could not be run.";
-    ENV_TEST_TARGET = ENVIRONMENT, "The test domain does not run on that target here.";
-    ENV_RUST_TOOLCHAIN = ENVIRONMENT, "The Rust toolchain is not installed, or older than Viso builds with.";
-    ENV_RUST_TARGET = ENVIRONMENT, "The Rust standard library of a target the build needs is not installed.";
-    ENV_GPU = ENVIRONMENT, "The host has no GPU backend Viso renders with.";
-    ENV_ANDROID_SDK = ENVIRONMENT, "No Android SDK, with its NDK, build tools and a platform, is found.";
+    ENV_CURRENT_DIR = ENVIRONMENT {
+        summary: "The current directory could not be read.",
+        explanation: "The process's working directory was removed, renamed or made unreadable while the shell still points at it, so no project can be located from it.",
+        fix: "Change into an existing directory, or name the project with `--project <path>`.",
+        commands: [],
+    }
+    ENV_STDOUT = ENVIRONMENT {
+        summary: "Standard output could not be written.",
+        explanation: "Writing to standard output failed, usually because the reading end of a pipe closed early or the output file's disk is full.",
+        fix: "Keep the consumer of the output reading until the command ends, or redirect the output to a writable file.",
+        commands: [],
+    }
+    ENV_SOURCE_UNREADABLE = ENVIRONMENT {
+        summary: "A source file the command needs could not be read.",
+        explanation: "A `.vs` source, a message catalog or an asset directory exists but cannot be read: its permissions, a broken link, or a file that is not UTF-8 text.",
+        fix: "Fix the file's permissions or encoding; the diagnostic names the path.",
+        commands: ["viso check"],
+    }
+    ENV_CARGO_MANIFEST = ENVIRONMENT {
+        summary: "The project root has no `Cargo.toml` to build.",
+        explanation: "A Viso app is a Cargo package: the build runs Cargo in the directory that holds `Viso.toml`, and that directory has no `Cargo.toml`.",
+        fix: "Create the project with `viso new`, or add a `Cargo.toml` beside `Viso.toml` that depends on `viso`.",
+        commands: ["viso new <name>"],
+    }
+    ENV_CARGO = ENVIRONMENT {
+        summary: "Cargo could not be run.",
+        explanation: "The build starts `cargo`, which is not on `PATH` or failed to start.",
+        fix: "Install Rust with rustup and make sure `cargo` is on `PATH`.",
+        commands: ["viso doctor"],
+    }
+    ENV_NO_EXECUTABLE = ENVIRONMENT {
+        summary: "The build produced no executable, or more than one.",
+        explanation: "`viso run` launches the one binary target the package builds; the package has none, or several and none is chosen.",
+        fix: "Give the package exactly one binary target (`src/main.rs`), or set `default-run` in `Cargo.toml`.",
+        commands: [],
+    }
+    ENV_DEV_CHANNEL = ENVIRONMENT {
+        summary: "The dev channel could not be opened on the loopback interface.",
+        explanation: "A dev session talks to the running app over a loopback socket; binding it failed, usually because the port is taken or loopback networking is blocked.",
+        fix: "Stop the other process holding the port, or let the session pick a free one by not pinning it in the configuration.",
+        commands: ["viso doctor"],
+    }
+    ENV_DEVICE = ENVIRONMENT {
+        summary: "The simulator or emulator toolchain is missing or failed.",
+        explanation: "Starting, creating or reaching a simulator or emulator needs the platform's tools (Xcode's `simctl`, the Android emulator), which are missing or reported a failure.",
+        fix: "Install the platform toolchain, then check it.",
+        commands: ["viso doctor"],
+    }
+    ENV_NO_DEV_SESSION = ENVIRONMENT {
+        summary: "No `viso run` session is running for the project, or it cannot be reached.",
+        explanation: "The command talks to a running dev session of the project, and none is registered, or its socket does not answer.",
+        fix: "Start one with `viso run` in another terminal and rerun the command.",
+        commands: ["viso run"],
+    }
+    ENV_TAPE_WRITE = ENVIRONMENT {
+        summary: "A recorded tape could not be written.",
+        explanation: "Recording ended but the tape file could not be created or written: its directory is missing or read-only, or the disk is full.",
+        fix: "Record into a writable path.",
+        commands: [],
+    }
+    ENV_TEST_INPUT = ENVIRONMENT {
+        summary: "A test scenario or tape could not be found or read.",
+        explanation: "A scenario or tape named on the command line, or found under `tests/`, does not exist or cannot be read.",
+        fix: "Check the path and its permissions; `viso test --filter` selects scenarios by name.",
+        commands: ["viso test --help"],
+    }
+    ENV_SOURCE_WRITE = ENVIRONMENT {
+        summary: "A source file the command rewrites could not be written.",
+        explanation: "The formatter or a fix rewrites a source in place and the write failed: a read-only file or directory, or a full disk. The original is left as it was.",
+        fix: "Make the file writable, or check the formatting without writing it.",
+        commands: ["viso fmt --check"],
+    }
+    ENV_LOCK_HELD = ENVIRONMENT {
+        summary: "Another viso process holds a lock the command needs free.",
+        explanation: "Builds, dev sessions and cleaning take locks under `target/viso/locks` so two processes never write the same output; another live process holds the one this command needs. A lock its holder stopped refreshing is taken over.",
+        fix: "Wait for the other command to finish, or stop it; the diagnostic names its process and age.",
+        commands: [],
+    }
+    ENV_REMOVE = ENVIRONMENT {
+        summary: "A file or directory the command removes could not be removed.",
+        explanation: "Cleaning or replacing an output failed to delete a path, usually because of permissions or a file another process keeps open.",
+        fix: "Close what holds the file, fix its permissions, and rerun.",
+        commands: ["viso clean"],
+    }
+    ENV_BUILD_WRITE = ENVIRONMENT {
+        summary: "The build's output could not be written.",
+        explanation: "The build's generated sources, cache or artifacts could not be written under `target/viso` or `dist`: permissions, or a full disk.",
+        fix: "Free disk space or fix the permissions of the output directories; `--target-dir` moves them.",
+        commands: [],
+    }
+    ENV_TOOL = ENVIRONMENT {
+        summary: "A tool the build needs is not installed or could not be run.",
+        explanation: "A step of the build calls an external tool (a wasm optimizer, a packager, a signing tool) that is missing from `PATH` or failed to start.",
+        fix: "Install the tool the diagnostic names, then check the environment.",
+        commands: ["viso doctor"],
+    }
+    ENV_TEST_TARGET = ENVIRONMENT {
+        summary: "The test domain does not run on that target here.",
+        explanation: "The tests asked for run on a target this machine cannot run them on, for example a GPU target without a GPU.",
+        fix: "Run them on the headless target, or on a machine that has the target.",
+        commands: ["viso test --target headless"],
+    }
+    ENV_RUST_TOOLCHAIN = ENVIRONMENT {
+        summary: "The Rust toolchain is not installed, or older than Viso builds with.",
+        explanation: "Viso builds with a minimum Rust version, and the installed toolchain is older or missing.",
+        fix: "Update Rust with `rustup update`, then check the environment.",
+        commands: ["viso doctor"],
+    }
+    ENV_RUST_TARGET = ENVIRONMENT {
+        summary: "The Rust standard library of a target the build needs is not installed.",
+        explanation: "Building for a platform other than the host needs that target's standard library, which rustup has not installed.",
+        fix: "Install it with `rustup target add <triple>`; the diagnostic names the triple.",
+        commands: ["viso doctor"],
+    }
+    ENV_GPU = ENVIRONMENT {
+        summary: "The host has no GPU backend Viso renders with.",
+        explanation: "Running a windowed app needs Metal, Vulkan or Direct3D 12, and none is available on this machine or in this session (for example over a remote shell).",
+        fix: "Run on a machine with a supported GPU, or use the headless target for tests.",
+        commands: ["viso doctor", "viso test --target headless"],
+    }
+    ENV_ANDROID_SDK = ENVIRONMENT {
+        summary: "No Android SDK, with its NDK, build tools and a platform, is found.",
+        explanation: "Android builds need an SDK with an NDK, build tools and a platform; none is found under `ANDROID_HOME`, `ANDROID_SDK_ROOT` or the default locations.",
+        fix: "Install the Android SDK components, or point `ANDROID_HOME` at an existing SDK.",
+        commands: ["viso doctor"],
+    }
 
-    BUILD_FAILED = BUILD, "`cargo build` failed.";
-    BUILD_PACKAGE = BUILD, "The built app could not be packaged for its target.";
-    RUN_APP_FAILED = RUNTIME, "The app could not be launched, crashed, or exited with a failure.";
-    RUN_TEST_CRASHED = RUNTIME, "A test case's runner could not start, crashed, or ended without its report.";
+    BUILD_FAILED = BUILD {
+        summary: "`cargo build` failed.",
+        explanation: "The Rust build of the app failed; the compiler's own diagnostics precede this one and name the cause.",
+        fix: "Fix the errors the Rust compiler reported; `rustc --explain <code>` explains a Rust error code.",
+        commands: ["viso check"],
+    }
+    BUILD_PACKAGE = BUILD {
+        summary: "The built app could not be packaged for its target.",
+        explanation: "The executable was built, but wrapping it for its target (an app bundle, an APK, a web bundle) failed.",
+        fix: "Read the packaging step's message; it names the file or tool that failed.",
+        commands: [],
+    }
+    RUN_APP_FAILED = RUNTIME {
+        summary: "The app could not be launched, crashed, or exited with a failure.",
+        explanation: "The app started by `viso run` did not start, crashed, or exited with a nonzero status; its own output precedes this diagnostic.",
+        fix: "Read the app's output and its exit record; rerun with the debugger or logs the diagnostic suggests.",
+        commands: [],
+    }
+    RUN_TEST_CRASHED = RUNTIME {
+        summary: "A test case's runner could not start, crashed, or ended without its report.",
+        explanation: "A test ran in its own process, which crashed or exited before reporting a result. The other cases still ran.",
+        fix: "Run the case alone with `--nocapture` to see its output.",
+        commands: ["viso test --filter <name> --nocapture"],
+    }
 
-    TEST_INPUT_INVALID = DIAGNOSTICS, "A test scenario or tape does not parse or fit the build.";
-    TEST_EXPECTATION = DIAGNOSTICS, "A test's expectation was not met.";
+    EXPLAIN_UNKNOWN = DIAGNOSTICS {
+        summary: "No diagnostic code has that name.",
+        explanation: "`viso explain` knows every code the compiler, the project configuration and the CLI raise; the one given is none of them. A code of the form `E0XXX` is the Rust compiler's.",
+        fix: "Use one of the codes the diagnostic suggests, or list them all.",
+        commands: ["viso explain --list"],
+    }
 
-    NEW_NAME_INVALID = USAGE, "The package name is not one Cargo accepts.";
-    NEW_PATH_TAKEN = USAGE, "The project's directory is a file, or holds files and `--force-empty-dir` is not given, or holds a file the project would write.";
-    NEW_FRAMEWORK = USAGE, "The `--framework` path is not the `viso` crate or a checkout holding it.";
-    NEW_GIT = ENVIRONMENT, "Git could not make the new project a repository.";
-    NEW_WRITE = INTERNAL, "The project's files could not be written; nothing was left behind.";
+    TEST_INPUT_INVALID = DIAGNOSTICS {
+        summary: "A test scenario or tape does not parse or fit the build.",
+        explanation: "A scenario or tape has a syntax error, names a node, action or state the app does not have, or was recorded for another build.",
+        fix: "Fix the step the diagnostic points at, or record the tape again.",
+        commands: [],
+    }
+    TEST_EXPECTATION = DIAGNOSTICS {
+        summary: "A test's expectation was not met.",
+        explanation: "An `expect` step of a scenario, or an assertion of a test, found a different value or tree than it states.",
+        fix: "Compare the expected and actual values the diagnostic lists; fix the app, or the expectation if the change is meant.",
+        commands: [],
+    }
 
-    DEVICE_MISSING = ENVIRONMENT, "No simulator or emulator profile exists.";
-    DEVICE_UNKNOWN = USAGE, "`--device` or a configured default names no profile.";
-    DEVICE_AMBIGUOUS = USAGE, "Several profiles exist and none is the default.";
-    DEVICE_ID_INVALID = USAGE, "A profile ID that is not one.";
-    DEVICE_EXISTS = USAGE, "A profile of that ID exists already.";
-    DEVICE_SYSTEM = ENVIRONMENT, "No installed system image or runtime fits the profile.";
+    NEW_NAME_INVALID = USAGE {
+        summary: "The package name is not one Cargo accepts.",
+        explanation: "The project's name becomes its Cargo package name, which must be ASCII letters, digits, `-` or `_`, not start with a digit, and not be a Rust keyword.",
+        fix: "Give a valid name with `--name`.",
+        commands: ["viso new <path> --name <name>"],
+    }
+    NEW_PATH_TAKEN = USAGE {
+        summary: "The project's directory is a file, or holds files and `--force-empty-dir` is not given, or holds a file the project would write.",
+        explanation: "`viso new` never replaces a file: the target directory must be empty unless `--force-empty-dir` is given, and even then none of the files the template writes may exist.",
+        fix: "Pick another directory, or pass `--force-empty-dir` when its other files may stay.",
+        commands: ["viso new <path> --force-empty-dir"],
+    }
+    NEW_FRAMEWORK = USAGE {
+        summary: "The `--framework` path is not the `viso` crate or a checkout holding it.",
+        explanation: "`--framework` points at a local copy of Viso to depend on; the path must be the `viso` crate or a checkout with `crates/viso`.",
+        fix: "Point it at the checkout's root or its `crates/viso` directory.",
+        commands: [],
+    }
+    NEW_GIT = ENVIRONMENT {
+        summary: "Git could not make the new project a repository.",
+        explanation: "The project was created, but `git init` was not found or failed, so it is not a repository.",
+        fix: "Install Git and run `git init` in the project, or create projects with `--no-git`.",
+        commands: [],
+    }
+    NEW_WRITE = INTERNAL {
+        summary: "The project's files could not be written; nothing was left behind.",
+        explanation: "Writing the template into its staging directory failed, so the project was not created and the staging files were removed.",
+        fix: "Check that the parent directory is writable and has space, then rerun.",
+        commands: [],
+    }
 
-    GAME_NOT_RUNNING = ENVIRONMENT, "No mounted view of the named file runs a game.";
-    GAME_AMBIGUOUS = USAGE, "The game's name matches more than one mounted view.";
-    GAME_UNKNOWN_STATE = DIAGNOSTICS, "The game has no such system or state.";
-    GAME_BUSY = ENVIRONMENT, "The game replays a tape, or is being recorded already.";
-    GAME_ENDED = RUNTIME, "The game ended before the recording did.";
-    GAME_FAULT = RUNTIME, "The World did not restart for the recording.";
-    GAME_ANSWER_INVALID = INTERNAL, "The running session's answer did not decode or outgrew a dev frame.";
+    DEVICE_MISSING = ENVIRONMENT {
+        summary: "No simulator or emulator profile exists.",
+        explanation: "Running on iOS or Android needs a device profile, and none has been created.",
+        fix: "Create one, then run again.",
+        commands: ["viso ios simulator create", "viso android emulator create"],
+    }
+    DEVICE_UNKNOWN = USAGE {
+        summary: "`--device` or a configured default names no profile.",
+        explanation: "The device named on the command line or in the configuration is not one of the profiles that exist.",
+        fix: "List the profiles and name one of them.",
+        commands: ["viso ios simulator list", "viso android emulator list"],
+    }
+    DEVICE_AMBIGUOUS = USAGE {
+        summary: "Several profiles exist and none is the default.",
+        explanation: "With several device profiles and no default, a command run without a terminal to ask in cannot choose one.",
+        fix: "Name the device with `--device`, or set a default profile.",
+        commands: [],
+    }
+    DEVICE_ID_INVALID = USAGE {
+        summary: "A profile ID that is not one.",
+        explanation: "A device profile ID is lowercase ASCII letters, digits and `-`; the one given is not.",
+        fix: "Give an ID of that form.",
+        commands: [],
+    }
+    DEVICE_EXISTS = USAGE {
+        summary: "A profile of that ID exists already.",
+        explanation: "Creating a device profile never replaces one; a profile with that ID is there.",
+        fix: "Pick another ID, or delete the existing profile first.",
+        commands: [],
+    }
+    DEVICE_SYSTEM = ENVIRONMENT {
+        summary: "No installed system image or runtime fits the profile.",
+        explanation: "The profile asks for an OS version or system image that is not installed for this host.",
+        fix: "Install the runtime or system image, or create the profile for one that is installed.",
+        commands: ["viso doctor"],
+    }
+
+    GAME_NOT_RUNNING = ENVIRONMENT {
+        summary: "No mounted view of the named file runs a game.",
+        explanation: "The game command addresses a running game by the file that declares it, and no view mounted from that file in the dev session runs one.",
+        fix: "Start the app with `viso run` and open the view that runs the game.",
+        commands: ["viso run"],
+    }
+    GAME_AMBIGUOUS = USAGE {
+        summary: "The game's name matches more than one mounted view.",
+        explanation: "Several mounted views run a game from files of that name.",
+        fix: "Give the file's path relative to the project instead of its name.",
+        commands: [],
+    }
+    GAME_UNKNOWN_STATE = DIAGNOSTICS {
+        summary: "The game has no such system or state.",
+        explanation: "The path names a system, or a state of a system, that the running game does not declare.",
+        fix: "Use one of the names the diagnostic suggests.",
+        commands: [],
+    }
+    GAME_BUSY = ENVIRONMENT {
+        summary: "The game replays a tape, or is being recorded already.",
+        explanation: "A game records or replays one tape at a time.",
+        fix: "Wait for the replay or recording to end, then rerun.",
+        commands: [],
+    }
+    GAME_ENDED = RUNTIME {
+        summary: "The game ended before the recording did.",
+        explanation: "The game's view unmounted, or the app exited, while the recording was still running; the tape is incomplete and was not written.",
+        fix: "Keep the game running for the recording's length.",
+        commands: [],
+    }
+    GAME_FAULT = RUNTIME {
+        summary: "The World did not restart for the recording.",
+        explanation: "Recording starts from a fresh World, and restarting it failed: a system faulted during its first frame.",
+        fix: "Fix the fault the game's diagnostics report, then record again.",
+        commands: [],
+    }
+    GAME_ANSWER_INVALID = INTERNAL {
+        summary: "The running session's answer did not decode or outgrew a dev frame.",
+        explanation: "The dev session answered with a frame the CLI could not decode, or one larger than the dev protocol allows; the CLI and the app speak different protocol versions or the session failed.",
+        fix: "Rebuild and restart the app with the same Viso version as the CLI.",
+        commands: ["viso run"],
+    }
 }
 
 /// The code named `name`.
@@ -132,7 +391,7 @@ mod tests {
                 "ENV" => &[ENVIRONMENT],
                 "BUILD" => &[BUILD],
                 "RUN" => &[RUNTIME],
-                "TEST" => &[DIAGNOSTICS],
+                "TEST" | "EXPLAIN" => &[DIAGNOSTICS],
                 // Device and game codes are about one subject and fail in
                 // more than one way.
                 "NEW" => &[USAGE, ENVIRONMENT, INTERNAL],
@@ -152,8 +411,43 @@ mod tests {
                 code.name
             );
             assert_eq!(by_name(code.name), Some(*code));
-            assert!(code.summary.ends_with('.'), "{}", code.name);
+            for text in [code.summary, code.explanation, code.fix] {
+                assert!(text.ends_with('.'), "{}: {text}", code.name);
+            }
+            assert!(code.commands.iter().all(|c| c.starts_with("viso ")));
         }
         assert_eq!(by_name("NOPE"), None);
+    }
+
+    /// A code nothing raises would explain a failure that cannot happen.
+    #[test]
+    fn every_code_is_raised() {
+        fn sources(dir: &std::path::Path, out: &mut String) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    sources(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("error.rs")
+                {
+                    out.push_str(&std::fs::read_to_string(&path).unwrap());
+                }
+            }
+        }
+        let mut text = String::new();
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut text,
+        );
+        let unraised: Vec<&str> = ALL
+            .iter()
+            .map(|code| code.name)
+            .filter(|name| {
+                !text.match_indices(name).any(|(i, _)| {
+                    let after = text.as_bytes().get(i + name.len());
+                    !after.is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                })
+            })
+            .collect();
+        assert!(unraised.is_empty(), "never raised: {unraised:?}");
     }
 }
