@@ -105,6 +105,13 @@ fn nothing_to_take_is_the_environment_s() {
         "{}",
         stderr(&out)
     );
+    let out = viso(&s.0, &["snapshot", "capture", "Nope"]);
+    assert_eq!(code(&out), 3);
+    assert!(
+        stderr(&out).contains("no scenario `Nope` (`tests/ui/Nope.tape`) and no component `Nope`"),
+        "{}",
+        stderr(&out)
+    );
     let out = viso(&s.0, &["snapshot", "update", "plain", "--filter", "wide"]);
     assert_eq!(code(&out), 3);
     assert!(
@@ -133,6 +140,27 @@ fn scenarios_are_checked_before_a_build() {
         "{err}"
     );
     assert!(err.contains("tests/ui/two.tape:2"), "{err}");
+    assert!(!err.contains("Compiling"), "nothing is built: {err}");
+}
+
+#[test]
+fn a_component_shown_alone_needs_defaults_for_its_inputs() {
+    let s = Scratch::new("needy");
+    s.write(
+        "src/tag.vs",
+        "export component Tag {\n    input text: String;\n    view { Text { text: text; } }\n}\n",
+    );
+    let out = viso(&s.0, &["snapshot", "capture", "Tag"]);
+    assert_eq!(code(&out), 1);
+    let err = stderr(&out);
+    assert!(err.contains("error[TEST_INPUT_INVALID]"), "{err}");
+    assert!(
+        err.contains(
+            "the component `tag::Tag` cannot be shown alone: it needs `text`, which has no default"
+        ),
+        "{err}"
+    );
+    assert!(err.contains("src/tag.vs:1"), "{err}");
     assert!(!err.contains("Compiling"), "nothing is built: {err}");
 }
 
@@ -168,6 +196,11 @@ fn snapshots_are_captured_compared_and_updated() {
                 b"export component App {\n    state on = false;\n    view {\n        Column {\n            \
                   Stack { width: 120dp; height: 40dp; background: if on { #ff3300 } else { #0055ff }; }\n            \
                   Button { width: 120dp; height: 40dp; text: \"Flip\"; on click { on = !on; } }\n        }\n    }\n}\n",
+            ),
+            (
+                "src/badge.vs",
+                b"export component Badge {\n    input wide: Bool = true;\n    view {\n        \
+                  Stack { width: 80dp; height: 30dp; background: if wide { #22aa44 } else { #000000 }; }\n    }\n}\n",
             ),
             (
                 "tests/ui/flip.tape",
@@ -243,4 +276,27 @@ fn snapshots_are_captured_compared_and_updated() {
 
     let out = viso(&["test", "ui"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // A component alone, then held with the scenarios' snapshots.
+    let out = viso(&["snapshot", "capture", "Badge", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains(r#""path":"tests/snapshots/Badge.headless.png""#),
+        "{}",
+        stdout(&out)
+    );
+    let sidecar = fs::read_to_string(app.join("tests/snapshots/Badge.headless.json")).unwrap();
+    assert!(
+        sidecar.contains(r#""component": "badge::Badge""#),
+        "{sidecar}"
+    );
+    let out = viso(&["snapshot", "compare", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let json = stdout(&out);
+    let tests = events(&json, "test");
+    assert_eq!(tests.len(), 3, "{json}");
+    assert!(
+        tests.iter().all(|t| t.contains(r#""status":"pass""#)),
+        "{json}"
+    );
 }

@@ -487,8 +487,9 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
       `tests/snapshots/<name>.<target>.png` plus a sidecar (tree hash, build id,
       renderer, surface, size, tolerance); a scenario without snapshot steps captured
       by name takes its end; `--output <dir>` writes elsewhere.
-- [ ] `snapshot capture <component>`: a component alone, mounted by a harness the
-      headless build carries, at the test surface.
+- [x] `snapshot capture <component>`: a component alone, mounted by a harness the
+      headless build carries, at the test surface; its golden records the component,
+      so `compare`/`update` take it again with the scenarios.
 - [x] The software raster's CPU shader programs compile once into a flat register
       program run on a quad's four lanes at once, allocating nothing per instance or
       pixel: a full-screen custom shader at 1280×720 (release, `cpu_shader` bench)

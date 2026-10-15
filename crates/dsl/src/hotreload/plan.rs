@@ -160,6 +160,23 @@ pub fn plan_view_for(
     ))
 }
 
+/// [`plan_view_for`] mounting the component named `component`, exported or
+/// not.
+pub fn plan_mount_for(
+    source: &str,
+    origin: &Origin,
+    profile: TargetProfile,
+    component: &str,
+) -> Result<CandidatePlan, Vec<Diagnostic>> {
+    candidate(crate::frontend::compile_mount_for(
+        source,
+        origin,
+        crate::schema::Natives::standard(),
+        profile,
+        component,
+    ))
+}
+
 /// [`plan_view_for`] over `parse`, a current parse of `source` with the
 /// compilation-unit entry.
 pub fn plan_view_parsed(

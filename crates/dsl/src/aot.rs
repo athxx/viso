@@ -44,7 +44,7 @@ use viso_view::{ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewS
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
 use crate::hir::TargetProfile;
-use crate::hotreload::plan::{CandidatePlan, plan, plan_view_for};
+use crate::hotreload::plan::{CandidatePlan, plan, plan_mount_for, plan_view_for};
 use crate::ir::ui_ir::{
     AxisIr, InsetIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
 };
@@ -84,14 +84,44 @@ pub fn build_view_package_for(
     origin: &Origin,
     profile: TargetProfile,
 ) -> Result<Vec<u8>, Vec<Diagnostic>> {
+    let (dir, langs) = packed(&profile);
+    package_plan(&plan_view_for(source, origin, profile)?, dir, &langs)
+}
+
+/// [`build_view_package_for`] mounting the component named `component`,
+/// exported or not.
+pub fn build_mount_package_for(
+    source: &str,
+    origin: &Origin,
+    profile: TargetProfile,
+    component: &str,
+) -> Result<Vec<u8>, Vec<Diagnostic>> {
+    let (dir, langs) = packed(&profile);
+    package_plan(
+        &plan_mount_for(source, origin, profile, component)?,
+        dir,
+        &langs,
+    )
+}
+
+/// Where `profile` reads assets from and the languages it packs shaders in.
+fn packed(profile: &TargetProfile) -> (Option<std::path::PathBuf>, Vec<ShaderLang>) {
     let dir = profile
         .assets
         .as_ref()
         .map(|catalog| catalog.dir().to_owned());
-    let langs = profile.shader_langs.clone();
-    let plan = plan_view_for(source, origin, profile)?;
-    let mut package = emit_view_package(&plan);
-    package.shaders = package_shaders(&plan, &langs).map_err(|error| {
+    (dir, profile.shader_langs.clone())
+}
+
+/// The package of `plan`, its assets read from `dir` and its shaders packed
+/// in `langs`, encoded.
+fn package_plan(
+    plan: &CandidatePlan,
+    dir: Option<std::path::PathBuf>,
+    langs: &[ShaderLang],
+) -> Result<Vec<u8>, Vec<Diagnostic>> {
+    let mut package = emit_view_package(plan);
+    package.shaders = package_shaders(plan, langs).map_err(|error| {
         vec![Diagnostic::error(
             "E3711",
             crate::syntax::TextRange::empty(0.into()),
@@ -99,7 +129,7 @@ pub fn build_view_package_for(
         )]
     })?;
     if let Some(dir) = dir {
-        package.assets = package_assets(&plan, &dir).map_err(|(path, error)| {
+        package.assets = package_assets(plan, &dir).map_err(|(path, error)| {
             vec![Diagnostic::error(
                 crate::hir::infer::asset::ASSET,
                 crate::syntax::TextRange::empty(0.into()),

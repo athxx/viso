@@ -499,6 +499,9 @@ struct AppDriver<A: Application> {
     /// The UI scenario a headless run plays.
     #[cfg(feature = "headless")]
     script: Option<headless::ScriptRunner>,
+    /// The view a headless run mounts alone in place of the app's.
+    #[cfg(feature = "headless")]
+    harness: headless::Harness,
 }
 
 /// The fonts an app registered at init, installed into every window's shaper.
@@ -765,6 +768,8 @@ impl<A: Application> AppDriver<A> {
             hot_reload: hot_reload::HotReloadSession::default(),
             #[cfg(feature = "headless")]
             script: None,
+            #[cfg(feature = "headless")]
+            harness: headless::Harness::default(),
         }
     }
 
@@ -1668,6 +1673,23 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // build inside `open`; read it back afterward to hold for fullscreen hide.
         let caption_cell = Cell::new(None);
         let services = self.services.clone();
+        #[cfg(feature = "headless")]
+        if self.harness.is_pending() {
+            // The view mounts alone: no caption, no safe area, nothing of the
+            // app's own view.
+            let mut ws = WindowState::open(
+                cx,
+                id,
+                &self.fonts,
+                services,
+                ui_chrome,
+                chrome_geom,
+                |_| None,
+            );
+            self.harness.mount(&mut ws);
+            self.windows.push(ws);
+            return;
+        }
         let mut ws = WindowState::open(
             cx,
             id,

@@ -3,7 +3,8 @@
 //! environment; and what the build reports of the scenario.
 //!
 //! A headless build reads them as it starts; a run without them gets the
-//! default surface and lasts until the app settles.
+//! default surface and lasts until the app settles. A run handed a view
+//! package mounts it alone instead of the app's view.
 //!
 //! A UI scenario ([`Script`]) is text, one step a line: input aimed at a node
 //! found by its accessible label (and role), waits, and expectations on what
@@ -32,6 +33,11 @@ pub const REPORT_ENV: &str = "VISO_HEADLESS_REPORT";
 /// scenario takes to is passed in: `<name>.png`, the image, and
 /// `<name>.tree`, the window's tree, layout, paint and batches as text.
 pub const SNAPSHOT_ENV: &str = "VISO_HEADLESS_SNAPSHOTS";
+
+/// The environment variable the path of a [`ViewPackage`](crate::ViewPackage)
+/// is passed in: the run mounts it alone in its first window, in place of
+/// the app's view, as a tool captures one component.
+pub const VIEW_ENV: &str = "VISO_HEADLESS_VIEW";
 
 /// How many frames a step waits for the app to settle by default: two
 /// seconds of its clock.

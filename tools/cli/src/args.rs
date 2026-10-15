@@ -736,11 +736,13 @@ pub enum SnapshotCommand {
     Update(UpdateArgs),
 }
 
-/// Which scenarios `viso snapshot` plays, and where.
+/// Which scenarios and components `viso snapshot` takes, and where.
 #[derive(Debug, Args)]
 pub struct SnapshotArgs {
-    /// One scenario, `tests/ui/<NAME>.tape`; every one when omitted.
-    #[arg(add = ArgValueCandidates::new(complete::scenarios))]
+    /// One scenario, `tests/ui/<NAME>.tape`, else a component shown alone,
+    /// `Name` or `module::Name`; every scenario and component golden when
+    /// omitted.
+    #[arg(value_name = "NAME", add = ArgValueCandidates::new(complete::scenarios))]
     pub scenario: Option<String>,
     /// Where the snapshots are taken: `headless`, the default.
     #[arg(long, value_enum, value_name = "TARGET")]

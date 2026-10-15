@@ -1032,7 +1032,7 @@ Notes:
 $ viso snapshot capture --help
 Render the scenarios headless and write each snapshot as its golden
 
-Usage: viso snapshot capture [OPTIONS] [SCENARIO]
+Usage: viso snapshot capture [OPTIONS] [NAME]
 
 Examples:
   viso snapshot capture                         # write every snapshot the scenarios take as its golden
@@ -1040,7 +1040,7 @@ Examples:
   viso snapshot capture home --output out/home  # into `out/home/` instead of `tests/snapshots/`
 
 Arguments:
-  [SCENARIO]  One scenario, `tests/ui/<NAME>.tape`; every one when omitted
+  [NAME]  One scenario, `tests/ui/<NAME>.tape`, else a component shown alone, `Name` or `module::Name`; every scenario and component golden when omitted
 
 Options:
       --target <TARGET>  Where the snapshots are taken: `headless`, the default [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
@@ -1062,7 +1062,7 @@ Global options:
 $ viso snapshot compare --help
 Hold each snapshot to its golden; what departs goes to `target/viso/snapshots/`
 
-Usage: viso snapshot compare [OPTIONS] [SCENARIO]
+Usage: viso snapshot compare [OPTIONS] [NAME]
 
 Examples:
   viso snapshot compare         # hold every snapshot to its golden
@@ -1070,7 +1070,7 @@ Examples:
   viso snapshot compare --json  # one `test` event a golden, as JSON events
 
 Arguments:
-  [SCENARIO]  One scenario, `tests/ui/<NAME>.tape`; every one when omitted
+  [NAME]  One scenario, `tests/ui/<NAME>.tape`, else a component shown alone, `Name` or `module::Name`; every scenario and component golden when omitted
 
 Options:
       --target <TARGET>  Where the snapshots are taken: `headless`, the default [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
@@ -1091,7 +1091,7 @@ Global options:
 $ viso snapshot update --help
 Rewrite only the goldens that are missing or no longer match
 
-Usage: viso snapshot update [OPTIONS] [SCENARIO]
+Usage: viso snapshot update [OPTIONS] [NAME]
 
 Examples:
   viso snapshot update                    # rewrite the goldens missing or departed from
@@ -1099,7 +1099,7 @@ Examples:
   viso snapshot update --filter settings  # only the snapshots named `*settings*`
 
 Arguments:
-  [SCENARIO]  One scenario, `tests/ui/<NAME>.tape`; every one when omitted
+  [NAME]  One scenario, `tests/ui/<NAME>.tape`, else a component shown alone, `Name` or `module::Name`; every scenario and component golden when omitted
 
 Options:
       --target <TARGET>   Where the snapshots are taken: `headless`, the default [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]

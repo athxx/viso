@@ -15,10 +15,16 @@
 //! the raster, as a PNG with its tree, layout and paint as text beside it,
 //! for the launching tool to hold to a golden. Each step's outcome is a line
 //! of the report; the first failed step ends the run.
+//!
+//! A run handed a view package ([`VIEW_ENV`]) mounts it alone in its first
+//! window, with no caption and none of the app's own view, so a tool
+//! captures one component as the app's fonts and assets draw it.
 
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use viso_platform::backend::headless::{HeadlessApp, HeadlessFeed};
 use viso_platform::{
@@ -26,13 +32,14 @@ use viso_platform::{
     RawText, WindowId,
 };
 use viso_runtime::{FixedStepClock, RuntimeCx, Scheduler};
-use viso_ui::NodeId;
 use viso_ui::semantics::SemanticsNode;
+use viso_ui::{DirtyClass, NodeId};
 use viso_view::headless::{
     Action, Chord, Expectation, FRAMES_ENV, HeadlessSurface, Key, REPORT_ENV, Reported, SCRIPT_ENV,
-    SNAPSHOT_ENV, SURFACE_ENV, Script, Selector, State,
+    SNAPSHOT_ENV, SURFACE_ENV, Script, Selector, State, VIEW_ENV,
 };
 use viso_view::snapshot::Image;
+use viso_view::{ViewHost, load_view};
 
 use crate::{AppDriver, Application, WindowState, services};
 
@@ -51,6 +58,15 @@ pub(crate) fn run<A: Application>() {
         app.frame_budget(frames);
     }
     let mut driver = AppDriver::<A>::new(Some(services::Services::unsupported()));
+    if let Some(path) = viso_platform::launch_var(VIEW_ENV) {
+        match std::fs::read(&path) {
+            Ok(package) => driver.harness.package = Some(package),
+            Err(error) => {
+                eprintln!("viso: cannot read the view `{path}`: {error}");
+                std::process::exit(2);
+            }
+        }
+    }
     if let Some(path) = viso_platform::launch_var(SCRIPT_ENV) {
         let report = viso_platform::launch_var(REPORT_ENV);
         let snapshots = viso_platform::launch_var(SNAPSHOT_ENV).map(PathBuf::from);
@@ -67,6 +83,51 @@ pub(crate) fn run<A: Application>() {
         std::time::Duration::from_nanos(1_000_000_000 / 60),
     );
     Scheduler::with_clock(app, driver, clock).run();
+}
+
+/// The view package a run mounts alone, and once it is mounted the instance
+/// that runs it.
+#[derive(Default)]
+pub(crate) struct Harness {
+    package: Option<Vec<u8>>,
+    host: Option<Rc<RefCell<ViewHost>>>,
+}
+
+impl Harness {
+    /// Whether a view waits to be mounted in place of the app's.
+    pub(crate) fn is_pending(&self) -> bool {
+        self.package.is_some()
+    }
+
+    /// Mounts the view as the root of `ws`, a window opened with none; a
+    /// package that does not load ends the run.
+    pub(crate) fn mount(&mut self, ws: &mut WindowState) {
+        let Some(package) = self.package.take() else {
+            return;
+        };
+        let loaded = match load_view(
+            &package,
+            &mut ws.store,
+            &mut ws.states,
+            &mut ws.bindings,
+            &mut ws.virtual_lists,
+        ) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                eprintln!("viso: the view to mount does not load: {error}");
+                std::process::exit(2);
+            }
+        };
+        self.host = loaded.host;
+        ws.root = loaded.root;
+        ws.shape_pending_text();
+        if let Some(root) = ws.root {
+            ws.store.mark_dirty(
+                root,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+        }
+    }
 }
 
 /// A scenario being played.

@@ -2772,6 +2772,13 @@ leaking platform-private APIs into the generic Render IR.
     reports `Srgb`, and the wide/HDR paths are exercised through the headless backend's
     reported target. Bandwidth of an HDR frame is not measured; the SDR path is unchanged by
     construction (same format as before), so no regression is claimed or possible.
+- [ ] SDR output is encoded once (§5.4): the Metal layer is `BGRA8Unorm` with no colorspace
+      and no composite shader encodes, and the headless readback writes the linear
+      framebuffer as sRGB bytes, so every linearized color shows dark (`#22aa44` reads back
+      `(4, 103, 15)`, `#ff3300` as `(255, 8, 0)`) — on screen as in `viso snapshot` goldens.
+      Use an `*Srgb` swapchain (or encode in the final composite), encode the headless
+      `read_pixels_bgra8` of an `Srgb` surface, and check which paint paths pass sRGB bytes
+      through unlinearized (the default window background reads back `(26, 26, 26)`).
 
 ### M1 Done (no standalone spec block)
 

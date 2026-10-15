@@ -243,7 +243,7 @@ fn mounted_view_diagnostics(
     let Some(cu) = CompilationUnit::cast(root) else {
         return Vec::new();
     };
-    let Some(decl) = mounted_component(&cu, source, &mut Vec::new()) else {
+    let Some(decl) = mounted_component(&cu, source, None, &mut Vec::new()) else {
         return Vec::new();
     };
     let Some(block) = decl.view().and_then(|view| view.block()) else {

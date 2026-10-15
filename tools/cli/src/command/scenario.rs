@@ -9,6 +9,10 @@
 //! its report and the directory its snapshots go to reach the run in the
 //! environment. Each run is handed back, in name order, as soon as the runs
 //! before it are.
+//!
+//! A case may instead be a component alone: its view package goes to the run
+//! beside a scenario of one snapshot step, and the run mounts it in place of
+//! the app's view.
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -21,7 +25,7 @@ use std::time::{Duration, Instant};
 use viso_project::Target;
 use viso_view::headless::{
     Action, FRAMES_ENV, HeadlessSurface, REPORT_ENV, Reported, SCRIPT_ENV, SNAPSHOT_ENV,
-    SURFACE_ENV, Script, is_snapshot_name,
+    SURFACE_ENV, Script, VIEW_ENV, is_snapshot_name,
 };
 
 use crate::build::cargo::ProcessTree;
@@ -48,11 +52,15 @@ const WITHHELD: &[&str] = &[
     SCRIPT_ENV,
     REPORT_ENV,
     SNAPSHOT_ENV,
+    VIEW_ENV,
 ];
 
 /// The name of the file a played scenario is written to when it differs
 /// from its source.
 const PLAYED: &str = "scenario.tape";
+
+/// The name of the file a component's view package is written to.
+const VIEW: &str = "view.pkg";
 
 /// Why no scenario was planned.
 pub(super) enum Unplanned {
@@ -113,9 +121,10 @@ pub(super) fn scenarios(dir: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
     Ok(found)
 }
 
-/// A scenario that parsed, to play.
+/// A scenario that parsed, or a component, to play.
 pub(super) struct Case {
     pub name: String,
+    /// The scenario, or the source declaring the component.
     pub path: PathBuf,
     pub text: String,
     pub surface: HeadlessSurface,
@@ -124,6 +133,21 @@ pub(super) struct Case {
     /// Whether it is played with a snapshot of its end, named after it,
     /// appended.
     pub ends_in_snapshot: bool,
+    pub kind: Kind,
+}
+
+/// What a case plays.
+pub(super) enum Kind {
+    /// The scenario at the case's path.
+    Scenario,
+    /// A component alone: its module path and name, the view package
+    /// mounting it, and the line of its declaration, which every report
+    /// about it points at.
+    Component {
+        path: String,
+        view: Vec<u8>,
+        line: u32,
+    },
 }
 
 impl Case {
@@ -162,12 +186,41 @@ impl Case {
             text,
             snapshots,
             ends_in_snapshot,
+            kind: Kind::Scenario,
         })
+    }
+
+    /// The case that mounts `view`, the component `component` declared on
+    /// `line` of the source `text` at `path`, alone at `surface` and takes
+    /// one snapshot of it named `name`.
+    pub fn component(
+        name: String,
+        component: String,
+        (path, text, line): (PathBuf, String, u32),
+        view: Vec<u8>,
+        surface: HeadlessSurface,
+    ) -> Case {
+        Case {
+            snapshots: vec![(name.clone(), 1)],
+            name,
+            path,
+            text,
+            surface,
+            ends_in_snapshot: true,
+            kind: Kind::Component {
+                path: component,
+                view,
+                line,
+            },
+        }
     }
 
     /// The line a report about the step on `line` points at: the scenario's
     /// last step for the snapshot of its end, which is on no line of it.
     pub fn shown(&self, line: u32) -> u32 {
+        if let Kind::Component { line, .. } = self.kind {
+            return line;
+        }
         if !self.ends_in_snapshot || self.snapshot_at(line).is_none() {
             return line;
         }
@@ -395,29 +448,50 @@ fn run(exe: &Path, work: &Path, index: usize, case: &Case, stop: &Mutex<bool>) -
             );
         }
     };
-    let script = if case.ends_in_snapshot {
-        let path = dir.join(PLAYED);
-        let mut text = case.text.clone();
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
+    let end = format!("expect snapshot \"{}\"\n", case.name);
+    let script = match &case.kind {
+        Kind::Component { .. } => Some(end),
+        Kind::Scenario if case.ends_in_snapshot => {
+            let mut text = case.text.clone();
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&end);
+            Some(text)
         }
-        text.push_str(&format!("expect snapshot \"{}\"\n", case.name));
-        if let Err(error) = fs::write(&path, text) {
+        Kind::Scenario => None,
+    };
+    let view = match &case.kind {
+        Kind::Component { view, .. } => Some((dir.join(VIEW), view.as_slice())),
+        Kind::Scenario => None,
+    };
+    let script = script.map(|text| (dir.join(PLAYED), text));
+    let written = [
+        script.as_ref().map(|(path, text)| (path, text.as_bytes())),
+        view.as_ref().map(|(path, bytes)| (path, *bytes)),
+    ];
+    for (path, bytes) in written.into_iter().flatten() {
+        if let Err(error) = fs::write(path, bytes) {
             return played(
                 Ended::Crashed(format!("cannot write `{}`: {error}", path.display())),
                 String::new(),
                 Vec::new(),
             );
         }
-        path
-    } else {
-        case.path
+    }
+    let script = match script {
+        Some((path, _)) => path,
+        None => case
+            .path
             .canonicalize()
-            .unwrap_or_else(|_| case.path.clone())
+            .unwrap_or_else(|_| case.path.clone()),
     };
     let mut command = Command::new(exe);
     for name in WITHHELD {
         command.env_remove(name);
+    }
+    if let Some((path, _)) = &view {
+        command.env(VIEW_ENV, path);
     }
     command
         .env(SURFACE_ENV, case.surface.to_env())

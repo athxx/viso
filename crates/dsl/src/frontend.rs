@@ -295,7 +295,7 @@ pub fn compile_component_for(source: &str, origin: &Origin, profile: TargetProfi
         )),
         errors: parse.errors,
     };
-    compile_unit(source, unit, origin, Natives::standard(), profile)
+    compile_unit(source, unit, origin, Natives::standard(), profile, None)
 }
 
 /// Compiles a `.vs` file for `view!`: the unit's exported component, or its only
@@ -318,7 +318,66 @@ pub fn compile_file_for(
     profile: TargetProfile,
 ) -> Compiled {
     let parse = parse_entry(&tokenize(source), source, Entry::CompilationUnit);
-    compile_unit(source, parse, origin, natives, profile)
+    compile_unit(source, parse, origin, natives, profile, None)
+}
+
+/// [`compile_file_for`] mounting the component named `component`, exported
+/// or not, whatever else the file declares.
+pub fn compile_mount_for(
+    source: &str,
+    origin: &Origin,
+    natives: Arc<Natives>,
+    profile: TargetProfile,
+    component: &str,
+) -> Compiled {
+    let parse = parse_entry(&tokenize(source), source, Entry::CompilationUnit);
+    compile_unit(source, parse, origin, natives, profile, Some(component))
+}
+
+/// A component a `.vs` file declares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredComponent {
+    pub name: String,
+    pub exported: bool,
+    /// Its declaration's span.
+    pub range: TextRange,
+    /// The inputs it declares without a default, which a use must give.
+    pub required: Vec<String>,
+}
+
+/// The components `source`, a `.vs` file, declares, in source order.
+pub fn declared_components(source: &str) -> Vec<DeclaredComponent> {
+    let parse = parse_entry(&tokenize(source), source, Entry::CompilationUnit);
+    let Some(cu) = CompilationUnit::cast(SyntaxNode::new_root(parse.root)) else {
+        return Vec::new();
+    };
+    let declared = |decl: ComponentDecl, exported| {
+        let required = decl
+            .members()
+            .filter_map(|member| match member {
+                Member::Input(input) if input.default().is_none() => {
+                    Some(input.name()?.text().trim_start_matches("r#").to_owned())
+                }
+                _ => None,
+            })
+            .collect();
+        Some(DeclaredComponent {
+            name: decl.name()?.text(),
+            exported,
+            range: decl.syntax().text_range(),
+            required,
+        })
+    };
+    cu.items()
+        .filter_map(|item| match item {
+            Item::Component(decl) => declared(decl, false),
+            Item::Export(export) => match export.declaration()? {
+                Item::Component(decl) => declared(decl, true),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 /// [`compile_file_for`] over `parse`, a parse of `source` with the
@@ -333,7 +392,7 @@ pub fn compile_parsed_for(
     natives: Arc<Natives>,
     profile: TargetProfile,
 ) -> Compiled {
-    compile_unit(source, parse, origin, natives, profile)
+    compile_unit(source, parse, origin, natives, profile, None)
 }
 
 /// The module frontend over one parsed unit: resolve, lower to typed HIR, pick the
@@ -344,6 +403,7 @@ fn compile_unit(
     origin: &Origin,
     natives: Arc<Natives>,
     profile: TargetProfile,
+    mount: Option<&str>,
 ) -> Compiled {
     let mut diagnostics = parse.diagnostics();
     if let Some(error) = origin
@@ -382,7 +442,7 @@ fn compile_unit(
     diagnostics.extend(module.errors.iter().cloned());
     diagnostics.extend(lowered.diagnostics.iter().cloned());
 
-    let Some(decl) = mounted_component(&cu, source, &mut diagnostics) else {
+    let Some(decl) = mounted_component(&cu, source, mount, &mut diagnostics) else {
         return Compiled::empty(diagnostics, behavior, shaders);
     };
     let range = decl.syntax().text_range();
@@ -724,14 +784,29 @@ fn declares_system(cu: &CompilationUnit) -> bool {
     })
 }
 
-/// The component a unit mounts: its single exported component, else its single
-/// component. A unit of systems or shaders without a component mounts nothing. Anything
-/// else is ambiguous or empty and reported.
+/// The component a unit mounts: the one named `mount`, else its single
+/// exported component, else its single component. A unit of systems or
+/// shaders without a component mounts nothing. Anything else is ambiguous or
+/// empty and reported.
 pub(crate) fn mounted_component(
     cu: &CompilationUnit,
     source: &str,
+    mount: Option<&str>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<ComponentDecl> {
+    if let Some(name) = mount {
+        let found = component_decls(cu)
+            .into_iter()
+            .find(|decl| decl.name().is_some_and(|n| n.text() == name));
+        if found.is_none() {
+            diagnostics.push(Diagnostic::error(
+                "E2005",
+                whole(source),
+                format!("the source declares no component `{name}` to mount"),
+            ));
+        }
+        return found;
+    }
     let mut exported = Vec::new();
     let mut all = Vec::new();
     for item in cu.items() {
@@ -948,6 +1023,52 @@ mod tests {
             module_path(&root, Path::new("/elsewhere/x.vs")),
             ["elsewhere", "x"]
         );
+    }
+
+    #[test]
+    fn a_component_is_mounted_by_name_whatever_the_file_exports() {
+        let src = "export component Page { view { Badge {} } }
+component Badge {
+  input label: String = \"new\";
+  view { Text { text: label; } }
+}
+";
+        let declared = declared_components(src);
+        let names: Vec<(&str, bool)> = declared
+            .iter()
+            .map(|c| (c.name.as_str(), c.exported))
+            .collect();
+        assert_eq!(names, [("Page", true), ("Badge", false)]);
+        assert!(declared.iter().all(|c| c.required.is_empty()));
+        let needy = declared_components(
+            "component Tag { input text: String; view { Text { text: text; } } }",
+        );
+        assert_eq!(needy[0].required, ["text"]);
+        assert_eq!(
+            compile_file(src, &origin(&["page"]))
+                .component
+                .unwrap()
+                .schema
+                .name,
+            "Page"
+        );
+        let badge = compile_mount_for(
+            src,
+            &origin(&["page"]),
+            Natives::standard(),
+            TargetProfile::default(),
+            "Badge",
+        );
+        assert!(!badge.has_errors(), "{:?}", badge.diagnostics);
+        assert_eq!(badge.component.unwrap().schema.name, "Badge");
+        let missing = compile_mount_for(
+            src,
+            &origin(&["page"]),
+            Natives::standard(),
+            TargetProfile::default(),
+            "Card",
+        );
+        assert_eq!(codes(&missing), ["E2005"]);
     }
 
     #[test]

@@ -850,10 +850,18 @@ mod tests {
                     Body::Filled(text) => text.contains("{name}"),
                     Body::Verbatim(bytes) => bytes.windows(6).any(|w| w == b"{name}"),
                 };
-                assert_eq!(filled, matches!(file.body, Body::Filled(_)), "{}", file.path);
+                assert_eq!(
+                    filled,
+                    matches!(file.body, Body::Filled(_)),
+                    "{}",
+                    file.path
+                );
             }
             if binary {
-                assert!(paths.iter().any(|p| p.starts_with("assets/fonts/")), "{template:?}");
+                assert!(
+                    paths.iter().any(|p| p.starts_with("assets/fonts/")),
+                    "{template:?}"
+                );
             }
         }
     }

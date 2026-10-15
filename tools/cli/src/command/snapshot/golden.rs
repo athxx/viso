@@ -34,6 +34,8 @@ pub(in crate::command) struct Taken {
     /// The tree, layout, paint and batches that drew it.
     tree: String,
     surface: HeadlessSurface,
+    /// The component it shows alone, by module path, when it is one's.
+    component: Option<String>,
 }
 
 impl Taken {
@@ -55,7 +57,14 @@ impl Taken {
             image,
             tree,
             surface,
+            component: None,
         })
+    }
+
+    /// The snapshot as one of the component at `path` alone.
+    pub fn of_component(mut self, path: &str) -> Taken {
+        self.component = Some(path.to_owned());
+        self
     }
 
     fn tree_hash(&self) -> String {
@@ -188,6 +197,12 @@ impl Store {
     /// Whether `name` has a golden.
     pub fn has(&self, name: &str) -> bool {
         self.file(name, "png").is_file()
+    }
+
+    /// The component, by module path, the golden `name` shows alone; `None`
+    /// for a scenario's, or one whose sidecar cannot be read.
+    pub fn component(&self, name: &str) -> Option<String> {
+        self.sidecar(name).ok()?.component
     }
 
     /// The names of every golden, in order.
@@ -324,6 +339,10 @@ impl Store {
         }
         Ok(Sidecar {
             tolerance,
+            component: value
+                .get("component")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned),
             tree_hash: value
                 .get("tree_hash")
                 .and_then(JsonValue::as_str)
@@ -339,8 +358,13 @@ impl Store {
             w.into_string()
         };
         let surface = taken.surface;
+        let component = taken
+            .component
+            .as_deref()
+            .map(|path| format!("  \"component\": {},\n", string(path)))
+            .unwrap_or_default();
         format!(
-            "{{\n  \"snapshot_version\": {SNAPSHOT_VERSION},\n  \"name\": {},\n  \
+            "{{\n  \"snapshot_version\": {SNAPSHOT_VERSION},\n  \"name\": {},\n{component}  \
              \"target\": {},\n  \"renderer\": {},\n  \"surface\": {},\n  \
              \"size\": [{}, {}],\n  \"tree_hash\": {},\n  \"build_id\": {},\n  \
              \"tolerance\": {{ \"threshold\": {}, \"pixels\": {} }}\n}}\n",
@@ -363,6 +387,7 @@ impl Store {
 struct Sidecar {
     tolerance: Tolerance,
     tree_hash: Option<String>,
+    component: Option<String>,
 }
 
 /// `path` relative to `root`, `/`-separated.
@@ -395,6 +420,7 @@ mod tests {
                 height: 2,
                 scale: 1.0,
             },
+            component: None,
         }
     }
 
@@ -417,7 +443,12 @@ mod tests {
             Some("4x2@1")
         );
         assert_eq!(store.names(), ["home"]);
+        assert_eq!(store.component("home"), None);
         assert!(matches!(store.hold(&gray).unwrap(), Held::Matched));
+
+        let badge = taken("badge", [0, 0, 0, 255], "tree:\n").of_component("ui::Badge");
+        store.write(&badge, "b1").unwrap();
+        assert_eq!(store.component("badge").as_deref(), Some("ui::Badge"));
 
         let red = taken("home", [255, 0, 0, 255], "tree: changed\n");
         let Held::Differs(departure) = store.hold(&red).unwrap() else {

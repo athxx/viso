@@ -1,7 +1,13 @@
-//! `viso snapshot capture|compare|update [<scenario>]`: the images, with the
-//! tree, layout and paint that drew them, the UI scenarios under `tests/ui/`
-//! take with `expect snapshot "<name>"` steps, held to the goldens under
-//! `tests/snapshots/` (`Viso_CLI.md` §23).
+//! `viso snapshot capture|compare|update [<scenario>|<component>]`: the
+//! images, with the tree, layout and paint that drew them, the UI scenarios
+//! under `tests/ui/` take with `expect snapshot "<name>"` steps, and those of
+//! components shown alone, held to the goldens under `tests/snapshots/`
+//! (`Viso_CLI.md` §23).
+//!
+//! A name that is no scenario's names a component, `Name` or `module::Name`:
+//! it is mounted alone in a headless run, with its inputs' defaults, and its
+//! golden records which component it shows, so `compare` and `update` take
+//! it again with the scenarios.
 //!
 //! A scenario that takes no snapshot of its own is held at its end to the
 //! golden named after it, when it has one; `capture` of such a scenario by
@@ -12,6 +18,7 @@
 //! but by `capture` or `update`. A snapshot is taken only from a scenario
 //! that played through.
 
+mod component;
 mod golden;
 
 pub(crate) use golden::SNAPSHOT_VERSION;
@@ -24,7 +31,7 @@ use viso_dsl::Diagnostic;
 use viso_view::headless::HeadlessSurface;
 
 use super::check;
-use super::scenario::{self, Case, Ended, Played, SCENARIOS, Unplanned};
+use super::scenario::{self, Case, Ended, Kind, Played, SCENARIOS, TAPE, Unplanned};
 use super::test::{invalid, line_range, relative, report};
 use crate::args::{SnapshotCommand, TestTarget};
 use crate::context::Context;
@@ -88,12 +95,6 @@ pub fn run(ctx: &Context<'_>, command: &SnapshotCommand, out: &mut Output) -> u8
     let store = Store::new(&root, output, &layout.viso_dir(), TARGET);
     let keeps = |name: &str| filter.is_none_or(|pattern| name.contains(pattern));
 
-    let planned = match scenario::plan(&root, args.scenario.as_deref(), |_| true, None) {
-        Ok(planned) => planned,
-        Err(Unplanned::Nothing(why) | Unplanned::Unreadable(why)) => {
-            return out.failure(ENV_TEST_INPUT, &why, &[]);
-        }
-    };
     let (width, height, scale) = checked.project.manifest.test.surface.resolved();
     let surface = HeadlessSurface {
         width,
@@ -101,9 +102,86 @@ pub fn run(ctx: &Context<'_>, command: &SnapshotCommand, out: &mut Output) -> u8
         scale: scale.get(),
     };
     let named = args.scenario.is_some();
+    let wanted_component = args.scenario.as_deref().filter(|name| {
+        !root
+            .join(SCENARIOS)
+            .join(format!("{name}.{TAPE}"))
+            .is_file()
+    });
+    // The goldens of components, which are taken again with the scenarios.
+    let components: Vec<(String, String)> = if named {
+        Vec::new()
+    } else {
+        store
+            .names()
+            .into_iter()
+            .filter_map(|name| Some((store.component(&name)?, name)))
+            .collect()
+    };
+    let planned = match wanted_component {
+        Some(_) => Vec::new(),
+        None => match scenario::plan(&root, args.scenario.as_deref(), |_| true, None) {
+            Ok(planned) => planned,
+            Err(Unplanned::Nothing(_)) if !components.is_empty() => Vec::new(),
+            Err(Unplanned::Nothing(why) | Unplanned::Unreadable(why)) => {
+                return out.failure(ENV_TEST_INPUT, &why, &[]);
+            }
+        },
+    };
     let mut code = SUCCESS;
     let mut cases = Vec::new();
     let mut taken_by: HashMap<String, String> = HashMap::new();
+    let mut lost: Vec<(String, String)> = Vec::new();
+    let alone = Alone {
+        checked: &checked,
+        surface,
+    };
+    if let Some(name) = wanted_component {
+        match component::find(&checked.package, name) {
+            Ok(Some(found)) => match alone.case(out, &found.name.clone(), found) {
+                Ok(case) => cases.push(case),
+                Err(failed) => return failed,
+            },
+            Ok(None) => {
+                return out.failure_next(
+                    ENV_TEST_INPUT,
+                    &format!(
+                        "no scenario `{name}` (`{SCENARIOS}/{name}.{TAPE}`) and no component `{name}`"
+                    ),
+                    &["a component is named `Name` or `module::Name`".to_owned()],
+                    &[],
+                );
+            }
+            Err(why) => {
+                invalid(out, None, None, &why);
+                return DIAGNOSTICS;
+            }
+        }
+    }
+    for (path, name) in &components {
+        match component::find(&checked.package, path) {
+            Ok(Some(found)) => match alone.case(out, name, found) {
+                Ok(case) => {
+                    if taken_twice(out, &root, &case, &mut taken_by).is_some() {
+                        code = DIAGNOSTICS;
+                    } else if keeps(name) {
+                        cases.push(case);
+                    }
+                }
+                Err(failed) => code = code.max(failed),
+            },
+            Ok(None) => {
+                taken_by.insert(name.clone(), path.clone());
+                if keeps(name) {
+                    lost.push((name.clone(), path.clone()));
+                }
+            }
+            Err(why) => {
+                invalid(out, None, None, &why);
+                code = DIAGNOSTICS;
+            }
+        }
+    }
     for (name, path) in planned {
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
@@ -151,7 +229,7 @@ pub fn run(ctx: &Context<'_>, command: &SnapshotCommand, out: &mut Output) -> u8
     if code != SUCCESS {
         return code;
     }
-    if cases.is_empty() && (orphans.is_empty() || mode == Mode::Capture) {
+    if cases.is_empty() && ((orphans.is_empty() && lost.is_empty()) || mode == Mode::Capture) {
         let why = match &args.scenario {
             Some(name) => format!("the scenario `{name}` takes no snapshot"),
             None => format!("no scenario in `{SCENARIOS}` takes a snapshot"),
@@ -195,12 +273,26 @@ pub fn run(ctx: &Context<'_>, command: &SnapshotCommand, out: &mut Output) -> u8
         );
         code = code.max(played);
     }
-    for name in &orphans {
+    let untaken = orphans
+        .iter()
+        .map(|name| (name, None))
+        .chain(lost.iter().map(|(name, path)| (name, Some(path))));
+    for (name, path) in untaken {
         let golden = store.golden_name(name);
-        let message = format!("the golden `{golden}` is taken by no scenario");
-        let notes = [format!(
-            "remove it, or take it with an `expect snapshot \"{name}\"` step"
-        )];
+        let (message, notes) = match path {
+            None => (
+                format!("the golden `{golden}` is taken by no scenario"),
+                [format!(
+                    "remove it, or take it with an `expect snapshot \"{name}\"` step"
+                )],
+            ),
+            Some(path) => (
+                format!(
+                    "the golden `{golden}` shows the component `{path}`, which the package no longer declares"
+                ),
+                ["remove it, or capture the component under its new name".to_owned()],
+            ),
+        };
         if mode == Mode::Compare {
             out.failure(TEST_SNAPSHOT_MISSING, &message, &notes);
             report(
@@ -238,6 +330,64 @@ pub fn run(ctx: &Context<'_>, command: &SnapshotCommand, out: &mut Output) -> u8
         _ => {}
     }
     code
+}
+
+/// How components are captured alone: in the package as checked, at the
+/// test surface.
+struct Alone<'c> {
+    checked: &'c check::Checked,
+    surface: HeadlessSurface,
+}
+
+impl Alone<'_> {
+    /// The case showing `found` alone, its snapshot named `name`; the exit
+    /// code when it cannot be compiled to.
+    fn case(&self, out: &mut Output, name: &str, found: component::Found) -> Result<Case, u8> {
+        let project = &self.checked.project;
+        let given = &self.checked.profile;
+        // As the app's views are compiled: its grants, catalogs and assets.
+        let profile = viso_dsl::hir::TargetProfile {
+            capabilities: given.capabilities.clone(),
+            messages: given.messages.clone(),
+            assets: given.assets.clone(),
+            ..viso_dsl::hir::TargetProfile::default()
+        };
+        let language = project
+            .manifest
+            .package
+            .language
+            .as_ref()
+            .map(|language| language.value.clone());
+        let source = Source::new(&found.file, &project.root, &found.source);
+        match component::package(&found, &self.checked.name, language, profile) {
+            Ok(view) => Ok(Case::component(
+                name.to_owned(),
+                found.path.clone(),
+                (found.file.clone(), found.source.clone(), found.line),
+                view,
+                self.surface,
+            )),
+            Err(component::Unbuilt::Source(diagnostics)) => {
+                for diagnostic in &diagnostics {
+                    out.source(Some(&source), &[], diagnostic);
+                }
+                Err(DIAGNOSTICS)
+            }
+            Err(component::Unbuilt::Alone(why)) => {
+                invalid(
+                    out,
+                    Some(&source),
+                    Some(line_range(&found.source, found.line)),
+                    &format!(
+                        "the component `{}` cannot be shown alone: {}",
+                        found.path,
+                        why.join("; ")
+                    ),
+                );
+                Err(DIAGNOSTICS)
+            }
+        }
+    }
 }
 
 /// What a capture or an update wrote.
@@ -334,7 +484,10 @@ fn hold(
             out.source(Some(&source), &[], &diagnostic);
         };
         let taken = match shot.map(|_| Taken::read(&played.snapshots(), name, case.surface)) {
-            Some(Ok(taken)) => taken,
+            Some(Ok(taken)) => match &case.kind {
+                Kind::Component { path, .. } => taken.of_component(path),
+                Kind::Scenario => taken,
+            },
             Some(Err(why)) => {
                 out.failure(RUN_SNAPSHOT_FAILED, &why, &[]);
                 code = code.max(RUNTIME);
