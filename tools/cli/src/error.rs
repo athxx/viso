@@ -152,6 +152,12 @@ codes! {
         fix: "Check the path and its permissions; `viso test --filter` selects scenarios by name.",
         commands: ["viso test --help"],
     }
+    ENV_LSP = ENVIRONMENT {
+        summary: "The language server `viso-lsp` was not found or could not be started.",
+        explanation: "`viso lsp` runs the `viso-lsp` binary installed next to `viso`, or else the first on `PATH`, handing it the editor's stdin and stdout. Neither place has one, or starting it failed.",
+        fix: "Install `viso-lsp` with the same Viso version as the CLI (`cargo install viso-lsp`), next to `viso` or on `PATH`.",
+        commands: ["viso doctor"],
+    }
     ENV_DUMP_WRITE = ENVIRONMENT {
         summary: "The dump could not be written to the `--out` file.",
         explanation: "`viso dump --out` writes the dump to a file, and creating or writing it failed: its directory is missing or read-only, or the disk is full.",

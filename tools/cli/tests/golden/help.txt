@@ -28,6 +28,7 @@ LANGUAGE
   schema      Show the typed schema of a widget, component, native library, function or type
   explain     Explain a diagnostic code: why it is raised and how to fix it
   dump        Print one of the compiler's IRs of the project: syntax tree, HIR, view, behavior, shader, systems
+  lsp         Start the `.vs` language server for an editor, speaking LSP over stdio
 
 TEST / DEBUG
   test        Run the project's tests: unit, UI, game
@@ -912,6 +913,31 @@ Options:
       --symbol <PATH>  Narrow a file's dump to one of its declarations, by path or suffix, optionally with `.member`
       --out <FILE>     Write the dump to FILE instead of printing it
   -h, --help           Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso lsp --help
+Start the `.vs` language server for an editor, speaking LSP over stdio
+
+Usage: viso lsp [OPTIONS]
+
+Examples:
+  viso lsp --stdio  # what an editor starts for `.vs` files
+  viso lsp          # the same: stdio is the only transport
+
+Options:
+      --stdio  Speak the protocol over stdin and stdout, the transport the server has
+  -h, --help   Print help
 
 Global options:
       --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward

@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use viso_dsl::diag::{Diagnostic, Severity};
+use viso_dsl::diag::{Diagnostic, Severity, codes};
 
 use crate::actions;
 use crate::engine;
@@ -43,12 +43,21 @@ pub struct Server {
     uri_of: HashMap<FileId, String>,
     /// The [`FileId`] each open URI maps to.
     id_of: HashMap<String, FileId>,
+    /// Whether the client asked for `shutdown`, which makes the `exit` after it
+    /// a clean one.
+    shut_down: bool,
 }
 
 impl Server {
     /// A fresh server with no open documents.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The process exit code once the loop stops: `0` after `shutdown`, `1`
+    /// for an `exit` or an end of input without it, as the protocol has it.
+    pub fn exit_code(&self) -> u8 {
+        if self.shut_down { 0 } else { 1 }
     }
 
     /// Handles one incoming JSON-RPC message, returning the reply and any diagnostics
@@ -69,13 +78,16 @@ impl Server {
             "initialized" => (Outbound::default(), false),
             // `shutdown` acknowledges with a null result; the loop stops only on the
             // subsequent `exit` notification, per the LSP lifecycle.
-            "shutdown" => (
-                Outbound {
-                    reply: Some(response(id, Json::Null)),
-                    notifications: Vec::new(),
-                },
-                false,
-            ),
+            "shutdown" => {
+                self.shut_down = true;
+                (
+                    Outbound {
+                        reply: Some(response(id, Json::Null)),
+                        notifications: Vec::new(),
+                    },
+                    false,
+                )
+            }
             "exit" => (Outbound::default(), true),
             "textDocument/didOpen" => (self.did_open(params), false),
             "textDocument/didChange" => (self.did_change(params), false),
@@ -97,6 +109,13 @@ impl Server {
             "textDocument/rename" => (
                 Outbound {
                     reply: Some(response(id, self.rename(params))),
+                    notifications: Vec::new(),
+                },
+                false,
+            ),
+            "textDocument/hover" => (
+                Outbound {
+                    reply: Some(response(id, self.hover(params))),
                     notifications: Vec::new(),
                 },
                 false,
@@ -225,6 +244,53 @@ impl Server {
             }
             None => Json::Null,
         }
+    }
+
+    /// What each diagnostic under the cursor means and how to fix it, from
+    /// the diagnostics registry `viso explain` reads.
+    fn hover(&self, params: Option<&Json>) -> Json {
+        let Some((id, offset)) = self.locate(params) else {
+            return Json::Null;
+        };
+        let doc = self.docs.get(id).expect("located doc is open");
+        let mut sections: Vec<String> = Vec::new();
+        let mut range: Option<viso_dsl::TextRange> = None;
+        for d in doc.parse.errors.iter().chain(doc.resolved.errors.iter()) {
+            let primary = d.primary;
+            if offset < primary.start() || offset > primary.end() {
+                continue;
+            }
+            let Some(info) = codes::lookup(d.code) else {
+                continue;
+            };
+            let section = format!(
+                "**{}** {}\n\n{}\n\nFix: {}\n\n`viso explain {}`",
+                info.code, info.title, info.explanation, info.fix, info.code
+            );
+            if !sections.contains(&section) {
+                sections.push(section);
+            }
+            range = Some(match range {
+                Some(r) => viso_dsl::TextRange::new(
+                    r.start().min(primary.start()),
+                    r.end().max(primary.end()),
+                ),
+                None => primary,
+            });
+        }
+        let Some(range) = range else {
+            return Json::Null;
+        };
+        let mut contents = BTreeMap::new();
+        contents.insert("kind".to_string(), Json::Str("markdown".to_string()));
+        contents.insert("value".to_string(), Json::Str(sections.join("\n\n---\n\n")));
+        let mut m = BTreeMap::new();
+        m.insert("contents".to_string(), Json::Obj(contents));
+        m.insert(
+            "range".to_string(),
+            range_json(position::to_lsp_range(&doc.line_index, range)),
+        );
+        Json::Obj(m)
     }
 
     fn references(&self, params: Option<&Json>) -> Json {
@@ -459,6 +525,7 @@ fn initialize_result() -> Json {
     caps.insert("referencesProvider".to_string(), Json::Bool(true));
     caps.insert("renameProvider".to_string(), Json::Bool(true));
     caps.insert("documentFormattingProvider".to_string(), Json::Bool(true));
+    caps.insert("hoverProvider".to_string(), Json::Bool(true));
     caps.insert("codeActionProvider".to_string(), Json::Bool(true));
     let mut result = BTreeMap::new();
     result.insert("capabilities".to_string(), Json::Obj(caps));
@@ -882,12 +949,49 @@ mod tests {
         assert!(!exit, "shutdown alone does not stop the loop");
         let (_, exit) = s.handle(&notif("exit", Json::Null));
         assert!(exit, "exit stops the loop");
+        assert_eq!(s.exit_code(), 0);
+
+        let mut s = Server::new();
+        let (_, exit) = s.handle(&notif("exit", Json::Null));
+        assert!(exit);
+        assert_eq!(s.exit_code(), 1, "an exit without shutdown");
+    }
+
+    #[test]
+    fn hover_on_a_diagnostic_explains_its_code() {
+        let mut s = Server::new();
+        let uri = "file:///h.vs";
+        s.handle(&open(
+            uri,
+            "component C {\n    view { Text { text: missing; } }\n}\n",
+        ));
+        let at = |line: u32, character: u32| {
+            json::parse(&format!(
+                r#"{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":{line},"character":{character}}}}}"#
+            ))
+            .unwrap()
+        };
+        let (out, _) = s.handle(&req(5, "textDocument/hover", at(1, 25)));
+        let result = out.reply.unwrap().get("result").cloned().unwrap();
+        let value = result
+            .get("contents")
+            .and_then(|c| c.get("value"))
+            .and_then(Json::as_str)
+            .unwrap()
+            .to_string();
+        assert!(value.starts_with("**E2001** "), "{value}");
+        assert!(value.contains("\n\nFix: "), "{value}");
+        assert!(value.ends_with("`viso explain E2001`"), "{value}");
+        assert!(result.get("range").is_some());
+
+        let (out, _) = s.handle(&req(6, "textDocument/hover", at(0, 2)));
+        assert_eq!(out.reply.unwrap().get("result"), Some(&Json::Null));
     }
 
     #[test]
     fn unknown_request_is_method_not_found() {
         let mut s = Server::new();
-        let (out, _) = s.handle(&req(7, "textDocument/hover", Json::Null));
+        let (out, _) = s.handle(&req(7, "textDocument/signatureHelp", Json::Null));
         let code = out
             .reply
             .unwrap()

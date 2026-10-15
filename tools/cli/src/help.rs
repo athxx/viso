@@ -16,7 +16,10 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("PROJECT", &["new", "doctor", "config"]),
     ("MOBILE DEV ENVIRONMENT", &["android", "ios"]),
     ("DEVELOP", &["run", "build", "serve"]),
-    ("LANGUAGE", &["fmt", "check", "schema", "explain", "dump"]),
+    (
+        "LANGUAGE",
+        &["fmt", "check", "schema", "explain", "dump", "lsp"],
+    ),
     ("TEST / DEBUG", &["test", "game"]),
     ("DELIVERY", &[]),
     ("MAINTENANCE", &["clean", "completion"]),
@@ -364,6 +367,13 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
                 "what each state of `Counter` invalidates, as JSON events",
             ),
             ("viso dump module-graph", "every module and its imports"),
+        ],
+    ),
+    (
+        "lsp",
+        &[
+            ("viso lsp --stdio", "what an editor starts for `.vs` files"),
+            ("viso lsp", "the same: stdio is the only transport"),
         ],
     ),
     (

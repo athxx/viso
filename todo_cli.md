@@ -473,10 +473,13 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
 
 ### C2.5 — `viso lsp` (§21)
 
-- [ ] `viso lsp` execs `viso-lsp` (found next to `viso`, then on `PATH`), forwarding
-      stdio and args; missing binary is exit 3 with the install hint; no `--json`.
-- [ ] `viso-lsp` uses the shared formatter (C1.4) and the diagnostics registry for
+- [x] `viso lsp` execs `viso-lsp` (found next to `viso`, then on `PATH`), forwarding
+      stdio and args; missing binary is exit 3 with the install hint (`ENV_LSP`); no
+      `--json` (`CLI_USAGE`).
+- [x] `viso-lsp` uses the shared formatter (C1.4) and the diagnostics registry for
       hover on codes.
+- [x] `viso-lsp` exits 0 after `shutdown`+`exit`, 1 otherwise (it always exited 0).
+- [ ] `viso doctor` reports whether a `viso-lsp` of the CLI's version is installed.
 
 ### C2.6 — `viso snapshot` headless (§23)
 

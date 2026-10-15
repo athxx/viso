@@ -122,6 +122,8 @@ pub enum Command {
     /// Manage the iOS Simulator profiles `viso run ios` runs on.
     #[command(subcommand)]
     Ios(IosCommand),
+    /// Start the `.vs` language server for an editor, speaking LSP over stdio.
+    Lsp(LspArgs),
     /// Create a Viso project from a template: an app, a game, a web app or a library.
     New(NewArgs),
     /// Build a dev artifact and run it, hot reloading edits as they are saved.
@@ -716,6 +718,14 @@ pub enum DumpKind {
     ModuleGraph,
 }
 
+/// How `viso lsp` starts the language server.
+#[derive(Debug, Args)]
+pub struct LspArgs {
+    /// Speak the protocol over stdin and stdout, the transport the server has.
+    #[arg(long)]
+    pub stdio: bool,
+}
+
 /// What `viso explain` explains.
 #[derive(Debug, Args)]
 pub struct ExplainArgs {
@@ -791,6 +801,7 @@ impl Command {
                 DeviceCommand::Stop(_) => "ios simulator stop",
                 DeviceCommand::Delete(_) => "ios simulator delete",
             },
+            Command::Lsp(_) => "lsp",
             Command::New(_) => "new",
             Command::Run(_) => "run",
             Command::Schema(_) => "schema",

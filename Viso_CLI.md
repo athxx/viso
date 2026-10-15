@@ -1640,20 +1640,24 @@ viso dump module-graph
 viso lsp --stdio
 ```
 
-`viso lsp` 只定位并 exec `viso-lsp` binary（ADR-0018：同步 stdio `Content-Length` JSON-RPC loop），不在 CLI 进程内实现 language server。stdout 专属 JSON-RPC，任何日志只写 stderr；`--json` 不适用（§6.1）；没有 `summary` event。
+`viso lsp` 只定位并 exec `viso-lsp` binary（ADR-0018：同步 stdio `Content-Length` JSON-RPC loop），不在 CLI 进程内实现 language server。查找顺序：`viso` 可执行文件所在目录，然后 `PATH`；找到后以它替换当前进程（Windows 上为运行并等待），继承 stdin/stdout/stderr，`--stdio` 原样传给它，exit code 即 server 的 exit code。两处都没有或无法启动时为 `ENV_LSP`（exit 3，提示安装与 CLI 同版本的 `viso-lsp`）。
+
+stdout 专属 JSON-RPC，任何日志只写 stderr；`--json` 不适用（§6.1），给出时为 `CLI_USAGE`（exit 2）；没有 `summary` event。
 
 能力范围：
 
 ```text
-ADR-0018 最小集（已实现）:
-    publishDiagnostics, goto definition, find references, rename, formatting
+已实现:
+    publishDiagnostics, goto definition, find references, rename,
+    formatting（与 `viso fmt` 同一 `viso_dsl::format`）,
+    code actions（诊断的 fix）,
+    hover（光标下诊断的 code：标题、解释与修复，来自 `viso explain` 读取的同一诊断 registry）
 
 1.0 目标（ADR-0018 明确 deferred，需后续 ADR/修订）:
-    hover, completion, semantic tokens, code actions,
-    schema lookup, source-to-generated mapping
+    completion, semantic tokens, schema lookup, source-to-generated mapping
 ```
 
-Exit code：客户端 `shutdown`+`exit` 后 0；未收到 `shutdown` 即 `exit` 或 transport 损坏时 1（LSP 规范）。
+Exit code：客户端 `shutdown`+`exit` 后 0；未收到 `shutdown` 即 `exit`、未收到 `exit` 即输入结束或 transport 损坏时 1（LSP 规范）。
 
 ---
 

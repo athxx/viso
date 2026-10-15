@@ -11,11 +11,25 @@
 //! Cold-path throughout (AGENTS 7.2): a handful of messages per editor keystroke.
 
 use std::io::{self, BufReader, BufWriter};
+use std::process::ExitCode;
 
 use viso_lsp::rpc;
 use viso_lsp::server::Server;
 
-fn main() -> io::Result<()> {
+/// `0` once the client shut the server down and sent `exit`; `1` for an
+/// `exit` without `shutdown`, an end of input before `exit`, or a broken
+/// transport.
+fn main() -> ExitCode {
+    match serve() {
+        Ok(code) => ExitCode::from(code),
+        Err(error) => {
+            eprintln!("viso-lsp: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn serve() -> io::Result<u8> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = BufReader::new(stdin.lock());
@@ -34,8 +48,8 @@ fn main() -> io::Result<()> {
             rpc::write_message(&mut writer, &notification)?;
         }
         if should_exit {
-            break;
+            return Ok(server.exit_code());
         }
     }
-    Ok(())
+    Ok(1)
 }
