@@ -70,6 +70,44 @@ pub struct LoadedPackage {
     pub unreadable: Vec<(PathBuf, io::Error)>,
     /// The package's typed HIR.
     pub hir: LoweredPackage,
+    /// What resolution and lowering worked from, for the tools that read past
+    /// the HIR: the schema of each component, the IR dumps.
+    pub(crate) model: PackageModel,
+}
+
+/// The parsed units of a package, its module graph and each module's
+/// resolution, as the HIR was lowered from them.
+pub(crate) struct PackageModel {
+    /// The package identity.
+    pub name: String,
+    pub interner: NameInterner,
+    /// Each file's unit, index-parallel to [`LoadedPackage::files`].
+    pub units: Vec<SourceUnit>,
+    pub graph: ModuleGraph,
+    /// Each graph module's resolution, index-parallel to its modules.
+    pub resolved: Vec<ResolvedModule>,
+}
+
+impl PackageModel {
+    /// The resolution of the module the file `file` declares.
+    pub fn module_of(&self, file: usize) -> Option<&ResolvedModule> {
+        let text = self.units.get(file)?.path.display(&self.interner);
+        let index = self
+            .graph
+            .modules()
+            .iter()
+            .position(|m| m.path.display(&self.interner) == text)?;
+        self.resolved.get(index)
+    }
+}
+
+impl std::fmt::Debug for PackageModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PackageModel")
+            .field("name", &self.name)
+            .field("units", &self.units.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl LoadedPackage {
@@ -181,6 +219,13 @@ pub fn load_package_in(
         files,
         unreadable,
         hir,
+        model: PackageModel {
+            name: manifest.name.to_owned(),
+            interner,
+            units,
+            graph,
+            resolved,
+        },
     }
 }
 

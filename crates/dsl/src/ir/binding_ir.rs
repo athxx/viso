@@ -31,7 +31,7 @@ use std::collections::HashMap;
 
 use crate::ast::{AstNode, Expr};
 use crate::hir::{DerivedReads, ReadEnv, WithDerived, collect_reads};
-use crate::ir::dirty_map::DirtyClass;
+use crate::ir::dirty_map::{DirtyClass, property_dirty_class};
 use crate::ir::ui_ir::{PendingProperty, UiItem, UiNode, UiTree};
 use crate::resolve::{ResolvedRef, SymbolId};
 use crate::syntax::SyntaxNode;
@@ -147,41 +147,41 @@ pub fn lower_view_bindings(
         env,
         derived: &is_derived,
     };
-    let env: &dyn ReadEnv = &with;
-    let exprs = index_exprs(root);
-    let mut substitutions: Vec<HashMap<SymbolId, Vec<SymbolId>>> = Vec::new();
-    for (instance, sources) in tree.instances.iter().zip(instances) {
-        let mut map: HashMap<SymbolId, Vec<SymbolId>> = sources
-            .states
-            .iter()
-            .map(|&(state, hidden)| (state, vec![hidden]))
-            .collect();
-        for &(slot, at) in &instance.args {
-            let Some(Some(input)) = sources.inputs.get(slot as usize) else {
-                continue;
-            };
-            let Some(expr) = exprs.get(&at) else { continue };
-            let reads = derived.flatten(collect_reads(refs, env, expr));
-            let reads = substitute(&substitutions, instance.parent, reads);
-            map.insert(*input, reads);
-        }
-        substitutions.push(map);
-    }
-    let mut ctx = LowerCtx {
-        exprs,
-        refs,
-        env,
-        derived,
-        substitutions,
-        ir: BindingIr::default(),
-        next_key: 0,
-        dynamic_nodes: BTreeSet::new(),
-    };
+    let mut ctx = LowerCtx::new(tree, root, refs, &with, derived, instances);
     for item in &tree.items {
         ctx.lower_item(item);
     }
     ctx.ir.dynamic_fallback_nodes = ctx.dynamic_nodes.len() as u32;
     ctx.ir
+}
+
+/// What a write to each reactive source of a view invalidates: the dirty
+/// classes of every property it binds, a view-driven control's value it
+/// feeds included, and `STRUCTURE` where it decides an `if`, `for` or `match`
+/// region. Sources the view never reads are absent.
+pub fn source_invalidations(
+    tree: &UiTree,
+    root: &SyntaxNode,
+    refs: &[ResolvedRef],
+    env: &dyn ReadEnv,
+    derived: &DerivedReads,
+    instances: &[InstanceSources],
+) -> HashMap<SymbolId, DirtyClass> {
+    let is_derived = |symbol: SymbolId| derived.is_derived(symbol);
+    let with = WithDerived {
+        env,
+        derived: &is_derived,
+    };
+    let mut ctx = LowerCtx::new(tree, root, refs, &with, derived, instances);
+    let mut out: HashMap<SymbolId, DirtyClass> = HashMap::new();
+    for item in &tree.items {
+        ctx.lower_item(item);
+        ctx.invalidations(item, &mut out);
+    }
+    for edge in &ctx.ir.edges {
+        *out.entry(edge.source).or_insert(DirtyClass::EMPTY) |= edge.class;
+    }
+    out
 }
 
 /// What the reads `reads` in the view of `instance` bind in the mounted
@@ -225,7 +225,97 @@ struct LowerCtx<'a> {
     dynamic_nodes: BTreeSet<u32>,
 }
 
-impl LowerCtx<'_> {
+impl<'a> LowerCtx<'a> {
+    /// The walk over `tree`, each inlined instance's input reads standing for
+    /// what its caller's arguments read.
+    fn new(
+        tree: &UiTree,
+        root: &SyntaxNode,
+        refs: &'a [ResolvedRef],
+        env: &'a dyn ReadEnv,
+        derived: &'a DerivedReads,
+        instances: &[InstanceSources],
+    ) -> Self {
+        let exprs = index_exprs(root);
+        let mut substitutions: Vec<HashMap<SymbolId, Vec<SymbolId>>> = Vec::new();
+        for (instance, sources) in tree.instances.iter().zip(instances) {
+            let mut map: HashMap<SymbolId, Vec<SymbolId>> = sources
+                .states
+                .iter()
+                .map(|&(state, hidden)| (state, vec![hidden]))
+                .collect();
+            for &(slot, at) in &instance.args {
+                let Some(Some(input)) = sources.inputs.get(slot as usize) else {
+                    continue;
+                };
+                let Some(expr) = exprs.get(&at) else { continue };
+                let reads = derived.flatten(collect_reads(refs, env, expr));
+                let reads = substitute(&substitutions, instance.parent, reads);
+                map.insert(*input, reads);
+            }
+            substitutions.push(map);
+        }
+        Self {
+            exprs,
+            refs,
+            env,
+            derived,
+            substitutions,
+            ir: BindingIr::default(),
+            next_key: 0,
+            dynamic_nodes: BTreeSet::new(),
+        }
+    }
+
+    /// The sources the expression at `at`, in the view of `instance`, reads.
+    fn reads_at(&self, at: TextRange, instance: u32) -> Vec<SymbolId> {
+        let Some(expr) = self.exprs.get(&at) else {
+            return Vec::new();
+        };
+        let reads = self
+            .derived
+            .flatten(collect_reads(self.refs, self.env, expr));
+        substitute(&self.substitutions, instance, reads)
+    }
+
+    /// Adds what the regions and control values under `item` invalidate.
+    fn invalidations(&self, item: &UiItem, out: &mut HashMap<SymbolId, DirtyClass>) {
+        let mut add = |at: Option<TextRange>, instance: u32, class: DirtyClass| {
+            for source in at.map(|at| self.reads_at(at, instance)).unwrap_or_default() {
+                *out.entry(source).or_insert(DirtyClass::EMPTY) |= class;
+            }
+        };
+        let children: Vec<&UiItem> = match item {
+            UiItem::Node(node) => {
+                for (name, at, instance) in &node.control_reads {
+                    add(Some(*at), *instance, property_dirty_class(name));
+                }
+                node.children.iter().collect()
+            }
+            UiItem::If(region) => {
+                for arm in &region.arms {
+                    add(arm.condition, region.instance, DirtyClass::STRUCTURE);
+                }
+                region.arms.iter().flat_map(|arm| &arm.items).collect()
+            }
+            UiItem::For(region) => {
+                add(region.iterable, region.instance, DirtyClass::STRUCTURE);
+                add(region.key, region.instance, DirtyClass::STRUCTURE);
+                region.body.iter().collect()
+            }
+            UiItem::Match(region) => {
+                add(region.scrutinee, region.instance, DirtyClass::STRUCTURE);
+                for arm in &region.arms {
+                    add(arm.guard, region.instance, DirtyClass::STRUCTURE);
+                }
+                region.arms.iter().flat_map(|arm| &arm.items).collect()
+            }
+        };
+        for child in children {
+            self.invalidations(child, out);
+        }
+    }
+
     /// Assigns the next pre-order [`NodeKey`].
     fn take_key(&mut self) -> NodeKey {
         let key = NodeKey(self.next_key);

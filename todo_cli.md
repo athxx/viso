@@ -422,11 +422,18 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
 
 ### C2.2 — `viso schema` remaining (§18)
 
-- [ ] All query forms of §18.1 (`Widget`, `Widget.prop`, `module::Item`, `--list
+- [x] All query forms of §18.1 (`Widget`, `Widget.prop`, `module::Item`, `--list
       widgets|components|natives|types`), project components included with their
       source origin (`file:line`, §18.3), framework items marked `framework`.
-- [ ] JSON schema output stable and versioned (`schema_version`), golden-tested
-      (§58).
+      (`schema::Catalog` + `package_components`: each input's `invalidates` from
+      the view's binding edges, control values and region decisions.)
+- [x] JSON schema output stable and versioned (`schema_version`), golden-tested
+      (§58). (`tests/golden/schema.json.txt`; `viso --version` reports
+      `schema object`.)
+- [ ] Project records and enums as schema symbols (`kind: record|enum`, fields and
+      variants), so `--list types` covers the package's own types.
+- [ ] A component's slot cardinality (`Slot`/`OptionalSlot`/`SlotList`) and
+      `@default` in the schema object instead of a bare name.
 
 ### C2.3 — `viso explain` (§19)
 

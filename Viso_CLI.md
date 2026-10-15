@@ -1511,12 +1511,14 @@ Slots
 viso schema Button
 viso schema viso::widgets::Button
 viso schema Button.text
+viso schema Card                 # 项目组件
 viso schema --search text
+viso schema --list widgets       # widgets | components | natives | types
 ```
 
-符号按完整路径或其任意 `::` 后缀匹配（`Button`、`text::upper`、`viso::time::Stopwatch`）；后缀匹配多个符号时报告全部候选并 exit 1。`.member` 收窄到一个 Property、Event 或方法。可查询内置 Widget 与 Native Registry 中的 Library、函数和 Handle 类型。
+符号按完整路径或其任意 `::` 后缀匹配（`Button`、`text::upper`、`viso::time::Stopwatch`、`card::Card`）；后缀匹配多个符号时报告全部候选并 exit 1。`.member` 收窄到一个 Property、Event 或方法。可查询内置 Widget、Native Registry 中的 Library、函数和 Handle 类型，以及当前项目（`--project` 或向上找到的 `Viso.toml`；不在项目中时只查框架）声明的 Component 与 Template：路径为 `<package>::<module>::<Name>`。
 
-`--search TERM` 不区分大小写地列出路径包含 `TERM` 的符号与成员，每行一个路径及其类型或签名；无匹配时 exit 0。`--json` 输出一条 `result`，`payload: {query, matches: [{path, kind, detail}]}`。
+`--search TERM` 不区分大小写地列出路径包含 `TERM` 的符号与成员，每行一个路径及其类型或签名；无匹配时 exit 0。`--list GROUP` 列出一组的全部符号：`widgets`（框架 Widget）、`components`（项目组件及其声明位置）、`natives`（Native Library 与函数）、`types`（Native Handle 类型）。`--json` 下二者都输出一条 `result`，`payload: {schema_version, query | list, matches: [{path, kind, detail, origin}]}`，`origin` 为 `"framework"` 或项目组件的 `file:line:column`。
 
 ### 18.2 AI/tool use
 
@@ -1524,7 +1526,7 @@ viso schema --search text
 viso schema Button --json
 ```
 
-输出一条 `result` event，`payload` 为 `Viso_DSL_1.0.md` §139 定义的 schema object；CLI 不定义第二套 schema JSON。Invalidation 名称只用 dirty class 规范名（`STRUCTURE STYLE MEASURE LAYOUT TRANSFORM PAINT HIT_TEST SEMANTICS`）。符号不存在时输出 `diagnostic` 并 exit 1。
+输出一条 `result` event，`payload` 为 `Viso_DSL_1.0.md` §139 定义的 schema object；CLI 不定义第二套 schema JSON。对象以 `schema_version`（当前 `1.0`，`viso --version` 的 `schema object`）开头：删除字段或改变字段含义时升级，新增字段不升级。Invalidation 名称只用 dirty class 规范名（`STRUCTURE STYLE MEASURE LAYOUT TRANSFORM PAINT HIT_TEST SEMANTICS`）。符号不存在时输出 `diagnostic` 并 exit 1。`tests/golden/schema.json.txt` 固定 Widget、成员、Native 函数与类型、项目组件和 `--list` 的 JSON。
 
 ### 18.3 Source origin
 
@@ -1537,6 +1539,10 @@ SymbolId
 visibility
 schema revision
 ```
+
+JSON 中为 `origin` 对象：`{file, byte_start, byte_end, line, column_utf16, end_line, end_column_utf16, symbol_id, visibility, revision}`。位置是组件名的位置（`file` 相对项目根）；`visibility` 为 `public`（`export`）或 `private`；`revision` 是 schema 内容的 128 位摘要，只随公开面（Input、Event、Slot、Part、Capability、版本）变化。框架符号的 `origin` 为 `"framework"`。
+
+项目组件的 `version` 是 `Viso.toml` 的 `[package] version`（未写时 `0.0.0`）；Input 的 `required` 为没有默认值，`default` 为默认值源码，`two_way` 为 `@bindable`；`invalidates` 是该 Input 在组件自身 View 中实际绑定到的 Dirty Class 并集——经 `computed`/`fn` 与内联子组件 Input 传递，控件取值按其 Property 计，决定 `if`/`for`/`match` Region 时含 `STRUCTURE`，View 未读的 Input 为空；Event 的 `payload` 为参数列表（`(value: String)`），不冒泡、不可取消。
 
 ---
 
@@ -3041,10 +3047,11 @@ viso 0.1.0 (4c0177cbeff8)     CLI 版本与构建 commit（12 位，git 外为 u
 language 1.0                  DSL language version
 event schema 1                §34 envelope schema_version
 diagnostic schema 1.0         §36.1 diagnostic schema_version
+schema object 1.0             §18 schema object schema_version
 dev protocol 14               dev channel protocol version
 ```
 
-`--json` 下为一条 `result`（`payload: {version, commit, language, event_schema, diagnostic_schema, dev_protocol}`）+ `summary`。
+`--json` 下为一条 `result`（`payload: {version, commit, language, event_schema, diagnostic_schema, schema_object, dev_protocol}`）+ `summary`。
 
 ---
 

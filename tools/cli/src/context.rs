@@ -72,6 +72,17 @@ impl<'a> Context<'a> {
         Ok(project)
     }
 
+    /// The project `--project` names or the current directory lies in, or
+    /// `None` when no `--project` is given and no manifest is found: for a
+    /// command that also works outside a project.
+    pub fn project_if_any(&self, out: &mut Output) -> Result<Option<Project>, u8> {
+        let cwd = self.cwd(out)?;
+        if self.global.project.is_none() && viso_project::find_root(&cwd).is_none() {
+            return Ok(None);
+        }
+        self.project(out).map(Some)
+    }
+
     /// The project and its configuration for a build for `target`, as
     /// `--profile` and the environment ask.
     pub fn load(

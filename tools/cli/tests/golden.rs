@@ -189,6 +189,7 @@ fn version_names_the_build_and_what_it_speaks() {
             "language",
             "event schema",
             "diagnostic schema",
+            "schema object",
             "dev protocol"
         ]
     );
@@ -202,6 +203,7 @@ fn version_names_the_build_and_what_it_speaks() {
         "language",
         "event_schema",
         "diagnostic_schema",
+        "schema_object",
         "dev_protocol",
     ] {
         assert!(
@@ -209,6 +211,75 @@ fn version_names_the_build_and_what_it_speaks() {
             "{name} in {stdout}"
         );
     }
+}
+
+/// The payload of the `result` event in `stdout`.
+fn payload(stdout: &str) -> String {
+    let line = stdout
+        .lines()
+        .find(|l| l.contains(r#""type":"result""#))
+        .unwrap_or_else(|| panic!("no result: {stdout}"));
+    let start = line.find(r#""payload":"#).unwrap() + r#""payload":"#.len();
+    format!("{}\n", &line[start..line.len() - 1])
+}
+
+const CARD: &str = r#"export component Card {
+    @bindable(changed)
+    input value: String;
+    input title: String;
+    input dense: Bool = false;
+    event changed(value: String);
+    slot footer: OptionalSlot<Node>;
+    view {
+        Column {
+            Text { text: title; }
+            if dense { Text { text: value; } }
+        }
+    }
+}
+"#;
+
+/// The schema objects of a widget, a member, a native function and type and
+/// a project component, and each `--list`, as `--json` gives them.
+#[test]
+fn schema_objects() {
+    let dir = scratch("schema");
+    fs::write(
+        dir.join("Viso.toml"),
+        "[package]\nname = \"demo\"\nversion = \"1.2.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/card.vs"), CARD).unwrap();
+    let mut objects = String::new();
+    for args in [
+        &["Button"][..],
+        &["Slider.value"],
+        &["viso::clipboard::write_text"],
+        &["Stopwatch"],
+        &["Card"],
+        &["--search", "card"],
+        &["--list", "components"],
+        &["--list", "types"],
+    ] {
+        let mut full = vec!["schema"];
+        full.extend(args);
+        full.push("--json");
+        let out = viso(&dir, &full);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            text(&out.stdout)
+        );
+        objects.push_str(&format!("$ viso schema {}\n", args.join(" ")));
+        objects.push_str(&payload(&text(&out.stdout)));
+    }
+    golden("schema.json.txt", &objects);
+
+    let out = viso(&dir, &["schema", "Card"]);
+    assert_eq!(out.status.code(), Some(0));
+    golden("schema_card.txt", &text(&out.stdout));
 }
 
 #[test]

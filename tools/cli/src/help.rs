@@ -474,7 +474,7 @@ const NOTES: &[(&str, &str)] = &[
 
 /// What `viso --version` reports: the CLI's version and commit, and the
 /// versions of what it speaks — the language, the event stream, the
-/// diagnostic object and the dev protocol. Constants only: nothing is loaded
+/// diagnostic object, the schema object and the dev protocol. Constants only: nothing is loaded
 /// to say them.
 pub struct Version {
     pub version: &'static str,
@@ -482,6 +482,7 @@ pub struct Version {
     pub language: &'static str,
     pub event_schema: u64,
     pub diagnostic_schema: &'static str,
+    pub schema_object: &'static str,
     pub dev_protocol: u16,
 }
 
@@ -492,6 +493,7 @@ pub const VERSION: Version = Version {
     language: viso_dsl::frontend::LANGUAGE_VERSION,
     event_schema: crate::output::json::SCHEMA_VERSION,
     diagnostic_schema: crate::output::json::DIAGNOSTIC_SCHEMA_VERSION,
+    schema_object: viso_dsl::schema::SCHEMA_VERSION,
     dev_protocol: viso_view::dev::wire::DEV_PROTOCOL_VERSION,
 };
 
@@ -503,6 +505,7 @@ impl Version {
 language {}
 event schema {}
 diagnostic schema {}
+schema object {}
 dev protocol {}
 ",
             self.version,
@@ -510,6 +513,7 @@ dev protocol {}
             self.language,
             self.event_schema,
             self.diagnostic_schema,
+            self.schema_object,
             self.dev_protocol
         )
     }
@@ -527,6 +531,8 @@ dev protocol {}
         w.uint(self.event_schema);
         w.name("diagnostic_schema");
         w.string(self.diagnostic_schema);
+        w.name("schema_object");
+        w.string(self.schema_object);
         w.name("dev_protocol");
         w.uint(u64::from(self.dev_protocol));
         w.end_object();

@@ -46,7 +46,7 @@ fn json_is_one_result_event_with_the_schema_object() {
     assert_eq!(lines.len(), 2, "{text}");
     assert!(lines[0].contains(r#""type":"result""#), "{}", lines[0]);
     assert!(
-        lines[0].contains(r#""payload":{"kind":"component","symbol":"viso::widgets::Button","version":"1","inputs":["#),
+        lines[0].contains(r#""payload":{"schema_version":"1.0","kind":"component","symbol":"viso::widgets::Button","version":"1","inputs":["#),
         "{}",
         lines[0]
     );
@@ -77,7 +77,7 @@ fn search_lists_matching_symbols_and_members() {
         "viso::time::Stopwatch.elapsed_ms  action elapsed_ms(this: Stopwatch) -> F64\n"
     );
     let json = stdout(&viso(&["schema", "--search", "elapsed", "--json"]));
-    assert!(json.contains(r#""payload":{"query":"elapsed","matches":[{"path":"viso::time::Stopwatch.elapsed_ms","kind":"native_type""#), "{json}");
+    assert!(json.contains(r#""payload":{"schema_version":"1.0","query":"elapsed","matches":[{"path":"viso::time::Stopwatch.elapsed_ms","kind":"native_type""#), "{json}");
 }
 
 #[test]

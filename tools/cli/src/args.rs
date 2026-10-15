@@ -678,11 +678,30 @@ pub struct SchemaArgs {
     /// The symbol, by full path or a `::`-suffix of it, optionally with
     /// `.member`: `Button`, `viso::widgets::Button`, `Button.text`,
     /// `text::upper`.
-    #[arg(required_unless_present = "search", conflicts_with = "search")]
+    #[arg(
+        required_unless_present_any = ["search", "list"],
+        conflicts_with_all = ["search", "list"]
+    )]
     pub symbol: Option<String>,
     /// List every symbol and member whose path contains TERM, ignoring case.
-    #[arg(long, value_name = "TERM")]
+    #[arg(long, value_name = "TERM", conflicts_with = "list")]
     pub search: Option<String>,
+    /// List every symbol of one group.
+    #[arg(long, value_enum, value_name = "GROUP")]
+    pub list: Option<SchemaGroup>,
+}
+
+/// A group of symbols `viso schema --list` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SchemaGroup {
+    /// The framework's widgets.
+    Widgets,
+    /// The project's components, with where each is declared.
+    Components,
+    /// The native libraries and their functions.
+    Natives,
+    /// The native handle types.
+    Types,
 }
 
 impl Command {
@@ -1013,22 +1032,34 @@ mod tests {
     }
 
     #[test]
-    fn schema_takes_a_symbol_or_a_search() {
+    fn schema_takes_a_symbol_a_search_or_a_group() {
         let cli = Cli::try_parse_from(["viso", "schema", "Button.text", "--json"]).unwrap();
-        assert!(
-            matches!(cli.command, Command::Schema(SchemaArgs { symbol: Some(s), search: None }) if s == "Button.text")
-        );
+        assert!(matches!(
+            cli.command,
+            Command::Schema(SchemaArgs { symbol: Some(s), search: None, list: None }) if s == "Button.text"
+        ));
         assert!(cli.global.json);
         let cli = Cli::try_parse_from(["viso", "schema", "--search", "text"]).unwrap();
         assert!(matches!(
             cli.command,
             Command::Schema(SchemaArgs {
                 symbol: None,
-                search: Some(_)
+                search: Some(_),
+                list: None,
+            })
+        ));
+        let cli = Cli::try_parse_from(["viso", "schema", "--list", "components"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Schema(SchemaArgs {
+                list: Some(SchemaGroup::Components),
+                ..
             })
         ));
         assert!(Cli::try_parse_from(["viso", "schema"]).is_err());
         assert!(Cli::try_parse_from(["viso", "schema", "Button", "--search", "x"]).is_err());
+        assert!(Cli::try_parse_from(["viso", "schema", "Button", "--list", "types"]).is_err());
+        assert!(Cli::try_parse_from(["viso", "schema", "--list", "things"]).is_err());
     }
 
     #[test]

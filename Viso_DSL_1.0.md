@@ -7253,6 +7253,7 @@ viso schema viso::widgets::Button --json
 
 ```json
 {
+  "schema_version": "1.0",
   "kind": "component",
   "symbol": "viso::widgets::Button",
   "version": "1.0",
@@ -7275,12 +7276,15 @@ viso schema viso::widgets::Button --json
   ],
   "slots": [],
   "parts": [],
-  "capabilities": []
+  "capabilities": [],
+  "origin": "framework"
 }
 ```
 
 对象字段：
 
+- `schema_version`：对象格式版本（当前 `1.0`），删除字段或改变含义时升级；
+- `origin`：框架符号为 `"framework"`，项目组件为其声明位置、SymbolId、`visibility` 与 schema `revision`（CLI §18.3）；
 - `kind`：`component`、`native_library`、`native_function` 或 `native_type`；查询 `Symbol.member` 时另有 `member`，`inputs`/`events`/`functions` 只保留该成员；
 - `inputs`：Component 的 Property（分组 Property 写作 `semantics.label`，`invalidates` 为该 Binding 实际失效的 Dirty Class 规范名，`two_way` 标记可 `bind`），或 Native 函数的参数；`default` 未记录时为 `null`；
 - `events`：`bubbles` 为 Capture → Target → Bubble 路由的输入事件为真；Component 自身事件不冒泡；

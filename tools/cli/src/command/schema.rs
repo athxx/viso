@@ -1,24 +1,45 @@
-//! `viso schema`: the typed schema of a widget, native library, function or
-//! handle type, or a search over every symbol and member. The schema model and
-//! its JSON object come from `viso-dsl`; this command only picks the form.
+//! `viso schema`: the typed schema of a widget, a project component, a native
+//! library, function or handle type, a search over every symbol and member,
+//! or every symbol of one group. The schema model and its JSON object come
+//! from `viso-dsl`; this command only finds the project and picks the form.
 
 use std::fmt::Write as _;
 
-use viso_dsl::schema::{self, FunctionSchema, Natives, Schema, SchemaKind, SearchHit};
+use viso_dsl::hir::TargetProfile;
+use viso_dsl::package::{PackageManifest, load_package};
+use viso_dsl::schema::{
+    self, Catalog, FunctionSchema, ListKind, Natives, Schema, SchemaKind, SearchHit,
+};
 
-use crate::args::SchemaArgs;
+use crate::args::{SchemaArgs, SchemaGroup};
+use crate::context::{Context, in_its_file};
 use crate::error::{DIAGNOSTICS, SUCCESS};
 use crate::output::Output;
 
-pub fn run(args: &SchemaArgs, out: &mut Output) -> u8 {
-    let natives = Natives::standard();
+pub fn run(ctx: &Context<'_>, args: &SchemaArgs, out: &mut Output) -> u8 {
+    let catalog = match catalog(ctx, out) {
+        Ok(catalog) => catalog,
+        Err(code) => return code,
+    };
+    if let Some(group) = args.list {
+        let hits = schema::list(list_kind(group), &catalog);
+        let name = group_name(group);
+        out.result(
+            |w| write_hits(w, "list", name, &hits),
+            || list_text(name, &hits),
+        );
+        return SUCCESS;
+    }
     if let Some(term) = &args.search {
-        let hits = schema::search(term, &natives);
-        out.result(|w| write_hits(w, term, &hits), || hits_text(term, &hits));
+        let hits = schema::search(term, &catalog);
+        out.result(
+            |w| write_hits(w, "query", term, &hits),
+            || hits_text(term, &hits),
+        );
         return SUCCESS;
     }
     let symbol = args.symbol.as_deref().unwrap_or_default();
-    match schema::query(symbol, &natives) {
+    match schema::query(symbol, &catalog) {
         Ok(schema) => {
             out.result(|w| schema.write_json(w), || schema_text(&schema));
             SUCCESS
@@ -30,11 +51,60 @@ pub fn run(args: &SchemaArgs, out: &mut Output) -> u8 {
     }
 }
 
-/// The search result payload: the term and every match.
-fn write_hits(w: &mut viso_ende::JsonWriter, term: &str, hits: &[SearchHit]) {
+/// The framework's symbols, and the components of the project the command
+/// runs in, if it runs in one.
+fn catalog(ctx: &Context<'_>, out: &mut Output) -> Result<Catalog, u8> {
+    let catalog = Catalog::framework(Natives::standard());
+    let Some(project) = ctx.project_if_any(out)? else {
+        return Ok(catalog);
+    };
+    let name = project.name().map_err(|diagnostic| {
+        in_its_file(out, &diagnostic);
+        diagnostic.code.exit_code()
+    })?;
+    let package = load_package(
+        &project.root,
+        PackageManifest {
+            name,
+            language: None,
+            profile: TargetProfile::default(),
+        },
+    );
+    let version = project
+        .manifest
+        .package
+        .version
+        .as_ref()
+        .map_or("0.0.0", |version| version.value.as_str());
+    let components = schema::package_components(&package, &project.root, version);
+    Ok(catalog.with_components(components))
+}
+
+fn list_kind(group: SchemaGroup) -> ListKind {
+    match group {
+        SchemaGroup::Widgets => ListKind::Widgets,
+        SchemaGroup::Components => ListKind::Components,
+        SchemaGroup::Natives => ListKind::Natives,
+        SchemaGroup::Types => ListKind::Types,
+    }
+}
+
+fn group_name(group: SchemaGroup) -> &'static str {
+    match group {
+        SchemaGroup::Widgets => "widgets",
+        SchemaGroup::Components => "components",
+        SchemaGroup::Natives => "natives",
+        SchemaGroup::Types => "types",
+    }
+}
+
+/// The search or list payload: what was asked, under `key`, and every match.
+fn write_hits(w: &mut viso_ende::JsonWriter, key: &str, asked: &str, hits: &[SearchHit]) {
     w.begin_object();
-    w.name("query");
-    w.string(term);
+    w.name("schema_version");
+    w.string(schema::SCHEMA_VERSION);
+    w.name(key);
+    w.string(asked);
     w.name("matches");
     w.begin_array();
     for hit in hits {
@@ -45,6 +115,8 @@ fn write_hits(w: &mut viso_ende::JsonWriter, term: &str, hits: &[SearchHit]) {
         w.string(hit.kind.name());
         w.name("detail");
         w.string(&hit.detail);
+        w.name("origin");
+        w.string(hit.origin.as_deref().unwrap_or("framework"));
         w.end_object();
     }
     w.end_array();
@@ -55,7 +127,32 @@ fn hits_text(term: &str, hits: &[SearchHit]) -> String {
     if hits.is_empty() {
         return format!("no schema symbol or member matches `{term}`\n");
     }
-    let rows: Vec<[&str; 2]> = hits.iter().map(|h| [&*h.path, &*h.detail]).collect();
+    rows_text(hits)
+}
+
+fn list_text(group: &str, hits: &[SearchHit]) -> String {
+    if hits.is_empty() {
+        return format!("no {group}\n");
+    }
+    rows_text(hits)
+}
+
+/// One row per hit: its path, its detail, and where a project declares it.
+fn rows_text(hits: &[SearchHit]) -> String {
+    if hits.iter().all(|h| h.origin.is_none()) {
+        let rows: Vec<[&str; 2]> = hits.iter().map(|h| [&*h.path, &*h.detail]).collect();
+        return table(&rows, "");
+    }
+    let rows: Vec<[&str; 3]> = hits
+        .iter()
+        .map(|h| {
+            [
+                &*h.path,
+                &*h.detail,
+                h.origin.as_deref().unwrap_or("framework"),
+            ]
+        })
+        .collect();
     table(&rows, "")
 }
 
@@ -74,6 +171,16 @@ fn schema_text(schema: &Schema) -> String {
         );
     }
     text.push('\n');
+    if let Some(origin) = &schema.origin {
+        let _ = writeln!(
+            text,
+            "  {}  {}  version {}  revision {:032x}",
+            origin.location(),
+            origin.visibility(),
+            schema.version,
+            origin.revision
+        );
+    }
     if let Some(handle) = schema.handle {
         let _ = writeln!(
             text,

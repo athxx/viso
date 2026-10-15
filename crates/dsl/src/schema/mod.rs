@@ -1,12 +1,18 @@
-//! Schema queries: the typed schema of a native widget, a native library, a
-//! native function or a native handle type, as the one object tools read
-//! (`viso schema`, section 139).
+//! Schema queries: the typed schema of a native widget, a component a package
+//! declares, a native library, a native function or a native handle type, as
+//! the one object tools read (`viso schema`, section 139).
 //!
 //! A query names a symbol by its full path (`viso::widgets::Button`,
-//! `viso::text::upper`) or by any `::`-suffix of it (`Button`, `text::upper`),
-//! optionally followed by `.member` to narrow the answer to one property, event
-//! or method (`Button.text`, `Stopwatch.elapsed_ms`). Cold path: this runs once
-//! per tool request.
+//! `app::card::Card`, `viso::text::upper`) or by any `::`-suffix of it
+//! (`Button`, `Card`, `text::upper`), optionally followed by `.member` to
+//! narrow the answer to one property, event or method (`Button.text`,
+//! `Stopwatch.elapsed_ms`). Cold path: this runs once per tool request.
+
+mod project;
+
+pub use project::package_components;
+
+use std::sync::Arc;
 
 use viso_behavior::native::{
     NativeEntry, NativeFunction, NativeLibrary, NativeTypeEntry, NativeWidgetEntry,
@@ -17,8 +23,13 @@ use viso_ende::JsonWriter;
 use crate::diag::Diagnostic;
 use crate::hir::widget::WidgetSchema;
 use crate::ir::{DirtyClass, property_dirty_class};
+use crate::resolve::SymbolId;
 use crate::resolve::suggest::{Candidate, nearest};
 use crate::syntax::TextRange;
+
+/// The version of the schema object's format, which every object reports as
+/// its `schema_version`: a field removed or changing meaning raises it.
+pub const SCHEMA_VERSION: &str = "1.0";
 
 /// The dirty classes in canonical order, with their names.
 const DIRTY_NAMES: [(DirtyClass, &str); 8] = [
@@ -153,6 +164,64 @@ pub struct Schema {
     pub types: Vec<String>,
     /// A handle type's ownership and thread.
     pub handle: Option<HandleSchema>,
+    /// Where a package declares it; `None` for a framework symbol.
+    pub origin: Option<SourceOrigin>,
+}
+
+/// Where a package declares a component.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceOrigin {
+    /// Its file, relative to the package root, `/`-separated.
+    pub file: String,
+    /// Its name's span in the file.
+    pub range: TextRange,
+    /// The 1-based line and UTF-16 column its name starts at.
+    pub start: (u32, u32),
+    /// The 1-based line and UTF-16 column its name ends at.
+    pub end: (u32, u32),
+    /// Its durable identity.
+    pub symbol_id: SymbolId,
+    /// Whether the module exports it.
+    pub public: bool,
+    /// A digest of its schema: equal while its public surface is.
+    pub revision: u128,
+}
+
+/// Every symbol a query can name: the framework's widgets and natives, and
+/// the components of the package in hand.
+pub struct Catalog {
+    natives: Arc<Natives>,
+    components: Vec<Schema>,
+}
+
+impl Catalog {
+    /// The framework's symbols alone.
+    pub fn framework(natives: Arc<Natives>) -> Self {
+        Self {
+            natives,
+            components: Vec::new(),
+        }
+    }
+
+    /// This catalog with a package's `components`
+    /// ([`package_components`]).
+    pub fn with_components(mut self, components: Vec<Schema>) -> Self {
+        self.components = components;
+        self
+    }
+}
+
+/// A group of symbols `viso schema --list` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListKind {
+    /// The framework's widgets.
+    Widgets,
+    /// The package's components.
+    Components,
+    /// The native libraries and their functions.
+    Natives,
+    /// The native handle types.
+    Types,
 }
 
 /// One match of a schema search.
@@ -164,12 +233,16 @@ pub struct SearchHit {
     pub kind: SchemaKind,
     /// A one-line signature: a type, a payload or a function signature.
     pub detail: String,
+    /// `file:line:column` of a package's component; `None` for a framework
+    /// symbol.
+    pub origin: Option<String>,
 }
 
 /// A symbol a query can name.
 #[derive(Clone, Copy)]
 enum Symbol<'a> {
     Widget(&'a NativeWidgetEntry),
+    Component(&'a Schema),
     Library(&'static NativeLibrary),
     Function(&'a NativeEntry),
     Type(&'a NativeTypeEntry),
@@ -179,6 +252,7 @@ impl Symbol<'_> {
     fn path(&self) -> String {
         match self {
             Symbol::Widget(entry) => format!("{}::{}", entry.library.path, entry.widget.name),
+            Symbol::Component(schema) => schema.symbol.clone(),
             Symbol::Library(library) => library.path.to_owned(),
             Symbol::Function(entry) => entry.path.to_string(),
             Symbol::Type(entry) => entry.path.to_string(),
@@ -186,10 +260,12 @@ impl Symbol<'_> {
     }
 }
 
-/// Every symbol a query can name, in a stable order: widgets, then each
-/// library, its functions and its types.
-fn symbols(natives: &Natives) -> Vec<Symbol<'_>> {
+/// Every symbol a query can name, in a stable order: widgets, the package's
+/// components, then each library, its functions and its types.
+fn symbols(catalog: &Catalog) -> Vec<Symbol<'_>> {
+    let natives = &*catalog.natives;
     let mut all: Vec<Symbol<'_>> = natives.widgets().iter().map(Symbol::Widget).collect();
+    all.extend(catalog.components.iter().map(Symbol::Component));
     for &library in natives.libraries() {
         all.push(Symbol::Library(library));
         let under = |path: &str| {
@@ -228,13 +304,13 @@ fn names(path: &str, name: &str) -> bool {
 ///
 /// An `E2001` diagnostic, with the nearest symbol or member names as notes, if
 /// nothing matches; an `E2001` listing every match if a bare name is ambiguous.
-pub fn query(query: &str, natives: &Natives) -> Result<Schema, Box<Diagnostic>> {
+pub fn query(query: &str, catalog: &Catalog) -> Result<Schema, Box<Diagnostic>> {
     let query = query.trim();
     let (name, member) = match query.split_once('.') {
         Some((name, member)) => (name, Some(member)),
         None => (query, None),
     };
-    let all = symbols(natives);
+    let all = symbols(catalog);
     let matches: Vec<_> = all.iter().filter(|s| names(&s.path(), name)).collect();
     let symbol = match matches.as_slice() {
         [one] => **one,
@@ -262,7 +338,7 @@ pub fn query(query: &str, natives: &Natives) -> Result<Schema, Box<Diagnostic>> 
             ));
         }
     };
-    let schema = schema_of(symbol, natives);
+    let schema = schema_of(symbol, &catalog.natives);
     match member {
         None => Ok(schema),
         Some(member) => narrow(schema, member),
@@ -315,25 +391,23 @@ fn narrow(mut schema: Schema, member: &str) -> Result<Schema, Box<Diagnostic>> {
 }
 
 /// Every symbol or member whose path contains `term`, ignoring case.
-pub fn search(term: &str, natives: &Natives) -> Vec<SearchHit> {
+pub fn search(term: &str, catalog: &Catalog) -> Vec<SearchHit> {
     let term = term.to_lowercase();
     let mut hits = Vec::new();
-    for symbol in symbols(natives) {
-        let schema = schema_of(symbol, natives);
+    for symbol in symbols(catalog) {
+        let schema = schema_of(symbol, &catalog.natives);
+        let origin = schema.origin.as_ref().map(SourceOrigin::location);
         let mut hit = |path: String, detail: String| {
             if path.to_lowercase().contains(&term) {
                 hits.push(SearchHit {
                     path,
                     kind: schema.kind,
                     detail,
+                    origin: origin.clone(),
                 });
             }
         };
-        let detail = match symbol {
-            Symbol::Function(entry) => signature(&function(entry, false)),
-            _ => schema.kind.name().to_owned(),
-        };
-        hit(schema.symbol.clone(), detail);
+        hit(schema.symbol.clone(), detail_of(symbol, &schema));
         if schema.kind == SchemaKind::Function {
             continue;
         }
@@ -354,6 +428,36 @@ pub fn search(term: &str, natives: &Natives) -> Vec<SearchHit> {
         }
     }
     hits
+}
+
+/// Every symbol of the group `kind`, in the order queries see them.
+pub fn list(kind: ListKind, catalog: &Catalog) -> Vec<SearchHit> {
+    symbols(catalog)
+        .into_iter()
+        .filter(|symbol| match kind {
+            ListKind::Widgets => matches!(symbol, Symbol::Widget(_)),
+            ListKind::Components => matches!(symbol, Symbol::Component(_)),
+            ListKind::Natives => matches!(symbol, Symbol::Library(_) | Symbol::Function(_)),
+            ListKind::Types => matches!(symbol, Symbol::Type(_)),
+        })
+        .map(|symbol| {
+            let schema = schema_of(symbol, &catalog.natives);
+            SearchHit {
+                path: schema.symbol.clone(),
+                kind: schema.kind,
+                detail: detail_of(symbol, &schema),
+                origin: schema.origin.as_ref().map(SourceOrigin::location),
+            }
+        })
+        .collect()
+}
+
+/// A symbol's one-line detail: a function's signature, else its kind.
+fn detail_of(symbol: Symbol<'_>, schema: &Schema) -> String {
+    match symbol {
+        Symbol::Function(entry) => signature(&function(entry, false)),
+        _ => schema.kind.name().to_owned(),
+    }
 }
 
 /// A function's one-line signature, `action name(a: T) -> R`.
@@ -386,8 +490,10 @@ fn schema_of(symbol: Symbol<'_>, natives: &Natives) -> Schema {
         functions: Vec::new(),
         types: Vec::new(),
         handle: None,
+        origin: None,
     };
     match symbol {
+        Symbol::Component(schema) => schema.clone(),
         Symbol::Widget(entry) => {
             let widget = WidgetSchema::of(entry.widget);
             Schema {
@@ -504,7 +610,7 @@ fn union<'a>(lists: impl Iterator<Item = &'a [String]>) -> Vec<String> {
 }
 
 /// The canonical names of the classes in `class`.
-fn dirty_names(class: DirtyClass) -> Vec<&'static str> {
+pub(crate) fn dirty_names(class: DirtyClass) -> Vec<&'static str> {
     DIRTY_NAMES
         .iter()
         .filter(|(c, _)| class.contains(*c))
@@ -516,6 +622,8 @@ impl Schema {
     /// Writes the section 139 schema object.
     pub fn write_json(&self, w: &mut JsonWriter) {
         w.begin_object();
+        w.name("schema_version");
+        w.string(SCHEMA_VERSION);
         w.name("kind");
         w.string(self.kind.name());
         w.name("symbol");
@@ -570,6 +678,11 @@ impl Schema {
             w.string(handle.ownership.name());
             w.name("thread");
             w.string(handle.thread.name());
+        }
+        w.name("origin");
+        match &self.origin {
+            Some(origin) => origin.write_json(w),
+            None => w.string("framework"),
         }
         w.end_object();
     }
@@ -653,8 +766,8 @@ fn strings(w: &mut JsonWriter, values: &[String]) {
 mod tests {
     use super::*;
 
-    fn standard() -> std::sync::Arc<Natives> {
-        Natives::standard()
+    fn standard() -> Catalog {
+        Catalog::framework(Natives::standard())
     }
 
     #[test]
@@ -763,10 +876,11 @@ mod tests {
         assert_eq!(
             w.as_str(),
             concat!(
-                r#"{"kind":"component","symbol":"viso::widgets::Button","version":"1","#,
+                r#"{"schema_version":"1.0","kind":"component","symbol":"viso::widgets::Button","#,
+                r#""version":"1","#,
                 r#""member":"text","inputs":[{"name":"text","type":"String","required":false,"#,
                 r#""default":null,"invalidates":["MEASURE","LAYOUT","PAINT","SEMANTICS"]}],"#,
-                r#""events":[],"slots":[],"parts":[],"capabilities":[]}"#
+                r#""events":[],"slots":[],"parts":[],"capabilities":[],"origin":"framework"}"#
             )
         );
     }

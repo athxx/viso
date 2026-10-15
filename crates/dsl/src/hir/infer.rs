@@ -1391,6 +1391,26 @@ impl TypeSchemas {
             &|_| "<native>".to_string(),
         )
     }
+
+    /// [`describe`](Self::describe), each native type named as `natives`
+    /// declares it.
+    pub fn describe_in(&self, ty: &Ty, natives: &viso_behavior::native::Natives) -> String {
+        spell(
+            ty,
+            &|id| {
+                self.names
+                    .get(&id)
+                    .map_or("<named>", String::as_str)
+                    .to_string()
+            },
+            &|id| {
+                natives.ty_by_id(id).map_or_else(
+                    || "<native>".to_string(),
+                    |t| t.path.rsplit("::").next().unwrap_or(&t.path).to_string(),
+                )
+            },
+        )
+    }
 }
 
 /// A type as source spells it, each nominal type named by `named` and each

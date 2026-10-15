@@ -848,6 +848,7 @@ Arguments:
 
 Options:
       --search <TERM>  List every symbol and member whose path contains TERM, ignoring case
+      --list <GROUP>   List every symbol of one group [possible values: widgets, components, natives, types]
   -h, --help           Print help
 
 Global options:

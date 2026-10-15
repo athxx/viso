@@ -1,0 +1,13 @@
+demo::card::Card
+  src/card.vs:1:18  public  version 1.2.0  revision c7d9ccb96ef4426ee2795333c470bf77
+
+Properties
+  value  String        invalidates: MEASURE|LAYOUT|PAINT|SEMANTICS  bind
+  title  String        invalidates: MEASURE|LAYOUT|PAINT|SEMANTICS
+  dense  Bool = false  invalidates: STRUCTURE
+
+Events
+  changed  (value: String)
+
+Slots
+  footer  optional

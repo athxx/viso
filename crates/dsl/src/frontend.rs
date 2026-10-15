@@ -33,9 +33,9 @@ use crate::hir::{
     TargetProfile, Ty, TypeSchemas, persists, write_backs,
 };
 use crate::ir::{
-    BindingIr, ComponentLibrary, Consts, InstanceSources, KeyIr, LibraryComponent, LoweredView,
-    UiTree, analyze_keys, lower_bindings, lower_component_view, lower_fragment_items,
-    lower_view_bindings,
+    BindingIr, ComponentLibrary, Consts, DirtyClass, InstanceSources, KeyIr, LibraryComponent,
+    LoweredView, UiTree, analyze_keys, lower_bindings, lower_component_view, lower_fragment_items,
+    lower_view_bindings, source_invalidations,
 };
 use crate::resolve::{
     ModuleGraph, ModulePath, NameInterner, ResolvedModule, SourceUnit, SymbolId, SymbolIdentity,
@@ -567,6 +567,68 @@ fn unmounted_diagnostic(unmounted: &crate::ir::Unmounted) -> Diagnostic {
             .push(crate::diag::Related::new(placed, "placed here"));
     }
     diagnostic
+}
+
+/// What a write to each input of `component`, one of the unit `cu`'s
+/// `components`, invalidates in the view it mounts, by input: nothing for an
+/// input the view never reads.
+pub(crate) fn input_invalidations(
+    cu: &CompilationUnit,
+    module: &ResolvedModule,
+    components: &[&HirComponent],
+    natives: &Natives,
+    component: &HirComponent,
+) -> Vec<DirtyClass> {
+    let inputs = &component.schema.inputs;
+    let decls = component_decls(cu);
+    let block = decls
+        .iter()
+        .find(|d| d.syntax().text_range() == component.source_origin)
+        .and_then(|decl| decl.view()?.block());
+    let Some(block) = block else {
+        return vec![DirtyClass::EMPTY; inputs.len()];
+    };
+    let library = unit_library(cu, module, &decls, components.iter().copied());
+    let tree = lower_component_view(&block, natives, &library, component.schema.symbol).tree;
+    drop(library);
+    let child = |symbol: SymbolId| components.iter().find(|c| c.schema.symbol == symbol);
+    let instances: Vec<InstanceSources> = tree
+        .instances
+        .iter()
+        .map(|i| InstanceSources {
+            states: Vec::new(),
+            inputs: child(i.component)
+                .map(|c| {
+                    c.schema
+                        .inputs
+                        .iter()
+                        .map(|i| i.meta.resolved_symbol)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+        .collect();
+    let env = SourceSet::new(
+        instance_symbols(component).into_iter().chain(
+            tree.instances
+                .iter()
+                .filter_map(|i| child(i.component))
+                .flat_map(|c| instance_symbols(c)),
+        ),
+    );
+    let derived = DerivedReads::merged(components.iter().map(|c| &c.schema.derived));
+    let by_source =
+        source_invalidations(&tree, cu.syntax(), &module.refs, &env, &derived, &instances);
+    inputs
+        .iter()
+        .map(|input| {
+            input
+                .meta
+                .resolved_symbol
+                .and_then(|symbol| by_source.get(&symbol).copied())
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 /// Every component and template the unit declares, exported or not.
