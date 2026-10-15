@@ -89,6 +89,11 @@ codes! {
     TEST_INPUT_INVALID = DIAGNOSTICS, "A test scenario or tape does not parse or fit the build.";
     TEST_EXPECTATION = DIAGNOSTICS, "A test's expectation was not met.";
 
+    NEW_NAME_INVALID = USAGE, "The package name is not one Cargo accepts.";
+    NEW_PATH_TAKEN = USAGE, "The project's directory is a file, or holds files and `--force-empty-dir` is not given, or holds a file the project would write.";
+    NEW_GIT = ENVIRONMENT, "Git could not make the new project a repository.";
+    NEW_WRITE = INTERNAL, "The project's files could not be written; nothing was left behind.";
+
     DEVICE_MISSING = ENVIRONMENT, "No simulator or emulator profile exists.";
     DEVICE_UNKNOWN = USAGE, "`--device` or a configured default names no profile.";
     DEVICE_AMBIGUOUS = USAGE, "Several profiles exist and none is the default.";
@@ -129,6 +134,7 @@ mod tests {
                 "TEST" => &[DIAGNOSTICS],
                 // Device and game codes are about one subject and fail in
                 // more than one way.
+                "NEW" => &[USAGE, ENVIRONMENT, INTERNAL],
                 "DEVICE" | "GAME" => &[DIAGNOSTICS, USAGE, ENVIRONMENT, RUNTIME, INTERNAL],
                 other => panic!("`{}` has no known prefix `{other}`", code.name),
             };

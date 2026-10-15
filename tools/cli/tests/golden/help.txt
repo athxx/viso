@@ -4,11 +4,12 @@ Build, check and run Viso applications
 Usage: viso [OPTIONS] <COMMAND>
 
 Examples:
+  viso new my_app    # create an app in `my_app/`
   viso run           # build and run the app here, hot reloading it
-  viso run ios       # the same on an iOS Simulator
   viso check --json  # check the sources, as JSON events
 
 PROJECT
+  new         Create a Viso project from a template: an app, a game, a web app or a library
   doctor      Examine this machine for developing Viso apps: toolchains, the project, a target's SDK
   config      Show where each configuration value comes from, or validate it
 
@@ -50,6 +51,43 @@ Options:
 
 Notes:
   Run `viso <command> --help` for a command's arguments and options.
+
+$ viso new --help
+Create a Viso project from a template: an app, a game, a web app or a library
+
+Usage: viso new [OPTIONS] <PATH>
+
+Examples:
+  viso new my_app                               # an app in `my_app/`, a Git repository
+  viso new . --template game                    # a game in the current directory, named after it
+  viso new widgets --template library --no-git  # components for other apps, without Git
+
+Arguments:
+  <PATH>  The directory to create the project in, made with its parents when missing; `.` for the current one
+
+Options:
+      --template <NAME>  What the project starts as [default: app] [possible values: app, game, web, library]
+      --name <NAME>      The package name; the directory's name when omitted
+      --edition <YEAR>   The Rust edition the package is written in [default: 2024] [possible values: 2021, 2024]
+      --no-git           Do not make the directory a Git repository
+      --force-empty-dir  Create the project in a directory that has files already; none of them is replaced, and one the project would write is an error
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  The templates are built in, so it needs no network. A directory with files is
+  refused unless `--force-empty-dir`, which still replaces none of them.
 
 $ viso doctor --help
 Examine this machine for developing Viso apps: toolchains, the project, a target's SDK

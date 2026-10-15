@@ -1,0 +1,3 @@
+[app]
+clicks = "{count, plural, one {# click} other {# clicks}}"
+click = "Click me"

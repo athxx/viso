@@ -1,0 +1,3 @@
+[counter]
+count = "Count: {count}"
+add = "Add one"

@@ -551,6 +551,21 @@ viso test ui        # 默认 --target headless
 
 `--json`：`progress`、一条 `result`（`payload: {path, template, files[]}`）、`summary`。目标目录非空且未给 `--force-empty-dir`：exit 2；模板写出失败：exit 7。
 
+### 8.6 当前实现
+
+- 模板编译进 CLI，不需要网络（`--offline` 下同样可用）。四个模板都是一个 Cargo package，依赖与本 CLI 同版本的 `viso`（`viso = "<CLI version>"`，dev 协议双方一致），外加 `Viso.toml`（`[package] name`、`language`，`[i18n] source = "en"`）、`i18n/en.toml`、空的 `assets/` 与 `.gitignore`（`/target`、`/dist`）。View 的文本都取自 `tr`，因此新项目在 `viso check --a11y strict --i18n strict` 下也没有诊断：
+  - `app`：`src/main.rs` 只有 `viso::run::<App>()`，`src/app.rs` 用 `view!("app.vs")` 挂载 `src/app.vs`（一个 state、一个 Button、一个 plural 文本），`tests/ui/clicks.tape`；
+  - `game`：同样的 Rust 入口，`src/app.vs` 是一个 `FixedUpdate` System（`@probe state jumps`）和它的 HUD，`Viso.toml` 加 `[game] tick_rate = 60`，`tests/game/jump.tape` 与 `tests/ui/hint.tape`；
+  - `web`：`app` 加 `[web] default_target = "web-dom"`；
+  - `library`：没有 binary，`src/lib.rs` 导出 `pub fn counter(cx: &mut BuildCx)`（挂载 `src/counter.vs`），没有 `tests/ui/`（UI Scenario 需要可执行文件）。
+- `ui!`、`component!`、`view!`、`asset!` 展开为经由 facade 的路径，所以只依赖 `viso` 的项目可以编译它的 View。
+- Package name 默认取目录名（`.` 取当前目录名），按 Cargo 规则校验：ASCII 字母、数字、`-`、`_`，以字母或 `_` 开头，至多 64 个字符，不是 Rust 关键字、标准库 crate、`viso` 或 Windows 保留设备名；否则 `NEW_NAME_INVALID`（exit 2），名字来自目录时附带一个可用的 `--name`。
+- 路径不存在时连同父目录一起创建；路径上有文件、目录非空且未给 `--force-empty-dir`（note 列出已有内容，fix 为加上该 flag 的命令），或 `--force-empty-dir` 下已有项目要写的文件（note 列出它们），为 `NEW_PATH_TAKEN`（exit 2）。`--force-empty-dir` 从不替换文件。
+- 写出是原子的：新目录先在同级的 staging 目录写全，再一次 rename；已有目录（如 `.`）在其内部的 staging 目录写全，再逐个文件移入。失败或 Ctrl-C 时删除已写的文件与新建的目录（含新建的父目录），exit 7（`NEW_WRITE`）或 130。
+- 不给 `--no-git` 时，目录不在已有 Git work tree 中则 `git init`；没有 Git 或 `git init` 失败是 `NEW_GIT` warning，项目照常创建。
+- 人类输出为 `Created the app `<name>` in <path>` 加下一步命令（`cd`，然后 `viso run`/`viso serve`/`viso check` 与 `viso test`）。
+- 验收测试（`tools/cli/tests/new.rs`）对每个模板运行 `new → check → build headless（library 除外）→ test`：在项目旁的 `.cargo/config.toml` 中以 `[patch.crates-io]` 指向 workspace 的 `crates/viso`，离线。
+
 ---
 
 ## 9. `viso doctor`
@@ -2461,6 +2476,10 @@ BUILD_FAILED            cargo build 失败                         exit 4
 BUILD_PACKAGE           构建产物无法为 target 打包               exit 4
 RUN_APP_FAILED          app 无法启动、crash 或非零退出           exit 5
 RUN_TEST_CRASHED        测试用例的 runner 无法启动、crash 或未报告结束 exit 5
+NEW_NAME_INVALID        package name 不是 Cargo 接受的名字         exit 2
+NEW_PATH_TAKEN          目录是文件、非空且无 `--force-empty-dir`，或已有项目要写的文件 exit 2
+NEW_GIT                 Git 无法把新项目建成仓库（warning）         —
+NEW_WRITE               项目文件写不出，未留下任何文件             exit 7
 DEVICE_MISSING          没有 simulator/emulator profile           exit 3
 DEVICE_UNKNOWN          `--device` 或默认值不是已有 profile        exit 2
 DEVICE_AMBIGUOUS        多个 profile 且无默认                     exit 2

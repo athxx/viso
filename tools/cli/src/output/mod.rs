@@ -444,11 +444,28 @@ impl Output {
         self.report_error(code, message, notes, &[]);
     }
 
+    /// Reports a warning under the CLI's own `code`: something went short of
+    /// what was asked, and the command still succeeds.
+    pub fn warning(&mut self, code: Code, message: &str, notes: &[String]) {
+        self.report(false, code.name, message, notes, &[]);
+    }
+
     fn report_error(&mut self, code: &str, message: &str, notes: &[String], next: &[String]) {
+        self.report(true, code, message, notes, next);
+    }
+
+    fn report(
+        &mut self,
+        error: bool,
+        code: &str,
+        message: &str,
+        notes: &[String],
+        next: &[String],
+    ) {
         self.emit(
-            true,
+            error,
             &Report {
-                severity: "error",
+                severity: if error { "error" } else { "warning" },
                 code,
                 message,
                 location: Location::None,

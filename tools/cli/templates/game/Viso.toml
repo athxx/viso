@@ -1,0 +1,9 @@
+[package]
+name = "{name}"
+language = "{language}"
+
+[i18n]
+source = "en"
+
+[game]
+tick_rate = 60

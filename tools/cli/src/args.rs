@@ -118,6 +118,8 @@ pub enum Command {
     /// Manage the iOS Simulator profiles `viso run ios` runs on.
     #[command(subcommand)]
     Ios(IosCommand),
+    /// Create a Viso project from a template: an app, a game, a web app or a library.
+    New(NewArgs),
     /// Build a dev artifact and run it, hot reloading edits as they are saved.
     Run(RunArgs),
     /// Show the typed schema of a widget, native library, function or type.
@@ -182,6 +184,77 @@ pub struct DoctorArgs {
     /// with `rustup`), each said before it runs; nothing else is installed.
     #[arg(long)]
     pub fix: bool,
+}
+
+/// What `viso new` creates.
+#[derive(Debug, Args)]
+pub struct NewArgs {
+    /// The directory to create the project in, made with its parents when
+    /// missing; `.` for the current one.
+    #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+    pub path: PathBuf,
+    /// What the project starts as.
+    #[arg(long, value_enum, value_name = "NAME", default_value_t)]
+    pub template: Template,
+    /// The package name; the directory's name when omitted.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+    /// The Rust edition the package is written in.
+    #[arg(long, value_enum, value_name = "YEAR", default_value_t)]
+    pub edition: Edition,
+    /// Do not make the directory a Git repository.
+    #[arg(long)]
+    pub no_git: bool,
+    /// Create the project in a directory that has files already; none of
+    /// them is replaced, and one the project would write is an error.
+    #[arg(long)]
+    pub force_empty_dir: bool,
+}
+
+/// The templates `viso new` creates a project from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum Template {
+    /// A cross-platform app: a view, its state and a UI test.
+    #[default]
+    App,
+    /// A game: a system on the fixed tick, its HUD and a game test.
+    Game,
+    /// An app whose first target is the browser's DOM.
+    Web,
+    /// Components for other apps to mount, with no binary.
+    Library,
+}
+
+impl Template {
+    /// Its name on the command line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Template::App => "app",
+            Template::Game => "game",
+            Template::Web => "web",
+            Template::Library => "library",
+        }
+    }
+}
+
+/// The Rust editions a new package can be written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum Edition {
+    #[value(name = "2021")]
+    E2021,
+    #[default]
+    #[value(name = "2024")]
+    E2024,
+}
+
+impl Edition {
+    /// Its year, as `Cargo.toml` writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Edition::E2021 => "2021",
+            Edition::E2024 => "2024",
+        }
+    }
 }
 
 /// What `viso check` checks.
@@ -638,6 +711,7 @@ impl Command {
                 DeviceCommand::Stop(_) => "ios simulator stop",
                 DeviceCommand::Delete(_) => "ios simulator delete",
             },
+            Command::New(_) => "new",
             Command::Run(_) => "run",
             Command::Schema(_) => "schema",
             Command::Serve(_) => "serve",

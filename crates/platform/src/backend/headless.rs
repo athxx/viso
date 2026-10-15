@@ -264,7 +264,12 @@ impl PlatformApp for HeadlessApp {
     }
 
     fn request_redraw(&mut self, id: WindowId) {
-        self.pending_redraws.push_back(id);
+        // A closed window draws no more frames, as on a native backend: a
+        // frame client that asks for one each frame must not keep its
+        // `WindowClosed` from being delivered.
+        if self.windows.iter().any(|w| w.id == id) {
+            self.pending_redraws.push_back(id);
+        }
     }
 
     fn set_menu(&mut self, _menu: &crate::menu::Menu) {
@@ -282,6 +287,7 @@ impl PlatformApp for HeadlessApp {
         // backends that ignore stale handles.
         let existed = self.windows.iter().any(|w| w.id == id);
         self.windows.retain(|w| w.id != id);
+        self.pending_redraws.retain(|w| *w != id);
         if existed {
             self.script
                 .push_front(RawEvent::WindowClosed { window: id });
@@ -451,6 +457,21 @@ mod tests {
                 RawEvent::RedrawRequested { .. },
                 RawEvent::Text(_)
             ]
+        ));
+    }
+
+    #[test]
+    fn a_closed_window_takes_no_more_redraws() {
+        let mut app = HeadlessApp::new();
+        let window = app.create_window(WindowConfig::default()).unwrap();
+        app.request_redraw(window);
+        app.close_window(window);
+        app.request_redraw(window);
+        let mut recorder = Recorder(Vec::new());
+        app.run(&mut recorder);
+        assert!(matches!(
+            recorder.0[..],
+            [RawEvent::AppLaunched, RawEvent::WindowClosed { .. }]
         ));
     }
 

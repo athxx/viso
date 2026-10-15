@@ -13,7 +13,7 @@ use clap::{Arg, ArgAction, Command};
 
 /// The top-level groups in order, each with its commands in order.
 const GROUPS: &[(&str, &[&str])] = &[
-    ("PROJECT", &["doctor", "config"]),
+    ("PROJECT", &["new", "doctor", "config"]),
     ("MOBILE DEV ENVIRONMENT", &["android", "ios"]),
     ("DEVELOP", &["run", "build", "serve"]),
     ("LANGUAGE", &["fmt", "check", "schema"]),
@@ -27,8 +27,8 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
     (
         "",
         &[
+            ("viso new my_app", "create an app in `my_app/`"),
             ("viso run", "build and run the app here, hot reloading it"),
-            ("viso run ios", "the same on an iOS Simulator"),
             ("viso check --json", "check the sources, as JSON events"),
         ],
     ),
@@ -130,6 +130,20 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             (
                 "viso check --watch --json",
                 "again after every change, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "new",
+        &[
+            ("viso new my_app", "an app in `my_app/`, a Git repository"),
+            (
+                "viso new . --template game",
+                "a game in the current directory, named after it",
+            ),
+            (
+                "viso new widgets --template library --no-git",
+                "components for other apps, without Git",
             ),
         ],
     ),
@@ -416,6 +430,11 @@ const NOTES: &[(&str, &str)] = &[
         "`Viso.toml` is the source of truth: `viso config` reads it and never writes it.\n\
          A value comes from the first of: a flag, a `VISO_*` variable, the profile's\n\
          table, the manifest, the default.",
+    ),
+    (
+        "new",
+        "The templates are built in, so it needs no network. A directory with files is\n\
+         refused unless `--force-empty-dir`, which still replaces none of them.",
     ),
     (
         "doctor",

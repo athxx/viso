@@ -1,0 +1,9 @@
+[package]
+name = "{name}"
+language = "{language}"
+
+[i18n]
+source = "en"
+
+[web]
+default_target = "web-dom"

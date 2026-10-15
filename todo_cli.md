@@ -208,19 +208,35 @@ gap, and CI can run all of it headless.
 - [x] `ui!`, `component!`, `view!` and `asset!` expand to paths through the facade
       (`viso::__private`), so a project that depends only on `viso` builds its
       views; the examples drop their internal-crate dependencies.
-- [ ] Templates `app`, `game`, `web`, `library` embedded in the binary (no network);
-      each a Cargo package plus `Viso.toml`, `src/main.rs`, `ui/*.vs`, `tests/ui/`,
-      `.gitignore`; `library` has no binary.
-- [ ] Options `--template`, `--name` (package name validated as a Cargo name, C-code
-      on invalid), `--edition`, `--no-git` (default runs `git init` when git exists,
-      a missing git is a warning), `--force-empty-dir`.
-- [ ] `viso new <path>` refuses a non-empty directory (exit 2, lists what is there);
-      `viso new .` works in an empty directory and takes the directory name.
-- [ ] Generated files written atomically (temp dir, then rename) so a failure leaves
-      nothing behind (§51).
-- [ ] JSON `result{path,template,files}`; human output prints the next commands.
-- [ ] Acceptance: for each template `new → check → build headless → test ui` passes
-      (integration test, offline, uses the workspace's crates via a path override).
+- [x] Templates `app`, `game`, `web`, `library` embedded in the binary (no network);
+      each a Cargo package depending on `viso` at the CLI's version, plus
+      `Viso.toml`, `src/*.vs`, `i18n/en.toml` (every text through `tr`, so strict
+      checks are clean), `assets/`, `.gitignore`; `tests/ui/` for the binaries and
+      `tests/game/` for the game; `library` has no binary and no UI scenarios.
+- [x] Options `--template`, `--name` (validated as a Cargo name, `NEW_NAME_INVALID`
+      exit 2 with a usable `--name` when the directory gave it), `--edition`
+      (2021 | 2024), `--no-git` (default `git init` unless inside a work tree; no
+      Git is a `NEW_GIT` warning), `--force-empty-dir` (fills a directory with
+      files, never replaces one; a file the project writes is `NEW_PATH_TAKEN`).
+- [x] `viso new <path>` refuses a non-empty directory (`NEW_PATH_TAKEN`, exit 2,
+      lists what is there, the fix adds `--force-empty-dir`); `viso new .` takes
+      the directory's name; missing parents are made.
+- [x] Generated files written atomically: a new directory is staged beside it and
+      renamed; an existing one is staged inside and filled file by file; a
+      failure or Ctrl-C removes everything made (`NEW_WRITE` exit 7, or 130).
+- [x] JSON `progress`, `result{path,template,files}`; human output prints the next
+      commands. Help (PROJECT group, examples, notes), completion from the grammar,
+      golden help updated.
+- [x] Acceptance: for each template `new → check → build headless → test` passes
+      (`tools/cli/tests/new.rs`, offline, `[patch.crates-io]` to the workspace's
+      `crates/viso`); plus layout, refusal, force, `.`, name, Git and failed-write
+      tests.
+- [x] Headless backend: a closed window takes no more redraws, so a view running a
+      game (a frame client asking for a frame every frame) ends its UI scenario
+      instead of spinning forever.
+- [ ] A published `viso` to depend on: until then a new project builds only with
+      a `[patch]` or path to the framework's source; `viso new` could offer
+      `--framework <path>` for development checkouts.
 
 ### C1.3 — `viso doctor` (§9)
 

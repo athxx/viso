@@ -10,6 +10,7 @@ mod device;
 mod doctor;
 mod fmt;
 mod game;
+mod new;
 mod run;
 mod schema;
 mod serve;
@@ -56,6 +57,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
         Command::Fmt(args) => fmt::run(ctx, args, out),
         Command::Ios(IosCommand::Simulator(command)) => device::run(Platform::Ios, command, out),
         Command::Game(command) => game::run(ctx, command, out),
+        Command::New(args) => new::run(ctx, args, out),
         Command::Run(args) => run::run(ctx, args, out),
         Command::Schema(args) => schema::run(args, out),
         Command::Serve(args) => serve::run(ctx, args, out),

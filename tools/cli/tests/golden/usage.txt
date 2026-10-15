@@ -11,11 +11,12 @@ Build, check and run Viso applications
 Usage: viso [OPTIONS] <COMMAND>
 
 Examples:
+  viso new my_app    # create an app in `my_app/`
   viso run           # build and run the app here, hot reloading it
-  viso run ios       # the same on an iOS Simulator
   viso check --json  # check the sources, as JSON events
 
 PROJECT
+  new         Create a Viso project from a template: an app, a game, a web app or a library
   doctor      Examine this machine for developing Viso apps: toolchains, the project, a target's SDK
   config      Show where each configuration value comes from, or validate it
 
