@@ -306,8 +306,9 @@ gap, and CI can run all of it headless.
       constant `justify`, `align`, qualified `Axis`, `Sizing` variants and `const`
       values lay out, and `visible`, `focusable` and text `color`/`font_size`/
       `soft_wrap` reach the node (DSL D2.5 lists the rest).
-- [ ] `Offset` and `Transition` properties are typed too (a literal of another
-      type is accepted today), with the promotions the schema gives them.
+- [x] `Offset` properties are typed as the prelude record (`Offset::zero()` beside
+      it), so a value of another type is `E2103`; a `transition.*` value of another
+      type than `Transition` is `E3703` (DSL §U6.1).
 
 ### C1.6 — `viso build` (§14)
 

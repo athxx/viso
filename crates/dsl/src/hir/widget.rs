@@ -8,8 +8,8 @@
 //! types, `Color`, `Angle`, their `Option`s) types its binding; any other
 //! is a native schema type: a prelude enum (`Justify`, `Role`, `Sizing`) or
 //! one of the prelude records [`PRELUDE_RECORDS`] types its binding as that
-//! declaration, and the rest (`Offset`, `Transition`) are inferred without an
-//! expectation.
+//! declaration. A `transition.*` binding is inferred on its own and checked
+//! to be a `Transition` (`E3703`).
 
 use viso_behavior::native::{
     COMPONENT, NativeWidget, Natives, PropertyGroup, WidgetEvent, WidgetNode, WidgetProperty,
@@ -35,6 +35,7 @@ pub(crate) const PRELUDE_RECORDS: &[&str] = &[
     "EdgeInsets",
     "Border",
     "AdaptiveColumns",
+    "Offset",
 ];
 
 /// The type a binding of a property typed `name` is checked against, or `None`

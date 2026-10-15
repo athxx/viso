@@ -3374,8 +3374,12 @@ mod tests {
             ["E3103"]
         );
         assert_eq!(
-            codes("component C {\n  view { Text { translate: 50%; } }\n}"),
+            codes("component C {\n  view { Text { translate: Offset { x: 50%, y: 0dp }; } }\n}"),
             ["E3104"]
+        );
+        assert_eq!(
+            codes("component C {\n  view { Text { translate: 4dp; } }\n}"),
+            ["E2103"]
         );
         assert_eq!(
             codes("component C {\n  view { Toggle { checked: 1; } }\n}"),
@@ -3507,7 +3511,7 @@ mod tests {
         let flagged = |body: &str| codes(&format!("{decls}component C {{\n{body}\n}}"));
         // Through a state initializer, a computed, a field access and a local.
         assert_eq!(
-            flagged("  state o = At { x: 50%, y: 0dp }\n  view { Text { translate: o; } }"),
+            flagged("  state o = Offset { x: 50%, y: 0dp }\n  view { Text { translate: o; } }"),
             ["E3104"]
         );
         assert_eq!(
@@ -3533,7 +3537,7 @@ mod tests {
         );
         // The diagnostic points back at the spelled `Percent`.
         let pkg = lower_src(&format!(
-            "{decls}component C {{\n  state o = At {{ x: 50%, y: 0dp }}\n  view {{ Text {{ translate: o; }} }}\n}}"
+            "{decls}component C {{\n  state o = Offset {{ x: 50%, y: 0dp }}\n  view {{ Text {{ translate: o; }} }}\n}}"
         ));
         let reason = &pkg.diagnostics[0].related[0].label;
         assert!(reason.contains("comes from"), "{reason}");
@@ -3545,7 +3549,7 @@ mod tests {
              \x20 view { Text { translate: Offset { x: f(w), y: 0dp }; visible: w > 10%; } }\n}",
         );
         assert_clean(&format!(
-            "{decls}component C {{\n  state o = At {{ x: 4dp, y: 0dp }}\n  view {{ Text {{ translate: o; }} }}\n}}"
+            "{decls}component C {{\n  state o = Offset {{ x: 4dp, y: 0dp }}\n  view {{ Text {{ translate: o; }} }}\n}}"
         ));
     }
 
@@ -3554,12 +3558,12 @@ mod tests {
         let decls = "record Pad { x: MixedLength = 50%; y: MixedLength = 0dp; }\n";
         assert_eq!(
             codes(&format!(
-                "{decls}component C {{\n  state p = Pad {{ y: 1dp }}\n  view {{ Text {{ translate: p; }} }}\n}}"
+                "{decls}component C {{\n  state p = Pad {{ y: 1dp }}\n  view {{ Text {{ translate: Offset {{ x: p.x, y: p.y }}; }} }}\n}}"
             )),
             ["E3104"]
         );
         assert_clean(&format!(
-            "{decls}component C {{\n  state p = Pad {{ x: 1dp, y: 1dp }}\n  view {{ Text {{ translate: p; }} }}\n}}"
+            "{decls}component C {{\n  state p = Pad {{ x: 1dp, y: 1dp }}\n  view {{ Text {{ translate: Offset {{ x: p.x, y: p.y }}; }} }}\n}}"
         ));
     }
 

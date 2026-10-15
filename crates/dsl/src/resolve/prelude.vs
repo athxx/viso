@@ -5,6 +5,9 @@
 
 export record Point { x: Dp; y: Dp; }
 export record Offset { x: MixedLength = 0dp; y: MixedLength = 0dp; }
+impl Offset {
+    fn zero() -> Offset { Offset {} }
+}
 export record SizeDp { width: Dp; height: Dp; }
 
 export record Modifiers { shift: Bool; control: Bool; alt: Bool; logo: Bool; }
