@@ -152,6 +152,12 @@ codes! {
         fix: "Check the path and its permissions; `viso test --filter` selects scenarios by name.",
         commands: ["viso test --help"],
     }
+    ENV_DUMP_WRITE = ENVIRONMENT {
+        summary: "The dump could not be written to the `--out` file.",
+        explanation: "`viso dump --out` writes the dump to a file, and creating or writing it failed: its directory is missing or read-only, or the disk is full.",
+        fix: "Give `--out` a writable path, or drop it to print the dump.",
+        commands: [],
+    }
     ENV_SOURCE_WRITE = ENVIRONMENT {
         summary: "A source file the command rewrites could not be written.",
         explanation: "The formatter or a fix rewrites a source in place and the write failed: a read-only file or directory, or a full disk. The original is left as it was.",
@@ -326,6 +332,13 @@ codes! {
         commands: ["viso doctor"],
     }
 
+    DUMP_INPUT = USAGE {
+        summary: "The file `viso dump` is given is not a `.vs` source of the project.",
+        explanation: "A dump covers the project's package: a file input must be one of the `.vs` sources the package loads from `src/`. Anything else, a missing file or one outside the package, has no IR to dump.",
+        fix: "Name a `.vs` file under the project's `src/`, a declaration by its name, or nothing to dump every file.",
+        commands: ["viso dump --help"],
+    }
+
     GAME_NOT_RUNNING = ENVIRONMENT {
         summary: "No mounted view of the named file runs a game.",
         explanation: "The game command addresses a running game by the file that declares it, and no view mounted from that file in the dev session runs one.",
@@ -392,6 +405,7 @@ mod tests {
                 "BUILD" => &[BUILD],
                 "RUN" => &[RUNTIME],
                 "TEST" | "EXPLAIN" => &[DIAGNOSTICS],
+                "DUMP" => &[USAGE],
                 // Device and game codes are about one subject and fail in
                 // more than one way.
                 "NEW" => &[USAGE, ENVIRONMENT, INTERNAL],

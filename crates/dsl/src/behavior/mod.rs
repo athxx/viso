@@ -15,6 +15,7 @@ mod dump;
 mod instance;
 pub(crate) mod lower;
 
+pub(crate) use dump::inst_text;
 pub(crate) use instance::{hidden_state, inline_instances};
 pub use ir::{
     Body, ComponentLayout, FuncId, Function, FunctionKind, Inst, Program, Reg, RegionalStates,

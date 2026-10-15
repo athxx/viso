@@ -112,7 +112,7 @@ pub fn lower_bindings(
     refs: &[ResolvedRef],
     env: &dyn ReadEnv,
 ) -> BindingIr {
-    lower_view_bindings(tree, root, refs, env, &DerivedReads::default(), &[])
+    lower_view_reactivity(tree, root, refs, env, &DerivedReads::default(), &[]).0
 }
 
 /// The reactive sources of one inlined instance of a [`UiTree`]: what its
@@ -127,34 +127,6 @@ pub struct InstanceSources {
     pub inputs: Vec<Option<SymbolId>>,
 }
 
-/// [`lower_bindings`] for a view that inlines component instances, `instances`
-/// holding each one's sources in [`UiTree::instances`] order. A read in an
-/// instance's view of one of its component's states binds the hidden state
-/// keeping it; a read of an input binds whatever the caller's argument reads,
-/// through the caller's own instance in turn. Any other read of an inlined view
-/// binds nothing. A read of a `computed` or a call of a `fn` binds the states and
-/// inputs beneath it, as `derived` records them.
-pub fn lower_view_bindings(
-    tree: &UiTree,
-    root: &SyntaxNode,
-    refs: &[ResolvedRef],
-    env: &dyn ReadEnv,
-    derived: &DerivedReads,
-    instances: &[InstanceSources],
-) -> BindingIr {
-    let is_derived = |symbol: SymbolId| derived.is_derived(symbol);
-    let with = WithDerived {
-        env,
-        derived: &is_derived,
-    };
-    let mut ctx = LowerCtx::new(tree, root, refs, &with, derived, instances);
-    for item in &tree.items {
-        ctx.lower_item(item);
-    }
-    ctx.ir.dynamic_fallback_nodes = ctx.dynamic_nodes.len() as u32;
-    ctx.ir
-}
-
 /// What a write to each reactive source of a view invalidates: the dirty
 /// classes of every property it binds, a view-driven control's value it
 /// feeds included, and `STRUCTURE` where it decides an `if`, `for` or `match`
@@ -167,6 +139,25 @@ pub fn source_invalidations(
     derived: &DerivedReads,
     instances: &[InstanceSources],
 ) -> HashMap<SymbolId, DirtyClass> {
+    lower_view_reactivity(tree, root, refs, env, derived, instances).1
+}
+
+/// [`lower_bindings`] for a view that inlines component instances, `instances`
+/// holding each one's sources in [`UiTree::instances`] order, with
+/// [`source_invalidations`] from the same walk. A read in an instance's view of
+/// one of its component's states binds the hidden state keeping it; a read of
+/// an input binds whatever the caller's argument reads, through the caller's
+/// own instance in turn. Any other read of an inlined view binds nothing. A
+/// read of a `computed` or a call of a `fn` binds the states and inputs beneath
+/// it, as `derived` records them.
+pub fn lower_view_reactivity(
+    tree: &UiTree,
+    root: &SyntaxNode,
+    refs: &[ResolvedRef],
+    env: &dyn ReadEnv,
+    derived: &DerivedReads,
+    instances: &[InstanceSources],
+) -> (BindingIr, HashMap<SymbolId, DirtyClass>) {
     let is_derived = |symbol: SymbolId| derived.is_derived(symbol);
     let with = WithDerived {
         env,
@@ -181,7 +172,8 @@ pub fn source_invalidations(
     for edge in &ctx.ir.edges {
         *out.entry(edge.source).or_insert(DirtyClass::EMPTY) |= edge.class;
     }
-    out
+    ctx.ir.dynamic_fallback_nodes = ctx.dynamic_nodes.len() as u32;
+    (ctx.ir, out)
 }
 
 /// What the reads `reads` in the view of `instance` bind in the mounted

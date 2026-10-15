@@ -34,8 +34,8 @@ use crate::hir::{
 };
 use crate::ir::{
     BindingIr, ComponentLibrary, Consts, DirtyClass, InstanceSources, KeyIr, LibraryComponent,
-    LoweredView, UiTree, analyze_keys, lower_bindings, lower_component_view, lower_fragment_items,
-    lower_view_bindings, source_invalidations,
+    LoweredView, UiTree, analyze_keys, lower_component_view, lower_fragment_items,
+    lower_view_reactivity, source_invalidations,
 };
 use crate::resolve::{
     ModuleGraph, ModulePath, NameInterner, ResolvedModule, SourceUnit, SymbolId, SymbolIdentity,
@@ -162,6 +162,10 @@ pub struct Compiled {
     pub tree: UiTree,
     /// The view's compiled binding edges.
     pub bindings: BindingIr,
+    /// What a write to each reactive source the view reads invalidates, in
+    /// [`Compiled::sources`] order then first-read order: the classes of the
+    /// properties it binds, and `STRUCTURE` where it decides a region.
+    pub invalidations: Vec<(SymbolId, DirtyClass)>,
     /// The view's keyed-list analysis.
     pub keys: KeyIr,
     /// Every reactive source in scope of the view, in declaration (or, for a
@@ -233,7 +237,14 @@ pub fn compile_fragment(source: &str) -> Compiled {
     }
     let tree = lowered.tree;
     let env = SourceSet::new(resolved.sources.iter().copied());
-    let bindings = lower_bindings(&tree, &root, &resolved.refs, &env);
+    let (bindings, by_source) = lower_view_reactivity(
+        &tree,
+        &root,
+        &resolved.refs,
+        &env,
+        &DerivedReads::default(),
+        &[],
+    );
     let keys = analyze_keys(&tree, &root, &resolved.refs, &env);
     diagnostics.extend(keys.diagnostics.iter().cloned());
 
@@ -245,11 +256,13 @@ pub fn compile_fragment(source: &str) -> Compiled {
             symbol,
             kind: SourceKind::External,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let invalidations = ordered_invalidations(&sources, &[], by_source);
     Compiled {
         component: None,
         tree,
         bindings,
+        invalidations,
         keys,
         sources,
         regional: Vec::new(),
@@ -466,15 +479,18 @@ fn compile_unit(
             })),
     );
     let derived = DerivedReads::merged(components.iter().map(|c| &c.schema.derived));
-    let bindings = lower_view_bindings(&tree, &root, &module.refs, &env, &derived, &instances);
+    let (bindings, by_source) =
+        lower_view_reactivity(&tree, &root, &module.refs, &env, &derived, &instances);
     let keys = analyze_keys(&tree, &root, &module.refs, &env);
     diagnostics.extend(keys.diagnostics.iter().cloned());
     sources.extend(hidden);
+    let invalidations = ordered_invalidations(&sources, &regional, by_source);
 
     Compiled {
         component: Some(components.swap_remove(mounted)),
         tree,
         bindings,
+        invalidations,
         keys,
         sources,
         regional,
@@ -487,6 +503,24 @@ fn compile_unit(
         paints,
         assets,
     }
+}
+
+/// `by_source` in the order of `sources` then `regional`, any other source
+/// it holds after them in symbol order.
+fn ordered_invalidations(
+    sources: &[Source],
+    regional: &[Source],
+    mut by_source: HashMap<SymbolId, DirtyClass>,
+) -> Vec<(SymbolId, DirtyClass)> {
+    let mut out: Vec<(SymbolId, DirtyClass)> = sources
+        .iter()
+        .chain(regional)
+        .filter_map(|s| by_source.remove(&s.symbol).map(|class| (s.symbol, class)))
+        .collect();
+    let mut rest: Vec<_> = by_source.into_iter().collect();
+    rest.sort_by_key(|(symbol, _)| *symbol);
+    out.extend(rest);
+    out
 }
 
 /// The library a view of the unit `cu`, resolved as `module`, inlines: the
@@ -665,6 +699,7 @@ impl Compiled {
             component: None,
             tree: UiTree::default(),
             bindings: BindingIr::default(),
+            invalidations: Vec::new(),
             keys: KeyIr::default(),
             sources: Vec::new(),
             regional: Vec::new(),

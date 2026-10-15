@@ -107,6 +107,8 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Write the script that completes `viso` commands in a shell.
     Completion(CompletionArgs),
+    /// Print one of the compiler's IRs of the project: syntax tree, HIR, view, behavior, shader, systems.
+    Dump(DumpArgs),
     /// Explain a diagnostic code: why it is raised and how to fix it.
     Explain(ExplainArgs),
     /// Lay out `.vs` sources in the one canonical format.
@@ -674,6 +676,46 @@ pub struct ServeArgs {
     pub no_hot_reload: bool,
 }
 
+/// What `viso dump` prints.
+#[derive(Debug, Args)]
+pub struct DumpArgs {
+    /// The IR to print.
+    #[arg(value_enum)]
+    pub kind: DumpKind,
+    /// A `.vs` file of the project, or a declaration by its path or a
+    /// `::`-suffix of it (`Counter`, `app::counter::Counter.increment`);
+    /// every file when omitted.
+    pub input: Option<String>,
+    /// Narrow a file's dump to one of its declarations, by path or suffix,
+    /// optionally with `.member`.
+    #[arg(long, value_name = "PATH")]
+    pub symbol: Option<String>,
+    /// Write the dump to FILE instead of printing it.
+    #[arg(long, value_name = "FILE")]
+    pub out: Option<PathBuf>,
+}
+
+/// An IR `viso dump` prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum DumpKind {
+    /// The syntax tree, trivia aside.
+    Ast,
+    /// The typed HIR: members with their types, effects and reads.
+    Hir,
+    /// The retained-tree template of the view each file mounts.
+    UiIr,
+    /// The binding edges and what each reactive source invalidates.
+    ReactiveIr,
+    /// The Behavior IR the bodies compile to.
+    BehaviorIr,
+    /// The checked shader programs.
+    ShaderIr,
+    /// The systems in scheduler order, their hooks and states.
+    SystemIr,
+    /// The modules, their files, imports and declarations.
+    ModuleGraph,
+}
+
 /// What `viso explain` explains.
 #[derive(Debug, Args)]
 pub struct ExplainArgs {
@@ -733,6 +775,7 @@ impl Command {
             Command::Clean => "clean",
             Command::Doctor(_) => "doctor",
             Command::Completion(_) => "completion",
+            Command::Dump(_) => "dump",
             Command::Explain(_) => "explain",
             Command::Fmt(_) => "fmt",
             Command::Config(ConfigCommand::Show) => "config show",

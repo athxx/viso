@@ -16,7 +16,7 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("PROJECT", &["new", "doctor", "config"]),
     ("MOBILE DEV ENVIRONMENT", &["android", "ios"]),
     ("DEVELOP", &["run", "build", "serve"]),
-    ("LANGUAGE", &["fmt", "check", "schema", "explain"]),
+    ("LANGUAGE", &["fmt", "check", "schema", "explain", "dump"]),
     ("TEST / DEBUG", &["test", "game"]),
     ("DELIVERY", &[]),
     ("MAINTENANCE", &["clean", "completion"]),
@@ -353,6 +353,20 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "dump",
+        &[
+            (
+                "viso dump ui-ir src/app.vs",
+                "the view a file mounts, node by node",
+            ),
+            (
+                "viso dump reactive-ir Counter --json",
+                "what each state of `Counter` invalidates, as JSON events",
+            ),
+            ("viso dump module-graph", "every module and its imports"),
+        ],
+    ),
+    (
         "explain",
         &[
             (
@@ -488,8 +502,8 @@ const NOTES: &[(&str, &str)] = &[
 
 /// What `viso --version` reports: the CLI's version and commit, and the
 /// versions of what it speaks — the language, the event stream, the
-/// diagnostic object, the schema object and the dev protocol. Constants only: nothing is loaded
-/// to say them.
+/// diagnostic object, the schema object, the IR dumps and the dev protocol.
+/// Constants only: nothing is loaded to say them.
 pub struct Version {
     pub version: &'static str,
     pub commit: &'static str,
@@ -497,6 +511,7 @@ pub struct Version {
     pub event_schema: u64,
     pub diagnostic_schema: &'static str,
     pub schema_object: &'static str,
+    pub dump_version: u32,
     pub dev_protocol: u16,
 }
 
@@ -508,6 +523,7 @@ pub const VERSION: Version = Version {
     event_schema: crate::output::json::SCHEMA_VERSION,
     diagnostic_schema: crate::output::json::DIAGNOSTIC_SCHEMA_VERSION,
     schema_object: viso_dsl::schema::SCHEMA_VERSION,
+    dump_version: viso_dsl::dump::DUMP_VERSION,
     dev_protocol: viso_view::dev::wire::DEV_PROTOCOL_VERSION,
 };
 
@@ -520,6 +536,7 @@ language {}
 event schema {}
 diagnostic schema {}
 schema object {}
+dump {}
 dev protocol {}
 ",
             self.version,
@@ -528,6 +545,7 @@ dev protocol {}
             self.event_schema,
             self.diagnostic_schema,
             self.schema_object,
+            self.dump_version,
             self.dev_protocol
         )
     }
@@ -547,6 +565,8 @@ dev protocol {}
         w.string(self.diagnostic_schema);
         w.name("schema_object");
         w.string(self.schema_object);
+        w.name("dump_version");
+        w.uint(u64::from(self.dump_version));
         w.name("dev_protocol");
         w.uint(u64::from(self.dev_protocol));
         w.end_object();

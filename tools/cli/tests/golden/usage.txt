@@ -34,6 +34,7 @@ LANGUAGE
   check       Check the project's `.vs` sources and `Viso.toml` without building
   schema      Show the typed schema of a widget, component, native library, function or type
   explain     Explain a diagnostic code: why it is raised and how to fix it
+  dump        Print one of the compiler's IRs of the project: syntax tree, HIR, view, behavior, shader, systems
 
 TEST / DEBUG
   test        Run the project's tests: unit, UI, game

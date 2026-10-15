@@ -8,21 +8,35 @@
 use std::fmt::{self, Write};
 
 use super::ir::{
-    BinaryOp, Body, Const, DisplayKind, Function, Inst, PathStep, Program, Reg, UnaryOp,
+    BinaryOp, Body, ComponentLayout, Const, DisplayKind, Function, Inst, PathStep, Program, Reg,
+    UnaryOp,
 };
 
 impl Program {
     /// The program's textual dump.
     pub fn dump(&self) -> String {
         let mut out = String::from("behavior-ir 1\n");
-        for component in &self.components {
+        self.write_dump(&mut out, |_| true, |_| true);
+        out
+    }
+
+    /// Appends the dump of the components and functions `component` and
+    /// `function` keep, each function under its own index, and every native
+    /// import.
+    pub(crate) fn write_dump(
+        &self,
+        out: &mut String,
+        component: impl Fn(&ComponentLayout) -> bool,
+        function: impl Fn(&Function) -> bool,
+    ) {
+        for layout in self.components.iter().filter(|c| component(c)) {
             let _ = writeln!(
                 out,
                 "component {} states=[{}] inputs=[{}] events=[{}]",
-                component.name,
-                component.states.join(", "),
-                component.inputs.join(", "),
-                component.events.join(", "),
+                layout.name,
+                layout.states.join(", "),
+                layout.inputs.join(", "),
+                layout.events.join(", "),
             );
         }
         for (i, native) in self.natives.iter().enumerate() {
@@ -32,11 +46,19 @@ impl Program {
                 native.path, native.params, native.signature
             );
         }
-        for (i, function) in self.functions.iter().enumerate() {
-            let _ = write_function(&mut out, i, function);
+        for (i, f) in self.functions.iter().enumerate() {
+            if function(f) {
+                let _ = write_function(out, i, f);
+            }
         }
-        out
     }
+}
+
+/// One instruction's text, as the dump prints it.
+pub(crate) fn inst_text(inst: &Inst) -> String {
+    let mut out = String::new();
+    let _ = write_inst(&mut out, inst);
+    out
 }
 
 fn write_function(out: &mut String, index: usize, function: &Function) -> fmt::Result {

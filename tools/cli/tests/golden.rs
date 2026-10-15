@@ -190,6 +190,7 @@ fn version_names_the_build_and_what_it_speaks() {
             "event schema",
             "diagnostic schema",
             "schema object",
+            "dump",
             "dev protocol"
         ]
     );
@@ -204,6 +205,7 @@ fn version_names_the_build_and_what_it_speaks() {
         "event_schema",
         "diagnostic_schema",
         "schema_object",
+        "dump_version",
         "dev_protocol",
     ] {
         assert!(
@@ -280,6 +282,133 @@ fn schema_objects() {
     let out = viso(&dir, &["schema", "Card"]);
     assert_eq!(out.status.code(), Some(0));
     golden("schema_card.txt", &text(&out.stdout));
+}
+
+const DUMP_COUNTER: &str = r#"import viso::math::Vec2F32;
+
+export component Counter {
+    input label: String = "Count";
+    state count = 0;
+    state names: [String] = ["a", "b"];
+    computed doubled: I64 = count * 2;
+    event changed(value: I64);
+
+    action increment() {
+        count += 1;
+        emit changed(count);
+    }
+
+    view {
+        Column {
+            gap: 8dp;
+            node title: Text { text: label; }
+            Button { text: "Add"; on click { increment(); } }
+            for name in names key name { Text { text: name; } }
+            if count > 3 { Text { text: "many"; } } else { Text { text: "few"; } }
+        }
+    }
+}
+
+shader Glow {
+    uniform viewport_size: Vec2F32;
+    instance rect_pos: Vec2F32;
+    instance rect_size: Vec2F32;
+    instance tint: ColorLinear;
+    varying local: Vec2F32;
+
+    vertex(vertex_id: U32) -> VertexOutput {
+        let unit = quad_vertex(vertex_id);
+        local = unit;
+        return VertexOutput {
+            clip_position: to_clip(rect_pos + unit * rect_size, viewport_size),
+        };
+    }
+
+    fragment() -> ColorLinear {
+        let k = 1.0 - length(local - Vec2F32(0.5, 0.5));
+        return ColorLinear(tint.r * k, tint.g * k, tint.b * k, 1.0);
+    }
+}
+"#;
+
+const DUMP_GAME: &str = r#"import viso::game::quick::{QuickGame, QuickStart, QuickFrame};
+import viso::game::{InputAction, InputAxis};
+
+export system Runner implements QuickGame {
+    state lives = 0;
+    state x = 0.0;
+
+    action start(cx: QuickStart) {
+        lives = 2;
+    }
+
+    action fixed(frame: QuickFrame) {
+        x = x + frame.input.axis(InputAxis::move_x) * frame.dt();
+        if frame.input.pressed(InputAction::jump) && lives > 0 {
+            lives -= 1;
+        }
+    }
+}
+"#;
+
+const DUMP_MODEL: &str = r#"export record Step {
+    by: I64;
+}
+
+export fn twice(n: I64) -> I64 {
+    n * 2
+}
+"#;
+
+/// Every `viso dump` kind over a fixed project, and two of them as JSON.
+#[test]
+fn dumps() {
+    let dir = scratch("dump");
+    fs::write(
+        dir.join("Viso.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/counter.vs"), DUMP_COUNTER).unwrap();
+    fs::write(dir.join("src/game.vs"), DUMP_GAME).unwrap();
+    fs::write(dir.join("src/model.vs"), DUMP_MODEL).unwrap();
+    let mut report = String::new();
+    for args in [
+        &["module-graph"][..],
+        &["ast", "src/model.vs"],
+        &["hir"],
+        &["ui-ir", "src/counter.vs"],
+        &["reactive-ir", "Counter"],
+        &["behavior-ir", "Counter.increment"],
+        &["shader-ir", "Glow"],
+        &["system-ir", "src/game.vs"],
+    ] {
+        let mut full = vec!["dump"];
+        full.extend(args);
+        let out = viso(&dir, &full);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+        report.push_str(&format!(
+            "$ viso dump {}\n{}\n",
+            args.join(" "),
+            text(&out.stdout)
+        ));
+    }
+    for args in [&["hir", "Counter"][..], &["reactive-ir", "Counter"]] {
+        let mut full = vec!["dump"];
+        full.extend(args);
+        full.push("--json");
+        let out = viso(&dir, &full);
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        report.push_str(&format!("$ viso dump {} --json\n", args.join(" ")));
+        report.push_str(&payload(&text(&out.stdout)));
+    }
+    golden("dump.txt", &report);
 }
 
 /// `viso explain` of a code of each producer, and the list.

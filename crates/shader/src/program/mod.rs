@@ -15,6 +15,7 @@
 
 pub mod brush;
 pub mod codegen;
+mod dump;
 pub mod interp;
 pub mod layout;
 pub mod ops;

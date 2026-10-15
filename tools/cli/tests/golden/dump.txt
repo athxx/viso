@@ -1,0 +1,187 @@
+$ viso dump module-graph
+module-graph 1
+package demo
+module counter (src/counter.vs)
+  native Vec2F32 = viso::math::Vec2F32
+  export component Counter
+  shader Glow
+module game (src/game.vs)
+  native QuickGame = viso::game::quick::QuickGame
+  native QuickStart = viso::game::quick::QuickStart
+  native QuickFrame = viso::game::quick::QuickFrame
+  native InputAction = viso::game::InputAction
+  native InputAxis = viso::game::InputAxis
+  export system Runner
+module model (src/model.vs)
+  export record Step
+  export fn twice
+
+$ viso dump ast src/model.vs
+ast 1
+
+== src/model.vs (module model)
+CompilationUnit 0..82 @1:1
+  ExportDecl 0..35 @1:1
+    ExportKw "export" 0..6 @1:1
+    RecordDecl 7..35 @1:8
+      RecordKw "record" 7..13 @1:8
+      Ident "Step" 14..18 @1:15
+      LBrace "{" 19..20 @1:20
+      RecordField 25..33 @2:5
+        Ident "by" 25..27 @2:5
+        Colon ":" 27..28 @2:7
+        TypePath 29..32 @2:9
+          TypePathSegment 29..32 @2:9
+            Ident "I64" 29..32 @2:9
+        Semi ";" 32..33 @2:12
+      RBrace "}" 34..35 @3:1
+  ExportDecl 37..81 @5:1
+    ExportKw "export" 37..43 @5:1
+    FnDecl 44..81 @5:8
+      FnKw "fn" 44..46 @5:8
+      Ident "twice" 47..52 @5:11
+      ParamList 52..60 @5:16
+        LParen "(" 52..53 @5:16
+        Param 53..59 @5:17
+          Ident "n" 53..54 @5:17
+          Colon ":" 54..55 @5:18
+          TypePath 56..59 @5:20
+            TypePathSegment 56..59 @5:20
+              Ident "I64" 56..59 @5:20
+        RParen ")" 59..60 @5:23
+      ReturnType 61..67 @5:25
+        Arrow "->" 61..63 @5:25
+        TypePath 64..67 @5:28
+          TypePathSegment 64..67 @5:28
+            Ident "I64" 64..67 @5:28
+      Block 68..81 @5:32
+        LBrace "{" 68..69 @5:32
+        ExprStmt 74..79 @6:5
+          BinaryExpr 74..79 @6:5
+            PathExpr 74..75 @6:5
+              Ident "n" 74..75 @6:5
+            Star "*" 76..77 @6:7
+            LiteralExpr 78..79 @6:9
+              IntLiteral "2" 78..79 @6:9
+        RBrace "}" 80..81 @7:1
+
+$ viso dump hir
+hir 1
+
+== src/counter.vs (module counter)
+component Counter @3:8 #3742120144c5f74ad8e949f422124058
+  input label: String  read borrowed  @4:5
+  state count: I64  read owned  @5:5
+  state names: List<String>  read owned  @6:5
+  computed doubled: I64  read derived  reads [count]  @7:5
+  event changed: (value: I64)  pure none  @8:5
+  action increment: () -> Unit  action none  @10:5
+
+== src/game.vs (module game)
+system Runner @4:8 #69672ab7f9487e4d8498610f478cf0f1
+  state lives: I64  read owned  @5:5
+  state x: F64  read owned  @6:5
+  action start: (cx: QuickStart) -> Unit  action none  @8:5
+  action fixed: (frame: QuickFrame) -> Unit  action none  @12:5
+
+== src/model.vs (module model)
+record Step @1:15 #15cba9bf03df90801ea40aae4246401e
+  field by: I64  pure none  @2:5
+module model @1:1
+  fn twice: (n: I64) -> I64  read none  @5:8
+
+$ viso dump ui-ir src/counter.vs
+ui-ir 1
+
+== src/counter.vs (module counter)
+view Counter
+  n0 Column flex @16:9
+    style axis=column gap=8dp
+    n1 Text title leaf @18:13
+      bind text: label  MEASURE | LAYOUT | PAINT | SEMANTICS
+      control text: label
+    n2 Button leaf @19:13
+      bind text: "Add"  MEASURE | LAYOUT | PAINT | SEMANTICS
+      control text: "Add"
+      on click @19:35
+    for name in names key name @20:13
+      n3 Text leaf @20:42
+        bind text: name  MEASURE | LAYOUT | PAINT | SEMANTICS
+        control text: name
+    if @21:13
+      when count > 3
+        n4 Text leaf @21:28
+          bind text: "many"  MEASURE | LAYOUT | PAINT | SEMANTICS
+          control text: "many"
+      else
+        n5 Text leaf @21:60
+          bind text: "few"  MEASURE | LAYOUT | PAINT | SEMANTICS
+          control text: "few"
+
+$ viso dump reactive-ir Counter
+reactive-ir 1
+
+== src/counter.vs (module counter)
+view Counter
+  state count #5516f0399d0443338f03f5bff964ce47  invalidates STRUCTURE
+  state names #1dc5d1b5690443338f03e842b80fb428  invalidates STRUCTURE
+  input label #ac84802cfcfceaa987abed575db0852b  invalidates MEASURE | LAYOUT | PAINT | SEMANTICS
+  computed doubled #6916ecd9b7b4309b2aff7a6972137aaa  unread
+  label -> n1 Text.text  MEASURE | LAYOUT | PAINT | SEMANTICS
+  dynamic_fallback_nodes 0
+
+$ viso dump behavior-ir Counter.increment
+behavior-ir 1
+
+== src/counter.vs (module counter)
+component Counter states=[count, names] inputs=[label] events=[changed]
+
+fn#0 Counter.increment action params=0 regs=5
+    0: r0 = const 1
+    1: r1 = state[0]
+    2: r2 = add.i64 r1, r0
+    3: state[0] = r2
+    4: r3 = state[0]
+    5: emit event#0 (r3)
+    6: r4 = const ()
+    7: return r4
+
+$ viso dump shader-ir Glow
+shader-ir 1
+
+== src/counter.vs (module counter)
+-- Glow brush
+shader Glow
+uniform#0 viewport_size: Vec2F32
+instance#0 rect_pos: Vec2F32
+instance#1 rect_size: Vec2F32
+instance#2 tint: ColorLinear
+varying#0 local: Vec2F32
+
+vertex(vertex_id: U32) -> VertexOutput builtins=[vertex_id]
+  local unit: Vec2F32
+  let unit = quad_vertex(vertex_id)
+  varying.local = unit
+  return VertexOutput(to_clip((instance.rect_pos + (unit * instance.rect_size)), uniform.viewport_size))
+
+fragment() -> ColorLinear
+  local k: F32
+  let k = (1.0 - length((varying.local - Vec2F32(0.5, 0.5))))
+  return ColorLinear((instance.tint.r * k), (instance.tint.g * k), (instance.tint.b * k), 1.0)
+
+$ viso dump system-ir src/game.vs
+system-ir 1
+
+== src/game.vs (module game)
+tick_rate 60
+game_profile determinism=same_binary contacts=event_major
+system#0 Runner
+  hook viso::game::quick::QuickGame::start simulation -> fn#0 Runner.start
+  hook viso::game::quick::QuickGame::fixed simulation -> fn#1 Runner.fixed
+  state[0] lives simulation
+  state[1] x simulation
+
+$ viso dump hir Counter --json
+{"kind":"hir","input":"Counter","ir":{"dump_version":1,"sections":[{"file":"src/counter.vs","module":"counter","ir":{"items":[{"kind":"component","name":"Counter","symbol_id":"3742120144c5f74ad8e949f422124058","span":{"start":36,"end":626,"line":3,"column_utf16":8},"members":[{"kind":"input","name":"label","type":"String","symbol_id":"ac84802cfcfceaa987abed575db0852b","effect":"read","ownership":"borrowed","capabilities":[],"reads":[],"constant":null,"span":{"start":60,"end":90,"line":4,"column_utf16":5}},{"kind":"state","name":"count","type":"I64","symbol_id":"5516f0399d0443338f03f5bff964ce47","effect":"read","ownership":"owned","capabilities":[],"reads":[],"constant":null,"span":{"start":95,"end":111,"line":5,"column_utf16":5}},{"kind":"state","name":"names","type":"List<String>","symbol_id":"1dc5d1b5690443338f03e842b80fb428","effect":"read","ownership":"owned","capabilities":[],"reads":[],"constant":null,"span":{"start":116,"end":151,"line":6,"column_utf16":5}},{"kind":"computed","name":"doubled","type":"I64","symbol_id":"6916ecd9b7b4309b2aff7a6972137aaa","effect":"read","ownership":"derived","capabilities":[],"reads":["count"],"constant":null,"span":{"start":156,"end":190,"line":7,"column_utf16":5}},{"kind":"event","name":"changed","type":"(value: I64)","symbol_id":"8c73d0a8da0d3e411f5aaf90e1a0e7a0","effect":"pure","ownership":"none","capabilities":[],"reads":[],"constant":null,"span":{"start":195,"end":221,"line":8,"column_utf16":5}},{"kind":"action","name":"increment","type":"() -> Unit","symbol_id":"a0346f4cfc7aa4e54d6676c94962ae9a","effect":"action","ownership":"none","capabilities":[],"reads":[],"constant":null,"span":{"start":227,"end":302,"line":10,"column_utf16":5}}]}]}}]}}
+$ viso dump reactive-ir Counter --json
+{"kind":"reactive-ir","input":"Counter","ir":{"dump_version":1,"sections":[{"file":"src/counter.vs","module":"counter","ir":{"view":"Counter","sources":[{"name":"count","kind":"state","symbol_id":"5516f0399d0443338f03f5bff964ce47","invalidates":["STRUCTURE"]},{"name":"names","kind":"state","symbol_id":"1dc5d1b5690443338f03e842b80fb428","invalidates":["STRUCTURE"]},{"name":"label","kind":"input","symbol_id":"ac84802cfcfceaa987abed575db0852b","invalidates":["MEASURE","LAYOUT","PAINT","SEMANTICS"]},{"name":"doubled","kind":"computed","symbol_id":"6916ecd9b7b4309b2aff7a6972137aaa","invalidates":[]}],"edges":[{"source":"label","node":1,"node_type":"Text","property":"text","invalidates":["MEASURE","LAYOUT","PAINT","SEMANTICS"],"kind":"static"}],"dynamic_fallback_nodes":0}}]}}

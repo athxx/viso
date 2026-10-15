@@ -45,7 +45,7 @@ use super::effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
 use super::infer::{
     EventInfo, FieldInfo, InferCx, TypeEnv, TypeSchemas, VariantInfo, VariantPayload,
 };
-use super::nodes::{ComponentSchema, HirCallable, HirComponent, HirSlot};
+use super::nodes::{CallableKind, ComponentSchema, HirCallable, HirComponent, HirSlot};
 use super::ownership::check_stored;
 use super::percent::PercentSources;
 use super::reads::ReadEnv;
@@ -274,7 +274,7 @@ pub fn lower(
     shader::check_brushes(&shaders, &brushes, &decls, &mut per_module);
     traits::check_overlap(&decls, &mut per_module);
     lower_prelude_defaults(&prelude, &prelude_scope, &decls, &behavior, graph.natives());
-    cap.finish(&mut components, &mut per_module);
+    cap.finish(&mut components, &mut callables, &mut per_module);
     check_input_bases(&input_flows, &mut per_module);
     domains.check(&decls, graph.natives(), profile, &mut per_module);
     domains.check_realtime(&decls, graph.natives(), &behavior.borrow(), &mut per_module);
@@ -539,6 +539,7 @@ fn lower_module(
                     clause: f.capability_clause(),
                 };
                 check_callable(&callable, refs, env, diagnostics, cap, &mut percent);
+                callables.push(module_callable(&callable, f.syntax().text_range()));
             }
             Item::Action(a) => {
                 let callable = Callable {
@@ -552,6 +553,7 @@ fn lower_module(
                     clause: a.capability_clause(),
                 };
                 check_callable(&callable, refs, env, diagnostics, cap, &mut percent);
+                callables.push(module_callable(&callable, a.syntax().text_range()));
                 if let Some(body) = a.body() {
                     detached_starts(body.syntax(), diagnostics);
                 }
@@ -568,10 +570,10 @@ fn lower_module(
                     clause: t.capability_clause(),
                 };
                 check_callable(&callable, refs, env, diagnostics, cap, &mut percent);
+                callables.push(module_callable(&callable, t.syntax().text_range()));
             }
             _ => {}
         }
-        let _ = &mut *callables;
     }
     let items: Vec<Item> = cu.items().collect();
     domains.collect(
@@ -838,6 +840,17 @@ fn check_callable(
         .map(|b| env.native_capabilities(b.syntax().text_range()))
         .unwrap_or_default();
     cap.add(callable.symbol, direct, declared, calls);
+}
+
+/// The HIR node of a module-level `fn`, `action` or `task` declared at
+/// `origin`; its capabilities are filled once the package's call graph is.
+fn module_callable(callable: &Callable, origin: TextRange) -> HirCallable {
+    let (kind, effect) = match callable.kind {
+        FunctionKind::Action => (CallableKind::Action, EffectClass::Action),
+        FunctionKind::Task => (CallableKind::Task, EffectClass::Task),
+        _ => (CallableKind::Fn, EffectClass::Read),
+    };
+    super::component::callable_node(callable.name.clone(), kind, effect, callable.symbol, origin)
 }
 
 /// Runs an effect-check body walk in `context`, appending any `E2501`/`E2502` it raises.
@@ -1291,7 +1304,12 @@ impl CapabilityGraphBuilder {
     /// call to anything but a callable of the package — a native, a closure — adds none),
     /// runs [`propagate`], writes each inferred set back onto the lowered callable with the
     /// same symbol, and appends each `E2601` to its module's diagnostics.
-    fn finish(self, components: &mut [HirComponent], diagnostics: &mut [Vec<Diagnostic>]) {
+    fn finish(
+        self,
+        components: &mut [HirComponent],
+        callables: &mut [HirCallable],
+        diagnostics: &mut [Vec<Diagnostic>],
+    ) {
         if self.pending.is_empty() {
             return;
         }
@@ -1338,6 +1356,7 @@ impl CapabilityGraphBuilder {
         for callable in components
             .iter_mut()
             .flat_map(|c| c.schema.callables.iter_mut())
+            .chain(callables.iter_mut())
         {
             if let Some(set) = callable
                 .meta

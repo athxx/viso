@@ -1585,29 +1585,48 @@ viso explain --list         # 全部码与标题，reserved 码标出
 
 ## 20. `viso dump`
 
-用于 compiler/runtime advanced diagnostics。
+用于 compiler/runtime advanced diagnostics：把项目 package 的一种编译器 IR 打印成文本或 JSON。
 
 ```bash
 viso dump ast src/app.vs
 viso dump hir src/app.vs
 viso dump ui-ir src/app.vs
-viso dump reactive-ir src/app.vs
-viso dump behavior-ir src/app.vs
+viso dump reactive-ir Counter
+viso dump behavior-ir Counter.increment
 viso dump shader-ir RoundedRect
 viso dump system-ir PlayerController
 viso dump module-graph
 ```
 
+`<kind>`：
+
+| kind | 内容 |
+| ---- | ---- |
+| `ast` | 语法树（trivia 除外）：每个节点 `Kind start..end @line:col`，token 带文本 |
+| `hir` | Typed HIR：component/system/template 的 input/state/computed/event/slot/callable，record/enum 的字段与变体，模块级 `fn`/`action`/`task`；每项带类型（callable 为源码签名）、effect、ownership、capabilities、reactive reads、常量值 |
+| `ui-ir` | 文件挂载的 view 的 retained-tree 模板：节点按先序编号 `n0…`，折叠后的 style、绑定属性（值表达式与 dirty class）、control 读值、handler、look、role/live、`if`/`for`/`match` 区域，以及内联的 component instance |
+| `reactive-ir` | 同一 view 的每个 reactive source 及其写入失效的 dirty class（决定区域的 source 含 `STRUCTURE`；未被读的标 `unread`），每条 binding edge（source → 节点.属性、dirty class、static/dynamic），`dynamic_fallback_nodes` |
+| `behavior-ir` | 文件编译出的 Behavior IR：component 槽位、native import、每个函数的指令（JSON 中每条带 span） |
+| `shader-ir` | 通过检查的 shader：binding、record、函数与 vertex/fragment 入口，表达式全部加括号、名字全部解析；有错误的 shader 标 `unchecked` |
+| `system-ir` | system 按调度顺序：每个 hook 实现的 trait hook 路径与 domain、实现它的函数；每个 state 的 slot、domain（simulation/local/presentation）、`@probe`、`@persist` key；package 的 tick rate 与 game profile |
+| `module-graph` | 每个模块的文件、import、native binding、顶层声明（含 export 标记），以及 graph 级诊断 |
+
+`[<input>]`：以 `.vs` 结尾或含路径分隔符时为项目的源文件（相对当前目录或项目根），只 dump 该文件；否则是一个声明，按完整路径或 `::` 后缀（`Counter`、`demo::counter::Counter`），可带 `.member`，dump 声明它的文件并在该 kind 可收窄时只保留它。省略时 dump 每个文件。不是 package 源文件的路径为 `DUMP_INPUT`（exit 2）；不存在或有歧义的声明为 `E2001`（带最近候选），exit 1。
+
 支持：
 
 ```text
---out <path>        # 写文件而不是 stdout
---symbol <path>     # 只输出指定 symbol
+--out <path>        # 写文件而不是 stdout；--json 时写 IR 的 JSON
+--symbol <path>     # 在指定文件内只输出该声明
 ```
 
-`--json`：一条 `result`（`payload: {kind, input, ir}`，`ir` 的形状由对应 IR 的 schema version 决定）+ `summary`；输入有 source error 时只输出 `diagnostic`，exit 1。
+`ui-ir`/`reactive-ir`/`behavior-ir`/`shader-ir`/`system-ir` 以 `view!`、hot reload 与 build 相同的方式逐文件编译（同一 target profile）。
 
-`dump` 不属于普通应用 authoring API，但必须稳定到足以支持 compiler tests、Studio 和 AI debugging。
+诊断：先报告 package 检查与被 dump 文件编译产生的全部诊断（同一诊断只报一次），再输出已 lower 的部分，所以无效文件仍有 dump；有 error 时 exit 1。
+
+`--json`：每条诊断一个 `diagnostic`，然后一条 `result`（`payload: {kind, input, ir}`；`--out` 时为 `{kind, input, out}`）+ `summary`。`ir` 为 `{dump_version, sections: [{file, module, ir}]}`（`module-graph` 只有一个不带 `file` 的 section）；span 为 `{start, end, line, column_utf16}`（文件字节区间，起点 1-based 行列）。
+
+文本形式供人与 golden test 阅读，可随版本变化；JSON 的 key 由 `dump_version`（`viso --version` 中的 `dump`）版本化，删除或改变含义时递增。`dump` 不属于普通应用 authoring API，但必须稳定到足以支持 compiler tests、Studio 和 AI debugging。
 
 ---
 
@@ -3059,10 +3078,11 @@ language 1.0                  DSL language version
 event schema 1                §34 envelope schema_version
 diagnostic schema 1.0         §36.1 diagnostic schema_version
 schema object 1.0             §18 schema object schema_version
+dump 1                        §20 dump JSON dump_version
 dev protocol 14               dev channel protocol version
 ```
 
-`--json` 下为一条 `result`（`payload: {version, commit, language, event_schema, diagnostic_schema, schema_object, dev_protocol}`）+ `summary`。
+`--json` 下为一条 `result`（`payload: {version, commit, language, event_schema, diagnostic_schema, schema_object, dump_version, dev_protocol}`）+ `summary`。
 
 ---
 

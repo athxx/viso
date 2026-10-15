@@ -72,6 +72,9 @@ the three source entries share one frontend.
       = A + 1;` raises nothing), not only theme and style base cycles.
 - [ ] `E2002` for the same name imported twice (`import viso::math::{clamp};` written
       twice raises nothing).
+- [ ] One file's compile (`compile_file_for`: what `view!`, hot reload and `viso dump`
+      compile) resolves imports of the package's other modules: `import model::{twice};`
+      of a sibling module passes `viso check` but raises `E2001` there.
 - [x] `E2001` carries the nearest candidates in `related` and a `fixes` entry, ranked by
       edit distance and filtered by namespace (§105.2, §138; `resolve/suggest.rs`, types
       and module paths).

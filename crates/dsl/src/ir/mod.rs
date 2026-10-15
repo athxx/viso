@@ -31,7 +31,7 @@ pub mod ui_ir;
 
 pub use binding_ir::{
     BindingEdge, BindingIr, BindingKind, InstanceSources, NodeKey, lower_bindings,
-    lower_view_bindings, source_invalidations,
+    lower_view_reactivity, source_invalidations,
 };
 pub use dirty_map::{DirtyClass, property_dirty_class};
 pub use keys::{KEYLESS_STATEFUL_FOR, KeyIr, KeyedFor, analyze_keys};

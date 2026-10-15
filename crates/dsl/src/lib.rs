@@ -21,6 +21,7 @@ pub mod assets;
 pub mod ast;
 pub mod behavior;
 pub mod diag;
+pub mod dump;
 pub mod edit;
 pub mod format;
 pub mod frontend;

@@ -458,14 +458,18 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
 
 ### C2.4 — `viso dump` (§20)
 
-- [ ] Stable textual and JSON dumps from `viso-dsl` for `ast`, `hir`, `ui-ir`,
+- [x] Stable textual and JSON dumps from `viso-dsl` for `ast`, `hir`, `ui-ir`,
       `reactive-ir` (binding IR + dirty map), `behavior-ir` (existing `dump()`
       generalized), `shader-ir`, `system-ir`, `module-graph`; one `Dump` trait, no
-      `Debug` formatting as output.
-- [ ] `viso dump <kind> [<file>] [--symbol <path>] [--out <file>]`; source spans
-      included; dumping an invalid file prints diagnostics and dumps what lowered.
-- [ ] Golden tests per kind on a fixture project; the dump format is documented as
-      unstable-for-humans but its JSON keys versioned.
+      `Debug` formatting as output (`crates/dsl/src/dump/`, the shader printer in
+      `viso-shader`; `Compiled::invalidations` keeps what each source invalidates).
+- [x] `viso dump <kind> [<file>|<symbol>] [--symbol <path>] [--out <file>]`; source
+      spans included; dumping an invalid file prints diagnostics and dumps what lowered.
+- [x] Golden tests per kind on a fixture project; the dump format is documented as
+      unstable-for-humans but its JSON keys versioned (`dump_version`, in `viso --version`).
+- [x] The HIR records module-level `fn`/`action`/`task` nodes (they were never filled).
+- [ ] `ui-ir`/`reactive-ir`/`behavior-ir` of a file importing a sibling module's
+      declaration: blocked on the one-file compile resolving package imports (todo_dsl).
 
 ### C2.5 — `viso lsp` (§21)
 

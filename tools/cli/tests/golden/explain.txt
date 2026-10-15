@@ -247,6 +247,7 @@ ENV_DEVICE             The simulator or emulator toolchain is missing or failed.
 ENV_NO_DEV_SESSION     No `viso run` session is running for the project, or it cannot be reached.
 ENV_TAPE_WRITE         A recorded tape could not be written.
 ENV_TEST_INPUT         A test scenario or tape could not be found or read.
+ENV_DUMP_WRITE         The dump could not be written to the `--out` file.
 ENV_SOURCE_WRITE       A source file the command rewrites could not be written.
 ENV_LOCK_HELD          Another viso process holds a lock the command needs free.
 ENV_REMOVE             A file or directory the command removes could not be removed.
@@ -275,6 +276,7 @@ DEVICE_AMBIGUOUS       Several profiles exist and none is the default.
 DEVICE_ID_INVALID      A profile ID that is not one.
 DEVICE_EXISTS          A profile of that ID exists already.
 DEVICE_SYSTEM          No installed system image or runtime fits the profile.
+DUMP_INPUT             The file `viso dump` is given is not a `.vs` source of the project.
 GAME_NOT_RUNNING       No mounted view of the named file runs a game.
 GAME_AMBIGUOUS         The game's name matches more than one mounted view.
 GAME_UNKNOWN_STATE     The game has no such system or state.

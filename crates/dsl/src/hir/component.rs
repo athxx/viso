@@ -644,7 +644,7 @@ fn decl_meta(
 /// Builds a callable node's shape (name, kind, effect). The body's effect/capability
 /// refinement is the effect/capability sections' work; this section records the declared
 /// kind so the schema is complete.
-fn callable_node(
+pub(super) fn callable_node(
     name: String,
     kind: CallableKind,
     effect_class: super::effect::EffectClass,

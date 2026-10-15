@@ -303,6 +303,8 @@ pub(super) struct Checked {
     pub project: Project,
     pub name: String,
     pub package: LoadedPackage,
+    /// The build the package was checked for.
+    pub profile: TargetProfile,
 }
 
 impl Checked {
@@ -413,7 +415,7 @@ pub(super) fn package_for(
         &project.root,
         PackageManifest {
             name: &name,
-            profile,
+            profile: profile.clone(),
             language: project
                 .manifest
                 .package
@@ -454,6 +456,7 @@ pub(super) fn package_for(
         project,
         name,
         package,
+        profile,
     })
 }
 
