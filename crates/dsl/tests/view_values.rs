@@ -11,8 +11,8 @@ use viso_dsl::hotreload::plan_view;
 use viso_dsl::ir::binding_ir::NodeKey;
 
 use viso_ui::{
-    BindingTable, BuildCx, EffectStore, LeafStyle, NodeId, NodeStore, Role, SemanticState,
-    StateStore, StateValue, StructureCx, TextRequest, run_structure_hooks,
+    BindingTable, BuildCx, EffectStore, LeafStyle, LiveRegion, NodeId, NodeStore, Role,
+    SemanticState, StateStore, StateValue, StructureCx, TextRequest, run_structure_hooks,
 };
 use viso_view::{ControlKind, Scope, Value, ViewHost, mount_values};
 
@@ -316,6 +316,105 @@ fn nodes_take_their_role_and_the_name_they_show() {
         named(&store, ids[2]),
         Some((Role::Button, "Add to 4".into()))
     );
+}
+
+const SAID: &str = r#"
+export component Said {
+    state step = 1;
+    state busy = false;
+    view {
+        Column {
+            semantics.role: Role::heading;
+            semantics.heading_level: 2;
+            semantics.label: "Settings";
+            Text {
+                text: "x";
+                semantics.hint: "Opens the details";
+                semantics.value: format("Step {}", step);
+                semantics.live: LiveRegion::polite;
+            }
+            Text { text: "y"; semantics.hidden: busy; }
+            Tabs { selected: 0; Text { text: "A"; } Text { text: "B"; } }
+            RadioGroup { selected: 0; if busy { Text { text: "r1"; } } else { Text { text: "r2"; } } }
+        }
+    }
+}
+"#;
+
+#[test]
+fn nodes_say_their_hint_value_live_setting_level_and_hiding() {
+    let plan = plan_view(SAID, &origin()).expect("the view compiles");
+    let view = plan.view.expect("the view has behavior");
+    let host = ViewHost::new(Rc::clone(&view.module), &view.component).expect("mounts");
+    let host = Rc::new(RefCell::new(host));
+    let mut store = NodeStore::new();
+    let mut states = StateStore::default();
+    let mut bindings = BindingTable::default();
+    let mut effects = EffectStore::default();
+    let step = states.alloc(StateValue::Int(1));
+    let busy = states.alloc(StateValue::Bool(false));
+    {
+        let mut host = host.borrow_mut();
+        let slot = host.state_slot("step").expect("a state");
+        assert!(host.mirror(slot, step));
+        let slot = host.state_slot("busy").expect("a state");
+        assert!(host.mirror(slot, busy));
+    }
+    // Column, the two texts, the tabs and their pages, the radio group and
+    // the items of its two arms.
+    const NODES: usize = 9;
+    let mut cx = BuildCx::new(&mut store);
+    let ids: Vec<NodeId> = (0..NODES)
+        .map(|_| cx.leaf(LeafStyle::default()).id())
+        .collect();
+    cx.root();
+    let nodes: Vec<(NodeId, viso_view::Control)> = (0..NODES)
+        .filter_map(|key| Some((ids[key], view.control(NodeKey(key as u32))?)))
+        .collect();
+    let mut structure = StructureCx {
+        store: &mut store,
+        states: &mut states,
+        bindings: &mut bindings,
+        effects: &mut effects,
+    };
+    mount_values(&mut structure, &host, &nodes);
+
+    let heading = store.semantics(ids[0]).expect("the heading says");
+    assert_eq!(heading.role, Role::Heading);
+    assert_eq!(heading.heading_level, Some(2));
+    assert_eq!(heading.label.as_deref(), Some("Settings"));
+    let detail = store.semantics(ids[1]).expect("the text says");
+    assert_eq!(detail.role, Role::Label);
+    assert_eq!(detail.hint.as_deref(), Some("Opens the details"));
+    assert_eq!(detail.value.as_deref(), Some("Step 1"));
+    assert_eq!(detail.live, LiveRegion::Polite);
+    assert!(!store.semantics(ids[2]).expect("says").hidden);
+    let role = |store: &NodeStore, id| store.semantics(id).map(|s| s.role);
+    assert_eq!(role(&store, ids[3]), Some(Role::TabList));
+    assert_eq!(role(&store, ids[4]), Some(Role::Tab), "a page is a tab");
+    assert_eq!(role(&store, ids[5]), Some(Role::Tab));
+    assert_eq!(role(&store, ids[6]), None, "a radio group is a group");
+    assert_eq!(
+        role(&store, ids[7]),
+        Some(Role::Radio),
+        "an item is a radio"
+    );
+    assert_eq!(role(&store, ids[8]), Some(Role::Radio), "in every arm");
+
+    states.set(step, StateValue::Int(2));
+    states.set(busy, StateValue::Bool(true));
+    let mut changed = Vec::new();
+    states.take_pending(&mut changed);
+    run_structure_hooks(
+        &mut store,
+        &mut states,
+        &mut bindings,
+        &mut effects,
+        &changed,
+    );
+    let detail = store.semantics(ids[1]).expect("the text says");
+    assert_eq!(detail.value.as_deref(), Some("Step 2"));
+    assert!(store.semantics(ids[2]).expect("says").hidden);
 }
 
 #[test]

@@ -95,7 +95,7 @@ pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
     ProjectId, SemanticProjector,
 };
-pub use semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
+pub use semantics::{LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 pub use shader::ShaderSlots;
 pub use state::{StateId, StateStore, StateValue};
 pub use structure::{StructureCx, StructureHookId, run_structure_hooks};

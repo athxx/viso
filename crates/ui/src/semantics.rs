@@ -183,26 +183,95 @@ impl Role {
     }
 }
 
+/// How an assistive technology announces a change to a node's content: not
+/// at all, once the user is idle, or at once, interrupting what it says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LiveRegion {
+    #[default]
+    Off,
+    Polite,
+    Assertive,
+}
+
+impl LiveRegion {
+    /// Every live setting, in declaration order.
+    pub const ALL: [LiveRegion; 3] = [LiveRegion::Off, LiveRegion::Polite, LiveRegion::Assertive];
+
+    /// The lowercase label of an inspector dump (`off`, `polite`, `assertive`).
+    pub fn label(self) -> &'static str {
+        match self {
+            LiveRegion::Off => "off",
+            LiveRegion::Polite => "polite",
+            LiveRegion::Assertive => "assertive",
+        }
+    }
+}
+
 /// A node's *authored* semantics: the facts a builder sets, distinct from the
 /// live state derived from other columns. Cold — holds the only heap data (the
-/// label), read only by the derive pass.
+/// label, hint and value text), read only by the derive pass.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Semantics {
     /// The node's role. [`Group`](Role::Group) for a plain container.
     pub role: Role,
     /// The accessible name, if any.
     pub label: Option<String>,
+    /// What acting on the node does, read after its name.
+    pub hint: Option<String>,
+    /// The value it holds, as text: what its role's live state does not say
+    /// (a step of a wizard, a rating).
+    pub value: Option<String>,
+    /// How a change to its content is announced.
+    pub live: LiveRegion,
+    /// Whether it and its subtree are left out of what assistive technology
+    /// reads, though still shown.
+    pub hidden: bool,
+    /// The level of a [`Heading`](Role::Heading), 1 the topmost.
+    pub heading_level: Option<u8>,
 }
 
 impl Semantics {
-    /// Authored semantics with `role` and no label.
+    /// Authored semantics with `role` and nothing else.
     pub fn role(role: Role) -> Self {
-        Self { role, label: None }
+        Self {
+            role,
+            ..Self::default()
+        }
     }
 
     /// This with an accessible label.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// This with a hint on what acting on the node does.
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    /// This with a value as text.
+    pub fn with_value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    /// This announcing a change to its content as `live` says.
+    pub fn with_live(mut self, live: LiveRegion) -> Self {
+        self.live = live;
+        self
+    }
+
+    /// This left out of what assistive technology reads when `hidden`.
+    pub fn with_hidden(mut self, hidden: bool) -> Self {
+        self.hidden = hidden;
+        self
+    }
+
+    /// This a heading of `level`.
+    pub fn with_heading_level(mut self, level: u8) -> Self {
+        self.heading_level = Some(level);
         self
     }
 }
@@ -290,6 +359,14 @@ pub struct SemanticsNode {
     pub role: Role,
     /// The resolved accessible label, if any.
     pub label: Option<String>,
+    /// What acting on it does, if authored.
+    pub hint: Option<String>,
+    /// Its value as text, if authored.
+    pub value: Option<String>,
+    /// How a change to its content is announced.
+    pub live: LiveRegion,
+    /// Its level, when it is a heading with one.
+    pub heading_level: Option<u8>,
     /// Whether this node currently holds focus (derived from the focus slot).
     pub focused: bool,
     /// The node's live accessibility state (checked / value / range / expanded),
@@ -494,6 +571,10 @@ mod tests {
                     id: root_id,
                     role: Role::Group,
                     label: None,
+                    hint: None,
+                    value: None,
+                    live: LiveRegion::Off,
+                    heading_level: None,
                     focused: false,
                     state: None,
                     bounds: ZERO_RECT,
@@ -503,6 +584,10 @@ mod tests {
                     id: child_id,
                     role: Role::Button,
                     label: Some("Add".to_string()),
+                    hint: None,
+                    value: None,
+                    live: LiveRegion::Off,
+                    heading_level: None,
                     focused: true,
                     state: None,
                     bounds: ZERO_RECT,

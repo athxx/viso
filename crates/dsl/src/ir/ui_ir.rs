@@ -115,6 +115,9 @@ pub struct UiNode {
     pub styled: Option<UiStyled>,
     /// The role its `semantics.role` names, `None` when it names none.
     pub role: Option<viso_ui::Role>,
+    /// The live setting its `semantics.live` names, `None` when it names
+    /// none.
+    pub live: Option<viso_ui::LiveRegion>,
     /// The node's children, in source order.
     pub children: Vec<UiItem>,
     /// The node declaration's source span.

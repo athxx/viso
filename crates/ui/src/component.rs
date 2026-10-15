@@ -2939,6 +2939,10 @@ impl NodeStore {
             id,
             role,
             label,
+            hint: authored.and_then(|s| s.hint.clone()),
+            value: authored.and_then(|s| s.value.clone()),
+            live: authored.map(|s| s.live).unwrap_or_default(),
+            heading_level: authored.and_then(|s| s.heading_level),
             focused,
             // Live state comes from the node's own side column (`&self`), never
             // a cross-layer state-store read: a control's projection binding
@@ -2949,8 +2953,11 @@ impl NodeStore {
         });
         let mut child = self.arena.links(id).and_then(|l| l.first_child);
         while let Some(c) = child {
-            let ci = self.derive_into(c, tree);
-            tree.nodes[my_index].children.push(ci);
+            // A subtree authored hidden is shown but not read.
+            if !self.semantics(c).is_some_and(|s| s.hidden) {
+                let ci = self.derive_into(c, tree);
+                tree.nodes[my_index].children.push(ci);
+            }
             child = self.arena.links(c).and_then(|l| l.next_sibling);
         }
         my_index

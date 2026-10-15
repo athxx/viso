@@ -12,7 +12,7 @@
 )]
 
 use crate::accessibility::AccessAction;
-use crate::accessibility::accesskit::{Role, Toggled};
+use crate::accessibility::accesskit::{Live, Role, Toggled};
 use crate::event::{
     CursorIcon, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase,
 };
@@ -374,6 +374,15 @@ pub(crate) fn named_by_content(role: Role) -> bool {
     matches!(role, Role::Label | Role::Status)
 }
 
+/// The `aria-live` value of an AccessKit live setting.
+pub(crate) fn aria_live(live: Live) -> &'static str {
+    match live {
+        Live::Off => "off",
+        Live::Polite => "polite",
+        Live::Assertive => "assertive",
+    }
+}
+
 pub(crate) fn aria_checked(toggled: Toggled) -> &'static str {
     match toggled {
         Toggled::True => "true",
@@ -599,6 +608,8 @@ mod tests {
         assert_eq!(aria_role(Role::Label), None);
         assert!(named_by_content(Role::Label) && !named_by_content(Role::Button));
         assert_eq!(aria_checked(Toggled::Mixed), "mixed");
+        assert_eq!(aria_live(Live::Polite), "polite");
+        assert_eq!(aria_live(Live::Assertive), "assertive");
         assert_eq!(slider_step("ArrowUp"), Some(AccessAction::Increment));
         assert_eq!(slider_step("ArrowLeft"), Some(AccessAction::Decrement));
         assert_eq!(slider_step("Enter"), None);

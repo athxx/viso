@@ -581,17 +581,31 @@ impl PaintRanges {
     }
 }
 
-/// Writes a `SemanticsNode` object. Optional facts (`label`, per-role `state`)
-/// are `null` when absent, so the object shape is stable across nodes.
+/// Writes a `SemanticsNode` object. Optional facts (`label`, `hint`, `value`,
+/// `heading_level`, per-role `state`) are `null` when absent, so the object
+/// shape is stable across nodes.
 fn write_semantics_node(w: &mut JsonWriter, node: &SemanticsNode) {
     w.begin_object();
     w.name("id");
     write_node_id(w, node.id);
     w.name("role");
     w.string(node.role.label());
-    w.name("label");
-    match &node.label {
-        Some(l) => w.string(l),
+    for (name, text) in [
+        ("label", &node.label),
+        ("hint", &node.hint),
+        ("value", &node.value),
+    ] {
+        w.name(name);
+        match text {
+            Some(text) => w.string(text),
+            None => w.null(),
+        }
+    }
+    w.name("live");
+    w.string(node.live.label());
+    w.name("heading_level");
+    match node.heading_level {
+        Some(level) => w.uint(u64::from(level)),
         None => w.null(),
     }
     w.name("focused");
@@ -1139,9 +1153,11 @@ mod tests {
                 r#"{{"id":{{"index":{ri},"generation":{rg}}},"start":0,"len":1}},"#,
                 r#"{{"id":{{"index":{ci},"generation":{cg}}},"start":0,"len":1}}]}},"#,
                 r#""semantics":{{"nodes":["#,
-                r#"{{"id":{{"index":{ri},"generation":{rg}}},"role":"group","label":null,"focused":false,"#,
+                r#"{{"id":{{"index":{ri},"generation":{rg}}},"role":"group","label":null,"hint":null,"value":null,"#,
+                r#""live":"off","heading_level":null,"focused":false,"#,
                 r#""state":null,"bounds":{{"x":0,"y":0,"w":0,"h":0}},"children":[1]}},"#,
-                r#"{{"id":{{"index":{ci},"generation":{cg}}},"role":"group","label":null,"focused":false,"#,
+                r#"{{"id":{{"index":{ci},"generation":{cg}}},"role":"group","label":null,"hint":null,"value":null,"#,
+                r#""live":"off","heading_level":null,"focused":false,"#,
                 r#""state":null,"bounds":{{"x":0,"y":0,"w":0,"h":0}},"children":[]}}]}},"#,
                 r#""batches":["#,
                 r#"{{"id":0,"pipeline":"quad","pipeline_id":7,"bind_group":null,"#,

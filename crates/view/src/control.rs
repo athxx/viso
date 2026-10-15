@@ -16,8 +16,8 @@ use std::rc::Rc;
 use viso_behavior::{Aggregate, Fault, FaultKind, Value};
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder};
 use viso_ui::{
-    DispatchPhase, EditIntent, EventCx, ImeEvent, Interaction, Key, KeyEvent, Motion, NodeId,
-    NodeStore, PointerButtons, PointerPhase, Role, TextOffset,
+    DispatchPhase, EditIntent, EventCx, ImeEvent, Interaction, Key, KeyEvent, LiveRegion, Motion,
+    NodeId, NodeStore, PointerButtons, PointerPhase, Role, TextOffset,
 };
 
 use crate::host::ViewHost;
@@ -122,6 +122,10 @@ impl ControlKind {
             (_, "transition.background") => ControlInput::BackgroundTransition,
             (_, "transition.opacity") => ControlInput::OpacityTransition,
             (_, "semantics.label") => ControlInput::Label,
+            (_, "semantics.hint") => ControlInput::Hint,
+            (_, "semantics.value") => ControlInput::SpokenValue,
+            (_, "semantics.hidden") => ControlInput::Hidden,
+            (_, "semantics.heading_level") => ControlInput::HeadingLevel,
             (ControlKind::Toggle, "checked")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
@@ -171,6 +175,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "Text" => Role::Label,
         "Image" | "Svg" => Role::Image,
         "VirtualList" => Role::List,
+        "NavigationStack" => Role::Navigation,
         _ => return None,
     })
 }
@@ -255,6 +260,14 @@ pub enum ControlInput {
     OpacityTransition,
     /// The node's `semantics.label`: its accessible name.
     Label,
+    /// The node's `semantics.hint`.
+    Hint,
+    /// The node's `semantics.value`: its value as text.
+    SpokenValue,
+    /// The node's `semantics.hidden`.
+    Hidden,
+    /// The node's `semantics.heading_level`.
+    HeadingLevel,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -284,11 +297,50 @@ pub struct Control {
     /// The look values its styles' `when` blocks select, the first that holds
     /// winning over the others and over [`look`](Self::look).
     pub arms: Box<[LookArm]>,
-    /// Its role, `None` for a node with no semantics of its own.
+    /// What it tells assistive technology beside the state its kind
+    /// projects.
+    pub semantics: SemanticEntries,
+}
+
+/// What a control tells assistive technology beside the state its kind
+/// projects: its role and live setting, and the handler-table entries of the
+/// rest of its `semantics.*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SemanticEntries {
+    /// Its role, `None` for a node with no role of its own (a container that
+    /// is a group).
     pub role: Option<Role>,
+    /// How a change to its content is announced.
+    pub live: LiveRegion,
     /// The entry of its `semantics.label`; without one, a label's name is the
     /// text it shows.
     pub label: Option<u32>,
+    /// The entry of its `semantics.hint`.
+    pub hint: Option<u32>,
+    /// The entry of its `semantics.value`.
+    pub value: Option<u32>,
+    /// The entry of its `semantics.hidden`.
+    pub hidden: Option<u32>,
+    /// The entry of its `semantics.heading_level`.
+    pub heading_level: Option<u32>,
+}
+
+impl SemanticEntries {
+    /// Whether it says anything of its own: a node with nothing to say keeps
+    /// what its builder gave it.
+    pub fn says_anything(&self) -> bool {
+        self.role.is_some()
+            || self.live != LiveRegion::Off
+            || [
+                self.label,
+                self.hint,
+                self.value,
+                self.hidden,
+                self.heading_level,
+            ]
+            .iter()
+            .any(Option::is_some)
+    }
 }
 
 /// A look value a style's `when` selects: while `when` holds, `input` shows
@@ -415,8 +467,7 @@ impl Control {
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
-            role: None,
-            label: None,
+            semantics: SemanticEntries::default(),
         }
     }
 
@@ -438,7 +489,11 @@ impl Control {
             ControlInput::Opacity => self.look.opacity,
             ControlInput::BackgroundTransition => self.look.background_transition,
             ControlInput::OpacityTransition => self.look.opacity_transition,
-            ControlInput::Label => self.label,
+            ControlInput::Label => self.semantics.label,
+            ControlInput::Hint => self.semantics.hint,
+            ControlInput::SpokenValue => self.semantics.value,
+            ControlInput::Hidden => self.semantics.hidden,
+            ControlInput::HeadingLevel => self.semantics.heading_level,
         }
     }
 
@@ -455,7 +510,11 @@ impl Control {
             ControlInput::Opacity => &mut self.look.opacity,
             ControlInput::BackgroundTransition => &mut self.look.background_transition,
             ControlInput::OpacityTransition => &mut self.look.opacity_transition,
-            ControlInput::Label => &mut self.label,
+            ControlInput::Label => &mut self.semantics.label,
+            ControlInput::Hint => &mut self.semantics.hint,
+            ControlInput::SpokenValue => &mut self.semantics.value,
+            ControlInput::Hidden => &mut self.semantics.hidden,
+            ControlInput::HeadingLevel => &mut self.semantics.heading_level,
         };
         *slot = Some(entry);
     }
@@ -602,7 +661,9 @@ impl Control {
 impl Encode for Control {
     fn encode(&self, enc: &mut Encoder) {
         enc.write_u8(self.kind as u8);
-        enc.write_u8(self.role.map_or(0, |role| role_tag(role) + 1));
+        let semantics = self.semantics;
+        enc.write_u8(semantics.role.map_or(0, |role| role_tag(role) + 1));
+        enc.write_u8(live_tag(semantics.live));
         let look = self.look;
         for entry in [
             self.value,
@@ -616,7 +677,11 @@ impl Encode for Control {
             look.opacity,
             look.background_transition,
             look.opacity_transition,
-            self.label,
+            semantics.label,
+            semantics.hint,
+            semantics.value,
+            semantics.hidden,
+            semantics.heading_level,
         ] {
             enc.write_varint(entry.map_or(0, |e| u64::from(e) + 1));
         }
@@ -657,6 +722,10 @@ impl Decode for Control {
                     .ok_or(DecodeError::Malformed { offset })?,
             ),
         };
+        let offset = dec.position();
+        let live = *LiveRegion::ALL
+            .get(usize::from(dec.read_u8()?))
+            .ok_or(DecodeError::Malformed { offset })?;
         let mut entry = || -> Result<Option<u32>, DecodeError> {
             let offset = dec.position();
             let raw =
@@ -679,8 +748,15 @@ impl Decode for Control {
                 opacity_transition: entry()?,
             },
             arms: Box::new([]),
-            role,
-            label: entry()?,
+            semantics: SemanticEntries {
+                role,
+                live,
+                label: entry()?,
+                hint: entry()?,
+                value: entry()?,
+                hidden: entry()?,
+                heading_level: entry()?,
+            },
         };
         let index = |dec: &mut Decoder<'_>| -> Result<u32, DecodeError> {
             let offset = dec.position();
@@ -728,6 +804,21 @@ impl Decode for Control {
 /// The wire tag of `role`: its place in [`Role::ALL`].
 fn role_tag(role: Role) -> u8 {
     Role::ALL.iter().position(|r| *r == role).unwrap_or(0) as u8
+}
+
+/// The wire tag of `live`: its place in [`LiveRegion::ALL`].
+fn live_tag(live: LiveRegion) -> u8 {
+    LiveRegion::ALL.iter().position(|l| *l == live).unwrap_or(0) as u8
+}
+
+/// The live setting a `LiveRegion::<variant>` of the source names.
+pub fn source_live(variant: &str) -> Option<LiveRegion> {
+    Some(match variant {
+        "off" => LiveRegion::Off,
+        "polite" => LiveRegion::Polite,
+        "assertive" => LiveRegion::Assertive,
+        _ => return None,
+    })
 }
 
 /// A text field's response: pointer placement and drag selection, caret
@@ -944,8 +1035,15 @@ mod tests {
                 ]),
                 entry: 6,
             }]),
-            role: Some(Role::Slider),
-            label: Some(9),
+            semantics: SemanticEntries {
+                role: Some(Role::Slider),
+                live: LiveRegion::Polite,
+                label: Some(9),
+                hint: Some(10),
+                value: None,
+                hidden: Some(11),
+                heading_level: None,
+            },
         };
         let bytes = control.encode_to_vec();
         assert_eq!(Control::decode_from_slice(&bytes), Ok(control));
@@ -955,6 +1053,12 @@ mod tests {
         let mut bad = bytes.clone();
         bad[1] = 99;
         assert!(Control::decode_from_slice(&bad).is_err(), "no such role");
+        let mut bad = bytes.clone();
+        bad[2] = 3;
+        assert!(
+            Control::decode_from_slice(&bad).is_err(),
+            "no such live setting"
+        );
         let mut bad = bytes;
         let state = bad.len() - 6;
         bad[state] = 9;

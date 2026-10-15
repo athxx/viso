@@ -15,7 +15,9 @@ use viso_platform::{AccessAction, WindowId};
 use viso_runtime::{
     InputSample, Key, KeySample, Modifiers, PointerId, PointerKind, PointerPhase, PointerSample,
 };
-use viso_ui::{DirtyClass, NodeId, NodeStore, PointerButtons, Role, SemanticsNode, SemanticsTree};
+use viso_ui::{
+    DirtyClass, LiveRegion, NodeId, NodeStore, PointerButtons, Role, SemanticsNode, SemanticsTree,
+};
 
 /// The dirty classes that can change what the published tree says: roles,
 /// labels, state and focus (SEMANTICS), and where nodes sit (LAYOUT,
@@ -239,6 +241,20 @@ impl Walk<'_> {
         if let Some(label) = &row.label {
             node.set_label(label.as_str());
         }
+        if let Some(hint) = &row.hint {
+            node.set_description(hint.as_str());
+        }
+        if let Some(value) = &row.value {
+            node.set_value(value.as_str());
+        }
+        match row.live {
+            LiveRegion::Off => {}
+            LiveRegion::Polite => node.set_live(ak::Live::Polite),
+            LiveRegion::Assertive => node.set_live(ak::Live::Assertive),
+        }
+        if let Some(level) = row.heading_level {
+            node.set_level(usize::from(level));
+        }
         let rect = self.store.world(row.id);
         let scale = f64::from(self.scale);
         node.set_bounds(ak::Rect {
@@ -408,6 +424,40 @@ mod tests {
             update.nodes.iter().all(|(id, _)| *id != access_id(button)),
             "a removed node is not resent"
         );
+    }
+
+    #[test]
+    fn hints_values_live_settings_and_levels_are_published_and_hidden_ones_are_not() {
+        let (mut store, root, [button, slider]) = scene();
+        store.set_semantics(
+            button,
+            Semantics::role(Role::Heading)
+                .with_label("Totals")
+                .with_hint("Opens the details")
+                .with_value("Step 2")
+                .with_live(LiveRegion::Assertive)
+                .with_heading_level(2),
+        );
+        store.set_semantics(
+            slider,
+            Semantics::role(Role::Slider)
+                .with_label("Volume")
+                .with_hidden(true),
+        );
+        let mut bridge = AccessBridge::new();
+        let update = bridge.update(&store, root, 1.0).expect("first update");
+        let totals = node(&update, button);
+        assert_eq!(totals.role(), ak::Role::Heading);
+        assert_eq!(totals.description(), Some("Opens the details"));
+        assert_eq!(totals.value(), Some("Step 2"));
+        assert_eq!(totals.live(), Some(ak::Live::Assertive));
+        assert_eq!(totals.level(), Some(2));
+        assert_eq!(
+            node(&update, root).children(),
+            [access_id(button)],
+            "a node hidden from assistive technology is left out"
+        );
+        assert!(update.nodes.iter().all(|(id, _)| *id != access_id(slider)));
     }
 
     #[test]

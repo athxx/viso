@@ -28,8 +28,8 @@ use viso_behavior::Value;
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
 use viso_ui::{
-    AssetFit, BuildCx, Easing, LookValue, NodeId, NodeStore, Rgba, Role, SemanticState, Semantics,
-    Srgb, StateId, StructureCx, TextRequest, Timing,
+    AssetFit, BuildCx, Easing, LiveRegion, LookValue, NodeId, NodeStore, Rgba, Role, SemanticState,
+    Semantics, Srgb, StateId, StructureCx, TextRequest, Timing,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, When};
@@ -146,6 +146,7 @@ pub(crate) fn control_cells(
         });
         when.chain([arm.entry])
     });
+    let semantics = control.semantics;
     for entry in [
         control.value,
         control.min,
@@ -154,7 +155,11 @@ pub(crate) fn control_cells(
         control.tint,
         look.background,
         look.opacity,
-        control.label,
+        semantics.label,
+        semantics.hint,
+        semantics.value,
+        semantics.hidden,
+        semantics.heading_level,
     ]
     .into_iter()
     .flatten()
@@ -166,14 +171,15 @@ pub(crate) fn control_cells(
 
 /// How many values a node shows: its value, the two entries beside it (a
 /// slider's bounds, an image's fit and tint), its look's background and
-/// opacity, and its `semantics.label`.
-const SHOWN: usize = 8;
+/// opacity, and its `semantics.label`, `hint`, `value`, `hidden` and
+/// `heading_level`.
+const SHOWN: usize = 12;
 
 /// Where its background and opacity sit among the values a node shows.
 const LOOK: usize = 5;
 
-/// Where its `semantics.label` sits among the values a node shows.
-const LABEL: usize = 7;
+/// Where its `semantics.*` values start among the values a node shows.
+const SEMANTICS: usize = 7;
 
 /// A node showing a value of the view.
 pub(crate) struct Shown {
@@ -187,7 +193,7 @@ pub(crate) struct Shown {
     /// The cells its entries read, ascending.
     deps: Box<[StateId]>,
     /// The value, lower bound, upper bound, fit, tint, background, opacity
-    /// and label it shows, `None` before the first delivery.
+    /// and `semantics.*` values it shows, `None` before the first delivery.
     shows: Option<[Value; SHOWN]>,
     /// Whether [`shows`](Self::shows) is what the node showed before a hot
     /// reload mounted it again: the next delivery skips the values equal to
@@ -259,6 +265,7 @@ impl Shown {
         ) else {
             return;
         };
+        let semantics = control.semantics;
         let mut shows: [Value; SHOWN] = Default::default();
         for (value, entry) in shows.iter_mut().zip([
             control.value,
@@ -268,7 +275,11 @@ impl Shown {
             control.tint,
             background,
             opacity,
-            control.label,
+            semantics.label,
+            semantics.hint,
+            semantics.value,
+            semantics.hidden,
+            semantics.heading_level,
         ]) {
             let Some(entry) = entry else { continue };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
@@ -298,17 +309,40 @@ impl Shown {
         let shown_background =
             (background.is_some() || styled(ControlInput::Background)).then_some(());
         let shown_opacity = (opacity.is_some() || styled(ControlInput::Opacity)).then_some(());
-        let [value, min, max, fit, tint, background, opacity, label] = &shows;
+        let [
+            value,
+            min,
+            max,
+            fit,
+            tint,
+            background,
+            opacity,
+            label,
+            hint,
+            spoken,
+            hidden,
+            level,
+        ] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
-        if let Some(role) = control.role
-            && (changed(LABEL) || (control.kind == ControlKind::Label && changed(0)))
+        if semantics.says_anything()
+            && ((SEMANTICS..SHOWN).any(changed)
+                || (control.kind == ControlKind::Label && changed(0)))
         {
             let name = match (label.as_str(), control.kind) {
                 (Some(label), _) => Some(label),
                 (None, ControlKind::Label) => value.as_str(),
                 (None, _) => None,
             };
-            name_node(cx.store, self.node, role, name);
+            let said = Said {
+                role: semantics.role.unwrap_or_default(),
+                live: semantics.live,
+                name,
+                hint: hint.as_str(),
+                value: spoken.as_str(),
+                hidden: hidden.as_int().is_some_and(|v| v != 0),
+                heading_level: level.as_int().and_then(|v| u8::try_from(v).ok()),
+            };
+            describe_node(cx.store, self.node, &said);
         }
         let mut moves: [Option<Timing>; 2] = [None; 2];
         for (at, (shown, transition)) in [
@@ -431,25 +465,46 @@ impl Shown {
     }
 }
 
-/// Gives `node` its role and accessible name `name`, unless it has them. An
-/// image without a name is decoration: a mute group.
-fn name_node(store: &mut NodeStore, node: NodeId, role: Role, name: Option<&str>) {
-    let role = match (role, name) {
+/// What a node tells assistive technology, as its values evaluate.
+struct Said<'a> {
+    role: Role,
+    live: LiveRegion,
+    name: Option<&'a str>,
+    hint: Option<&'a str>,
+    value: Option<&'a str>,
+    hidden: bool,
+    heading_level: Option<u8>,
+}
+
+/// Gives `node` the semantics `said` says, unless it has them. An image
+/// without a name is decoration: a mute group.
+fn describe_node(store: &mut NodeStore, node: NodeId, said: &Said<'_>) {
+    let role = match (said.role, said.name) {
         (Role::Image, None) => Role::Group,
         (role, _) => role,
     };
-    let unchanged = store
-        .semantics(node)
-        .is_some_and(|s| s.role == role && s.label.as_deref() == name);
+    let unchanged = store.semantics(node).is_some_and(|s| {
+        s.role == role
+            && s.label.as_deref() == said.name
+            && s.hint.as_deref() == said.hint
+            && s.value.as_deref() == said.value
+            && s.live == said.live
+            && s.hidden == said.hidden
+            && s.heading_level == said.heading_level
+    });
     if unchanged {
         return;
     }
-    let semantics = Semantics::role(role);
     store.set_semantics(
         node,
-        match name {
-            Some(name) => semantics.with_label(name),
-            None => semantics,
+        Semantics {
+            role,
+            label: said.name.map(str::to_owned),
+            hint: said.hint.map(str::to_owned),
+            value: said.value.map(str::to_owned),
+            live: said.live,
+            hidden: said.hidden,
+            heading_level: said.heading_level,
         },
     );
 }

@@ -21,7 +21,9 @@ use super::{Listener, WINDOW, drive, push};
 use crate::access_mirror::TreeMirror;
 use crate::accessibility::accesskit::{Action, Node, Rect, Role, TreeUpdate};
 use crate::accessibility::{AccessAction, AccessRequest};
-use crate::backend::web_translate::{aria_checked, aria_role, named_by_content, slider_step};
+use crate::backend::web_translate::{
+    aria_checked, aria_live, aria_role, named_by_content, slider_step,
+};
 use crate::event::RawEvent;
 
 /// The mirror's root: fixed over the canvas, invisible, and transparent to
@@ -204,6 +206,13 @@ fn describe(element: &HtmlElement, node: &Node) {
     let flag = |value: Option<bool>| value.map(|v| if v { "true" } else { "false" });
     set("aria-expanded", flag(node.is_expanded()));
     set("aria-selected", flag(node.is_selected()));
+    set("aria-description", node.description());
+    set("aria-valuetext", node.value());
+    set("aria-live", node.live().map(aria_live));
+    set(
+        "aria-level",
+        node.level().map(|level| level.to_string()).as_deref(),
+    );
     // Focusable by a screen reader, not by Tab: the canvas's own focus
     // order stays the only one.
     set(

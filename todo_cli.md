@@ -373,9 +373,13 @@ gap, and CI can run all of it headless.
       `semantics.role` names (a constant `Role::<variant>`) or the widget's, the name
       `semantics.label` gives or the text a `Text`/`Button` shows, re-projected when
       a state they read changes; roles `heading`, `list`, `list_item` added.
-- [ ] The rest of `.vs` semantics: `semantics.hint`, `value`, `live`, `hidden`,
-      `heading_level`, the `tab`/`radio` roles of `Tabs` pages and `RadioGroup`
-      items, and the default roles of `Modal`/`Sheet`/`Toast`/`NavigationStack`.
+- [x] The rest of `.vs` semantics: `semantics.hint`, `value`, `hidden` and
+      `heading_level` re-projected as the states they read change, `live` a constant
+      `LiveRegion::…`; a hidden node's subtree leaves the semantics tree; the direct
+      children of `Tabs` are tabs and of `RadioGroup` radios (through regions too),
+      `NavigationStack` is navigation; AccessKit and the web publish them.
+- [ ] The default roles of `Modal`, `Sheet` (`dialog`) and `Toast` (`status`,
+      polite) once they are `.vs` widgets.
 - [x] Filters (§22.4): `--filter <pattern>`, `--exact`, `--fail-fast`, `--nocapture`,
       `--update-snapshots`, `--target <t>`, `--device <profile>` (C3). (`--target`
       takes `headless`; `--update-snapshots` lands with C2.6, `--device` with C3.5.)

@@ -462,6 +462,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         // Where the node's own `padding` is written, for the diagnostics.
         let mut padding_at = None;
         let mut role = None;
+        let mut live = None;
         let own: Vec<ViewItem> = body.iter().flat_map(|b| b.members()).collect();
         let styled = self.styled(&type_name, &own, instance, &mut style, &mut pending);
         // The caller's overrides replace the node's own bindings of the same
@@ -489,6 +490,12 @@ impl<'a, 'l> Lowering<'a, 'l> {
                         if name == "semantics.role" {
                             match authored_role(&value) {
                                 Ok(authored) => role = Some(authored),
+                                Err(reason) => self.unmount((at, reason)),
+                            }
+                        }
+                        if name == "semantics.live" {
+                            match authored_live(&value) {
+                                Ok(authored) => live = Some(authored),
                                 Err(reason) => self.unmount((at, reason)),
                             }
                         }
@@ -594,6 +601,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             control_reads,
             styled,
             role,
+            live,
             children,
             origin,
             instance: self.instance(),
@@ -659,6 +667,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             control_reads: Vec::new(),
             styled: None,
             role: None,
+            live: None,
             children: Vec::new(),
             origin,
             instance: self.instance(),
@@ -1173,6 +1182,19 @@ fn fold_axis(value: &Expr) -> Option<AxisIr> {
         "row" => Some(AxisIr::Row),
         "column" | "col" => Some(AxisIr::Column),
         _ => None,
+    }
+}
+
+/// The live setting a `semantics.live` value names: a constant
+/// `LiveRegion::<variant>`.
+fn authored_live(value: &Expr) -> Result<viso_ui::LiveRegion, String> {
+    let segments: Vec<String> = PathExpr::cast(value.syntax().clone())
+        .map(|path| path.segments().map(|t| t.text()).collect())
+        .unwrap_or_default();
+    match segments.as_slice() {
+        [owner, variant] if owner == "LiveRegion" => viso_view::source_live(variant)
+            .ok_or_else(|| format!("`LiveRegion` has no variant `{variant}`")),
+        _ => Err("`semantics.live` is a constant `LiveRegion::…`".to_string()),
     }
 }
 

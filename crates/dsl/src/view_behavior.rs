@@ -278,9 +278,10 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     }
     let mut controls = Vec::with_capacity(nodes.len());
     let mut shaders: Vec<(SymbolId, ViewBrush)> = Vec::new();
-    for (key, kind, node) in nodes {
+    for (key, kind, node, item) in nodes {
         let mut control = Control::new(kind);
-        control.role = node_role(node);
+        control.semantics.role = node_role(node, item);
+        control.semantics.live = node.live.unwrap_or_default();
         for (property, at, instance) in &node.control_reads {
             let Some(input) = kind.input(property) else {
                 continue;
@@ -514,34 +515,47 @@ struct Walk<'a> {
     key: u32,
     /// Each handler: its node, the node's control kind, its event and its site.
     sites: Vec<(NodeKey, ControlKind, &'a str, bool, Site)>,
-    /// Each view-driven native node: a control, or a label showing a text.
-    nodes: Vec<(NodeKey, ControlKind, &'a UiNode)>,
+    /// Each view-driven native node: a control, or a label showing a text,
+    /// with the role it takes as an item of the selection it is in.
+    nodes: Vec<(NodeKey, ControlKind, &'a UiNode, Option<viso_ui::Role>)>,
     /// Each component instance's root node, the first of its view's nodes.
     roots: Vec<(u32, NodeKey)>,
+    /// The role the next node takes as an item: a tab of a `Tabs`, a radio
+    /// button of a `RadioGroup`, whose direct children (in or out of a
+    /// control-flow region) are its items.
+    item: Option<viso_ui::Role>,
 }
 
 impl<'a> Walk<'a> {
     fn item(&mut self, item: &'a UiItem) {
+        let role = self.item;
         match item {
             UiItem::Node(node) => self.node(node),
             UiItem::If(region) => {
                 for arm in &region.arms {
+                    self.item = role;
                     self.items(&arm.items);
                 }
             }
             UiItem::For(region) => self.items(&region.body),
             UiItem::Match(region) => {
                 for arm in &region.arms {
+                    self.item = role;
                     self.items(&arm.items);
                 }
             }
         }
     }
 
+    /// The items of a region, each an item of the selection the region is in
+    /// when it is one's child.
     fn items(&mut self, items: &'a [UiItem]) {
-        for item in items {
-            self.item(item);
+        let item = self.item;
+        for each in items {
+            self.item = item;
+            self.item(each);
         }
+        self.item = None;
     }
 
     fn node(&mut self, node: &'a UiNode) {
@@ -551,12 +565,15 @@ impl<'a> Walk<'a> {
             self.roots.push((node.instance, own));
         }
         let kind = ControlKind::of(&node.type_name);
+        let item = self.item.take();
         if kind.responds()
             || !node.control_reads.is_empty()
             || node.styled.is_some()
             || node.role.is_some()
+            || node.live.is_some()
+            || item.is_some()
         {
-            self.nodes.push((own, kind, node));
+            self.nodes.push((own, kind, node, item));
         }
         for handler in &node.handlers {
             let event = handler.event.trim_start_matches("r#");
@@ -572,13 +589,21 @@ impl<'a> Walk<'a> {
                 },
             ));
         }
+        let items = match node.type_name.as_str() {
+            "Tabs" => Some(viso_ui::Role::Tab),
+            "RadioGroup" => Some(viso_ui::Role::Radio),
+            _ => None,
+        };
+        self.item = items;
         self.items(&node.children);
     }
 }
 
-/// The role of `node`: the one its `semantics.role` names, else its widget's.
-fn node_role(node: &UiNode) -> Option<viso_ui::Role> {
+/// The role of `node`: the one its `semantics.role` names, else the one it
+/// takes as an item of a selection, else its widget's.
+fn node_role(node: &UiNode, item: Option<viso_ui::Role>) -> Option<viso_ui::Role> {
     node.role
+        .or(item)
         .or_else(|| viso_view::widget_role(&node.type_name))
 }
 

@@ -522,14 +522,21 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(control.tint),
         entry(control.shader),
     );
-    let label = entry(control.label);
-    let role = match control.role {
+    let semantics = control.semantics;
+    let role = match semantics.role {
         Some(role) => {
             let role = Ident::new(&format!("{role:?}"), Span::call_site());
             quote! { ::core::option::Option::Some(::viso::__private::viso_ui::Role::#role) }
         }
         None => quote! { ::core::option::Option::None },
     };
+    let live = Ident::new(&format!("{:?}", semantics.live), Span::call_site());
+    let (label, hint, spoken) = (
+        entry(semantics.label),
+        entry(semantics.hint),
+        entry(semantics.value),
+    );
+    let (hidden, heading_level) = (entry(semantics.hidden), entry(semantics.heading_level));
     let look = control.look;
     let (background, opacity) = (entry(look.background), entry(look.opacity));
     let (background_transition, opacity_transition) = (
@@ -577,8 +584,15 @@ fn control_tokens(control: Control) -> TokenStream {
                 opacity_transition: #opacity_transition,
             },
             arms: ::std::boxed::Box::new([#(#arms),*]),
-            role: #role,
-            label: #label,
+            semantics: ::viso::__private::viso_view::SemanticEntries {
+                role: #role,
+                live: ::viso::__private::viso_ui::LiveRegion::#live,
+                label: #label,
+                hint: #hint,
+                value: #spoken,
+                hidden: #hidden,
+                heading_level: #heading_level,
+            },
         }
     }
 }
