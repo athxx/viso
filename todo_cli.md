@@ -512,10 +512,20 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
 
 ### C2.7 — `viso inspect query` (§24.3)
 
-- [ ] `inspect query <selector>` against a headless instance (or a running session in
+- [x] `inspect query <selector>` against a headless instance (or a running session in
       C6): selector syntax (type, `#id`, `.class`, `[prop=value]`, descendant), JSON
-      result of matched nodes with layout rect, props and source span.
-- [ ] Shared Inspector Service type used by tests (C1.9), Studio and the CLI.
+      result of matched nodes with layout rect, props and source span. (Type, `*`,
+      `#name`, `.Style`, `[attr]`/`[attr=value]` over role, label, hint, value,
+      checked, selected, expanded, focused, focusable, shown, kind; descendant, `>`
+      and `,`. The running `viso run` session of any target, through its control
+      endpoint and the `Inspect` dev message (protocol 15), or `--target headless`
+      after an optional `--scenario`; `INSPECT_SELECTOR` exit 2, no session 3, no
+      match 0. A component's name selects its root node, the view's own included;
+      `tests/inspect_session.rs` queries a live session before and after an edit.)
+- [x] Shared Inspector Service type used by tests (C1.9), Studio and the CLI.
+      (`viso_view::inspect`: the runtime's census, the tool's source table from
+      `viso_dsl::inspect`, their join and the selector; UI scenarios select by it as
+      `click (Column > #save)`; Studio is to use it once it exists.)
 
 ---
 

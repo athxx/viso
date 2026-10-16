@@ -49,6 +49,8 @@ impl UiTree {
 pub struct UiInstance {
     /// The component.
     pub component: SymbolId,
+    /// The component's name, as the node placing it spells its type.
+    pub name: String,
     /// The node or `use` that places it, in its parent's view: the call
     /// site of every node its view mounts.
     pub origin: TextRange,
@@ -114,6 +116,9 @@ pub struct UiNode {
     pub control_reads: Vec<(String, TextRange, u32)>,
     /// The look the node's styles give it, beyond what it binds itself.
     pub styled: Option<UiStyled>,
+    /// The names of the styles its `styles` applies, in the order they
+    /// apply: what an inspector selects it by as a class.
+    pub styles: Vec<String>,
     /// The role its `semantics.role` names, `None` when it names none.
     pub role: Option<viso_ui::Role>,
     /// The live setting its `semantics.live` names, `None` when it names

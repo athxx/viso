@@ -48,7 +48,7 @@ use super::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 14;
+pub const DEV_PROTOCOL_VERSION: u16 = 15;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -853,6 +853,11 @@ pub enum HostMessage {
     Snapshot,
     /// The state a process launched to restore starts from.
     Restore(Box<RestoreBundle>),
+    /// Asks for the app's [`Census`](crate::inspect::Census) at the next
+    /// frame boundary, for `viso inspect`; the answer repeats `id`.
+    Inspect {
+        id: u32,
+    },
 }
 
 /// What the runtime sends.
@@ -885,6 +890,12 @@ pub enum RuntimeMessage {
     },
     /// The answer to a [`HostMessage::Restore`].
     Restored(RestoreReport),
+    /// The answer to a [`HostMessage::Inspect`]: the census, its bytes in
+    /// the blob sent ahead.
+    Inspect {
+        id: u32,
+        census: BlobRef,
+    },
 }
 
 /// Why a frame or message was refused.
@@ -1139,6 +1150,7 @@ const HOST_GAME: u8 = 4;
 const HOST_BLOB: u8 = 5;
 const HOST_SNAPSHOT: u8 = 6;
 const HOST_RESTORE: u8 = 7;
+const HOST_INSPECT: u8 = 8;
 
 const RUNTIME_HELLO: u8 = 0;
 const RUNTIME_ACK: u8 = 1;
@@ -1151,6 +1163,7 @@ const RUNTIME_GAME: u8 = 7;
 const RUNTIME_BLOB: u8 = 8;
 const RUNTIME_SNAPSHOT: u8 = 9;
 const RUNTIME_RESTORED: u8 = 10;
+const RUNTIME_INSPECT: u8 = 11;
 
 const REJECT_PROTOCOL: u8 = 0;
 const REJECT_BUILD: u8 = 1;
@@ -1508,6 +1521,10 @@ impl Message for HostMessage {
                 restore.snapshot.write(enc);
                 write_ui(enc, &restore.ui);
             }
+            HostMessage::Inspect { id } => {
+                enc.write_u8(HOST_INSPECT);
+                enc.write_varint(u64::from(*id));
+            }
         }
     }
 
@@ -1587,6 +1604,7 @@ impl Message for HostMessage {
                 snapshot: BlobRef::read(dec)?,
                 ui: read_ui(dec)?,
             }))),
+            HOST_INSPECT => Ok(HostMessage::Inspect { id: read_u32(dec)? }),
             _ => Err(malformed(dec)),
         }
     }
@@ -1719,6 +1737,11 @@ impl Message for RuntimeMessage {
                     enc.write_varint(u64::from(count));
                 }
                 enc.write_varint(report.restore_us);
+            }
+            RuntimeMessage::Inspect { id, census } => {
+                enc.write_u8(RUNTIME_INSPECT);
+                enc.write_varint(u64::from(*id));
+                census.write(enc);
             }
         }
     }
@@ -1874,6 +1897,10 @@ impl Message for RuntimeMessage {
                     restore_us: dec.read_varint()?,
                 }))
             }
+            RUNTIME_INSPECT => Ok(RuntimeMessage::Inspect {
+                id: read_u32(dec)?,
+                census: BlobRef::read(dec)?,
+            }),
             _ => Err(malformed(dec)),
         }
     }
@@ -1971,6 +1998,7 @@ mod tests {
                 bytes: vec![0; 3],
             }),
             HostMessage::Snapshot,
+            HostMessage::Inspect { id: 3 },
             HostMessage::Restore(Box::new(RestoreBundle {
                 dev_session: DevSessionId(7),
                 target_runtime: RuntimeSessionId(9),
@@ -2312,6 +2340,10 @@ mod tests {
                 capture_us: 1200,
             },
             RuntimeMessage::Restored(RestoreReport::default()),
+            RuntimeMessage::Inspect {
+                id: 3,
+                census: BlobRef::of(b"census"),
+            },
             RuntimeMessage::Restored(RestoreReport {
                 files: vec![FileCommit {
                     file: FileId(1),

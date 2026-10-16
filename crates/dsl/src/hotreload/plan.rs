@@ -38,6 +38,8 @@ use crate::view_behavior::{ViewBehavior, state_value, view_behavior};
 /// tree and bindings key into the source set by [`SymbolId`].
 #[derive(Debug, Clone, Default)]
 pub struct CandidatePlan {
+    /// The name of the component the view mounts, `None` for a fragment.
+    pub component: Option<String>,
     /// The recompiled static template.
     pub tree: UiTree,
     /// The recompiled reactive binding edges (`SymbolId → node/DirtyClass`).
@@ -239,6 +241,10 @@ fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
         declared.push(at);
     }
     Ok(CandidatePlan {
+        component: compiled
+            .component
+            .as_ref()
+            .map(|component| component.schema.name.clone()),
         tree: compiled.tree,
         bindings: compiled.bindings,
         sources,

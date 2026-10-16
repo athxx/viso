@@ -12,6 +12,7 @@ mod dump;
 mod explain;
 mod fmt;
 mod game;
+mod inspect;
 mod lsp;
 mod new;
 mod run;
@@ -65,6 +66,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
         Command::Fmt(args) => fmt::run(ctx, args, out),
         Command::Ios(IosCommand::Simulator(command)) => device::run(Platform::Ios, command, out),
         Command::Game(command) => game::run(ctx, command, out),
+        Command::Inspect(command) => inspect::run(ctx, command, out),
         Command::Lsp(args) => lsp::run(ctx, args, out),
         Command::New(args) => new::run(ctx, args, out),
         Command::Run(args) => run::run(ctx, args, out),

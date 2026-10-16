@@ -114,6 +114,11 @@ impl RegionKeys {
             .map(|index| self.keys[index].1)
     }
 
+    /// Each node a region mounts, by region, arm and arm item, ascending.
+    pub fn iter(&self) -> impl Iterator<Item = ((u32, u32, u32), NodeKey)> + '_ {
+        self.keys.iter().copied()
+    }
+
     /// The region, arm and arm item that mounts the node `key`, `None` for a
     /// node no region mounts. Linear: a reload plans it once per kept node.
     pub fn item(&self, key: NodeKey) -> Option<(u32, u32, u32)> {
@@ -669,7 +674,7 @@ fn authors_children(node: &UiNode) -> bool {
 
 /// The item lists of a region's arms (a `for` has one, its body); none for a
 /// node.
-fn arms(item: &UiItem) -> Vec<&[UiItem]> {
+pub(crate) fn arms(item: &UiItem) -> Vec<&[UiItem]> {
     match item {
         UiItem::Node(_) => Vec::new(),
         UiItem::If(region) => region.arms.iter().map(|arm| arm.items.as_slice()).collect(),

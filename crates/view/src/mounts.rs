@@ -1,13 +1,13 @@
 //! The record of every `view!` mount, kept for the development session that
-//! hot-reloads it.
+//! hot-reloads it or the headless run that inspects it.
 //!
-//! Under the `hot-reload` feature a `view!` expansion records, once its tree is
+//! Under the `inspect` feature a `view!` expansion records, once its tree is
 //! built, the identities a reload needs to reach the mount: the `.vs` file and
 //! the hash of the source it was compiled from, the module identity, catalogs,
 //! assets and grants it compiles under, the mounted root and static
 //! nodes, the state cells it allocated and the behavior host it dispatches
 //! into. No source text is embedded: the host holds it. The records queue on
-//! the UI thread until the session [takes](take_mounts) them. Without the
+//! the UI thread until the session or the run [takes](take_mounts) them. Without the
 //! feature `__record_mount!` expands to nothing, so a release binary carries
 //! no record.
 
@@ -76,7 +76,7 @@ pub fn take_mounts(out: &mut Vec<MountRecord>) {
 }
 
 /// Records a `view!` mount for the development session.
-#[cfg(feature = "hot-reload")]
+#[cfg(feature = "inspect")]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __record_mount {

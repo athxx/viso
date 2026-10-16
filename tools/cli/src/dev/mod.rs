@@ -76,13 +76,14 @@ use viso_project::LockGuard;
 use viso_text::font_format;
 use viso_view::dev::wire::{
     BlobRef, Blobs, CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply,
-    HostMessage, PatchAck, PatchBundle, PatchNack, PatchSection, Rebuild, ResourceAsset,
+    HostMessage, MAX_FRAME, PatchAck, PatchBundle, PatchNack, PatchSection, Rebuild, ResourceAsset,
     ResourcePatch, RestoreBundle, RestoreReport, Revision, RuntimeHello, RuntimeMessage,
     RuntimeSessionId, RuntimeTarget, ShaderLang, Stage, SystemPatch, UiPatch, WindowGeometry,
     blob_chunks, source_hash,
 };
+use viso_view::inspect::SourceTable;
 
-pub use control::{Control, ControlCall, ControlDeliver, ControlReply};
+pub use control::{Control, ControlAsk, ControlCall, ControlDeliver, ControlReply};
 pub use link::{Deliver, Expect, LinkEvent, Traffic};
 pub use watch::Change;
 
@@ -130,6 +131,8 @@ struct Runtime {
     in_flight: Option<InFlight>,
     /// The questions of `viso game` it was sent and has not answered.
     asked: Vec<Asked>,
+    /// The questions of `viso inspect` it was sent and has not answered.
+    inspecting: Vec<(u32, Sender<ControlReply>)>,
     /// The chunks of the snapshot it is sending.
     blobs: Blobs,
     /// What it runs of the source graph.
@@ -172,6 +175,12 @@ impl Drop for Runtime {
         for asked in self.asked.drain(..) {
             let _ = asked.reply.send(ControlReply::refused(
                 control::GAME_NOT_RUNNING,
+                "the app exited before it answered",
+            ));
+        }
+        for (_, reply) in self.inspecting.drain(..) {
+            let _ = reply.send(ControlReply::refused(
+                control::ENV_NO_DEV_SESSION,
                 "the app exited before it answered",
             ));
         }
@@ -584,6 +593,7 @@ impl DevSession {
                     traffic: connection.traffic,
                     in_flight: None,
                     asked: Vec::new(),
+                    inspecting: Vec::new(),
                     blobs: Blobs::default(),
                     mounts: Mounts::default(),
                     patch: None,
@@ -797,6 +807,7 @@ impl DevSession {
                 &format!("the app dropped {count} dev messages: `viso run` read too slowly"),
             ),
             RuntimeMessage::Game(answer) => self.answer(at, answer),
+            RuntimeMessage::Inspect { id, census } => self.inspected(at, id, census),
             // The link thread delivers no second hello.
             RuntimeMessage::Hello(_) => {}
         }
@@ -1126,11 +1137,90 @@ impl DevSession {
         &mut self._lock
     }
 
-    /// Relays what `viso game` asks about the game `call.game` names to the
-    /// first runtime that runs it, or refuses it.
+    /// Relays what `viso game` or `viso inspect` asks to the runtime it is
+    /// for, or refuses it.
     pub fn control(&mut self, call: ControlCall, out: &mut Output) {
+        match call.ask {
+            ControlAsk::Game { game, ask } => self.game(&game, ask, call.reply, out),
+            ControlAsk::Inspect => self.inspect(call.reply),
+        }
+    }
+
+    /// Asks the first runtime connected for its census, which
+    /// [`inspected`](Self::inspected) answers.
+    fn inspect(&mut self, reply: Sender<ControlReply>) {
+        let Some(runtime) = self.runtimes.first_mut() else {
+            let _ = reply.send(ControlReply::refused(
+                control::ENV_NO_DEV_SESSION,
+                "the app is not connected to `viso run`",
+            ));
+            return;
+        };
+        let id = self.next_query;
+        self.next_query = self.next_query.wrapping_add(1);
+        if runtime.writer.send(HostMessage::Inspect { id }).is_err() {
+            let _ = reply.send(ControlReply::refused(
+                control::ENV_NO_DEV_SESSION,
+                "the app is not connected to `viso run`",
+            ));
+            return;
+        }
+        runtime.inspecting.push((id, reply));
+    }
+
+    /// Answers the `viso inspect` that asked runtime `at` for the census
+    /// `census` names, with the table of the views it mounts.
+    fn inspected(&mut self, at: usize, id: u32, census: BlobRef) {
+        let runtime = &mut self.runtimes[at];
+        let Some(index) = runtime
+            .inspecting
+            .iter()
+            .position(|(asked, _)| *asked == id)
+        else {
+            return;
+        };
+        let (_, reply) = runtime.inspecting.swap_remove(index);
+        let Some(census) = runtime.blobs.take(census) else {
+            let _ = reply.send(ControlReply::refused(
+                control::INSPECT_ANSWER_INVALID,
+                "the app's census did not arrive whole",
+            ));
+            return;
+        };
+        let runtime = &self.runtimes[at];
+        let files = runtime
+            .mounts
+            .views
+            .keys()
+            .filter_map(|&view| {
+                let name = self.name(&self.sources.views[view].path);
+                self.sources.file_sources(&runtime.mounts, view, name)
+            })
+            .collect();
+        let sources = SourceTable { files }.to_bytes();
+        // What the reply holds besides the two fits in a few bytes.
+        let answer = if census.len() + sources.len() > MAX_FRAME - 64 {
+            ControlReply::refused(
+                control::INSPECT_ANSWER_INVALID,
+                format!(
+                    "the app's tree outgrew the control link: {} bytes",
+                    census.len() + sources.len()
+                ),
+            )
+        } else {
+            ControlReply::Inspected {
+                census: census.to_vec(),
+                sources,
+            }
+        };
+        let _ = reply.send(answer);
+    }
+
+    /// Relays what `viso game` asks about the game `game` names to the
+    /// first runtime that runs it, or refuses it.
+    fn game(&mut self, game: &str, ask: GameAsk, reply: Sender<ControlReply>, out: &mut Output) {
         let refuse = |code: &str, message: String| {
-            let _ = call.reply.send(ControlReply::refused(code, message));
+            let _ = reply.send(ControlReply::refused(code, message));
         };
         if self.runtimes.is_empty() {
             return refuse(
@@ -1144,7 +1234,7 @@ impl DevSession {
             if !runtime.hello.capabilities.contains(Domain::System) {
                 continue;
             }
-            match self.find_game(&runtime.mounts, &call.game) {
+            match self.find_game(&runtime.mounts, game) {
                 Ok(view) => {
                     found = Some((at, view));
                     break;
@@ -1156,8 +1246,8 @@ impl DevSession {
         }
         let Some((at, view)) = found else {
             return match refusal {
-                Some(reply) => {
-                    let _ = call.reply.send(reply);
+                Some(refusal) => {
+                    let _ = reply.send(refusal);
                 }
                 None => refuse(
                     control::GAME_NOT_RUNNING,
@@ -1167,7 +1257,7 @@ impl DevSession {
         };
         let runtime = &mut self.runtimes[at];
         let file = runtime.mounts.views[&view].file;
-        if let GameAsk::Record { .. } = call.ask {
+        if let GameAsk::Record { .. } = ask {
             let name = Source::new(&self.sources.views[view].path, &self.root, "")
                 .name()
                 .to_owned();
@@ -1182,7 +1272,7 @@ impl DevSession {
         let query = GameQuery {
             id,
             file,
-            ask: call.ask.clone(),
+            ask: ask.clone(),
         };
         if runtime.writer.send(HostMessage::Game(query)).is_err() {
             return refuse(
@@ -1193,8 +1283,8 @@ impl DevSession {
         runtime.asked.push(Asked {
             id,
             at: view,
-            ask: call.ask,
-            reply: call.reply,
+            ask,
+            reply,
         });
     }
 
@@ -2319,8 +2409,10 @@ mod tests {
     ) -> (Vec<HostMessage>, Receiver<ControlReply>) {
         let (reply, answer) = mpsc::channel();
         let call = ControlCall {
-            game: game.into(),
-            ask,
+            ask: ControlAsk::Game {
+                game: game.into(),
+                ask,
+            },
             reply,
         };
         f.dev.control(call, &mut f.out);
@@ -2331,6 +2423,107 @@ mod tests {
         GameAsk::Peek {
             system: system.into(),
             state: state.into(),
+        }
+    }
+
+    #[test]
+    fn an_inspection_relays_the_census_with_the_source_of_the_views_mounted() {
+        use viso_view::inspect::{
+            Census, CensusMount, CensusNode, InspectKind, NodeOrigin, Rect, Selector, WindowCensus,
+            resolve,
+        };
+        let mut f = Fixture::app("inspect", true, GAME, GAME, Domains::NONE.with(Domain::Ui));
+        let _ = f.settle();
+        let (reply, answer) = mpsc::channel();
+        f.dev.control(
+            ControlCall {
+                ask: ControlAsk::Inspect,
+                reply,
+            },
+            &mut f.out,
+        );
+        let sent: Vec<HostMessage> = f.sent.try_iter().collect();
+        let [HostMessage::Inspect { id }] = &sent[..] else {
+            panic!("not asked: {sent:?}");
+        };
+        let census = |file: &str| Census {
+            windows: vec![WindowCensus {
+                mounts: vec![CensusMount {
+                    file: file.into(),
+                    source_hash: 0,
+                }],
+                nodes: vec![CensusNode {
+                    index: 3,
+                    generation: 1,
+                    parent: None,
+                    kind: InspectKind::Container,
+                    bounds: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 200.0,
+                        h: 10.0,
+                    },
+                    shown: true,
+                    focusable: false,
+                    focused: false,
+                    semantics: None,
+                    origin: Some(NodeOrigin::Static { mount: 0, index: 0 }),
+                }],
+            }],
+        };
+        let bytes = census("elsewhere.vs").to_bytes();
+        for chunk in blob_chunks(&bytes) {
+            f.runtime(RuntimeMessage::Blob(chunk));
+        }
+        f.runtime(RuntimeMessage::Inspect {
+            id: *id,
+            census: BlobRef::of(&bytes),
+        });
+        let Ok(ControlReply::Inspected {
+            census: relayed,
+            sources,
+        }) = answer.try_recv()
+        else {
+            panic!("not answered");
+        };
+        assert_eq!(relayed, bytes);
+        let table = SourceTable::from_bytes(&sources).unwrap();
+        let [file] = &table.files[..] else {
+            panic!("not one view: {table:?}");
+        };
+        assert_eq!(file.path, "view.vs");
+        assert_eq!(file.statics[0].type_name, "Column");
+        assert_eq!(file.statics[0].owner, "Arena");
+        let census = census(&file.file);
+        let inspection = resolve(&census, &table);
+        let selected = Selector::parse("Column").unwrap().select(&inspection);
+        assert_eq!(selected, [0]);
+
+        // An app that exits with the question open refuses it, and without
+        // an app there is no one to ask.
+        let (reply, open) = mpsc::channel();
+        f.dev.control(
+            ControlCall {
+                ask: ControlAsk::Inspect,
+                reply,
+            },
+            &mut f.out,
+        );
+        let launch = f.launch();
+        f.dev.link(LinkEvent::Closed(launch), &mut f.out);
+        let (reply, answer) = mpsc::channel();
+        f.dev.control(
+            ControlCall {
+                ask: ControlAsk::Inspect,
+                reply,
+            },
+            &mut f.out,
+        );
+        for answer in [open, answer] {
+            let Ok(ControlReply::Refused { code, .. }) = answer.try_recv() else {
+                panic!("not refused");
+            };
+            assert_eq!(code, control::ENV_NO_DEV_SESSION);
         }
     }
 

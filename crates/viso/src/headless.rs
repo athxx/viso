@@ -16,6 +16,12 @@
 //! for the launching tool to hold to a golden. Each step's outcome is a line
 //! of the report; the first failed step ends the run.
 //!
+//! A selector in parentheses is an inspector selector: the run joins the
+//! census of the window with the source table the launch hands it
+//! ([`SOURCES_ENV`]) and takes the first node it selects that is shown.
+//! Once the scenario ends the run writes the window's census where the
+//! launch names ([`CENSUS_ENV`]), for a tool to inspect what it showed.
+//!
 //! A run handed a view package ([`VIEW_ENV`]) mounts it alone in its first
 //! window, with no caption and none of the app's own view, so a tool
 //! captures one component as the app's fonts and assets draw it.
@@ -35,11 +41,12 @@ use viso_runtime::{FixedStepClock, RuntimeCx, Scheduler};
 use viso_ui::semantics::SemanticsNode;
 use viso_ui::{DirtyClass, NodeId};
 use viso_view::headless::{
-    Action, Chord, Expectation, FRAMES_ENV, HeadlessSurface, Key, REPORT_ENV, Reported, SCRIPT_ENV,
-    SNAPSHOT_ENV, SURFACE_ENV, Script, Selector, State, VIEW_ENV,
+    Action, CENSUS_ENV, Chord, Expectation, FRAMES_ENV, HeadlessSurface, Key, REPORT_ENV, Reported,
+    SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, Script, Selector, State, VIEW_ENV,
 };
+use viso_view::inspect::{self, Census, CensusView, SourceTable, WindowCensus, static_nodes};
 use viso_view::snapshot::Image;
-use viso_view::{ViewHost, load_view};
+use viso_view::{MountRecord, ViewHost, load_view, take_mounts};
 
 use crate::{AppDriver, Application, WindowState, services};
 
@@ -70,7 +77,13 @@ pub(crate) fn run<A: Application>() {
     if let Some(path) = viso_platform::launch_var(SCRIPT_ENV) {
         let report = viso_platform::launch_var(REPORT_ENV);
         let snapshots = viso_platform::launch_var(SNAPSHOT_ENV).map(PathBuf::from);
-        match ScriptRunner::open(&path, report.as_deref(), snapshots, app.feed()) {
+        let outputs = Outputs {
+            report: report.as_deref(),
+            snapshots,
+            sources: viso_platform::launch_var(SOURCES_ENV),
+            census: viso_platform::launch_var(CENSUS_ENV).map(PathBuf::from),
+        };
+        match ScriptRunner::open(&path, outputs, app.feed()) {
             Ok(runner) => driver.script = Some(runner),
             Err(why) => {
                 eprintln!("viso: {why}");
@@ -86,14 +99,31 @@ pub(crate) fn run<A: Application>() {
 }
 
 /// The view package a run mounts alone, and once it is mounted the instance
-/// that runs it.
+/// that runs it; the views the first window's build mounted.
 #[derive(Default)]
 pub(crate) struct Harness {
     package: Option<Vec<u8>>,
     host: Option<Rc<RefCell<ViewHost>>>,
+    first: Option<WindowId>,
+    mounts: Vec<MountRecord>,
 }
 
 impl Harness {
+    /// Keeps the views `ws`'s build just mounted, when it is the first
+    /// window, which a scenario plays against.
+    pub(crate) fn adopt(&mut self, ws: &WindowState) {
+        let mut records = Vec::new();
+        take_mounts(&mut records);
+        if *self.first.get_or_insert(ws.window) == ws.window {
+            self.mounts.append(&mut records);
+        }
+    }
+
+    /// The views the first window's build mounted.
+    pub(crate) fn mounts(&self) -> &[MountRecord] {
+        &self.mounts
+    }
+
     /// Whether a view waits to be mounted in place of the app's.
     pub(crate) fn is_pending(&self) -> bool {
         self.package.is_some()
@@ -145,16 +175,29 @@ pub(crate) struct ScriptRunner {
     report: Option<BufWriter<File>>,
     /// Where snapshot steps write their captures.
     snapshots: Option<PathBuf>,
+    /// What the views' nodes are in their source, for inspector selectors.
+    sources: Option<Rc<SourceTable>>,
+    /// Where the census goes once the scenario ends.
+    census: Option<PathBuf>,
     feed: HeadlessFeed,
 }
 
+/// What a launch hands a scenario besides its steps.
+struct Outputs<'a> {
+    report: Option<&'a str>,
+    snapshots: Option<PathBuf>,
+    sources: Option<String>,
+    census: Option<PathBuf>,
+}
+
 impl ScriptRunner {
-    fn open(
-        path: &str,
-        report: Option<&str>,
-        snapshots: Option<PathBuf>,
-        feed: HeadlessFeed,
-    ) -> Result<Self, String> {
+    fn open(path: &str, outputs: Outputs<'_>, feed: HeadlessFeed) -> Result<Self, String> {
+        let Outputs {
+            report,
+            snapshots,
+            sources,
+            census,
+        } = outputs;
         let text = std::fs::read_to_string(path)
             .map_err(|error| format!("cannot read the scenario `{path}`: {error}"))?;
         let script = Script::parse(&text)
@@ -167,6 +210,17 @@ impl ScriptRunner {
             }
             None => None,
         };
+        let sources = match sources {
+            Some(sources) => {
+                let bytes = std::fs::read(&sources).map_err(|error| {
+                    format!("cannot read the source table `{sources}`: {error}")
+                })?;
+                Some(Rc::new(SourceTable::from_bytes(&bytes).map_err(
+                    |error| format!("the source table `{sources}` does not decode: {error}"),
+                )?))
+            }
+            None => None,
+        };
         Ok(ScriptRunner {
             script,
             next: 0,
@@ -176,15 +230,29 @@ impl ScriptRunner {
             finished: false,
             report,
             snapshots,
+            sources,
+            census,
             feed,
         })
     }
 
-    /// After each frame of the first window `ws`: run the steps due.
-    pub(crate) fn after_frame(&mut self, ws: &WindowState, cx: &mut RuntimeCx<'_>) {
+    /// After each frame of the first window `ws`, whose build mounted
+    /// `mounts`: run the steps due.
+    pub(crate) fn after_frame(
+        &mut self,
+        ws: &WindowState,
+        mounts: &[MountRecord],
+        cx: &mut RuntimeCx<'_>,
+    ) {
         if self.finished {
             return;
         }
+        let sources = self.sources.clone();
+        let window = Window {
+            ws,
+            mounts,
+            sources: sources.as_deref(),
+        };
         self.frames += 1;
         if self.waiting > 0 {
             self.waiting -= 1;
@@ -200,7 +268,7 @@ impl ScriptRunner {
             let line = step.line;
             self.next += 1;
             let outcome = match &step.action {
-                Action::Expect(expectation) => expect(ws, expectation),
+                Action::Expect(expectation) => expect(&window, expectation),
                 Action::Snapshot(name) => match capture(ws, self.snapshots.as_deref(), name) {
                     Ok((width, height)) => {
                         self.write(Reported::Snapshot {
@@ -219,7 +287,7 @@ impl ScriptRunner {
                     cx.request_redraw(ws.window);
                     return;
                 }
-                input => match events(ws, input) {
+                input => match events(&window, input) {
                     Ok(events) => {
                         for event in events {
                             self.feed.push(event);
@@ -242,14 +310,25 @@ impl ScriptRunner {
                 }
             }
         }
-        self.finish(ws.window, cx);
+        self.finish(&window, cx);
     }
 
-    fn finish(&mut self, window: WindowId, cx: &mut RuntimeCx<'_>) {
+    fn finish(&mut self, window: &Window<'_>, cx: &mut RuntimeCx<'_>) {
         self.finished = true;
+        if let Some(path) = &self.census {
+            let census = Census {
+                windows: vec![window.census()],
+            };
+            if let Err(error) = std::fs::write(path, census.to_bytes()) {
+                eprintln!(
+                    "viso: cannot write the census `{}`: {error}",
+                    path.display()
+                );
+            }
+        }
         let frames = self.frames;
         self.write(Reported::Done { frames });
-        cx.close_window(window);
+        cx.close_window(window.ws.window);
     }
 
     fn write(&mut self, reported: Reported) {
@@ -305,9 +384,54 @@ fn capture(ws: &WindowState, dir: Option<&Path>, name: &str) -> Result<(u32, u32
     Ok((width, height))
 }
 
-/// A node of the window as a scenario sees it.
+/// The window a scenario plays against: its state, the views its build
+/// mounted and what their nodes are in their source.
+struct Window<'a> {
+    ws: &'a WindowState,
+    mounts: &'a [MountRecord],
+    sources: Option<&'a SourceTable>,
+}
+
+impl Window<'_> {
+    /// The window's census, its nodes named by the views it mounts.
+    fn census(&self) -> WindowCensus {
+        let store = &self.ws.store;
+        let nodes: Vec<Vec<Option<NodeId>>> = self
+            .mounts
+            .iter()
+            .map(|mount| {
+                if mount.nodes.is_empty() {
+                    static_nodes(store, mount.root, mount.statics)
+                } else {
+                    mount.nodes.clone()
+                }
+            })
+            .collect();
+        let hosts: Vec<Option<std::cell::Ref<'_, ViewHost>>> = self
+            .mounts
+            .iter()
+            .map(|mount| mount.host.as_ref().map(|host| host.borrow()))
+            .collect();
+        let views: Vec<CensusView<'_>> = self
+            .mounts
+            .iter()
+            .zip(&nodes)
+            .zip(&hosts)
+            .map(|((mount, nodes), host)| CensusView {
+                file: mount.file,
+                source_hash: mount.source_hash,
+                nodes,
+                host: host.as_deref(),
+            })
+            .collect();
+        inspect::census(store, self.ws.root, &views)
+    }
+}
+
+/// A node of the window as a scenario sees it: its semantics, `None` for a
+/// node an inspector selector found outside the semantics tree.
 struct Shown<'a> {
-    node: &'a SemanticsNode,
+    node: Option<&'a SemanticsNode>,
     center: (f64, f64),
 }
 
@@ -346,31 +470,65 @@ fn shown(ws: &WindowState, semantics: &[SemanticsNode]) -> Vec<(usize, (f64, f64
         .collect()
 }
 
-/// The first node `selector` finds in `ws`, or why there is none.
+/// The first node `selector` finds in `window`, or why there is none.
 fn find(
-    ws: &WindowState,
+    window: &Window<'_>,
     selector: &Selector,
     f: impl FnOnce(Shown<'_>) -> Result<(), String>,
 ) -> Result<(), String> {
+    let ws = window.ws;
     let semantics = match ws.root {
         Some(root) => ws.store.derive_semantics(root).nodes,
         None => Vec::new(),
     };
     let shown = shown(ws, &semantics);
-    let found = shown.iter().find(|(index, _)| {
-        let node = &semantics[*index];
-        node.label.as_deref() == Some(selector.label.as_str())
-            && selector.role.is_none_or(|role| node.role == role)
-    });
-    match found {
-        Some(&(index, center)) => f(Shown {
-            node: &semantics[index],
-            center,
-        }),
-        None => Err(format!(
+    let missing = || {
+        Err(format!(
             "no {selector} is shown{}",
             labels(&semantics, &shown)
-        )),
+        ))
+    };
+    match selector {
+        Selector::Label { role, label } => {
+            let found = shown.iter().find(|(index, _)| {
+                let node = &semantics[*index];
+                node.label.as_deref() == Some(label.as_str())
+                    && role.is_none_or(|role| node.role == role)
+            });
+            match found {
+                Some(&(index, center)) => f(Shown {
+                    node: Some(&semantics[index]),
+                    center,
+                }),
+                None => missing(),
+            }
+        }
+        Selector::Query(query) => {
+            let Some(sources) = window.sources else {
+                return Err(format!(
+                    "the run was given no source table to find {selector} by ({SOURCES_ENV})"
+                ));
+            };
+            let census = Census {
+                windows: vec![window.census()],
+            };
+            let inspection = inspect::resolve(&census, sources);
+            let found = query
+                .select(&inspection)
+                .into_iter()
+                .map(|at| inspection.nodes[at].node)
+                .find(|node| node.shown && node.bounds.w > 0.0 && node.bounds.h > 0.0);
+            let Some(node) = found else {
+                return missing();
+            };
+            let b = node.bounds;
+            f(Shown {
+                node: semantics
+                    .iter()
+                    .find(|s| s.id.index() == node.index && s.id.generation() == node.generation),
+                center: (f64::from(b.x + b.w / 2.0), f64::from(b.y + b.h / 2.0)),
+            })
+        }
     }
 }
 
@@ -389,16 +547,21 @@ fn labels(semantics: &[SemanticsNode], shown: &[(usize, (f64, f64))]) -> String 
     }
 }
 
-/// Whether `expectation` holds of `ws`, or why not.
-fn expect(ws: &WindowState, expectation: &Expectation) -> Result<(), String> {
+/// Whether `expectation` holds of `window`, or why not.
+fn expect(window: &Window<'_>, expectation: &Expectation) -> Result<(), String> {
     match expectation {
-        Expectation::Shown(selector) => find(ws, selector, |_| Ok(())),
-        Expectation::Absent(selector) => match find(ws, selector, |_| Ok(())) {
+        Expectation::Shown(selector) => find(window, selector, |_| Ok(())),
+        Expectation::Absent(selector) => match find(window, selector, |_| Ok(())) {
             Ok(()) => Err(format!("{selector} is shown")),
             Err(_) => Ok(()),
         },
-        Expectation::State(selector, state) => find(ws, selector, |shown| {
-            let node = shown.node;
+        Expectation::State(selector, state) => find(window, selector, |shown| {
+            let Some(node) = shown.node else {
+                return Err(format!(
+                    "{selector} has no semantics to be {}",
+                    state.describe()
+                ));
+            };
             let live = node.state.unwrap_or_default();
             let holds = match *state {
                 State::Focused => node.focused,
@@ -437,9 +600,9 @@ fn expect(ws: &WindowState, expectation: &Expectation) -> Result<(), String> {
     }
 }
 
-/// The platform events an input step delivers to `ws`.
-fn events(ws: &WindowState, action: &Action) -> Result<Vec<RawEvent>, String> {
-    let window = ws.window;
+/// The platform events an input step delivers to `at`.
+fn events(at: &Window<'_>, action: &Action) -> Result<Vec<RawEvent>, String> {
+    let window = at.ws.window;
     let pointer = |(x, y): (f64, f64), buttons, phase| {
         RawEvent::Pointer(RawPointer::mouse(
             window,
@@ -452,7 +615,7 @@ fn events(ws: &WindowState, action: &Action) -> Result<Vec<RawEvent>, String> {
     };
     let mut events = Vec::new();
     match action {
-        Action::Click(selector) => find(ws, selector, |shown| {
+        Action::Click(selector) => find(at, selector, |shown| {
             events = vec![
                 pointer(shown.center, PointerButtons::NONE, PointerPhase::Moved),
                 pointer(shown.center, PointerButtons::PRIMARY, PointerPhase::Down),
@@ -460,7 +623,7 @@ fn events(ws: &WindowState, action: &Action) -> Result<Vec<RawEvent>, String> {
             ];
             Ok(())
         })?,
-        Action::Hover(selector) => find(ws, selector, |shown| {
+        Action::Hover(selector) => find(at, selector, |shown| {
             events = vec![pointer(
                 shown.center,
                 PointerButtons::NONE,
@@ -468,7 +631,7 @@ fn events(ws: &WindowState, action: &Action) -> Result<Vec<RawEvent>, String> {
             )];
             Ok(())
         })?,
-        Action::Scroll(selector, dx, dy) => find(ws, selector, |shown| {
+        Action::Scroll(selector, dx, dy) => find(at, selector, |shown| {
             let (x, y) = shown.center;
             events = vec![
                 pointer(shown.center, PointerButtons::NONE, PointerPhase::Moved),

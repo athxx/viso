@@ -7,9 +7,10 @@
 //! package mounts it alone instead of the app's view.
 //!
 //! A UI scenario ([`Script`]) is text, one step a line: input aimed at a node
-//! found by its accessible label (and role), waits, and expectations on what
-//! the window shows. The build plays it against its first window, each step
-//! once the app has settled, and writes one [`Reported`] line per step.
+//! found by its accessible label (and role) or by an inspector selector,
+//! waits, and expectations on what the window shows. The build plays it
+//! against its first window, each step once the app has settled, and writes
+//! one [`Reported`] line per step.
 
 use viso_ende::{JsonValue, JsonWriter};
 use viso_ui::semantics::Role;
@@ -38,6 +39,16 @@ pub const SNAPSHOT_ENV: &str = "VISO_HEADLESS_SNAPSHOTS";
 /// is passed in: the run mounts it alone in its first window, in place of
 /// the app's view, as a tool captures one component.
 pub const VIEW_ENV: &str = "VISO_HEADLESS_VIEW";
+
+/// The environment variable the path of a
+/// [`SourceTable`](crate::inspect::SourceTable) is passed in: what the nodes
+/// of the views the build mounts are in their source, which a scenario's
+/// inspector selectors select by.
+pub const SOURCES_ENV: &str = "VISO_HEADLESS_SOURCES";
+
+/// The environment variable a path is passed in where the run writes its
+/// [`Census`](crate::inspect::Census) once the scenario ends.
+pub const CENSUS_ENV: &str = "VISO_HEADLESS_CENSUS";
 
 /// How many frames a step waits for the app to settle by default: two
 /// seconds of its clock.
@@ -150,20 +161,28 @@ pub fn is_snapshot_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// A node, by its accessible label and, optionally, role: the first such
-/// node shown, in tree order.
+/// A node: the first one shown, in tree order, that the selector finds.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Selector {
-    pub role: Option<Role>,
-    pub label: String,
+pub enum Selector {
+    /// `"<label>"` or `<role> "<label>"`: by its accessible label and,
+    /// optionally, role.
+    Label { role: Option<Role>, label: String },
+    /// `(<selector>)`: by an inspector selector, over what the nodes are in
+    /// their source.
+    Query(crate::inspect::Selector),
 }
 
 impl std::fmt::Display for Selector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(role) = self.role {
-            write!(f, "{} ", crate::source_name(role))?;
+        match self {
+            Selector::Label { role, label } => {
+                if let Some(role) = role {
+                    write!(f, "{} ", crate::source_name(*role))?;
+                }
+                write!(f, "{label:?}")
+            }
+            Selector::Query(selector) => write!(f, "({selector})"),
         }
-        write!(f, "{:?}", self.label)
     }
 }
 
@@ -461,8 +480,12 @@ impl<'a> Words<'a> {
             .ok_or_else(|| format!("`{word}` is not a number"))
     }
 
-    /// `"<label>"` or `<role> "<label>"`.
+    /// `"<label>"`, `<role> "<label>"` or `(<selector>)`.
     fn selector(&mut self) -> Result<Selector, String> {
+        self.rest = self.rest.trim_start();
+        if self.rest.starts_with('(') {
+            return self.query();
+        }
         let role = if self.at_quote() {
             None
         } else {
@@ -479,7 +502,34 @@ impl<'a> Words<'a> {
             )
         };
         let label = self.quoted("a node's label")?;
-        Ok(Selector { role, label })
+        Ok(Selector::Label { role, label })
+    }
+
+    /// `(<selector>)`: up to the parenthesis that closes it, outside quotes
+    /// and brackets.
+    fn query(&mut self) -> Result<Selector, String> {
+        let (mut quoted, mut escaped, mut brackets) = (false, false, 0u32);
+        let mut close = None;
+        for (at, c) in self.rest.char_indices().skip(1) {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' if quoted => escaped = true,
+                '"' => quoted = !quoted,
+                '[' if !quoted => brackets += 1,
+                ']' if !quoted => brackets = brackets.saturating_sub(1),
+                ')' if !quoted && brackets == 0 => {
+                    close = Some(at);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let close = close.ok_or("the selector's `(` is not closed")?;
+        let text = &self.rest[1..close];
+        self.rest = &self.rest[close + 1..];
+        crate::inspect::Selector::parse(text)
+            .map(Selector::Query)
+            .map_err(|error| format!("`({text})` is not a selector: {error}"))
     }
 
     fn chord(&mut self) -> Result<Chord, String> {
@@ -697,10 +747,40 @@ mod tests {
     }
 
     fn selector(role: Option<Role>, label: &str) -> Selector {
-        Selector {
+        Selector::Label {
             role,
             label: label.into(),
         }
+    }
+
+    #[test]
+    fn a_node_is_found_by_an_inspector_selector_in_parentheses() {
+        let script = Script::parse(
+            "click (Column > #save)   # a comment\n\
+             expect ([role=button][label=\"a ) b\"]) checked\n",
+        )
+        .unwrap();
+        let query = |text: &str| Selector::Query(crate::inspect::Selector::parse(text).unwrap());
+        assert_eq!(
+            script.steps[0].action,
+            Action::Click(query("Column > #save"))
+        );
+        assert_eq!(
+            script.steps[1].action,
+            Action::Expect(Expectation::State(
+                query("[role=button][label=\"a ) b\"]"),
+                State::Checked
+            ))
+        );
+        assert_eq!(query("Column > #save").to_string(), "(Column > #save)");
+        let error = Script::parse("click (Button\n").unwrap_err();
+        assert!(error.message.contains("not closed"), "{}", error.message);
+        let error = Script::parse("hover ([colour=red])\n").unwrap_err();
+        assert!(
+            error.message.contains("no attribute `colour`"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

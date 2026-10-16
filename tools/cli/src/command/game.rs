@@ -19,8 +19,8 @@ use viso_view::dev::wire::{GameAsk, MAX_RECORD_TICKS, RecordSpan};
 
 use crate::args::{GameCommand, PeekArgs, RecordArgs};
 use crate::context::Context;
-use crate::dev::ControlReply;
 use crate::dev::control;
+use crate::dev::{ControlAsk, ControlReply};
 use crate::error::{
     self, CLI_USAGE, ENV_NO_DEV_SESSION, ENV_TAPE_WRITE, GAME_ANSWER_INVALID, SUCCESS,
 };
@@ -82,7 +82,11 @@ fn peek(ctx: &Context<'_>, args: &PeekArgs, out: &mut Output) -> u8 {
         system: system.to_owned(),
         state: state.to_owned(),
     };
-    match control::call(&endpoint, &args.game, ask, Some(PEEK_WAIT)) {
+    let ask = ControlAsk::Game {
+        game: args.game.clone(),
+        ask,
+    };
+    match control::call(&endpoint, ask, Some(PEEK_WAIT)) {
         Ok(ControlReply::State {
             file,
             json,
@@ -154,7 +158,11 @@ fn record(ctx: &Context<'_>, args: &RecordArgs, out: &mut Output) -> u8 {
             args.game
         ),
     );
-    let reply = control::call(&endpoint, &args.game, GameAsk::Record { span }, None);
+    let ask = ControlAsk::Game {
+        game: args.game.clone(),
+        ask: GameAsk::Record { span },
+    };
+    let reply = control::call(&endpoint, ask, None);
     let (file, bytes) = match reply {
         Ok(ControlReply::Tape { file, tape }) => (file, tape),
         Ok(reply) => return refused(reply, out),

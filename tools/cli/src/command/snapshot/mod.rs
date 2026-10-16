@@ -248,7 +248,11 @@ pub fn run(ctx: &Context<'_>, command: &SnapshotCommand, out: &mut Output) -> u8
 
     let mut tally = Tally::default();
     if !cases.is_empty() {
-        let build = match scenario::build(ctx, out) {
+        let sources = cases
+            .iter()
+            .any(|case| case.queries)
+            .then(|| checked.sources());
+        let build = match scenario::build(ctx, sources, out) {
             Ok(build) => build,
             Err(failed) => return code.max(failed),
         };
@@ -344,20 +348,8 @@ impl Alone<'_> {
     /// code when it cannot be compiled to.
     fn case(&self, out: &mut Output, name: &str, found: component::Found) -> Result<Case, u8> {
         let project = &self.checked.project;
-        let given = &self.checked.profile;
-        // As the app's views are compiled: its grants, catalogs and assets.
-        let profile = viso_dsl::hir::TargetProfile {
-            capabilities: given.capabilities.clone(),
-            messages: given.messages.clone(),
-            assets: given.assets.clone(),
-            ..viso_dsl::hir::TargetProfile::default()
-        };
-        let language = project
-            .manifest
-            .package
-            .language
-            .as_ref()
-            .map(|language| language.value.clone());
+        let profile = self.checked.view_profile();
+        let language = self.checked.language();
         let source = Source::new(&found.file, &project.root, &found.source);
         match component::package(&found, &self.checked.name, language, profile) {
             Ok(view) => Ok(Case::component(
@@ -486,7 +478,7 @@ fn hold(
         let taken = match shot.map(|_| Taken::read(&played.snapshots(), name, case.surface)) {
             Some(Ok(taken)) => match &case.kind {
                 Kind::Component { path, .. } => taken.of_component(path),
-                Kind::Scenario => taken,
+                Kind::Scenario | Kind::Bare => taken,
             },
             Some(Err(why)) => {
                 out.failure(RUN_SNAPSHOT_FAILED, &why, &[]);

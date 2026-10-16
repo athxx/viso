@@ -33,6 +33,7 @@ LANGUAGE
 TEST / DEBUG
   test        Run the project's tests: unit, UI, game
   snapshot    Take the snapshots UI scenarios take, and hold them to their goldens
+  inspect     Inspect what the running app shows: its nodes, their boxes, semantics and source
   game        Read a state of, or record input from, the game `viso run` is playing
 
 MAINTENANCE
@@ -1117,6 +1118,76 @@ Global options:
       --jobs <N>           Run at most N jobs at once
       --profile <NAME>     The build profile [possible values: dev, release, shipping]
       --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso inspect --help
+Inspect what the running app shows: its nodes, their boxes, semantics and source
+
+Usage: viso inspect [OPTIONS] <COMMAND>
+
+Examples:
+  viso inspect query '#save'                            # the node named `save` in the running app
+  viso inspect query 'Button' --target headless --json  # every button of a headless run, as JSON events
+
+Commands:
+  query  Find the nodes a selector selects, with their box, semantics and the source that declares them
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  It asks the app of this project's running `viso run` session, or a headless run
+  of it with `--target headless`.
+
+$ viso inspect query --help
+Find the nodes a selector selects, with their box, semantics and the source that declares them
+
+Usage: viso inspect query [OPTIONS] <SELECTOR>
+
+Examples:
+  viso inspect query '#save'                                            # a node by its name, in the `viso run` session
+  viso inspect query '[role=check_box][checked]' --json                 # the checked check boxes, as JSON events
+  viso inspect query 'Toolbar>Text' --target headless --scenario login  # the texts right under a toolbar, after the `login` scenario
+
+Arguments:
+  <SELECTOR>  The selector: a type (`Button`, a component), `#name`, `.Style`, `[attribute]` or `[attribute=value]`, joined by a space (descendant) or `>` (child); several separated by `,`
+
+Options:
+      --target <TARGET>  The app to inspect: the `viso run` session on this machine when omitted, the session of a target, or `headless`, a headless run of the app built for it [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+      --device <ID>      The simulator or emulator profile of the session (`ios` and `android` only): the only session of the target when omitted
+      --scenario <NAME>  The UI scenario a headless run plays before it is inspected, by its name under `tests/ui/` (`--target headless` only)
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  Attributes: role, label, hint, value, checked, selected, expanded, focused,
+  focusable, shown, kind. `[checked]` alone holds of a checked node, `[label]` of
+  one with a label; a value is a name, a number or a quoted string. A type matches
+  a widget of that type or the root node of that component (`module::Component`
+  by its module). No match is not an error. The selector's syntax errors exit 2; no
+  session exits 3.
 
 $ viso game --help
 Read a state of, or record input from, the game `viso run` is playing

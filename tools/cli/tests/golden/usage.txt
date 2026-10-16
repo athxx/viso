@@ -40,6 +40,7 @@ LANGUAGE
 TEST / DEBUG
   test        Run the project's tests: unit, UI, game
   snapshot    Take the snapshots UI scenarios take, and hold them to their goldens
+  inspect     Inspect what the running app shows: its nodes, their boxes, semantics and source
   game        Read a state of, or record input from, the game `viso run` is playing
 
 MAINTENANCE

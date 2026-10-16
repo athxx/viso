@@ -93,6 +93,7 @@ use viso_view::dev::wire::{
     RestoreBundle, RestoreReport, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint,
     ScopedReset, Stage, WindowGeometry,
 };
+use viso_view::inspect::{self, Census, CensusView};
 use viso_view::{
     GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
 };
@@ -160,6 +161,9 @@ pub(crate) struct HotReloadSession {
     /// Whether the host asked for a snapshot, taken at the next frame
     /// boundary.
     snapshot_asked: bool,
+    /// The host's questions for the app's census, answered at the next
+    /// frame boundary.
+    inspects: Vec<u32>,
     /// Whether `viso run` launched this process to restore the one before it
     /// and the restore is still to be waited for.
     awaiting_restore: bool,
@@ -873,7 +877,7 @@ impl HotReloadSession {
         if !self.receive(windows) {
             return;
         }
-        if self.snapshot_asked {
+        if self.snapshot_asked || !self.inspects.is_empty() {
             for ws in windows {
                 cx.request_redraw(ws.window);
             }
@@ -978,6 +982,10 @@ impl HotReloadSession {
                 }
                 Incoming::Snapshot => {
                     self.snapshot_asked = true;
+                    changed = true;
+                }
+                Incoming::Inspect(id) => {
+                    self.inspects.push(id);
                     changed = true;
                 }
                 // The launch window waits for it in a browser.
@@ -1107,6 +1115,55 @@ impl HotReloadSession {
         if std::mem::take(&mut self.snapshot_asked) {
             self.capture(windows);
         }
+        if !self.inspects.is_empty() {
+            let census = self.census(windows).to_bytes();
+            if let Some(link) = &mut self.link {
+                for id in std::mem::take(&mut self.inspects) {
+                    link.send_census(id, census.clone());
+                }
+            }
+        }
+    }
+
+    /// Every window's census, its nodes named by the views it mounts.
+    fn census(&self, windows: &[WindowState]) -> Census {
+        let mut census = Census::default();
+        for ws in windows {
+            let live: Vec<(&LiveView, Vec<Option<NodeId>>)> = self
+                .views
+                .iter()
+                .filter(|live| live.window == ws.window)
+                .map(|live| {
+                    let nodes = if live.nodes.is_empty() {
+                        static_nodes(&ws.store, live.root, self.files[live.file].statics)
+                    } else {
+                        live.nodes.clone()
+                    };
+                    (live, nodes)
+                })
+                .collect();
+            let hosts: Vec<Option<std::cell::Ref<'_, ViewHost>>> = live
+                .iter()
+                .map(|(live, _)| live.host.as_ref().map(|host| host.borrow()))
+                .collect();
+            let views: Vec<CensusView<'_>> = live
+                .iter()
+                .zip(&hosts)
+                .map(|((live, nodes), host)| {
+                    let entry = &self.files[live.file].entry;
+                    CensusView {
+                        file: &entry.path,
+                        source_hash: entry.source_hash,
+                        nodes,
+                        host: host.as_deref(),
+                    }
+                })
+                .collect();
+            census
+                .windows
+                .push(inspect::census(&ws.store, ws.root, &views));
+        }
+        census
     }
 
     /// The sessions the mounts of `file` run, in mount order.

@@ -120,7 +120,11 @@ pub(super) fn run(ctx: &Context<'_>, checked: &Checked, run: &Run<'_>, out: &mut
         return code;
     }
 
-    let build = match scenario::build(ctx, out) {
+    let sources = cases
+        .iter()
+        .any(|case| case.queries)
+        .then(|| checked.sources());
+    let build = match scenario::build(ctx, sources, out) {
         Ok(build) => build,
         Err(failed) => return code.max(failed),
     };

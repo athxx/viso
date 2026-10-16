@@ -37,10 +37,12 @@ use viso_dsl::frontend::Origin;
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
 use viso_dsl::hotreload::{CandidatePlan, plan_view_for, plan_view_parsed};
 use viso_dsl::i18n::{CatalogFile, CatalogIssue, Messages};
+use viso_dsl::inspect::file_sources;
 use viso_dsl::syntax::{Edit, Entry, IncrementalParse, TextRange, TextSize};
 use viso_dsl::{Diagnostic, LineIndex, Severity};
 use viso_text::font_format;
 use viso_view::dev::wire::{FileId, MAX_LINE, MAX_LINES, MountEntry, content_hash, source_hash};
+use viso_view::inspect::FileSources;
 
 /// How many of a file's latest distinct versions the session keeps, to find
 /// the one a build compiled.
@@ -402,6 +404,27 @@ impl Sources {
                 file.built = file.hash;
             }
         }
+    }
+
+    /// What each node of view `at` is in the source its mount in `mounts`
+    /// runs, shown as `name`; `None` while the session holds no compile of
+    /// that source.
+    pub fn file_sources(&self, mounts: &Mounts, at: usize, name: String) -> Option<FileSources> {
+        let view = &self.views[at];
+        let mount = mounts.views.get(&at)?;
+        let plan = mount.last_good.as_ref()?;
+        let (_, text) = view
+            .versions
+            .iter()
+            .rev()
+            .find(|&&(hash, _)| hash == mount.running)?;
+        Some(file_sources(
+            plan,
+            text,
+            view.path.to_string_lossy().into_owned(),
+            name,
+            mount.origin.module.clone(),
+        ))
     }
 
     /// Compiles the version of view `at` its mount in `mounts` runs as the

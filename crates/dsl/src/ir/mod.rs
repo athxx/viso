@@ -476,6 +476,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         // Each binding left to a runtime value, by property and value span.
         let mut bound = Vec::new();
         let own: Vec<ViewItem> = body.iter().flat_map(|b| b.members()).collect();
+        let styles = self.style_names(&type_name, &own);
         let styled = self.styled(
             &type_name,
             kind,
@@ -638,6 +639,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             handlers,
             control_reads,
             styled,
+            styles,
             role,
             live,
             children,
@@ -696,6 +698,21 @@ impl<'a, 'l> Lowering<'a, 'l> {
         })
     }
 
+    /// The names of the styles among `members`' `styles` that apply to a
+    /// node of type `type_name`, in list order.
+    fn style_names(&self, type_name: &str, members: &[ViewItem]) -> Vec<String> {
+        let Some(uses) =
+            styles_value(members).and_then(|v| style::uses(&self.library.styles, &v).ok())
+        else {
+            return Vec::new();
+        };
+        style::applying(&uses, type_name)
+            .iter()
+            .filter_map(|(_, decl)| decl.name())
+            .map(|name| name.text().trim_start_matches("r#").to_owned())
+            .collect()
+    }
+
     /// A node of the Rust-scope component `ty`, which mounts through its own
     /// `build` and so takes nothing from the fragment.
     fn rust_component(
@@ -722,6 +739,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             handlers: Vec::new(),
             control_reads: Vec::new(),
             styled: None,
+            styles: Vec::new(),
             role: None,
             live: None,
             children: Vec::new(),
@@ -1018,6 +1036,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         };
         self.instances.push(UiInstance {
             component: id,
+            name: type_name.clone(),
             origin,
             parent,
             identity,

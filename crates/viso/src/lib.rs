@@ -1717,6 +1717,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
         #[cfg(feature = "hot-reload")]
         self.hot_reload.adopt(|| cx.loop_waker(), &mut ws);
+        #[cfg(feature = "headless")]
+        self.harness.adopt(&ws);
         self.windows.push(ws);
     }
 
@@ -2371,6 +2373,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         }
                         #[cfg(feature = "hot-reload")]
                         self.hot_reload.adopt(|| cx.loop_waker(), &mut ws);
+                        #[cfg(feature = "headless")]
+                        self.harness.adopt(&ws);
                         self.windows.push(ws);
                     }
                 }
@@ -2630,7 +2634,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
                 #[cfg(feature = "headless")]
                 if let (Some(script), Some(ws)) = (&mut self.script, self.windows.first()) {
-                    script.after_frame(ws, cx);
+                    script.after_frame(ws, self.harness.mounts(), cx);
                 }
             }
             _ => {}

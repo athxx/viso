@@ -140,6 +140,11 @@ impl DevLink {
         self.write(Outgoing::Snapshot(bytes, windows, capture_us));
     }
 
+    /// Sends the census `bytes` answering the question `id`.
+    pub(crate) fn send_census(&mut self, id: u32, bytes: Vec<u8>) {
+        self.write(Outgoing::Census(id, bytes));
+    }
+
     /// The next host frame the socket delivered.
     pub(crate) fn poll(&self) -> Option<Incoming> {
         self.shared.borrow_mut().incoming.pop_front()

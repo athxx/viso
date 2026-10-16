@@ -10,6 +10,11 @@
 //! environment. Each run is handed back, in name order, as soon as the runs
 //! before it are.
 //!
+//! A scenario that finds a node by an inspector selector gets the source
+//! table of the package's views beside it, which the build writes once for
+//! every run; a case can ask its run for the census of what it showed once
+//! the scenario ends.
+//!
 //! A case may instead be a component alone: its view package goes to the run
 //! beside a scenario of one snapshot step, and the run mounts it in place of
 //! the app's view.
@@ -24,9 +29,10 @@ use std::time::{Duration, Instant};
 
 use viso_project::Target;
 use viso_view::headless::{
-    Action, FRAMES_ENV, HeadlessSurface, REPORT_ENV, Reported, SCRIPT_ENV, SNAPSHOT_ENV,
-    SURFACE_ENV, Script, VIEW_ENV, is_snapshot_name,
+    Action, CENSUS_ENV, Expectation, FRAMES_ENV, HeadlessSurface, REPORT_ENV, Reported, SCRIPT_ENV,
+    SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, Script, Selector, VIEW_ENV, is_snapshot_name,
 };
+use viso_view::inspect::SourceTable;
 
 use crate::build::cargo::ProcessTree;
 use crate::command::build::{self as build_command, Check};
@@ -53,6 +59,8 @@ const WITHHELD: &[&str] = &[
     REPORT_ENV,
     SNAPSHOT_ENV,
     VIEW_ENV,
+    SOURCES_ENV,
+    CENSUS_ENV,
 ];
 
 /// The name of the file a played scenario is written to when it differs
@@ -61,6 +69,13 @@ const PLAYED: &str = "scenario.tape";
 
 /// The name of the file a component's view package is written to.
 const VIEW: &str = "view.pkg";
+
+/// The name of the file the source table is written to, in the directory of
+/// every run.
+const SOURCES: &str = "sources.bin";
+
+/// The name of the file a run writes its census to.
+const CENSUS: &str = "census.bin";
 
 /// Why no scenario was planned.
 pub(super) enum Unplanned {
@@ -133,6 +148,10 @@ pub(super) struct Case {
     /// Whether it is played with a snapshot of its end, named after it,
     /// appended.
     pub ends_in_snapshot: bool,
+    /// Whether a step finds its node by an inspector selector.
+    pub queries: bool,
+    /// Whether its run writes its census once the scenario ends.
+    pub census: bool,
     pub kind: Kind,
 }
 
@@ -140,6 +159,8 @@ pub(super) struct Case {
 pub(super) enum Kind {
     /// The scenario at the case's path.
     Scenario,
+    /// Nothing: the app as it settles.
+    Bare,
     /// A component alone: its module path and name, the view package
     /// mounting it, and the line of its declaration, which every report
     /// about it points at.
@@ -175,6 +196,20 @@ impl Case {
             .collect();
         let ends_in_snapshot =
             snapshots.is_empty() && is_snapshot_name(&name) && end_snapshot(&name);
+        let queries = script.steps.iter().any(|step| {
+            let selector = match &step.action {
+                Action::Click(selector)
+                | Action::Hover(selector)
+                | Action::Scroll(selector, ..) => selector,
+                Action::Expect(
+                    Expectation::Shown(selector)
+                    | Expectation::Absent(selector)
+                    | Expectation::State(selector, _),
+                ) => selector,
+                _ => return false,
+            };
+            matches!(selector, Selector::Query(_))
+        });
         if ends_in_snapshot {
             let line = text.lines().count() as u32 + 1;
             snapshots.push((name.clone(), line));
@@ -186,6 +221,8 @@ impl Case {
             text,
             snapshots,
             ends_in_snapshot,
+            queries,
+            census: false,
             kind: Kind::Scenario,
         })
     }
@@ -207,11 +244,29 @@ impl Case {
             text,
             surface,
             ends_in_snapshot: true,
+            queries: false,
+            census: false,
             kind: Kind::Component {
                 path: component,
                 view,
                 line,
             },
+        }
+    }
+
+    /// The case that plays nothing, named `name`: the app at `surface` as it
+    /// settles.
+    pub fn bare(name: String, surface: HeadlessSurface) -> Case {
+        Case {
+            name,
+            path: PathBuf::new(),
+            text: String::new(),
+            surface,
+            snapshots: Vec::new(),
+            ends_in_snapshot: false,
+            queries: false,
+            census: false,
+            kind: Kind::Bare,
         }
     }
 
@@ -279,6 +334,11 @@ impl Played {
         self.dir.join("snapshots")
     }
 
+    /// Where the run wrote its census, when its case asked for one.
+    pub fn census(&self) -> PathBuf {
+        self.dir.join(CENSUS)
+    }
+
     /// Removes the run's directory.
     pub fn discard(&self) {
         let _ = fs::remove_dir_all(&self.dir);
@@ -290,17 +350,24 @@ pub(super) struct Build {
     exe: PathBuf,
     /// Where each run gets its directory.
     work: PathBuf,
+    /// The source table handed to every run, when a case selects by it.
+    sources: Option<PathBuf>,
     /// The build's identity and profile.
     pub build_id: String,
     pub profile: &'static str,
 }
 
-/// Builds the app headless for `cases`.
+/// Builds the app headless for `cases`, handing every run `sources` when
+/// given.
 ///
 /// # Errors
 ///
 /// The exit code of the failed build, reported.
-pub(super) fn build(ctx: &Context<'_>, out: &mut Output) -> Result<Build, u8> {
+pub(super) fn build(
+    ctx: &Context<'_>,
+    sources: Option<SourceTable>,
+    out: &mut Output,
+) -> Result<Build, u8> {
     let built = build_command::stage(ctx, Target::Headless, None, Check::Done, out)?;
     let Some(exe) = built
         .staged
@@ -315,13 +382,31 @@ pub(super) fn build(ctx: &Context<'_>, out: &mut Output) -> Result<Build, u8> {
             &[],
         ));
     };
+    let work = built
+        .layout
+        .tests()
+        .join(std::process::id().to_string())
+        .join("ui");
+    let sources = match sources {
+        Some(table) => {
+            let path = work.join(SOURCES);
+            let written =
+                fs::create_dir_all(&work).and_then(|()| fs::write(&path, table.to_bytes()));
+            if let Err(error) = written {
+                return Err(out.failure(
+                    RUN_TEST_CRASHED,
+                    &format!("cannot write `{}`: {error}", path.display()),
+                    &[],
+                ));
+            }
+            Some(path)
+        }
+        None => None,
+    };
     Ok(Build {
         exe,
-        work: built
-            .layout
-            .tests()
-            .join(std::process::id().to_string())
-            .join("ui"),
+        work,
+        sources,
         build_id: built.build_id,
         profile: built.profile.as_str(),
     })
@@ -359,13 +444,19 @@ pub(super) fn play(
         .map(|_| {
             let (tx, queue, cases, stopped) =
                 (tx.clone(), queue.clone(), cases.clone(), stopped.clone());
-            let (exe, work) = (build.exe.clone(), build.work.clone());
+            let (exe, work, sources) =
+                (build.exe.clone(), build.work.clone(), build.sources.clone());
             thread::spawn(move || {
                 loop {
                     let Some(index) = queue.lock().unwrap().next() else {
                         break;
                     };
-                    let played = run(&exe, &work, index, &cases[index], &stopped);
+                    let at = Launch {
+                        exe: &exe,
+                        work: &work,
+                        sources: sources.as_deref(),
+                    };
+                    let played = run(&at, index, &cases[index], &stopped);
                     if tx.send(played).is_err() {
                         break;
                     }
@@ -403,6 +494,9 @@ pub(super) fn play(
     for worker in workers {
         let _ = worker.join();
     }
+    if let Some(sources) = &build.sources {
+        let _ = fs::remove_file(sources);
+    }
     let _ = fs::remove_dir(&build.work);
     if let Some(parent) = build.work.parent() {
         let _ = fs::remove_dir(parent);
@@ -413,10 +507,18 @@ pub(super) fn play(
     code
 }
 
-/// Plays `case` in a run of `exe` in a fresh directory under `work`.
-fn run(exe: &Path, work: &Path, index: usize, case: &Case, stop: &Mutex<bool>) -> Played {
-    let started = Instant::now();
-    let dir = work.join(&case.name);
+/// Where runs are launched from: the executable, the directory each run
+/// gets its own under, and the source table they are handed.
+struct Launch<'a> {
+    exe: &'a Path,
+    work: &'a Path,
+    sources: Option<&'a Path>,
+}
+
+/// Plays `case` in a run of the build in a fresh directory of its own.
+fn run(at: &Launch<'_>, index: usize, case: &Case, stop: &Mutex<bool>) -> Played {
+    let (exe, started) = (at.exe, Instant::now());
+    let dir = at.work.join(&case.name);
     let played = |ended, output, shots| Played {
         index,
         ended,
@@ -451,6 +553,7 @@ fn run(exe: &Path, work: &Path, index: usize, case: &Case, stop: &Mutex<bool>) -
     let end = format!("expect snapshot \"{}\"\n", case.name);
     let script = match &case.kind {
         Kind::Component { .. } => Some(end),
+        Kind::Bare => Some(String::new()),
         Kind::Scenario if case.ends_in_snapshot => {
             let mut text = case.text.clone();
             if !text.is_empty() && !text.ends_with('\n') {
@@ -463,7 +566,7 @@ fn run(exe: &Path, work: &Path, index: usize, case: &Case, stop: &Mutex<bool>) -
     };
     let view = match &case.kind {
         Kind::Component { view, .. } => Some((dir.join(VIEW), view.as_slice())),
-        Kind::Scenario => None,
+        Kind::Scenario | Kind::Bare => None,
     };
     let script = script.map(|text| (dir.join(PLAYED), text));
     let written = [
@@ -492,6 +595,12 @@ fn run(exe: &Path, work: &Path, index: usize, case: &Case, stop: &Mutex<bool>) -
     }
     if let Some((path, _)) = &view {
         command.env(VIEW_ENV, path);
+    }
+    if let Some(sources) = at.sources {
+        command.env(SOURCES_ENV, sources);
+    }
+    if case.census {
+        command.env(CENSUS_ENV, dir.join(CENSUS));
     }
     command
         .env(SURFACE_ENV, case.surface.to_env())

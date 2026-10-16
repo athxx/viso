@@ -119,6 +119,9 @@ pub enum Command {
     /// Read a state of, or record input from, the game `viso run` is playing.
     #[command(subcommand)]
     Game(GameCommand),
+    /// Inspect what the running app shows: its nodes, their boxes, semantics and source.
+    #[command(subcommand)]
+    Inspect(InspectCommand),
     /// Manage the iOS Simulator profiles `viso run ios` runs on.
     #[command(subcommand)]
     Ios(IosCommand),
@@ -424,6 +427,68 @@ pub struct DeviceArgs {
     /// The profile ID.
     #[arg(add = ArgValueCandidates::new(complete::device_ids))]
     pub id: String,
+}
+
+/// What `viso inspect` looks at.
+#[derive(Debug, Subcommand)]
+pub enum InspectCommand {
+    /// Find the nodes a selector selects, with their box, semantics and the
+    /// source that declares them.
+    Query(QueryArgs),
+}
+
+/// What `viso inspect query` selects, and in which app.
+#[derive(Debug, Args)]
+pub struct QueryArgs {
+    /// The selector: a type (`Button`, a component), `#name`, `.Style`,
+    /// `[attribute]` or `[attribute=value]`, joined by a space (descendant)
+    /// or `>` (child); several separated by `,`.
+    #[arg(value_name = "SELECTOR")]
+    pub selector: String,
+    /// The app to inspect: the `viso run` session on this machine when
+    /// omitted, the session of a target, or `headless`, a headless run of
+    /// the app built for it.
+    #[arg(long, value_enum)]
+    pub target: Option<InspectTarget>,
+    /// The simulator or emulator profile of the session (`ios` and
+    /// `android` only): the only session of the target when omitted.
+    #[arg(long, value_name = "ID", add = ArgValueCandidates::new(complete::device_ids))]
+    pub device: Option<String>,
+    /// The UI scenario a headless run plays before it is inspected, by its
+    /// name under `tests/ui/` (`--target headless` only).
+    #[arg(long, value_name = "NAME")]
+    pub scenario: Option<String>,
+}
+
+/// The apps `viso inspect` inspects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum InspectTarget {
+    /// A headless run, built and played for the inspection.
+    Headless,
+    /// The session's iOS Simulator.
+    Ios,
+    /// The session's Android Emulator.
+    Android,
+    /// The session's browser page, on WebGPU.
+    WebGpu,
+    /// The session's browser page, DOM output.
+    WebDom,
+    /// The session's browser page, DOM with WebGPU islands.
+    WebHybrid,
+}
+
+impl InspectTarget {
+    pub fn target(self) -> viso_project::Target {
+        use viso_project::Target;
+        match self {
+            InspectTarget::Headless => Target::Headless,
+            InspectTarget::Ios => Target::Ios,
+            InspectTarget::Android => Target::Android,
+            InspectTarget::WebGpu => Target::WebGpu,
+            InspectTarget::WebDom => Target::WebDom,
+            InspectTarget::WebHybrid => Target::WebHybrid,
+        }
+    }
 }
 
 /// What `viso game` does with a running game.
@@ -845,6 +910,7 @@ impl Command {
             Command::Config(ConfigCommand::Validate) => "config validate",
             Command::Game(GameCommand::Peek(_)) => "game peek",
             Command::Game(GameCommand::Record(_)) => "game record",
+            Command::Inspect(InspectCommand::Query(_)) => "inspect query",
             Command::Ios(IosCommand::Simulator(command)) => match command {
                 DeviceCommand::List => "ios simulator list",
                 DeviceCommand::Create(_) => "ios simulator create",

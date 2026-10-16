@@ -1,13 +1,15 @@
 //! The control endpoint of `viso run`: a loopback
 //! listener, named with its token in the dev session's lock, through which
-//! `viso game peek` and `viso game record` ask the running app about a game.
+//! `viso game peek` and `viso game record` ask the running app about a game
+//! and `viso inspect` for what it shows.
 //!
 //! A control connection sends one [`ControlRequest`] — the session's control
-//! token, the game by its `.vs` file and the question — and reads one
-//! [`ControlReply`]. A wrong token is dropped unanswered. The session relays
-//! the question to the runtime over the dev channel and answers the
-//! connection when the runtime does: a peek at the next frame, a recording
-//! once the game ran the ticks asked for.
+//! token and the question: about a game, named by its `.vs` file, or for the
+//! app's census — and reads one [`ControlReply`]. A wrong token is dropped
+//! unanswered. The session relays the question to the runtime over the dev
+//! channel and answers the connection when the runtime does: a peek and a
+//! census at the next frame, a recording once the game ran the ticks asked
+//! for.
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -43,15 +45,23 @@ pub const GAME_BUSY: &str = error::GAME_BUSY.name;
 pub const GAME_ENDED: &str = error::GAME_ENDED.name;
 pub const GAME_FAULT: &str = error::GAME_FAULT.name;
 pub const GAME_ANSWER_INVALID: &str = error::GAME_ANSWER_INVALID.name;
+pub const INSPECT_ANSWER_INVALID: &str = error::INSPECT_ANSWER_INVALID.name;
 
 /// What a control connection asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlRequest {
     pub token: String,
-    /// The game, by its `.vs` file: a path from the project root, with or
+    pub ask: ControlAsk,
+}
+
+/// The question.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlAsk {
+    /// About the game of a `.vs` file: a path from the project root, with or
     /// without the extension, or the file's stem.
-    pub game: String,
-    pub ask: GameAsk,
+    Game { game: String, ask: GameAsk },
+    /// For what the app shows.
+    Inspect,
 }
 
 /// The session's answer.
@@ -67,6 +77,9 @@ pub enum ControlReply {
     },
     /// The recorded tape, binary.
     Tape { file: String, tape: Vec<u8> },
+    /// The app's census and the table of the views it mounts, each in its
+    /// wire form.
+    Inspected { census: Vec<u8>, sources: Vec<u8> },
     /// Why there is no answer: a code of this module and what to tell the
     /// developer.
     Refused {
@@ -90,8 +103,7 @@ impl ControlReply {
 /// A request a control connection delivered, and where its answer goes.
 #[derive(Debug)]
 pub struct ControlCall {
-    pub game: String,
-    pub ask: GameAsk,
+    pub ask: ControlAsk,
     pub reply: Sender<ControlReply>,
 }
 
@@ -161,8 +173,11 @@ fn serve(mut stream: TcpStream, token: &str, deliver: &dyn Fn(ControlCall) -> bo
         _ => return,
     };
     let (reply, answer) = mpsc::channel();
+    let ended = match request.ask {
+        ControlAsk::Game { .. } => GAME_NOT_RUNNING,
+        ControlAsk::Inspect => ENV_NO_DEV_SESSION,
+    };
     let call = ControlCall {
-        game: request.game,
         ask: request.ask,
         reply,
     };
@@ -171,21 +186,20 @@ fn serve(mut stream: TcpStream, token: &str, deliver: &dyn Fn(ControlCall) -> bo
     } else {
         None
     };
-    let reply =
-        reply.unwrap_or_else(|| ControlReply::refused(GAME_NOT_RUNNING, "`viso run` ended"));
+    let reply = reply
+        .unwrap_or_else(|| ControlReply::refused(ended, "`viso run` ended, or the app left it"));
     let _ = write_frame(&mut stream, &reply);
 }
 
 /// Asks the session at `endpoint` (`<address> <token>`, as its lock names
-/// it) about `game`, waiting `wait` for the answer, or as long as it takes.
+/// it) `ask`, waiting `wait` for the answer, or as long as it takes.
 ///
 /// # Errors
 ///
 /// When the session cannot be reached or does not answer: the message.
 pub fn call(
     endpoint: &str,
-    game: &str,
-    ask: GameAsk,
+    ask: ControlAsk,
     wait: Option<Duration>,
 ) -> Result<ControlReply, String> {
     let (address, token) = endpoint
@@ -201,7 +215,6 @@ pub fn call(
     let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).map_err(unreachable)?;
     let request = ControlRequest {
         token: token.to_owned(),
-        game: game.to_owned(),
         ask,
     };
     write_frame(&mut stream, &request).map_err(unreachable)?;
@@ -236,8 +249,11 @@ impl Message for ControlRequest {
     fn write(&self, enc: &mut Encoder) {
         enc.write_u16(DEV_PROTOCOL_VERSION);
         write_string(enc, &self.token);
-        write_string(enc, &self.game);
-        match &self.ask {
+        let (game, ask) = match &self.ask {
+            ControlAsk::Inspect => return enc.write_u8(3),
+            ControlAsk::Game { game, ask } => (game, ask),
+        };
+        match ask {
             GameAsk::Peek { system, state } => {
                 enc.write_u8(0);
                 write_string(enc, system);
@@ -256,6 +272,7 @@ impl Message for ControlRequest {
                 enc.write_varint(*n);
             }
         }
+        write_string(enc, game);
     }
 
     fn read(dec: &mut Decoder<'_>) -> Result<Self, WireError> {
@@ -264,7 +281,6 @@ impl Message for ControlRequest {
             return Err(WireError::Version { peer: version });
         }
         let token = read_string(dec, "control token")?;
-        let game = read_string(dec, "game name")?;
         let ask = match dec.read_u8()? {
             0 => GameAsk::Peek {
                 system: read_string(dec, "system name")?,
@@ -283,9 +299,19 @@ impl Message for ControlRequest {
             2 => GameAsk::Record {
                 span: RecordSpan::Millis(dec.read_varint()?),
             },
+            3 => {
+                return Ok(ControlRequest {
+                    token,
+                    ask: ControlAsk::Inspect,
+                });
+            }
             _ => return Err(malformed(dec)),
         };
-        Ok(ControlRequest { token, game, ask })
+        let game = read_string(dec, "game name")?;
+        Ok(ControlRequest {
+            token,
+            ask: ControlAsk::Game { game, ask },
+        })
     }
 }
 
@@ -308,6 +334,11 @@ impl Message for ControlReply {
                 enc.write_u8(1);
                 write_string(enc, file);
                 enc.write_bytes(tape);
+            }
+            ControlReply::Inspected { census, sources } => {
+                enc.write_u8(3);
+                enc.write_bytes(census);
+                enc.write_bytes(sources);
             }
             ControlReply::Refused {
                 code,
@@ -353,6 +384,10 @@ impl Message for ControlReply {
                     notes,
                 }
             }
+            3 => ControlReply::Inspected {
+                census: dec.read_bytes()?.to_vec(),
+                sources: dec.read_bytes()?.to_vec(),
+            },
             _ => return Err(malformed(dec)),
         })
     }
@@ -377,10 +412,12 @@ mod tests {
         let caller = thread::spawn(move || {
             call(
                 &endpoint,
-                "movement",
-                GameAsk::Peek {
-                    system: "Player".into(),
-                    state: "score".into(),
+                ControlAsk::Game {
+                    game: "movement".into(),
+                    ask: GameAsk::Peek {
+                        system: "Player".into(),
+                        state: "score".into(),
+                    },
                 },
                 Some(Duration::from_secs(10)),
             )
@@ -392,7 +429,7 @@ mod tests {
                 break call;
             }
         };
-        assert_eq!(call.game, "movement");
+        assert!(matches!(&call.ask, ControlAsk::Game { game, .. } if game == "movement"));
         let state = ControlReply::State {
             file: "src/movement.vs".into(),
             json: "{\"x\":1}".into(),
@@ -411,7 +448,11 @@ mod tests {
         let ask = GameAsk::Record {
             span: RecordSpan::Ticks(60),
         };
-        let caller = thread::spawn(move || call(&endpoint, "movement", ask, None));
+        let ask = ControlAsk::Game {
+            game: "movement".into(),
+            ask,
+        };
+        let caller = thread::spawn(move || call(&endpoint, ask, None));
         let mut threads = Vec::new();
         while threads.is_empty() {
             control.accept(&deliver, &mut threads);
@@ -428,7 +469,11 @@ mod tests {
         let ask = GameAsk::Record {
             span: RecordSpan::Millis(1000),
         };
-        let caller = thread::spawn(move || call(&endpoint, "game", ask, None));
+        let ask = ControlAsk::Game {
+            game: "game".into(),
+            ask,
+        };
+        let caller = thread::spawn(move || call(&endpoint, ask, None));
         let mut threads = Vec::new();
         let call = loop {
             control.accept(&deliver, &mut threads);
@@ -448,11 +493,17 @@ mod tests {
         let bodies = [
             viso_view::dev::wire::encode(&ControlRequest {
                 token: "t".into(),
-                game: "src/a.vs".into(),
-                ask: GameAsk::Peek {
-                    system: "S".into(),
-                    state: "s".into(),
+                ask: ControlAsk::Game {
+                    game: "src/a.vs".into(),
+                    ask: GameAsk::Peek {
+                        system: "S".into(),
+                        state: "s".into(),
+                    },
                 },
+            }),
+            viso_view::dev::wire::encode(&ControlReply::Inspected {
+                census: vec![1, 2],
+                sources: vec![3],
             }),
             viso_view::dev::wire::encode(&ControlReply::Refused {
                 code: GAME_BUSY.into(),
@@ -495,18 +546,26 @@ mod tests {
         for request in [
             ControlRequest {
                 token: "t".into(),
-                game: "src/a.vs".into(),
-                ask: GameAsk::Peek {
-                    system: "S".into(),
-                    state: "s".into(),
+                ask: ControlAsk::Game {
+                    game: "src/a.vs".into(),
+                    ask: GameAsk::Peek {
+                        system: "S".into(),
+                        state: "s".into(),
+                    },
                 },
             },
             ControlRequest {
                 token: "t".into(),
-                game: "a".into(),
-                ask: GameAsk::Record {
-                    span: RecordSpan::Millis(5),
+                ask: ControlAsk::Game {
+                    game: "a".into(),
+                    ask: GameAsk::Record {
+                        span: RecordSpan::Millis(5),
+                    },
                 },
+            },
+            ControlRequest {
+                token: "t".into(),
+                ask: ControlAsk::Inspect,
             },
         ] {
             let body = viso_view::dev::wire::encode(&request);
@@ -516,6 +575,10 @@ mod tests {
             ControlReply::Tape {
                 file: "a.vs".into(),
                 tape: vec![1, 2, 3],
+            },
+            ControlReply::Inspected {
+                census: vec![1, 2],
+                sources: Vec::new(),
             },
             ControlReply::Refused {
                 code: GAME_BUSY.into(),
@@ -528,10 +591,7 @@ mod tests {
         }
         let long = ControlRequest {
             token: "t".repeat(MAX_FIELD + 1),
-            game: "a".into(),
-            ask: GameAsk::Record {
-                span: RecordSpan::Ticks(1),
-            },
+            ask: ControlAsk::Inspect,
         };
         assert_eq!(
             ControlRequest::from_frame(&viso_view::dev::wire::encode(&long)),

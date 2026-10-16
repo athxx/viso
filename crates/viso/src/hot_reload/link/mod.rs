@@ -87,6 +87,8 @@ pub(crate) enum Incoming {
     Game(GameQuery),
     /// The host asks for the app's snapshot.
     Snapshot,
+    /// The host asks for the app's census, for its question `id`.
+    Inspect(u32),
     /// The state to restore, and the bytes of its snapshot, `None` when they
     /// did not arrive whole.
     Restore(Box<RestoreBundle>, Option<Arc<[u8]>>),
@@ -100,6 +102,9 @@ enum Outgoing {
     /// A snapshot's bytes, its windows and how long capturing them took,
     /// written as blob chunks and the message naming them.
     Snapshot(Vec<u8>, Vec<WindowGeometry>, u64),
+    /// A census's bytes, answering the question `id`, written as blob
+    /// chunks and the message naming them.
+    Census(u32, Vec<u8>),
 }
 
 /// An asset a patch names, as its blob decoded.
@@ -193,6 +198,7 @@ fn host_frame(body: &[u8], blobs: &mut Blobs) -> Frame {
         Ok(HostMessage::Failure { file, lines }) => Incoming::Failure { file, lines },
         Ok(HostMessage::Game(query)) => Incoming::Game(query),
         Ok(HostMessage::Snapshot) => Incoming::Snapshot,
+        Ok(HostMessage::Inspect { id }) => Incoming::Inspect(id),
         Ok(HostMessage::Restore(restore)) => {
             let snapshot = blobs.take(restore.snapshot);
             blobs.clear();
@@ -219,6 +225,15 @@ fn write_outgoing<E>(
                 blob: BlobRef::of(&bytes),
                 windows,
                 capture_us,
+            })
+        }
+        Outgoing::Census(id, bytes) => {
+            for chunk in blob_chunks(&bytes) {
+                write(&RuntimeMessage::Blob(chunk))?;
+            }
+            write(&RuntimeMessage::Inspect {
+                id,
+                census: BlobRef::of(&bytes),
             })
         }
     }
@@ -317,6 +332,14 @@ impl DevLink {
     ) {
         if let Some(outgoing) = &self.outgoing {
             let _ = outgoing.send(Outgoing::Snapshot(bytes, windows, capture_us));
+        }
+    }
+
+    /// Hands the writer the census `bytes` answering the question `id`:
+    /// never dropped, so this waits while the queue is full.
+    pub(crate) fn send_census(&mut self, id: u32, bytes: Vec<u8>) {
+        if let Some(outgoing) = &self.outgoing {
+            let _ = outgoing.send(Outgoing::Census(id, bytes));
         }
     }
 

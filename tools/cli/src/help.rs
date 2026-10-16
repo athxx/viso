@@ -20,7 +20,7 @@ const GROUPS: &[(&str, &[&str])] = &[
         "LANGUAGE",
         &["fmt", "check", "schema", "explain", "dump", "lsp"],
     ),
-    ("TEST / DEBUG", &["test", "snapshot", "game"]),
+    ("TEST / DEBUG", &["test", "snapshot", "inspect", "game"]),
     ("DELIVERY", &[]),
     ("MAINTENANCE", &["clean", "completion"]),
 ];
@@ -284,6 +284,36 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "inspect",
+        &[
+            (
+                "viso inspect query '#save'",
+                "the node named `save` in the running app",
+            ),
+            (
+                "viso inspect query 'Button' --target headless --json",
+                "every button of a headless run, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "inspect query",
+        &[
+            (
+                "viso inspect query '#save'",
+                "a node by its name, in the `viso run` session",
+            ),
+            (
+                "viso inspect query '[role=check_box][checked]' --json",
+                "the checked check boxes, as JSON events",
+            ),
+            (
+                "viso inspect query 'Toolbar>Text' --target headless --scenario login",
+                "the texts right under a toolbar, after the `login` scenario",
+            ),
+        ],
+    ),
+    (
         "ios",
         &[
             ("viso ios simulator list", "list the simulator profiles"),
@@ -543,6 +573,20 @@ const NOTES: &[(&str, &str)] = &[
     (
         "game",
         "Both ask the app of this project's running `viso run` session: start one first.",
+    ),
+    (
+        "inspect",
+        "It asks the app of this project's running `viso run` session, or a headless run\n\
+         of it with `--target headless`.",
+    ),
+    (
+        "inspect query",
+        "Attributes: role, label, hint, value, checked, selected, expanded, focused,\n\
+         focusable, shown, kind. `[checked]` alone holds of a checked node, `[label]` of\n\
+         one with a label; a value is a name, a number or a quoted string. A type matches\n\
+         a widget of that type or the root node of that component (`module::Component`\n\
+         by its module). No match is not an error. The selector's syntax errors exit 2; no\n\
+         session exits 3.",
     ),
     (
         "ios",

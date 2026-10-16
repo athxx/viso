@@ -381,6 +381,19 @@ codes! {
         commands: ["viso dump --help"],
     }
 
+    INSPECT_SELECTOR = USAGE {
+        summary: "The selector `viso inspect query` is given does not parse.",
+        explanation: "A selector is one or more comma-separated chains of compounds — a type, `#name`, `.Style`, `[attribute]` or `[attribute=value]` — joined by a space (descendant) or `>` (child); the one given breaks that grammar or names an attribute there is none of.",
+        fix: "Correct the selector at the byte the diagnostic points at; `viso inspect query --help` lists the grammar and the attributes.",
+        commands: ["viso inspect query --help"],
+    }
+    INSPECT_ANSWER_INVALID = INTERNAL {
+        summary: "The app's inspection did not arrive whole or did not decode.",
+        explanation: "The census the app sent, or the table of its views, is not one this CLI reads: the CLI and the app speak different protocol versions, the tree outgrew a dev frame, or the run failed while writing it.",
+        fix: "Rebuild and restart the app with the same Viso version as the CLI.",
+        commands: ["viso run"],
+    }
+
     GAME_NOT_RUNNING = ENVIRONMENT {
         summary: "No mounted view of the named file runs a game.",
         explanation: "The game command addresses a running game by the file that declares it, and no view mounted from that file in the dev session runs one.",
@@ -451,6 +464,7 @@ mod tests {
                 // Device and game codes are about one subject and fail in
                 // more than one way.
                 "NEW" => &[USAGE, ENVIRONMENT, INTERNAL],
+                "INSPECT" => &[USAGE, INTERNAL],
                 "DEVICE" | "GAME" => &[DIAGNOSTICS, USAGE, ENVIRONMENT, RUNTIME, INTERNAL],
                 other => panic!("`{}` has no known prefix `{other}`", code.name),
             };

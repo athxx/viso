@@ -284,6 +284,8 @@ DEVICE_ID_INVALID       A profile ID that is not one.
 DEVICE_EXISTS           A profile of that ID exists already.
 DEVICE_SYSTEM           No installed system image or runtime fits the profile.
 DUMP_INPUT              The file `viso dump` is given is not a `.vs` source of the project.
+INSPECT_SELECTOR        The selector `viso inspect query` is given does not parse.
+INSPECT_ANSWER_INVALID  The app's inspection did not arrive whole or did not decode.
 GAME_NOT_RUNNING        No mounted view of the named file runs a game.
 GAME_AMBIGUOUS          The game's name matches more than one mounted view.
 GAME_UNKNOWN_STATE      The game has no such system or state.

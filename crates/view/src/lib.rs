@@ -30,7 +30,8 @@ mod env;
 mod game;
 pub mod headless;
 mod host;
-#[cfg(feature = "hot-reload")]
+pub mod inspect;
+#[cfg(feature = "inspect")]
 mod mounts;
 mod package;
 mod persistence;
@@ -57,7 +58,7 @@ pub use game::{
     describe_fault, game_session, install_game_audio, mount_game, take_game_faults,
 };
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
-#[cfg(feature = "hot-reload")]
+#[cfg(feature = "inspect")]
 pub use mounts::{__mounted_view, MountRecord, take_mounts};
 pub use package::{
     LoadedView, ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewLoadError, ViewPackage,
@@ -89,8 +90,8 @@ pub mod persist {
     };
 }
 
-/// Records nothing: the build has no development session to hand mounts to.
-#[cfg(not(feature = "hot-reload"))]
+/// Records nothing: the build has no tool to hand mounts to.
+#[cfg(not(feature = "inspect"))]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __record_mount {

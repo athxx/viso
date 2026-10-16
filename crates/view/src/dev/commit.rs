@@ -69,6 +69,7 @@ use crate::attach::{Route, attach_node};
 use crate::control::Control;
 use crate::effects::{mount_effects, release_effects};
 use crate::host::{HostError, ViewHost, cell_value, vm_value};
+pub use crate::inspect::static_nodes;
 use crate::regions::{ItemKey, mount_regions};
 use crate::scope::Scope;
 use crate::tasks::release_tasks;
@@ -226,43 +227,6 @@ pub struct LiveRuntime<'a> {
     /// The host the view's handlers dispatch into, `None` while the view
     /// declares none. The commit creates, reloads or drops it.
     pub view: &'a mut Option<Rc<RefCell<ViewHost>>>,
-}
-
-/// The static nodes of a view without regions mounted at `root`, by static
-/// index: the live tree walked in pre-order with `shape`, the number of
-/// static children of each static node in pre-order. A view's static
-/// children are exactly a container's live children; a node that authors no
-/// children (a leaf, a `VirtualList` mounting its own items) has none.
-pub fn static_nodes(store: &NodeStore, root: NodeId, shape: &[u32]) -> Vec<Option<NodeId>> {
-    let mut out = vec![None; shape.len()];
-    let mut cursor = 0;
-    while cursor < shape.len() {
-        let live = (cursor == 0).then_some(root);
-        walk_static(store, shape, live, &mut cursor, &mut out);
-    }
-    out
-}
-
-fn walk_static(
-    store: &NodeStore,
-    shape: &[u32],
-    live: Option<NodeId>,
-    cursor: &mut usize,
-    out: &mut [Option<NodeId>],
-) {
-    let index = *cursor;
-    *cursor += 1;
-    out[index] = live;
-    let links = |id: NodeId| store.arena().links(id);
-    let mut child = live.and_then(|id| links(id)?.first_child);
-    for _ in 0..shape[index] {
-        if *cursor >= shape.len() {
-            return;
-        }
-        let at = child;
-        child = at.and_then(|id| links(id)?.next_sibling);
-        walk_static(store, shape, at, cursor, out);
-    }
 }
 
 /// Commits `candidate` to the mount `rt` by `plan`, and reports what it kept

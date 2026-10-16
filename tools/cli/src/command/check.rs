@@ -18,14 +18,18 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use viso_dsl::frontend::Origin;
 use viso_dsl::hir::{CapabilitySet, CollisionDelivery, Determinism, InputDevices, TargetProfile};
+use viso_dsl::hotreload::plan_view_for;
 use viso_dsl::i18n::{CatalogIssue, Messages};
+use viso_dsl::inspect::file_sources;
 use viso_dsl::package::{LoadedPackage, PackageManifest, load_package};
 use viso_dsl::{Diagnostic, TextRange, TextSize};
 use viso_package::android::Sdk;
 use viso_project::{
     ArtifactKind, DevRuntime, GameDeterminism, Project, ResolvedConfig, Span, Target,
 };
+use viso_view::inspect::SourceTable;
 
 use crate::args::{BuildTarget, CheckArgs, Strictness};
 use crate::build;
@@ -308,6 +312,59 @@ pub(super) struct Checked {
 }
 
 impl Checked {
+    /// The profile the app's views compile under: its grants, catalogs and
+    /// assets.
+    pub fn view_profile(&self) -> TargetProfile {
+        TargetProfile {
+            capabilities: self.profile.capabilities.clone(),
+            messages: self.profile.messages.clone(),
+            assets: self.profile.assets.clone(),
+            ..TargetProfile::default()
+        }
+    }
+
+    /// The language edition the package declares.
+    pub fn language(&self) -> Option<String> {
+        let language = self.project.manifest.package.language.as_ref();
+        language.map(|language| language.value.clone())
+    }
+
+    /// What the nodes of every view the package can mount are in their
+    /// source: each file compiled as a `view!` of it mounts it, keyed by the
+    /// canonical path a build records. A file with nothing to mount is left
+    /// out.
+    pub fn sources(&self) -> SourceTable {
+        let profile = self.view_profile();
+        let files = self
+            .package
+            .files
+            .iter()
+            .filter_map(|file| {
+                let origin = Origin {
+                    package: self.name.clone(),
+                    module: file.module.clone(),
+                    language: self.language(),
+                };
+                let plan = plan_view_for(&file.source, &origin, profile.clone()).ok()?;
+                let canonical = file
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| file.path.clone());
+                let shown = crate::output::Source::new(&file.path, &self.project.root, "")
+                    .name()
+                    .to_owned();
+                Some(file_sources(
+                    &plan,
+                    &file.source,
+                    canonical.to_string_lossy().into_owned(),
+                    shown,
+                    file.module.clone(),
+                ))
+            })
+            .collect();
+        SourceTable { files }
+    }
+
     /// The exit code of the check: a source that could not be read leaves it
     /// incomplete, an environment failure whatever the rest of the package
     /// says.
