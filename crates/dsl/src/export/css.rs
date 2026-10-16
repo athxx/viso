@@ -1,4 +1,4 @@
-//! CSS for an HTML export: the theme as custom properties, a rule per
+//! CSS for an export: the theme as custom properties, a rule per
 //! distinct set of declarations, and the values a view's lengths, colors and
 //! timings take in CSS.
 

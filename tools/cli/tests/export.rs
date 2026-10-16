@@ -227,6 +227,48 @@ fn a_message_translates_on_the_page() {
             .contains(">Click me</button>")
     );
     let script = s.read("dist-html/app.js");
-    assert!(script.contains("const L = \"en\";"), "{script}");
+    assert!(script.contains("const T = { L: \"en\", M: ["), "{script}");
     assert!(script.contains("{ one: [[2], \" click\"] }"), "{script}");
+}
+
+#[test]
+fn a_solid_export_is_a_project_whose_installs_survive_the_next_one() {
+    let s = counter("solid");
+    let out = viso(&s.0, &["export", "solid", "--json"]);
+    let json = stdout(&out);
+    assert_eq!(code(&out), 0, "{json}{}", stderr(&out));
+    assert!(
+        json.contains("\"kind\":\"export-dir\"")
+            && json.contains("\"path\":\"web-solid\"")
+            && json.contains("\"target\":\"solid\""),
+        "{json}"
+    );
+    let component = s.read("web-solid/src/components/App.tsx");
+    assert!(
+        component.contains("export default function App("),
+        "{component}"
+    );
+    assert!(component.contains("{\"Count\"}"), "{component}");
+    assert!(
+        s.read("web-solid/package.json")
+            .contains("\"vite-plugin-solid\"")
+    );
+
+    // What the package manager and the bundler write stays.
+    s.write("web-solid/node_modules/solid-js/package.json", "{}")
+        .write("web-solid/package-lock.json", "{}")
+        .write("web-solid/dist/index.html", "built");
+    let again = viso(&s.0, &["export", "solid"]);
+    assert_eq!(code(&again), 0, "{}", stderr(&again));
+    assert!(stdout(&again).contains("next: cd web-solid && npm install && npm run dev"));
+    assert_eq!(s.read("web-solid/node_modules/solid-js/package.json"), "{}");
+    assert_eq!(s.read("web-solid/package-lock.json"), "{}");
+    assert_eq!(s.read("web-solid/dist/index.html"), "built");
+
+    // A generated file edited is the user's until `--force`.
+    s.write("web-solid/src/App.tsx", "mine");
+    let out = viso(&s.0, &["export", "solid"]);
+    assert_eq!(code(&out), 6);
+    assert!(stderr(&out).contains("`src/App.tsx`"), "{}", stderr(&out));
+    assert_eq!(s.read("web-solid/src/App.tsx"), "mine");
 }

@@ -1531,11 +1531,12 @@ Generate source a web project owns from the app's view: plain HTML and CSS
 Usage: viso export [OPTIONS] <COMMAND>
 
 Examples:
-  viso export html                      # the view as HTML and CSS in `dist-html/`
-  viso export html --static --out site  # with no JavaScript, into `site/`
+  viso export html   # the view as HTML and CSS in `dist-html/`
+  viso export solid  # the view as a SolidJS component in `web-solid/`
 
 Commands:
-  html  Semantic HTML and CSS, with vanilla JavaScript for what changes
+  html   Semantic HTML and CSS, with vanilla JavaScript for what changes
+  solid  A Vite project whose SolidJS component is the view
 
 Options:
   -h, --help  Print help
@@ -1589,6 +1590,42 @@ Notes:
   cannot show (a shader, a game) is an error naming its node, never dropped.
   The directory is replaced whole; one holding files the export did not write, or
   edited since, is refused unless `--force`.
+
+$ viso export solid --help
+A Vite project whose SolidJS component is the view
+
+Usage: viso export solid [OPTIONS] [COMPONENT]
+
+Examples:
+  viso export solid                      # the view as a SolidJS component in a Vite project in `web-solid/`
+  viso export solid ui::Card --out card  # one component alone, its inputs as props
+  viso export solid --force --json       # over edits in `web-solid/`, as JSON events
+
+Arguments:
+  [COMPONENT]  The component to export, `Name` or `module::Name`: the one `src/app.vs` exports when omitted
+
+Options:
+      --out <DIR>  The directory to write: `export.solid.out_dir`, else `web-solid`
+      --force      Replace the directory even where it holds files the export did not write or that were edited since
+  -h, --help       Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  The component is lowered as for `export html`, then written as JSX: its states as
+  signals, computeds as memos, inputs as typed props, events as `on…` callbacks, each
+  handler one transaction; `if`/`match`/`for` as `Show`/`Switch`/keyed `Each`. The
+  project needs `solid-js`, `vite` and `vite-plugin-solid`; Viso never installs them.
 
 $ viso clean --help
 Remove `target/viso/`: builds, caches and dev state, never `dist/`

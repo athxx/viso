@@ -72,6 +72,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
         Command::Dump(args) => dump::run(ctx, args, out),
         Command::Explain(args) => explain::run(args, out),
         Command::Export(ExportCommand::Html(args)) => export::html(ctx, args, out),
+        Command::Export(ExportCommand::Solid(args)) => export::solid(ctx, args, out),
         Command::Config(command) => config::run(ctx, command, out),
         Command::Fmt(args) => fmt::run(ctx, args, out),
         Command::Ios(command) => ios::run(ctx, command, out),

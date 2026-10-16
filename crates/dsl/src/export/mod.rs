@@ -1,4 +1,5 @@
-//! One-way exports of a compiled view into source another ecosystem owns.
+//! One-way exports of a compiled view into source another ecosystem owns:
+//! an HTML page, a SolidJS project.
 //!
 //! An exporter reads what the compiler made of the view — the UI IR, the
 //! behavior table, the Behavior IR — and never the `.vs` text. Before it
@@ -10,13 +11,14 @@ mod css;
 mod eval;
 mod html;
 mod script;
+mod solid;
 
 use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::frontend::Compiled;
 use crate::syntax::TextRange;
-use crate::view_behavior::view_behavior;
+use crate::view_behavior::{ViewBehavior, view_behavior};
 
 /// The line every generated file starts with, in its comment syntax.
 pub const GENERATED: &str = "Generated from Viso source. This directory is an export artifact.";
@@ -42,7 +44,7 @@ pub struct Finding {
     pub notes: Vec<String>,
 }
 
-/// How an HTML export is made.
+/// How an export is made.
 #[derive(Debug, Clone)]
 pub struct HtmlOptions {
     /// Write no script: what needs one is a [`Need::Dynamic`] finding.
@@ -74,6 +76,117 @@ pub struct HtmlExport {
 ///
 /// Every place the view needs what the page cannot have, in source order.
 pub fn html(compiled: &Compiled, options: &HtmlOptions) -> Result<HtmlExport, Vec<Finding>> {
+    let mut prepared = prepare(compiled, &options.lang)?;
+    let mut lower = html::Lower::new(
+        prepared.vb.as_ref(),
+        prepared.eval.as_mut(),
+        &compiled.assets,
+        options.static_only,
+    );
+    lower.view(&compiled.tree.items);
+    let scripted = lower.out.root.marks.iter().any(|m| !m.wires.is_empty());
+    if scripted {
+        lower.all_assets();
+    }
+    let html::Lower {
+        findings,
+        out: page,
+        ..
+    } = lower;
+    if !findings.is_empty() {
+        return Err(sorted(findings));
+    }
+    let script = match (&prepared.eval, scripted) {
+        (Some(eval), true) => {
+            let catalog = prepared.vb.as_ref().and_then(|vb| vb.module.catalog());
+            Some(script::script(&page, eval, catalog, GENERATED, prepared.origin).map_err(sorted)?)
+        }
+        _ => None,
+    };
+    Ok(HtmlExport {
+        index: index(&page, options, script.is_some()),
+        styles: styles(&page),
+        script,
+        assets: page.assets.values().cloned().collect(),
+    })
+}
+
+/// How a SolidJS export is made.
+#[derive(Debug, Clone)]
+pub struct SolidOptions {
+    /// The npm package name of the project.
+    pub package: String,
+    /// Its version.
+    pub version: String,
+    /// The page's title.
+    pub title: String,
+    /// The language of its text, as a BCP 47 tag.
+    pub lang: String,
+}
+
+/// A SolidJS export: a Vite project whose component is the view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolidExport {
+    /// Each file by its path in the project, in path order.
+    pub files: Vec<(String, String)>,
+    /// The path under the project's `assets/` of each asset the component
+    /// shows, written to the same path under the export's `src/assets/`.
+    pub assets: Vec<String>,
+}
+
+/// The view `compiled` mounts as a SolidJS component in a project of its own.
+///
+/// # Errors
+///
+/// Every place the view needs what the component cannot have, in source
+/// order.
+pub fn solid(compiled: &Compiled, options: &SolidOptions) -> Result<SolidExport, Vec<Finding>> {
+    let mut prepared = prepare(compiled, &options.lang)?;
+    if let Some(eval) = prepared.eval.as_mut() {
+        eval.props = true;
+    }
+    let mut lower = html::Lower::new(
+        prepared.vb.as_ref(),
+        prepared.eval.as_mut(),
+        &compiled.assets,
+        false,
+    );
+    lower.view(&compiled.tree.items);
+    lower.all_assets();
+    let html::Lower {
+        findings,
+        out: page,
+        ..
+    } = lower;
+    if !findings.is_empty() {
+        return Err(sorted(findings));
+    }
+    let catalog = prepared.vb.as_ref().and_then(|vb| vb.module.catalog());
+    let files = solid::project(&solid::Input {
+        page: &page,
+        eval: prepared.eval.as_ref(),
+        catalog,
+        component: compiled.component.as_ref(),
+        styles: &styles(&page),
+        options,
+        origin: prepared.origin,
+    })
+    .map_err(sorted)?;
+    Ok(SolidExport {
+        files,
+        assets: page.assets.values().cloned().collect(),
+    })
+}
+
+/// What every export reads of the view: its behavior table and the
+/// interpreter over its component, once nothing it cannot run is found.
+struct Prepared<'a> {
+    vb: Option<ViewBehavior>,
+    eval: Option<eval::Eval<'a>>,
+    origin: TextRange,
+}
+
+fn prepare<'a>(compiled: &'a Compiled, lang: &str) -> Result<Prepared<'a>, Vec<Finding>> {
     let origin = compiled
         .component
         .as_ref()
@@ -111,7 +224,9 @@ pub fn html(compiled: &Compiled, options: &HtmlOptions) -> Result<HtmlExport, Ve
             findings.push(Finding {
                 need: Need::Unsupported,
                 at: origin,
-                message: "the view runs an `effect` or loads a `resource`, which an HTML export does not run".to_owned(),
+                message:
+                    "the view runs an `effect` or loads a `resource`, which an export does not run"
+                        .to_owned(),
                 notes: Vec::new(),
             });
         }
@@ -123,18 +238,18 @@ pub fn html(compiled: &Compiled, options: &HtmlOptions) -> Result<HtmlExport, Ve
             findings.push(Finding {
                 need: Need::Unsupported,
                 at,
-                message: "a component a region mounts keeps states of its own, which an HTML export does not hold".to_owned(),
+                message: "a component a region mounts keeps states of its own, which an export does not hold".to_owned(),
                 notes: Vec::new(),
             });
         }
     }
-    let mut eval = match (layout, &vb) {
+    let eval = match (layout, &vb) {
         (Some(layout), Some(vb)) => {
             match eval::Eval::new(
                 Rc::clone(&vb.module),
                 &compiled.behavior,
                 layout,
-                &options.lang,
+                lang,
                 origin,
             ) {
                 Ok(eval) => Some(eval),
@@ -149,39 +264,7 @@ pub fn html(compiled: &Compiled, options: &HtmlOptions) -> Result<HtmlExport, Ve
     if !findings.is_empty() {
         return Err(sorted(findings));
     }
-
-    let mut lower = html::Lower::new(
-        vb.as_ref(),
-        eval.as_mut(),
-        &compiled.assets,
-        options.static_only,
-    );
-    lower.view(&compiled.tree.items);
-    let scripted = lower.out.root.marks.iter().any(|m| !m.wires.is_empty());
-    if scripted {
-        lower.all_assets();
-    }
-    let html::Lower {
-        findings,
-        out: page,
-        ..
-    } = lower;
-    if !findings.is_empty() {
-        return Err(sorted(findings));
-    }
-    let script = match (&eval, scripted) {
-        (Some(eval), true) => {
-            let catalog = vb.as_ref().and_then(|vb| vb.module.catalog());
-            Some(script::script(&page, eval, catalog, GENERATED, origin).map_err(sorted)?)
-        }
-        _ => None,
-    };
-    Ok(HtmlExport {
-        index: index(&page, options, script.is_some()),
-        styles: styles(&page),
-        script,
-        assets: page.assets.values().cloned().collect(),
-    })
+    Ok(Prepared { vb, eval, origin })
 }
 
 fn sorted(mut findings: Vec<Finding>) -> Vec<Finding> {
@@ -205,7 +288,7 @@ fn index(page: &html::Lowered, options: &HtmlOptions, scripted: bool) -> String 
         out.push_str("<script src=\"app.js\" defer></script>\n");
     }
     out.push_str("</head>\n<body>\n");
-    out.push_str(&page.root.html);
+    html::write_html(&page.root.nodes, &page.regions, &mut out);
     out.push_str("\n</body>\n</html>\n");
     out
 }

@@ -28,14 +28,27 @@ pub(super) const TEXT_COLOR: &str = "#3f3f45";
 /// The font size a text shows where it sets none.
 pub(super) const FONT_SIZE: &str = "14px";
 
-/// A stretch of HTML the page shows as one: the static view, or an arm of a
+/// A stretch of the page shown as one: the static view, or an arm of a
 /// region the script mounts.
 #[derive(Debug, Default)]
 pub(super) struct Content {
-    pub(super) html: String,
-    /// The elements the script wires, in document order: each carries a
-    /// `data-v` attribute.
+    pub(super) nodes: Vec<Piece>,
+    /// The elements the script wires, in document order: in HTML each carries
+    /// a `data-v` attribute.
     pub(super) marks: Vec<Mark>,
+}
+
+/// A node of the lowered tree.
+#[derive(Debug)]
+pub(super) enum Piece {
+    Element {
+        el: Box<Element>,
+        children: Vec<Piece>,
+        /// Its index among the content's marks, when the script wires it.
+        mark: Option<usize>,
+    },
+    /// Where region `region` mounts its content.
+    Region { region: u32 },
 }
 
 /// An element the script wires.
@@ -119,6 +132,8 @@ pub(super) enum VarToken {
 #[derive(Debug)]
 pub(super) struct Region {
     pub(super) kind: RegionKind,
+    /// The name a `for` binds each item to.
+    pub(super) binding: Option<String>,
     pub(super) arms: Vec<Content>,
     pub(super) preserve: Vec<bool>,
 }
@@ -245,7 +260,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             self.need(
                 Need::Unsupported,
                 at,
-                format!("{what} reads `env`'s {field}, which an HTML export does not follow"),
+                format!("{what} reads `env`'s {field}, which an export does not follow"),
                 vec!["only `theme` is read from the environment of an exported view".to_owned()],
             );
             return Fixed::Changes;
@@ -455,13 +470,11 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             el.marked = true;
         }
 
-        el.open(&mut out.html);
-        if el.marked {
+        let mark = el.marked.then(|| {
             out.marks.push(Mark { wires });
-        }
-        if let Some(text) = &el.text {
-            escape_text(text, &mut out.html);
-        }
+            out.marks.len() - 1
+        });
+        let siblings = std::mem::take(&mut out.nodes);
         let child_parent = match node.kind {
             NodeKind::Flex => Some(Parent::Flex(node.style.axis.unwrap_or(AxisIr::Row))),
             NodeKind::Grid => Some(Parent::Grid),
@@ -496,7 +509,12 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
             }
         }
-        el.close(&mut out.html);
+        let children = std::mem::replace(&mut out.nodes, siblings);
+        out.nodes.push(Piece::Element {
+            el: Box::new(el),
+            children,
+            mark,
+        });
     }
 
     /// The declarations of `node`'s box: how it lays out its children, and
@@ -720,13 +738,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     match fixed.resource() {
                         Some(id) => {
                             let url = self.asset(id);
-                            if mask {
-                                el.style(&format!(
-                                    "mask-image: url(\"{url}\"); -webkit-mask-image: url(\"{url}\")"
-                                ));
-                            } else {
-                                el.attr("src", &url);
-                            }
+                            el.asset = Some(Shown { id, url, mask });
                         }
                         None if !mask => el.attr("src", ""),
                         None => {}
@@ -1146,7 +1158,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     self.need(
                         Need::Unsupported,
                         at,
-                        format!("the region reads `env`'s {field:?}, which an HTML export does not follow"),
+                        format!(
+                            "the region reads `env`'s {field:?}, which an export does not follow"
+                        ),
                         Vec::new(),
                     );
                 }
@@ -1155,6 +1169,10 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         let index = self.out.regions.len() as u32;
         self.out.regions.push(Region {
             kind,
+            binding: match item {
+                UiItem::For(r) => r.binding.clone(),
+                _ => None,
+            },
             arms: Vec::new(),
             preserve: Vec::new(),
         });
@@ -1184,21 +1202,13 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             arms.push(content);
             preserve.push(keep);
         }
-        // The anchor holds one template per arm; the script clones the arm
-        // it mounts in front of it.
-        out.html.push_str("<template data-v>");
-        for arm in &arms {
-            out.html.push_str("<template>");
-            out.html.push_str(&arm.html);
-            out.html.push_str("</template>");
-        }
-        out.html.push_str("</template>");
         let region = &mut self.out.regions[index as usize];
         region.arms = arms;
         region.preserve = preserve;
         out.marks.push(Mark {
             wires: vec![Wire::Region(index)],
         });
+        out.nodes.push(Piece::Region { region: index });
     }
 }
 
@@ -1412,16 +1422,27 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
     })
 }
 
+/// An asset an element shows: its resource id, its URL under the export, and
+/// whether it shows as a mask its tint fills.
+#[derive(Debug, Clone)]
+pub(super) struct Shown {
+    pub(super) id: u64,
+    pub(super) url: String,
+    pub(super) mask: bool,
+}
+
 /// An element as it is opened and closed.
 #[derive(Debug, Default)]
-struct Element {
-    tag: &'static str,
-    id: Option<&'static str>,
-    base: &'static str,
-    classes: Vec<String>,
-    attrs: Vec<(&'static str, String)>,
-    style: Vec<String>,
-    text: Option<String>,
+pub(super) struct Element {
+    pub(super) tag: &'static str,
+    pub(super) id: Option<&'static str>,
+    pub(super) base: &'static str,
+    pub(super) classes: Vec<String>,
+    pub(super) attrs: Vec<(&'static str, String)>,
+    pub(super) style: Vec<String>,
+    pub(super) text: Option<String>,
+    /// The asset it shows for good.
+    pub(super) asset: Option<Shown>,
     /// Whether the node has rules of its own class.
     own_class: bool,
     /// Whether the script wires it.
@@ -1462,9 +1483,23 @@ impl Element {
                 out.push('"');
             }
         }
-        if !self.style.is_empty() {
+        let mut style = self.style.clone();
+        if let Some(shown) = &self.asset {
+            if shown.mask {
+                let url = &shown.url;
+                style.insert(
+                    0,
+                    format!("mask-image: url(\"{url}\"); -webkit-mask-image: url(\"{url}\")"),
+                );
+            } else {
+                out.push_str(" src=\"");
+                escape_attr(&shown.url, out);
+                out.push('"');
+            }
+        }
+        if !style.is_empty() {
             out.push_str(" style=\"");
-            escape_attr(&self.style.join("; "), out);
+            escape_attr(&style.join("; "), out);
             out.push('"');
         }
         if self.marked {
@@ -1473,9 +1508,40 @@ impl Element {
         out.push('>');
     }
 
+    /// Whether it is a void element, which has no children and no end tag.
+    pub(super) fn void(&self) -> bool {
+        self.tag == "input" || self.tag == "img"
+    }
+
     fn close(&self, out: &mut String) {
-        if self.tag != "input" && self.tag != "img" {
+        if !self.void() {
             let _ = write!(out, "</{}>", self.tag);
+        }
+    }
+}
+
+/// `nodes` as HTML, each region an anchor `<template>` holding one template
+/// per arm, which the script clones in front of it.
+pub(super) fn write_html(nodes: &[Piece], regions: &[Region], out: &mut String) {
+    for piece in nodes {
+        match piece {
+            Piece::Element { el, children, .. } => {
+                el.open(out);
+                if let Some(text) = &el.text {
+                    escape_text(text, out);
+                }
+                write_html(children, regions, out);
+                el.close(out);
+            }
+            Piece::Region { region, .. } => {
+                out.push_str("<template data-v>");
+                for arm in &regions[*region as usize].arms {
+                    out.push_str("<template>");
+                    write_html(&arm.nodes, regions, out);
+                    out.push_str("</template>");
+                }
+                out.push_str("</template>");
+            }
         }
     }
 }

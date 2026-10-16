@@ -207,8 +207,8 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
                 "the view as HTML and CSS in `dist-html/`",
             ),
             (
-                "viso export html --static --out site",
-                "with no JavaScript, into `site/`",
+                "viso export solid",
+                "the view as a SolidJS component in `web-solid/`",
             ),
         ],
     ),
@@ -226,6 +226,23 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             (
                 "viso export html --out site --force --json",
                 "over edits in `site/`, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "export solid",
+        &[
+            (
+                "viso export solid",
+                "the view as a SolidJS component in a Vite project in `web-solid/`",
+            ),
+            (
+                "viso export solid ui::Card --out card",
+                "one component alone, its inputs as props",
+            ),
+            (
+                "viso export solid --force --json",
+                "over edits in `web-solid/`, as JSON events",
             ),
         ],
     ),
@@ -699,6 +716,13 @@ const NOTES: &[(&str, &str)] = &[
          cannot show (a shader, a game) is an error naming its node, never dropped.\n\
          The directory is replaced whole; one holding files the export did not write, or\n\
          edited since, is refused unless `--force`.",
+    ),
+    (
+        "export solid",
+        "The component is lowered as for `export html`, then written as JSX: its states as\n\
+         signals, computeds as memos, inputs as typed props, events as `on…` callbacks, each\n\
+         handler one transaction; `if`/`match`/`for` as `Show`/`Switch`/keyed `Each`. The\n\
+         project needs `solid-js`, `vite` and `vite-plugin-solid`; Viso never installs them.",
     ),
     (
         "check",

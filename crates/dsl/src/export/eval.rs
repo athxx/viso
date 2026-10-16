@@ -38,6 +38,9 @@ pub(super) struct Eval<'a> {
     themes: Vec<u32>,
     /// The `env` slots holding the locale, fixed to the page's language.
     locales: Vec<u32>,
+    /// Whether the inputs change, as a component's props do, rather than
+    /// hold their defaults for good, as a page's do.
+    pub(super) props: bool,
 }
 
 impl<'a> Eval<'a> {
@@ -101,6 +104,7 @@ impl<'a> Eval<'a> {
             instance,
             themes,
             locales,
+            props: false,
         })
     }
 
@@ -134,10 +138,14 @@ impl<'a> Eval<'a> {
     }
 
     /// Whether `entry` shows one value for as long as the page is open: it
-    /// reads no state that changes, and takes no region's binding.
+    /// reads no state that changes, no input that does, and takes no
+    /// region's binding.
     pub(super) fn constant(&self, entry: u32) -> bool {
         let (deps, env) = self.deps(entry);
-        deps.is_empty() && env.is_empty() && self.program.function(self.func(entry)).params == 0
+        deps.is_empty()
+            && env.is_empty()
+            && self.program.function(self.func(entry)).params == 0
+            && !(self.props && !self.vm.reads(self.func(entry).0).inputs.is_empty())
     }
 
     /// The value `entry` evaluates to now, with `args` as its region bindings.

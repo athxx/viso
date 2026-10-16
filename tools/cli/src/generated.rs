@@ -7,6 +7,9 @@
 //! SHA-256. The next write replaces the tree only while every file in it is
 //! one it recorded, unchanged: a file someone edited or added, or a
 //! directory it never wrote, is a conflict, which `--force` overrides.
+//! What the tree [keeps](Tree::keep), such as the packages a package
+//! manager installed into it, is neither checked nor replaced: it moves into
+//! the new tree as it is.
 
 use std::fs;
 use std::io;
@@ -27,6 +30,7 @@ const NAMED: usize = 8;
 #[derive(Debug, Default)]
 pub(crate) struct Tree {
     files: Vec<(String, Vec<u8>)>,
+    keep: Vec<String>,
 }
 
 impl Tree {
@@ -41,9 +45,37 @@ impl Tree {
         self.files.push((path, bytes.into()));
     }
 
+    /// Keeps the entry `name` of the directory, a file or a directory, as it
+    /// is: what another tool writes there.
+    pub(crate) fn keep(&mut self, name: &str) {
+        debug_assert!(
+            !name.is_empty() && !name.contains('/'),
+            "`{name}` is one entry"
+        );
+        self.keep.push(name.to_owned());
+    }
+
     /// Each file's path and bytes, in path order.
     pub(crate) fn files(&self) -> impl Iterator<Item = (&str, &[u8])> {
         self.files.iter().map(|(p, b)| (p.as_str(), b.as_slice()))
+    }
+
+    /// The size and `sha256:<hex>` of its files, as a build hashes a
+    /// directory: over each file in path order, its path, a NUL and the
+    /// SHA-256 of its bytes.
+    pub(crate) fn hash(&self) -> (u64, String) {
+        let mut files: Vec<&(String, Vec<u8>)> = self.files.iter().collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files.dedup_by(|a, b| a.0 == b.0);
+        let mut tree = Sha256::new();
+        let mut size = 0;
+        for (path, bytes) in files {
+            size += bytes.len() as u64;
+            tree.update(path.as_bytes());
+            tree.update([0]);
+            tree.update(Sha256::digest(bytes));
+        }
+        (size, format!("sha256:{}", hex(&tree.finalize())))
     }
 
     fn sort(&mut self) {
@@ -87,20 +119,21 @@ pub(crate) fn write(
         Err(e) => return Err(io_error(dir, &e)),
     };
     if exists && !force {
-        conflicts(dir)?;
+        conflicts(dir, &tree.keep)?;
     }
     let staging = atomic::sibling(dir);
     let _ = remove(&staging);
     let staged = stage(&staging, &tree, generator);
-    let placed = staged.and_then(|()| place(&staging, dir, exists));
+    let placed = staged.and_then(|()| place(&staging, dir, exists, &tree.keep));
     if placed.is_err() {
         let _ = remove(&staging);
     }
     placed
 }
 
-/// Fails with what in the existing `dir` the record does not account for.
-fn conflicts(dir: &Path) -> Result<(), Refusal> {
+/// Fails with what in the existing `dir`, beside what it `keep`s, the record
+/// does not account for.
+fn conflicts(dir: &Path, keep: &[String]) -> Result<(), Refusal> {
     if !fs::symlink_metadata(dir)
         .map_err(|e| io_error(dir, &e))?
         .is_dir()
@@ -122,7 +155,11 @@ fn conflicts(dir: &Path) -> Result<(), Refusal> {
     let foreign = recorded.is_none();
     let recorded = recorded.unwrap_or_default();
     let mut changed = Vec::new();
-    for path in found.into_iter().filter(|p| p != RECORD) {
+    let kept = |path: &str| {
+        let first = path.split('/').next().unwrap_or_default();
+        keep.iter().any(|k| k == first)
+    };
+    for path in found.into_iter().filter(|p| p != RECORD && !kept(p)) {
         let same = match recorded.iter().find(|(p, _)| *p == path) {
             Some((_, hash)) => {
                 let bytes = fs::read(dir.join(&path)).map_err(|e| io_error(dir, &e))?;
@@ -216,24 +253,48 @@ fn stage(staging: &Path, tree: &Tree, generator: &str) -> Result<(), Refusal> {
     fs::write(&path, text).map_err(|e| io_error(&path, &e))
 }
 
-/// Puts `staging` in the place of `dir`: the old tree moves aside first and
-/// comes back when the new one cannot take its place.
-fn place(staging: &Path, dir: &Path, exists: bool) -> Result<(), Refusal> {
+/// Puts `staging` in the place of `dir`, carrying over what it `keep`s: the
+/// old tree moves aside first and comes back, with what was carried, when
+/// the new one cannot take its place.
+fn place(staging: &Path, dir: &Path, exists: bool, keep: &[String]) -> Result<(), Refusal> {
     if !exists {
         if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent).map_err(|e| io_error(parent, &e))?;
         }
         return fs::rename(staging, dir).map_err(|e| io_error(dir, &e));
     }
+    let mut carried = Vec::new();
+    for name in keep {
+        let from = dir.join(name);
+        if fs::symlink_metadata(&from).is_err() {
+            continue;
+        }
+        if let Err(e) = fs::rename(&from, staging.join(name)) {
+            carry_back(staging, dir, &carried);
+            return Err(io_error(&from, &e));
+        }
+        carried.push(name.as_str());
+    }
     let aside = aside(dir);
     let _ = remove(&aside);
-    fs::rename(dir, &aside).map_err(|e| io_error(dir, &e))?;
+    if let Err(e) = fs::rename(dir, &aside) {
+        carry_back(staging, dir, &carried);
+        return Err(io_error(dir, &e));
+    }
     if let Err(e) = fs::rename(staging, dir) {
         let _ = fs::rename(&aside, dir);
+        carry_back(staging, dir, &carried);
         return Err(io_error(dir, &e));
     }
     let _ = remove(&aside);
     Ok(())
+}
+
+/// Moves each `carried` entry from `staging` back into `dir`.
+fn carry_back(staging: &Path, dir: &Path, carried: &[&str]) {
+    for name in carried {
+        let _ = fs::rename(staging.join(name), dir.join(name));
+    }
 }
 
 /// Where the tree being replaced waits while the new one takes its place.
@@ -254,10 +315,11 @@ fn remove(path: &Path) -> io::Result<()> {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hex(&Sha256::digest(bytes))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn io_error(path: &Path, e: &io::Error) -> Refusal {
@@ -342,6 +404,34 @@ mod tests {
             write(&mine, tree(&[("index.html", "a")]), "t", false),
             Err(Refusal::Conflict { foreign: true, .. })
         ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn what_a_tree_keeps_is_carried_over_untouched() {
+        let root = scratch("keep");
+        let dir = root.join("out");
+        let kept = |files: &[(&str, &str)]| {
+            let mut tree = tree(files);
+            tree.keep("node_modules");
+            tree.keep("package-lock.json");
+            tree
+        };
+        write(&dir, kept(&[("package.json", "a")]), "t", false).unwrap();
+        fs::create_dir_all(dir.join("node_modules/solid-js")).unwrap();
+        fs::write(dir.join("node_modules/solid-js/index.js"), "x").unwrap();
+        fs::write(dir.join("package-lock.json"), "{}").unwrap();
+        write(&dir, kept(&[("package.json", "b")]), "t", false).unwrap();
+        assert_eq!(
+            names(&dir),
+            [
+                RECORD,
+                "node_modules/solid-js/index.js",
+                "package-lock.json",
+                "package.json"
+            ]
+        );
+        assert_eq!(fs::read_to_string(dir.join("package.json")).unwrap(), "b");
         let _ = fs::remove_dir_all(&root);
     }
 

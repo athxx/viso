@@ -276,6 +276,7 @@ PACKAGE_UNSIGNED              The package is signed short of what its platform n
 PACKAGE_ARCHIVE               The package or its archive could not be made.
 EXPORT_HTML_DYNAMIC_REQUIRED  `--static` was asked for, but the view changes while it runs.
 EXPORT_HTML_GPU_ONLY_NODE     A node only the Viso renderer can draw has no HTML form.
+EXPORT_SOLID_GPU_ONLY_NODE    A node only the Viso renderer can draw has no SolidJS form.
 EXPORT_UNSUPPORTED            Part of the view has no form the exporter writes.
 EXPORT_NO_VIEW                The project has no view to export.
 EXPORT_CONFLICT               The export directory holds files the export did not write, or that were edited since.

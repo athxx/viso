@@ -1,4 +1,4 @@
-//! The page script of an HTML export: each Behavior IR function the page
+//! The page script of an export: each Behavior IR function the page
 //! runs, translated instruction by instruction to JavaScript with the value
 //! representation the interpreter has — integers as `BigInt` checked against
 //! their type's range, floats as numbers (an `F32` rounded after every
@@ -8,7 +8,7 @@
 //! handlers it names, and a runtime that commits each handler as one
 //! transaction and re-evaluates only what reads a state it changed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use viso_behavior::Value;
@@ -23,8 +23,14 @@ use crate::behavior::ir::{
 };
 use crate::syntax::TextRange;
 
-/// The runtime every page script carries.
-const RUNTIME: &str = include_str!("runtime.js");
+/// The runtime every page script carries: the interpreter's value semantics,
+/// what DOM elements show and the payloads of their events, then the page's
+/// transactions and regions.
+const RUNTIME: &str = concat!(
+    include_str!("values.js"),
+    include_str!("dom.js"),
+    include_str!("page.js")
+);
 
 /// The page script of `page`, or why one of its functions has no JavaScript
 /// form.
@@ -44,34 +50,8 @@ pub(super) fn script(
         arms.push(first..contents.len());
     }
 
-    // Every function the page calls, and those they call.
-    let mut roots = BTreeSet::new();
+    let roots = roots(page, eval);
     let entry = |e: u32| eval.func(e);
-    for content in &contents {
-        for mark in &content.marks {
-            for wire in &mark.wires {
-                match *wire {
-                    Wire::Prop { entry: e, .. } => {
-                        roots.insert(entry(e));
-                    }
-                    Wire::On { handler, .. } => {
-                        roots.insert(entry(handler));
-                    }
-                    Wire::Sync { entry: e, .. } => {
-                        if let Some(e) = e {
-                            roots.insert(entry(e));
-                        }
-                    }
-                    Wire::Region(_) => {}
-                }
-            }
-        }
-    }
-    for region in &page.regions {
-        for e in region_entries(region.kind) {
-            roots.insert(entry(e));
-        }
-    }
     let functions = reachable(program, roots);
 
     let mut out = String::new();
@@ -114,24 +94,20 @@ pub(super) fn script(
                 .any(|i| matches!(i, Inst::Translate { .. }))
         })
     });
-    match catalog.filter(|_| translates) {
-        Some(catalog) => {
-            if let Err(why) = messages(&mut out, catalog) {
-                return Err(vec![Finding {
-                    need: Need::Unsupported,
-                    at: origin,
-                    message: format!("the message catalog does not read: {why}"),
-                    notes: Vec::new(),
-                }]);
-            }
-        }
-        None => out.push_str("const L = \"\";\nconst M = [];\nconst MK = new Map();\n"),
-    }
+    let messages = messages(catalog.filter(|_| translates)).map_err(|why| {
+        vec![Finding {
+            need: Need::Unsupported,
+            at: origin,
+            message: format!("the message catalog does not read: {why}"),
+            notes: Vec::new(),
+        }]
+    })?;
+    let _ = writeln!(out, "const T = {messages};");
     out.push_str(RUNTIME);
 
     let mut findings = Vec::new();
     for id in &functions {
-        match function(program, *id, origin) {
+        match function(program, *id, origin, Dialect::Page) {
             Ok(code) => out.push_str(&code),
             Err(mut found) => findings.append(&mut found),
         }
@@ -195,7 +171,7 @@ pub(super) fn script(
 }
 
 /// The entries that decide a region's content.
-fn region_entries(kind: RegionKind) -> Vec<u32> {
+pub(super) fn region_entries(kind: RegionKind) -> Vec<u32> {
     match kind {
         RegionKind::If { select } => vec![select],
         RegionKind::Match { scrutinee, select } => vec![scrutinee, select],
@@ -303,8 +279,38 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>) {
     out.push_str("  return { u, r };\n}\n");
 }
 
+/// The entries and handlers `page` names, which its script calls.
+pub(super) fn roots(page: &Lowered, eval: &Eval<'_>) -> BTreeSet<FuncId> {
+    let mut roots = BTreeSet::new();
+    let contents = std::iter::once(&page.root).chain(page.regions.iter().flat_map(|r| &r.arms));
+    for content in contents {
+        for mark in &content.marks {
+            for wire in &mark.wires {
+                match *wire {
+                    Wire::Prop { entry, .. }
+                    | Wire::Sync {
+                        entry: Some(entry), ..
+                    } => {
+                        roots.insert(eval.func(entry));
+                    }
+                    Wire::On { handler, .. } => {
+                        roots.insert(eval.func(handler));
+                    }
+                    Wire::Sync { entry: None, .. } | Wire::Region(_) => {}
+                }
+            }
+        }
+    }
+    for region in &page.regions {
+        for entry in region_entries(region.kind) {
+            roots.insert(eval.func(entry));
+        }
+    }
+    roots
+}
+
 /// Every function `roots` call, transitively, ascending.
-fn reachable(program: &Program, roots: BTreeSet<FuncId>) -> BTreeSet<FuncId> {
+pub(super) fn reachable(program: &Program, roots: BTreeSet<FuncId>) -> BTreeSet<FuncId> {
     let mut seen = BTreeSet::new();
     let mut stack: Vec<FuncId> = roots.into_iter().collect();
     while let Some(id) = stack.pop() {
@@ -323,14 +329,18 @@ fn reachable(program: &Program, roots: BTreeSet<FuncId>) -> BTreeSet<FuncId> {
     seen
 }
 
-/// The catalog's source locale `L`, each message's pattern in it `M` by id,
-/// and the id of each key `MK`.
-fn messages(out: &mut String, catalog: &Catalog) -> Result<(), String> {
+/// The messages a script translates with, as an object literal: the
+/// catalog's source locale `L`, each message's pattern in it `M` by id, and
+/// the id of each key `MK`; none without a catalog.
+pub(super) fn messages(catalog: Option<&Catalog>) -> Result<String, String> {
+    let Some(catalog) = catalog else {
+        return Ok("{ L: \"\", M: [], MK: new Map() }".to_owned());
+    };
+    let mut out = String::new();
     let source = catalog.locales().next().unwrap_or_default();
-    let _ = writeln!(out, "const L = {};", string(source));
+    let _ = write!(out, "{{ L: {}, M: [", string(source));
     let mut tables: Vec<Option<Table>> = catalog.locales().map(|_| None).collect();
     let own = catalog.table(0).map_err(|e| e.0)?;
-    out.push_str("const M = [");
     for id in 0..catalog.messages().len() {
         let entry = own.entries[id];
         let origin = usize::from(entry.origin);
@@ -353,15 +363,15 @@ fn messages(out: &mut String, catalog: &Catalog) -> Result<(), String> {
             _ => out.push_str(&pattern(table, ops)),
         }
     }
-    out.push_str("];\nconst MK = new Map([");
+    out.push_str("], MK: new Map([");
     for (id, message) in catalog.messages().iter().enumerate() {
         if id > 0 {
             out.push_str(", ");
         }
         let _ = write!(out, "[{}, {id}]", string(&message.key));
     }
-    out.push_str("]);\n");
-    Ok(())
+    out.push_str("]) }");
+    Ok(out)
 }
 
 fn slice(table: &Table, start: u32, len: u32) -> &str {
@@ -465,7 +475,7 @@ fn choices(
 
 /// A value as a JavaScript literal of its representation; `Err` names what a
 /// page cannot hold.
-fn literal(value: &Value) -> Result<String, String> {
+pub(super) fn literal(value: &Value) -> Result<String, String> {
     Ok(match value {
         Value::Nil => "null".to_owned(),
         Value::Int(i) => format!("{i}n"),
@@ -484,7 +494,7 @@ fn literal(value: &Value) -> Result<String, String> {
     })
 }
 
-fn float(f: f64) -> String {
+pub(super) fn float(f: f64) -> String {
     if f.is_nan() {
         "NaN".to_owned()
     } else if f == f64::INFINITY {
@@ -532,8 +542,46 @@ fn wide(n: Num, r: &str) -> String {
     }
 }
 
-/// Function `id` as a JavaScript function `f<id>`.
-fn function(program: &Program, id: FuncId, origin: TextRange) -> Result<String, Vec<Finding>> {
+/// Where a translated function runs, which decides how it reaches the
+/// component.
+#[derive(Clone, Copy)]
+pub(super) enum Dialect<'a> {
+    /// The page script: the states in `W`, the inputs in `I`, functions
+    /// named `f<id>`.
+    Page,
+    /// A Solid component's behavior: everything through its store `st`,
+    /// functions by `names`, and each `memos` computed read through its memo
+    /// outside a transaction.
+    Solid {
+        names: &'a BTreeMap<FuncId, String>,
+        memos: &'a BTreeSet<FuncId>,
+    },
+}
+
+impl Dialect<'_> {
+    pub(super) fn name(self, id: FuncId) -> String {
+        match self {
+            Dialect::Page => format!("f{}", id.0),
+            Dialect::Solid { names, .. } => names
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| format!("f{}", id.0)),
+        }
+    }
+
+    fn solid(self) -> bool {
+        matches!(self, Dialect::Solid { .. })
+    }
+}
+
+/// Function `id` as a JavaScript function, typed as TypeScript's `any` in
+/// the Solid dialect.
+pub(super) fn function(
+    program: &Program,
+    id: FuncId,
+    origin: TextRange,
+    dialect: Dialect<'_>,
+) -> Result<String, Vec<Finding>> {
     let function = program.function(id);
     let body = function.body.as_ref().map_err(|unsupported| {
         vec![Finding {
@@ -544,14 +592,15 @@ fn function(program: &Program, id: FuncId, origin: TextRange) -> Result<String, 
         }]
     })?;
     let mut out = String::new();
-    let params: Vec<String> = (0..function.params).map(|r| format!("r{r}")).collect();
+    let any = if dialect.solid() { ": any" } else { "" };
+    let params: Vec<String> = (0..function.params).map(|r| format!("r{r}{any}")).collect();
     let captures: Vec<String> = (0..function.captures.len())
-        .map(|c| format!("c{c}"))
+        .map(|c| format!("c{c}{any}"))
         .collect();
     let _ = writeln!(
         out,
-        "function f{}({}) {{",
-        id.0,
+        "function {}({}){any} {{",
+        dialect.name(id),
         params
             .iter()
             .chain(captures.iter())
@@ -560,7 +609,7 @@ fn function(program: &Program, id: FuncId, origin: TextRange) -> Result<String, 
             .join(", ")
     );
     let locals: Vec<String> = (function.params..body.regs.max(function.params))
-        .map(|r| format!("r{r}"))
+        .map(|r| format!("r{r}{any}"))
         .collect();
     if !locals.is_empty() {
         let _ = writeln!(out, "  let {};", locals.join(", "));
@@ -595,7 +644,7 @@ fn function(program: &Program, id: FuncId, origin: TextRange) -> Result<String, 
         if branches && at > 0 && targets.contains(&(at as u32)) {
             let _ = writeln!(out, "  case {at}:");
         }
-        match inst_js(program, inst) {
+        match inst_js(program, inst, dialect) {
             Ok(code) => {
                 let _ = writeln!(out, "{indent}{code}");
             }
@@ -631,7 +680,8 @@ fn regs(list: &[crate::behavior::ir::Reg]) -> String {
 }
 
 /// One instruction as a JavaScript statement.
-fn inst_js(program: &Program, inst: &Inst) -> Result<String, String> {
+fn inst_js(program: &Program, inst: &Inst, dialect: Dialect<'_>) -> Result<String, String> {
+    let solid = dialect.solid();
     Ok(match inst {
         Inst::Const { dst, value } => {
             let value = match value {
@@ -648,6 +698,9 @@ fn inst_js(program: &Program, inst: &Inst) -> Result<String, String> {
             format!("{} = {value};", r(*dst))
         }
         Inst::Move { dst, src } => format!("{} = {};", r(*dst), r(*src)),
+        Inst::LoadState { dst, slot } if solid => format!("{} = st.get({slot});", r(*dst)),
+        Inst::StoreState { slot, src } if solid => format!("st.set({slot}, {});", r(*src)),
+        Inst::LoadInput { dst, slot } if solid => format!("{} = st.input({slot});", r(*dst)),
         Inst::LoadState { dst, slot } => format!("{} = W[{slot}];", r(*dst)),
         Inst::StoreState { slot, src } => format!("W[{slot}] = {};", r(*src)),
         Inst::LoadInput { dst, slot } => format!("{} = I[{slot}];", r(*dst)),
@@ -679,7 +732,13 @@ fn inst_js(program: &Program, inst: &Inst) -> Result<String, String> {
             };
             format!("{} = {value};", r(*dst))
         }
-        Inst::Call { dst, func, args } => format!("{} = f{}({});", r(*dst), func.0, regs(args)),
+        Inst::Call { dst, func, args } => match dialect {
+            Dialect::Solid { memos, .. } if memos.contains(func) => {
+                let name = dialect.name(*func);
+                format!("{} = st.work ? {name}() : {name}$memo();", r(*dst))
+            }
+            _ => format!("{} = {}({});", r(*dst), dialect.name(*func), regs(args)),
+        },
         Inst::CallValue { dst, callee, args } => {
             format!("{} = {}({});", r(*dst), r(*callee), regs(args))
         }
@@ -691,7 +750,7 @@ fn inst_js(program: &Program, inst: &Inst) -> Result<String, String> {
                 .unwrap_or_default();
             let a: Vec<String> = args.iter().map(|x| r(*x)).collect();
             let value = native(path, &a).ok_or_else(|| {
-                format!("it calls `{path}`, which has no JavaScript form in an HTML export")
+                format!("it calls `{path}`, which has no JavaScript form in an export")
             })?;
             format!("{} = {value};", r(*dst))
         }
@@ -699,7 +758,12 @@ fn inst_js(program: &Program, inst: &Inst) -> Result<String, String> {
             dst,
             func,
             captures,
-        } => format!("{} = $.bind(f{}, [{}]);", r(*dst), func.0, regs(captures)),
+        } => format!(
+            "{} = $.bind({}, [{}]);",
+            r(*dst),
+            dialect.name(*func),
+            regs(captures)
+        ),
         Inst::Make { dst, tag, fields } => {
             format!("{} = {{ t: {tag}, f: [{}] }};", r(*dst), regs(fields))
         }
@@ -760,9 +824,10 @@ fn inst_js(program: &Program, inst: &Inst) -> Result<String, String> {
             )
         }
         Inst::Return { src } => format!("return {};", r(*src)),
+        Inst::Emit { event, args } if solid => format!("st.emit({event}, [{}]);", regs(args)),
         Inst::Emit { event, args } => format!("$.emit({event}, [{}]);", regs(args)),
         Inst::Start { .. } => {
-            return Err("it starts a task, which an HTML export does not run".to_owned());
+            return Err("it starts a task, which an export does not run".to_owned());
         }
         Inst::Display { dst, src, kind } => {
             let s = r(*src);
@@ -788,7 +853,13 @@ fn inst_js(program: &Program, inst: &Inst) -> Result<String, String> {
         // The locale is the page's, which the catalog's source table is.
         Inst::Translate {
             dst, message, args, ..
-        } => format!("{} = $.tr({}, [{}]);", r(*dst), r(*message), regs(args)),
+        } => format!(
+            "{} = {}.tr({}, [{}]);",
+            r(*dst),
+            if solid { "st" } else { "$" },
+            r(*message),
+            regs(args)
+        ),
         Inst::Unreachable => "throw fault(\"an unreachable point\");".to_owned(),
     })
 }

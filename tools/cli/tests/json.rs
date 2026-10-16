@@ -58,6 +58,7 @@ fn every_command_keeps_the_event_contract() {
         &["package", "--profile", "dev"],
         &["build", "--release", "--profile", "dev"],
         &["export", "html", "--static"],
+        &["export", "solid"],
         &["clean"],
     ];
     let mut codes = Vec::new();

@@ -195,6 +195,8 @@ impl BuildTarget {
 pub enum ExportCommand {
     /// Semantic HTML and CSS, with vanilla JavaScript for what changes.
     Html(ExportHtmlArgs),
+    /// A Vite project whose SolidJS component is the view.
+    Solid(ExportSolidArgs),
 }
 
 /// Where and how `viso export html` writes.
@@ -210,6 +212,21 @@ pub struct ExportHtmlArgs {
     /// Write no JavaScript: a view that needs it to change is an error.
     #[arg(long = "static")]
     pub static_only: bool,
+    /// Replace the directory even where it holds files the export did not write or that were edited since.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Where `viso export solid` writes.
+#[derive(Debug, Args)]
+pub struct ExportSolidArgs {
+    /// The component to export, `Name` or `module::Name`: the one `src/app.vs`
+    /// exports when omitted.
+    #[arg(value_name = "COMPONENT")]
+    pub component: Option<String>,
+    /// The directory to write: `export.solid.out_dir`, else `web-solid`.
+    #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
+    pub out: Option<PathBuf>,
     /// Replace the directory even where it holds files the export did not write or that were edited since.
     #[arg(long)]
     pub force: bool,
@@ -1079,6 +1096,7 @@ impl Command {
             Command::Dump(_) => "dump",
             Command::Explain(_) => "explain",
             Command::Export(ExportCommand::Html(_)) => "export html",
+            Command::Export(ExportCommand::Solid(_)) => "export solid",
             Command::Fmt(_) => "fmt",
             Command::Config(ConfigCommand::Show) => "config show",
             Command::Config(ConfigCommand::Get(_)) => "config get",

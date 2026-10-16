@@ -2323,6 +2323,26 @@ web-solid/
     └── assets/
 ```
 
+组件与目录的选择同 §29（`<component>`、`--out`、`export.solid.out_dir`，默认 `web-solid/`）。实际输出：
+
+```text
+web-solid/
+├── package.json        solid-js, vite, vite-plugin-solid, typescript
+├── tsconfig.json
+├── vite.config.ts
+├── index.html
+└── src/
+    ├── index.tsx
+    ├── App.tsx                         挂载导出的组件
+    ├── components/<Name>.tsx           JSX、signal、props
+    ├── components/<Name>.behavior.ts   Behavior IR 翻译的 TypeScript
+    ├── viso/runtime.js (+ .d.ts)       值语义、store、Each/With/Choose
+    ├── styles.css
+    └── assets/
+```
+
+导出与 `export html` 共用同一次 lowering 与分类，所以两者支持与拒绝的内容相同；GPU-only 节点为 `EXPORT_SOLID_GPU_ONLY_NODE`。Viso 不运行 package manager；`node_modules/`、`dist/` 与 lockfile 在再次导出时原样保留，不算冲突；artifact 的 hash 只覆盖生成的文件。
+
 ### 30.1 Reactive mapping
 
 概念映射：
@@ -2337,6 +2357,8 @@ property binding -> JSX property/text binding
 ```
 
 必须保持 typed semantics；不能通过 source regex 生成。
+
+实际映射：每个 state 一个 `createSignal`；无参的 `computed` 为 `createMemo`（transaction 内直接求值，读到工作副本）；input 为可选 typed prop（`Bool` → `boolean`，整数 → `bigint | number`，浮点 → `number`，`String` → `string`，其余为 Viso 值），缺省时为 input 默认值；event 为 `on<Event>` callback prop。每个 handler 在 store 的工作副本上运行为一个 transaction，成功后在一个 `batch` 中只设置改变了的 signal，再回调 emit 的 event；失败时什么都不变。`if` → `Show`（三个以上 arm 为 `Switch`/`Match`），`match` → `With` + `Switch`/`Match`，keyed `for` → `Each`（按 key 保留 item），`preserve` arm → `Choose`。
 
 ### 30.2 State example
 
@@ -3554,7 +3576,7 @@ Delivery / maintenance：
 
 ```text
 viso export html [<component>] [--out <dir>] [--static] [--force]
-viso export solid [--out <dir>]
+viso export solid [<component>] [--out <dir>] [--force]
 viso clean
 viso completion <bash|zsh|fish|powershell>
 ```

@@ -324,9 +324,15 @@ codes! {
         fix: "Build for the browser with the Viso renderer, `viso build web-gpu`, or with DOM and GPU islands, `viso build web-hybrid`; or rewrite the node with widgets HTML has.",
         commands: ["viso build web-gpu", "viso build web-hybrid"],
     }
+    EXPORT_SOLID_GPU_ONLY_NODE = DIAGNOSTICS {
+        summary: "A node only the Viso renderer can draw has no SolidJS form.",
+        explanation: "A `ShaderView` paints with a shader on the GPU; a SolidJS component renders DOM elements, none of which runs it, and dropping it would change what the component shows.",
+        fix: "Build for the browser with the Viso renderer, `viso build web-gpu`, or with DOM and GPU islands, `viso build web-hybrid`; or rewrite the node with widgets the DOM has.",
+        commands: ["viso build web-gpu", "viso build web-hybrid"],
+    }
     EXPORT_UNSUPPORTED = DIAGNOSTICS {
         summary: "Part of the view has no form the exporter writes.",
-        explanation: "The exporter lowers what it can say as HTML, CSS and vanilla JavaScript with the same meaning; this construct (a game's systems, a task, an effect, a native call, a Rust component) it cannot, and it never drops one silently.",
+        explanation: "The exporter lowers what it can say as HTML, CSS and JavaScript (vanilla, or a SolidJS component) with the same meaning; this construct (a game's systems, a task, an effect, a native call, a Rust component) it cannot, and it never drops one silently.",
         fix: "Build for the browser instead, `viso build web-gpu`, or move the construct out of the exported view.",
         commands: ["viso build web-gpu"],
     }

@@ -769,13 +769,25 @@ a precise diagnostic what it cannot express.
 
 ### C5.4 — `viso export solid` (§30)
 
-- [ ] SolidJS component source from UI IR + binding IR (§30.1): signals for state,
-      memos for derived values, event handlers; the state example of §30.2 as a
-      golden test.
-- [ ] SolidJS is never a Viso core dependency (§30.3): the exporter emits source and a
-      `package.json` stub only.
-- [ ] Ownership (§30.4): generated header, regenerate-in-place rules, user edits
-      detected and preserved by refusing to overwrite.
+- [x] SolidJS component source from the same lowering as C5.3 (§30.1): the lowered
+      element tree written as JSX; states as `createSignal`s, computeds as
+      `createMemo`s (read raw inside a transaction), inputs as typed props
+      (`bigint | number`, `boolean`, `number`, `string`), events as `on…` callback
+      props; each handler one transaction over the store, setting only the signals it
+      changed in one `batch`; `if` as `Show`, `match` as `With` + `Switch`/`Match`,
+      keyed `for` as `Each`, `preserve` arms as `Choose`; assets imported so Vite
+      places them. The Behavior IR translated to TypeScript by the page translator's
+      Solid dialect. The state example of §30.2 is a golden test.
+- [x] SolidJS is never a Viso core dependency (§30.3): the export writes `package.json`
+      (`solid-js`, `vite`, `vite-plugin-solid`, `typescript`), `tsconfig.json`,
+      `vite.config.ts`, `index.html`, `src/` and its runtime; Viso runs no package
+      manager (the human output prints the next step for `export.solid.package_manager`).
+      Verified: `tsc` clean and `vite build` under Node 24, then counter, regions,
+      controls, assets, props and event callbacks in headless Chrome.
+- [x] Ownership (§30.4): generated header in every source file; the directory replaced
+      whole only while unchanged since the last export (`EXPORT_CONFLICT`, exit 6,
+      unless `--force`); `node_modules/`, `dist/` and lockfiles are kept as they are
+      across exports; the artifact hash covers the generated files only.
 
 ---
 
