@@ -17,6 +17,7 @@ mod inspect;
 mod ios;
 mod lsp;
 mod new;
+mod package;
 mod run;
 mod scenario;
 mod schema;
@@ -62,6 +63,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
             device::run(Platform::Android, command, out)
         }
         Command::Build(args) => build::run(ctx, args, out),
+        Command::Package(args) => package::run(ctx, args, out),
         Command::Check(args) => check::run(ctx, args, out),
         Command::Clean => clean::run(ctx, out),
         Command::Doctor(args) => doctor::run(ctx, args, out),

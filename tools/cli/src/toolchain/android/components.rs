@@ -142,11 +142,12 @@ pub(crate) struct Api {
 }
 
 impl Api {
-    /// Its system image for `abi`.
+    /// Its system image for `abi`: the 64-bit one of its family, which
+    /// runs the 32-bit ABI's apps too.
     pub(crate) fn image(&self, abi: Abi) -> &Component {
         match abi {
-            Abi::Arm64 => &self.arm64,
-            Abi::X86_64 => &self.x86_64,
+            Abi::Arm64 | Abi::Armv7 => &self.arm64,
+            Abi::X86_64 | Abi::X86 => &self.x86_64,
         }
     }
 
@@ -211,8 +212,8 @@ const fn image(
         title: "system image",
         repository: GOOGLE_APIS,
         license: match abi {
-            Abi::Arm64 => ARM_LICENSE,
-            Abi::X86_64 => SDK_LICENSE,
+            Abi::Arm64 | Abi::Armv7 => ARM_LICENSE,
+            Abi::X86_64 | Abi::X86 => SDK_LICENSE,
         },
         keep: &[],
         archives,

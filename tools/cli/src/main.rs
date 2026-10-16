@@ -10,6 +10,7 @@ mod build;
 mod command;
 mod complete;
 mod context;
+mod delivery;
 mod deploy;
 mod dev;
 mod device;

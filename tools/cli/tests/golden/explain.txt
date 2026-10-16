@@ -271,6 +271,9 @@ ENV_XCODE                Xcode is not installed or not the selected developer di
 ENV_XCODE_LICENSE        The Xcode license is not accepted.
 BUILD_FAILED             `cargo build` failed.
 BUILD_PACKAGE            The built app could not be packaged for its target.
+PACKAGE_SIGNING          The package could not be signed as `--signing` asks.
+PACKAGE_UNSIGNED         The package is signed short of what its platform needs to install it elsewhere.
+PACKAGE_ARCHIVE          The package or its archive could not be made.
 RUN_APP_FAILED           The app could not be launched, crashed, or exited with a failure.
 RUN_TEST_CRASHED         A test case's runner could not start, crashed, or ended without its report.
 RUN_SNAPSHOT_FAILED      A scenario's snapshot could not be taken.

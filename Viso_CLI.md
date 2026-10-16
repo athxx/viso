@@ -2082,39 +2082,41 @@ viso package web-hybrid
 
 ```toml
 [package]
-name = "My App"
-bundle_id = "com.example.myapp"
-version = "1.0.0"
+name = "notes"
+display_name = "Notes"          # 图标下的名字；缺省为 name
+bundle_id = "com.example.notes" # macOS/iOS/Android 必需
+version = "1.0.0"               # 必需
+build = 42                      # CFBundleVersion / versionCode；缺省 1
+orientation = "portrait"        # any|portrait|landscape；缺省 any
 
 [package.icons]
-source = "assets/icon.png"
+source = "assets/icon.png"      # 正方形 PNG，至少 1024 px
+
+[package.permissions]           # 每项权限及系统询问时显示的理由
+camera = "Scans receipts into notes"
 ```
+
+权限 `camera|microphone|location|photos|contacts|bluetooth|notifications` 映射为各平台的 Info.plist usage 说明、hardened runtime entitlement 与 Android `<uses-permission>`。检查在构建前进行，问题以 C diagnostic 指向所在行：缺 `version`、所需平台缺 `bundle_id` 为 C0006；图标不可读、非 PNG、非正方形或小于 1024 px 为 C0007；`provisioning_profile`/`keystore` 指向的文件不存在为 C0007，有 keystore 无 `key_alias` 为 C0006。需要图标的平台没有图标是 warning（系统默认图标）；iOS 图标含透明像素是 warning（铺白底，iOS 图标不透明）。
 
 ### 27.2 Signing
 
-签名策略：
+`--signing auto|required|off`（默认 `auto`）：
 
 ```text
-auto
-required
-off
+auto      配置的或 keychain 中找到的身份；没有则按平台尽量签（ad-hoc、debug keystore 或不签）并 warning PACKAGE_UNSIGNED
+required  只接受真实身份；没有则 PACKAGE_SIGNING，exit 6
+off       不签
 ```
 
-示例：
+| 平台 | 身份来源 | `auto` 无身份时 |
+|---|---|---|
+| macOS | `[package.macos] identity`，否则 keychain 中第一个 `Developer ID Application:`；hardened runtime + 按权限生成 entitlements + timestamp，`.dmg` 同样签名 | ad-hoc（只在本机可运行） |
+| iOS | `[package.ios] identity`（否则 keychain 中 Apple/iPhone Distribution，再 Development）+ `provisioning_profile`；profile 必须覆盖 `bundle_id`，`team_id` 若配置须与 profile 一致 | 不签 |
+| Android | `[package.android] keystore` + `key_alias`；密码只从 `VISO_ANDROID_KEYSTORE_PASSWORD`（key 不同则 `VISO_ANDROID_KEY_PASSWORD`）由 `apksigner`/`jarsigner` 自己读取（`env:` 形式），缺失即 PACKAGE_SIGNING | debug keystore |
+| Windows | `[package.windows] identity`（证书 subject 或 SHA-1 thumbprint，在系统证书库）+ 可选 `timestamp_url`，`signtool` | 不签 |
+| Linux / Web | 无签名；`required` 为 PACKAGE_SIGNING | — |
 
-```bash
-viso package ios --signing required
-```
-
-Secret 不应以明文 CLI echo 或普通 log 输出。
-
-可使用：
-
-```text
-OS keychain
-CI secret environment
-credential provider
-```
+配置中点名的身份不在 keychain 时，`auto` 也失败（不静默降级）。Secret 不出现在命令行、`Viso.toml`、log 或 `artifact.json`；身份只以名字出现。
 
 ### 27.3 `--dry-run`
 
@@ -2122,39 +2124,50 @@ credential provider
 viso package ios --dry-run
 ```
 
-输出：
+不构建，输出一条 `result`（human 为对齐的表）：
 
-- resolved target；
-- bundle metadata；
-- signing identity metadata（不含 secret）；
-- expected build/package steps；
-- output path。
+```json
+{"target":"ios","profile":"shipping",
+ "metadata":{"id":"com.example.notes","name":"notes","display_name":"Notes","version":"1.0.0","build":42,"icon":"/…/assets/icon.png","orientation":"portrait","permissions":["camera"]},
+ "signing":{"policy":"auto","status":"signed","identity":"Apple Distribution: Example (ABCDE12345)"},
+ "steps":["compile for aarch64-apple-ios","bundle the app for devices","compile the icon into the asset catalog","sign it with `…` under `notes.mobileprovision`","archive notes-1.0.0.ipa"],
+ "output":"dist/ios","artifacts":[{"kind":"ipa","path":"dist/ios/notes-1.0.0.ipa"}]}
+```
+
+metadata 检查与签名决定都在 dry-run 中完成，因此缺身份、缺文件在 dry-run 就失败。
 
 ### 27.4 Artifact manifest
 
 每次 package 产生 machine-readable manifest：
 
 ```text
-dist/<target>/artifact.json
+dist/<platform>/artifact.json
 ```
 
-记录：
+```json
+{"project":"notes","version":"1.0.0","build":42,"target":"macos","profile":"shipping",
+ "build_id":"…","toolchain":"rustc 1.90.0 (…)",
+ "signing":{"policy":"auto","status":"signed","identity":"Developer ID Application: Example (ABCDE12345)"},
+ "artifacts":[{"kind":"app-bundle","path":"Notes.app","size":…,"hash":"sha256:…"},
+              {"kind":"dmg","path":"notes-1.0.0-aarch64.dmg","size":…,"hash":"sha256:…"}]}
+```
+
+`signing.status` ∈ `none|ad-hoc|debug-keystore|signed`（`viso build` 的 `artifact.json` 用同一对象，只有 `status`）。各平台产物（`<name>` 为 `package.name` 中可作文件名的字符）：
 
 ```text
-project
-version
-target
-profile
-artifact paths
-content hashes
-build id
-Viso toolchain identity
-signing status
+macOS    <display_name>.app、<name>-<version>-<arch>.dmg（含 /Applications 链接，UDZO）
+Windows  <name>-<version>-<arch>.zip（<name>-<version>-<arch>/<bin>.exe）
+Linux    <name>-<version>-<arch>.tar.gz（可执行文件、.desktop、512 px 图标）
+iOS      <name>-<version>.ipa（device 架构，actool 编译的 asset catalog）
+Android  <name>-<version>.apk 与 .aab（每个 ABI 一个库；`[package.android] abis`，缺省 arm64-v8a）
+Web      site/（与 build 相同的 bundle）与 <name>-<version>-<target>.zip
 ```
+
+zip 与 tar 由 CLI 自己写：条目按名排序、固定时间（1980-01-01）、模式只保留可执行位、无属主，同样的文件得到同样的字节。图标从 source 在线性光、预乘 alpha 下按面积平均缩放到各平台尺寸（ICNS 16–1024、Android 五个 density、Linux 512）。
 
 ### 27.5 JSON / exit codes
 
-`--json`：`progress`、`diagnostic`、每个产物一条 `artifact`（含 `artifact.json` 本身）、`summary`。`--dry-run` 以一条 `result`（§27.3 字段）代替 `artifact`。Exit code：1（diagnostics）、3（SDK/lock）、4（build）、6（signing/archive）。
+`--json`：`progress`、`diagnostic`、每个产物一条 `artifact`（含 `artifact.json` 本身）、`summary`。`--dry-run` 以一条 `result`（§27.3 字段）代替 `artifact`。Exit code：1（diagnostics）、2（`--profile dev`）、3（SDK/lock）、4（build）、6（PACKAGE_SIGNING、PACKAGE_ARCHIVE）。持有 `package-<target>.lock`，编译期间另持 `build-<target>.lock`。
 
 ---
 
@@ -2746,9 +2759,29 @@ minimum_os = "17.0"
 
 [package.ios]
 team_id = "ABCDE12345"
+identity = "Apple Distribution: Example (ABCDE12345)"
+provisioning_profile = "signing/notes.mobileprovision"
 ```
 
 Simulator development 不需要 signing。`team_id`、provisioning/signing metadata 只属于 package/delivery configuration。Secret 不写进普通 project config。
+
+### 38.4.1 Delivery signing
+
+```toml
+[package.macos]
+identity = "Developer ID Application: Example (ABCDE12345)"
+
+[package.android]
+keystore = "signing/release.jks"
+key_alias = "upload"
+abis = ["arm64-v8a", "armeabi-v7a"]   # arm64-v8a|armeabi-v7a|x86_64|x86
+
+[package.windows]
+identity = "Example Ltd"               # subject 或 SHA-1 thumbprint
+timestamp_url = "http://timestamp.example.com"
+```
+
+规则见 §27.2。
 
 ### 38.5 Export
 

@@ -23,11 +23,13 @@ use crate::args::{BuildArgs, BuildTarget};
 use crate::build::cargo::{self, BuildCommand, BuildFailure, CargoEvent, Sink};
 use crate::build::{self, Job, Staged, Written};
 use crate::context::{Context, Loaded, in_its_file};
+use crate::delivery::Plan;
 use crate::deploy;
 use crate::dev::cargo::RustScope;
 use crate::error::{
     BUILD_FAILED, BUILD_PACKAGE, CLI_USAGE, ENV_BUILD_WRITE, ENV_CARGO, ENV_CARGO_MANIFEST,
-    ENV_DEVICE, ENV_LOCK_HELD, ENV_NO_EXECUTABLE, ENV_TOOL, INTERRUPTED, SUCCESS,
+    ENV_DEVICE, ENV_LOCK_HELD, ENV_NO_EXECUTABLE, ENV_TOOL, INTERRUPTED, PACKAGE_ARCHIVE,
+    PACKAGE_SIGNING, SUCCESS,
 };
 use crate::interrupt;
 use crate::output::{Artifact, Output, human};
@@ -88,8 +90,13 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
             target: &platform,
             profile: profile.as_str(),
             build_id: &build_id,
+            build: None,
             toolchain: &toolchain,
-            signing: staged.signing,
+            signing: Signed {
+                policy: None,
+                status: staged.signing,
+                identity: None,
+            },
             dist: &dist,
             artifacts,
         })
@@ -171,18 +178,39 @@ pub(super) fn stage(
     check: Check,
     out: &mut Output,
 ) -> Result<Built, u8> {
+    available(target, out)?;
+    let loaded = ctx.load_as(target, ArtifactKind::Build, profile, out)?;
+    stage_loaded(ctx, target, loaded, check, None, out)
+}
+
+/// Fails unless this build of `viso` can build for `target` here.
+pub(super) fn available(target: Target, out: &mut Output) -> Result<(), u8> {
     if let Err(diagnostic) = target.require_available() {
         out.config(None, &diagnostic);
         return Err(diagnostic.code.exit_code());
     }
     if target == Target::Ios && !cfg!(target_os = "macos") {
-        return Err(out.failure(ENV_DEVICE, "the iOS Simulator SDK is on macOS only", &[]));
+        return Err(out.failure(ENV_DEVICE, "the iOS SDK is on macOS only", &[]));
     }
+    Ok(())
+}
+
+/// As [`stage`], for the project `loaded`; with a `delivery` plan, the
+/// package it describes in place of the build's own output, its failures
+/// the delivery's.
+pub(super) fn stage_loaded(
+    ctx: &Context<'_>,
+    target: Target,
+    loaded: Loaded,
+    check: Check,
+    delivery: Option<Plan>,
+    out: &mut Output,
+) -> Result<Built, u8> {
     let Loaded {
         project,
         resolved,
         layout,
-    } = ctx.load_as(target, ArtifactKind::Build, profile, out)?;
+    } = loaded;
     let config = resolved.config;
     let profile = config.profile.value;
 
@@ -230,7 +258,11 @@ pub(super) fn stage(
     let build_id = identity.to_hex();
     let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
     let manifest = canonical.join("Cargo.toml");
-    let plan = build::rust_plan(target, profile, sdk.as_ref());
+    let plan = match &delivery {
+        Some(delivery) => build::package_plan(delivery, profile, sdk.as_ref()),
+        None => build::rust_plan(target, profile, sdk.as_ref()),
+    };
+    let packaging = delivery.is_some();
     let android = match sdk {
         Some(sdk) => {
             let scope = match RustScope::read(&manifest, plan.target.as_deref(), &ctx.cargo_args())
@@ -273,9 +305,11 @@ pub(super) fn stage(
         web: config.settings.web,
         dir: layout.build(identity),
         android,
+        delivery,
     };
     out.verbose(|| job.cargo.describe());
-    out.progress("build", &format!("building {target} ({profile})"));
+    let doing = if packaging { "packaging" } else { "building" };
+    out.progress("build", &format!("{doing} {target} ({profile})"));
 
     interrupt::catch();
     let started = Instant::now();
@@ -285,7 +319,7 @@ pub(super) fn stage(
         Err(failure) => {
             // A failed or cancelled build leaves no output that looks whole.
             let _ = std::fs::remove_dir_all(&staging);
-            return Err(failed(out, &failure));
+            return Err(failed(out, &failure, packaging));
         }
     };
     if interrupt::count() > 0 {
@@ -346,9 +380,12 @@ fn produce(job: Job, root: &Path, out: &mut Output) -> Result<Staged, BuildFailu
     }
 }
 
-/// Reports why the build gave nothing, and returns the exit code.
-fn failed(out: &mut Output, failure: &BuildFailure) -> u8 {
+/// Reports why the build gave nothing, and returns the exit code; a
+/// package's own steps fail as delivery does when `packaging`.
+fn failed(out: &mut Output, failure: &BuildFailure, packaging: bool) -> u8 {
     let code = match failure {
+        BuildFailure::Package(_) if packaging => PACKAGE_ARCHIVE,
+        BuildFailure::Sign(_) => PACKAGE_SIGNING,
         BuildFailure::Cancelled => return INTERRUPTED,
         BuildFailure::Spawn(_) => ENV_CARGO,
         BuildFailure::Failed { .. } => BUILD_FAILED,
@@ -368,23 +405,32 @@ fn failed(out: &mut Output, failure: &BuildFailure) -> u8 {
     out.failure(code, &failure.message(), &notes)
 }
 
-/// What `artifact.json` records of a build.
-struct Described<'a> {
-    project: &'a str,
-    version: Option<&'a str>,
-    target: &'a str,
-    profile: &'a str,
-    build_id: &'a str,
-    toolchain: &'a str,
-    signing: &'a str,
+/// What `artifact.json` records of a build or a package.
+pub(super) struct Described<'a> {
+    pub(super) project: &'a str,
+    pub(super) version: Option<&'a str>,
+    pub(super) target: &'a str,
+    pub(super) profile: &'a str,
+    pub(super) build_id: &'a str,
+    /// A package's build number.
+    pub(super) build: Option<u32>,
+    pub(super) toolchain: &'a str,
+    pub(super) signing: Signed<'a>,
     /// The directory it lies in, which its paths are relative to.
-    dist: &'a Path,
-    artifacts: &'a [Written],
+    pub(super) dist: &'a Path,
+    pub(super) artifacts: &'a [Written],
+}
+
+/// How it is signed: a package's policy and identity, and the status.
+pub(super) struct Signed<'a> {
+    pub(super) policy: Option<&'a str>,
+    pub(super) status: &'a str,
+    pub(super) identity: Option<String>,
 }
 
 /// `artifact.json`: the build, and each artifact beside it with its size
 /// and hash, by its path relative to the manifest's directory.
-fn manifest_json(described: &Described<'_>) -> String {
+pub(super) fn manifest_json(described: &Described<'_>) -> String {
     let mut w = JsonWriter::new();
     w.begin_object();
     w.name("project");
@@ -394,16 +440,33 @@ fn manifest_json(described: &Described<'_>) -> String {
         Some(version) => w.string(version),
         None => w.null(),
     }
+    if let Some(build) = described.build {
+        w.name("build");
+        w.uint(u64::from(build));
+    }
     for (name, value) in [
         ("target", described.target),
         ("profile", described.profile),
         ("build_id", described.build_id),
         ("toolchain", described.toolchain),
-        ("signing", described.signing),
     ] {
         w.name(name);
         w.string(value);
     }
+    let signed = &described.signing;
+    w.name("signing");
+    w.begin_object();
+    if let Some(policy) = signed.policy {
+        w.name("policy");
+        w.string(policy);
+    }
+    w.name("status");
+    w.string(signed.status);
+    if let Some(identity) = &signed.identity {
+        w.name("identity");
+        w.string(identity);
+    }
+    w.end_object();
     w.name("artifacts");
     w.begin_array();
     for artifact in described.artifacts {
@@ -427,7 +490,7 @@ fn manifest_json(described: &Described<'_>) -> String {
 
 /// `path` relative to `base`, `/`-separated, with a trailing `/` for a
 /// directory when `directory`.
-fn relative_name(base: &Path, path: &Path, directory: bool) -> String {
+pub(super) fn relative_name(base: &Path, path: &Path, directory: bool) -> String {
     let relative = path.strip_prefix(base).unwrap_or(path);
     let mut name = relative
         .iter()
@@ -441,7 +504,7 @@ fn relative_name(base: &Path, path: &Path, directory: bool) -> String {
 }
 
 /// A duration as seconds to a tenth.
-fn seconds(duration: Duration) -> String {
+pub(super) fn seconds(duration: Duration) -> String {
     format!("{:.1} s", duration.as_secs_f64())
 }
 
@@ -466,15 +529,20 @@ mod tests {
             target: "web-gpu",
             profile: "shipping",
             build_id: "ab",
+            build: None,
             toolchain: "rustc 1.90.0",
-            signing: "none",
+            signing: Signed {
+                policy: None,
+                status: "none",
+                identity: None,
+            },
             dist: &dist,
             artifacts: &artifacts,
         });
         assert_eq!(
             text,
             "{\"project\":\"app\",\"version\":null,\"target\":\"web-gpu\",\"profile\":\"shipping\",\
-             \"build_id\":\"ab\",\"toolchain\":\"rustc 1.90.0\",\"signing\":\"none\",\"artifacts\":\
+             \"build_id\":\"ab\",\"toolchain\":\"rustc 1.90.0\",\"signing\":{\"status\":\"none\"},\"artifacts\":\
              [{\"kind\":\"wasm\",\"path\":\"app_bg.wasm\",\"size\":12,\"hash\":\"sha256:00\"}]}\n"
         );
     }

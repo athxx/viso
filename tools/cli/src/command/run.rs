@@ -823,7 +823,9 @@ fn launch_build(
                         BuildFailure::Spawn(_) => ENV_CARGO,
                         BuildFailure::Failed { .. } | BuildFailure::Cancelled => BUILD_FAILED,
                         BuildFailure::Executables(_) => ENV_NO_EXECUTABLE,
-                        BuildFailure::Package(_) | BuildFailure::Tool(_) => ENV_DEVICE,
+                        BuildFailure::Package(_)
+                        | BuildFailure::Sign(_)
+                        | BuildFailure::Tool(_) => ENV_DEVICE,
                         BuildFailure::Lock(_) => ENV_LOCK_HELD,
                         BuildFailure::Write(_) => ENV_BUILD_WRITE,
                     };

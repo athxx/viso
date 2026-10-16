@@ -19,10 +19,6 @@ pub const BUILD: u8 = 4;
 /// The app, a device or a test runner failed while running.
 pub const RUNTIME: u8 = 5;
 /// Packaging, signing or an exporter failed.
-#[allow(
-    dead_code,
-    reason = "the exit of the delivery commands, which are still to come"
-)]
 pub const PACKAGE: u8 = 6;
 /// A tooling service broke its protocol, or the CLI itself failed.
 pub const INTERNAL: u8 = 7;
@@ -298,6 +294,24 @@ codes! {
         fix: "Read the packaging step's message; it names the file or tool that failed.",
         commands: [],
     }
+    PACKAGE_SIGNING = PACKAGE {
+        summary: "The package could not be signed as `--signing` asks.",
+        explanation: "`--signing required` found no identity, provisioning profile, keystore or certificate configured or on this machine; or the one `Viso.toml` names is missing from the keychain, its password is not in the environment, or the signing tool failed on it. A secret is never read from the command line or `Viso.toml`.",
+        fix: "Name the identity in `[package.macos]`, `[package.ios]`, `[package.android]` or `[package.windows]`, keep its key in the keychain or certificate store and a keystore's passwords in `VISO_ANDROID_KEYSTORE_PASSWORD`/`VISO_ANDROID_KEY_PASSWORD`; `--dry-run` shows what would sign.",
+        commands: ["viso package --dry-run"],
+    }
+    PACKAGE_UNSIGNED = PACKAGE {
+        summary: "The package is signed short of what its platform needs to install it elsewhere.",
+        explanation: "Under `--signing auto` nothing better was configured or found, so the package is signed ad hoc, with the debug keystore, or not at all: it runs where it was built or installs for testing, but a store or another machine refuses it. The command still succeeds.",
+        fix: "Configure the platform's identity as the warning's note says, or pass `--signing off` to package unsigned on purpose.",
+        commands: ["viso package --dry-run"],
+    }
+    PACKAGE_ARCHIVE = PACKAGE {
+        summary: "The package or its archive could not be made.",
+        explanation: "The app was built, but wrapping it as its platform ships it failed: the `.app` or disk image, the asset catalog or `.ipa`, the APK or app bundle, the zip or tar, in its tool or on disk.",
+        fix: "Read the step's message; it names the tool or file that failed.",
+        commands: [],
+    }
     RUN_APP_FAILED = RUNTIME {
         summary: "The app could not be launched, crashed, or exited with a failure.",
         explanation: "The app started by `viso run` did not start, crashed, or exited with a nonzero status; its own output precedes this diagnostic.",
@@ -525,6 +539,7 @@ mod tests {
                 "INTERNAL" => &[INTERNAL],
                 "ENV" => &[ENVIRONMENT],
                 "BUILD" => &[BUILD],
+                "PACKAGE" => &[PACKAGE],
                 "RUN" => &[RUNTIME],
                 "TEST" | "EXPLAIN" => &[DIAGNOSTICS],
                 "DUMP" => &[USAGE],

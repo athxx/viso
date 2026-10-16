@@ -56,7 +56,7 @@ fn kind(path: &Path) -> Option<&'static str> {
 
 /// Writes the bundle of the module `wasm`, the app `bin`, into `dir`, which
 /// is empty; each file it wrote with its kind, by name.
-pub(super) fn bundle(
+pub(crate) fn bundle(
     wasm: &Path,
     dir: &Path,
     bin: &str,

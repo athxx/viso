@@ -2794,6 +2794,9 @@ dependencies = [
 [[package]]
 name = "viso-package"
 version = "0.0.0"
+dependencies = [
+ "flate2",
+]
 
 [[package]]
 name = "viso-platform"

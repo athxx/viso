@@ -11,5 +11,7 @@ repository.workspace = true
 # `viso run` packages each dev build with it and `cargo xtask bundle` each
 # release build, so there is one packager. It runs the platform toolchains
 # (codesign, javac, d8, aapt2, zipalign, apksigner, wasm-bindgen) and depends on
-# nothing internal.
+# nothing internal. It writes the archives a package ships in itself, so they
+# are the same bytes for the same files on every host.
 [dependencies]
+flate2 = "1"

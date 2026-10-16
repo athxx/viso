@@ -696,21 +696,32 @@ a precise diagnostic what it cannot express.
 
 ### C5.2 — `viso package` (§27)
 
-- [ ] `package [<target>]`, default profile `shipping`; `--profile dev` is exit 2
-      (§2.2); host targets: macOS `.app` + `.dmg`/zip, Windows/Linux archive; iOS
-      `.ipa`; Android `.aab` and `.apk`; web directory + archive.
-- [ ] Package metadata (§27.1) from `[package]`/`[ios]`/`[android]` in `Viso.toml`:
-      id, display name, version, build number, icons, permissions, orientation;
-      validated (C diagnostics) before building.
-- [ ] Signing (§27.2): `--sign auto|required|off`; identities, keystores and
-      passwords only from env/keychain/files named in config, never on the command
-      line or in logs (§49); `required` with no identity is exit 6.
-- [ ] `--dry-run` (§27.3): prints the plan (build, steps, signing identity chosen,
-      output paths) and validates metadata without building.
-- [ ] Package lock `package-<target>`; output `dist/<target>/` with
+- [x] `package [<target>]`, default profile `shipping`; `--profile dev` is exit 2
+      (§2.2); host targets: macOS `.app` + `.dmg`, Windows zip, Linux tar.gz; iOS
+      `.ipa` (device triple, actool asset catalog); Android `.apk` and `.aab`, one
+      library per `[package.android] abis`; web `site/` + zip. Zip and tar are
+      written by the packager itself, the same bytes for the same files.
+- [x] Package metadata (§27.1) from `[package]` in `Viso.toml`: id, display name,
+      version, build number, icon (square PNG ≥ 1024 px, scaled in linear light),
+      permissions, orientation; validated (C diagnostics at their line) before
+      building.
+- [x] Signing (§27.2): `--signing auto|required|off`; identities from
+      `[package.<platform>]` or the keychain, keystore passwords from
+      `VISO_ANDROID_KEYSTORE_PASSWORD`/`VISO_ANDROID_KEY_PASSWORD` read by the tools
+      (`env:`), never on the command line or in logs; `required` with no identity is
+      exit 6; `auto` short of a real one warns `PACKAGE_UNSIGNED`.
+- [x] `--dry-run` (§27.3): prints the plan (metadata, signing identity chosen,
+      steps, output paths) and validates metadata and signing without building.
+- [x] Package lock `package-<target>`; output `dist/<platform>/` with
       `artifact.json` (§27.4: files with SHA-256, size, target, profile, build id,
-      signing summary, toolchain versions); `artifact` events; exit 6 on
-      signing/archive failure.
+      build number, signing object, toolchain); `artifact` events; exit 6
+      (`PACKAGE_SIGNING`, `PACKAGE_ARCHIVE`).
+- [ ] Windows: the icon embedded in the executable (a resource at link time) and an
+      MSIX beside the zip; signing with `signtool` is written but unverified on a
+      Windows host.
+- [ ] Verify on real credentials: a Developer ID signature notarized
+      (`notarytool`, stapled), an `.ipa` signed with a distribution profile, an
+      `.aab` accepted by `bundletool validate`/Play; this machine has no identities.
 
 ### C5.3 — `viso export html` (§28, §29, §31)
 

@@ -9,14 +9,16 @@
 //! - [`produce`]: a build packaged for its target into
 //!   `target/viso/build/<build-id>/out/` — the executable, the simulator
 //!   `.app` signed ad hoc, the APK, or the web bundle as the profile's web
-//!   settings shape it ([`web`]).
+//!   settings shape it ([`web`]); or, for `viso package`, the package its
+//!   [`Plan`](crate::delivery::Plan) describes, every ABI it carries
+//!   compiled in turn.
 //! - [`publish`]: the packaged output copied into `dist/<platform>/` whole,
 //!   with its `artifact.json`, replacing what was there in one rename, so
 //!   `dist/` never holds part of a build; each file with its size and
 //!   SHA-256.
 
 pub(crate) mod cargo;
-mod web;
+pub(crate) mod web;
 
 use std::ffi::OsString;
 use std::fs;
@@ -32,6 +34,8 @@ use viso_package::{apple, web as bundle};
 use viso_project::{Layout, Profile, Target, Toolchain, WebSettings};
 
 use cargo::{BuildCommand, BuildFailure, Sink, is_cancelled};
+
+use crate::delivery::{self, Plan, Platform};
 
 /// How the app is compiled for a target.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -66,30 +70,50 @@ pub(crate) fn rust_plan(target: Target, profile: Profile, sdk: Option<&Sdk>) -> 
                 apple::MIN_IOS.into(),
             )],
         },
-        Target::Android => {
-            let abi = Abi::host();
-            let mut env: Vec<(String, OsString)> = sdk
-                .map(|sdk| sdk.cargo_env(abi))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(k, v)| (k, v.into_os_string()))
-                .collect();
-            if profile == Profile::Dev {
-                // The debug info stays on the host: the APK carries the code
-                // only, so it installs in seconds.
-                env.push(("CARGO_PROFILE_DEV_STRIP".to_owned(), "debuginfo".into()));
-            }
-            RustPlan {
-                target: Some(abi.triple().to_owned()),
-                features: Vec::new(),
-                rustc_args: android::RUSTC_ARGS.iter().map(|&a| a.to_owned()).collect(),
-                env,
-            }
-        }
+        Target::Android => android_plan(Abi::host(), profile, sdk),
         Target::WebGpu | Target::WebDom | Target::WebHybrid => RustPlan {
             target: Some(bundle::TRIPLE.to_owned()),
             ..RustPlan::default()
         },
+    }
+}
+
+/// How the app is compiled as the shell's library for `abi`, linked with
+/// the NDK of `sdk`.
+fn android_plan(abi: Abi, profile: Profile, sdk: Option<&Sdk>) -> RustPlan {
+    let mut env: Vec<(String, OsString)> = sdk
+        .map(|sdk| sdk.cargo_env(abi))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| (k, v.into_os_string()))
+        .collect();
+    if profile == Profile::Dev {
+        // The debug info stays on the host: the APK carries the code
+        // only, so it installs in seconds.
+        env.push(("CARGO_PROFILE_DEV_STRIP".to_owned(), "debuginfo".into()));
+    }
+    RustPlan {
+        target: Some(abi.triple().to_owned()),
+        features: Vec::new(),
+        rustc_args: android::RUSTC_ARGS.iter().map(|&a| a.to_owned()).collect(),
+        env,
+    }
+}
+
+/// How the app is compiled for the package `plan` describes: for devices
+/// on iOS, for the first of its ABIs on Android.
+pub(crate) fn package_plan(plan: &Plan, profile: Profile, sdk: Option<&Sdk>) -> RustPlan {
+    match plan.platform {
+        Platform::Ios => RustPlan {
+            target: Some(apple::DEVICE_TRIPLE.to_owned()),
+            env: vec![(
+                "IPHONEOS_DEPLOYMENT_TARGET".to_owned(),
+                plan.metadata.minimum_os.clone().into(),
+            )],
+            ..RustPlan::default()
+        },
+        Platform::Android => android_plan(plan.abis[0], profile, sdk),
+        _ => rust_plan(plan.target, profile, sdk),
     }
 }
 
@@ -143,6 +167,9 @@ pub(crate) struct Job {
     pub(crate) dir: PathBuf,
     /// The SDK and Java shell an Android build is packed with.
     pub(crate) android: Option<(Sdk, Shell)>,
+    /// The package `viso package` makes of it, in place of the build's own
+    /// output.
+    pub(crate) delivery: Option<Plan>,
 }
 
 /// A build compiled and packaged, not yet published.
@@ -152,7 +179,8 @@ pub(crate) struct Staged {
     pub(crate) out: PathBuf,
     /// Each artifact: its kind and its path under `out`.
     pub(crate) artifacts: Vec<(&'static str, PathBuf)>,
-    /// How the output is signed: `none`, `ad-hoc` or `debug-keystore`.
+    /// How the output is signed: `none`, `ad-hoc`, `debug-keystore` or
+    /// `signed`.
     pub(crate) signing: &'static str,
     /// Each stage and how long it took.
     pub(crate) stages: Vec<(&'static str, Duration)>,
@@ -191,60 +219,102 @@ pub(crate) fn produce(
         .file_stem()
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| BuildFailure::Package(format!("`{}` has no name", exe.display())))?;
-    let (artifacts, signing) = match job.target {
-        Target::Host | Target::Headless => {
-            let path = out.join(file);
-            fs::copy(&exe, &path).map_err(|e| written(e, &path))?;
-            (vec![("binary", path)], "none")
-        }
-        Target::Ios => {
-            let app = apple::bundle(&exe, &out, bin, true).map_err(BuildFailure::Package)?;
-            apple::sign(&app.path, None, None, &job.dir.join("sign"))
-                .map_err(BuildFailure::Package)?;
-            (vec![("app-bundle", app.path)], "ad-hoc")
-        }
-        Target::Android => {
-            let (sdk, shell) = job
-                .android
-                .as_ref()
-                .expect("an Android build has its SDK and shell");
-            let flavor = match job.profile {
-                Profile::Dev => android::Flavor::Dev,
-                Profile::Release | Profile::Shipping => android::Flavor::Release,
+    let (artifacts, signing) = match &job.delivery {
+        Some(plan) => {
+            // Each further ABI is its own compile, with its own NDK, and
+            // counts as compiling.
+            let mut more = Vec::new();
+            for &abi in plan.abis.iter().skip(1) {
+                let rust = android_plan(abi, job.profile, job.android.as_ref().map(|(sdk, _)| sdk));
+                let mut cargo = job.cargo.clone();
+                cargo.target = rust.target;
+                cargo.env = rust.env;
+                more.push((abi, cargo::build(&cargo, cancelled, sink)?));
+                if is_cancelled(cancelled) {
+                    return Err(BuildFailure::Cancelled);
+                }
+            }
+            stages[0].1 += started.elapsed();
+            let started = Instant::now();
+            let built = delivery::package::Built {
+                exe: &exe,
+                more: &more,
+                bin,
+                dir: &job.dir,
+                profile: job.profile,
+                web: &job.web,
+                android: job.android.as_ref(),
             };
-            let apk = sdk
-                .package(
-                    &exe,
-                    Abi::host(),
-                    &job.dir.join("android"),
-                    bin,
-                    shell,
-                    flavor,
-                )
-                .map_err(BuildFailure::Package)?;
-            let path = out.join(format!("{bin}.apk"));
-            fs::copy(&apk.path, &path).map_err(|e| written(e, &path))?;
-            (vec![("apk", path)], "debug-keystore")
+            let artifacts = delivery::package::make(plan, &built, &out, cancelled, sink)?;
+            stages.push(("package", started.elapsed()));
+            return Ok(Staged {
+                artifacts: relative(artifacts, &out),
+                out,
+                signing: plan.signing.signer.status(),
+                stages,
+            });
         }
-        Target::WebGpu | Target::WebDom | Target::WebHybrid => {
-            let files = web::bundle(&exe, &out, bin, job.profile, &job.web, cancelled, sink)?;
-            (files, "none")
-        }
+        None => match job.target {
+            Target::Host | Target::Headless => {
+                let path = out.join(file);
+                fs::copy(&exe, &path).map_err(|e| written(e, &path))?;
+                (vec![("binary", path)], "none")
+            }
+            Target::Ios => {
+                let app = apple::bundle(&exe, &out, &apple::Info::dev(bin), true)
+                    .map_err(BuildFailure::Package)?;
+                apple::sign(&app.path, None, None, &job.dir.join("sign"))
+                    .map_err(BuildFailure::Package)?;
+                (vec![("app-bundle", app.path)], "ad-hoc")
+            }
+            Target::Android => {
+                let (sdk, shell) = job
+                    .android
+                    .as_ref()
+                    .expect("an Android build has its SDK and shell");
+                let flavor = match job.profile {
+                    Profile::Dev => android::Flavor::Dev,
+                    Profile::Release | Profile::Shipping => android::Flavor::Release,
+                };
+                let dir = job.dir.join("android");
+                let apk = sdk
+                    .package(&android::Packing::dev(
+                        &exe,
+                        Abi::host(),
+                        &dir,
+                        bin,
+                        shell,
+                        flavor,
+                    ))
+                    .map_err(BuildFailure::Package)?;
+                let path = out.join(format!("{bin}.apk"));
+                fs::copy(&apk.path, &path).map_err(|e| written(e, &path))?;
+                (vec![("apk", path)], "debug-keystore")
+            }
+            Target::WebGpu | Target::WebDom | Target::WebHybrid => {
+                let files = web::bundle(&exe, &out, bin, job.profile, &job.web, cancelled, sink)?;
+                (files, "none")
+            }
+        },
     };
     stages.push(("package", started.elapsed()));
-    let artifacts = artifacts
-        .into_iter()
-        .map(|(kind, path)| {
-            let relative = path.strip_prefix(&out).map(Path::to_owned).unwrap_or(path);
-            (kind, relative)
-        })
-        .collect();
     Ok(Staged {
+        artifacts: relative(artifacts, &out),
         out,
-        artifacts,
         signing,
         stages,
     })
+}
+
+/// Each artifact's path relative to `out`.
+fn relative(artifacts: Vec<(&'static str, PathBuf)>, out: &Path) -> Vec<(&'static str, PathBuf)> {
+    artifacts
+        .into_iter()
+        .map(|(kind, path)| {
+            let relative = path.strip_prefix(out).map(Path::to_owned).unwrap_or(path);
+            (kind, relative)
+        })
+        .collect()
 }
 
 /// An artifact as published.

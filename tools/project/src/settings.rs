@@ -95,7 +95,20 @@ pub const KEYS: &[&str] = &[
     "package.version",
     "package.language",
     "package.capabilities",
+    "package.display_name",
+    "package.build",
+    "package.icons.source",
+    "package.orientation",
+    "package.permissions",
     "package.ios.team_id",
+    "package.ios.identity",
+    "package.ios.provisioning_profile",
+    "package.android.keystore",
+    "package.android.key_alias",
+    "package.android.abis",
+    "package.macos.identity",
+    "package.windows.identity",
+    "package.windows.timestamp_url",
     "profile.dev.opt_level",
     "profile.dev.source_maps",
     "profile.dev.strip",
@@ -190,7 +203,87 @@ pub fn settings(project: &Project, config: &ResolvedConfig, env: &Env) -> Vec<En
     push_text(&mut push, "package.version", &package.version, None);
     push_text(&mut push, "package.language", &package.language, None);
     push_list(&mut push, "package.capabilities", &package.capabilities);
-    push_text(&mut push, "package.ios.team_id", &package.ios_team_id, None);
+    push_text(
+        &mut push,
+        "package.display_name",
+        &package.display_name,
+        package.name.as_ref().map(|n| n.value.as_str()),
+    );
+    push_value(
+        &mut push,
+        "package.build",
+        package
+            .build
+            .as_ref()
+            .map(|b| b.as_ref().map(|n| Value::Integer(i64::from(*n)))),
+        Value::Integer(1),
+    );
+    push_text(&mut push, "package.icons.source", &package.icon, None);
+    push_value(
+        &mut push,
+        "package.orientation",
+        package
+            .orientation
+            .as_ref()
+            .map(|o| o.as_ref().map(|o| Value::Text(o.as_str().into()))),
+        Value::Text(crate::Orientation::Any.as_str().into()),
+    );
+    let permissions: Vec<Spanned<String>> = package
+        .permissions
+        .iter()
+        .map(|(permission, _)| permission.as_ref().map(|p| p.as_str().to_owned()))
+        .collect();
+    push_list(&mut push, "package.permissions", &permissions);
+    let ios = &package.ios;
+    push_text(&mut push, "package.ios.team_id", &ios.team_id, None);
+    push_text(&mut push, "package.ios.identity", &ios.identity, None);
+    push_text(
+        &mut push,
+        "package.ios.provisioning_profile",
+        &ios.provisioning_profile,
+        None,
+    );
+    let android = &package.android;
+    push_text(
+        &mut push,
+        "package.android.keystore",
+        &android.keystore,
+        None,
+    );
+    push_text(
+        &mut push,
+        "package.android.key_alias",
+        &android.key_alias,
+        None,
+    );
+    if android.abis.is_empty() {
+        push(
+            "package.android.abis",
+            Value::List(vec!["arm64-v8a".into()]),
+            Origin::FrameworkDefault,
+        );
+    } else {
+        push_list(&mut push, "package.android.abis", &android.abis);
+    }
+    push_text(
+        &mut push,
+        "package.macos.identity",
+        &package.macos.identity,
+        None,
+    );
+    let windows = &package.windows;
+    push_text(
+        &mut push,
+        "package.windows.identity",
+        &windows.identity,
+        None,
+    );
+    push_text(
+        &mut push,
+        "package.windows.timestamp_url",
+        &windows.timestamp_url,
+        None,
+    );
 
     for (profile, keys) in Profile::ALL.iter().zip(PROFILE_KEYS) {
         let mut errors = Vec::new();

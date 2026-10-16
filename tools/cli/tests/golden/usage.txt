@@ -43,6 +43,9 @@ TEST / DEBUG
   inspect     Inspect what the running app shows: its nodes, their boxes, semantics and source
   game        Read a state of, or record input from, the game `viso run` is playing
 
+DELIVERY
+  package     Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive
+
 MAINTENANCE
   clean       Remove `target/viso/`: builds, caches and dev state, never `dist/`
   completion  Write the script that completes `viso` commands in a shell

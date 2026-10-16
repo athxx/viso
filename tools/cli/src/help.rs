@@ -21,7 +21,7 @@ const GROUPS: &[(&str, &[&str])] = &[
         &["fmt", "check", "schema", "explain", "dump", "lsp"],
     ),
     ("TEST / DEBUG", &["test", "snapshot", "inspect", "game"]),
-    ("DELIVERY", &[]),
+    ("DELIVERY", &["package"]),
     ("MAINTENANCE", &["clean", "completion"]),
 ];
 
@@ -179,6 +179,23 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             (
                 "viso build ios --release --json",
                 "a release `.app`, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "package",
+        &[
+            (
+                "viso package",
+                "a signed `.app` and `.dmg` on a Mac, an archive elsewhere",
+            ),
+            (
+                "viso package android --signing required",
+                "an APK and app bundle, only with the release keystore",
+            ),
+            (
+                "viso package ios --dry-run",
+                "what the `.ipa` would be, building nothing",
             ),
         ],
     ),
@@ -639,6 +656,13 @@ const NOTES: &[(&str, &str)] = &[
          `[profile.<name>.web]` in `Viso.toml` shapes a web bundle.",
     ),
     (
+        "package",
+        "The default profile is `shipping`. `[package]` in `Viso.toml` gives the metadata,\n\
+         `[package.<platform>]` the identity; a keystore's passwords come from\n\
+         `VISO_ANDROID_KEYSTORE_PASSWORD` and `VISO_ANDROID_KEY_PASSWORD`, never a flag.\n\
+         The output replaces `dist/<platform>/` whole, with its `artifact.json`.",
+    ),
+    (
         "check",
         "A named target is checked as its build would be: its configuration, and the input\n\
          its devices have. `--a11y strict` and `--i18n strict` make those findings errors.",
@@ -1011,12 +1035,12 @@ mod tests {
             at("Examples:"),
             at("PROJECT\n"),
             at("MOBILE DEV ENVIRONMENT\n"),
+            at("DELIVERY\n"),
             at("MAINTENANCE\n"),
             at("Options:"),
             at("Notes:"),
         ];
         assert!(order.is_sorted(), "{help}");
-        assert!(!help.contains("DELIVERY"), "an empty group is left out");
     }
 
     /// A command page reads purpose, usage, examples, arguments, options and

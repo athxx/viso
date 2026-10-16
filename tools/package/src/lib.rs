@@ -6,13 +6,40 @@
 //!   app as the shared library the Java shell loads, and the signed APK.
 //! - [`web`]: the `wasm-bindgen` glue, the page that loads it and the files a
 //!   server hands out.
+//! - [`windows`] and [`linux`]: a desktop app's signature and launcher entry.
+//! - [`archive`]: the zip and tar a package ships in, the same bytes for the
+//!   same files.
 //!
 //! Each step runs the platform's own tool; a failure is a message naming the
 //! tool and what it said.
 
 pub mod android;
 pub mod apple;
+pub mod archive;
+pub mod linux;
 pub mod web;
+pub mod windows;
+
+/// What an app asks the system to let it use; each platform names it its
+/// own way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Camera,
+    Microphone,
+    Location,
+    Photos,
+    Contacts,
+    Bluetooth,
+    Notifications,
+}
+
+/// The orientations a mobile app turns to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientations {
+    Any,
+    Portrait,
+    Landscape,
+}
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

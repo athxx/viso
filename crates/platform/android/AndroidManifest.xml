@@ -1,19 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The manifest the packager fills in: {package}, {label}, {lib}, and
-     {dev_permissions}, what a dev build adds for its dev channel. -->
+<!-- The manifest the packager fills in: the app's id, version, lowest API
+     level, the permissions it asks for, its name, launcher icon and
+     orientation, and the library the shell loads. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="{package}"
-    android:versionCode="1"
-    android:versionName="1.0">
+    android:versionCode="{version_code}"
+    android:versionName="{version_name}">
 
-    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+    <uses-sdk android:minSdkVersion="{min_sdk}" android:targetSdkVersion="36" />
     <uses-feature android:name="android.hardware.vulkan.version"
         android:version="0x400003" android:required="true" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    {dev_permissions}
+    {permissions}
 
     <application
         android:label="{label}"
+        {icon}
         android:hasCode="true"
         android:extractNativeLibs="false"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
@@ -22,6 +23,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
+            {orientation}
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection|colorMode|touchscreen|mcc|mnc">
             <meta-data android:name="dev.viso.lib_name" android:value="{lib}" />
             <intent-filter>

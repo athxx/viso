@@ -142,7 +142,9 @@ fn avd_config(name: &str, image: &SystemImage, abi: Abi, preset: Preset) -> Stri
     };
     let arch = match abi {
         Abi::Arm64 => "arm64",
+        Abi::Armv7 => "arm",
         Abi::X86_64 => "x86_64",
+        Abi::X86 => "x86",
     };
     let play_store = image.tag.contains("playstore");
     format!(

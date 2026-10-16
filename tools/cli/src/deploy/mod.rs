@@ -355,7 +355,7 @@ impl Deploy {
             Deploy::Simulator { .. } => BuildPlan {
                 rust: rust_plan(Target::Ios, Profile::Dev, None),
                 package: Some(once_per_executable(|exe, bin, dir| {
-                    let app = apple::bundle(exe, dir, bin, true)?;
+                    let app = apple::bundle(exe, dir, &apple::Info::dev(bin), true)?;
                     apple::sign(&app.path, None, None, &dir.join("sign"))?;
                     Ok(app.path)
                 })),
@@ -366,8 +366,15 @@ impl Deploy {
                 BuildPlan {
                     rust: rust_plan(Target::Android, Profile::Dev, Some(&sdk)),
                     package: Some(once_per_executable(move |exe, bin, dir| {
-                        sdk.package(exe, abi, dir, bin, &shell, android::Flavor::Dev)
-                            .map(|apk| apk.path)
+                        sdk.package(&android::Packing::dev(
+                            exe,
+                            abi,
+                            dir,
+                            bin,
+                            &shell,
+                            android::Flavor::Dev,
+                        ))
+                        .map(|apk| apk.path)
                     })),
                 }
             }

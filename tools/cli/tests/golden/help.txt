@@ -36,6 +36,9 @@ TEST / DEBUG
   inspect     Inspect what the running app shows: its nodes, their boxes, semantics and source
   game        Read a state of, or record input from, the game `viso run` is playing
 
+DELIVERY
+  package     Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive
+
 MAINTENANCE
   clean       Remove `target/viso/`: builds, caches and dev state, never `dist/`
   completion  Write the script that completes `viso` commands in a shell
@@ -1484,6 +1487,42 @@ Global options:
       --jobs <N>           Run at most N jobs at once
       --profile <NAME>     The build profile [possible values: dev, release, shipping]
       --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso package --help
+Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive
+
+Usage: viso package [OPTIONS] [TARGET]
+
+Examples:
+  viso package                             # a signed `.app` and `.dmg` on a Mac, an archive elsewhere
+  viso package android --signing required  # an APK and app bundle, only with the release keystore
+  viso package ios --dry-run               # what the `.ipa` would be, building nothing
+
+Arguments:
+  [TARGET]  What to package for: this machine when omitted [possible values: ios, android, web-gpu, web-dom, web-hybrid]
+
+Options:
+      --signing <SIGNING>  How the package is signed: with the identity configured or found, else as far as the platform allows with a warning (`auto`); only with a real one (`required`); not at all (`off`) [default: auto] [possible values: auto, required, off]
+      --dry-run            Print what the package would be (its metadata, signing, steps and files) and build nothing
+  -h, --help               Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  The default profile is `shipping`. `[package]` in `Viso.toml` gives the metadata,
+  `[package.<platform>]` the identity; a keystore's passwords come from
+  `VISO_ANDROID_KEYSTORE_PASSWORD` and `VISO_ANDROID_KEY_PASSWORD`, never a flag.
+  The output replaces `dist/<platform>/` whole, with its `artifact.json`.
 
 $ viso clean --help
 Remove `target/viso/`: builds, caches and dev state, never `dist/`

@@ -232,6 +232,8 @@ pub(crate) enum BuildFailure {
     Executables(Vec<PathBuf>),
     /// The executable could not be packaged for its device.
     Package(String),
+    /// The package could not be signed.
+    Sign(String),
     /// A tool the packaging needs is not installed.
     Tool(String),
     /// The build's output could not be written.
@@ -258,6 +260,7 @@ impl BuildFailure {
                 "the package builds more than one executable".to_owned()
             }
             BuildFailure::Package(why) => format!("cannot package the app: {why}"),
+            BuildFailure::Sign(why) => format!("cannot sign the package: {why}"),
             BuildFailure::Cancelled => "the build was cancelled".to_owned(),
         }
     }

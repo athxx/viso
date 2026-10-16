@@ -129,6 +129,8 @@ pub enum Command {
     Lsp(LspArgs),
     /// Create a Viso project from a template: an app, a game, a web app or a library.
     New(NewArgs),
+    /// Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive.
+    Package(PackageArgs),
     /// Build a dev artifact and run it, hot reloading edits as they are saved.
     Run(RunArgs),
     /// Show the typed schema of a widget, component, native library, function or type.
@@ -183,6 +185,60 @@ impl BuildTarget {
             BuildTarget::WebHybrid => Target::WebHybrid,
         }
     }
+}
+
+/// What `viso package` packages.
+#[derive(Debug, Args)]
+pub struct PackageArgs {
+    /// What to package for: this machine when omitted.
+    #[arg(value_enum)]
+    pub target: Option<PackageTarget>,
+    /// How the package is signed: with the identity configured or found, else as far as the platform allows with a warning (`auto`); only with a real one (`required`); not at all (`off`).
+    #[arg(long, value_enum, default_value_t = SigningPolicy::Auto)]
+    pub signing: SigningPolicy,
+    /// Print what the package would be (its metadata, signing, steps and files) and build nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// The targets `viso package` packages for, beside this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PackageTarget {
+    /// An `.ipa` for iOS devices.
+    Ios,
+    /// An APK and an app bundle (`.aab`).
+    Android,
+    /// A web bundle and its zip, the Viso renderer on WebGPU.
+    WebGpu,
+    /// A web bundle and its zip, DOM output.
+    WebDom,
+    /// A web bundle and its zip, DOM with WebGPU islands.
+    WebHybrid,
+}
+
+impl PackageTarget {
+    /// The target it names.
+    pub fn target(self) -> viso_project::Target {
+        use viso_project::Target;
+        match self {
+            PackageTarget::Ios => Target::Ios,
+            PackageTarget::Android => Target::Android,
+            PackageTarget::WebGpu => Target::WebGpu,
+            PackageTarget::WebDom => Target::WebDom,
+            PackageTarget::WebHybrid => Target::WebHybrid,
+        }
+    }
+}
+
+/// How `viso package` signs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SigningPolicy {
+    /// With the identity configured or found; else ad hoc, with the debug keystore or unsigned, and a warning.
+    Auto,
+    /// Only with a real identity, keystore or certificate; without one the command fails.
+    Required,
+    /// Not at all.
+    Off,
 }
 
 /// What `viso doctor` examines.
@@ -1014,6 +1070,7 @@ impl Command {
             },
             Command::Lsp(_) => "lsp",
             Command::New(_) => "new",
+            Command::Package(_) => "package",
             Command::Run(_) => "run",
             Command::Schema(_) => "schema",
             Command::Serve(_) => "serve",
@@ -1042,7 +1099,10 @@ pub fn parse() -> Result<Cli, clap::Error> {
 /// Whether `command` names its target as a positional argument, so a
 /// `--target` there is the other commands' spelling.
 pub fn takes_positional_target(command: &str) -> bool {
-    matches!(command, "build" | "check" | "doctor" | "run" | "serve")
+    matches!(
+        command,
+        "build" | "check" | "doctor" | "package" | "run" | "serve"
+    )
 }
 
 /// Whether `--json` appears among `args` (the arguments after the program name)

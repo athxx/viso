@@ -79,12 +79,151 @@ pub struct Package {
     /// The Viso language version the package's `.vs` sources are written in; a
     /// source file never restates it.
     pub language: Option<Spanned<String>>,
-    /// `[package.ios]` signing identity. Kept here rather than
-    /// under `[target.ios]` because it is delivery configuration, not a build
-    /// property.
-    pub ios_team_id: Option<Spanned<String>>,
     /// The capabilities the package is granted, such as `storage.persist`.
     pub capabilities: Vec<Spanned<String>>,
+    /// The name a person sees under the app's icon; the project name when
+    /// absent.
+    pub display_name: Option<Spanned<String>>,
+    /// The build number, rising with every upload of one version: iOS's
+    /// `CFBundleVersion`, Android's `versionCode`; 1 when absent.
+    pub build: Option<Spanned<u32>>,
+    /// `[package.icons] source`: the square PNG, at least 1024 pixels, every
+    /// icon is scaled from, relative to the project root.
+    pub icon: Option<Spanned<String>>,
+    /// The orientations a mobile app turns to; every one when absent.
+    pub orientation: Option<Spanned<Orientation>>,
+    /// `[package.permissions]`: each permission the app asks for, with the
+    /// reason the system shows when it asks.
+    pub permissions: Vec<(Spanned<Permission>, Spanned<String>)>,
+    /// `[package.ios]`: delivery configuration, not a build property, so not
+    /// under `[target.ios]`.
+    pub ios: IosPackage,
+    /// `[package.android]`.
+    pub android: AndroidPackage,
+    /// `[package.macos]`.
+    pub macos: MacosPackage,
+    /// `[package.windows]`.
+    pub windows: WindowsPackage,
+}
+
+/// The orientations a mobile app turns to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    /// Portrait and landscape.
+    Any,
+    /// Upright only.
+    Portrait,
+    /// Either way on its side.
+    Landscape,
+}
+
+impl Orientation {
+    /// The name `Viso.toml` gives it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Orientation::Any => "any",
+            Orientation::Portrait => "portrait",
+            Orientation::Landscape => "landscape",
+        }
+    }
+
+    /// Every orientation, in declaration order.
+    pub const ALL: &'static [Orientation] = &[
+        Orientation::Any,
+        Orientation::Portrait,
+        Orientation::Landscape,
+    ];
+}
+
+/// A permission an app asks the system for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Permission {
+    /// The camera.
+    Camera,
+    /// The microphone.
+    Microphone,
+    /// Where the device is, while the app is in use.
+    Location,
+    /// The photo library.
+    Photos,
+    /// The contacts.
+    Contacts,
+    /// Bluetooth devices nearby.
+    Bluetooth,
+    /// Showing notifications.
+    Notifications,
+}
+
+impl Permission {
+    /// The name `[package.permissions]` gives it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Permission::Camera => "camera",
+            Permission::Microphone => "microphone",
+            Permission::Location => "location",
+            Permission::Photos => "photos",
+            Permission::Contacts => "contacts",
+            Permission::Bluetooth => "bluetooth",
+            Permission::Notifications => "notifications",
+        }
+    }
+
+    /// Every permission, in declaration order.
+    pub const ALL: &'static [Permission] = &[
+        Permission::Camera,
+        Permission::Microphone,
+        Permission::Location,
+        Permission::Photos,
+        Permission::Contacts,
+        Permission::Bluetooth,
+        Permission::Notifications,
+    ];
+}
+
+/// `[package.ios]`: how the iOS package is signed. The identity's key stays
+/// in the keychain.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IosPackage {
+    /// The Apple Developer team.
+    pub team_id: Option<Spanned<String>>,
+    /// The signing identity, as the keychain names it; the one of the team
+    /// when absent.
+    pub identity: Option<Spanned<String>>,
+    /// The provisioning profile embedded and signed with, relative to the
+    /// project root.
+    pub provisioning_profile: Option<Spanned<String>>,
+}
+
+/// `[package.android]`: how the Android package is built and signed. The
+/// keystore's passwords are never configuration: they come from the
+/// environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AndroidPackage {
+    /// The release keystore, relative to the project root.
+    pub keystore: Option<Spanned<String>>,
+    /// The key in it.
+    pub key_alias: Option<Spanned<String>>,
+    /// The ABIs the package carries; `arm64-v8a` when absent.
+    pub abis: Vec<Spanned<String>>,
+}
+
+/// `[package.macos]`: how the macOS package is signed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MacosPackage {
+    /// The signing identity, as the keychain names it; a Developer ID one
+    /// found there when absent.
+    pub identity: Option<Spanned<String>>,
+}
+
+/// `[package.windows]`: how the Windows executable is signed. The
+/// certificate and its key stay in the system's certificate store.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WindowsPackage {
+    /// The certificate: its subject name, or its SHA-1 thumbprint.
+    pub identity: Option<Spanned<String>>,
+    /// The RFC 3161 server the signature is timestamped by, so it outlives
+    /// the certificate.
+    pub timestamp_url: Option<Spanned<String>>,
 }
 
 /// One `[profile.X]` table.
@@ -470,6 +609,17 @@ fn bundle_id(id: &str) -> Result<(), &'static str> {
     }
 }
 
+/// An `http` or `https` URL.
+fn timestamp_url(url: &str) -> Result<(), &'static str> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
+    match rest {
+        Some(host) if !host.is_empty() && !url.contains(char::is_whitespace) => Ok(()),
+        _ => Err("an `http://` or `https://` URL"),
+    }
+}
+
 /// `1`, `1.2` or `1.2.3`, with an optional `-pre` or `+build` suffix.
 fn version(version: &str) -> Result<(), &'static str> {
     let core = version.split(['-', '+']).next().unwrap_or_default();
@@ -494,6 +644,23 @@ fn team_id(id: &str) -> Result<(), &'static str> {
         Ok(())
     } else {
         Err("ten uppercase letters and digits, as the Apple Developer account shows it")
+    }
+}
+
+/// The highest build number Android's `versionCode` allows.
+pub const MAX_BUILD: u32 = 2_100_000_000;
+
+/// The ABIs an Android package can carry.
+pub const ANDROID_ABIS: &[&str] = &["arm64-v8a", "armeabi-v7a", "x86_64", "x86"];
+
+/// A name a home screen can show: not empty, at most 30 characters, no
+/// control characters.
+fn display_name(name: &str) -> Result<(), &'static str> {
+    if !name.trim().is_empty() && name.chars().count() <= 30 && !name.chars().any(char::is_control)
+    {
+        Ok(())
+    } else {
+        Err("a name of 1 to 30 characters, with no control characters")
     }
 }
 
@@ -606,24 +773,100 @@ impl<'a> Reader<'a> {
                         "bundle_id",
                         "version",
                         "language",
-                        "ios",
                         "capabilities",
+                        "display_name",
+                        "build",
+                        "icons",
+                        "orientation",
+                        "permissions",
+                        "ios",
+                        "android",
+                        "macos",
+                        "windows",
                     ],
                     "package",
                 );
+                let orientations: Vec<(&str, Orientation)> =
+                    Orientation::ALL.iter().map(|o| (o.as_str(), *o)).collect();
                 Package {
                     name: self.string(t, "name", "package"),
                     bundle_id: self.checked(t, "bundle_id", "package", bundle_id),
                     version: self.checked(t, "version", "package", version),
                     language: self.string(t, "language", "package"),
-                    ios_team_id: match self.table(t, "ios") {
-                        Some(ios) => {
-                            self.deny_unknown(ios, &["team_id"], "package.ios");
-                            self.checked(ios, "team_id", "package.ios", team_id)
+                    capabilities: self.string_array(t, "capabilities", "package"),
+                    display_name: self.checked(t, "display_name", "package", display_name),
+                    build: self.build_number(t),
+                    icon: match self.table(t, "icons") {
+                        Some(icons) => {
+                            self.deny_unknown(icons, &["source"], "package.icons");
+                            self.string(icons, "source", "package.icons")
                         }
                         None => None,
                     },
-                    capabilities: self.string_array(t, "capabilities", "package"),
+                    orientation: self.choice(t, "orientation", "package", &orientations),
+                    permissions: self.permissions(t),
+                    ios: match self.table(t, "ios") {
+                        Some(ios) => {
+                            self.deny_unknown(
+                                ios,
+                                &["team_id", "identity", "provisioning_profile"],
+                                "package.ios",
+                            );
+                            IosPackage {
+                                team_id: self.checked(ios, "team_id", "package.ios", team_id),
+                                identity: self.string(ios, "identity", "package.ios"),
+                                provisioning_profile: self.string(
+                                    ios,
+                                    "provisioning_profile",
+                                    "package.ios",
+                                ),
+                            }
+                        }
+                        None => IosPackage::default(),
+                    },
+                    android: match self.table(t, "android") {
+                        Some(android) => {
+                            self.deny_unknown(
+                                android,
+                                &["keystore", "key_alias", "abis"],
+                                "package.android",
+                            );
+                            AndroidPackage {
+                                keystore: self.string(android, "keystore", "package.android"),
+                                key_alias: self.string(android, "key_alias", "package.android"),
+                                abis: self.abis(android),
+                            }
+                        }
+                        None => AndroidPackage::default(),
+                    },
+                    macos: match self.table(t, "macos") {
+                        Some(macos) => {
+                            self.deny_unknown(macos, &["identity"], "package.macos");
+                            MacosPackage {
+                                identity: self.string(macos, "identity", "package.macos"),
+                            }
+                        }
+                        None => MacosPackage::default(),
+                    },
+                    windows: match self.table(t, "windows") {
+                        Some(windows) => {
+                            self.deny_unknown(
+                                windows,
+                                &["identity", "timestamp_url"],
+                                "package.windows",
+                            );
+                            WindowsPackage {
+                                identity: self.string(windows, "identity", "package.windows"),
+                                timestamp_url: self.checked(
+                                    windows,
+                                    "timestamp_url",
+                                    "package.windows",
+                                    timestamp_url,
+                                ),
+                            }
+                        }
+                        None => WindowsPackage::default(),
+                    },
                 }
             }
             None => Package::default(),
@@ -916,6 +1159,84 @@ impl<'a> Reader<'a> {
                 None
             }
         }
+    }
+
+    /// `[package] build`: a build number both stores take, 1 to 2100000000.
+    fn build_number(&mut self, t: &dyn TableLike) -> Option<Spanned<u32>> {
+        let raw = self.integer(t, "build", "package")?;
+        match u32::try_from(raw.value) {
+            Ok(build) if (1..=MAX_BUILD).contains(&build) => Some(Spanned::new(build, raw.span)),
+            _ => {
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!("`package.build` cannot be {}", raw.value),
+                    )
+                    .at(self.path)
+                    .span(raw.span)
+                    .note(format!(
+                        "a whole number from 1 to {MAX_BUILD}, as Android's `versionCode` allows"
+                    )),
+                );
+                None
+            }
+        }
+    }
+
+    /// `[package.permissions]`: each known permission with a reason that
+    /// says why.
+    fn permissions(&mut self, t: &dyn TableLike) -> Vec<(Spanned<Permission>, Spanned<String>)> {
+        let Some(table) = self.table(t, "permissions") else {
+            return Vec::new();
+        };
+        let names: Vec<&str> = Permission::ALL.iter().map(|p| p.as_str()).collect();
+        self.deny_unknown(table, &names, "package.permissions");
+        let mut out = Vec::new();
+        for permission in Permission::ALL {
+            let name = permission.as_str();
+            let Some(reason) = self.string(table, name, "package.permissions") else {
+                continue;
+            };
+            if reason.value.trim().is_empty() {
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!("`package.permissions.{name}` says no reason"),
+                    )
+                    .at(self.path)
+                    .span(reason.span)
+                    .note("the system shows it when it asks, as `\"Scans receipts\"`"),
+                );
+                continue;
+            }
+            let key = self
+                .span_of(self.key_range(table, name))
+                .unwrap_or(reason.span);
+            out.push((Spanned::new(*permission, key), reason));
+        }
+        out
+    }
+
+    /// `[package.android] abis`: each one Android names.
+    fn abis(&mut self, t: &dyn TableLike) -> Vec<Spanned<String>> {
+        let abis = self.string_array(t, "abis", "package.android");
+        let mut out = Vec::with_capacity(abis.len());
+        for abi in abis {
+            if ANDROID_ABIS.contains(&abi.value.as_str()) {
+                out.push(abi);
+            } else {
+                self.diags.push(
+                    ConfigDiagnostic::error(
+                        ConfigCode::InvalidValue,
+                        format!("`package.android.abis` cannot hold `{}`", abi.value),
+                    )
+                    .at(self.path)
+                    .span(abi.span)
+                    .note(format!("one of: {}", ANDROID_ABIS.join(", "))),
+                );
+            }
+        }
+        out
     }
 
     /// A sub-table, accepting both `[a.b]` and `a = { b = ... }` forms.
@@ -1481,7 +1802,7 @@ members = ["apps/one", "apps/two"]
 
         assert_eq!(m.package.version.as_ref().unwrap().value, "0.2.0");
         assert_eq!(m.package.language.as_ref().unwrap().value, "1.0");
-        assert_eq!(m.package.ios_team_id.as_ref().unwrap().value, "ABCDE12345");
+        assert_eq!(m.package.ios.team_id.as_ref().unwrap().value, "ABCDE12345");
 
         assert_eq!(m.profiles.dev.opt_level.unwrap().value, OptLevel::Zero);
         assert!(m.profiles.dev.source_maps.unwrap().value);
@@ -1661,6 +1982,94 @@ members = ["apps/one", "apps/two"]
         );
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(m.package.version.unwrap().value, "1.4.0-beta.1");
+    }
+
+    #[test]
+    fn delivery_metadata_is_read_and_checked_where_written() {
+        let (m, warnings) = parse(
+            r#"
+[package]
+name = "notes"
+display_name = "Notes"
+bundle_id = "com.example.notes"
+version = "2.1.0"
+build = 42
+orientation = "portrait"
+
+[package.icons]
+source = "assets/icon.png"
+
+[package.permissions]
+camera = "Scans receipts into notes"
+notifications = "Reminds you of a note"
+
+[package.ios]
+team_id = "ABCDE12345"
+identity = "Apple Distribution: Example (ABCDE12345)"
+provisioning_profile = "signing/notes.mobileprovision"
+
+[package.android]
+keystore = "signing/release.jks"
+key_alias = "upload"
+abis = ["arm64-v8a", "x86_64"]
+
+[package.macos]
+identity = "Developer ID Application: Example (ABCDE12345)"
+
+[package.windows]
+identity = "Example Ltd"
+timestamp_url = "http://timestamp.example.com"
+"#,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let p = &m.package;
+        assert_eq!(p.display_name.as_ref().unwrap().value, "Notes");
+        assert_eq!(p.build.as_ref().unwrap().value, 42);
+        assert_eq!(p.icon.as_ref().unwrap().value, "assets/icon.png");
+        assert_eq!(p.orientation.as_ref().unwrap().value, Orientation::Portrait);
+        let permissions: Vec<(Permission, &str)> = p
+            .permissions
+            .iter()
+            .map(|(permission, reason)| (permission.value, reason.value.as_str()))
+            .collect();
+        assert_eq!(
+            permissions,
+            [
+                (Permission::Camera, "Scans receipts into notes"),
+                (Permission::Notifications, "Reminds you of a note")
+            ]
+        );
+        assert_eq!(p.permissions[0].0.span.line, 14, "the key is the span");
+        assert_eq!(
+            p.ios.provisioning_profile.as_ref().unwrap().value,
+            "signing/notes.mobileprovision"
+        );
+        assert_eq!(p.android.key_alias.as_ref().unwrap().value, "upload");
+        assert_eq!(p.android.abis.len(), 2);
+        assert!(p.macos.identity.is_some());
+        assert_eq!(p.windows.identity.as_ref().unwrap().value, "Example Ltd");
+
+        for (text, line) in [
+            ("[package]\nbuild = 0\n", 2),
+            ("[package]\nbuild = 2100000001\n", 2),
+            ("[package]\ndisplay_name = \"\"\n", 2),
+            (
+                "[package]\ndisplay_name = \"A name far too long for any home screen\"\n",
+                2,
+            ),
+            ("[package]\norientation = \"upside-down\"\n", 2),
+            ("[package.permissions]\ncamera = \" \"\n", 2),
+            ("[package.android]\nabis = [\"mips\"]\n", 2),
+            ("[package.windows]\ntimestamp_url = \"timestamp\"\n", 2),
+        ] {
+            let diags = errors(text);
+            assert_eq!(diags[0].code, ConfigCode::InvalidValue, "{text}");
+            assert_eq!(diags[0].span.unwrap().line, line, "{text}");
+            assert!(!diags[0].notes.is_empty(), "{text}");
+        }
+        let diags = errors("[package.permissions]\ncamra = \"Scans\"\n");
+        assert_eq!(diags[0].code, ConfigCode::UnknownKey);
+        assert_eq!(diags[0].notes, ["did you mean `camera`?"]);
     }
 
     #[test]

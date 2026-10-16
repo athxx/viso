@@ -192,7 +192,7 @@ fn ios(o: &Options, simulator: bool) -> Result<PathBuf, String> {
     let bin = o.bin.clone().unwrap_or_else(|| o.package.clone());
     let (built, target_dir) = cargo(o, &bin, triple, &[], &[])?;
     let out = target_dir.join("bundle").join(target);
-    let app = apple::bundle(&built, &out, &bin, simulator)?;
+    let app = apple::bundle(&built, &out, &apple::Info::dev(&bin), simulator)?;
     let profile = o.profile.as_deref().filter(|_| !simulator);
     apple::sign(
         &app.path,
@@ -248,7 +248,9 @@ fn android(o: &Options) -> Result<PathBuf, String> {
     } else {
         android::Flavor::Dev
     };
-    let apk = sdk.package(&built, abi, &out, &bin, &shell, flavor)?;
+    let apk = sdk.package(&android::Packing::dev(
+        &built, abi, &out, &bin, &shell, flavor,
+    ))?;
 
     if o.run {
         run(Command::new(&sdk.adb)
