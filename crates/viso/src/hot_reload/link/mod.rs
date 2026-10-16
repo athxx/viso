@@ -89,6 +89,13 @@ pub(crate) enum Incoming {
     Snapshot,
     /// The host asks for the app's census, for its question `id`.
     Inspect(u32),
+    /// A scenario to play, its text and source table as their blobs
+    /// arrived, `None` when one did not arrive whole.
+    Scenario {
+        id: u32,
+        script: Option<Arc<[u8]>>,
+        sources: Option<Option<Arc<[u8]>>>,
+    },
     /// The state to restore, and the bytes of its snapshot, `None` when they
     /// did not arrive whole.
     Restore(Box<RestoreBundle>, Option<Arc<[u8]>>),
@@ -199,6 +206,20 @@ fn host_frame(body: &[u8], blobs: &mut Blobs) -> Frame {
         Ok(HostMessage::Game(query)) => Incoming::Game(query),
         Ok(HostMessage::Snapshot) => Incoming::Snapshot,
         Ok(HostMessage::Inspect { id }) => Incoming::Inspect(id),
+        Ok(HostMessage::Scenario {
+            id,
+            script,
+            sources,
+        }) => {
+            let script = blobs.take(script);
+            let sources = sources.map(|sources| blobs.take(sources));
+            blobs.clear();
+            Incoming::Scenario {
+                id,
+                script,
+                sources,
+            }
+        }
         Ok(HostMessage::Restore(restore)) => {
             let snapshot = blobs.take(restore.snapshot);
             blobs.clear();

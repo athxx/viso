@@ -81,6 +81,7 @@ use viso_view::dev::wire::{
     RuntimeSessionId, RuntimeTarget, ShaderLang, Stage, SystemPatch, UiPatch, WindowGeometry,
     blob_chunks, source_hash,
 };
+use viso_view::headless::Reported;
 use viso_view::inspect::SourceTable;
 
 pub use control::{Control, ControlAsk, ControlCall, ControlDeliver, ControlReply};
@@ -133,6 +134,14 @@ struct Runtime {
     asked: Vec<Asked>,
     /// The questions of `viso inspect` it was sent and has not answered.
     inspecting: Vec<(u32, Sender<ControlReply>)>,
+    /// The scenarios it was sent to play, with the report lines it sent of
+    /// each so far.
+    playing: Vec<(u32, Sender<ControlReply>, Vec<String>)>,
+    /// Scenarios asked for before it reported what it mounts, which its
+    /// selectors resolve against: sent once it does.
+    held_scenarios: Vec<(String, Sender<ControlReply>)>,
+    /// Whether it reported what it mounts.
+    mounted: bool,
     /// The chunks of the snapshot it is sending.
     blobs: Blobs,
     /// What it runs of the source graph.
@@ -182,6 +191,18 @@ impl Drop for Runtime {
             let _ = reply.send(ControlReply::refused(
                 control::ENV_NO_DEV_SESSION,
                 "the app exited before it answered",
+            ));
+        }
+        let held = self.held_scenarios.drain(..).map(|(_, reply)| reply);
+        for reply in self
+            .playing
+            .drain(..)
+            .map(|(_, reply, _)| reply)
+            .chain(held)
+        {
+            let _ = reply.send(ControlReply::refused(
+                control::ENV_NO_DEV_SESSION,
+                "the app exited before it played the scenario",
             ));
         }
     }
@@ -594,6 +615,9 @@ impl DevSession {
                     in_flight: None,
                     asked: Vec::new(),
                     inspecting: Vec::new(),
+                    playing: Vec::new(),
+                    held_scenarios: Vec::new(),
+                    mounted: false,
                     blobs: Blobs::default(),
                     mounts: Mounts::default(),
                     patch: None,
@@ -735,6 +759,10 @@ impl DevSession {
                     self.clock.mounted = Some(Instant::now());
                 }
                 self.ready = true;
+                self.runtimes[at].mounted = true;
+                for (script, reply) in std::mem::take(&mut self.runtimes[at].held_scenarios) {
+                    self.play(&script, reply);
+                }
             }
             RuntimeMessage::Blob(chunk) => self.runtimes[at].blobs.add(chunk),
             RuntimeMessage::Snapshot {
@@ -808,6 +836,7 @@ impl DevSession {
             ),
             RuntimeMessage::Game(answer) => self.answer(at, answer),
             RuntimeMessage::Inspect { id, census } => self.inspected(at, id, census),
+            RuntimeMessage::Scenario { id, line } => self.played(at, id, line),
             // The link thread delivers no second hello.
             RuntimeMessage::Hello(_) => {}
         }
@@ -1143,7 +1172,76 @@ impl DevSession {
         match call.ask {
             ControlAsk::Game { game, ask } => self.game(&game, ask, call.reply, out),
             ControlAsk::Inspect => self.inspect(call.reply),
+            ControlAsk::Scenario { script } => self.play(&script, call.reply),
         }
+    }
+
+    /// Hands the first runtime connected the scenario `script` to play,
+    /// with the table of the views it mounts for its inspector selectors;
+    /// [`played`](Self::played) answers once its report ends.
+    fn play(&mut self, script: &str, reply: Sender<ControlReply>) {
+        let refuse = |reply: Sender<ControlReply>| {
+            let _ = reply.send(ControlReply::refused(
+                control::ENV_NO_DEV_SESSION,
+                "the app is not connected to `viso run`",
+            ));
+        };
+        if self.runtimes.is_empty() {
+            return refuse(reply);
+        }
+        if !self.runtimes[0].mounted {
+            self.runtimes[0]
+                .held_scenarios
+                .push((script.to_owned(), reply));
+            return;
+        }
+        let sources = self.source_table(0);
+        let id = self.next_query;
+        self.next_query = self.next_query.wrapping_add(1);
+        let runtime = &mut self.runtimes[0];
+        let message = HostMessage::Scenario {
+            id,
+            script: BlobRef::of(script.as_bytes()),
+            sources: Some(BlobRef::of(&sources)),
+        };
+        let sent = blob_chunks(script.as_bytes())
+            .chain(blob_chunks(&sources))
+            .all(|chunk| runtime.writer.send(HostMessage::Blob(chunk)).is_ok())
+            && runtime.writer.send(message).is_ok();
+        if !sent {
+            return refuse(reply);
+        }
+        runtime.playing.push((id, reply, Vec::new()));
+    }
+
+    /// Keeps the report line `line` of the scenario `id` runtime `at` plays,
+    /// and answers its caller with the report once it ends.
+    fn played(&mut self, at: usize, id: u32, line: String) {
+        let runtime = &mut self.runtimes[at];
+        let Some(index) = runtime.playing.iter().position(|(asked, ..)| *asked == id) else {
+            return;
+        };
+        let done = matches!(Reported::from_line(&line), Some(Reported::Done { .. }));
+        runtime.playing[index].2.push(line);
+        if done {
+            let (_, reply, lines) = runtime.playing.swap_remove(index);
+            let _ = reply.send(ControlReply::Played { lines });
+        }
+    }
+
+    /// The source table of the views runtime `at` mounts, in its wire form.
+    fn source_table(&self, at: usize) -> Vec<u8> {
+        let runtime = &self.runtimes[at];
+        let files = runtime
+            .mounts
+            .views
+            .keys()
+            .filter_map(|&view| {
+                let name = self.name(&self.sources.views[view].path);
+                self.sources.file_sources(&runtime.mounts, view, name)
+            })
+            .collect();
+        SourceTable { files }.to_bytes()
     }
 
     /// Asks the first runtime connected for its census, which
@@ -1187,17 +1285,7 @@ impl DevSession {
             ));
             return;
         };
-        let runtime = &self.runtimes[at];
-        let files = runtime
-            .mounts
-            .views
-            .keys()
-            .filter_map(|&view| {
-                let name = self.name(&self.sources.views[view].path);
-                self.sources.file_sources(&runtime.mounts, view, name)
-            })
-            .collect();
-        let sources = SourceTable { files }.to_bytes();
+        let sources = self.source_table(at);
         // What the reply holds besides the two fits in a few bytes.
         let answer = if census.len() + sources.len() > MAX_FRAME - 64 {
             ControlReply::refused(
@@ -2525,6 +2613,78 @@ mod tests {
             };
             assert_eq!(code, control::ENV_NO_DEV_SESSION);
         }
+    }
+
+    #[test]
+    fn a_scenario_goes_to_the_app_with_its_views_and_its_report_comes_back_whole() {
+        let mut f = Fixture::app("scenario", true, GAME, GAME, Domains::NONE.with(Domain::Ui));
+        let _ = f.settle();
+        let script = "expect \"0 clicks\"\nclick \"Click me\"\n";
+        let (reply, answer) = mpsc::channel();
+        f.dev.control(
+            ControlCall {
+                ask: ControlAsk::Scenario {
+                    script: script.to_owned(),
+                },
+                reply,
+            },
+            &mut f.out,
+        );
+        let sent: Vec<HostMessage> = f.sent.try_iter().collect();
+        let Some(HostMessage::Scenario {
+            id,
+            script: sent_script,
+            sources: Some(sources),
+        }) = sent.last()
+        else {
+            panic!("not asked: {sent:?}");
+        };
+        assert_eq!(*sent_script, BlobRef::of(script.as_bytes()));
+        let blobs = sent
+            .iter()
+            .filter(|message| matches!(message, HostMessage::Blob(_)))
+            .count();
+        assert!(blobs >= 2, "the script and the views go ahead: {sent:?}");
+        assert!(sources.len > 0);
+
+        let lines = [
+            Reported::Passed { line: 1 }.to_line(),
+            Reported::Passed { line: 2 }.to_line(),
+        ];
+        for line in &lines {
+            f.runtime(RuntimeMessage::Scenario {
+                id: *id,
+                line: line.clone(),
+            });
+        }
+        assert!(answer.try_recv().is_err(), "the report has not ended");
+        let done = Reported::Done { frames: 4 }.to_line();
+        f.runtime(RuntimeMessage::Scenario {
+            id: *id,
+            line: done.clone(),
+        });
+        let Ok(ControlReply::Played { lines: relayed }) = answer.try_recv() else {
+            panic!("not answered");
+        };
+        assert_eq!(relayed, [lines[0].clone(), lines[1].clone(), done]);
+
+        // An app that exits mid-scenario refuses it.
+        let (reply, open) = mpsc::channel();
+        f.dev.control(
+            ControlCall {
+                ask: ControlAsk::Scenario {
+                    script: script.to_owned(),
+                },
+                reply,
+            },
+            &mut f.out,
+        );
+        let launch = f.launch();
+        f.dev.link(LinkEvent::Closed(launch), &mut f.out);
+        let Ok(ControlReply::Refused { code, .. }) = open.try_recv() else {
+            panic!("not refused");
+        };
+        assert_eq!(code, control::ENV_NO_DEV_SESSION);
     }
 
     #[test]

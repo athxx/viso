@@ -1814,9 +1814,10 @@ viso game peek movement Player.score                 # 读取运行中 System St
 
 - 省略测试域即 `all`：依次 `unit`、`ui`、`game`、`web`；某域在此无可运行的内容（没有 `Cargo.toml`、没有 `tests/ui` 或 `tests/game`、`web`）时以该域名记一个 `skip` 用例并给出原因；显式指定的域无内容时为 `ENV_TEST_INPUT` / `ENV_CARGO_MANIFEST` / `ENV_TEST_TARGET`（exit 3）；
 - `unit`：`cargo test`（带 `--no-fail-fast`，`--fail-fast` 时去掉），`--filter`/`--exact`/`--nocapture` 交给 test harness，`--jobs` 同时作为 `--test-threads`；编译诊断与 `viso build` 相同，harness 报告的每个测试一个用例（`ignored` 为 `skip`），失败用例带其输出；编译失败 `BUILD_FAILED`（exit 4）；
-- `ui` 只在 `headless` 上运行，`--target` 为其他 target 时 `ENV_TEST_TARGET`（exit 3）；`web` 尚未实现（`ENV_TEST_TARGET`）；`--target` 不用于 `unit`/`game`（usage error）；`--frames`/`--seed`/`--tape` 只用于 `game`，Scenario 名只用于 `ui`/`game`；
+- `ui` 在 `headless`、`ios`、`android` 上运行，其他 target 为 `ENV_TEST_TARGET`（exit 3）；`web` 尚未实现（`ENV_TEST_TARGET`）；`--target` 不用于 `unit`/`game`（usage error）；`--frames`/`--seed`/`--tape` 只用于 `game`，Scenario 名只用于 `ui`/`game`；
 - `--filter <pattern>` 按名字包含（`--exact` 时相等）筛选每个域的用例；`--fail-fast` 在第一个失败用例后停止（进行中的 ui 用例被终止、不报告）；
-- `--update-snapshots` 只用于 `ui`（及省略测试域时的 `ui`），见 §22.2；`--device` 随 device target（C3）加入；
+- `--update-snapshots` 只用于 `ui`（及省略测试域时的 `ui`），见 §22.2；`--device` 只用于 `--target ios|android`（否则 usage error），省略时按 `viso run` 的规则选 profile（本地默认、唯一 profile、TTY 询问）；
+- `ui --target ios|android`：每个用例在设备上全新启动一次 app——以本可执行文件运行 `viso run <ios|android> --device <id> --json` 并读它的事件；app 连上 dev 通道且报告完 mounts 后，Scenario 经该 session 的 control endpoint（`ControlAsk::Scenario`）交给 app，由 dev runtime 在第一个窗口上逐步执行（输入以平台事件 post 进 scheduler，与用户输入同一路由；期望读 semantics；inspector selector 用 session 给的 source table），每步结果以 `RuntimeMessage::Scenario` 报告行（与 headless 报告同形，多一种 `skip`）回传，结束后以 Ctrl-C 结束该 session。snapshot 步骤只在 headless 拍摄，设备上记为 skip 并输出一行说明；component 用例（单独挂载组件）只在 headless 运行，记为 skip。session 在 app 连上之前结束（构建、设备或 SDK 失败）时，该用例以 session 最后的诊断失败，域以 session 的 exit code 结束，不再继续后面的用例；app 在 Scenario 结束前退出为 `RUN_TEST_CRASHED`（exit 5）；Ctrl-C 结束当前 session，exit 130；
 - 人类输出每个用例一行 `test <domain> <name> ... ok|FAILED|skipped`（被跳过的整个域为 `test <domain> ... skipped (<原因>)`），末行 `test result: ok|FAILED. <n> passed; <n> failed; <n> skipped`。
 
 ### 22.5 JSON / exit codes

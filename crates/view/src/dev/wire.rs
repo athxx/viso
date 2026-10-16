@@ -121,6 +121,9 @@ pub const MAX_CAPABILITIES: usize = 256;
 /// The most lines a failure carries, and the longest line.
 pub const MAX_LINES: usize = 16;
 pub const MAX_LINE: usize = 1024;
+/// The longest line of a scenario's report: a failed expectation lists what
+/// the window shows.
+pub const MAX_REPORT_LINE: usize = 16 * 1024;
 
 /// The most notices an ACK carries.
 pub const MAX_NOTICES: usize = 64;
@@ -858,6 +861,16 @@ pub enum HostMessage {
     Inspect {
         id: u32,
     },
+    /// A UI scenario for the app to play against its first window, for
+    /// `viso test` on a device: its text and the source table its inspector
+    /// selectors join, their bytes in the blobs sent ahead. The steps'
+    /// outcomes come back as [`RuntimeMessage::Scenario`] lines repeating
+    /// `id`.
+    Scenario {
+        id: u32,
+        script: BlobRef,
+        sources: Option<BlobRef>,
+    },
 }
 
 /// What the runtime sends.
@@ -895,6 +908,12 @@ pub enum RuntimeMessage {
     Inspect {
         id: u32,
         census: BlobRef,
+    },
+    /// A line of the report of the scenario `id` plays: a step's outcome, a
+    /// snapshot taken, or its end.
+    Scenario {
+        id: u32,
+        line: String,
     },
 }
 
@@ -1151,6 +1170,7 @@ const HOST_BLOB: u8 = 5;
 const HOST_SNAPSHOT: u8 = 6;
 const HOST_RESTORE: u8 = 7;
 const HOST_INSPECT: u8 = 8;
+const HOST_SCENARIO: u8 = 9;
 
 const RUNTIME_HELLO: u8 = 0;
 const RUNTIME_ACK: u8 = 1;
@@ -1164,6 +1184,7 @@ const RUNTIME_BLOB: u8 = 8;
 const RUNTIME_SNAPSHOT: u8 = 9;
 const RUNTIME_RESTORED: u8 = 10;
 const RUNTIME_INSPECT: u8 = 11;
+const RUNTIME_SCENARIO: u8 = 12;
 
 const REJECT_PROTOCOL: u8 = 0;
 const REJECT_BUILD: u8 = 1;
@@ -1525,6 +1546,22 @@ impl Message for HostMessage {
                 enc.write_u8(HOST_INSPECT);
                 enc.write_varint(u64::from(*id));
             }
+            HostMessage::Scenario {
+                id,
+                script,
+                sources,
+            } => {
+                enc.write_u8(HOST_SCENARIO);
+                enc.write_varint(u64::from(*id));
+                script.write(enc);
+                match sources {
+                    Some(sources) => {
+                        enc.write_u8(1);
+                        sources.write(enc);
+                    }
+                    None => enc.write_u8(0),
+                }
+            }
         }
     }
 
@@ -1605,6 +1642,15 @@ impl Message for HostMessage {
                 ui: read_ui(dec)?,
             }))),
             HOST_INSPECT => Ok(HostMessage::Inspect { id: read_u32(dec)? }),
+            HOST_SCENARIO => Ok(HostMessage::Scenario {
+                id: read_u32(dec)?,
+                script: BlobRef::read(dec)?,
+                sources: match dec.read_u8()? {
+                    0 => None,
+                    1 => Some(BlobRef::read(dec)?),
+                    _ => return Err(malformed(dec)),
+                },
+            }),
             _ => Err(malformed(dec)),
         }
     }
@@ -1742,6 +1788,11 @@ impl Message for RuntimeMessage {
                 enc.write_u8(RUNTIME_INSPECT);
                 enc.write_varint(u64::from(*id));
                 census.write(enc);
+            }
+            RuntimeMessage::Scenario { id, line } => {
+                enc.write_u8(RUNTIME_SCENARIO);
+                enc.write_varint(u64::from(*id));
+                write_string(enc, line);
             }
         }
     }
@@ -1901,6 +1952,10 @@ impl Message for RuntimeMessage {
                 id: read_u32(dec)?,
                 census: BlobRef::read(dec)?,
             }),
+            RUNTIME_SCENARIO => Ok(RuntimeMessage::Scenario {
+                id: read_u32(dec)?,
+                line: read_string(dec, MAX_REPORT_LINE, "scenario report line")?,
+            }),
             _ => Err(malformed(dec)),
         }
     }
@@ -1999,6 +2054,16 @@ mod tests {
             }),
             HostMessage::Snapshot,
             HostMessage::Inspect { id: 3 },
+            HostMessage::Scenario {
+                id: 4,
+                script: BlobRef::of(b"tap \"Save\""),
+                sources: Some(BlobRef::of(b"sources")),
+            },
+            HostMessage::Scenario {
+                id: 5,
+                script: BlobRef::of(b""),
+                sources: None,
+            },
             HostMessage::Restore(Box::new(RestoreBundle {
                 dev_session: DevSessionId(7),
                 target_runtime: RuntimeSessionId(9),
@@ -2343,6 +2408,10 @@ mod tests {
             RuntimeMessage::Inspect {
                 id: 3,
                 census: BlobRef::of(b"census"),
+            },
+            RuntimeMessage::Scenario {
+                id: 4,
+                line: "failed 3 no node shows \"Save\"".into(),
             },
             RuntimeMessage::Restored(RestoreReport {
                 files: vec![FileCommit {

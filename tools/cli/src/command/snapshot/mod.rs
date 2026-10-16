@@ -263,7 +263,7 @@ pub fn run(ctx: &Context<'_>, command: &SnapshotCommand, out: &mut Output) -> u8
             out,
             |_| false,
             |out, case, played| {
-                let ended = ended(out, &root, case, &played);
+                let ended = ended(out, &root, case, &played.ended);
                 let held = hold(
                     out, &root, &store, mode, case, &played, &build, &keeps, &mut tally,
                 );
@@ -417,8 +417,8 @@ pub(super) fn taken_twice(
 }
 
 /// Reports how `case`'s run ended when it did not pass; the exit code.
-pub(super) fn ended(out: &mut Output, root: &std::path::Path, case: &Case, played: &Played) -> u8 {
-    match &played.ended {
+pub(super) fn ended(out: &mut Output, root: &std::path::Path, case: &Case, ended: &Ended) -> u8 {
+    match ended {
         Ended::Passed | Ended::Stopped => SUCCESS,
         Ended::Failed { line, message } => {
             let snapshot = case.snapshot_at(*line).is_some();

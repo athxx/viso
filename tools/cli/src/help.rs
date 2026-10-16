@@ -607,8 +607,8 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             ("viso test", "every domain"),
             ("viso test ui", "every scenario under `tests/ui/`, headless"),
             (
-                "viso test game movement --tape runs/jump.tape",
-                "one game scenario, replaying a recorded tape",
+                "viso test ui --target android --device pixel",
+                "the UI scenarios on an emulator profile",
             ),
         ],
     ),
@@ -725,7 +725,9 @@ const NOTES: &[(&str, &str)] = &[
     ),
     (
         "test",
-        "A scenario is `tests/ui/<name>.tape` or `tests/game/<name>.tape`; a failed case exits 1, a crashed runner 5.",
+        "A scenario is `tests/ui/<name>.tape` or `tests/game/<name>.tape`; a failed case exits 1, a crashed runner 5.\n\
+         On `--target ios|android` each UI scenario plays on a fresh launch of the app on\n\
+         the device; its snapshot steps are taken headless only.",
     ),
 ];
 

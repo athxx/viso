@@ -135,13 +135,16 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
         unsafe { (*app).run(this) };
     }
 
-    /// Run one frame if the pending reasons call for it, then reset them.
+    /// Run one frame if the pending reasons call for it, taking them; a
+    /// reason added while it runs or by the events it posts is the next
+    /// frame's.
     fn maybe_run_frame(&mut self) {
         // Only spend a frame when something is actually pending — the
         // zero-CPU-when-idle contract. A backgrounded app draws nothing.
         if self.suspended || self.reasons.is_idle() {
             return;
         }
+        self.reasons.take();
         // Sample the clock at the frame head and diff against the previous
         // frame; the first frame has no predecessor, so its delta is ZERO.
         let now = self.clock.now();
@@ -150,10 +153,14 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
             .map(|prev| now.saturating_duration_since(prev))
             .unwrap_or(Duration::ZERO);
         self.last_frame = Some(now);
-        let (created, state_dirty) = {
+        let (created, state_dirty, posted) = {
             let mut cx = RuntimeCx::new(self.app.as_mut(), delta, now);
             run_frame(&mut self.driver, &mut cx);
-            (cx.windows_created(), cx.state_dirty_requested())
+            (
+                cx.windows_created(),
+                cx.state_dirty_requested(),
+                cx.take_posted(),
+            )
         };
         self.open_windows += created;
         // A write made during this frame (e.g. an input handler that ran in an
@@ -161,6 +168,14 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
         // the reason forward so that frame actually runs.
         if state_dirty {
             self.reasons.add(RedrawReason::StateDirty);
+        }
+        self.deliver(posted);
+    }
+
+    /// Handles the events the driver posted, in order.
+    fn deliver(&mut self, posted: Vec<RawEvent>) {
+        for event in posted {
+            let _ = self.handle(event);
         }
     }
 
@@ -179,14 +194,15 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
 
     /// Hand a loop kick to the driver with a live context.
     fn wakeup(&mut self) {
-        let state_dirty = {
+        let (state_dirty, posted) = {
             let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.peek());
             self.driver.on_wakeup(&mut cx);
-            cx.state_dirty_requested()
+            (cx.state_dirty_requested(), cx.take_posted())
         };
         if state_dirty {
             self.reasons.add(RedrawReason::StateDirty);
         }
+        self.deliver(posted);
     }
 
     /// Hand a window's surface loss or return to the driver with a live
@@ -274,10 +290,7 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 // A beat: run the frame the pending reasons ask for. Requesting
                 // a redraw from the driver added a reason; the beat drains it.
                 // While suspended the reasons stay pending for the resume frame.
-                if !self.suspended {
-                    self.maybe_run_frame();
-                    self.reasons.take();
-                }
+                self.maybe_run_frame();
             }
             RawEvent::Resized {
                 window,
@@ -882,5 +895,54 @@ mod tests {
         // still launches and returns; only the scheduler is never dropped.
         let app = Box::new(HeadlessApp::scripted(vec![]));
         Scheduler::new(app, LifecycleDriver::default()).run_detached();
+    }
+
+    /// A driver that posts a click from its first frame and records the
+    /// pointer samples it then receives.
+    #[derive(Default)]
+    struct PostDriver {
+        frames: u32,
+        presses: Vec<(f32, f32)>,
+    }
+
+    impl FrameDriver for PostDriver {
+        fn on_launch(&mut self, _cx: &mut RuntimeCx<'_>) {}
+        fn on_geometry(&mut self, _window: WindowId, _scale: f64, _width: u32, _height: u32) {}
+        fn on_input(&mut self, sample: InputSample) {
+            if let InputSample::Pointer(p) = sample {
+                self.presses.push((p.x, p.y));
+            }
+        }
+        fn run_phase(&mut self, phase: FramePhase, cx: &mut RuntimeCx<'_>) {
+            if phase == FramePhase::Submit {
+                self.frames += 1;
+                if self.frames == 1 {
+                    cx.post_event(click());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_event_a_frame_posts_is_handled_as_the_platforms_once_it_returns() {
+        let app = Box::new(HeadlessApp::scripted(vec![]));
+        let mut sched = Scheduler::new(app, PostDriver::default());
+        sched.launched = true;
+        sched.open_windows = 1;
+        sched.reasons.add(RedrawReason::FirstFrame);
+        let _ = sched.handle(RawEvent::RedrawRequested {
+            window: WindowId(1),
+        });
+        assert_eq!(sched.driver.frames, 1);
+        assert_eq!(
+            sched.driver.presses,
+            vec![(4.0, 4.0)],
+            "the posted click reaches the driver as input, normalized"
+        );
+        // The input it caused is the next beat's reason: that frame runs.
+        let _ = sched.handle(RawEvent::RedrawRequested {
+            window: WindowId(1),
+        });
+        assert_eq!(sched.driver.frames, 2);
     }
 }

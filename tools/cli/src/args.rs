@@ -704,6 +704,10 @@ pub struct TestArgs {
     /// Where the cases run: `headless` by default.
     #[arg(long, value_enum, value_name = "TARGET")]
     pub target: Option<TestTarget>,
+    /// The simulator or emulator profile UI scenarios run on (`--target
+    /// ios` and `android` only).
+    #[arg(long, value_name = "ID", add = ArgValueCandidates::new(complete::device_ids))]
+    pub device: Option<String>,
     /// The frames a game scenario runs, one fixed tick each; by default
     /// through the tape and the scenario's last expectation.
     #[arg(long, value_name = "N")]

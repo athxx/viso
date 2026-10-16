@@ -262,6 +262,11 @@ fn a_headless_run_is_queried_and_scenarios_select_by_the_same_selectors() {
                 "tests/ui/press.tape",
                 b"surface 320x200@1\nclick (Column > #flip)\nexpect \"Done\"\nexpect ([label=Done])\n",
             ),
+            // A click lands on its node at any scale.
+            (
+                "tests/ui/dense.tape",
+                b"surface 320x200@2.5\nclick \"Flip\"\nexpect \"Done\"\n",
+            ),
         ],
     );
     let target = app.parent().unwrap().join("target");

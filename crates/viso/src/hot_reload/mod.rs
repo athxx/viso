@@ -93,7 +93,8 @@ use viso_view::dev::wire::{
     RestoreBundle, RestoreReport, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint,
     ScopedReset, Stage, WindowGeometry,
 };
-use viso_view::inspect::{self, Census, CensusView};
+use viso_view::headless::Reported;
+use viso_view::inspect::{self, Census, CensusView, WindowCensus};
 use viso_view::{
     GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
 };
@@ -164,6 +165,12 @@ pub(crate) struct HotReloadSession {
     /// The host's questions for the app's census, answered at the next
     /// frame boundary.
     inspects: Vec<u32>,
+    /// The scenario the host asked the app to play, and its question `id`;
+    /// its steps run after each frame of the first window.
+    scenario: Option<(u32, crate::scenario::ScriptRunner)>,
+    /// Whether a scenario arrived since the last frame, which every window
+    /// draws to start.
+    scenario_arrived: bool,
     /// Whether `viso run` launched this process to restore the one before it
     /// and the restore is still to be waited for.
     awaiting_restore: bool,
@@ -877,7 +884,8 @@ impl HotReloadSession {
         if !self.receive(windows) {
             return;
         }
-        if self.snapshot_asked || !self.inspects.is_empty() {
+        if self.snapshot_asked || !self.inspects.is_empty() || self.scenario_arrived {
+            self.scenario_arrived = false;
             for ws in windows {
                 cx.request_redraw(ws.window);
             }
@@ -986,6 +994,30 @@ impl HotReloadSession {
                 }
                 Incoming::Inspect(id) => {
                     self.inspects.push(id);
+                    changed = true;
+                }
+                Incoming::Scenario {
+                    id,
+                    script,
+                    sources,
+                } => {
+                    match scenario(script, sources) {
+                        Ok(runner) => {
+                            self.scenario = Some((id, runner));
+                            self.scenario_arrived = true;
+                        }
+                        Err(message) => {
+                            for reported in [
+                                Reported::Failed { line: 0, message },
+                                Reported::Done { frames: 0 },
+                            ] {
+                                link.send(RuntimeMessage::Scenario {
+                                    id,
+                                    line: reported.to_line(),
+                                });
+                            }
+                        }
+                    }
                     changed = true;
                 }
                 // The launch window waits for it in a browser.
@@ -1125,45 +1157,66 @@ impl HotReloadSession {
         }
     }
 
+    /// After each frame: runs the steps of the scenario being played that
+    /// are due against the first window, and sends their report.
+    pub(crate) fn play(&mut self, windows: &[WindowState], cx: &mut RuntimeCx<'_>) {
+        let Some((id, mut runner)) = self.scenario.take() else {
+            return;
+        };
+        if let Some(ws) = windows.first() {
+            runner.after_frame(ws, &|| self.window_census(ws), cx);
+        }
+        let lines = runner.take_lines();
+        if let Some(link) = &mut self.link {
+            for line in lines {
+                link.send(RuntimeMessage::Scenario { id, line });
+            }
+        }
+        if !runner.is_finished() {
+            self.scenario = Some((id, runner));
+        }
+    }
+
     /// Every window's census, its nodes named by the views it mounts.
     fn census(&self, windows: &[WindowState]) -> Census {
-        let mut census = Census::default();
-        for ws in windows {
-            let live: Vec<(&LiveView, Vec<Option<NodeId>>)> = self
-                .views
-                .iter()
-                .filter(|live| live.window == ws.window)
-                .map(|live| {
-                    let nodes = if live.nodes.is_empty() {
-                        static_nodes(&ws.store, live.root, self.files[live.file].statics)
-                    } else {
-                        live.nodes.clone()
-                    };
-                    (live, nodes)
-                })
-                .collect();
-            let hosts: Vec<Option<std::cell::Ref<'_, ViewHost>>> = live
-                .iter()
-                .map(|(live, _)| live.host.as_ref().map(|host| host.borrow()))
-                .collect();
-            let views: Vec<CensusView<'_>> = live
-                .iter()
-                .zip(&hosts)
-                .map(|((live, nodes), host)| {
-                    let entry = &self.files[live.file].entry;
-                    CensusView {
-                        file: &entry.path,
-                        source_hash: entry.source_hash,
-                        nodes,
-                        host: host.as_deref(),
-                    }
-                })
-                .collect();
-            census
-                .windows
-                .push(inspect::census(&ws.store, ws.root, &views));
+        Census {
+            windows: windows.iter().map(|ws| self.window_census(ws)).collect(),
         }
-        census
+    }
+
+    /// The census of `ws`, its nodes named by the views it mounts.
+    fn window_census(&self, ws: &WindowState) -> WindowCensus {
+        let live: Vec<(&LiveView, Vec<Option<NodeId>>)> = self
+            .views
+            .iter()
+            .filter(|live| live.window == ws.window)
+            .map(|live| {
+                let nodes = if live.nodes.is_empty() {
+                    static_nodes(&ws.store, live.root, self.files[live.file].statics)
+                } else {
+                    live.nodes.clone()
+                };
+                (live, nodes)
+            })
+            .collect();
+        let hosts: Vec<Option<std::cell::Ref<'_, ViewHost>>> = live
+            .iter()
+            .map(|(live, _)| live.host.as_ref().map(|host| host.borrow()))
+            .collect();
+        let views: Vec<CensusView<'_>> = live
+            .iter()
+            .zip(&hosts)
+            .map(|((live, nodes), host)| {
+                let entry = &self.files[live.file].entry;
+                CensusView {
+                    file: &entry.path,
+                    source_hash: entry.source_hash,
+                    nodes,
+                    host: host.as_deref(),
+                }
+            })
+            .collect();
+        inspect::census(&ws.store, ws.root, &views)
     }
 
     /// The sessions the mounts of `file` run, in mount order.
@@ -1911,6 +1964,20 @@ fn commit_view(
         .filter_map(|key| Some((key, ws.states.id_for_key(key)?)))
         .collect();
     report
+}
+
+/// The runner of the scenario whose text and source table arrived as
+/// `script` and `sources`, or why there is none: one that did not arrive
+/// whole or does not parse ends at once, its failure its report.
+fn scenario(
+    script: Option<Arc<[u8]>>,
+    sources: Option<Option<Arc<[u8]>>>,
+) -> Result<crate::scenario::ScriptRunner, String> {
+    let (Some(script), Some(sources)) = (script, sources) else {
+        return Err("the scenario did not arrive whole".to_owned());
+    };
+    let text = std::str::from_utf8(&script).map_err(|_| "the scenario is not UTF-8".to_owned())?;
+    crate::scenario::ScriptRunner::from_host(text, sources.as_deref())
 }
 
 #[cfg(test)]

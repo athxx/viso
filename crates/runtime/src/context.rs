@@ -11,8 +11,8 @@ use std::time::Duration;
 use viso_platform::{Instant, LoopWaker};
 
 use viso_platform::{
-    Appearance, CursorIcon, LogicalRect, PlatformApp, PlatformError, RawWindowHandle, WindowConfig,
-    WindowId, accesskit,
+    Appearance, CursorIcon, LogicalRect, PlatformApp, PlatformError, RawEvent, RawWindowHandle,
+    WindowConfig, WindowId, accesskit,
 };
 
 /// Capabilities available to a frame driver for the duration of one callback.
@@ -46,6 +46,9 @@ pub struct RuntimeCx<'a> {
     /// [`frame_delta`](Self::frame_delta), so timer expiry and animation advance
     /// agree on "now".
     frame_now: Instant,
+    /// Events the driver posted, which the scheduler handles once this
+    /// callback returns.
+    posted: Vec<RawEvent>,
 }
 
 impl<'a> RuntimeCx<'a> {
@@ -64,7 +67,21 @@ impl<'a> RuntimeCx<'a> {
             state_dirty_requested: false,
             frame_delta: delta,
             frame_now: now,
+            posted: Vec::new(),
         }
+    }
+
+    /// The events posted through this context, in order.
+    pub(crate) fn take_posted(&mut self) -> Vec<RawEvent> {
+        std::mem::take(&mut self.posted)
+    }
+
+    /// Delivers `event` as the platform would: once this callback returns,
+    /// the scheduler handles it as the next event, so input posted here —
+    /// a scenario's taps and keys on a device — takes the route the user's
+    /// does, scale normalization included.
+    pub fn post_event(&mut self, event: RawEvent) {
+        self.posted.push(event);
     }
 
     /// How many windows were created through this context so far.

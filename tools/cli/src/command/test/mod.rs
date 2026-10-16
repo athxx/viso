@@ -12,6 +12,7 @@
 //! skipped with the reason. `--filter` (with `--exact`) narrows each domain's
 //! cases by name; `--fail-fast` stops at the first failed case.
 
+mod device;
 mod game;
 mod ui;
 mod unit;
@@ -126,6 +127,10 @@ fn misplaced(args: &TestArgs, domain: TestDomain) -> Option<String> {
         return Some(
             "a scenario is named in the `ui` or `game` domain: `viso test ui <name>`".into(),
         );
+    }
+    if args.device.is_some() && !matches!(args.target, Some(TestTarget::Ios | TestTarget::Android))
+    {
+        return Some("`--device` names the profile of `--target ios` or `--target android`".into());
     }
     if args.target.is_some() && matches!(domain, TestDomain::Unit | TestDomain::Game) {
         return Some(format!(

@@ -633,6 +633,9 @@ pub enum Reported {
         width: u32,
         height: u32,
     },
+    /// The step on `line` was not played here, and why: a snapshot on a
+    /// target without the software raster.
+    Skipped { line: u32, message: String },
     /// The run played every step it could, in `frames` frames.
     Done { frames: u64 },
 }
@@ -654,6 +657,14 @@ impl Reported {
                 w.uint(u64::from(*line));
                 w.name("status");
                 w.string("fail");
+                w.name("message");
+                w.string(message);
+            }
+            Reported::Skipped { line, message } => {
+                w.name("line");
+                w.uint(u64::from(*line));
+                w.name("status");
+                w.string("skip");
                 w.name("message");
                 w.string(message);
             }
@@ -695,6 +706,10 @@ impl Reported {
         match value.get("status")?.as_str()? {
             "pass" => Some(Reported::Passed { line }),
             "fail" => Some(Reported::Failed {
+                line,
+                message: value.get("message")?.as_str()?.to_owned(),
+            }),
+            "skip" => Some(Reported::Skipped {
                 line,
                 message: value.get("message")?.as_str()?.to_owned(),
             }),
@@ -919,6 +934,10 @@ mod tests {
     fn a_report_line_round_trips() {
         for reported in [
             Reported::Passed { line: 3 },
+            Reported::Skipped {
+                line: 5,
+                message: "the snapshot `home` is taken headless".into(),
+            },
             Reported::Failed {
                 line: 7,
                 message: "no node labeled \"Save\"".into(),

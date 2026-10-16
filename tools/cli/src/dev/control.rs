@@ -1,7 +1,8 @@
 //! The control endpoint of `viso run`: a loopback
 //! listener, named with its token in the dev session's lock, through which
-//! `viso game peek` and `viso game record` ask the running app about a game
-//! and `viso inspect` for what it shows.
+//! `viso game peek` and `viso game record` ask the running app about a game,
+//! `viso inspect` for what it shows, and `viso test` on a device to play a
+//! UI scenario.
 //!
 //! A control connection sends one [`ControlRequest`] — the session's control
 //! token and the question: about a game, named by its `.vs` file, or for the
@@ -9,7 +10,7 @@
 //! unanswered. The session relays the question to the runtime over the dev
 //! channel and answers the connection when the runtime does: a peek and a
 //! census at the next frame, a recording once the game ran the ticks asked
-//! for.
+//! for, a scenario once it is played.
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -34,6 +35,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The longest token, game name and state name a request carries.
 const MAX_FIELD: usize = 4096;
+
+/// The longest scenario a request carries, and report a reply.
+const MAX_SCENARIO: usize = 1 << 20;
 
 // The codes a refusal carries over the wire, by name; their exits are the
 // registry's.
@@ -62,6 +66,8 @@ pub enum ControlAsk {
     Game { game: String, ask: GameAsk },
     /// For what the app shows.
     Inspect,
+    /// To play the UI scenario `script` against the app's first window.
+    Scenario { script: String },
 }
 
 /// The session's answer.
@@ -80,6 +86,9 @@ pub enum ControlReply {
     /// The app's census and the table of the views it mounts, each in its
     /// wire form.
     Inspected { census: Vec<u8>, sources: Vec<u8> },
+    /// The report of the scenario played, a line per step and its end, as
+    /// a headless run writes it.
+    Played { lines: Vec<String> },
     /// Why there is no answer: a code of this module and what to tell the
     /// developer.
     Refused {
@@ -175,7 +184,7 @@ fn serve(mut stream: TcpStream, token: &str, deliver: &dyn Fn(ControlCall) -> bo
     let (reply, answer) = mpsc::channel();
     let ended = match request.ask {
         ControlAsk::Game { .. } => GAME_NOT_RUNNING,
-        ControlAsk::Inspect => ENV_NO_DEV_SESSION,
+        ControlAsk::Inspect | ControlAsk::Scenario { .. } => ENV_NO_DEV_SESSION,
     };
     let call = ControlCall {
         ask: request.ask,
@@ -251,6 +260,10 @@ impl Message for ControlRequest {
         write_string(enc, &self.token);
         let (game, ask) = match &self.ask {
             ControlAsk::Inspect => return enc.write_u8(3),
+            ControlAsk::Scenario { script } => {
+                enc.write_u8(4);
+                return write_string(enc, script);
+            }
             ControlAsk::Game { game, ask } => (game, ask),
         };
         match ask {
@@ -305,6 +318,18 @@ impl Message for ControlRequest {
                     ask: ControlAsk::Inspect,
                 });
             }
+            4 => {
+                let script = dec.read_str()?;
+                if script.len() > MAX_SCENARIO {
+                    return Err(WireError::Bound { what: "scenario" });
+                }
+                return Ok(ControlRequest {
+                    token,
+                    ask: ControlAsk::Scenario {
+                        script: script.to_owned(),
+                    },
+                });
+            }
             _ => return Err(malformed(dec)),
         };
         let game = read_string(dec, "game name")?;
@@ -339,6 +364,13 @@ impl Message for ControlReply {
                 enc.write_u8(3);
                 enc.write_bytes(census);
                 enc.write_bytes(sources);
+            }
+            ControlReply::Played { lines } => {
+                enc.write_u8(4);
+                enc.write_varint(lines.len() as u64);
+                for line in lines {
+                    write_string(enc, line);
+                }
             }
             ControlReply::Refused {
                 code,
@@ -388,6 +420,18 @@ impl Message for ControlReply {
                 census: dec.read_bytes()?.to_vec(),
                 sources: dec.read_bytes()?.to_vec(),
             },
+            4 => {
+                let count = dec.read_varint()?;
+                if count > MAX_SCENARIO as u64 {
+                    return Err(WireError::Bound {
+                        what: "report lines",
+                    });
+                }
+                let lines = (0..count)
+                    .map(|_| dec.read_str().map(str::to_owned))
+                    .collect::<Result<_, _>>()?;
+                ControlReply::Played { lines }
+            }
             _ => return Err(malformed(dec)),
         })
     }
@@ -567,6 +611,12 @@ mod tests {
                 token: "t".into(),
                 ask: ControlAsk::Inspect,
             },
+            ControlRequest {
+                token: "t".into(),
+                ask: ControlAsk::Scenario {
+                    script: format!("click \"Save\"\n{}", "#".repeat(MAX_FIELD)),
+                },
+            },
         ] {
             let body = viso_view::dev::wire::encode(&request);
             assert_eq!(ControlRequest::from_frame(&body), Ok(request));
@@ -579,6 +629,12 @@ mod tests {
             ControlReply::Inspected {
                 census: vec![1, 2],
                 sources: Vec::new(),
+            },
+            ControlReply::Played {
+                lines: vec![
+                    r#"{"line":1,"status":"pass"}"#.into(),
+                    r#"{"done":3}"#.into(),
+                ],
             },
             ControlReply::Refused {
                 code: GAME_BUSY.into(),

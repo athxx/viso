@@ -655,7 +655,7 @@ fn ended(report: &str, status: ExitStatus) -> (Ended, Vec<Shot>) {
             Some(Reported::Failed { line, message }) => failed = Some((line, message)),
             Some(Reported::Done { .. }) => finished = true,
             Some(Reported::Snapshot { line, name, .. }) => shots.push(Shot { name, line }),
-            Some(Reported::Passed { .. }) | None => {}
+            Some(Reported::Passed { .. } | Reported::Skipped { .. }) | None => {}
         }
     }
     let ended = match (finished, failed) {

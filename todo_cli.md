@@ -388,7 +388,7 @@ gap, and CI can run all of it headless.
       polite) once they are `.vs` widgets.
 - [x] Filters (§22.4): `--filter <pattern>`, `--exact`, `--fail-fast`, `--nocapture`,
       `--update-snapshots`, `--target <t>`, `--device <profile>` (C3). (`--target`
-      takes `headless`; `--update-snapshots` lands with C2.6, `--device` with C3.5.)
+      takes `headless`, and `ios`/`android` for `ui` with `--device`.)
 - [x] One `test` event per case (`name`, `domain`, `status`, `duration_ms`, failure
       with location), a tally in `summary`; exit 1 on a failed assertion, 5 on a
       crashed runner (§7).
@@ -608,8 +608,14 @@ service and the platform runtime backend stay separate.
 
 - [x] `build ios|android` through the Build Service (C1.6): simulator `.app` (ad-hoc)
       / emulator APK (dev APK in dev, release APK otherwise); device signing is C5.
-- [ ] `test --target ios|android --device <profile>`: UI tests on the simulator or
+- [x] `test --target ios|android --device <profile>`: UI tests on the simulator or
       emulator through the same runner protocol as headless (C1.9).
+      (Each case is a fresh `viso run <platform> --device`; the scenario goes through
+      its control endpoint to the app, which plays it on its first window — input
+      posted to the scheduler as the platform's, expectations read from its
+      semantics — and reports each line back. Snapshot steps report skipped, component
+      cases are headless only. Verified on the API 36 emulator: a passing tape, a
+      failing step reported at its line, a snapshot skipped.)
 - [x] ~~`ios logs [--device]`~~ — superseded: §11.6/§12.6 keep no separate logs
       grammar; `viso run ios` streams the app's console and its exit record.
 - [x] Fake iOS backend (simctl replaced by a scripted fake) beside the Android one,

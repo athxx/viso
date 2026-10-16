@@ -16,21 +16,30 @@ use viso_dsl::Diagnostic;
 use viso_view::headless::HeadlessSurface;
 
 use super::{Run, invalid, line_range, relative, report};
+use viso_project::Platform;
+
 use crate::args::TestTarget;
 use crate::command::check::Checked;
 use crate::command::scenario::{self, Build, Case, Ended, Played, Unplanned};
 use crate::command::snapshot::{self, Held, Store, Taken, Tally};
 use crate::context::Context;
 use crate::error::{
-    Code, DIAGNOSTICS, ENV_SNAPSHOT_WRITE, ENV_TEST_INPUT, ENV_TEST_TARGET, RUN_SNAPSHOT_FAILED,
-    SUCCESS, TEST_SNAPSHOT_INVALID, TEST_SNAPSHOT_MISMATCH, TEST_SNAPSHOT_MISSING,
+    Code, DIAGNOSTICS, ENV_IOS_HOST, ENV_SNAPSHOT_WRITE, ENV_TEST_INPUT, ENV_TEST_TARGET,
+    RUN_SNAPSHOT_FAILED, SUCCESS, TEST_SNAPSHOT_INVALID, TEST_SNAPSHOT_MISMATCH,
+    TEST_SNAPSHOT_MISSING,
 };
 use crate::output::{Output, Source, TestStatus};
 
 pub(super) fn run(ctx: &Context<'_>, checked: &Checked, run: &Run<'_>, out: &mut Output) -> u8 {
     let root = &checked.project.root;
+    let device = match run.args.target {
+        Some(TestTarget::Ios) => Some(Platform::Ios),
+        Some(TestTarget::Android) => Some(Platform::Android),
+        _ => None,
+    };
     if let Some(target) = run.args.target
         && target != TestTarget::Headless
+        && device.is_none()
     {
         if run.every
             && matches!(
@@ -45,7 +54,7 @@ pub(super) fn run(ctx: &Context<'_>, checked: &Checked, run: &Run<'_>, out: &mut
             "ui",
             ENV_TEST_TARGET,
             &format!(
-                "UI scenarios run `headless` in this build of viso, not on `{}`",
+                "UI scenarios run `headless`, `ios` or `android` in this build of viso, not on `{}`",
                 target.target()
             ),
         );
@@ -119,6 +128,9 @@ pub(super) fn run(ctx: &Context<'_>, checked: &Checked, run: &Run<'_>, out: &mut
     if cases.is_empty() {
         return code;
     }
+    if let Some(platform) = device {
+        return code.max(on_device(ctx, root, run, platform, cases, out));
+    }
 
     let sources = cases
         .iter()
@@ -153,7 +165,7 @@ fn reported(
     tally: &mut Tally,
 ) -> u8 {
     let duration_ms = played.duration.as_millis() as u64;
-    let mut code = snapshot::ended(out, root, case, &played);
+    let mut code = snapshot::ended(out, root, case, &played.ended);
     let mut message = match &played.ended {
         Ended::Failed { line, message } => Some(format!(
             "{}:{line}: {message}",
@@ -255,4 +267,29 @@ fn held(
             departure.notes(),
         ),
     }
+}
+
+/// Plays `cases` on the simulator or emulator of `platform` that
+/// `--device`, the project's default or the sole profile names.
+fn on_device(
+    ctx: &Context<'_>,
+    root: &Path,
+    run: &Run<'_>,
+    platform: Platform,
+    cases: Vec<Case>,
+    out: &mut Output,
+) -> u8 {
+    if platform == Platform::Ios && !cfg!(target_os = "macos") {
+        return out.failure(ENV_IOS_HOST, "the iOS Simulator runs on macOS only", &[]);
+    }
+    let store = match crate::device::store(out) {
+        Ok(store) => store,
+        Err(code) => return code,
+    };
+    let profile =
+        match crate::device::select(out, &store, platform, run.args.device.as_deref(), root) {
+            Ok(profile) => profile,
+            Err(code) => return code,
+        };
+    super::device::run(ctx, root, run, platform, &profile, cases, out)
 }

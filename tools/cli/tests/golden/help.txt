@@ -1161,9 +1161,9 @@ Run the project's tests: unit, UI, game
 Usage: viso test [OPTIONS] [DOMAIN] [SCENARIO]
 
 Examples:
-  viso test                                      # every domain
-  viso test ui                                   # every scenario under `tests/ui/`, headless
-  viso test game movement --tape runs/jump.tape  # one game scenario, replaying a recorded tape
+  viso test                                     # every domain
+  viso test ui                                  # every scenario under `tests/ui/`, headless
+  viso test ui --target android --device pixel  # the UI scenarios on an emulator profile
 
 Arguments:
   [DOMAIN]    The test domain; every domain when omitted [possible values: unit, ui, game, web, all]
@@ -1176,6 +1176,7 @@ Options:
       --nocapture         Show what every case writes, not only a failed case's
       --update-snapshots  Rewrite the golden of each snapshot a UI scenario takes that is missing or no longer matches, instead of failing the case
       --target <TARGET>   Where the cases run: `headless` by default [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+      --device <ID>       The simulator or emulator profile UI scenarios run on (`--target ios` and `android` only)
       --frames <N>        The frames a game scenario runs, one fixed tick each; by default through the tape and the scenario's last expectation
       --seed <SEED>       A game world's random seed, over the tape's
       --tape <PATH>       Replay the game input tape at PATH, binary or text, instead of the scenario's
@@ -1195,6 +1196,8 @@ Global options:
 
 Notes:
   A scenario is `tests/ui/<name>.tape` or `tests/game/<name>.tape`; a failed case exits 1, a crashed runner 5.
+  On `--target ios|android` each UI scenario plays on a fresh launch of the app on
+  the device; its snapshot steps are taken headless only.
 
 $ viso snapshot --help
 Take the snapshots UI scenarios take, and hold them to their goldens

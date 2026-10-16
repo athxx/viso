@@ -62,6 +62,8 @@ mod environment;
 #[cfg(feature = "headless")]
 mod headless;
 mod persist;
+#[cfg(any(feature = "headless", feature = "hot-reload"))]
+mod scenario;
 pub mod services;
 mod shaders;
 pub mod system_fonts;
@@ -498,7 +500,7 @@ struct AppDriver<A: Application> {
     hot_reload: hot_reload::HotReloadSession,
     /// The UI scenario a headless run plays.
     #[cfg(feature = "headless")]
-    script: Option<headless::ScriptRunner>,
+    script: Option<scenario::ScriptRunner>,
     /// The view a headless run mounts alone in place of the app's.
     #[cfg(feature = "headless")]
     harness: headless::Harness,
@@ -2634,8 +2636,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
                 #[cfg(feature = "headless")]
                 if let (Some(script), Some(ws)) = (&mut self.script, self.windows.first()) {
-                    script.after_frame(ws, self.harness.mounts(), cx);
+                    let mounts = self.harness.mounts();
+                    script.after_frame(ws, &|| headless::census(ws, mounts), cx);
                 }
+                #[cfg(feature = "hot-reload")]
+                self.hot_reload.play(&self.windows, cx);
             }
             _ => {}
         }
