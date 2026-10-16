@@ -241,10 +241,22 @@ const CARD: &str = r#"export component Card {
         }
     }
 }
+
+export record Point {
+    x: I64;
+    y: I64 = 0;
+}
+
+enum Status {
+    idle;
+    ready(I64);
+    failed { code: I64; };
+}
 "#;
 
 /// The schema objects of a widget, a member, a native function and type and
-/// a project component, and each `--list`, as `--json` gives them.
+/// a project component, record and enum, and each `--list`, as `--json`
+/// gives them.
 #[test]
 fn schema_objects() {
     let dir = scratch("schema");
@@ -262,6 +274,8 @@ fn schema_objects() {
         &["viso::clipboard::write_text"],
         &["Stopwatch"],
         &["Card"],
+        &["Point"],
+        &["Status"],
         &["--search", "card"],
         &["--list", "components"],
         &["--list", "types"],
@@ -281,9 +295,13 @@ fn schema_objects() {
     }
     golden("schema.json.txt", &objects);
 
-    let out = viso(&dir, &["schema", "Card"]);
-    assert_eq!(out.status.code(), Some(0));
-    golden("schema_card.txt", &text(&out.stdout));
+    let mut human = String::new();
+    for symbol in ["Card", "Point", "Status"] {
+        let out = viso(&dir, &["schema", symbol]);
+        assert_eq!(out.status.code(), Some(0));
+        human.push_str(&format!("$ viso schema {symbol}\n{}", text(&out.stdout)));
+    }
+    golden("schema_card.txt", &human);
 }
 
 const DUMP_COUNTER: &str = r#"import viso::math::Vec2F32;

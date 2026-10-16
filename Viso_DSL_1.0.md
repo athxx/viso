@@ -7285,11 +7285,13 @@ viso schema viso::widgets::Button --json
 
 - `schema_version`：对象格式版本（当前 `1.0`），删除字段或改变含义时升级；
 - `origin`：框架符号为 `"framework"`，项目组件为其声明位置、SymbolId、`visibility` 与 schema `revision`（CLI §18.3）；
-- `kind`：`component`、`native_library`、`native_function` 或 `native_type`；查询 `Symbol.member` 时另有 `member`，`inputs`/`events`/`functions` 只保留该成员；
+- `kind`：`component`、`record`、`enum`、`native_library`、`native_function` 或 `native_type`；查询 `Symbol.member` 时另有 `member`，`inputs`/`events`/`functions`/`fields`/`variants` 只保留该成员；
 - `inputs`：Component 的 Property（分组 Property 写作 `semantics.label`，`invalidates` 为该 Binding 实际失效的 Dirty Class 规范名，`two_way` 标记可 `bind`），或 Native 函数的参数；`default` 未记录时为 `null`；
 - `events`：`bubbles` 为 Capture → Target → Bubble 路由的输入事件为真；Component 自身事件不冒泡；
+- `slots`：每项 `{name, type, default}`，`type` 为 `Slot<Node>`、`OptionalSlot<Node>` 或 `SlotList<Node>`，`default` 标记 `@default`（Native Widget 为其 Default Slot）；
+- `record` 另有 `fields`（每项 `name`、`type`、`required`、`default`，`default` 为源码形式，未声明为 `null`）；`enum` 另有 `variants`（每项 `name`、`payload`：Tuple 载荷 `(I64, String)`、Record 载荷 `{ code: I64 }`，Unit 为 `null`）；
 - `capabilities`：函数自身所需，或 Library/Type 全部函数所需的并集；
-- 非 Component 另有 `functions`（每项：`name`、`symbol`、`kind`、`method`、`params`、`returns`、`capabilities`、`thread`、`deterministic`、`realtime_safe`、`cost`）；`native_library` 另有 `types`；`native_type` 另有 `ownership` 与 `thread`。
+- `native_library`、`native_function`、`native_type` 另有 `functions`（每项：`name`、`symbol`、`kind`、`method`、`params`、`returns`、`capabilities`、`thread`、`deterministic`、`realtime_safe`、`cost`）；`native_library` 另有 `types`；`native_type` 另有 `ownership` 与 `thread`。
 
 未知符号为 `E2001`，附最近的符号或成员名。
 

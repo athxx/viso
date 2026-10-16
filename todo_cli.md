@@ -430,10 +430,12 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
 - [x] JSON schema output stable and versioned (`schema_version`), golden-tested
       (§58). (`tests/golden/schema.json.txt`; `viso --version` reports
       `schema object`.)
-- [ ] Project records and enums as schema symbols (`kind: record|enum`, fields and
-      variants), so `--list types` covers the package's own types.
-- [ ] A component's slot cardinality (`Slot`/`OptionalSlot`/`SlotList`) and
-      `@default` in the schema object instead of a bare name.
+- [x] Project records and enums as schema symbols (`kind: record|enum`, fields and
+      variants), so `--list types` covers the package's own types. (`package_schemas`;
+      fields and variants are members, `Point.x`, `Status.ready`.)
+- [x] A component's slot cardinality (`Slot`/`OptionalSlot`/`SlotList`) and
+      `@default` in the schema object instead of a bare name. (`slots[{name, type,
+      default}]`, a widget's from its native schema too.)
 
 ### C2.3 — `viso explain` (§19)
 

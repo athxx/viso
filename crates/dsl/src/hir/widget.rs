@@ -13,6 +13,7 @@
 
 use viso_behavior::native::{
     COMPONENT, NativeWidget, Natives, PropertyGroup, WidgetEvent, WidgetNode, WidgetProperty,
+    WidgetSlot,
 };
 
 use super::ty::Ty;
@@ -165,9 +166,9 @@ impl WidgetSchema {
         self.widget.node == WidgetNode::Fragment
     }
 
-    /// The slot names, for suggestions.
-    pub(crate) fn slot_names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.widget.slots.iter().map(|s| s.name)
+    /// The slots its caller fills.
+    pub(crate) fn slots(&self) -> impl Iterator<Item = &'static WidgetSlot> + '_ {
+        self.widget.slots.iter()
     }
 
     /// What the property path `segments` names on this node.

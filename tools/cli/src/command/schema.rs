@@ -1,5 +1,5 @@
-//! `viso schema`: the typed schema of a widget, a project component, a native
-//! library, function or handle type, a search over every symbol and member,
+//! `viso schema`: the typed schema of a widget, a project component, record
+//! or enum, a native library, function or handle type, a search over every symbol and member,
 //! or every symbol of one group. The schema model and its JSON object come
 //! from `viso-dsl`; this command only finds the project and picks the form.
 
@@ -51,8 +51,8 @@ pub fn run(ctx: &Context<'_>, args: &SchemaArgs, out: &mut Output) -> u8 {
     }
 }
 
-/// The framework's symbols, and the components of the project the command
-/// runs in, if it runs in one.
+/// The framework's symbols, and the components, records and enums of the
+/// project the command runs in, if it runs in one.
 fn catalog(ctx: &Context<'_>, out: &mut Output) -> Result<Catalog, u8> {
     let catalog = Catalog::framework(Natives::standard());
     let Some(project) = ctx.project_if_any(out)? else {
@@ -76,8 +76,7 @@ fn catalog(ctx: &Context<'_>, out: &mut Output) -> Result<Catalog, u8> {
         .version
         .as_ref()
         .map_or("0.0.0", |version| version.value.as_str());
-    let components = schema::package_components(&package, &project.root, version);
-    Ok(catalog.with_components(components))
+    Ok(catalog.with_package(schema::package_schemas(&package, &project.root, version)))
 }
 
 fn list_kind(group: SchemaGroup) -> ListKind {
@@ -162,13 +161,19 @@ fn schema_text(schema: &Schema) -> String {
     if let Some(member) = &schema.member {
         let _ = write!(text, ".{member}");
     }
-    if schema.kind != SchemaKind::Component {
-        let _ = write!(
-            text,
-            "  ({}, version {})",
-            schema.kind.name().replace('_', " "),
-            schema.version
-        );
+    match (schema.kind, &schema.origin) {
+        (SchemaKind::Component, _) => {}
+        (kind, Some(_)) => {
+            let _ = write!(text, "  ({})", kind.name());
+        }
+        (kind, None) => {
+            let _ = write!(
+                text,
+                "  ({}, version {})",
+                kind.name().replace('_', " "),
+                schema.version
+            );
+        }
     }
     text.push('\n');
     if let Some(origin) = &schema.origin {
@@ -219,10 +224,34 @@ fn schema_text(schema: &Schema) -> String {
             })
             .collect();
         section("Events", table(&rows, "  "));
-        let slots: Vec<[&str; 2]> = schema.slots.iter().map(|s| [&**s, "optional"]).collect();
+        let slots: Vec<[&str; 3]> = schema
+            .slots
+            .iter()
+            .map(|s| {
+                let default = if s.default { "default" } else { "" };
+                [&*s.name, s.cardinality.type_name(), default]
+            })
+            .collect();
         section("Slots", table(&slots, "  "));
         let parts: Vec<[&str; 1]> = schema.parts.iter().map(|p| [&**p]).collect();
         section("Parts", table(&parts, "  "));
+    } else if schema.kind == SchemaKind::Record {
+        let rows: Vec<[String; 2]> = schema
+            .fields
+            .iter()
+            .map(|f| match &f.default {
+                Some(default) => [f.name.clone(), format!("{} = {default}", f.ty)],
+                None => [f.name.clone(), f.ty.clone()],
+            })
+            .collect();
+        section("Fields", table(&rows, "  "));
+    } else if schema.kind == SchemaKind::Enum {
+        let rows: Vec<[&str; 2]> = schema
+            .variants
+            .iter()
+            .map(|v| [&*v.name, v.payload.as_deref().unwrap_or("")])
+            .collect();
+        section("Variants", table(&rows, "  "));
     } else {
         let title = match schema.kind {
             SchemaKind::Type => "Methods",
@@ -259,7 +288,8 @@ fn function_text(function: &FunctionSchema) -> String {
     )
 }
 
-/// Rows with every column but the last padded to its widest cell.
+/// Rows with every column but the last padded to its widest cell, and no
+/// line ending in spaces.
 fn table<const N: usize, S: AsRef<str>>(rows: &[[S; N]], indent: &str) -> String {
     let mut widths = [0; N];
     for row in rows {
@@ -269,6 +299,7 @@ fn table<const N: usize, S: AsRef<str>>(rows: &[[S; N]], indent: &str) -> String
     }
     let mut text = String::new();
     for row in rows {
+        let start = text.len();
         text.push_str(indent);
         for (column, cell) in row.iter().enumerate() {
             let cell = cell.as_ref();
@@ -278,6 +309,9 @@ fn table<const N: usize, S: AsRef<str>>(rows: &[[S; N]], indent: &str) -> String
                 let _ = write!(text, "{cell:<width$}  ", width = widths[column]);
             }
         }
+        // An empty last cell leaves no padding behind.
+        let end = start + text[start..].trim_end().len();
+        text.truncate(end);
         text.push('\n');
     }
     text

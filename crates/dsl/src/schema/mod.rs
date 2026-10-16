@@ -1,21 +1,22 @@
-//! Schema queries: the typed schema of a native widget, a component a package
-//! declares, a native library, a native function or a native handle type, as
-//! the one object tools read (`viso schema`, section 139).
+//! Schema queries: the typed schema of a native widget, a component, record
+//! or enum a package declares, a native library, a native function or a
+//! native handle type, as the one object tools read (`viso schema`, section
+//! 139).
 //!
 //! A query names a symbol by its full path (`viso::widgets::Button`,
 //! `app::card::Card`, `viso::text::upper`) or by any `::`-suffix of it
 //! (`Button`, `Card`, `text::upper`), optionally followed by `.member` to
-//! narrow the answer to one property, event or method (`Button.text`,
-//! `Stopwatch.elapsed_ms`). Cold path: this runs once per tool request.
+//! narrow the answer to one property, event, method, field or variant
+//! (`Button.text`, `Stopwatch.elapsed_ms`, `Point.x`). Cold path: this runs once per tool request.
 
 mod project;
 
-pub use project::package_components;
+pub use project::package_schemas;
 
 use std::sync::Arc;
 
 use viso_behavior::native::{
-    NativeEntry, NativeFunction, NativeLibrary, NativeTypeEntry, NativeWidgetEntry,
+    NativeEntry, NativeFunction, NativeLibrary, NativeTypeEntry, NativeWidgetEntry, SlotCardinality,
 };
 pub use viso_behavior::native::{NativeKind, Natives, Ownership, ThreadDomain};
 use viso_ende::JsonWriter;
@@ -48,6 +49,10 @@ const DIRTY_NAMES: [(DirtyClass, &str); 8] = [
 pub enum SchemaKind {
     /// A node type: its inputs, events, slots and parts.
     Component,
+    /// A package's record: its fields.
+    Record,
+    /// A package's enum: its variants.
+    Enum,
     /// A native library: its functions and handle types.
     Library,
     /// One native function; its parameters are the inputs.
@@ -61,6 +66,8 @@ impl SchemaKind {
     pub fn name(self) -> &'static str {
         match self {
             SchemaKind::Component => "component",
+            SchemaKind::Record => "record",
+            SchemaKind::Enum => "enum",
             SchemaKind::Library => "native_library",
             SchemaKind::Function => "native_function",
             SchemaKind::Type => "native_type",
@@ -98,6 +105,38 @@ pub struct EventSchema {
     /// Whether a handler may stop it before the default action; the routed
     /// input events are, a node's own events are not.
     pub cancelable: bool,
+}
+
+/// A slot a node type's caller fills.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotSchema {
+    /// Its name, the one `fill` names.
+    pub name: String,
+    /// How many nodes it takes.
+    pub cardinality: SlotCardinality,
+    /// Whether `@default` marks it: a caller's bare child items fill it.
+    pub default: bool,
+}
+
+/// A field of a record, or of an enum variant's record payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldSchema {
+    /// Its name.
+    pub name: String,
+    /// Its type's source name.
+    pub ty: String,
+    /// Its default in source form; an initializer may then omit it.
+    pub default: Option<String>,
+}
+
+/// A variant of an enum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantSchema {
+    /// Its name.
+    pub name: String,
+    /// What it carries, as its declaration spells it: `(I64, String)` or
+    /// `{ code: I64 }`; `None` for a unit variant.
+    pub payload: Option<String>,
 }
 
 /// A native function or method.
@@ -151,8 +190,8 @@ pub struct Schema {
     pub inputs: Vec<InputSchema>,
     /// A node type's events.
     pub events: Vec<EventSchema>,
-    /// A node type's named slots.
-    pub slots: Vec<String>,
+    /// A node type's slots.
+    pub slots: Vec<SlotSchema>,
     /// A node type's named parts.
     pub parts: Vec<String>,
     /// The capabilities using it needs: a function's own, or every function's of
@@ -164,11 +203,39 @@ pub struct Schema {
     pub types: Vec<String>,
     /// A handle type's ownership and thread.
     pub handle: Option<HandleSchema>,
+    /// A record's fields.
+    pub fields: Vec<FieldSchema>,
+    /// An enum's variants.
+    pub variants: Vec<VariantSchema>,
     /// Where a package declares it; `None` for a framework symbol.
     pub origin: Option<SourceOrigin>,
 }
 
-/// Where a package declares a component.
+impl Schema {
+    /// An empty schema of `kind` for `symbol` at `version`, for its fields to
+    /// fill.
+    pub(crate) fn empty(kind: SchemaKind, symbol: String, version: String) -> Schema {
+        Schema {
+            kind,
+            symbol,
+            version,
+            member: None,
+            inputs: Vec::new(),
+            events: Vec::new(),
+            slots: Vec::new(),
+            parts: Vec::new(),
+            capabilities: Vec::new(),
+            functions: Vec::new(),
+            types: Vec::new(),
+            handle: None,
+            fields: Vec::new(),
+            variants: Vec::new(),
+            origin: None,
+        }
+    }
+}
+
+/// Where a package declares a component, record or enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceOrigin {
     /// Its file, relative to the package root, `/`-separated.
@@ -188,10 +255,10 @@ pub struct SourceOrigin {
 }
 
 /// Every symbol a query can name: the framework's widgets and natives, and
-/// the components of the package in hand.
+/// the components, records and enums of the package in hand.
 pub struct Catalog {
     natives: Arc<Natives>,
-    components: Vec<Schema>,
+    package: Vec<Schema>,
 }
 
 impl Catalog {
@@ -199,14 +266,13 @@ impl Catalog {
     pub fn framework(natives: Arc<Natives>) -> Self {
         Self {
             natives,
-            components: Vec::new(),
+            package: Vec::new(),
         }
     }
 
-    /// This catalog with a package's `components`
-    /// ([`package_components`]).
-    pub fn with_components(mut self, components: Vec<Schema>) -> Self {
-        self.components = components;
+    /// This catalog with a package's own symbols ([`package_schemas`]).
+    pub fn with_package(mut self, package: Vec<Schema>) -> Self {
+        self.package = package;
         self
     }
 }
@@ -220,7 +286,7 @@ pub enum ListKind {
     Components,
     /// The native libraries and their functions.
     Natives,
-    /// The native handle types.
+    /// The native handle types, and the package's records and enums.
     Types,
 }
 
@@ -233,7 +299,7 @@ pub struct SearchHit {
     pub kind: SchemaKind,
     /// A one-line signature: a type, a payload or a function signature.
     pub detail: String,
-    /// `file:line:column` of a package's component; `None` for a framework
+    /// `file:line:column` of a package's declaration; `None` for a framework
     /// symbol.
     pub origin: Option<String>,
 }
@@ -242,7 +308,8 @@ pub struct SearchHit {
 #[derive(Clone, Copy)]
 enum Symbol<'a> {
     Widget(&'a NativeWidgetEntry),
-    Component(&'a Schema),
+    /// A component, record or enum of the package.
+    Package(&'a Schema),
     Library(&'static NativeLibrary),
     Function(&'a NativeEntry),
     Type(&'a NativeTypeEntry),
@@ -252,7 +319,7 @@ impl Symbol<'_> {
     fn path(&self) -> String {
         match self {
             Symbol::Widget(entry) => format!("{}::{}", entry.library.path, entry.widget.name),
-            Symbol::Component(schema) => schema.symbol.clone(),
+            Symbol::Package(schema) => schema.symbol.clone(),
             Symbol::Library(library) => library.path.to_owned(),
             Symbol::Function(entry) => entry.path.to_string(),
             Symbol::Type(entry) => entry.path.to_string(),
@@ -261,11 +328,11 @@ impl Symbol<'_> {
 }
 
 /// Every symbol a query can name, in a stable order: widgets, the package's
-/// components, then each library, its functions and its types.
+/// own symbols, then each library, its functions and its types.
 fn symbols(catalog: &Catalog) -> Vec<Symbol<'_>> {
     let natives = &*catalog.natives;
     let mut all: Vec<Symbol<'_>> = natives.widgets().iter().map(Symbol::Widget).collect();
-    all.extend(catalog.components.iter().map(Symbol::Component));
+    all.extend(catalog.package.iter().map(Symbol::Package));
     for &library in natives.libraries() {
         all.push(Symbol::Library(library));
         let under = |path: &str| {
@@ -354,19 +421,19 @@ fn unknown(message: String, candidates: &[String]) -> Box<Diagnostic> {
     Box::new(diagnostic)
 }
 
-/// `schema` keeping only its input, event or function `member`.
+/// `schema` keeping only its input, event, function, field or variant
+/// `member`.
 fn narrow(mut schema: Schema, member: &str) -> Result<Schema, Box<Diagnostic>> {
-    let known = schema.inputs.iter().any(|i| i.name == member)
-        || schema.events.iter().any(|e| e.name == member)
-        || schema.functions.iter().any(|f| f.name == member);
-    if !known {
-        let members: Vec<&str> = schema
-            .inputs
-            .iter()
-            .map(|i| i.name.as_str())
-            .chain(schema.events.iter().map(|e| e.name.as_str()))
-            .chain(schema.functions.iter().map(|f| f.name.as_str()))
-            .collect();
+    let members: Vec<&str> = schema
+        .inputs
+        .iter()
+        .map(|i| i.name.as_str())
+        .chain(schema.events.iter().map(|e| e.name.as_str()))
+        .chain(schema.functions.iter().map(|f| f.name.as_str()))
+        .chain(schema.fields.iter().map(|f| f.name.as_str()))
+        .chain(schema.variants.iter().map(|v| v.name.as_str()))
+        .collect();
+    if !members.contains(&member) {
         let near: Vec<String> = nearest(
             member,
             members.iter().map(|&name| Candidate {
@@ -385,6 +452,8 @@ fn narrow(mut schema: Schema, member: &str) -> Result<Schema, Box<Diagnostic>> {
     schema.inputs.retain(|i| i.name == member);
     schema.events.retain(|e| e.name == member);
     schema.functions.retain(|f| f.name == member);
+    schema.fields.retain(|f| f.name == member);
+    schema.variants.retain(|v| v.name == member);
     schema.capabilities = union(schema.functions.iter().map(|f| f.capabilities.as_slice()));
     schema.member = Some(member.to_owned());
     Ok(schema)
@@ -426,6 +495,16 @@ pub fn search(term: &str, catalog: &Catalog) -> Vec<SearchHit> {
                 hit(format!("{}.{}", schema.symbol, f.name), signature(f));
             }
         }
+        for field in &schema.fields {
+            hit(
+                format!("{}.{}", schema.symbol, field.name),
+                field.ty.clone(),
+            );
+        }
+        for variant in &schema.variants {
+            let payload = variant.payload.clone().unwrap_or_else(|| "()".to_owned());
+            hit(format!("{}.{}", schema.symbol, variant.name), payload);
+        }
     }
     hits
 }
@@ -436,9 +515,15 @@ pub fn list(kind: ListKind, catalog: &Catalog) -> Vec<SearchHit> {
         .into_iter()
         .filter(|symbol| match kind {
             ListKind::Widgets => matches!(symbol, Symbol::Widget(_)),
-            ListKind::Components => matches!(symbol, Symbol::Component(_)),
+            ListKind::Components => {
+                matches!(symbol, Symbol::Package(s) if s.kind == SchemaKind::Component)
+            }
             ListKind::Natives => matches!(symbol, Symbol::Library(_) | Symbol::Function(_)),
-            ListKind::Types => matches!(symbol, Symbol::Type(_)),
+            ListKind::Types => match symbol {
+                Symbol::Type(_) => true,
+                Symbol::Package(s) => matches!(s.kind, SchemaKind::Record | SchemaKind::Enum),
+                _ => false,
+            },
         })
         .map(|symbol| {
             let schema = schema_of(symbol, &catalog.natives);
@@ -477,23 +562,9 @@ pub fn signature(function: &FunctionSchema) -> String {
 }
 
 fn schema_of(symbol: Symbol<'_>, natives: &Natives) -> Schema {
-    let empty = |kind, version: String| Schema {
-        kind,
-        symbol: symbol.path(),
-        version,
-        member: None,
-        inputs: Vec::new(),
-        events: Vec::new(),
-        slots: Vec::new(),
-        parts: Vec::new(),
-        capabilities: Vec::new(),
-        functions: Vec::new(),
-        types: Vec::new(),
-        handle: None,
-        origin: None,
-    };
+    let empty = |kind, version: String| Schema::empty(kind, symbol.path(), version);
     match symbol {
-        Symbol::Component(schema) => schema.clone(),
+        Symbol::Package(schema) => schema.clone(),
         Symbol::Widget(entry) => {
             let widget = WidgetSchema::of(entry.widget);
             Schema {
@@ -517,7 +588,14 @@ fn schema_of(symbol: Symbol<'_>, natives: &Natives) -> Schema {
                         cancelable: e.bubbles,
                     })
                     .collect(),
-                slots: widget.slot_names().map(str::to_owned).collect(),
+                slots: widget
+                    .slots()
+                    .map(|slot| SlotSchema {
+                        name: slot.name.to_owned(),
+                        cardinality: slot.cardinality,
+                        default: slot.default,
+                    })
+                    .collect(),
                 ..empty(SchemaKind::Component, entry.library.version.to_string())
             }
         }
@@ -656,12 +734,26 @@ impl Schema {
         }
         w.end_array();
         w.name("slots");
-        strings(w, &self.slots);
+        w.begin_array();
+        for slot in &self.slots {
+            w.begin_object();
+            w.name("name");
+            w.string(&slot.name);
+            w.name("type");
+            w.string(slot.cardinality.type_name());
+            w.name("default");
+            w.bool(slot.default);
+            w.end_object();
+        }
+        w.end_array();
         w.name("parts");
         strings(w, &self.parts);
         w.name("capabilities");
         strings(w, &self.capabilities);
-        if self.kind != SchemaKind::Component {
+        if matches!(
+            self.kind,
+            SchemaKind::Library | SchemaKind::Function | SchemaKind::Type
+        ) {
             w.name("functions");
             w.begin_array();
             for function in &self.functions {
@@ -678,6 +770,36 @@ impl Schema {
             w.string(handle.ownership.name());
             w.name("thread");
             w.string(handle.thread.name());
+        }
+        if self.kind == SchemaKind::Record {
+            w.name("fields");
+            w.begin_array();
+            for field in &self.fields {
+                w.begin_object();
+                w.name("name");
+                w.string(&field.name);
+                w.name("type");
+                w.string(&field.ty);
+                w.name("required");
+                w.bool(field.default.is_none());
+                w.name("default");
+                optional(w, field.default.as_deref());
+                w.end_object();
+            }
+            w.end_array();
+        }
+        if self.kind == SchemaKind::Enum {
+            w.name("variants");
+            w.begin_array();
+            for variant in &self.variants {
+                w.begin_object();
+                w.name("name");
+                w.string(&variant.name);
+                w.name("payload");
+                optional(w, variant.payload.as_deref());
+                w.end_object();
+            }
+            w.end_array();
         }
         w.name("origin");
         match &self.origin {

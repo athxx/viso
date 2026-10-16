@@ -1502,7 +1502,7 @@ Events
   click       ClickEvent
 
 Slots
-  content     optional
+  content     OptionalSlot<Node>  default
 ```
 
 ### 18.1 Query forms
@@ -1516,9 +1516,9 @@ viso schema --search text
 viso schema --list widgets       # widgets | components | natives | types
 ```
 
-符号按完整路径或其任意 `::` 后缀匹配（`Button`、`text::upper`、`viso::time::Stopwatch`、`card::Card`）；后缀匹配多个符号时报告全部候选并 exit 1。`.member` 收窄到一个 Property、Event 或方法。可查询内置 Widget、Native Registry 中的 Library、函数和 Handle 类型，以及当前项目（`--project` 或向上找到的 `Viso.toml`；不在项目中时只查框架）声明的 Component 与 Template：路径为 `<package>::<module>::<Name>`。
+符号按完整路径或其任意 `::` 后缀匹配（`Button`、`text::upper`、`viso::time::Stopwatch`、`card::Card`）；后缀匹配多个符号时报告全部候选并 exit 1。`.member` 收窄到一个 Property、Event 或方法。可查询内置 Widget、Native Registry 中的 Library、函数和 Handle 类型，以及当前项目（`--project` 或向上找到的 `Viso.toml`；不在项目中时只查框架）声明的 Component、Template、Record 与 Enum：路径为 `<package>::<module>::<Name>`；Record 的字段与 Enum 的变体是其成员（`Point.x`、`Status.ready`）。
 
-`--search TERM` 不区分大小写地列出路径包含 `TERM` 的符号与成员，每行一个路径及其类型或签名；无匹配时 exit 0。`--list GROUP` 列出一组的全部符号：`widgets`（框架 Widget）、`components`（项目组件及其声明位置）、`natives`（Native Library 与函数）、`types`（Native Handle 类型）。`--json` 下二者都输出一条 `result`，`payload: {schema_version, query | list, matches: [{path, kind, detail, origin}]}`，`origin` 为 `"framework"` 或项目组件的 `file:line:column`。
+`--search TERM` 不区分大小写地列出路径包含 `TERM` 的符号与成员，每行一个路径及其类型或签名；无匹配时 exit 0。`--list GROUP` 列出一组的全部符号：`widgets`（框架 Widget）、`components`（项目组件及其声明位置）、`natives`（Native Library 与函数）、`types`（项目的 Record 与 Enum 及其声明位置，Native Handle 类型）。`--json` 下二者都输出一条 `result`，`payload: {schema_version, query | list, matches: [{path, kind, detail, origin}]}`，`origin` 为 `"framework"` 或项目声明的 `file:line:column`。
 
 ### 18.2 AI/tool use
 
@@ -1530,7 +1530,7 @@ viso schema Button --json
 
 ### 18.3 Source origin
 
-如果 schema 来自项目组件，应返回：
+如果 schema 来自项目的 Component、Record 或 Enum，应返回：
 
 ```text
 source file

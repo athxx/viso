@@ -1,23 +1,28 @@
-//! The schema of each component a package declares, read from its typed HIR
-//! and its view's binding edges, with where it is declared.
+//! The schema of each component, record and enum a package declares, read
+//! from its typed HIR and its views' binding edges, with where it is
+//! declared.
 
 use std::path::Path;
 
 use viso_ende::JsonWriter;
 
-use super::{EventSchema, InputSchema, Schema, SchemaKind, SourceOrigin, dirty_names};
-use crate::ast::{AstNode, CompilationUnit, ComponentDecl, Member, PartNode};
+use super::{
+    EventSchema, FieldSchema, InputSchema, Schema, SchemaKind, SlotSchema, SourceOrigin,
+    VariantSchema, dirty_names,
+};
+use crate::ast::{AstNode, CompilationUnit, ComponentDecl, Item, Member, PartNode, RecordField};
 use crate::frontend::{component_decls, input_invalidations};
-use crate::hir::{HirComponent, LoweredPackage};
+use crate::hir::{FieldInfo, HirComponent, LoweredPackage, VariantPayload};
 use crate::package::LoadedPackage;
-use crate::resolve::digest;
-use crate::syntax::{LineIndex, SyntaxNode};
+use crate::resolve::{SymbolDecl, digest};
+use crate::syntax::{LineIndex, SyntaxNode, SyntaxToken};
 
-/// The schema of every component and template `package` declares, in file
-/// then source order, each path led by the package name and its module's
-/// path, and each versioned `version`. `root` is the package root its file
-/// paths are reported relative to.
-pub fn package_components(package: &LoadedPackage, root: &Path, version: &str) -> Vec<Schema> {
+/// The schema of every component, template, record and enum `package`
+/// declares, in file then source order (each file's components first), each
+/// path led by the package name and its module's path, and each versioned
+/// `version`. `root` is the package root its file paths are reported
+/// relative to.
+pub fn package_schemas(package: &LoadedPackage, root: &Path, version: &str) -> Vec<Schema> {
     let model = &package.model;
     let hir = &package.hir;
     let natives = model.graph.natives();
@@ -44,6 +49,26 @@ pub fn package_components(package: &LoadedPackage, root: &Path, version: &str) -
             .join("/");
         let mut prefix = vec![model.name.as_str()];
         prefix.extend(file.module.iter().map(String::as_str));
+        let place = |mut schema: Schema, declared: &SymbolDecl| {
+            schema.version = version.to_owned();
+            let mut w = JsonWriter::new();
+            schema.write_json(&mut w);
+            let at = declared.name_range;
+            let position = |offset| {
+                let at = lines.line_col_utf16(offset);
+                (at.line + 1, at.column + 1)
+            };
+            schema.origin = Some(SourceOrigin {
+                file: file_name.clone(),
+                range: at,
+                start: position(at.start()),
+                end: position(at.end()),
+                symbol_id: declared.id,
+                public: declared.export_at.is_none(),
+                revision: digest([w.as_str().as_bytes()]),
+            });
+            schema
+        };
         for component in &own {
             let Some(decl) = decls
                 .iter()
@@ -61,27 +86,109 @@ pub fn package_components(package: &LoadedPackage, root: &Path, version: &str) -
             let invalidates = input_invalidations(&cu, module, &own, natives, component);
             let mut schema = component_schema(component, decl, &invalidates, hir, natives);
             schema.symbol = format!("{}::{}", prefix.join("::"), component.schema.name);
-            schema.version = version.to_owned();
-            let mut w = JsonWriter::new();
-            schema.write_json(&mut w);
-            let at = declared.name_range;
-            let position = |offset| {
-                let at = lines.line_col_utf16(offset);
-                (at.line + 1, at.column + 1)
+            out.push(place(schema, declared));
+        }
+        let describe = |ty: &crate::hir::Ty| hir.types.describe_in(ty, natives);
+        let declared = |name: Option<SyntaxToken>| {
+            let at = name?.text_range();
+            module.decls.iter().find(|d| d.name_range == at)
+        };
+        let items = cu.items().filter_map(|item| match item {
+            Item::Export(export) => export.declaration(),
+            other => Some(other),
+        });
+        for item in items {
+            let schema = match &item {
+                Item::Record(record) => {
+                    let Some(declared) = declared(record.name()) else {
+                        continue;
+                    };
+                    let Some(fields) = hir.types.records.get(&declared.id) else {
+                        continue;
+                    };
+                    let mut schema = Schema::empty(
+                        SchemaKind::Record,
+                        format!("{}::{}", prefix.join("::"), hir_name(hir, declared)),
+                        String::new(),
+                    );
+                    schema.fields = field_schemas(fields, record.fields(), &describe);
+                    place(schema, declared)
+                }
+                Item::Enum(decl) => {
+                    let Some(declared) = declared(decl.name()) else {
+                        continue;
+                    };
+                    let Some(variants) = hir.types.enums.get(&declared.id) else {
+                        continue;
+                    };
+                    let mut schema = Schema::empty(
+                        SchemaKind::Enum,
+                        format!("{}::{}", prefix.join("::"), hir_name(hir, declared)),
+                        String::new(),
+                    );
+                    schema.variants = variants
+                        .iter()
+                        .map(|variant| VariantSchema {
+                            name: variant.name.clone(),
+                            payload: match &variant.payload {
+                                VariantPayload::Unit => None,
+                                VariantPayload::Tuple(tys) => Some(format!(
+                                    "({})",
+                                    tys.iter().map(&describe).collect::<Vec<_>>().join(", ")
+                                )),
+                                VariantPayload::Record(fields) => Some(format!(
+                                    "{{ {} }}",
+                                    fields
+                                        .iter()
+                                        .map(|f| format!("{}: {}", f.name, describe(&f.ty)))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                )),
+                            },
+                        })
+                        .collect();
+                    place(schema, declared)
+                }
+                _ => continue,
             };
-            schema.origin = Some(SourceOrigin {
-                file: file_name.clone(),
-                range: at,
-                start: position(at.start()),
-                end: position(at.end()),
-                symbol_id: component.schema.symbol,
-                public: declared.export_at.is_none(),
-                revision: digest([w.as_str().as_bytes()]),
-            });
             out.push(schema);
         }
     }
     out
+}
+
+/// The name `declared` was given.
+fn hir_name(hir: &LoweredPackage, declared: &SymbolDecl) -> String {
+    hir.types
+        .names
+        .get(&declared.id)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The schema of a record's `fields`, each default as `syntax` writes it.
+fn field_schemas(
+    fields: &[FieldInfo],
+    syntax: impl Iterator<Item = RecordField>,
+    describe: &impl Fn(&crate::hir::Ty) -> String,
+) -> Vec<FieldSchema> {
+    let defaults: Vec<(String, Option<String>)> = syntax
+        .filter_map(|field| {
+            let name = field.name()?.text().to_owned();
+            Some((name, field.default().map(|d| source_text(d.syntax()))))
+        })
+        .collect();
+    fields
+        .iter()
+        .map(|field| FieldSchema {
+            name: field.name.clone(),
+            ty: describe(&field.ty),
+            default: defaults
+                .iter()
+                .find(|(name, _)| *name == field.name)
+                .and_then(|(_, default)| default.clone()),
+        })
+        .collect()
 }
 
 /// The schema of `component`, its path, version and origin left for the
@@ -158,19 +265,20 @@ fn component_schema(
         .collect();
     parts.dedup();
     Schema {
-        kind: SchemaKind::Component,
-        symbol: schema.name.clone(),
-        version: String::new(),
-        member: None,
         inputs,
         events,
-        slots: schema.slots.iter().map(|s| s.name.clone()).collect(),
+        slots: schema
+            .slots
+            .iter()
+            .map(|slot| SlotSchema {
+                name: slot.name.clone(),
+                cardinality: slot.cardinality,
+                default: slot.default,
+            })
+            .collect(),
         parts,
         capabilities,
-        functions: Vec::new(),
-        types: Vec::new(),
-        handle: None,
-        origin: None,
+        ..Schema::empty(SchemaKind::Component, schema.name.clone(), String::new())
     }
 }
 
