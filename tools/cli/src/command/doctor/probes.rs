@@ -87,6 +87,11 @@ const GIT: Probe = Probe {
     title: "Git",
     run: git,
 };
+const LSP: Probe = Probe {
+    name: "lsp",
+    title: "Language server",
+    run: lsp,
+};
 const ANDROID: Probe = Probe {
     name: "android-sdk",
     title: "Android SDK",
@@ -141,7 +146,7 @@ pub(super) fn plan(target: Option<Target>) -> Vec<Probe> {
         None => {
             return vec![
                 RUST, CARGO, RUSTUP, PROJECT, FRAMEWORK, LINKER, GPU, WASM, BINDGEN, WASM_OPT,
-                FILESYSTEM, GIT, ANDROID, IOS,
+                FILESYSTEM, GIT, LSP, ANDROID, IOS,
             ];
         }
         Some(Target::Host) => &[LINKER, GPU, FILESYSTEM],
@@ -517,6 +522,31 @@ fn git(_: &Machine) -> Option<Found> {
     })
 }
 
+fn lsp(_: &Machine) -> Option<Found> {
+    let Some(server) = crate::command::lsp::locate() else {
+        return Some(
+            Found::warn(
+                "`viso-lsp` is not next to `viso` or on `PATH`: editors get no `.vs` \
+                 diagnostics, completion or formatting",
+            )
+            .suggest(crate::command::lsp::install()),
+        );
+    };
+    let at = shown(&server);
+    Some(match tool(&server, &["--version"], TOOL_TIMEOUT) {
+        Ok(text) => match text.trim().strip_prefix("viso-lsp ") {
+            Some(version) if version == VERSION => Found::ok(format!("viso-lsp {version} ({at})")),
+            said => Found::warn(format!(
+                "{at} is viso-lsp {}, this CLI is {VERSION}: an editor would check `.vs` \
+                 by another compiler than `viso check`",
+                said.unwrap_or("of no version")
+            ))
+            .suggest(crate::command::lsp::install()),
+        },
+        Err(why) => Found::warn(why).suggest(crate::command::lsp::install()),
+    })
+}
+
 fn android_sdk(machine: &Machine) -> Option<Found> {
     let required = asked(machine, Target::Android);
     Some(
@@ -761,6 +791,8 @@ mod tests {
             ]
         );
         assert!(names(None).contains(&"android-sdk"));
+        assert!(names(None).contains(&"lsp"));
+        assert!(!names(Some(Target::Host)).contains(&"lsp"));
         assert!(!names(Some(Target::Ios)).contains(&"android-sdk"));
     }
 }

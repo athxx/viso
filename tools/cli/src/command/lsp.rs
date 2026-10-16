@@ -31,7 +31,7 @@ pub fn run(ctx: &Context<'_>, args: &LspArgs, out: &mut Output) -> u8 {
         return out.failure(
             ENV_LSP,
             "no `viso-lsp` next to `viso` or on `PATH`",
-            &["install it with `cargo install viso-lsp`, the same version as the CLI".to_owned()],
+            &[install()],
         );
     };
     let mut command = Command::new(&server);
@@ -48,7 +48,7 @@ pub fn run(ctx: &Context<'_>, args: &LspArgs, out: &mut Output) -> u8 {
 }
 
 /// `viso-lsp` beside the running executable, else the first on `PATH`.
-fn locate() -> Option<PathBuf> {
+pub(crate) fn locate() -> Option<PathBuf> {
     let beside = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(SERVER)))
@@ -59,6 +59,14 @@ fn locate() -> Option<PathBuf> {
             .map(|dir| dir.join(SERVER))
             .find(|path| is_file(path))
     })
+}
+
+/// How to install the server this CLI speaks with.
+pub(crate) fn install() -> String {
+    format!(
+        "cargo install viso-lsp --version {}",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 fn is_file(path: &Path) -> bool {

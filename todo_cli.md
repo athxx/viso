@@ -479,7 +479,8 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
 - [x] `viso-lsp` uses the shared formatter (C1.4) and the diagnostics registry for
       hover on codes.
 - [x] `viso-lsp` exits 0 after `shutdown`+`exit`, 1 otherwise (it always exited 0).
-- [ ] `viso doctor` reports whether a `viso-lsp` of the CLI's version is installed.
+- [x] `viso doctor` reports whether a `viso-lsp` of the CLI's version is installed.
+      (The `lsp` check asks `viso-lsp --version` of the server `viso lsp` would run.)
 
 ### C2.6 — `viso snapshot` headless (§23)
 

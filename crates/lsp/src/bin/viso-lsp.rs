@@ -18,8 +18,13 @@ use viso_lsp::server::Server;
 
 /// `0` once the client shut the server down and sent `exit`; `1` for an
 /// `exit` without `shutdown`, an end of input before `exit`, or a broken
-/// transport.
+/// transport. `--version` prints `viso-lsp <version>` instead, for a tool
+/// checking that the server matches it.
 fn main() -> ExitCode {
+    if std::env::args().skip(1).any(|arg| arg == "--version") {
+        println!("viso-lsp {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     match serve() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {

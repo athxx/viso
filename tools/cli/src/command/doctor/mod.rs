@@ -3,8 +3,8 @@
 //!
 //! Without a target the checks are the host's: the Rust toolchain, Cargo,
 //! the project here, the framework it links, the linker, the GPU backend,
-//! the web tools, the places builds write, Git, and a word on the Android
-//! and iOS environments. A target adds its own toolchain's checks to the
+//! the web tools, the places builds write, Git, the language server editors
+//! run, and a word on the Android and iOS environments. A target adds its own toolchain's checks to the
 //! toolchain and the project, and a gap there is `missing` rather than a
 //! warning: what `viso build <target>` would stop at.
 //!

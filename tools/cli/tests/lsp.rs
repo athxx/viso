@@ -64,3 +64,40 @@ fn the_server_beside_it_gets_the_stdio_and_gives_the_exit() {
     assert_eq!(text(&out.stdout), "server --stdio\n");
     assert!(out.stderr.is_empty(), "{}", text(&out.stderr));
 }
+
+/// The doctor's `lsp` check, as a `doctor_check` payload.
+fn lsp_check(dir: &Path) -> String {
+    let out = viso(dir, &["doctor", "--json"]);
+    text(&out.stdout)
+        .lines()
+        .find(|line| line.contains(r#""name":"lsp""#))
+        .unwrap_or_else(|| panic!("no lsp check: {}", text(&out.stdout)))
+        .to_owned()
+}
+
+#[cfg(unix)]
+#[test]
+fn the_doctor_checks_the_server_is_there_and_of_the_cli_version() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = install("doctor");
+    let check = lsp_check(&dir);
+    assert!(check.contains(r#""status":"warn""#), "{check}");
+    assert!(
+        check.contains("cargo install viso-lsp --version"),
+        "{check}"
+    );
+
+    let server = dir.join("viso-lsp");
+    let answer = |version: &str| {
+        fs::write(&server, format!("#!/bin/sh\necho \"viso-lsp {version}\"\n")).unwrap();
+        fs::set_permissions(&server, fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    answer("9.9.9");
+    let check = lsp_check(&dir);
+    assert!(check.contains(r#""status":"warn""#), "{check}");
+    assert!(check.contains("viso-lsp 9.9.9, this CLI is"), "{check}");
+
+    answer(env!("CARGO_PKG_VERSION"));
+    let check = lsp_check(&dir);
+    assert!(check.contains(r#""status":"ok""#), "{check}");
+}
