@@ -848,9 +848,9 @@ and traced from the CLI and from Studio over the same services.
 - [ ] Fake backends (§61): fake iOS and Android (existing Android), disconnected
       device, signing error, SDK missing — selected by an env var only test builds
       honour.
-- [ ] JSON contract tests (§62): envelope fields, `seq` monotonic, `summary` last and
+- [x] JSON contract tests (§62): envelope fields, `seq` monotonic, `summary` last and
       exactly once, `exit_code` equal to the process exit, every `code` in the
-      registry (C2.3).
+      registry (C2.3) — `tests/json.rs` over a dozen commands, success and failure.
 - [ ] Ctrl-C/cleanup tests (§63): for `run`, `build`, `test`, `package`: signal
       mid-stage, assert no child left, lock released, temp files gone, exit 130.
 

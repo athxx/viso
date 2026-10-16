@@ -222,6 +222,7 @@ impl Plan {
         dist: &str,
         root: &Path,
     ) {
+        w.begin_object();
         w.name("target");
         w.string(name);
         w.name("profile");
@@ -249,6 +250,7 @@ impl Plan {
             w.end_object();
         }
         w.end_array();
+        w.end_object();
     }
 
     /// The `--dry-run` result as text.
