@@ -610,9 +610,13 @@ service and the platform runtime backend stay separate.
       / emulator APK (dev APK in dev, release APK otherwise); device signing is C5.
 - [ ] `test --target ios|android --device <profile>`: UI tests on the simulator or
       emulator through the same runner protocol as headless (C1.9).
-- [ ] `ios logs [--device]`: the app's `log stream` as `log` events.
-- [ ] Fake iOS backend (simctl replaced by a scripted fake) beside the Android one,
+- [x] ~~`ios logs [--device]`~~ — superseded: §11.6/§12.6 keep no separate logs
+      grammar; `viso run ios` streams the app's console and its exit record.
+- [x] Fake iOS backend (simctl replaced by a scripted fake) beside the Android one,
       covering boot failure, disconnect mid-session and SDK missing (§61).
+      (`deploy/ios_fake.rs`: Xcode's tools resolved through a test-only directory;
+      boot failure, simulator gone, abort, shutdown mid-session, no `xcrun`. `viso ios
+      list/use/doctor` against fakes on `PATH` in `tests/ios.rs`.)
 
 ---
 

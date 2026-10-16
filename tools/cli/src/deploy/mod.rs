@@ -27,6 +27,8 @@ pub(crate) mod web;
 
 #[cfg(all(test, unix))]
 mod android_fake;
+#[cfg(all(test, unix))]
+mod ios_fake;
 
 use std::cell::Cell;
 use std::ffi::OsString;

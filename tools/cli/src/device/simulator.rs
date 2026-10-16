@@ -38,8 +38,24 @@ pub(crate) enum State {
     Gone,
 }
 
+/// Xcode's tool `name`, from `PATH`; from the fake's directory in tests.
+fn tool(name: &str) -> Command {
+    #[cfg(test)]
+    if let Some(dir) = FAKE_TOOLS.with(|dir| dir.borrow().clone()) {
+        return Command::new(dir.join(name));
+    }
+    Command::new(name)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Where the scripted `xcrun` and `open` of a fake simulator are.
+    pub(crate) static FAKE_TOOLS: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn simctl() -> Command {
-    let mut command = Command::new("xcrun");
+    let mut command = tool("xcrun");
     command.arg("simctl");
     command
 }
@@ -144,7 +160,7 @@ pub(crate) fn boot(profile: &DeviceProfile) -> Result<(), String> {
     }
     quiet(simctl().args(["bootstatus", udid, "-b"]))?;
     // The window shows the device; the app runs whether or not it is open.
-    let _ = Command::new("open")
+    let _ = tool("open")
         .args([
             "-g",
             "-a",
