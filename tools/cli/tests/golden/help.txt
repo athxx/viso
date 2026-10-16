@@ -14,8 +14,8 @@ PROJECT
   config      Show where each configuration value comes from, or validate it
 
 MOBILE DEV ENVIRONMENT
-  android     Manage the Android Emulator profiles `viso run android` runs on
-  ios         Manage the iOS Simulator profiles `viso run ios` runs on
+  android     Manage the Android SDK and the emulator profiles `viso run android` runs on
+  ios         Manage the iOS Simulator runtimes and the profiles `viso run ios` runs on
 
 DEVELOP
   run         Build a dev artifact and run it, hot reloading edits as they are saved
@@ -266,15 +266,19 @@ Global options:
       --target-dir <PATH>  Put build output under PATH instead of `target/`
 
 $ viso android --help
-Manage the Android Emulator profiles `viso run android` runs on
+Manage the Android SDK and the emulator profiles `viso run android` runs on
 
 Usage: viso android [OPTIONS] <COMMAND>
 
 Examples:
-  viso android emulator list          # list the emulator profiles
+  viso android use 36                 # install API 36's tools and make it the default
   viso android emulator create pixel  # create a phone profile
 
 Commands:
+  list      List the supported API levels, what each installs and which is the default
+  use       Install an API level's tested component set and make it the default
+  doctor    Check the Android SDK, emulator, acceleration and profiles
+  adb       Run the SDK's `adb`, on a profile's running emulator
   emulator  The emulator profiles
 
 Options:
@@ -295,6 +299,118 @@ Global options:
 Notes:
   Profiles are kept in `~/.viso/` (`$VISO_HOME`); `viso run android --device <id>`
   runs on one.
+
+$ viso android list --help
+List the supported API levels, what each installs and which is the default
+
+Usage: viso android list [OPTIONS]
+
+Examples:
+  viso android list         # the supported API levels and the default
+  viso android list --json  # with each level's components, as JSON events
+
+Options:
+      --offline  Only the levels installed
+  -h, --help     Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso android use --help
+Install an API level's tested component set and make it the default
+
+Usage: viso android use [OPTIONS] <API>
+
+Examples:
+  viso android use 36                    # install API 36's tested set, asking for its licenses
+  viso android use 35 --accept-licenses  # accept the licenses without being asked
+  viso android use 36 --offline          # switch only if nothing needs downloading
+
+Arguments:
+  <API>  The API level
+
+Options:
+      --accept-licenses  Accept the licenses of what is downloaded without being asked
+      --offline          Download nothing: fail when anything is missing
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  The tested set is the platform, a Google APIs system image for this host, and the
+  platform-tools, build-tools, NDK and emulator, each archive verified before it is
+  unpacked into `~/.viso/android/sdk`. `ANDROID_HOME` still wins when it is set.
+
+$ viso android doctor --help
+Check the Android SDK, emulator, acceleration and profiles
+
+Usage: viso android doctor [OPTIONS]
+
+Examples:
+  viso android doctor         # check the SDK, emulator and acceleration
+  viso android doctor --json  # one `doctor_check` event per check
+
+Options:
+      --fix   Make the local, reversible fixes the checks name
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso android adb --help
+Run the SDK's `adb`, on a profile's running emulator
+
+Usage: viso android adb [OPTIONS] [ARGS]...
+
+Examples:
+  viso android adb devices                       # the devices adb sees
+  viso android adb --device pixel shell getprop  # run a command on a profile's emulator
+  viso android adb -- logcat -d                  # everything after `--` goes to adb as it is
+
+Arguments:
+  [ARGS]...  The arguments for `adb`, passed on as they are
+
+Options:
+      --device <DEVICE>  The profile whose running emulator `adb` talks to
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
 
 $ viso android emulator --help
 The emulator profiles
@@ -365,7 +481,7 @@ Arguments:
 
 Options:
       --preset <PRESET>  The device's form factor [default: phone] [possible values: phone, tablet]
-      --api <LEVEL>      The Android API level of its system image (the newest installed when omitted); Android only
+      --api <LEVEL>      The Android API level of its system image (the one `viso android use` chose, else the newest installed, when omitted); Android only
   -h, --help             Print help
 
 Global options:
@@ -463,15 +579,18 @@ Global options:
       --target-dir <PATH>  Put build output under PATH instead of `target/`
 
 $ viso ios --help
-Manage the iOS Simulator profiles `viso run ios` runs on
+Manage the iOS Simulator runtimes and the profiles `viso run ios` runs on
 
 Usage: viso ios [OPTIONS] <COMMAND>
 
 Examples:
-  viso ios simulator list           # list the simulator profiles
+  viso ios list                     # the Simulator runtimes and the default
   viso ios simulator create iphone  # create a phone profile
 
 Commands:
+  list       List the Simulator runtimes installed and the one Xcode can install, and which is the default
+  use        Make a Simulator runtime the default, having Xcode install it first when it is not
+  doctor     Check Xcode, its license, the Simulator runtime and the profiles
   simulator  The simulator profiles
 
 Options:
@@ -491,7 +610,90 @@ Global options:
 
 Notes:
   Profiles are kept in `~/.viso/` (`$VISO_HOME`); `viso run ios --device <id>`
-  runs on one.
+  runs on one. Every `viso ios` command needs macOS and Xcode.
+
+$ viso ios list --help
+List the Simulator runtimes installed and the one Xcode can install, and which is the default
+
+Usage: viso ios list [OPTIONS]
+
+Examples:
+  viso ios list         # the runtimes installed and the one Xcode can install
+  viso ios list --json  # with each runtime's build and models, as JSON events
+
+Options:
+      --offline  Only the runtimes installed
+  -h, --help     Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso ios use --help
+Make a Simulator runtime the default, having Xcode install it first when it is not
+
+Usage: viso ios use [OPTIONS] <RUNTIME>
+
+Examples:
+  viso ios use 26.3           # make an installed runtime the default
+  viso ios use 27 --download  # have Xcode download it first when it is not installed
+  viso ios use 27 --offline   # switch only if nothing needs downloading
+
+Arguments:
+  <RUNTIME>  The runtime version: `26.3`, `27`, `iOS 27.0`
+
+Options:
+      --download  Have Xcode download the runtime, when it is not installed, without being asked
+      --offline   Download nothing: fail when the runtime is not installed
+  -h, --help      Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  New simulators are made on the default runtime (`27` follows the newest 27.x).
+  A runtime is downloaded only by Xcode (`xcodebuild -downloadPlatform iOS`), only
+  with `--download` or a yes at a terminal; Xcode itself is never changed.
+
+$ viso ios doctor --help
+Check Xcode, its license, the Simulator runtime and the profiles
+
+Usage: viso ios doctor [OPTIONS]
+
+Examples:
+  viso ios doctor         # check Xcode, its license and the runtime
+  viso ios doctor --json  # one `doctor_check` event per check
+
+Options:
+      --fix   Make the local, reversible fixes the checks name
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
 
 $ viso ios simulator --help
 The simulator profiles
@@ -562,7 +764,7 @@ Arguments:
 
 Options:
       --preset <PRESET>  The device's form factor [default: phone] [possible values: phone, tablet]
-      --api <LEVEL>      The Android API level of its system image (the newest installed when omitted); Android only
+      --api <LEVEL>      The Android API level of its system image (the one `viso android use` chose, else the newest installed, when omitted); Android only
   -h, --help             Print help
 
 Global options:

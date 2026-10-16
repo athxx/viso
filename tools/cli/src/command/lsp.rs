@@ -75,7 +75,7 @@ fn is_file(path: &Path) -> bool {
 
 /// Replaces this process with `command`; returns only when that fails.
 #[cfg(unix)]
-fn replace(mut command: Command) -> std::io::Error {
+pub(crate) fn replace(mut command: Command) -> std::io::Error {
     use std::os::unix::process::CommandExt;
     command.exec()
 }
@@ -83,7 +83,7 @@ fn replace(mut command: Command) -> std::io::Error {
 /// Runs `command` on this process's stdio and exits with its code; returns
 /// only when it cannot start.
 #[cfg(not(unix))]
-fn replace(mut command: Command) -> std::io::Error {
+pub(crate) fn replace(mut command: Command) -> std::io::Error {
     match command.status() {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
         Err(error) => error,

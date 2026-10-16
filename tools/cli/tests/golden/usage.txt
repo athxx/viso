@@ -21,8 +21,8 @@ PROJECT
   config      Show where each configuration value comes from, or validate it
 
 MOBILE DEV ENVIRONMENT
-  android     Manage the Android Emulator profiles `viso run android` runs on
-  ios         Manage the iOS Simulator profiles `viso run ios` runs on
+  android     Manage the Android SDK and the emulator profiles `viso run android` runs on
+  ios         Manage the iOS Simulator runtimes and the profiles `viso run ios` runs on
 
 DEVELOP
   run         Build a dev artifact and run it, hot reloading edits as they are saved

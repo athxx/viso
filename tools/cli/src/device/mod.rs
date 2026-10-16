@@ -9,7 +9,7 @@ pub(crate) mod simulator;
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::{Command, Stdio};
 
-use viso_package::android::{Abi, Sdk};
+use viso_package::android::Abi;
 use viso_project::{DeviceProfile, DeviceStore, Platform, Preset, Selection, device::valid_id};
 
 use crate::error::{
@@ -98,7 +98,7 @@ pub(crate) fn create(
             if api.is_some() {
                 return Err(out.failure(CLI_USAGE, "`--api` is an Android option", &[]));
             }
-            simulator::newest_runtime(preset)
+            simulator::runtime_for(preset)
                 .and_then(|(runtime, device_type, model)| {
                     let udid =
                         simulator::create(&format!("Viso {id} ({model})"), &device_type, &runtime)?;
@@ -137,9 +137,19 @@ fn create_avd(
     api: Option<&str>,
     preset: Preset,
 ) -> Result<(String, String), (crate::error::Code, String)> {
-    let sdk = Sdk::locate().map_err(|why| (ENV_DEVICE, why))?;
+    let sdk = crate::toolchain::android::sdk().map_err(|why| (ENV_DEVICE, why))?;
     let abi = Abi::host();
     let images = emulator::system_images(&sdk, abi);
+    // With no level asked, the one `viso android use` chose, when its image
+    // is here; else the newest.
+    let chosen = crate::toolchain::android::Home::current()
+        .and_then(|home| home.default_api())
+        .map(|level| level.to_string());
+    let api = api.or_else(|| {
+        chosen
+            .as_deref()
+            .filter(|level| images.iter().any(|image| image.api == *level))
+    });
     let image = images
         .iter()
         .find(|image| {
@@ -151,7 +161,8 @@ fn create_avd(
                 DEVICE_SYSTEM,
                 match api {
                     Some(api) => format!(
-                        "no {} system image of API {api} is installed (installed: {})",
+                        "no {} system image of API {api} is installed (installed: {}); \
+                         `viso android use {api}` installs it",
                         abi.as_str(),
                         if installed.is_empty() {
                             "none".into()
@@ -159,7 +170,11 @@ fn create_avd(
                             installed.join(", ")
                         }
                     ),
-                    None => format!("no {} system image is installed", abi.as_str()),
+                    None => format!(
+                        "no {} system image is installed; `viso android use {}` installs one",
+                        abi.as_str(),
+                        crate::toolchain::android::components::DEFAULT_API
+                    ),
                 },
             )
         })?;
@@ -170,7 +185,7 @@ fn create_avd(
 
 /// Whether the user can be asked: human output, a terminal on stdin and
 /// stderr, and no CI.
-fn can_ask(out: &Output) -> bool {
+pub(crate) fn can_ask(out: &Output) -> bool {
     out.human()
         && std::io::stdin().is_terminal()
         && std::io::stderr().is_terminal()

@@ -1,6 +1,7 @@
 //! Command handlers. Each resolves what it needs, calls the owning service and
 //! returns the process exit code.
 
+mod android;
 mod build;
 mod check;
 mod clean;
@@ -13,6 +14,7 @@ mod explain;
 mod fmt;
 mod game;
 mod inspect;
+mod ios;
 mod lsp;
 mod new;
 mod run;
@@ -25,7 +27,7 @@ mod test;
 pub(crate) use snapshot::SNAPSHOT_VERSION;
 use viso_project::Platform;
 
-use crate::args::{AndroidCommand, Cli, Command, Global, IosCommand};
+use crate::args::{AndroidCommand, Cli, Command, Global};
 use crate::context::Context;
 use crate::error::{CLI_USAGE, INTERNAL_PANIC, SUCCESS};
 use crate::output::Output;
@@ -52,6 +54,10 @@ pub fn run(cli: &Cli) -> u8 {
 
 fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
     match command {
+        Command::Android(AndroidCommand::List(args)) => android::list(args, out),
+        Command::Android(AndroidCommand::Use(args)) => android::use_level(args, out),
+        Command::Android(AndroidCommand::Doctor(args)) => android::doctor(ctx, args, out),
+        Command::Android(AndroidCommand::Adb(args)) => android::adb(ctx, args, out),
         Command::Android(AndroidCommand::Emulator(command)) => {
             device::run(Platform::Android, command, out)
         }
@@ -64,7 +70,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
         Command::Explain(args) => explain::run(args, out),
         Command::Config(command) => config::run(ctx, command, out),
         Command::Fmt(args) => fmt::run(ctx, args, out),
-        Command::Ios(IosCommand::Simulator(command)) => device::run(Platform::Ios, command, out),
+        Command::Ios(command) => ios::run(ctx, command, out),
         Command::Game(command) => game::run(ctx, command, out),
         Command::Inspect(command) => inspect::run(ctx, command, out),
         Command::Lsp(args) => lsp::run(ctx, args, out),

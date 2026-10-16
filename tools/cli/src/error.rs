@@ -232,9 +232,58 @@ codes! {
     }
     ENV_ANDROID_SDK = ENVIRONMENT {
         summary: "No Android SDK, with its NDK, build tools and a platform, is found.",
-        explanation: "Android builds need an SDK with an NDK, build tools and a platform; none is found under `ANDROID_HOME`, `ANDROID_SDK_ROOT` or the default locations.",
-        fix: "Install the Android SDK components, or point `ANDROID_HOME` at an existing SDK.",
-        commands: ["viso doctor"],
+        explanation: "Android builds need an SDK with an NDK, build tools and a platform; none is found under `ANDROID_HOME`, `ANDROID_SDK_ROOT`, the SDK `viso android use` installs, or the default locations.",
+        fix: "Install a tested component set with `viso android use <api>`, or point `ANDROID_HOME` at an existing SDK.",
+        commands: ["viso android use 36", "viso android doctor"],
+    }
+    ENV_ANDROID_LICENSE = ENVIRONMENT {
+        summary: "A license of the Android components to install is not accepted.",
+        explanation: "The Android SDK archives are published under licenses that must be accepted before they are installed. Viso asks at a terminal; elsewhere, or when declined, nothing is downloaded.",
+        fix: "Run the command at a terminal and accept, or pass `--accept-licenses` once you have read them.",
+        commands: ["viso android use 36 --accept-licenses"],
+    }
+    ENV_DOWNLOAD = ENVIRONMENT {
+        summary: "A toolchain archive could not be downloaded.",
+        explanation: "The transfer of a pinned archive failed (no network, a refused connection, an HTTP error). What arrived is kept, so the next attempt resumes it.",
+        fix: "Check the network, then run the command again.",
+        commands: [],
+    }
+    ENV_DOWNLOAD_INTEGRITY = ENVIRONMENT {
+        summary: "A downloaded archive is not the one pinned.",
+        explanation: "Every toolchain archive is pinned by its size and digest; what arrived differs, so it was deleted and nothing of it was unpacked. A proxy rewriting downloads, or a changed upstream file, does this.",
+        fix: "Run the command again; if it persists, the network between this machine and the repository alters the file.",
+        commands: [],
+    }
+    ENV_INSTALL = ENVIRONMENT {
+        summary: "A verified toolchain archive could not be unpacked into place.",
+        explanation: "The archive was verified, but unpacking it into the staging directory or moving that into the SDK failed, usually for disk space or permissions; the component was left as it was.",
+        fix: "Free disk space or fix the permissions of `~/.viso`, then run the command again.",
+        commands: [],
+    }
+    ENV_OFFLINE = ENVIRONMENT {
+        summary: "`--offline` was given and something needs downloading.",
+        explanation: "With `--offline` nothing is downloaded, and a component that is not installed and verified already is missing.",
+        fix: "Run the command without `--offline`.",
+        commands: [],
+    }
+
+    ENV_IOS_HOST = ENVIRONMENT {
+        summary: "The iOS Simulator is on macOS only.",
+        explanation: "`viso ios` manages Xcode's Simulator runtimes and simulators, which exist on a Mac only; on another host every `viso ios` command stops here.",
+        fix: "Develop for iOS on a Mac; elsewhere `viso run android` or `viso run` runs the app.",
+        commands: [],
+    }
+    ENV_XCODE = ENVIRONMENT {
+        summary: "Xcode is not installed or not the selected developer directory.",
+        explanation: "The Simulator, `simctl` and runtime downloads come with Xcode; the Command Line Tools alone have none of them.",
+        fix: "Install Xcode from the App Store and select it with `sudo xcode-select -s /Applications/Xcode.app`.",
+        commands: ["viso ios doctor"],
+    }
+    ENV_XCODE_LICENSE = ENVIRONMENT {
+        summary: "The Xcode license is not accepted.",
+        explanation: "Xcode's tools refuse to run until its license is accepted, which needs an administrator and is never done by Viso.",
+        fix: "Run `sudo xcodebuild -license` and accept it.",
+        commands: ["viso ios doctor"],
     }
 
     BUILD_FAILED = BUILD {
@@ -381,6 +430,24 @@ codes! {
         commands: ["viso dump --help"],
     }
 
+    ANDROID_API_UNSUPPORTED = USAGE {
+        summary: "The Android API level is not one Viso supports.",
+        explanation: "`viso android use` installs a component set Viso is tested with, and has one for each supported API level only.",
+        fix: "Pick a level `viso android list` shows.",
+        commands: ["viso android list"],
+    }
+    IOS_RUNTIME_INVALID = USAGE {
+        summary: "The iOS runtime given is not a version.",
+        explanation: "`viso ios use` takes a Simulator runtime version — `27`, `26.3`, `iOS 27.0` — of up to three numbers.",
+        fix: "Pick a version `viso ios list` shows.",
+        commands: ["viso ios list"],
+    }
+    IOS_RUNTIME_MISSING = USAGE {
+        summary: "The iOS runtime is not installed, and installing it was not asked for.",
+        explanation: "A Simulator runtime is a download of several gigabytes through Xcode; `viso ios use` starts one only when `--download` is given or the user agrees at a terminal.",
+        fix: "Pass `--download`, or run the command at a terminal and agree.",
+        commands: ["viso ios list"],
+    }
     INSPECT_SELECTOR = USAGE {
         summary: "The selector `viso inspect query` is given does not parse.",
         explanation: "A selector is one or more comma-separated chains of compounds — a type, `#name`, `.Style`, `[attribute]` or `[attribute=value]` — joined by a space (descendant) or `>` (child); the one given breaks that grammar or names an attribute there is none of.",
@@ -465,6 +532,8 @@ mod tests {
                 // more than one way.
                 "NEW" => &[USAGE, ENVIRONMENT, INTERNAL],
                 "INSPECT" => &[USAGE, INTERNAL],
+                "ANDROID" => &[USAGE],
+                "IOS" => &[USAGE],
                 "DEVICE" | "GAME" => &[DIAGNOSTICS, USAGE, ENVIRONMENT, RUNTIME, INTERNAL],
                 other => panic!("`{}` has no known prefix `{other}`", code.name),
             };

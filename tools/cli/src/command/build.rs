@@ -14,7 +14,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use viso_ende::JsonWriter;
-use viso_package::android::Sdk;
 use viso_project::{
     ArtifactKind, Layout, LockGuard, LockKind, Profile, Project, ProjectFingerprint, Target,
 };
@@ -211,9 +210,9 @@ pub(super) fn stage(
         ));
     }
     let sdk = match target {
-        Target::Android => match Sdk::locate() {
+        Target::Android => match crate::toolchain::android::sdk() {
             Ok(sdk) => Some(sdk),
-            Err(why) => return Err(out.failure(ENV_DEVICE, &why, &[])),
+            Err(why) => return Err(crate::toolchain::android::no_sdk(out, &why)),
         },
         _ => None,
     };

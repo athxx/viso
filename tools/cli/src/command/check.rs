@@ -25,7 +25,6 @@ use viso_dsl::i18n::{CatalogIssue, Messages};
 use viso_dsl::inspect::file_sources;
 use viso_dsl::package::{LoadedPackage, PackageManifest, load_package};
 use viso_dsl::{Diagnostic, TextRange, TextSize};
-use viso_package::android::Sdk;
 use viso_project::{
     ArtifactKind, DevRuntime, GameDeterminism, Project, ResolvedConfig, Span, Target,
 };
@@ -137,7 +136,7 @@ fn rust(ctx: &Context<'_>, project: &Project, config: &ResolvedConfig, out: &mut
     // The NDK's compilers serve a build script that compiles C; without
     // them only such a script fails.
     let sdk = (target == Target::Android)
-        .then(|| Sdk::locate().ok())
+        .then(|| crate::toolchain::android::sdk().ok())
         .flatten();
     let plan = build::rust_plan(target, profile, sdk.as_ref());
     let mut features = plan.features;

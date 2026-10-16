@@ -38,10 +38,70 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
     (
         "android",
         &[
-            ("viso android emulator list", "list the emulator profiles"),
+            (
+                "viso android use 36",
+                "install API 36's tools and make it the default",
+            ),
             (
                 "viso android emulator create pixel",
                 "create a phone profile",
+            ),
+        ],
+    ),
+    (
+        "android list",
+        &[
+            (
+                "viso android list",
+                "the supported API levels and the default",
+            ),
+            (
+                "viso android list --json",
+                "with each level's components, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "android use",
+        &[
+            (
+                "viso android use 36",
+                "install API 36's tested set, asking for its licenses",
+            ),
+            (
+                "viso android use 35 --accept-licenses",
+                "accept the licenses without being asked",
+            ),
+            (
+                "viso android use 36 --offline",
+                "switch only if nothing needs downloading",
+            ),
+        ],
+    ),
+    (
+        "android doctor",
+        &[
+            (
+                "viso android doctor",
+                "check the SDK, emulator and acceleration",
+            ),
+            (
+                "viso android doctor --json",
+                "one `doctor_check` event per check",
+            ),
+        ],
+    ),
+    (
+        "android adb",
+        &[
+            ("viso android adb devices", "the devices adb sees"),
+            (
+                "viso android adb --device pixel shell getprop",
+                "run a command on a profile's emulator",
+            ),
+            (
+                "viso android adb -- logcat -d",
+                "everything after `--` goes to adb as it is",
             ),
         ],
     ),
@@ -316,8 +376,48 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
     (
         "ios",
         &[
-            ("viso ios simulator list", "list the simulator profiles"),
+            ("viso ios list", "the Simulator runtimes and the default"),
             ("viso ios simulator create iphone", "create a phone profile"),
+        ],
+    ),
+    (
+        "ios list",
+        &[
+            (
+                "viso ios list",
+                "the runtimes installed and the one Xcode can install",
+            ),
+            (
+                "viso ios list --json",
+                "with each runtime's build and models, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "ios use",
+        &[
+            ("viso ios use 26.3", "make an installed runtime the default"),
+            (
+                "viso ios use 27 --download",
+                "have Xcode download it first when it is not installed",
+            ),
+            (
+                "viso ios use 27 --offline",
+                "switch only if nothing needs downloading",
+            ),
+        ],
+    ),
+    (
+        "ios doctor",
+        &[
+            (
+                "viso ios doctor",
+                "check Xcode, its license and the runtime",
+            ),
+            (
+                "viso ios doctor --json",
+                "one `doctor_check` event per check",
+            ),
         ],
     ),
     (
@@ -527,6 +627,12 @@ const NOTES: &[(&str, &str)] = &[
          runs on one.",
     ),
     (
+        "android use",
+        "The tested set is the platform, a Google APIs system image for this host, and the\n\
+         platform-tools, build-tools, NDK and emulator, each archive verified before it is\n\
+         unpacked into `~/.viso/android/sdk`. `ANDROID_HOME` still wins when it is set.",
+    ),
+    (
         "build",
         "The sources are checked first. The output replaces `dist/<platform>/` whole, with\n\
          its `artifact.json`; `ios` builds for the Simulator and `android` for the Emulator.\n\
@@ -591,7 +697,13 @@ const NOTES: &[(&str, &str)] = &[
     (
         "ios",
         "Profiles are kept in `~/.viso/` (`$VISO_HOME`); `viso run ios --device <id>`\n\
-         runs on one.",
+         runs on one. Every `viso ios` command needs macOS and Xcode.",
+    ),
+    (
+        "ios use",
+        "New simulators are made on the default runtime (`27` follows the newest 27.x).\n\
+         A runtime is downloaded only by Xcode (`xcodebuild -downloadPlatform iOS`), only\n\
+         with `--download` or a yes at a terminal; Xcode itself is never changed.",
     ),
     (
         "run",

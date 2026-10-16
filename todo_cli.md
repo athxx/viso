@@ -255,8 +255,10 @@ gap, and CI can run all of it headless.
       every command creates it; the doctor checks that it can be written.)
 - [x] Probes run in parallel with a per-probe timeout; a hung tool is `error` with the
       timeout, not a hung doctor.
-- [ ] Point `android-sdk` and `ios-runtime` gaps at `viso android use` / `viso ios use`
+- [x] Point `android-sdk` and `ios-runtime` gaps at `viso android use` / `viso ios use`
       once C3.2 and C3.4 land; until then the message says what to install.
+      (`android-sdk`, `android-tools` and every no-SDK failure suggest
+      `viso android use <level>`; `ios-runtime` suggests `viso ios use <v>`.)
 
 ### C1.4 — `viso fmt` (§16)
 
@@ -552,43 +554,55 @@ service and the platform runtime backend stay separate.
 
 ### C3.2 — `viso android list|use|doctor` (§11.1–§11.3)
 
-- [ ] `android list`: installed and available API levels with their component set
+- [x] `android list`: installed and available API levels with their component set
       (platform, build-tools, platform-tools, emulator, system image per host ABI,
       NDK), marking the active one; `--offline` lists installed only.
-- [ ] `android use <api>`: download the pinned component set into
-      `~/.viso/android/sdk/` — each archive's SHA-256 verified against the pinned
-      table, extracted to a temp dir, moved into place atomically, only the files a
+- [x] `android use <api>`: download the pinned component set into
+      `~/.viso/android/sdk/` — each archive's size and SHA-1 (the digest Google's
+      repository manifest publishes) verified against the pinned table, extracted to a temp dir, moved into place atomically, only the files a
       build needs kept (makepad's selective expansion); resumable; progress events;
       accepts the license by an explicit `--accept-licenses` or a TTY prompt, never
-      silently; `--offline` fails with exit 3 when anything is missing.
-- [ ] Active SDK recorded in `~/.viso/android/config.toml`; resolution order
+      silently; `--offline` fails with exit 3 when anything is missing. (`curl` over
+      HTTPS only, resumed from `.part`; the CLI's own zip reader with ZIP64, CRC and
+      zip-slip/link checks; staging dir + one rename; `.viso-component` marker.)
+- [x] Active SDK recorded in `~/.viso/android/config.toml`; resolution order
       `ANDROID_HOME`/`ANDROID_SDK_ROOT` > active Viso SDK > default locations,
       reported with origin.
-- [ ] `android doctor`: SDK, NDK, build-tools, platform-tools, emulator binary,
+- [x] `android doctor`: SDK, NDK, build-tools, platform-tools, emulator binary,
       system image for the host ABI, hardware acceleration (HVF/KVM/WHPX), Java only
       where a step needs it, rustup targets; `doctor_check` events; each failure's
-      fix is a `viso` command.
-- [ ] Unblocks the Android API 35/36 image install noted in `todo_hotreload.md`.
+      fix is a `viso` command. (Checks `android-components`, `android-accel`
+      (`emulator -accel-check`), `java` added to the Android plan.)
+- [x] Unblocks the Android API 35/36 image install noted in `todo_hotreload.md`.
+      (Real `viso android use 36` installed and verified the set, resuming the
+      system image across two dropped connections; patch and warm restart then
+      verified on that emulator.)
 
 ### C3.3 — `viso android adb` and logs (§11.5, §11.6)
 
-- [ ] `android adb [--device <profile>] -- <args>`: resolves the profile to the
+- [x] `android adb [--device <profile>] -- <args>`: resolves the profile to the
       running emulator's serial, runs the SDK's `adb -s <serial>` with the args
       verbatim, exit code passed through; not running is exit 3 with the start
       command.
-- [ ] `android logs [--device]`: `logcat` filtered to the app's pid, as `log` events
-      under `--json`.
+- [x] ~~`android logs [--device]`~~ — superseded: §11.6 keeps no separate logs
+      grammar; `viso run android` gathers the app's log and `viso android adb
+      --device <p> logcat` is the low-level path.
 
 ### C3.4 — `viso ios list|use|doctor` (§12.1–§12.3)
 
-- [ ] `ios list`: installed simulator runtimes and device types (`simctl list -j`),
+- [x] `ios list`: installed simulator runtimes and device types (`simctl list -j`),
       the active one marked; downloadable runtimes when Xcode can report them.
-- [ ] `ios use <runtime>`: sets the default runtime for new profiles; a runtime not
+      (Xcode reports only the runtime its SDK pairs with, `simctl runtime match
+      list`; that one is listed `available`.)
+- [x] `ios use <runtime>`: sets the default runtime for new profiles; a runtime not
       installed is installed through `xcodebuild -downloadPlatform iOS` only with
       explicit consent (flag or TTY prompt); never touches Xcode itself.
-- [ ] `ios doctor`: Xcode and command line tools selection, license accepted,
+- [x] `ios doctor`: Xcode and command line tools selection, license accepted,
       simulator runtime, `aarch64-apple-ios-sim` target, disk space for a runtime;
       on a non-macOS host every `ios` command is exit 3 with one clear diagnostic.
+      (`ENV_IOS_HOST`; checks `xcode-license`, `ios-disk` added.)
+- [x] Simulator profiles are created on the default runtime when it is installed,
+      else the newest.
 
 ### C3.5 — Mobile `build`, `test`, `logs`
 

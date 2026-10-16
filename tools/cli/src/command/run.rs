@@ -290,11 +290,9 @@ pub(super) fn session(
         None => None,
     };
     let sdk = match platform {
-        Some(Platform::Android) => match Sdk::locate() {
+        Some(Platform::Android) => match crate::toolchain::android::sdk() {
             Ok(sdk) => Some(sdk),
-            Err(why) => {
-                return out.failure(ENV_DEVICE, &why, &[]);
-            }
+            Err(why) => return crate::toolchain::android::no_sdk(out, &why),
         },
         _ => None,
     };

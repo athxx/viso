@@ -517,6 +517,25 @@ impl Output {
         }
     }
 
+    /// Reports a step of a long command: a `progress` event, or a line on
+    /// stderr. `--quiet` drops it.
+    pub fn step(&mut self, phase: &str, message: &str) {
+        if self.quiet {
+            return;
+        }
+        match &mut self.form {
+            Form::Json(stream) => stream.progress(phase, message),
+            Form::Human => eprintln!("[viso] {message}"),
+        }
+    }
+
+    /// Whether a live line may be redrawn on stderr: human output to a
+    /// terminal, without `--quiet`.
+    pub fn live(&self) -> bool {
+        use std::io::IsTerminal;
+        self.human() && !self.quiet && std::io::stderr().is_terminal()
+    }
+
     /// Reports where the virtual device `id` (`name`, as the platform
     /// calls it) of `platform` is: a `device` event, or a line on stderr.
     pub fn device(&mut self, platform: &str, id: &str, name: &str, state: &str) {

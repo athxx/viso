@@ -1067,12 +1067,14 @@ differ.
       at once.
 - [x] TTY prompt to pick or create a profile when `--device` is ambiguous or missing
       (`Viso_CLI.md` §13.2); `--json`, non-TTY and CI keep the diagnostics.
-- [ ] Android emulator: profile → adb serial mapping, `adb reverse` for the dev port
+- [x] Android emulator: profile → adb serial mapping, `adb reverse` for the dev port
       (no LAN exposure), dev APK build/install/launch, warm restart delays stopping
       the old process until the candidate is built (§27). Built, installed, launched
-      and logged on an emulator, with its exit status from `ApplicationExitInfo`;
-      the patch and restart are unverified: the local emulator (36.4.10) cannot
-      create a Vulkan instance on the only installed image (API 37 preview).
+      and logged on an emulator, with its exit status from `ApplicationExitInfo`.
+      Verified on the API 36 Google APIs arm64 image `viso android use 36` installs
+      (emulator 37.2.12): Vulkan renders, a `.vs` layout edit is applied in ~110 ms
+      with state migrated, a Rust edit restarts the app on a new runtime session
+      with state restored, both read back with `viso inspect query`.
 - [x] iOS simulator: `simctl` install/launch, host-reachable loopback transport, no
       signing or provisioning (§28).
 - [x] Web: dev server with a WebSocket dev channel bound to loopback (LAN opt-in),

@@ -72,11 +72,35 @@ pub const RUSTC_ARGS: &[&str] = &[
 /// The permission line a dev APK adds, for its dev channel.
 const DEV_PERMISSIONS: &str = r#"<uses-permission android:name="android.permission.INTERNET" />"#;
 
+/// Where an SDK was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdkOrigin {
+    /// The environment variable that names it.
+    Variable(&'static str),
+    /// The one `viso android use` installed.
+    Viso,
+    /// The place the Android tools install to by default.
+    Default,
+}
+
+impl SdkOrigin {
+    /// Where it came from, for a reader.
+    pub fn describe(self) -> String {
+        match self {
+            SdkOrigin::Variable(name) => format!("from `{name}`"),
+            SdkOrigin::Viso => "installed by `viso android use`".to_owned(),
+            SdkOrigin::Default => "at the default location".to_owned(),
+        }
+    }
+}
+
 /// The SDK and NDK tools packaging uses.
 #[derive(Debug, Clone)]
 pub struct Sdk {
     /// The SDK root.
     pub root: PathBuf,
+    /// Where it was found.
+    pub origin: SdkOrigin,
     /// The NDK's LLVM `bin` directory.
     pub ndk_bin: PathBuf,
     /// The newest build-tools directory.
@@ -133,22 +157,31 @@ pub fn library_name(bin: &str) -> String {
 }
 
 impl Sdk {
-    /// The SDK at `$ANDROID_HOME`, `$ANDROID_SDK_ROOT` or the default place,
-    /// with the NDK at `$ANDROID_NDK_HOME` or its newest under the SDK.
-    pub fn locate() -> Result<Sdk, String> {
+    /// The SDK at `$ANDROID_HOME` or `$ANDROID_SDK_ROOT`, else `viso`, the
+    /// one Viso installed, else the default place; with the NDK at
+    /// `$ANDROID_NDK_HOME` or its newest under the SDK.
+    pub fn locate(viso: Option<&Path>) -> Result<Sdk, String> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
-        let root = ["ANDROID_HOME", "ANDROID_SDK_ROOT"]
-            .iter()
-            .find_map(std::env::var_os)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| default_sdk(&home));
+        let (root, origin) = ["ANDROID_HOME", "ANDROID_SDK_ROOT"]
+            .into_iter()
+            .find_map(|name| {
+                let value = std::env::var_os(name).filter(|v| !v.is_empty())?;
+                Some((PathBuf::from(value), SdkOrigin::Variable(name)))
+            })
+            .or_else(|| Some((viso.filter(|v| v.is_dir())?.to_owned(), SdkOrigin::Viso)))
+            .unwrap_or_else(|| (default_sdk(&home), SdkOrigin::Default));
         if !root.is_dir() {
-            return Err(format!(
-                "no Android SDK at {} (set ANDROID_HOME)",
-                root.display()
-            ));
+            return Err(match origin {
+                SdkOrigin::Variable(name) => {
+                    format!(
+                        "`{name}` names {}, which is not a directory",
+                        root.display()
+                    )
+                }
+                _ => format!("no Android SDK at {}", root.display()),
+            });
         }
         let ndk = std::env::var_os("ANDROID_NDK_HOME")
             .map(PathBuf::from)
@@ -170,6 +203,7 @@ impl Sdk {
             adb: root.join("platform-tools/adb"),
             emulator: root.join("emulator/emulator"),
             root,
+            origin,
         })
     }
 

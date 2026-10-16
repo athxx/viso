@@ -94,7 +94,7 @@ impl ProfileArg {
 /// The subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Manage the Android Emulator profiles `viso run android` runs on.
+    /// Manage the Android SDK and the emulator profiles `viso run android` runs on.
     #[command(subcommand)]
     Android(AndroidCommand),
     /// Build the app for a target and write it to `dist/`, without running it.
@@ -122,7 +122,7 @@ pub enum Command {
     /// Inspect what the running app shows: its nodes, their boxes, semantics and source.
     #[command(subcommand)]
     Inspect(InspectCommand),
-    /// Manage the iOS Simulator profiles `viso run ios` runs on.
+    /// Manage the iOS Simulator runtimes and the profiles `viso run ios` runs on.
     #[command(subcommand)]
     Ios(IosCommand),
     /// Start the `.vs` language server for an editor, speaking LSP over stdio.
@@ -360,14 +360,97 @@ pub struct ConfigGetArgs {
 /// What `viso android` manages.
 #[derive(Debug, Subcommand)]
 pub enum AndroidCommand {
+    /// List the supported API levels, what each installs and which is the
+    /// default.
+    List(AndroidListArgs),
+    /// Install an API level's tested component set and make it the default.
+    Use(AndroidUseArgs),
+    /// Check the Android SDK, emulator, acceleration and profiles.
+    Doctor(PlatformDoctorArgs),
+    /// Run the SDK's `adb`, on a profile's running emulator.
+    Adb(AdbArgs),
     /// The emulator profiles.
     #[command(subcommand)]
     Emulator(DeviceCommand),
 }
 
+/// What `viso android list` shows.
+#[derive(Debug, Args)]
+pub struct AndroidListArgs {
+    /// Only the levels installed.
+    #[arg(long)]
+    pub offline: bool,
+}
+
+/// What `viso android use` installs.
+#[derive(Debug, Args)]
+pub struct AndroidUseArgs {
+    /// The API level.
+    pub api: String,
+    /// Accept the licenses of what is downloaded without being asked.
+    #[arg(long)]
+    pub accept_licenses: bool,
+    /// Download nothing: fail when anything is missing.
+    #[arg(long)]
+    pub offline: bool,
+}
+
+/// What `viso ios list` shows.
+#[derive(Debug, Args)]
+pub struct IosListArgs {
+    /// Only the runtimes installed.
+    #[arg(long)]
+    pub offline: bool,
+}
+
+/// What `viso ios use` chooses.
+#[derive(Debug, Args)]
+pub struct IosUseArgs {
+    /// The runtime version: `26.3`, `27`, `iOS 27.0`.
+    pub runtime: String,
+    /// Have Xcode download the runtime, when it is not installed, without
+    /// being asked.
+    #[arg(long)]
+    pub download: bool,
+    /// Download nothing: fail when the runtime is not installed.
+    #[arg(long)]
+    pub offline: bool,
+}
+
+/// What `viso android doctor` / `viso ios doctor` may fix.
+#[derive(Debug, Args)]
+pub struct PlatformDoctorArgs {
+    /// Make the local, reversible fixes the checks name.
+    #[arg(long)]
+    pub fix: bool,
+}
+
+/// What `viso android adb` runs.
+#[derive(Debug, Args)]
+pub struct AdbArgs {
+    /// The profile whose running emulator `adb` talks to.
+    #[arg(long, add = ArgValueCandidates::new(complete::device_ids))]
+    pub device: Option<String>,
+    /// The arguments for `adb`, passed on as they are.
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "ARGS"
+    )]
+    pub args: Vec<String>,
+}
+
 /// What `viso ios` manages.
 #[derive(Debug, Subcommand)]
 pub enum IosCommand {
+    /// List the Simulator runtimes installed and the one Xcode can install,
+    /// and which is the default.
+    List(IosListArgs),
+    /// Make a Simulator runtime the default, having Xcode install it first
+    /// when it is not.
+    Use(IosUseArgs),
+    /// Check Xcode, its license, the Simulator runtime and the profiles.
+    Doctor(PlatformDoctorArgs),
     /// The simulator profiles.
     #[command(subcommand)]
     Simulator(DeviceCommand),
@@ -404,8 +487,8 @@ pub struct CreateArgs {
     /// The device's form factor.
     #[arg(long, value_enum, default_value_t)]
     pub preset: PresetArg,
-    /// The Android API level of its system image (the newest installed when
-    /// omitted); Android only.
+    /// The Android API level of its system image (the one `viso android
+    /// use` chose, else the newest installed, when omitted); Android only.
     #[arg(long, value_name = "LEVEL")]
     pub api: Option<String>,
 }
@@ -889,6 +972,10 @@ impl Command {
     /// The command path the JSON envelope reports.
     pub fn name(&self) -> &'static str {
         match self {
+            Command::Android(AndroidCommand::List(_)) => "android list",
+            Command::Android(AndroidCommand::Use(_)) => "android use",
+            Command::Android(AndroidCommand::Doctor(_)) => "android doctor",
+            Command::Android(AndroidCommand::Adb(_)) => "android adb",
             Command::Android(AndroidCommand::Emulator(command)) => match command {
                 DeviceCommand::List => "android emulator list",
                 DeviceCommand::Create(_) => "android emulator create",
@@ -911,6 +998,9 @@ impl Command {
             Command::Game(GameCommand::Peek(_)) => "game peek",
             Command::Game(GameCommand::Record(_)) => "game record",
             Command::Inspect(InspectCommand::Query(_)) => "inspect query",
+            Command::Ios(IosCommand::List(_)) => "ios list",
+            Command::Ios(IosCommand::Use(_)) => "ios use",
+            Command::Ios(IosCommand::Doctor(_)) => "ios doctor",
             Command::Ios(IosCommand::Simulator(command)) => match command {
                 DeviceCommand::List => "ios simulator list",
                 DeviceCommand::Create(_) => "ios simulator create",

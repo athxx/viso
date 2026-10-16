@@ -24,7 +24,8 @@ use std::time::Duration;
 use viso_ende::JsonValue;
 use viso_project::{DeviceProfile, Preset};
 
-use super::{capture, quiet, version_key};
+use super::{capture, quiet};
+use crate::toolchain::ios;
 
 /// Where `simctl` says a simulator is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,51 +44,41 @@ fn simctl() -> Command {
     command
 }
 
-/// The newest available iOS runtime and, for `preset`, the device type of
-/// its plain current model: `(runtime, device type, device name)`.
-pub(crate) fn newest_runtime(preset: Preset) -> Result<(String, String, String), String> {
-    let text = capture(simctl().args(["list", "runtimes", "-j"]))?;
-    let json = JsonValue::parse(&text).map_err(|e| format!("`simctl` wrote no JSON: {e}"))?;
-    let runtimes = json
-        .get("runtimes")
-        .and_then(JsonValue::as_array)
-        .unwrap_or_default();
-    let runtime = runtimes
-        .iter()
-        .filter(|r| r.get("isAvailable").and_then(JsonValue::as_bool) == Some(true))
-        .filter(|r| r.get("platform").and_then(JsonValue::as_str) == Some("iOS"))
-        .max_by_key(|r| version_key(r.get("version").and_then(JsonValue::as_str).unwrap_or("")))
-        .ok_or(
-            "no iOS Simulator runtime is installed (install one in Xcode › Settings › Components)",
-        )?;
-    let id = runtime
-        .get("identifier")
-        .and_then(JsonValue::as_str)
-        .ok_or("`simctl` names no runtime identifier")?;
+/// The runtime new simulators are made on — the one `viso ios use` chose
+/// when it is installed, else the newest — and, for `preset`, the device
+/// type of its plain current model: `(runtime, device type, device name)`.
+pub(crate) fn runtime_for(preset: Preset) -> Result<(String, String, String), String> {
+    let runtimes = ios::runtimes()?;
+    let home = ios::Home::current();
+    let runtime = ios::chosen(&runtimes, home.as_ref())
+        .ok_or("no iOS Simulator runtime is installed (`viso ios use <version>` installs one)")?;
+    let (name, device_type) = model(runtime, preset).ok_or_else(|| {
+        format!(
+            "the runtime iOS {} has no {} model",
+            runtime.version,
+            preset.as_str()
+        )
+    })?;
+    Ok((
+        runtime.identifier.clone(),
+        device_type.to_owned(),
+        name.to_owned(),
+    ))
+}
+
+/// The model `preset` makes on `runtime`: its name and device type.
+pub(crate) fn model(runtime: &ios::Runtime, preset: Preset) -> Option<(&str, &str)> {
+    let family = match preset {
+        Preset::Phone => "iPhone",
+        Preset::Tablet => "iPad",
+    };
     let types: Vec<(&str, &str)> = runtime
-        .get("supportedDeviceTypes")
-        .and_then(JsonValue::as_array)
-        .unwrap_or_default()
+        .device_types
         .iter()
-        .filter_map(|t| {
-            Some((
-                t.get("name")?.as_str()?,
-                t.get("identifier")?.as_str()?,
-                t.get("productFamily")?.as_str()?,
-            ))
-        })
-        .filter(|(_, _, family)| {
-            *family
-                == match preset {
-                    Preset::Phone => "iPhone",
-                    Preset::Tablet => "iPad",
-                }
-        })
-        .map(|(name, identifier, _)| (name, identifier))
+        .filter(|t| t.family == family)
+        .map(|t| (t.name.as_str(), t.identifier.as_str()))
         .collect();
-    let (name, device_type) = pick_model(preset, &types)
-        .ok_or_else(|| format!("the runtime `{id}` has no {} model", preset.as_str()))?;
-    Ok((id.to_owned(), device_type.to_owned(), name.to_owned()))
+    pick_model(preset, &types)
 }
 
 /// The model a preset makes: the newest plain `iPhone N`, or an 11-inch iPad

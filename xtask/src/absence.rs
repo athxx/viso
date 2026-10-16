@@ -256,7 +256,7 @@ fn build(
         }
         Target::Android => {
             let abi = android::Abi::Arm64;
-            let sdk = android::Sdk::locate()?;
+            let sdk = crate::bundle::android_sdk()?;
             command
                 .args(["--target", abi.triple()])
                 .envs(sdk.cargo_env(abi));

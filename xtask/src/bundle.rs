@@ -211,9 +211,20 @@ fn ios(o: &Options, simulator: bool) -> Result<PathBuf, String> {
     Ok(app.path)
 }
 
+/// The Android SDK: `$ANDROID_HOME`/`$ANDROID_SDK_ROOT`, then the one
+/// `viso android use` installed, then the default location.
+pub(crate) fn android_sdk() -> Result<android::Sdk, String> {
+    let viso = std::env::var_os("VISO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".viso")))
+        .map(|root| root.join("android/sdk"))
+        .filter(|sdk| sdk.is_dir());
+    android::Sdk::locate(viso.as_deref())
+}
+
 fn android(o: &Options) -> Result<PathBuf, String> {
     let root = crate::workspace_root();
-    let sdk = android::Sdk::locate()?;
+    let sdk = android_sdk()?;
     let bin = o.bin.clone().unwrap_or_else(|| o.package.clone());
     let abi = android::Abi::Arm64;
     let (built, target_dir) = cargo(

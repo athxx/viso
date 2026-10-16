@@ -10,13 +10,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use viso_ende::JsonValue;
-use viso_package::android::{Abi, Sdk};
+use viso_package::android::{Abi, SdkOrigin};
 use viso_package::{apple, web};
 use viso_project::{ArtifactKind, DeviceStore, Platform, Target};
 
 use super::{Fix, Found, Machine, Probe, shown};
 use crate::build::cargo::{self, ProcessTree};
 use crate::device::version_key;
+use crate::toolchain::{android, ios};
 
 /// How long one tool may run.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -97,6 +98,21 @@ const ANDROID: Probe = Probe {
     title: "Android SDK",
     run: android_sdk,
 };
+const ANDROID_SET: Probe = Probe {
+    name: "android-components",
+    title: "Viso Android component set",
+    run: android_set,
+};
+const ANDROID_ACCEL: Probe = Probe {
+    name: "android-accel",
+    title: "Emulator hardware acceleration",
+    run: android_accel,
+};
+const JAVA: Probe = Probe {
+    name: "java",
+    title: "Java compiler",
+    run: java,
+};
 const ANDROID_TOOLS: Probe = Probe {
     name: "android-tools",
     title: "Android emulator and adb",
@@ -121,6 +137,16 @@ const XCODE: Probe = Probe {
     name: "xcode",
     title: "Xcode",
     run: xcode,
+};
+const XCODE_LICENSE: Probe = Probe {
+    name: "xcode-license",
+    title: "Xcode license",
+    run: xcode_license,
+};
+const IOS_DISK: Probe = Probe {
+    name: "ios-disk",
+    title: "Space for a Simulator runtime",
+    run: ios_disk,
 };
 const IOS_RUST: Probe = Probe {
     name: "ios-rust",
@@ -151,8 +177,24 @@ pub(super) fn plan(target: Option<Target>) -> Vec<Probe> {
         }
         Some(Target::Host) => &[LINKER, GPU, FILESYSTEM],
         Some(Target::Headless) => &[LINKER, FILESYSTEM],
-        Some(Target::Ios) => &[XCODE, IOS, IOS_RUST, IOS_PROFILES, GPU],
-        Some(Target::Android) => &[ANDROID, ANDROID_TOOLS, ANDROID_RUST, ANDROID_PROFILES],
+        Some(Target::Ios) => &[
+            XCODE,
+            XCODE_LICENSE,
+            IOS,
+            IOS_DISK,
+            IOS_RUST,
+            IOS_PROFILES,
+            GPU,
+        ],
+        Some(Target::Android) => &[
+            ANDROID,
+            ANDROID_SET,
+            ANDROID_TOOLS,
+            ANDROID_ACCEL,
+            JAVA,
+            ANDROID_RUST,
+            ANDROID_PROFILES,
+        ],
         Some(Target::WebGpu) => &[WASM, BINDGEN, WASM_OPT],
         Some(Target::WebDom | Target::WebHybrid) => &[AVAILABLE],
     };
@@ -547,19 +589,80 @@ fn lsp(_: &Machine) -> Option<Found> {
     })
 }
 
+/// The command that installs this machine's Android component set.
+fn android_use() -> String {
+    let level = android::Home::current()
+        .and_then(|home| home.default_api())
+        .unwrap_or(android::components::DEFAULT_API);
+    format!("viso android use {level}")
+}
+
 fn android_sdk(machine: &Machine) -> Option<Found> {
     let required = asked(machine, Target::Android);
     Some(
-        match Sdk::locate() {
-            Ok(sdk) => Found::ok(format!("SDK at {}", shown(&sdk.root))),
-            Err(why) => Found::missing(crate::error::ENV_ANDROID_SDK.name, why),
+        match android::sdk() {
+            Ok(sdk) => Found::ok(format!(
+                "SDK at {}, {}",
+                shown(&sdk.root),
+                sdk.origin.describe()
+            )),
+            Err(why) => {
+                Found::missing(crate::error::ENV_ANDROID_SDK.name, why).suggest(android_use())
+            }
         }
         .required(required),
     )
 }
 
+/// The level `viso android use` chose and whether its whole set is
+/// installed; it does not apply to an SDK an environment variable names.
+fn android_set(_: &Machine) -> Option<Found> {
+    if android::sdk().is_ok_and(|sdk| matches!(sdk.origin, SdkOrigin::Variable(_))) {
+        return None;
+    }
+    let home = android::Home::current()?;
+    let Some(level) = home.default_api() else {
+        return Some(
+            Found::warn(
+                "no API level chosen: Viso installs its tested set with `viso android use`",
+            )
+            .suggest(android_use()),
+        );
+    };
+    let Some(api) = android::components::api(level) else {
+        return Some(
+            Found::missing(
+                crate::error::ANDROID_API_UNSUPPORTED.name,
+                format!("the chosen API {level} has no tested component set any more"),
+            )
+            .suggest(format!(
+                "viso android use {}",
+                android::components::DEFAULT_API
+            )),
+        );
+    };
+    let missing: Vec<&str> = api
+        .components(Abi::host())
+        .into_iter()
+        .filter(|c| !android::installed(&home.sdk(), c))
+        .map(|c| c.path)
+        .collect();
+    Some(if missing.is_empty() {
+        Found::ok(format!(
+            "API {level} (Android {}), every component installed",
+            api.android
+        ))
+    } else {
+        Found::missing(
+            crate::error::ENV_ANDROID_SDK.name,
+            format!("API {level} lacks {}", missing.join(", ")),
+        )
+        .suggest(format!("viso android use {level}"))
+    })
+}
+
 fn android_tools(_: &Machine) -> Option<Found> {
-    let sdk = Sdk::locate().ok()?;
+    let sdk = android::sdk().ok()?;
     let absent: Vec<String> = [(&sdk.emulator, "emulator"), (&sdk.adb, "platform-tools")]
         .into_iter()
         .filter(|(path, _)| !path.is_file())
@@ -572,6 +675,41 @@ fn android_tools(_: &Machine) -> Option<Found> {
             crate::error::ENV_DEVICE.name,
             format!("the SDK lacks {}", absent.join(" and ")),
         )
+        .suggest(android_use())
+    })
+}
+
+/// Whether the emulator can use the host's hypervisor (HVF, KVM, WHPX):
+/// without it an emulator is too slow to develop on.
+fn android_accel(_: &Machine) -> Option<Found> {
+    let sdk = android::sdk().ok().filter(|sdk| sdk.emulator.is_file())?;
+    Some(match tool(&sdk.emulator, &["-accel-check"], TOOL_TIMEOUT) {
+        Ok(text) => {
+            let said = text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with("accel"))
+                .find(|line| line.parse::<i32>().is_err())
+                .unwrap_or("usable")
+                .to_owned();
+            Found::ok(said)
+        }
+        Err(why) => Found::missing(
+            crate::error::ENV_DEVICE.name,
+            format!("the emulator cannot use hardware acceleration: {why}"),
+        ),
+    })
+}
+
+/// `javac`, which compiles the APK's Java shell.
+fn java(_: &Machine) -> Option<Found> {
+    Some(match tool("javac", &["-version"], TOOL_TIMEOUT) {
+        Ok(text) if !text.trim().is_empty() => Found::ok(text.trim()),
+        Ok(_) => Found::ok("javac"),
+        Err(why) => Found::missing(
+            crate::error::ENV_TOOL.name,
+            format!("{why}; an APK's Java shell is compiled with it (a JDK 17 or newer)"),
+        ),
     })
 }
 
@@ -603,21 +741,49 @@ fn profiles(platform: Platform, create: &str) -> Option<Found> {
 fn xcode(_: &Machine) -> Option<Found> {
     if !cfg!(target_os = "macos") {
         return Some(Found::error(
-            crate::error::ENV_DEVICE.name,
+            crate::error::ENV_IOS_HOST.name,
             "the iOS Simulator SDK is on macOS only",
         ));
     }
     Some(match tool("xcode-select", &["-p"], TOOL_TIMEOUT) {
         Ok(path) if path.trim().ends_with("CommandLineTools") => Found::missing(
-            crate::error::ENV_DEVICE.name,
+            crate::error::ENV_XCODE.name,
             "only the Command Line Tools are selected; the Simulator needs Xcode",
         )
         .suggest("sudo xcode-select -s /Applications/Xcode.app"),
-        Ok(path) => Found::ok(format!("at {}", path.trim())),
-        Err(why) => {
-            Found::missing(crate::error::ENV_DEVICE.name, why).suggest("xcode-select --install")
-        }
+        Ok(path) => match tool("xcodebuild", &["-version"], TOOL_TIMEOUT) {
+            Ok(version) => Found::ok(format!(
+                "{} at {}",
+                version.lines().next().unwrap_or("Xcode").trim(),
+                path.trim()
+            )),
+            Err(_) => Found::ok(format!("at {}", path.trim())),
+        },
+        Err(why) => Found::missing(crate::error::ENV_XCODE.name, why)
+            .suggest("sudo xcode-select -s /Applications/Xcode.app"),
     })
+}
+
+fn xcode_license(_: &Machine) -> Option<Found> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    Some(
+        match tool("xcodebuild", &["-license", "check"], TOOL_TIMEOUT) {
+            Ok(_) => Found::ok("accepted"),
+            Err(_) => Found::missing(
+                crate::error::ENV_XCODE_LICENSE.name,
+                "not accepted: Xcode's tools refuse to run until it is",
+            )
+            .suggest("sudo xcodebuild -license"),
+        },
+    )
+}
+
+/// How to install a runtime: the one Xcode's SDK pairs with.
+fn ios_use() -> String {
+    let version = ios::xcode_runtime().unwrap_or_else(|| "<version>".to_owned());
+    format!("viso ios use {version}")
 }
 
 fn ios_runtime(machine: &Machine) -> Option<Found> {
@@ -625,37 +791,53 @@ fn ios_runtime(machine: &Machine) -> Option<Found> {
     if !cfg!(target_os = "macos") {
         return Some(
             Found::missing(
-                crate::error::ENV_DEVICE.name,
+                crate::error::ENV_IOS_HOST.name,
                 "the iOS Simulator runs on macOS only",
             )
             .required(required),
         );
     }
-    let found = match tool("xcrun", &["simctl", "list", "runtimes", "-j"], TOOL_TIMEOUT) {
-        Ok(text) => {
-            let json = JsonValue::parse(&text).ok();
-            let newest = json
-                .as_ref()
-                .and_then(|j| j.get("runtimes"))
-                .and_then(JsonValue::as_array)
-                .unwrap_or_default()
-                .iter()
-                .filter(|r| r.get("isAvailable").and_then(JsonValue::as_bool) == Some(true))
-                .filter(|r| r.get("platform").and_then(JsonValue::as_str) == Some("iOS"))
-                .filter_map(|r| r.get("version").and_then(JsonValue::as_str))
-                .max_by_key(|version| version_key(version))
-                .map(str::to_owned);
-            match newest {
-                Some(version) => Found::ok(format!("iOS {version}")),
-                None => Found::missing(
+    let found = match ios::runtimes() {
+        Ok(runtimes) => {
+            let home = ios::Home::current();
+            let default = home.as_ref().and_then(ios::Home::default_runtime);
+            match (&default, ios::chosen(&runtimes, home.as_ref())) {
+                (Some(wanted), _) if ios::find(&runtimes, wanted).is_none() => Found::missing(
                     crate::error::DEVICE_SYSTEM.name,
-                    "no iOS Simulator runtime is installed (Xcode › Settings › Components)",
-                ),
+                    format!("the default, iOS {wanted}, is not installed"),
+                )
+                .suggest(format!("viso ios use {wanted} --download")),
+                (Some(_), Some(runtime)) => Found::ok(format!(
+                    "iOS {} ({}), the default",
+                    runtime.version, runtime.build
+                )),
+                (None, Some(runtime)) => Found::ok(format!(
+                    "iOS {} ({}), the newest; `viso ios use` chooses another",
+                    runtime.version, runtime.build
+                )),
+                (_, None) => Found::missing(
+                    crate::error::DEVICE_SYSTEM.name,
+                    "no iOS Simulator runtime is installed",
+                )
+                .suggest(ios_use()),
             }
         }
-        Err(why) => Found::missing(crate::error::ENV_DEVICE.name, why),
+        Err(why) => Found::missing(crate::error::ENV_XCODE.name, why),
     };
     Some(found.required(required))
+}
+
+fn ios_disk(_: &Machine) -> Option<Found> {
+    let free = ios::free_bytes()?;
+    let shown = crate::output::human::size(free);
+    Some(if free < ios::RUNTIME_BYTES {
+        Found::warn(format!(
+            "{shown} free; a runtime needs about {}",
+            crate::output::human::size(ios::RUNTIME_BYTES)
+        ))
+    } else {
+        Found::ok(format!("{shown} free"))
+    })
 }
 
 fn ios_rust(_: &Machine) -> Option<Found> {

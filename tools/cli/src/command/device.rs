@@ -91,7 +91,7 @@ fn state(profile: &DeviceProfile, sdk: Option<&Sdk>) -> &'static str {
 }
 
 fn list(platform: Platform, store: &DeviceStore, out: &mut Output) -> u8 {
-    let sdk = Sdk::locate().ok();
+    let sdk = crate::toolchain::android::sdk().ok();
     let rows: Vec<(DeviceProfile, &'static str)> = store
         .list(platform)
         .into_iter()
@@ -159,9 +159,8 @@ fn start(profile: &DeviceProfile, window: bool, out: &mut Output) -> u8 {
     out.device(platform, &profile.id, &profile.device, "booting");
     let booted = match profile.platform {
         Platform::Ios => simulator::boot(profile),
-        Platform::Android => {
-            Sdk::locate().and_then(|sdk| emulator::boot(&sdk, profile, window).map(drop))
-        }
+        Platform::Android => crate::toolchain::android::sdk()
+            .and_then(|sdk| emulator::boot(&sdk, profile, window).map(drop)),
     };
     match booted {
         Ok(()) => {
@@ -173,15 +172,16 @@ fn start(profile: &DeviceProfile, window: bool, out: &mut Output) -> u8 {
 }
 
 fn stop(profile: &DeviceProfile, out: &mut Output) -> u8 {
-    let stopped = match profile.platform {
-        Platform::Ios => simulator::shutdown(&profile.device),
-        Platform::Android => {
-            Sdk::locate().and_then(|sdk| match emulator::serial(&sdk, &profile.device) {
-                Some(serial) => emulator::kill(&sdk, &serial),
-                None => Ok(()),
-            })
-        }
-    };
+    let stopped =
+        match profile.platform {
+            Platform::Ios => simulator::shutdown(&profile.device),
+            Platform::Android => crate::toolchain::android::sdk().and_then(|sdk| {
+                match emulator::serial(&sdk, &profile.device) {
+                    Some(serial) => emulator::kill(&sdk, &serial),
+                    None => Ok(()),
+                }
+            }),
+        };
     match stopped {
         Ok(()) => {
             out.device(

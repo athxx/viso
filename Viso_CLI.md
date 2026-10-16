@@ -663,7 +663,7 @@ viso doctor --json
 ### 9.5 当前实现
 
 - `viso doctor` 的 check（`name`）：`rust`（`rustc -vV`，早于框架的 `rust-version` 为 `ENV_RUST_TOOLCHAIN` error）、`cargo`、`rustup`、`project`（`Viso.toml`、language 版本、配置解析、根目录的 `Cargo.toml`；不在 project 中为 warn，建议 `viso new <name>`）、`framework`（project 的 `Cargo.lock` 中 `viso` 的版本与 CLI 相同）、`linker`（`cc`，Windows 为 Visual Studio Build Tools）、`gpu`（macOS Metal、Windows Direct3D 12、Linux Vulkan loader 与 ICD；没有为 `ENV_GPU` error）、`wasm32`、`wasm-bindgen`（与 `Cargo.lock` 锁定的版本一致）、`wasm-opt`、`filesystem`（project 的 `target/` 与 `~/.viso` 可写）、`git`、`lsp`（`viso-lsp --version` 与 CLI 版本相同；缺失或不同为 warn，建议 `cargo install viso-lsp --version <cli>`）、`android-sdk`、`ios-runtime`；host doctor 中 target 工具的缺口只是 warn。
-- `viso doctor <target>` 为 `rust`、`cargo`、`project` 加上该 target 的 check，缺口为 `missing`：`ios` — `xcode`、`ios-runtime`、`ios-rust`、`ios-profiles`、`gpu`；`android` — `android-sdk`（`ENV_ANDROID_SDK`）、`android-tools`、`android-rust`、`android-profiles`；`web-gpu` — `wasm32`、`wasm-bindgen`、`wasm-opt`；`headless` — `linker`、`filesystem`；`web-dom`/`web-hybrid` — `target`（`C0011`）。不适用的 check（没有 project 时的 `framework`）不输出。
+- `viso doctor <target>` 为 `rust`、`cargo`、`project` 加上该 target 的 check，缺口为 `missing`：`ios` — `xcode`、`xcode-license`、`ios-runtime`、`ios-disk`、`ios-rust`、`ios-profiles`、`gpu`（见 §12.7）；`android` — `android-sdk`（`ENV_ANDROID_SDK`，message 给出 SDK 的来源）、`android-components`（默认 API level 的固定组件是否都装好）、`android-tools`、`android-accel`（`emulator -accel-check`：HVF/KVM/WHPX）、`java`（`javac -version`：APK 的 Java shell 由它编译，缺失为 `ENV_TOOL`）、`android-rust`、`android-profiles`；`web-gpu` — `wasm32`、`wasm-bindgen`、`wasm-opt`；`headless` — `linker`、`filesystem`；`web-dom`/`web-hybrid` — `target`（`C0011`）。不适用的 check（没有 project 时的 `framework`）不输出。
 - 各 check 同时运行，单个工具最多 15 s、单个 check 最多 20 s，超时为 error 并说明超时，不会挂住 doctor。
 - `--fix` 只做本地可逆的修复：缺少的 Rust target 以 `rustup target add <triple>` 加上，运行前先说出命令（human 为 stderr 一行，JSON 为 `progress{phase:"fix"}`），之后重新检查；不安装 SDK、runtime 或工具。
 - 人类输出：`Viso Doctor`、每个 check 一行 `[status] <title>: <message>`、`Suggested actions:` 列出未通过 check 的建议命令。
@@ -902,6 +902,16 @@ viso android adb --device pixel-local logcat
 
 Exit code：不在支持矩阵的 API（`ANDROID_API_UNSUPPORTED`）或未知 profile 2；SDK/emulator/host virtualization 不可用 3；emulator 启动失败 5。
 
+### 11.8 当前实现
+
+- 支持矩阵：API 36（Android 16）、35（15）、34（14），默认推荐 36。每个 level 的组件集固定在 CLI 中：`platform-tools`、`build-tools;36.0.0`、`ndk;28.2.13676358`、`emulator`（各 level 共用）、`platforms;android-<api>` 与 host ABI 的 `system-images;android-<api>;google_apis;<abi>`；每个 archive 按 host（macOS arm64/x86_64、Linux x86_64、Windows x86_64）固定 URL、大小与 Google repository manifest 发布的 SHA-1。不另装 command-line tools：Viso 自己写 AVD，不需要 `sdkmanager`/`avdmanager`。
+- SDK 解析顺序：非空的 `ANDROID_HOME`、`ANDROID_SDK_ROOT` > `viso android use` 选过 level 后的 `~/.viso/android/sdk` > 平台默认位置；`list`、`doctor` 与 `use` 的结果说明来源（`origin` ∈ 变量名|`viso`|`default`）。默认 level 记录在 `~/.viso/android/config.toml` 的 `api`，文件中的其他 key 保留；`emulator create` 未指定 `--api` 时用它。
+- `list`：`--json` 一条 `result{sdk{root, origin}|null, default, abi, apis[{api, android, status, system_image, default, components[{path, revision, title, installed, download_bytes}]}]}`，`status` ∈ `installed|partial|available`；`--offline` 只列已装的 level。
+- `use <api>`：只下载未装的组件。下载前先取得 license 同意：`--accept-licenses`，或 TTY 上显示 license 全文并询问；非 TTY 无 flag 时在任何网络请求之前以 `ENV_ANDROID_LICENSE` 结束。同意记录为 `~/.viso/android/licenses/<id>`（license 文本的 SHA-1，与 Android 工具的记录同形）。每个 archive 以 `curl`（只允许 HTTPS、TLS 1.2+、失败重试）下载到 `~/.viso/android/downloads/<file>.part`，连接中途断开而仍有新字节到达时立即续传，连续 3 次没有新字节才以 `ENV_DOWNLOAD` 结束，已到部分保留，重新运行从那里续传；完成后核对大小与 SHA-1，不符为 `ENV_DOWNLOAD_INTEGRITY` 并删除。解包由 CLI 自己的 zip reader 完成（ZIP64、逐 entry CRC，拒绝绝对路径、`..` 与指向外部的 link，link 最后创建），NDK 只保留 `toolchains/llvm/prebuilt`，platform 只保留 `android.jar`；解到 `sdk/.staging/` 后一次 rename 到位，目录中的 `.viso-component` 记录 path 与 revision，revision 相同即视为已装。进度：TTY 上一行实时刷新，否则（含 `--json`）每秒至多一条 `progress{phase:"download"}`，每个组件装好一条 `progress{phase:"install"}`。`result{api, android, installed[], default:true, sdk, active}`，`active` 为 build 是否会用这个 SDK（`ANDROID_HOME` 等覆盖时为 `false`，人类输出附 note）。Ctrl-C 保留已下载部分，exit 130。
+- `doctor` 即 `viso doctor android`（§9.5）。
+- `adb`：`--device <profile>` 解析为运行中 emulator 的 serial（`-s <serial>`），未运行为 `ENV_DEVICE`（exit 3，下一步 `viso android emulator start <id>`）；第一个 adb 参数之后的全部参数（包括形如 flag 的）原样交给 adb，进程以 `exec` 替换（Windows 上等待并传回 exit code）；`--json` 为 `CLI_USAGE`。
+- 没有 SDK 的命令（`build android`、`run android`、`adb`）以 `ENV_ANDROID_SDK` 结束，下一步为 `viso android use <默认或推荐 level>`。
+
 ---
 
 ## 12. `viso ios`
@@ -989,6 +999,15 @@ Android/iOS 选择和 virtual-device profile 都属于 developer-machine state�
 ### 12.6 JSON / exit codes
 
 JSON 合同与 §11.7 相同（`list`/`use`/`doctor`/`simulator ...`）。非 macOS host 上所有 `viso ios` 子命令 exit 3。
+
+### 12.7 当前实现
+
+- 非 macOS host 上每个 `viso ios` 子命令（含 `simulator ...`）都以一条 `ENV_IOS_HOST`（exit 3）结束。
+- Runtime 来自 `xcrun simctl list runtimes -j`（只取 iOS，新版本在前）；Xcode 的 iOS SDK 所配的 runtime 来自 `simctl runtime match list -j`，它是 `xcodebuild -downloadPlatform iOS` 不带 build version 时安装的那个。版本按数字段前缀匹配：`27` 匹配 `27.0`、`26.3` 匹配 `26.3.1`，缺少的段为 0。
+- 默认 runtime 记录在 `~/.viso/ios/config.toml` 的 `runtime`（按用户写的版本保存，`27` 跟随最新的 27.x），文件中的其他 key 保留。`ios simulator create` 与 `viso run ios` 新建的 simulator 用默认 runtime（已装时），否则用最新的。
+- `list`：`--json` 一条 `result{xcode, default, runtimes[{version, status, build, identifier, unusable, phone, tablet, default}]}`，`status` ∈ `installed|unusable|available`（`available` 只有 Xcode 所配且未装的那个；Xcode 不报告其他可下载版本），`phone`/`tablet` 为 preset 会选的机型，`default` 为新 simulator 用的那一个；人类输出 `RUNTIME STATUS DEFAULT` 表，不可用的 runtime 另起一行说明原因；`--offline` 不列 `available`。
+- `use <runtime>`：版本不合法为 `IOS_RUNTIME_INVALID`（exit 2）。已装则只记录默认。未装时：`--offline` 为 `ENV_OFFLINE`；未给 `--download` 且不能在 TTY 上询问为 `IOS_RUNTIME_MISSING`（exit 2，下一步 `viso ios use <v> --download`），Xcode 不被调用；可用空间不足约 10 GiB 为 `ENV_INSTALL`；`xcodebuild -license check` 未通过为 `ENV_XCODE_LICENSE`。下载由 `xcodebuild -downloadPlatform iOS`（不是 Xcode 所配版本时加 `-buildVersion <v>`）完成，它的进度行（TTY 上一行实时刷新，否则每秒至多一条 `progress{phase:"download"}`）转为 Viso 的进度；失败为 `ENV_DOWNLOAD`，message 带 Xcode 的原话，下一步为 Xcode 所配的版本；完成后重新列 runtime，仍无可用的为 `ENV_INSTALL`。Ctrl-C 结束 `xcodebuild`，exit 130。`result{runtime, version, build, identifier, installed, default:true}`。
+- `doctor` 即 `viso doctor ios`：`xcode`（`xcode-select -p` 指向 Xcode 而非 Command Line Tools，`xcodebuild -version`；`ENV_XCODE`）、`xcode-license`（`ENV_XCODE_LICENSE`，建议 `sudo xcodebuild -license`）、`ios-runtime`（默认 runtime 未装为 `DEVICE_SYSTEM`，建议 `viso ios use <v> --download`；没有任何 runtime 时建议 `viso ios use <Xcode 所配版本>`）、`ios-disk`（runtime 所在卷可用空间，不足约 10 GiB 为 warn）、`ios-rust`、`ios-profiles`、`gpu`。
 
 
 ---
@@ -2535,6 +2554,17 @@ ENV_RUST_TOOLCHAIN      Rust toolchain 未安装或早于 Viso 所需     exit 3
 ENV_RUST_TARGET         构建需要的 Rust target 未安装             exit 3
 ENV_GPU                 host 没有 Viso 渲染所用的 GPU backend     exit 3
 ENV_ANDROID_SDK         找不到带 NDK、build tools 与 platform 的 Android SDK  exit 3
+ENV_ANDROID_LICENSE     Android SDK license 未接受或被拒绝        exit 3
+ENV_DOWNLOAD            toolchain 组件下载失败（已到部分保留）    exit 3
+ENV_DOWNLOAD_INTEGRITY  下载内容与固定的大小/SHA-1 不符           exit 3
+ENV_INSTALL             组件无法解包或移动到位，或本机状态写不出  exit 3
+ENV_OFFLINE             `--offline` 时仍有组件需要下载            exit 3
+ANDROID_API_UNSUPPORTED API level 不在 Viso 支持矩阵中             exit 2
+ENV_IOS_HOST            host 不是 macOS                          exit 3
+ENV_XCODE               Xcode 未安装或未被选为 developer directory exit 3
+ENV_XCODE_LICENSE       Xcode license 未接受                      exit 3
+IOS_RUNTIME_INVALID     `ios use` 的参数不是 runtime 版本          exit 2
+IOS_RUNTIME_MISSING     runtime 未安装且未要求下载（`--download`） exit 2
 TEST_INPUT_INVALID      Scenario/Tape 无法解析或与 Build 不符     exit 1
 TEST_EXPECTATION        测试期望未满足                           exit 1
 BUILD_FAILED            cargo build 失败                         exit 4

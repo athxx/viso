@@ -110,6 +110,7 @@ impl Fake {
         };
         let sdk = Sdk {
             root: dir.clone(),
+            origin: viso_package::android::SdkOrigin::Viso,
             ndk_bin: dir.clone(),
             build_tools: dir.clone(),
             platform_jar: dir.join("android.jar"),
