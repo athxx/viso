@@ -111,6 +111,9 @@ pub enum Command {
     Dump(DumpArgs),
     /// Explain a diagnostic code: why it is raised and how to fix it.
     Explain(ExplainArgs),
+    /// Generate source a web project owns from the app's view: plain HTML and CSS.
+    #[command(subcommand)]
+    Export(ExportCommand),
     /// Lay out `.vs` sources in the one canonical format.
     Fmt(FmtArgs),
     /// Show where each configuration value comes from, or validate it.
@@ -185,6 +188,31 @@ impl BuildTarget {
             BuildTarget::WebHybrid => Target::WebHybrid,
         }
     }
+}
+
+/// What `viso export` generates.
+#[derive(Debug, Subcommand)]
+pub enum ExportCommand {
+    /// Semantic HTML and CSS, with vanilla JavaScript for what changes.
+    Html(ExportHtmlArgs),
+}
+
+/// Where and how `viso export html` writes.
+#[derive(Debug, Args)]
+pub struct ExportHtmlArgs {
+    /// The component to export, `Name` or `module::Name`: the one `src/app.vs`
+    /// exports when omitted.
+    #[arg(value_name = "COMPONENT")]
+    pub component: Option<String>,
+    /// The directory to write: `export.html.out_dir`, else `dist-html`.
+    #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
+    pub out: Option<PathBuf>,
+    /// Write no JavaScript: a view that needs it to change is an error.
+    #[arg(long = "static")]
+    pub static_only: bool,
+    /// Replace the directory even where it holds files the export did not write or that were edited since.
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// What `viso package` packages.
@@ -1050,6 +1078,7 @@ impl Command {
             Command::Completion(_) => "completion",
             Command::Dump(_) => "dump",
             Command::Explain(_) => "explain",
+            Command::Export(ExportCommand::Html(_)) => "export html",
             Command::Fmt(_) => "fmt",
             Command::Config(ConfigCommand::Show) => "config show",
             Command::Config(ConfigCommand::Get(_)) => "config get",

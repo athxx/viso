@@ -160,7 +160,7 @@ pub fn run(ctx: &Context<'_>, args: &PackageArgs, out: &mut Output) -> u8 {
                 kind: artifact.kind,
                 path: path.trim_end_matches('/'),
                 target: &platform_name,
-                profile: profile.as_str(),
+                profile: Some(profile.as_str()),
                 build_id: &built.build_id,
                 size: artifact.size,
                 hash: &artifact.hash,

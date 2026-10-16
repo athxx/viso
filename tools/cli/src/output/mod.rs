@@ -286,7 +286,8 @@ pub struct Artifact<'a> {
     pub path: &'a str,
     /// The platform the host target resolves to, or the target.
     pub target: &'a str,
-    pub profile: &'a str,
+    /// `None` for an export, which no profile builds.
+    pub profile: Option<&'a str>,
     pub build_id: &'a str,
     pub size: u64,
     /// `sha256:<hex>`.

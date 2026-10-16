@@ -18,7 +18,7 @@
 //! but by `capture` or `update`. A snapshot is taken only from a scenario
 //! that played through.
 
-mod component;
+pub(super) mod component;
 mod golden;
 
 pub(crate) use golden::SNAPSHOT_VERSION;
@@ -591,7 +591,7 @@ pub(super) fn write(
                         kind: file.kind,
                         path: &file.path,
                         target: TARGET,
-                        profile: build.profile,
+                        profile: Some(build.profile),
                         build_id: &build.build_id,
                         size: file.size,
                         hash: &file.hash,

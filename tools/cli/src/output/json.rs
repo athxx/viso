@@ -115,14 +115,17 @@ impl Stream {
         self.event("artifact", |w| {
             w.begin_object();
             for (name, value) in [
-                ("kind", artifact.kind),
-                ("path", artifact.path),
-                ("target", artifact.target),
+                ("kind", Some(artifact.kind)),
+                ("path", Some(artifact.path)),
+                ("target", Some(artifact.target)),
                 ("profile", artifact.profile),
-                ("build_id", artifact.build_id),
+                ("build_id", Some(artifact.build_id)),
             ] {
                 w.name(name);
-                w.string(value);
+                match value {
+                    Some(value) => w.string(value),
+                    None => w.null(),
+                }
             }
             w.name("size");
             w.uint(artifact.size);

@@ -999,7 +999,7 @@ fn dev_artifact(
             kind,
             path: &name,
             target: &platform,
-            profile: Profile::Dev.as_str(),
+            profile: Some(Profile::Dev.as_str()),
             build_id,
             size,
             hash: &hash,

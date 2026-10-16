@@ -45,6 +45,7 @@ TEST / DEBUG
 
 DELIVERY
   package     Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive
+  export      Generate source a web project owns from the app's view: plain HTML and CSS
 
 MAINTENANCE
   clean       Remove `target/viso/`: builds, caches and dev state, never `dist/`

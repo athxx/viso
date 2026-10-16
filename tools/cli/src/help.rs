@@ -21,7 +21,7 @@ const GROUPS: &[(&str, &[&str])] = &[
         &["fmt", "check", "schema", "explain", "dump", "lsp"],
     ),
     ("TEST / DEBUG", &["test", "snapshot", "inspect", "game"]),
-    ("DELIVERY", &["package"]),
+    ("DELIVERY", &["package", "export"]),
     ("MAINTENANCE", &["clean", "completion"]),
 ];
 
@@ -196,6 +196,36 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             (
                 "viso package ios --dry-run",
                 "what the `.ipa` would be, building nothing",
+            ),
+        ],
+    ),
+    (
+        "export",
+        &[
+            (
+                "viso export html",
+                "the view as HTML and CSS in `dist-html/`",
+            ),
+            (
+                "viso export html --static --out site",
+                "with no JavaScript, into `site/`",
+            ),
+        ],
+    ),
+    (
+        "export html",
+        &[
+            (
+                "viso export html",
+                "the view as HTML and CSS in `dist-html/`",
+            ),
+            (
+                "viso export html ui::Card --static --out card",
+                "one component alone, with no JavaScript, failing on what needs it",
+            ),
+            (
+                "viso export html --out site --force --json",
+                "over edits in `site/`, as JSON events",
             ),
         ],
     ),
@@ -661,6 +691,14 @@ const NOTES: &[(&str, &str)] = &[
          `[package.<platform>]` the identity; a keystore's passwords come from\n\
          `VISO_ANDROID_KEYSTORE_PASSWORD` and `VISO_ANDROID_KEY_PASSWORD`, never a flag.\n\
          The output replaces `dist/<platform>/` whole, with its `artifact.json`.",
+    ),
+    (
+        "export html",
+        "The component named, else the one `src/app.vs` exports, is lowered as it checks: layout to flexbox and grid,\n\
+         widgets to their HTML elements and roles, the theme to CSS variables. What HTML\n\
+         cannot show (a shader, a game) is an error naming its node, never dropped.\n\
+         The directory is replaced whole; one holding files the export did not write, or\n\
+         edited since, is refused unless `--force`.",
     ),
     (
         "check",

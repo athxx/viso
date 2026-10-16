@@ -15,7 +15,7 @@ use viso_dsl::hir::TargetProfile;
 use viso_dsl::package::LoadedPackage;
 
 /// A component the package declares.
-pub(super) struct Found {
+pub(in crate::command) struct Found {
     pub name: String,
     /// Its module path and name, `::`-separated: what its golden records.
     pub path: String,
@@ -35,7 +35,10 @@ pub(super) struct Found {
 /// # Errors
 ///
 /// Why the name is ambiguous.
-pub(super) fn find(package: &LoadedPackage, wanted: &str) -> Result<Option<Found>, String> {
+pub(in crate::command) fn find(
+    package: &LoadedPackage,
+    wanted: &str,
+) -> Result<Option<Found>, String> {
     let (module, name) = match wanted.rsplit_once("::") {
         Some((module, name)) => (Some(module), name),
         None => (None, wanted),

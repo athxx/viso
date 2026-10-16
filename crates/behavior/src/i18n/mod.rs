@@ -228,7 +228,7 @@ impl Catalog {
     /// # Errors
     ///
     /// When its bytes are malformed or it does not fit the catalog.
-    fn table(&self, index: usize) -> Result<Table, CatalogError> {
+    pub fn table(&self, index: usize) -> Result<Table, CatalogError> {
         let locale = &self.locales[index];
         let mut dec = Decoder::new(&locale.bytes);
         let table = read_table(&mut dec)

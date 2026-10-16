@@ -57,6 +57,7 @@ fn every_command_keeps_the_event_contract() {
         &["package", "web-gpu", "--dry-run"],
         &["package", "--profile", "dev"],
         &["build", "--release", "--profile", "dev"],
+        &["export", "html", "--static"],
         &["clean"],
     ];
     let mut codes = Vec::new();

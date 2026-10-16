@@ -11,6 +11,7 @@ mod device;
 mod doctor;
 mod dump;
 mod explain;
+mod export;
 mod fmt;
 mod game;
 mod inspect;
@@ -28,7 +29,7 @@ mod test;
 pub(crate) use snapshot::SNAPSHOT_VERSION;
 use viso_project::Platform;
 
-use crate::args::{AndroidCommand, Cli, Command, Global};
+use crate::args::{AndroidCommand, Cli, Command, ExportCommand, Global};
 use crate::context::Context;
 use crate::error::{CLI_USAGE, INTERNAL_PANIC, SUCCESS};
 use crate::output::Output;
@@ -70,6 +71,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
         Command::Completion(args) => completion::run(ctx, args, out),
         Command::Dump(args) => dump::run(ctx, args, out),
         Command::Explain(args) => explain::run(args, out),
+        Command::Export(ExportCommand::Html(args)) => export::html(ctx, args, out),
         Command::Config(command) => config::run(ctx, command, out),
         Command::Fmt(args) => fmt::run(ctx, args, out),
         Command::Ios(command) => ios::run(ctx, command, out),

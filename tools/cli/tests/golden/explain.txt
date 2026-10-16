@@ -95,216 +95,222 @@ Fix:
   Wait for the other command to finish, or stop it; the diagnostic names its process and age.
 
 $ viso explain --list
-E1001                    Unsupported Language Version
-E1101                    Identifier Normalization Conflict
-E1102                    Confusable Identifier
-E1201                    Unterminated String
-E1202                    Unterminated Block Comment
-E1203                    Invalid Numeric Literal
-E1204                    Unknown Unit Suffix
-E1205                    Invalid Escape Sequence
-E1206                    Misplaced Numeric Separator
-E1207                    Invalid Color Literal
-E1208                    Character Literal Not One Character
-E1209                    Invalid Source Character
-E1210                    Too Many Raw String Hashes
-E1301                    Strict Keyword Used As A Name
-E1401                    Unclosed Delimiter
-E1402                    Unmatched Closing Delimiter
-E1403                    Unexpected Tokens
-E1404                    Missing Token
-E1405                    Expected Expression
-E1406                    Nesting Too Deep
-E1407                    Source Too Large
-E2001                    Unresolved Symbol
-E2002                    Ambiguous Name
-E2003                    Initialization Cycle
-E2004                    Missing Turbofish Or Const Marker
-E2005                    No Component To Mount
-E2006                    Several Components To Mount
-E2101                    Float Is Not A Type
-E2102                    Illegal Implicit Numeric Conversion
-E2103                    Type Mismatch
-E2104                    State Initializer Forward Reference
-E2105                    Computed Dependency Cycle
-E2106                    MixedLength Cannot Narrow Before Layout
-E2107                    Illegal Dimensional Operation
-E2108                    Format Template Mismatch
-E2109                    Length Divided By Constant Zero
-E2110                    Assignment Target Is Not Writable
-E2111                    Context Read Outside Its Scope
-E2112                    Compile-Time Argument Rejected
-E2201                    Trait Bound Not Satisfied
-E2202                    Overlapping Or Ambiguous Impl
-E2203                    Unbounded Generic Instantiation
-E2301                    Non-Exhaustive Match
-E2302                    Unreachable Pattern
-E2303                    Refutable Pattern In Binding Position
-E2401                    Closure Parameter Cannot Be Inferred
-E2501                    Effect Kind Violation
-E2502                    Side Effect In View Or Computed
-E2601                    Missing Capability
-E2701                    Type Cannot Be A StableKey
-E2702                    Duplicate Runtime Key  (reserved)
-E2801                    Record Expression In Control Head Needs Parentheses
-E2802                    Chained Non-Associative Operator
-E2803                    Misplaced Control Transfer
-E3001                    Reserved Word Child
-E3002                    View Cardinality Not Satisfied  (reserved)
-E3003                    No Default Slot
-E3004                    Several Default Slots
-E3101                    Unknown Property
-E3102                    Property Bound Twice
-E3103                    Property Is Not Two-Way
-E3104                    Percent Without Percent Basis
-E3105                    Indefinite Percent Basis
-E3106                    Non-Finite Length
-E3107                    Bind Source Is Not A State Lens
-E3201                    Arrow Event Handler
-E3202                    Unknown Event Or Wrong Payload
-E3301                    Invalid Preserve Identity
-E3401                    View For Without Key
-E3402                    Unstable Key Expression
-E3501                    Unknown Slot Or Part
-E3502                    Slot Cardinality Conflict
-E3601                    Invalid Template
-E3701                    Invalid Bindable Input
-E3702                    Misplaced Parent-Provided Property
-E3703                    Invalid Transition
-E3704                    Interactive Node Without Role Or Name
-E3705                    Concatenated Localizable Text
-E3706                    Message Catalog Mismatch
-E3707                    Invalid VirtualList Item Template  (reserved)
-E3708                    Interactive Node Without Keyboard Path
-E3709                    Property Not Yet Supported By Runtime  (reserved)
-E3710                    Invalid Styleable Or Selector Member
-E3711                    View Cannot Be Mounted
-E3712                    Invalid Migrate Function
-E3713                    Invalid Asset
-E4101                    Await Outside a Task
-E4102                    Task Reads State After Suspending
-E4201                    Effect Reads an Undeclared Dependency
-E4202                    Reactive Cycle
-E4203                    Effect Run Policy Does Not Fit Its Dependencies
-E4204                    Adaptive Cycle
-E4301                    Resource Missing Load or Key
-E4302                    Invalid Resource or Task Policy
-E4401                    Start Target Is Not a Task
-E4501                    Detached Task
-E5101                    State Reset on Hot Reload
-E5102                    Stable Identity Collision on Reload
-E5103                    Game Reload Tier
-E5104                    Duplicate Stable Id
-E6101                    Native Declaration Does Not Match the Schema
-E6102                    Native Ownership or Thread Domain Violation
-E6103                    Capability Denied
-E7101                    Execution Budget Exceeded
-E7102                    Memory Budget Exceeded
-E7103                    Arithmetic Fault
-E7104                    Index Out of Bounds
-E7105                    Function Cannot Run
-E7106                    Native Function Failed
-E8101                    Host-Only Type in a Shader
-E8102                    F64 in a Shader
-E8103                    Shader Loop Without a Static Bound
-E8104                    Shader ABI Mismatch
-E8105                    Construct Outside the Shader Subset
-E8106                    Render Profile Stage Rule Violated
-E8107                    Brush Profile Violated
-E9101                    System Order Cycle
-E9102                    Fixed Tick Budget Exceeded
-E9103                    Simulation Reaches Local State
-E9104                    Non-Deterministic Source in the Simulation
-E9105                    Simulation State Without Snapshot
-E9106                    Invalid Persisted State
-E9107                    Input Action Missing a Device Binding
-E9108                    Audio Realtime Rule Violated
-E9109                    UI Member in a System
-E9110                    Misplaced Probe
-E9111                    Persisted State Failed to Load or Store
-C0001                    no Viso.toml found
-C0002                    Viso.toml could not be read
-C0003                    Viso.toml is not valid TOML
-C0004                    unknown configuration key
-C0005                    configuration value has the wrong type
-C0006                    required configuration key is missing
-C0007                    configuration value is not one of the accepted values
-C0008                    hot reload cannot be enabled in a shipping profile
-C0009                    unknown build profile
-C0010                    VISO_* environment variable could not be parsed
-C0011                    target is not available in this build
-C0012                    workspace member has no Viso.toml
-CLI_USAGE                The command line did not parse or asks for something the command does not do.
-INTERNAL_PANIC           The CLI failed on its own; this is a bug in Viso.
-ENV_CURRENT_DIR          The current directory could not be read.
-ENV_STDOUT               Standard output could not be written.
-ENV_SOURCE_UNREADABLE    A source file the command needs could not be read.
-ENV_CARGO_MANIFEST       The project root has no `Cargo.toml` to build.
-ENV_CARGO                Cargo could not be run.
-ENV_NO_EXECUTABLE        The build produced no executable, or more than one.
-ENV_DEV_CHANNEL          The dev channel could not be opened on the loopback interface.
-ENV_DEVICE               The simulator or emulator toolchain is missing or failed.
-ENV_NO_DEV_SESSION       No `viso run` session is running for the project, or it cannot be reached.
-ENV_TAPE_WRITE           A recorded tape could not be written.
-ENV_TEST_INPUT           A test scenario or tape could not be found or read.
-ENV_SNAPSHOT_TARGET      Snapshots are not taken on that target here.
-ENV_SNAPSHOT_WRITE       A golden snapshot, or what a comparison found, could not be written.
-ENV_LSP                  The language server `viso-lsp` was not found or could not be started.
-ENV_DUMP_WRITE           The dump could not be written to the `--out` file.
-ENV_SOURCE_WRITE         A source file the command rewrites could not be written.
-ENV_LOCK_HELD            Another viso process holds a lock the command needs free.
-ENV_REMOVE               A file or directory the command removes could not be removed.
-ENV_BUILD_WRITE          The build's output could not be written.
-ENV_TOOL                 A tool the build needs is not installed or could not be run.
-ENV_TEST_TARGET          The test domain does not run on that target here.
-ENV_RUST_TOOLCHAIN       The Rust toolchain is not installed, or older than Viso builds with.
-ENV_RUST_TARGET          The Rust standard library of a target the build needs is not installed.
-ENV_GPU                  The host has no GPU backend Viso renders with.
-ENV_ANDROID_SDK          No Android SDK, with its NDK, build tools and a platform, is found.
-ENV_ANDROID_LICENSE      A license of the Android components to install is not accepted.
-ENV_DOWNLOAD             A toolchain archive could not be downloaded.
-ENV_DOWNLOAD_INTEGRITY   A downloaded archive is not the one pinned.
-ENV_INSTALL              A verified toolchain archive could not be unpacked into place.
-ENV_OFFLINE              `--offline` was given and something needs downloading.
-ENV_IOS_HOST             The iOS Simulator is on macOS only.
-ENV_XCODE                Xcode is not installed or not the selected developer directory.
-ENV_XCODE_LICENSE        The Xcode license is not accepted.
-BUILD_FAILED             `cargo build` failed.
-BUILD_PACKAGE            The built app could not be packaged for its target.
-PACKAGE_SIGNING          The package could not be signed as `--signing` asks.
-PACKAGE_UNSIGNED         The package is signed short of what its platform needs to install it elsewhere.
-PACKAGE_ARCHIVE          The package or its archive could not be made.
-RUN_APP_FAILED           The app could not be launched, crashed, or exited with a failure.
-RUN_TEST_CRASHED         A test case's runner could not start, crashed, or ended without its report.
-RUN_SNAPSHOT_FAILED      A scenario's snapshot could not be taken.
-EXPLAIN_UNKNOWN          No diagnostic code has that name.
-TEST_INPUT_INVALID       A test scenario or tape does not parse or fit the build.
-TEST_SNAPSHOT_MISMATCH   A snapshot differs from its golden.
-TEST_SNAPSHOT_MISSING    A snapshot has no golden, or a golden no snapshot.
-TEST_SNAPSHOT_INVALID    A golden snapshot or its sidecar does not read.
-TEST_EXPECTATION         A test's expectation was not met.
-NEW_NAME_INVALID         The package name is not one Cargo accepts.
-NEW_PATH_TAKEN           The project's directory is a file, or holds files and `--force-empty-dir` is not given, or holds a file the project would write.
-NEW_FRAMEWORK            The `--framework` path is not the `viso` crate or a checkout holding it.
-NEW_GIT                  Git could not make the new project a repository.
-NEW_WRITE                The project's files could not be written; nothing was left behind.
-DEVICE_MISSING           No simulator or emulator profile exists.
-DEVICE_UNKNOWN           `--device` or a configured default names no profile.
-DEVICE_AMBIGUOUS         Several profiles exist and none is the default.
-DEVICE_ID_INVALID        A profile ID that is not one.
-DEVICE_EXISTS            A profile of that ID exists already.
-DEVICE_SYSTEM            No installed system image or runtime fits the profile.
-DUMP_INPUT               The file `viso dump` is given is not a `.vs` source of the project.
-ANDROID_API_UNSUPPORTED  The Android API level is not one Viso supports.
-IOS_RUNTIME_INVALID      The iOS runtime given is not a version.
-IOS_RUNTIME_MISSING      The iOS runtime is not installed, and installing it was not asked for.
-INSPECT_SELECTOR         The selector `viso inspect query` is given does not parse.
-INSPECT_ANSWER_INVALID   The app's inspection did not arrive whole or did not decode.
-GAME_NOT_RUNNING         No mounted view of the named file runs a game.
-GAME_AMBIGUOUS           The game's name matches more than one mounted view.
-GAME_UNKNOWN_STATE       The game has no such system or state.
-GAME_BUSY                The game replays a tape, or is being recorded already.
-GAME_ENDED               The game ended before the recording did.
-GAME_FAULT               The World did not restart for the recording.
-GAME_ANSWER_INVALID      The running session's answer did not decode or outgrew a dev frame.
+E1001                         Unsupported Language Version
+E1101                         Identifier Normalization Conflict
+E1102                         Confusable Identifier
+E1201                         Unterminated String
+E1202                         Unterminated Block Comment
+E1203                         Invalid Numeric Literal
+E1204                         Unknown Unit Suffix
+E1205                         Invalid Escape Sequence
+E1206                         Misplaced Numeric Separator
+E1207                         Invalid Color Literal
+E1208                         Character Literal Not One Character
+E1209                         Invalid Source Character
+E1210                         Too Many Raw String Hashes
+E1301                         Strict Keyword Used As A Name
+E1401                         Unclosed Delimiter
+E1402                         Unmatched Closing Delimiter
+E1403                         Unexpected Tokens
+E1404                         Missing Token
+E1405                         Expected Expression
+E1406                         Nesting Too Deep
+E1407                         Source Too Large
+E2001                         Unresolved Symbol
+E2002                         Ambiguous Name
+E2003                         Initialization Cycle
+E2004                         Missing Turbofish Or Const Marker
+E2005                         No Component To Mount
+E2006                         Several Components To Mount
+E2101                         Float Is Not A Type
+E2102                         Illegal Implicit Numeric Conversion
+E2103                         Type Mismatch
+E2104                         State Initializer Forward Reference
+E2105                         Computed Dependency Cycle
+E2106                         MixedLength Cannot Narrow Before Layout
+E2107                         Illegal Dimensional Operation
+E2108                         Format Template Mismatch
+E2109                         Length Divided By Constant Zero
+E2110                         Assignment Target Is Not Writable
+E2111                         Context Read Outside Its Scope
+E2112                         Compile-Time Argument Rejected
+E2201                         Trait Bound Not Satisfied
+E2202                         Overlapping Or Ambiguous Impl
+E2203                         Unbounded Generic Instantiation
+E2301                         Non-Exhaustive Match
+E2302                         Unreachable Pattern
+E2303                         Refutable Pattern In Binding Position
+E2401                         Closure Parameter Cannot Be Inferred
+E2501                         Effect Kind Violation
+E2502                         Side Effect In View Or Computed
+E2601                         Missing Capability
+E2701                         Type Cannot Be A StableKey
+E2702                         Duplicate Runtime Key  (reserved)
+E2801                         Record Expression In Control Head Needs Parentheses
+E2802                         Chained Non-Associative Operator
+E2803                         Misplaced Control Transfer
+E3001                         Reserved Word Child
+E3002                         View Cardinality Not Satisfied  (reserved)
+E3003                         No Default Slot
+E3004                         Several Default Slots
+E3101                         Unknown Property
+E3102                         Property Bound Twice
+E3103                         Property Is Not Two-Way
+E3104                         Percent Without Percent Basis
+E3105                         Indefinite Percent Basis
+E3106                         Non-Finite Length
+E3107                         Bind Source Is Not A State Lens
+E3201                         Arrow Event Handler
+E3202                         Unknown Event Or Wrong Payload
+E3301                         Invalid Preserve Identity
+E3401                         View For Without Key
+E3402                         Unstable Key Expression
+E3501                         Unknown Slot Or Part
+E3502                         Slot Cardinality Conflict
+E3601                         Invalid Template
+E3701                         Invalid Bindable Input
+E3702                         Misplaced Parent-Provided Property
+E3703                         Invalid Transition
+E3704                         Interactive Node Without Role Or Name
+E3705                         Concatenated Localizable Text
+E3706                         Message Catalog Mismatch
+E3707                         Invalid VirtualList Item Template  (reserved)
+E3708                         Interactive Node Without Keyboard Path
+E3709                         Property Not Yet Supported By Runtime  (reserved)
+E3710                         Invalid Styleable Or Selector Member
+E3711                         View Cannot Be Mounted
+E3712                         Invalid Migrate Function
+E3713                         Invalid Asset
+E4101                         Await Outside a Task
+E4102                         Task Reads State After Suspending
+E4201                         Effect Reads an Undeclared Dependency
+E4202                         Reactive Cycle
+E4203                         Effect Run Policy Does Not Fit Its Dependencies
+E4204                         Adaptive Cycle
+E4301                         Resource Missing Load or Key
+E4302                         Invalid Resource or Task Policy
+E4401                         Start Target Is Not a Task
+E4501                         Detached Task
+E5101                         State Reset on Hot Reload
+E5102                         Stable Identity Collision on Reload
+E5103                         Game Reload Tier
+E5104                         Duplicate Stable Id
+E6101                         Native Declaration Does Not Match the Schema
+E6102                         Native Ownership or Thread Domain Violation
+E6103                         Capability Denied
+E7101                         Execution Budget Exceeded
+E7102                         Memory Budget Exceeded
+E7103                         Arithmetic Fault
+E7104                         Index Out of Bounds
+E7105                         Function Cannot Run
+E7106                         Native Function Failed
+E8101                         Host-Only Type in a Shader
+E8102                         F64 in a Shader
+E8103                         Shader Loop Without a Static Bound
+E8104                         Shader ABI Mismatch
+E8105                         Construct Outside the Shader Subset
+E8106                         Render Profile Stage Rule Violated
+E8107                         Brush Profile Violated
+E9101                         System Order Cycle
+E9102                         Fixed Tick Budget Exceeded
+E9103                         Simulation Reaches Local State
+E9104                         Non-Deterministic Source in the Simulation
+E9105                         Simulation State Without Snapshot
+E9106                         Invalid Persisted State
+E9107                         Input Action Missing a Device Binding
+E9108                         Audio Realtime Rule Violated
+E9109                         UI Member in a System
+E9110                         Misplaced Probe
+E9111                         Persisted State Failed to Load or Store
+C0001                         no Viso.toml found
+C0002                         Viso.toml could not be read
+C0003                         Viso.toml is not valid TOML
+C0004                         unknown configuration key
+C0005                         configuration value has the wrong type
+C0006                         required configuration key is missing
+C0007                         configuration value is not one of the accepted values
+C0008                         hot reload cannot be enabled in a shipping profile
+C0009                         unknown build profile
+C0010                         VISO_* environment variable could not be parsed
+C0011                         target is not available in this build
+C0012                         workspace member has no Viso.toml
+CLI_USAGE                     The command line did not parse or asks for something the command does not do.
+INTERNAL_PANIC                The CLI failed on its own; this is a bug in Viso.
+ENV_CURRENT_DIR               The current directory could not be read.
+ENV_STDOUT                    Standard output could not be written.
+ENV_SOURCE_UNREADABLE         A source file the command needs could not be read.
+ENV_CARGO_MANIFEST            The project root has no `Cargo.toml` to build.
+ENV_CARGO                     Cargo could not be run.
+ENV_NO_EXECUTABLE             The build produced no executable, or more than one.
+ENV_DEV_CHANNEL               The dev channel could not be opened on the loopback interface.
+ENV_DEVICE                    The simulator or emulator toolchain is missing or failed.
+ENV_NO_DEV_SESSION            No `viso run` session is running for the project, or it cannot be reached.
+ENV_TAPE_WRITE                A recorded tape could not be written.
+ENV_TEST_INPUT                A test scenario or tape could not be found or read.
+ENV_SNAPSHOT_TARGET           Snapshots are not taken on that target here.
+ENV_SNAPSHOT_WRITE            A golden snapshot, or what a comparison found, could not be written.
+ENV_LSP                       The language server `viso-lsp` was not found or could not be started.
+ENV_DUMP_WRITE                The dump could not be written to the `--out` file.
+ENV_SOURCE_WRITE              A source file the command rewrites could not be written.
+ENV_LOCK_HELD                 Another viso process holds a lock the command needs free.
+ENV_REMOVE                    A file or directory the command removes could not be removed.
+ENV_BUILD_WRITE               The build's output could not be written.
+ENV_TOOL                      A tool the build needs is not installed or could not be run.
+ENV_TEST_TARGET               The test domain does not run on that target here.
+ENV_RUST_TOOLCHAIN            The Rust toolchain is not installed, or older than Viso builds with.
+ENV_RUST_TARGET               The Rust standard library of a target the build needs is not installed.
+ENV_GPU                       The host has no GPU backend Viso renders with.
+ENV_ANDROID_SDK               No Android SDK, with its NDK, build tools and a platform, is found.
+ENV_ANDROID_LICENSE           A license of the Android components to install is not accepted.
+ENV_DOWNLOAD                  A toolchain archive could not be downloaded.
+ENV_DOWNLOAD_INTEGRITY        A downloaded archive is not the one pinned.
+ENV_INSTALL                   A verified toolchain archive could not be unpacked into place.
+ENV_OFFLINE                   `--offline` was given and something needs downloading.
+ENV_IOS_HOST                  The iOS Simulator is on macOS only.
+ENV_XCODE                     Xcode is not installed or not the selected developer directory.
+ENV_XCODE_LICENSE             The Xcode license is not accepted.
+BUILD_FAILED                  `cargo build` failed.
+BUILD_PACKAGE                 The built app could not be packaged for its target.
+PACKAGE_SIGNING               The package could not be signed as `--signing` asks.
+PACKAGE_UNSIGNED              The package is signed short of what its platform needs to install it elsewhere.
+PACKAGE_ARCHIVE               The package or its archive could not be made.
+EXPORT_HTML_DYNAMIC_REQUIRED  `--static` was asked for, but the view changes while it runs.
+EXPORT_HTML_GPU_ONLY_NODE     A node only the Viso renderer can draw has no HTML form.
+EXPORT_UNSUPPORTED            Part of the view has no form the exporter writes.
+EXPORT_NO_VIEW                The project has no view to export.
+EXPORT_CONFLICT               The export directory holds files the export did not write, or that were edited since.
+EXPORT_WRITE                  The export could not be written.
+RUN_APP_FAILED                The app could not be launched, crashed, or exited with a failure.
+RUN_TEST_CRASHED              A test case's runner could not start, crashed, or ended without its report.
+RUN_SNAPSHOT_FAILED           A scenario's snapshot could not be taken.
+EXPLAIN_UNKNOWN               No diagnostic code has that name.
+TEST_INPUT_INVALID            A test scenario or tape does not parse or fit the build.
+TEST_SNAPSHOT_MISMATCH        A snapshot differs from its golden.
+TEST_SNAPSHOT_MISSING         A snapshot has no golden, or a golden no snapshot.
+TEST_SNAPSHOT_INVALID         A golden snapshot or its sidecar does not read.
+TEST_EXPECTATION              A test's expectation was not met.
+NEW_NAME_INVALID              The package name is not one Cargo accepts.
+NEW_PATH_TAKEN                The project's directory is a file, or holds files and `--force-empty-dir` is not given, or holds a file the project would write.
+NEW_FRAMEWORK                 The `--framework` path is not the `viso` crate or a checkout holding it.
+NEW_GIT                       Git could not make the new project a repository.
+NEW_WRITE                     The project's files could not be written; nothing was left behind.
+DEVICE_MISSING                No simulator or emulator profile exists.
+DEVICE_UNKNOWN                `--device` or a configured default names no profile.
+DEVICE_AMBIGUOUS              Several profiles exist and none is the default.
+DEVICE_ID_INVALID             A profile ID that is not one.
+DEVICE_EXISTS                 A profile of that ID exists already.
+DEVICE_SYSTEM                 No installed system image or runtime fits the profile.
+DUMP_INPUT                    The file `viso dump` is given is not a `.vs` source of the project.
+ANDROID_API_UNSUPPORTED       The Android API level is not one Viso supports.
+IOS_RUNTIME_INVALID           The iOS runtime given is not a version.
+IOS_RUNTIME_MISSING           The iOS runtime is not installed, and installing it was not asked for.
+INSPECT_SELECTOR              The selector `viso inspect query` is given does not parse.
+INSPECT_ANSWER_INVALID        The app's inspection did not arrive whole or did not decode.
+GAME_NOT_RUNNING              No mounted view of the named file runs a game.
+GAME_AMBIGUOUS                The game's name matches more than one mounted view.
+GAME_UNKNOWN_STATE            The game has no such system or state.
+GAME_BUSY                     The game replays a tape, or is being recorded already.
+GAME_ENDED                    The game ended before the recording did.
+GAME_FAULT                    The World did not restart for the recording.
+GAME_ANSWER_INVALID           The running session's answer did not decode or outgrew a dev frame.
 

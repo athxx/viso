@@ -725,16 +725,47 @@ a precise diagnostic what it cannot express.
 
 ### C5.3 — `viso export html` (§28, §29, §31)
 
-- [ ] Capability analysis (§28.2) shared with C4.4: every node classified static,
-      dynamic or GPU-only before any file is written.
-- [ ] Layout lowering to HTML + CSS (§29.2): flex/stack/grid mapping, text, images,
-      theme tokens as CSS variables; output deterministic (stable ordering, no
-      timestamps).
-- [ ] `--static` (§29.1): a dynamic binding is `EXPORT_HTML_DYNAMIC_REQUIRED`, a
-      GPU-only node is `EXPORT_HTML_GPU_ONLY_NODE`, each with span and alternative;
-      exit 1.
-- [ ] Generated-file safety (§51): writes only into the export dir, refuses to
-      overwrite files without the generated header unless `--force`.
+- [x] Capability analysis (§28.2): the exporter reads the UI IR, the behavior table
+      and the Behavior IR (never the `.vs` text); every entry is run by the
+      interpreter against the initial states, inputs' defaults, the default theme and
+      the source locale, and what it reads (`Vm::reads`) classifies it constant,
+      theme (a CSS variable) or changing, before any file is written. Each finding
+      is a diagnostic at its span: `EXPORT_HTML_DYNAMIC_REQUIRED`,
+      `EXPORT_HTML_GPU_ONLY_NODE`, `EXPORT_UNSUPPORTED`; exit 1.
+- [x] Layout lowering to HTML + CSS (§29.2): Flex/Grid/Scroll as flexbox, grid and
+      overflow containers with the runtime's sizing (leaf default 0, containers
+      Fill, unset side Fit, cross Fill natural unless stretched), widgets as their
+      HTML elements and roles (button, checkbox switch, range, input, img, tabs and
+      radio groups with `aria-selected`/`aria-checked`), semantics as ARIA, styles'
+      `When` arms as `:hover`/`:active`/`:focus-visible` rules, transitions with a
+      reduced-motion rule, theme tokens as `:root` custom properties, shared classes
+      deduplicated; assets copied under `assets/`; output deterministic.
+- [x] The page script (§29): every reachable Behavior IR function translated to
+      JavaScript with the interpreter's value model (BigInt integers range-checked
+      or wrapped, `F32` rounded, aggregates `{t, f}`, lists copy on write); each
+      handler one transaction that refreshes only the updaters whose state it
+      changed; `if`/`match`/keyed `for` regions mounted from `<template>`s (with
+      `preserve`), controls kept controlled after their own events, `emit` as a
+      `CustomEvent` on `#viso-root`; `tr` formatted from the source locale's table
+      with `Intl.PluralRules`/`NumberFormat`. Verified in headless Chrome: counter,
+      regions, toggle, text input, assets.
+- [x] `--static` (§29.1): no script; what changes is `EXPORT_HTML_DYNAMIC_REQUIRED`
+      at its span, a shader node `EXPORT_HTML_GPU_ONLY_NODE` with the `web-gpu` /
+      `web-hybrid` alternative.
+- [x] `[COMPONENT]` (`Name` or `module::Name`) exports one component alone, inputs
+      at their defaults; the default is the one `src/app.vs` exports
+      (`EXPORT_NO_VIEW` when there is none).
+- [x] Generated-file safety (§51): the export dir is replaced whole through a staging
+      directory beside it; `.viso-generated.json` records each file's SHA-256, and a
+      directory holding a file the export did not write, or one edited since, is
+      `EXPORT_CONFLICT` (exit 6) unless `--force`; the project, an ancestor of it,
+      `src/` and `assets/` are refused as the export dir. `artifact`
+      `kind:"export-dir"`, `profile: null`.
+- [ ] Export what the page cannot run yet: `start`ed tasks, `effect`/`resource`,
+      states of a component a region mounts, a game's systems, `env` fields other
+      than theme and locale (each is `EXPORT_UNSUPPORTED` at its span today).
+- [ ] Locales beyond the source one: the page follows `navigator.language` through the
+      catalog's fallback chain, every table shipped.
 
 ### C5.4 — `viso export solid` (§30)
 

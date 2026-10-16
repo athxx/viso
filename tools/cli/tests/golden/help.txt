@@ -38,6 +38,7 @@ TEST / DEBUG
 
 DELIVERY
   package     Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive
+  export      Generate source a web project owns from the app's view: plain HTML and CSS
 
 MAINTENANCE
   clean       Remove `target/viso/`: builds, caches and dev state, never `dist/`
@@ -1523,6 +1524,71 @@ Notes:
   `[package.<platform>]` the identity; a keystore's passwords come from
   `VISO_ANDROID_KEYSTORE_PASSWORD` and `VISO_ANDROID_KEY_PASSWORD`, never a flag.
   The output replaces `dist/<platform>/` whole, with its `artifact.json`.
+
+$ viso export --help
+Generate source a web project owns from the app's view: plain HTML and CSS
+
+Usage: viso export [OPTIONS] <COMMAND>
+
+Examples:
+  viso export html                      # the view as HTML and CSS in `dist-html/`
+  viso export html --static --out site  # with no JavaScript, into `site/`
+
+Commands:
+  html  Semantic HTML and CSS, with vanilla JavaScript for what changes
+
+Options:
+  -h, --help  Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso export html --help
+Semantic HTML and CSS, with vanilla JavaScript for what changes
+
+Usage: viso export html [OPTIONS] [COMPONENT]
+
+Examples:
+  viso export html                               # the view as HTML and CSS in `dist-html/`
+  viso export html ui::Card --static --out card  # one component alone, with no JavaScript, failing on what needs it
+  viso export html --out site --force --json     # over edits in `site/`, as JSON events
+
+Arguments:
+  [COMPONENT]  The component to export, `Name` or `module::Name`: the one `src/app.vs` exports when omitted
+
+Options:
+      --out <DIR>  The directory to write: `export.html.out_dir`, else `dist-html`
+      --static     Write no JavaScript: a view that needs it to change is an error
+      --force      Replace the directory even where it holds files the export did not write or that were edited since
+  -h, --help       Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  The component named, else the one `src/app.vs` exports, is lowered as it checks: layout to flexbox and grid,
+  widgets to their HTML elements and roles, the theme to CSS variables. What HTML
+  cannot show (a shader, a game) is an error naming its node, never dropped.
+  The directory is replaced whole; one holding files the export did not write, or
+  edited since, is refused unless `--force`.
 
 $ viso clean --help
 Remove `target/viso/`: builds, caches and dev state, never `dist/`

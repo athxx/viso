@@ -15,6 +15,7 @@ mod deploy;
 mod dev;
 mod device;
 mod error;
+mod generated;
 mod help;
 mod interrupt;
 mod output;

@@ -2219,7 +2219,11 @@ Unsupported
 
 ### 28.3 JSON / exit codes
 
-`--json`：`progress`、`diagnostic`（含 `EXPORT_*` capability 诊断）、输出目录一条 `artifact`（`kind:"export-dir"`）、`summary`。Exit code：capability diagnostics（Unsupported、`EXPORT_HTML_DYNAMIC_REQUIRED` 等）1；exporter 写出或外部工具（如 package manager）失败 6。
+`--json`：`progress`、`diagnostic`（含 `EXPORT_*` capability 诊断）、输出目录一条 `artifact`（`kind:"export-dir"`，`profile` 为 `null`）、`summary`。Exit code：capability diagnostics（Unsupported、`EXPORT_HTML_DYNAMIC_REQUIRED` 等）1；exporter 写出或外部工具（如 package manager）失败 6。
+
+### 28.4 导出目录
+
+导出目录整体替换：先写到它旁边的 staging 目录，再一次换位，失败时原目录不变。目录内 `.viso-generated.json` 记录 `{generator, files:[{path, sha256}]}`；目录中有导出未写的文件、或写后被改过的文件时以 `EXPORT_CONFLICT`（exit 6）拒绝并列出路径，`--force` 才替换。项目根、它的祖先、`src/` 与 `assets/` 下不能作导出目录（`CLI_USAGE`）。读写失败为 `EXPORT_WRITE`（exit 6）。
 
 ---
 
@@ -2229,7 +2233,10 @@ Unsupported
 
 ```bash
 viso export html --out dist-html
+viso export html ui::Card --out card
 ```
+
+导出的组件是 `<component>`（`Name` 或 `module::Name`，input 取默认值；有无默认值的 input 为 `EXPORT_UNSUPPORTED`），省略时为 `src/app.vs` 导出的组件（没有时 `EXPORT_NO_VIEW`）。目录是 `--out`（相对当前目录），否则 `Viso.toml` 的 `export.html.out_dir`（相对项目根），否则 `dist-html/`。产物：`index.html`、`styles.css`、有变化时的 `app.js`，以及页面显示的 `assets/<path>`；同样的源码得到同样的字节。
 
 目标：
 
@@ -2239,6 +2246,8 @@ viso export html --out dist-html
 - DOM event mapping；
 - 对支持的 reactive subset 生成直接 DOM mutation/vanilla JS；
 - 不引入 Solid/React/Vue 等 framework dependency。
+
+分类：每个 entry 由解释器在初始 state、input 默认值、默认 theme 与 source locale 下求值，它读到的 state（`Vm::reads`）决定它是常量（直接写进 HTML/CSS）、theme 字段（CSS custom property）还是会变化（由 `app.js` 更新）。`app.js` 把可达的 Behavior IR 函数逐条翻译为 JavaScript，保持解释器的值语义（整数为 BigInt 并检查范围、`F32` 每步舍入、聚合 `{t, f}`、列表写时复制）；每个 handler 是一个 transaction，只刷新读到被改 state 的绑定；`if`/`match`/keyed `for` 区域从 `<template>` 挂载；`emit` 在 `#viso-root` 上派发 `CustomEvent`；`tr` 用 source locale 的消息表与 `Intl.PluralRules`/`Intl.NumberFormat` 格式化。task（`start`）、`effect`/`resource`、区域内组件自己的 state、game system，以及 theme 与 locale 之外的 `env` 字段为 `EXPORT_UNSUPPORTED`。
 
 ### 29.1 Static-only mode
 
@@ -2268,6 +2277,8 @@ Stack    -> positioned stacking
 Scroll   -> overflow container
 Absolute -> positioned element
 ```
+
+尺寸与运行时一致：leaf 默认 0，容器默认两轴 Fill，写了一边时另一边为 Fit；Flex 主轴 Fill(w) 为 `flex: w 0 0`，交叉轴 Fill 为自然尺寸（除非父容器 stretch）。控件映射为对应 HTML 元素与 role（`button`、`checkbox` + `switch`、`range`、`input`、`img`、tabs/radio group 的 `aria-selected`/`aria-checked`），semantics 为 ARIA，style 的 `When` arm 为 `:hover`/`:active`/`:focus-visible` 规则，transition 附 `prefers-reduced-motion` 规则。
 
 DOM exporter 追求 semantic equivalence，不承诺与 GPU renderer pixel-identical。
 
@@ -3542,7 +3553,7 @@ viso ios simulator <list|create|delete|start|stop> ...
 Delivery / maintenance：
 
 ```text
-viso export html [--out <dir>] [--static]
+viso export html [<component>] [--out <dir>] [--static] [--force]
 viso export solid [--out <dir>]
 viso clean
 viso completion <bash|zsh|fish|powershell>

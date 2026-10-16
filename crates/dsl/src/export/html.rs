@@ -1,0 +1,1516 @@
+//! A view lowered to HTML and CSS: each node an element with the semantics of
+//! its widget and role, its layout as flexbox or grid, and each value the
+//! interpreter fixes written in place. What can change becomes a wire the
+//! page script drives — a property, a handler, a region — so a static page
+//! and a scripted one come from one walk.
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+
+use viso_behavior::Value;
+use viso_ui::{Align, Justify, LiveRegion, Role};
+use viso_view::{Control, ControlKind, EventRoute};
+
+use super::css::{self, Sheet, Token};
+use super::eval::Eval;
+use super::{Finding, Need};
+use crate::assets::{AssetUse, ResourceId};
+use crate::behavior::ir::Site;
+use crate::ir::binding_ir::NodeKey;
+use crate::ir::ui_ir::{AxisIr, InsetIr, LengthIr, NodeKind, UiItem, UiNode};
+use crate::syntax::TextRange;
+use crate::view_behavior::{ViewBehavior, When};
+
+/// The text color a view shows where it sets none: the runtime's default,
+/// in sRGB.
+pub(super) const TEXT_COLOR: &str = "#3f3f45";
+
+/// The font size a text shows where it sets none.
+pub(super) const FONT_SIZE: &str = "14px";
+
+/// A stretch of HTML the page shows as one: the static view, or an arm of a
+/// region the script mounts.
+#[derive(Debug, Default)]
+pub(super) struct Content {
+    pub(super) html: String,
+    /// The elements the script wires, in document order: each carries a
+    /// `data-v` attribute.
+    pub(super) marks: Vec<Mark>,
+}
+
+/// An element the script wires.
+#[derive(Debug)]
+pub(super) struct Mark {
+    pub(super) wires: Vec<Wire>,
+}
+
+/// What the script does to a marked element.
+#[derive(Debug)]
+pub(super) enum Wire {
+    /// Shows the value of handler-table entry `entry` as `prop`.
+    Prop { entry: u32, prop: Prop },
+    /// Runs handler `handler` on `route`.
+    On {
+        route: EventRoute,
+        handler: u32,
+        capture: bool,
+        kind: ControlKind,
+    },
+    /// Shows a control's current value again after its own event, from
+    /// `entry` (its default without one): the view, not the browser, decides
+    /// what a control shows.
+    Sync {
+        kind: ControlKind,
+        entry: Option<u32>,
+    },
+    /// Mounts region `region` before the element, a `<template>` anchor.
+    Region(u32),
+}
+
+/// A property a wire shows.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Prop {
+    Text,
+    TextColor,
+    SoftWrap,
+    Visible,
+    Focusable,
+    /// The accessible name: `alt` of an image, else `aria-label`.
+    Label {
+        alt: bool,
+    },
+    Hint,
+    Spoken,
+    Hidden,
+    HeadingLevel,
+    Checked,
+    /// A slider's `value`, `min`, `max` or `step`.
+    Range(&'static str),
+    InputValue,
+    Selected {
+        radio: bool,
+    },
+    /// An asset's source, as an image or as a mask.
+    Source {
+        mask: bool,
+    },
+    Fit {
+        mask: bool,
+    },
+    /// A custom property of the element that its own rules read.
+    Var {
+        name: String,
+        token: VarToken,
+    },
+    /// A class of the element its own rules select by.
+    Class(String),
+}
+
+/// What a custom property holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum VarToken {
+    Color,
+    Opacity,
+    /// A `Transition` for the CSS property named.
+    Transition(&'static str),
+}
+
+/// A region the script mounts.
+#[derive(Debug)]
+pub(super) struct Region {
+    pub(super) kind: RegionKind,
+    pub(super) arms: Vec<Content>,
+    pub(super) preserve: Vec<bool>,
+}
+
+/// What decides a region's content, by handler-table entry.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum RegionKind {
+    If { select: u32 },
+    Match { scrutinee: u32, select: u32 },
+    For { items: u32, key: Option<u32> },
+}
+
+/// The view as a page.
+#[derive(Debug, Default)]
+pub(super) struct Lowered {
+    pub(super) root: Content,
+    pub(super) regions: Vec<Region>,
+    pub(super) sheet: Sheet,
+    /// Every asset an element shows, by resource id: its path under
+    /// `assets/`.
+    pub(super) assets: BTreeMap<u64, String>,
+    /// Whether a length has a device-pixel term.
+    pub(super) device: bool,
+}
+
+/// Where a node sits, which decides how its size reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Parent {
+    /// The view's root, which the window sizes.
+    Root,
+    Flex(AxisIr),
+    Grid,
+    Scroll(AxisIr),
+}
+
+/// The walk.
+pub(super) struct Lower<'v, 'e, 'a> {
+    vb: Option<&'v ViewBehavior>,
+    eval: Option<&'e mut Eval<'a>>,
+    uses: &'v [AssetUse],
+    static_only: bool,
+    pub(super) findings: Vec<Finding>,
+    pub(super) out: Lowered,
+    /// The next node key, counting every node in pre-order as the behavior
+    /// table does.
+    key: u32,
+}
+
+impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
+    pub(super) fn new(
+        vb: Option<&'v ViewBehavior>,
+        eval: Option<&'e mut Eval<'a>>,
+        uses: &'v [AssetUse],
+        static_only: bool,
+    ) -> Self {
+        Lower {
+            vb,
+            eval,
+            uses,
+            static_only,
+            findings: Vec::new(),
+            out: Lowered::default(),
+            key: 0,
+        }
+    }
+
+    /// Lowers the view's root items.
+    pub(super) fn view(&mut self, items: &[UiItem]) {
+        let mut root = Content::default();
+        for item in items {
+            match item {
+                UiItem::Node(node) => self.node(node, Parent::Root, None, 0, false, &mut root),
+                _ => self.skip(item),
+            }
+        }
+        self.out.root = root;
+    }
+
+    fn need(&mut self, need: Need, at: TextRange, message: impl Into<String>, notes: Vec<String>) {
+        self.findings.push(Finding {
+            need,
+            at,
+            message: message.into(),
+            notes,
+        });
+    }
+
+    /// Counts the nodes of an item no element shows past.
+    fn skip(&mut self, item: &UiItem) {
+        match item {
+            UiItem::Node(node) => {
+                self.key += 1;
+                for child in &node.children {
+                    self.skip(child);
+                }
+            }
+            _ => {
+                for items in crate::view_regions::arms(item) {
+                    for item in items {
+                        self.skip(item);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The source span of handler-table entry `entry`.
+    fn site(&self, entry: u32) -> Option<TextRange> {
+        let eval = self.eval.as_deref()?;
+        let (Site { at, .. }, _) = eval.layout.handlers.get(entry as usize)?;
+        Some(*at)
+    }
+
+    /// What `entry` shows here: its value when it never changes, else
+    /// `None`, a wire for the script — which a static export refuses.
+    fn fixed(&mut self, entry: u32, what: &str, fallback: TextRange) -> Fixed {
+        let at = self.site(entry).unwrap_or(fallback);
+        let Some(eval) = self.eval.as_deref_mut() else {
+            return Fixed::Changes;
+        };
+        let (_, env) = eval.deps(entry);
+        if let Some(field) = env.first() {
+            let field = format!("{field:?}");
+            self.need(
+                Need::Unsupported,
+                at,
+                format!("{what} reads `env`'s {field}, which an HTML export does not follow"),
+                vec!["only `theme` is read from the environment of an exported view".to_owned()],
+            );
+            return Fixed::Changes;
+        }
+        if eval.constant(entry) {
+            if let Some(path) = eval.theme_path(entry)
+                && let Some((name, token)) = css::theme_var(&path)
+                && token == Token::Color
+            {
+                return Fixed::Theme(name);
+            }
+            return match eval.value(entry, &[]) {
+                Ok(value) => Fixed::Value(value),
+                Err(fault) => {
+                    self.need(
+                        Need::Unsupported,
+                        at,
+                        format!("{what} faults as it is evaluated: {}", fault.message),
+                        Vec::new(),
+                    );
+                    Fixed::Changes
+                }
+            };
+        }
+        if self.static_only {
+            self.need(
+                Need::Dynamic,
+                at,
+                format!("{what} changes while the page is open"),
+                vec!["it reads state, or a region's binding, which a page without JavaScript cannot follow".to_owned()],
+            );
+        }
+        Fixed::Changes
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn node(
+        &mut self,
+        node: &UiNode,
+        parent: Parent,
+        item: Option<(Role, Option<bool>)>,
+        depth: u32,
+        templated: bool,
+        out: &mut Content,
+    ) {
+        let key = self.key;
+        self.key += 1;
+        let control = self.vb.and_then(|vb| vb.control(NodeKey(key)));
+        let routes: Vec<_> = self
+            .vb
+            .map(|vb| vb.routes(NodeKey(key)).to_vec())
+            .unwrap_or_default();
+        let kind = ControlKind::of(&node.type_name);
+        match (node.kind, kind) {
+            (_, ControlKind::Shader) => {
+                self.need(
+                    Need::GpuOnly,
+                    node.origin,
+                    format!(
+                        "a `{}` paints with a shader, which no HTML element runs",
+                        node.type_name
+                    ),
+                    vec![
+                        "build for the browser with the Viso renderer: `viso build web-gpu`, or with DOM and GPU islands: `viso build web-hybrid`".to_owned(),
+                        "or rewrite the node with widgets HTML has".to_owned(),
+                    ],
+                );
+                for child in &node.children {
+                    self.skip(child);
+                }
+                return;
+            }
+            (NodeKind::Component, _) => {
+                self.need(
+                    Need::Unsupported,
+                    node.origin,
+                    format!(
+                        "`{}` is a Rust component, which only the Viso runtime mounts",
+                        node.type_name
+                    ),
+                    Vec::new(),
+                );
+                for child in &node.children {
+                    self.skip(child);
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        let mut el = Element::default();
+        let role = node
+            .role
+            .or(item.map(|(role, _)| role))
+            .or_else(|| viso_view::widget_role(&node.type_name));
+        let masked = control.as_ref().is_some_and(|c| c.tint.is_some());
+        el.tag = match (node.type_name.as_str(), role) {
+            ("Button", _) => "button",
+            ("TextInput" | "Toggle" | "CheckBox" | "Slider", _) => "input",
+            ("Image" | "Svg", _) if !masked => "img",
+            ("Text", _) => "span",
+            (_, Some(Role::Navigation)) => "nav",
+            _ => "div",
+        };
+        el.base = match (node.kind, node.type_name.as_str()) {
+            (NodeKind::Flex, _) => "vx-flex",
+            (NodeKind::Grid, _) => "vx-grid",
+            (NodeKind::Scroll, _) => "vx-scroll",
+            (_, "Text") => "vx-text",
+            (_, "Button") => "vx-button",
+            (_, "TextInput") => "vx-input",
+            (_, "Toggle" | "CheckBox") => "vx-check",
+            (_, "Slider") => "vx-range",
+            (_, "Image" | "Svg") if masked => "vx-mask",
+            (_, "Image" | "Svg") => "vx-image",
+            _ => "vx-leaf",
+        };
+        match node.type_name.as_str() {
+            "Button" => el.attr("type", "button"),
+            "TextInput" => el.attr("type", "text"),
+            "Toggle" => {
+                el.attr("type", "checkbox");
+                el.attr("role", "switch");
+            }
+            "CheckBox" => el.attr("type", "checkbox"),
+            "Slider" => {
+                el.attr("type", "range");
+                el.attr("min", "0");
+                el.attr("max", "1");
+                el.attr("step", "any");
+                el.attr("value", "0");
+            }
+            _ => {}
+        }
+        let unlabeled = control.as_ref().is_none_or(|c| c.semantics.label.is_none());
+        match role {
+            Some(Role::Image) if unlabeled => {}
+            Some(role) => {
+                if let Some(name) = aria_role(role, el.tag, &node.type_name) {
+                    el.attr("role", name);
+                }
+            }
+            None if node.type_name == "RadioGroup" => el.attr("role", "radiogroup"),
+            None => {}
+        }
+        if let Some((role, selected)) = item {
+            let state = if role == Role::Radio {
+                "aria-checked"
+            } else {
+                "aria-selected"
+            };
+            if let Some(selected) = selected {
+                el.attr(state, if selected { "true" } else { "false" });
+                el.attr("tabindex", if selected { "0" } else { "-1" });
+            }
+        }
+        match node.live {
+            Some(LiveRegion::Polite) => el.attr("aria-live", "polite"),
+            Some(LiveRegion::Assertive) => el.attr("aria-live", "assertive"),
+            _ => {}
+        }
+        if parent == Parent::Root {
+            el.id = Some("viso-root");
+        }
+
+        let mut decls: Vec<(&'static str, String)> = Vec::new();
+        self.layout(node, parent, &mut decls);
+
+        let own = format!("v{key}");
+        let mut wires = Vec::new();
+        let mut selected = None;
+        if let Some(control) = &control {
+            selected = self.control(node, key, control, &own, &mut el, &mut decls, &mut wires);
+        }
+        if !routes.is_empty() && !templated && self.static_only {
+            for route in &routes {
+                let at = self.site(route.handler).unwrap_or(node.origin);
+                self.need(
+                    Need::Dynamic,
+                    at,
+                    format!("the `{}` handler changes the page", route.event.event()),
+                    vec!["a page without JavaScript runs no handler".to_owned()],
+                );
+            }
+        }
+        if !self.static_only {
+            for route in &routes {
+                wires.push(Wire::On {
+                    route: route.event,
+                    handler: route.handler,
+                    capture: route.capture,
+                    kind,
+                });
+            }
+            if kind.responds() && routes.iter().any(|r| kind.reports(r.event)) {
+                let entry = control.as_ref().and_then(|c| c.value);
+                wires.push(Wire::Sync { kind, entry });
+            }
+        }
+        if let Some(class) = self.out.sheet.class(&decls) {
+            el.classes.push(class);
+        }
+        if el.own_class {
+            el.classes.push(own);
+        }
+        if !wires.is_empty() {
+            el.marked = true;
+        }
+
+        el.open(&mut out.html);
+        if el.marked {
+            out.marks.push(Mark { wires });
+        }
+        if let Some(text) = &el.text {
+            escape_text(text, &mut out.html);
+        }
+        let child_parent = match node.kind {
+            NodeKind::Flex => Some(Parent::Flex(node.style.axis.unwrap_or(AxisIr::Row))),
+            NodeKind::Grid => Some(Parent::Grid),
+            NodeKind::Scroll => Some(Parent::Scroll(node.style.axis.unwrap_or(AxisIr::Column))),
+            _ => None,
+        };
+        let item_role = match node.type_name.as_str() {
+            "Tabs" => Some(Role::Tab),
+            "RadioGroup" => Some(Role::Radio),
+            _ => None,
+        };
+        match child_parent {
+            Some(child) => {
+                let mut index = 0i64;
+                for item in &node.children {
+                    let item_of = item_role.map(|role| (role, selected.map(|s| s == index)));
+                    match item {
+                        UiItem::Node(n) => {
+                            self.node(n, child, item_of, depth, templated, out);
+                            index += 1;
+                        }
+                        region => {
+                            let item_of = item_role.map(|role| (role, None));
+                            self.region(region, child, item_of, depth, out);
+                        }
+                    }
+                }
+            }
+            None => {
+                for child in &node.children {
+                    self.skip(child);
+                }
+            }
+        }
+        el.close(&mut out.html);
+    }
+
+    /// The declarations of `node`'s box: how it lays out its children, and
+    /// how its parent sizes it.
+    fn layout(&mut self, node: &UiNode, parent: Parent, decls: &mut Vec<(&'static str, String)>) {
+        let style = &node.style;
+        let lengths = style.lengths();
+        let device = &mut self.out.device;
+        match node.kind {
+            NodeKind::Flex => {
+                if style.axis == Some(AxisIr::Column) {
+                    decls.push(("flex-direction", "column".into()));
+                }
+                match style.justify {
+                    Some(Justify::Center) => decls.push(("justify-content", "center".into())),
+                    Some(Justify::End) => decls.push(("justify-content", "flex-end".into())),
+                    _ => {}
+                }
+                match style.align {
+                    Some(Align::Center) => decls.push(("align-items", "center".into())),
+                    Some(Align::End) => decls.push(("align-items", "flex-end".into())),
+                    Some(Align::Stretch) => decls.push(("align-items", "stretch".into())),
+                    _ => {}
+                }
+                if let Some(gap) = lengths.gap {
+                    decls.push(("gap", css::terms(gap, device)));
+                } else if let Some(gap) = style.gap.filter(|g| *g != 0.0) {
+                    decls.push(("gap", css::px(f64::from(gap))));
+                }
+                padding(node, decls, device);
+            }
+            NodeKind::Grid => padding(node, decls, device),
+            NodeKind::Scroll => {
+                if style.axis == Some(AxisIr::Row) {
+                    decls.push(("flex-direction", "row".into()));
+                    decls.push(("overflow-y", "hidden".into()));
+                } else {
+                    decls.push(("overflow-x", "hidden".into()));
+                }
+            }
+            _ => {}
+        }
+        if let Some(size) = lengths.font_size {
+            decls.push(("font-size", css::terms(size, device)));
+        }
+
+        if parent == Parent::Root {
+            decls.push(("width", "100%".into()));
+            decls.push(("height", "100%".into()));
+            return;
+        }
+        let authored = style.width.is_some()
+            || style.height.is_some()
+            || lengths.width.is_some()
+            || lengths.height.is_some();
+        let (width, height) = if authored {
+            (
+                style.width.unwrap_or(LengthIr::Fit),
+                style.height.unwrap_or(LengthIr::Fit),
+            )
+        } else if node.kind.is_container() && node.kind != NodeKind::VirtualList {
+            (
+                LengthIr::Fill { weight: 1.0 },
+                LengthIr::Fill { weight: 1.0 },
+            )
+        } else {
+            (LengthIr::Fixed(0.0), LengthIr::Fixed(0.0))
+        };
+        let width = Extent::of(width, lengths.width.map(|t| css::terms(t, device)));
+        let height = Extent::of(height, lengths.height.map(|t| css::terms(t, device)));
+        match parent {
+            Parent::Root => {}
+            Parent::Flex(axis) => {
+                let (main, cross, main_name, cross_name) = match axis {
+                    AxisIr::Row => (width, height, "width", "height"),
+                    AxisIr::Column => (height, width, "height", "width"),
+                };
+                match main {
+                    Extent::Set(value) => {
+                        decls.push(("flex", "none".into()));
+                        decls.push((main_name, value));
+                    }
+                    Extent::Fit => decls.push(("flex", "none".into())),
+                    Extent::Fill(weight) => {
+                        decls.push(("flex", format!("{} 0 0", css::number(f64::from(weight)))));
+                        decls.push((min_of(main_name), "0".into()));
+                    }
+                }
+                if let Extent::Set(value) = cross {
+                    decls.push((cross_name, value));
+                }
+            }
+            Parent::Grid => {
+                for (extent, name, place) in [
+                    (width, "width", "justify-self"),
+                    (height, "height", "align-self"),
+                ] {
+                    match extent {
+                        Extent::Set(value) => {
+                            decls.push((name, value));
+                            decls.push((place, "start".into()));
+                        }
+                        Extent::Fit => decls.push((place, "start".into())),
+                        Extent::Fill(_) => decls.push((place, "stretch".into())),
+                    }
+                }
+            }
+            Parent::Scroll(axis) => {
+                let (main, main_name) = match axis {
+                    AxisIr::Row => (width, "width"),
+                    AxisIr::Column => (height, "height"),
+                };
+                decls.push(("flex", "none".into()));
+                if let Extent::Set(value) = main
+                    && !value.contains('%')
+                {
+                    decls.push((main_name, value));
+                }
+            }
+        }
+    }
+
+    /// What `entry` shows, or the wire that keeps `prop` current.
+    #[allow(clippy::too_many_arguments)]
+    fn bind(
+        &mut self,
+        wires: &mut Vec<Wire>,
+        entry: Option<u32>,
+        prop: Prop,
+        what: &str,
+        at: TextRange,
+    ) -> Option<Fixed> {
+        let entry = entry?;
+        match self.fixed(entry, what, at) {
+            Fixed::Changes => {
+                wires.push(Wire::Prop { entry, prop });
+                None
+            }
+            fixed => Some(fixed),
+        }
+    }
+
+    /// Writes what `control`'s entries show; returns the child a selection
+    /// selects when it never changes.
+    #[allow(clippy::too_many_arguments)]
+    fn control(
+        &mut self,
+        node: &UiNode,
+        key: u32,
+        control: &Control,
+        own: &str,
+        el: &mut Element,
+        decls: &mut Vec<(&'static str, String)>,
+        wires: &mut Vec<Wire>,
+    ) -> Option<i64> {
+        let at = node.origin;
+        let mut selected = None;
+        let mask = el.tag != "img";
+        match control.kind {
+            ControlKind::Label => {
+                if let Some(fixed) = self.bind(wires, control.value, Prop::Text, "the text", at) {
+                    el.text = Some(fixed.text());
+                }
+            }
+            ControlKind::TextInput => {
+                if let Some(fixed) =
+                    self.bind(wires, control.value, Prop::InputValue, "the text", at)
+                {
+                    el.attr("value", &fixed.text());
+                }
+            }
+            ControlKind::Toggle => {
+                if let Some(fixed) = self.bind(
+                    wires,
+                    control.value,
+                    Prop::Checked,
+                    "whether it is checked",
+                    at,
+                ) && fixed.truth()
+                {
+                    el.attr("checked", "");
+                }
+            }
+            ControlKind::Slider => {
+                for (entry, name, what) in [
+                    (control.min, "min", "the slider's minimum"),
+                    (control.max, "max", "the slider's maximum"),
+                    (control.step, "step", "the slider's step"),
+                    (control.value, "value", "the slider's value"),
+                ] {
+                    if let Some(fixed) = self.bind(wires, entry, Prop::Range(name), what, at) {
+                        el.attr(name, &fixed.text());
+                    }
+                }
+            }
+            ControlKind::Select => {
+                let radio = node.type_name == "RadioGroup";
+                match control.value {
+                    Some(entry) => {
+                        if let Some(fixed) = self.bind(
+                            wires,
+                            Some(entry),
+                            Prop::Selected { radio },
+                            "the selection",
+                            at,
+                        ) {
+                            selected = fixed.int();
+                        }
+                    }
+                    None => selected = Some(0),
+                }
+            }
+            ControlKind::Asset => {
+                if let Some(fixed) = self.bind(
+                    wires,
+                    control.value,
+                    Prop::Source { mask },
+                    "the source",
+                    at,
+                ) {
+                    match fixed.resource() {
+                        Some(id) => {
+                            let url = self.asset(id);
+                            if mask {
+                                el.style(&format!(
+                                    "mask-image: url(\"{url}\"); -webkit-mask-image: url(\"{url}\")"
+                                ));
+                            } else {
+                                el.attr("src", &url);
+                            }
+                        }
+                        None if !mask => el.attr("src", ""),
+                        None => {}
+                    }
+                }
+                if let Some(fixed) =
+                    self.bind(wires, control.fit, Prop::Fit { mask }, "the fit", at)
+                {
+                    let fit = fit(fixed.int().unwrap_or(0));
+                    if mask {
+                        decls.push(("mask-size", mask_size(fit).into()));
+                        decls.push(("-webkit-mask-size", mask_size(fit).into()));
+                    } else if fit != "contain" {
+                        decls.push(("object-fit", fit.into()));
+                    }
+                }
+                if let Some(tint) = control.tint {
+                    let var = format!("--v{key}-tint");
+                    match self.fixed(tint, "the tint", at) {
+                        Fixed::Changes => {
+                            wires.push(Wire::Prop {
+                                entry: tint,
+                                prop: Prop::Var {
+                                    name: var.clone(),
+                                    token: VarToken::Color,
+                                },
+                            });
+                            decls.push(("background-color", format!("var({var})")));
+                        }
+                        fixed => decls.push(("background-color", fixed.color())),
+                    }
+                }
+                if el.tag == "img" && control.semantics.label.is_none() {
+                    el.attr("alt", "");
+                }
+            }
+            ControlKind::Plain | ControlKind::Shader => {}
+        }
+
+        if let Some(fixed) = self.bind(
+            wires,
+            control.text.color,
+            Prop::TextColor,
+            "the text color",
+            at,
+        ) {
+            decls.push(("color", fixed.color()));
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.text.soft_wrap,
+            Prop::SoftWrap,
+            "the wrapping",
+            at,
+        ) && fixed.truth()
+        {
+            decls.push(("white-space", "pre-wrap".into()));
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.node.visible,
+            Prop::Visible,
+            "whether it shows",
+            at,
+        ) && !fixed.truth()
+        {
+            el.style("display: none");
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.node.focusable,
+            Prop::Focusable,
+            "whether it takes focus",
+            at,
+        ) {
+            el.attr("tabindex", if fixed.truth() { "0" } else { "-1" });
+        }
+        let alt = el.tag == "img";
+        if let Some(fixed) = self.bind(
+            wires,
+            control.semantics.label,
+            Prop::Label { alt },
+            "the label",
+            at,
+        ) {
+            el.attr(if alt { "alt" } else { "aria-label" }, &fixed.text());
+        }
+        if let Some(fixed) = self.bind(wires, control.semantics.hint, Prop::Hint, "the hint", at) {
+            el.attr("aria-description", &fixed.text());
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.semantics.value,
+            Prop::Spoken,
+            "the spoken value",
+            at,
+        ) {
+            el.attr("aria-valuetext", &fixed.text());
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.semantics.hidden,
+            Prop::Hidden,
+            "whether it is hidden",
+            at,
+        ) && fixed.truth()
+        {
+            el.attr("aria-hidden", "true");
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.semantics.heading_level,
+            Prop::HeadingLevel,
+            "the heading level",
+            at,
+        ) {
+            el.attr("aria-level", &fixed.text());
+        }
+
+        self.look(control, key, at, own, el, decls, wires);
+        selected
+    }
+
+    /// A look value as CSS: written in place, or a custom property of the
+    /// element the script keeps current.
+    fn look_value(
+        &mut self,
+        wires: &mut Vec<Wire>,
+        entry: u32,
+        var: String,
+        token: VarToken,
+        at: TextRange,
+    ) -> String {
+        let what = match token {
+            VarToken::Color => "the background",
+            VarToken::Opacity => "the opacity",
+            VarToken::Transition(_) => "the transition",
+        };
+        match self.fixed(entry, what, at) {
+            Fixed::Changes => {
+                wires.push(Wire::Prop {
+                    entry,
+                    prop: Prop::Var {
+                        name: var.clone(),
+                        token,
+                    },
+                });
+                format!("var({var})")
+            }
+            Fixed::Value(v) => match token {
+                VarToken::Color => v
+                    .as_int()
+                    .map_or("transparent".to_owned(), |c| css::color(c as u32)),
+                VarToken::Opacity => css::number(v.as_float().unwrap_or(1.0).clamp(0.0, 1.0)),
+                VarToken::Transition(_) => String::new(),
+            },
+            Fixed::Theme(name) => format!("var({name})"),
+        }
+    }
+
+    /// The node's background and opacity, each its base value and the values
+    /// its styles' `when` blocks select, as rules of its own class; and how
+    /// they move.
+    #[allow(clippy::too_many_arguments)]
+    fn look(
+        &mut self,
+        control: &Control,
+        key: u32,
+        at: TextRange,
+        own: &str,
+        el: &mut Element,
+        decls: &mut Vec<(&'static str, String)>,
+        wires: &mut Vec<Wire>,
+    ) {
+        let look = control.look;
+        for (base, input, property, token) in [
+            (
+                look.background,
+                viso_view::ControlInput::Background,
+                "background-color",
+                VarToken::Color,
+            ),
+            (
+                look.opacity,
+                viso_view::ControlInput::Opacity,
+                "opacity",
+                VarToken::Opacity,
+            ),
+        ] {
+            if let Some(entry) = base {
+                let var = format!("--v{key}-{property}");
+                let value = self.look_value(wires, entry, var, token, at);
+                decls.push((property, value));
+            }
+            let arms: Vec<_> = control.arms.iter().filter(|a| a.input == input).collect();
+            // The first arm that holds wins: the rules are written last first,
+            // so an earlier one of equal specificity overrides the later.
+            for (index, arm) in arms.iter().enumerate().rev() {
+                let Some(selector) = self.selector(&arm.when, key, at, wires) else {
+                    continue;
+                };
+                let var = format!("--v{key}-{property}-{index}");
+                let value = self.look_value(wires, arm.entry, var, token, at);
+                self.out
+                    .sheet
+                    .rule(None, format!(".{own}{selector}"), &[(property, value)]);
+                el.own_class = true;
+            }
+        }
+        let mut moves = Vec::new();
+        let mut reduce = false;
+        for (entry, property) in [
+            (look.background_transition, "background-color"),
+            (look.opacity_transition, "opacity"),
+        ] {
+            let Some(entry) = entry else { continue };
+            match self.fixed(entry, "the transition", at) {
+                Fixed::Value(spec) => {
+                    if let Some((transition, instant)) = transition(property, &spec) {
+                        moves.push(transition);
+                        reduce |= instant;
+                    }
+                }
+                Fixed::Changes => {
+                    let var = format!("--v{key}-{property}-move");
+                    wires.push(Wire::Prop {
+                        entry,
+                        prop: Prop::Var {
+                            name: var.clone(),
+                            token: VarToken::Transition(property),
+                        },
+                    });
+                    moves.push(format!("var({var})"));
+                }
+                Fixed::Theme(..) => {}
+            }
+        }
+        if !moves.is_empty() {
+            decls.push(("transition", moves.join(", ")));
+            if reduce {
+                el.own_class = true;
+                self.out.sheet.rule(
+                    Some("@media (prefers-reduced-motion: reduce)"),
+                    format!(".{own}"),
+                    &[("transition", "none".into())],
+                );
+            }
+        }
+    }
+
+    /// The selector suffix of a style's `when`, `None` when it never holds.
+    fn selector(
+        &mut self,
+        when: &[When],
+        key: u32,
+        at: TextRange,
+        wires: &mut Vec<Wire>,
+    ) -> Option<String> {
+        // Each step is `Some(suffix)` when it may hold, `None` when it never
+        // does; an empty suffix always holds.
+        let mut stack: Vec<Option<String>> = Vec::new();
+        for step in when {
+            let next = match *step {
+                When::State(state) => Some(
+                    match state {
+                        viso_ui::Interaction::Hovered => ":hover",
+                        viso_ui::Interaction::Pressed => ":active",
+                        viso_ui::Interaction::Focused => ":focus",
+                        viso_ui::Interaction::FocusVisible => ":focus-visible",
+                    }
+                    .to_owned(),
+                ),
+                When::Entry(entry) => match self.fixed(entry, "the style's condition", at) {
+                    Fixed::Value(v) => (v.as_int().unwrap_or(0) != 0).then(String::new),
+                    Fixed::Theme(..) => Some(String::new()),
+                    Fixed::Changes => {
+                        let class = format!("v{key}-c{entry}");
+                        wires.push(Wire::Prop {
+                            entry,
+                            prop: Prop::Class(class.clone()),
+                        });
+                        Some(format!(".{class}"))
+                    }
+                },
+                When::Not => match stack.pop()? {
+                    Some(s) if s.is_empty() => None,
+                    Some(s) => Some(format!(":not({s})")),
+                    None => Some(String::new()),
+                },
+                When::And => {
+                    let (b, a) = (stack.pop()?, stack.pop()?);
+                    match (a, b) {
+                        (Some(a), Some(b)) => Some(a + &b),
+                        _ => None,
+                    }
+                }
+                When::Or => {
+                    let (b, a) = (stack.pop()?, stack.pop()?);
+                    match (a, b) {
+                        (Some(a), _) | (_, Some(a)) if a.is_empty() => Some(String::new()),
+                        (Some(a), Some(b)) => Some(format!(":is({a}, {b})")),
+                        (Some(a), None) | (None, Some(a)) => Some(a),
+                        (None, None) => None,
+                    }
+                }
+            };
+            stack.push(next);
+        }
+        stack.pop().flatten()
+    }
+
+    /// The url of the asset `id` shows, recorded for the export to copy.
+    fn asset(&mut self, id: u64) -> String {
+        let path = self
+            .uses
+            .iter()
+            .find(|u| u.id == ResourceId(id))
+            .map(|u| u.path.clone());
+        match path {
+            Some(path) => {
+                self.out.assets.insert(id, path.clone());
+                format!("assets/{}", url_path(&path))
+            }
+            None => String::new(),
+        }
+    }
+
+    /// Every asset the view names, which a changing source may show.
+    pub(super) fn all_assets(&mut self) {
+        for asset in self.uses {
+            self.out.assets.insert(asset.id.0, asset.path.clone());
+        }
+    }
+
+    /// Lowers a region among the children of a node laid out as `parent`.
+    fn region(
+        &mut self,
+        item: &UiItem,
+        parent: Parent,
+        item_of: Option<(Role, Option<bool>)>,
+        depth: u32,
+        out: &mut Content,
+    ) {
+        let origin = match item {
+            UiItem::If(r) => r.origin,
+            UiItem::For(r) => r.origin,
+            UiItem::Match(r) => r.origin,
+            UiItem::Node(_) => unreachable!("a node is not a region"),
+        };
+        if self.static_only {
+            let what = match item {
+                UiItem::If(_) => "an `if`",
+                UiItem::For(_) => "a `for`",
+                _ => "a `match`",
+            };
+            self.need(
+                Need::Dynamic,
+                origin,
+                format!("{what} decides what the page shows while it is open"),
+                vec!["a page without JavaScript shows one content for good".to_owned()],
+            );
+            self.skip(item);
+            return;
+        }
+        let Some(layout) = self.eval.as_deref().map(|e| e.layout) else {
+            self.skip(item);
+            return;
+        };
+        let entry = |at: Option<TextRange>, instance: u32| {
+            at.and_then(|at| {
+                layout.handler(Site {
+                    instance,
+                    at,
+                    part: 0,
+                })
+            })
+        };
+        let (kind, inner) = match item {
+            UiItem::If(r) => (
+                entry(Some(r.origin), r.instance).map(|select| RegionKind::If { select }),
+                depth,
+            ),
+            UiItem::Match(r) => (
+                entry(r.scrutinee, r.instance)
+                    .zip(entry(Some(r.origin), r.instance))
+                    .map(|(scrutinee, select)| RegionKind::Match { scrutinee, select }),
+                depth + 1,
+            ),
+            UiItem::For(r) => (
+                entry(r.iterable, r.instance).map(|items| RegionKind::For {
+                    items,
+                    key: r.key.and_then(|k| entry(Some(k), r.instance)),
+                }),
+                depth + 1,
+            ),
+            UiItem::Node(_) => unreachable!("a node is not a region"),
+        };
+        let Some(kind) = kind else {
+            self.need(
+                Need::Unsupported,
+                origin,
+                "internal: the region's entries were not lowered",
+                Vec::new(),
+            );
+            self.skip(item);
+            return;
+        };
+        for entry in match kind {
+            RegionKind::If { select } => vec![select],
+            RegionKind::Match { scrutinee, select } => vec![scrutinee, select],
+            RegionKind::For { items, key } => [Some(items), key].into_iter().flatten().collect(),
+        } {
+            if let Some(eval) = self.eval.as_deref() {
+                let (_, env) = eval.deps(entry);
+                if let Some(field) = env.first() {
+                    let at = self.site(entry).unwrap_or(origin);
+                    self.need(
+                        Need::Unsupported,
+                        at,
+                        format!("the region reads `env`'s {field:?}, which an HTML export does not follow"),
+                        Vec::new(),
+                    );
+                }
+            }
+        }
+        let index = self.out.regions.len() as u32;
+        self.out.regions.push(Region {
+            kind,
+            arms: Vec::new(),
+            preserve: Vec::new(),
+        });
+        let mut arms = Vec::new();
+        let mut preserve = Vec::new();
+        let arm_items: Vec<(&[UiItem], bool)> = match item {
+            UiItem::If(r) => r
+                .arms
+                .iter()
+                .map(|a| (a.items.as_slice(), a.preserve.is_some()))
+                .collect(),
+            UiItem::Match(r) => r.arms.iter().map(|a| (a.items.as_slice(), false)).collect(),
+            UiItem::For(r) => vec![(r.body.as_slice(), false)],
+            UiItem::Node(_) => unreachable!("a node is not a region"),
+        };
+        for (items, keep) in arm_items {
+            let mut content = Content::default();
+            for item in items {
+                match item {
+                    UiItem::Node(n) => {
+                        let item = item_of.map(|(role, _)| (role, None));
+                        self.node(n, parent, item, inner, true, &mut content);
+                    }
+                    region => self.region(region, parent, item_of, inner, &mut content),
+                }
+            }
+            arms.push(content);
+            preserve.push(keep);
+        }
+        // The anchor holds one template per arm; the script clones the arm
+        // it mounts in front of it.
+        out.html.push_str("<template data-v>");
+        for arm in &arms {
+            out.html.push_str("<template>");
+            out.html.push_str(&arm.html);
+            out.html.push_str("</template>");
+        }
+        out.html.push_str("</template>");
+        let region = &mut self.out.regions[index as usize];
+        region.arms = arms;
+        region.preserve = preserve;
+        out.marks.push(Mark {
+            wires: vec![Wire::Region(index)],
+        });
+    }
+}
+
+/// What an entry shows where it is written.
+enum Fixed {
+    /// One value for good.
+    Value(Value),
+    /// The theme field its custom property holds.
+    Theme(String),
+    /// A value the script keeps current.
+    Changes,
+}
+
+impl Fixed {
+    fn text(&self) -> String {
+        match self {
+            Fixed::Value(v) => text_of(v),
+            _ => String::new(),
+        }
+    }
+
+    fn truth(&self) -> bool {
+        matches!(self, Fixed::Value(v) if v.as_int().is_some_and(|i| i != 0))
+    }
+
+    fn int(&self) -> Option<i64> {
+        match self {
+            Fixed::Value(v) => v.as_int(),
+            _ => None,
+        }
+    }
+
+    fn color(&self) -> String {
+        match self {
+            Fixed::Value(v) => v
+                .as_int()
+                .map_or("transparent".to_owned(), |c| css::color(c as u32)),
+            Fixed::Theme(name) => format!("var({name})"),
+            Fixed::Changes => String::new(),
+        }
+    }
+
+    fn resource(&self) -> Option<u64> {
+        match self {
+            Fixed::Value(Value::Agg(asset)) => {
+                asset.fields.first()?.as_int().map(i64::cast_unsigned)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A value's text where the page shows it as text.
+fn text_of(v: &Value) -> String {
+    match v {
+        Value::Str(s) => s.as_str().to_owned(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// One side of a node's box.
+#[derive(Debug, Clone, PartialEq)]
+enum Extent {
+    /// A CSS extent: fixed, relative or from the environment.
+    Set(String),
+    Fit,
+    Fill(f32),
+}
+
+impl Extent {
+    fn of(length: LengthIr, terms: Option<String>) -> Extent {
+        if let Some(terms) = terms {
+            return Extent::Set(terms);
+        }
+        match length {
+            LengthIr::Fill { weight } => Extent::Fill(weight.max(0.0)),
+            LengthIr::Fit => Extent::Fit,
+            length => Extent::Set(css::extent(length).unwrap_or_default()),
+        }
+    }
+}
+
+fn min_of(name: &str) -> &'static str {
+    if name == "width" {
+        "min-width"
+    } else {
+        "min-height"
+    }
+}
+
+/// A container's padding: plain dp physically, or terms that follow the
+/// layout direction; a safe area adds the display's insets.
+fn padding(node: &UiNode, decls: &mut Vec<(&'static str, String)>, device: &mut bool) {
+    let safe = node.style.avoid == Some(crate::ir::ui_ir::Avoid::SafeArea);
+    if let Some(edges) = node.style.lengths().padding {
+        for (name, terms, inset) in [
+            ("padding-top", edges.top, "top"),
+            ("padding-inline-end", edges.end, "right"),
+            ("padding-bottom", edges.bottom, "bottom"),
+            ("padding-inline-start", edges.start, "left"),
+        ] {
+            let value = css::terms(terms, device);
+            decls.push((name, safe_inset(value, inset, safe)));
+        }
+        return;
+    }
+    let InsetIr {
+        left,
+        top,
+        right,
+        bottom,
+    } = node.style.padding.unwrap_or_default();
+    if safe {
+        for (name, v, inset) in [
+            ("padding-top", top, "top"),
+            ("padding-right", right, "right"),
+            ("padding-bottom", bottom, "bottom"),
+            ("padding-left", left, "left"),
+        ] {
+            decls.push((name, safe_inset(css::px(f64::from(v)), inset, true)));
+        }
+    } else if [left, top, right, bottom].iter().any(|v| *v != 0.0) {
+        let [t, r, b, l] = [top, right, bottom, left].map(|v| css::px(f64::from(v)));
+        let value = if t == b && r == l {
+            if t == r { t } else { format!("{t} {r}") }
+        } else {
+            format!("{t} {r} {b} {l}")
+        };
+        decls.push(("padding", value));
+    }
+}
+
+fn safe_inset(value: String, inset: &str, safe: bool) -> String {
+    if !safe {
+        value
+    } else if value == "0" {
+        format!("env(safe-area-inset-{inset}, 0px)")
+    } else {
+        format!("calc({value} + env(safe-area-inset-{inset}, 0px))")
+    }
+}
+
+/// The CSS `transition` of `property` by a `Transition` value, and whether a
+/// reader who asks for reduced motion sees it instantly.
+fn transition(property: &str, spec: &Value) -> Option<(String, bool)> {
+    let Value::Agg(spec) = spec else {
+        return None;
+    };
+    let time = |at: usize| spec.fields.get(at).and_then(Value::as_float).unwrap_or(0.0);
+    let tag = |at: usize| spec.fields.get(at).and_then(Value::as_int).unwrap_or(0);
+    Some((
+        format!(
+            "{property} {} {} {}",
+            css::seconds(time(0)),
+            css::easing(tag(2)),
+            css::seconds(time(1))
+        ),
+        tag(3) == 0,
+    ))
+}
+
+/// An `ImageFit` variant as `object-fit`.
+pub(super) fn fit(tag: i64) -> &'static str {
+    match tag {
+        1 => "cover",
+        2 => "fill",
+        _ => "contain",
+    }
+}
+
+pub(super) fn mask_size(fit: &str) -> &'static str {
+    match fit {
+        "cover" => "cover",
+        "fill" => "100% 100%",
+        _ => "contain",
+    }
+}
+
+/// The `role` attribute of `role` on a `tag` element of widget `widget`,
+/// `None` where the element says it already.
+fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
+    Some(match (role, tag, widget) {
+        (Role::Button, "button", _)
+        | (Role::CheckBox, "input", "CheckBox")
+        | (Role::CheckBox, "input", "Toggle")
+        | (Role::Slider, "input", _)
+        | (Role::TextField, "input", _)
+        | (Role::Image, "img", _)
+        | (Role::Navigation, "nav", _)
+        | (Role::Label, _, _) => return None,
+        (Role::Group, ..) => "group",
+        (Role::Button, ..) => "button",
+        (Role::CheckBox, ..) => "checkbox",
+        (Role::Slider, ..) => "slider",
+        (Role::Radio, ..) => "radio",
+        (Role::Image, ..) => "img",
+        (Role::TextField, ..) => "textbox",
+        (Role::Tab, ..) => "tab",
+        (Role::TabList, ..) => "tablist",
+        (Role::Navigation, ..) => "navigation",
+        (Role::Dialog, ..) => "dialog",
+        (Role::Status, ..) => "status",
+        (Role::Region, ..) => "region",
+        (Role::Tree, ..) => "tree",
+        (Role::TreeItem, ..) => "treeitem",
+        (Role::Heading, ..) => "heading",
+        (Role::List, ..) => "list",
+        (Role::ListItem, ..) => "listitem",
+    })
+}
+
+/// An element as it is opened and closed.
+#[derive(Debug, Default)]
+struct Element {
+    tag: &'static str,
+    id: Option<&'static str>,
+    base: &'static str,
+    classes: Vec<String>,
+    attrs: Vec<(&'static str, String)>,
+    style: Vec<String>,
+    text: Option<String>,
+    /// Whether the node has rules of its own class.
+    own_class: bool,
+    /// Whether the script wires it.
+    marked: bool,
+}
+
+impl Element {
+    fn attr(&mut self, name: &'static str, value: &str) {
+        match self.attrs.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, v)) => *v = value.to_owned(),
+            None => self.attrs.push((name, value.to_owned())),
+        }
+    }
+
+    fn style(&mut self, declaration: &str) {
+        self.style.push(declaration.to_owned());
+    }
+
+    fn open(&self, out: &mut String) {
+        out.push('<');
+        out.push_str(self.tag);
+        if let Some(id) = self.id {
+            let _ = write!(out, " id=\"{id}\"");
+        }
+        out.push_str(" class=\"");
+        out.push_str(self.base);
+        for class in &self.classes {
+            out.push(' ');
+            out.push_str(class);
+        }
+        out.push('"');
+        for (name, value) in &self.attrs {
+            out.push(' ');
+            out.push_str(name);
+            if !(value.is_empty() && matches!(*name, "checked")) {
+                out.push_str("=\"");
+                escape_attr(value, out);
+                out.push('"');
+            }
+        }
+        if !self.style.is_empty() {
+            out.push_str(" style=\"");
+            escape_attr(&self.style.join("; "), out);
+            out.push('"');
+        }
+        if self.marked {
+            out.push_str(" data-v");
+        }
+        out.push('>');
+    }
+
+    fn close(&self, out: &mut String) {
+        if self.tag != "input" && self.tag != "img" {
+            let _ = write!(out, "</{}>", self.tag);
+        }
+    }
+}
+
+pub(super) fn escape_text(text: &str, out: &mut String) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c => out.push(c),
+        }
+    }
+}
+
+pub(super) fn escape_attr(text: &str, out: &mut String) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            c => out.push(c),
+        }
+    }
+}
+
+/// An asset path as a relative URL: each segment percent-encoded.
+pub(super) fn url_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}

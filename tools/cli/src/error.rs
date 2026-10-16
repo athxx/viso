@@ -312,6 +312,42 @@ codes! {
         fix: "Read the step's message; it names the tool or file that failed.",
         commands: [],
     }
+    EXPORT_HTML_DYNAMIC_REQUIRED = DIAGNOSTICS {
+        summary: "`--static` was asked for, but the view changes while it runs.",
+        explanation: "A static export has no JavaScript, so nothing in it can change: a binding that reads state or input, a handler, an `if`, `for` or `match`, a control the user moves. The diagnostic points at the first such place in each node.",
+        fix: "Drop `--static` to export the changing parts as vanilla JavaScript, or make the value constant.",
+        commands: ["viso export html"],
+    }
+    EXPORT_HTML_GPU_ONLY_NODE = DIAGNOSTICS {
+        summary: "A node only the Viso renderer can draw has no HTML form.",
+        explanation: "A `ShaderView` paints with a shader on the GPU; an HTML export has no element that runs it, and dropping it would change what the page shows.",
+        fix: "Build for the browser with the Viso renderer, `viso build web-gpu`, or with DOM and GPU islands, `viso build web-hybrid`; or rewrite the node with widgets HTML has.",
+        commands: ["viso build web-gpu", "viso build web-hybrid"],
+    }
+    EXPORT_UNSUPPORTED = DIAGNOSTICS {
+        summary: "Part of the view has no form the exporter writes.",
+        explanation: "The exporter lowers what it can say as HTML, CSS and vanilla JavaScript with the same meaning; this construct (a game's systems, a task, an effect, a native call, a Rust component) it cannot, and it never drops one silently.",
+        fix: "Build for the browser instead, `viso build web-gpu`, or move the construct out of the exported view.",
+        commands: ["viso build web-gpu"],
+    }
+    EXPORT_NO_VIEW = DIAGNOSTICS {
+        summary: "The project has no view to export.",
+        explanation: "An export starts from the component it is named, else from the one `src/app.vs` exports, the app's own; the project declares no such component.",
+        fix: "Name a component the project declares, `Name` or `module::Name`, or add `src/app.vs` as `viso new` starts a project.",
+        commands: ["viso new"],
+    }
+    EXPORT_CONFLICT = PACKAGE {
+        summary: "The export directory holds files the export did not write, or that were edited since.",
+        explanation: "An export replaces its directory whole, and only while every file there is one it wrote, unchanged, as its `.viso-generated.json` records. A file someone added or edited would be lost.",
+        fix: "Move the edits out, export into another directory with `--out`, or pass `--force` to replace them.",
+        commands: ["viso export html --force"],
+    }
+    EXPORT_WRITE = PACKAGE {
+        summary: "The export could not be written.",
+        explanation: "Writing the staging tree, or putting it in place of the export directory, failed; the directory is as it was.",
+        fix: "Read the message; it names the file and the system's error.",
+        commands: [],
+    }
     RUN_APP_FAILED = RUNTIME {
         summary: "The app could not be launched, crashed, or exited with a failure.",
         explanation: "The app started by `viso run` did not start, crashed, or exited with a nonzero status; its own output precedes this diagnostic.",
@@ -540,6 +576,7 @@ mod tests {
                 "ENV" => &[ENVIRONMENT],
                 "BUILD" => &[BUILD],
                 "PACKAGE" => &[PACKAGE],
+                "EXPORT" => &[DIAGNOSTICS, PACKAGE],
                 "RUN" => &[RUNTIME],
                 "TEST" | "EXPLAIN" => &[DIAGNOSTICS],
                 "DUMP" => &[USAGE],
