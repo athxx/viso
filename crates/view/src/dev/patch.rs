@@ -108,6 +108,32 @@ impl ReloadPlan {
     }
 }
 
+impl ReloadPlan {
+    /// Whether what the plan names in the candidate is in `package`: each
+    /// carry's static node, and each built subtree, which is the package's own
+    /// nodes at its ordinals. What it names in the last-good tree the runtime
+    /// resolves against the tree it holds.
+    fn fits(&self, package: &ViewPackage) -> bool {
+        let nodes = &package.ui.nodes;
+        let carried = self.nodes.iter().all(|carry| match carry.to {
+            NodeRef::Static(index) => (index as usize) < nodes.len(),
+            NodeRef::Region { .. } => true,
+        });
+        carried
+            && self.structural.iter().all(|op| match op {
+                StructuralOp::Remove { .. } => true,
+                StructuralOp::Replace { start, subtree, .. }
+                | StructuralOp::Insert { start, subtree, .. } => {
+                    let start = *start as usize;
+                    start
+                        .checked_add(subtree.len())
+                        .and_then(|end| nodes.get(start..end))
+                        .is_some_and(|built| built == subtree.as_slice())
+                }
+            })
+    }
+}
+
 /// A node of a view's template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeRef {
@@ -322,10 +348,16 @@ pub(super) fn write_ui(enc: &mut Encoder, ui: &UiPatch) {
 
 pub(super) fn read_ui(dec: &mut Decoder<'_>) -> Result<UiPatch, WireError> {
     let views = read_list(dec, MAX_FILES, "patched views", |dec| {
+        let file = read_file(dec)?;
+        let package = ViewPackage::decode(dec)?;
+        let plan = read_plan(dec)?;
+        if !plan.fits(&package) {
+            return Err(malformed(dec));
+        }
         Ok(ViewPatch {
-            file: read_file(dec)?,
-            package: ViewPackage::decode(dec)?,
-            plan: read_plan(dec)?,
+            file,
+            package,
+            plan,
         })
     })?;
     Ok(UiPatch { views })

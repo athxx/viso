@@ -2210,6 +2210,20 @@ mod tests {
             child_count: 0,
         };
 
+        let flex = |child_count| AotNode {
+            kind: AotNodeKind::Flex,
+            style: AotStyle::default(),
+            child_count,
+        };
+        // The candidate the plan builds into: a root over a leaf, the leaf
+        // replacing node 1, and the inserted column with its leaf.
+        let package = ViewPackage {
+            ui: viso_ui::aot::AotPackage {
+                nodes: vec![flex(3), leaf.clone(), leaf.clone(), flex(1), leaf.clone()],
+                edges: Vec::new(),
+            },
+            ..ViewPackage::default()
+        };
         let plan = ReloadPlan {
             preserving: false,
             structural: vec![
@@ -2225,14 +2239,7 @@ mod tests {
                     parent: NodeRef::Static(0),
                     before: Some(NodeRef::Static(1)),
                     start: 3,
-                    subtree: vec![
-                        AotNode {
-                            kind: AotNodeKind::Flex,
-                            style: AotStyle::default(),
-                            child_count: 1,
-                        },
-                        leaf,
-                    ],
+                    subtree: vec![flex(1), leaf],
                 },
             ],
             nodes: vec![
@@ -2251,7 +2258,7 @@ mod tests {
                         arm: 0,
                         item: 0,
                     },
-                    to: NodeRef::Static(u32::MAX),
+                    to: NodeRef::Static(4),
                     carries: MigratableState::NONE,
                 },
             ],
@@ -2313,7 +2320,7 @@ mod tests {
             views: vec![
                 ViewPatch {
                     file: FileId(0),
-                    package: ViewPackage::default(),
+                    package,
                     plan,
                 },
                 ViewPatch {
@@ -3118,6 +3125,32 @@ mod tests {
                 what: "node carries"
             })
         );
+        // A plan naming candidate nodes its package does not hold: a carry
+        // past its nodes, a subtree that is not its nodes at its ordinals.
+        for misfit in [
+            |plan: &mut ReloadPlan| plan.nodes[1].to = NodeRef::Static(5),
+            |plan: &mut ReloadPlan| {
+                if let StructuralOp::Insert { start, .. } = &mut plan.structural[2] {
+                    *start = 4;
+                }
+            },
+            |plan: &mut ReloadPlan| {
+                if let StructuralOp::Replace { start, .. } = &mut plan.structural[1] {
+                    *start = 3;
+                }
+            },
+        ] {
+            let mut ui = ui();
+            misfit(&mut ui.views[0].plan);
+            let patch = HostMessage::Patch(Box::new(PatchBundle {
+                sections: vec![PatchSection::Ui(ui)],
+                ..patch(3, 4)
+            }));
+            assert!(matches!(
+                HostMessage::from_frame(&encode(&patch)),
+                Err(WireError::Malformed(_))
+            ));
+        }
         // A state's declaration range that ends before it starts.
         let mut ui = ui();
         ui.views[0].plan.states[1]

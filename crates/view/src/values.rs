@@ -76,6 +76,8 @@ pub fn mount_values(
                 .find(|before| before.node == *node && before.control.kind == control.kind)
             {
                 shown.shows = before.shows.clone();
+                shown.program = before.program.clone();
+                shown.font_size = before.font_size;
                 shown.seeded = true;
             }
             shown

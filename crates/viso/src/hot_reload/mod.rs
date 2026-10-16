@@ -2392,9 +2392,7 @@ mod tests {
         let (mut session, mut host, mut edits) = session(&mut ws, COUNTER);
         let (_, cell) = session.views[0].cells[0];
         ws.states.set(cell, StateValue::Int(5));
-        let mut changed = Vec::new();
-        ws.states.take_pending(&mut changed);
-        ws.store.flush_state_transactions(&changed, &ws.bindings);
+        settle(&mut ws);
         ws.relayout_and_paint();
         let root = ws.root.unwrap();
         let nodes = subtree(&ws.store, root);
@@ -2434,7 +2432,8 @@ mod tests {
         );
         ws.relayout_and_paint();
 
-        // A label edit touches its own text node.
+        // A label edit touches its own text node: its accessible name moves,
+        // its run reshapes, nothing re-measures.
         let labelled = |label: &str| {
             edited.replace(
                 "Text { visible: enabled; }",
@@ -2447,11 +2446,22 @@ mod tests {
         ws.store.take_text_requests(&mut requests);
         ws.store.clear_dirty();
         let ack = accept(&mut session, &mut host, &mut ws, &mut edits, &labelled("B"));
-        assert!(dirty(&ws).iter().all(|d| d.is_empty()), "{:?}", dirty(&ws));
-        assert!(
-            ack.files[0].counts.dirty.is_empty(),
-            "the text request carries the reshape, not a dirty mark: {:?}",
-            ack.files[0].counts.dirty
+        assert_eq!(
+            dirty(&ws),
+            [
+                DirtyClass::SEMANTICS,
+                DirtyClass::EMPTY,
+                DirtyClass::SEMANTICS
+            ],
+            "the name reaches the semantics tree up the label's ancestry"
+        );
+        assert_eq!(
+            ack.files[0].counts.dirty,
+            viso_view::dev::wire::DirtyCounts {
+                semantics: 2,
+                ..Default::default()
+            },
+            "the text request carries the reshape; the ACK counts the nodes the tree shows dirty"
         );
         requests.clear();
         ws.store.take_text_requests(&mut requests);
@@ -2533,9 +2543,21 @@ mod tests {
                 &mut chain,
             );
         }
-        let mut changed = Vec::new();
-        ws.states.take_pending(&mut changed);
-        ws.store.flush_state_transactions(&changed, &ws.bindings);
+        settle(ws);
+    }
+
+    /// Settles the pending writes of `ws` as a frame does.
+    fn settle(ws: &mut WindowState) {
+        viso_ui::settle_states(
+            &mut ws.store,
+            &mut ws.states,
+            &mut ws.bindings,
+            &mut ws.computeds,
+            &mut ws.projectors,
+            &mut ws.effects,
+            &mut ws.changed,
+        )
+        .expect("the writes settle");
     }
 
     /// The VM value of the logger's `log`, for the view `at`.
