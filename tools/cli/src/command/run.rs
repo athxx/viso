@@ -166,36 +166,10 @@ fn misplaced(args: &RunArgs, platform: Option<Platform>, target: Target) -> Opti
     None
 }
 
-/// Whether a variable's name says its value is a secret, which is then
-/// never printed.
-fn secret(name: &str) -> bool {
-    let name = name.to_ascii_uppercase();
-    [
-        "TOKEN",
-        "SECRET",
-        "PASSWORD",
-        "PASSWD",
-        "KEY",
-        "CREDENTIAL",
-        "AUTH",
-        "PRIVATE",
-        "COOKIE",
-        "SESSION",
-    ]
-    .iter()
-    .any(|word| name.contains(word))
-}
-
 /// The `--env` variables as `--verbose` shows them, secret values hidden.
 fn shown(env: &[(String, String)]) -> String {
     env.iter()
-        .map(|(name, value)| {
-            if secret(name) {
-                format!("{name}=<hidden>")
-            } else {
-                format!("{name}={value}")
-            }
-        })
+        .map(|(name, value)| crate::secret::pair(name, value))
         .collect::<Vec<_>>()
         .join(" ")
 }

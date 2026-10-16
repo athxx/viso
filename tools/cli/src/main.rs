@@ -18,6 +18,7 @@ mod error;
 mod help;
 mod interrupt;
 mod output;
+mod secret;
 mod toolchain;
 
 use std::process::ExitCode;

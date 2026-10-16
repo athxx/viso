@@ -98,7 +98,7 @@ impl BuildCommand {
         let mut line = format!("VISO_PROFILE={} {}", self.profile, self.cargo.display());
         for arg in self.args(false) {
             line.push(' ');
-            line.push_str(&arg.to_string_lossy());
+            line.push_str(&crate::secret::argument(&arg.to_string_lossy()));
         }
         if let Some(dir) = &self.target_dir {
             line.push_str(&format!(" (CARGO_TARGET_DIR={})", dir.display()));
