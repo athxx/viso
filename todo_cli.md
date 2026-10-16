@@ -800,15 +800,21 @@ and traced from the CLI and from Studio over the same services.
       the dev runtime transport; tree, props, layout, styles, events; `query` works
       against it (C2.7).
 - [ ] Inspector capabilities negotiated (§24.2): what a runtime reports it supports.
-- [ ] `profile [<target>]` (§25): frame time, CPU/GPU split, layout/paint/reactive
-      counts, allocations, draw calls; `profile` events; `--frames <n>`,
-      `--duration`.
-- [ ] Trace output (§25.3): `--output trace.ende` (Ende binary trace), `--chrome`
-      (Chrome trace JSON); traces under `target/viso/traces/`.
-- [ ] `run --profile-frame` overlay and per-frame `profile` events.
+- [x] `profile [<target>]` (§25): frame time, per-span CPU time, GPU time,
+      layout/paint/reactive/text/upload counts, draw calls; `profile` events;
+      `--frames <n>`, `--seconds <s>`; dev session and `headless [--scenario]`.
+- [x] Trace output (§25.3): `--output trace.ende` (Ende binary trace), `--chrome`
+      (Chrome trace JSON); traces under `target/viso/traces/` (newest 20 kept).
+- [x] `run --profile-frame` HUD and per-frame `profile` events.
+- [ ] Allocation counts: a counting allocator the app opts into, reported as
+      `allocations` (always `unavailable` today).
+- [ ] GPU time on Vulkan, D3D12 and WebGPU (timestamp queries); Metal and the
+      headless raster report it today.
+- [ ] HUD checked on screen (golden of a window with `--profile-frame`); only its
+      layout is tested.
 - [ ] `run --inspect`: the session opens the inspector channel to the app it
       launches, the same one `inspect --attach` uses.
-- [ ] Device profiles for mobile performance (simulator vs emulator caveats reported
+- [x] Device profiles for mobile performance (simulator vs emulator caveats reported
       in the result).
 - [ ] `viso studio [--target]` (§26): launches Studio against the project, sharing the
       dev session service (blocked until Studio exists; the dev session moves into a
@@ -822,8 +828,8 @@ and traced from the CLI and from Studio over the same services.
 
 - [x] Event envelope and stream; `diagnostic`, `progress`, `device`, `server`, `dev`,
       `runtime`, `log`, `trace`, `test`, `result`, `artifact`, `summary`.
-- [ ] Remaining event types: `profile` (C6), `doctor_check`
-      (C1.3); every payload documented in `Viso_CLI.md` with an example.
+- [ ] Remaining event types: `doctor_check`
+      (C1.3) (`profile` done in C6); every payload documented in `Viso_CLI.md` with an example.
 - [ ] Every command except `lsp`, `studio`, `completion` supports `--json`; a test
       runs each command with `--json` and checks the stream (C7.6).
 - [x] stdout carries only events under `--json` (child output becomes `log`),

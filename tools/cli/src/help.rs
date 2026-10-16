@@ -20,7 +20,10 @@ const GROUPS: &[(&str, &[&str])] = &[
         "LANGUAGE",
         &["fmt", "check", "schema", "explain", "dump", "lsp"],
     ),
-    ("TEST / DEBUG", &["test", "snapshot", "inspect", "game"]),
+    (
+        "TEST / DEBUG",
+        &["test", "snapshot", "inspect", "profile", "game"],
+    ),
     ("DELIVERY", &["package", "export"]),
     ("MAINTENANCE", &["clean", "completion"]),
 ];
@@ -438,6 +441,23 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "profile",
+        &[
+            (
+                "viso profile",
+                "five seconds of the `viso run` app's frames",
+            ),
+            (
+                "viso profile ios --device iphone --frames 600 --chrome trace.json",
+                "600 frames on the simulator, also as a Chrome trace",
+            ),
+            (
+                "viso profile headless --scenario scroll --json",
+                "every frame of the `scroll` scenario, headless, as JSON events",
+            ),
+        ],
+    ),
+    (
         "ios",
         &[
             ("viso ios list", "the Simulator runtimes and the default"),
@@ -781,6 +801,15 @@ const NOTES: &[(&str, &str)] = &[
          session exits 3.",
     ),
     (
+        "profile",
+        "Each frame is timed span by span on the UI thread (input, flush, text, layout,\n\
+         style, paint, semantics, upload, submit), the GPU's time where the backend\n\
+         measures it, and its work counted. Metrics are p50, p95 and max over the frames;\n\
+         an idle app draws none. The trace is kept in Ende under `target/viso/traces/`\n\
+         (the newest 20) unless `--output` names a file. No session exits 3; an app that\n\
+         leaves while profiled exits 5.",
+    ),
+    (
         "ios",
         "Profiles are kept in `~/.viso/` (`$VISO_HOME`); `viso run ios --device <id>`\n\
          runs on one. Every `viso ios` command needs macOS and Xcode.",
@@ -796,7 +825,8 @@ const NOTES: &[(&str, &str)] = &[
         "`ios` and `android` run on a simulator or emulator profile: see\n\
          `viso ios simulator list` and `viso android emulator list`. The web targets\n\
          build for a browser and serve it as `viso serve` does. The app's own arguments\n\
-         follow `--`.",
+         follow `--`. `--profile-frame` draws the frame time over the app's windows and\n\
+         reports its frames as `viso profile` measures them.",
     ),
     (
         "serve",

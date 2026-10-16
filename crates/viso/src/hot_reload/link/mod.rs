@@ -82,13 +82,23 @@ pub(crate) enum Incoming {
     /// how long its frame and assets took to decode.
     Patch(Box<PatchBundle>, Vec<LoadedAsset>, Duration),
     /// The host's verdict on a rejected edit, or its clearing.
-    Failure { file: FileId, lines: Vec<String> },
+    Failure {
+        file: FileId,
+        lines: Vec<String>,
+    },
     /// A question about a running game.
     Game(GameQuery),
     /// The host asks for the app's snapshot.
     Snapshot,
     /// The host asks for the app's census, for its question `id`.
     Inspect(u32),
+    /// The host starts a capture of the app's frames, the frame time drawn
+    /// over its windows with `hud`, or ends one.
+    Profile {
+        id: u32,
+        hud: bool,
+    },
+    ProfileEnd(u32),
     /// A scenario to play, its text and source table as their blobs
     /// arrived, `None` when one did not arrive whole.
     Scenario {
@@ -206,6 +216,8 @@ fn host_frame(body: &[u8], blobs: &mut Blobs) -> Frame {
         Ok(HostMessage::Game(query)) => Incoming::Game(query),
         Ok(HostMessage::Snapshot) => Incoming::Snapshot,
         Ok(HostMessage::Inspect { id }) => Incoming::Inspect(id),
+        Ok(HostMessage::Profile { id, hud }) => Incoming::Profile { id, hud },
+        Ok(HostMessage::ProfileEnd { id }) => Incoming::ProfileEnd(id),
         Ok(HostMessage::Scenario {
             id,
             script,

@@ -59,6 +59,8 @@ fn every_command_keeps_the_event_contract() {
         &["build", "--release", "--profile", "dev"],
         &["export", "html", "--static"],
         &["export", "solid"],
+        &["profile"],
+        &["profile", "headless", "--seconds", "1"],
         &["clean"],
     ];
     let mut codes = Vec::new();

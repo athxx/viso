@@ -35,6 +35,7 @@ pub mod inspect;
 mod mounts;
 mod package;
 mod persistence;
+pub mod profile;
 mod regions;
 mod resources;
 mod route;

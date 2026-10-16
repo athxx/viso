@@ -145,6 +145,9 @@ pub struct HeadlessRaster {
     current_epoch: Epoch,
     /// Scratch reused across `begin_frame` drains so reclamation allocates nothing.
     reclaim_scratch: Vec<Retired>,
+    /// While a profiler times frames, the raster time of each frame encoded
+    /// since it last asked: the CPU stands in for the GPU here.
+    timed: Option<Vec<(u64, u64)>>,
 }
 
 impl Default for HeadlessRaster {
@@ -175,6 +178,7 @@ impl HeadlessRaster {
             fence: Fence::new(),
             current_epoch: Epoch::START,
             reclaim_scratch: Vec::new(),
+            timed: None,
         }
     }
 
@@ -500,8 +504,18 @@ impl GpuBackend for HeadlessRaster {
     }
 
     fn encode(&mut self, list: &DrawList<'_>) {
+        #[cfg(not(target_family = "wasm"))]
+        let started = self.timed.is_some().then(std::time::Instant::now);
         for pass in list.passes {
             self.encode_pass(pass, &list.commands[pass.command_range()]);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if let (Some(started), Some(timed)) = (started, &mut self.timed) {
+            let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            match timed.last_mut() {
+                Some((epoch, sum)) if *epoch == self.current_epoch.0 => *sum += nanos,
+                _ => timed.push((self.current_epoch.0, nanos)),
+            }
         }
     }
 
@@ -526,6 +540,22 @@ impl GpuBackend for HeadlessRaster {
 
     fn caps(&self) -> &Caps {
         &self.caps
+    }
+
+    fn time_frames(&mut self, on: bool) {
+        if on != self.timed.is_some() {
+            self.timed = on.then(Vec::new);
+        }
+    }
+
+    fn frame_epoch(&self) -> u64 {
+        self.current_epoch.0
+    }
+
+    fn finished_frame_times(&mut self, out: &mut Vec<(u64, u64)>) {
+        if let Some(timed) = &mut self.timed {
+            out.append(timed);
+        }
     }
 
     fn surface_format(&self, surface: SurfaceId) -> TextureFormat {

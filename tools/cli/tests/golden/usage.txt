@@ -41,6 +41,7 @@ TEST / DEBUG
   test        Run the project's tests: unit, UI, game
   snapshot    Take the snapshots UI scenarios take, and hold them to their goldens
   inspect     Inspect what the running app shows: its nodes, their boxes, semantics and source
+  profile     Sample the frames the running app draws: their time, phase by phase, and the work they count
   game        Read a state of, or record input from, the game `viso run` is playing
 
 DELIVERY

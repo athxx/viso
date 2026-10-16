@@ -34,6 +34,7 @@ TEST / DEBUG
   test        Run the project's tests: unit, UI, game
   snapshot    Take the snapshots UI scenarios take, and hold them to their goldens
   inspect     Inspect what the running app shows: its nodes, their boxes, semantics and source
+  profile     Sample the frames the running app draws: their time, phase by phase, and the work they count
   game        Read a state of, or record input from, the game `viso run` is playing
 
 DELIVERY
@@ -883,6 +884,7 @@ Options:
       --device <ID>      The simulator or emulator profile (`ios` and `android` only)
       --browser <NAME>   The browser to open (`web-*` only): `chrome`, `safari`, `firefox`, or `none` to only serve
       --no-hot-reload    Keep the dev session up but apply no edit to the app: each is compiled and reported, not sent
+      --profile-frame    Draw the frame time over the app's windows, and report every frame it draws: a `profile` event each under `--json`, a line a second otherwise
       --open             Open the page in a browser (`web-*` only), under `--json` too
       --env <KEY=VALUE>  A variable the app is launched with; repeatable. A value whose name looks secret is never printed
       --cwd <PATH>       The app's working directory (this machine only): the project root when omitted
@@ -904,7 +906,8 @@ Notes:
   `ios` and `android` run on a simulator or emulator profile: see
   `viso ios simulator list` and `viso android emulator list`. The web targets
   build for a browser and serve it as `viso serve` does. The app's own arguments
-  follow `--`.
+  follow `--`. `--profile-frame` draws the frame time over the app's windows and
+  reports its frames as `viso profile` measures them.
 
 $ viso build --help
 Build the app for a target and write it to `dist/`, without running it
@@ -1398,6 +1401,48 @@ Notes:
   a widget of that type or the root node of that component (`module::Component`
   by its module). No match is not an error. The selector's syntax errors exit 2; no
   session exits 3.
+
+$ viso profile --help
+Sample the frames the running app draws: their time, phase by phase, and the work they count
+
+Usage: viso profile [OPTIONS] [TARGET]
+
+Examples:
+  viso profile                                                       # five seconds of the `viso run` app's frames
+  viso profile ios --device iphone --frames 600 --chrome trace.json  # 600 frames on the simulator, also as a Chrome trace
+  viso profile headless --scenario scroll --json                     # every frame of the `scroll` scenario, headless, as JSON events
+
+Arguments:
+  [TARGET]  The app to profile: the `viso run` session on this machine when omitted, the session of a target, or `headless`, a headless run of the app built for it [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+
+Options:
+      --device <ID>        The simulator or emulator profile of the session (`ios` and `android` only): the only session of the target when omitted
+      --frames <N>         How many frames to sample: the capture ends once the app drew them
+      --seconds <SECONDS>  How long to sample, in seconds: 5 when neither this nor `--frames` is given; with both, whichever ends first
+      --output <PATH>      Where to write the trace, in Ende: under `target/viso/traces/` when omitted
+      --chrome <PATH>      Also write the trace as Chrome trace-event JSON, for `chrome://tracing` or Perfetto
+      --scenario <NAME>    The UI scenario a headless run plays while it is profiled, by its name under `tests/ui/` (`headless` only): the app settling when omitted
+  -h, --help               Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  Each frame is timed span by span on the UI thread (input, flush, text, layout,
+  style, paint, semantics, upload, submit), the GPU's time where the backend
+  measures it, and its work counted. Metrics are p50, p95 and max over the frames;
+  an idle app draws none. The trace is kept in Ende under `target/viso/traces/`
+  (the newest 20) unless `--output` names a file. No session exits 3; an app that
+  leaves while profiled exits 5.
 
 $ viso game --help
 Read a state of, or record input from, the game `viso run` is playing

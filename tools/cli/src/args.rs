@@ -134,6 +134,8 @@ pub enum Command {
     New(NewArgs),
     /// Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive.
     Package(PackageArgs),
+    /// Sample the frames the running app draws: their time, phase by phase, and the work they count.
+    Profile(ProfileArgs),
     /// Build a dev artifact and run it, hot reloading edits as they are saved.
     Run(RunArgs),
     /// Show the typed schema of a widget, component, native library, function or type.
@@ -644,6 +646,50 @@ pub struct QueryArgs {
     pub scenario: Option<String>,
 }
 
+/// What `viso profile` samples, and for how long.
+#[derive(Debug, Args)]
+pub struct ProfileArgs {
+    /// The app to profile: the `viso run` session on this machine when
+    /// omitted, the session of a target, or `headless`, a headless run of
+    /// the app built for it.
+    #[arg(value_enum)]
+    pub target: Option<InspectTarget>,
+    /// The simulator or emulator profile of the session (`ios` and
+    /// `android` only): the only session of the target when omitted.
+    #[arg(long, value_name = "ID", add = ArgValueCandidates::new(complete::device_ids))]
+    pub device: Option<String>,
+    /// How many frames to sample: the capture ends once the app drew them.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=100_000))]
+    pub frames: Option<u32>,
+    /// How long to sample, in seconds: 5 when neither this nor `--frames`
+    /// is given; with both, whichever ends first.
+    #[arg(long, value_name = "SECONDS", value_parser = parse_seconds)]
+    pub seconds: Option<f64>,
+    /// Where to write the trace, in Ende: under `target/viso/traces/` when
+    /// omitted.
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
+    pub output: Option<PathBuf>,
+    /// Also write the trace as Chrome trace-event JSON, for `chrome://tracing`
+    /// or Perfetto.
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
+    pub chrome: Option<PathBuf>,
+    /// The UI scenario a headless run plays while it is profiled, by its
+    /// name under `tests/ui/` (`headless` only): the app settling when
+    /// omitted.
+    #[arg(long, value_name = "NAME")]
+    pub scenario: Option<String>,
+}
+
+/// A `--seconds` value: positive, at most an hour.
+fn parse_seconds(text: &str) -> Result<f64, String> {
+    match text.parse::<f64>() {
+        Ok(seconds) if seconds > 0.0 && seconds <= 3600.0 => Ok(seconds),
+        _ => Err(format!(
+            "`{text}` is not a number of seconds above 0, at most 3600"
+        )),
+    }
+}
+
 /// The apps `viso inspect` inspects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum InspectTarget {
@@ -857,6 +903,11 @@ pub struct RunArgs {
     /// and reported, not sent.
     #[arg(long)]
     pub no_hot_reload: bool,
+    /// Draw the frame time over the app's windows, and report every frame
+    /// it draws: a `profile` event each under `--json`, a line a second
+    /// otherwise.
+    #[arg(long)]
+    pub profile_frame: bool,
     /// Open the page in a browser (`web-*` only), under `--json` too.
     #[arg(long)]
     pub open: bool,
@@ -1118,6 +1169,7 @@ impl Command {
             Command::Lsp(_) => "lsp",
             Command::New(_) => "new",
             Command::Package(_) => "package",
+            Command::Profile(_) => "profile",
             Command::Run(_) => "run",
             Command::Schema(_) => "schema",
             Command::Serve(_) => "serve",

@@ -9,6 +9,7 @@
 //! headless path from the package's sources. The selector is parsed before
 //! anything runs and evaluated over the two joined.
 
+use std::path::Path;
 use std::time::Duration;
 
 use viso_dsl::Diagnostic;
@@ -106,7 +107,7 @@ fn query(ctx: &Context<'_>, args: &QueryArgs, out: &mut Output) -> u8 {
 
 /// The control endpoint of the project's dev session for `target`: on
 /// `device`, else the only one of the target.
-fn endpoint(
+pub(super) fn endpoint(
     ctx: &Context<'_>,
     target: Target,
     device: Option<&str>,
@@ -197,47 +198,9 @@ fn headless(
         height,
         scale: scale.get(),
     };
-    let mut case = match scenario {
-        None => Case::bare("inspect".to_owned(), surface),
-        Some(name) => {
-            let path = match scenario::plan(&root, Some(name), |_| true, None) {
-                Ok(mut planned) => match planned.pop() {
-                    Some((_, path)) => path,
-                    None => {
-                        return out.failure(ENV_TEST_INPUT, &format!("no scenario `{name}`"), &[]);
-                    }
-                },
-                Err(Unplanned::Nothing(why) | Unplanned::Unreadable(why)) => {
-                    return out.failure(ENV_TEST_INPUT, &why, &[]);
-                }
-            };
-            let text = match std::fs::read_to_string(&path) {
-                Ok(text) => text,
-                Err(error) => {
-                    return out.failure(
-                        ENV_TEST_INPUT,
-                        &format!("cannot read `{}`: {error}", path.display()),
-                        &[],
-                    );
-                }
-            };
-            match Case::parse(name.to_owned(), path.clone(), text.clone(), surface, |_| {
-                false
-            }) {
-                Ok(case) => case,
-                Err((line, message)) => {
-                    let source = Source::new(&path, &root, &text);
-                    let start = line_start(&text, line);
-                    let diagnostic = Diagnostic::error(
-                        TEST_INPUT_INVALID.name,
-                        viso_dsl::TextRange::new(start.into(), start.into()),
-                        message,
-                    );
-                    out.source(Some(&source), &[], &diagnostic);
-                    return TEST_INPUT_INVALID.exit;
-                }
-            }
-        }
+    let mut case = match case(&root, "inspect", scenario, surface, out) {
+        Ok(case) => case,
+        Err(code) => return code,
     };
     case.census = true;
     let sources = checked.sources();
@@ -296,6 +259,56 @@ fn headless(
         ),
         None => code,
     }
+}
+
+/// The case a headless run named `name` plays: the scenario `scenario`
+/// names under `tests/ui/`, or the app settling at `surface` without one.
+pub(super) fn case(
+    root: &Path,
+    name: &str,
+    scenario: Option<&str>,
+    surface: HeadlessSurface,
+    out: &mut Output,
+) -> Result<Case, u8> {
+    let Some(scenario) = scenario else {
+        return Ok(Case::bare(name.to_owned(), surface));
+    };
+    let path = match scenario::plan(root, Some(scenario), |_| true, None) {
+        Ok(mut planned) => match planned.pop() {
+            Some((_, path)) => path,
+            None => {
+                return Err(out.failure(ENV_TEST_INPUT, &format!("no scenario `{scenario}`"), &[]));
+            }
+        },
+        Err(Unplanned::Nothing(why) | Unplanned::Unreadable(why)) => {
+            return Err(out.failure(ENV_TEST_INPUT, &why, &[]));
+        }
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        out.failure(
+            ENV_TEST_INPUT,
+            &format!("cannot read `{}`: {error}", path.display()),
+            &[],
+        )
+    })?;
+    Case::parse(
+        scenario.to_owned(),
+        path.clone(),
+        text.clone(),
+        surface,
+        |_| false,
+    )
+    .map_err(|(line, message)| {
+        let source = Source::new(&path, root, &text);
+        let start = line_start(&text, line);
+        let diagnostic = Diagnostic::error(
+            TEST_INPUT_INVALID.name,
+            viso_dsl::TextRange::new(start.into(), start.into()),
+            message,
+        );
+        out.source(Some(&source), &[], &diagnostic);
+        TEST_INPUT_INVALID.exit
+    })
 }
 
 /// The byte the 1-based `line` of `text` starts at.

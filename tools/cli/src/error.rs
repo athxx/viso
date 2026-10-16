@@ -516,6 +516,24 @@ codes! {
         fix: "Rebuild and restart the app with the same Viso version as the CLI.",
         commands: ["viso run"],
     }
+    PROFILE_APP_GONE = RUNTIME {
+        summary: "The app closed, or crashed, while it was profiled.",
+        explanation: "`viso profile` samples the frames of the app a dev session runs, or of a headless run of it; the app left before the capture ended, so there is no profile of the frames asked for.",
+        fix: "Read the app's output in the `viso run` session, or the run's output the diagnostic carries, and profile again once it runs.",
+        commands: ["viso run"],
+    }
+    PROFILE_WRITE = ENVIRONMENT {
+        summary: "The profile's trace could not be written.",
+        explanation: "`viso profile` writes its trace under `target/viso/traces/`, or where `--output` and `--chrome` name; the directory could not be created or the file written.",
+        fix: "Check that the path is writable and the disk has room, or name another with `--output`.",
+        commands: [],
+    }
+    PROFILE_ANSWER_INVALID = INTERNAL {
+        summary: "The app's frames did not arrive whole or did not decode.",
+        explanation: "The trace the session or the headless run handed over is not one this CLI reads: the CLI and the app speak different protocol versions, or the run failed while writing it.",
+        fix: "Rebuild and restart the app with the same Viso version as the CLI.",
+        commands: ["viso run"],
+    }
 
     GAME_NOT_RUNNING = ENVIRONMENT {
         summary: "No mounted view of the named file runs a game.",
@@ -590,6 +608,7 @@ mod tests {
                 // more than one way.
                 "NEW" => &[USAGE, ENVIRONMENT, INTERNAL],
                 "INSPECT" => &[USAGE, INTERNAL],
+                "PROFILE" => &[ENVIRONMENT, RUNTIME, INTERNAL],
                 "ANDROID" => &[USAGE],
                 "IOS" => &[USAGE],
                 "DEVICE" | "GAME" => &[DIAGNOSTICS, USAGE, ENVIRONMENT, RUNTIME, INTERNAL],

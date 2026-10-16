@@ -2433,6 +2433,12 @@ impl NodeStore {
         self.dirty.iter().any(|d| !d.is_empty())
     }
 
+    /// How many nodes carry a dirty class: what the frame's changes
+    /// invalidated, until [`clear_dirty`](Self::clear_dirty).
+    pub fn dirty_count(&self) -> usize {
+        self.dirty.iter().filter(|d| !d.is_empty()).count()
+    }
+
     /// Whether any node carries a dirty class intersecting `class`. Lets a frame
     /// gate a specific pass precisely — the facade runs `resolve_transforms`
     /// only when a `TRANSFORM`-dirty node exists, so a pure paint-only frame

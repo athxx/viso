@@ -180,6 +180,11 @@ impl Stream {
         });
     }
 
+    /// Writes a `profile` event, its payload as `payload` writes it.
+    pub(super) fn profile(&mut self, payload: impl FnOnce(&mut JsonWriter)) {
+        self.event("profile", payload);
+    }
+
     /// Writes a `test` event: its common fields, then those `extra` writes.
     pub(super) fn test(&mut self, test: &super::Test<'_>, extra: impl FnOnce(&mut JsonWriter)) {
         self.event("test", |w| {

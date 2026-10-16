@@ -110,6 +110,12 @@ impl NodeArena {
         })
     }
 
+    /// How many nodes are live.
+    #[inline]
+    pub fn live_count(&self) -> usize {
+        self.slots.len() - self.free.len()
+    }
+
     /// Whether an id refers to a currently-live node (generation + occupancy).
     #[inline]
     pub fn is_live(&self, id: NodeId) -> bool {

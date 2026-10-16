@@ -680,6 +680,24 @@ impl Output {
         }
     }
 
+    /// Reports what a capture of the app's frames measured, as `payload`
+    /// writes it: a `profile` event, or the text `text` gives on stdout, if
+    /// any.
+    pub fn profile(
+        &mut self,
+        payload: impl FnOnce(&mut JsonWriter),
+        text: impl FnOnce() -> Option<String>,
+    ) {
+        match &mut self.form {
+            Form::Json(stream) => stream.profile(payload),
+            Form::Human => {
+                if let Some(text) = text() {
+                    say!("{text}");
+                }
+            }
+        }
+    }
+
     /// Reports the `@probe` states of `scenario` after `tick`, `probes` an
     /// encoded JSON object: a `trace` event, which human text leaves out.
     pub fn trace(&mut self, scenario: &str, tick: u64, probes: &str) {

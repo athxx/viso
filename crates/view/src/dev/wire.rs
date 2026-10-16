@@ -45,10 +45,11 @@ pub use super::resource::{
     blob_chunks,
 };
 use super::resource::{read_chunk, read_resources, write_chunk, write_resources};
+use crate::profile::{FrameSample, read_frames, write_frames};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 15;
+pub const DEV_PROTOCOL_VERSION: u16 = 16;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -871,6 +872,19 @@ pub enum HostMessage {
         script: BlobRef,
         sources: Option<BlobRef>,
     },
+    /// Starts sampling every frame the app draws, for `viso profile` and
+    /// `viso run --profile-frame`, until [`HostMessage::ProfileEnd`]; with
+    /// `hud`, the frame time is drawn over each window. The samples come back
+    /// as [`RuntimeMessage::Profile`] batches repeating `id`. A capture
+    /// started ends the one running.
+    Profile {
+        id: u32,
+        hud: bool,
+    },
+    /// Ends the capture `id`: the runtime sends what it holds of it, done.
+    ProfileEnd {
+        id: u32,
+    },
 }
 
 /// What the runtime sends.
@@ -914,6 +928,14 @@ pub enum RuntimeMessage {
     Scenario {
         id: u32,
         line: String,
+    },
+    /// Frames the capture `id` sampled, in order, the samples it could not
+    /// keep for want of room, and whether it ended.
+    Profile {
+        id: u32,
+        frames: Vec<FrameSample>,
+        dropped: u32,
+        done: bool,
     },
 }
 
@@ -1171,6 +1193,8 @@ const HOST_SNAPSHOT: u8 = 6;
 const HOST_RESTORE: u8 = 7;
 const HOST_INSPECT: u8 = 8;
 const HOST_SCENARIO: u8 = 9;
+const HOST_PROFILE: u8 = 10;
+const HOST_PROFILE_END: u8 = 11;
 
 const RUNTIME_HELLO: u8 = 0;
 const RUNTIME_ACK: u8 = 1;
@@ -1185,6 +1209,7 @@ const RUNTIME_SNAPSHOT: u8 = 9;
 const RUNTIME_RESTORED: u8 = 10;
 const RUNTIME_INSPECT: u8 = 11;
 const RUNTIME_SCENARIO: u8 = 12;
+const RUNTIME_PROFILE: u8 = 13;
 
 const REJECT_PROTOCOL: u8 = 0;
 const REJECT_BUILD: u8 = 1;
@@ -1562,6 +1587,15 @@ impl Message for HostMessage {
                     None => enc.write_u8(0),
                 }
             }
+            HostMessage::Profile { id, hud } => {
+                enc.write_u8(HOST_PROFILE);
+                enc.write_varint(u64::from(*id));
+                enc.write_u8(u8::from(*hud));
+            }
+            HostMessage::ProfileEnd { id } => {
+                enc.write_u8(HOST_PROFILE_END);
+                enc.write_varint(u64::from(*id));
+            }
         }
     }
 
@@ -1651,6 +1685,15 @@ impl Message for HostMessage {
                     _ => return Err(malformed(dec)),
                 },
             }),
+            HOST_PROFILE => Ok(HostMessage::Profile {
+                id: read_u32(dec)?,
+                hud: match dec.read_u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(malformed(dec)),
+                },
+            }),
+            HOST_PROFILE_END => Ok(HostMessage::ProfileEnd { id: read_u32(dec)? }),
             _ => Err(malformed(dec)),
         }
     }
@@ -1793,6 +1836,18 @@ impl Message for RuntimeMessage {
                 enc.write_u8(RUNTIME_SCENARIO);
                 enc.write_varint(u64::from(*id));
                 write_string(enc, line);
+            }
+            RuntimeMessage::Profile {
+                id,
+                frames,
+                dropped,
+                done,
+            } => {
+                enc.write_u8(RUNTIME_PROFILE);
+                enc.write_varint(u64::from(*id));
+                write_frames(enc, frames);
+                enc.write_varint(u64::from(*dropped));
+                enc.write_u8(u8::from(*done));
             }
         }
     }
@@ -1956,6 +2011,16 @@ impl Message for RuntimeMessage {
                 id: read_u32(dec)?,
                 line: read_string(dec, MAX_REPORT_LINE, "scenario report line")?,
             }),
+            RUNTIME_PROFILE => Ok(RuntimeMessage::Profile {
+                id: read_u32(dec)?,
+                frames: read_frames(dec)?,
+                dropped: read_u32(dec)?,
+                done: match dec.read_u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(malformed(dec)),
+                },
+            }),
             _ => Err(malformed(dec)),
         }
     }
@@ -2054,6 +2119,8 @@ mod tests {
             }),
             HostMessage::Snapshot,
             HostMessage::Inspect { id: 3 },
+            HostMessage::Profile { id: 6, hud: true },
+            HostMessage::ProfileEnd { id: 6 },
             HostMessage::Scenario {
                 id: 4,
                 script: BlobRef::of(b"tap \"Save\""),
@@ -2412,6 +2479,18 @@ mod tests {
             RuntimeMessage::Scenario {
                 id: 4,
                 line: "failed 3 no node shows \"Save\"".into(),
+            },
+            RuntimeMessage::Profile {
+                id: 6,
+                frames: vec![crate::profile::FrameSample {
+                    frame: 2,
+                    at: 33_000_000,
+                    nanos: 1_200_000,
+                    gpu: Some(400_000),
+                    ..Default::default()
+                }],
+                dropped: 1,
+                done: true,
             },
             RuntimeMessage::Restored(RestoreReport {
                 files: vec![FileCommit {

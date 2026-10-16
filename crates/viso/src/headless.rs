@@ -28,6 +28,7 @@ use viso_view::headless::{
     SURFACE_ENV, VIEW_ENV,
 };
 use viso_view::inspect::{self, CensusView, WindowCensus, static_nodes};
+use viso_view::profile::{PROFILE_ENV, Trace};
 use viso_view::{MountRecord, ViewHost, load_view, take_mounts};
 
 use crate::scenario::{Input, Outputs, ScriptRunner};
@@ -75,7 +76,25 @@ pub(crate) fn run<A: Application>() {
         viso_platform::Instant::now(),
         std::time::Duration::from_nanos(1_000_000_000 / 60),
     );
-    Scheduler::with_clock(app, driver, clock).run();
+    let profile = viso_platform::launch_var(PROFILE_ENV);
+    if profile.is_some() {
+        let baseline = driver.profile_baseline();
+        driver.profiler.start(0, false, false, baseline);
+    }
+    let mut driver = Scheduler::with_clock(app, driver, clock).run_returning();
+    if let Some(path) = profile {
+        let (_, frames, dropped) = driver.profiler.end().unwrap_or_default();
+        let trace = Trace {
+            target: "headless".into(),
+            dropped,
+            frames,
+            ..Trace::default()
+        };
+        if let Err(error) = std::fs::write(&path, trace.to_bytes()) {
+            eprintln!("viso: cannot write the profile `{path}`: {error}");
+            std::process::exit(2);
+        }
+    }
 }
 
 /// The view package a run mounts alone, and once it is mounted the instance

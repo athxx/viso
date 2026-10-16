@@ -368,4 +368,25 @@ pub trait GpuBackend {
         let _ = surface;
         crate::ColorSpace::Srgb
     }
+
+    /// Starts or stops timing the GPU's work on each frame, for a profiler.
+    /// A backend that cannot time it leaves it off, and costs nothing either
+    /// way while it is off.
+    fn time_frames(&mut self, on: bool) {
+        let _ = on;
+    }
+
+    /// The epoch of the frame last begun: what
+    /// [`finished_frame_times`](Self::finished_frame_times) names it by, 0
+    /// before the first.
+    fn frame_epoch(&self) -> u64 {
+        0
+    }
+
+    /// Appends to `out` the GPU time of each timed frame the GPU finished
+    /// since the last call, oldest first: its epoch and nanoseconds, from the
+    /// start of its first pass to the end of its last.
+    fn finished_frame_times(&mut self, out: &mut Vec<(u64, u64)>) {
+        let _ = out;
+    }
 }

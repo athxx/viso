@@ -411,6 +411,9 @@ pub(super) fn session(
     let mut dev = DevSession::start(scope, &expect, lock, !args.no_hot_reload, move |change| {
         watched.send(Incoming::Change(change)).is_ok()
     });
+    if args.profile_frame {
+        dev.stream_profiles();
+    }
     // `viso game` finds the endpoint in the lock; a session without one
     // still runs, and says why `viso game` cannot reach it.
     let control = Control::bind(random_hex())

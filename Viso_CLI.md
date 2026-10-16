@@ -1173,7 +1173,8 @@ Release / Shipping artifact:
 - `--open`：web target 打开浏览器（`--json` 下同样打开）；非 web target 或与 `--browser none` 同时出现为 usage error；
 - `--env KEY=VALUE`：可重复；KEY 为可移植变量名（字母、数字、`_`，不以数字开头），`VISO_DEV_*` 保留给 dev session；desktop 为进程环境变量，iOS/Android/web 经 launch 变量（§13.10），app 一律以 `viso_platform::launch_var` 读取；名字像 secret（含 TOKEN、SECRET、PASSWORD、KEY、CREDENTIAL、AUTH、PRIVATE、COOKIE、SESSION）的值在 `--verbose` 中显示为 `<hidden>`（§49）；
 - `--cwd <path>`：desktop app 的工作目录，相对调用 `viso` 的目录，默认 project root；非 host target 或不是目录为 usage error；
-- `--inspect`、`--profile-frame` 随 inspector channel 与 frame profiler 提供。
+- `--profile-frame`：session 对每个连上的 runtime 开一个 capture（§25.4），每个窗口右上角显示最近 1 秒的帧与 GPU 时间 p50/p95（每 500 ms 更新）；`--json` 下每帧一条 `profile`（`payload: {frame, at_ms, metrics: {<§25.2 指标>: <该帧的值>}}`，该帧没有的指标省略），human 模式每秒在 stderr 打一行 `[viso] profile  120 frames  frame 8.29/8.97 ms  gpu 0.09/0.09 ms`；
+- `--inspect` 随 inspector channel 提供。
 
 `viso run` 不提供 `--release`。Release/Shipping 验证使用 `viso build --profile release`、`viso package`、benchmark/profile 工具，而不是把开发主命令变成 delivery frontend。
 
@@ -1189,7 +1190,7 @@ Release / Shipping artifact:
 
 ### 13.9 JSON / exit codes
 
-`--json` 事件：`progress`、`diagnostic`、`artifact`（dev artifact）、`device`、`dev`（每个 candidate revision 一条，§36）、`log`、`summary`。Dev session 中的 candidate 失败只产生 `diagnostic` + `dev{outcome:"rejected"}`，不结束命令。
+`--json` 事件：`progress`、`diagnostic`、`artifact`（dev artifact）、`device`、`dev`（每个 candidate revision 一条，§36）、`log`、`profile`（`--profile-frame`）、`summary`。Dev session 中的 candidate 失败只产生 `diagnostic` + `dev{outcome:"rejected"}`，不结束命令。
 
 Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app crash 或非零退出 5；Ctrl-C 结束 session 130。
 
@@ -1215,7 +1216,7 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
   - `web-dom`/`web-hybrid` 以 `TargetUnavailable` 退出；
 - `viso ios simulator` / `viso android emulator` 的 `list|create|start|stop|delete`（§11.4、§12.4）：profile 存于 `~/.viso/ios/simulators/<id>.toml` / `~/.viso/android/emulators/<id>.toml`（`preset`、`system`、`device`，`$VISO_HOME` 可改 root）；iOS 以最新已安装 runtime 与对应 iPhone/iPad 机型创建 Simulator，Android 不依赖 `avdmanager`，直接按最新（或 `--api` 指定）已安装 system image 写出 AVD `viso_<id>`；`start --no-window` 无窗口启动 emulator；`list` 列出 `NAME PROFILE STATUS SYSTEM`；
 - Dev artifact 与 `viso build` 共用 Build Service（§14.5）：以 dev profile 的 `--profile dev` 与 `[profile.dev]` 设置构建；每次 build 前取 `build-<target>.lock`，被 `viso build` 占用时等待（输出一条 `log`）而不失败；`--json` 下 launch build 之后输出一条 `artifact`（host `binary`、iOS `app-bundle`、Android `apk`、web `wasm`，`path` 相对 project root），Rust 编译诊断为带 span 的 `diagnostic`；
-- 尚未实现：`viso android|ios list|use|doctor`、`viso serve --https`、§13.7 中的 `--inspect` 与 `--profile-frame`。
+- 尚未实现：`viso android|ios list|use|doctor`、`viso serve --https`、§13.7 中的 `--inspect`。
 
 ---
 
@@ -1977,33 +1978,35 @@ viso profile ios --device iphone-local --seconds 10
 
 ### 25.2 指标
 
-```text
-frame total
-input
-state flush
-style
-measure
-layout
-semantics
-paint
-batch
-GPU upload
-GPU time
-present
+每帧采样 UI 线程上各 span 的耗时、GPU 耗时与该帧的计数（`viso_view::profile`，CLI 与 Studio 共用）：
 
-mounted nodes
-visible nodes
-dirty nodes
-reactive evaluations
-dynamic fallbacks
-draw calls
-instances
-upload bytes
-allocations
-glyph cache
-atlas occupancy
-resource loads
+```text
+frame               帧总耗时（从输入分发到 present 返回）
+input               输入路由与 handler
+flush               state flush：reload、动画、timer、task、binding/effect settle、asset
+text                text commit/edit/shaping/reflow
+layout              dirty 子树的 measure 与 layout（含 adaptive settle）
+style               interaction style 解析
+paint               dirty 子树 paint 为 primitive
+semantics           semantics tree 更新
+upload              batching 与 GPU upload
+submit              encode 与 present（含等待 drawable）
+gpu                 GPU 执行该帧的时间（Metal 以 command buffer 的 GPU 起止；headless 为软件 raster 的 CPU 时间）
+
+nodes               全部窗口挂载的节点
+dirty_nodes         被某个改动 invalidate 的节点
+measured / laid_out 重新 measure / 重新放置的节点
+painted             paint 重建的 primitive
+reactive_evals      static binding 求值
+dynamic_evals       dynamic binding 求值
+dynamic_fallbacks   走 dynamic 依赖边的节点
+primitives / draw_calls / batches / instances / upload_bytes
+shaped_runs / glyph_rasters / glyph_upload_bytes
+glyph_cache_bytes / atlas_pages
+resource_loads      解码的 asset
 ```
+
+Summary 中 span 按全部帧统计（帧没有运行该 span 记 0）；`gpu` 与计数只按报告了它的帧统计。没有任何帧报告的指标列入 `unavailable`；`allocations` 始终在其中：runtime 不计分配，计数 allocator 由 app 自己安装。p50/p95 为 nearest rank。
 
 ### 25.3 Trace output
 
@@ -2019,9 +2022,23 @@ viso profile --output trace.ende
 viso profile --chrome trace.json
 ```
 
-Ende trace schema 由 tooling protocol 定义。
+Ende trace（`viso_view::profile::Trace`）：protocol tag + `trace` + u16 版本，之后为 `app`、`target`、`device`、`started_ms`（UTC 毫秒）、`nanos`（采集时长）、`dropped`、每帧 `{frame, at, nanos, spans[9], gpu, counts[19]}`（时间为 ns，`at` 相对首帧，缺失的 span/计数以位掩码省略）。不带 `--output` 时写到 `target/viso/traces/profile-YYYYMMDD-HHMMSS-mmm.ende`（UTC），只保留最新 20 个。Chrome trace 为 trace-event JSON：每帧一个 `frame` X event、每个 span 一个 X event（tid 1 "UI"），计数与 `gpu_ms` 为 C event，可在 Perfetto/`chrome://tracing` 打开。文件经临时文件 + rename 写出。
 
-`--json`：采样期间 `progress`，结束时一条 `profile`（`payload: {frames, duration_ms, metrics: {<§25.2 指标>: {p50, p95, max}}}`）、trace 文件对应 `artifact`、`summary`。Exit code：无 Dev Session 且无法启动 3；app crash 5。
+`--json`：采样期间 `progress`，结束时一条 `profile`（`payload: {target, device, frames, duration_ms, dropped, metrics: {<§25.2 指标>: {p50, p95, max}}, unavailable, caveats}`，时间以 ms、计数以整数）、每个写出的文件一条 `artifact`（`kind: "trace" | "chrome-trace"`，带 sha256）、`summary`。Human 输出为一行概要、每个指标一行 p50/p95/max、未测量项与 caveat。
+
+```json
+{"type":"profile","payload":{"target":"macos","device":null,"frames":238,"duration_ms":2004.1,"dropped":0,
+ "metrics":{"frame":{"p50":8.29,"p95":8.97,"max":11.2},"gpu":{"p50":0.087,"p95":0.09,"max":0.12},"draw_calls":{"p50":3,"p95":3,"max":3}},
+ "unavailable":["allocations"],"caveats":[]}}
+```
+
+### 25.4 当前实现
+
+- Dev Session：`viso profile [<target>] [--device <id>]` 经 `viso run` 的控制端点（与 `inspect` 同一选择规则）请求首个连接的 runtime 接下来绘制的帧：`--frames <n>`（1–100000）取接下来 n 帧，`--seconds <s>`（0 < s ≤ 3600）取 s 秒内的帧，两者都给时先到者结束，都不给为 5 秒。App 只在有人采集时采样：runtime 同时只跑一个 capture，所有等待的 `viso profile` 与 `run --profile-frame` 共享它，session 在没有消费者时结束它。样本每 32 帧或 100 ms 成批经 dev 通道发送，每帧最多等 4 帧拿到它的 GPU 时间（按 backend 的 frame epoch 对应）。App 空闲不绘制时结果为 0 帧，human 输出提示在采集期间与 app 交互；
+- `headless`：以 headless 构建 app（同 `viso test ui`），采样它 settle 或播放 `--scenario <name>` 期间绘制的每一帧，`--frames` 保留前 n 帧；headless 不接受 `--seconds`（它的时钟是自己的）与 `--device`，非 headless 不接受 `--scenario`（`CLI_USAGE`，exit 2）；
+- Caveat：`ios-simulator`、`android-emulator` 的时间不代表真机（CPU 为本机，GPU 经 simulator/emulator 转译），`web` 的帧由浏览器调度且不测 GPU 时间，`headless` 的 `gpu` 是软件 raster 的 CPU 时间；
+- GPU 时间目前只有 Metal 与 headless raster 报告，其它 backend 的 `gpu` 列入 `unavailable`；
+- 失败码：没有 session `ENV_NO_DEV_SESSION`（exit 3）；采集期间 app 离开 session 或 headless run crash `PROFILE_APP_GONE`（exit 5）；trace 写不出 `PROFILE_WRITE`（exit 3）；回答无法解码 `PROFILE_ANSWER_INVALID`（exit 7）；scenario 失败 `TEST_EXPECTATION`（exit 1）；Ctrl-C 130。
 
 ---
 

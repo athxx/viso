@@ -23,7 +23,7 @@
 use core::ffi::c_void;
 use core::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use block2::RcBlock;
 use objc2::msg_send;
@@ -233,6 +233,36 @@ pub struct MetalBackend {
     /// never adds to this. A test snapshots it after prewarm and asserts a paint
     /// leaves it unchanged — the "no runtime shader compilation" contract.
     library_compiles: Arc<AtomicU64>,
+    /// The GPU time of the latest frames, while a profiler times them.
+    clock: Arc<FrameClock>,
+    /// The last epoch [`finished_frame_times`](GpuBackend::finished_frame_times)
+    /// reported.
+    clock_reported: u64,
+}
+
+/// How many recent frames the clock keeps: more than are ever in flight.
+const CLOCK_FRAMES: usize = 8;
+
+/// When each recent frame's GPU work started and ended, in nanoseconds of
+/// the host's media clock. A pass's completion handler, on a Metal thread,
+/// widens its frame's slot; the UI thread opens each slot as its frame
+/// begins and reads it once the frame after it completed.
+struct FrameClock {
+    on: AtomicBool,
+    slots: [ClockSlot; CLOCK_FRAMES],
+}
+
+#[derive(Default)]
+struct ClockSlot {
+    epoch: AtomicU64,
+    start: AtomicU64,
+    end: AtomicU64,
+}
+
+impl FrameClock {
+    fn slot(&self, epoch: u64) -> &ClockSlot {
+        &self.slots[epoch as usize % CLOCK_FRAMES]
+    }
 }
 
 impl Default for MetalBackend {
@@ -280,6 +310,11 @@ impl MetalBackend {
             completed: Arc::new(AtomicU64::new(0)),
             reclaim_scratch: Vec::new(),
             library_compiles: Arc::new(AtomicU64::new(0)),
+            clock: Arc::new(FrameClock {
+                on: AtomicBool::new(false),
+                slots: Default::default(),
+            }),
+            clock_reported: 0,
         }
     }
 
@@ -794,6 +829,13 @@ impl GpuBackend for MetalBackend {
         // `destroy_*` during it parks against this epoch and reclaims once the
         // matching `present` completes.
         self.current_epoch = self.current_epoch.next();
+        if self.clock.on.load(Ordering::Relaxed) {
+            let epoch = self.current_epoch.0;
+            let slot = self.clock.slot(epoch);
+            slot.start.store(u64::MAX, Ordering::Relaxed);
+            slot.end.store(0, Ordering::Relaxed);
+            slot.epoch.store(epoch, Ordering::Release);
+        }
         Some(Frame {
             surface,
             drawable: 0,
@@ -863,6 +905,38 @@ impl GpuBackend for MetalBackend {
 
     fn surface_format(&self, surface: SurfaceId) -> TextureFormat {
         self.surface(surface).format
+    }
+
+    fn time_frames(&mut self, on: bool) {
+        if on && !self.clock.on.load(Ordering::Relaxed) {
+            self.clock_reported = self.current_epoch.0;
+        }
+        self.clock.on.store(on, Ordering::Relaxed);
+    }
+
+    fn frame_epoch(&self) -> u64 {
+        self.current_epoch.0
+    }
+
+    fn finished_frame_times(&mut self, out: &mut Vec<(u64, u64)>) {
+        // A frame's passes may complete after the present that raised the
+        // counter: a frame is read once the one after it completed too.
+        let done = self.completed.load(Ordering::Acquire).saturating_sub(1);
+        let from = (self.clock_reported + 1).max(done.saturating_sub(CLOCK_FRAMES as u64 - 1));
+        for epoch in from..=done {
+            let slot = self.clock.slot(epoch);
+            if slot.epoch.load(Ordering::Acquire) != epoch {
+                continue;
+            }
+            let (start, end) = (
+                slot.start.load(Ordering::Relaxed),
+                slot.end.load(Ordering::Acquire),
+            );
+            if end > start {
+                out.push((epoch, end - start));
+            }
+        }
+        self.clock_reported = self.clock_reported.max(done);
     }
 }
 
@@ -974,6 +1048,28 @@ impl MetalBackend {
         }
 
         encoder.endEncoding();
+        if self.clock.on.load(Ordering::Relaxed) {
+            let clock = Arc::clone(&self.clock);
+            let epoch = self.current_epoch.0;
+            let handler = RcBlock::new(move |cb: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                // SAFETY: Metal hands the handler the command buffer it
+                // completed, live for the call.
+                let cb = unsafe { cb.as_ref() };
+                let nanos = |seconds: f64| (seconds * 1e9) as u64;
+                let (start, end) = (nanos(cb.GPUStartTime()), nanos(cb.GPUEndTime()));
+                let slot = clock.slot(epoch);
+                if end > start && slot.epoch.load(Ordering::Acquire) == epoch {
+                    slot.start.fetch_min(start, Ordering::Relaxed);
+                    slot.end.fetch_max(end, Ordering::Release);
+                }
+            });
+            // SAFETY: as for the present handler: a valid block of the
+            // handler's signature, copied by Metal and invoked at most once;
+            // it captures only an `Arc` of atomics, which is `Send`.
+            unsafe {
+                cmd.addCompletedHandler(RcBlock::as_ptr(&handler));
+            }
+        }
         cmd.commit();
     }
 

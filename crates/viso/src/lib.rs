@@ -53,6 +53,9 @@ use viso_ui::{
     TimerRegistry, TimerRequest, TranslateAnim, VirtualLists, WindowOpenRequest, focus_next,
     text_edit, virtual_list,
 };
+#[cfg(any(feature = "hot-reload", feature = "headless"))]
+use viso_view::profile::Count;
+use viso_view::profile::Span;
 use viso_widgets::caption_bar;
 
 mod accessibility;
@@ -62,6 +65,7 @@ mod environment;
 #[cfg(feature = "headless")]
 mod headless;
 mod persist;
+mod profile;
 #[cfg(any(feature = "headless", feature = "hot-reload"))]
 mod scenario;
 pub mod services;
@@ -504,6 +508,9 @@ struct AppDriver<A: Application> {
     /// The view a headless run mounts alone in place of the app's.
     #[cfg(feature = "headless")]
     harness: headless::Harness,
+    /// The capture of the app's frames a tool asked for, if any.
+    #[cfg(any(feature = "hot-reload", feature = "headless"))]
+    profiler: profile::Profiler,
 }
 
 /// The fonts an app registered at init, installed into every window's shaper.
@@ -666,6 +673,9 @@ struct WindowState {
     /// this window mounts does not compile.
     #[cfg(feature = "hot-reload")]
     dev_overlay: Option<NodeId>,
+    /// The frame time drawn over the tree, while a capture asks for it.
+    #[cfg(feature = "hot-reload")]
+    dev_hud: Option<NodeId>,
     /// How much each layer recomputed on the most recent frame — surfaced for
     /// diagnostics and asserted by tests to confirm only the dirty subtree moved.
     recompute: FrameRecompute,
@@ -772,6 +782,8 @@ impl<A: Application> AppDriver<A> {
             script: None,
             #[cfg(feature = "headless")]
             harness: headless::Harness::default(),
+            #[cfg(any(feature = "hot-reload", feature = "headless"))]
+            profiler: profile::Profiler::default(),
         }
     }
 
@@ -824,6 +836,8 @@ impl WindowState {
             redo_roots: Vec::new(),
             #[cfg(feature = "hot-reload")]
             dev_overlay: None,
+            #[cfg(feature = "hot-reload")]
+            dev_hud: None,
             recompute: FrameRecompute::default(),
             awaiting_first_frame: true,
             assets_served: 0,
@@ -1239,6 +1253,7 @@ impl WindowState {
             w: lw,
             h: lh,
         };
+        let layout = profile::time(Span::Layout);
         let (mut measured, mut laid_out) =
             self.store
                 .relayout_dirty(root, surface, &mut self.scratch, &mut self.redo_roots);
@@ -1287,6 +1302,7 @@ impl WindowState {
         if self.store.any_dirty_class(DirtyClass::TRANSFORM) {
             self.store.resolve_transforms(root);
         }
+        drop(layout);
         // Re-select interaction-state boxes when a STYLE class is pending. A
         // press/hover flip marks its node STYLE (and PAINT) through the flush;
         // this folds the winning variant (pressed > hover > resting) into the
@@ -1296,8 +1312,10 @@ impl WindowState {
         // STYLE so a pure paint/transform frame skips it; a steady frame with no
         // interaction change carries no STYLE dirt and pays nothing.
         if self.store.any_dirty_class(DirtyClass::STYLE) {
+            let _style = profile::time(Span::Style);
             self.store.resolve_interaction_styles(&self.states);
         }
+        let _paint = profile::time(Span::Paint);
         let painted = self.store.repaint_dirty(root, &mut self.primitives);
         #[cfg(feature = "hot-reload")]
         let painted = painted + hot_reload::overlay::paint(self, surface, painted);
@@ -1769,6 +1787,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // dirtying by the next frame's flush (the scheduler already flagged the
         // frame input-dirty). A sample naming an unknown window (already closed)
         // is dropped.
+        let _input = profile::time(Span::Input);
         let target = sample.window();
         let Some(ws) = self.window_mut(target) else {
             return;
@@ -1990,7 +2009,25 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // elapsed. Frame the windows with work, so the frame polls the tasks
         // and fires the timers.
         #[cfg(feature = "hot-reload")]
-        self.hot_reload.wakeup(cx, &self.windows);
+        {
+            self.hot_reload.wakeup(cx, &self.windows);
+            for ask in self.hot_reload.take_profiles() {
+                match ask {
+                    hot_reload::ProfileAsk::Start { id, hud } => {
+                        self.start_profile(id, hud, true);
+                        if hud {
+                            for ws in &self.windows {
+                                cx.request_redraw(ws.window);
+                            }
+                        }
+                    }
+                    hot_reload::ProfileAsk::End { id } => self.end_profile(id),
+                }
+                if !self.profiler.hud() {
+                    self.show_hud(None, cx);
+                }
+            }
+        }
         let now = cx.frame_now();
         // A decoded asset frames the windows that show assets.
         let decoded = self.assets.receive();
@@ -2162,6 +2199,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // A single-window app (the common case) walks a one-element vec; the
         // cost scales with the window count, not with any per-window map lookup
         // (section 45: we iterate all windows, never key one).
+        #[cfg(any(feature = "hot-reload", feature = "headless"))]
+        if phase == FramePhase::CollectInput {
+            self.begin_profiled_frame();
+        }
+        let _span = match phase {
+            FramePhase::FlushStateTransactions => Some(profile::time(Span::Flush)),
+            FramePhase::UpdateSemantics => Some(profile::time(Span::Semantics)),
+            FramePhase::UploadGpuChanges => Some(profile::time(Span::Upload)),
+            FramePhase::Submit => Some(profile::time(Span::Submit)),
+            _ => None,
+        };
         match phase {
             FramePhase::FlushStateTransactions => {
                 // Commit the edits the watcher staged before the windows flush,
@@ -2416,14 +2464,18 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // last frame, within the commit budget, so this frame's
                     // measure sees them; what the budget leaves waits for the
                     // next frame, drawing its last good layout meanwhile.
-                    ws.commit_text_work();
-                    ws.settle_text_edits();
-                    // Shape any text (re)declared this frame — a rebuilt list row,
-                    // an applied text edit, or a future reactive text update
-                    // leaves a pending `TextRequest` — into a content payload
-                    // before measure, so a `Fit` text node sizes to its run. A
-                    // no-op when nothing declared text (the steady case).
-                    ws.shape_pending_text();
+                    {
+                        let _text = profile::time(Span::Text);
+                        ws.commit_text_work();
+                        ws.settle_text_edits();
+                        // Shape any text (re)declared this frame — a rebuilt
+                        // list row, an applied text edit, or a future reactive
+                        // text update leaves a pending `TextRequest` — into a
+                        // content payload before measure, so a `Fit` text node
+                        // sizes to its run. A no-op when nothing declared text
+                        // (the steady case).
+                        ws.shape_pending_text();
+                    }
                     // Incrementally re-place invalidated subtrees and repaint if
                     // any paint-affecting class is pending; a clean frame touches
                     // nothing.
@@ -2437,10 +2489,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // `absorb_measurements` so a virtualized list's height model
                     // sees the final wrapped row heights, not the unconstrained
                     // single-line ones.
-                    let reflow_passes = ws.reflow_wrapped_text();
-                    // Every layout this frame asked for goes to the worker at
-                    // once, so it lays them out while the frame renders.
-                    ws.dispatch_text_work();
+                    let reflow_passes = {
+                        let _text = profile::time(Span::Text);
+                        let passes = ws.reflow_wrapped_text();
+                        // Every layout this frame asked for goes to the worker
+                        // at once, so it lays them out while the frame renders.
+                        ws.dispatch_text_work();
+                        passes
+                    };
                     // First-frame double-shape visibility (§61): a wrapped `Fill`
                     // paragraph is shaped once unconstrained then once at its width
                     // on the frame it appears/resizes; this surfaces that one-time
@@ -2596,6 +2652,19 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 }
                             }
                         }
+                        #[cfg(any(feature = "hot-reload", feature = "headless"))]
+                        if self.profiler.is_on() {
+                            let stats = gpu.renderer.frame_stats();
+                            for (count, value) in [
+                                (Count::Primitives, u64::from(stats.visible_primitives)),
+                                (Count::DrawCalls, stats.draw_calls as u64),
+                                (Count::Batches, stats.batches as u64),
+                                (Count::Instances, stats.instances as u64),
+                                (Count::UploadBytes, stats.gpu_upload_bytes as u64),
+                            ] {
+                                self.profiler.count(count, value);
+                            }
+                        }
                         if let Some(surface) = gpu.surface {
                             gpu.renderer.submit(
                                 &mut gpu.backend,
@@ -2606,8 +2675,17 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         }
                     }
                 }
+                // The launch window's GPU stands for the frame's.
+                #[cfg(any(feature = "hot-reload", feature = "headless"))]
+                if let Some(gpu) = self.windows.first().and_then(|ws| ws.gpu.as_ref()) {
+                    self.profiler.presented(gpu.backend.frame_epoch());
+                }
             }
             FramePhase::PostFrameCleanup => {
+                #[cfg(any(feature = "hot-reload", feature = "headless"))]
+                if self.profiler.is_on() {
+                    self.count_frame();
+                }
                 for ws in &mut self.windows {
                     // The incremental passes have consumed this frame's
                     // invalidation; clear every node's dirty set so the next frame
@@ -2641,6 +2719,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
                 #[cfg(feature = "hot-reload")]
                 self.hot_reload.play(&self.windows, cx);
+                #[cfg(any(feature = "hot-reload", feature = "headless"))]
+                self.end_profiled_frame(cx);
             }
             _ => {}
         }

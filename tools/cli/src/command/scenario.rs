@@ -33,6 +33,7 @@ use viso_view::headless::{
     SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, Script, Selector, VIEW_ENV, is_snapshot_name,
 };
 use viso_view::inspect::SourceTable;
+use viso_view::profile::PROFILE_ENV;
 
 use crate::build::cargo::ProcessTree;
 use crate::command::build::{self as build_command, Check};
@@ -61,6 +62,7 @@ const WITHHELD: &[&str] = &[
     VIEW_ENV,
     SOURCES_ENV,
     CENSUS_ENV,
+    PROFILE_ENV,
 ];
 
 /// The name of the file a played scenario is written to when it differs
@@ -76,6 +78,9 @@ const SOURCES: &str = "sources.bin";
 
 /// The name of the file a run writes its census to.
 const CENSUS: &str = "census.bin";
+
+/// The name of the file a run writes the samples of its frames to.
+const PROFILE: &str = "profile.ende";
 
 /// Why no scenario was planned.
 pub(super) enum Unplanned {
@@ -152,6 +157,8 @@ pub(super) struct Case {
     pub queries: bool,
     /// Whether its run writes its census once the scenario ends.
     pub census: bool,
+    /// Whether its run writes the samples of every frame it draws.
+    pub profile: bool,
     pub kind: Kind,
 }
 
@@ -223,6 +230,7 @@ impl Case {
             ends_in_snapshot,
             queries,
             census: false,
+            profile: false,
             kind: Kind::Scenario,
         })
     }
@@ -246,6 +254,7 @@ impl Case {
             ends_in_snapshot: true,
             queries: false,
             census: false,
+            profile: false,
             kind: Kind::Component {
                 path: component,
                 view,
@@ -266,6 +275,7 @@ impl Case {
             ends_in_snapshot: false,
             queries: false,
             census: false,
+            profile: false,
             kind: Kind::Bare,
         }
     }
@@ -337,6 +347,12 @@ impl Played {
     /// Where the run wrote its census, when its case asked for one.
     pub fn census(&self) -> PathBuf {
         self.dir.join(CENSUS)
+    }
+
+    /// Where the run wrote the samples of its frames, when its case asked
+    /// for them.
+    pub fn profile(&self) -> PathBuf {
+        self.dir.join(PROFILE)
     }
 
     /// Removes the run's directory.
@@ -601,6 +617,9 @@ fn run(at: &Launch<'_>, index: usize, case: &Case, stop: &Mutex<bool>) -> Played
     }
     if case.census {
         command.env(CENSUS_ENV, dir.join(CENSUS));
+    }
+    if case.profile {
+        command.env(PROFILE_ENV, dir.join(PROFILE));
     }
     command
         .env(SURFACE_ENV, case.surface.to_env())

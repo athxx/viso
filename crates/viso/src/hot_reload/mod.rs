@@ -95,6 +95,7 @@ use viso_view::dev::wire::{
 };
 use viso_view::headless::Reported;
 use viso_view::inspect::{self, Census, CensusView, WindowCensus};
+use viso_view::profile::FrameSample;
 use viso_view::{
     GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
 };
@@ -165,6 +166,9 @@ pub(crate) struct HotReloadSession {
     /// The host's questions for the app's census, answered at the next
     /// frame boundary.
     inspects: Vec<u32>,
+    /// The captures the host started and ended since the driver last took
+    /// them, in order.
+    profiles: Vec<ProfileAsk>,
     /// The scenario the host asked the app to play, and its question `id`;
     /// its steps run after each frame of the first window.
     scenario: Option<(u32, crate::scenario::ScriptRunner)>,
@@ -308,6 +312,13 @@ struct HeldLaunch {
     deadline: Instant,
     restore: Option<Box<RestoreBundle>>,
     bytes: Option<Arc<[u8]>>,
+}
+
+/// A capture the host started or ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProfileAsk {
+    Start { id: u32, hud: bool },
+    End { id: u32 },
 }
 
 /// One mount of a file in a window.
@@ -472,6 +483,31 @@ impl HotReloadSession {
             restoring.spent += started.elapsed();
         }
         self.cells.push((ws.window, cells));
+    }
+
+    /// The captures the host started and ended since the last call, in
+    /// order.
+    pub(crate) fn take_profiles(&mut self) -> Vec<ProfileAsk> {
+        std::mem::take(&mut self.profiles)
+    }
+
+    /// Sends the host the frames of capture `id` sampled since the last
+    /// batch, the samples it could not keep, and whether it ended.
+    pub(crate) fn send_profile(
+        &mut self,
+        id: u32,
+        frames: Vec<FrameSample>,
+        dropped: u32,
+        done: bool,
+    ) {
+        if let Some(link) = &mut self.link {
+            link.send(RuntimeMessage::Profile {
+                id,
+                frames,
+                dropped,
+                done,
+            });
+        }
     }
 
     /// Whether the host asked for a snapshot, which the next frame boundary
@@ -996,6 +1032,8 @@ impl HotReloadSession {
                     self.inspects.push(id);
                     changed = true;
                 }
+                Incoming::Profile { id, hud } => self.profiles.push(ProfileAsk::Start { id, hud }),
+                Incoming::ProfileEnd(id) => self.profiles.push(ProfileAsk::End { id }),
                 Incoming::Scenario {
                     id,
                     script,

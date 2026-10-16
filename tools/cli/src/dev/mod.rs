@@ -58,6 +58,7 @@ pub(crate) mod build;
 pub(crate) mod cargo;
 pub mod control;
 pub mod link;
+mod profile;
 pub mod report;
 mod sources;
 pub mod watch;
@@ -142,6 +143,10 @@ struct Runtime {
     /// Scenarios asked for before it reported what it mounts, which its
     /// selectors resolve against: sent once it does.
     held_scenarios: Vec<(String, Sender<ControlReply>)>,
+    /// The capture of its frames under way, and those it was asked to end
+    /// whose last frames are still to come.
+    capture: Option<profile::Capture>,
+    ended: Vec<profile::Capture>,
     /// Whether it reported what it mounts.
     mounted: bool,
     /// The chunks of the snapshot it is sending.
@@ -312,6 +317,8 @@ pub struct DevSession {
     /// Where the app's windows were when it sent its snapshot.
     windows: Vec<WindowGeometry>,
     clock: RestartClock,
+    /// Whether each runtime's frames are streamed, `--profile-frame`.
+    profile_frames: bool,
 }
 
 impl DevSession {
@@ -351,11 +358,26 @@ impl DevSession {
             restarting: None,
             windows: Vec::new(),
             clock: RestartClock::default(),
+            profile_frames: false,
         }
+    }
+
+    /// Streams the frames of every runtime that connects from now on, the
+    /// frame time drawn over its windows: `viso run --profile-frame`.
+    pub fn stream_profiles(&mut self) {
+        self.profile_frames = true;
     }
 
     /// When the session next wants [`tick`](Self::tick)ed.
     pub fn deadline(&self) -> Option<Instant> {
+        match (self.batch_deadline(), self.profile_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// When the batch of edits is due.
+    fn batch_deadline(&self) -> Option<Instant> {
         if self.ready {
             return Some(Instant::now());
         }
@@ -494,6 +516,7 @@ impl DevSession {
         while at < self.runtimes.len() {
             if target.is_none_or(|t| t == self.runtimes[at].hello.target) {
                 let runtime = self.runtimes.remove(at);
+                profile::gone(&runtime);
                 self.report_status(&runtime, false, out);
             } else {
                 at += 1;
@@ -619,12 +642,17 @@ impl DevSession {
                     inspecting: Vec::new(),
                     playing: Vec::new(),
                     held_scenarios: Vec::new(),
+                    capture: None,
+                    ended: Vec::new(),
                     mounted: false,
                     blobs: Blobs::default(),
                     mounts: Mounts::default(),
                     patch: None,
                 });
                 self.status(self.runtimes.len() - 1, out);
+                if self.profile_frames {
+                    self.stream_frames(self.runtimes.len() - 1);
+                }
             }
             LinkEvent::Runtime(from, message) => {
                 if let Some(at) = self.index(from) {
@@ -636,6 +664,7 @@ impl DevSession {
                     return;
                 };
                 let runtime = self.runtimes.remove(at);
+                profile::gone(&runtime);
                 self.report_status(&runtime, false, out);
                 if self.landing && self.restarts(runtime.hello.target) {
                     out.log(
@@ -722,9 +751,11 @@ impl DevSession {
         Source::new(path, &self.root, "").name().to_owned()
     }
 
-    /// Takes the batch when it is due.
+    /// Takes the batch when it is due, and ends the profiles whose time is
+    /// up.
     pub fn tick(&mut self, out: &mut Output) {
-        if self.deadline().is_none_or(|due| due > Instant::now()) {
+        self.expire_profiles();
+        if self.batch_deadline().is_none_or(|due| due > Instant::now()) {
             return;
         }
         self.batch = None;
@@ -839,6 +870,12 @@ impl DevSession {
             RuntimeMessage::Game(answer) => self.answer(at, answer),
             RuntimeMessage::Inspect { id, census } => self.inspected(at, id, census),
             RuntimeMessage::Scenario { id, line } => self.played(at, id, line),
+            RuntimeMessage::Profile {
+                id,
+                frames,
+                dropped,
+                done,
+            } => self.profiled(at, id, frames, dropped, done, out),
             // The link thread delivers no second hello.
             RuntimeMessage::Hello(_) => {}
         }
@@ -1175,6 +1212,7 @@ impl DevSession {
             ControlAsk::Game { game, ask } => self.game(&game, ask, call.reply, out),
             ControlAsk::Inspect => self.inspect(call.reply),
             ControlAsk::Scenario { script } => self.play(&script, call.reply),
+            ControlAsk::Profile { frames, millis } => self.profile(frames, millis, call.reply),
         }
     }
 
