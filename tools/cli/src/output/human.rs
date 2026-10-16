@@ -396,6 +396,26 @@ mod tests {
     }
 
     #[test]
+    fn an_error_saying_no_fix_points_at_its_explanation() {
+        let text = "x\n";
+        let source = Source::new(Path::new("x.vs"), Path::new(""), text);
+        let help = |diagnostic: &Diagnostic| {
+            render_in(&source, diagnostic)
+                .lines()
+                .filter(|line| line.contains("= help"))
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let error = Diagnostic::error("E2001", range(text, "x"), "unresolved `x`");
+        assert_eq!(help(&error), "= help: run `viso explain E2001`");
+        let unknown = Diagnostic::error("E0001", range(text, "x"), "not a registered code");
+        assert_eq!(help(&unknown), "");
+        let warning = Diagnostic::warning("E2001", range(text, "x"), "unused");
+        assert_eq!(help(&warning), "");
+    }
+
+    #[test]
     fn color_styles_the_header_frame_and_marks_and_nothing_else() {
         let text = "let x = y;\n";
         let source = Source::new(Path::new("/p/a.vs"), Path::new("/p"), text);
@@ -447,7 +467,8 @@ mod tests {
              ::: src/lib.vs:1:8\n  \
              |\n\
              1 | record Point { x: I64; }\n  \
-             |        ----- declared here\n"
+             |        ----- declared here\n  \
+             = help: run `viso explain E2001`\n"
         );
     }
 

@@ -1581,6 +1581,8 @@ viso explain --list         # 全部码与标题，reserved 码标出
 
 未知 code：`EXPLAIN_UNKNOWN` 诊断并 exit 1，附编辑距离最近的码；`E0XXX` 形式的码是 Rust 编译器的，提示 `rustc --explain`。
 
+诊断链接到解释：编译器或配置的 error 诊断若自身没有 fix（配置诊断：没有 note），附一条无 edits 的 fix `run \`viso explain <code>\``——human 输出为 `= help:` 行，event stream 中即 §36.1 的 fix，不另加字段；warning 与 registry 中没有的码不附。
+
 ---
 
 ## 20. `viso dump`

@@ -452,9 +452,10 @@ explanations, IR dumps, the LSP, headless snapshots and tree queries.
       spec's) with nearest codes; `--json` gives
       `result{code,title,explanation,example,fix,…}`; `--list` lists all codes.
       (`EXPLAIN_UNKNOWN`; a Rust `E0XXX` points at `rustc --explain`.)
-- [ ] `viso check` and the event stream link each diagnostic to its explanation
+- [x] `viso check` and the event stream link each diagnostic to its explanation
       (`= help: viso explain E3101` on errors whose fix the message does not
-      already say).
+      already say). (An error with no fix of its own, a config error with no note,
+      gets the fix `run \`viso explain <code>\``: no edits, as §53's next commands.)
 
 ### C2.4 — `viso dump` (§20)
 

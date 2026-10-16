@@ -340,7 +340,11 @@ impl Output {
                 expected: &[],
                 actual: None,
                 notes: &diagnostic.notes,
-                fixes: Vec::new(),
+                fixes: if diagnostic.is_error() && diagnostic.notes.is_empty() {
+                    explained(diagnostic.code.as_str()).into_iter().collect()
+                } else {
+                    Vec::new()
+                },
             },
         );
     }
@@ -745,6 +749,16 @@ impl Output {
     }
 }
 
+/// The suggestion to read `code`'s explanation, for an error that says no
+/// fix of its own; `None` for a code `viso explain` does not know.
+fn explained(code: &str) -> Option<Suggestion<'static>> {
+    let known = viso_dsl::diag::codes::lookup(code).is_some()
+        || viso_project::ConfigCode::ALL
+            .iter()
+            .any(|known| known.as_str() == code);
+    known.then(|| Suggestion::command(&format!("viso explain {code}")))
+}
+
 /// Whether human output to stderr is colored under `choice`.
 fn colored(choice: ColorChoice) -> bool {
     use std::io::IsTerminal;
@@ -792,7 +806,7 @@ fn compiler_report<'a>(
             })
         })
         .collect();
-    let fixes = diagnostic
+    let mut fixes: Vec<Suggestion<'a>> = diagnostic
         .fixes
         .iter()
         .map(|fix: &'a Fix| Suggestion {
@@ -809,6 +823,9 @@ fn compiler_report<'a>(
                 .collect(),
         })
         .collect();
+    if diagnostic.severity == Severity::Error && fixes.is_empty() {
+        fixes.extend(explained(diagnostic.code));
+    }
     Report {
         severity,
         code: diagnostic.code,
