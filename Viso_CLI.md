@@ -1291,6 +1291,7 @@ threads      auto|off          auto
 - `VISO_STRIP`/`VISO_SOURCE_MAPS` 仍优先于 web 子表（§10 的层序）；
 - `source_maps` 让 `wasm-bindgen` 保留 DWARF（`--keep-debug`）并让 Cargo 生成 debug info；`strip` 去掉 name 与 producers section；
 - `optimize` 经 `wasm-opt`（`-O3`/`-Oz`，启用 Rust 默认产生的 bulk-memory、mutable-globals、nontrapping-float-to-int、sign-ext、reference-types、multivalue）；保留 names/debug info 时加 `-g`。`wasm-opt` 缺失：dev/release 输出 `log{level:"warn"}` 并保留未优化模块，shipping 以 `ENV_TOOL`（exit 3）失败；
+- 模块与 glue 按内容命名（`<bin>_bg.<hash>.wasm`、`<bin>.<hash>.js`，`<hash>` 为文件 SHA-256 的前 16 位十六进制），`index.html` 不带 hash，以 `init({ module_or_path })` 加载该模块，服务端可对带 hash 的文件永久缓存、对页面每次重新验证；
 - `brotli`/`gzip` 在每个 `.wasm`/`.js`/`.html` 旁写 `.br`（quality 11、window 24）与 `.gz`（level 9），各文件并行压缩；
 - `split`/`threads` 的 `auto` 当前解析为不拆分、单线程（拆分与 shared-memory 线程模块见 C4.2）。
 
@@ -1300,16 +1301,16 @@ Human output：
 
 ```text
 Built web-gpu (shipping) in 41.3 s
-  js         dist/web/app.js              18.0 KiB
-  brotli     dist/web/app.js.br           4.1 KiB
-  gzip       dist/web/app.js.gz           5.0 KiB
-  wasm       dist/web/app_bg.wasm         1.82 MiB
-  brotli     dist/web/app_bg.wasm.br      612 KiB
-  gzip       dist/web/app_bg.wasm.gz      744 KiB
-  html       dist/web/index.html          402 B
-  brotli     dist/web/index.html.br       233 B
-  gzip       dist/web/index.html.gz       281 B
-  manifest   dist/web/artifact.json       1.1 KiB
+  js         dist/web/app.3f9a0c1e7b2d4a65.js              18.0 KiB
+  brotli     dist/web/app.3f9a0c1e7b2d4a65.js.br           4.1 KiB
+  gzip       dist/web/app.3f9a0c1e7b2d4a65.js.gz           5.0 KiB
+  wasm       dist/web/app_bg.c41d8e09a6f3b257.wasm         1.82 MiB
+  brotli     dist/web/app_bg.c41d8e09a6f3b257.wasm.br      612 KiB
+  gzip       dist/web/app_bg.c41d8e09a6f3b257.wasm.gz      744 KiB
+  html       dist/web/index.html                           402 B
+  brotli     dist/web/index.html.br                        233 B
+  gzip       dist/web/index.html.gz                        281 B
+  manifest   dist/web/artifact.json                        1.1 KiB
 ```
 
 表头与各行写 stdout（`--quiet` 保留）；`--verbose` 另给出各阶段耗时（compile、package、publish）。`--json` 事件：`progress`、`diagnostic`（含 Rust 编译诊断，带 span）、每个产物一条 `artifact`（§36.2）、`summary`（`artifact_count`）。Exit code：1（source/config diagnostics）、3（target/SDK/工具不可用、lock 被占用、输出写不出）、4（compile/link 失败 `BUILD_FAILED`，打包失败 `BUILD_PACKAGE`）、130（Ctrl-C）。

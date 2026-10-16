@@ -469,6 +469,7 @@ mod tests {
     #[test]
     fn the_cargo_environment_names_the_ndk_tools() {
         let sdk = Sdk {
+            origin: SdkOrigin::Default,
             root: PathBuf::from("/sdk"),
             ndk_bin: PathBuf::from("/ndk/bin"),
             build_tools: PathBuf::from("/sdk/build-tools/36.0.0"),

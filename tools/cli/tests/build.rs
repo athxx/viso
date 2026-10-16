@@ -200,6 +200,20 @@ fn installed(program: &str) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// The name of the file in `dir` that starts with `prefix` and ends with
+/// `suffix`, its fingerprint between.
+fn bundled(dir: &Path, prefix: &str, suffix: &str) -> Option<String> {
+    fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .find(|name| {
+            name.strip_prefix(prefix)
+                .and_then(|rest| rest.strip_suffix(suffix))
+                .is_some_and(|hash| !hash.contains('.'))
+        })
+}
+
 #[test]
 fn a_web_build_is_a_bundle_shaped_by_its_profile() {
     let wasm32 = Command::new("rustup")
@@ -255,7 +269,19 @@ fn a_web_build_is_a_bundle_shaped_by_its_profile() {
         .collect();
     assert_eq!(kinds, ["html", "js", "wasm", "manifest"], "{stdout}");
     assert!(root.join("dist/web/index.html").is_file());
-    assert!(root.join("dist/web/probe_bg.wasm").is_file());
+    // The module and its glue are named by their content, and the page by
+    // the names.
+    let web = root.join("dist/web");
+    let module = bundled(&web, "probe_bg.", ".wasm").expect("the module");
+    let glue = bundled(&web, "probe.", ".js").expect("the glue");
+    let page = fs::read_to_string(web.join("index.html")).unwrap();
+    assert!(
+        page.contains(&format!(
+            r#"import init from "./{glue}"; init({{ module_or_path: "./{module}" }});"#
+        )),
+        "{page}"
+    );
+    assert_ne!(module, "probe_bg.wasm");
 
     // Shipping optimizes for size and precompresses; without `wasm-opt` it
     // cannot ship.
@@ -273,16 +299,16 @@ fn a_web_build_is_a_bundle_shaped_by_its_profile() {
     let stdout = text(&out.stdout);
     if installed("wasm-opt") {
         assert_eq!(out.status.code(), Some(0), "{stdout}");
-        assert!(root.join("dist/web/probe_bg.wasm.br").is_file());
-        assert!(root.join("dist/web/probe_bg.wasm.gz").is_file());
+        assert!(bundled(&web, "probe_bg.", ".wasm.br").is_some());
+        assert!(bundled(&web, "probe_bg.", ".wasm.gz").is_some());
     } else {
         assert_eq!(out.status.code(), Some(3), "{stdout}");
         assert!(stdout.contains("\"code\":\"ENV_TOOL\""), "{stdout}");
         assert!(
-            root.join("dist/web/probe_bg.wasm").is_file(),
+            bundled(&web, "probe_bg.", ".wasm").is_some(),
             "the dev bundle stays"
         );
-        assert!(!root.join("dist/web/probe_bg.wasm.br").exists());
+        assert!(bundled(&web, "probe_bg.", ".wasm.br").is_none());
     }
 
     // Release without `wasm-opt` builds, unoptimized, and says so.

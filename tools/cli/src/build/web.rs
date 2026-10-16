@@ -1,9 +1,11 @@
 //! The web bundle of a build, as its profile's web settings shape it: the
 //! glue `wasm-bindgen` generates, keeping the module's debug info for source
 //! maps or removing its name and producers sections for a stripped build;
-//! the page that loads it; the module optimized by `wasm-opt` for speed or
-//! size; and a Brotli and a gzip copy of each file beside it, for a server
-//! to hand out precompressed.
+//! the module optimized by `wasm-opt` for speed or size; the module and its
+//! glue named by their content (`<bin>_bg.<hash>.wasm`, `<bin>.<hash>.js`)
+//! so a server can cache them forever, and the page that loads them, which
+//! keeps its name; and a Brotli and a gzip copy of each file beside it, for a
+//! server to hand out precompressed.
 //!
 //! `wasm-opt` is optional where the profile can ship without it: missing, a
 //! dev or release bundle stays unoptimized with a warning, and a shipping
@@ -76,7 +78,6 @@ pub(super) fn bundle(
         bundle::BINDGEN_INSTALL,
         cancelled,
     )?;
-    bundle::write_index(dir, bin).map_err(BuildFailure::Package)?;
 
     let module = dir.join(format!("{bin}_bg.wasm"));
     if let Some(level) = match web.optimize.value {
@@ -107,6 +108,8 @@ pub(super) fn bundle(
         }
     }
 
+    fingerprint(dir, bin)?;
+
     let mut files = listed(dir)?;
     let compress: Vec<(&str, bool)> = vec![("br", web.brotli.value), ("gz", web.gzip.value)];
     if compress.iter().any(|(_, on)| *on) {
@@ -117,6 +120,30 @@ pub(super) fn bundle(
         files = listed(dir)?;
     }
     Ok(files)
+}
+
+/// Digits of a file's SHA-256 its fingerprinted name carries.
+const FINGERPRINT: usize = 16;
+
+/// Renames the module and the glue in `dir` by their content and writes the
+/// page loading them under those names.
+fn fingerprint(dir: &Path, bin: &str) -> Result<(), BuildFailure> {
+    let rename = |stem: &str, extension: &str| -> Result<String, BuildFailure> {
+        let from = dir.join(format!("{stem}.{extension}"));
+        let (_, sum) = super::file_hash(&from).map_err(|error| {
+            BuildFailure::Package(format!("cannot read `{}`: {error}", from.display()))
+        })?;
+        let digest: String = sum.iter().map(|b| format!("{b:02x}")).collect();
+        let name = format!("{stem}.{}.{extension}", &digest[..FINGERPRINT]);
+        std::fs::rename(&from, dir.join(&name)).map_err(|error| {
+            BuildFailure::Package(format!("cannot rename `{}`: {error}", from.display()))
+        })?;
+        Ok(name)
+    };
+    let module = rename(&format!("{bin}_bg"), "wasm")?;
+    let glue = rename(bin, "js")?;
+    bundle::write_page(dir, bin, &glue, Some(&module)).map_err(BuildFailure::Package)?;
+    Ok(())
 }
 
 /// The bundle files in `dir`, each with its kind, by name.
@@ -276,6 +303,44 @@ mod tests {
         assert_eq!(kind(Path::new("app.js.br")), Some("brotli"));
         assert_eq!(kind(Path::new("index.html.gz")), Some("gzip"));
         assert_eq!(kind(Path::new("notes.txt")), None);
+    }
+
+    #[test]
+    fn the_module_and_its_glue_are_named_by_their_content_and_the_page_by_none() {
+        let dir = std::env::temp_dir().join(format!("viso-web-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |wasm: &str| {
+            std::fs::write(dir.join("app_bg.wasm"), wasm).unwrap();
+            std::fs::write(dir.join("app.js"), "export default function init() {}").unwrap();
+            fingerprint(&dir, "app").unwrap();
+            let mut names: Vec<String> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            for name in &names {
+                if name != "index.html" {
+                    std::fs::remove_file(dir.join(name)).unwrap();
+                }
+            }
+            names
+        };
+        let first = write("\0asm one");
+        let [glue, module, index] = &first[..] else {
+            panic!("{first:?}");
+        };
+        assert_eq!(index, "index.html");
+        assert!(glue.starts_with("app.") && glue.len() == "app..js".len() + FINGERPRINT);
+        assert!(module.starts_with("app_bg.") && module.ends_with(".wasm"));
+        let page = std::fs::read_to_string(dir.join("index.html")).unwrap();
+        assert!(page.contains(&format!("./{glue}")) && page.contains(&format!("./{module}")));
+
+        // A changed module is a new name; its unchanged glue keeps its own.
+        let second = write("\0asm two");
+        assert_eq!(second[0], first[0]);
+        assert_ne!(second[1], first[1]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

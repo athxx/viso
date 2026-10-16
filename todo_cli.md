@@ -643,8 +643,10 @@ alternative.
 
 - [x] `build web-gpu` through the Build Service with the optimization policy (C1.6):
       a static directory with precompressed files.
-- [ ] Hashed asset names in the web bundle (`app.<hash>.js`, `app_bg.<hash>.wasm`,
-      the page naming them) so a server can cache them forever.
+- [x] Hashed asset names in the web bundle (`app.<hash>.js`, `app_bg.<hash>.wasm`,
+      the page naming them) so a server can cache them forever. (16 hex digits of
+      each file's SHA-256 after `wasm-opt`; the page passes the module to `init`, so
+      the generated glue is not rewritten; `index.html` keeps its name.)
 - [ ] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a
       shared-memory threaded module (`auto` resolves to off until then).
 - [ ] `serve` security headers of §15.3 (COOP/COEP when threads are on, CSP, `nosniff`,

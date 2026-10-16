@@ -447,7 +447,7 @@ pub(crate) fn hash(path: &Path) -> io::Result<(u64, String)> {
 }
 
 /// The SHA-256 of a file's bytes, and how many there are.
-fn file_hash(path: &Path) -> io::Result<(u64, [u8; 32])> {
+pub(crate) fn file_hash(path: &Path) -> io::Result<(u64, [u8; 32])> {
     let mut hasher = Sha256::new();
     let size = io::copy(&mut fs::File::open(path)?, &mut hasher)?;
     Ok((size, hasher.finalize().into()))

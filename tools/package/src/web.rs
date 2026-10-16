@@ -37,8 +37,23 @@ pub fn bindgen_command(wasm: &Path, dir: &Path, bin: &str) -> Command {
 
 /// Writes the page that loads `<bin>.js` as `<dir>/index.html`.
 pub fn write_index(dir: &Path, bin: &str) -> Result<PathBuf, String> {
+    write_page(dir, bin, &format!("{bin}.js"), None)
+}
+
+/// Writes the page titled `title` as `<dir>/index.html`, loading the glue
+/// `glue` and, when named, the module `module` beside it rather than the
+/// one the glue names.
+pub fn write_page(
+    dir: &Path,
+    title: &str,
+    glue: &str,
+    module: Option<&str>,
+) -> Result<PathBuf, String> {
     let index = dir.join("index.html");
-    io(&index, std::fs::write(&index, index_html(bin, "")))?;
+    io(
+        &index,
+        std::fs::write(&index, page(title, glue, module, "")),
+    )?;
     Ok(index)
 }
 
@@ -46,17 +61,25 @@ pub fn write_index(dir: &Path, bin: &str) -> Result<PathBuf, String> {
 /// app does) at the end of its head. The canvas fills it edge to edge (the
 /// backend keeps content inside the safe area) and nothing scrolls.
 pub fn index_html(bin: &str, head: &str) -> String {
+    page(bin, &format!("{bin}.js"), None, head)
+}
+
+fn page(title: &str, glue: &str, module: Option<&str>, head: &str) -> String {
+    let init = match module {
+        Some(module) => format!(r#"init({{ module_or_path: "./{module}" }})"#),
+        None => "init()".to_owned(),
+    };
     format!(
         r#"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>{bin}</title>
+<title>{title}</title>
 <style>html, body {{ height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }}</style>
 {head}</head>
 <body>
-<script type="module">import init from "./{bin}.js"; init();</script>
+<script type="module">import init from "./{glue}"; {init};</script>
 </body>
 </html>
 "#
@@ -103,6 +126,11 @@ mod tests {
         assert!(html.contains(r#"import init from "./demo.js"; init();"#));
         assert!(html.contains("viewport-fit=cover"));
         assert!(html.find("<script>x</script>").unwrap() < html.find("</head>").unwrap());
+        let html = page("demo", "demo.0a1b.js", Some("demo_bg.2c3d.wasm"), "");
+        assert!(html.contains(
+            r#"import init from "./demo.0a1b.js"; init({ module_or_path: "./demo_bg.2c3d.wasm" });"#
+        ));
+        assert!(html.contains("<title>demo</title>"));
     }
 
     #[test]
