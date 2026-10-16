@@ -12,8 +12,8 @@
 //! skipped with the reason. `--filter` (with `--exact`) narrows each domain's
 //! cases by name; `--fail-fast` stops at the first failed case.
 
-mod device;
 mod game;
+mod live;
 mod ui;
 mod unit;
 

@@ -658,8 +658,11 @@ alternative.
 - [ ] `serve --https`: self-signed loopback/LAN certificate generated and cached under
       `~/.viso/web/` (needs a TLS dependency decision — rustls; pending user call).
 - [ ] Page-side `print`/`eprintln` log API (pending user call, see `todo_hotreload.md`).
-- [ ] `test web --target web-gpu`: headless Chrome/WebDriver runner when a browser is
-      found, `skip` otherwise.
+- [x] `test web --target web-gpu`: headless Chrome/WebDriver runner when a browser is
+      found, `skip` otherwise. (`test ui --target web-gpu`: the device runner with a
+      browser venue — `viso run web-gpu --browser none`, the served page opened in
+      headless Chromium (`VISO_CHROME`, else Chrome/Chromium/Edge), the scenario through
+      the control endpoint; no WebDriver needed.)
 
 ### C4.3 — web-dom and web-hybrid
 

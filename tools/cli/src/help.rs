@@ -727,7 +727,8 @@ const NOTES: &[(&str, &str)] = &[
         "test",
         "A scenario is `tests/ui/<name>.tape` or `tests/game/<name>.tape`; a failed case exits 1, a crashed runner 5.\n\
          On `--target ios|android` each UI scenario plays on a fresh launch of the app on\n\
-         the device; its snapshot steps are taken headless only.",
+         the device, on `--target web-gpu` in a headless Chromium (`VISO_CHROME`); its\n\
+         snapshot steps are taken headless only.",
     ),
 ];
 

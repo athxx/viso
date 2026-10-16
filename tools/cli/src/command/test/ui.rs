@@ -32,21 +32,17 @@ use crate::output::{Output, Source, TestStatus};
 
 pub(super) fn run(ctx: &Context<'_>, checked: &Checked, run: &Run<'_>, out: &mut Output) -> u8 {
     let root = &checked.project.root;
-    let device = match run.args.target {
-        Some(TestTarget::Ios) => Some(Platform::Ios),
-        Some(TestTarget::Android) => Some(Platform::Android),
+    let live = match run.args.target {
+        Some(TestTarget::Ios) => Some(Live::Device(Platform::Ios)),
+        Some(TestTarget::Android) => Some(Live::Device(Platform::Android)),
+        Some(TestTarget::WebGpu) => Some(Live::Browser),
         _ => None,
     };
     if let Some(target) = run.args.target
         && target != TestTarget::Headless
-        && device.is_none()
+        && live.is_none()
     {
-        if run.every
-            && matches!(
-                target,
-                TestTarget::WebGpu | TestTarget::WebDom | TestTarget::WebHybrid
-            )
-        {
+        if run.every && matches!(target, TestTarget::WebDom | TestTarget::WebHybrid) {
             return SUCCESS;
         }
         return run.nothing(
@@ -54,7 +50,7 @@ pub(super) fn run(ctx: &Context<'_>, checked: &Checked, run: &Run<'_>, out: &mut
             "ui",
             ENV_TEST_TARGET,
             &format!(
-                "UI scenarios run `headless`, `ios` or `android` in this build of viso, not on `{}`",
+                "UI scenarios run `headless`, `ios`, `android` or `web-gpu` in this build of viso, not on `{}`",
                 target.target()
             ),
         );
@@ -128,8 +124,12 @@ pub(super) fn run(ctx: &Context<'_>, checked: &Checked, run: &Run<'_>, out: &mut
     if cases.is_empty() {
         return code;
     }
-    if let Some(platform) = device {
-        return code.max(on_device(ctx, root, run, platform, cases, out));
+    match live {
+        Some(Live::Device(platform)) => {
+            return code.max(on_device(ctx, root, run, platform, cases, out));
+        }
+        Some(Live::Browser) => return code.max(in_browser(ctx, root, run, cases, out)),
+        None => {}
     }
 
     let sources = cases
@@ -269,6 +269,50 @@ fn held(
     }
 }
 
+/// Where a run off headless plays its cases.
+#[derive(Clone, Copy)]
+enum Live {
+    Device(Platform),
+    Browser,
+}
+
+/// Plays `cases` in a headless Chromium browser, or skips each when there is
+/// none.
+fn in_browser(
+    ctx: &Context<'_>,
+    root: &Path,
+    run: &Run<'_>,
+    cases: Vec<Case>,
+    out: &mut Output,
+) -> u8 {
+    let Some(browser) = crate::deploy::web::headless_browser() else {
+        let why = format!(
+            "no Chromium browser to run `web-gpu` headless (install Chrome, or name one in `{}`)",
+            crate::deploy::web::CHROME_ENV
+        );
+        for case in &cases {
+            report(
+                out,
+                "ui",
+                &case.name,
+                TestStatus::Skip,
+                0,
+                Some(&why),
+                |_| {},
+            );
+        }
+        return SUCCESS;
+    };
+    super::live::run(
+        ctx,
+        root,
+        run,
+        &super::live::Venue::Browser { browser },
+        cases,
+        out,
+    )
+}
+
 /// Plays `cases` on the simulator or emulator of `platform` that
 /// `--device`, the project's default or the sole profile names.
 fn on_device(
@@ -291,5 +335,15 @@ fn on_device(
             Ok(profile) => profile,
             Err(code) => return code,
         };
-    super::device::run(ctx, root, run, platform, &profile, cases, out)
+    super::live::run(
+        ctx,
+        root,
+        run,
+        &super::live::Venue::Device {
+            platform,
+            profile: &profile,
+        },
+        cases,
+        out,
+    )
 }

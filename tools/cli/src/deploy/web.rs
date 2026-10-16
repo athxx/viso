@@ -1005,6 +1005,69 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// The variable that names the browser a headless run uses.
+pub(crate) const CHROME_ENV: &str = "VISO_CHROME";
+
+/// The Chromium browser a headless run uses: the one [`CHROME_ENV`] names,
+/// else Chrome, Chromium or Edge where they install; `None` when there is
+/// none.
+pub(crate) fn headless_browser() -> Option<PathBuf> {
+    if let Some(named) = std::env::var_os(CHROME_ENV).filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(named));
+    }
+    let installed: &[&str] = if cfg!(target_os = "macos") {
+        &[
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+    } else if cfg!(windows) {
+        &[
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ]
+    } else {
+        &[]
+    };
+    if let Some(found) = installed.iter().map(PathBuf::from).find(|p| p.is_file()) {
+        return Some(found);
+    }
+    let names = [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "microsoft-edge",
+    ];
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Opens `url` in `browser` with no window, its profile kept in `profile`,
+/// WebGPU on.
+pub(crate) fn open_headless(
+    browser: &std::path::Path,
+    url: &str,
+    profile: &std::path::Path,
+) -> io::Result<std::process::Child> {
+    Command::new(browser)
+        .args([
+            "--headless=new",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--enable-unsafe-webgpu",
+        ])
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+}
+
 /// Opens `url` in `browser` (`chrome`, `safari`, `firefox`), or in the
 /// system's default browser.
 pub(crate) fn open_browser(url: &str, browser: Option<&str>) -> Result<(), String> {
@@ -1412,25 +1475,8 @@ mod tests {
         web::write_index(&dir, "probe").unwrap();
         server.serve(dir.clone(), Vec::new(), false);
 
-        let chrome = std::env::var_os("VISO_E2E_CHROME").map_or_else(
-            || {
-                if cfg!(target_os = "macos") {
-                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".into()
-                } else {
-                    "google-chrome".into()
-                }
-            },
-            PathBuf::from,
-        );
-        let mut page = Command::new(chrome)
-            .args(["--headless=new", "--no-first-run"])
-            .arg(format!("--user-data-dir={}", dir.join("chrome").display()))
-            .arg(server.url())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("Chrome runs");
+        let chrome = headless_browser().expect("a Chromium browser");
+        let mut page = open_headless(&chrome, &server.url(), &dir.join("chrome")).expect("it runs");
         let next = || rx.recv_timeout(Duration::from_secs(60)).expect("a line");
         let lines = [next(), next()];
         server.reload_pages();
