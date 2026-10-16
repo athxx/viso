@@ -23,9 +23,7 @@
 //! token in the session lock: `viso game peek` and `viso game record` reach
 //! the running app through it.
 
-use std::collections::hash_map::RandomState;
 use std::ffi::OsString;
-use std::hash::{BuildHasher, Hasher as _};
 use std::io::{BufRead, BufReader, Read};
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
@@ -52,6 +50,7 @@ use crate::dev::build::{BuildEvent, RustBuild};
 use crate::dev::cargo::RustScope;
 use crate::dev::{
     self, Control, ControlCall, ControlDeliver, Deliver, DevSession, Expect, LinkEvent, WatchScope,
+    random_hex,
 };
 use crate::device::{self as devices, emulator, simulator};
 use crate::error::{
@@ -884,19 +883,6 @@ fn snapshot(exe: PathBuf, dev: &mut DevSession, app: &App, out: &mut Output) -> 
         app.close();
         Restart::Closing { exe, since }
     }
-}
-
-/// 128 bits from the process's randomly keyed hasher, as 32 hex digits. The
-/// keys come from the operating system's random source; the hash is not a
-/// cryptographic generator, which a loopback session token does not need.
-fn random_hex() -> String {
-    let state = RandomState::new();
-    let word = |salt: u8| {
-        let mut hasher = state.build_hasher();
-        hasher.write_u8(salt);
-        hasher.finish()
-    };
-    format!("{:016x}{:016x}", word(0), word(1))
 }
 
 /// Starts a thread per piped output of the app, turning each line into a `log`

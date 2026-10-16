@@ -385,6 +385,7 @@ impl Deploy {
                         };
                         let out = dir.join(slot).join(bin);
                         bundle::bindgen(exe, &out, bin)?;
+                        bundle::write_index(&out, bin)?;
                         Ok(out)
                     })),
                 }
@@ -495,13 +496,12 @@ impl Deploy {
                 open,
                 launched,
             } => {
-                let bin = artifact_name(artifact, "")?;
                 let page = vars
                     .of(false, None)
                     .into_iter()
                     .map(|(name, value)| (name.to_owned(), value))
                     .collect();
-                server.serve(artifact.to_owned(), bin, page, restore);
+                server.serve(artifact.to_owned(), page, restore);
                 if std::mem::replace(launched, true) {
                     // The open pages load the new build.
                     server.reload_pages();

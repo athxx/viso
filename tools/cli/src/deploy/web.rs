@@ -7,10 +7,10 @@
 //! an IP literal or `localhost`, never a domain name, so a page of another
 //! site cannot reach it by rebinding its name to this machine.
 //!
-//! The page that loads the app is written per request: the bundle's page
-//! with the launch variables (`visoLaunch`) the app reads before it starts —
-//! the dev channel's address and the session's identity, and, once after a
-//! warm restart, the restore. A WebSocket is accepted only from a page this
+//! The page that loads the app is written per request: the bundle's own
+//! `index.html`, which names its module and glue, with the launch variables
+//! (`visoLaunch`) the app reads before it starts — the session's identity,
+//! and, once after a warm restart, the restore — ahead of its `</head>`. A WebSocket is accepted only from a page this
 //! server served (its `Origin`), and the dev channel behind it checks the
 //! session token as the TCP channel does. Once a newer build is served, every
 //! open page's channel is closed with [`WEB_RELOAD_CLOSE`] and the page loads
@@ -24,7 +24,12 @@
 //! level, a tab and the line, each line at most [`MAX_LOG`] bytes.
 //!
 //! Each connection is served on a thread of its own; nothing is cached by the
-//! browser (`Cache-Control: no-store`).
+//! browser (`Cache-Control: no-store`). Every file is sent with its type and
+//! `nosniff`, kept to this origin (`Cross-Origin-Resource-Policy`), and as its
+//! Brotli or gzip copy when the bundle has one the browser accepts; the page
+//! runs only the scripts it was written with — each carries the response's
+//! nonce — and the bundle's (`Content-Security-Policy`), WebAssembly
+//! compiled.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
@@ -221,8 +226,8 @@ fn is_private(ip: IpAddr) -> bool {
 /// What the server serves.
 #[derive(Default)]
 struct Served {
-    /// The bundle's directory and the app's name, once a build is served.
-    bundle: Option<(PathBuf, String)>,
+    /// The bundle's directory, once a build is served.
+    bundle: Option<PathBuf>,
     /// The launch variables of the page.
     vars: Vec<(String, String)>,
     /// Whether the next page restores the app before it.
@@ -352,15 +357,9 @@ impl WebServer {
 
     /// Serves the bundle in `dir` of the app `bin`, its page launched with
     /// `vars`, the next one restoring the app before it when `restore`.
-    pub(crate) fn serve(
-        &self,
-        dir: PathBuf,
-        bin: String,
-        vars: Vec<(String, String)>,
-        restore: bool,
-    ) {
+    pub(crate) fn serve(&self, dir: PathBuf, vars: Vec<(String, String)>, restore: bool) {
         let mut served = lock(&self.served);
-        served.bundle = Some((dir, bin));
+        served.bundle = Some(dir);
         served.vars = vars;
         served.restore = restore;
     }
@@ -456,6 +455,7 @@ fn respond(stream: TcpStream, cx: &Context) {
             &mut stream,
             "421 Misdirected Request",
             "text/plain",
+            "",
             b"",
             false,
         );
@@ -474,65 +474,178 @@ fn respond(stream: TcpStream, cx: &Context) {
             &mut stream,
             "405 Method Not Allowed",
             "text/plain",
+            "",
             b"",
             true,
         );
         return;
     }
     let head = request.method == "HEAD";
-    let (status, kind, body) = {
+    let reply = {
         let mut served = lock(served);
         match &served.bundle {
-            None => (
+            None => Reply::text(
                 "503 Service Unavailable",
-                "text/plain; charset=utf-8",
-                b"the app is still building; load the page again in a moment".to_vec(),
+                "the app is still building; load the page again in a moment",
             ),
-            Some((_, bin)) if path.is_empty() || path == "index.html" => {
-                let bin = bin.clone();
-                // The page's dev channel is at the address it was loaded
-                // from, not at one it is told.
-                let mut vars: Vec<_> = served
-                    .vars
-                    .iter()
-                    .filter(|(name, _)| name != DEV_RUNTIME_ENV)
-                    .cloned()
-                    .collect();
-                // The restore is for the first page after the restart.
-                if std::mem::take(&mut served.restore) && !head {
-                    vars.push((DEV_RESTORE_ENV.to_owned(), "1".to_owned()));
+            Some(dir) if path.is_empty() || path == "index.html" => {
+                match std::fs::read_to_string(dir.join("index.html")) {
+                    Ok(page) => {
+                        // The page's dev channel is at the address it was
+                        // loaded from, not at one it is told.
+                        let mut vars: Vec<_> = served
+                            .vars
+                            .iter()
+                            .filter(|(name, _)| name != DEV_RUNTIME_ENV)
+                            .cloned()
+                            .collect();
+                        // The restore is for the first page after the restart.
+                        if std::mem::take(&mut served.restore) && !head {
+                            vars.push((DEV_RESTORE_ENV.to_owned(), "1".to_owned()));
+                        }
+                        let launch = format!("{}{PAGE_SCRIPT}", launch_script(&vars));
+                        Reply::page(&page, &launch, &crate::dev::random_hex())
+                    }
+                    Err(_) => Reply::text("404 Not Found", "the bundle has no page"),
                 }
-                let head = format!("{}{PAGE_SCRIPT}", launch_script(&vars));
-                let page = web::index_html(&bin, &head);
-                (
-                    "200 OK",
-                    web::mime(std::path::Path::new("index.html")),
-                    page.into_bytes(),
-                )
             }
-            Some((dir, _)) => match web::resolve(dir, &request.target)
-                .and_then(|file| std::fs::read(&file).ok().map(|body| (file, body)))
-            {
-                Some((file, body)) => ("200 OK", web::mime(&file), body),
-                None => ("404 Not Found", "text/plain", b"not found".to_vec()),
-            },
+            Some(dir) => match web::resolve(dir, &request.target) {
+                Some(file) => Reply::file(&file, request.header("accept-encoding")),
+                None => None,
+            }
+            .unwrap_or_else(|| Reply::text("404 Not Found", "not found")),
         }
     };
-    let _ = answer(&mut stream, status, kind, &body, head);
+    let _ = answer(
+        &mut stream,
+        reply.status,
+        reply.kind,
+        &reply.headers,
+        &reply.body,
+        head,
+    );
 }
 
-/// Writes a response.
+/// A response to a request for a file of the bundle.
+struct Reply {
+    status: &'static str,
+    kind: &'static str,
+    /// Its headers beyond the ones every response has, each ending in CRLF.
+    headers: String,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    fn text(status: &'static str, text: &str) -> Reply {
+        Reply {
+            status,
+            kind: "text/plain; charset=utf-8",
+            headers: String::new(),
+            body: text.as_bytes().to_vec(),
+        }
+    }
+
+    /// The bundle's page `page` with `launch` ahead of its `</head>`, every
+    /// script of it carrying `nonce`, the only inline scripts it may run.
+    fn page(page: &str, launch: &str, nonce: &str) -> Reply {
+        let page = match page.find("</head>") {
+            Some(at) => format!("{}{launch}{}", &page[..at], &page[at..]),
+            None => format!("{launch}{page}"),
+        };
+        let page = page.replace("<script", &format!("<script nonce=\"{nonce}\""));
+        Reply {
+            status: "200 OK",
+            kind: web::mime(std::path::Path::new("index.html")),
+            headers: format!("Content-Security-Policy: {}\r\n", page_policy(nonce)),
+            body: page.into_bytes(),
+        }
+    }
+
+    /// The bundle file `file`, as the copy of it `accept` (the request's
+    /// `Accept-Encoding`) takes when there is one; `None` when it cannot be
+    /// read.
+    fn file(file: &std::path::Path, accept: Option<&str>) -> Option<Reply> {
+        let mut headers = String::new();
+        let mut body = None;
+        let mut copies = false;
+        for (encoding, extension) in [("br", "br"), ("gzip", "gz")] {
+            let mut name = file.as_os_str().to_owned();
+            name.push(".");
+            name.push(extension);
+            let copy = std::path::PathBuf::from(name);
+            if !copy.is_file() {
+                continue;
+            }
+            copies = true;
+            if body.is_none() && accepts(accept, encoding) {
+                body = std::fs::read(&copy).ok();
+                if body.is_some() {
+                    headers.push_str(&format!("Content-Encoding: {encoding}\r\n"));
+                }
+            }
+        }
+        if copies {
+            headers.push_str("Vary: Accept-Encoding\r\n");
+        }
+        let body = match body {
+            Some(body) => body,
+            None => std::fs::read(file).ok()?,
+        };
+        Some(Reply {
+            status: "200 OK",
+            kind: web::mime(file),
+            headers,
+            body,
+        })
+    }
+}
+
+/// The page's `Content-Security-Policy`: scripts from this origin and the
+/// ones carrying `nonce`, WebAssembly compiled, no plugins, no other base,
+/// framed by this origin only. What the app loads and connects to is its own.
+fn page_policy(nonce: &str) -> String {
+    format!(
+        "script-src 'self' 'nonce-{nonce}' 'wasm-unsafe-eval'; object-src 'none'; \
+         base-uri 'none'; frame-ancestors 'self'"
+    )
+}
+
+/// Whether an `Accept-Encoding` of `accept` takes `encoding`: named, or by
+/// `*`, with a weight above zero.
+fn accepts(accept: Option<&str>, encoding: &str) -> bool {
+    let mut any = false;
+    for item in accept.unwrap_or("").split(',') {
+        let mut parts = item.split(';');
+        let name = parts.next().unwrap_or("").trim();
+        let weight = parts
+            .filter_map(|p| p.trim().strip_prefix("q="))
+            .find_map(|q| q.trim().parse::<f32>().ok())
+            .unwrap_or(1.0);
+        if name.eq_ignore_ascii_case(encoding) {
+            return weight > 0.0;
+        }
+        if name == "*" {
+            any = weight > 0.0;
+        }
+    }
+    any
+}
+
+/// Writes a response: every one is typed, not sniffed, not cached and kept
+/// to this origin, with `headers` besides.
 fn answer(
     stream: &mut TcpStream,
     status: &str,
     kind: &str,
+    headers: &str,
     body: &[u8],
     head: bool,
 ) -> io::Result<()> {
     write!(
         stream,
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+         X-Content-Type-Options: nosniff\r\nCross-Origin-Resource-Policy: same-origin\r\n\
+         {headers}Cache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     if !head {
@@ -602,7 +715,7 @@ fn upgrade(mut stream: TcpStream, request: &Request) -> Option<TcpStream> {
         .is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
     let key = request.header("sec-websocket-key");
     let (Some(key), true, true) = (key, origin_ok, upgrade) else {
-        let _ = answer(&mut stream, "403 Forbidden", "text/plain", b"", false);
+        let _ = answer(&mut stream, "403 Forbidden", "text/plain", "", b"", false);
         return None;
     };
     let accept = base64(&sha1(format!("{key}{WEBSOCKET_GUID}").as_bytes()));
@@ -983,6 +1096,132 @@ mod tests {
     }
 
     #[test]
+    fn an_encoding_is_taken_when_named_or_by_a_wildcard_with_weight() {
+        assert!(accepts(Some("gzip, deflate, br, zstd"), "br"));
+        assert!(accepts(Some("br;q=0.5"), "br"));
+        assert!(!accepts(Some("br;q=0, gzip"), "br"));
+        assert!(accepts(Some("*"), "gzip"));
+        assert!(!accepts(Some("*, gzip;q=0"), "gzip"));
+        assert!(!accepts(Some("identity"), "br"));
+        assert!(!accepts(None, "gzip"));
+    }
+
+    #[test]
+    fn the_page_runs_its_own_scripts_and_the_launch_before_the_app() {
+        let page = "<html><head><title>a</title></head><body>\
+                    <script type=\"module\">import init from \"./a.1.js\"; init();</script></body></html>";
+        let reply = Reply::page(
+            page,
+            "<script>globalThis.visoLaunch = {};</script>\n",
+            "n0nce",
+        );
+        let body = String::from_utf8(reply.body).unwrap();
+        let launch = body.find("visoLaunch").unwrap();
+        assert!(launch < body.find("</head>").unwrap());
+        assert!(launch < body.find("./a.1.js").unwrap());
+        assert_eq!(body.matches("<script nonce=\"n0nce\"").count(), 2, "{body}");
+        assert_eq!(body.matches("<script").count(), 2);
+        assert!(
+            reply
+                .headers
+                .contains("script-src 'self' 'nonce-n0nce' 'wasm-unsafe-eval'"),
+            "{}",
+            reply.headers
+        );
+        assert!(reply.headers.contains("object-src 'none'"));
+    }
+
+    #[test]
+    fn a_file_goes_as_the_copy_the_browser_takes() {
+        let dir = std::env::temp_dir().join(format!("viso-serve-copies-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let module = dir.join("a_bg.1.wasm");
+        std::fs::write(&module, b"\0asm plain").unwrap();
+        std::fs::write(dir.join("a_bg.1.wasm.br"), b"brotli").unwrap();
+        std::fs::write(dir.join("a_bg.1.wasm.gz"), b"gzip").unwrap();
+        let reply = Reply::file(&module, Some("gzip, br")).unwrap();
+        assert_eq!(reply.body, b"brotli");
+        assert_eq!(reply.kind, "application/wasm");
+        assert!(reply.headers.contains("Content-Encoding: br\r\n"));
+        assert!(reply.headers.contains("Vary: Accept-Encoding\r\n"));
+        let reply = Reply::file(&module, Some("gzip")).unwrap();
+        assert_eq!(reply.body, b"gzip");
+        let reply = Reply::file(&module, None).unwrap();
+        assert_eq!(reply.body, b"\0asm plain");
+        assert!(!reply.headers.contains("Content-Encoding"));
+        assert!(reply.headers.contains("Vary: Accept-Encoding"));
+
+        // A file with no copies varies by nothing.
+        let page = dir.join("index.html");
+        std::fs::write(&page, "<html></html>").unwrap();
+        assert_eq!(Reply::file(&page, Some("br")).unwrap().headers, "");
+        assert!(Reply::file(&dir.join("gone.js"), None).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_server_hands_out_the_bundles_page_and_files_with_their_headers() {
+        use viso_view::dev::wire::{BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint};
+
+        let dir = std::env::temp_dir().join(format!("viso-serve-page-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        web::write_page(&dir, "probe", "probe.0a.js", Some("probe_bg.1b.wasm")).unwrap();
+        std::fs::write(dir.join("probe_bg.1b.wasm"), b"\0asm").unwrap();
+        let expect = Expect {
+            token: "token".into(),
+            dev_session: DevSessionId(1),
+            build_id: BuildId(2),
+            project: ProjectFingerprint(3),
+            schema: SchemaFingerprint(4),
+        };
+        let log: PageLog = Arc::new(|_, _| true);
+        let server =
+            WebServer::bind(Listen::loopback(), 0, expect, Arc::new(|_| true), log).unwrap();
+        let get = |path: &str| {
+            let mut stream = TcpStream::connect(server.addr()).unwrap();
+            write!(
+                stream,
+                "GET {path} HTTP/1.1\r\nHost: {}\r\nAccept-Encoding: br\r\n\r\n",
+                server.addr()
+            )
+            .unwrap();
+            let mut response = String::new();
+            let _ = stream.read_to_string(&mut response);
+            response
+        };
+        assert!(get("/").starts_with("HTTP/1.1 503"), "nothing is built yet");
+        server.serve(
+            dir.clone(),
+            vec![("VISO_DEV_TOKEN".into(), "token".into())],
+            false,
+        );
+        let page = get("/");
+        assert!(page.starts_with("HTTP/1.1 200 OK"), "{page}");
+        for header in [
+            "Content-Type: text/html; charset=utf-8",
+            "X-Content-Type-Options: nosniff",
+            "Cross-Origin-Resource-Policy: same-origin",
+            "Content-Security-Policy: script-src 'self' 'nonce-",
+            "Cache-Control: no-store",
+        ] {
+            assert!(page.contains(header), "{header}: {page}");
+        }
+        assert!(page.contains(r#"init({ module_or_path: "./probe_bg.1b.wasm" })"#));
+        assert!(page.contains("\"VISO_DEV_TOKEN\":\"token\""));
+        let module = get("/probe_bg.1b.wasm");
+        assert!(
+            module.contains("Content-Type: application/wasm"),
+            "{module}"
+        );
+        assert!(module.contains("X-Content-Type-Options: nosniff"));
+        assert!(!module.contains("Content-Security-Policy"));
+        assert!(get("/missing.js").starts_with("HTTP/1.1 404"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_launch_script_cannot_end_its_element() {
         let script = launch_script(&[("VISO_DEV_TOKEN".into(), "</script>".into())]);
         assert!(script.starts_with("<script>globalThis.visoLaunch = {\"VISO_DEV_TOKEN\":"));
@@ -1170,7 +1409,8 @@ mod tests {
         let log: PageLog = Arc::new(move |level, line| tx.send((level, line)).is_ok());
         let server =
             WebServer::bind(Listen::loopback(), 0, expect, Arc::new(|_| true), log).unwrap();
-        server.serve(dir.clone(), "probe".into(), Vec::new(), false);
+        web::write_index(&dir, "probe").unwrap();
+        server.serve(dir.clone(), Vec::new(), false);
 
         let chrome = std::env::var_os("VISO_E2E_CHROME").map_or_else(
             || {

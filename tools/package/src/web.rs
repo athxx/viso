@@ -50,21 +50,14 @@ pub fn write_page(
     module: Option<&str>,
 ) -> Result<PathBuf, String> {
     let index = dir.join("index.html");
-    io(
-        &index,
-        std::fs::write(&index, page(title, glue, module, "")),
-    )?;
+    io(&index, std::fs::write(&index, page(title, glue, module)))?;
     Ok(index)
 }
 
-/// The page that loads the app, with `head` (markup that runs before the
-/// app does) at the end of its head. The canvas fills it edge to edge (the
-/// backend keeps content inside the safe area) and nothing scrolls.
-pub fn index_html(bin: &str, head: &str) -> String {
-    page(bin, &format!("{bin}.js"), None, head)
-}
-
-fn page(title: &str, glue: &str, module: Option<&str>, head: &str) -> String {
+/// The page that loads the app. The canvas fills it edge to edge (the
+/// backend keeps content inside the safe area) and nothing scrolls; a dev
+/// server adds what runs before the app ahead of its `</head>`.
+fn page(title: &str, glue: &str, module: Option<&str>) -> String {
     let init = match module {
         Some(module) => format!(r#"init({{ module_or_path: "./{module}" }})"#),
         None => "init()".to_owned(),
@@ -77,7 +70,7 @@ fn page(title: &str, glue: &str, module: Option<&str>, head: &str) -> String {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{title}</title>
 <style>html, body {{ height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }}</style>
-{head}</head>
+</head>
 <body>
 <script type="module">import init from "./{glue}"; {init};</script>
 </body>
@@ -121,12 +114,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_page_loads_the_generated_module_after_its_head() {
-        let html = index_html("demo", "<script>x</script>\n");
+    fn the_page_loads_the_generated_module() {
+        let html = page("demo", "demo.js", None);
         assert!(html.contains(r#"import init from "./demo.js"; init();"#));
         assert!(html.contains("viewport-fit=cover"));
-        assert!(html.find("<script>x</script>").unwrap() < html.find("</head>").unwrap());
-        let html = page("demo", "demo.0a1b.js", Some("demo_bg.2c3d.wasm"), "");
+        let html = page("demo", "demo.0a1b.js", Some("demo_bg.2c3d.wasm"));
         assert!(html.contains(
             r#"import init from "./demo.0a1b.js"; init({ module_or_path: "./demo_bg.2c3d.wasm" });"#
         ));

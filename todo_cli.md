@@ -648,9 +648,13 @@ alternative.
       each file's SHA-256 after `wasm-opt`; the page passes the module to `init`, so
       the generated glue is not rewritten; `index.html` keeps its name.)
 - [ ] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a
-      shared-memory threaded module (`auto` resolves to off until then).
-- [ ] `serve` security headers of §15.3 (COOP/COEP when threads are on, CSP, `nosniff`,
-      correct MIME for `.wasm`), served precompressed when the client accepts it.
+      shared-memory threaded module (`auto` resolves to off until then); with threads
+      on, `serve` sends COOP `same-origin` and COEP `require-corp`.
+- [x] `serve` security headers of §15.3 (CSP, `nosniff`, correct MIME for `.wasm`),
+      served precompressed when the client accepts it. (The page is the bundle's own
+      `index.html` with the launch scripts ahead of `</head>`; a per-response nonce on
+      each script, CSP on scripts only; CORP `same-origin`; `.br` before `.gz` by
+      `Accept-Encoding` with `Vary`. COOP/COEP move to the threads item.)
 - [ ] `serve --https`: self-signed loopback/LAN certificate generated and cached under
       `~/.viso/web/` (needs a TLS dependency decision — rustls; pending user call).
 - [ ] Page-side `print`/`eprintln` log API (pending user call, see `todo_hotreload.md`).

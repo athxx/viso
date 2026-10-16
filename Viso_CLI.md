@@ -1387,6 +1387,13 @@ print local/network URL
 
 WebGPU/threaded WASM 所需 COOP/COEP 等 header 由 target/profile policy 决定，不能要求用户自己拼开发 server 配置。
 
+当前实现：
+
+- 每个响应带 `Content-Type`（`.wasm` 为 `application/wasm`）、`X-Content-Type-Options: nosniff`、`Cross-Origin-Resource-Policy: same-origin`、`Cache-Control: no-store`；
+- 页面是 bundle 自己的 `index.html`（它给出按内容命名的模块与 glue，§14.3），launch 变量与页面 log 脚本插在 `</head>` 前；每个响应生成一个 nonce，页面的每个 `<script>` 都带上它，`Content-Security-Policy: script-src 'self' 'nonce-…' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'`——只限制脚本来源，app 自己的网络请求、图片与字体不受限制；
+- bundle 文件有 `.br`/`.gz` 副本时按请求的 `Accept-Encoding`（权重大于 0，`*` 亦可）优先 Brotli、其次 gzip 发送，带 `Content-Encoding` 与 `Vary: Accept-Encoding`；
+- WebGPU 只要求 secure context，不需要 COOP/COEP；`Cross-Origin-Opener-Policy: same-origin` 与 `Cross-Origin-Embedder-Policy: require-corp` 随 shared-memory 线程模块（`[profile.<name>.web] threads`）开启，否则不发——COEP 会挡住 app 加载的跨源资源。
+
 ---
 
 # Part V — Language / Compiler commands

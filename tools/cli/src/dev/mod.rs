@@ -62,7 +62,9 @@ pub mod report;
 mod sources;
 pub mod watch;
 
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{BuildHasher, Hasher as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -1921,6 +1923,19 @@ fn quoted(names: &[String]) -> String {
 
 fn elapsed_us(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+/// 128 bits from the process's randomly keyed hasher, as 32 hex digits. The
+/// keys come from the operating system's random source; the hash is not a
+/// cryptographic generator, which a loopback session token does not need.
+pub(crate) fn random_hex() -> String {
+    let state = RandomState::new();
+    let word = |salt: u8| {
+        let mut hasher = state.build_hasher();
+        hasher.write_u8(salt);
+        hasher.finish()
+    };
+    format!("{:016x}{:016x}", word(0), word(1))
 }
 
 #[cfg(test)]
