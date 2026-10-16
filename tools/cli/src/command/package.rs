@@ -21,6 +21,7 @@ use crate::context::{Context, failure_code, in_its_file};
 use crate::delivery::signing::{self, Machine};
 use crate::delivery::{Plan, Platform, Policy, metadata};
 use crate::error::{CLI_USAGE, ENV_BUILD_WRITE, PACKAGE_SIGNING, PACKAGE_UNSIGNED, SUCCESS};
+use crate::output::sayln;
 use crate::output::{Artifact, Output, human};
 
 pub fn run(ctx: &Context<'_>, args: &PackageArgs, out: &mut Output) -> u8 {
@@ -141,7 +142,7 @@ pub fn run(ctx: &Context<'_>, args: &PackageArgs, out: &mut Output) -> u8 {
     };
 
     if out.human() {
-        println!(
+        sayln!(
             "Packaged {platform_name} ({profile}) in {}, {}",
             seconds(started.elapsed()),
             plan.signing.signer.summary()

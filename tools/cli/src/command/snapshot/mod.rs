@@ -40,6 +40,7 @@ use crate::error::{
     RUN_TEST_CRASHED, RUNTIME, SUCCESS, TEST_EXPECTATION, TEST_SNAPSHOT_INVALID,
     TEST_SNAPSHOT_MISMATCH, TEST_SNAPSHOT_MISSING,
 };
+use crate::output::sayln;
 use crate::output::{Artifact, Output, Source, TestStatus, human};
 
 /// The target snapshots are taken on.
@@ -324,7 +325,7 @@ pub fn run(ctx: &Context<'_>, command: &SnapshotCommand, out: &mut Output) -> u8
             } else {
                 "updated"
             };
-            println!(
+            sayln!(
                 "{} snapshot{} {word}; {} unchanged",
                 tally.written,
                 if tally.written == 1 { "" } else { "s" },

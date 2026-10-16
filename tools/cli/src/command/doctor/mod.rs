@@ -30,6 +30,7 @@ use crate::args::{BuildTarget, DoctorArgs};
 use crate::context::Context;
 use crate::error::{ENVIRONMENT, SUCCESS};
 use crate::output::Output;
+use crate::output::sayln;
 
 /// How long a check may take, its tools included, before it is an error.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
@@ -299,7 +300,7 @@ fn fix(checks: &mut [Check], machine: &Arc<Machine>, out: &mut Output) {
 /// Reports every check and the commands that close its gaps; the exit code.
 fn report(checks: &[Check], out: &mut Output) -> u8 {
     if out.human() {
-        println!("Viso Doctor\n");
+        sayln!("Viso Doctor\n");
     }
     for check in checks {
         let found = &check.found;
@@ -325,9 +326,9 @@ fn report(checks: &[Check], out: &mut Output) -> u8 {
         .filter_map(|check| check.found.suggestion.as_deref())
         .collect();
     if out.human() && !suggestions.is_empty() {
-        println!("\nSuggested actions:");
+        sayln!("\nSuggested actions:");
         for suggestion in suggestions {
-            println!("  {suggestion}");
+            sayln!("  {suggestion}");
         }
     }
     if checks.iter().any(|check| check.found.status.fails()) {

@@ -7,6 +7,42 @@
 pub mod human;
 pub mod json;
 
+/// Writes to stdout as `print!` does, through [`write_stdout`].
+macro_rules! say {
+    ($($arg:tt)*) => {
+        $crate::output::write_stdout(format_args!($($arg)*))
+    };
+}
+
+/// Writes a line to stdout as `println!` does, through [`write_stdout`].
+macro_rules! sayln {
+    () => {
+        $crate::output::write_stdout(format_args!("\n"))
+    };
+    ($($arg:tt)*) => {
+        $crate::output::write_stdout(format_args!("{}\n", format_args!($($arg)*)))
+    };
+}
+
+pub(crate) use sayln;
+
+/// Whether stdout's reader has gone.
+static STDOUT_GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Writes `text` to stdout. A reader that has gone — `viso … | head`, a
+/// closed pipe — is no failure of the command: what it would have read is
+/// dropped, and the command finishes its work and cleans up as it would.
+pub(crate) fn write_stdout(text: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    use std::sync::atomic::Ordering;
+    if STDOUT_GONE.load(Ordering::Relaxed) {
+        return;
+    }
+    if std::io::stdout().lock().write_fmt(text).is_err() {
+        STDOUT_GONE.store(true, Ordering::Relaxed);
+    }
+}
+
 use std::borrow::Cow;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -419,7 +455,7 @@ impl Output {
         self.artifacts += 1;
         match &mut self.form {
             Form::Json(stream) => stream.artifact(artifact),
-            Form::Human => print!("{}", text()),
+            Form::Human => say!("{}", text()),
         }
     }
 
@@ -503,7 +539,7 @@ impl Output {
     pub fn result(&mut self, payload: impl FnOnce(&mut JsonWriter), text: impl FnOnce() -> String) {
         match &mut self.form {
             Form::Json(stream) => stream.result(payload),
-            Form::Human => print!("{}", text()),
+            Form::Human => say!("{}", text()),
         }
     }
 
@@ -562,7 +598,7 @@ impl Output {
     ) {
         match &mut self.form {
             Form::Json(stream) => stream.doctor_check(name, status, code, message, suggestion),
-            Form::Human => print!("{}", text()),
+            Form::Human => say!("{}", text()),
         }
     }
 
@@ -667,7 +703,7 @@ impl Output {
         }
         match &mut self.form {
             Form::Json(stream) => stream.test(test, extra),
-            Form::Human => print!("{}", text()),
+            Form::Human => say!("{}", text()),
         }
     }
 
@@ -687,7 +723,7 @@ impl Output {
             } else {
                 "FAILED"
             };
-            println!("test result: {status}. {pass} passed; {fail} failed; {skip} skipped");
+            sayln!("test result: {status}. {pass} passed; {fail} failed; {skip} skipped");
         }
     }
 
@@ -713,7 +749,7 @@ impl Output {
             Form::Json(stream) => stream.progress("idle", message),
             Form::Human => {
                 if let Some((package, files)) = &self.checked {
-                    println!(
+                    sayln!(
                         "{}",
                         human::summary(package, *files, self.errors, self.warnings)
                     );
@@ -732,7 +768,7 @@ impl Output {
         match self.form {
             Form::Human => {
                 if let Some((package, files)) = checked {
-                    println!(
+                    sayln!(
                         "{}",
                         human::summary(package, files, self.errors, self.warnings)
                     );

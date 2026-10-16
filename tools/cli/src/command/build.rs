@@ -32,6 +32,7 @@ use crate::error::{
     PACKAGE_SIGNING, SUCCESS,
 };
 use crate::interrupt;
+use crate::output::sayln;
 use crate::output::{Artifact, Output, human};
 
 /// How long the command waits for the build between checks for Ctrl-C.
@@ -116,7 +117,7 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
     });
 
     if out.human() {
-        println!("Built {target} ({profile}) in {}", seconds(elapsed));
+        sayln!("Built {target} ({profile}) in {}", seconds(elapsed));
     }
     let paths: Vec<String> = written
         .iter()

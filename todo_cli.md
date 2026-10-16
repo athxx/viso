@@ -783,9 +783,10 @@ and traced from the CLI and from Studio over the same services.
       (C1.3); every payload documented in `Viso_CLI.md` with an example.
 - [ ] Every command except `lsp`, `studio`, `completion` supports `--json`; a test
       runs each command with `--json` and checks the stream (C7.6).
-- [ ] stdout carries only events under `--json` (child output becomes `log`),
-      human output never writes events; a test closes stdout early and the CLI exits
-      cleanly without a panic (`EPIPE`).
+- [x] stdout carries only events under `--json` (child output becomes `log`),
+      human output never writes events; every human write goes through one writer
+      that drops what a gone reader would have read, so a closed pipe (`EPIPE`) ends
+      the command as it would, never a panic (`tests/stdout.rs`).
 
 ### C7.2 — Reliability and security (§48–§51)
 
