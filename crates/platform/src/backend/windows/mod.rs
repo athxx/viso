@@ -107,12 +107,15 @@ impl PumpQueue {
         }
     }
 
+    /// The next synthetic event: a pending wake first, so a window that
+    /// draws every beat cannot hold off what it delivers, then redraw beats,
+    /// then the queue.
     fn next_synthetic(&mut self) -> Option<RawEvent> {
-        if let Some(window) = self.redraws.pop_front() {
-            return Some(RawEvent::RedrawRequested { window });
-        }
         if self.woken.swap(false, Ordering::AcqRel) {
             return Some(RawEvent::Wakeup);
+        }
+        if let Some(window) = self.redraws.pop_front() {
+            return Some(RawEvent::RedrawRequested { window });
         }
         self.events.pop_front()
     }
@@ -518,13 +521,22 @@ impl PlatformApp for WinApp {
         let _drive_guard = DriveGuard(self.shared.clone());
 
         let mut flow = ControlFlow::Wait;
+        // Whether a redraw beat was just delivered: the pump then takes what
+        // the OS has queued before the next synthetic event, so a window that
+        // draws every beat does not starve input.
+        let mut drew = false;
         loop {
             if self.shared.borrow().should_exit {
                 break;
             }
-            let synthetic = self.shared.borrow_mut().next_synthetic();
+            let synthetic = if drew {
+                None
+            } else {
+                self.shared.borrow_mut().next_synthetic()
+            };
             if let Some(event) = synthetic {
                 let closed = matches!(event, RawEvent::WindowClosed { .. });
+                drew = matches!(event, RawEvent::RedrawRequested { .. });
                 flow = deliver(handler, &self.shared, event);
                 if closed {
                     self.prune_closed();
@@ -536,6 +548,16 @@ impl PlatformApp for WinApp {
             }
 
             let mut msg = MSG::default();
+            if std::mem::take(&mut drew) {
+                if !peek(&mut msg) {
+                    continue;
+                }
+                if msg.message == WM_QUIT {
+                    break;
+                }
+                self.dispatch(&msg);
+                continue;
+            }
             match flow {
                 // Sleep until input arrives or the timer deadline passes; a
                 // timeout with nothing queued means the deadline arrived, so a

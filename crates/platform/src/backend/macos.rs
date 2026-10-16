@@ -101,14 +101,15 @@ struct PumpQueue {
 }
 
 impl PumpQueue {
-    /// The next synthetic event: redraw beats first, then a pending wake,
-    /// then the delegate/view queue.
+    /// The next synthetic event: a pending wake first, then redraw beats,
+    /// then the delegate/view queue. A wake goes ahead of the beats so a
+    /// window that draws every beat cannot hold off what the wake delivers.
     fn pop(&mut self) -> Option<RawEvent> {
-        if let Some(w) = self.redraws.pop_front() {
-            return Some(RawEvent::RedrawRequested { window: w });
-        }
         if self.woken.swap(false, Ordering::AcqRel) {
             return Some(RawEvent::Wakeup);
+        }
+        if let Some(w) = self.redraws.pop_front() {
+            return Some(RawEvent::RedrawRequested { window: w });
         }
         self.events.pop_front()
     }
@@ -520,6 +521,10 @@ impl PlatformApp for MacApp {
         let _drive_guard = DriveGuard(self.shared.clone());
 
         let mut flow = ControlFlow::Wait;
+        // Whether a redraw beat was just delivered: the pump then takes what
+        // the OS has before the next synthetic event, so a window that draws
+        // every beat does not starve input.
+        let mut drew = false;
         loop {
             if self.shared.borrow().should_exit {
                 break;
@@ -527,18 +532,20 @@ impl PlatformApp for MacApp {
             // Deliver any synthetic (delegate/view) events first — redraw beats,
             // resizes, closes, and the pointer/key/scroll/IME samples the view
             // enqueued while AppKit dispatched the last OS event.
-            if let Some(event) = self.next_synthetic() {
+            if !drew && let Some(event) = self.next_synthetic() {
                 if let RawEvent::WindowFocused { window, focused } = event
                     && let Some(win) = self.windows.iter_mut().find(|w| w.id == window)
                 {
                     win.access.set_focused(focused);
                 }
+                drew = matches!(event, RawEvent::RedrawRequested { .. });
                 flow = deliver(handler, event);
                 if flow == ControlFlow::Exit {
                     break;
                 }
                 continue;
             }
+            let yielding = std::mem::take(&mut drew);
 
             // Then pull one OS event. Block or spin per the last decision.
             // Each turn runs inside its own autorelease pool: AppKit's event
@@ -546,9 +553,11 @@ impl PlatformApp for MacApp {
             // a pool draining them `nextEventMatchingMask:` degenerates into a
             // busy spin (it returns immediately instead of blocking on
             // `distantFuture`).
-            let block = matches!(flow, ControlFlow::Wait | ControlFlow::WaitUntil(_));
+            let block = !yielding && matches!(flow, ControlFlow::Wait | ControlFlow::WaitUntil(_));
             let got_event = autoreleasepool(|_| {
                 let until = match flow {
+                    // After a beat: only what is already queued.
+                    _ if yielding => NSDate::distantPast(),
                     // A one-shot timer's deadline: block only until it is due, so
                     // the pump wakes to fire it and otherwise spends zero CPU.
                     // `NSDate` from the remaining seconds (clamped at zero for a
@@ -582,7 +591,7 @@ impl PlatformApp for MacApp {
                     None => false,
                 }
             });
-            if !got_event {
+            if !got_event && !yielding {
                 match flow {
                     // A `WaitUntil` that returned no OS event means the timer
                     // deadline elapsed: synthesize a wakeup so the scheduler runs
