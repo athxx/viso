@@ -833,8 +833,12 @@ and traced from the CLI and from Studio over the same services.
       Windows only.
 - [ ] GPU time verified on a presenting Vulkan device (Android emulator's Vulkan
       fails to create an instance on this host) and on Windows D3D12.
-- [ ] HUD checked on screen (golden of a window with `--profile-frame`); only its
-      layout is tested.
+- [x] HUD checked on screen: a macOS `run --profile-frame` window's presented
+      frame carries the HUD's panel and its text run (`inspect frame`: 3 nodes and
+      2 primitives beyond the tree, in their own quad and glyph batches); its
+      layout is unit-tested.
+- [ ] A pixel golden of the HUD: its text changes every half second and a
+      headless run shapes no text, and this host grants no screen capture.
 - [x] `run --inspect`: the session follows its first runtime's first window over its
       own control endpoint, the same journal `inspect --attach` follows.
 - [x] Device profiles for mobile performance (simulator vs emulator caveats reported
