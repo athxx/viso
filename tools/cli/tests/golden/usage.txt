@@ -45,8 +45,8 @@ TEST / DEBUG
   game        Read a state of, or record input from, the game `viso run` is playing
 
 DELIVERY
-  package     Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive
-  export      Generate source a web project owns from the app's view: plain HTML and CSS
+  package     Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive and an MSIX
+  export      Generate source a web project owns from the app's view: plain HTML and CSS, or a SolidJS component
 
 MAINTENANCE
   clean       Remove `target/viso/`: builds, caches and dev state, never `dist/`

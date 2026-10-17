@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use viso_project::{Platform, Preset};
+use viso_project::Preset;
 
 use crate::args::{BuildTarget, DoctorArgs, IosCommand, IosUseArgs, PlatformDoctorArgs};
 use crate::context::Context;
@@ -40,7 +40,7 @@ pub fn run(ctx: &Context<'_>, command: &IosCommand, out: &mut Output) -> u8 {
         IosCommand::List => list(ctx.global.offline, out),
         IosCommand::Use(args) => use_runtime(args, ctx.global.offline, out),
         IosCommand::Doctor(args) => doctor(ctx, args, out),
-        IosCommand::Simulator(command) => super::device::run(Platform::Ios, command, out),
+        IosCommand::Simulator(command) => super::device::simulator(command, out),
     }
 }
 

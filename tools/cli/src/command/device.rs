@@ -5,12 +5,45 @@
 use viso_package::android::Sdk;
 use viso_project::{DeviceProfile, DeviceStore, Platform, Preset};
 
-use crate::args::{CreateArgs, DeviceCommand, PresetArg};
+use crate::args::{CreateArgs, EmulatorCommand, PresetArg, SimulatorCommand};
 use crate::device::{self, emulator, simulator};
 use crate::error::{DEVICE_UNKNOWN, ENV_DEVICE, SUCCESS};
 use crate::output::Output;
 
-pub fn run(platform: Platform, command: &DeviceCommand, out: &mut Output) -> u8 {
+/// What is done with a profile, on either platform.
+enum Action<'a> {
+    List,
+    Create(&'a CreateArgs, Option<&'a str>),
+    Start(&'a str, bool),
+    Stop(&'a str),
+    Delete(&'a str),
+}
+
+/// `viso android emulator …`.
+pub fn emulator(command: &EmulatorCommand, out: &mut Output) -> u8 {
+    let action = match command {
+        EmulatorCommand::List => Action::List,
+        EmulatorCommand::Create(args) => Action::Create(&args.profile, args.api.as_deref()),
+        EmulatorCommand::Start(args) => Action::Start(&args.id, !args.no_window),
+        EmulatorCommand::Stop(args) => Action::Stop(&args.id),
+        EmulatorCommand::Delete(args) => Action::Delete(&args.id),
+    };
+    run(Platform::Android, action, out)
+}
+
+/// `viso ios simulator …`.
+pub fn simulator(command: &SimulatorCommand, out: &mut Output) -> u8 {
+    let action = match command {
+        SimulatorCommand::List => Action::List,
+        SimulatorCommand::Create(args) => Action::Create(args, None),
+        SimulatorCommand::Start(args) => Action::Start(&args.id, true),
+        SimulatorCommand::Stop(args) => Action::Stop(&args.id),
+        SimulatorCommand::Delete(args) => Action::Delete(&args.id),
+    };
+    run(Platform::Ios, action, out)
+}
+
+fn run(platform: Platform, action: Action<'_>, out: &mut Output) -> u8 {
     if platform == Platform::Ios && !cfg!(target_os = "macos") {
         return out.failure(ENV_DEVICE, "the iOS Simulator runs on macOS only", &[]);
     }
@@ -18,37 +51,33 @@ pub fn run(platform: Platform, command: &DeviceCommand, out: &mut Output) -> u8 
         Ok(store) => store,
         Err(code) => return code,
     };
-    match command {
-        DeviceCommand::List => list(platform, &store, out),
-        DeviceCommand::Create(args) => create(platform, &store, args, out),
-        DeviceCommand::Start(args) => {
-            with_profile(platform, &store, &args.id, out, |profile, out| {
-                start(profile, !args.no_window, out)
-            })
-        }
-        DeviceCommand::Stop(args) => with_profile(platform, &store, &args.id, out, stop),
-        DeviceCommand::Delete(args) => {
-            with_profile(platform, &store, &args.id, out, |profile, out| {
-                let code = stop(profile, out);
-                if code != SUCCESS {
-                    return code;
-                }
-                let deleted = match platform {
-                    Platform::Ios => simulator::delete(&profile.device),
-                    Platform::Android => emulator::delete(&profile.device),
-                };
-                if let Err(why) = deleted.and_then(|()| {
-                    store
-                        .remove(platform, &profile.id)
-                        .map(drop)
-                        .map_err(|e| e.to_string())
-                }) {
-                    return out.failure(ENV_DEVICE, &why, &[]);
-                }
-                out.device(platform.as_str(), &profile.id, &profile.device, "deleted");
-                SUCCESS
-            })
-        }
+    match action {
+        Action::List => list(platform, &store, out),
+        Action::Create(args, api) => create(platform, &store, args, api, out),
+        Action::Start(id, window) => with_profile(platform, &store, id, out, |profile, out| {
+            start(profile, window, out)
+        }),
+        Action::Stop(id) => with_profile(platform, &store, id, out, stop),
+        Action::Delete(id) => with_profile(platform, &store, id, out, |profile, out| {
+            let code = stop(profile, out);
+            if code != SUCCESS {
+                return code;
+            }
+            let deleted = match platform {
+                Platform::Ios => simulator::delete(&profile.device),
+                Platform::Android => emulator::delete(&profile.device),
+            };
+            if let Err(why) = deleted.and_then(|()| {
+                store
+                    .remove(platform, &profile.id)
+                    .map(drop)
+                    .map_err(|e| e.to_string())
+            }) {
+                return out.failure(ENV_DEVICE, &why, &[]);
+            }
+            out.device(platform.as_str(), &profile.id, &profile.device, "deleted");
+            SUCCESS
+        }),
     }
 }
 
@@ -143,12 +172,18 @@ fn list(platform: Platform, store: &DeviceStore, out: &mut Output) -> u8 {
 }
 
 /// Creates the profile `create` names, with its virtual device.
-fn create(platform: Platform, store: &DeviceStore, args: &CreateArgs, out: &mut Output) -> u8 {
+fn create(
+    platform: Platform,
+    store: &DeviceStore,
+    args: &CreateArgs,
+    api: Option<&str>,
+    out: &mut Output,
+) -> u8 {
     let preset = match args.preset {
         PresetArg::Phone => Preset::Phone,
         PresetArg::Tablet => Preset::Tablet,
     };
-    match device::create(platform, store, &args.id, preset, args.api.as_deref(), out) {
+    match device::create(platform, store, &args.id, preset, api, out) {
         Ok(_) => SUCCESS,
         Err(code) => code,
     }

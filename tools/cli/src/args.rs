@@ -111,7 +111,7 @@ pub enum Command {
     Dump(DumpArgs),
     /// Explain a diagnostic code: why it is raised and how to fix it.
     Explain(ExplainArgs),
-    /// Generate source a web project owns from the app's view: plain HTML and CSS.
+    /// Generate source a web project owns from the app's view: plain HTML and CSS, or a SolidJS component.
     #[command(subcommand)]
     Export(ExportCommand),
     /// Lay out `.vs` sources in the one canonical format.
@@ -131,7 +131,7 @@ pub enum Command {
     Lsp(LspArgs),
     /// Create a Viso project from a template: an app, a game, a web app or a library.
     New(NewArgs),
-    /// Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive.
+    /// Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive and an MSIX.
     Package(PackageArgs),
     /// Sample the frames the running app draws: their time, phase by phase, and the work they count.
     Profile(ProfileArgs),
@@ -473,7 +473,7 @@ pub enum AndroidCommand {
     Adb(AdbArgs),
     /// The emulator profiles.
     #[command(subcommand)]
-    Emulator(DeviceCommand),
+    Emulator(EmulatorCommand),
 }
 
 /// What `viso android use` installs.
@@ -533,18 +533,33 @@ pub enum IosCommand {
     Doctor(PlatformDoctorArgs),
     /// The simulator profiles.
     #[command(subcommand)]
-    Simulator(DeviceCommand),
+    Simulator(SimulatorCommand),
 }
 
-/// What is done with a simulator or emulator profile.
+/// What is done with an emulator profile.
 #[derive(Debug, Subcommand)]
-pub enum DeviceCommand {
+pub enum EmulatorCommand {
+    /// List the profiles and whether each is booted.
+    List,
+    /// Create a profile and its virtual device.
+    Create(EmulatorCreateArgs),
+    /// Boot a profile's device.
+    Start(StartArgs),
+    /// Shut a profile's device down.
+    Stop(DeviceArgs),
+    /// Delete a profile and its virtual device.
+    Delete(DeviceArgs),
+}
+
+/// What is done with a simulator profile.
+#[derive(Debug, Subcommand)]
+pub enum SimulatorCommand {
     /// List the profiles and whether each is booted.
     List,
     /// Create a profile and its virtual device.
     Create(CreateArgs),
     /// Boot a profile's device.
-    Start(StartArgs),
+    Start(DeviceArgs),
     /// Shut a profile's device down.
     Stop(DeviceArgs),
     /// Delete a profile and its virtual device.
@@ -567,8 +582,15 @@ pub struct CreateArgs {
     /// The device's form factor.
     #[arg(long, value_enum, default_value_t)]
     pub preset: PresetArg,
-    /// The Android API level of its system image (the one `viso android
-    /// use` chose, else the newest installed, when omitted); Android only.
+}
+
+/// What `viso android emulator create` makes.
+#[derive(Debug, Args)]
+pub struct EmulatorCreateArgs {
+    #[command(flatten)]
+    pub profile: CreateArgs,
+    /// The Android API level of its system image: the one `viso android
+    /// use` chose, else the newest installed, when omitted.
     #[arg(long, value_name = "LEVEL")]
     pub api: Option<String>,
 }
@@ -579,7 +601,7 @@ pub struct StartArgs {
     /// The profile ID.
     #[arg(add = ArgValueCandidates::new(complete::device_ids))]
     pub id: String,
-    /// Boot the emulator without its window (Android only).
+    /// Boot the emulator without its window.
     #[arg(long)]
     pub no_window: bool,
 }
@@ -1236,11 +1258,11 @@ impl Command {
             Command::Android(AndroidCommand::Doctor(_)) => "android doctor",
             Command::Android(AndroidCommand::Adb(_)) => "android adb",
             Command::Android(AndroidCommand::Emulator(command)) => match command {
-                DeviceCommand::List => "android emulator list",
-                DeviceCommand::Create(_) => "android emulator create",
-                DeviceCommand::Start(_) => "android emulator start",
-                DeviceCommand::Stop(_) => "android emulator stop",
-                DeviceCommand::Delete(_) => "android emulator delete",
+                EmulatorCommand::List => "android emulator list",
+                EmulatorCommand::Create(_) => "android emulator create",
+                EmulatorCommand::Start(_) => "android emulator start",
+                EmulatorCommand::Stop(_) => "android emulator stop",
+                EmulatorCommand::Delete(_) => "android emulator delete",
             },
             Command::Build(_) => "build",
             Command::Check(_) => "check",
@@ -1270,11 +1292,11 @@ impl Command {
             Command::Ios(IosCommand::Use(_)) => "ios use",
             Command::Ios(IosCommand::Doctor(_)) => "ios doctor",
             Command::Ios(IosCommand::Simulator(command)) => match command {
-                DeviceCommand::List => "ios simulator list",
-                DeviceCommand::Create(_) => "ios simulator create",
-                DeviceCommand::Start(_) => "ios simulator start",
-                DeviceCommand::Stop(_) => "ios simulator stop",
-                DeviceCommand::Delete(_) => "ios simulator delete",
+                SimulatorCommand::List => "ios simulator list",
+                SimulatorCommand::Create(_) => "ios simulator create",
+                SimulatorCommand::Start(_) => "ios simulator start",
+                SimulatorCommand::Stop(_) => "ios simulator stop",
+                SimulatorCommand::Delete(_) => "ios simulator delete",
             },
             Command::Lsp(_) => "lsp",
             Command::New(_) => "new",
@@ -1560,12 +1582,15 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(cli.command.name(), "android emulator create");
-        let Command::Android(AndroidCommand::Emulator(DeviceCommand::Create(args))) = cli.command
+        let Command::Android(AndroidCommand::Emulator(EmulatorCommand::Create(args))) = cli.command
         else {
             panic!("a create");
         };
-        assert_eq!((&*args.id, args.api.as_deref()), ("pixel35", Some("35")));
-        assert_eq!(args.preset, PresetArg::Phone);
+        assert_eq!(
+            (&*args.profile.id, args.api.as_deref()),
+            ("pixel35", Some("35"))
+        );
+        assert_eq!(args.profile.preset, PresetArg::Phone);
         let cli = Cli::try_parse_from([
             "viso",
             "ios",
@@ -1580,6 +1605,19 @@ mod tests {
         let cli = Cli::try_parse_from(["viso", "ios", "simulator", "list", "--json"]).unwrap();
         assert_eq!(cli.command.name(), "ios simulator list");
         assert!(Cli::try_parse_from(["viso", "ios", "emulator", "list"]).is_err());
+        // What only an emulator has, a simulator does not take.
+        let api = [
+            "viso",
+            "ios",
+            "simulator",
+            "create",
+            "iphone",
+            "--api",
+            "35",
+        ];
+        assert!(Cli::try_parse_from(api).is_err());
+        let window = ["viso", "ios", "simulator", "start", "iphone", "--no-window"];
+        assert!(Cli::try_parse_from(window).is_err());
     }
 
     #[test]

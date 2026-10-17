@@ -294,7 +294,8 @@ gap, and CI can run all of it headless.
       errors.
 - [ ] A platform-gated native on a target that lacks it: natives declare no target
       availability yet (every capability they require exists on every available
-      target).
+      target). Blocked until the native schema gains per-target availability; the
+      check lands with the first native that is missing somewhere.
 - [x] A schema-enum property value names a variant of its enum: the widget enums
       (`Sizing`, `Track`, `Axis`, `Justify`, `Align`, `GridAlign`, `Alignment2D`,
       `FontWeight`, `TextOverflow`, `TextAlign`, `LiveRegion`, `Role`, …) and the
@@ -677,7 +678,13 @@ alternative.
 - [ ] Capability table per target (GPU-only nodes, custom shaders, threads, file
       system, native libraries) in the compiler, consumed by `check <web-target>` and
       `build`; each diagnostic names the node, the target and the alternative
-      (`WEB_*` codes registered in C2.3).
+      (`WEB_*` codes registered in C2.3). Blocked: on `web-gpu` every node, shader
+      and native the compiler knows is available, so the table has rows only for
+      `web-dom`/`web-hybrid` (GPU-only primitives, custom shaders) and for
+      platform-gated natives (the item above); it lands with the DOM backend. The
+      §33 classification already runs where a target lacks something today — the
+      export lowering's findings (`viso export html|solid`), each at its span with
+      the node, the capability and the alternative.
 
 ---
 
@@ -1031,26 +1038,31 @@ and traced from the CLI and from Studio over the same services.
 
 ## C8 — Definition of Done (§76)
 
-- [ ] Project: `new` generates a minimal runnable project; discovery stable; config
+- [x] Project: `new` generates a minimal runnable project; discovery stable; config
       precedence tested; `doctor` explains environment gaps.
-- [ ] Develop: `check/build/run` cover the host; `run` has watcher and hot reload;
+- [x] Develop: `check/build/run` cover the host; `run` has watcher and hot reload;
       Ctrl-C cleans up; headless usable in CI.
-- [ ] Mobile: `run` means the desktop host only; `run ios/android` targets only
+- [x] Mobile: `run` means the desktop host only; `run ios/android` targets only
       simulator/emulator; `--device` accepts only Viso virtual-device profiles;
       `android list/use/doctor/emulator/adb` and `ios list/use/doctor/simulator` manage
       their environments alone; no signing, provisioning or physical device in the dev
       loop; no `sdkmanager`/`avdmanager`/`simctl` in ordinary workflows.
 - [ ] Web: `web-gpu`, `web-dom`, `web-hybrid`, `serve`, capability diagnostics.
-- [ ] Language: `fmt`, `check`, `schema`, `explain`, `dump`, `lsp`.
+      (`web-gpu` and `serve` done; `web-dom`, `web-hybrid` and the capability table
+      wait for the DOM backend, C4.3/C4.4.)
+- [x] Language: `fmt`, `check`, `schema`, `explain`, `dump`, `lsp`.
 - [ ] Test/Debug: `test`, `snapshot`, `inspect`, `profile`, `studio`.
-- [ ] Delivery: `package`, artifact manifest, `export html`, `export solid`.
-- [ ] Automation: `--json` on every command but `lsp`/`studio`/`completion` per
+      (All but `studio`, which waits for Studio itself.)
+- [x] Delivery: `package`, artifact manifest, `export html`, `export solid`.
+      (Signing with real credentials and the Windows host run are the open
+      verification items of C5.2.)
+- [x] Automation: `--json` on every command but `lsp`/`studio`/`completion` per
       §34–§37; stable exit codes; no prompts off a TTY; Studio/IDE/AI share services
       and protocol; the CLI duplicates no compiler/build/packager core.
 
 ## C9 — User guide
 
-- [ ] `docs/cli/` usage guide for the documentation site: install, the first project,
+- [x] `docs/cli/` usage guide for the documentation site: install, the first project,
       the dev loop (`run`, hot reload, `inspect`, `profile`), checking and formatting,
       testing and snapshots, mobile (`android`/`ios` environments, emulators and
       simulators), web (`web-gpu`/`web-dom`, `serve`), building, packaging and

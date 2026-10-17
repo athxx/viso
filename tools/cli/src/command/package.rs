@@ -1,7 +1,7 @@
 //! `viso package [<target>]`: build the app with the shipping profile (or
 //! `--profile release`) and make it what its platform ships — a signed
-//! `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive — into
-//! `dist/<platform>/` with its `artifact.json`.
+//! `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive and an
+//! MSIX — into `dist/<platform>/` with its `artifact.json`.
 //!
 //! The metadata is checked and the signing decided before anything is
 //! built, so a missing identity fails in a second rather than after the

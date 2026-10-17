@@ -28,7 +28,6 @@ mod snapshot;
 mod test;
 
 pub(crate) use snapshot::SNAPSHOT_VERSION;
-use viso_project::Platform;
 
 use crate::args::{AndroidCommand, Cli, Command, ExportCommand, Global};
 use crate::context::Context;
@@ -65,9 +64,7 @@ fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
         Command::Android(AndroidCommand::Use(args)) => android::use_level(ctx, args, out),
         Command::Android(AndroidCommand::Doctor(args)) => android::doctor(ctx, args, out),
         Command::Android(AndroidCommand::Adb(args)) => android::adb(ctx, args, out),
-        Command::Android(AndroidCommand::Emulator(command)) => {
-            device::run(Platform::Android, command, out)
-        }
+        Command::Android(AndroidCommand::Emulator(command)) => device::emulator(command, out),
         Command::Build(args) => build::run(ctx, args, out),
         Command::Package(args) => package::run(ctx, args, out),
         Command::Profile(args) => profile::run(ctx, args, out),

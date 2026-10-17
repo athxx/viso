@@ -38,8 +38,8 @@ TEST / DEBUG
   game        Read a state of, or record input from, the game `viso run` is playing
 
 DELIVERY
-  package     Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive
-  export      Generate source a web project owns from the app's view: plain HTML and CSS
+  package     Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive and an MSIX
+  export      Generate source a web project owns from the app's view: plain HTML and CSS, or a SolidJS component
 
 MAINTENANCE
   clean       Remove `target/viso/`: builds, caches and dev state, never `dist/`
@@ -486,7 +486,7 @@ Arguments:
 
 Options:
       --preset <PRESET>  The device's form factor [default: phone] [possible values: phone, tablet]
-      --api <LEVEL>      The Android API level of its system image (the one `viso android use` chose, else the newest installed, when omitted); Android only
+      --api <LEVEL>      The Android API level of its system image: the one `viso android use` chose, else the newest installed, when omitted
   -h, --help             Print help
 
 Global options:
@@ -514,7 +514,7 @@ Arguments:
   <ID>  The profile ID
 
 Options:
-      --no-window  Boot the emulator without its window (Android only)
+      --no-window  Boot the emulator without its window
   -h, --help       Print help
 
 Global options:
@@ -769,7 +769,6 @@ Arguments:
 
 Options:
       --preset <PRESET>  The device's form factor [default: phone] [possible values: phone, tablet]
-      --api <LEVEL>      The Android API level of its system image (the one `viso android use` chose, else the newest installed, when omitted); Android only
   -h, --help             Print help
 
 Global options:
@@ -797,8 +796,7 @@ Arguments:
   <ID>  The profile ID
 
 Options:
-      --no-window  Boot the emulator without its window (Android only)
-  -h, --help       Print help
+  -h, --help  Print help
 
 Global options:
       --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
@@ -1683,7 +1681,7 @@ Global options:
       --target-dir <PATH>  Put build output under PATH instead of `target/`
 
 $ viso package --help
-Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive
+Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive and an MSIX
 
 Usage: viso package [OPTIONS] [TARGET]
 
@@ -1719,7 +1717,7 @@ Notes:
   The output replaces `dist/<platform>/` whole, with its `artifact.json`.
 
 $ viso export --help
-Generate source a web project owns from the app's view: plain HTML and CSS
+Generate source a web project owns from the app's view: plain HTML and CSS, or a SolidJS component
 
 Usage: viso export [OPTIONS] <COMMAND>
 
