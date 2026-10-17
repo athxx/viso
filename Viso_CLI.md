@@ -2611,7 +2611,8 @@ artifact      kind, path, target, profile, build_id, size, hash
 device        platform(ios|android), id, name, state(booting|ready|installing|launched|stopped)
 test          name, domain, status(pass|fail|skip), duration_ms, message?, artifacts[]?
 trace         scenario, tick, probes（`viso test game` 每 Tick 一条，§22.3）
-profile       frames, duration_ms, metrics（§25）
+profile       target, device, frames, duration_ms, dropped, metrics, unavailable[], caveats[]（§25）
+inspect       kind(attached|input|focus|dirty|dropped), …（`inspect` 跟随中的 app 事件，§24.5）
 server        url, host, port, lan
 dev           见下
 runtime       dev_session_id, runtime_session_id, target, build_id, connection(connected|closed), running_revision, candidate_revision?, last_good_revision, failing[], rust(idle|building|restarting), bytes_sent, bytes_received, patch?（`Viso_Hot_Reload.md` §52）
@@ -2626,6 +2627,26 @@ summary       见 §36.3
 - `result` 用于 `config`、`schema`、`explain`、`dump`、`inspect query`、`android/ios list`、`emulator/simulator list`、`package --dry-run` 等查询型命令；除 `fmt`（每文件一条）外每次调用至多一条。
 - 未单独说明 JSON 合同的命令只输出 `progress`、`diagnostic`、`summary`。
 - `--json` 模式下 app/device 的 stdout/stderr 只能以 `log` 事件出现。
+
+每种事件的 `payload` 示例（envelope 字段 `schema, schema_version, seq, type, timestamp_ms, session_id, command` 见 §35，这里只列 `type` 与 `payload`；`dev` 与 `runtime` 的完整字段见 §36.4）：
+
+```json
+{"type":"progress","payload":{"phase":"build","message":"building headless (dev)"}}
+{"type":"diagnostic","payload":{"schema_version":"1.0","severity":"warning","code":"E3705","message":"`text` shows a `format` with literal text; word order differs between languages, so build it with `tr` and arguments","primary":{"file":"src/app.vs","byte_start":136,"byte_end":163,"line":5,"column_utf16":66,"end_line":5,"end_column_utf16":93},"related":[],"expected":[],"actual":null,"notes":[],"fixes":[]}}
+{"type":"artifact","payload":{"kind":"trace","path":"target/viso/traces/profile-20261017-071234-512.ende","target":"headless","profile":"dev","build_id":"sha256:4be1…","size":18432,"hash":"sha256:4be1…"}}
+{"type":"device","payload":{"platform":"android","id":"pixel-local","name":"Pixel (local)","state":"ready"}}
+{"type":"test","payload":{"name":"clicks","domain":"ui","status":"pass","duration_ms":688}}
+{"type":"trace","payload":{"scenario":"jump","tick":12,"probes":{"player.y":3.5}}}
+{"type":"profile","payload":{"target":"headless","device":null,"frames":6,"duration_ms":12010.4,"dropped":0,"metrics":{"frame":{"p50":0.7,"p95":3.6,"max":3.6}},"unavailable":["allocations","allocated_bytes"],"caveats":[]}}
+{"type":"inspect","payload":{"kind":"input","seq":1,"frame":1,"window":0,"input":"pointer_down","at":[60,78],"target":{"node_id":"15:0","label":"Button#tap"},"route":[{"node_id":"0:0","label":"container"},{"node_id":"15:0","label":"Button#tap"}]}}
+{"type":"server","payload":{"url":"http://127.0.0.1:8000/","host":"127.0.0.1","port":8000,"lan":false}}
+{"type":"dev","payload":{"dev_session_id":"s1","runtime_session_id":"r1","target":"web","build_id":"b1","file":"src/view.vs","base_revision":2,"candidate_revision":3,"patch_class":null,"outcome":"rejected","stage":"parse","diagnostic_codes":["E1001"],"last_good_revision":2,"elapsed_ms":1.5,"mounts":0,"migrated":0,"reset":0,"focus_lost":0,"scroll_lost":0,"handlers_lost":0,"dirty":{"structure":0,"style":0,"measure":0,"layout":0,"transform":0,"paint":0,"hit_test":0,"semantics":0},"game":null}}
+{"type":"runtime","payload":{"dev_session_id":"s1","runtime_session_id":"r1","target":"web","build_id":"b1","connection":"connected","running_revision":3,"candidate_revision":null,"last_good_revision":3,"failing":["src/view.vs"],"rust":"building","bytes_sent":1200,"bytes_received":300,"patch":{"candidate_revision":4,"outcome":"rejected","patch_class":null,"stage":"shader-compile","scoped_resets":0,"compile_ms":2.5,"commit_ms":null,"round_trip_ms":4,"bytes":900}}}
+{"type":"doctor_check","payload":{"name":"rust","status":"ok","message":"rustc 1.99.1 (aarch64-apple-darwin)"}}
+{"type":"result","payload":{"sdk":{"root":"/Users/x/Library/Android/sdk","origin":"ANDROID_HOME"},"default":null,"abi":"arm64-v8a","apis":[…]}}
+{"type":"log","payload":{"level":"info","source":"tool","message":"    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.30s"}}
+{"type":"summary","payload":{"status":"success","exit_code":0,"elapsed_ms":36,"warning_count":0,"error_count":0,"artifact_count":0,"package":"hr-android","file_count":1}}
+```
 
 ### 36.1 Diagnostic
 

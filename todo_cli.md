@@ -855,8 +855,8 @@ and traced from the CLI and from Studio over the same services.
 
 - [x] Event envelope and stream; `diagnostic`, `progress`, `device`, `server`, `dev`,
       `runtime`, `log`, `trace`, `test`, `result`, `artifact`, `summary`.
-- [ ] Remaining event types: `doctor_check`
-      (C1.3) (`profile` done in C6); every payload documented in `Viso_CLI.md` with an example.
+- [x] Every event type emitted (`doctor_check`, `profile` and `inspect` among them)
+      in the `Viso_CLI.md` §36 table, each payload with an example.
 - [ ] Every command except `lsp`, `studio`, `completion` supports `--json`; a test
       runs each command with `--json` and checks the stream (C7.6).
 - [x] stdout carries only events under `--json` (child output becomes `log`),
