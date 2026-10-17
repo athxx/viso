@@ -867,10 +867,14 @@ and traced from the CLI and from Studio over the same services.
 
 ### C7.2 — Reliability and security (§48–§51)
 
-- [ ] External processes (§48): one runner — explicit program path, args as a list
-      (never a shell string), env allow-list, timeout, process-group kill on cancel,
-      captured output on failure, `--verbose` echoes the command line with secrets
-      redacted.
+- [x] External processes (§48): one runner (`process.rs`) for every program the CLI
+      starts. Args are passed as a list, never a shell string. `--verbose` echoes the
+      command line with secrets hidden (also the argument after a secret's name);
+      under `--json` the echo is a `log` event. Output and exit status are captured as
+      data. Not installed, timed out and interrupted are distinct failures. A timeout
+      or interrupt kills the process group or job. The env is inherited, since tools
+      read their configuration from it. The duplicate per-command echoes and the
+      ad-hoc capture loops (doctor, device, new, build) are removed.
 - [x] Secrets (§49): one rule (`secret.rs`) for what is never printed — a variable
       or `name=value` argument whose name holds `TOKEN`, `PASSWORD`, `SECRET`, `KEY`,
       `AUTH`… — applied to `--env` and the Cargo command line under `--verbose`. The

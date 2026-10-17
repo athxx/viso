@@ -160,18 +160,17 @@ pub(crate) fn boot(profile: &DeviceProfile) -> Result<(), String> {
     }
     quiet(simctl().args(["bootstatus", udid, "-b"]))?;
     // The window shows the device; the app runs whether or not it is open.
-    let _ = tool("open")
-        .args([
+    let _ = crate::process::status(
+        tool("open").args([
             "-g",
             "-a",
             "Simulator",
             "--args",
             "-CurrentDeviceUDID",
             udid,
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        ]),
+        crate::process::QUICK,
+    );
     Ok(())
 }
 
@@ -222,16 +221,15 @@ pub(crate) fn launch(
     if piped {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
     }
-    command.spawn()
+    crate::process::spawn(&mut command)
 }
 
 /// Stops the app `id`.
 pub(crate) fn terminate(udid: &str, id: &str) {
-    let _ = simctl()
-        .args(["terminate", udid, id])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let _ = crate::process::status(
+        simctl().args(["terminate", udid, id]),
+        crate::process::QUICK,
+    );
 }
 
 /// How long the simulator's log has to start streaming.
@@ -254,22 +252,23 @@ impl ExitWatch {
              OR (process == \"SpringBoard\" AND eventMessage CONTAINS \"[app<{id}>:\" \
              AND eventMessage CONTAINS \"Process exited:\")"
         );
-        let mut stream = simctl()
-            .args([
-                "spawn",
-                udid,
-                "log",
-                "stream",
-                "--style",
-                "compact",
-                "--predicate",
-            ])
-            .arg(predicate)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("cannot read the simulator's log: {e}"))?;
+        let mut stream = crate::process::spawn(
+            simctl()
+                .args([
+                    "spawn",
+                    udid,
+                    "log",
+                    "stream",
+                    "--style",
+                    "compact",
+                    "--predicate",
+                ])
+                .arg(predicate)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        )
+        .map_err(|e| format!("cannot read the simulator's log: {e}"))?;
         let stdout = stream.stdout.take().expect("piped");
         let record = Arc::new(Mutex::new(None));
         let (started, ready) = std::sync::mpsc::channel();

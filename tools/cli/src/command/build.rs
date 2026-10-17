@@ -308,7 +308,6 @@ pub(super) fn stage_loaded(
         android,
         delivery,
     };
-    out.verbose(|| job.cargo.describe());
     let doing = if packaging { "packaging" } else { "building" };
     out.progress("build", &format!("{doing} {target} ({profile})"));
 

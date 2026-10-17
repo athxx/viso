@@ -26,6 +26,7 @@ use crate::error::{
     INTERRUPTED, SUCCESS,
 };
 use crate::output::{Output, human::size};
+use crate::process::Launch;
 use crate::toolchain::android::components::{self, APIS, Api, Component, Host, License};
 use crate::toolchain::android::{self as toolchain, Home, InstallError, installed};
 use crate::toolchain::download::{self, Curl, Failure};
@@ -42,7 +43,7 @@ fn relay_adb(mut command: Command, out: &mut Output) -> u8 {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .launch()
     {
         Ok(child) => child,
         Err(error) => {
@@ -589,7 +590,6 @@ pub fn adb(ctx: &Context<'_>, args: &AdbArgs, out: &mut Output) -> u8 {
         command.args(["-s", &serial]);
     }
     command.args(&args.args);
-    out.verbose(|| format!("running {}", sdk.adb.display()));
     if ctx.global.json {
         return relay_adb(command, out);
     }

@@ -160,7 +160,6 @@ fn rust(ctx: &Context<'_>, project: &Project, config: &ResolvedConfig, out: &mut
         package: None,
         lock: None,
     };
-    out.verbose(|| command.describe());
     out.progress("check", "checking the Cargo package");
 
     interrupt::catch();

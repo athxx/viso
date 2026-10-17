@@ -22,7 +22,8 @@ use std::time::Duration;
 use viso_package::web as bundle;
 use viso_project::{Profile, WebOptimize, WebSettings};
 
-use super::cargo::{BuildFailure, CargoEvent, ProcessTree, Sink, is_cancelled};
+use super::cargo::{BuildFailure, CargoEvent, Sink, is_cancelled};
+use crate::process::ProcessTree;
 
 /// How `wasm-opt` is installed, for a message about its absence.
 const WASM_OPT_INSTALL: &str = "install Binaryen (`brew install binaryen`, or its release from github.com/WebAssembly/binaryen)";

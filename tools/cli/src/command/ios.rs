@@ -16,7 +16,6 @@ use viso_project::{Platform, Preset};
 use crate::args::{
     BuildTarget, DoctorArgs, IosCommand, IosListArgs, IosUseArgs, PlatformDoctorArgs,
 };
-use crate::build::cargo::ProcessTree;
 use crate::context::Context;
 use crate::device::simulator;
 use crate::error::{
@@ -25,6 +24,7 @@ use crate::error::{
 };
 use crate::interrupt;
 use crate::output::{Output, human::size};
+use crate::process::ProcessTree;
 use crate::toolchain::ios::{self, Home, Runtime};
 
 pub fn run(ctx: &Context<'_>, command: &IosCommand, out: &mut Output) -> u8 {
@@ -319,13 +319,10 @@ fn download(out: &mut Output, wanted: &str, xcode: Option<&str>) -> Result<(), u
         }
         _ => {}
     }
-    match Command::new("xcodebuild")
-        .args(["-license", "check"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
+    match crate::process::status(
+        Command::new("xcodebuild").args(["-license", "check"]),
+        crate::process::QUICK,
+    ) {
         Ok(status) if status.success() => {}
         Ok(_) => {
             return Err(out.failure(
@@ -335,7 +332,7 @@ fn download(out: &mut Output, wanted: &str, xcode: Option<&str>) -> Result<(), u
             ));
         }
         Err(error) => {
-            return Err(out.failure(ENV_XCODE, &format!("cannot run `xcodebuild`: {error}"), &[]));
+            return Err(out.failure(ENV_XCODE, &error.to_string(), &[]));
         }
     }
     let mut command = Command::new("xcodebuild");

@@ -19,6 +19,7 @@ mod generated;
 mod help;
 mod interrupt;
 mod output;
+mod process;
 mod secret;
 mod toolchain;
 

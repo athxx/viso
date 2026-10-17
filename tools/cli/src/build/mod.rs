@@ -120,9 +120,12 @@ pub(crate) fn package_plan(plan: &Plan, profile: Profile, sdk: Option<&Sdk>) -> 
 /// The Rust target of this machine, as `rustc -vV` names it.
 fn host_triple() -> Option<String> {
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
-    let output = Command::new(rustc).arg("-vV").output().ok()?;
-    let text = String::from_utf8(output.stdout).ok()?;
-    text.lines()
+    let output =
+        crate::process::capture(Command::new(rustc).arg("-vV"), Some(crate::process::QUICK))
+            .ok()?;
+    output
+        .stdout
+        .lines()
         .find_map(|line| line.strip_prefix("host: "))
         .map(|host| host.trim().to_owned())
 }
@@ -131,12 +134,8 @@ fn host_triple() -> Option<String> {
 /// not run.
 pub(crate) fn toolchain() -> Toolchain {
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
-    let version = Command::new(rustc)
-        .arg("-V")
-        .output()
+    let version = crate::process::run(Command::new(rustc).arg("-V"), Some(crate::process::QUICK))
         .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
         .map_or_else(|| "unknown".to_string(), |v| v.trim().to_string());
     Toolchain::new(version, Toolchain::current_host())
 }

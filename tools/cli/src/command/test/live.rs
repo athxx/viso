@@ -34,6 +34,7 @@ use crate::dev::{ControlAsk, ControlReply};
 use crate::error::{ENV_NO_DEV_SESSION, INTERRUPTED, RUN_TEST_CRASHED, SUCCESS};
 use crate::interrupt;
 use crate::output::{Output, TestStatus};
+use crate::process::Launch;
 
 /// How long a case's app has to play one step, on top of a base.
 const STEP_WAIT: Duration = Duration::from_secs(10);
@@ -269,7 +270,7 @@ impl Session {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
+            .launch()
             .map_err(|e| format!("cannot start `viso run {}`: {e}", venue.target().as_str()))?;
         let stdout = child.stdout.take().expect("piped");
         let (send, events) = mpsc::channel();

@@ -17,7 +17,7 @@ use viso_ende::JsonValue;
 use viso_project::Profile;
 
 use super::{Run, report};
-use crate::build::cargo::{self, ProcessTree, RustDiagnostic};
+use crate::build::cargo::{self, RustDiagnostic};
 use crate::command::check::Checked;
 use crate::context::Context;
 use crate::error::{
@@ -26,6 +26,7 @@ use crate::error::{
 };
 use crate::interrupt;
 use crate::output::{Output, TestStatus};
+use crate::process::ProcessTree;
 
 /// How often the run is checked for Ctrl-C.
 const POLL: Duration = Duration::from_millis(50);

@@ -46,6 +46,7 @@ use viso_view::dev::wire::{
 };
 
 use crate::dev::link::{self, Deliver, DevStream, Expect};
+use crate::process::Launch;
 
 /// The port tried first, and how many after it.
 pub(crate) const DEFAULT_PORT: u16 = viso_project::settings::defaults::SERVE_PORT;
@@ -1065,7 +1066,7 @@ pub(crate) fn open_headless(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .launch()
 }
 
 /// Opens `url` in `browser` (`chrome`, `safari`, `firefox`), or in the
@@ -1110,7 +1111,7 @@ pub(crate) fn open_browser(url: &str, browser: Option<&str>) -> Result<(), Strin
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .launch()
         .map(drop)
         .map_err(|e| format!("cannot open the browser: {e}"))
 }

@@ -169,14 +169,6 @@ fn misplaced(args: &RunArgs, platform: Option<Platform>, target: Target) -> Opti
     None
 }
 
-/// The `--env` variables as `--verbose` shows them, secret values hidden.
-fn shown(env: &[(String, String)]) -> String {
-    env.iter()
-        .map(|(name, value)| crate::secret::pair(name, value))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 pub fn run(ctx: &Context<'_>, args: &RunArgs, out: &mut Output) -> u8 {
     session(ctx, args, web::Listen::loopback(), None, out)
 }
@@ -469,7 +461,6 @@ pub(super) fn session(
         // `viso build` of the target waits while this one builds.
         lock: Some((layout.clone(), target)),
     };
-    out.verbose(|| build.describe());
     let mut builds = RustBuild::new(build, move |event| {
         built
             .lock()
@@ -532,9 +523,6 @@ pub(super) fn session(
         build_id: &build_id,
         env: &args.env,
     };
-    if !args.env.is_empty() {
-        out.verbose(|| format!("the app's variables: {}", shown(&args.env)));
-    }
     let device_event = |out: &mut Output, state: &str| {
         if let Some(profile) = &profile {
             out.device(
@@ -1033,19 +1021,6 @@ mod tests {
     use viso_view::dev::wire::same_token;
 
     use super::*;
-
-    #[test]
-    fn a_secret_value_is_never_shown() {
-        let env = [
-            ("GREETING".to_owned(), "hi".to_owned()),
-            ("API_TOKEN".to_owned(), "t0p".to_owned()),
-            ("db_password".to_owned(), "pw".to_owned()),
-        ];
-        assert_eq!(
-            shown(&env),
-            "GREETING=hi API_TOKEN=<hidden> db_password=<hidden>"
-        );
-    }
 
     #[test]
     fn tokens_are_distinct_hex() {

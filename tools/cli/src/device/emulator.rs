@@ -224,8 +224,7 @@ pub(crate) fn boot(sdk: &Sdk, profile: &DeviceProfile, window: bool) -> Result<S
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
             detach(&mut emulator);
-            emulator
-                .spawn()
+            crate::process::spawn(&mut emulator)
                 .map_err(|e| format!("cannot run `{}`: {e}", sdk.emulator.display()))?;
             let since = Instant::now();
             loop {
@@ -307,12 +306,11 @@ impl Device {
 
     /// Stops forwarding `port`.
     pub(crate) fn unreverse(&self, port: u16) {
-        let _ = self
-            .adb()
-            .args(["reverse", "--remove", &format!("tcp:{port}")])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let _ = crate::process::status(
+            self.adb()
+                .args(["reverse", "--remove", &format!("tcp:{port}")]),
+            crate::process::QUICK,
+        );
     }
 
     /// Starts `component` with `extras` as string extras, stopping the app
@@ -360,33 +358,35 @@ impl Device {
 
     /// The process that ends when `pid` does.
     pub(crate) fn watch(&self, pid: u32) -> std::io::Result<Child> {
-        self.adb()
-            .args([
-                "shell",
-                &format!("while [ -d /proc/{pid} ]; do sleep 0.2; done"),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
+        crate::process::spawn(
+            self.adb()
+                .args([
+                    "shell",
+                    &format!("while [ -d /proc/{pid} ]; do sleep 0.2; done"),
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
     }
 
     /// The log of `pid`: the app's own lines (the `viso` tag) and every
     /// warning and error of its process, in logcat's brief format.
     pub(crate) fn logcat(&self, pid: u32) -> std::io::Result<Child> {
-        self.adb()
-            .args([
-                "logcat",
-                "-v",
-                "brief",
-                &format!("--pid={pid}"),
-                "viso:V",
-                "*:W",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
+        crate::process::spawn(
+            self.adb()
+                .args([
+                    "logcat",
+                    "-v",
+                    "brief",
+                    &format!("--pid={pid}"),
+                    "viso:V",
+                    "*:W",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        )
     }
 
     /// How the process `pid` of `package` ended, as Android recorded it:
@@ -409,12 +409,10 @@ impl Device {
 
     /// Stops `package`.
     pub(crate) fn force_stop(&self, package: &str) {
-        let _ = self
-            .adb()
-            .args(["shell", "am", "force-stop", package])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let _ = crate::process::status(
+            self.adb().args(["shell", "am", "force-stop", package]),
+            crate::process::QUICK,
+        );
     }
 }
 

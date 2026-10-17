@@ -51,6 +51,7 @@ use crate::build::{RustPlan, rust_plan};
 use crate::dev::build::{Stamp, stamp};
 use crate::device::emulator::{self, Device};
 use crate::device::simulator;
+use crate::process::Launch;
 
 /// The dev variables an app is launched with.
 pub(crate) struct Vars<'a> {
@@ -419,7 +420,7 @@ impl Deploy {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .spawn(),
+                .launch(),
         )
     }
 
@@ -444,7 +445,7 @@ impl Deploy {
                     launch.stdout(Stdio::piped()).stderr(Stdio::piped());
                 }
                 let process = launch
-                    .spawn()
+                    .launch()
                     .map_err(|e| format!("cannot launch `{}`: {e}", artifact.display()))?;
                 Ok(App::of(process, Vec::new(), Stop::Signal))
             }

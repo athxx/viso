@@ -7,8 +7,7 @@ pub(crate) mod emulator;
 pub(crate) mod simulator;
 
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use viso_package::android::Abi;
 use viso_project::{DeviceProfile, DeviceStore, Platform, Preset, Selection, device::valid_id};
@@ -24,29 +23,7 @@ const STANDARD_PROFILE: &str = "phone";
 
 /// Runs `command` and returns its stdout, or what it said when it failed.
 pub(crate) fn capture(command: &mut Command) -> Result<String, String> {
-    let out = command.stdin(Stdio::null()).output().map_err(|e| {
-        let program = Path::new(command.get_program()).display();
-        if e.kind() == std::io::ErrorKind::NotFound {
-            format!("`{program}` is not installed")
-        } else {
-            format!("cannot run `{program}`: {e}")
-        }
-    })?;
-    if !out.status.success() {
-        let said = String::from_utf8_lossy(&out.stderr);
-        let said = if said.trim().is_empty() {
-            String::from_utf8_lossy(&out.stdout)
-        } else {
-            said
-        };
-        return Err(format!(
-            "{:?} failed ({}): {}",
-            command.get_program(),
-            out.status,
-            said.trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    crate::process::run(command, None)
 }
 
 /// Runs `command` for its effect.

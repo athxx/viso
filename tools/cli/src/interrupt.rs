@@ -5,13 +5,19 @@
 //! killing the builds it started, asking its app to close — and the second
 //! forces its children down.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 static COUNT: AtomicU32 = AtomicU32::new(0);
+static CAUGHT: AtomicBool = AtomicBool::new(false);
 
 /// How many interrupts arrived since [`catch`].
 pub fn count() -> u32 {
     COUNT.load(Ordering::Relaxed)
+}
+
+/// Whether [`catch`] took the interrupts over.
+pub fn caught() -> bool {
+    CAUGHT.load(Ordering::Relaxed)
 }
 
 #[cfg(unix)]
@@ -22,6 +28,7 @@ extern "C" fn counted(_: libc::c_int) {
 /// Counts each interrupt from now on instead of ending the process.
 #[cfg(unix)]
 pub fn catch() {
+    CAUGHT.store(true, Ordering::Relaxed);
     for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         // SAFETY: `action` is zeroed plain data with its handler and flags
         // set; the handler only touches an atomic, which is signal safe.
@@ -38,6 +45,7 @@ pub fn catch() {
 /// Counts each interrupt from now on instead of ending the process.
 #[cfg(windows)]
 pub fn catch() {
+    CAUGHT.store(true, Ordering::Relaxed);
     use windows::Win32::System::Console::SetConsoleCtrlHandler;
     use windows_core::BOOL;
 

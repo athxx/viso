@@ -43,6 +43,18 @@ pub(crate) fn argument(arg: &str) -> String {
     }
 }
 
+/// Whether `arg` names a secret the next argument holds: a flag
+/// (`--password`) or a variable name (`--es VISO_DEV_TOKEN value`) that
+/// says so and carries no value of its own.
+pub(crate) fn names_next(arg: &str) -> bool {
+    let flag = arg.starts_with('-');
+    let variable = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    (flag || variable) && !arg.contains('=') && named(arg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

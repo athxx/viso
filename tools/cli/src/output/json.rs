@@ -333,8 +333,25 @@ impl Stream {
         });
     }
 
-    /// Writes one event line: the envelope around the payload `payload` writes.
+    /// Writes one event line: the envelope around the payload `payload`
+    /// writes, after a `log` for each command `--verbose` shows run since.
     fn event(&mut self, kind: &str, payload: impl FnOnce(&mut JsonWriter)) {
+        for line in crate::process::echoed() {
+            self.write("log", |w| {
+                w.begin_object();
+                w.name("level");
+                w.string("debug");
+                w.name("source");
+                w.string("tool");
+                w.name("message");
+                w.string(&line);
+                w.end_object();
+            });
+        }
+        self.write(kind, payload);
+    }
+
+    fn write(&mut self, kind: &str, payload: impl FnOnce(&mut JsonWriter)) {
         let mut w = JsonWriter::new();
         w.begin_object();
         w.name("schema");

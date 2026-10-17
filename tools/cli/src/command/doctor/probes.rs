@@ -3,11 +3,9 @@
 //! [`TOOL_TIMEOUT`].
 
 use std::ffi::OsStr;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use viso_ende::JsonValue;
 use viso_package::android::{Abi, SdkOrigin};
@@ -15,7 +13,7 @@ use viso_package::{apple, web};
 use viso_project::{ArtifactKind, DeviceStore, Platform, Target};
 
 use super::{Fix, Found, Machine, Probe, shown};
-use crate::build::cargo::{self, ProcessTree};
+use crate::build::cargo;
 use crate::device::version_key;
 use crate::toolchain::{android, ios};
 
@@ -859,79 +857,7 @@ pub(super) fn tool(
     args: &[&str],
     timeout: Duration,
 ) -> Result<String, String> {
-    let program = program.as_ref();
-    let name = Path::new(program)
-        .file_name()
-        .unwrap_or(program)
-        .to_string_lossy()
-        .into_owned();
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut tree = match ProcessTree::spawn(&mut command) {
-        Ok(tree) => tree,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!("`{name}` is not installed"));
-        }
-        Err(error) => return Err(format!("cannot run `{name}`: {error}")),
-    };
-    let readers: Vec<_> = [
-        tree.child
-            .stdout
-            .take()
-            .map(|o| Box::new(o) as Box<dyn Read + Send>),
-        tree.child
-            .stderr
-            .take()
-            .map(|e| Box::new(e) as Box<dyn Read + Send>),
-    ]
-    .into_iter()
-    .map(|stream| {
-        thread::spawn(move || {
-            let mut text = String::new();
-            if let Some(mut stream) = stream {
-                let _ = stream.read_to_string(&mut text);
-            }
-            text
-        })
-    })
-    .collect();
-    let until = Instant::now() + timeout;
-    let status = loop {
-        match tree.child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() >= until => {
-                tree.kill();
-                return Err(format!(
-                    "`{name}` did not answer in {} s",
-                    timeout.as_secs()
-                ));
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(10)),
-            Err(error) => {
-                tree.kill();
-                return Err(format!("cannot wait for `{name}`: {error}"));
-            }
-        }
-    };
-    let mut texts = readers.into_iter().map(|r| r.join().unwrap_or_default());
-    let (stdout, stderr) = (
-        texts.next().unwrap_or_default(),
-        texts.next().unwrap_or_default(),
-    );
-    if status.success() {
-        Ok(stdout)
-    } else {
-        let said = if stderr.trim().is_empty() {
-            &stdout
-        } else {
-            &stderr
-        };
-        Err(format!("`{name}` failed ({status}): {}", said.trim()))
-    }
+    crate::process::run(Command::new(program).args(args), Some(timeout))
 }
 
 #[cfg(test)]
@@ -953,7 +879,7 @@ mod tests {
         assert!(absent.contains("is not installed"), "{absent}");
         if cfg!(unix) {
             let hung = tool("sleep", &["5"], Duration::from_millis(100)).unwrap_err();
-            assert!(hung.contains("did not answer"), "{hung}");
+            assert!(hung.contains("did not finish"), "{hung}");
             assert_eq!(tool("echo", &["hi"], TOOL_TIMEOUT).as_deref(), Ok("hi\n"));
         }
     }

@@ -36,12 +36,12 @@ use viso_view::headless::{
 use viso_view::inspect::SourceTable;
 use viso_view::profile::PROFILE_ENV;
 
-use crate::build::cargo::ProcessTree;
 use crate::command::build::{self as build_command, Check};
 use crate::context::Context;
 use crate::error::{INTERRUPTED, RUN_TEST_CRASHED, SUCCESS};
 use crate::interrupt;
 use crate::output::Output;
+use crate::process::ProcessTree;
 
 /// The directory below the project root that holds UI scenarios.
 pub(super) const SCENARIOS: &str = "tests/ui";

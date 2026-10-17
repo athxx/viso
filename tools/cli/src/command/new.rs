@@ -23,7 +23,7 @@ use std::borrow::Cow;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use crate::args::{NewArgs, Template};
 use crate::atomic;
@@ -732,16 +732,17 @@ fn merge(staging: &Path, root: &Path, files: &[File]) -> io::Result<()> {
 /// Makes `root` a Git repository unless it lies in one; a warning when Git
 /// cannot.
 fn git(root: &Path, out: &mut Output) {
-    let inside = Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    use crate::process::{Failure, QUICK, capture, status};
+
+    let inside = status(
+        Command::new("git")
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .current_dir(root),
+        QUICK,
+    );
     let skip = ["`--no-git` creates the project without one".to_owned()];
     match inside {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        Err(Failure::NotFound(_)) => {
             out.warning(
                 NEW_GIT,
                 "Git is not installed, so the project is not a repository",
@@ -750,7 +751,7 @@ fn git(root: &Path, out: &mut Output) {
             return;
         }
         Err(error) => {
-            out.warning(NEW_GIT, &format!("cannot run `git`: {error}"), &skip);
+            out.warning(NEW_GIT, &error.to_string(), &skip);
             return;
         }
         // Its files are the enclosing repository's.
@@ -758,22 +759,19 @@ fn git(root: &Path, out: &mut Output) {
         Ok(_) => {}
     }
     out.progress("git", "git init");
-    match Command::new("git")
-        .args(["init", "--quiet"])
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .output()
-    {
+    match capture(
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root),
+        Some(QUICK),
+    ) {
         Ok(output) if output.status.success() => {}
         Ok(output) => out.warning(
             NEW_GIT,
-            &format!(
-                "`git init` failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
+            &format!("`git init` failed: {}", output.said()),
             &skip,
         ),
-        Err(error) => out.warning(NEW_GIT, &format!("cannot run `git`: {error}"), &skip),
+        Err(error) => out.warning(NEW_GIT, &error.to_string(), &skip),
     }
 }
 

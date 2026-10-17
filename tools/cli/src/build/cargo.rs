@@ -11,7 +11,9 @@
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
+
+use crate::process::ProcessTree;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
@@ -93,19 +95,6 @@ pub(crate) struct BuildCommand {
 }
 
 impl BuildCommand {
-    /// The Cargo command line, for `--verbose`.
-    pub(crate) fn describe(&self) -> String {
-        let mut line = format!("VISO_PROFILE={} {}", self.profile, self.cargo.display());
-        for arg in self.args(false) {
-            line.push(' ');
-            line.push_str(&crate::secret::argument(&arg.to_string_lossy()));
-        }
-        if let Some(dir) = &self.target_dir {
-            line.push_str(&format!(" (CARGO_TARGET_DIR={})", dir.display()));
-        }
-        line
-    }
-
     /// Every argument of the Cargo command line: `cargo check` when
     /// `check`, which takes no `rustc` arguments.
     fn args(&self, check: bool) -> Vec<OsString> {
@@ -631,111 +620,6 @@ impl Messages {
                 Some(diagnostic.clone())
             }
             _ => None,
-        }
-    }
-}
-
-/// A child and every process it starts, killed together: its own process
-/// group on Unix, a job object on Windows.
-pub(crate) struct ProcessTree {
-    pub(crate) child: Child,
-    #[cfg(windows)]
-    job: Option<job::Job>,
-}
-
-impl ProcessTree {
-    #[cfg(unix)]
-    pub(crate) fn spawn(command: &mut Command) -> std::io::Result<ProcessTree> {
-        use std::os::unix::process::CommandExt;
-        // Its own group, which the terminal's Ctrl-C does not reach: the
-        // session kills it.
-        command.process_group(0);
-        Ok(ProcessTree {
-            child: command.spawn()?,
-        })
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn spawn(command: &mut Command) -> std::io::Result<ProcessTree> {
-        let child = command.spawn()?;
-        let job = job::Job::holding(&child);
-        Ok(ProcessTree { child, job })
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    pub(crate) fn spawn(command: &mut Command) -> std::io::Result<ProcessTree> {
-        Ok(ProcessTree {
-            child: command.spawn()?,
-        })
-    }
-
-    /// Kills the tree and reaps the child.
-    pub(crate) fn kill(&mut self) {
-        #[cfg(unix)]
-        if let Ok(group) = libc::pid_t::try_from(self.child.id()) {
-            // SAFETY: a plain call; the child is not yet reaped, so its id
-            // still names its group.
-            unsafe { libc::kill(-group, libc::SIGKILL) };
-        }
-        #[cfg(windows)]
-        if let Some(job) = &self.job {
-            job.terminate();
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-#[cfg(windows)]
-mod job {
-    use std::os::windows::io::AsRawHandle;
-    use std::process::Child;
-
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject,
-    };
-    use windows_core::PCWSTR;
-
-    /// A job object holding a child and what it starts, which closing kills.
-    pub(super) struct Job(HANDLE);
-
-    impl Job {
-        /// A job holding `child`, `None` when the system gives none.
-        pub(super) fn holding(child: &Child) -> Option<Job> {
-            // SAFETY: no attributes and no name; the handle is owned below.
-            let job = Job(unsafe { CreateJobObjectW(None, PCWSTR::null()) }.ok()?);
-            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            // SAFETY: `limits` is the extended limit record the class names,
-            // of the length given, and lives across the call; the process
-            // handle is the child's, open while `child` lives.
-            unsafe {
-                SetInformationJobObject(
-                    job.0,
-                    JobObjectExtendedLimitInformation,
-                    (&raw const limits).cast(),
-                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                )
-                .ok()?;
-                AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())).ok()?;
-            }
-            Some(job)
-        }
-
-        /// Ends every process of the job.
-        pub(super) fn terminate(&self) {
-            // SAFETY: the job handle is open while `self` lives.
-            let _ = unsafe { TerminateJobObject(self.0, 1) };
-        }
-    }
-
-    impl Drop for Job {
-        fn drop(&mut self) {
-            // SAFETY: the handle is owned and closed once.
-            let _ = unsafe { CloseHandle(self.0) };
         }
     }
 }

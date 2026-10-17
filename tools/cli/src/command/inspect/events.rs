@@ -29,6 +29,7 @@ use crate::dev::{ControlAsk, ControlReply};
 use crate::error::{CLI_USAGE, ENV_NO_DEV_SESSION, INSPECT_UNSUPPORTED, RUN_APP_FAILED};
 use crate::interrupt;
 use crate::output::Output;
+use crate::process::Launch;
 
 /// How often a follower asks for what is new.
 const POLL: Duration = Duration::from_millis(100);
@@ -664,7 +665,7 @@ fn run_and_attach(
         .stdin(Stdio::null())
         .stdout(Stdio::from(file))
         .stderr(Stdio::from(err));
-    let child = command.spawn().map_err(|error| {
+    let child = command.launch().map_err(|error| {
         out.failure(
             RUN_APP_FAILED,
             &format!("cannot start `viso run`: {error}"),

@@ -54,15 +54,12 @@ impl RustScope {
         if let Some(platform) = target.map(str::to_owned).or_else(host_triple) {
             command.args(["--filter-platform", &platform]);
         }
-        let output = command
-            .output()
+        let output = crate::process::capture(&mut command, None)
             .map_err(|error| format!("cannot run `cargo metadata`: {error}"))?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("`cargo metadata` failed: {}", stderr.trim()));
+            return Err(format!("`cargo metadata` failed: {}", output.stderr.trim()));
         }
-        let text = String::from_utf8(output.stdout)
-            .map_err(|_| "`cargo metadata` wrote no UTF-8".to_owned())?;
+        let text = output.stdout;
         let metadata = JsonValue::parse(&text)
             .map_err(|error| format!("`cargo metadata` wrote no JSON: {error}"))?;
         RustScope::of(&metadata, manifest)
@@ -203,9 +200,12 @@ fn cargo_home() -> Option<PathBuf> {
 /// The host's target triple, as `rustc -vV` reports it.
 fn host_triple() -> Option<String> {
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
-    let output = Command::new(rustc).arg("-vV").output().ok()?;
-    let text = String::from_utf8(output.stdout).ok()?;
-    text.lines()
+    let output =
+        crate::process::capture(Command::new(rustc).arg("-vV"), Some(crate::process::QUICK))
+            .ok()?;
+    output
+        .stdout
+        .lines()
         .find_map(|line| line.strip_prefix("host: "))
         .map(str::to_owned)
 }

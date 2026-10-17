@@ -3188,6 +3188,17 @@ JSON for CLI/AI/external tooling
 - exit status 与 stdout/stderr 捕获结构化；
 - timeout/cancellation 可控。
 
+### 48.1 当前实现
+
+CLI 启动的每个外部程序都经过同一个 runner（`tools/cli/src/process.rs`）：
+
+- 程序与参数以列表给出，从不经 shell；
+- `--verbose` 在 stderr 打出 `[viso] running <env> <program> <args> (in <dir>)`；`--json` 下改为 `log` 事件（`source:"tool"`，`level:"debug"`）。按名字是 secret 的变量与 `name=value` 参数显示为 `<hidden>`，紧跟在 secret 名字之后的参数也一样（`--token <hidden>`、`--es VISO_DEV_TOKEN <hidden>`）；
+- 问答式调用（`capture`/`run`/`status`）不给 stdin，stdout/stderr 边写边读，结果为 `{status, stdout, stderr}`。失败分为四种：未安装、无法启动、超时（`did not finish in N s`）、被中断；
+- 超时或第一次中断时，结束该程序及其启动的所有进程（Unix 进程组，Windows job object）。只有 CLI 自己接管 Ctrl-C 时，子进程才放进独立进程组，否则终端的 Ctrl-C 照常直接到达它；
+- 环境变量继承用户环境：SDK 工具要从中读取 `HOME`、代理、`ANDROID_HOME`、`DEVELOPER_DIR` 等配置，回显时 secret 一律隐藏；
+- `viso lsp` 以 exec 方式把进程交给 `viso-lsp`，交接之前同样回显。
+
 ---
 
 ## 49. Secrets

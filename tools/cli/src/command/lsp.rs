@@ -38,7 +38,6 @@ pub fn run(ctx: &Context<'_>, args: &LspArgs, out: &mut Output) -> u8 {
     if args.stdio {
         command.arg("--stdio");
     }
-    out.verbose(|| format!("running {}", server.display()));
     let error = replace(command);
     out.failure(
         ENV_LSP,
@@ -77,6 +76,7 @@ fn is_file(path: &Path) -> bool {
 #[cfg(unix)]
 pub(crate) fn replace(mut command: Command) -> std::io::Error {
     use std::os::unix::process::CommandExt;
+    crate::process::echo(&command);
     command.exec()
 }
 
@@ -84,6 +84,7 @@ pub(crate) fn replace(mut command: Command) -> std::io::Error {
 /// only when it cannot start.
 #[cfg(not(unix))]
 pub(crate) fn replace(mut command: Command) -> std::io::Error {
+    crate::process::echo(&command);
     match command.status() {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
         Err(error) => error,

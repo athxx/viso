@@ -317,6 +317,11 @@ enum Form {
 impl Output {
     /// Output for `command` in the form and verbosity `global` asks for.
     pub fn new(global: &Global, command: Option<&str>) -> Self {
+        crate::process::echo_to(match (global.verbose, global.json) {
+            (false, _) => crate::process::Echo::Off,
+            (true, false) => crate::process::Echo::Stderr,
+            (true, true) => crate::process::Echo::Events,
+        });
         Self {
             form: if global.json {
                 Form::Json(json::Stream::new(command))

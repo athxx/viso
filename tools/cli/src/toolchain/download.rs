@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use sha1::{Digest, Sha1};
 
-use crate::build::cargo::ProcessTree;
 use crate::interrupt;
+use crate::process::ProcessTree;
 
 /// An archive as a component set pins it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
