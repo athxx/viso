@@ -2297,7 +2297,7 @@ viso export html ui::Card --out card
 - 对支持的 reactive subset 生成直接 DOM mutation/vanilla JS；
 - 不引入 Solid/React/Vue 等 framework dependency。
 
-分类：每个 entry 由解释器在初始 state、input 默认值、默认 theme 与 source locale 下求值，它读到的 state（`Vm::reads`）决定它是常量（直接写进 HTML/CSS）、theme 字段（CSS custom property）还是会变化（由 `app.js` 更新）。`app.js` 把可达的 Behavior IR 函数逐条翻译为 JavaScript，保持解释器的值语义（整数为 BigInt 并检查范围、`F32` 每步舍入、聚合 `{t, f}`、列表写时复制）；每个 handler 是一个 transaction，只刷新读到被改 state 的绑定；`if`/`match`/keyed `for` 区域从 `<template>` 挂载；`emit` 在 `#viso-root` 上派发 `CustomEvent`；`tr` 用 source locale 的消息表与 `Intl.PluralRules`/`Intl.NumberFormat` 格式化。task（`start`）、`effect`/`resource`、区域内组件自己的 state、game system，以及 theme 与 locale 之外的 `env` 字段为 `EXPORT_UNSUPPORTED`。
+分类：每个 entry 由解释器在初始 state、input 默认值、默认 theme 与 source locale 下求值，它读到的 state（`Vm::reads`）决定它是常量（直接写进 HTML/CSS）、theme 字段（CSS custom property）还是会变化（由 `app.js` 更新）。`app.js` 把可达的 Behavior IR 函数逐条翻译为 JavaScript，保持解释器的值语义（整数为 BigInt 并检查范围、`F32` 每步舍入、聚合 `{t, f}`、列表写时复制）；每个 handler 是一个 transaction，只刷新读到被改 state 的绑定；`if`/`match`/keyed `for` 区域从 `<template>` 挂载；`emit` 在 `#viso-root` 上派发 `CustomEvent`；`tr` 用 `Intl.PluralRules`/`Intl.NumberFormat` 格式化。消息目录有多个 locale 时，`app.js` 带上每个 locale 的消息表（翻译缺失的条目已按 CLDR fallback 指向其来源表）。页面载入时按 `navigator.languages` 依次查找最近的 locale：先是原 tag，再逐级截短，再取 `Intl.Locale#maximize` 推出的 script（`zh-TW` → `zh-Hant`）；都找不到时用 source。找到后设置 `<html lang>`、`env.locale` 以及数字的格式化语言。这时读到 locale 的 entry 不再写进 HTML，改由脚本在挂载时写入。plural 规则取 pattern 所在表的语言，与原生 runtime 一致。`--static` 导出没有脚本，以 source locale 写成。Solid export 也是如此：组件模块载入时 `settle(MESSAGES)`。task（`start`）、`effect`/`resource`、区域内组件自己的 state、game system，以及 theme 与 locale 之外的 `env` 字段为 `EXPORT_UNSUPPORTED`。
 
 ### 29.1 Static-only mode
 

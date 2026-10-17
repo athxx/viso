@@ -764,8 +764,16 @@ a precise diagnostic what it cannot express.
 - [ ] Export what the page cannot run yet: `start`ed tasks, `effect`/`resource`,
       states of a component a region mounts, a game's systems, `env` fields other
       than theme and locale (each is `EXPORT_UNSUPPORTED` at its span today).
-- [ ] Locales beyond the source one: the page follows `navigator.language` through the
-      catalog's fallback chain, every table shipped.
+- [x] Locales beyond the source one: `app.js` (and the Solid module) ships every
+      locale's table, untranslated entries already pointing at their CLDR fallback.
+      At load, `settle` picks the locale nearest `navigator.languages`: the tag
+      itself, then shorter forms, then its `maximize()` script, so `zh-TW` reaches
+      `zh-Hant`; the source when nothing matches. It sets `<html lang>`, `env.locale`
+      and the number language. Text that reads the locale is written by the script
+      rather than into the HTML; a `--static` page stays in the source locale. Plural
+      rules follow the language the pattern is written in, as the native runtime
+      does. `tests/export_html.rs` runs the choice under node for four browser
+      languages; checked in Chrome with `--lang=de-DE`/`en-US`.
 
 ### C5.4 — `viso export solid` (§30)
 

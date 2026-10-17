@@ -23,10 +23,19 @@ export interface Store {
 }
 
 export interface Messages {
+  /** Each locale's tag, the source's first. */
+  Ls: string[];
+  /** Each locale's patterns, by message id. */
+  Ms: Value[][];
+  /** The locale `settle` picked, its patterns, and the reader's language. */
   L: string;
   M: Value[];
+  R?: string;
   MK: Map<string, number>;
 }
+
+/** Has `messages` speak the reader's language, as near as they can. */
+export declare function settle(messages: Messages): void;
 
 export declare function store(o: {
   states: [Accessor<Value>, Setter<Value>][];

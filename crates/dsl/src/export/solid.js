@@ -175,4 +175,4 @@ export const show = {
   select,
 };
 
-export { $, fault };
+export { $, fault, settle };

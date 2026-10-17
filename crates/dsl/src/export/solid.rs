@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use viso_behavior::Value;
 use viso_behavior::i18n::Catalog;
 use viso_view::EventRoute;
 
@@ -233,7 +234,7 @@ fn component(input: &Input<'_>, name: &str) -> Result<(String, Option<String>), 
     }
     let mut runtime: Vec<&str> = runtime_uses.into_iter().collect();
     if behavior.is_some() {
-        runtime.extend(["store", "type Messages", "type Value"]);
+        runtime.extend(["settle", "store", "type Messages", "type Value"]);
     }
     if marked {
         runtime.push("show");
@@ -303,7 +304,8 @@ fn component(input: &Input<'_>, name: &str) -> Result<(String, Option<String>), 
                 &format!("the message catalog does not read: {why}"),
             )
         })?;
-        let _ = writeln!(out, "const MESSAGES: Messages = {messages};\n");
+        let _ = writeln!(out, "const MESSAGES: Messages = {messages};");
+        out.push_str("settle(MESSAGES);\n\n");
     }
     let props_param = if props.is_empty() { "_props" } else { "props" };
     let _ = writeln!(
@@ -316,12 +318,19 @@ fn component(input: &Input<'_>, name: &str) -> Result<(String, Option<String>), 
             let state = layout.states.get(slot).map_or("state", String::as_str);
             let getter = idents.take(&ident(state), slot as u32);
             let setter = idents.take(&format!("set{}", pascal(&getter)), slot as u32);
-            let value = script::literal(value).map_err(|why| {
-                unsupported(
-                    input.origin,
-                    &format!("the component starts with {why}, which a page cannot hold"),
-                )
-            })?;
+            let value = if eval.locale_slots().contains(&(slot as u32))
+                && let Value::Agg(locale) = value
+            {
+                // The reader's locale, as the page found it.
+                format!("{{ t: {}, f: [MESSAGES.R] }}", locale.tag)
+            } else {
+                script::literal(value).map_err(|why| {
+                    unsupported(
+                        input.origin,
+                        &format!("the component starts with {why}, which a page cannot hold"),
+                    )
+                })?
+            };
             let _ = writeln!(
                 out,
                 "  const [{getter}, {setter}] = createSignal<Value>({value}, {{ equals: false }});"

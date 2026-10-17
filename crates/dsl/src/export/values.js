@@ -149,10 +149,12 @@ const $ = {
 
 const number = (T, v) => {
   if (typeof v !== "bigint" && !Number.isFinite(v)) throw fault(v + " is not a finite number");
-  T.numbers ??= new Intl.NumberFormat(T.L || undefined, { maximumFractionDigits: 20 });
+  T.numbers ??= new Intl.NumberFormat(T.R || T.L || undefined, { maximumFractionDigits: 20 });
   return T.numbers.format(typeof v === "bigint" ? v : $.f64(v));
 };
-const pattern = (T, ops, a, pound, out) => {
+// Formats the pattern `ops` with the arguments `a`, its plurals by the
+// rules of the language `lang` it is written in.
+const pattern = (T, ops, a, pound, out, lang) => {
   for (const op of ops) {
     if (typeof op === "string") {
       out.push(op);
@@ -174,21 +176,58 @@ const pattern = (T, ops, a, pound, out) => {
         const hit = op[4].find((c) => c[0] === exact);
         let body = hit && hit[1];
         if (!body) {
-          T.plurals ??= [null, null];
-          T.plurals[op[2]] ??= new Intl.PluralRules(T.L || undefined, { type: op[2] ? "ordinal" : "cardinal" });
-          body = op[5][T.plurals[op[2]].select(Number(shown))] || op[6];
+          T.plurals ??= new Map();
+          const key = lang + (op[2] ? "/o" : "/c");
+          let rules = T.plurals.get(key);
+          if (!rules) {
+            rules = new Intl.PluralRules(lang || undefined, { type: op[2] ? "ordinal" : "cardinal" });
+            T.plurals.set(key, rules);
+          }
+          body = op[5][rules.select(Number(shown))] || op[6];
         }
-        pattern(T, body, a, shown, out);
+        pattern(T, body, a, shown, out, lang);
         break;
       }
       default: {
         const v = a[op[1]];
         if (typeof v !== "string") throw fault("a `select` argument is text");
         const hit = op[2].find((c) => c[0] === v);
-        pattern(T, hit ? hit[1] : op[3], a, pound, out);
+        pattern(T, hit ? hit[1] : op[3], a, pound, out, lang);
       }
     }
   }
+};
+// The index of the locale of `tags` nearest the first of `wanted` that has
+// one: the tag itself, then each shorter form of it and of its likely
+// script and region, as a fallback chain runs; the source's, 0, when none.
+const nearest = (tags, wanted) => {
+  const lower = tags.map((t) => t.toLowerCase());
+  for (const w of wanted) {
+    const chain = [];
+    const cut = (tag) => {
+      for (let t = tag; t; t = t.includes("-") ? t.slice(0, t.lastIndexOf("-")) : "") chain.push(t.toLowerCase());
+    };
+    cut(w);
+    try {
+      const max = new Intl.Locale(w).maximize();
+      if (max.script) cut(max.language + "-" + max.script);
+    } catch (_) {}
+    for (const t of chain) {
+      const at = lower.indexOf(t);
+      if (at >= 0) return at;
+    }
+  }
+  return 0;
+};
+// Has the messages `T` speak the reader's language as near as they can,
+// and write numbers as the reader's language `R` does.
+const settle = (T) => {
+  const nav = typeof navigator === "undefined" ? null : navigator;
+  const wanted = !nav ? [] : nav.languages && nav.languages.length ? nav.languages : [nav.language || ""];
+  const at = nearest(T.Ls, wanted);
+  T.L = T.Ls[at];
+  T.M = T.Ms[at];
+  T.R = wanted[0] || T.L;
 };
 // Message `m` of the messages `T`, by id or key, with the arguments `a`.
 const translate = (T, m, a) => {
@@ -198,6 +237,9 @@ const translate = (T, m, a) => {
   if (p === undefined) throw fault("message " + m + " is not in the catalog");
   if (typeof p === "string") return p;
   const out = [];
-  pattern(T, p, a, null, out);
+  // A pattern the locale leaves to its fallback is `{o, p}`: written in
+  // locale `o`, whose plural rules it follows.
+  if (Array.isArray(p)) pattern(T, p, a, null, out, T.L);
+  else pattern(T, p.p, a, null, out, T.Ls[p.o]);
   return out.join("");
 };

@@ -1,7 +1,8 @@
 //! A view's entries at export time: the interpreter runs each against the
 //! component's initial states, its inputs' defaults, the default theme and
 //! the page's locale, and what the entry reads says whether the value it
-//! shows can change.
+//! shows can change. A page that picks its locale as it loads changes what
+//! reads the locale once, then.
 
 use std::rc::Rc;
 
@@ -38,6 +39,9 @@ pub(super) struct Eval<'a> {
     themes: Vec<u32>,
     /// The `env` slots holding the locale, fixed to the page's language.
     locales: Vec<u32>,
+    /// Whether the page picks its locale as it loads, so what reads the
+    /// locale is written by the script rather than into the page.
+    picks_locale: bool,
     /// Whether the inputs change, as a component's props do, rather than
     /// hold their defaults for good, as a page's do.
     pub(super) props: bool,
@@ -104,6 +108,7 @@ impl<'a> Eval<'a> {
             instance,
             themes,
             locales,
+            picks_locale: false,
             props: false,
         })
     }
@@ -137,15 +142,27 @@ impl<'a> Eval<'a> {
         (deps, env)
     }
 
+    /// Has the page pick its locale as it loads, among the catalog's.
+    pub(super) fn pick_locale(&mut self) {
+        self.picks_locale = true;
+    }
+
+    /// The `env` slots holding the locale.
+    pub(super) fn locale_slots(&self) -> &[u32] {
+        &self.locales
+    }
+
     /// Whether `entry` shows one value for as long as the page is open: it
-    /// reads no state that changes, no input that does, and takes no
-    /// region's binding.
+    /// reads no state that changes, no input that does, no locale the page
+    /// picks, and takes no region's binding.
     pub(super) fn constant(&self, entry: u32) -> bool {
         let (deps, env) = self.deps(entry);
+        let reads = self.vm.reads(self.func(entry).0);
         deps.is_empty()
             && env.is_empty()
             && self.program.function(self.func(entry)).params == 0
-            && !(self.props && !self.vm.reads(self.func(entry).0).inputs.is_empty())
+            && !(self.props && !reads.inputs.is_empty())
+            && !(self.picks_locale && reads.states.iter().any(|s| self.locales.contains(s)))
     }
 
     /// The value `entry` evaluates to now, with `args` as its region bindings.

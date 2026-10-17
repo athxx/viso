@@ -104,6 +104,16 @@ pub(super) fn script(
     })?;
     let _ = writeln!(out, "const T = {messages};");
     out.push_str(RUNTIME);
+    // The locale is the reader's, nearest among the catalog's, from the
+    // start.
+    out.push_str("settle(T);\n");
+    if catalog.is_some_and(|c| c.locales().count() > 1) {
+        out.push_str("if (T.L) document.documentElement.lang = T.L;\n");
+    }
+    for slot in eval.locale_slots() {
+        let _ = writeln!(out, "S[{slot}] = {{ t: S[{slot}].t, f: [T.R] }};");
+    }
+    out.push_str("W = S;\n");
 
     let mut findings = Vec::new();
     for id in &functions {
@@ -329,41 +339,54 @@ pub(super) fn reachable(program: &Program, roots: BTreeSet<FuncId>) -> BTreeSet<
     seen
 }
 
-/// The messages a script translates with, as an object literal: the
-/// catalog's source locale `L`, each message's pattern in it `M` by id, and
-/// the id of each key `MK`; none without a catalog.
+/// The messages a script translates with, as an object literal: each
+/// locale's tag `Ls`, the source's first, and its patterns `Ms`, each
+/// message's by id (its own, or the one its fallback gives), and the id of
+/// each key `MK`. `settle` picks the reader's locale `L` and its patterns
+/// `M` among them. One empty locale without a catalog.
 pub(super) fn messages(catalog: Option<&Catalog>) -> Result<String, String> {
     let Some(catalog) = catalog else {
-        return Ok("{ L: \"\", M: [], MK: new Map() }".to_owned());
+        return Ok("{ Ls: [\"\"], Ms: [[]], L: \"\", M: [], MK: new Map() }".to_owned());
     };
-    let mut out = String::new();
-    let source = catalog.locales().next().unwrap_or_default();
-    let _ = write!(out, "{{ L: {}, M: [", string(source));
+    let tags: Vec<String> = catalog.locales().map(string).collect();
     let mut tables: Vec<Option<Table>> = catalog.locales().map(|_| None).collect();
-    let own = catalog.table(0).map_err(|e| e.0)?;
-    for id in 0..catalog.messages().len() {
-        let entry = own.entries[id];
-        let origin = usize::from(entry.origin);
-        let table = if origin == 0 {
-            &own
-        } else {
+    let mut out = String::new();
+    let _ = write!(out, "{{ Ls: [{}], Ms: [", tags.join(", "));
+    for locale in 0..tags.len() {
+        if tables[locale].is_none() {
+            tables[locale] = Some(catalog.table(locale).map_err(|e| e.0)?);
+        }
+        if locale > 0 {
+            out.push_str(", ");
+        }
+        out.push('[');
+        for id in 0..catalog.messages().len() {
+            let entry = tables[locale].as_ref().map(|t| t.entries[id]);
+            let entry = entry.ok_or("the table did not decode")?;
+            let origin = usize::from(entry.origin);
             if tables[origin].is_none() {
                 tables[origin] = Some(catalog.table(origin).map_err(|e| e.0)?);
             }
-            tables[origin].as_ref().unwrap_or(&own)
-        };
-        let start = entry.start as usize;
-        let ops = &table.ops[start..start + entry.len as usize];
-        if id > 0 {
-            out.push_str(", ");
+            let table = tables[origin].as_ref().ok_or("the table did not decode")?;
+            let start = entry.start as usize;
+            let ops = &table.ops[start..start + entry.len as usize];
+            if id > 0 {
+                out.push_str(", ");
+            }
+            match ops {
+                [] => out.push_str("\"\""),
+                [PatternOp::Text { start, len }] => {
+                    out.push_str(&string(slice(table, *start, *len)));
+                }
+                _ if origin == locale => out.push_str(&pattern(table, ops)),
+                _ => {
+                    let _ = write!(out, "{{ o: {origin}, p: {} }}", pattern(table, ops));
+                }
+            }
         }
-        match ops {
-            [] => out.push_str("\"\""),
-            [PatternOp::Text { start, len }] => out.push_str(&string(slice(table, *start, *len))),
-            _ => out.push_str(&pattern(table, ops)),
-        }
+        out.push(']');
     }
-    out.push_str("], MK: new Map([");
+    let _ = write!(out, "], L: {}, M: [], MK: new Map([", tags[0]);
     for (id, message) in catalog.messages().iter().enumerate() {
         if id > 0 {
             out.push_str(", ");

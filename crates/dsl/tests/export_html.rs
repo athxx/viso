@@ -239,3 +239,102 @@ fn a_shader_has_no_html_form() {
         "{findings:#?}"
     );
 }
+
+/// A view translated into German and Traditional Chinese beside English,
+/// exported with a script or `static_only`.
+fn translated(static_only: bool) -> HtmlExport {
+    use viso_dsl::i18n::{CatalogFile, Messages};
+    let file = |locale: &str, text: &str| CatalogFile {
+        locale: locale.into(),
+        path: format!("i18n/{locale}.toml"),
+        text: text.into(),
+    };
+    let messages = Messages::compile(
+        "en",
+        &[
+            file(
+                "en",
+                "[inbox]\ntitle = \"Inbox\"\nunread = \"{count, plural, one {# unread} other {# unread}}\"\n",
+            ),
+            file(
+                "de",
+                "[inbox]\ntitle = \"Posteingang\"\nunread = \"{count, plural, one {# ungelesen} other {# ungelesene}}\"\n",
+            ),
+            file("zh-Hant", "inbox = { title = \"收件匣\" }\n"),
+        ],
+    );
+    let profile = TargetProfile {
+        messages: Some(Rc::new(messages)),
+        ..TargetProfile::default()
+    };
+    let source = "import viso::i18n::{tr};\nexport component Inbox {\n    view {\n        Column {\n            Text { text: tr(\"inbox.title\"); }\n            Text { text: tr(\"inbox.unread\", count: 1); }\n        }\n    }\n}\n";
+    let compiled = compile_file_for(source, &origin(), Natives::standard(), profile);
+    let errors: Vec<_> = compiled.errors().collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    html(&compiled, &options(static_only)).unwrap()
+}
+
+#[test]
+fn a_page_ships_every_locale_and_speaks_its_readers() {
+    // A page with no script is written in the source's language.
+    let fixed = translated(true);
+    assert!(fixed.script.is_none());
+    assert!(fixed.index.contains(">Inbox<"), "{}", fixed.index);
+    assert!(fixed.index.contains(">1 unread<"), "{}", fixed.index);
+
+    let page = translated(false);
+    let script = page.script.expect("translated text is the script's");
+    assert!(
+        script.contains("Ls: [\"en\", \"de\", \"zh-Hant\"]"),
+        "{script}"
+    );
+    assert!(script.contains("settle(T);"), "{script}");
+    assert!(
+        !page.index.contains(">Inbox<"),
+        "the reader's language is not known when the page is written: {}",
+        page.index
+    );
+    // The page script's messages, read as a browser in each language would.
+    let Ok(node) = which("node") else {
+        eprintln!("no `node` on PATH: the locale choice is not run");
+        return;
+    };
+    let messages = script
+        .lines()
+        .find(|line| line.starts_with("const T = "))
+        .expect("the messages");
+    for (languages, title, unread) in [
+        ("[\"de-AT\", \"en\"]", "Posteingang", "1 ungelesen"),
+        ("[\"zh-TW\"]", "收件匣", "1 unread"),
+        ("[\"fr-FR\", \"de\"]", "Posteingang", "1 ungelesen"),
+        ("[\"fr-FR\"]", "Inbox", "1 unread"),
+    ] {
+        let program = format!(
+            "{}\n{messages}\nglobalThis.navigator = {{ languages: {languages} }};\nsettle(T);\n\
+             console.log(T.L + \"|\" + translate(T, \"inbox.title\", []) + \"|\" + translate(T, \"inbox.unread\", [1n]));\n",
+            include_str!("../src/export/values.js")
+        );
+        let out = std::process::Command::new(&node)
+            .args(["-e", &program])
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout);
+        let fields: Vec<&str> = said.trim().split('|').collect();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(fields[1..], [title, unread], "{languages}: {said}");
+    }
+}
+
+fn which(program: &str) -> Result<std::path::PathBuf, ()> {
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join(program))
+                .find(|path| path.is_file())
+        })
+        .ok_or(())
+}

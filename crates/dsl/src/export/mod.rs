@@ -77,6 +77,11 @@ pub struct HtmlExport {
 /// Every place the view needs what the page cannot have, in source order.
 pub fn html(compiled: &Compiled, options: &HtmlOptions) -> Result<HtmlExport, Vec<Finding>> {
     let mut prepared = prepare(compiled, &options.lang)?;
+    // A page with a script follows its reader's language; a static one is
+    // written in the source's.
+    if !options.static_only {
+        prepared.pick_locale();
+    }
     let mut lower = html::Lower::new(
         prepared.vb.as_ref(),
         prepared.eval.as_mut(),
@@ -142,6 +147,7 @@ pub struct SolidExport {
 /// order.
 pub fn solid(compiled: &Compiled, options: &SolidOptions) -> Result<SolidExport, Vec<Finding>> {
     let mut prepared = prepare(compiled, &options.lang)?;
+    prepared.pick_locale();
     if let Some(eval) = prepared.eval.as_mut() {
         eval.props = true;
     }
@@ -184,6 +190,23 @@ struct Prepared<'a> {
     vb: Option<ViewBehavior>,
     eval: Option<eval::Eval<'a>>,
     origin: TextRange,
+}
+
+impl Prepared<'_> {
+    /// Has the page pick its locale as it loads, when the catalog has more
+    /// than the source's.
+    fn pick_locale(&mut self) {
+        let locales = self
+            .vb
+            .as_ref()
+            .and_then(|vb| vb.module.catalog())
+            .map_or(0, |catalog| catalog.locales().count());
+        if locales > 1
+            && let Some(eval) = self.eval.as_mut()
+        {
+            eval.pick_locale();
+        }
+    }
 }
 
 fn prepare<'a>(compiled: &'a Compiled, lang: &str) -> Result<Prepared<'a>, Vec<Finding>> {
