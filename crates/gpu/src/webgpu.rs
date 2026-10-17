@@ -79,11 +79,13 @@ const PROGRAM_GROUP_IDLE_FRAMES: u64 = 4;
 
 // GPUBufferUsage bits.
 const BUFFER_MAP_READ: u32 = 0x0001;
+const BUFFER_COPY_SRC: u32 = 0x0004;
 const BUFFER_COPY_DST: u32 = 0x0008;
 const BUFFER_INDEX: u32 = 0x0010;
 const BUFFER_VERTEX: u32 = 0x0020;
 const BUFFER_UNIFORM: u32 = 0x0040;
 const BUFFER_STORAGE: u32 = 0x0080;
+const BUFFER_QUERY_RESOLVE: u32 = 0x0200;
 // GPUTextureUsage bits.
 const TEXTURE_COPY_SRC: u32 = 0x01;
 const TEXTURE_COPY_DST: u32 = 0x02;
@@ -160,8 +162,14 @@ extern "C" {
     fn create_bind_group(this: &GpuDevice, desc: &Object) -> GpuBindGroup;
     #[wasm_bindgen(method, js_name = createCommandEncoder)]
     fn create_command_encoder(this: &GpuDevice) -> GpuCommandEncoder;
+    #[wasm_bindgen(method, js_name = createQuerySet)]
+    fn create_query_set(this: &GpuDevice, desc: &Object) -> GpuQuerySet;
     #[wasm_bindgen(method, js_name = destroy)]
     fn destroy_device(this: &GpuDevice);
+
+    type GpuQuerySet;
+    #[wasm_bindgen(method, js_name = destroy)]
+    fn destroy_query_set(this: &GpuQuerySet);
 
     type GpuQueue;
     #[wasm_bindgen(method, js_name = writeBuffer)]
@@ -201,6 +209,24 @@ extern "C" {
     fn begin_render_pass(this: &GpuCommandEncoder, desc: &Object) -> GpuRenderPassEncoder;
     #[wasm_bindgen(method, js_name = copyTextureToBuffer)]
     fn copy_texture_to_buffer(this: &GpuCommandEncoder, src: &Object, dst: &Object, size: &Object);
+    #[wasm_bindgen(method, js_name = copyBufferToBuffer)]
+    fn copy_buffer_to_buffer(
+        this: &GpuCommandEncoder,
+        src: &GpuBuffer,
+        src_offset: f64,
+        dst: &GpuBuffer,
+        dst_offset: f64,
+        size: f64,
+    );
+    #[wasm_bindgen(method, js_name = resolveQuerySet)]
+    fn resolve_query_set(
+        this: &GpuCommandEncoder,
+        set: &GpuQuerySet,
+        first: u32,
+        count: u32,
+        dst: &GpuBuffer,
+        dst_offset: f64,
+    );
     #[wasm_bindgen(method)]
     fn finish(this: &GpuCommandEncoder) -> GpuCommandBuffer;
 
@@ -305,6 +331,7 @@ struct Opened {
     device: GpuDevice,
     preferred: TextureFormat,
     float32_filterable: bool,
+    timestamps: bool,
 }
 
 /// Open the best adapter's device.
@@ -317,11 +344,15 @@ async fn open() -> Option<Opened> {
     // `R32Float` (the depth plane's storage) is sampled through the shared
     // filtering layout, which needs this feature; request it whenever offered.
     let float32_filterable = adapter.features().has("float32-filterable");
-    let features = if float32_filterable {
-        arr(&["float32-filterable".into()])
-    } else {
-        Array::new()
-    };
+    // A frame's GPU time, for a profiler, wherever the browser exposes it.
+    let timestamps = adapter.features().has("timestamp-query");
+    let features = Array::new();
+    if float32_filterable {
+        features.push(&"float32-filterable".into());
+    }
+    if timestamps {
+        features.push(&"timestamp-query".into());
+    }
     let limits = adapter.limits();
     let required = obj(&[
         (
@@ -348,6 +379,7 @@ async fn open() -> Option<Opened> {
         device,
         preferred,
         float32_filterable,
+        timestamps,
     })
 }
 
@@ -559,6 +591,137 @@ impl PassDescriptor {
     }
 }
 
+/// The frame clock: each pass of a frame writes its end into a query set, the
+/// first its beginning too, and the frame's stamps are resolved and copied
+/// into a readback buffer mapped when the GPU is done with it.
+struct Clock {
+    set: GpuQuerySet,
+    resolve: GpuBuffer,
+    readbacks: [Readback; Clock::READBACKS],
+    /// The reusable `timestampWrites` of a pass.
+    writes: Object,
+    key_writes: JsValue,
+    key_begin: JsValue,
+    key_end: JsValue,
+    on: bool,
+    /// The passes the open frame stamped.
+    stamped: u32,
+    /// Frames timed and read, waiting for the profiler: epoch and ns.
+    read: Vec<(u64, u64)>,
+}
+
+/// A readback buffer and the frame it holds the stamps of.
+struct Readback {
+    buffer: GpuBuffer,
+    /// The frame's epoch and stamp count, while it is copied or mapped.
+    frame: Option<(u64, u32)>,
+    /// Whether the map settled: `Some(true)` mapped, `Some(false)` failed.
+    mapped: Rc<Cell<Option<bool>>>,
+    /// What the map's promise settles through, made once.
+    on_mapped: Closure<dyn FnMut(JsValue)>,
+    on_failed: Closure<dyn FnMut(JsValue)>,
+}
+
+impl Clock {
+    /// The stamps a frame takes: its beginning and the end of each pass.
+    const STAMPS: u32 = 32;
+    /// Frames in flight to the CPU at once; a frame finding none free goes
+    /// untimed.
+    const READBACKS: usize = 4;
+    /// The most read times kept for a profiler that stopped asking.
+    const KEPT: usize = 64;
+
+    fn new(device: &GpuDevice) -> Clock {
+        let bytes = f64::from(Clock::STAMPS * 8);
+        let set = device.create_query_set(&obj(&[
+            ("type", "timestamp".into()),
+            ("count", Clock::STAMPS.into()),
+        ]));
+        let resolve = device.create_buffer(&obj(&[
+            ("size", bytes.into()),
+            ("usage", (BUFFER_QUERY_RESOLVE | BUFFER_COPY_SRC).into()),
+        ]));
+        let readbacks = std::array::from_fn(|_| {
+            let mapped = Rc::new(Cell::new(None));
+            let settle = |to: bool| {
+                let mapped = mapped.clone();
+                Closure::<dyn FnMut(JsValue)>::new(move |_: JsValue| mapped.set(Some(to)))
+            };
+            Readback {
+                buffer: device.create_buffer(&obj(&[
+                    ("size", bytes.into()),
+                    ("usage", (BUFFER_MAP_READ | BUFFER_COPY_DST).into()),
+                ])),
+                frame: None,
+                on_mapped: settle(true),
+                on_failed: settle(false),
+                mapped,
+            }
+        });
+        let writes = obj(&[("querySet", set.clone())]);
+        Clock {
+            set,
+            resolve,
+            readbacks,
+            writes,
+            key_writes: "timestampWrites".into(),
+            key_begin: "beginningOfPassWriteIndex".into(),
+            key_end: "endOfPassWriteIndex".into(),
+            on: false,
+            stamped: 0,
+            read: Vec::new(),
+        }
+    }
+
+    /// Points `pass` at the stamps of the frame's next pass, or at none.
+    fn stamp(&mut self, pass: &Object, frame: bool) {
+        if !self.on || !frame || self.stamped + 1 >= Clock::STAMPS {
+            let _ = Reflect::set(pass, &self.key_writes, &JsValue::UNDEFINED);
+            return;
+        }
+        let begin = if self.stamped == 0 {
+            JsValue::from(0)
+        } else {
+            JsValue::UNDEFINED
+        };
+        let _ = Reflect::set(&self.writes, &self.key_begin, &begin);
+        let _ = Reflect::set(&self.writes, &self.key_end, &(self.stamped + 1).into());
+        let _ = Reflect::set(pass, &self.key_writes, &self.writes);
+        self.stamped += 1;
+    }
+
+    /// Reads every frame whose stamps arrived.
+    fn collect(&mut self) {
+        for readback in &mut self.readbacks {
+            let Some((epoch, count)) = readback.frame else {
+                continue;
+            };
+            match readback.mapped.get() {
+                None => continue,
+                Some(true) => {
+                    let mut bytes = [0u8; Clock::STAMPS as usize * 8];
+                    let bytes = &mut bytes[..count as usize * 8];
+                    Uint8Array::new(&readback.buffer.get_mapped_range())
+                        .subarray(0, bytes.len() as u32)
+                        .copy_to(bytes);
+                    readback.buffer.unmap();
+                    let stamp = |i: usize| {
+                        u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().expect("8 bytes"))
+                    };
+                    let begin = stamp(0);
+                    let end = (1..count as usize).map(stamp).max().unwrap_or(0);
+                    if end > begin && self.read.len() < Clock::KEPT {
+                        self.read.push((epoch, end - begin));
+                    }
+                }
+                Some(false) => {}
+            }
+            readback.frame = None;
+            readback.mapped.set(None);
+        }
+    }
+}
+
 /// The WebGPU backend.
 pub struct WebGpuBackend {
     device: GpuDevice,
@@ -601,6 +764,8 @@ pub struct WebGpuBackend {
     validation_errors: Rc<Cell<u32>>,
     /// The `uncapturederror` listener, removed in `Drop` before it is freed.
     on_error: Closure<dyn FnMut(JsValue)>,
+    /// The frame clock, on a device that takes timestamps.
+    clock: Option<Clock>,
 }
 
 impl Default for WebGpuBackend {
@@ -631,6 +796,7 @@ impl WebGpuBackend {
             device,
             preferred,
             float32_filterable,
+            timestamps,
         } = opened;
         let queue = device.queue();
         let limits = device.device_limits();
@@ -771,6 +937,7 @@ impl WebGpuBackend {
             indirect_draw: false,
             program_instance_align: limits.min_storage_buffer_offset_alignment().max(4),
         };
+        let clock = timestamps.then(|| Clock::new(&device));
         Self {
             device,
             queue,
@@ -805,6 +972,7 @@ impl WebGpuBackend {
             lost,
             validation_errors,
             on_error,
+            clock,
         }
     }
 
@@ -1184,6 +1352,9 @@ impl WebGpuBackend {
                 (t.width, t.height)
             }
         };
+        if let Some(clock) = &mut self.clock {
+            clock.stamp(&self.pass_desc.pass, self.acquired.is_some());
+        }
         let rp = encoder.begin_render_pass(&self.pass_desc.pass);
         rp.set_bind_group(1, &self.default_group);
         let mut bound_pipeline = None;
@@ -1885,6 +2056,9 @@ impl GpuBackend for WebGpuBackend {
         self.reclaim_completed();
         self.evict_idle_program_groups();
         let texture = self.surface(surface).context.get_current_texture().ok()?;
+        if let Some(clock) = &mut self.clock {
+            clock.stamped = 0;
+        }
         self.acquired = Some(Acquired {
             surface,
             view: texture.create_view(),
@@ -1922,6 +2096,7 @@ impl GpuBackend for WebGpuBackend {
             .is_some_and(|a| a.surface == frame.surface)
         {
             self.acquired = None;
+            self.resolve_clock();
         }
     }
 
@@ -1939,6 +2114,56 @@ impl GpuBackend for WebGpuBackend {
     fn surface_format(&self, surface: SurfaceId) -> TextureFormat {
         self.surface(surface).format
     }
+
+    fn time_frames(&mut self, on: bool) {
+        if let Some(clock) = &mut self.clock {
+            if on && !clock.on {
+                clock.read.clear();
+            }
+            clock.on = on;
+        }
+    }
+
+    fn frame_epoch(&self) -> u64 {
+        self.current_epoch.0
+    }
+
+    fn finished_frame_times(&mut self, out: &mut Vec<(u64, u64)>) {
+        if let Some(clock) = &mut self.clock {
+            clock.collect();
+            clock.read.sort_unstable_by_key(|&(epoch, _)| epoch);
+            out.append(&mut clock.read);
+        }
+    }
+}
+
+impl WebGpuBackend {
+    /// Resolves the stamps of the frame just presented into a free readback
+    /// buffer and maps it; a frame finding none free goes untimed.
+    fn resolve_clock(&mut self) {
+        let Some(clock) = &mut self.clock else {
+            return;
+        };
+        let count = std::mem::take(&mut clock.stamped) + 1;
+        if count == 1 || self.lost.get() {
+            return;
+        }
+        let Some(readback) = clock.readbacks.iter_mut().find(|r| r.frame.is_none()) else {
+            return;
+        };
+        let bytes = f64::from(count * 8);
+        let encoder = self.device.create_command_encoder();
+        encoder.resolve_query_set(&clock.set, 0, count, &clock.resolve, 0.0);
+        encoder.copy_buffer_to_buffer(&clock.resolve, 0.0, &readback.buffer, 0.0, bytes);
+        self.submit_list.set(0, encoder.finish().into());
+        self.queue.submit(&self.submit_list);
+        self.submit_list.set(0, JsValue::UNDEFINED);
+        readback.frame = Some((self.current_epoch.0, count));
+        let _ = readback
+            .buffer
+            .map_async(MAP_READ)
+            .then2(&readback.on_mapped, &readback.on_failed);
+    }
 }
 
 impl Drop for WebGpuBackend {
@@ -1951,6 +2176,13 @@ impl Drop for WebGpuBackend {
         }
         self.uniforms.buffer.destroy_buffer();
         self.default_texture.destroy_texture();
+        if let Some(clock) = self.clock.take() {
+            clock.set.destroy_query_set();
+            clock.resolve.destroy_buffer();
+            for readback in clock.readbacks {
+                readback.buffer.destroy_buffer();
+            }
+        }
         self.device
             .remove_event_listener("uncapturederror", self.on_error.as_ref().unchecked_ref());
         self.device.destroy_device();

@@ -314,6 +314,28 @@ fn retired_resources_are_released_after_the_gpu_finishes() {
     assert_no_validation_errors(&gpu);
 }
 
+/// A timed backend stamps each recording's start, and times only what it
+/// presents: offscreen work reports no frame, with no validation error.
+#[test]
+fn offscreen_work_is_stamped_but_not_reported_as_a_frame() {
+    let Some(mut gpu) = device() else { return };
+    gpu.time_frames(true);
+    for _ in 0..4 {
+        let probe = target(&mut gpu, 4, 4);
+        gpu.read_texture(probe);
+        gpu.destroy_texture(probe);
+        gpu.encode(&DrawList {
+            commands: &[],
+            passes: &[],
+        });
+    }
+    let mut times = Vec::new();
+    gpu.finished_frame_times(&mut times);
+    assert!(times.is_empty(), "{times:?}");
+    gpu.time_frames(false);
+    assert_no_validation_errors(&gpu);
+}
+
 /// The renderer's device-init prewarm builds every standard pipeline from the
 /// frozen SPIR-V, and a frame's upload path runs, with no validation error.
 #[test]

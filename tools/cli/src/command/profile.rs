@@ -433,7 +433,8 @@ fn caveats(target: &str) -> Vec<String> {
                 .to_owned(),
         ],
         "web" => vec![
-            "a page's frames are paced by the browser, and its GPU time is not measured there"
+            "a page's frames are paced by the browser, and its GPU time is measured only where \
+             the browser offers timestamp queries, which it may round"
                 .to_owned(),
         ],
         "headless" => vec![

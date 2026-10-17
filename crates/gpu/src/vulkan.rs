@@ -211,6 +211,28 @@ struct FrameSlot {
     /// use.
     program_pools: Vec<vk::DescriptorPool>,
     program_pool: usize,
+    /// Whether the open recording stamped its start in the clock.
+    clocking: bool,
+    /// The frame epoch the last submission timed, until its time is read.
+    timed: Option<u64>,
+}
+
+/// The device's timestamp queries, two per frame slot: where the slot's
+/// recording began and where its last pass ended.
+struct Clock {
+    pool: vk::QueryPool,
+    /// Nanoseconds per tick.
+    period: f64,
+    /// The bits a timestamp carries.
+    mask: u64,
+    on: bool,
+    /// Frames timed and read, waiting for the profiler: epoch and ns.
+    read: Vec<(u64, u64)>,
+}
+
+impl Clock {
+    /// The most read times kept for a profiler that stopped asking.
+    const KEPT: usize = 64;
 }
 
 /// The frame between `begin_frame` and `present`.
@@ -271,6 +293,8 @@ pub struct VulkanBackend {
     /// The device's `minUniformBufferOffsetAlignment`, where a staged inline
     /// uniform block starts.
     uniform_align: u64,
+    /// The frame clock, on a queue that takes timestamps.
+    clock: Option<Clock>,
 }
 
 impl Default for VulkanBackend {
@@ -508,6 +532,29 @@ impl VulkanBackend {
 
         let (set_layout, pipeline_layout, pipeline_cache) = create_layouts(&device);
         let slots = std::array::from_fn(|_| create_frame_slot(&device, queue_family));
+        // SAFETY: `physical` belongs to `instance`.
+        let bits = unsafe { instance.get_physical_device_queue_family_properties(physical) }
+            .get(queue_family as usize)
+            .map_or(0, |family| family.timestamp_valid_bits);
+        let clock = (bits > 0 && limits.timestamp_period > 0.0).then(|| {
+            let info = vk::QueryPoolCreateInfo::default()
+                .query_type(vk::QueryType::TIMESTAMP)
+                .query_count(2 * FRAMES_IN_FLIGHT as u32);
+            // SAFETY: plain object creation on a live device.
+            let pool = unsafe { device.create_query_pool(&info, None) }
+                .expect("failed to create a Vulkan query pool");
+            Clock {
+                pool,
+                period: f64::from(limits.timestamp_period),
+                mask: if bits >= 64 {
+                    u64::MAX
+                } else {
+                    (1 << bits) - 1
+                },
+                on: false,
+                read: Vec::new(),
+            }
+        });
 
         Ok(Self {
             entry,
@@ -550,6 +597,7 @@ impl VulkanBackend {
             reclaim_scratch: Vec::new(),
             storage_align: limits.min_storage_buffer_offset_alignment.max(1),
             uniform_align: limits.min_uniform_buffer_offset_alignment.max(16),
+            clock,
         })
     }
 
@@ -790,6 +838,9 @@ impl VulkanBackend {
                     .expect("reset a frame fence");
                 slot.submitted = false;
             }
+            if let Some(clock) = &mut self.clock {
+                read_clock(&self.device, clock, slot, self.slot);
+            }
             self.device
                 .reset_command_pool(slot.pool, vk::CommandPoolResetFlags::empty())
                 .expect("reset a frame command pool");
@@ -805,6 +856,19 @@ impl VulkanBackend {
             self.device
                 .begin_command_buffer(slot.draw, &begin)
                 .expect("begin the draw command buffer");
+            slot.clocking = false;
+            if let Some(clock) = self.clock.as_ref().filter(|clock| clock.on) {
+                let first = 2 * self.slot as u32;
+                self.device
+                    .cmd_reset_query_pool(slot.upload, clock.pool, first, 2);
+                self.device.cmd_write_timestamp(
+                    slot.upload,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    clock.pool,
+                    first,
+                );
+                slot.clocking = true;
+            }
         }
         slot.staging.current = 0;
         slot.staging.cursor = 0;
@@ -834,7 +898,22 @@ impl VulkanBackend {
         ];
         // SAFETY: both command buffers were begun by `ensure_recording` and are
         // ended here exactly once; the fence was reset when the slot opened.
+        // The end stamp follows the start the upload buffer wrote, which the
+        // same submission runs first.
         unsafe {
+            slot.timed = None;
+            if let Some(clock) = &self.clock
+                && slot.clocking
+                && signal.is_some()
+            {
+                self.device.cmd_write_timestamp(
+                    slot.draw,
+                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    clock.pool,
+                    2 * self.slot as u32 + 1,
+                );
+                slot.timed = Some(self.current_epoch.0);
+            }
             self.device
                 .end_command_buffer(slot.upload)
                 .expect("end the upload command buffer");
@@ -2373,6 +2452,57 @@ impl GpuBackend for VulkanBackend {
     fn surface_format(&self, surface: SurfaceId) -> TextureFormat {
         self.surface(surface).format
     }
+
+    fn time_frames(&mut self, on: bool) {
+        if let Some(clock) = &mut self.clock {
+            if on && !clock.on {
+                clock.read.clear();
+            }
+            clock.on = on;
+        }
+    }
+
+    fn frame_epoch(&self) -> u64 {
+        self.current_epoch.0
+    }
+
+    fn finished_frame_times(&mut self, out: &mut Vec<(u64, u64)>) {
+        let Some(clock) = &mut self.clock else {
+            return;
+        };
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            // SAFETY: `slot.fence` is a live fence of this device.
+            if slot.submitted && unsafe { self.device.get_fence_status(slot.fence) } == Ok(true) {
+                read_clock(&self.device, clock, slot, index);
+            }
+        }
+        clock.read.sort_unstable_by_key(|&(epoch, _)| epoch);
+        out.append(&mut clock.read);
+    }
+}
+
+/// Reads the time slot `index` took, if its finished submission timed a frame.
+fn read_clock(device: &ash::Device, clock: &mut Clock, slot: &mut FrameSlot, index: usize) {
+    let Some(epoch) = slot.timed.take() else {
+        return;
+    };
+    let mut stamps = [0u64; 2];
+    // SAFETY: the slot's submission finished, so both of its queries are
+    // available; `stamps` holds exactly the two read.
+    let read = unsafe {
+        device.get_query_pool_results(
+            clock.pool,
+            2 * index as u32,
+            &mut stamps,
+            vk::QueryResultFlags::TYPE_64,
+        )
+    };
+    if read.is_ok() && clock.read.len() < Clock::KEPT {
+        let ticks = stamps[1].wrapping_sub(stamps[0]) & clock.mask;
+        clock
+            .read
+            .push((epoch, (ticks as f64 * clock.period) as u64));
+    }
 }
 
 impl Drop for VulkanBackend {
@@ -2424,6 +2554,9 @@ impl Drop for VulkanBackend {
                 self.device.destroy_command_pool(slot.pool, None);
                 self.device.destroy_fence(slot.fence, None);
                 self.device.destroy_semaphore(slot.acquire, None);
+            }
+            if let Some(clock) = self.clock.take() {
+                self.device.destroy_query_pool(clock.pool, None);
             }
             for e in self.render_passes.drain(..) {
                 self.device.destroy_render_pass(e.pass, None);
@@ -2567,6 +2700,8 @@ fn create_frame_slot(device: &ash::Device, queue_family: u32) -> FrameSlot {
             staging: Staging::default(),
             program_pools: Vec::new(),
             program_pool: 0,
+            clocking: false,
+            timed: None,
         }
     }
 }

@@ -2022,7 +2022,7 @@ paint               dirty 子树 paint 为 primitive
 semantics           semantics tree 更新
 upload              batching 与 GPU upload
 submit              encode 与 present（含等待 drawable）
-gpu                 GPU 执行该帧的时间（Metal 以 command buffer 的 GPU 起止；headless 为软件 raster 的 CPU 时间）
+gpu                 GPU 执行该帧的时间（Metal 以 command buffer 的 GPU 起止；Vulkan、D3D12 以 timestamp query 记该帧 recording 的开始与最后一个 pass 的结束；WebGPU 以各 pass 的 `timestampWrites`，仅当浏览器提供 `timestamp-query`，其精度由浏览器决定；headless 为软件 raster 的 CPU 时间）
 
 nodes               全部窗口挂载的节点
 dirty_nodes         被某个改动 invalidate 的节点
@@ -2069,7 +2069,7 @@ Ende trace（`viso_view::profile::Trace`）：protocol tag + `trace` + u16 版�
 
 - Dev Session：`viso profile [<target>] [--device <id>]` 经 `viso run` 的控制端点（与 `inspect` 同一选择规则）请求首个连接的 runtime 接下来绘制的帧：`--frames <n>`（1–100000）取接下来 n 帧，`--seconds <s>`（0 < s ≤ 3600）取 s 秒内的帧，两者都给时先到者结束，都不给为 5 秒。App 只在有人采集时采样：runtime 同时只跑一个 capture，所有等待的 `viso profile` 与 `run --profile-frame` 共享它，session 在没有消费者时结束它。样本每 32 帧或 100 ms 成批经 dev 通道发送，每帧最多等 4 帧拿到它的 GPU 时间（按 backend 的 frame epoch 对应）。App 空闲不绘制时结果为 0 帧，human 输出提示在采集期间与 app 交互；
 - `headless`：以 headless 构建 app（同 `viso test ui`），采样它 settle 或播放 `--scenario <name>` 期间绘制的每一帧，`--frames` 保留前 n 帧；headless 不接受 `--seconds`（它的时钟是自己的）与 `--device`，非 headless 不接受 `--scenario`（`CLI_USAGE`，exit 2）；
-- Caveat：`ios-simulator`、`android-emulator` 的时间不代表真机（CPU 为本机，GPU 经 simulator/emulator 转译），`web` 的帧由浏览器调度且不测 GPU 时间，`headless` 的 `gpu` 是软件 raster 的 CPU 时间；
+- Caveat：`ios-simulator`、`android-emulator` 的时间不代表真机（CPU 为本机，GPU 经 simulator/emulator 转译），`web` 的帧由浏览器调度，GPU 时间只在浏览器提供 `timestamp-query` 时测得且可能被浏览器取整，`headless` 的 `gpu` 是软件 raster 的 CPU 时间；
 - GPU 时间目前只有 Metal 与 headless raster 报告，其它 backend 的 `gpu` 列入 `unavailable`；
 - 失败码：没有 session `ENV_NO_DEV_SESSION`（exit 3）；采集期间 app 离开 session 或 headless run crash `PROFILE_APP_GONE`（exit 5）；trace 写不出 `PROFILE_WRITE`（exit 3）；回答无法解码 `PROFILE_ANSWER_INVALID`（exit 7）；scenario 失败 `TEST_EXPECTATION`（exit 1）；Ctrl-C 130。
 

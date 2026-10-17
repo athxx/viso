@@ -825,8 +825,14 @@ and traced from the CLI and from Studio over the same services.
 - [x] Allocation counts: `viso::alloc::Counting`, a counting allocator the app
       declares as its global allocator, reported per frame as `allocations` and
       `allocated_bytes`; `unavailable` without it.
-- [ ] GPU time on Vulkan, D3D12 and WebGPU (timestamp queries); Metal and the
-      headless raster report it today.
+- [x] GPU time on Vulkan, D3D12 and WebGPU from timestamp queries: a frame's
+      recording start to its last pass's end (Vulkan, D3D12), each pass's
+      `timestampWrites` where the browser offers `timestamp-query` (WebGPU).
+      Checked: WebGPU in Chrome through `viso profile web-gpu`; the Vulkan
+      queries validation-clean on MoltenVK offscreen; D3D12 compiles for
+      Windows only.
+- [ ] GPU time verified on a presenting Vulkan device (Android emulator's Vulkan
+      fails to create an instance on this host) and on Windows D3D12.
 - [ ] HUD checked on screen (golden of a window with `--profile-frame`); only its
       layout is tested.
 - [x] `run --inspect`: the session follows its first runtime's first window over its

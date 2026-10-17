@@ -239,6 +239,50 @@ struct FrameSlot {
     /// The oldest epoch the last submission's commands were recorded in.
     epoch: Epoch,
     staging: Staging,
+    /// Whether the open recording stamped its start in the clock.
+    clocking: bool,
+    /// The frame epoch the last submission timed, until its time is read.
+    timed: Option<u64>,
+}
+
+/// The queue's timestamp queries, two per frame slot — where the slot's
+/// recording began and where its last pass ended — resolved into a
+/// readback buffer the CPU reads once the slot's fence passes.
+struct Clock {
+    heap: ID3D12QueryHeap,
+    readback: ID3D12Resource,
+    /// `readback`, mapped for as long as it lives.
+    stamps: *const u64,
+    /// Ticks per second.
+    frequency: u64,
+    on: bool,
+    /// Frames timed and read, waiting for the profiler: epoch and ns.
+    read: Vec<(u64, u64)>,
+}
+
+impl Clock {
+    /// The most read times kept for a profiler that stopped asking.
+    const KEPT: usize = 64;
+
+    /// Reads the time slot `index` took, if its finished submission timed a
+    /// frame.
+    fn read(&mut self, slot: &mut FrameSlot, index: usize) {
+        let Some(epoch) = slot.timed.take() else {
+            return;
+        };
+        // SAFETY: the slot's submission resolved its two stamps into
+        // `readback` and has completed; the mapping covers every slot's pair.
+        let (start, end) = unsafe {
+            (
+                self.stamps.add(2 * index).read_volatile(),
+                self.stamps.add(2 * index + 1).read_volatile(),
+            )
+        };
+        if end > start && self.read.len() < Self::KEPT {
+            let nanos = u128::from(end - start) * 1_000_000_000 / u128::from(self.frequency);
+            self.read.push((epoch, nanos as u64));
+        }
+    }
 }
 
 /// What a pass's recording has bound so far.
@@ -338,6 +382,8 @@ pub struct D3D12Backend {
     retire_queue: RetireQueue,
     current_epoch: Epoch,
     reclaim_scratch: Vec<Retired>,
+    /// The frame clock, on a queue that takes timestamps.
+    clock: Option<Clock>,
 }
 
 impl Default for D3D12Backend {
@@ -440,7 +486,7 @@ impl D3D12Backend {
             unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) };
         let slots = std::array::from_fn(|_| create_frame_slot(&device));
 
-        Some(Self {
+        let mut backend = Self {
             factory,
             device,
             queue,
@@ -485,6 +531,50 @@ impl D3D12Backend {
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
             reclaim_scratch: Vec::new(),
+            clock: None,
+        };
+        backend.clock = backend.create_clock();
+        Some(backend)
+    }
+
+    /// The frame clock, if the queue takes timestamps.
+    fn create_clock(&self) -> Option<Clock> {
+        // SAFETY: querying a live queue has no preconditions.
+        let frequency = unsafe { self.queue.GetTimestampFrequency() }.ok()?;
+        if frequency == 0 {
+            return None;
+        }
+        let count = 2 * FRAMES_IN_FLIGHT as u32;
+        let mut heap: Option<ID3D12QueryHeap> = None;
+        // SAFETY: the description borrows a local for the call.
+        unsafe {
+            self.device
+                .CreateQueryHeap(
+                    &D3D12_QUERY_HEAP_DESC {
+                        Type: D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                        Count: count,
+                        NodeMask: 0,
+                    },
+                    &mut heap,
+                )
+                .ok()?;
+        }
+        let readback = self.create_buffer_resource(
+            D3D12_HEAP_TYPE_READBACK,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            u64::from(count) * 8,
+        );
+        let mut ptr: *mut c_void = core::ptr::null_mut();
+        // SAFETY: a readback buffer may stay mapped while the GPU writes it;
+        // the CPU reads a slot's stamps only after its fence passes.
+        unsafe { readback.Map(0, None, Some(&mut ptr)) }.ok()?;
+        Some(Clock {
+            heap: heap?,
+            readback,
+            stamps: ptr.cast(),
+            frequency,
+            on: false,
+            read: Vec::new(),
         })
     }
 
@@ -741,6 +831,9 @@ impl D3D12Backend {
         }
         self.wait_for(self.slots[self.slot].fence_value);
         let slot = &mut self.slots[self.slot];
+        if let Some(clock) = &mut self.clock {
+            clock.read(slot, self.slot);
+        }
         let zeros = [0u32; InlineUniforms::MAX / 4];
         // SAFETY: the slot's last submission has completed, so its allocators
         // and lists are no longer in use and may be reset; the draw list binds
@@ -768,6 +861,15 @@ impl D3D12Backend {
             draw.SetGraphicsRootDescriptorTable(ROOT_TEXTURES, self.srv_heap.gpu(0));
             draw.SetGraphicsRootDescriptorTable(ROOT_SAMPLER, self.sampler_heap.gpu(0));
             draw.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            slot.clocking = false;
+            if let Some(clock) = self.clock.as_ref().filter(|clock| clock.on) {
+                slot.upload.EndQuery(
+                    &clock.heap,
+                    D3D12_QUERY_TYPE_TIMESTAMP,
+                    2 * self.slot as u32,
+                );
+                slot.clocking = true;
+            }
         }
         slot.staging.current = 0;
         slot.staging.cursor = 0;
@@ -1865,6 +1967,29 @@ impl GpuBackend for D3D12Backend {
                 )]);
             }
         }
+        let slot = &mut self.slots[self.slot];
+        slot.timed = None;
+        if let Some(clock) = &self.clock
+            && slot.clocking
+        {
+            let first = 2 * self.slot as u32;
+            // SAFETY: the recording is open; the end stamp follows the start
+            // the upload list wrote, which the same submission runs first,
+            // and both resolve into this slot's pair of the readback buffer.
+            unsafe {
+                slot.draw
+                    .EndQuery(&clock.heap, D3D12_QUERY_TYPE_TIMESTAMP, first + 1);
+                slot.draw.ResolveQueryData(
+                    &clock.heap,
+                    D3D12_QUERY_TYPE_TIMESTAMP,
+                    first,
+                    2,
+                    &clock.readback,
+                    u64::from(first) * 8,
+                );
+            }
+            slot.timed = Some(self.current_epoch.0);
+        }
         self.submit();
         let s = self.surface_mut(frame.surface);
         s.waited = false;
@@ -1914,6 +2039,34 @@ impl GpuBackend for D3D12Backend {
 
     fn surface_format(&self, _surface: SurfaceId) -> TextureFormat {
         TextureFormat::Bgra8Unorm
+    }
+
+    fn time_frames(&mut self, on: bool) {
+        if let Some(clock) = &mut self.clock {
+            if on && !clock.on {
+                clock.read.clear();
+            }
+            clock.on = on;
+        }
+    }
+
+    fn frame_epoch(&self) -> u64 {
+        self.current_epoch.0
+    }
+
+    fn finished_frame_times(&mut self, out: &mut Vec<(u64, u64)>) {
+        let Some(clock) = &mut self.clock else {
+            return;
+        };
+        // SAFETY: reading a live fence's value has no preconditions.
+        let completed = unsafe { self.fence.GetCompletedValue() };
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if slot.fence_value <= completed {
+                clock.read(slot, index);
+            }
+        }
+        clock.read.sort_unstable_by_key(|&(epoch, _)| epoch);
+        out.append(&mut clock.read);
     }
 }
 
@@ -2260,6 +2413,8 @@ fn create_frame_slot(device: &ID3D12Device) -> FrameSlot {
             fence_value: 0,
             epoch: Epoch::START,
             staging: Staging::default(),
+            clocking: false,
+            timed: None,
         }
     }
 }
