@@ -19,16 +19,20 @@ use super::eval::{Deps, Eval};
 use super::html::{Content, Lowered, Prop, RegionKind, VarToken, Wire};
 use super::{Finding, Need};
 use crate::behavior::ir::{
-    BinaryOp, Const, DisplayKind, FuncId, Inst, Num, PathStep, Program, UnaryOp,
+    BinaryOp, Const, DisplayKind, EffectEntry, FuncId, FunctionKind, Inst, Num, PathStep, Program,
+    UnaryOp,
 };
 use crate::syntax::TextRange;
 
 /// The runtime every page script carries: the interpreter's value semantics,
-/// what DOM elements show and the payloads of their events, then the page's
+/// what DOM elements show and the payloads of their events, the tasks,
+/// effects and resources, the browser's environment, then the page's
 /// transactions and regions.
 const RUNTIME: &str = concat!(
     include_str!("values.js"),
     include_str!("dom.js"),
+    include_str!("work.js"),
+    include_str!("env.js"),
     include_str!("page.js")
 );
 
@@ -113,11 +117,42 @@ pub(super) fn script(
     for slot in eval.locale_slots() {
         let _ = writeln!(out, "S[{slot}] = {{ t: S[{slot}].t, f: [T.R] }};");
     }
+    // The rest of the environment is the browser's: the window-wide fields
+    // as they are, an anchored field the window's until its reader is laid
+    // out.
+    let regional = |instance: u32| eval.layout.regional.iter().any(|r| r.instance == instance);
+    let mut wide = Vec::new();
+    let mut anchored = Vec::new();
+    for (slot, tag, instance) in eval.browser_env() {
+        if is_anchored(tag) {
+            if !regional(instance) {
+                anchored.push(format!("[{slot}, {tag}]"));
+            }
+        } else {
+            wide.push(format!("[{slot}, {tag}]"));
+        }
+    }
+    if eval.browser_env().next().is_some() {
+        let _ = writeln!(
+            out,
+            "const env = new Env([{}], (changes, m) => work.run(() => {{ for (const [s, v] of changes) W[s] = v; }}, m || top), (s, m) => work.h.read(() => W[s], m || top));",
+            wide.join(", ")
+        );
+        out.push_str("for (const [s, v] of env.initial()) S[s] = v;\n");
+        if !anchored.is_empty() {
+            let _ = writeln!(
+                out,
+                "for (const [s, t] of [{}]) S[s] = envField(t);",
+                anchored.join(", ")
+            );
+        }
+    }
     out.push_str("W = S;\n");
 
+    let suspends = suspending(program, &functions);
     let mut findings = Vec::new();
     for id in &functions {
-        match function(program, *id, origin, Dialect::Page) {
+        match function(program, *id, origin, Dialect::Page, &suspends) {
             Ok(code) => out.push_str(&code),
             Err(mut found) => findings.append(&mut found),
         }
@@ -174,7 +209,7 @@ pub(super) fn script(
     out.push_str("];\n");
 
     for (index, content) in contents.iter().enumerate() {
-        mount(&mut out, index, content, eval);
+        mount(&mut out, index, content, eval, index == 0);
     }
     out.push_str("start(m0);\n})();\n");
     Ok(out)
@@ -211,11 +246,50 @@ fn deps_literal(deps: &Deps) -> String {
     }
 }
 
-/// The mount of content `index`: its marked elements wired in document
-/// order, with `sc` its region bindings.
-fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>) {
-    let _ = writeln!(out, "function m{index}(e, sc) {{\n  const u = [], r = [];");
+/// The mount of content `index`: the states of the instances it mounts,
+/// its marked elements wired in document order, then the effects it runs,
+/// with `sc` its region bindings and `p` the mount around it. The root runs
+/// the effects of every instance no region mounts.
+fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, root: bool) {
+    let _ = writeln!(out, "function m{index}(e, sc, p) {{");
     let call = |entry: u32| format!("f{}(...sc)", eval.func(entry).0);
+    let thunk = |entry: u32| format!("() => {}", call(entry));
+    let mut locals = Vec::new();
+    for regional in eval
+        .layout
+        .regional
+        .iter()
+        .filter(|r| content.instances.contains(&r.instance))
+    {
+        for (at, init) in regional.inits.iter().enumerate() {
+            let slot = regional.base + at as u32;
+            match eval.layout.env.iter().find(|env| env.slot == slot) {
+                Some(read) if read.field.anchored() => {
+                    locals.push(format!("[{slot}, () => envField({})]", read.field.tag()));
+                }
+                Some(_) => {}
+                None => locals.push(format!(
+                    "[{slot}, {}]",
+                    init.map_or("null".to_owned(), thunk)
+                )),
+            }
+        }
+    }
+    if content.instances.is_empty() {
+        out.push_str(
+            "  const m = mount(sc, p);
+",
+        );
+    } else {
+        let own: Vec<String> = content.instances.iter().map(u32::to_string).collect();
+        let _ = writeln!(
+            out,
+            "  const m = mount(sc, p, [{}], [{}]);",
+            own.join(", "),
+            locals.join(", ")
+        );
+    }
+    out.push_str("  const { u, r } = m;\n");
     for (at, mark) in content.marks.iter().enumerate() {
         let el = format!("e[{at}]");
         for wire in &mark.wires {
@@ -262,12 +336,12 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>) {
                     let f = eval.func(*handler).0;
                     let _ = writeln!(
                         out,
-                        "  on({el}, {}, {capture}, {}, (p) => f{f}(p, ...sc));",
+                        "  on({el}, {}, {capture}, {}, (p) => f{f}(p, ...sc), m);",
                         *route as u8, *kind as u8
                     );
                 }
                 Wire::Sync { kind, entry } => {
-                    let value = entry.map_or("null".to_owned(), |e| format!("() => {}", call(e)));
+                    let value = entry.map_or("null".to_owned(), thunk);
                     if *kind == ControlKind::Select {
                         let _ = writeln!(
                             out,
@@ -281,12 +355,98 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>) {
                     );
                 }
                 Wire::Region(region) => {
-                    let _ = writeln!(out, "  r.push(region({el}, G[{region}], sc));");
+                    let _ = writeln!(out, "  r.push(region({el}, G[{region}], sc, m));");
+                }
+                Wire::Anchor(instance) => {
+                    let _ = writeln!(
+                        out,
+                        "  env.anchor({el}, [{}], m);",
+                        anchored_reads(eval, *instance).join(", ")
+                    );
                 }
             }
         }
     }
-    out.push_str("  return { u, r };\n}\n");
+    let effects: Vec<String> = effects_of(eval, content, root)
+        .map(|effect| {
+            effect_literal(eval, effect, &thunk, &|entry| {
+                format!("(v) => f{}(v, ...sc)", eval.func(entry).0)
+            })
+        })
+        .collect();
+    if !effects.is_empty() {
+        let _ = writeln!(out, "  fx(m, [{}]);", effects.join(", "));
+    }
+    out.push_str("  return m;\n}\n");
+}
+
+/// Effect `effect` as the runtime takes it: `[dep, deps, body, run, res]`,
+/// its dependency list and the slots that list reads, its body, its run
+/// policy, and how a resource loads. `thunk` calls an entry, `write` the
+/// handler writing a resource's state.
+pub(super) fn effect_literal(
+    eval: &Eval<'_>,
+    effect: &EffectEntry,
+    thunk: &dyn Fn(u32) -> String,
+    write: &dyn Fn(u32) -> String,
+) -> String {
+    let dep = effect.deps.map_or("null".to_owned(), thunk);
+    let deps = effect
+        .deps
+        .map_or("[]".to_owned(), |d| deps_literal(&eval.deps(d).0));
+    let run = match effect.run {
+        viso_behavior::EffectRun::Mount => 0,
+        viso_behavior::EffectRun::Change => 1,
+        viso_behavior::EffectRun::MountAndChange => 2,
+    };
+    let secs =
+        |d: Option<std::time::Duration>| d.map_or("null".to_owned(), |d| float(d.as_secs_f64()));
+    let load = effect.resource.map_or("null".to_owned(), |load| {
+        format!(
+            "{{ s: {}, w: {}, d: {}, c: {}, e: {}, k: {} }}",
+            thunk(load.state),
+            write(load.write),
+            secs(load.debounce),
+            secs(load.cache_for),
+            load.cache_errors,
+            load.keep_latest
+        )
+    });
+    format!("[{dep}, {deps}, {}, {run}, {load}]", thunk(effect.body))
+}
+
+/// Whether the `env` field of tag `tag` depends on where its reader sits.
+fn is_anchored(tag: u8) -> bool {
+    viso_ui::adaptive::EnvField::from_tag(tag).is_some_and(|f| f.anchored())
+}
+
+/// The `[slot, tag]` of each `env` field instance `instance` reads that
+/// depends on where it sits.
+pub(super) fn anchored_reads(eval: &Eval<'_>, instance: u32) -> Vec<String> {
+    eval.browser_env()
+        .filter(|&(_, tag, at)| at == instance && is_anchored(tag))
+        .map(|(slot, tag, _)| format!("[{slot}, {tag}]"))
+        .collect()
+}
+
+/// The effects a mount of `content` runs: those of the instances it mounts,
+/// and at the root those of every instance no region mounts.
+pub(super) fn effects_of<'l>(
+    eval: &Eval<'l>,
+    content: &'l Content,
+    root: bool,
+) -> impl Iterator<Item = &'l EffectEntry> {
+    let layout = eval.layout;
+    layout.effects.iter().filter(move |effect| {
+        if root {
+            !layout
+                .regional
+                .iter()
+                .any(|r| r.instance == effect.instance)
+        } else {
+            content.instances.contains(&effect.instance)
+        }
+    })
 }
 
 /// The entries and handlers `page` names, which its script calls.
@@ -306,7 +466,7 @@ pub(super) fn roots(page: &Lowered, eval: &Eval<'_>) -> BTreeSet<FuncId> {
                     Wire::On { handler, .. } => {
                         roots.insert(eval.func(handler));
                     }
-                    Wire::Sync { entry: None, .. } | Wire::Region(_) => {}
+                    Wire::Sync { entry: None, .. } | Wire::Region(_) | Wire::Anchor(_) => {}
                 }
             }
         }
@@ -314,6 +474,21 @@ pub(super) fn roots(page: &Lowered, eval: &Eval<'_>) -> BTreeSet<FuncId> {
     for region in &page.regions {
         for entry in region_entries(region.kind) {
             roots.insert(eval.func(entry));
+        }
+    }
+    for effect in &eval.layout.effects {
+        let load = effect.resource.map(|load| [load.state, load.write]);
+        for entry in [effect.deps, Some(effect.body)]
+            .into_iter()
+            .flatten()
+            .chain(load.into_iter().flatten())
+        {
+            roots.insert(eval.func(entry));
+        }
+    }
+    for regional in &eval.layout.regional {
+        for &init in regional.inits.iter().flatten() {
+            roots.insert(eval.func(init));
         }
     }
     roots
@@ -330,13 +505,56 @@ pub(super) fn reachable(program: &Program, roots: BTreeSet<FuncId>) -> BTreeSet<
         if let Ok(body) = &program.function(id).body {
             for inst in &body.insts {
                 match inst {
-                    Inst::Call { func, .. } | Inst::Closure { func, .. } => stack.push(*func),
+                    Inst::Call { func, .. }
+                    | Inst::Closure { func, .. }
+                    | Inst::Start { task: func, .. } => stack.push(*func),
                     _ => {}
                 }
             }
         }
     }
     seen
+}
+
+/// The functions among `functions` that suspend: each task, and each closure
+/// that awaits a task or a task native. Each is an `async` function whose
+/// first parameter is the token of the task it runs in.
+pub(super) fn suspending(program: &Program, functions: &BTreeSet<FuncId>) -> BTreeSet<FuncId> {
+    let mut out: BTreeSet<FuncId> = functions
+        .iter()
+        .copied()
+        .filter(|&id| program.function(id).kind == FunctionKind::Task)
+        .collect();
+    loop {
+        let more: Vec<FuncId> = functions
+            .iter()
+            .copied()
+            .filter(|id| !out.contains(id))
+            .filter(|&id| {
+                program.function(id).body.as_ref().is_ok_and(|body| {
+                    body.insts.iter().any(|inst| match inst {
+                        Inst::Call { func, .. } => out.contains(func),
+                        Inst::Native { import, .. } => {
+                            task_native(native_path(program, *import), "", &[]).is_some()
+                        }
+                        _ => false,
+                    })
+                })
+            })
+            .collect();
+        if more.is_empty() {
+            return out;
+        }
+        out.extend(more);
+    }
+}
+
+fn native_path(program: &Program, import: u32) -> &str {
+    program
+        .natives
+        .get(import as usize)
+        .map(|n| n.path.as_ref())
+        .unwrap_or_default()
 }
 
 /// The messages a script translates with, as an object literal: each
@@ -604,6 +822,7 @@ pub(super) fn function(
     id: FuncId,
     origin: TextRange,
     dialect: Dialect<'_>,
+    suspends: &BTreeSet<FuncId>,
 ) -> Result<String, Vec<Finding>> {
     let function = program.function(id);
     let body = function.body.as_ref().map_err(|unsupported| {
@@ -616,16 +835,24 @@ pub(super) fn function(
     })?;
     let mut out = String::new();
     let any = if dialect.solid() { ": any" } else { "" };
+    let suspends_here = suspends.contains(&id);
+    let token = suspends_here.then(|| format!("tk{any}"));
     let params: Vec<String> = (0..function.params).map(|r| format!("r{r}{any}")).collect();
     let captures: Vec<String> = (0..function.captures.len())
         .map(|c| format!("c{c}{any}"))
         .collect();
+    let returns = match (dialect.solid(), suspends_here) {
+        (true, true) => ": Promise<any>",
+        _ => any,
+    };
     let _ = writeln!(
         out,
-        "function {}({}){any} {{",
+        "{}function {}({}){returns} {{",
+        if suspends_here { "async " } else { "" },
         dialect.name(id),
-        params
+        token
             .iter()
+            .chain(params.iter())
             .chain(captures.iter())
             .cloned()
             .collect::<Vec<_>>()
@@ -667,7 +894,7 @@ pub(super) fn function(
         if branches && at > 0 && targets.contains(&(at as u32)) {
             let _ = writeln!(out, "  case {at}:");
         }
-        match inst_js(program, inst, dialect) {
+        match inst_js(program, inst, dialect, suspends, suspends_here) {
             Ok(code) => {
                 let _ = writeln!(out, "{indent}{code}");
             }
@@ -702,8 +929,15 @@ fn regs(list: &[crate::behavior::ir::Reg]) -> String {
     list.iter().map(|x| r(*x)).collect::<Vec<_>>().join(", ")
 }
 
-/// One instruction as a JavaScript statement.
-fn inst_js(program: &Program, inst: &Inst, dialect: Dialect<'_>) -> Result<String, String> {
+/// One instruction as a JavaScript statement, in a function that suspends
+/// when `task` is set.
+fn inst_js(
+    program: &Program,
+    inst: &Inst,
+    dialect: Dialect<'_>,
+    suspends: &BTreeSet<FuncId>,
+    task: bool,
+) -> Result<String, String> {
     let solid = dialect.solid();
     Ok(match inst {
         Inst::Const { dst, value } => {
@@ -755,6 +989,20 @@ fn inst_js(program: &Program, inst: &Inst, dialect: Dialect<'_>) -> Result<Strin
             };
             format!("{} = {value};", r(*dst))
         }
+        Inst::Call { dst, func, args } if suspends.contains(func) => {
+            if !task {
+                return Err("it calls a task outside one".to_owned());
+            }
+            let args: Vec<String> = std::iter::once("tk".to_owned())
+                .chain(args.iter().map(|a| r(*a)))
+                .collect();
+            format!(
+                "{} = await {}({});",
+                r(*dst),
+                dialect.name(*func),
+                args.join(", ")
+            )
+        }
         Inst::Call { dst, func, args } => match dialect {
             Dialect::Solid { memos, .. } if memos.contains(func) => {
                 let name = dialect.name(*func);
@@ -762,16 +1010,24 @@ fn inst_js(program: &Program, inst: &Inst, dialect: Dialect<'_>) -> Result<Strin
             }
             _ => format!("{} = {}({});", r(*dst), dialect.name(*func), regs(args)),
         },
+        Inst::CallValue { dst, callee, args } if task => format!(
+            "{} = await $.callt(tk, {}, [{}]);",
+            r(*dst),
+            r(*callee),
+            regs(args)
+        ),
         Inst::CallValue { dst, callee, args } => {
             format!("{} = {}({});", r(*dst), r(*callee), regs(args))
         }
         Inst::Native { dst, import, args } => {
-            let path = program
-                .natives
-                .get(*import as usize)
-                .map(|n| n.path.as_ref())
-                .unwrap_or_default();
+            let path = native_path(program, *import);
             let a: Vec<String> = args.iter().map(|x| r(*x)).collect();
+            if let Some(wait) = task_native(path, "tk", &a) {
+                if !task {
+                    return Err(format!("it awaits `{path}` outside a task"));
+                }
+                return Ok(format!("{} = await {wait};", r(*dst)));
+            }
             let value = native(path, &a).ok_or_else(|| {
                 format!("it calls `{path}`, which has no JavaScript form in an export")
             })?;
@@ -782,8 +1038,13 @@ fn inst_js(program: &Program, inst: &Inst, dialect: Dialect<'_>) -> Result<Strin
             func,
             captures,
         } => format!(
-            "{} = $.bind({}, [{}]);",
+            "{} = $.{}({}, [{}]);",
             r(*dst),
+            if suspends.contains(func) {
+                "bindt"
+            } else {
+                "bind"
+            },
             dialect.name(*func),
             regs(captures)
         ),
@@ -849,8 +1110,26 @@ fn inst_js(program: &Program, inst: &Inst, dialect: Dialect<'_>) -> Result<Strin
         Inst::Return { src } => format!("return {};", r(*src)),
         Inst::Emit { event, args } if solid => format!("st.emit({event}, [{}]);", regs(args)),
         Inst::Emit { event, args } => format!("$.emit({event}, [{}]);", regs(args)),
-        Inst::Start { .. } => {
-            return Err("it starts a task, which an export does not run".to_owned());
+        Inst::Start {
+            task,
+            args,
+            done,
+            cancelled,
+            instance,
+            slot,
+            policy,
+        } => {
+            let or_null = |reg: &Option<crate::behavior::ir::Reg>| reg.map_or("null".to_owned(), r);
+            format!(
+                "{}.start({}, [{}], {}, {}, {instance}, {}, {});",
+                if solid { "st" } else { "$" },
+                dialect.name(*task),
+                regs(args),
+                or_null(done),
+                or_null(cancelled),
+                slot.map_or("null".to_owned(), |s| s.to_string()),
+                policy.word()
+            )
         }
         Inst::Display { dst, src, kind } => {
             let s = r(*src);
@@ -946,6 +1225,18 @@ fn binary(op: BinaryOp, a: &str, b: &str) -> String {
         BinaryOp::Eq => format!("($.eq({a}, {b}) ? 1n : 0n)"),
         BinaryOp::Ne => format!("($.eq({a}, {b}) ? 0n : 1n)"),
         BinaryOp::Concat => format!("{a} + {b}"),
+    }
+}
+
+/// A task native's work as a promise of its value, in the task whose token
+/// is `tk`: `None` for a native that is no task.
+fn task_native(path: &str, tk: &str, a: &[String]) -> Option<String> {
+    match path {
+        "viso::time::sleep" => Some(format!(
+            "$.sleep({tk}, {})",
+            a.first().map_or("0", String::as_str)
+        )),
+        _ => None,
     }
 }
 

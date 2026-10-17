@@ -761,9 +761,38 @@ a precise diagnostic what it cannot express.
       `EXPORT_CONFLICT` (exit 6) unless `--force`; the project, an ancestor of it,
       `src/` and `assets/` are refused as the export dir. `artifact`
       `kind:"export-dir"`, `profile: null`.
-- [ ] Export what the page cannot run yet: `start`ed tasks, `effect`/`resource`,
-      states of a component a region mounts, a game's systems, `env` fields other
-      than theme and locale (each is `EXPORT_UNSUPPORTED` at its span today).
+- [x] The page runs what the view starts: `start`ed tasks as `async` functions whose
+      task natives (`time::sleep`) are awaited promises, launched after the commit,
+      each slot under its policy (`keep_latest` cancels and runs `cancelled`,
+      `drop_new`, `queue`, `parallel(n)`), the `success`/`error` handler a new
+      transaction; `effect`s gated by their `when` value and run policy after the
+      commit that mounts them and each that changes it, settling in rounds, with
+      their cleanups; `resource`s through `loading`/`reloading`/`ready`/`error` with
+      `debounce`, `keep_latest` and `cache_for`/`cache_errors`; a component a region
+      mounts keeps its states per mount, runs its effects there and owns the tasks it
+      starts, all ended without a handler when the content goes. `--static` refuses
+      an effect as `Need::Dynamic`. `tests/export_html.rs` runs such a page in
+      headless Chrome. Fixed on the way: a region placed at the top of region content
+      left the items it mounted in the template fragment; and natively, a static
+      instance whose own view has a region ran its effects twice.
+- [x] The Solid export runs the same, on one engine with the page (`work.js`): the
+      store starts tasks after its commit and runs effects and resources by the same
+      rules; region content mounting a component is an `st.mount`, whose signals keep
+      that component's states, whose effects run there and which owns its tasks, all
+      ended with its Solid owner; a computed reading such states is no shared memo.
+      Verified: `tsc` clean, `vite build`, and the same page in headless Chrome.
+- [x] `env` fields beyond theme and locale come from the browser (`env.js`, shared by
+      the page and the Solid store): the window, safe area (the `env(safe-area-inset-*)`
+      probe the web backend uses), keyboard inset (the visual viewport), display
+      features (viewport segments), input capabilities (media queries, touch points,
+      gamepads), text scale (`font-size: medium`), reduced motion, orientation and
+      layout direction, each followed through its events. `env.constraints` and
+      `env.size_class` are measured at their reader's root as the native layout
+      resolves them, from what the elements say of their layout (`data-root`,
+      `data-fit` for an extent its content decides, `data-scope` for an
+      `AdaptiveScope`), and followed with a `ResizeObserver`; in a region each mount
+      keeps its own. Verified in headless Chrome for both exports at 1000×700.
+      A game's systems stay the Viso runtime's: `viso build web-gpu`.
 - [x] Locales beyond the source one: `app.js` (and the Solid module) ships every
       locale's table, untranslated entries already pointing at their CLDR fallback.
       At load, `settle` picks the locale nearest `navigator.languages`: the tag

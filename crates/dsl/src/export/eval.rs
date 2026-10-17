@@ -2,7 +2,8 @@
 //! component's initial states, its inputs' defaults, the default theme and
 //! the page's locale, and what the entry reads says whether the value it
 //! shows can change. A page that picks its locale as it loads changes what
-//! reads the locale once, then.
+//! reads the locale once, then; the rest of the environment is the
+//! browser's, which the page follows.
 
 use std::rc::Rc;
 
@@ -118,8 +119,9 @@ impl<'a> Eval<'a> {
         self.layout.handlers[entry as usize].1
     }
 
-    /// The state slots `entry` reads that can change, and the `env` fields
-    /// beside the theme and the locale it reads.
+    /// The state slots `entry` reads that can change — the `env` slots the
+    /// browser fills among them — and the `env` fields beside the theme and
+    /// the locale it reads.
     pub(super) fn deps(&self, entry: u32) -> (Deps, Vec<EnvField>) {
         let reads = self.vm.reads(self.func(entry).0);
         let mut env = Vec::new();
@@ -128,10 +130,10 @@ impl<'a> Eval<'a> {
             if self.themes.contains(&slot) || self.locales.contains(&slot) {
                 continue;
             }
-            match self.layout.env.iter().find(|e| e.slot == slot) {
-                Some(read) => env.push(read.field),
-                None => slots.push(slot),
+            if let Some(read) = self.layout.env.iter().find(|e| e.slot == slot) {
+                env.push(read.field);
             }
+            slots.push(slot);
         }
         env.dedup();
         let deps = if reads.opaque {
@@ -142,6 +144,19 @@ impl<'a> Eval<'a> {
         (deps, env)
     }
 
+    /// Whether function `f` reads a state of a component a region mounts,
+    /// which each mount of the content keeps for itself.
+    pub(super) fn reads_regional(&self, f: FuncId) -> bool {
+        let reads = self.vm.reads(f.0);
+        reads.opaque
+            || reads.states.iter().any(|&slot| {
+                self.layout
+                    .regional
+                    .iter()
+                    .any(|r| (r.base..r.base + r.inits.len() as u32).contains(&slot))
+            })
+    }
+
     /// Has the page pick its locale as it loads, among the catalog's.
     pub(super) fn pick_locale(&mut self) {
         self.picks_locale = true;
@@ -150,6 +165,16 @@ impl<'a> Eval<'a> {
     /// The `env` slots holding the locale.
     pub(super) fn locale_slots(&self) -> &[u32] {
         &self.locales
+    }
+
+    /// The `env` slots the browser fills, `(slot, field tag, instance)` each:
+    /// every field beside the theme and the locale.
+    pub(super) fn browser_env(&self) -> impl Iterator<Item = (u32, u8, u32)> + '_ {
+        self.layout
+            .env
+            .iter()
+            .filter(|e| !matches!(e.field, EnvField::Theme | EnvField::Locale))
+            .map(|e| (e.slot, e.field.tag(), e.instance))
     }
 
     /// Whether `entry` shows one value for as long as the page is open: it

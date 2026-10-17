@@ -82,6 +82,7 @@ pub fn html(compiled: &Compiled, options: &HtmlOptions) -> Result<HtmlExport, Ve
     if !options.static_only {
         prepared.pick_locale();
     }
+    let layout = prepared.eval.as_ref().map(|eval| eval.layout);
     let mut lower = html::Lower::new(
         prepared.vb.as_ref(),
         prepared.eval.as_mut(),
@@ -89,7 +90,25 @@ pub fn html(compiled: &Compiled, options: &HtmlOptions) -> Result<HtmlExport, Ve
         options.static_only,
     );
     lower.view(&compiled.tree.items);
-    let scripted = lower.out.root.marks.iter().any(|m| !m.wires.is_empty());
+    if let Some(layout) = layout
+        && options.static_only
+        && let Some(effect) = layout.effects.first()
+    {
+        let at = layout.handlers[effect.body as usize].0.at;
+        let what = if effect.resource.is_some() {
+            "loads a `resource`"
+        } else {
+            "runs an `effect`"
+        };
+        lower.findings.push(Finding {
+            need: Need::Dynamic,
+            at,
+            message: format!("the view {what}, which only the page script runs"),
+            notes: vec!["a page without JavaScript runs nothing as it opens".to_owned()],
+        });
+    }
+    let effects = layout.is_some_and(|layout| !layout.effects.is_empty());
+    let scripted = effects || lower.out.root.marks.iter().any(|m| !m.wires.is_empty());
     if scripted {
         lower.all_assets();
     }
@@ -233,38 +252,14 @@ fn prepare<'a>(compiled: &'a Compiled, lang: &str) -> Result<Prepared<'a>, Vec<F
         .component
         .as_ref()
         .and_then(|c| compiled.behavior.component(&c.schema.name));
-    if let Some(layout) = layout {
-        if !compiled.behavior.systems.is_empty() {
-            findings.push(Finding {
-                need: Need::Unsupported,
-                at: origin,
-                message: "the view runs a game's systems, which only the Viso runtime schedules"
-                    .to_owned(),
-                notes: vec!["build for the browser instead: `viso build web-gpu`".to_owned()],
-            });
-        }
-        if !layout.effects.is_empty() {
-            findings.push(Finding {
-                need: Need::Unsupported,
-                at: origin,
-                message:
-                    "the view runs an `effect` or loads a `resource`, which an export does not run"
-                        .to_owned(),
-                notes: Vec::new(),
-            });
-        }
-        if !layout.regional.is_empty() {
-            let at = compiled
-                .tree
-                .instance(layout.regional[0].instance)
-                .map_or(origin, |i| i.origin);
-            findings.push(Finding {
-                need: Need::Unsupported,
-                at,
-                message: "a component a region mounts keeps states of its own, which an export does not hold".to_owned(),
-                notes: Vec::new(),
-            });
-        }
+    if layout.is_some() && !compiled.behavior.systems.is_empty() {
+        findings.push(Finding {
+            need: Need::Unsupported,
+            at: origin,
+            message: "the view runs a game's systems, which only the Viso runtime schedules"
+                .to_owned(),
+            notes: vec!["build for the browser instead: `viso build web-gpu`".to_owned()],
+        });
     }
     let eval = match (layout, &vb) {
         (Some(layout), Some(vb)) => {

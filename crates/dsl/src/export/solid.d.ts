@@ -4,6 +4,27 @@ import type { Accessor, JSX, Setter } from "solid-js";
  * nothing as `null`, records and enum variants as `{ t, f }`, lists as arrays. */
 export type Value = any;
 
+/** A mount of region content mounting a component: it keeps that
+ * component's states, runs its effects and owns the tasks it starts. */
+export type Mount = object;
+
+/** How a resource loads: its state and the handler writing it, its debounce
+ * and cache time in seconds, whether it caches errors and cancels a load in
+ * flight when its key changes. */
+export interface Load {
+  s: () => Value;
+  w: (value: Value) => void;
+  d: number | null;
+  c: number | null;
+  e: boolean;
+  k: boolean;
+}
+
+/** An effect: its dependency list and the state slots that list reads (null
+ * for any), its body, its run policy (0 mount, 1 change, 2 both), and how a
+ * resource loads. */
+export type Effect = [(() => Value) | null, number[] | null, () => Value, number, Load | null];
+
 /** How a prop reaches its input: as is, or as the Viso value it denotes. */
 export type InputKind = "bool" | "int" | "float" | "string" | "value";
 
@@ -14,10 +35,29 @@ export interface Store {
   input(slot: number): Value;
   emit(event: number, args: Value[]): void;
   tr(message: Value, args: Value[]): string;
+  start(
+    task: (...args: Value[]) => Promise<Value>,
+    args: Value[],
+    done: ((value: Value) => void) | null,
+    cancelled: (() => void) | null,
+    instance: number,
+    slot: number | null,
+    policy: number,
+  ): void;
   memo<T>(f: () => T): Accessor<T>;
   effect(f: () => void): void;
-  run(handler: () => void): void;
-  on(el: Element, route: number, capture: boolean, control: number, handler: (payload: Value) => void): void;
+  at<T>(m: Mount, f: () => T): T;
+  run(handler: () => void, m?: Mount): void;
+  fx(effects: Effect[]): void;
+  mount(
+    p: Mount | null,
+    own: number[],
+    locals: [number, (() => Value) | null][],
+    fx: ((m: Mount) => Effect[]) | null,
+    render: (m: Mount) => JSX.Element,
+  ): JSX.Element;
+  on(el: Element, route: number, capture: boolean, control: number, handler: (payload: Value) => void, m?: Mount): void;
+  anchor(el: Element, reads: [number, number][], m?: Mount): void;
   click(e: MouseEvent): Value;
   sync(el: Element, control: number, value: (() => Value) | null): void;
 }
@@ -42,8 +82,13 @@ export declare function store(o: {
   inputs: [() => unknown, InputKind, Value][];
   events: (() => ((...args: Value[]) => void) | undefined)[];
   messages: Messages;
+  env?: [number, number][];
   assets: [string, string][];
 }): Store;
+
+/** The browser's value of the `env` field of tag `tag`, for a reader whose
+ * place in the layout is not known yet. */
+export declare function envField(tag: number): Value;
 
 export declare function Each(props: {
   each: () => Value;

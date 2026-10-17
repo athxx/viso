@@ -1,11 +1,52 @@
 let root = null;
 let top = null;
 let pending = [];
+let starts = [];
 $.emit = (event, args) => pending.push([event, args]);
+$.start = (task, args, done, cancelled, instance, slot, policy) =>
+  starts.push({ task, args, done, cancelled, instance, slot, policy });
 $.tr = (m, a) => translate(T, m, a);
 
-const hit = (deps, changed) => changed === null || deps === null || deps.some((d) => changed.has(d));
+// A mount of content: its wired values `u` and regions `r`, the region
+// bindings `sc` its functions take, the mount `p` around it, the instances
+// `o` it mounts, the values `l` it keeps of their states, and its effects.
+// `f` says whether it or a mount around it keeps states.
+const mount = (sc, p, o = null, l = null) => {
+  const m = { u: [], r: [], sc, p, o, l: null, f: !!(p && p.f), fx: [], live: true };
+  if (l) {
+    if (m.f) focus(p);
+    const s = [], v = [];
+    for (const [slot, init] of l) {
+      let x = null;
+      if (init) {
+        try { x = init(); } catch (e) { console.error(e); }
+      }
+      S[slot] = x;
+      s.push(slot);
+      v.push(x);
+    }
+    m.l = { s, v };
+    m.f = true;
+  }
+  return m;
+};
+// Puts the states mount `m` and the mounts around it keep where its
+// functions read them.
+const focus = (m) => {
+  if (m.p) focus(m.p);
+  const l = m.l;
+  if (l) for (let i = 0; i < l.s.length; i++) S[l.s[i]] = l.v[i];
+};
+// Keeps what a transaction left in the states of `m` and the mounts around it.
+const keep = (m) => {
+  for (let x = m; x; x = x.p) {
+    const l = x.l;
+    if (l) for (let i = 0; i < l.s.length; i++) l.v[i] = S[l.s[i]];
+  }
+};
+
 const refresh = (m, changed) => {
+  if (m.f) focus(m);
   for (const [deps, f] of m.u) {
     if (hit(deps, changed)) {
       try { f(); } catch (e) { console.error(e); }
@@ -16,47 +57,106 @@ const refresh = (m, changed) => {
   }
 };
 
-const run = (handler) => {
-  const before = S;
-  W = S.slice();
-  pending = [];
-  try {
-    handler();
-  } catch (e) {
-    W = S;
-    pending = [];
-    console.error(e);
-    return;
-  }
-  S = W;
-  const changed = new Set();
-  for (let i = 0; i < S.length; i++) if (!Object.is(S[i], before[i])) changed.add(i);
-  const events = pending;
-  pending = [];
-  if (changed.size) refresh(top, changed);
+const deliver = (events) => {
   for (const [event, args] of events) {
     root.dispatchEvent(new CustomEvent(E[event], { detail: args, bubbles: true }));
   }
 };
+// The page's transactions, over the states `S`: a handler writes a working
+// copy `W`, which only success commits.
+const work = new Work({
+  transact(f, m) {
+    if (m.f) focus(m);
+    const before = S;
+    W = S.slice();
+    pending = [];
+    starts = [];
+    let value;
+    try {
+      value = f();
+    } catch (e) {
+      W = S;
+      pending = [];
+      starts = [];
+      console.error(e);
+      return null;
+    }
+    S = W;
+    if (m.f) keep(m);
+    const changed = new Set();
+    for (let i = 0; i < S.length; i++) if (!Object.is(S[i], before[i])) changed.add(i);
+    const t = { value, changed, events: pending, starts };
+    pending = [];
+    starts = [];
+    return t;
+  },
+  land(t) {
+    if (t.changed.size) refresh(top, t.changed);
+    deliver(t.events);
+  },
+  read(f, m) {
+    if (m.f) focus(m);
+    return f();
+  },
+  drop(f, m) {
+    if (m.f) focus(m);
+    W = S.slice();
+    pending = [];
+    try { f(); } catch (e) { console.error(e); }
+    W = S;
+    const events = pending;
+    pending = [];
+    starts = [];
+    deliver(events);
+  },
+}, null);
+const fx = (m, list) => work.effects(m, list);
 
-const on = (el, route, capture, control, handler) =>
+// Ends mount `m` and the content it mounts.
+const dispose = (m) => {
+  for (const r of m.r) {
+    if (r.c) dispose(r.c.m);
+    for (const c of r.kept.values()) dispose(c.m);
+    if (r.items) for (const it of r.items) dispose(it.m);
+  }
+  unanchor(m);
+  work.end(m);
+};
+
+const on = (el, route, capture, control, handler, m) =>
   listen(el, route, capture, control, (payload) => {
-    run(() => handler(payload));
-    if (el.$sync) el.$sync();
+    work.run(() => handler(payload), m);
+    if (el.$sync) {
+      if (m.f) focus(m);
+      el.$sync();
+    }
   });
 
 const clone = (r, arm, scope) => {
   const frag = r.anchor.content.children[arm].content.cloneNode(true);
   const nodes = Array.from(frag.childNodes);
-  const m = r.g.arms[arm](Array.from(frag.querySelectorAll("[data-v]")), scope);
+  const m = r.g.arms[arm](Array.from(frag.querySelectorAll("[data-v]")), scope, r.m);
   refresh(m, null);
   return { m, nodes, scope, key: null };
 };
+// The nodes content `c` shows, in order: its own, and before each region
+// anchor among them what that region mounts.
+const nodesOf = (c, out = []) => {
+  for (const n of c.nodes) {
+    const r = c.m.r.find((r) => r.anchor === n);
+    if (r) {
+      if (r.items) for (const it of r.items) nodesOf(it, out);
+      else if (r.c) nodesOf(r.c, out);
+    }
+    out.push(n);
+  }
+  return out;
+};
 const place = (r, c) => {
-  for (const n of c.nodes) r.anchor.parentNode.insertBefore(n, r.anchor);
+  for (const n of nodesOf(c)) r.anchor.parentNode.insertBefore(n, r.anchor);
 };
 const drop = (c) => {
-  for (const n of c.nodes) n.remove();
+  for (const n of nodesOf(c)) n.remove();
 };
 const choice = (r, changed) => {
   const g = r.g;
@@ -67,6 +167,7 @@ const choice = (r, changed) => {
       if (r.c) {
         drop(r.c);
         if (g.keep[r.arm]) r.kept.set(r.arm, r.c);
+        else dispose(r.c.m);
       }
       r.arm = arm;
       r.c = null;
@@ -124,18 +225,27 @@ const repeat = (r, changed) => {
     }
     return it;
   });
-  for (const it of old.values()) drop(it);
+  for (const it of old.values()) {
+    drop(it);
+    dispose(it.m);
+  }
   for (const it of next) place(r, it);
   r.items = next;
 };
-const region = (anchor, g, sc) => {
-  const r = { anchor, g, sc, arm: -1, c: null, kept: new Map(), items: null };
-  r.update = (changed) => (g.k === 2 ? repeat(r, changed) : choice(r, changed));
+const region = (anchor, g, sc, m) => {
+  const r = { anchor, g, sc, m, arm: -1, c: null, kept: new Map(), items: null };
+  r.update = (changed) => {
+    if (m.f) focus(m);
+    if (g.k === 2) repeat(r, changed);
+    else choice(r, changed);
+  };
   return r;
 };
 
-const start = (mount) => {
+const start = (view) => {
   root = document.getElementById("viso-root");
-  top = mount(Array.from(document.querySelectorAll("[data-v]")), []);
+  top = view(Array.from(document.querySelectorAll("[data-v]")), [], null);
+  work.top = top;
   refresh(top, null);
+  work.flush(new Set());
 };

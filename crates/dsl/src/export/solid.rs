@@ -22,11 +22,14 @@ use crate::hir::{HirComponent, Ty};
 use crate::syntax::TextRange;
 
 /// The runtime the component imports: the interpreter's value semantics,
-/// what DOM elements show and the payloads of their events, and the store
-/// and region components.
+/// what DOM elements show and the payloads of their events, the tasks,
+/// effects and resources, the browser's environment, and the store and
+/// region components.
 const RUNTIME: &str = concat!(
     include_str!("values.js"),
     include_str!("dom.js"),
+    include_str!("work.js"),
+    include_str!("env.js"),
     include_str!("solid.js")
 );
 
@@ -64,7 +67,7 @@ pub(super) fn project(input: &Input<'_>) -> Result<Vec<(String, String)>, Vec<Fi
     let mut runtime = String::new();
     let _ = writeln!(runtime, "// {GENERATED}");
     runtime.push_str(
-        "import { batch, createMemo, createRenderEffect, createRoot, getOwner, mapArray, onCleanup, untrack } from \"solid-js\";\n\n",
+        "import { batch, createMemo, createRenderEffect, createRoot, createSignal, getOwner, mapArray, onCleanup, untrack } from \"solid-js\";\n\n",
     );
     runtime.push_str("const A = new Map();\n");
     runtime.push_str(RUNTIME);
@@ -138,6 +141,7 @@ fn component(input: &Input<'_>, name: &str) -> Result<(String, Option<String>), 
             if function.kind == FunctionKind::Computed
                 && function.params == 0
                 && function.captures.is_empty()
+                && !eval.reads_regional(id)
             {
                 memos.insert(id);
             }
@@ -148,9 +152,10 @@ fn component(input: &Input<'_>, name: &str) -> Result<(String, Option<String>), 
         };
         let mut out = String::new();
         out.push_str("export function behavior(st: Store) {\n");
+        let suspends = script::suspending(program, &functions);
         let mut findings = Vec::new();
         for &id in &functions {
-            match script::function(program, id, input.origin, dialect) {
+            match script::function(program, id, input.origin, dialect, &suspends) {
                 Ok(code) => {
                     for line in code.lines() {
                         let _ = writeln!(out, "  {line}");
@@ -213,6 +218,7 @@ fn component(input: &Input<'_>, name: &str) -> Result<(String, Option<String>), 
         solid: BTreeSet::new(),
         runtime: BTreeSet::new(),
         out: String::new(),
+        mount: None,
     };
     jsx.content(&page.root, &[], 2);
     let Jsx {
@@ -235,6 +241,12 @@ fn component(input: &Input<'_>, name: &str) -> Result<(String, Option<String>), 
     let mut runtime: Vec<&str> = runtime_uses.into_iter().collect();
     if behavior.is_some() {
         runtime.extend(["settle", "store", "type Messages", "type Value"]);
+        if input
+            .eval
+            .is_some_and(|eval| eval.browser_env().next().is_some())
+        {
+            runtime.push("envField");
+        }
     }
     if marked {
         runtime.push("show");
@@ -318,11 +330,19 @@ fn component(input: &Input<'_>, name: &str) -> Result<(String, Option<String>), 
             let state = layout.states.get(slot).map_or("state", String::as_str);
             let getter = idents.take(&ident(state), slot as u32);
             let setter = idents.take(&format!("set{}", pascal(&getter)), slot as u32);
+            let browser = eval
+                .browser_env()
+                .find(|&(at, _, _)| at == slot as u32)
+                .map(|(_, tag, _)| tag);
             let value = if eval.locale_slots().contains(&(slot as u32))
                 && let Value::Agg(locale) = value
             {
                 // The reader's locale, as the page found it.
                 format!("{{ t: {}, f: [MESSAGES.R] }}", locale.tag)
+            } else if let Some(tag) = browser {
+                // The browser's, the window's for a field its reader's place
+                // decides until it is laid out.
+                format!("envField({tag})")
             } else {
                 script::literal(value).map_err(|why| {
                     unsupported(
@@ -351,8 +371,22 @@ fn component(input: &Input<'_>, name: &str) -> Result<(String, Option<String>), 
         let _ = writeln!(out, "    inputs: [{}],", inputs.join(", "));
         let _ = writeln!(out, "    events: [{}],", events.join(", "));
         out.push_str("    messages: MESSAGES,\n");
+        let wide: Vec<String> = eval
+            .browser_env()
+            .filter(|&(_, tag, _)| {
+                !viso_ui::adaptive::EnvField::from_tag(tag).is_some_and(|f| f.anchored())
+            })
+            .map(|(slot, tag, _)| format!("[{slot}, {tag}]"))
+            .collect();
+        if !wide.is_empty() {
+            let _ = writeln!(out, "    env: [{}],", wide.join(", "));
+        }
         let _ = writeln!(out, "    assets: [{}],", asset_list.join(", "));
         out.push_str("  });\n  const f = behavior(st);\n");
+        let effects = effects_literal(eval, &names, &page.root, true, &[]);
+        if !effects.is_empty() {
+            let _ = writeln!(out, "  st.fx([{}]);", effects.join(", "));
+        }
     }
     out.push_str("  return (\n");
     out.push_str(&view);
@@ -393,6 +427,9 @@ struct Jsx<'a> {
     solid: BTreeSet<&'static str>,
     runtime: BTreeSet<&'static str>,
     out: String,
+    /// The mount of the region content being written, when a mount around
+    /// it mounts a component.
+    mount: Option<String>,
 }
 
 impl Jsx<'_> {
@@ -417,6 +454,23 @@ impl Jsx<'_> {
         format!("f.{name}({})", args.join(", "))
     }
 
+    /// The value of entry `entry` as [`call`](Self::call) reads it, seeing
+    /// the states of the mount it is written in.
+    fn value(&self, entry: u32, scope: &[String], extra: Option<&str>) -> String {
+        let call = self.call(entry, scope, extra);
+        match &self.mount {
+            Some(m) => format!("st.at({m}, () => {call})"),
+            None => call,
+        }
+    }
+
+    /// The mount argument of a handler written here.
+    fn mount_arg(&self) -> String {
+        self.mount
+            .as_ref()
+            .map_or_else(String::new, |m| format!(", {m}"))
+    }
+
     /// `content` at `depth`: its one node, or a fragment of its nodes.
     fn content(&mut self, content: &Content, scope: &[String], depth: usize) {
         match content.nodes.len() {
@@ -430,10 +484,64 @@ impl Jsx<'_> {
         }
     }
 
-    /// `content` at `depth` as a string of its own.
+    /// `content` at `depth` as a string of its own: when it mounts a
+    /// component, inside a mount keeping its states, running its effects and
+    /// owning its tasks.
     fn arm(&mut self, content: &Content, scope: &[String], depth: usize) -> String {
         let outer = std::mem::take(&mut self.out);
-        self.content(content, scope, depth);
+        match self.eval.filter(|_| !content.instances.is_empty()) {
+            Some(eval) => {
+                let at = self.idents.take("m", 0);
+                let parent = self.mount.clone().unwrap_or_else(|| "null".to_owned());
+                let own: Vec<String> = content.instances.iter().map(u32::to_string).collect();
+                let mut locals = Vec::new();
+                for regional in eval
+                    .layout
+                    .regional
+                    .iter()
+                    .filter(|r| content.instances.contains(&r.instance))
+                {
+                    for (i, init) in regional.inits.iter().enumerate() {
+                        let slot = regional.base + i as u32;
+                        match eval.layout.env.iter().find(|env| env.slot == slot) {
+                            Some(read) if read.field.anchored() => {
+                                self.runtime.insert("envField");
+                                locals.push(format!(
+                                    "[{slot}, () => envField({})]",
+                                    read.field.tag()
+                                ));
+                            }
+                            Some(_) => {}
+                            None => {
+                                let init = init.map_or("null".to_owned(), |e| {
+                                    format!("() => {}", self.call(e, scope, None))
+                                });
+                                locals.push(format!("[{slot}, {init}]"));
+                            }
+                        }
+                    }
+                }
+                let effects = effects_literal(eval, self.names, content, false, scope);
+                let fx = if effects.is_empty() {
+                    "null".to_owned()
+                } else {
+                    format!("({at}) => [{}]", effects.join(", "))
+                };
+                self.line(
+                    depth,
+                    &format!(
+                        "<>{{st.mount({parent}, [{}], [{}], {fx}, ({at}) => (",
+                        own.join(", "),
+                        locals.join(", ")
+                    ),
+                );
+                let outer_mount = self.mount.replace(at);
+                self.content(content, scope, depth + 1);
+                self.mount = outer_mount;
+                self.line(depth, "))}</>");
+            }
+            None => self.content(content, scope, depth),
+        }
         std::mem::replace(&mut self.out, outer)
     }
 
@@ -507,7 +615,7 @@ impl Jsx<'_> {
         for wire in wires {
             match wire {
                 Wire::Prop { entry, prop } => {
-                    let v = self.call(*entry, scope, None);
+                    let v = self.value(*entry, scope, None);
                     match prop {
                         Prop::Text => text = Some(format!("show.text({v})")),
                         Prop::TextColor => {
@@ -582,24 +690,35 @@ impl Jsx<'_> {
                     let h = self.call(*handler, &[], None);
                     let h = h.trim_end_matches("()");
                     let rest = args(scope);
+                    let m = self.mount_arg();
                     if *route == EventRoute::Click && !capture && !synced {
                         events.push(format!(
-                            "onClick={{(e) => st.run(() => {h}(st.click(e){rest}))}}"
+                            "onClick={{(e) => st.run(() => {h}(st.click(e){rest}){m})}}"
                         ));
                     } else {
                         refs.push(format!(
-                            "st.on(el, {}, {capture}, {}, (p) => {h}(p{rest}));",
+                            "st.on(el, {}, {capture}, {}, (p) => {h}(p{rest}){m});",
                             *route as u8, *kind as u8
                         ));
                     }
                 }
                 Wire::Sync { kind, entry } => {
                     let value = entry.map_or("null".to_owned(), |e| {
-                        format!("() => {}", self.call(e, scope, None))
+                        format!("() => {}", self.value(e, scope, None))
                     });
                     refs.push(format!("st.sync(el, {}, {value});", *kind as u8));
                 }
                 Wire::Region(_) => {}
+                Wire::Anchor(instance) => {
+                    if let Some(eval) = self.eval {
+                        let reads = script::anchored_reads(eval, *instance);
+                        refs.push(format!(
+                            "st.anchor(el, [{}]{});",
+                            reads.join(", "),
+                            self.mount_arg()
+                        ));
+                    }
+                }
             }
         }
         if !style.is_empty() {
@@ -666,15 +785,15 @@ impl Jsx<'_> {
         let keep = region.preserve.iter().any(|k| *k);
         match region.kind {
             RegionKind::If { select } => {
-                let sel = self.call(select, scope, None);
+                let sel = self.value(select, scope, None);
                 self.choice(index, &sel, None, keep, scope, depth);
             }
             RegionKind::Match { scrutinee, select } => {
                 let value = self.idents.take(&format!("value{index}"), index);
-                let scr = self.call(scrutinee, scope, None);
+                let scr = self.value(scrutinee, scope, None);
                 let mut inner = scope.to_vec();
                 inner.push(value.clone());
-                let sel = self.call(select, scope, Some(&format!("{value}()")));
+                let sel = self.value(select, scope, Some(&format!("{value}()")));
                 self.runtime.insert("With");
                 self.line(depth, &format!("<With value={{() => {scr}}}>"));
                 self.line(depth + 1, &format!("{{({value}) => ("));
@@ -688,9 +807,9 @@ impl Jsx<'_> {
                     .as_deref()
                     .map_or_else(|| format!("item{index}"), ident);
                 let item = self.idents.take(&wanted, index);
-                let each = self.call(items, scope, None);
+                let each = self.value(items, scope, None);
                 let by = key.map_or("null".to_owned(), |k| {
-                    format!("(v) => {}", self.call(k, scope, Some("v")))
+                    format!("(v) => {}", self.value(k, scope, Some("v")))
                 });
                 let mut inner = scope.to_vec();
                 inner.push(item.clone());
@@ -771,6 +890,37 @@ impl Jsx<'_> {
             }
         }
     }
+}
+
+/// The effects a mount of `content` runs, as the store takes them: those of
+/// the instances it mounts, and at the root those of every instance no
+/// region mounts, each calling its entries with the region bindings `scope`.
+fn effects_literal(
+    eval: &Eval<'_>,
+    names: &BTreeMap<FuncId, String>,
+    content: &Content,
+    root: bool,
+    scope: &[String],
+) -> Vec<String> {
+    let call = |entry: u32, extra: Option<&str>| {
+        let name = names
+            .get(&eval.func(entry))
+            .cloned()
+            .unwrap_or_else(|| format!("entry{entry}"));
+        let mut args: Vec<String> = extra.map(str::to_owned).into_iter().collect();
+        args.extend(scope.iter().map(|s| format!("{s}()")));
+        format!("f.{name}({})", args.join(", "))
+    };
+    script::effects_of(eval, content, root)
+        .map(|effect| {
+            script::effect_literal(
+                eval,
+                effect,
+                &|entry| format!("() => {}", call(entry, None)),
+                &|entry| format!("(v: Value) => {}", call(entry, Some("v"))),
+            )
+        })
+        .collect()
 }
 
 /// The identifiers a scope has given out.

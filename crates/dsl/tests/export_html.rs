@@ -218,7 +218,7 @@ fn regions_mount_from_templates() {
     assert!(script.contains("{ k: 0, sel: (sc) => f"), "{script}");
     assert!(script.contains("{ k: 2, items: (sc) => f"), "{script}");
     assert!(
-        script.contains("r.push(region(e[0], G[0], sc));"),
+        script.contains("r.push(region(e[0], G[0], sc, m));"),
         "{script}"
     );
     // The text of each item reads its binding.
@@ -337,4 +337,132 @@ fn which(program: &str) -> Result<std::path::PathBuf, ()> {
                 .find(|path| path.is_file())
         })
         .ok_or(())
+}
+
+/// Tasks, effects, a resource and components a region mounts, each with
+/// states of its own: everything the page runs as it opens, with no input.
+const RUNNING: &str = include_str!("sources/running.vs");
+
+#[test]
+fn a_page_runs_its_tasks_effects_and_resources() {
+    let page = export(RUNNING, false).unwrap();
+    let script = page.script.clone().expect("what runs is the script's");
+    assert!(script.contains("async function"), "{script}");
+    assert!(script.contains("await $.sleep(tk, "), "{script}");
+    assert!(script.contains("fx(m, ["), "{script}");
+    assert!(
+        script.contains("const m = mount(sc, p, ["),
+        "a region mounts its components' states: {script}"
+    );
+
+    let findings = export(RUNNING, true).unwrap_err();
+    assert!(
+        findings
+            .iter()
+            .any(|(need, _, message)| *need == Need::Dynamic
+                && message.contains("only the page script runs")),
+        "{findings:#?}"
+    );
+
+    // The page as a browser runs it.
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let dom = run_in_chrome(&page, &script, "export-running", &[], chrome);
+    for shown in [
+        ">log=ca2q3d5q4<",
+        ">runs=2<",
+        ">item=b<",
+        ">item=bb<",
+        ">y=12<",
+    ] {
+        assert!(dom.contains(shown), "{shown} in {dom}");
+    }
+    for gone in [">item=a<", ">x="] {
+        assert!(!dom.contains(gone), "{gone} in {dom}");
+    }
+}
+
+fn chrome() -> Option<std::path::PathBuf> {
+    let mac = Path::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+    if mac.is_file() {
+        return Some(mac.to_path_buf());
+    }
+    ["google-chrome", "chromium", "chromium-browser"]
+        .into_iter()
+        .find_map(|name| which(name).ok())
+}
+
+/// Components reading where they sit (`env.size_class` under adaptive
+/// scopes, `env.constraints`) beside the window's fields, one of them in a
+/// region.
+const ADAPTIVE: &str = include_str!("sources/adaptive.vs");
+
+#[test]
+fn a_page_follows_the_browsers_environment() {
+    let page = export(ADAPTIVE, false).unwrap();
+    let script = page
+        .script
+        .clone()
+        .expect("the environment is the script's");
+    assert!(script.contains("const env = new Env(["), "{script}");
+    assert!(script.contains("env.anchor(e["), "{script}");
+    assert!(page.index.contains("data-scope=\"700\""), "{}", page.index);
+    assert!(page.index.contains("data-root"), "{}", page.index);
+
+    let Some(chrome) = chrome() else {
+        eprintln!("no Chrome: the page is not run");
+        return;
+    };
+    let dom = run_in_chrome(
+        &page,
+        &script,
+        "export-adaptive",
+        &["--window-size=1000,700"],
+        chrome,
+    );
+    for shown in [
+        ">window=expanded<",
+        ">landscape<",
+        ">scale=1<",
+        ">based=medium<",
+        ">scoped=compact<",
+        ">scoped max=480dp<",
+        ">regional=expanded<",
+        ">regional max=1000dp<",
+    ] {
+        assert!(dom.contains(shown), "{shown} in {dom}");
+    }
+}
+
+/// `page` as headless Chrome shows it once its timers ran.
+fn run_in_chrome(
+    page: &HtmlExport,
+    script: &str,
+    name: &str,
+    flags: &[&str],
+    chrome: std::path::PathBuf,
+) -> String {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.html"), &page.index).unwrap();
+    std::fs::write(dir.join("styles.css"), &page.styles).unwrap();
+    std::fs::write(dir.join("app.js"), script).unwrap();
+    let out = std::process::Command::new(chrome)
+        .args([
+            "--headless",
+            "--disable-gpu",
+            "--no-first-run",
+            "--allow-file-access-from-files",
+            "--virtual-time-budget=5000",
+            &format!("--user-data-dir={}", dir.join("profile").display()),
+            "--dump-dom",
+        ])
+        .args(flags)
+        .arg(format!("file://{}", dir.join("index.html").display()))
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }

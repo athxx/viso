@@ -227,7 +227,10 @@ fn a_message_translates_on_the_page() {
             .contains(">Click me</button>")
     );
     let script = s.read("dist-html/app.js");
-    assert!(script.contains("const T = { Ls: [\"en\"], Ms: [["), "{script}");
+    assert!(
+        script.contains("const T = { Ls: [\"en\"], Ms: [["),
+        "{script}"
+    );
     assert!(script.contains("{ one: [[2], \" click\"] }"), "{script}");
 }
 

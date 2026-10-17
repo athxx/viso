@@ -1,9 +1,11 @@
 
 // A component's store: its states as signals, its inputs read from its
-// props, its events called back through them. A handler runs as one
-// transaction over a working copy of the states; only on success does it
-// set the signals whose state it changed, in one batch, and call back what
-// it emitted.
+// props, its events called back through them, and the work it runs beside
+// its transactions. A handler runs as one transaction over a working copy of
+// the states; only on success does it set the signals whose state it
+// changed, in one batch, call back what it emitted, and start the tasks it
+// started. Region content mounting a component keeps that component's states
+// as signals of its own mount.
 class Store {
   constructor(o) {
     this.states = o.states;
@@ -12,10 +14,36 @@ class Store {
     this.messages = o.messages;
     this.work = null;
     this.pending = [];
+    this.starts = [];
+    // The mount whose states a read sees, beside the component's.
+    this.cur = null;
+    this.top = { p: null, o: null, l: null, fx: [], live: true };
+    this.w = new Work(this, this.top);
+    this.env = new Env(
+      o.env || [],
+      (changes, m) => this.run(() => { for (const [s, v] of changes) this.set(s, v); }, m),
+      (s, m) => this.read(() => this.get(s), m || this.top),
+    );
+    onCleanup(() => {
+      unanchor(this.top);
+      this.w.end(this.top);
+    });
     for (const [id, href] of o.assets) A.set(id, href);
   }
+  // The signal of slot `i` as mount `m` sees it: the one the nearest mount
+  // keeping it holds, else the component's.
+  cell(i, m) {
+    for (let x = m; x; x = x.p) {
+      const l = x.l;
+      if (l) {
+        const at = l.s.indexOf(i);
+        if (at >= 0) return l.v[at];
+      }
+    }
+    return this.states[i];
+  }
   get(i) {
-    return this.work ? this.work[i] : this.states[i][0]();
+    return this.work ? this.work[i] : this.cell(i, this.cur)[0]();
   }
   set(i, v) {
     if (!this.work) throw fault("a state is written outside a handler");
@@ -35,6 +63,9 @@ class Store {
   emit(event, args) {
     this.pending.push([event, args]);
   }
+  start(task, args, done, cancelled, instance, slot, policy) {
+    this.starts.push({ task, args, done, cancelled, instance, slot, policy });
+  }
   tr(m, a) {
     return translate(this.messages, m, a);
   }
@@ -44,39 +75,115 @@ class Store {
   effect(f) {
     createRenderEffect(f);
   }
-  run(handler) {
-    if (this.work) {
-      handler();
-      return;
+  // Evaluates `f` with the states mount `m` keeps.
+  at(m, f) {
+    const prev = this.cur;
+    this.cur = m;
+    try {
+      return f();
+    } finally {
+      this.cur = prev;
     }
-    const before = this.states.map(([read]) => untrack(read));
+  }
+  // A transaction over a working copy of the states mount `m` sees; only
+  // success sets the signals whose state it changed.
+  transact(f, m) {
+    if (this.work) {
+      f();
+      return { value: undefined, changed: new Set(), events: [], starts: [], cells: [], after: [] };
+    }
+    const cells = this.states.map((_, i) => this.cell(i, m));
+    const before = cells.map(([read]) => untrack(read));
     this.work = before.slice();
     this.pending = [];
+    this.starts = [];
+    const prev = this.cur;
+    this.cur = m;
+    let value;
     try {
-      untrack(handler);
+      value = untrack(f);
     } catch (e) {
       this.work = null;
       this.pending = [];
+      this.starts = [];
       console.error(e);
-      return;
+      return null;
+    } finally {
+      this.cur = prev;
     }
     const after = this.work;
-    const events = this.pending;
     this.work = null;
+    const changed = new Set();
+    for (let i = 0; i < after.length; i++) if (!Object.is(after[i], before[i])) changed.add(i);
+    const t = { value, changed, events: this.pending, starts: this.starts, cells, after };
     this.pending = [];
-    batch(() => {
-      for (let i = 0; i < after.length; i++) {
-        if (!Object.is(after[i], before[i])) this.states[i][1](() => after[i]);
-      }
-    });
+    this.starts = [];
+    return t;
+  }
+  land(t) {
+    if (t.changed.size) {
+      batch(() => {
+        for (const i of t.changed) t.cells[i][1](() => t.after[i]);
+      });
+    }
+    this.deliver(t.events);
+  }
+  deliver(events) {
     for (const [event, args] of events) {
       const call = this.events[event]();
       if (call) call(...args);
     }
   }
-  on(el, route, capture, control, handler) {
+  read(f, m) {
+    return untrack(() => this.at(m, f));
+  }
+  drop(f, m) {
+    const t = this.transact(f, m);
+    if (t) this.deliver(t.events);
+  }
+  run(handler, m) {
+    if (this.work) {
+      handler();
+      return;
+    }
+    this.w.run(handler, m || this.top);
+  }
+  // The effects of the component and of the instances no region mounts.
+  fx(list) {
+    this.w.effects(this.top, list);
+  }
+  // A mount of region content, inside mount `p`, mounting the instances
+  // `own`: it keeps their states `locals` (`[slot, init]` each), runs their
+  // effects `fx(m)` and owns the tasks they start, until the content goes.
+  mount(p, own, locals, fx, render) {
+    const m = { p: p || this.top, o: own, l: null, fx: [], live: true };
+    if (locals.length) {
+      const s = [], v = [];
+      m.l = { s, v };
+      for (const [slot, init] of locals) {
+        let x = null;
+        if (init) {
+          try { x = this.read(init, m); } catch (e) { console.error(e); }
+        }
+        s.push(slot);
+        v.push(createSignal(x, { equals: false }));
+      }
+    }
+    onCleanup(() => {
+      unanchor(m);
+      this.w.end(m);
+    });
+    if (fx) this.w.effects(m, fx(m));
+    return untrack(() => render(m));
+  }
+  // Follows the `env` fields the reader whose root is `el` reads that depend
+  // on where it sits.
+  anchor(el, reads, m) {
+    this.env.anchor(el, reads, m || this.top);
+  }
+  on(el, route, capture, control, handler, m) {
     listen(el, route, capture, control, (payload) => {
-      this.run(() => handler(payload));
+      this.run(() => handler(payload), m);
       if (el.$sync) el.$sync();
     });
   }
@@ -175,4 +282,4 @@ export const show = {
   select,
 };
 
-export { $, fault, settle };
+export { $, envField, fault, settle };

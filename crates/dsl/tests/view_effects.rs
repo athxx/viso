@@ -416,3 +416,30 @@ fn an_effect_writes_state_only_in_a_transaction() {
 fn the_dependency_list_is_pure() {
     assert_eq!(codes("effect e when (reset()) { }"), ["E2502"]);
 }
+
+#[test]
+fn an_instance_whose_own_view_has_a_region_runs_its_effects_once() {
+    let source = r#"
+import viso::clipboard;
+
+component Shell {
+    state open = true;
+    view { Column { width: 20dp; height: 20dp; if open { Text { width: 20dp; height: 20dp; } } } }
+    effect hello {
+        clipboard::write_text("hello");
+    }
+}
+
+export component Probe {
+    view {
+        Column {
+            width: 400dp;
+            height: 100dp;
+            Shell {}
+        }
+    }
+}
+"#;
+    let rt = Rt::reloaded(source);
+    assert_eq!(*rt.board.borrow(), ["hello"]);
+}

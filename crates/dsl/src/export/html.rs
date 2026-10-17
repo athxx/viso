@@ -4,7 +4,7 @@
 //! page script drives — a property, a handler, a region — so a static page
 //! and a scripted one come from one walk.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use viso_behavior::Value;
@@ -36,6 +36,10 @@ pub(super) struct Content {
     /// The elements the script wires, in document order: in HTML each carries
     /// a `data-v` attribute.
     pub(super) marks: Vec<Mark>,
+    /// The component instances it mounts, each where its view first appears:
+    /// each mount of the content keeps their states, runs their effects and
+    /// owns the tasks they start.
+    pub(super) instances: Vec<u32>,
 }
 
 /// A node of the lowered tree.
@@ -78,6 +82,9 @@ pub(super) enum Wire {
     },
     /// Mounts region `region` before the element, a `<template>` anchor.
     Region(u32),
+    /// Follows the `env` fields instance `instance` reads that depend on
+    /// where it sits: the element is its root.
+    Anchor(u32),
 }
 
 /// A property a wire shows.
@@ -180,6 +187,16 @@ pub(super) struct Lower<'v, 'e, 'a> {
     /// The next node key, counting every node in pre-order as the behavior
     /// table does.
     key: u32,
+    /// The instances a region's content mounts that a content claimed.
+    claimed: BTreeSet<u32>,
+    /// The instances whose root element was lowered.
+    rooted: BTreeSet<u32>,
+    /// Whether the view reads `env` fields that depend on where their reader
+    /// sits, which the page measures from what its elements say of their
+    /// layout.
+    anchors: bool,
+    /// Whether the flex container being lowered stretches its children.
+    stretch: bool,
 }
 
 impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
@@ -197,11 +214,20 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             findings: Vec::new(),
             out: Lowered::default(),
             key: 0,
+            claimed: BTreeSet::new(),
+            rooted: BTreeSet::new(),
+            anchors: false,
+            stretch: false,
         }
     }
 
     /// Lowers the view's root items.
     pub(super) fn view(&mut self, items: &[UiItem]) {
+        self.anchors = !self.static_only
+            && self
+                .eval
+                .as_deref()
+                .is_some_and(|eval| eval.layout.env.iter().any(|e| e.field.anchored()));
         let mut root = Content::default();
         for item in items {
             match item {
@@ -254,17 +280,6 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         let Some(eval) = self.eval.as_deref_mut() else {
             return Fixed::Changes;
         };
-        let (_, env) = eval.deps(entry);
-        if let Some(field) = env.first() {
-            let field = format!("{field:?}");
-            self.need(
-                Need::Unsupported,
-                at,
-                format!("{what} reads `env`'s {field}, which an export does not follow"),
-                vec!["only `theme` is read from the environment of an exported view".to_owned()],
-            );
-            return Fixed::Changes;
-        }
         if eval.constant(entry) {
             if let Some(path) = eval.theme_path(entry)
                 && let Some((name, token)) = css::theme_var(&path)
@@ -308,6 +323,15 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
     ) {
         let key = self.key;
         self.key += 1;
+        let regional = self.eval.as_deref().is_some_and(|eval| {
+            eval.layout
+                .regional
+                .iter()
+                .any(|r| r.instance == node.instance)
+        });
+        if regional && self.claimed.insert(node.instance) {
+            out.instances.push(node.instance);
+        }
         let control = self.vb.and_then(|vb| vb.control(NodeKey(key)));
         let routes: Vec<_> = self
             .vb
@@ -460,6 +484,31 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 wires.push(Wire::Sync { kind, entry });
             }
         }
+        let root_of = self.rooted.insert(node.instance);
+        if self.anchors {
+            let reads = self.eval.as_deref().is_some_and(|eval| {
+                eval.layout
+                    .env
+                    .iter()
+                    .any(|e| e.instance == node.instance && e.field.anchored())
+            });
+            if root_of && reads {
+                wires.push(Wire::Anchor(node.instance));
+            }
+            if parent == Parent::Root {
+                el.attr("data-root", "");
+            }
+            let fit = self.fit(node, parent);
+            if !fit.is_empty() {
+                el.attr("data-fit", fit);
+            }
+            if let Some(scope) = node.style.scope {
+                let basis = scope
+                    .basis
+                    .map_or_else(String::new, |b| css::number(f64::from(b)));
+                el.attr("data-scope", &basis);
+            }
+        }
         if let Some(class) = self.out.sheet.class(&decls) {
             el.classes.push(class);
         }
@@ -486,6 +535,10 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             "RadioGroup" => Some(Role::Radio),
             _ => None,
         };
+        let stretch = std::mem::replace(
+            &mut self.stretch,
+            node.kind == NodeKind::Flex && node.style.align == Some(Align::Stretch),
+        );
         match child_parent {
             Some(child) => {
                 let mut index = 0i64;
@@ -509,12 +562,36 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
             }
         }
+        self.stretch = stretch;
         let children = std::mem::replace(&mut out.nodes, siblings);
         out.nodes.push(Piece::Element {
             el: Box::new(el),
             children,
             mark,
         });
+    }
+
+    /// The axes along which `node`'s content decides its extent — it fits
+    /// its content, or fills the cross axis of a flex container that does
+    /// not stretch its children — as `data-fit` names them.
+    fn fit(&self, node: &UiNode, parent: Parent) -> &'static str {
+        if parent == Parent::Root {
+            return "";
+        }
+        let (width, height) = extents(node);
+        let sized = |length: LengthIr, axis: AxisIr| match length {
+            LengthIr::Fit => true,
+            LengthIr::Fill { .. } => {
+                matches!(parent, Parent::Flex(main) if main != axis) && !self.stretch
+            }
+            LengthIr::Fixed(_) | LengthIr::Relative { .. } => false,
+        };
+        match (sized(width, AxisIr::Row), sized(height, AxisIr::Column)) {
+            (true, true) => "wh",
+            (true, false) => "w",
+            (false, true) => "h",
+            (false, false) => "",
+        }
     }
 
     /// The declarations of `node`'s box: how it lays out its children, and
@@ -566,23 +643,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             decls.push(("height", "100%".into()));
             return;
         }
-        let authored = style.width.is_some()
-            || style.height.is_some()
-            || lengths.width.is_some()
-            || lengths.height.is_some();
-        let (width, height) = if authored {
-            (
-                style.width.unwrap_or(LengthIr::Fit),
-                style.height.unwrap_or(LengthIr::Fit),
-            )
-        } else if node.kind.is_container() && node.kind != NodeKind::VirtualList {
-            (
-                LengthIr::Fill { weight: 1.0 },
-                LengthIr::Fill { weight: 1.0 },
-            )
-        } else {
-            (LengthIr::Fixed(0.0), LengthIr::Fixed(0.0))
-        };
+        let (width, height) = extents(node);
         let width = Extent::of(width, lengths.width.map(|t| css::terms(t, device)));
         let height = Extent::of(height, lengths.height.map(|t| css::terms(t, device)));
         match parent {
@@ -1146,26 +1207,6 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             self.skip(item);
             return;
         };
-        for entry in match kind {
-            RegionKind::If { select } => vec![select],
-            RegionKind::Match { scrutinee, select } => vec![scrutinee, select],
-            RegionKind::For { items, key } => [Some(items), key].into_iter().flatten().collect(),
-        } {
-            if let Some(eval) = self.eval.as_deref() {
-                let (_, env) = eval.deps(entry);
-                if let Some(field) = env.first() {
-                    let at = self.site(entry).unwrap_or(origin);
-                    self.need(
-                        Need::Unsupported,
-                        at,
-                        format!(
-                            "the region reads `env`'s {field:?}, which an export does not follow"
-                        ),
-                        Vec::new(),
-                    );
-                }
-            }
-        }
         let index = self.out.regions.len() as u32;
         self.out.regions.push(Region {
             kind,
@@ -1209,6 +1250,30 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             wires: vec![Wire::Region(index)],
         });
         out.nodes.push(Piece::Region { region: index });
+    }
+}
+
+/// How `node`'s parent sizes it: as authored, else filling for a container
+/// and nothing for a leaf.
+fn extents(node: &UiNode) -> (LengthIr, LengthIr) {
+    let style = &node.style;
+    let lengths = style.lengths();
+    let authored = style.width.is_some()
+        || style.height.is_some()
+        || lengths.width.is_some()
+        || lengths.height.is_some();
+    if authored {
+        (
+            style.width.unwrap_or(LengthIr::Fit),
+            style.height.unwrap_or(LengthIr::Fit),
+        )
+    } else if node.kind.is_container() && node.kind != NodeKind::VirtualList {
+        (
+            LengthIr::Fill { weight: 1.0 },
+            LengthIr::Fill { weight: 1.0 },
+        )
+    } else {
+        (LengthIr::Fixed(0.0), LengthIr::Fixed(0.0))
     }
 }
 

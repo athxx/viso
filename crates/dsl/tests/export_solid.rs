@@ -255,3 +255,49 @@ fn a_shader_has_no_solid_form() {
         "{findings:#?}"
     );
 }
+
+/// The view of `tests/export_html.rs` that runs tasks, effects, a resource
+/// and components a region mounts.
+const RUNNING: &str = include_str!("sources/running.vs");
+
+#[test]
+fn the_component_runs_its_tasks_effects_and_resources() {
+    let project = export(RUNNING);
+    let behavior = file(&project, "src/components/Demo.behavior.ts");
+    assert!(behavior.contains("async function"), "{behavior}");
+    assert!(behavior.contains("st.start("), "{behavior}");
+    assert!(behavior.contains("await $.sleep(tk, "), "{behavior}");
+    let component = file(&project, "src/components/Demo.tsx");
+    assert!(component.contains("st.fx(["), "{component}");
+    assert!(
+        component.contains("<>{st.mount(null, ["),
+        "a region mounting a component keeps its states: {component}"
+    );
+    assert!(component.contains("st.at(m, () => "), "{component}");
+    write(&project, "solid-running");
+}
+
+/// The view of `tests/export_html.rs` whose components read where they sit.
+const ADAPTIVE: &str = include_str!("sources/adaptive.vs");
+
+#[test]
+fn the_component_follows_the_browsers_environment() {
+    let project = export(ADAPTIVE);
+    let component = file(&project, "src/components/Shell.tsx");
+    assert!(component.contains("envField("), "{component}");
+    assert!(component.contains("st.anchor(el, ["), "{component}");
+    assert!(component.contains("data-scope=\"700\""), "{component}");
+    write(&project, "solid-adaptive");
+}
+
+/// Writes `project` under the test's scratch directory, keeping what a
+/// package manager installed there, so a reader can build and run it.
+fn write(project: &SolidExport, name: &str) {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(dir.join("src"));
+    for (path, text) in &project.files {
+        let at = dir.join(path);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, text).unwrap();
+    }
+}

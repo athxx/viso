@@ -491,7 +491,14 @@ impl Builder<'_> {
             out.push(ItemTemplate::Region(region));
             return;
         };
-        if node.instance != 0 && self.claimed.insert(node.instance) {
+        // Region content mounts the instances declared in it; an instance
+        // whose own view has the region is the root's.
+        let mounted = self
+            .layout
+            .regional
+            .iter()
+            .any(|r| r.instance == node.instance);
+        if mounted && self.claimed.insert(node.instance) {
             let anchor = out.len() as u32;
             if self.layout.starters.contains(&node.instance) {
                 starters.push(StarterTemplate {
