@@ -7,8 +7,11 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-fn scratch() -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("startup");
+/// A directory of the test's own, so tests running at once never share one.
+fn scratch(test: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("startup")
+        .join(test);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("Viso.toml"), "[package\nthis is not toml").unwrap();
@@ -28,7 +31,7 @@ fn bare(dir: &PathBuf, args: &[&str]) -> Output {
 
 #[test]
 fn the_constant_commands_need_nothing_around_them() {
-    let dir = scratch();
+    let dir = scratch("constant");
     for args in [
         &["--version"][..],
         &["--version", "--json"],
@@ -59,7 +62,7 @@ const VERSION_BUDGET: Duration = Duration::from_millis(250);
 
 #[test]
 fn version_answers_within_its_budget() {
-    let dir = scratch();
+    let dir = scratch("version");
     let best = (0..5)
         .map(|_| {
             let started = Instant::now();
