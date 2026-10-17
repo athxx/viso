@@ -158,33 +158,78 @@ pub fn zip(entries: &mut [Entry], out: &Path) -> Result<(), String> {
 /// The zip of `entries`, in the order given. No entry or archive reaches
 /// 4 GiB, so the format needs no 64-bit extension.
 pub fn zip_bytes(entries: &[Entry]) -> io::Result<Vec<u8>> {
+    let packed = entries
+        .iter()
+        .map(|entry| {
+            let (method, data) = match entry.kind {
+                Kind::File { .. } if !entry.stored && !entry.data.is_empty() => {
+                    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
+                    encoder.write_all(&entry.data)?;
+                    let deflated = encoder.finish()?;
+                    if deflated.len() < entry.data.len() {
+                        (DEFLATED, deflated)
+                    } else {
+                        (STORED, entry.data.clone())
+                    }
+                }
+                _ => (STORED, entry.data.clone()),
+            };
+            Ok(Packed {
+                entry,
+                method,
+                data,
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    zip_packed(&packed, Host::Unix)
+}
+
+/// A zip's compression methods.
+pub(crate) const STORED: u16 = 0;
+pub(crate) const DEFLATED: u16 = 8;
+/// The size of an entry's local header, less its name.
+pub(crate) const LOCAL_HEADER: usize = 30;
+
+/// An entry with its data as the zip holds it, `method` saying how.
+pub(crate) struct Packed<'a> {
+    pub(crate) entry: &'a Entry,
+    pub(crate) method: u16,
+    pub(crate) data: Vec<u8>,
+}
+
+/// What a zip says it was made on: Unix, with UTF-8 names and each entry's
+/// mode, or MS-DOS, with neither, as an app package's reader expects.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Host {
+    Unix,
+    Dos,
+}
+
+/// The zip of `packed`, in the order given.
+pub(crate) fn zip_packed(packed: &[Packed<'_>], host: Host) -> io::Result<Vec<u8>> {
     let mut body = Vec::new();
     let mut central = Vec::new();
-    for entry in entries {
+    for Packed {
+        entry,
+        method,
+        data,
+    } in packed
+    {
         let crc = {
             let mut crc = flate2::Crc::new();
             crc.update(&entry.data);
             crc.sum()
         };
-        let (method, data) = match entry.kind {
-            Kind::File { .. } if !entry.stored && !entry.data.is_empty() => {
-                let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
-                encoder.write_all(&entry.data)?;
-                let deflated = encoder.finish()?;
-                if deflated.len() < entry.data.len() {
-                    (8u16, deflated)
-                } else {
-                    (0, entry.data.clone())
-                }
-            }
-            _ => (0, entry.data.clone()),
-        };
         let offset = small(body.len())?;
         let name = entry.name.as_bytes();
         let fields = |w: &mut Vec<u8>| -> io::Result<()> {
             w.extend_from_slice(&20u16.to_le_bytes());
-            // UTF-8 names.
-            w.extend_from_slice(&0x0800u16.to_le_bytes());
+            let flags: u16 = match host {
+                // UTF-8 names.
+                Host::Unix => 0x0800,
+                Host::Dos => 0,
+            };
+            w.extend_from_slice(&flags.to_le_bytes());
             w.extend_from_slice(&method.to_le_bytes());
             w.extend_from_slice(&0u16.to_le_bytes());
             w.extend_from_slice(&DOS_DATE.to_le_bytes());
@@ -198,11 +243,15 @@ pub fn zip_bytes(entries: &[Entry]) -> io::Result<Vec<u8>> {
         body.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
         fields(&mut body)?;
         body.extend_from_slice(name);
-        body.extend_from_slice(&data);
+        body.extend_from_slice(data);
 
         central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
-        // Made by Unix, so the mode in the external attributes is read.
-        central.extend_from_slice(&((3u16 << 8) | 20).to_le_bytes());
+        let made_by: u16 = match host {
+            // Made by Unix, so the mode in the external attributes is read.
+            Host::Unix => (3 << 8) | 20,
+            Host::Dos => 20,
+        };
+        central.extend_from_slice(&made_by.to_le_bytes());
         fields(&mut central)?;
         central.extend_from_slice(&0u16.to_le_bytes());
         central.extend_from_slice(&0u16.to_le_bytes());
@@ -212,11 +261,15 @@ pub fn zip_bytes(entries: &[Entry]) -> io::Result<Vec<u8>> {
         } else {
             0
         };
-        central.extend_from_slice(&((entry.mode() << 16) | dos).to_le_bytes());
+        let attributes = match host {
+            Host::Unix => (entry.mode() << 16) | dos,
+            Host::Dos => dos,
+        };
+        central.extend_from_slice(&attributes.to_le_bytes());
         central.extend_from_slice(&offset.to_le_bytes());
         central.extend_from_slice(name);
     }
-    let count = u16::try_from(entries.len())
+    let count = u16::try_from(packed.len())
         .map_err(|_| io::Error::other("more than 65535 entries in one archive"))?;
     let start = small(body.len())?;
     let size = small(central.len())?;

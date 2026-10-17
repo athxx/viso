@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use viso_ende::JsonWriter;
 use viso_package::android::{self, MIN_API};
 use viso_package::apple::{self, MIN_IOS};
+use viso_package::windows::msix;
 use viso_package::{Access, Orientations};
 use viso_project::{ConfigCode, ConfigDiagnostic, Orientation, Permission, Project};
 use viso_view::snapshot::Image;
@@ -39,6 +40,8 @@ pub(crate) struct Metadata {
     pub(crate) minimum_os: String,
     /// The lowest Android API level.
     pub(crate) min_sdk: u32,
+    /// The publisher a Windows package names, when the project names one.
+    pub(crate) publisher: Option<String>,
 }
 
 impl Metadata {
@@ -61,6 +64,24 @@ impl Metadata {
     /// without the characters a file name cannot hold.
     pub(crate) fn bundle_name(&self) -> String {
         self.display_name.replace(['/', ':'], "-")
+    }
+
+    /// Its version as Windows numbers it: major, minor, patch and the build
+    /// number, each checked to fit.
+    pub(crate) fn windows_version(&self) -> [u16; 4] {
+        let [major, minor, patch] = numbers(&self.version).map(|n| n.min(MAX_WINDOWS) as u16);
+        [
+            major,
+            minor,
+            patch,
+            self.build.min(MAX_WINDOWS as u32) as u16,
+        ]
+    }
+
+    /// The name of its MSIX: the bundle id, else the project's name, with
+    /// only letters, digits, `.` and `-`.
+    pub(crate) fn package_name(&self) -> String {
+        msix_name(self.id.as_deref().unwrap_or(&self.name))
     }
 
     /// What it asks the user for, as the packager names it.
@@ -145,6 +166,31 @@ impl Metadata {
         w.end_array();
         w.end_object();
     }
+}
+
+/// The highest number of a Windows version.
+const MAX_WINDOWS: u64 = 65_535;
+
+/// The numbers of `version`'s `major.minor.patch`, 0 where it stops short.
+fn numbers(version: &str) -> [u64; 3] {
+    let core = version.split(['-', '+']).next().unwrap_or_default();
+    let mut out = [0; 3];
+    for (n, part) in out.iter_mut().zip(core.split('.')) {
+        *n = part.parse().unwrap_or(u64::MAX);
+    }
+    out
+}
+
+fn msix_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 /// The packager's name for `permission`.
@@ -242,17 +288,20 @@ pub(crate) fn read(
         }
         None => {
             if platform.shows_icon() {
+                let message = if platform == Platform::Windows {
+                    "no `[package.icons] source`: the app shows the system's default icon, and \
+                     no MSIX is made, whose tiles are drawn from it"
+                } else {
+                    "no `[package.icons] source`: the app shows the system's default icon"
+                };
                 diagnostics.push(
-                    ConfigDiagnostic::warning(
-                        ConfigCode::MissingRequired,
-                        "no `[package.icons] source`: the app shows the system's default icon",
-                    )
-                    .at(&path)
-                    .note(format!(
-                        "add `[package.icons]` with `source = \"assets/icon.png\"`, a square \
+                    ConfigDiagnostic::warning(ConfigCode::MissingRequired, message)
+                        .at(&path)
+                        .note(format!(
+                            "add `[package.icons]` with `source = \"assets/icon.png\"`, a square \
                          PNG of at least {} pixels",
-                        icon::MIN_SIZE
-                    )),
+                            icon::MIN_SIZE
+                        )),
                 );
             }
             None
@@ -293,6 +342,52 @@ pub(crate) fn read(
                 }
             }
         }
+        Platform::Windows => {
+            let too_large = |message: String, span| {
+                ConfigDiagnostic::error(ConfigCode::InvalidValue, message)
+                    .at(&path)
+                    .span(span)
+                    .note(format!(
+                        "Windows numbers a version with four numbers of at most {MAX_WINDOWS}: \
+                         major, minor, patch and the build number"
+                    ))
+            };
+            if let Some(version) = &package.version
+                && numbers(&version.value).iter().any(|&n| n > MAX_WINDOWS)
+            {
+                diagnostics.push(too_large(
+                    format!(
+                        "the version `{}` has a number above {MAX_WINDOWS}",
+                        version.value
+                    ),
+                    version.span,
+                ));
+            }
+            if let Some(build) = &package.build
+                && u64::from(build.value) > MAX_WINDOWS
+            {
+                diagnostics.push(too_large(
+                    format!("the build number {} is above {MAX_WINDOWS}", build.value),
+                    build.span,
+                ));
+            }
+            let named = msix_name(id.as_deref().unwrap_or(&name));
+            if icon.is_some() && !msix::valid_name(&named) {
+                let mut diagnostic = ConfigDiagnostic::error(
+                    ConfigCode::InvalidValue,
+                    format!(
+                        "the MSIX's package name `{named}` is not 3 to 50 letters, digits, `.` \
+                         and `-`"
+                    ),
+                )
+                .at(&path)
+                .note("set `bundle_id = \"com.example.app\"` under `[package]`; the MSIX is named by it");
+                if let Some(id) = &package.bundle_id {
+                    diagnostic = diagnostic.span(id.span);
+                }
+                diagnostics.push(diagnostic);
+            }
+        }
         _ => {}
     }
 
@@ -329,6 +424,7 @@ pub(crate) fn read(
             .min_sdk
             .as_ref()
             .map_or(MIN_API, |v| v.value.max(MIN_API)),
+        publisher: package.windows.publisher.as_ref().map(|p| p.value.clone()),
     };
     (Some(metadata), diagnostics)
 }
@@ -374,6 +470,59 @@ mod tests {
         assert_eq!(metadata.file_name(), "My-App");
         assert_eq!(metadata.display_name, "My App");
         assert_eq!(metadata.build, 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn windows_numbers_its_version_and_names_its_package() {
+        let dir = scratch("windows");
+        let p = project(
+            &dir,
+            "[package]\nname = \"a\"\nversion = \"1.70000.0\"\nbuild = 70000\n",
+        );
+        let (metadata, diagnostics) = read(&p, Platform::Windows);
+        assert!(metadata.is_none());
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert!(messages[0].contains("no MSIX is made"));
+        assert_eq!(
+            messages[1],
+            "the version `1.70000.0` has a number above 65535"
+        );
+        assert_eq!(messages[2], "the build number 70000 is above 65535");
+        assert_eq!(diagnostics[1].span.unwrap().line, 3);
+
+        let icon = Image {
+            width: 1024,
+            height: 1024,
+            rgba: vec![255; 1024 * 1024 * 4],
+        };
+        std::fs::write(dir.join("icon.png"), icon.to_png()).unwrap();
+        let p = project(
+            &dir,
+            "[package]\nname = \"a\"\nversion = \"1.0.0\"\n\n[package.icons]\nsource = \"icon.png\"\n",
+        );
+        let (_, diagnostics) = read(&p, Platform::Windows);
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("package name `a` is not 3 to 50"),
+            "{diagnostics:?}"
+        );
+        // Only the MSIX, made with an icon, needs the name.
+        let p = project(&dir, "[package]\nname = \"a\"\nversion = \"1.0.0\"\n");
+        assert!(read(&p, Platform::Windows).0.is_some());
+
+        let p = project(
+            &dir,
+            "[package]\nname = \"a\"\nversion = \"1.2\"\nbuild = 9\nbundle_id = \"com.example.app2\"\n\
+             \n[package.icons]\nsource = \"icon.png\"\n\n[package.windows]\npublisher = \"CN=Example\"\n",
+        );
+        let (metadata, diagnostics) = read(&p, Platform::Windows);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let metadata = metadata.unwrap();
+        assert_eq!(metadata.windows_version(), [1, 2, 0, 9]);
+        assert_eq!(metadata.package_name(), "com.example.app2");
+        assert_eq!(metadata.publisher.as_deref(), Some("CN=Example"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

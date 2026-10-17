@@ -6,7 +6,9 @@
 //!   app as the shared library the Java shell loads, and the signed APK.
 //! - [`web`]: the `wasm-bindgen` glue, the page that loads it and the files a
 //!   server hands out.
-//! - [`windows`] and [`linux`]: a desktop app's signature and launcher entry.
+//! - [`windows`]: the icon and version linked into the executable, the MSIX
+//!   and the signature of both.
+//! - [`linux`]: the desktop entry that launches the app.
 //! - [`archive`]: the zip and tar a package ships in, the same bytes for the
 //!   same files.
 //!

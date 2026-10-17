@@ -224,6 +224,9 @@ pub struct WindowsPackage {
     /// The RFC 3161 server the signature is timestamped by, so it outlives
     /// the certificate.
     pub timestamp_url: Option<Spanned<String>>,
+    /// The publisher the MSIX names: the certificate's subject, such as
+    /// `CN=Example Ltd, O=Example Ltd, C=US`.
+    pub publisher: Option<Spanned<String>>,
 }
 
 /// One `[profile.X]` table.
@@ -620,6 +623,69 @@ fn timestamp_url(url: &str) -> Result<(), &'static str> {
     }
 }
 
+/// A certificate subject as an MSIX publisher writes it: comma-separated
+/// `KEY=value` parts, a value quoted when it holds `,+="<>#;`.
+fn publisher(subject: &str) -> Result<(), &'static str> {
+    const KEYS: &[&str] = &[
+        "CN",
+        "L",
+        "O",
+        "OU",
+        "E",
+        "C",
+        "S",
+        "STREET",
+        "T",
+        "G",
+        "I",
+        "SN",
+        "DC",
+        "SERIALNUMBER",
+        "Description",
+        "PostalCode",
+        "POBox",
+        "Phone",
+        "X21Address",
+        "dnQualifier",
+    ];
+    let key = |key: &str| {
+        KEYS.contains(&key)
+            || key
+                .strip_prefix("OID.")
+                .is_some_and(|oid| oid.contains('.') && dotted_numbers(oid))
+    };
+    let value = |value: &str| {
+        (value.len() >= 2 && value.starts_with('"') && value.ends_with('"'))
+            || (!value.is_empty() && !value.contains([',', '+', '=', '"', '<', '>', '#', ';']))
+    };
+    let mut parts = Vec::new();
+    let mut quoted = false;
+    let mut start = 0;
+    for (at, c) in subject.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                parts.push(&subject[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&subject[start..]);
+    let valid = subject.len() <= 8192
+        && !quoted
+        && parts.iter().all(|part| {
+            part.trim()
+                .split_once('=')
+                .is_some_and(|(k, v)| key(k.trim()) && value(v.trim()))
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err("the certificate's subject, such as `CN=Example Ltd, O=Example Ltd, C=US`")
+    }
+}
+
 /// `1`, `1.2` or `1.2.3`, with an optional `-pre` or `+build` suffix.
 fn version(version: &str) -> Result<(), &'static str> {
     let core = version.split(['-', '+']).next().unwrap_or_default();
@@ -852,7 +918,7 @@ impl<'a> Reader<'a> {
                         Some(windows) => {
                             self.deny_unknown(
                                 windows,
-                                &["identity", "timestamp_url"],
+                                &["identity", "timestamp_url", "publisher"],
                                 "package.windows",
                             );
                             WindowsPackage {
@@ -862,6 +928,12 @@ impl<'a> Reader<'a> {
                                     "timestamp_url",
                                     "package.windows",
                                     timestamp_url,
+                                ),
+                                publisher: self.checked(
+                                    windows,
+                                    "publisher",
+                                    "package.windows",
+                                    publisher,
                                 ),
                             }
                         }
@@ -2019,6 +2091,7 @@ identity = "Developer ID Application: Example (ABCDE12345)"
 [package.windows]
 identity = "Example Ltd"
 timestamp_url = "http://timestamp.example.com"
+publisher = "CN=Example Ltd, O=\"Example, Ltd\", C=US"
 "#,
         );
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -2048,6 +2121,10 @@ timestamp_url = "http://timestamp.example.com"
         assert_eq!(p.android.abis.len(), 2);
         assert!(p.macos.identity.is_some());
         assert_eq!(p.windows.identity.as_ref().unwrap().value, "Example Ltd");
+        assert_eq!(
+            p.windows.publisher.as_ref().unwrap().value,
+            "CN=Example Ltd, O=\"Example, Ltd\", C=US"
+        );
 
         for (text, line) in [
             ("[package]\nbuild = 0\n", 2),
@@ -2061,6 +2138,9 @@ timestamp_url = "http://timestamp.example.com"
             ("[package.permissions]\ncamera = \" \"\n", 2),
             ("[package.android]\nabis = [\"mips\"]\n", 2),
             ("[package.windows]\ntimestamp_url = \"timestamp\"\n", 2),
+            ("[package.windows]\npublisher = \"Example Ltd\"\n", 2),
+            ("[package.windows]\npublisher = \"CN=Example, Ltd\"\n", 2),
+            ("[package.windows]\npublisher = \"XX=Example\"\n", 2),
         ] {
             let diags = errors(text);
             assert_eq!(diags[0].code, ConfigCode::InvalidValue, "{text}");

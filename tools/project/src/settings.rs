@@ -109,6 +109,7 @@ pub const KEYS: &[&str] = &[
     "package.macos.identity",
     "package.windows.identity",
     "package.windows.timestamp_url",
+    "package.windows.publisher",
     "profile.dev.opt_level",
     "profile.dev.source_maps",
     "profile.dev.strip",
@@ -282,6 +283,12 @@ pub fn settings(project: &Project, config: &ResolvedConfig, env: &Env) -> Vec<En
         &mut push,
         "package.windows.timestamp_url",
         &windows.timestamp_url,
+        None,
+    );
+    push_text(
+        &mut push,
+        "package.windows.publisher",
+        &windows.publisher,
         None,
     );
 

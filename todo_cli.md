@@ -716,9 +716,20 @@ a precise diagnostic what it cannot express.
       `artifact.json` (§27.4: files with SHA-256, size, target, profile, build id,
       build number, signing object, toolchain); `artifact` events; exit 6
       (`PACKAGE_SIGNING`, `PACKAGE_ARCHIVE`).
-- [ ] Windows: the icon embedded in the executable (a resource at link time) and an
-      MSIX beside the zip; signing with `signtool` is written but unverified on a
-      Windows host.
+- [x] Windows: the icon (16–256 px) and `VS_VERSIONINFO` linked into the executable —
+      a `.res` for MSVC (byte-identical to `llvm-rc`'s), a COFF `.rsrc` object for
+      GNU, named by content so a change relinks, passed by
+      `cargo rustc --bins -- -Clink-arg=…` (`--bins` also lets a lib + bin package
+      take rustc arguments, Android's too); the resource tree checked through
+      `lld-link` and MinGW `ld.lld`. An MSIX beside the zip when there is an icon:
+      written by the packager (64 KiB blocks deflated alone, SHA-256 block map,
+      content types), full-trust manifest with capabilities from the permissions,
+      `[package.windows] publisher` (required to sign it; unsigned ones carry the
+      unsigned OID); unpacked and schema-validated by Microsoft's MSIX SDK
+      (`makemsix`). Version numbers ≤ 65535 and the package name checked first.
+- [ ] Windows on a Windows host: `signtool` signing of the executable and the MSIX,
+      and `Add-AppxPackage` of the MSIX, are written but unverified (no Windows
+      machine here).
 - [ ] Verify on real credentials: a Developer ID signature notarized
       (`notarytool`, stapled), an `.ipa` signed with a distribution profile, an
       `.aab` accepted by `bundletool validate`/Play; this machine has no identities.

@@ -118,7 +118,7 @@ pub(crate) fn package_plan(plan: &Plan, profile: Profile, sdk: Option<&Sdk>) -> 
 }
 
 /// The Rust target of this machine, as `rustc -vV` names it.
-fn host_triple() -> Option<String> {
+pub(crate) fn host_triple() -> Option<String> {
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
     let output =
         crate::process::capture(Command::new(rustc).arg("-vV"), Some(crate::process::QUICK))

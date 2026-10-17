@@ -386,6 +386,17 @@ pub(crate) fn resolve(
                         &["it comes with the Windows SDK"],
                     )
                 })?;
+                // The MSIX, made with an icon, names its signer.
+                if package.icon.is_some() && package.windows.publisher.is_none() {
+                    return Err(Problem::new(
+                        "the MSIX's publisher is not named",
+                        &[
+                            "set `[package.windows] publisher` to the certificate's subject, such \
+                             as `CN=Example Ltd, O=Example Ltd, C=US`: Windows installs a signed \
+                             package only when the two are the same",
+                        ],
+                    ));
+                }
                 Ok(signing(
                     Signer::Authenticode {
                         identity: identity.value.clone(),
@@ -444,15 +455,27 @@ mod tests {
     use crate::delivery::metadata;
 
     fn project(manifest: &str) -> (Project, Metadata) {
-        let dir = std::env::temp_dir().join(format!(
-            "viso-signing-{}-{}",
-            std::process::id(),
-            manifest.len()
-        ));
+        // A directory of each manifest's own, as the tests run at once.
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            manifest.hash(&mut h);
+            h.finish()
+        };
+        let dir =
+            std::env::temp_dir().join(format!("viso-signing-{}-{key:016x}", std::process::id(),));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Viso.toml"), manifest).unwrap();
         for file in ["k.jks", "p.mobileprovision"] {
             std::fs::write(dir.join(file), "").unwrap();
+        }
+        if manifest.contains("icon.png") {
+            let icon = viso_view::snapshot::Image {
+                width: 1024,
+                height: 1024,
+                rgba: vec![255; 1024 * 1024 * 4],
+            };
+            std::fs::write(dir.join("icon.png"), icon.to_png()).unwrap();
         }
         let project = Project::discover(&dir).unwrap();
         let platform = if manifest.contains("[package.ios]") {
@@ -637,5 +660,28 @@ mod tests {
             &machine(&none, &unset),
         );
         assert!(s.unwrap_err().message.contains("certificate"));
+    }
+
+    #[test]
+    fn a_signed_msix_names_its_publisher() {
+        let signtool = || Some(PathBuf::from("signtool"));
+        let none = || Ok(Vec::new());
+        let unset = |_: &str| false;
+        let machine = Machine {
+            signtool: &signtool,
+            ..machine(&none, &unset)
+        };
+        let windows = "[package.icons]\nsource = \"icon.png\"\n\n[package.windows]\nidentity = \"Example Ltd\"\n";
+        let (p, m) = project(&manifest(windows));
+        let refused = resolve(Policy::Auto, Platform::Windows, &p, &m, &machine);
+        assert!(refused.unwrap_err().message.contains("publisher"));
+        let (p, m) = project(&manifest(&format!(
+            "{windows}publisher = \"CN=Example Ltd\"\n"
+        )));
+        let s = resolve(Policy::Auto, Platform::Windows, &p, &m, &machine).unwrap();
+        assert!(matches!(s.signer, Signer::Authenticode { .. }));
+        // Without an icon there is no MSIX to name it in.
+        let (p, m) = project(&manifest("[package.windows]\nidentity = \"Example Ltd\"\n"));
+        assert!(resolve(Policy::Auto, Platform::Windows, &p, &m, &machine).is_ok());
     }
 }

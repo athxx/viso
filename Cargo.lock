@@ -2796,6 +2796,7 @@ name = "viso-package"
 version = "0.0.0"
 dependencies = [
  "flate2",
+ "sha2",
 ]
 
 [[package]]

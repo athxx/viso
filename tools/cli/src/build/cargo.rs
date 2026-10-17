@@ -123,6 +123,9 @@ impl BuildCommand {
             args.push("--quiet".into());
         }
         if rustc {
+            // The arguments are the executable's, whatever else the package
+            // builds.
+            args.push("--bins".into());
             args.push("--".into());
             args.extend(self.rustc_args.iter().map(OsString::from));
         }
@@ -629,6 +632,45 @@ mod tests {
     use viso_project::{Env, Manifest};
 
     use super::*;
+
+    #[test]
+    fn rustc_arguments_go_to_the_executable_alone() {
+        let mut command = BuildCommand {
+            cargo: PathBuf::from("cargo"),
+            manifest: PathBuf::from("/p/Cargo.toml"),
+            quiet: false,
+            piped: true,
+            target_dir: None,
+            cargo_args: Vec::new(),
+            build_args: Vec::new(),
+            profile: Profile::Release,
+            profile_args: Vec::new(),
+            features: Vec::new(),
+            target: None,
+            rustc_args: Vec::new(),
+            env: Vec::new(),
+            package: None,
+            lock: None,
+        };
+        let args = |command: &BuildCommand, check| -> Vec<String> {
+            command
+                .args(check)
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(args(&command, false)[0], "build");
+        assert!(!args(&command, false).contains(&"--bins".to_owned()));
+        command.rustc_args = vec!["-Clink-arg=/b/resources.res".to_owned()];
+        let rustc = args(&command, false);
+        assert_eq!(rustc[0], "rustc");
+        assert_eq!(
+            &rustc[rustc.len() - 3..],
+            ["--bins", "--", "-Clink-arg=/b/resources.res"]
+        );
+        assert_eq!(args(&command, true)[0], "check");
+        assert!(!args(&command, true).contains(&"--".to_owned()));
+    }
 
     fn rendered(messages: &mut Messages, lines: &[&str]) -> Vec<String> {
         lines

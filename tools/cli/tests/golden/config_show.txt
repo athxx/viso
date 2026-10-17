@@ -22,6 +22,7 @@ package.android.abis              [arm64-v8a]  default
 package.macos.identity            (unset)      default
 package.windows.identity          (unset)      default
 package.windows.timestamp_url     (unset)      default
+package.windows.publisher         (unset)      default
 profile.dev.opt_level             0            default
 profile.dev.source_maps           true         default
 profile.dev.strip                 false        default

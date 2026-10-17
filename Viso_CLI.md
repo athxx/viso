@@ -716,7 +716,7 @@ viso config validate
 - invalid resource path；
 - signing config shape。
 
-这些检查在 manifest 解析时进行，因此每个读取项目的命令都报告同样的问题；`validate` 额外解析 `VISO_*` 环境变量（C0010）。具体规则：`package.bundle_id` 为 iOS 与 Android 都接受的反向域名（两段以上，每段字母开头、只含字母数字）；`package.version` 为 1–3 段数字加可选 `-pre`/`+build`；`package.ios.team_id` 为 10 位大写字母数字；`target.ios.minimum_os` 为 1–3 段数字；`export.*.out_dir` 为留在 project 内的相对路径；`export.solid.package_manager` ∈ `npm|pnpm|yarn|bun`；`web.default_target` 只能是 `web-*`。违反者为 C0007，指向所在行。
+这些检查在 manifest 解析时进行，因此每个读取项目的命令都报告同样的问题；`validate` 额外解析 `VISO_*` 环境变量（C0010）。具体规则：`package.bundle_id` 为 iOS 与 Android 都接受的反向域名（两段以上，每段字母开头、只含字母数字）；`package.version` 为 1–3 段数字加可选 `-pre`/`+build`；`package.ios.team_id` 为 10 位大写字母数字；`target.ios.minimum_os` 为 1–3 段数字；`export.*.out_dir` 为留在 project 内的相对路径；`export.solid.package_manager` ∈ `npm|pnpm|yarn|bun`；`web.default_target` 只能是 `web-*`；`package.windows.timestamp_url` 为 `http://`/`https://` URL；`package.windows.publisher` 为证书 subject 的写法（逗号分隔的 `KEY=value`，KEY 为 `CN`/`O`/`OU`/`L`/`S`/`C`/`E`/`STREET`/`DC`… 或 `OID.<n>.<n>…`，含 `,+="<>#;` 的值加引号）。违反者为 C0007，指向所在行。
 
 ### 10.5 不提供隐式 magic write
 
@@ -2146,7 +2146,9 @@ source = "assets/icon.png"      # 正方形 PNG，至少 1024 px
 camera = "Scans receipts into notes"
 ```
 
-权限 `camera|microphone|location|photos|contacts|bluetooth|notifications` 映射为各平台的 Info.plist usage 说明、hardened runtime entitlement 与 Android `<uses-permission>`。检查在构建前进行，问题以 C diagnostic 指向所在行：缺 `version`、所需平台缺 `bundle_id` 为 C0006；图标不可读、非 PNG、非正方形或小于 1024 px 为 C0007；`provisioning_profile`/`keystore` 指向的文件不存在为 C0007，有 keystore 无 `key_alias` 为 C0006。需要图标的平台没有图标是 warning（系统默认图标）；iOS 图标含透明像素是 warning（铺白底，iOS 图标不透明）。
+权限 `camera|microphone|location|photos|contacts|bluetooth|notifications` 映射为各平台的 Info.plist usage 说明、hardened runtime entitlement 与 Android `<uses-permission>`。检查在构建前进行，问题以 C diagnostic 指向所在行：缺 `version`、所需平台缺 `bundle_id` 为 C0006；图标不可读、非 PNG、非正方形或小于 1024 px 为 C0007；`provisioning_profile`/`keystore` 指向的文件不存在为 C0007，有 keystore 无 `key_alias` 为 C0006。需要图标的平台没有图标是 warning（系统默认图标）；iOS 图标含透明像素是 warning（铺白底，iOS 图标不透明）。Windows 上版本的 major/minor/patch 与 `build` 各不超过 65535（Windows 版本号是四个 16 位数），超出为 C0007；有图标时 MSIX 的 package name 取 `bundle_id`，缺省取 `name`（`.`、`-`、字母数字以外的字符换成 `-`），须为 3–50 个字符，否则为 C0007，建议设 `bundle_id`。
+
+Windows 的 executable 在链接时带上资源：图标（16、20、24、32、40、48、64 px 为 32 位 bitmap，256 px 为 PNG，从同一源图按线性光缩放）与版本信息（`VS_VERSIONINFO`：数字版本 `major.minor.patch.build`，`ProductName`/`FileDescription` 为 display name，`FileVersion`/`ProductVersion` 为 `version`，配置了 `publisher` 时 `CompanyName` 为其 `O=`（否则 `CN=`），dev profile 标记 debug）。资源由打包器自己写出——MSVC 目标为 `.res`（与 `rc.exe`/`llvm-rc` 的输出逐字节相同），GNU 目标为只含 `.rsrc` section 的 COFF object——放在 build 目录下以内容 hash 命名，经 `cargo rustc --bins -- -Clink-arg=<file>` 交给链接器；内容变了文件名就变，Cargo 因此重新链接。
 
 ### 27.2 Signing
 
@@ -2163,7 +2165,7 @@ off       不签
 | macOS | `[package.macos] identity`，否则 keychain 中第一个 `Developer ID Application:`；hardened runtime + 按权限生成 entitlements + timestamp，`.dmg` 同样签名 | ad-hoc（只在本机可运行） |
 | iOS | `[package.ios] identity`（否则 keychain 中 Apple/iPhone Distribution，再 Development）+ `provisioning_profile`；profile 必须覆盖 `bundle_id`，`team_id` 若配置须与 profile 一致 | 不签 |
 | Android | `[package.android] keystore` + `key_alias`；密码只从 `VISO_ANDROID_KEYSTORE_PASSWORD`（key 不同则 `VISO_ANDROID_KEY_PASSWORD`）由 `apksigner`/`jarsigner` 自己读取（`env:` 形式），缺失即 PACKAGE_SIGNING | debug keystore |
-| Windows | `[package.windows] identity`（证书 subject 或 SHA-1 thumbprint，在系统证书库）+ 可选 `timestamp_url`，`signtool` | 不签 |
+| Windows | `[package.windows] identity`（证书 subject 或 SHA-1 thumbprint，在系统证书库）+ 可选 `timestamp_url`，`signtool`；先签 executable，再签 MSIX。有图标（即有 MSIX）时还须 `publisher`（证书的完整 subject），否则 PACKAGE_SIGNING——Windows 只安装 publisher 与签名证书 subject 相同的包 | 不签；MSIX 的 publisher 为 `publisher`（缺省 `CN=<display_name>`）加 unsigned 标记 `OID.2.25.311729368913984317654407730594956997722=1`，可用 `Add-AppxPackage -AllowUnsigned` 安装 |
 | Linux / Web | 无签名；`required` 为 PACKAGE_SIGNING | — |
 
 配置中点名的身份不在 keychain 时，`auto` 也失败（不静默降级）。Secret 不出现在命令行、`Viso.toml`、log 或 `artifact.json`；身份只以名字出现。
@@ -2206,7 +2208,7 @@ dist/<platform>/artifact.json
 
 ```text
 macOS    <display_name>.app、<name>-<version>-<arch>.dmg（含 /Applications 链接，UDZO）
-Windows  <name>-<version>-<arch>.zip（<name>-<version>-<arch>/<bin>.exe）
+Windows  <name>-<version>-<arch>.zip（<name>-<version>-<arch>/<bin>.exe，图标与版本已链接进 exe）；有图标时另有 <name>-<version>-<arch>.msix
 Linux    <name>-<version>-<arch>.tar.gz（可执行文件、.desktop、512 px 图标）
 iOS      <name>-<version>.ipa（device 架构，actool 编译的 asset catalog）
 Android  <name>-<version>.apk 与 .aab（每个 ABI 一个库；`[package.android] abis`，缺省 arm64-v8a）
@@ -2884,9 +2886,12 @@ abis = ["arm64-v8a", "armeabi-v7a"]   # arm64-v8a|armeabi-v7a|x86_64|x86
 [package.windows]
 identity = "Example Ltd"               # subject 或 SHA-1 thumbprint
 timestamp_url = "http://timestamp.example.com"
+publisher = "CN=Example Ltd, O=Example Ltd, C=US"   # MSIX 的 publisher：签名证书的 subject
 ```
 
 规则见 §27.2。
+
+MSIX 由打包器自己写出（同样的文件得到同样的字节）：payload 为 `<bin>.exe` 与 `Assets/` 下的三张 logo（`Square44x44Logo.png` 44 px、`Square150x150Logo.png` 150 px、`StoreLogo.png` 50 px），`AppxManifest.xml` 声明 full-trust desktop app（`Windows.FullTrustApplication`、`runFullTrust`；`TargetDeviceFamily Windows.Desktop`，MinVersion 10.0.17763.0），Identity 为 package name、publisher、`major.minor.patch.0`（最后一位留给 Store）与 host 架构（`x64`/`arm64`/`x86`）；权限映射为 capability：`camera`→`webcam`、`microphone`、`location`、`bluetooth`（device capability），`photos`→`picturesLibrary`、`contacts`（uap capability），`notifications` 不需要。zip 按 app package 格式：PNG 原样存放，其余每 64 KiB block 以 full flush 单独 deflate，`AppxBlockMap.xml` 记录每个 block 的 SHA-256 与压缩后大小，`[Content_Types].xml` 列出每种 part 的类型。
 
 ### 38.5 Export
 

@@ -70,10 +70,7 @@ impl Platform {
 
     /// Whether its packages carry an icon.
     pub(crate) fn shows_icon(self) -> bool {
-        matches!(
-            self,
-            Platform::MacOs | Platform::Ios | Platform::Android | Platform::Linux
-        )
+        !matches!(self, Platform::Web)
     }
 }
 
@@ -107,7 +104,14 @@ impl Plan {
                 ("app-bundle", format!("{}.app", metadata.bundle_name())),
                 ("dmg", format!("{stem}-{arch}.dmg")),
             ],
-            Platform::Windows => vec![("archive", format!("{stem}-{arch}.zip"))],
+            Platform::Windows => {
+                let mut outputs = vec![("archive", format!("{stem}-{arch}.zip"))];
+                // Its tiles are drawn from the icon.
+                if metadata.icon.is_some() {
+                    outputs.push(("msix", format!("{stem}-{arch}.msix")));
+                }
+                outputs
+            }
             Platform::Linux => vec![("archive", format!("{stem}-{arch}.tar.gz"))],
             Platform::Ios => vec![("ipa", format!("{stem}.ipa"))],
             Platform::Android => vec![
@@ -142,8 +146,15 @@ impl Plan {
                     .join(", ")
             ),
             Platform::Ios => format!("compile for {}", viso_package::apple::DEVICE_TRIPLE),
+            Platform::Windows if self.metadata.icon.is_some() => {
+                "compile, linking in the icon and the version".to_owned()
+            }
+            Platform::Windows => "compile, linking in the version".to_owned(),
             _ => "compile".to_owned(),
         };
+        if self.platform == Platform::Windows && self.metadata.icon.is_some() {
+            steps.push("render the icon at 16 to 256 pixels".to_owned());
+        }
         steps.push(compile);
         let icon = self.metadata.icon.is_some();
         let signed = self.signing.signer != Signer::None;
@@ -174,6 +185,12 @@ impl Plan {
                     steps.push(format!("sign the executable {sign}"));
                 }
                 steps.push(format!("archive {}", output("archive")));
+                if icon {
+                    steps.push(format!("pack the app package {}", output("msix")));
+                    if signed {
+                        steps.push(format!("sign the app package {sign}"));
+                    }
+                }
             }
             Platform::Linux => {
                 if icon {

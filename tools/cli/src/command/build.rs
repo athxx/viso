@@ -23,7 +23,7 @@ use crate::args::{BuildArgs, BuildTarget};
 use crate::build::cargo::{self, BuildCommand, BuildFailure, CargoEvent, Sink};
 use crate::build::{self, Job, Staged, Written};
 use crate::context::{Context, Loaded, in_its_file};
-use crate::delivery::Plan;
+use crate::delivery::{Plan, Platform, package};
 use crate::deploy;
 use crate::dev::cargo::RustScope;
 use crate::error::{
@@ -265,10 +265,19 @@ pub(super) fn stage_loaded(
     let build_id = identity.to_hex();
     let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
     let manifest = canonical.join("Cargo.toml");
-    let plan = match &delivery {
+    let mut plan = match &delivery {
         Some(delivery) => build::package_plan(delivery, profile, sdk.as_ref()),
         None => build::rust_plan(target, profile, sdk.as_ref()),
     };
+    if let Some(delivery) = &delivery
+        && delivery.platform == Platform::Windows
+    {
+        let triple = build::host_triple().unwrap_or_default();
+        match package::link_resources(delivery, profile, &triple, &layout.build(identity)) {
+            Ok(args) => plan.rustc_args.extend(args),
+            Err(why) => return Err(out.failure(PACKAGE_ARCHIVE, &why, &[])),
+        }
+    }
     let packaging = delivery.is_some();
     let android = match sdk {
         Some(sdk) => {

@@ -1,5 +1,12 @@
-//! A Windows executable's signature: Authenticode with `signtool`, the
-//! certificate and its key kept in the system's certificate store.
+//! A Windows app as it ships:
+//!
+//! - [`resources`]: the icon and version the executable carries, linked in;
+//! - [`msix`]: the app package Windows installs it from;
+//! - the Authenticode signature of either, with `signtool`, the certificate
+//!   and its key kept in the system's certificate store.
+
+pub mod msix;
+pub mod resources;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
