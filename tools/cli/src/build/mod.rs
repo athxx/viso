@@ -183,6 +183,110 @@ pub(crate) struct Staged {
     pub(crate) signing: &'static str,
     /// Each stage and how long it took.
     pub(crate) stages: Vec<(&'static str, Duration)>,
+    /// Whether `out` is the one an earlier build staged from the same
+    /// inputs, packaged again by nothing.
+    pub(crate) reused: bool,
+}
+
+/// Beside `out/`, what it was staged from and holds: its key, its signing,
+/// then each artifact as `<kind>\t<path>`.
+const STAGED: &str = "out.staged";
+
+/// Every kind a build of its own stages; a record naming another is not
+/// one this CLI wrote.
+const STAGED_KINDS: &[&str] = &[
+    "binary",
+    "app-bundle",
+    "apk",
+    "wasm",
+    "js",
+    "html",
+    "brotli",
+    "gzip",
+];
+
+/// What staging `job` from the executable `exe` depends on: the executable
+/// as Cargo left it, how it is packaged, the SDK packing it, and the CLI
+/// and tools doing so. The same key stages the same `out/`.
+fn staging_key(job: &Job, exe: &Path) -> String {
+    use std::fmt::Write as _;
+    let stamp = |path: &Path| {
+        fs::metadata(path).ok().map(|meta| {
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .unwrap_or_default();
+            (meta.len(), modified.as_nanos())
+        })
+    };
+    let mut key = String::new();
+    let _ = write!(
+        key,
+        "{exe:?} {:?}\n{:?} {:?}\n{:?}\n{:?}\n",
+        stamp(exe),
+        job.target,
+        job.profile,
+        job.web,
+        job.android
+    );
+    if let Ok(cli) = std::env::current_exe() {
+        let _ = writeln!(key, "{cli:?} {:?}", stamp(&cli));
+    }
+    if matches!(
+        job.target,
+        Target::WebGpu | Target::WebDom | Target::WebHybrid
+    ) {
+        for tool in ["wasm-bindgen", "wasm-opt"] {
+            let found = std::env::var_os("PATH").and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|dir| dir.join(tool))
+                    .find(|path| path.is_file())
+            });
+            let _ = writeln!(
+                key,
+                "{tool} {found:?} {:?}",
+                found.as_deref().and_then(stamp)
+            );
+        }
+    }
+    let sum = Sha256::digest(key.as_bytes());
+    sum.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The signing and artifacts of the `out/` of `dir` when it was staged
+/// with `key` and is still there.
+fn staged_before(dir: &Path, key: &str) -> Option<(&'static str, Vec<(&'static str, PathBuf)>)> {
+    let record = fs::read_to_string(dir.join(STAGED)).ok()?;
+    let mut lines = record.lines();
+    if lines.next()? != key {
+        return None;
+    }
+    let signing = match lines.next()? {
+        "none" => "none",
+        "ad-hoc" => "ad-hoc",
+        "debug-keystore" => "debug-keystore",
+        _ => return None,
+    };
+    let out = dir.join("out");
+    let mut artifacts = Vec::new();
+    for line in lines {
+        let (kind, path) = line.split_once('\t')?;
+        let kind = STAGED_KINDS.iter().find(|k| **k == kind)?;
+        let path = PathBuf::from(path);
+        fs::symlink_metadata(out.join(&path)).ok()?;
+        artifacts.push((*kind, path));
+    }
+    Some((signing, artifacts))
+}
+
+/// Records that `staged` was made with `key`, for the next build.
+fn record_staged(dir: &Path, key: &str, staged: &Staged) {
+    let mut record = format!("{key}\n{}\n", staged.signing);
+    for (kind, path) in &staged.artifacts {
+        record.push_str(&format!("{kind}\t{}\n", path.display()));
+    }
+    let _ = crate::atomic::write(&dir.join(STAGED), record.as_bytes());
 }
 
 /// Compiles `job` and packages it for its target, until it is done or
@@ -202,6 +306,22 @@ pub(crate) fn produce(
 
     let started = Instant::now();
     let out = job.dir.join("out");
+    // A build of its own whose inputs did not change has nothing to stage
+    // again; a package is always made afresh.
+    let key = job.delivery.is_none().then(|| staging_key(job, &exe));
+    if let Some(key) = &key
+        && let Some((signing, artifacts)) = staged_before(&job.dir, key)
+    {
+        stages.push(("package", started.elapsed()));
+        return Ok(Staged {
+            out,
+            artifacts,
+            signing,
+            stages,
+            reused: true,
+        });
+    }
+    let _ = fs::remove_file(job.dir.join(STAGED));
     let written = |error: io::Error, path: &Path| {
         BuildFailure::Write(format!("cannot write `{}`: {error}", path.display()))
     };
@@ -251,6 +371,7 @@ pub(crate) fn produce(
                 out,
                 signing: plan.signing.signer.status(),
                 stages,
+                reused: false,
             });
         }
         None => match job.target {
@@ -297,12 +418,17 @@ pub(crate) fn produce(
         },
     };
     stages.push(("package", started.elapsed()));
-    Ok(Staged {
+    let staged = Staged {
         artifacts: relative(artifacts, &out),
         out,
         signing,
         stages,
-    })
+        reused: false,
+    };
+    if let Some(key) = &key {
+        record_staged(&job.dir, key, &staged);
+    }
+    Ok(staged)
 }
 
 /// Each artifact's path relative to `out`.
@@ -331,15 +457,30 @@ pub(crate) struct Written {
 /// The name of the manifest beside a published build.
 pub(crate) const MANIFEST: &str = "artifact.json";
 
+/// What publishing wrote: the artifacts, the manifest last, and whether
+/// `dist/` held them already.
+pub(crate) struct Published {
+    pub(crate) written: Vec<Written>,
+    pub(crate) cached: bool,
+}
+
 /// Publishes `staged` as `dist`, `dist/<platform>/`, with the manifest
 /// `manifest` writes of its artifacts: copied beside it, then swapped in
-/// with one rename, the old output removed after. The artifacts, the
-/// manifest last.
+/// with one rename, the old output removed after. A reused `staged` that
+/// `dist` holds already, artifacts and manifest the same, is left as it is.
 pub(crate) fn publish(
     staged: &Staged,
     dist: &Path,
-    manifest: impl FnOnce(&[Written]) -> String,
-) -> Result<Vec<Written>, String> {
+    manifest: impl Fn(&[Written]) -> String,
+) -> Result<Published, String> {
+    if staged.reused
+        && let Some(written) = published_already(staged, dist, &manifest)
+    {
+        return Ok(Published {
+            written,
+            cached: true,
+        });
+    }
     let parent = dist
         .parent()
         .ok_or_else(|| format!("`{}` has no parent", dist.display()))?;
@@ -374,11 +515,65 @@ pub(crate) fn publish(
             hash,
         });
         replace(&fresh, dist, parent, &name).map_err(|e| failed(e, dist))?;
-        Ok(written)
+        Ok(Published {
+            written,
+            cached: false,
+        })
     })();
     // After a swap it holds the old output; after a failure, part of the new.
     let _ = fs::remove_dir_all(&fresh);
     result
+}
+
+/// What `dist` holds of `staged` when it holds every artifact as `staged`
+/// has it, the manifest `manifest` writes of them, and nothing else.
+fn published_already(
+    staged: &Staged,
+    dist: &Path,
+    manifest: &impl Fn(&[Written]) -> String,
+) -> Option<Vec<Written>> {
+    let mut expected: Vec<OsString> = staged
+        .artifacts
+        .iter()
+        .filter_map(|(_, relative)| relative.iter().next().map(ToOwned::to_owned))
+        .chain([MANIFEST.into()])
+        .collect();
+    expected.sort();
+    expected.dedup();
+    let mut held: Vec<OsString> = fs::read_dir(dist)
+        .ok()?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<io::Result<_>>()
+        .ok()?;
+    held.sort();
+    if held != expected {
+        return None;
+    }
+    let mut written = Vec::with_capacity(staged.artifacts.len() + 1);
+    for (kind, relative) in &staged.artifacts {
+        let (size, hash) = hash(&dist.join(relative)).ok()?;
+        if hash != self::hash(&staged.out.join(relative)).ok()?.1 {
+            return None;
+        }
+        written.push(Written {
+            kind,
+            path: dist.join(relative),
+            size,
+            hash,
+        });
+    }
+    let path = dist.join(MANIFEST);
+    if fs::read_to_string(&path).ok()? != manifest(&written) {
+        return None;
+    }
+    let (size, hash) = hash(&path).ok()?;
+    written.push(Written {
+        kind: "manifest",
+        path,
+        size,
+        hash,
+    });
+    Some(written)
 }
 
 /// Puts `fresh` where `dist` is: swapped in one rename where the system
@@ -622,11 +817,13 @@ mod tests {
             artifacts: vec![("app-bundle", PathBuf::from("demo.app"))],
             signing: "ad-hoc",
             stages: Vec::new(),
+            reused: false,
         };
         let written = publish(&staged, &dist, |artifacts| {
             format!("{{\"count\":{}}}\n", artifacts.len())
         })
-        .unwrap();
+        .unwrap()
+        .written;
         let kinds: Vec<&str> = written.iter().map(|w| w.kind).collect();
         assert_eq!(kinds, ["app-bundle", "manifest"]);
         assert_eq!(written[0].path, dist.join("demo.app"));
@@ -646,6 +843,22 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(left, ["ios"], "nothing is left beside it");
+
+        // A reused staging `dist/` holds already is left as it is; one it
+        // does not hold, or holds beside something else, is published.
+        let reused = Staged {
+            reused: true,
+            ..staged
+        };
+        let count = |artifacts: &[Written]| format!("{{\"count\":{}}}\n", artifacts.len());
+        assert!(publish(&reused, &dist, count).unwrap().cached);
+        fs::write(dist.join("demo.app/demo"), b"edited").unwrap();
+        assert!(!publish(&reused, &dist, count).unwrap().cached);
+        assert_eq!(fs::read(dist.join("demo.app/demo")).unwrap(), b"new");
+        fs::write(dist.join("extra"), b"x").unwrap();
+        assert!(!publish(&reused, &dist, count).unwrap().cached);
+        assert!(!dist.join("extra").exists());
+        let staged = reused;
 
         // Into a `dist/` that does not exist yet.
         let fresh = dir.join("other/dist/web");

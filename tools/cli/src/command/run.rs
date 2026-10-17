@@ -377,7 +377,7 @@ pub(super) fn session(
                     adb: sdk.adb.clone(),
                     serial: String::new(),
                 },
-                sdk,
+                sdk: Box::new(sdk),
                 shell,
                 reversed: None,
             },
@@ -1007,6 +1007,7 @@ fn dev_artifact(
             build_id,
             size,
             hash: &hash,
+            cached: false,
         },
         String::new,
     );

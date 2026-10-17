@@ -104,7 +104,7 @@ pub(crate) enum Deploy {
     Simulator { profile: DeviceProfile },
     /// The emulator `device`; `reversed` is the port forwarded to the host.
     Emulator {
-        sdk: Sdk,
+        sdk: Box<Sdk>,
         device: Device,
         shell: Shell,
         reversed: Option<u16>,

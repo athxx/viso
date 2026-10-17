@@ -250,3 +250,59 @@ fn leaves(path: &[&str]) -> Vec<String> {
     }
     leaves
 }
+
+/// `line` without what differs between two runs of the same command: the
+/// envelope's clock and session, and the summary's elapsed time.
+fn steady(line: &str) -> String {
+    let mut line = line.to_owned();
+    for key in ["\"timestamp_ms\":", "\"elapsed_ms\":", "\"session_id\":"] {
+        if let Some(at) = line.find(key) {
+            let value = at + key.len();
+            let end = if line[value..].starts_with('"') {
+                value + 1 + line[value + 1..].find('"').unwrap() + 1
+            } else {
+                value + line[value..].find(|c: char| !c.is_ascii_digit()).unwrap()
+            };
+            line.replace_range(value..end, "_");
+        }
+    }
+    line
+}
+
+#[test]
+fn the_commands_an_agent_asks_answer_the_same_twice() {
+    let dir = std::env::temp_dir().join(format!("viso-json-steady-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    project(&dir);
+    for args in [
+        &["check"][..],
+        &["schema", "Button"],
+        &["schema", "--search", "button"],
+        &["dump", "hir", "src/app.vs"],
+        &["explain", "E2001"],
+        &["fmt", "--check"],
+        &["config", "show"],
+    ] {
+        let run = || {
+            let out = Command::new(env!("CARGO_BIN_EXE_viso"))
+                .arg("--json")
+                .args(args)
+                .current_dir(&dir)
+                .env_remove("VISO_PROFILE")
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout)
+                .unwrap()
+                .lines()
+                .map(steady)
+                .collect::<Vec<_>>()
+        };
+        let first = run();
+        assert!(!first.is_empty(), "{args:?}");
+        assert_eq!(first, run(), "{args:?}");
+        for line in &first {
+            assert!(!line.contains("\x1b["), "{args:?}: color in {line}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

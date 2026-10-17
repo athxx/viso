@@ -66,13 +66,19 @@ fn use_refuses_an_unsupported_level_offline_and_without_consent() {
     assert!(err.contains("ANDROID_API_UNSUPPORTED"), "{err}");
     assert!(err.contains("36, 35, 34"), "{err}");
 
-    let out = viso(&home, &["android", "use", "36", "--offline"]);
-    assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
-    let err = text(&out.stderr);
-    assert!(
-        err.contains("ENV_OFFLINE") && err.contains("platform-tools"),
-        "{err}"
-    );
+    // `--offline` is the one global flag, wherever it is given.
+    for args in [
+        &["android", "use", "36", "--offline"][..],
+        &["--offline", "android", "use", "36"],
+    ] {
+        let out = viso(&home, args);
+        assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
+        let err = text(&out.stderr);
+        assert!(
+            err.contains("ENV_OFFLINE") && err.contains("platform-tools"),
+            "{err}"
+        );
+    }
 
     // No terminal and no `--accept-licenses`: nothing is downloaded.
     let out = viso(&home, &["android", "use", "36", "--json"]);
@@ -84,13 +90,12 @@ fn use_refuses_an_unsupported_level_offline_and_without_consent() {
 }
 
 #[test]
-fn adb_has_no_event_form_and_needs_an_sdk() {
+fn adb_needs_an_sdk_and_reports_it_as_events_under_json() {
     let home = home("adb");
-    // After the first argument for adb, everything is adb's: `--json` goes
-    // before it.
+    // Before the first argument for adb, `--json` is the CLI's.
     let out = viso(&home, &["android", "adb", "--json", "devices"]);
-    assert_eq!(out.status.code(), Some(2));
-    assert!(text(&out.stdout).contains(r#""code":"CLI_USAGE""#));
+    assert_eq!(out.status.code(), Some(3));
+    assert!(text(&out.stdout).contains(r#""code":"ENV_ANDROID_SDK""#));
 
     let out = viso(&home, &["android", "adb", "devices"]);
     assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));

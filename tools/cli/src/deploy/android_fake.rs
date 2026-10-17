@@ -19,7 +19,11 @@ use super::*;
 const ADB: &str = r#"#!/bin/sh
 STATE="__STATE__"
 echo "$*" >> "$STATE/calls"
-[ "$1" = "-s" ] && shift 2
+if [ "$1" = "-s" ]; then
+    # A device that went away answers nothing.
+    [ -f "$STATE/gone" ] && { echo "error: device '$2' not found" >&2; exit 1; }
+    shift 2
+fi
 case "$1" in
 devices)
     echo "List of devices attached"
@@ -81,6 +85,7 @@ esac
 const EMULATOR: &str = r#"#!/bin/sh
 STATE="__STATE__"
 echo "emulator $*" >> "$STATE/calls"
+[ -f "$STATE/noboot" ] && { echo "PANIC: Missing emulator engine program for 'arm64' CPU." >&2; exit 1; }
 (sleep 0.2; echo "$2" > "$STATE/avd") </dev/null >/dev/null 2>&1 &
 "#;
 
@@ -130,7 +135,7 @@ impl Fake {
     /// The deploy onto the device booted for `profile`.
     fn deploy(&self, serial: String) -> Deploy {
         Deploy::Emulator {
-            sdk: self.sdk.clone(),
+            sdk: Box::new(self.sdk.clone()),
             device: Device {
                 adb: self.sdk.adb.clone(),
                 serial,
@@ -290,4 +295,35 @@ fn an_app_that_panics_ends_with_its_exit_status() {
     let ended = ended(&mut app);
     assert!(!ended.success());
     assert_eq!(ended.to_string(), "exit status: 101");
+}
+
+#[test]
+fn an_emulator_that_goes_away_mid_session_ends_it_as_a_failure() {
+    let fake = Fake::new("gone");
+    std::fs::write(fake.state.join("avd"), b"viso_pixel_fake\n").unwrap();
+    let serial = emulator::boot(&fake.sdk, &profile(), false).expect("it runs already");
+    let mut deploy = fake.deploy(serial);
+    let mut app = deploy
+        .launch(&fake.apk, &[], &vars(), false, None, true)
+        .expect("it launches");
+    assert!(app.try_wait().unwrap().is_none(), "it runs");
+    // The emulator dies, and the app with it.
+    std::fs::write(fake.state.join("gone"), b"").unwrap();
+    let pid = std::fs::read_to_string(fake.state.join("pid")).unwrap();
+    let _ = std::process::Command::new("kill").arg(pid.trim()).status();
+    let ended = ended(&mut app);
+    assert!(!ended.success(), "{ended}");
+}
+
+#[test]
+fn an_emulator_that_cannot_boot_or_an_sdk_without_adb_says_why() {
+    let fake = Fake::new("noboot");
+    std::fs::write(fake.state.join("noboot"), b"").unwrap();
+    let why = emulator::boot(&fake.sdk, &profile(), false).unwrap_err();
+    assert!(why.contains("Missing emulator engine"), "{why}");
+
+    let fake = Fake::new("noadb");
+    std::fs::remove_file(&fake.sdk.adb).unwrap();
+    let why = emulator::boot(&fake.sdk, &profile(), false).unwrap_err();
+    assert!(why.contains("`adb` is not installed"), "{why}");
 }

@@ -36,6 +36,7 @@ fn a_dev_build_lands_in_dist_with_its_manifest() {
         "{path}"
     );
     assert!(field(binary, "hash").unwrap().starts_with("sha256:"));
+    assert!(binary.contains("\"cached\":false"), "{binary}");
     assert_eq!(field(artifacts[1], "kind"), Some("manifest"));
     assert!(stdout.contains("\"artifact_count\":2"), "{stdout}");
 
@@ -62,6 +63,40 @@ fn a_dev_build_lands_in_dist_with_its_manifest() {
     ] {
         assert!(manifest.contains(&part), "{part} in {manifest}");
     }
+}
+
+#[test]
+fn a_build_of_nothing_changed_leaves_its_output_as_it_is() {
+    let root = project("unchanged");
+    let first = viso(&root, &["build"]);
+    assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
+    let again = viso(&root, &["build", "--json"]);
+    let stdout = text(&again.stdout);
+    let artifacts = events(&stdout, "artifact");
+    assert_eq!(artifacts.len(), 2, "{stdout}");
+    assert!(
+        artifacts.iter().all(|a| a.contains("\"cached\":true")),
+        "{stdout}"
+    );
+    let shown = text(&viso(&root, &["build"]).stdout);
+    assert!(
+        shown.lines().next().unwrap().ends_with(", unchanged"),
+        "{shown}"
+    );
+
+    // A change to the app is built and published again.
+    fs::write(
+        root.join("src/main.rs"),
+        format!("{}// edited\n", stand_in::MAIN),
+    )
+    .unwrap();
+    let stdout = text(&viso(&root, &["build", "--json"]).stdout);
+    assert!(
+        events(&stdout, "artifact")
+            .iter()
+            .all(|a| a.contains("\"cached\":false")),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -145,7 +180,7 @@ fn what_stops_a_build_before_cargo_runs() {
     assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
     let stderr = text(&out.stderr);
     assert!(
-        stderr.contains("build cache for `host` is already in use"),
+        stderr.starts_with("error[ENV_LOCK_HELD]: the build cache for `host` is held (pid 1"),
         "{stderr}"
     );
 

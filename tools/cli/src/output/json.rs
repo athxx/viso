@@ -131,6 +131,8 @@ impl Stream {
             w.uint(artifact.size);
             w.name("hash");
             w.string(artifact.hash);
+            w.name("cached");
+            w.bool(artifact.cached);
             w.end_object();
         });
     }

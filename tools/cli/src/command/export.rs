@@ -406,6 +406,7 @@ impl View {
                 build_id: &build_id,
                 size,
                 hash: &hash,
+                cached: false,
             },
             || format!("  export-dir {path}  {}\n", human::size(size)),
         );

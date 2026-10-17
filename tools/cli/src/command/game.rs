@@ -10,7 +10,6 @@
 //! expectations, or its binary form when the run took live patches, which
 //! only the binary form carries.
 
-use std::fs;
 use std::time::Duration;
 
 use viso_dsl::scenario::read_tape;
@@ -188,12 +187,7 @@ fn record(ctx: &Context<'_>, args: &RecordArgs, out: &mut Output) -> u8 {
         tape.to_text().into_bytes()
     };
     let path = &args.output;
-    let wrote = path
-        .parent()
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .map_or(Ok(()), fs::create_dir_all)
-        .and_then(|()| fs::write(path, &written));
-    if let Err(error) = wrote {
+    if let Err(error) = crate::atomic::write(path, &written) {
         return out.failure(
             ENV_TAPE_WRITE,
             &format!("cannot write `{}`: {error}", path.display()),

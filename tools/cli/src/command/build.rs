@@ -84,7 +84,7 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
         .version
         .as_ref()
         .map(|version| version.value.clone());
-    let written = match build::publish(&staged, &dist, |artifacts| {
+    let published = match build::publish(&staged, &dist, |artifacts| {
         manifest_json(&Described {
             project: &name,
             version: version.as_deref(),
@@ -102,9 +102,10 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
             artifacts,
         })
     }) {
-        Ok(written) => written,
+        Ok(published) => published,
         Err(why) => return out.failure(ENV_BUILD_WRITE, &why, &[]),
     };
+    let written = &published.written;
     let elapsed = started.elapsed();
     out.verbose(|| {
         let mut stages: Vec<String> = staged
@@ -117,7 +118,11 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
     });
 
     if out.human() {
-        sayln!("Built {target} ({profile}) in {}", seconds(elapsed));
+        sayln!(
+            "Built {target} ({profile}) in {}{}",
+            seconds(elapsed),
+            if published.cached { ", unchanged" } else { "" }
+        );
     }
     let paths: Vec<String> = written
         .iter()
@@ -134,6 +139,7 @@ pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
                 build_id: &build_id,
                 size: artifact.size,
                 hash: &artifact.hash,
+                cached: published.cached,
             },
             || {
                 format!(

@@ -46,6 +46,7 @@ pub(crate) fn write_stdout(text: std::fmt::Arguments<'_>) {
 use std::borrow::Cow;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use viso_dsl::diag::Fix;
 use viso_dsl::{Diagnostic, LineIndex, Severity, TextSize};
@@ -292,6 +293,8 @@ pub struct Artifact<'a> {
     pub size: u64,
     /// `sha256:<hex>`.
     pub hash: &'a str,
+    /// Whether it is the one an earlier build left, unchanged.
+    pub cached: bool,
 }
 
 /// The output of one command run.
@@ -307,6 +310,17 @@ pub struct Output {
     /// The test cases reported, when any is.
     tests: Option<TestCounts>,
     checked: Option<(String, usize)>,
+    /// The phase [`Output::advance`] reports, while one is under way.
+    advancing: Option<Advancing>,
+}
+
+/// A phase reporting how far it has come.
+struct Advancing {
+    began: Instant,
+    /// When it last said so; `None` before the first time.
+    said: Option<Instant>,
+    /// Whether a live line is drawn on stderr.
+    drawn: bool,
 }
 
 enum Form {
@@ -336,6 +350,7 @@ impl Output {
             artifacts: 0,
             tests: None,
             checked: None,
+            advancing: None,
         }
     }
 
@@ -568,6 +583,56 @@ impl Output {
         match &mut self.form {
             Form::Json(stream) => stream.progress(phase, message),
             Form::Human => eprintln!("[viso] {message}"),
+        }
+    }
+
+    /// Reports how far the phase `phase` has come: redrawn in place on one
+    /// stderr line at a terminal, with the time since it began; a `progress`
+    /// event at most once a second under `--json`; a plain line at most every
+    /// ten seconds otherwise; nothing under `--quiet`. [`Output::settle`] ends
+    /// it.
+    pub fn advance(&mut self, phase: &str, message: &str) {
+        if self.quiet {
+            return;
+        }
+        let live = self.live();
+        let now = Instant::now();
+        let advancing = self.advancing.get_or_insert(Advancing {
+            began: now,
+            said: None,
+            drawn: false,
+        });
+        let every = match (&self.form, live) {
+            (_, true) => Duration::from_millis(200),
+            (Form::Json(_), _) => Duration::from_secs(1),
+            (Form::Human, false) => Duration::from_secs(10),
+        };
+        if advancing
+            .said
+            .is_some_and(|said| now.duration_since(said) < every)
+        {
+            return;
+        }
+        advancing.said = Some(now);
+        match &mut self.form {
+            Form::Json(stream) => stream.progress(phase, message),
+            Form::Human if live => {
+                advancing.drawn = true;
+                let elapsed = now.duration_since(advancing.began).as_secs();
+                eprint!(
+                    "\r[viso] {message} ({}:{:02})\x1b[K",
+                    elapsed / 60,
+                    elapsed % 60
+                );
+            }
+            Form::Human => eprintln!("[viso] {message}"),
+        }
+    }
+
+    /// Ends the phase [`Output::advance`] reports, clearing its live line.
+    pub fn settle(&mut self) {
+        if self.advancing.take().is_some_and(|a| a.drawn) {
+            eprint!("\r\x1b[K");
         }
     }
 

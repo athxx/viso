@@ -595,6 +595,7 @@ pub(super) fn write(
                         build_id: &build.build_id,
                         size: file.size,
                         hash: &file.hash,
+                        cached: false,
                     },
                     || {
                         format!(

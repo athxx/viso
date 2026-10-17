@@ -119,7 +119,7 @@ pub fn run(ctx: &Context<'_>, args: &PackageArgs, out: &mut Output) -> u8 {
     };
     let version = plan.metadata.version.clone();
     let identity = plan.signing.signer.identity(&root);
-    let written = match service::publish(&built.staged, &dist, |artifacts| {
+    let published = match service::publish(&built.staged, &dist, |artifacts| {
         build::manifest_json(&Described {
             project: &plan.metadata.name,
             version: Some(&version),
@@ -137,9 +137,10 @@ pub fn run(ctx: &Context<'_>, args: &PackageArgs, out: &mut Output) -> u8 {
             artifacts,
         })
     }) {
-        Ok(written) => written,
+        Ok(published) => published,
         Err(why) => return out.failure(ENV_BUILD_WRITE, &why, &[]),
     };
+    let written = &published.written;
 
     if out.human() {
         sayln!(
@@ -164,6 +165,7 @@ pub fn run(ctx: &Context<'_>, args: &PackageArgs, out: &mut Output) -> u8 {
                 build_id: &built.build_id,
                 size: artifact.size,
                 hash: &artifact.hash,
+                cached: false,
             },
             || {
                 format!(

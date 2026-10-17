@@ -10,8 +10,9 @@
 //! - [`archive`]: the zip and tar a package ships in, the same bytes for the
 //!   same files.
 //!
-//! Each step runs the platform's own tool; a failure is a message naming the
-//! tool and what it said.
+//! Each step runs the platform's own tool through the [`Runner`] the caller
+//! installs, the CLI's showing and ending it as every program it starts; a
+//! failure is a message naming the tool and what it said.
 
 pub mod android;
 pub mod apple;
@@ -43,6 +44,19 @@ pub enum Orientations {
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+/// What runs a tool to its end and returns its stdout, or why it failed with
+/// what it said.
+pub type Runner = fn(&mut Command) -> Result<String, String>;
+
+static RUNNER: OnceLock<Runner> = OnceLock::new();
+
+/// Runs every tool from now on with `runner`; the first runner installed is
+/// the one kept.
+pub fn run_tools_with(runner: Runner) {
+    let _ = RUNNER.set(runner);
+}
 
 /// Runs `cmd`, failing with its name and what it wrote if it does not succeed.
 pub(crate) fn run(cmd: &mut Command) -> Result<(), String> {
@@ -51,6 +65,14 @@ pub(crate) fn run(cmd: &mut Command) -> Result<(), String> {
 
 /// Runs `cmd` and returns its stdout.
 pub(crate) fn output(cmd: &mut Command) -> Result<String, String> {
+    match RUNNER.get() {
+        Some(runner) => runner(cmd),
+        None => plain(cmd),
+    }
+}
+
+/// The runner when none is installed: `cmd` to its end, its output captured.
+fn plain(cmd: &mut Command) -> Result<String, String> {
     let out = cmd
         .output()
         .map_err(|e| format!("cannot run {:?}: {e}", cmd.get_program()))?;

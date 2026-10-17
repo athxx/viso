@@ -267,7 +267,7 @@ fn report(
         ));
     }
     for (_, path, bytes) in &written {
-        if let Err(error) = write(path, bytes) {
+        if let Err(error) = crate::atomic::write(path, bytes) {
             return out.failure(
                 PROFILE_WRITE,
                 &format!("cannot write `{}`: {error}", path.display()),
@@ -338,6 +338,7 @@ fn report(
                 build_id: &build_id,
                 size: bytes.len() as u64,
                 hash: &hash,
+                cached: false,
             },
             || format!("  {kind} {shown}\n"),
         );
@@ -444,20 +445,6 @@ fn caveats(target: &str) -> Vec<String> {
         ],
         _ => Vec::new(),
     }
-}
-
-/// Writes `bytes` to `path` through a temporary file beside it.
-fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(".partial");
-    let temp = PathBuf::from(temp);
-    std::fs::write(&temp, bytes)?;
-    std::fs::rename(&temp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp);
-    })
 }
 
 /// Removes all but the newest [`KEPT_TRACES`] traces of `dir`.

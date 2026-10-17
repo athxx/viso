@@ -195,7 +195,8 @@ impl Archive {
 
     /// Extracts the entries `keep` accepts into `dir`, each at the path
     /// `rename` gives its name (`None` leaves it out). Files keep their
-    /// executable bits; links are made last.
+    /// executable bits; links are made last. An interrupt stops it with an
+    /// `Interrupted` error.
     pub(crate) fn extract(
         &mut self,
         dir: &Path,
@@ -204,6 +205,9 @@ impl Archive {
         let entries = self.entries.clone();
         let mut links = Vec::new();
         for entry in &entries {
+            if crate::interrupt::count() > 0 {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted"));
+            }
             let Some(name) = rename(&entry.name) else {
                 continue;
             };

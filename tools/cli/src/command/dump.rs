@@ -5,7 +5,6 @@
 //! and writes it. Every diagnostic the package or the dumped files raise is
 //! reported first, then what lowered is dumped: an invalid file still dumps.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use viso_dsl::dump::{self, Dump, DumpKind as IrKind, Selection};
@@ -75,7 +74,7 @@ pub fn run(ctx: &Context<'_>, args: &DumpArgs, out: &mut Output) -> u8 {
                 dumped.write_text(&mut text);
                 text
             };
-            if let Err(error) = fs::write(path, text) {
+            if let Err(error) = crate::atomic::write(path, text.as_bytes()) {
                 return out.failure(
                     ENV_DUMP_WRITE,
                     &format!("cannot write `{}`: {error}", path.display()),

@@ -1,14 +1,17 @@
 //! Downloads a toolchain archive whose size and digest are pinned: over HTTPS
-//! only, into a `.part` file the next attempt resumes, and renamed into place
+//! only, through the proxy the environment names, into a `.part` file the
+//! next attempt resumes, never past the pinned size, and renamed into place
 //! only once its size and SHA-1 are the pinned ones. A transfer cut off while
-//! bytes still arrive resumes at once; it fails after a few attempts in a row
-//! bring nothing. A cached archive that
-//! still verifies is not downloaded again; one that does not is deleted.
+//! bytes still arrive resumes at once; attempts that bring nothing wait
+//! longer each time, and a few in a row end it. A cached archive that still
+//! verifies is not downloaded again; one that does not is deleted. Under
+//! `--offline` nothing reaches the network.
 
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -35,17 +38,36 @@ pub(crate) enum Failure {
     Integrity(String),
     /// An interrupt stopped it; what was received is kept to resume.
     Interrupted,
+    /// `--offline` forbids the network.
+    Offline(String),
 }
+
+static OFFLINE: AtomicBool = AtomicBool::new(false);
+
+/// Keeps every download from now on off the network, as `--offline` asks.
+pub(crate) fn forbid() {
+    OFFLINE.store(true, Ordering::Relaxed);
+}
+
+/// The most a manifest may hold.
+const MANIFEST_LIMIT: u64 = 16 << 20;
 
 /// What moves an archive's bytes into a `.part` file, resuming what it holds.
 pub(crate) trait Transfer {
-    /// Fetches `url` into `part`, appending to what is there, calling
-    /// `progress` with the bytes it holds as it grows.
-    fn fetch(&self, url: &str, part: &Path, progress: &mut dyn FnMut(u64)) -> Result<(), Failure>;
+    /// Fetches `url` into `part`, appending to what is there but never past
+    /// `limit` bytes, calling `progress` with the bytes it holds as it grows.
+    fn fetch(
+        &self,
+        url: &str,
+        part: &Path,
+        limit: u64,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<(), Failure>;
 
-    /// Waits before an attempt that follows one which brought nothing.
-    fn pause(&self) {
-        thread::sleep(Duration::from_secs(2));
+    /// Waits before the `attempt`th attempt in a row after ones which brought
+    /// nothing: 2 s, then twice as long each time.
+    fn pause(&self, attempt: u32) {
+        thread::sleep(Duration::from_secs(2) * (1 << attempt.saturating_sub(1).min(4)));
     }
 }
 
@@ -56,7 +78,18 @@ const STALLED: u32 = 3;
 pub(crate) struct Curl;
 
 impl Transfer for Curl {
-    fn fetch(&self, url: &str, part: &Path, progress: &mut dyn FnMut(u64)) -> Result<(), Failure> {
+    fn fetch(
+        &self,
+        url: &str,
+        part: &Path,
+        limit: u64,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<(), Failure> {
+        if OFFLINE.load(Ordering::Relaxed) {
+            return Err(Failure::Offline(format!(
+                "`--offline` forbids downloading `{url}`"
+            )));
+        }
         if !url.starts_with("https://") {
             return Err(Failure::Transfer(format!("`{url}` is not HTTPS")));
         }
@@ -80,8 +113,10 @@ impl Transfer for Curl {
                 "30",
                 "--continue-at",
                 "-",
-                "--output",
+                "--max-filesize",
             ])
+            .arg(limit.to_string())
+            .arg("--output")
             .arg(part)
             .arg(url)
             .stdin(Stdio::null())
@@ -110,7 +145,14 @@ impl Transfer for Curl {
             match tree.child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) => {
-                    progress(fs::metadata(part).map_or(0, |m| m.len()));
+                    let held = fs::metadata(part).map_or(0, |m| m.len());
+                    if held > limit {
+                        tree.kill();
+                        return Err(Failure::Integrity(format!(
+                            "`{url}` holds more than {limit} bytes"
+                        )));
+                    }
+                    progress(held);
                     thread::sleep(Duration::from_millis(250));
                 }
                 Err(error) => {
@@ -194,7 +236,7 @@ pub(crate) fn fetch(
     let mut stalled = 0;
     while held() < pinned.size {
         let before = held();
-        match transfer.fetch(pinned.url, &part, progress) {
+        match transfer.fetch(pinned.url, &part, pinned.size, progress) {
             Ok(()) => break,
             Err(Failure::Transfer(why)) => {
                 stalled = if held() > before { 0 } else { stalled + 1 };
@@ -202,8 +244,12 @@ pub(crate) fn fetch(
                     return Err(Failure::Transfer(why));
                 }
                 if stalled > 0 {
-                    transfer.pause();
+                    transfer.pause(stalled);
                 }
+            }
+            Err(Failure::Integrity(why)) => {
+                let _ = fs::remove_file(&part);
+                return Err(Failure::Integrity(why));
             }
             Err(other) => return Err(other),
         }
@@ -216,9 +262,10 @@ pub(crate) fn fetch(
     fs::rename(&part, path).map_err(|e| Failure::Transfer(format!("{}: {e}", path.display())))
 }
 
-/// The text at `url`, unpinned: a manifest naming what is pinned elsewhere.
+/// The text at `url`, unpinned but bounded: a manifest naming what is
+/// pinned elsewhere.
 pub(crate) fn text(url: &str, transfer: &dyn Transfer) -> Result<String, Failure> {
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::AtomicU32;
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let part = std::env::temp_dir().join(format!(
         "viso-manifest-{}-{}",
@@ -226,7 +273,7 @@ pub(crate) fn text(url: &str, transfer: &dyn Transfer) -> Result<String, Failure
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let _ = fs::remove_file(&part);
-    let fetched = transfer.fetch(url, &part, &mut |_| {});
+    let fetched = transfer.fetch(url, &part, MANIFEST_LIMIT, &mut |_| {});
     let text = fetched.and_then(|()| {
         fs::read_to_string(&part).map_err(|e| Failure::Transfer(format!("{url}: {e}")))
     });
@@ -271,6 +318,7 @@ pub(crate) mod tests {
             &self,
             url: &str,
             part: &Path,
+            limit: u64,
             progress: &mut dyn FnMut(u64),
         ) -> Result<(), Failure> {
             self.calls.set(self.calls.get() + 1);
@@ -278,6 +326,11 @@ pub(crate) mod tests {
             let bytes =
                 fs::read(self.dir.join(name)).map_err(|e| Failure::Transfer(e.to_string()))?;
             let have = fs::metadata(part).map_or(0, |m| m.len()) as usize;
+            if bytes.len() as u64 > limit {
+                return Err(Failure::Integrity(format!(
+                    "`{url}` holds more than {limit} bytes"
+                )));
+            }
             let end = match self.cut.take() {
                 Some(cut) => (cut as usize).min(bytes.len()),
                 None => bytes.len(),
@@ -295,7 +348,7 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        fn pause(&self) {}
+        fn pause(&self, _: u32) {}
     }
 
     pub(crate) fn sha1_of(bytes: &[u8]) -> String {
@@ -357,12 +410,25 @@ pub(crate) mod tests {
             other => panic!("{other:?}"),
         }
         assert!(!path.exists() && !part_of(&path).exists());
+
+        // More than the pinned size is refused, and what arrived deleted.
+        let short = Pinned {
+            size: 9_000,
+            ..pinned
+        };
+        fs::write(part_of(&path), &bytes[..100]).unwrap();
+        match fetch(&short, &path, &local, &mut |_| {}) {
+            Err(Failure::Integrity(why)) => assert!(why.contains("more than 9000"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(!path.exists() && !part_of(&path).exists());
+
         let plain = Pinned {
             url: "http://example.invalid/a.zip",
             ..pinned
         };
         assert_eq!(
-            Curl.fetch(plain.url, &part_of(&path), &mut |_| {}),
+            Curl.fetch(plain.url, &part_of(&path), plain.size, &mut |_| {}),
             Err(Failure::Transfer(
                 "`http://example.invalid/a.zip` is not HTTPS".into()
             ))

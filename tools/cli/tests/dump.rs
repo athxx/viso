@@ -94,7 +94,19 @@ fn out_writes_the_dump_to_a_file() {
             .contains(r#""payload":{"kind":"module-graph","input":null,"out":"graph.json"}"#)
     );
 
-    let out = viso(&dir, &["dump", "ast", "--out", "missing/dir/ast.txt"]);
+    // A directory that is not there is made; one where the file would go
+    // cannot be written over.
+    let out = viso(&dir, &["dump", "ast", "--out", "new/dir/ast.txt"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(dir.join("new/dir/ast.txt").is_file());
+    let out = viso(&dir, &["dump", "ast", "--out", "new"]);
     assert_eq!(out.status.code(), Some(3));
     assert!(text(&out.stderr).contains("error[ENV_DUMP_WRITE]"));
+    assert!(
+        fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")),
+        "a failed write leaves nothing beside it"
+    );
 }

@@ -213,26 +213,59 @@ pub(crate) fn serial(sdk: &Sdk, name: &str) -> Option<String> {
 pub(crate) fn boot(sdk: &Sdk, profile: &DeviceProfile, window: bool) -> Result<String, String> {
     let name = profile.device.as_str();
     let window = window && has_display();
+    for tool in [&sdk.adb, &sdk.emulator] {
+        if !tool.is_file() {
+            return Err(format!(
+                "`{}` is not installed in the SDK at {}",
+                crate::process::name(tool.as_os_str()),
+                sdk.root.display()
+            ));
+        }
+    }
     let serial = match serial(sdk, name) {
         Some(serial) => serial,
         None => {
+            // What it says goes to a log of its own: the reason it stopped,
+            // when it does.
+            let log = std::env::temp_dir().join(format!("viso-emulator-{name}.log"));
+            let file = std::fs::File::create(&log)
+                .map_err(|e| format!("cannot write `{}`: {e}", log.display()))?;
             let mut emulator = Command::new(&sdk.emulator);
             emulator
                 .args(["-avd", name, "-no-snapshot-save", "-no-boot-anim"])
                 .args((!window).then_some("-no-window"))
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
+                .stdout(
+                    file.try_clone()
+                        .map_err(|e| format!("cannot write `{}`: {e}", log.display()))?,
+                )
+                .stderr(file);
             detach(&mut emulator);
-            crate::process::spawn(&mut emulator)
+            let mut started = crate::process::spawn(&mut emulator)
                 .map_err(|e| format!("cannot run `{}`: {e}", sdk.emulator.display()))?;
             let since = Instant::now();
             loop {
                 if let Some(serial) = serial(sdk, name) {
                     break serial;
                 }
+                if let Ok(Some(status)) = started.try_wait()
+                    && !status.success()
+                {
+                    let said = std::fs::read_to_string(&log).unwrap_or_default();
+                    let said: Vec<&str> = said.lines().rev().take(3).collect();
+                    let said: Vec<&str> = said.into_iter().rev().collect();
+                    return Err(format!(
+                        "the emulator of `{}` stopped ({status}): {}",
+                        profile.id,
+                        said.join(" ").trim()
+                    ));
+                }
                 if since.elapsed() >= APPEAR_WAIT {
-                    return Err(format!("the emulator of `{}` did not start", profile.id));
+                    return Err(format!(
+                        "the emulator of `{}` did not start; its log is {}",
+                        profile.id,
+                        log.display()
+                    ));
                 }
                 thread::sleep(POLL);
             }

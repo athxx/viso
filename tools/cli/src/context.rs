@@ -11,12 +11,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use viso_project::{
-    ArtifactKind, ConfigDiagnostic, Env, Layout, LockGuard, LockKind, Overrides, Profile, Project,
-    Resolved, Target,
+    ArtifactKind, ConfigDiagnostic, Env, LOCK_STALE, Layout, LockError, LockGuard, LockKind,
+    Overrides, Profile, Project, Resolved, Target,
 };
 
 use crate::args::{ColorChoice, Global};
-use crate::error::{CLI_USAGE, DIAGNOSTICS, ENV_CURRENT_DIR};
+use crate::error::{CLI_USAGE, DIAGNOSTICS, ENV_CURRENT_DIR, ENV_LOCK_HELD};
 use crate::output::{Output, Source};
 
 /// One invocation's options and environment.
@@ -192,6 +192,17 @@ impl<'a> Context<'a> {
                 }
                 Ok(lock)
             }
+            Err(LockError::Held { path, holder }) => Err(out.failure(
+                ENV_LOCK_HELD,
+                &format!("the {} is held ({holder})", holder.description),
+                &[
+                    format!("another viso process holds `{}`", path.display()),
+                    format!(
+                        "a lock its holder stopped refreshing is taken over after {} s",
+                        LOCK_STALE.as_secs()
+                    ),
+                ],
+            )),
             Err(error) => {
                 let diagnostic = error.diagnostic();
                 out.config(None, &diagnostic);

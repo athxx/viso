@@ -315,8 +315,7 @@ Examples:
   viso android list --json  # with each level's components, as JSON events
 
 Options:
-      --offline  Only the levels installed
-  -h, --help     Print help
+  -h, --help  Print help
 
 Global options:
       --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
@@ -324,6 +323,7 @@ Global options:
   -q, --quiet              Print only errors, requested paths and the summary
   -v, --verbose            Also print the resolved configuration, the tools run and stage times
       --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
       --locked             Require `Cargo.lock` to be up to date
       --jobs <N>           Run at most N jobs at once
       --profile <NAME>     The build profile [possible values: dev, release, shipping]
@@ -344,7 +344,6 @@ Arguments:
 
 Options:
       --accept-licenses  Accept the licenses of what is downloaded without being asked
-      --offline          Download nothing: fail when anything is missing
   -h, --help             Print help
 
 Global options:
@@ -353,6 +352,7 @@ Global options:
   -q, --quiet              Print only errors, requested paths and the summary
   -v, --verbose            Also print the resolved configuration, the tools run and stage times
       --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
       --locked             Require `Cargo.lock` to be up to date
       --jobs <N>           Run at most N jobs at once
       --profile <NAME>     The build profile [possible values: dev, release, shipping]
@@ -627,8 +627,7 @@ Examples:
   viso ios list --json  # with each runtime's build and models, as JSON events
 
 Options:
-      --offline  Only the runtimes installed
-  -h, --help     Print help
+  -h, --help  Print help
 
 Global options:
       --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
@@ -636,6 +635,7 @@ Global options:
   -q, --quiet              Print only errors, requested paths and the summary
   -v, --verbose            Also print the resolved configuration, the tools run and stage times
       --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
       --locked             Require `Cargo.lock` to be up to date
       --jobs <N>           Run at most N jobs at once
       --profile <NAME>     The build profile [possible values: dev, release, shipping]
@@ -656,7 +656,6 @@ Arguments:
 
 Options:
       --download  Have Xcode download the runtime, when it is not installed, without being asked
-      --offline   Download nothing: fail when the runtime is not installed
   -h, --help      Print help
 
 Global options:
@@ -665,6 +664,7 @@ Global options:
   -q, --quiet              Print only errors, requested paths and the summary
   -v, --verbose            Also print the resolved configuration, the tools run and stage times
       --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
       --locked             Require `Cargo.lock` to be up to date
       --jobs <N>           Run at most N jobs at once
       --profile <NAME>     The build profile [possible values: dev, release, shipping]

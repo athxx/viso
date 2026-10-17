@@ -2607,7 +2607,7 @@ payload         type 对应的 payload（§36）
 type          payload 关键字段
 progress      phase, message, current?, total?
 diagnostic    Viso_DSL_1.0.md §138 JSON Diagnostic 对象（原样）
-artifact      kind, path, target, profile, build_id, size, hash
+artifact      kind, path, target, profile, build_id, size, hash, cached
 device        platform(ios|android), id, name, state(booting|ready|installing|launched|stopped)
 test          name, domain, status(pass|fail|skip), duration_ms, message?, artifacts[]?
 trace         scenario, tick, probes（`viso test game` 每 Tick 一条，§22.3）
@@ -3074,6 +3074,13 @@ lock file
 4. 进程 exit code 130；若 JSON protocol 已启动，先输出 `summary{status:"cancelled", exit_code:130}`。
 5. 已完成并原子落盘的 artifact 保留；未完成的不得以部分内容出现在 `dist/`。
 
+### 43.1 当前实现
+
+- 长命令开始真正干活时才接管中断（`interrupt::catch`），交互问答期间 Ctrl-C 照常结束进程。接管的有 `run`、`serve`、`check --watch`、`build`、`package`、`test`、`profile`、`inspect events`、`new`、`ios use`，以及 license 确认之后的 `android use`；
+- 子进程都经 §48 的 runner 启动，各自在独立进程组（Windows 为 job object）中，中断时连同它们启动的进程一起结束。打包工具（`viso-package` 里的 `codesign`、`apksigner`、`zipalign`、`wasm-bindgen`……）走的也是这个 runner；
+- `android use` 中断时：下载留下 `.part` 供续传；解包中的 staging 目录删除；已校验的 archive 保留；
+- `tests/cancel.rs`：在 build script 挂住时中断 `build`、`package`、`test`，断言 exit 130、summary `cancelled`、build script 进程已结束、`target/viso/locks/` 为空、`dist/` 下没有 staging 残留。
+
 ---
 
 ## 44. Project lock
@@ -3092,6 +3099,7 @@ dev-<target>[-<device>].lock       dev session，按 target/device
 - 刷新：持有者每 20 秒更新锁文件的修改时间（不改内容）。
 - Stale：只按 age 判定——修改时间超过 90 秒未刷新即 stale（不探测 pid 存活，pid 可能被复用）；崩溃的持有者留下的锁 90 秒内失效，任意长的 build/session 不会被误判。获取时遇到 stale lock 直接接管并输出 `log{level:"warn"}`，诊断中的 note 说明这一点。
 - 不同 target 的 build/package 可以并发；同一 target 的 `run` 与 `build` 共享 `build-<target>.lock`。
+- 锁被占用统一报 `ENV_LOCK_HELD`（exit 3），message 写明 holder，note 给出锁路径。命令自己取锁时立即失败；`run` 的每次重建取 build lock 时等待并可取消，因为 session 期间另一个 `build` 只占用片刻。取锁顺序固定为 dev/package → build，不会死锁。
 
 ---
 
@@ -3240,6 +3248,20 @@ platform signing store
 - support `--offline`；
 - 不执行未验证下载内容。
 
+### 50.1 当前实现
+
+`viso android use` 的组件下载（`tools/cli/src/toolchain/download.rs`）：
+
+- 只走 HTTPS（`curl --proto =https --proto-redir =https --tlsv1.2`），代理按环境变量（`HTTPS_PROXY`、`NO_PROXY`）；
+- 每个 archive 的大小与 SHA-1 编译进 CLI，取自 SDK repository manifest，也就是发布方签发的那份 digest。传输时不超过 pin 住的大小（`--max-filesize`，并持续盯着 `.part` 的长度），超过即删除；
+- 先写入 `<file>.part`，校验通过后才 rename 到位，只有校验过的 archive 才会被解包；
+- 断点续传：只追加到同一 URL 的 `.part`，最后整体校验，所以续传不影响完整性。有进展的中断立刻续传；没有进展的尝试按 2 s、4 s 退避，连续 3 次后失败，已收到的部分保留；
+- 缓存：已校验的 archive 不会重复下载；已安装的组件记录 `path` 与 `revision`，revision 变了就重新安装；
+- `--offline` 是唯一的全局 flag，写在命令行哪个位置都一样。缺组件时直接报 `ENV_OFFLINE`，网络层也拒绝任何下载；
+- license manifest 不 pin，但最多读取 16 MiB。
+
+`viso ios use` 的 runtime 由 `xcodebuild -downloadPlatform` 下载，校验与签名由 Xcode 负责；`--offline` 下不会调用它。
+
 ---
 
 ## 51. Generated file safety
@@ -3251,6 +3273,13 @@ platform signing store
 - 写临时文件后 atomic rename；
 - 失败时清理 incomplete output；
 - export 先生成 staging tree，再原子替换目标目录或报告冲突。
+
+### 51.1 当前实现
+
+- 单个文件（`fmt` 的改写、`dump --output`、`game record --output`、profile trace、snapshot golden 及其 diff、toolchain 配置）一律经 `atomic::write`：先写到同目录的隐藏 sibling 并 `fsync`，再一次 rename 到位，权限保持不变，缺的目录会补上。中途失败时原文件原样保留，sibling 被删除；
+- `new` 先在 staging 目录里写好整个项目再移入。目标是已有目录时，只接受空目录；加 `--force-empty-dir` 也只往里添加文件，从不替换已有文件。失败或 Ctrl-C 时，它创建的东西全部清掉；
+- `export` 经 `generated::write`：staging tree 整体替换目标目录。目录里的 `.viso-generated.json` 记录每个文件的 SHA-256；有人改过或新增的文件、或不是它写的目录，都算冲突，只有 `--force` 才覆盖；
+- `build`/`package` 的 `dist/<target>/<profile>` 同样先 staging，再整体换入。
 
 ---
 
@@ -3361,6 +3390,17 @@ progress events
 
 不要向 CI 打大量 spinner control characters。
 
+当前实现：进度只有一个出口 `Output::advance`/`settle`。
+
+| 场景 | 行为 |
+|---|---|
+| TTY | stderr 上的一行原地刷新：内容 + 已用时间 `(m:ss)`，最多每 200 ms 一次；阶段结束时清掉 |
+| 非 TTY human | 普通的 `[viso] …` 行，最多每 10 s 一行，不含任何控制字符 |
+| `--json` | `progress` 事件，最多每秒一条 |
+| `--quiet` | 不输出 |
+
+阶段开始和结束各打一行 `[viso] …`（`Output::step`）。Cargo 自己的进度由 Cargo 输出。`build` 最后一行是 `Built <target> (<profile>) in N s`，`--verbose` 再加上各阶段耗时。
+
 ---
 
 ## 55. Interactive prompts
@@ -3378,6 +3418,17 @@ choice truly ambiguous
 `--json` / CI / non-TTY：
 
 必须报结构化 ambiguity，不等待 stdin。
+
+当前实现：能否提问只由一条规则判定（`device::can_ask`）：human 输出，stdin 与 stderr 都是 terminal，且没有 `CI`。会提问的地方及其 flag 等价物：
+
+| 问题 | flag 等价 | 不能提问时 |
+|---|---|---|
+| `android use` 的 license | `--accept-licenses` | `ENV_ANDROID_LICENSE` |
+| `ios use` 让 Xcode 下载 runtime | `--download` | `IOS_RUNTIME_MISSING`，next 为 `viso ios use <v> --download` |
+| `run`/`test ui` 在没有 emulator/simulator profile 时创建标准 profile | `viso <platform> <kind> create phone` | `DEVICE_MISSING` |
+| `run`/`test ui` 在多个 profile 中选一个 | `--device <id>`，或 `.viso/local.toml` 的默认值 | `DEVICE_AMBIGUOUS` |
+
+`tests/prompts.rs` 把每个会提问的命令放在 stdin 预先写好 "yes" 的管道下运行，断言它报出结构化错误、没有读取 stdin。
 
 ---
 
@@ -3559,6 +3610,8 @@ network
 
 目标：快速启动。
 
+当前实现：这些命令只做 parse，并输出编译期常量或内置表。`tests/startup.rs` 在 `Viso.toml` 损坏、`PATH` 为空、没有 home 的目录下运行 `--version`、`--help`、`completion`、`explain`：全部成功，不创建任何文件。`viso --version` 取 5 次中最快的一次，须低于 250 ms（debug build）。这个预算在 CI 硬件上实测之前只是假设。
+
 ---
 
 ## 65. Incremental build
@@ -3576,6 +3629,10 @@ browser/device deploy latency
 
 CLI 必须显示这些阶段 timing，Profile/verbose mode 可观测。
 
+当前实现：`viso build` 在 Cargo 判定无需重编译之后，还会跳过 staging，条件是 staging 的输入都没变。输入包括：可执行文件的大小与 mtime、target、profile、web 设置、Android SDK、CLI 自身的二进制，web target 另加 `PATH` 上的 `wasm-bindgen`/`wasm-opt`。它们的 key 记在 `target/viso/build/<id>/out.staged`。
+
+若 `dist/<platform>/` 正好包含这些 artifact（hash 一致）和相同的 `artifact.json`，且别无他物，就不再复制。此时 artifact 事件带 `cached: true`，human 输出第一行以 `, unchanged` 结尾。`package` 总是重新打包。`--verbose` 打出 compile/package/publish 各阶段耗时。
+
 ---
 
 ## 66. No unnecessary serialization
@@ -3592,6 +3649,8 @@ external JSON protocol
 ```
 
 才编码。
+
+当前实现：CLI 内部各 service 之间直接传 typed value。解码只发生在边界上：Cargo 与 `simctl` 的 JSON 输出、dev channel、trace/golden sidecar/生成记录文件。
 
 ---
 

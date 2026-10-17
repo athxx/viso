@@ -256,7 +256,7 @@ impl Store {
         let base = format!("{}.{}", taken.name, self.target);
         let write = |file: String, bytes: &[u8]| -> Result<String, String> {
             let path = self.found.join(file);
-            fs::write(&path, bytes)
+            crate::atomic::write(&path, bytes)
                 .map_err(|error| format!("cannot write `{}`: {error}", path.display()))?;
             Ok(relative(&self.root, &path))
         };
@@ -294,7 +294,7 @@ impl Store {
         let json = self.file(&taken.name, "json");
         let sidecar = self.sidecar_text(taken, build_id, tolerance);
         let write = |path: &Path, kind, bytes: &[u8]| -> Result<Written, String> {
-            fs::write(path, bytes)
+            crate::atomic::write(path, bytes)
                 .map_err(|error| format!("cannot write `{}`: {error}", path.display()))?;
             let sum = Sha256::digest(bytes);
             let hex: String = sum.iter().map(|b| format!("{b:02x}")).collect();

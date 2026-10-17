@@ -157,6 +157,8 @@ pub(crate) enum InstallError {
     Unpack(String),
     /// The SDK has no archive of it for this host.
     Host,
+    /// An interrupt stopped it unpacking; the verified archive is kept.
+    Interrupted,
 }
 
 /// Installs `component` into `home`'s SDK for `host`: its archive fetched
@@ -208,6 +210,9 @@ pub(crate) fn install(
     })();
     if let Err(error) = unpacked {
         let _ = fs::remove_dir_all(&staging);
+        if error.kind() == io::ErrorKind::Interrupted {
+            return Err(InstallError::Interrupted);
+        }
         return Err(unpack(error));
     }
     let _ = fs::remove_file(&cached);

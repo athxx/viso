@@ -464,7 +464,7 @@ pub struct ConfigGetArgs {
 pub enum AndroidCommand {
     /// List the supported API levels, what each installs and which is the
     /// default.
-    List(AndroidListArgs),
+    List,
     /// Install an API level's tested component set and make it the default.
     Use(AndroidUseArgs),
     /// Check the Android SDK, emulator, acceleration and profiles.
@@ -476,14 +476,6 @@ pub enum AndroidCommand {
     Emulator(DeviceCommand),
 }
 
-/// What `viso android list` shows.
-#[derive(Debug, Args)]
-pub struct AndroidListArgs {
-    /// Only the levels installed.
-    #[arg(long)]
-    pub offline: bool,
-}
-
 /// What `viso android use` installs.
 #[derive(Debug, Args)]
 pub struct AndroidUseArgs {
@@ -492,17 +484,6 @@ pub struct AndroidUseArgs {
     /// Accept the licenses of what is downloaded without being asked.
     #[arg(long)]
     pub accept_licenses: bool,
-    /// Download nothing: fail when anything is missing.
-    #[arg(long)]
-    pub offline: bool,
-}
-
-/// What `viso ios list` shows.
-#[derive(Debug, Args)]
-pub struct IosListArgs {
-    /// Only the runtimes installed.
-    #[arg(long)]
-    pub offline: bool,
 }
 
 /// What `viso ios use` chooses.
@@ -514,9 +495,6 @@ pub struct IosUseArgs {
     /// being asked.
     #[arg(long)]
     pub download: bool,
-    /// Download nothing: fail when the runtime is not installed.
-    #[arg(long)]
-    pub offline: bool,
 }
 
 /// What `viso android doctor` / `viso ios doctor` may fix.
@@ -547,7 +525,7 @@ pub struct AdbArgs {
 pub enum IosCommand {
     /// List the Simulator runtimes installed and the one Xcode can install,
     /// and which is the default.
-    List(IosListArgs),
+    List,
     /// Make a Simulator runtime the default, having Xcode install it first
     /// when it is not.
     Use(IosUseArgs),
@@ -1253,7 +1231,7 @@ impl Command {
     /// The command path the JSON envelope reports.
     pub fn name(&self) -> &'static str {
         match self {
-            Command::Android(AndroidCommand::List(_)) => "android list",
+            Command::Android(AndroidCommand::List) => "android list",
             Command::Android(AndroidCommand::Use(_)) => "android use",
             Command::Android(AndroidCommand::Doctor(_)) => "android doctor",
             Command::Android(AndroidCommand::Adb(_)) => "android adb",
@@ -1288,7 +1266,7 @@ impl Command {
                 Some(InspectCommand::Events(_)) => "inspect events",
                 Some(InspectCommand::Query(_)) => "inspect query",
             },
-            Command::Ios(IosCommand::List(_)) => "ios list",
+            Command::Ios(IosCommand::List) => "ios list",
             Command::Ios(IosCommand::Use(_)) => "ios use",
             Command::Ios(IosCommand::Doctor(_)) => "ios doctor",
             Command::Ios(IosCommand::Simulator(command)) => match command {

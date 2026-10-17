@@ -9,13 +9,11 @@
 use std::io::{BufRead as _, Write as _};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use viso_project::{Platform, Preset};
 
-use crate::args::{
-    BuildTarget, DoctorArgs, IosCommand, IosListArgs, IosUseArgs, PlatformDoctorArgs,
-};
+use crate::args::{BuildTarget, DoctorArgs, IosCommand, IosUseArgs, PlatformDoctorArgs};
 use crate::context::Context;
 use crate::device::simulator;
 use crate::error::{
@@ -39,8 +37,8 @@ pub fn run(ctx: &Context<'_>, command: &IosCommand, out: &mut Output) -> u8 {
         );
     }
     match command {
-        IosCommand::List(args) => list(args, out),
-        IosCommand::Use(args) => use_runtime(args, out),
+        IosCommand::List => list(ctx.global.offline, out),
+        IosCommand::Use(args) => use_runtime(args, ctx.global.offline, out),
         IosCommand::Doctor(args) => doctor(ctx, args, out),
         IosCommand::Simulator(command) => super::device::run(Platform::Ios, command, out),
     }
@@ -73,7 +71,7 @@ struct Row<'a> {
     status: &'static str,
 }
 
-fn list(args: &IosListArgs, out: &mut Output) -> u8 {
+fn list(offline: bool, out: &mut Output) -> u8 {
     let Some(home) = Home::current() else {
         return no_home(out);
     };
@@ -93,7 +91,7 @@ fn list(args: &IosListArgs, out: &mut Output) -> u8 {
         })
         .collect();
     if let Some(xcode) = &xcode
-        && !args.offline
+        && !offline
         && ios::find(&runtimes, xcode).is_none()
     {
         rows.insert(
@@ -179,7 +177,7 @@ fn list(args: &IosListArgs, out: &mut Output) -> u8 {
     SUCCESS
 }
 
-fn use_runtime(args: &IosUseArgs, out: &mut Output) -> u8 {
+fn use_runtime(args: &IosUseArgs, offline: bool, out: &mut Output) -> u8 {
     let Some(wanted) = ios::version(&args.runtime) else {
         return out.failure_next(
             IOS_RUNTIME_INVALID,
@@ -199,7 +197,7 @@ fn use_runtime(args: &IosUseArgs, out: &mut Output) -> u8 {
     let runtime = match ios::find(&runtimes, &wanted) {
         Some(runtime) => runtime.clone(),
         None => {
-            if args.offline {
+            if offline {
                 return out.failure(
                     ENV_OFFLINE,
                     &format!("no iOS {wanted} Simulator runtime is installed"),
@@ -388,28 +386,17 @@ fn download(out: &mut Output, wanted: &str, xcode: Option<&str>) -> Result<(), u
         }));
     }
     drop(send);
-    let live = out.live();
     let mut said = Vec::new();
-    let mut last = Instant::now() - Duration::from_secs(1);
     let status = loop {
         if interrupt::count() > 0 {
             tree.kill();
-            if live {
-                eprint!("\r\x1b[K");
-            }
+            out.settle();
             return Err(INTERRUPTED);
         }
         match lines.recv_timeout(Duration::from_millis(250)) {
             Ok(line) => {
                 if let Some(progress) = ios::download_progress(&line) {
-                    if last.elapsed() >= Duration::from_millis(if live { 200 } else { 1000 }) {
-                        last = Instant::now();
-                        if live {
-                            eprint!("\r[viso] downloading {progress}\x1b[K");
-                        } else {
-                            out.progress("download", &format!("downloading {progress}"));
-                        }
-                    }
+                    out.advance("download", &format!("downloading {progress}"));
                 } else {
                     out.verbose(|| format!("xcodebuild: {line}"));
                     said.push(line);
@@ -442,9 +429,7 @@ fn download(out: &mut Output, wanted: &str, xcode: Option<&str>) -> Result<(), u
             said.push(line);
         }
     }
-    if live {
-        eprint!("\r\x1b[K");
-    }
+    out.settle();
     if status.success() {
         out.step(
             "install",

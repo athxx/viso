@@ -40,6 +40,10 @@ use crate::output::Output;
 /// event stream still ends with its summary.
 pub fn run(cli: &Cli) -> u8 {
     let ctx = Context::new(&cli.global);
+    viso_package::run_tools_with(|command| crate::process::run(command, None));
+    if cli.global.offline {
+        crate::toolchain::download::forbid();
+    }
     let mut out = Output::new(&cli.global, Some(cli.command.name()));
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         dispatch(&ctx, &cli.command, &mut out)
@@ -57,8 +61,8 @@ pub fn run(cli: &Cli) -> u8 {
 
 fn dispatch(ctx: &Context<'_>, command: &Command, out: &mut Output) -> u8 {
     match command {
-        Command::Android(AndroidCommand::List(args)) => android::list(args, out),
-        Command::Android(AndroidCommand::Use(args)) => android::use_level(args, out),
+        Command::Android(AndroidCommand::List) => android::list(ctx, out),
+        Command::Android(AndroidCommand::Use(args)) => android::use_level(ctx, args, out),
         Command::Android(AndroidCommand::Doctor(args)) => android::doctor(ctx, args, out),
         Command::Android(AndroidCommand::Adb(args)) => android::adb(ctx, args, out),
         Command::Android(AndroidCommand::Emulator(command)) => {

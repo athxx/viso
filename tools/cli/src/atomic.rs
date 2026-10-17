@@ -7,8 +7,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// Replaces the file at `path` with `bytes`, keeping its permissions.
+/// Replaces the file at `path` with `bytes`, keeping its permissions, its
+/// directory created when it is missing.
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
     let staged = sibling(path);
     let written = (|| {
         let mut file = fs::File::create(&staged)?;
@@ -49,6 +53,8 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "new");
         let entries: Vec<_> = fs::read_dir(&dir).unwrap().collect();
         assert_eq!(entries.len(), 1);
+        write(&dir.join("new/b.vs"), b"b").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("new/b.vs")).unwrap(), "b");
         let _ = fs::remove_dir_all(&dir);
     }
 }

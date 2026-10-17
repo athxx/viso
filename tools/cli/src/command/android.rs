@@ -9,15 +9,13 @@
 
 use std::io::Write as _;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use viso_ende::JsonWriter;
 use viso_package::android::{Abi, SdkOrigin};
 use viso_project::{DeviceStore, Platform};
 
-use crate::args::{
-    AdbArgs, AndroidListArgs, AndroidUseArgs, BuildTarget, DoctorArgs, PlatformDoctorArgs,
-};
+use crate::args::{AdbArgs, AndroidUseArgs, BuildTarget, DoctorArgs, PlatformDoctorArgs};
 use crate::context::Context;
 use crate::device::emulator;
 use crate::error::{
@@ -159,7 +157,7 @@ fn no_home(out: &mut Output) -> u8 {
     )
 }
 
-pub fn list(args: &AndroidListArgs, out: &mut Output) -> u8 {
+pub fn list(ctx: &Context<'_>, out: &mut Output) -> u8 {
     let Some(home) = Home::current() else {
         return no_home(out);
     };
@@ -170,7 +168,7 @@ pub fn list(args: &AndroidListArgs, out: &mut Output) -> u8 {
     let rows: Vec<(&Api, Status)> = APIS
         .iter()
         .map(|api| (api, status(&home, api, abi)))
-        .filter(|(_, status)| !args.offline || *status == Status::Installed)
+        .filter(|(_, status)| !ctx.global.offline || *status == Status::Installed)
         .collect();
     out.result(
         |w| {
@@ -274,7 +272,7 @@ fn write_component(w: &mut JsonWriter, home: &Home, component: &Component, host:
     w.end_object();
 }
 
-pub fn use_level(args: &AndroidUseArgs, out: &mut Output) -> u8 {
+pub fn use_level(ctx: &Context<'_>, args: &AndroidUseArgs, out: &mut Output) -> u8 {
     let Some(api) = args.api.parse().ok().and_then(components::api) else {
         let levels: Vec<String> = APIS.iter().map(|a| a.level.to_string()).collect();
         return out.failure_next(
@@ -310,7 +308,7 @@ pub fn use_level(args: &AndroidUseArgs, out: &mut Output) -> u8 {
         .collect();
     let mut fresh = Vec::new();
     if !missing.is_empty() {
-        if args.offline {
+        if ctx.global.offline {
             let paths: Vec<&str> = missing.iter().map(|c| c.path).collect();
             return out.failure(
                 ENV_OFFLINE,
@@ -336,6 +334,10 @@ pub fn use_level(args: &AndroidUseArgs, out: &mut Output) -> u8 {
         if let Err(code) = consent(out, &home, &licenses, args.accept_licenses) {
             return code;
         }
+        // From here on the first Ctrl-C stops the download or unpack at
+        // hand: what arrived is kept to resume, a half-unpacked component
+        // removed.
+        crate::interrupt::catch();
         let total: u64 = missing
             .iter()
             .filter_map(|c| c.archive(host))
@@ -490,46 +492,41 @@ fn install_one(out: &mut Output, home: &Home, component: &Component, host: Host)
         ));
     };
     let name = format!("{} {}", component.title, component.revision);
-    let live = out.live();
-    if !live {
+    if !out.live() {
         out.step(
             "download",
             &format!("downloading {name} ({})", size(archive.size)),
         );
     }
-    let mut last = Instant::now();
     let mut progress = |got: u64| {
-        if last.elapsed() < Duration::from_millis(if live { 200 } else { 1000 }) {
-            return;
-        }
-        last = Instant::now();
         let percent = got.saturating_mul(100) / archive.size.max(1);
-        let line = format!(
-            "{name}: {percent}% ({} of {})",
-            size(got),
-            size(archive.size)
+        out.advance(
+            "download",
+            &format!(
+                "downloading {name}: {percent}% ({} of {})",
+                size(got),
+                size(archive.size)
+            ),
         );
-        if live {
-            eprint!("\r[viso] downloading {line}\x1b[K");
-        } else {
-            out.progress("download", &format!("downloading {line}"));
-        }
     };
     let result = toolchain::install(home, component, host, &Curl, &mut progress);
-    if live {
-        eprint!("\r\x1b[K");
-    }
+    out.settle();
     match result {
         Ok(()) => {
             out.step("install", &format!("installed {name} ({})", component.path));
             Ok(())
         }
-        Err(InstallError::Download(Failure::Interrupted)) => Err(INTERRUPTED),
+        Err(InstallError::Download(Failure::Interrupted) | InstallError::Interrupted) => {
+            Err(INTERRUPTED)
+        }
         Err(InstallError::Download(Failure::Transfer(why))) => Err(out.failure(
             ENV_DOWNLOAD,
             &format!("cannot download {name}: {why}"),
             &["what arrived is kept; running the command again resumes it".to_owned()],
         )),
+        Err(InstallError::Download(Failure::Offline(why))) => {
+            Err(out.failure(ENV_OFFLINE, &why, &[]))
+        }
         Err(InstallError::Download(Failure::Integrity(why))) => Err(out.failure(
             ENV_DOWNLOAD_INTEGRITY,
             &format!("the download of {name} is not the pinned archive: {why}"),
