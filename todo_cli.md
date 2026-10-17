@@ -813,8 +813,9 @@ and traced from the CLI and from Studio over the same services.
 - [x] Bare `viso inspect` / `inspect --attach <session>` / `inspect --run` (§24.1):
       attach, describe the app, follow its first window until interrupted; the session
       ID is published in the dev-session lock.
-- [ ] Per-node batch attribution: which draw batch each of a node's primitives lands
-      in (the renderer does not expose paint-stream index to batch slot yet).
+- [x] Per-node batch attribution: each paint-order entry records the stream index
+      of the primitive that emitted it; a node's detail lists the batches its own
+      draws land in, numbered as `inspect frame` numbers them.
 - [x] `profile [<target>]` (§25): frame time, per-span CPU time, GPU time,
       layout/paint/reactive/text/upload counts, draw calls; `profile` events;
       `--frames <n>`, `--seconds <s>`; dev session and `headless [--scenario]`.

@@ -683,8 +683,19 @@ fn describe_detail(sources: &SourceTable, node: &Inspected<'_>, detail: &NodeDet
             }
         })
         .collect();
+    let batches: Vec<String> = paint
+        .batches
+        .iter()
+        .map(|&(batch, n)| {
+            if n == 1 {
+                format!("#{batch}")
+            } else {
+                format!("#{batch}×{n}")
+            }
+        })
+        .collect();
     lines.push_str(&format!(
-        "  {:<9}primitives {}..{}{}\n",
+        "  {:<9}primitives {}..{}{}{}\n",
         "paint",
         paint.start,
         paint.start + paint.len,
@@ -692,6 +703,11 @@ fn describe_detail(sources: &SourceTable, node: &Inspected<'_>, detail: &NodeDet
             String::new()
         } else {
             format!(", own: {}", own.join(", "))
+        },
+        if batches.is_empty() {
+            String::new()
+        } else {
+            format!(", batches {}", batches.join(" "))
         }
     ));
     lines
@@ -833,6 +849,17 @@ fn write_detail(
         w.string(kind);
         w.name("count");
         w.uint(u64::from(*n));
+        w.end_object();
+    }
+    w.end_array();
+    w.name("batches");
+    w.begin_array();
+    for &(batch, n) in &detail.paint.batches {
+        w.begin_object();
+        w.name("batch");
+        w.uint(u64::from(batch));
+        w.name("draws");
+        w.uint(u64::from(n));
         w.end_object();
     }
     w.end_array();

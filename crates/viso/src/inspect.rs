@@ -30,6 +30,16 @@ pub(crate) fn nodes(ws: &WindowState, nodes: &[(u32, u32)]) -> NodeDetails {
         Some(root) => paint_ranges(&ws.store, root, &mut primitives),
         None => PaintRanges::default(),
     };
+    // Each draw's batch by stream index; empty draws open no batch.
+    let draws: Vec<(u32, u32)> = ws.gpu.as_ref().map_or_else(Vec::new, |gpu| {
+        gpu.renderer
+            .inspect_primitives()
+            .primitives
+            .iter()
+            .filter(|draw| draw.range.1 > 0)
+            .map(|draw| (draw.source, draw.batch.0))
+            .collect()
+    });
     let nodes = nodes
         .iter()
         .filter_map(|&(index, generation)| {
@@ -44,6 +54,7 @@ pub(crate) fn nodes(ws: &WindowState, nodes: &[(u32, u32)]) -> NodeDetails {
                 &ws.states,
                 &ranges,
                 &primitives,
+                &draws,
                 id,
             )
         })

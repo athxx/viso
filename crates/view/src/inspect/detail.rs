@@ -228,6 +228,10 @@ pub struct PaintSpan {
     pub len: u32,
     /// The primitives it draws itself, by kind, in the order it draws them.
     pub own: Vec<(String, u32)>,
+    /// The draw batches its own primitives land in, in submission order, each
+    /// with the number of its draws there; a culled primitive or a marker
+    /// draws nothing.
+    pub batches: Vec<(u32, u32)>,
 }
 
 /// What a window's last frame drew and what it holds to draw it.
@@ -313,13 +317,15 @@ impl Decode for WindowDetail {
 }
 
 /// The detail of node `id` of a window whose paint stream is `primitives`,
-/// spanned by `ranges`; `None` for a node not live.
+/// spanned by `ranges`, `draws` the batch of each draw the renderer made of
+/// it by stream index, in stream order; `None` for a node not live.
 pub fn node_detail(
     store: &NodeStore,
     bindings: &BindingTable,
     states: &StateStore,
     ranges: &PaintRanges,
     primitives: &[Primitive],
+    draws: &[(u32, u32)],
     id: NodeId,
 ) -> Option<NodeDetail> {
     if !store.arena().is_live(id) {
@@ -379,16 +385,13 @@ pub fn node_detail(
         .fold(0u8, |bits, state| bits | 1 << state.tag());
     let paint = ranges.get(id).map_or_else(PaintSpan::default, |range| {
         let end = (range.start + range.len).min(primitives.len());
+        let start = range.start.min(end);
+        let own = own_spans(store, ranges, id, start, end);
         PaintSpan {
             start: range.start as u32,
             len: range.len as u32,
-            own: own_primitives(
-                store,
-                ranges,
-                id,
-                range.start,
-                &primitives[range.start.min(end)..end],
-            ),
+            own: kinds(&primitives[own[0].0..own[0].1]),
+            batches: batches(draws, &own),
         }
     });
     Some(NodeDetail {
@@ -425,27 +428,34 @@ pub fn spell_value(value: StateValue) -> String {
     }
 }
 
-/// The kinds of the primitives node `id` draws itself, `span` being its
-/// span: those before its first painted child's span. The layers it closes
-/// after its children are its own too, but draw nothing.
-fn own_primitives(
+/// The stream spans node `id` paints itself, `start..end` being its span:
+/// the one before its first painted child, then the one after its last,
+/// where it closes what it opened. Either may be empty.
+fn own_spans(
     store: &NodeStore,
     ranges: &PaintRanges,
     id: NodeId,
     start: usize,
-    span: &[Primitive],
-) -> Vec<(String, u32)> {
+    end: usize,
+) -> [(usize, usize); 2] {
+    let mut head = end;
+    let mut tail = end;
     let mut child = store.arena().links(id).and_then(|links| links.first_child);
-    let mut own = span.len();
     while let Some(at) = child {
         if let Some(range) = ranges.get(at) {
-            own = range.start.saturating_sub(start).min(span.len());
-            break;
+            head = head.min(range.start.clamp(start, end));
+            tail = (range.start + range.len).clamp(start, end);
         }
         child = store.arena().links(at).and_then(|links| links.next_sibling);
     }
+    [(start, head), (tail.max(head), end)]
+}
+
+/// The kinds of `span`'s primitives, consecutive ones of a kind counted
+/// together.
+fn kinds(span: &[Primitive]) -> Vec<(String, u32)> {
     let mut kinds: Vec<(String, u32)> = Vec::new();
-    for primitive in &span[..own] {
+    for primitive in span {
         let kind = primitive.label();
         match kinds.last_mut() {
             Some((last, n)) if last == kind => *n += 1,
@@ -453,6 +463,25 @@ fn own_primitives(
         }
     }
     kinds
+}
+
+/// The batches the draws of `spans` land in, consecutive draws in one batch
+/// counted together.
+fn batches(draws: &[(u32, u32)], spans: &[(usize, usize)]) -> Vec<(u32, u32)> {
+    let mut batches: Vec<(u32, u32)> = Vec::new();
+    for &(lo, hi) in spans {
+        let first = draws.partition_point(|&(source, _)| (source as usize) < lo);
+        for &(_, batch) in draws[first..]
+            .iter()
+            .take_while(|&&(source, _)| (source as usize) < hi)
+        {
+            match batches.last_mut() {
+                Some((last, n)) if *last == batch => *n += 1,
+                _ => batches.push((batch, 1)),
+            }
+        }
+    }
+    batches
 }
 
 /// The node's layout, style and content properties as it resolved them.
@@ -873,6 +902,11 @@ impl Encode for NodeDetail {
             enc.write_str(kind);
             enc.write_varint(u64::from(*n));
         }
+        enc.write_varint(self.paint.batches.len() as u64);
+        for &(batch, n) in &self.paint.batches {
+            enc.write_varint(u64::from(batch));
+            enc.write_varint(u64::from(n));
+        }
     }
 }
 
@@ -944,6 +978,9 @@ impl Decode for NodeDetail {
         let own = (0..count(dec)?)
             .map(|_| Ok((dec.read_str()?.to_owned(), read_u32(dec)?)))
             .collect::<Result<_, DecodeError>>()?;
+        let batches = (0..count(dec)?)
+            .map(|_| Ok((read_u32(dec)?, read_u32(dec)?)))
+            .collect::<Result<_, DecodeError>>()?;
         Ok(NodeDetail {
             index,
             generation,
@@ -955,7 +992,12 @@ impl Decode for NodeDetail {
             states,
             route,
             bindings,
-            paint: PaintSpan { start, len, own },
+            paint: PaintSpan {
+                start,
+                len,
+                own,
+                batches,
+            },
         })
     }
 }

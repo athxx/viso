@@ -323,6 +323,9 @@ pub struct PrimitiveRange {
     /// still occupies a paint-order position and is reported with that
     /// positional id.
     pub id: PrimitiveId,
+    /// The index in the uploaded primitive stream of the primitive that
+    /// emitted it, so a tool can map a node's paint span to its draws.
+    pub source: u32,
     /// Which built-in pipeline this primitive lowers through (the readable
     /// label), matching the [`BatchPipeline`] of the batch it lands in.
     pub pipeline: BatchPipeline,
@@ -628,6 +631,7 @@ impl Renderer {
                 StoreRef::Shader(_) if self.program_draw_unseen(entry) => {
                     primitives.push(PrimitiveRange {
                         id: entry.id,
+                        source: entry.source,
                         pipeline: BatchPipeline::Program,
                         batch: BatchId(batch.max(0) as u32),
                         range: (0, 0),
@@ -676,6 +680,7 @@ impl Renderer {
             if pipeline == BatchPipeline::Mesh && count == 0 {
                 primitives.push(PrimitiveRange {
                     id: entry.id,
+                    source: entry.source,
                     pipeline,
                     batch: BatchId(batch.max(0) as u32),
                     range: (start, 0),
@@ -725,6 +730,7 @@ impl Renderer {
 
             primitives.push(PrimitiveRange {
                 id: entry.id,
+                source: entry.source,
                 pipeline,
                 batch: BatchId(batch as u32),
                 range: (start, count),
@@ -1263,6 +1269,39 @@ mod tests {
             assert!(p.primitives.iter().any(|pr| {
                 pr.pipeline == BatchPipeline::Image && !batches.get(pr.batch).unwrap().offscreen
             }));
+        });
+    }
+
+    #[test]
+    fn each_draw_names_the_stream_primitive_that_emitted_it() {
+        // The markers emit no draw of their own but keep their stream slots;
+        // the composite is the layer end's.
+        let prims = vec![
+            quad(0.0, 0.0),
+            Primitive::Layer(LayerClip {
+                clip: Rect {
+                    x: 4.0,
+                    y: 4.0,
+                    w: 20.0,
+                    h: 20.0,
+                },
+                opacity: 0.5,
+                blur_sigma: 0.0,
+                backdrop_sigma: 0.0,
+            }),
+            quad(4.0, 4.0),
+            quad(8.0, 8.0),
+            Primitive::LayerEnd,
+            quad(40.0, 40.0),
+        ];
+        with_upload(&prims, |r| {
+            let sources: Vec<u32> = r
+                .inspect_primitives()
+                .primitives
+                .iter()
+                .map(|p| p.source)
+                .collect();
+            assert_eq!(sources, [0, 2, 3, 4, 5]);
         });
     }
 

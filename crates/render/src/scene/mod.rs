@@ -94,6 +94,9 @@ pub struct PaintEntry {
     pub context: EmitContext,
     /// The primitive's five-stage bounds.
     pub bounds: Bounds,
+    /// The index in the frame's primitive stream of the primitive that
+    /// emitted it; a layer's composite is its closing marker's.
+    pub source: u32,
 }
 
 /// The retained scene: the per-kind stores, the revision planes, and the
@@ -166,6 +169,9 @@ pub struct Scene {
     pending_dirty: Option<bool>,
     /// Per-frame ingest tallies (§61), reset at [`Scene::begin_frame`].
     pub ingest_stats: IngestStats,
+    /// The stream index of the primitive being ingested, which every entry it
+    /// records carries.
+    pub(crate) source: u32,
 }
 
 impl Scene {
@@ -196,6 +202,7 @@ impl Scene {
         self.transforms.begin_frame();
         self.brushes.begin_frame();
         self.paint_order.clear();
+        self.source = 0;
         self.begin_ingest();
     }
 
@@ -222,6 +229,7 @@ impl Scene {
             store,
             context,
             bounds,
+            source: self.source,
         });
         // A slot that did not exist last frame is new content by definition; an
         // existing slot keeps its old stamp unless something about it moved. The

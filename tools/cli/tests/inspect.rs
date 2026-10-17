@@ -447,7 +447,7 @@ fn a_headless_run_shows_its_tree_its_nodes_and_its_frame() {
                 "src/app.vs",
                 b"export component App {\n    state taps = 0;\n    view {\n        Column {\n            \
                   node count: Text { width: 160dp; height: 20dp; text: format(\"{t} taps\", t: taps); }\n            \
-                  node tap: Button { width: 120dp; height: 40dp; text: \"Tap\"; on click { taps += 1; } }\n        }\n    }\n}\n",
+                  node tap: Button { width: 120dp; height: 40dp; background: #2266ff; text: \"Tap\"; on click { taps += 1; } }\n        }\n    }\n}\n",
             ),
             (
                 "tests/ui/taps.tape",
@@ -525,6 +525,10 @@ fn a_headless_run_shows_its_tree_its_nodes_and_its_frame() {
     let out = viso(&["inspect", "node", "#tap", "--target", "headless"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let text = stdout(&out);
+    assert!(
+        text.contains(", batches #"),
+        "the button's box is drawn: {text}"
+    );
     assert!(text.contains("  route    "), "{text}");
     assert!(text.contains("pointer"), "{text}");
     assert!(text.contains("1 node matches `#tap`"), "{text}");

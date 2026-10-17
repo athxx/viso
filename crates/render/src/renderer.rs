@@ -2451,6 +2451,7 @@ impl Renderer {
         self.backdrop_dirty_rois = 0;
 
         for (prim_index, prim) in primitives.iter().enumerate() {
+            self.scene.source = prim_index as u32;
             let (clip, target, origin) = self.active();
             // The group opacity the Effect Planner pushed into this primitive's
             // ancestors (§14.5). `1.0` — the steady state everywhere outside a
