@@ -75,7 +75,7 @@ pub use inspect::{
     paint_ranges, snapshot_ui,
 };
 pub use interaction::Interaction;
-pub use layout::{Align, Axis, Basis, Inset, Justify, Length, Size, Vec2};
+pub use layout::{Align, AlignItems, Axis, Basis, Inset, Justify, LayoutInput, Length, Size, Vec2};
 pub use length::{
     EdgeTerms, LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms, LengthWarning,
     NodeLengths,
@@ -90,7 +90,7 @@ pub use viso_runtime::Instant;
 // the DAG allows to reach `viso-ui` alone) can name them to construct a
 // `BoxStyle`, `TextRequest`, or `Content`. `viso-render` is already a `viso-ui`
 // dependency, so this adds no new edge.
-pub use asset::{Asset, AssetBytes, AssetDraw, AssetFit, AssetPayload, AssetTable};
+pub use asset::{Asset, AssetBytes, AssetDraw, AssetFit, AssetPayload, AssetState, AssetTable};
 pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
     ProjectId, SemanticProjector,
@@ -112,7 +112,9 @@ pub use virtual_list::{
 /// payloads — which the compiler names resources by and the facade decodes
 /// into.
 pub use viso_render::asset as resource;
-pub use viso_render::{Border, LineJoin, PathCmd, Point, Rect, Rgba, Srgb, Stroke, TextureId};
+pub use viso_render::{
+    Border, LineJoin, PathCmd, Point, Primitive, Rect, Rgba, Srgb, Stroke, TextureId,
+};
 pub use viso_text::selection::Selection;
 pub use viso_text::{CaretAffinity, TextOffset, TextPosition};
 pub use window::{ChromeContext, WindowChrome, WindowConfig, WindowIdSlot, WindowOpenRequest};

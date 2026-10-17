@@ -116,6 +116,16 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
         self.buffer
     }
 
+    /// The device bytes its buffer holds: its capacity at its stride, 0
+    /// before its first upload.
+    pub fn bytes(&self) -> u64 {
+        if self.buffer().is_some() {
+            (self.capacity() * Self::STRIDE) as u64
+        } else {
+            0
+        }
+    }
+
     /// Capacity of the device buffer in elements (its high-water mark).
     pub fn capacity(&self) -> usize {
         self.capacity

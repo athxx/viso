@@ -191,6 +191,24 @@ impl StateStore {
         )
     }
 
+    /// The live cell at dense index `index`, if one is. Cold path.
+    pub fn live_id(&self, index: u32) -> Option<StateId> {
+        let slot = self.slots.get(index as usize)?;
+        slot.occupied.then_some(StateId {
+            index,
+            generation: slot.generation,
+        })
+    }
+
+    /// The durable identity `id` carries, if it is a compiler-declared cell.
+    /// Cold path: it scans the identity map, for an inspector.
+    pub fn key_of(&self, id: StateId) -> Option<StateKey> {
+        self.keys
+            .iter()
+            .find(|(_, cell)| **cell == id)
+            .map(|(key, _)| *key)
+    }
+
     /// The current value of a live cell. `None` for a stale/out-of-range handle.
     #[inline]
     pub fn get(&self, id: StateId) -> Option<StateValue> {

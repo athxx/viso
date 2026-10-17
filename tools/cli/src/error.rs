@@ -510,6 +510,12 @@ codes! {
         fix: "Correct the selector at the byte the diagnostic points at; `viso inspect query --help` lists the grammar and the attributes.",
         commands: ["viso inspect query --help"],
     }
+    INSPECT_UNSUPPORTED = ENVIRONMENT {
+        summary: "The app's inspector does not tell what was asked.",
+        explanation: "A runtime reports what its inspector can tell when it connects: the tree, node detail, frame detail, GPU time, events. An app built by another Viso version, or a target whose runtime does not take that part yet, reports less than the command needs.",
+        fix: "Rebuild and restart the app with the same Viso version as the CLI, or inspect a headless run with `--target headless`.",
+        commands: ["viso inspect tree --target headless"],
+    }
     INSPECT_ANSWER_INVALID = INTERNAL {
         summary: "The app's inspection did not arrive whole or did not decode.",
         explanation: "The census the app sent, or the table of its views, is not one this CLI reads: the CLI and the app speak different protocol versions, the tree outgrew a dev frame, or the run failed while writing it.",
@@ -607,7 +613,7 @@ mod tests {
                 // Device and game codes are about one subject and fail in
                 // more than one way.
                 "NEW" => &[USAGE, ENVIRONMENT, INTERNAL],
-                "INSPECT" => &[USAGE, INTERNAL],
+                "INSPECT" => &[USAGE, ENVIRONMENT, INTERNAL],
                 "PROFILE" => &[ENVIRONMENT, RUNTIME, INTERNAL],
                 "ANDROID" => &[USAGE],
                 "IOS" => &[USAGE],

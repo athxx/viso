@@ -490,6 +490,7 @@ unsafe fn configure_layer_geometry(
 
 impl GpuBackend for MetalBackend {
     const SHADER_LANG: ShaderLang = ShaderLang::Msl;
+    const TIMES_FRAMES: bool = true;
 
     type Compiler = MetalCompiler;
 

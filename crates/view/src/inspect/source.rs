@@ -47,6 +47,8 @@ pub struct FileSources {
     pub statics: Vec<NodeSource>,
     /// Each node a region mounts, by region, arm and arm item, ascending.
     pub regional: Vec<((u32, u32, u32), NodeSource)>,
+    /// The reactive sources its view reads, by durable identity, ascending.
+    pub states: Vec<StateSource>,
 }
 
 impl FileSources {
@@ -62,6 +64,28 @@ impl FileSources {
             .ok()
             .map(|at| &self.regional[at].1)
     }
+
+    /// The source a runtime cell of durable identity `key` is.
+    pub fn state(&self, key: (u64, u64)) -> Option<&StateSource> {
+        self.states
+            .binary_search_by_key(&key, |state| state.key)
+            .ok()
+            .map(|at| &self.states[at])
+    }
+}
+
+/// A reactive source of a view: a `state`, `input` or `computed` its
+/// bindings read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StateSource {
+    /// Its durable identity: the key its runtime cell carries.
+    pub key: (u64, u64),
+    /// Its name in the source.
+    pub name: String,
+    /// Its type as source spells it, when the compiler inferred one.
+    pub type_name: Option<String>,
+    /// The 1-based line and UTF-16 column its declaration starts at.
+    pub start: (u32, u32),
 }
 
 /// A node as its source declares it.
@@ -84,6 +108,9 @@ pub struct NodeSource {
     /// end, as a diagnostic's location gives them.
     pub start: (u32, u32),
     pub end: (u32, u32),
+    /// Each property bound to a reactive source, with the source's durable
+    /// identity, in declaration order.
+    pub bindings: Vec<(String, (u64, u64))>,
 }
 
 impl Encode for SourceTable {
@@ -103,6 +130,15 @@ impl Encode for SourceTable {
                 enc.write_varint(u64::from(*arm));
                 enc.write_varint(u64::from(*item));
                 node.encode(enc);
+            }
+            enc.write_varint(file.states.len() as u64);
+            for state in &file.states {
+                enc.write_u64(state.key.0);
+                enc.write_u64(state.key.1);
+                enc.write_str(&state.name);
+                write_option_str(enc, state.type_name.as_deref());
+                enc.write_varint(u64::from(state.start.0));
+                enc.write_varint(u64::from(state.start.1));
             }
         }
     }
@@ -127,12 +163,26 @@ impl Decode for SourceTable {
                 if !regional.is_sorted_by(|(a, _), (b, _)| a < b) {
                     return Err(malformed(dec));
                 }
+                let states = (0..count(dec)?)
+                    .map(|_| {
+                        Ok(StateSource {
+                            key: (dec.read_u64()?, dec.read_u64()?),
+                            name: dec.read_str()?.to_owned(),
+                            type_name: read_option_str(dec)?,
+                            start: (read_u32(dec)?, read_u32(dec)?),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, DecodeError>>()?;
+                if !states.is_sorted_by(|a, b| a.key < b.key) {
+                    return Err(malformed(dec));
+                }
                 Ok(FileSources {
                     file,
                     path,
                     module,
                     statics,
                     regional,
+                    states,
                 })
             })
             .collect::<Result<_, DecodeError>>()?;
@@ -155,6 +205,12 @@ impl Encode for NodeSource {
         for v in [bytes.0, bytes.1, start.0, start.1, end.0, end.1] {
             enc.write_varint(u64::from(v));
         }
+        enc.write_varint(self.bindings.len() as u64);
+        for (property, (hi, lo)) in &self.bindings {
+            enc.write_str(property);
+            enc.write_u64(*hi);
+            enc.write_u64(*lo);
+        }
     }
 }
 
@@ -169,6 +225,12 @@ impl Decode for NodeSource {
             bytes: (read_u32(dec)?, read_u32(dec)?),
             start: (read_u32(dec)?, read_u32(dec)?),
             end: (read_u32(dec)?, read_u32(dec)?),
+            bindings: (0..count(dec)?)
+                .map(|_| {
+                    let property = dec.read_str()?.to_owned();
+                    Ok((property, (dec.read_u64()?, dec.read_u64()?)))
+                })
+                .collect::<Result<_, DecodeError>>()?,
         })
     }
 }

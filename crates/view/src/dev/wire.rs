@@ -45,11 +45,12 @@ pub use super::resource::{
     blob_chunks,
 };
 use super::resource::{read_chunk, read_resources, write_chunk, write_resources};
+use crate::inspect::{InspectAsk, InspectorCaps};
 use crate::profile::{FrameSample, read_frames, write_frames};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 16;
+pub const DEV_PROTOCOL_VERSION: u16 = 17;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -369,6 +370,8 @@ pub struct RuntimeHello {
     /// a view's shaders in; `None` for the software raster's reference
     /// interpreter.
     pub shader_lang: ShaderLang,
+    /// What its inspector answers; a tool asks it for nothing else.
+    pub inspector: InspectorCaps,
 }
 
 /// The host's acceptance of a runtime (§34).
@@ -857,10 +860,11 @@ pub enum HostMessage {
     Snapshot,
     /// The state a process launched to restore starts from.
     Restore(Box<RestoreBundle>),
-    /// Asks for the app's [`Census`](crate::inspect::Census) at the next
-    /// frame boundary, for `viso inspect`; the answer repeats `id`.
+    /// Asks the app's inspector `ask` at the next frame boundary, for
+    /// `viso inspect`; the answer repeats `id`.
     Inspect {
         id: u32,
+        ask: InspectAsk,
     },
     /// A UI scenario for the app to play against its first window, for
     /// `viso test` on a device: its text and the source table its inspector
@@ -917,11 +921,13 @@ pub enum RuntimeMessage {
     },
     /// The answer to a [`HostMessage::Restore`].
     Restored(RestoreReport),
-    /// The answer to a [`HostMessage::Inspect`]: the census, its bytes in
-    /// the blob sent ahead.
+    /// The answer to a [`HostMessage::Inspect`], its bytes in the blob sent
+    /// ahead: a [`Census`](crate::inspect::Census),
+    /// [`NodeDetails`](crate::inspect::NodeDetails) or
+    /// [`FrameDetail`](crate::inspect::FrameDetail), as asked.
     Inspect {
         id: u32,
-        census: BlobRef,
+        answer: BlobRef,
     },
     /// A line of the report of the scenario `id` plays: a step's outcome, a
     /// snapshot taken, or its end.
@@ -1567,9 +1573,10 @@ impl Message for HostMessage {
                 restore.snapshot.write(enc);
                 write_ui(enc, &restore.ui);
             }
-            HostMessage::Inspect { id } => {
+            HostMessage::Inspect { id, ask } => {
                 enc.write_u8(HOST_INSPECT);
                 enc.write_varint(u64::from(*id));
+                ask.encode(enc);
             }
             HostMessage::Scenario {
                 id,
@@ -1675,7 +1682,10 @@ impl Message for HostMessage {
                 snapshot: BlobRef::read(dec)?,
                 ui: read_ui(dec)?,
             }))),
-            HOST_INSPECT => Ok(HostMessage::Inspect { id: read_u32(dec)? }),
+            HOST_INSPECT => Ok(HostMessage::Inspect {
+                id: read_u32(dec)?,
+                ask: InspectAsk::decode(dec)?,
+            }),
             HOST_SCENARIO => Ok(HostMessage::Scenario {
                 id: read_u32(dec)?,
                 script: BlobRef::read(dec)?,
@@ -1721,6 +1731,7 @@ impl Message for RuntimeMessage {
                     ShaderLang::Hlsl => 3,
                     ShaderLang::SpirV => 4,
                 });
+                enc.write_varint(u64::from(hello.inspector.bits()));
             }
             RuntimeMessage::Ack(ack) => {
                 enc.write_u8(RUNTIME_ACK);
@@ -1827,10 +1838,10 @@ impl Message for RuntimeMessage {
                 }
                 enc.write_varint(report.restore_us);
             }
-            RuntimeMessage::Inspect { id, census } => {
+            RuntimeMessage::Inspect { id, answer } => {
                 enc.write_u8(RUNTIME_INSPECT);
                 enc.write_varint(u64::from(*id));
-                census.write(enc);
+                answer.write(enc);
             }
             RuntimeMessage::Scenario { id, line } => {
                 enc.write_u8(RUNTIME_SCENARIO);
@@ -1878,6 +1889,7 @@ impl Message for RuntimeMessage {
                     4 => ShaderLang::SpirV,
                     _ => return Err(malformed(dec)),
                 };
+                let inspector = InspectorCaps::from_bits(read_u32(dec)?);
                 Ok(RuntimeMessage::Hello(RuntimeHello {
                     protocol_version,
                     token,
@@ -1889,6 +1901,7 @@ impl Message for RuntimeMessage {
                     capabilities,
                     target,
                     shader_lang,
+                    inspector,
                 }))
             }
             RUNTIME_ACK => {
@@ -2005,7 +2018,7 @@ impl Message for RuntimeMessage {
             }
             RUNTIME_INSPECT => Ok(RuntimeMessage::Inspect {
                 id: read_u32(dec)?,
-                census: BlobRef::read(dec)?,
+                answer: BlobRef::read(dec)?,
             }),
             RUNTIME_SCENARIO => Ok(RuntimeMessage::Scenario {
                 id: read_u32(dec)?,
@@ -2043,6 +2056,7 @@ mod tests {
             capabilities: Domains::NONE.with(Domain::Ui).with(Domain::State),
             target: RuntimeTarget::DesktopHost,
             shader_lang: ShaderLang::Msl,
+            inspector: InspectorCaps::TREE.with(InspectorCaps::NODES),
         }
     }
 
@@ -2118,7 +2132,21 @@ mod tests {
                 bytes: vec![0; 3],
             }),
             HostMessage::Snapshot,
-            HostMessage::Inspect { id: 3 },
+            HostMessage::Inspect {
+                id: 3,
+                ask: InspectAsk::Census,
+            },
+            HostMessage::Inspect {
+                id: 4,
+                ask: InspectAsk::Nodes {
+                    window: 1,
+                    nodes: vec![(0, 0), (7, u32::MAX)],
+                },
+            },
+            HostMessage::Inspect {
+                id: 5,
+                ask: InspectAsk::Frame { window: 0 },
+            },
             HostMessage::Profile { id: 6, hud: true },
             HostMessage::ProfileEnd { id: 6 },
             HostMessage::Scenario {
@@ -2481,7 +2509,7 @@ mod tests {
             RuntimeMessage::Restored(RestoreReport::default()),
             RuntimeMessage::Inspect {
                 id: 3,
-                census: BlobRef::of(b"census"),
+                answer: BlobRef::of(b"census"),
             },
             RuntimeMessage::Scenario {
                 id: 4,

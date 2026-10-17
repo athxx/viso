@@ -4,8 +4,9 @@
 
 use std::collections::HashSet;
 
-use viso_view::inspect::{FileSources, NodeSource};
+use viso_view::inspect::{FileSources, NodeSource, StateSource};
 
+use crate::hir::Ty;
 use crate::hotreload::CandidatePlan;
 use crate::ir::ui_ir::{UiItem, UiNode, UiTree};
 use crate::syntax::{LineIndex, TextSize};
@@ -29,6 +30,14 @@ pub fn file_sources(
         .iter()
         .map(|node| source(tree, node, owner, &lines, text.len(), &mut rooted))
         .collect();
+    for edge in &plan.bindings.edges {
+        if let Some(node) = sources.get_mut(edge.node.0 as usize) {
+            let bound = (edge.property.clone(), (edge.source.hi, edge.source.lo));
+            if !node.bindings.contains(&bound) {
+                node.bindings.push(bound);
+            }
+        }
+    }
     // The view's root is the root of the component it mounts too.
     if let (Some(root), Some(component)) = (sources.first_mut(), &plan.component) {
         root.components
@@ -45,10 +54,35 @@ pub fn file_sources(
         .iter()
         .filter_map(|(at, key)| Some((at, sources.get(key.0 as usize)?.clone())))
         .collect();
+    let at = |offset: usize| {
+        let at = lines.line_col_utf16(TextSize::new(offset.min(text.len()) as u32));
+        (at.line + 1, at.column + 1)
+    };
+    let mut states: Vec<StateSource> = plan
+        .sources
+        .iter()
+        .enumerate()
+        .map(|(n, id)| StateSource {
+            key: (id.hi, id.lo),
+            name: plan.source_names.get(n).cloned().unwrap_or_default(),
+            type_name: plan
+                .types
+                .get(n)
+                .filter(|ty| !matches!(ty, Ty::Unknown))
+                .map(|ty| plan.schemas.describe(ty)),
+            start: plan
+                .declared
+                .get(n)
+                .map_or((0, 0), |range| at(range.start().to_usize())),
+        })
+        .collect();
+    states.sort_by_key(|state| state.key);
+    states.dedup_by_key(|state| state.key);
     FileSources {
         file,
         path,
         module,
+        states,
         statics: by_index
             .into_iter()
             .map(Option::unwrap_or_default)
@@ -119,6 +153,7 @@ fn source(
         bytes: (start as u32, end as u32),
         start: at(start),
         end: at(end),
+        bindings: Vec::new(),
     }
 }
 
@@ -145,8 +180,10 @@ component Tag {
 
 export component Home {
     state items = [1, 2];
+    state shown = true;
     view {
         Column {
+            visible: shown;
             node save: Button { text: \"Save\"; styles: [Primary]; }
             Tag {}
             for item in items key item {
@@ -177,7 +214,7 @@ export component Home {
         assert_eq!(save.name.as_deref(), Some("save"));
         assert_eq!(save.styles, ["Primary"]);
         assert_eq!(save.owner, "Home");
-        assert_eq!(save.start, (16, 13));
+        assert_eq!(save.start, (18, 13));
         assert_eq!(&text[save.bytes.0 as usize..][..9], "node save");
         let tag = &file.statics[2];
         assert_eq!(tag.components, ["Tag"]);
@@ -185,5 +222,21 @@ export component Home {
         let (at, row) = &file.regional[0];
         assert_eq!(*at, (0, 0, 0));
         assert_eq!(row.name.as_deref(), Some("row"));
+        let column = &file.statics[0];
+        let [(property, key)] = &column.bindings[..] else {
+            panic!("not one binding: {:?}", column.bindings);
+        };
+        assert_eq!(property, "visible");
+        let shown = file.state(*key).expect("the state");
+        assert_eq!(shown.name, "shown");
+        assert_eq!(shown.type_name.as_deref(), Some("Bool"));
+        assert_eq!(shown.start, (14, 5));
+        assert!(save.bindings.is_empty());
+        let items = file
+            .states
+            .iter()
+            .find(|s| s.name == "items")
+            .expect("items");
+        assert_eq!(items.start, (13, 5));
     }
 }

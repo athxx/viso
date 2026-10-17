@@ -1971,6 +1971,31 @@ pub enum Primitive {
     LayerEnd,
 }
 
+impl Primitive {
+    /// What it draws, lowercase, for an inspector's readout.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Primitive::Quad(_) => "quad",
+            Primitive::AnalyticRRect(_) => "rrect",
+            Primitive::AnalyticEllipse(_) => "ellipse",
+            Primitive::AnalyticCapsule(_) => "capsule",
+            Primitive::AnalyticLine(_) => "line",
+            Primitive::GlyphRun(_) => "glyphs",
+            Primitive::Image(_) => "image",
+            Primitive::Gradient(_) => "gradient",
+            Primitive::AnalyticShadow(_) => "shadow",
+            Primitive::Frosted(_) => "material",
+            Primitive::Path(_) => "path",
+            Primitive::Mesh(_) => "mesh",
+            Primitive::Shader(_) => "shader",
+            Primitive::Layer(_) => "layer",
+            Primitive::ColorEffect(_) => "color_effect",
+            Primitive::Blend(_) => "blend",
+            Primitive::LayerEnd => "layer_end",
+        }
+    }
+}
+
 /// GPU instance for the Quad built-in shader.
 ///
 /// Field names/formats match [`quad_schema`] and the headless `fill_quad`

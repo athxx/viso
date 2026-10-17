@@ -36,7 +36,7 @@ use viso_ui::semantics::SemanticsNode;
 use viso_view::headless::{
     Action, Chord, Expectation, Key, Reported, SOURCES_ENV, Script, Selector, State,
 };
-use viso_view::inspect::{self, Census, SourceTable, WindowCensus};
+use viso_view::inspect::{self, Census, SourceTable, WindowCensus, WindowDetail};
 
 use crate::WindowState;
 
@@ -63,6 +63,8 @@ pub(crate) struct ScriptRunner {
     sources: Option<Rc<SourceTable>>,
     /// Where the census goes once the scenario ends.
     census: Option<PathBuf>,
+    /// Where the window's detail goes once the scenario ends.
+    detail: Option<PathBuf>,
     input: Input,
     /// Whether the run ends with the scenario: its window closes.
     closes: bool,
@@ -96,6 +98,7 @@ pub(crate) struct Outputs<'a> {
     pub(crate) snapshots: Option<PathBuf>,
     pub(crate) sources: Option<String>,
     pub(crate) census: Option<PathBuf>,
+    pub(crate) detail: Option<PathBuf>,
 }
 
 impl ScriptRunner {
@@ -107,6 +110,7 @@ impl ScriptRunner {
             snapshots,
             sources,
             census,
+            detail,
         } = outputs;
         let text = std::fs::read_to_string(path)
             .map_err(|error| format!("cannot read the scenario `{path}`: {error}"))?;
@@ -142,6 +146,7 @@ impl ScriptRunner {
             snapshots,
             sources,
             census,
+            detail,
             input,
             closes: true,
         })
@@ -173,6 +178,7 @@ impl ScriptRunner {
             snapshots: None,
             sources,
             census: None,
+            detail: None,
             input: Input::Post,
             closes: false,
         })
@@ -195,11 +201,12 @@ impl ScriptRunner {
     }
 
     /// After each frame of the first window `ws`, whose census `census`
-    /// takes: run the steps due.
+    /// takes and whose detail `detail` does: run the steps due.
     pub(crate) fn after_frame(
         &mut self,
         ws: &WindowState,
         census: &dyn Fn() -> WindowCensus,
+        detail: Option<&dyn Fn() -> WindowDetail>,
         cx: &mut RuntimeCx<'_>,
     ) {
         if self.finished {
@@ -209,6 +216,7 @@ impl ScriptRunner {
         let window = Window {
             ws,
             census,
+            detail,
             sources: sources.as_deref(),
         };
         self.frames += 1;
@@ -296,6 +304,14 @@ impl ScriptRunner {
                 );
             }
         }
+        if let (Some(path), Some(detail)) = (&self.detail, window.detail)
+            && let Err(error) = std::fs::write(path, detail().to_bytes())
+        {
+            eprintln!(
+                "viso: cannot write the detail `{}`: {error}",
+                path.display()
+            );
+        }
         let frames = self.frames;
         self.write(Reported::Done { frames });
         if self.closes {
@@ -377,6 +393,7 @@ fn capture(_: &WindowState, _: Option<&Path>, name: &str) -> Result<(u32, u32), 
 struct Window<'a> {
     ws: &'a WindowState,
     census: &'a dyn Fn() -> WindowCensus,
+    detail: Option<&'a dyn Fn() -> WindowDetail>,
     sources: Option<&'a SourceTable>,
 }
 

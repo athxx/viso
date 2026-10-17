@@ -24,8 +24,8 @@ use viso_platform::backend::headless::HeadlessApp;
 use viso_runtime::{FixedStepClock, Scheduler};
 use viso_ui::{DirtyClass, NodeId};
 use viso_view::headless::{
-    CENSUS_ENV, FRAMES_ENV, HeadlessSurface, REPORT_ENV, SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV,
-    SURFACE_ENV, VIEW_ENV,
+    CENSUS_ENV, DETAIL_ENV, FRAMES_ENV, HeadlessSurface, REPORT_ENV, SCRIPT_ENV, SNAPSHOT_ENV,
+    SOURCES_ENV, SURFACE_ENV, VIEW_ENV,
 };
 use viso_view::inspect::{self, CensusView, WindowCensus, static_nodes};
 use viso_view::profile::{PROFILE_ENV, Trace};
@@ -63,6 +63,7 @@ pub(crate) fn run<A: Application>() {
             snapshots,
             sources: viso_platform::launch_var(SOURCES_ENV),
             census: viso_platform::launch_var(CENSUS_ENV).map(PathBuf::from),
+            detail: viso_platform::launch_var(DETAIL_ENV).map(PathBuf::from),
         };
         match ScriptRunner::open(&path, outputs, Input::Feed(app.feed())) {
             Ok(runner) => driver.script = Some(runner),
@@ -109,10 +110,14 @@ pub(crate) struct Harness {
 
 impl Harness {
     /// Keeps the views `ws`'s build just mounted, when it is the first
-    /// window, which a scenario plays against.
-    pub(crate) fn adopt(&mut self, ws: &WindowState) {
+    /// window, which a scenario plays against; their cells are keyed by
+    /// their durable identity, which an inspector names them by.
+    pub(crate) fn adopt(&mut self, ws: &mut WindowState) {
         let mut records = Vec::new();
         take_mounts(&mut records);
+        for &(key, id) in records.iter().flat_map(|record| &record.cells) {
+            ws.states.bind_key(id, key);
+        }
         if *self.first.get_or_insert(ws.window) == ws.window {
             self.mounts.append(&mut records);
         }

@@ -306,6 +306,7 @@ ANDROID_API_UNSUPPORTED       The Android API level is not one Viso supports.
 IOS_RUNTIME_INVALID           The iOS runtime given is not a version.
 IOS_RUNTIME_MISSING           The iOS runtime is not installed, and installing it was not asked for.
 INSPECT_SELECTOR              The selector `viso inspect query` is given does not parse.
+INSPECT_UNSUPPORTED           The app's inspector does not tell what was asked.
 INSPECT_ANSWER_INVALID        The app's inspection did not arrive whole or did not decode.
 PROFILE_APP_GONE              The app closed, or crashed, while it was profiled.
 PROFILE_WRITE                 The profile's trace could not be written.

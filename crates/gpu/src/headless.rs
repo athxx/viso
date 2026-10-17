@@ -334,6 +334,7 @@ impl HeadlessRaster {
 
 impl GpuBackend for HeadlessRaster {
     const SHADER_LANG: crate::ShaderLang = crate::ShaderLang::None;
+    const TIMES_FRAMES: bool = !cfg!(target_arch = "wasm32");
 
     fn create_buffer(&mut self, desc: &BufferDesc) -> BufferId {
         self.buffers

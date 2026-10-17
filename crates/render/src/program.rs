@@ -474,6 +474,11 @@ impl ProgramTable {
         }
     }
 
+    /// The device bytes the installed programs' instance buffers hold.
+    pub(crate) fn buffer_bytes(&self) -> u64 {
+        self.slots.iter().flatten().map(|p| p.pool.bytes()).sum()
+    }
+
     /// The programs installed.
     pub(crate) fn installed(&self) -> usize {
         self.slots.iter().flatten().count()

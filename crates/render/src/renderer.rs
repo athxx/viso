@@ -3815,6 +3815,48 @@ impl Renderer {
         backend.destroy_texture(texture);
     }
 
+    /// What the renderer holds on the device. Cold path: it reads its own
+    /// pools and caches.
+    pub fn resources(&self) -> crate::RenderResources {
+        let pools = [
+            self.quad_pool.bytes(),
+            self.analytic_rrect_pool.bytes(),
+            self.analytic_ellipse_pool.bytes(),
+            self.analytic_capsule_pool.bytes(),
+            self.analytic_line_pool.bytes(),
+            self.image_pool.bytes(),
+            self.glyph_pool.bytes(),
+            self.gradient_pool.bytes(),
+            self.analytic_shadow_pool.bytes(),
+            self.blur_pool.bytes(),
+            self.color_transform_pool.bytes(),
+            self.advanced_blend_pool.bytes(),
+            self.material_pool.bytes(),
+            self.mesh_vertex_pool.bytes(),
+            self.mesh_index_pool.bytes(),
+        ];
+        let programs = self.programs.buffer_bytes();
+        let transient = self.transient.stats();
+        let texel = |format: viso_gpu::TextureFormat| format.bytes_per_texel() as u64;
+        let mask = u64::from(self.mask_page.size());
+        crate::RenderResources {
+            pipelines: SHADER_PIPELINE_PREWARM_COUNT,
+            programs: self.programs.installed() as u32,
+            program_pipelines: self.programs.pipelines() as u32,
+            buffers: pools.iter().filter(|&&b| b > 0).count() as u32
+                + self.programs.installed() as u32,
+            buffer_bytes: pools.iter().sum::<u64>() + programs,
+            gradient_lut_bytes: u64::from(crate::gradient_lut::LUT_WIDTH)
+                * u64::from(self.gradient_lut.rows())
+                * texel(self.gradient_lut.format()),
+            mask_page_bytes: mask * mask,
+            masks: self.mask_cache.len() as u32,
+            transient_targets: transient.targets as u32,
+            transient_bytes: transient.pool_bytes as u64,
+            transient_peak_bytes: transient.peak_bytes as u64,
+        }
+    }
+
     pub fn frame_stats(&self) -> FrameStats {
         let ingest = self.scene.ingest_stats;
 

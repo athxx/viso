@@ -303,7 +303,6 @@ fn snippet(
     writeln!(out, "{:gutter$} {bar} {pad}{underline}", "")
 }
 
-/// The one-line summary of a check.
 /// A byte count in binary units: `612 B`, `18 KiB`, `1.82 MiB`; three
 /// significant digits from a kibibyte up.
 pub fn size(bytes: u64) -> String {
@@ -327,6 +326,7 @@ pub fn size(bytes: u64) -> String {
     format!("{value:.decimals$} {}", UNITS[unit])
 }
 
+/// The one-line summary of a check.
 pub(super) fn summary(package: &str, files: usize, errors: usize, warnings: usize) -> String {
     let count = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
     let mut line = format!("checked `{package}`: {}", count(files, "file"));

@@ -239,6 +239,26 @@ impl BindingTable {
         }
     }
 
+    /// Every edge into `node`, static ones first: the dense index of the state
+    /// it comes from, its classes, and whether it is dynamic. Cold path: it
+    /// scans the whole table, for an inspector asking about one node.
+    pub fn edges_into(&self, node: NodeId, out: &mut Vec<(u32, DirtyClass, bool)>) {
+        out.clear();
+        for (edges, runs, dynamic) in [
+            (&self.edges, &self.runs, false),
+            (&self.dynamic, &self.dynamic_runs, true),
+        ] {
+            for (state, run) in runs.iter().enumerate() {
+                let start = run.start as usize;
+                for edge in &edges[start..start + run.len as usize] {
+                    if edge.node == node {
+                        out.push((state as u32, edge.class, dynamic));
+                    }
+                }
+            }
+        }
+    }
+
     /// The reactive-path counters (section 10.3), for an inspector, a test, or a
     /// benchmark comparing the static / mixed / dynamic paths.
     #[inline]

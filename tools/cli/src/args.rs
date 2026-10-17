@@ -122,7 +122,7 @@ pub enum Command {
     /// Read a state of, or record input from, the game `viso run` is playing.
     #[command(subcommand)]
     Game(GameCommand),
-    /// Inspect what the running app shows: its nodes, their boxes, semantics and source.
+    /// Inspect the running app: its nodes and their source, what it holds for them, what it drew.
     #[command(subcommand)]
     Inspect(InspectCommand),
     /// Manage the iOS Simulator runtimes and the profiles `viso run ios` runs on.
@@ -618,19 +618,24 @@ pub struct DeviceArgs {
 /// What `viso inspect` looks at.
 #[derive(Debug, Subcommand)]
 pub enum InspectCommand {
+    /// Show every node the app shows, window by window, with its box,
+    /// semantics and the source that declares it.
+    Tree(TreeArgs),
+    /// Show everything the app holds for the nodes a selector selects:
+    /// resolved layout, style and content, transform chain, dirty classes,
+    /// interaction states, event route, bound states and paint primitives.
+    Node(NodeArgs),
+    /// Show what a window's last frame drew and holds: its counters, draw
+    /// batches, GPU resources and caches.
+    Frame(FrameArgs),
     /// Find the nodes a selector selects, with their box, semantics and the
     /// source that declares them.
     Query(QueryArgs),
 }
 
-/// What `viso inspect query` selects, and in which app.
+/// The app `viso inspect` asks.
 #[derive(Debug, Args)]
-pub struct QueryArgs {
-    /// The selector: a type (`Button`, a component), `#name`, `.Style`,
-    /// `[attribute]` or `[attribute=value]`, joined by a space (descendant)
-    /// or `>` (child); several separated by `,`.
-    #[arg(value_name = "SELECTOR")]
-    pub selector: String,
+pub struct InspectedApp {
     /// The app to inspect: the `viso run` session on this machine when
     /// omitted, the session of a target, or `headless`, a headless run of
     /// the app built for it.
@@ -644,6 +649,46 @@ pub struct QueryArgs {
     /// name under `tests/ui/` (`--target headless` only).
     #[arg(long, value_name = "NAME")]
     pub scenario: Option<String>,
+}
+
+/// Which app's tree `viso inspect tree` shows.
+#[derive(Debug, Args)]
+pub struct TreeArgs {
+    #[command(flatten)]
+    pub app: InspectedApp,
+}
+
+/// What `viso inspect node` details, and in which app.
+#[derive(Debug, Args)]
+pub struct NodeArgs {
+    /// The selector, as `viso inspect query` takes it, or a node ID
+    /// (`<index>:<generation>`).
+    #[arg(value_name = "SELECTOR")]
+    pub selector: String,
+    #[command(flatten)]
+    pub app: InspectedApp,
+}
+
+/// Which window's frame `viso inspect frame` shows.
+#[derive(Debug, Args)]
+pub struct FrameArgs {
+    /// The window, by its index in the tree: the first when omitted.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub window: u32,
+    #[command(flatten)]
+    pub app: InspectedApp,
+}
+
+/// What `viso inspect query` selects, and in which app.
+#[derive(Debug, Args)]
+pub struct QueryArgs {
+    /// The selector: a type (`Button`, a component), `#name`, `.Style`,
+    /// `[attribute]` or `[attribute=value]`, joined by a space (descendant)
+    /// or `>` (child); several separated by `,`.
+    #[arg(value_name = "SELECTOR")]
+    pub selector: String,
+    #[command(flatten)]
+    pub app: InspectedApp,
 }
 
 /// What `viso profile` samples, and for how long.
@@ -1155,6 +1200,9 @@ impl Command {
             Command::Config(ConfigCommand::Validate) => "config validate",
             Command::Game(GameCommand::Peek(_)) => "game peek",
             Command::Game(GameCommand::Record(_)) => "game record",
+            Command::Inspect(InspectCommand::Tree(_)) => "inspect tree",
+            Command::Inspect(InspectCommand::Node(_)) => "inspect node",
+            Command::Inspect(InspectCommand::Frame(_)) => "inspect frame",
             Command::Inspect(InspectCommand::Query(_)) => "inspect query",
             Command::Ios(IosCommand::List(_)) => "ios list",
             Command::Ios(IosCommand::Use(_)) => "ios use",

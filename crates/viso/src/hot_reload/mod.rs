@@ -94,7 +94,7 @@ use viso_view::dev::wire::{
     ScopedReset, Stage, WindowGeometry,
 };
 use viso_view::headless::Reported;
-use viso_view::inspect::{self, Census, CensusView, WindowCensus};
+use viso_view::inspect::{self, Census, CensusView, InspectAsk, InspectorCaps, WindowCensus};
 use viso_view::profile::FrameSample;
 use viso_view::{
     GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
@@ -125,6 +125,19 @@ const RESTORE_WAIT: Duration = Duration::from_secs(5);
 
 /// The compiler schema every view of the build compiled against.
 const SCHEMA: SchemaFingerprint = SchemaFingerprint(viso_ui_macros::__schema_fingerprint!());
+
+/// What the inspector answers: every ask, and the GPU's frame times where
+/// the backend measures them.
+const INSPECTOR: InspectorCaps = {
+    let caps = InspectorCaps::TREE
+        .with(InspectorCaps::NODES)
+        .with(InspectorCaps::FRAME);
+    if <viso_gpu::Backend as viso_gpu::GpuBackend>::TIMES_FRAMES {
+        caps.with(InspectorCaps::GPU_TIME)
+    } else {
+        caps
+    }
+};
 
 /// The domains this runtime applies.
 const APPLIES: Domains = Domains::NONE
@@ -163,9 +176,9 @@ pub(crate) struct HotReloadSession {
     /// Whether the host asked for a snapshot, taken at the next frame
     /// boundary.
     snapshot_asked: bool,
-    /// The host's questions for the app's census, answered at the next
+    /// The host's questions for the app's inspector, answered at the next
     /// frame boundary.
-    inspects: Vec<u32>,
+    inspects: Vec<(u32, InspectAsk)>,
     /// The captures the host started and ended since the driver last took
     /// them, in order.
     profiles: Vec<ProfileAsk>,
@@ -1028,8 +1041,8 @@ impl HotReloadSession {
                     self.snapshot_asked = true;
                     changed = true;
                 }
-                Incoming::Inspect(id) => {
-                    self.inspects.push(id);
+                Incoming::Inspect { id, ask } => {
+                    self.inspects.push((id, ask));
                     changed = true;
                 }
                 Incoming::Profile { id, hud } => self.profiles.push(ProfileAsk::Start { id, hud }),
@@ -1185,12 +1198,21 @@ impl HotReloadSession {
         if std::mem::take(&mut self.snapshot_asked) {
             self.capture(windows);
         }
-        if !self.inspects.is_empty() {
-            let census = self.census(windows).to_bytes();
+        for (id, ask) in std::mem::take(&mut self.inspects) {
+            let window = |at: u32| windows.get(at as usize);
+            let answer = match &ask {
+                InspectAsk::Census => self.census(windows).to_bytes(),
+                InspectAsk::Nodes { window: at, nodes } => window(*at)
+                    .map(|ws| crate::inspect::nodes(ws, nodes))
+                    .unwrap_or_default()
+                    .to_bytes(),
+                InspectAsk::Frame { window: at } => window(*at)
+                    .map(|ws| crate::inspect::frame(ws, *at, assets))
+                    .unwrap_or_default()
+                    .to_bytes(),
+            };
             if let Some(link) = &mut self.link {
-                for id in std::mem::take(&mut self.inspects) {
-                    link.send_census(id, census.clone());
-                }
+                link.send_inspection(id, answer);
             }
         }
     }
@@ -1202,7 +1224,7 @@ impl HotReloadSession {
             return;
         };
         if let Some(ws) = windows.first() {
-            runner.after_frame(ws, &|| self.window_census(ws), cx);
+            runner.after_frame(ws, &|| self.window_census(ws), None, cx);
         }
         let lines = runner.take_lines();
         if let Some(link) = &mut self.link {
@@ -2089,6 +2111,44 @@ mod tests {
         mounted(mount_counter)
     }
 
+    #[test]
+    fn an_inspector_is_told_what_a_node_holds_and_what_a_frame_drew() {
+        let mut ws = counter();
+        let mut records = Vec::new();
+        take_mounts(&mut records);
+        for &(key, id) in records.iter().flat_map(|record| &record.cells) {
+            ws.states.bind_key(id, key);
+        }
+        let root = ws.root.expect("mounted");
+        let label = children(&ws.store, root)[0];
+        let asked = [
+            (label.index(), label.generation()),
+            (label.index(), label.generation() + 1),
+        ];
+        let details = crate::inspect::nodes(&ws, &asked);
+        let [text] = &details.nodes[..] else {
+            panic!("a stale node has no detail: {details:?}");
+        };
+        let [binding] = &text.bindings[..] else {
+            panic!("not one binding: {:?}", text.bindings);
+        };
+        assert!(binding.key.is_some(), "a declared state");
+        assert_eq!(binding.value, "0");
+        assert!(!binding.dynamic);
+        assert_eq!(text.groups[0].name, "layout");
+
+        let column = crate::inspect::nodes(&ws, &[(root.index(), root.generation())]);
+        let layout = &column.nodes[0].groups[0].properties;
+        assert!(
+            layout.contains(&("width".to_owned(), "120dp".to_owned())),
+            "{layout:?}"
+        );
+
+        let frame = crate::inspect::frame(&ws, 0, &Assets::default());
+        assert_eq!(frame.counters[0], ("nodes".to_owned(), 3));
+        assert!(frame.batches.is_empty(), "no device drew it");
+    }
+
     /// A window whose build `mount`s one view, its mount recorded.
     fn mounted(mount: impl FnOnce(&mut BuildCx<'_>) -> NodeId) -> WindowState {
         let mut ws = WindowState::new(WindowId(1));
@@ -2853,6 +2913,10 @@ mod tests {
 
     #[cfg(target_vendor = "apple")]
     #[test]
+    #[cfg_attr(
+        feature = "headless",
+        ignore = "the headless backend compiles no shader source, so it refuses none"
+    )]
     fn a_shader_the_backend_refuses_refuses_the_revision_with_its_view() {
         let mut ws = shaded();
         let (mut session, mut host, mut edits) = session(&mut ws, SHADER_CARD);

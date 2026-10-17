@@ -244,6 +244,9 @@ pub trait GpuBackend {
     /// The shading language [`PipelineDesc::code`] must be in for this backend.
     const SHADER_LANG: crate::ShaderLang;
 
+    /// Whether [`time_frames`](Self::time_frames) measures anything.
+    const TIMES_FRAMES: bool = false;
+
     /// Create a GPU buffer.
     fn create_buffer(&mut self, desc: &BufferDesc) -> BufferId;
     /// Create a texture.

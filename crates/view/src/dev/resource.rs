@@ -186,6 +186,12 @@ impl Blobs {
         }
     }
 
+    /// Drops `blob`, its bytes read: the same bytes sent again assemble
+    /// anew.
+    pub fn release(&mut self, blob: BlobRef) {
+        self.drop_blob(blob.hash);
+    }
+
     fn drop_blob(&mut self, hash: u64) {
         if let Some(blob) = self.blobs.remove(&hash) {
             self.staged -= match blob {

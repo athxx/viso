@@ -796,10 +796,21 @@ a precise diagnostic what it cannot express.
 Goal: a running app (host, simulator, emulator, browser) can be inspected, profiled
 and traced from the CLI and from Studio over the same services.
 
-- [ ] `inspect --run [<target>]` / `inspect --attach <session>`: inspector channel on
-      the dev runtime transport; tree, props, layout, styles, events; `query` works
-      against it (C2.7).
-- [ ] Inspector capabilities negotiated (§24.2): what a runtime reports it supports.
+- [x] `inspect tree|node|frame` (§24.4) over the dev runtime transport (`Inspect` ask
+      and answer, protocol 17) and headless (`VISO_HEADLESS_DETAIL`): tree with
+      source, node detail (resolved layout/style/content, boxes, transform chain,
+      dirty classes, interaction states, event route, bound states with names, types,
+      values and declarations from the source table, paint span), frame detail
+      (counters, batches, GPU resources, caches, assets).
+- [x] Inspector capabilities negotiated (§24.2): the runtime hello reports
+      `tree`/`nodes`/`frame`/`gpu_time`/`events`; results carry `inspector` and
+      `unavailable`; a missing one is `INSPECT_UNSUPPORTED`.
+- [ ] Inspector event stream: input routes, focus changes and dirty reasons as they
+      happen (`events` capability), shown by `viso inspect` attached.
+- [ ] Bare `viso inspect` / `inspect --attach <session>` / `inspect --run [<target>]`:
+      an attached inspector following the app (tree changes, events) until it leaves.
+- [ ] Per-node batch attribution: which draw batch each of a node's primitives lands
+      in (the renderer does not expose paint-stream index to batch slot yet).
 - [x] `profile [<target>]` (§25): frame time, per-span CPU time, GPU time,
       layout/paint/reactive/text/upload counts, draw calls; `profile` events;
       `--frames <n>`, `--seconds <s>`; dev session and `headless [--scenario]`.

@@ -1,6 +1,6 @@
-//! `viso inspect query` end to end. A selector that does not parse, and a
-//! project with no session, fail before anything is built. Querying a
-//! headless run builds a probe app, so that test is ignored by default:
+//! `viso inspect` end to end. A selector that does not parse, and a
+//! project with no session, fail before anything is built. Inspecting a
+//! headless run builds a probe app, so those tests are ignored by default:
 //!
 //! `cargo test -p viso-cli --test inspect -- --ignored --nocapture`.
 
@@ -122,6 +122,12 @@ fn a_selector_that_does_not_parse_exits_2_before_anything_runs() {
     let out = viso(&s.0, &["inspect", "query", "Button >", "--json"]);
     assert_eq!(code(&out), 2);
     assert!(stdout(&out).contains(r#""code":"INSPECT_SELECTOR""#));
+
+    // `node` takes a selector or a node ID.
+    let out = viso(&s.0, &["inspect", "node", "Button >"]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    let out = viso(&s.0, &["inspect", "node", "12:1"]);
+    assert_eq!(code(&out), 3, "an ID parses: {}", stderr(&out));
 }
 
 #[test]
@@ -139,6 +145,16 @@ fn without_a_session_a_query_exits_3() {
 
     let out = viso(&s.0, &["inspect", "query", "#save", "--scenario", "login"]);
     assert_eq!(code(&out), 2, "a scenario plays only headless");
+
+    for args in [&["inspect", "tree"][..], &["inspect", "frame"]] {
+        let out = viso(&s.0, args);
+        assert_eq!(code(&out), 3, "{args:?}: {}", stderr(&out));
+    }
+    let out = viso(
+        &s.0,
+        &["inspect", "frame", "--target", "headless", "--device", "x"],
+    );
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
 }
 
 #[test]
@@ -198,15 +214,19 @@ fn a_session_answers_with_its_census_and_the_source_of_its_views() {
                 bytes: (40, 90),
                 start: (3, 9),
                 end: (3, 59),
+                bindings: Vec::new(),
             }],
             regional: Vec::new(),
+            states: Vec::new(),
         }],
     };
     let mut reply = Encoder::new();
     reply.write_u8(3);
     reply.write_bytes(&census.to_bytes());
     reply.write_bytes(&sources.to_bytes());
-    let (endpoint, served) = session(reply.into_bytes());
+    reply.write_varint(1);
+    let reply = reply.into_bytes();
+    let (endpoint, served) = session(reply.clone());
     s.lock("host", &endpoint);
     let out = viso(&s.0, &["inspect", "query", "Button.Primary", "--json"]);
     assert_eq!(code(&out), 0, "{}", stdout(&out));
@@ -219,6 +239,46 @@ fn a_session_answers_with_its_census_and_the_source_of_its_views() {
     );
     let request = served.join().unwrap();
     assert!(String::from_utf8_lossy(&request).contains("secret"));
+
+    // The tree, with what the app's inspector tells and does not.
+    let (endpoint, served) = session(reply.clone());
+    s.lock("host", &endpoint);
+    let out = viso(&s.0, &["inspect", "tree", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let json = stdout(&out);
+    assert!(
+        json.contains(r#""windows":[{"window":0,"nodes":[{"node_id":"4:2""#),
+        "{json}"
+    );
+    assert!(json.contains(r#""parent":null"#), "{json}");
+    assert!(
+        json.contains(
+            r#""inspector":["tree"],"unavailable":["nodes","frame","gpu_time","events"]"#
+        ),
+        "{json}"
+    );
+    served.join().unwrap();
+    let (endpoint, served) = session(reply.clone());
+    s.lock("host", &endpoint);
+    let out = viso(&s.0, &["inspect", "tree"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Button#save.Primary  src/home.vs:3:9"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(stdout(&out).ends_with("2 nodes\n"), "{}", stdout(&out));
+    served.join().unwrap();
+
+    // An inspector that tells no frame is not asked one.
+    let (endpoint, served) = session(reply);
+    s.lock("host", &endpoint);
+    let out = viso(&s.0, &["inspect", "frame"]);
+    assert_eq!(code(&out), 3, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("INSPECT_UNSUPPORTED"), "{err}");
+    assert!(err.contains("it tells: tree"), "{err}");
+    served.join().unwrap();
 }
 
 #[test]
@@ -334,4 +394,151 @@ fn a_headless_run_is_queried_and_scenarios_select_by_the_same_selectors() {
     assert_eq!(code(&out), 1);
     let said = format!("{}{}", stdout(&out), stderr(&out));
     assert!(said.contains("no (#missing) is shown"), "{said}");
+}
+
+#[test]
+#[ignore = "builds a probe app headless"]
+fn a_headless_run_shows_its_tree_its_nodes_and_its_frame() {
+    let app = support::project(
+        "inspect-detail",
+        &[
+            (
+                "src/main.rs",
+                b"use viso::prelude::*;\nstruct App;\nimpl Application for App {\n    \
+                  fn new(_cx: &mut AppCx) -> Self { App }\n    \
+                  fn build(&mut self, cx: &mut BuildCx<'_>) { viso::view!(\"app.vs\")(cx); }\n}\n\
+                  fn main() { viso::run::<App>(); }\n",
+            ),
+            (
+                "src/app.vs",
+                b"export component App {\n    state taps = 0;\n    view {\n        Column {\n            \
+                  node count: Text { width: 160dp; height: 20dp; text: format(\"{t} taps\", t: taps); }\n            \
+                  node tap: Button { width: 120dp; height: 40dp; text: \"Tap\"; on click { taps += 1; } }\n        }\n    }\n}\n",
+            ),
+            (
+                "tests/ui/taps.tape",
+                b"click \"Tap\"\nclick \"Tap\"\nexpect \"Tap\"\n",
+            ),
+        ],
+    );
+    let target = app.parent().unwrap().join("target");
+    let viso = |args: &[&str]| -> Output {
+        Command::new(env!("CARGO_BIN_EXE_viso"))
+            .args(args)
+            .current_dir(&app)
+            .env("CARGO_TARGET_DIR", &target)
+            .output()
+            .unwrap()
+    };
+
+    let out = viso(&["inspect", "tree", "--target", "headless"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    // The app's root sits under the window's caption bar, its nodes a
+    // level deeper.
+    let column = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("Column (App)  src/app.vs:4:9"))
+        .unwrap_or_else(|| panic!("no Column: {text}"));
+    let indent = column.len() - column.trim_start().len();
+    let child = " ".repeat(indent + 2);
+    assert!(
+        text.contains(&format!("\n{child}Text#count  src/app.vs:5:13")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("\n{child}Button#tap  src/app.vs:6:13")),
+        "{text}"
+    );
+
+    let out = viso(&["inspect", "tree", "--target", "headless", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let json = stdout(&out);
+    assert!(
+        json.contains(
+            r#""inspector":["tree","nodes","frame","gpu_time"],"unavailable":["events"]"#
+        ),
+        "{json}"
+    );
+
+    // The bound text names its state, its type and its value after two taps.
+    let out = viso(&[
+        "inspect",
+        "node",
+        "#count",
+        "--target",
+        "headless",
+        "--scenario",
+        "taps",
+        "--json",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let json = stdout(&out);
+    let result = events(&json, "result");
+    let [result] = &result[..] else {
+        panic!("not one result: {json}");
+    };
+    assert!(result.contains(r#""layout":{"kind":"leaf""#), "{result}");
+    assert!(
+        result.contains(r#""properties":["text"],"state":"taps","type":"I64","declared":{"file":"src/app.vs","line":2,"column_utf16":5}"#),
+        "{result}"
+    );
+    assert!(result.contains(r#""value":"2""#), "{result}");
+    assert!(result.contains(r#""invalidates":["#), "{result}");
+    assert!(result.contains(r#""world":{"x":"#), "{result}");
+    assert!(result.contains(r#""own":[{"kind":"glyphs""#), "{result}");
+
+    let out = viso(&["inspect", "node", "#tap", "--target", "headless"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("  route    "), "{text}");
+    assert!(text.contains("pointer"), "{text}");
+    assert!(text.contains("1 node matches `#tap`"), "{text}");
+
+    let out = viso(&[
+        "inspect",
+        "node",
+        "#count",
+        "--target",
+        "headless",
+        "--scenario",
+        "taps",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("  binding  text ← taps: I64 = 2  src/app.vs:2:5"),
+        "{text}"
+    );
+
+    let out = viso(&["inspect", "node", "999:9", "--target", "headless"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("no node matches `999:9`"),
+        "{}",
+        stdout(&out)
+    );
+
+    let out = viso(&["inspect", "frame", "--target", "headless", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let json = stdout(&out);
+    assert!(json.contains(r#""counters":{"nodes":"#), "{json}");
+    assert!(json.contains(r#""draw_calls":"#), "{json}");
+    assert!(json.contains(r#""batches":[{"pipeline":"#), "{json}");
+    assert!(
+        json.contains(r#""group":"gpu","name":"pipelines""#),
+        "{json}"
+    );
+    assert!(json.contains(r#""group":"cache","name":"fonts""#), "{json}");
+
+    let out = viso(&["inspect", "frame", "--target", "headless"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.starts_with("window 0: "), "{text}");
+    assert!(text.contains("\nbatches\n"), "{text}");
+    assert!(text.contains("\nresources\n"), "{text}");
+
+    let out = viso(&["inspect", "frame", "--window", "3", "--target", "headless"]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(stderr(&out).contains("no window 3"), "{}", stderr(&out));
 }

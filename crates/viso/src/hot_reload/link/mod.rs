@@ -49,6 +49,7 @@ use viso_view::dev::wire::{
 use viso_view::dev::wire::{
     DEV_RUNTIME_ENV, FrameError, Reject, accept_host, read_body, read_frame, write_frame,
 };
+use viso_view::inspect::InspectAsk;
 
 /// What this runtime runs on, for the host's per-target work.
 const RUNTIME_TARGET: RuntimeTarget = if cfg!(target_os = "ios") {
@@ -90,8 +91,11 @@ pub(crate) enum Incoming {
     Game(GameQuery),
     /// The host asks for the app's snapshot.
     Snapshot,
-    /// The host asks for the app's census, for its question `id`.
-    Inspect(u32),
+    /// The host asks the app's inspector `ask`, for its question `id`.
+    Inspect {
+        id: u32,
+        ask: InspectAsk,
+    },
     /// The host starts a capture of the app's frames, the frame time drawn
     /// over its windows with `hud`, or ends one.
     Profile {
@@ -119,9 +123,9 @@ enum Outgoing {
     /// A snapshot's bytes, its windows and how long capturing them took,
     /// written as blob chunks and the message naming them.
     Snapshot(Vec<u8>, Vec<WindowGeometry>, u64),
-    /// A census's bytes, answering the question `id`, written as blob
+    /// An inspection's bytes, answering the question `id`, written as blob
     /// chunks and the message naming them.
-    Census(u32, Vec<u8>),
+    Inspection(u32, Vec<u8>),
 }
 
 /// An asset a patch names, as its blob decoded.
@@ -175,6 +179,7 @@ fn launch_identity(schema: SchemaFingerprint, capabilities: Domains) -> Option<R
         capabilities,
         target: RUNTIME_TARGET,
         shader_lang: <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG,
+        inspector: super::INSPECTOR,
     })
 }
 
@@ -215,7 +220,7 @@ fn host_frame(body: &[u8], blobs: &mut Blobs) -> Frame {
         Ok(HostMessage::Failure { file, lines }) => Incoming::Failure { file, lines },
         Ok(HostMessage::Game(query)) => Incoming::Game(query),
         Ok(HostMessage::Snapshot) => Incoming::Snapshot,
-        Ok(HostMessage::Inspect { id }) => Incoming::Inspect(id),
+        Ok(HostMessage::Inspect { id, ask }) => Incoming::Inspect { id, ask },
         Ok(HostMessage::Profile { id, hud }) => Incoming::Profile { id, hud },
         Ok(HostMessage::ProfileEnd { id }) => Incoming::ProfileEnd(id),
         Ok(HostMessage::Scenario {
@@ -260,13 +265,13 @@ fn write_outgoing<E>(
                 capture_us,
             })
         }
-        Outgoing::Census(id, bytes) => {
+        Outgoing::Inspection(id, bytes) => {
             for chunk in blob_chunks(&bytes) {
                 write(&RuntimeMessage::Blob(chunk))?;
             }
             write(&RuntimeMessage::Inspect {
                 id,
-                census: BlobRef::of(&bytes),
+                answer: BlobRef::of(&bytes),
             })
         }
     }
@@ -368,11 +373,11 @@ impl DevLink {
         }
     }
 
-    /// Hands the writer the census `bytes` answering the question `id`:
+    /// Hands the writer the inspection `bytes` answering the question `id`:
     /// never dropped, so this waits while the queue is full.
-    pub(crate) fn send_census(&mut self, id: u32, bytes: Vec<u8>) {
+    pub(crate) fn send_inspection(&mut self, id: u32, bytes: Vec<u8>) {
         if let Some(outgoing) = &self.outgoing {
-            let _ = outgoing.send(Outgoing::Census(id, bytes));
+            let _ = outgoing.send(Outgoing::Inspection(id, bytes));
         }
     }
 
@@ -558,6 +563,7 @@ pub(crate) mod fake {
             capabilities: super::super::APPLIES,
             target: RUNTIME_TARGET,
             shader_lang: <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG,
+            inspector: super::super::INSPECTOR,
         }
     }
 

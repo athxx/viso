@@ -1282,6 +1282,12 @@ impl NodeStore {
         );
     }
 
+    /// A node's layout parameters: its kind, its size request and what it
+    /// arranges its children by. Cold path, for an inspector.
+    pub fn layout_input(&self, id: NodeId) -> LayoutInput {
+        self.layout[id.index() as usize]
+    }
+
     /// A node's paint style.
     #[inline]
     pub fn style(&self, id: NodeId) -> BoxStyle {

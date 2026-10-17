@@ -16,6 +16,7 @@
 //! path: a census is taken only when a tool asks.
 
 mod census;
+mod detail;
 mod selector;
 mod source;
 mod tree;
@@ -24,8 +25,13 @@ pub use census::{
     Census, CensusMount, CensusNode, CensusView, NodeOrigin, NodeSemantics, WindowCensus, census,
     static_nodes,
 };
+pub use detail::{
+    BatchDetail, ChainLink, FrameDetail, InspectAsk, InspectorCaps, MAX_ASKED_NODES, NodeBinding,
+    NodeDetail, NodeDetails, PaintSpan, PropertyGroup, ResourceDetail, RouteStop, WindowDetail,
+    dirty_names, node_detail, state_names,
+};
 pub use selector::{Attribute, Selector, SelectorError};
-pub use source::{FileSources, NodeSource, SourceTable};
+pub use source::{FileSources, NodeSource, SourceTable, StateSource};
 pub use tree::{Inspected, Inspection, resolve};
 // The types a census is made of.
 pub use viso_ui::{InspectKind, Rect, Role, SemanticState};
@@ -83,6 +89,7 @@ mod tests {
             bytes: (20, 52),
             start: (3, 5),
             end: (6, 6),
+            bindings: Vec::new(),
         }
     }
 
@@ -126,6 +133,7 @@ mod tests {
                     source("Text", None, &[], &[]),
                 ],
                 regional: vec![((0, 0, 0), source("Row", Some("row"), &[], &[]))],
+                states: Vec::new(),
             }],
         };
         (census, table)

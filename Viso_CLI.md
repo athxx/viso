@@ -1938,7 +1938,7 @@ resource cache
 hot-reload diagnostics
 ```
 
-### 24.3 Headless query
+### 24.3 Query
 
 不打开 GUI：
 
@@ -1956,6 +1956,21 @@ viso inspect query '#save_button' --json
 - 两半：运行时给出 census（每个窗口按先序的全部节点：父节点、绘制种类、窗口坐标的 box、是否显示、焦点、semantics，以及由 `.vs` View 挂载的节点在该 View 中的来源——静态序号，或挂载它的 region/arm/item），工具给出 source table（每个可挂载 `.vs` 文件编译出的每个节点：类型、名字、Style、以它为根的组件、声明它的组件与声明的 span），两者按文件与序号连接后求值 selector。`viso_view::inspect` 是 CLI、UI Scenario 与 Studio 共用的这一服务（census、source table、连接、selector），`viso_dsl::inspect` 从编译结果生成 source table；census 只在工具询问时生成，不在 release 的帧路径上；
 - Dev Session：经 `viso run` 的控制端点询问（与 `viso game` 同一端点），session 把请求经 dev 通道转给首个连接的 runtime，runtime 在下一帧边界生成 census（以 blob 发送），session 用它为各挂载规划编辑所用的编译结果生成 source table，一并回答；不带 `--device` 时取该 target 唯一的 session，有多个时为用法错误并列出各 device；`--target headless` 以 headless 构建 app（同 `viso test ui`），先播放 `--scenario <name>`（`tests/ui/<name>.tape`，否则只等 app 安定），在 Scenario 结束时由运行写出 census（`VISO_HEADLESS_CENSUS`），source table 由包的源码编译；Scenario 失败为 `TEST_EXPECTATION`，运行崩溃为 `RUN_TEST_CRASHED`；
 - 结果：`--json` 一条 `result`：`{selector, matches: [{node_id, window, type, name, styles, components, symbol, source_span, bounds, kind, shown, focusable, focused, semantics}]}`，`node_id` 为 `<index>:<generation>`，`symbol` 为声明它的组件路径加节点名（无名时为类型）：`home::Home::save`，`source_span` 与诊断的位置同形（`file`、`byte_start`、`byte_end`、`line`、`column_utf16`、`end_line`、`end_column_utf16`），`bounds` 为 `{x, y, width, height}`，`semantics` 为 `{role, label, hint, value, heading_level, checked, selected, expanded, range_value, range}` 或 `null`；不由 View 挂载的节点 `type`、`name`、`symbol`、`source_span` 为 `null`；人类输出每个匹配一行（`Button#save.Primary  src/home.vs:16:13  [x, y w×h]  button "Save"`），末行为匹配数；census 或 table 无法解码、超出控制链路帧上限为 `INSPECT_ANSWER_INVALID`（exit 7）。
+
+### 24.4 Tree, node and frame
+
+```bash
+viso inspect tree [--target <t>] [--device <id>] [--scenario <name>]
+viso inspect node <selector|index:generation> [--target <t>] …
+viso inspect frame [--window <n>] [--target <t>] …
+```
+
+与 `query` 同一来源（Dev Session 的控制端点，或 `--target headless` 的 headless 运行），同一 census 与 source table 的连接。Runtime 在 hello 中报告其 Inspector 能告诉什么（`tree`、`nodes`、`frame`、`gpu_time`、`events`）；每个结果附 `inspector`（报告的能力）与 `unavailable`（其余）。所需能力不在其中为 `INSPECT_UNSUPPORTED`（exit 3）。
+
+- `tree`：每个窗口按先序的全部节点，人类输出按深度缩进，每节点一行（同 `query` 的行），末行为节点数；`--json` 一条 `result`：`{windows: [{window, nodes: [<query 的 match 字段>…, parent]}], inspector, unavailable}`，`parent` 为父节点的 `node_id` 或 `null`；
+- `node`：selector（或 `<index>:<generation>`）所选节点，再向 app 询问它们的 detail（`InspectAsk::Nodes`，按窗口分批，一批至多 4096 个；headless 运行在结束时写出窗口全部节点的 detail，`VISO_HEADLESS_DETAIL`）。每个节点：`layout` / `style` / `content` 三组解析后的属性（如 `kind`、`axis`、`gap`、`padding`、`width`、`height`；`background`、`radius`、`opacity`、`hidden`、`hit_test`；内容种类、`font_size`、`color`、`soft_wrap`、`tint`），`world`（窗口坐标）与 `local` box，`transform_chain`（有平移或滚动的祖先，自根向下），`dirty`（当前 dirty class），`states`（hovered、pressed、focused…），`event_route`（自根向下有 pointer / key handler 或可聚焦的节点），`bindings`（使它失效的 cell：source table 给出的属性名、state 名、类型与声明位置，cell 的当前值，它失效的 class，是否 dynamic 边），`paint`（其在 paint stream 中的 span 与它自己绘制的 primitive 种类）。人类输出每节点一行加缩进的各项；census 之后已卸载的节点 `detail` 为 `null`（人类输出 `gone since the census`）；
+- `frame`：窗口 `--window`（默认 0，不存在为用法错误）最后一帧：`counters`（nodes、primitives、draw_calls、batches、instances、upload_bytes、culled_primitives 等），`batches`（提交顺序：pipeline、`start`/`count`、clip、offscreen、cost），`resources`（`group` 为 `gpu`：pipelines、buffers、gradient LUT、mask page、offscreen targets、各 glyph atlas pool；`cache`：fonts、shaped runs、atlas 中的 glyph、asset decode/upload 计数；`asset`：每个资源的状态 `wanted` / `encoded` / `decoded WxH` / `resident WxH` / `vector WxH`；附 `bytes`、`budget`、`note`）；
+- detail 在 runtime 的下一帧边界由该窗口最后一帧留下的状态生成，只在工具询问时分配，不在帧路径上；解码失败为 `INSPECT_ANSWER_INVALID`（exit 7）。
 
 ---
 

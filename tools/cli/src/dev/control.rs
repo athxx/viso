@@ -20,11 +20,12 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use viso_ende::{Decoder, Encoder};
+use viso_ende::{Decode, Decoder, Encode, Encoder};
 use viso_view::dev::wire::{
     DEV_PROTOCOL_VERSION, GameAsk, MAX_RECORD_TICKS, Message, RecordSpan, WireError, read_frame,
     same_token, write_frame,
 };
+use viso_view::inspect::{InspectAsk, InspectorCaps};
 
 use crate::error;
 
@@ -66,8 +67,8 @@ pub enum ControlAsk {
     /// About the game of a `.vs` file: a path from the project root, with or
     /// without the extension, or the file's stem.
     Game { game: String, ask: GameAsk },
-    /// For what the app shows.
-    Inspect,
+    /// For what the app's inspector answers `ask` with.
+    Inspect(InspectAsk),
     /// To play the UI scenario `script` against the app's first window.
     Scenario { script: String },
     /// For the samples of the next `frames` frames the app draws, or of
@@ -89,9 +90,13 @@ pub enum ControlReply {
     },
     /// The recorded tape, binary.
     Tape { file: String, tape: Vec<u8> },
-    /// The app's census and the table of the views it mounts, each in its
-    /// wire form.
-    Inspected { census: Vec<u8>, sources: Vec<u8> },
+    /// The inspector's answer, the table of the views the app mounts, each
+    /// in its wire form, and what the inspector answers.
+    Inspected {
+        answer: Vec<u8>,
+        sources: Vec<u8>,
+        inspector: InspectorCaps,
+    },
     /// The report of the scenario played, a line per step and its end, as
     /// a headless run writes it.
     Played { lines: Vec<String> },
@@ -192,7 +197,7 @@ fn serve(mut stream: TcpStream, token: &str, deliver: &dyn Fn(ControlCall) -> bo
     let (reply, answer) = mpsc::channel();
     let ended = match request.ask {
         ControlAsk::Game { .. } => GAME_NOT_RUNNING,
-        ControlAsk::Inspect | ControlAsk::Scenario { .. } | ControlAsk::Profile { .. } => {
+        ControlAsk::Inspect(_) | ControlAsk::Scenario { .. } | ControlAsk::Profile { .. } => {
             ENV_NO_DEV_SESSION
         }
     };
@@ -269,7 +274,10 @@ impl Message for ControlRequest {
         enc.write_u16(DEV_PROTOCOL_VERSION);
         write_string(enc, &self.token);
         let (game, ask) = match &self.ask {
-            ControlAsk::Inspect => return enc.write_u8(3),
+            ControlAsk::Inspect(ask) => {
+                enc.write_u8(3);
+                return ask.encode(enc);
+            }
             ControlAsk::Scenario { script } => {
                 enc.write_u8(4);
                 return write_string(enc, script);
@@ -330,7 +338,7 @@ impl Message for ControlRequest {
             3 => {
                 return Ok(ControlRequest {
                     token,
-                    ask: ControlAsk::Inspect,
+                    ask: ControlAsk::Inspect(InspectAsk::decode(dec)?),
                 });
             }
             4 => {
@@ -385,10 +393,15 @@ impl Message for ControlReply {
                 write_string(enc, file);
                 enc.write_bytes(tape);
             }
-            ControlReply::Inspected { census, sources } => {
+            ControlReply::Inspected {
+                answer,
+                sources,
+                inspector,
+            } => {
                 enc.write_u8(3);
-                enc.write_bytes(census);
+                enc.write_bytes(answer);
                 enc.write_bytes(sources);
+                enc.write_varint(u64::from(inspector.bits()));
             }
             ControlReply::Profiled { trace } => {
                 enc.write_u8(5);
@@ -446,8 +459,11 @@ impl Message for ControlReply {
                 }
             }
             3 => ControlReply::Inspected {
-                census: dec.read_bytes()?.to_vec(),
+                answer: dec.read_bytes()?.to_vec(),
                 sources: dec.read_bytes()?.to_vec(),
+                inspector: InspectorCaps::from_bits(
+                    u32::try_from(dec.read_varint()?).map_err(|_| malformed(dec))?,
+                ),
             },
             4 => {
                 let count = dec.read_varint()?;
@@ -578,8 +594,9 @@ mod tests {
                 },
             }),
             viso_view::dev::wire::encode(&ControlReply::Inspected {
-                census: vec![1, 2],
+                answer: vec![1, 2],
                 sources: vec![3],
+                inspector: InspectorCaps::TREE,
             }),
             viso_view::dev::wire::encode(&ControlReply::Refused {
                 code: GAME_BUSY.into(),
@@ -641,7 +658,14 @@ mod tests {
             },
             ControlRequest {
                 token: "t".into(),
-                ask: ControlAsk::Inspect,
+                ask: ControlAsk::Inspect(InspectAsk::Census),
+            },
+            ControlRequest {
+                token: "t".into(),
+                ask: ControlAsk::Inspect(InspectAsk::Nodes {
+                    window: 0,
+                    nodes: vec![(3, 1)],
+                }),
             },
             ControlRequest {
                 token: "t".into(),
@@ -666,8 +690,9 @@ mod tests {
                 tape: vec![1, 2, 3],
             },
             ControlReply::Inspected {
-                census: vec![1, 2],
+                answer: vec![1, 2],
                 sources: Vec::new(),
+                inspector: InspectorCaps::TREE.with(InspectorCaps::FRAME),
             },
             ControlReply::Played {
                 lines: vec![
@@ -687,7 +712,7 @@ mod tests {
         }
         let long = ControlRequest {
             token: "t".repeat(MAX_FIELD + 1),
-            ask: ControlAsk::Inspect,
+            ask: ControlAsk::Inspect(InspectAsk::Census),
         };
         assert_eq!(
             ControlRequest::from_frame(&viso_view::dev::wire::encode(&long)),

@@ -29,8 +29,9 @@ use std::time::{Duration, Instant};
 
 use viso_project::Target;
 use viso_view::headless::{
-    Action, CENSUS_ENV, Expectation, FRAMES_ENV, HeadlessSurface, REPORT_ENV, Reported, SCRIPT_ENV,
-    SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, Script, Selector, VIEW_ENV, is_snapshot_name,
+    Action, CENSUS_ENV, DETAIL_ENV, Expectation, FRAMES_ENV, HeadlessSurface, REPORT_ENV, Reported,
+    SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, Script, Selector, VIEW_ENV,
+    is_snapshot_name,
 };
 use viso_view::inspect::SourceTable;
 use viso_view::profile::PROFILE_ENV;
@@ -62,6 +63,7 @@ const WITHHELD: &[&str] = &[
     VIEW_ENV,
     SOURCES_ENV,
     CENSUS_ENV,
+    DETAIL_ENV,
     PROFILE_ENV,
 ];
 
@@ -78,6 +80,9 @@ const SOURCES: &str = "sources.bin";
 
 /// The name of the file a run writes its census to.
 const CENSUS: &str = "census.bin";
+
+/// The name of the file a run writes the detail of its window to.
+const DETAIL: &str = "detail.bin";
 
 /// The name of the file a run writes the samples of its frames to.
 const PROFILE: &str = "profile.ende";
@@ -157,6 +162,9 @@ pub(super) struct Case {
     pub queries: bool,
     /// Whether its run writes its census once the scenario ends.
     pub census: bool,
+    /// Whether its run writes the detail of its window's nodes and last
+    /// frame once the scenario ends.
+    pub detail: bool,
     /// Whether its run writes the samples of every frame it draws.
     pub profile: bool,
     pub kind: Kind,
@@ -230,6 +238,7 @@ impl Case {
             ends_in_snapshot,
             queries,
             census: false,
+            detail: false,
             profile: false,
             kind: Kind::Scenario,
         })
@@ -254,6 +263,7 @@ impl Case {
             ends_in_snapshot: true,
             queries: false,
             census: false,
+            detail: false,
             profile: false,
             kind: Kind::Component {
                 path: component,
@@ -275,6 +285,7 @@ impl Case {
             ends_in_snapshot: false,
             queries: false,
             census: false,
+            detail: false,
             profile: false,
             kind: Kind::Bare,
         }
@@ -347,6 +358,12 @@ impl Played {
     /// Where the run wrote its census, when its case asked for one.
     pub fn census(&self) -> PathBuf {
         self.dir.join(CENSUS)
+    }
+
+    /// Where the run wrote the detail of its window, when its case asked
+    /// for it.
+    pub fn detail(&self) -> PathBuf {
+        self.dir.join(DETAIL)
     }
 
     /// Where the run wrote the samples of its frames, when its case asked
@@ -617,6 +634,9 @@ fn run(at: &Launch<'_>, index: usize, case: &Case, stop: &Mutex<bool>) -> Played
     }
     if case.census {
         command.env(CENSUS_ENV, dir.join(CENSUS));
+    }
+    if case.detail {
+        command.env(DETAIL_ENV, dir.join(DETAIL));
     }
     if case.profile {
         command.env(PROFILE_ENV, dir.join(PROFILE));

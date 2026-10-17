@@ -64,6 +64,8 @@ pub mod audio;
 mod environment;
 #[cfg(feature = "headless")]
 mod headless;
+#[cfg(any(feature = "hot-reload", feature = "headless"))]
+mod inspect;
 mod persist;
 mod profile;
 #[cfg(any(feature = "headless", feature = "hot-reload"))]
@@ -1738,7 +1740,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         #[cfg(feature = "hot-reload")]
         self.hot_reload.adopt(|| cx.loop_waker(), &mut ws);
         #[cfg(feature = "headless")]
-        self.harness.adopt(&ws);
+        self.harness.adopt(&mut ws);
         self.windows.push(ws);
     }
 
@@ -2424,7 +2426,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         #[cfg(feature = "hot-reload")]
                         self.hot_reload.adopt(|| cx.loop_waker(), &mut ws);
                         #[cfg(feature = "headless")]
-                        self.harness.adopt(&ws);
+                        self.harness.adopt(&mut ws);
                         self.windows.push(ws);
                     }
                 }
@@ -2715,7 +2717,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 #[cfg(feature = "headless")]
                 if let (Some(script), Some(ws)) = (&mut self.script, self.windows.first()) {
                     let mounts = self.harness.mounts();
-                    script.after_frame(ws, &|| headless::census(ws, mounts), cx);
+                    let assets = &self.assets;
+                    script.after_frame(
+                        ws,
+                        &|| headless::census(ws, mounts),
+                        Some(&|| inspect::window_detail(ws, assets)),
+                        cx,
+                    );
                 }
                 #[cfg(feature = "hot-reload")]
                 self.hot_reload.play(&self.windows, cx);

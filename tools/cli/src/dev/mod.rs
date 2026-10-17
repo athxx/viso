@@ -85,7 +85,7 @@ use viso_view::dev::wire::{
     blob_chunks, source_hash,
 };
 use viso_view::headless::Reported;
-use viso_view::inspect::SourceTable;
+use viso_view::inspect::{InspectAsk, SourceTable};
 
 pub use control::{Control, ControlAsk, ControlCall, ControlDeliver, ControlReply};
 pub use link::{Deliver, Expect, LinkEvent, Traffic};
@@ -868,7 +868,7 @@ impl DevSession {
                 &format!("the app dropped {count} dev messages: `viso run` read too slowly"),
             ),
             RuntimeMessage::Game(answer) => self.answer(at, answer),
-            RuntimeMessage::Inspect { id, census } => self.inspected(at, id, census),
+            RuntimeMessage::Inspect { id, answer } => self.inspected(at, id, answer),
             RuntimeMessage::Scenario { id, line } => self.played(at, id, line),
             RuntimeMessage::Profile {
                 id,
@@ -1210,7 +1210,7 @@ impl DevSession {
     pub fn control(&mut self, call: ControlCall, out: &mut Output) {
         match call.ask {
             ControlAsk::Game { game, ask } => self.game(&game, ask, call.reply, out),
-            ControlAsk::Inspect => self.inspect(call.reply),
+            ControlAsk::Inspect(ask) => self.inspect(ask, call.reply),
             ControlAsk::Scenario { script } => self.play(&script, call.reply),
             ControlAsk::Profile { frames, millis } => self.profile(frames, millis, call.reply),
         }
@@ -1284,9 +1284,9 @@ impl DevSession {
         SourceTable { files }.to_bytes()
     }
 
-    /// Asks the first runtime connected for its census, which
+    /// Asks the first runtime connected what `ask` asks, which
     /// [`inspected`](Self::inspected) answers.
-    fn inspect(&mut self, reply: Sender<ControlReply>) {
+    fn inspect(&mut self, ask: InspectAsk, reply: Sender<ControlReply>) {
         let Some(runtime) = self.runtimes.first_mut() else {
             let _ = reply.send(ControlReply::refused(
                 control::ENV_NO_DEV_SESSION,
@@ -1296,7 +1296,11 @@ impl DevSession {
         };
         let id = self.next_query;
         self.next_query = self.next_query.wrapping_add(1);
-        if runtime.writer.send(HostMessage::Inspect { id }).is_err() {
+        if runtime
+            .writer
+            .send(HostMessage::Inspect { id, ask })
+            .is_err()
+        {
             let _ = reply.send(ControlReply::refused(
                 control::ENV_NO_DEV_SESSION,
                 "the app is not connected to `viso run`",
@@ -1306,9 +1310,10 @@ impl DevSession {
         runtime.inspecting.push((id, reply));
     }
 
-    /// Answers the `viso inspect` that asked runtime `at` for the census
-    /// `census` names, with the table of the views it mounts.
-    fn inspected(&mut self, at: usize, id: u32, census: BlobRef) {
+    /// Answers the `viso inspect` that asked runtime `at` with the answer
+    /// `answer` names, the table of the views it mounts and what its
+    /// inspector can tell.
+    fn inspected(&mut self, at: usize, id: u32, answer: BlobRef) {
         let runtime = &mut self.runtimes[at];
         let Some(index) = runtime
             .inspecting
@@ -1318,30 +1323,35 @@ impl DevSession {
             return;
         };
         let (_, reply) = runtime.inspecting.swap_remove(index);
-        let Some(census) = runtime.blobs.take(census) else {
+        let inspector = runtime.hello.inspector;
+        let taken = runtime.blobs.take(answer);
+        // An answer is read once; the same bytes may come again.
+        runtime.blobs.release(answer);
+        let Some(answer) = taken else {
             let _ = reply.send(ControlReply::refused(
                 control::INSPECT_ANSWER_INVALID,
-                "the app's census did not arrive whole",
+                "the app's answer did not arrive whole",
             ));
             return;
         };
         let sources = self.source_table(at);
         // What the reply holds besides the two fits in a few bytes.
-        let answer = if census.len() + sources.len() > MAX_FRAME - 64 {
+        let reply_with = if answer.len() + sources.len() > MAX_FRAME - 64 {
             ControlReply::refused(
                 control::INSPECT_ANSWER_INVALID,
                 format!(
-                    "the app's tree outgrew the control link: {} bytes",
-                    census.len() + sources.len()
+                    "the app's answer outgrew the control link: {} bytes",
+                    answer.len() + sources.len()
                 ),
             )
         } else {
             ControlReply::Inspected {
-                census: census.to_vec(),
+                answer: answer.to_vec(),
                 sources,
+                inspector,
             }
         };
-        let _ = reply.send(answer);
+        let _ = reply.send(reply_with);
     }
 
     /// Relays what `viso game` asks about the game `game` names to the
@@ -2176,6 +2186,8 @@ mod tests {
                 RuntimeTarget::AndroidEmulator => viso_view::dev::wire::ShaderLang::SpirV,
                 _ => viso_view::dev::wire::ShaderLang::Msl,
             },
+            inspector: viso_view::inspect::InspectorCaps::TREE
+                .with(viso_view::inspect::InspectorCaps::NODES),
         }
     }
 
@@ -2578,13 +2590,19 @@ mod tests {
         let (reply, answer) = mpsc::channel();
         f.dev.control(
             ControlCall {
-                ask: ControlAsk::Inspect,
+                ask: ControlAsk::Inspect(InspectAsk::Census),
                 reply,
             },
             &mut f.out,
         );
         let sent: Vec<HostMessage> = f.sent.try_iter().collect();
-        let [HostMessage::Inspect { id }] = &sent[..] else {
+        let [
+            HostMessage::Inspect {
+                id,
+                ask: InspectAsk::Census,
+            },
+        ] = &sent[..]
+        else {
             panic!("not asked: {sent:?}");
         };
         let census = |file: &str| Census {
@@ -2618,16 +2636,18 @@ mod tests {
         }
         f.runtime(RuntimeMessage::Inspect {
             id: *id,
-            census: BlobRef::of(&bytes),
+            answer: BlobRef::of(&bytes),
         });
         let Ok(ControlReply::Inspected {
-            census: relayed,
+            answer: relayed,
             sources,
+            inspector,
         }) = answer.try_recv()
         else {
             panic!("not answered");
         };
         assert_eq!(relayed, bytes);
+        assert_eq!(inspector, f.dev.runtimes[0].hello.inspector);
         let table = SourceTable::from_bytes(&sources).unwrap();
         let [file] = &table.files[..] else {
             panic!("not one view: {table:?}");
@@ -2640,12 +2660,37 @@ mod tests {
         let selected = Selector::parse("Column").unwrap().select(&inspection);
         assert_eq!(selected, [0]);
 
+        // The same answer again, for the next question, arrives whole too.
+        let (reply, again) = mpsc::channel();
+        f.dev.control(
+            ControlCall {
+                ask: ControlAsk::Inspect(InspectAsk::Census),
+                reply,
+            },
+            &mut f.out,
+        );
+        let sent: Vec<HostMessage> = f.sent.try_iter().collect();
+        let [HostMessage::Inspect { id, .. }] = &sent[..] else {
+            panic!("not asked: {sent:?}");
+        };
+        for chunk in blob_chunks(&bytes) {
+            f.runtime(RuntimeMessage::Blob(chunk));
+        }
+        f.runtime(RuntimeMessage::Inspect {
+            id: *id,
+            answer: BlobRef::of(&bytes),
+        });
+        assert!(
+            matches!(again.try_recv(), Ok(ControlReply::Inspected { answer, .. }) if answer == bytes),
+            "not answered again"
+        );
+
         // An app that exits with the question open refuses it, and without
         // an app there is no one to ask.
         let (reply, open) = mpsc::channel();
         f.dev.control(
             ControlCall {
-                ask: ControlAsk::Inspect,
+                ask: ControlAsk::Inspect(InspectAsk::Census),
                 reply,
             },
             &mut f.out,
@@ -2655,7 +2700,7 @@ mod tests {
         let (reply, answer) = mpsc::channel();
         f.dev.control(
             ControlCall {
-                ask: ControlAsk::Inspect,
+                ask: ControlAsk::Inspect(InspectAsk::Census),
                 reply,
             },
             &mut f.out,

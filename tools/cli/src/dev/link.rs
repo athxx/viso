@@ -286,6 +286,7 @@ mod tests {
             capabilities: Domains::NONE,
             target: RuntimeTarget::DesktopHost,
             shader_lang: viso_view::dev::wire::ShaderLang::Msl,
+            inspector: viso_view::inspect::InspectorCaps::TREE,
         }
     }
 

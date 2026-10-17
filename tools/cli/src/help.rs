@@ -414,12 +414,59 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
         "inspect",
         &[
             (
-                "viso inspect query '#save'",
-                "the node named `save` in the running app",
+                "viso inspect tree",
+                "every node the running app shows, with its source",
             ),
             (
-                "viso inspect query 'Button' --target headless --json",
-                "every button of a headless run, as JSON events",
+                "viso inspect node '#save'",
+                "what the app holds for the node named `save`",
+            ),
+            (
+                "viso inspect frame --target headless --json",
+                "a headless run's last frame, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "inspect tree",
+        &[
+            (
+                "viso inspect tree",
+                "the running app's nodes, indented by depth",
+            ),
+            (
+                "viso inspect tree --target headless --scenario login",
+                "a headless run's nodes after the `login` scenario",
+            ),
+        ],
+    ),
+    (
+        "inspect node",
+        &[
+            (
+                "viso inspect node '#save'",
+                "layout, style, bindings and paint of the node named `save`",
+            ),
+            (
+                "viso inspect node 12:1 --json",
+                "a node by its ID, as JSON events",
+            ),
+            (
+                "viso inspect node 'Toolbar>Button' --target headless",
+                "the buttons right under a toolbar, in a headless run",
+            ),
+        ],
+    ),
+    (
+        "inspect frame",
+        &[
+            (
+                "viso inspect frame",
+                "the running app's last frame: counters, batches, resources",
+            ),
+            (
+                "viso inspect frame --window 1 --json",
+                "the second window's frame, as JSON events",
             ),
         ],
     ),
@@ -790,6 +837,21 @@ const NOTES: &[(&str, &str)] = &[
         "inspect",
         "It asks the app of this project's running `viso run` session, or a headless run\n\
          of it with `--target headless`.",
+    ),
+    (
+        "inspect node",
+        "Takes a selector as `viso inspect query` does, or a node ID `<index>:<generation>`.\n\
+         Each node shows its resolved layout, style and content, its box in the window and\n\
+         its own, the offsets of its ancestors, the classes it is dirty for, its\n\
+         interaction states, the handlers its events reach, the states bound to it with\n\
+         their value and declaration, and its span of the paint stream. No match is not an\n\
+         error.",
+    ),
+    (
+        "inspect frame",
+        "Counters are those of the window's last frame; batches are its draw calls in\n\
+         submission order; resources are the GPU memory, caches and assets the window\n\
+         holds, with their budget where one bounds them.",
     ),
     (
         "inspect query",

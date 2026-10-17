@@ -110,6 +110,21 @@ impl AssetPayload {
     }
 }
 
+/// How far along a resource of a table is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AssetState {
+    /// A node shows it; no bytes of it are at hand.
+    Wanted,
+    /// Its encoded bytes wait to decode.
+    Encoded { bytes: u64 },
+    /// A raster decoded, not uploaded yet, of `size` pixels.
+    Decoded { size: [f32; 2] },
+    /// A raster resident as a texture of `size` pixels.
+    Resident { size: [f32; 2] },
+    /// A vector scene of `size`, drawn as paths.
+    Vector { size: [f32; 2] },
+}
+
 /// One resource of the table.
 #[derive(Debug, Clone)]
 pub(crate) struct AssetEntry {
@@ -207,6 +222,33 @@ impl AssetTable {
             }
             _ => None,
         })
+    }
+
+    /// Every resource the table knows and how far along it is, ascending by
+    /// id. Cold path, for an inspector.
+    pub fn states(&self) -> Vec<(ResourceId, AssetState)> {
+        let mut out: Vec<(ResourceId, AssetState)> = self
+            .entries
+            .iter()
+            .map(|(id, e)| {
+                let state = match (&e.texture, &e.payload, &e.bytes) {
+                    (Some((_, _, size)), ..) => AssetState::Resident { size: *size },
+                    (None, Some((_, AssetPayload::Vector(scene))), _) => {
+                        AssetState::Vector { size: scene.size }
+                    }
+                    (None, Some((_, AssetPayload::Raster(image))), _) => {
+                        AssetState::Decoded { size: image.size() }
+                    }
+                    (None, None, Some(bytes)) => AssetState::Encoded {
+                        bytes: bytes.len() as u64,
+                    },
+                    (None, None, None) => AssetState::Wanted,
+                };
+                (*id, state)
+            })
+            .collect();
+        out.sort_unstable_by_key(|(id, _)| id.0);
+        out
     }
 
     /// Whether the table holds `id` in any state.

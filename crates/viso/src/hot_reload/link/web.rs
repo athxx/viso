@@ -140,9 +140,9 @@ impl DevLink {
         self.write(Outgoing::Snapshot(bytes, windows, capture_us));
     }
 
-    /// Sends the census `bytes` answering the question `id`.
-    pub(crate) fn send_census(&mut self, id: u32, bytes: Vec<u8>) {
-        self.write(Outgoing::Census(id, bytes));
+    /// Sends the inspection `bytes` answering the question `id`.
+    pub(crate) fn send_inspection(&mut self, id: u32, bytes: Vec<u8>) {
+        self.write(Outgoing::Inspection(id, bytes));
     }
 
     /// The next host frame the socket delivered.

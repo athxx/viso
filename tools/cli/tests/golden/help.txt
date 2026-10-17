@@ -33,7 +33,7 @@ LANGUAGE
 TEST / DEBUG
   test        Run the project's tests: unit, UI, game
   snapshot    Take the snapshots UI scenarios take, and hold them to their goldens
-  inspect     Inspect what the running app shows: its nodes, their boxes, semantics and source
+  inspect     Inspect the running app: its nodes and their source, what it holds for them, what it drew
   profile     Sample the frames the running app draws: their time, phase by phase, and the work they count
   game        Read a state of, or record input from, the game `viso run` is playing
 
@@ -1333,15 +1333,19 @@ Global options:
       --target-dir <PATH>  Put build output under PATH instead of `target/`
 
 $ viso inspect --help
-Inspect what the running app shows: its nodes, their boxes, semantics and source
+Inspect the running app: its nodes and their source, what it holds for them, what it drew
 
 Usage: viso inspect [OPTIONS] <COMMAND>
 
 Examples:
-  viso inspect query '#save'                            # the node named `save` in the running app
-  viso inspect query 'Button' --target headless --json  # every button of a headless run, as JSON events
+  viso inspect tree                            # every node the running app shows, with its source
+  viso inspect node '#save'                    # what the app holds for the node named `save`
+  viso inspect frame --target headless --json  # a headless run's last frame, as JSON events
 
 Commands:
+  tree   Show every node the app shows, window by window, with its box, semantics and the source that declares it
+  node   Show everything the app holds for the nodes a selector selects: resolved layout, style and content, transform chain, dirty classes, interaction states, event route, bound states and paint primitives
+  frame  Show what a window's last frame drew and holds: its counters, draw batches, GPU resources and caches
   query  Find the nodes a selector selects, with their box, semantics and the source that declares them
 
 Options:
@@ -1362,6 +1366,105 @@ Global options:
 Notes:
   It asks the app of this project's running `viso run` session, or a headless run
   of it with `--target headless`.
+
+$ viso inspect tree --help
+Show every node the app shows, window by window, with its box, semantics and the source that declares it
+
+Usage: viso inspect tree [OPTIONS]
+
+Examples:
+  viso inspect tree                                     # the running app's nodes, indented by depth
+  viso inspect tree --target headless --scenario login  # a headless run's nodes after the `login` scenario
+
+Options:
+      --target <TARGET>  The app to inspect: the `viso run` session on this machine when omitted, the session of a target, or `headless`, a headless run of the app built for it [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+      --device <ID>      The simulator or emulator profile of the session (`ios` and `android` only): the only session of the target when omitted
+      --scenario <NAME>  The UI scenario a headless run plays before it is inspected, by its name under `tests/ui/` (`--target headless` only)
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso inspect node --help
+Show everything the app holds for the nodes a selector selects: resolved layout, style and content, transform chain, dirty classes, interaction states, event route, bound states and paint primitives
+
+Usage: viso inspect node [OPTIONS] <SELECTOR>
+
+Examples:
+  viso inspect node '#save'                             # layout, style, bindings and paint of the node named `save`
+  viso inspect node 12:1 --json                         # a node by its ID, as JSON events
+  viso inspect node 'Toolbar>Button' --target headless  # the buttons right under a toolbar, in a headless run
+
+Arguments:
+  <SELECTOR>  The selector, as `viso inspect query` takes it, or a node ID (`<index>:<generation>`)
+
+Options:
+      --target <TARGET>  The app to inspect: the `viso run` session on this machine when omitted, the session of a target, or `headless`, a headless run of the app built for it [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+      --device <ID>      The simulator or emulator profile of the session (`ios` and `android` only): the only session of the target when omitted
+      --scenario <NAME>  The UI scenario a headless run plays before it is inspected, by its name under `tests/ui/` (`--target headless` only)
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  Takes a selector as `viso inspect query` does, or a node ID `<index>:<generation>`.
+  Each node shows its resolved layout, style and content, its box in the window and
+  its own, the offsets of its ancestors, the classes it is dirty for, its
+  interaction states, the handlers its events reach, the states bound to it with
+  their value and declaration, and its span of the paint stream. No match is not an
+  error.
+
+$ viso inspect frame --help
+Show what a window's last frame drew and holds: its counters, draw batches, GPU resources and caches
+
+Usage: viso inspect frame [OPTIONS]
+
+Examples:
+  viso inspect frame                    # the running app's last frame: counters, batches, resources
+  viso inspect frame --window 1 --json  # the second window's frame, as JSON events
+
+Options:
+      --window <N>       The window, by its index in the tree: the first when omitted [default: 0]
+      --target <TARGET>  The app to inspect: the `viso run` session on this machine when omitted, the session of a target, or `headless`, a headless run of the app built for it [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+      --device <ID>      The simulator or emulator profile of the session (`ios` and `android` only): the only session of the target when omitted
+      --scenario <NAME>  The UI scenario a headless run plays before it is inspected, by its name under `tests/ui/` (`--target headless` only)
+  -h, --help             Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  Counters are those of the window's last frame; batches are its draw calls in
+  submission order; resources are the GPU memory, caches and assets the window
+  holds, with their budget where one bounds them.
 
 $ viso inspect query --help
 Find the nodes a selector selects, with their box, semantics and the source that declares them

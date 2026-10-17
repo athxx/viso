@@ -67,6 +67,7 @@ pub use glyph_atlas::{AtlasAlloc, GlyphAtlas};
 pub use gradient_lut::{GradientLutAtlas, LutAlloc, LutKey};
 pub use inspect::{
     BatchId, BatchPipeline, InspectBatch, InspectBatches, InspectPrimitives, PrimitiveRange,
+    RenderResources,
 };
 // The mask model and retained mask cache (§14.4): coverage realizations stored
 // tight (R8, ROI-sized, page-allocated), keyed so a stable mask is built once.

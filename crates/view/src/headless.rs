@@ -50,6 +50,11 @@ pub const SOURCES_ENV: &str = "VISO_HEADLESS_SOURCES";
 /// [`Census`](crate::inspect::Census) once the scenario ends.
 pub const CENSUS_ENV: &str = "VISO_HEADLESS_CENSUS";
 
+/// The environment variable a path is passed in where the run writes the
+/// [`WindowDetail`](crate::inspect::WindowDetail) of its first window once the
+/// scenario ends: the detail of every node, and its last frame.
+pub const DETAIL_ENV: &str = "VISO_HEADLESS_DETAIL";
+
 /// How many frames a step waits for the app to settle by default: two
 /// seconds of its clock.
 pub const SETTLE_FRAMES: u32 = 120;

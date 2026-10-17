@@ -61,6 +61,9 @@ fn every_command_keeps_the_event_contract() {
         &["export", "solid"],
         &["profile"],
         &["profile", "headless", "--seconds", "1"],
+        &["inspect", "tree"],
+        &["inspect", "node", "Button >"],
+        &["inspect", "frame", "--window", "1"],
         &["clean"],
     ];
     let mut codes = Vec::new();

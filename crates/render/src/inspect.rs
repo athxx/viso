@@ -70,6 +70,32 @@ impl ResourceIndex {
     }
 }
 
+/// What a renderer holds on the device, for an inspector: its pipelines,
+/// the buffers its draws upload into, and the textures it keeps besides the
+/// ones its scene samples (asset images and glyph atlases belong to their
+/// owners). Bytes are allocated sizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RenderResources {
+    /// The built-in pipelines.
+    pub pipelines: u32,
+    /// The user programs installed, and the pipelines they hold.
+    pub programs: u32,
+    pub program_pipelines: u32,
+    /// The instance, vertex and index buffers allocated, and their bytes.
+    pub buffers: u32,
+    pub buffer_bytes: u64,
+    /// The gradient ramp atlas.
+    pub gradient_lut_bytes: u64,
+    /// The clip-mask page, and the masks cached in it.
+    pub mask_page_bytes: u64,
+    pub masks: u32,
+    /// The offscreen targets pooled, their bytes, and the most live at once
+    /// in the last frame.
+    pub transient_targets: u32,
+    pub transient_bytes: u64,
+    pub transient_peak_bytes: u64,
+}
+
 /// A batch's index into the frame's segment list — the stable handle
 /// architecture section 62 names for `BatchId -> pipeline/resources`.
 ///
