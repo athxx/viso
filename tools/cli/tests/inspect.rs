@@ -146,9 +146,37 @@ fn without_a_session_a_query_exits_3() {
     let out = viso(&s.0, &["inspect", "query", "#save", "--scenario", "login"]);
     assert_eq!(code(&out), 2, "a scenario plays only headless");
 
-    for args in [&["inspect", "tree"][..], &["inspect", "frame"]] {
+    for args in [
+        &["inspect", "tree"][..],
+        &["inspect", "frame"],
+        &["inspect", "events"],
+        &["inspect"],
+    ] {
         let out = viso(&s.0, args);
         assert_eq!(code(&out), 3, "{args:?}: {}", stderr(&out));
+    }
+    let out = viso(&s.0, &["inspect", "--attach", "5e55"]);
+    assert_eq!(code(&out), 3, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("has the ID `5e55`"),
+        "{}",
+        stderr(&out)
+    );
+    for args in [
+        &["inspect", "--attach", "5e55", "--target", "ios"][..],
+        &["inspect", "--attach", "5e55", "--run"],
+        &["inspect", "--target", "ios", "tree"],
+        &[
+            "inspect",
+            "events",
+            "--target",
+            "headless",
+            "--seconds",
+            "1",
+        ],
+    ] {
+        let out = viso(&s.0, args);
+        assert_eq!(code(&out), 2, "{args:?}: {}", stderr(&out));
     }
     let out = viso(
         &s.0,
@@ -270,15 +298,21 @@ fn a_session_answers_with_its_census_and_the_source_of_its_views() {
     assert!(stdout(&out).ends_with("2 nodes\n"), "{}", stdout(&out));
     served.join().unwrap();
 
-    // An inspector that tells no frame is not asked one.
-    let (endpoint, served) = session(reply);
-    s.lock("host", &endpoint);
-    let out = viso(&s.0, &["inspect", "frame"]);
-    assert_eq!(code(&out), 3, "{}", stderr(&out));
-    let err = stderr(&out);
-    assert!(err.contains("INSPECT_UNSUPPORTED"), "{err}");
-    assert!(err.contains("it tells: tree"), "{err}");
-    served.join().unwrap();
+    // An inspector that tells no frame, or no events, is not asked them.
+    for args in [
+        &["inspect", "frame"][..],
+        &["inspect", "events"],
+        &["inspect"],
+    ] {
+        let (endpoint, served) = session(reply.clone());
+        s.lock("host", &endpoint);
+        let out = viso(&s.0, args);
+        assert_eq!(code(&out), 3, "{args:?}: {}", stderr(&out));
+        let err = stderr(&out);
+        assert!(err.contains("INSPECT_UNSUPPORTED"), "{err}");
+        assert!(err.contains("it tells: tree"), "{err}");
+        served.join().unwrap();
+    }
 }
 
 #[test]
@@ -456,7 +490,7 @@ fn a_headless_run_shows_its_tree_its_nodes_and_its_frame() {
     let json = stdout(&out);
     assert!(
         json.contains(
-            r#""inspector":["tree","nodes","frame","gpu_time"],"unavailable":["events"]"#
+            r#""inspector":["tree","nodes","frame","gpu_time","events"],"unavailable":[]"#
         ),
         "{json}"
     );
@@ -541,4 +575,66 @@ fn a_headless_run_shows_its_tree_its_nodes_and_its_frame() {
     let out = viso(&["inspect", "frame", "--window", "3", "--target", "headless"]);
     assert_eq!(code(&out), 2, "{}", stderr(&out));
     assert!(stderr(&out).contains("no window 3"), "{}", stderr(&out));
+
+    // The scenario's journal: each click reaches the button, and each tap
+    // marks the count's text for the state it bound.
+    let out = viso(&[
+        "inspect",
+        "events",
+        "--target",
+        "headless",
+        "--scenario",
+        "taps",
+        "--json",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let json = stdout(&out);
+    let inspected = events(&json, "inspect");
+    let downs: Vec<&&str> = inspected
+        .iter()
+        .filter(|e| e.contains(r#""input":"pointer_down""#))
+        .collect();
+    assert_eq!(downs.len(), 2, "{json}");
+    assert!(
+        downs[0].contains(r#""target":{"node_id":"#)
+            && downs[0].contains(r##""label":"Button#tap"}"##),
+        "{}",
+        downs[0]
+    );
+    let taps: Vec<&&str> = inspected
+        .iter()
+        .filter(|e| {
+            e.contains(r#""kind":"dirty""#)
+                && e.contains(r##""label":"Text#count""##)
+                && e.contains(r#""state":"taps""#)
+        })
+        .collect();
+    assert!(
+        taps.iter().any(|e| e.contains(r#""value":"2""#)
+            && e.contains(r#""declared":{"file":"src/app.vs","line":2"#)),
+        "{json}"
+    );
+    assert!(
+        inspected
+            .iter()
+            .any(|e| e.contains(r##""label":"Text#count""##)
+                && e.contains(r#""cause":{"kind":"text"}"#)),
+        "the new count is shaped: {json}"
+    );
+    let result = events(&json, "result");
+    assert!(result[0].contains(r#""ended":null"#), "{}", result[0]);
+
+    let out = viso(&[
+        "inspect",
+        "events",
+        "--target",
+        "headless",
+        "--scenario",
+        "taps",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains(" input  pointer_down ("), "{text}");
+    assert!(text.contains("→ Button#tap "), "{text}");
+    assert!(text.contains("← state taps = 2  src/app.vs:2:5"), "{text}");
 }

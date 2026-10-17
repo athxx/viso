@@ -54,7 +54,7 @@ pub use component::{
 };
 pub use content::{BrushImage, Content, TextRequest};
 pub use context::EventCx;
-pub use dirty::DirtyClass;
+pub use dirty::{DirtyCause, DirtyClass, DirtyMark};
 pub use flush::{
     ADAPTIVE_ROUNDS, AdaptiveCycle, ReactiveCycle, SETTLE_ROUNDS, Unsettled, settle_adaptive,
     settle_states,

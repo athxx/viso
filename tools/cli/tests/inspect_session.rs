@@ -110,7 +110,7 @@ fn a_running_app_is_queried_before_and_after_an_edit() {
             ("src/probe.vs", VIEW.as_bytes()),
         ],
     );
-    let run = Run::start(&app, &[], &[]);
+    let run = Run::start(&app, &["--inspect"], &[]);
     run.connected();
 
     let result = answered(&app, "Probe > #total", r#""name":"total""#);
@@ -144,10 +144,25 @@ fn a_running_app_is_queried_before_and_after_an_edit() {
         "{frame}"
     );
 
+    // An inspector follows the window through the edit, and the session
+    // reports the same events itself.
+    let target = app.parent().expect("the scratch directory").join("target");
+    let follower = Command::new(env!("CARGO_BIN_EXE_viso"))
+        .args(["inspect", "events", "--seconds", "8", "--json"])
+        .current_dir(&app)
+        .env("CARGO_TARGET_DIR", &target)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("viso runs");
+    std::thread::sleep(Duration::from_secs(1));
+
     // The edit reloads; the query names the node by its new name.
     std::fs::write(
         app.join("src/probe.vs"),
-        VIEW.replace("node total:", "node shown:"),
+        VIEW.replace(
+            "node total: Text { width: 200dp;",
+            "node shown: Text { width: 180dp;",
+        ),
     )
     .expect("probe.vs");
     run.until(Duration::from_secs(120), "the reload", |line| {
@@ -157,6 +172,21 @@ fn a_running_app_is_queried_before_and_after_an_edit() {
     assert!(
         result.contains(r#""symbol":"probe::Probe::shown""#),
         "{result}"
+    );
+    run.until(
+        Duration::from_secs(30),
+        "the session's inspect events",
+        |line| {
+            line.contains(r#""type":"inspect""#) && line.contains(r#""cause":{"kind":"reload"}"#)
+        },
+    );
+    let followed = follower.wait_with_output().expect("the follower ends");
+    assert_eq!(followed.status.code(), Some(0));
+    let json = String::from_utf8_lossy(&followed.stdout);
+    assert!(
+        json.lines().any(|line| line.contains(r#""type":"inspect""#)
+            && line.contains(r#""cause":{"kind":"reload"}"#)),
+        "{json}"
     );
 
     assert_eq!(run.stop(), Some(130));

@@ -350,7 +350,7 @@ gap, and CI can run all of it headless.
       project root).
 - [x] No `run --release` (§13.7): a non-dev `--profile` is a usage error naming
       `viso build --profile <name>`; release verification is `viso build`/`package`.
-- [ ] `--inspect` and `--profile-frame` land with the inspector channel and frame
+- [x] `--inspect` and `--profile-frame` land with the inspector channel and frame
       profiler (C6).
 
 ### C1.8 — Headless target (§3.4)
@@ -805,10 +805,14 @@ and traced from the CLI and from Studio over the same services.
 - [x] Inspector capabilities negotiated (§24.2): the runtime hello reports
       `tree`/`nodes`/`frame`/`gpu_time`/`events`; results carry `inspector` and
       `unavailable`; a missing one is `INSPECT_UNSUPPORTED`.
-- [ ] Inspector event stream: input routes, focus changes and dirty reasons as they
-      happen (`events` capability), shown by `viso inspect` attached.
-- [ ] Bare `viso inspect` / `inspect --attach <session>` / `inspect --run [<target>]`:
-      an attached inspector following the app (tree changes, events) until it leaves.
+- [x] Inspector event stream (§24.5): input routes, focus changes and each direct
+      dirty mark with its cause (input, state with name/value/declaration, computed,
+      animation, task, reload, text, asset, window, layout), from a bounded journal
+      the runtime keeps while asked (`viso-ui` `inspect` feature); `inspect events`
+      over a session or a headless scenario; `inspect` JSON events.
+- [x] Bare `viso inspect` / `inspect --attach <session>` / `inspect --run` (§24.1):
+      attach, describe the app, follow its first window until interrupted; the session
+      ID is published in the dev-session lock.
 - [ ] Per-node batch attribution: which draw batch each of a node's primitives lands
       in (the renderer does not expose paint-stream index to batch slot yet).
 - [x] `profile [<target>]` (§25): frame time, per-span CPU time, GPU time,
@@ -823,8 +827,8 @@ and traced from the CLI and from Studio over the same services.
       headless raster report it today.
 - [ ] HUD checked on screen (golden of a window with `--profile-frame`); only its
       layout is tested.
-- [ ] `run --inspect`: the session opens the inspector channel to the app it
-      launches, the same one `inspect --attach` uses.
+- [x] `run --inspect`: the session follows its first runtime's first window over its
+      own control endpoint, the same journal `inspect --attach` follows.
 - [x] Device profiles for mobile performance (simulator vs emulator caveats reported
       in the result).
 - [ ] `viso studio [--target]` (§26): launches Studio against the project, sharing the

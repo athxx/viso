@@ -29,9 +29,9 @@ use std::time::{Duration, Instant};
 
 use viso_project::Target;
 use viso_view::headless::{
-    Action, CENSUS_ENV, DETAIL_ENV, Expectation, FRAMES_ENV, HeadlessSurface, REPORT_ENV, Reported,
-    SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, Script, Selector, VIEW_ENV,
-    is_snapshot_name,
+    Action, CENSUS_ENV, DETAIL_ENV, EVENTS_ENV, Expectation, FRAMES_ENV, HeadlessSurface,
+    REPORT_ENV, Reported, SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, Script, Selector,
+    VIEW_ENV, is_snapshot_name,
 };
 use viso_view::inspect::SourceTable;
 use viso_view::profile::PROFILE_ENV;
@@ -64,6 +64,7 @@ const WITHHELD: &[&str] = &[
     SOURCES_ENV,
     CENSUS_ENV,
     DETAIL_ENV,
+    EVENTS_ENV,
     PROFILE_ENV,
 ];
 
@@ -83,6 +84,9 @@ const CENSUS: &str = "census.bin";
 
 /// The name of the file a run writes the detail of its window to.
 const DETAIL: &str = "detail.bin";
+
+/// The name of the file a run writes the journal of its window to.
+const EVENTS: &str = "events.bin";
 
 /// The name of the file a run writes the samples of its frames to.
 const PROFILE: &str = "profile.ende";
@@ -165,6 +169,9 @@ pub(super) struct Case {
     /// Whether its run writes the detail of its window's nodes and last
     /// frame once the scenario ends.
     pub detail: bool,
+    /// Whether its run keeps the journal of its window from its start and
+    /// writes it once the scenario ends.
+    pub events: bool,
     /// Whether its run writes the samples of every frame it draws.
     pub profile: bool,
     pub kind: Kind,
@@ -239,6 +246,7 @@ impl Case {
             queries,
             census: false,
             detail: false,
+            events: false,
             profile: false,
             kind: Kind::Scenario,
         })
@@ -264,6 +272,7 @@ impl Case {
             queries: false,
             census: false,
             detail: false,
+            events: false,
             profile: false,
             kind: Kind::Component {
                 path: component,
@@ -286,6 +295,7 @@ impl Case {
             queries: false,
             census: false,
             detail: false,
+            events: false,
             profile: false,
             kind: Kind::Bare,
         }
@@ -364,6 +374,12 @@ impl Played {
     /// for it.
     pub fn detail(&self) -> PathBuf {
         self.dir.join(DETAIL)
+    }
+
+    /// Where the run wrote the journal of its window, when its case asked
+    /// for it.
+    pub fn events(&self) -> PathBuf {
+        self.dir.join(EVENTS)
     }
 
     /// Where the run wrote the samples of its frames, when its case asked
@@ -637,6 +653,9 @@ fn run(at: &Launch<'_>, index: usize, case: &Case, stop: &Mutex<bool>) -> Played
     }
     if case.detail {
         command.env(DETAIL_ENV, dir.join(DETAIL));
+    }
+    if case.events {
+        command.env(EVENTS_ENV, dir.join(EVENTS));
     }
     if case.profile {
         command.env(PROFILE_ENV, dir.join(PROFILE));

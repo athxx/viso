@@ -94,7 +94,9 @@ use viso_view::dev::wire::{
     ScopedReset, Stage, WindowGeometry,
 };
 use viso_view::headless::Reported;
-use viso_view::inspect::{self, Census, CensusView, InspectAsk, InspectorCaps, WindowCensus};
+use viso_view::inspect::{
+    self, Census, CensusView, EventLog, InspectAsk, InspectorCaps, WindowCensus,
+};
 use viso_view::profile::FrameSample;
 use viso_view::{
     GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
@@ -131,7 +133,8 @@ const SCHEMA: SchemaFingerprint = SchemaFingerprint(viso_ui_macros::__schema_fin
 const INSPECTOR: InspectorCaps = {
     let caps = InspectorCaps::TREE
         .with(InspectorCaps::NODES)
-        .with(InspectorCaps::FRAME);
+        .with(InspectorCaps::FRAME)
+        .with(InspectorCaps::EVENTS);
     if <viso_gpu::Backend as viso_gpu::GpuBackend>::TIMES_FRAMES {
         caps.with(InspectorCaps::GPU_TIME)
     } else {
@@ -1200,6 +1203,22 @@ impl HotReloadSession {
         }
         for (id, ask) in std::mem::take(&mut self.inspects) {
             let window = |at: u32| windows.get(at as usize);
+            if let InspectAsk::Events { window: at, after } = ask {
+                let log = match windows.get_mut(at as usize) {
+                    Some(ws) => ws
+                        .journal
+                        .get_or_insert_with(|| crate::inspect::Journal::follow(&mut ws.store))
+                        .log(at, after),
+                    None => EventLog {
+                        window: at,
+                        ..EventLog::default()
+                    },
+                };
+                if let Some(link) = &mut self.link {
+                    link.send_inspection(id, log.to_bytes());
+                }
+                continue;
+            }
             let answer = match &ask {
                 InspectAsk::Census => self.census(windows).to_bytes(),
                 InspectAsk::Nodes { window: at, nodes } => window(*at)
@@ -1210,6 +1229,7 @@ impl HotReloadSession {
                     .map(|ws| crate::inspect::frame(ws, *at, assets))
                     .unwrap_or_default()
                     .to_bytes(),
+                InspectAsk::Events { .. } => unreachable!("answered above"),
             };
             if let Some(link) = &mut self.link {
                 link.send_inspection(id, answer);
@@ -2147,6 +2167,65 @@ mod tests {
         let frame = crate::inspect::frame(&ws, 0, &Assets::default());
         assert_eq!(frame.counters[0], ("nodes".to_owned(), 3));
         assert!(frame.batches.is_empty(), "no device drew it");
+    }
+
+    #[test]
+    fn a_followed_window_journals_a_bound_state_change_and_focus() {
+        use viso_view::inspect::{Cause, EventKind};
+        let mut ws = counter();
+        let mut records = Vec::new();
+        take_mounts(&mut records);
+        for &(key, id) in records.iter().flat_map(|record| &record.cells) {
+            ws.states.bind_key(id, key);
+        }
+        let root = ws.root.expect("mounted");
+        let label = children(&ws.store, root)[0];
+        let mut journal = crate::inspect::Journal::follow(&mut ws.store);
+        assert!(ws.store.journals_dirty());
+
+        // The counter's count, which the label shows, goes to 5.
+        let (count, _) = records[0]
+            .cells
+            .iter()
+            .map(|&(key, id)| (id, key))
+            .find(|&(id, _)| ws.states.get(id) == Some(StateValue::Int(0)))
+            .expect("the count");
+        ws.states.set(count, StateValue::Int(5));
+        settle(&mut ws);
+        ws.store.set_focused(Some(label));
+        journal.settle(&mut ws.store, &ws.states);
+        let log = journal.log(0, 0);
+        assert_eq!(log.dropped, 0);
+        let dirty: Vec<_> = log
+            .events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::Dirty { node, cause, .. } => Some((*node, cause.clone())),
+                _ => None,
+            })
+            .collect();
+        let Some((_, Cause::State { key, value, .. })) = dirty
+            .iter()
+            .find(|(node, _)| *node == (label.index(), label.generation()))
+        else {
+            panic!("the label was not marked by the count: {dirty:?}");
+        };
+        assert!(key.is_some());
+        assert_eq!(value, "5");
+        assert!(matches!(
+            log.events.last().map(|event| &event.kind),
+            Some(EventKind::Focus {
+                from: None,
+                to: Some(_)
+            })
+        ));
+
+        // Asked again after the last, nothing new; past the bound of a
+        // followed journal it ends.
+        let again = journal.log(0, log.next - 1);
+        assert!(again.events.is_empty());
+        assert_eq!(again.dropped, 0);
+        assert!((0..1_201).any(|_| journal.begin_frame()));
     }
 
     /// A window whose build `mount`s one view, its mount recorded.

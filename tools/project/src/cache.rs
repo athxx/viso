@@ -303,6 +303,9 @@ pub struct LockHolder {
     /// Where the holder takes requests, once it published one: a dev
     /// session's control endpoint, `<address> <token>`.
     pub endpoint: Option<String>,
+    /// The ID of the session the holder runs, published with its endpoint:
+    /// a dev session's, as it reports it.
+    pub session: Option<String>,
 }
 
 impl LockHolder {
@@ -320,6 +323,10 @@ impl LockHolder {
         if let Some(endpoint) = &self.endpoint {
             text.push_str(endpoint);
             text.push('\n');
+            if let Some(session) = &self.session {
+                text.push_str(session);
+                text.push('\n');
+            }
         }
         text
     }
@@ -340,6 +347,11 @@ impl LockHolder {
                 .unwrap_or(0),
             description: lines.next().unwrap_or("unknown").trim().to_string(),
             endpoint: lines
+                .next()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string),
+            session: lines
                 .next()
                 .map(str::trim)
                 .filter(|l| !l.is_empty())
@@ -474,6 +486,7 @@ impl LockGuard {
             acquired_unix: unix_seconds(),
             description: kind.description(),
             endpoint: None,
+            session: None,
         };
         match fs::OpenOptions::new()
             .write(true)
@@ -503,6 +516,7 @@ impl LockGuard {
                         acquired_unix: 0,
                         description: kind.description(),
                         endpoint: None,
+                        session: None,
                     });
                 Err(LockError::Held {
                     path: path.to_owned(),
@@ -545,14 +559,20 @@ impl LockGuard {
     }
 
     /// Names `endpoint` in the lock file as where this holder takes
-    /// requests. The file is replaced whole, so a reader sees the old holder
-    /// or the new one, never a part.
+    /// requests, for the session `session` names when it runs one. The file
+    /// is replaced whole, so a reader sees the old holder or the new one,
+    /// never a part.
     ///
     /// # Errors
     ///
     /// When the file cannot be written; the lock is still held.
-    pub fn publish(&mut self, endpoint: &str) -> Result<(), ConfigDiagnostic> {
+    pub fn publish(
+        &mut self,
+        endpoint: &str,
+        session: Option<&str>,
+    ) -> Result<(), ConfigDiagnostic> {
         self.holder.endpoint = Some(endpoint.to_string());
+        self.holder.session = session.map(str::to_string);
         let staged = self.path.with_extension("lock.new");
         fs::write(&staged, self.holder.encode())
             .and_then(|()| fs::rename(&staged, &self.path))
@@ -910,9 +930,10 @@ mod tests {
         assert!(holder.to_string().starts_with("pid "));
         assert_eq!(holder.endpoint, None);
 
-        guard.publish("127.0.0.1:4000 abc").unwrap();
+        guard.publish("127.0.0.1:4000 abc", Some("5e55")).unwrap();
         let published = LockGuard::holder(&layout, kind).unwrap();
         assert_eq!(published.endpoint.as_deref(), Some("127.0.0.1:4000 abc"));
+        assert_eq!(published.session.as_deref(), Some("5e55"));
         assert_eq!(
             (published.pid, published.acquired_unix),
             (holder.pid, holder.acquired_unix)
@@ -970,12 +991,18 @@ mod tests {
             acquired_unix: 1_700_000_000,
             description: "build cache for `host`".to_string(),
             endpoint: None,
+            session: None,
         };
         assert_eq!(LockHolder::decode(&round_trip.encode()), round_trip);
         let published = LockHolder {
             endpoint: Some("127.0.0.1:4000 abc".to_string()),
-            ..round_trip
+            ..round_trip.clone()
         };
         assert_eq!(LockHolder::decode(&published.encode()), published);
+        let session = LockHolder {
+            session: Some("5e55".to_string()),
+            ..published
+        };
+        assert_eq!(LockHolder::decode(&session.encode()), session);
     }
 }

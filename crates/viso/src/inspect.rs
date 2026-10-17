@@ -1,15 +1,24 @@
 //! The runtime's answers to an inspector past the census: the detail of
-//! chosen nodes of a window, and what a window's last frame drew and holds.
+//! chosen nodes of a window, what a window's last frame drew and holds, and
+//! the journal of what happens in a window while an inspector follows it.
 //!
-//! Both read the window as its last frame left it, at the boundary before
-//! the next one flushes, and allocate fresh: a tool asks, the frame path
-//! never does.
+//! The details read the window as its last frame left it, at the boundary
+//! before the next one flushes, and allocate fresh: a tool asks, the frame
+//! path never does. The journal exists only once an inspector asks for it,
+//! and ends when it stops asking.
+
+use std::collections::VecDeque;
 
 use viso_text::GlyphImageKind;
-use viso_ui::{AssetState, PaintRanges, paint_ranges};
+use viso_ui::{
+    AssetState, DirtyCause, DirtyMark, NodeId, NodeStore, PaintRanges, StateStore, paint_ranges,
+};
 #[cfg(feature = "headless")]
 use viso_view::inspect::WindowDetail;
-use viso_view::inspect::{BatchDetail, FrameDetail, NodeDetails, ResourceDetail, node_detail};
+use viso_view::inspect::{
+    BatchDetail, Cause, EventKind, EventLog, FrameDetail, InspectEvent, NodeDetails,
+    ResourceDetail, node_detail,
+};
 
 use crate::WindowState;
 use crate::assets::Assets;
@@ -243,4 +252,208 @@ pub(crate) fn frame(ws: &WindowState, window: u32, assets: &Assets) -> FrameDeta
         batches,
         resources,
     }
+}
+
+/// What happens in a window while an inspector follows it: the input it
+/// routes, focus moving and each direct dirty mark with its cause, numbered
+/// from 1 and bounded, the oldest dropped first.
+pub(crate) struct Journal {
+    events: VecDeque<InspectEvent>,
+    capacity: usize,
+    /// The number the next event takes.
+    next: u64,
+    /// The frames since the journal started.
+    frame: u64,
+    /// The frames since an inspector last asked; `None` for a journal kept
+    /// to the end of a headless run.
+    idle: Option<u32>,
+    focused: Option<NodeId>,
+    marks: Vec<DirtyMark>,
+}
+
+impl Journal {
+    /// The events a followed window keeps between two asks.
+    #[cfg(feature = "hot-reload")]
+    const FOLLOWED: usize = 8_192;
+    /// The events a headless run keeps for the log it writes at its end.
+    #[cfg(feature = "headless")]
+    const KEPT: usize = 65_536;
+    /// The frames without an ask after which a followed journal ends: about
+    /// twenty seconds of continuous drawing; an idle app draws none.
+    const UNASKED_FRAMES: u32 = 1_200;
+
+    /// Starts following `store`, whose focus is where it is.
+    #[cfg(feature = "hot-reload")]
+    pub(crate) fn follow(store: &mut NodeStore) -> Box<Journal> {
+        Self::start(store, Self::FOLLOWED, Some(0))
+    }
+
+    /// Starts a journal of `store` kept until the run ends.
+    #[cfg(feature = "headless")]
+    pub(crate) fn keep(store: &mut NodeStore) -> Box<Journal> {
+        Self::start(store, Self::KEPT, None)
+    }
+
+    fn start(store: &mut NodeStore, capacity: usize, idle: Option<u32>) -> Box<Journal> {
+        store.journal_dirty(true);
+        Box::new(Journal {
+            events: VecDeque::new(),
+            capacity,
+            next: 1,
+            frame: 0,
+            idle,
+            focused: store.focused(),
+            marks: Vec::new(),
+        })
+    }
+
+    /// Stops recording `store`'s marks: the journal ends.
+    pub(crate) fn end(store: &mut NodeStore) {
+        store.journal_dirty(false);
+    }
+
+    /// A frame begins; whether the journal has gone unasked too long.
+    pub(crate) fn begin_frame(&mut self) -> bool {
+        self.frame += 1;
+        match &mut self.idle {
+            Some(idle) => {
+                *idle += 1;
+                *idle > Self::UNASKED_FRAMES
+            }
+            None => false,
+        }
+    }
+
+    fn push(&mut self, kind: EventKind) {
+        if self.events.len() == self.capacity {
+            self.events.pop_front();
+        }
+        self.events.push_back(InspectEvent {
+            seq: self.next,
+            frame: self.frame,
+            kind,
+        });
+        self.next += 1;
+    }
+
+    /// An input event `input`, at `at` in the window for a pointer, was
+    /// routed through `route`, root first.
+    pub(crate) fn input(&mut self, input: String, at: Option<[f32; 2]>, route: &[NodeId]) {
+        let route = route.iter().map(|&node| id(node)).collect();
+        self.push(EventKind::Input { input, at, route });
+    }
+
+    /// Records what `store` marked since the last call and where its focus
+    /// moved, `states` naming the cells whose bindings fired.
+    pub(crate) fn settle(&mut self, store: &mut NodeStore, states: &StateStore) {
+        // Marks the bound dropped leave a gap in the numbering.
+        self.next += u64::from(store.take_dirty_marks(&mut self.marks));
+        let mut marks = std::mem::take(&mut self.marks);
+        for mark in marks.drain(..) {
+            let cause = match mark.cause {
+                DirtyCause::Other => Cause::Other,
+                DirtyCause::Input => Cause::Input,
+                DirtyCause::State(cell) => Cause::State {
+                    cell: (cell.index(), cell.generation()),
+                    key: states.key_of(cell).map(|key| (key.hi, key.lo)),
+                    value: states
+                        .get(cell)
+                        .map(viso_view::inspect::spell_value)
+                        .unwrap_or_default(),
+                },
+                DirtyCause::Computed => Cause::Computed,
+                DirtyCause::Animation => Cause::Animation,
+                DirtyCause::Task => Cause::Task,
+                DirtyCause::Reload => Cause::Reload,
+                DirtyCause::Text => Cause::Text,
+                DirtyCause::Asset => Cause::Asset,
+                DirtyCause::Window => Cause::Window,
+                DirtyCause::Layout => Cause::Layout,
+            };
+            self.push(EventKind::Dirty {
+                node: id(mark.node),
+                class: mark.class.bits(),
+                cause,
+            });
+        }
+        self.marks = marks;
+        let focused = store.focused();
+        if focused != self.focused {
+            let from = self.focused.map(id);
+            self.focused = focused;
+            self.push(EventKind::Focus {
+                from,
+                to: focused.map(id),
+            });
+        }
+    }
+
+    /// The events of window `window` after number `after`, an inspector
+    /// asking.
+    #[cfg(feature = "hot-reload")]
+    pub(crate) fn log(&mut self, window: u32, after: u64) -> EventLog {
+        if let Some(idle) = &mut self.idle {
+            *idle = 0;
+        }
+        self.read(window, after)
+    }
+
+    /// [`log`](Self::log), read without asking.
+    pub(crate) fn read(&self, window: u32, after: u64) -> EventLog {
+        let events: Vec<InspectEvent> = self
+            .events
+            .iter()
+            .filter(|event| event.seq > after)
+            .cloned()
+            .collect();
+        let first = events.first().map_or(self.next, |event| event.seq);
+        EventLog {
+            window,
+            next: self.next,
+            dropped: first.saturating_sub(after.saturating_add(1)),
+            events,
+        }
+    }
+}
+
+fn id(node: NodeId) -> (u32, u32) {
+    (node.index(), node.generation())
+}
+
+/// What input `sample` is, as a journal names it, and where it is in the
+/// window for a pointer, `scale` its pixels per point: `None` for a pointer
+/// move, which the hover it changes speaks for, and for a copy.
+pub(crate) fn input_name(
+    sample: &viso_runtime::InputSample,
+    scale: f32,
+) -> Option<(String, Option<[f32; 2]>)> {
+    use viso_runtime::{InputSample, PointerPhase};
+    Some(match sample {
+        InputSample::Pointer(p) => {
+            let phase = match p.phase {
+                PointerPhase::Down => "pointer_down",
+                PointerPhase::Up => "pointer_up",
+                PointerPhase::Leave => "pointer_leave",
+                PointerPhase::Cancel => "pointer_cancel",
+                PointerPhase::Move => return None,
+            };
+            (phase.to_owned(), Some([p.x / scale, p.y / scale]))
+        }
+        InputSample::Key(k) => {
+            let phase = match (k.pressed, k.repeat) {
+                (true, false) => "key_down",
+                (true, true) => "key_repeat",
+                (false, _) => "key_up",
+            };
+            (format!("{phase} {:?}", k.key), None)
+        }
+        InputSample::Text(t) => (format!("text {:?}", t.text), None),
+        InputSample::Paste(_) => ("paste".to_owned(), None),
+        InputSample::ImePreedit(_) => ("ime_preedit".to_owned(), None),
+        InputSample::Scroll(s) => (
+            format!("scroll {} {}", s.delta_x / scale, s.delta_y / scale),
+            Some([s.x / scale, s.y / scale]),
+        ),
+        InputSample::Copy(_) => return None,
+    })
 }

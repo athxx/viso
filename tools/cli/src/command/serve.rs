@@ -34,6 +34,7 @@ pub fn run(ctx: &Context<'_>, args: &ServeArgs, out: &mut Output) -> u8 {
         browser: None,
         no_hot_reload: args.no_hot_reload,
         profile_frame: false,
+        inspect: false,
         open: false,
         env: Vec::new(),
         cwd: None,

@@ -180,6 +180,11 @@ impl Stream {
         });
     }
 
+    /// Writes an `inspect` event, its payload as `payload` writes it.
+    pub(super) fn inspect(&mut self, payload: impl FnOnce(&mut JsonWriter)) {
+        self.event("inspect", payload);
+    }
+
     /// Writes a `profile` event, its payload as `payload` writes it.
     pub(super) fn profile(&mut self, payload: impl FnOnce(&mut JsonWriter)) {
         self.event("profile", payload);

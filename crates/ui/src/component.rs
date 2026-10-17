@@ -19,7 +19,7 @@ use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetTable};
 use crate::binding::BindingTable;
 use crate::content::{BrushImage, Content, TextRequest};
 use crate::context::EventCx;
-use crate::dirty::DirtyClass;
+use crate::dirty::{DirtyCause, DirtyClass, DirtyMark};
 use crate::grid::{GridPlacement, GridStyle, GridTracks, TrackSizing};
 use crate::input::{PointerContacts, PointerId};
 use crate::layout::{
@@ -463,6 +463,10 @@ pub struct NodeStore {
     /// Cold: the clients the frame loop advances, each owned by a node.
     /// Empty in a window that runs no game.
     frame_clients: crate::frame_client::FrameClients,
+    /// Cold: the marks recorded while an inspector watches the store; `None`
+    /// while none does, and then a mark records nothing.
+    #[cfg(feature = "inspect")]
+    journal: Option<Box<crate::dirty::DirtyJournal>>,
 }
 
 impl NodeStore {
@@ -2385,6 +2389,10 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
+        #[cfg(feature = "inspect")]
+        if let Some(journal) = &mut self.journal {
+            journal.record(id, class);
+        }
         // Everything lands on the node itself.
         self.dirty[id.index() as usize] |= class;
 
@@ -2663,6 +2671,7 @@ impl NodeStore {
         let mut applied = 0;
         let counters = bindings.counters();
         for &state in changed {
+            let cause = self.set_dirty_cause(DirtyCause::State(state));
             let statics = bindings.for_state(state);
             for edge in statics {
                 self.mark_dirty(edge.node, edge.class);
@@ -2676,8 +2685,54 @@ impl NodeStore {
             }
             counters.record_dynamic_eval(dynamics.len() as u64);
             applied += dynamics.len() as u32;
+            self.set_dirty_cause(cause);
         }
         applied
+    }
+
+    /// Names what the marks from now on are for, in the journal an
+    /// inspector watches; the cause it replaces. Without the `inspect`
+    /// feature, or while no inspector watches, it records nothing.
+    #[inline]
+    pub fn set_dirty_cause(&mut self, cause: DirtyCause) -> DirtyCause {
+        #[cfg(feature = "inspect")]
+        if let Some(journal) = &mut self.journal {
+            return core::mem::replace(&mut journal.cause, cause);
+        }
+        let _ = cause;
+        DirtyCause::Other
+    }
+
+    /// Starts or stops recording each direct mark and its cause, for an
+    /// inspector. Cold path; without the `inspect` feature it does nothing.
+    pub fn journal_dirty(&mut self, on: bool) {
+        #[cfg(feature = "inspect")]
+        match (on, self.journal.is_some()) {
+            (true, false) => self.journal = Some(Box::default()),
+            (false, true) => self.journal = None,
+            _ => {}
+        }
+        let _ = on;
+    }
+
+    /// Whether marks are being recorded.
+    pub fn journals_dirty(&self) -> bool {
+        #[cfg(feature = "inspect")]
+        return self.journal.is_some();
+        #[cfg(not(feature = "inspect"))]
+        false
+    }
+
+    /// Moves the marks recorded since the last drain onto `out`; how many
+    /// the bound dropped meanwhile.
+    pub fn take_dirty_marks(&mut self, out: &mut Vec<DirtyMark>) -> u32 {
+        #[cfg(feature = "inspect")]
+        if let Some(journal) = &mut self.journal {
+            out.append(&mut journal.marks);
+            return core::mem::take(&mut journal.dropped);
+        }
+        let _ = out;
+        0
     }
 
     /// Allocate a node and push its side-storage in lockstep so array indices
@@ -4148,6 +4203,65 @@ mod tests {
             w,
             h,
         }
+    }
+
+    #[cfg(feature = "inspect")]
+    #[test]
+    fn a_watched_store_journals_each_direct_mark_and_its_cause() {
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let leaf = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle::default()).id()
+        };
+        let cell = states.alloc(StateValue::Int(0));
+        let mut bindings = BindingTable::new();
+        bindings.bind(cell, leaf, DirtyClass::PAINT);
+
+        // Unwatched, nothing is recorded and no cause is held.
+        store.mark_dirty(leaf, DirtyClass::LAYOUT);
+        assert_eq!(store.set_dirty_cause(DirtyCause::Input), DirtyCause::Other);
+        let mut marks = Vec::new();
+        assert_eq!(store.take_dirty_marks(&mut marks), 0);
+        assert!(marks.is_empty());
+
+        store.journal_dirty(true);
+        assert!(store.journals_dirty());
+        store.set_dirty_cause(DirtyCause::Input);
+        store.mark_dirty(leaf, DirtyClass::STYLE);
+        store.mark_dirty(leaf, DirtyClass::HIT_TEST);
+        store.set_dirty_cause(DirtyCause::Other);
+        states.set(cell, StateValue::Int(1));
+        let mut pending = Vec::new();
+        states.take_pending(&mut pending);
+        store.flush_state_transactions(&pending, &bindings);
+        store.take_dirty_marks(&mut marks);
+        assert_eq!(
+            marks,
+            [
+                DirtyMark {
+                    node: leaf,
+                    class: DirtyClass::STYLE | DirtyClass::HIT_TEST,
+                    cause: DirtyCause::Input,
+                },
+                DirtyMark {
+                    node: leaf,
+                    class: DirtyClass::PAINT,
+                    cause: DirtyCause::State(cell),
+                },
+            ]
+        );
+        assert_eq!(
+            store.set_dirty_cause(DirtyCause::Other),
+            DirtyCause::Other,
+            "a binding's cause ends with its edges"
+        );
+
+        store.journal_dirty(false);
+        store.mark_dirty(leaf, DirtyClass::PAINT);
+        marks.clear();
+        store.take_dirty_marks(&mut marks);
+        assert!(marks.is_empty());
     }
 
     #[test]

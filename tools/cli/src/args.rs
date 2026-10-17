@@ -123,8 +123,7 @@ pub enum Command {
     #[command(subcommand)]
     Game(GameCommand),
     /// Inspect the running app: its nodes and their source, what it holds for them, what it drew.
-    #[command(subcommand)]
-    Inspect(InspectCommand),
+    Inspect(InspectArgs),
     /// Manage the iOS Simulator runtimes and the profiles `viso run ios` runs on.
     #[command(subcommand)]
     Ios(IosCommand),
@@ -615,6 +614,66 @@ pub struct DeviceArgs {
     pub id: String,
 }
 
+/// `viso inspect`: a command, or, without one, the app attached and
+/// followed.
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct InspectArgs {
+    #[command(subcommand)]
+    pub command: Option<InspectCommand>,
+    #[command(flatten)]
+    pub attach: AttachArgs,
+}
+
+/// Which session a bare `viso inspect` attaches to.
+#[derive(Debug, Args)]
+pub struct AttachArgs {
+    /// The session's target: the `viso run` session on this machine when
+    /// omitted.
+    #[arg(long, value_enum)]
+    pub target: Option<SessionTarget>,
+    /// The simulator or emulator profile of the session (`ios` and
+    /// `android` only): the only session of the target when omitted.
+    #[arg(long, value_name = "ID", add = ArgValueCandidates::new(complete::device_ids))]
+    pub device: Option<String>,
+    /// The session, by the ID `viso run` reports (`dev` events' `session`),
+    /// or its first characters.
+    #[arg(long, value_name = "SESSION", conflicts_with_all = ["target", "device", "run"])]
+    pub attach: Option<String>,
+    /// Start `viso run` for the target first, and attach once its app
+    /// connects; the session stops with the inspector.
+    #[arg(long)]
+    pub run: bool,
+}
+
+/// The targets of a `viso run` session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SessionTarget {
+    /// The session's iOS Simulator.
+    Ios,
+    /// The session's Android Emulator.
+    Android,
+    /// The session's browser page, on WebGPU.
+    WebGpu,
+    /// The session's browser page, DOM output.
+    WebDom,
+    /// The session's browser page, DOM with WebGPU islands.
+    WebHybrid,
+}
+
+impl SessionTarget {
+    pub fn target(self) -> viso_project::Target {
+        use viso_project::Target;
+        match self {
+            SessionTarget::Ios => Target::Ios,
+            SessionTarget::Android => Target::Android,
+            SessionTarget::WebGpu => Target::WebGpu,
+            SessionTarget::WebDom => Target::WebDom,
+            SessionTarget::WebHybrid => Target::WebHybrid,
+        }
+    }
+}
+
 /// What `viso inspect` looks at.
 #[derive(Debug, Subcommand)]
 pub enum InspectCommand {
@@ -628,6 +687,9 @@ pub enum InspectCommand {
     /// Show what a window's last frame drew and holds: its counters, draw
     /// batches, GPU resources and caches.
     Frame(FrameArgs),
+    /// Follow what happens in a window: each input event and the nodes it
+    /// reached, focus moving, and each node marked dirty with why.
+    Events(EventsArgs),
     /// Find the nodes a selector selects, with their box, semantics and the
     /// source that declares them.
     Query(QueryArgs),
@@ -675,6 +737,20 @@ pub struct FrameArgs {
     /// The window, by its index in the tree: the first when omitted.
     #[arg(long, value_name = "N", default_value_t = 0)]
     pub window: u32,
+    #[command(flatten)]
+    pub app: InspectedApp,
+}
+
+/// Which window's events `viso inspect events` follows, and for how long.
+#[derive(Debug, Args)]
+pub struct EventsArgs {
+    /// The window, by its index in the tree: the first when omitted.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub window: u32,
+    /// How long to follow, in seconds: until interrupted when omitted. A
+    /// headless run reports every event of its scenario instead.
+    #[arg(long, value_name = "SECONDS", value_parser = parse_seconds)]
+    pub seconds: Option<f64>,
     #[command(flatten)]
     pub app: InspectedApp,
 }
@@ -953,6 +1029,10 @@ pub struct RunArgs {
     /// otherwise.
     #[arg(long)]
     pub profile_frame: bool,
+    /// Follow what happens in the app's first window, as `viso inspect`
+    /// does: an `inspect` event each under `--json`, a line each otherwise.
+    #[arg(long)]
+    pub inspect: bool,
     /// Open the page in a browser (`web-*` only), under `--json` too.
     #[arg(long)]
     pub open: bool,
@@ -1200,10 +1280,14 @@ impl Command {
             Command::Config(ConfigCommand::Validate) => "config validate",
             Command::Game(GameCommand::Peek(_)) => "game peek",
             Command::Game(GameCommand::Record(_)) => "game record",
-            Command::Inspect(InspectCommand::Tree(_)) => "inspect tree",
-            Command::Inspect(InspectCommand::Node(_)) => "inspect node",
-            Command::Inspect(InspectCommand::Frame(_)) => "inspect frame",
-            Command::Inspect(InspectCommand::Query(_)) => "inspect query",
+            Command::Inspect(InspectArgs { command, .. }) => match command {
+                None => "inspect",
+                Some(InspectCommand::Tree(_)) => "inspect tree",
+                Some(InspectCommand::Node(_)) => "inspect node",
+                Some(InspectCommand::Frame(_)) => "inspect frame",
+                Some(InspectCommand::Events(_)) => "inspect events",
+                Some(InspectCommand::Query(_)) => "inspect query",
+            },
             Command::Ios(IosCommand::List(_)) => "ios list",
             Command::Ios(IosCommand::Use(_)) => "ios use",
             Command::Ios(IosCommand::Doctor(_)) => "ios doctor",

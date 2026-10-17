@@ -1174,7 +1174,7 @@ Release / Shipping artifact:
 - `--env KEY=VALUE`：可重复；KEY 为可移植变量名（字母、数字、`_`，不以数字开头），`VISO_DEV_*` 保留给 dev session；desktop 为进程环境变量，iOS/Android/web 经 launch 变量（§13.10），app 一律以 `viso_platform::launch_var` 读取；名字像 secret（含 TOKEN、SECRET、PASSWORD、KEY、CREDENTIAL、AUTH、PRIVATE、COOKIE、SESSION）的值在 `--verbose` 中显示为 `<hidden>`（§49）；
 - `--cwd <path>`：desktop app 的工作目录，相对调用 `viso` 的目录，默认 project root；非 host target 或不是目录为 usage error；
 - `--profile-frame`：session 对每个连上的 runtime 开一个 capture（§25.4），每个窗口右上角显示最近 1 秒的帧与 GPU 时间 p50/p95（每 500 ms 更新）；`--json` 下每帧一条 `profile`（`payload: {frame, at_ms, metrics: {<§25.2 指标>: <该帧的值>}}`，该帧没有的指标省略），human 模式每秒在 stderr 打一行 `[viso] profile  120 frames  frame 8.29/8.97 ms  gpu 0.09/0.09 ms`；
-- `--inspect` 随 inspector channel 提供。
+- `--inspect`：session 跟随首个连上的 runtime 的首个窗口（§24.5），与 `viso inspect events` 同一 journal：`--json` 下每个事件一条 `inspect`，human 模式每个事件一行；runtime 断开后跟随下一个连上的。
 
 `viso run` 不提供 `--release`。Release/Shipping 验证使用 `viso build --profile release`、`viso package`、benchmark/profile 工具，而不是把开发主命令变成 delivery frontend。
 
@@ -1190,7 +1190,7 @@ Release / Shipping artifact:
 
 ### 13.9 JSON / exit codes
 
-`--json` 事件：`progress`、`diagnostic`、`artifact`（dev artifact）、`device`、`dev`（每个 candidate revision 一条，§36）、`log`、`profile`（`--profile-frame`）、`summary`。Dev session 中的 candidate 失败只产生 `diagnostic` + `dev{outcome:"rejected"}`，不结束命令。
+`--json` 事件：`progress`、`diagnostic`、`artifact`（dev artifact）、`device`、`dev`（每个 candidate revision 一条，§36）、`log`、`profile`（`--profile-frame`）、`inspect`（`--inspect`）、`summary`。Dev session 中的 candidate 失败只产生 `diagnostic` + `dev{outcome:"rejected"}`，不结束命令。
 
 Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app crash 或非零退出 5；Ctrl-C 结束 session 130。
 
@@ -1216,7 +1216,7 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
   - `web-dom`/`web-hybrid` 以 `TargetUnavailable` 退出；
 - `viso ios simulator` / `viso android emulator` 的 `list|create|start|stop|delete`（§11.4、§12.4）：profile 存于 `~/.viso/ios/simulators/<id>.toml` / `~/.viso/android/emulators/<id>.toml`（`preset`、`system`、`device`，`$VISO_HOME` 可改 root）；iOS 以最新已安装 runtime 与对应 iPhone/iPad 机型创建 Simulator，Android 不依赖 `avdmanager`，直接按最新（或 `--api` 指定）已安装 system image 写出 AVD `viso_<id>`；`start --no-window` 无窗口启动 emulator；`list` 列出 `NAME PROFILE STATUS SYSTEM`；
 - Dev artifact 与 `viso build` 共用 Build Service（§14.5）：以 dev profile 的 `--profile dev` 与 `[profile.dev]` 设置构建；每次 build 前取 `build-<target>.lock`，被 `viso build` 占用时等待（输出一条 `log`）而不失败；`--json` 下 launch build 之后输出一条 `artifact`（host `binary`、iOS `app-bundle`、Android `apk`、web `wasm`，`path` 相对 project root），Rust 编译诊断为带 span 的 `diagnostic`；
-- 尚未实现：`viso android|ios list|use|doctor`、`viso serve --https`、§13.7 中的 `--inspect`。
+- 尚未实现：`viso android|ios list|use|doctor`、`viso serve --https`。
 
 ---
 
@@ -1916,6 +1916,8 @@ viso inspect --run
 
 等价于启动应用并自动附加 Inspector。
 
+不带子命令时 `viso inspect [--target <t>] [--device <id>] [--attach <session>] [--run]` 附加到 Dev Session：先报告 app（`--json` 一条 `inspect{kind:"attached", windows, nodes, inspector, unavailable}`，human 一行），再像 `viso inspect events` 一样跟随首个窗口直到中断（Ctrl-C 结束跟随，exit 0）或 session 结束；`--attach` 按 `viso run` 在 `dev` 事件中报告的 session ID（或其前缀）选择 session，与 `--target`/`--device`/`--run` 互斥，ID 写在 session lock 中，没有匹配为 `ENV_NO_DEV_SESSION`、多个匹配为用法错误；`--run` 先以同一 project 启动 `viso run [<target>] [--device <id>]`（其输出写到 `target/viso/dev/inspect-run.log`），等它的 app 连上（至多 15 分钟）后附加，跟随结束时像 Ctrl-C 一样停止该 session；session 先于 app 连上就结束为 `RUN_APP_FAILED`（附日志末尾）。
+
 ### 24.2 Inspector capability
 
 至少提供：
@@ -1971,6 +1973,20 @@ viso inspect frame [--window <n>] [--target <t>] …
 - `node`：selector（或 `<index>:<generation>`）所选节点，再向 app 询问它们的 detail（`InspectAsk::Nodes`，按窗口分批，一批至多 4096 个；headless 运行在结束时写出窗口全部节点的 detail，`VISO_HEADLESS_DETAIL`）。每个节点：`layout` / `style` / `content` 三组解析后的属性（如 `kind`、`axis`、`gap`、`padding`、`width`、`height`；`background`、`radius`、`opacity`、`hidden`、`hit_test`；内容种类、`font_size`、`color`、`soft_wrap`、`tint`），`world`（窗口坐标）与 `local` box，`transform_chain`（有平移或滚动的祖先，自根向下），`dirty`（当前 dirty class），`states`（hovered、pressed、focused…），`event_route`（自根向下有 pointer / key handler 或可聚焦的节点），`bindings`（使它失效的 cell：source table 给出的属性名、state 名、类型与声明位置，cell 的当前值，它失效的 class，是否 dynamic 边），`paint`（其在 paint stream 中的 span 与它自己绘制的 primitive 种类）。人类输出每节点一行加缩进的各项；census 之后已卸载的节点 `detail` 为 `null`（人类输出 `gone since the census`）；
 - `frame`：窗口 `--window`（默认 0，不存在为用法错误）最后一帧：`counters`（nodes、primitives、draw_calls、batches、instances、upload_bytes、culled_primitives 等），`batches`（提交顺序：pipeline、`start`/`count`、clip、offscreen、cost），`resources`（`group` 为 `gpu`：pipelines、buffers、gradient LUT、mask page、offscreen targets、各 glyph atlas pool；`cache`：fonts、shaped runs、atlas 中的 glyph、asset decode/upload 计数；`asset`：每个资源的状态 `wanted` / `encoded` / `decoded WxH` / `resident WxH` / `vector WxH`；附 `bytes`、`budget`、`note`）；
 - detail 在 runtime 的下一帧边界由该窗口最后一帧留下的状态生成，只在工具询问时分配，不在帧路径上；解码失败为 `INSPECT_ANSWER_INVALID`（exit 7）。
+
+### 24.5 Events
+
+```bash
+viso inspect events [--window <n>] [--seconds <s>] [--target <t>] [--device <id>] [--scenario <name>]
+```
+
+跟随窗口中发生的事：每个输入事件（`pointer_down`/`pointer_up`/`pointer_leave`/`pointer_cancel`、`key_down <Key>`/`key_repeat`/`key_up`、`text`、`paste`、`ime_preedit`、`scroll <dx> <dy>`；pointer move 不记，它造成的 hover 变化以 dirty 记）及它经过的节点（自根向下），焦点移动，以及每个被直接标记 dirty 的节点、class 与原因：`input`、`state`（state cell、source table 给出的名字、类型与声明位置，改变后的值）、`computed`、`animation`、`task`（timer 或 task 完成）、`reload`、`text`、`asset`、`window`（尺寸、scale、环境）、`layout`（virtual list、adaptive scope）或 `other`；向祖先冒泡的 class 由树决定，不记。
+
+- Runtime 在首次被询问（`InspectAsk::Events{window, after}`）时为该窗口开 journal（`viso-ui` 的 `inspect` feature：每个直接 mark 记一次，同节点同原因的连续 mark 合并；不开时没有 journal、mark 不记录），事件从 1 编号，有界（8192 个，丢弃最旧的，丢弃部分在 `dropped` 中报告）；约 1200 帧没有询问后 journal 关闭；
+- Dev Session：每 100 ms 询问一次 `after` 之后的事件，直到 `--seconds`（省略为直到中断）或 session 结束；事件中出现 census 中没有的节点时（至多每 500 ms）重新取 census 与 source table 以命名；
+- `--target headless`：运行从开始就保留 journal（65536 个），Scenario 结束时写出（`VISO_HEADLESS_EVENTS`），报告全部事件；不接受 `--seconds`；
+- `--json`：每个事件一条 `inspect`：`{kind:"input", seq, frame, window, input, at:[x,y]|null, target, route:[node…]}`、`{kind:"focus", …, from, to}`、`{kind:"dirty", …, node, classes, cause:{kind, cell?, state?, type?, value?, declared?}}`，node 为 `{node_id, label}`（label 如 `Button#save.Primary`，不由 View 挂载的节点为其绘制种类）；丢弃时一条 `inspect{kind:"dropped", window, count}`；最后一条 `result{events, ended}`（`ended` 为 session 结束的原因或 `null`）。Human 每个事件一行：`#12    f3     input  pointer_down (60, 20) → Button#tap 6:0`、`#14    f4     dirty  Text#count 5:0  measure, layout, paint, semantics  ← state taps = 2  src/app.vs:2:5`、`#15    f4     focus  none → TextInput#name 9:0`，末行为事件数；
+- runtime 不报告 `events` 能力为 `INSPECT_UNSUPPORTED`（exit 3）。
 
 ---
 

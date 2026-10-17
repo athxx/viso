@@ -17,6 +17,7 @@
 
 mod census;
 mod detail;
+mod events;
 mod selector;
 mod source;
 mod tree;
@@ -28,8 +29,9 @@ pub use census::{
 pub use detail::{
     BatchDetail, ChainLink, FrameDetail, InspectAsk, InspectorCaps, MAX_ASKED_NODES, NodeBinding,
     NodeDetail, NodeDetails, PaintSpan, PropertyGroup, ResourceDetail, RouteStop, WindowDetail,
-    dirty_names, node_detail, state_names,
+    dirty_names, node_detail, spell_value, state_names,
 };
+pub use events::{Cause, EventKind, EventLog, InspectEvent};
 pub use selector::{Attribute, Selector, SelectorError};
 pub use source::{FileSources, NodeSource, SourceTable, StateSource};
 pub use tree::{Inspected, Inspection, resolve};

@@ -65,6 +65,8 @@ pub(crate) struct ScriptRunner {
     census: Option<PathBuf>,
     /// Where the window's detail goes once the scenario ends.
     detail: Option<PathBuf>,
+    /// Where the window's journal goes once the scenario ends.
+    events: Option<PathBuf>,
     input: Input,
     /// Whether the run ends with the scenario: its window closes.
     closes: bool,
@@ -99,6 +101,7 @@ pub(crate) struct Outputs<'a> {
     pub(crate) sources: Option<String>,
     pub(crate) census: Option<PathBuf>,
     pub(crate) detail: Option<PathBuf>,
+    pub(crate) events: Option<PathBuf>,
 }
 
 impl ScriptRunner {
@@ -111,6 +114,7 @@ impl ScriptRunner {
             sources,
             census,
             detail,
+            events,
         } = outputs;
         let text = std::fs::read_to_string(path)
             .map_err(|error| format!("cannot read the scenario `{path}`: {error}"))?;
@@ -147,6 +151,7 @@ impl ScriptRunner {
             sources,
             census,
             detail,
+            events,
             input,
             closes: true,
         })
@@ -179,6 +184,7 @@ impl ScriptRunner {
             sources,
             census: None,
             detail: None,
+            events: None,
             input: Input::Post,
             closes: false,
         })
@@ -309,6 +315,14 @@ impl ScriptRunner {
         {
             eprintln!(
                 "viso: cannot write the detail `{}`: {error}",
+                path.display()
+            );
+        }
+        if let (Some(path), Some(journal)) = (&self.events, &window.ws.journal)
+            && let Err(error) = std::fs::write(path, journal.read(0, 0).to_bytes())
+        {
+            eprintln!(
+                "viso: cannot write the events `{}`: {error}",
                 path.display()
             );
         }

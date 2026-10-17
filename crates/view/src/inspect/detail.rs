@@ -27,6 +27,9 @@ pub enum InspectAsk {
     Nodes { window: u32, nodes: Vec<(u32, u32)> },
     /// What window `window`'s last frame drew and holds.
     Frame { window: u32 },
+    /// The events window `window` recorded after number `after`; the first
+    /// ask starts its journal.
+    Events { window: u32, after: u64 },
 }
 
 /// The most nodes one [`InspectAsk::Nodes`] names.
@@ -49,6 +52,11 @@ impl Encode for InspectAsk {
                 enc.write_u8(2);
                 enc.write_varint(u64::from(*window));
             }
+            InspectAsk::Events { window, after } => {
+                enc.write_u8(3);
+                enc.write_varint(u64::from(*window));
+                enc.write_varint(*after);
+            }
         }
     }
 }
@@ -70,6 +78,10 @@ impl Decode for InspectAsk {
             }
             2 => InspectAsk::Frame {
                 window: read_u32(dec)?,
+            },
+            3 => InspectAsk::Events {
+                window: read_u32(dec)?,
+                after: dec.read_varint()?,
             },
             _ => return Err(malformed(dec)),
         })
@@ -395,7 +407,7 @@ pub fn node_detail(
 }
 
 /// A cell's value as source would spell it.
-fn spell_value(value: StateValue) -> String {
+pub fn spell_value(value: StateValue) -> String {
     match value {
         StateValue::Int(v) => v.to_string(),
         StateValue::Float(v) => format!("{v:?}"),

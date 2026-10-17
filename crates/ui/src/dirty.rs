@@ -7,6 +7,9 @@
 
 use core::ops::{BitAnd, BitOr, BitOrAssign};
 
+use crate::node::NodeId;
+use crate::state::StateId;
+
 /// A set of invalidation classes, stored as a bitset.
 ///
 /// Examples of what bindings map to:
@@ -144,6 +147,82 @@ impl BitOrAssign for DirtyClass {
     #[inline]
     fn bitor_assign(&mut self, rhs: Self) {
         self.0 |= rhs.0;
+    }
+}
+
+/// Why a node was marked dirty, as an inspector's journal records it: the
+/// frame-loop phase that marked it, or the state cell whose bindings fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DirtyCause {
+    /// A mark outside any phase the frame loop names: a build, a handler's
+    /// own write, a structural edit.
+    #[default]
+    Other,
+    /// An input event routed through the tree: hover, press, focus, a
+    /// handler it ran.
+    Input,
+    /// A state cell changed and its binding edges fired.
+    State(StateId),
+    /// A computed value re-evaluated.
+    Computed,
+    /// An animation or transition advanced.
+    Animation,
+    /// A timer fired or a task finished.
+    Task,
+    /// A hot reload committed.
+    Reload,
+    /// Text shaping or an edit committed.
+    Text,
+    /// An asset arrived or decoded.
+    Asset,
+    /// The window's size, scale or environment changed.
+    Window,
+    /// Layout reconciled a virtual list or settled an adaptive scope.
+    Layout,
+}
+
+/// One direct mark: the classes `node` was marked dirty for and why. What
+/// the classes bubble to its ancestors follows from the tree and is not
+/// recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirtyMark {
+    pub node: NodeId,
+    pub class: DirtyClass,
+    pub cause: DirtyCause,
+}
+
+/// The marks a store records while an inspector watches it, bounded: past
+/// [`DirtyJournal::MAX_MARKS`] it counts what it drops.
+#[cfg(feature = "inspect")]
+#[derive(Debug, Default)]
+pub(crate) struct DirtyJournal {
+    pub(crate) cause: DirtyCause,
+    pub(crate) marks: Vec<DirtyMark>,
+    pub(crate) dropped: u32,
+}
+
+#[cfg(feature = "inspect")]
+impl DirtyJournal {
+    /// The most marks held between two drains.
+    pub(crate) const MAX_MARKS: usize = 16_384;
+
+    /// Records a mark of `class` on `node` under the current cause, folded
+    /// into the last one when it marks the same node for the same cause.
+    #[inline]
+    pub(crate) fn record(&mut self, node: NodeId, class: DirtyClass) {
+        let cause = self.cause;
+        if let Some(last) = self.marks.last_mut()
+            && last.node == node
+            && last.cause == cause
+        {
+            last.class |= class;
+            return;
+        }
+        if self.marks.len() < Self::MAX_MARKS {
+            self.marks.push(DirtyMark { node, class, cause });
+        } else {
+            self.dropped = self.dropped.saturating_add(1);
+        }
     }
 }
 

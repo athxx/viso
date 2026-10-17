@@ -516,7 +516,9 @@ impl ComputedStore {
                 && slot.generation == c.generation
             {
                 let (node, class) = (slot.node, slot.class);
+                let cause = nodes.set_dirty_cause(crate::dirty::DirtyCause::Computed);
                 nodes.mark_dirty(node, class);
+                nodes.set_dirty_cause(cause);
                 dirtied += 1;
             }
         }

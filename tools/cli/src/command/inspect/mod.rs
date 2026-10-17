@@ -11,6 +11,10 @@
 //! named back to the source through the same table. A selector is parsed
 //! before anything runs.
 
+mod events;
+
+pub(crate) use events::{Streamed, stream};
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -19,14 +23,16 @@ use viso_ende::JsonWriter;
 use viso_project::{LockGuard, LockKind, Target};
 use viso_view::headless::HeadlessSurface;
 use viso_view::inspect::{
-    Census, FileSources, FrameDetail, InspectAsk, Inspected, Inspection, InspectorCaps,
+    Census, EventLog, FileSources, FrameDetail, InspectAsk, Inspected, Inspection, InspectorCaps,
     MAX_ASKED_NODES, NodeDetail, NodeDetails, Rect, Selector, SourceTable, StateSource,
     WindowDetail, dirty_names, resolve, state_names,
 };
 
 use super::check;
 use super::scenario::{self, Case, Ended, Unplanned};
-use crate::args::{FrameArgs, InspectCommand, InspectedApp, NodeArgs, QueryArgs, TreeArgs};
+use crate::args::{
+    FrameArgs, InspectArgs, InspectCommand, InspectedApp, NodeArgs, QueryArgs, TreeArgs,
+};
 use crate::context::Context;
 use crate::dev::control;
 use crate::dev::{ControlAsk, ControlReply};
@@ -39,18 +45,22 @@ use crate::output::{Output, Source, human};
 /// How long the session has to answer: the app answers at its next frame.
 const WAIT: Duration = Duration::from_secs(10);
 
-/// What a headless run's inspector tells: everything but its event stream.
+/// What a headless run's inspector tells: everything, its events as a
+/// journal of the whole run.
 const HEADLESS: InspectorCaps = InspectorCaps::TREE
     .with(InspectorCaps::NODES)
     .with(InspectorCaps::FRAME)
-    .with(InspectorCaps::GPU_TIME);
+    .with(InspectorCaps::GPU_TIME)
+    .with(InspectorCaps::EVENTS);
 
-pub fn run(ctx: &Context<'_>, command: &InspectCommand, out: &mut Output) -> u8 {
-    let code = match command {
-        InspectCommand::Tree(args) => tree(ctx, args, out),
-        InspectCommand::Node(args) => node(ctx, args, out),
-        InspectCommand::Frame(args) => frame(ctx, args, out),
-        InspectCommand::Query(args) => query(ctx, args, out),
+pub fn run(ctx: &Context<'_>, args: &InspectArgs, out: &mut Output) -> u8 {
+    let code = match &args.command {
+        None => events::attach(ctx, &args.attach, out),
+        Some(InspectCommand::Tree(args)) => tree(ctx, args, out),
+        Some(InspectCommand::Node(args)) => node(ctx, args, out),
+        Some(InspectCommand::Frame(args)) => frame(ctx, args, out),
+        Some(InspectCommand::Events(args)) => events::events(ctx, args, out),
+        Some(InspectCommand::Query(args)) => query(ctx, args, out),
     };
     match code {
         Ok(()) => SUCCESS,
@@ -71,7 +81,32 @@ enum Asked {
     /// Through the control endpoint of its session.
     Session(String),
     /// A headless run, gone: what it wrote of its first window at its end.
-    Headless(Option<WindowDetail>),
+    Headless {
+        detail: Option<WindowDetail>,
+        events: Option<EventLog>,
+    },
+}
+
+/// What a headless run writes at its end besides its census.
+#[derive(Clone, Copy)]
+struct Wants {
+    detail: bool,
+    events: bool,
+}
+
+impl Wants {
+    const CENSUS: Wants = Wants {
+        detail: false,
+        events: false,
+    };
+    const DETAIL: Wants = Wants {
+        detail: true,
+        events: false,
+    };
+    const EVENTS: Wants = Wants {
+        detail: false,
+        events: true,
+    };
 }
 
 impl App {
@@ -103,7 +138,7 @@ impl App {
                 }
                 found
             }
-            Asked::Headless(detail) => match (window, detail) {
+            Asked::Headless { detail, .. } => match (window, detail) {
                 (0, Some(detail)) => detail.nodes.nodes.clone(),
                 _ => Vec::new(),
             },
@@ -132,8 +167,11 @@ impl App {
                     )
                 })
             }
-            Asked::Headless(Some(detail)) if window == 0 => Ok(detail.frame.clone()),
-            Asked::Headless(_) => Err(invalid(out, "the run wrote no detail of that window")),
+            Asked::Headless {
+                detail: Some(detail),
+                ..
+            } if window == 0 => Ok(detail.frame.clone()),
+            Asked::Headless { .. } => Err(invalid(out, "the run wrote no detail of that window")),
         }
     }
 
@@ -183,12 +221,11 @@ fn invalid(out: &mut Output, message: &str) -> u8 {
 }
 
 /// The app `app` names, its census taken: the session's, or a headless run
-/// built and played for it, which writes its window's detail too when
-/// `detail`.
+/// built and played for it, which writes what `wants` names too.
 fn connect(
     ctx: &Context<'_>,
     app: &InspectedApp,
-    detail: bool,
+    wants: Wants,
     out: &mut Output,
 ) -> Result<App, u8> {
     let target = app.target.map_or(Target::Host, |target| target.target());
@@ -196,7 +233,7 @@ fn connect(
         if app.device.is_some() {
             return Err(out.failure(CLI_USAGE, "a headless run has no `--device`", &[]));
         }
-        return headless(ctx, app.scenario.as_deref(), detail, out);
+        return headless(ctx, app.scenario.as_deref(), wants, out);
     }
     if app.scenario.is_some() {
         return Err(out.failure(
@@ -281,7 +318,7 @@ fn write_inspector(w: &mut JsonWriter, inspector: InspectorCaps) {
 
 fn query(ctx: &Context<'_>, args: &QueryArgs, out: &mut Output) -> Result<(), u8> {
     let selector = selector(&args.selector, out)?;
-    let app = connect(ctx, &args.app, false, out)?;
+    let app = connect(ctx, &args.app, Wants::CENSUS, out)?;
     let inspection = resolve(&app.census, &app.sources);
     let matches: Vec<&Inspected<'_>> = selector
         .select(&inspection)
@@ -325,7 +362,7 @@ fn count_line(n: usize, selector: &str) -> String {
 }
 
 fn tree(ctx: &Context<'_>, args: &TreeArgs, out: &mut Output) -> Result<(), u8> {
-    let app = connect(ctx, &args.app, false, out)?;
+    let app = connect(ctx, &args.app, Wants::CENSUS, out)?;
     let inspection = resolve(&app.census, &app.sources);
     let depths = depths(&inspection);
     let windows = app.census.windows.len();
@@ -400,7 +437,7 @@ fn node(ctx: &Context<'_>, args: &NodeArgs, out: &mut Output) -> Result<(), u8> 
         Some(_) => None,
         None => Some(selector(&args.selector, out)?),
     };
-    let app = connect(ctx, &args.app, true, out)?;
+    let app = connect(ctx, &args.app, Wants::DETAIL, out)?;
     let inspection = resolve(&app.census, &app.sources);
     let matches: Vec<usize> = match (&selector, id) {
         (Some(selector), _) => selector.select(&inspection),
@@ -804,7 +841,7 @@ fn write_detail(
 }
 
 fn frame(ctx: &Context<'_>, args: &FrameArgs, out: &mut Output) -> Result<(), u8> {
-    let app = connect(ctx, &args.app, true, out)?;
+    let app = connect(ctx, &args.app, Wants::DETAIL, out)?;
     let windows = app.census.windows.len() as u32;
     if args.window >= windows.max(1) {
         return Err(out.failure(
@@ -1034,12 +1071,11 @@ pub(super) fn endpoint(
 }
 
 /// Builds the app headless and plays `scenario` (or lets the app settle):
-/// the census the run wrote at its end, and its window's detail when
-/// `detail`.
+/// the census the run wrote at its end, and what `wants` names.
 fn headless(
     ctx: &Context<'_>,
     scenario: Option<&str>,
-    detail: bool,
+    wants: Wants,
     out: &mut Output,
 ) -> Result<App, u8> {
     let checked = check::load(ctx, out)?;
@@ -1056,7 +1092,8 @@ fn headless(
     };
     let mut case = case(&root, "inspect", scenario, surface, out)?;
     case.census = true;
-    case.detail = detail;
+    case.detail = wants.detail;
+    case.events = wants.events;
     let sources = checked.sources();
     let build = scenario::build(ctx, Some(sources.clone()), out)?;
     let mut written = None;
@@ -1084,8 +1121,9 @@ fn headless(
                 }
             };
             if code == SUCCESS {
-                let detail = detail.then(|| std::fs::read(played.detail()));
-                written = Some((std::fs::read(played.census()), detail));
+                let detail = wants.detail.then(|| std::fs::read(played.detail()));
+                let events = wants.events.then(|| std::fs::read(played.events()));
+                written = Some((std::fs::read(played.census()), detail, events));
             }
             played.discard();
             code
@@ -1094,7 +1132,7 @@ fn headless(
     if code != SUCCESS {
         return Err(code);
     }
-    let Some((census, detail)) = written else {
+    let Some((census, detail, events)) = written else {
         return Err(code);
     };
     let census = census
@@ -1119,11 +1157,23 @@ fn headless(
             )
         })?),
     };
+    let events = match events {
+        None => None,
+        Some(Err(error)) => {
+            return Err(invalid(
+                out,
+                &format!("the run wrote no journal of its window: {error}"),
+            ));
+        }
+        Some(Ok(bytes)) => Some(EventLog::from_bytes(&bytes).map_err(|error| {
+            invalid(out, &format!("the run's journal does not decode: {error}"))
+        })?),
+    };
     Ok(App {
         census,
         sources,
         inspector: HEADLESS,
-        asked: Asked::Headless(detail),
+        asked: Asked::Headless { detail, events },
     })
 }
 

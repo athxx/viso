@@ -39,6 +39,7 @@ use viso_view::dev::wire::{
     self, DevSessionId, ProjectFingerprint as WireProject, SchemaFingerprint,
 };
 
+use super::inspect;
 use crate::args::{RunArgs, RunTarget};
 use crate::build::{
     self,
@@ -126,6 +127,8 @@ enum Incoming {
     /// The device booted: the emulator's adb serial, empty for a simulator;
     /// or why it did not.
     Booted(Result<String, String>),
+    /// What happened in the app's first window, for `--inspect`.
+    Inspected(inspect::Streamed),
 }
 
 /// Where a run goes, as the command line asks: the target, and the device
@@ -421,10 +424,19 @@ pub(super) fn session(
         .map_err(|error| error.to_string())
         .and_then(|(endpoint, control)| {
             dev.lock_mut()
-                .publish(&endpoint)
+                .publish(&endpoint, Some(&session))
                 .map(|()| control)
                 .map_err(|diagnostic| diagnostic.message)
         });
+    if args.inspect
+        && let Ok(control) = &control
+        && let Ok(endpoint) = control.endpoint()
+    {
+        let tx = tx.clone();
+        inspect::stream(endpoint, move |streamed| {
+            tx.send(Incoming::Inspected(streamed)).is_ok()
+        });
+    }
     let control = match control {
         Ok(control) => Some(control),
         Err(why) => {
@@ -925,6 +937,7 @@ fn relay(
         Incoming::Link(event) => dev.link(event, out),
         Incoming::Control(call) => dev.control(call, out),
         Incoming::Booted(_) => {}
+        Incoming::Inspected(streamed) => streamed.report(out),
         Incoming::Build(BuildEvent::Cargo(CargoEvent::Log { level, line })) => {
             out.log(level, "tool", &line)
         }

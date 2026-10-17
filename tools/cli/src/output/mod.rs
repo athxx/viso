@@ -698,6 +698,19 @@ impl Output {
         }
     }
 
+    /// Reports what happened in the inspected app, as `payload` writes it:
+    /// an `inspect` event, or the line `text` gives on stdout.
+    pub fn inspect(
+        &mut self,
+        payload: impl FnOnce(&mut JsonWriter),
+        text: impl FnOnce() -> String,
+    ) {
+        match &mut self.form {
+            Form::Json(stream) => stream.inspect(payload),
+            Form::Human => say!("{}", text()),
+        }
+    }
+
     /// Reports the `@probe` states of `scenario` after `tick`, `probes` an
     /// encoded JSON object: a `trace` event, which human text leaves out.
     pub fn trace(&mut self, scenario: &str, tick: u64, probes: &str) {

@@ -47,11 +47,11 @@ use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::context::UpdateCx;
 use viso_ui::{
     AnimationRegistry, Axis, BindingTable, BuildCx, ChromeContext, ComputedStore, Continuation,
-    DirtyClass, EffectStore, FlexStyle, FrameRecompute, ImeEvent, KeyEvent, KeyRouter, Modifiers,
-    NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, ScrollEvent,
-    ScrollRouter, SemanticProjector, Size, StateId, StateStore, TextEdits, TextRequest,
-    TimerRegistry, TimerRequest, TranslateAnim, VirtualLists, WindowOpenRequest, focus_next,
-    text_edit, virtual_list,
+    DirtyCause, DirtyClass, EffectStore, FlexStyle, FrameRecompute, ImeEvent, KeyEvent, KeyRouter,
+    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter,
+    ScrollEvent, ScrollRouter, SemanticProjector, Size, StateId, StateStore, TextEdits,
+    TextRequest, TimerRegistry, TimerRequest, TranslateAnim, VirtualLists, WindowOpenRequest,
+    focus_next, text_edit, virtual_list,
 };
 #[cfg(any(feature = "hot-reload", feature = "headless"))]
 use viso_view::profile::Count;
@@ -659,6 +659,10 @@ struct WindowState {
     /// Reusable ancestry buffer the pointer router fills each event, owned here
     /// so routing a pointer allocates nothing on the steady path.
     route_chain: Vec<NodeId>,
+    /// What happens in the window while an inspector follows it; `None`
+    /// while none does.
+    #[cfg(any(feature = "hot-reload", feature = "headless"))]
+    journal: Option<Box<inspect::Journal>>,
     /// Reusable scratch for [`WindowState::settle_text_edits`]: the edited
     /// nodes drained from the registry, and the text of the one being reported.
     edited: Vec<NodeId>,
@@ -831,6 +835,8 @@ impl WindowState {
             root: None,
             ime_area: None,
             route_chain: Vec::new(),
+            #[cfg(any(feature = "hot-reload", feature = "headless"))]
+            journal: None,
             edited: Vec::new(),
             edited_text: String::new(),
             primitives: Vec::new(),
@@ -1771,10 +1777,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             gpu.size = (w, h);
         }
         if let Some(root) = ws.root {
+            let cause = ws.store.set_dirty_cause(DirtyCause::Window);
             ws.store.mark_dirty(
                 root,
                 DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
             );
+            ws.store.set_dirty_cause(cause);
         }
         ws.report_window();
     }
@@ -1798,6 +1806,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             return;
         };
         let scale = ws.dpi.max(1.0);
+        #[cfg(any(feature = "hot-reload", feature = "headless"))]
+        let journaled = match ws.journal {
+            Some(_) => {
+                ws.route_chain.clear();
+                inspect::input_name(&sample, scale)
+            }
+            None => None,
+        };
+        let cause = ws.store.set_dirty_cause(DirtyCause::Input);
         // Samples that can edit the focused text control settle their edits
         // once routed; a pointer sample settles only when a handler placed a
         // caret, and scroll samples never record one.
@@ -1975,6 +1992,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
         if edits_text || ws.store.has_edit_requests() {
             ws.settle_text_edits();
+        }
+        ws.store.set_dirty_cause(cause);
+        #[cfg(any(feature = "hot-reload", feature = "headless"))]
+        if let Some(journal) = &mut ws.journal {
+            if let Some((input, at)) = journaled {
+                journal.input(input, at, &ws.route_chain);
+            }
+            journal.settle(&mut ws.store, &ws.states);
         }
     }
 
@@ -2204,6 +2229,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         #[cfg(any(feature = "hot-reload", feature = "headless"))]
         if phase == FramePhase::CollectInput {
             self.begin_profiled_frame();
+            for ws in &mut self.windows {
+                if let Some(journal) = &mut ws.journal
+                    && journal.begin_frame()
+                {
+                    ws.journal = None;
+                    inspect::Journal::end(&mut ws.store);
+                }
+            }
         }
         let _span = match phase {
             FramePhase::FlushStateTransactions => Some(profile::time(Span::Flush)),
@@ -2227,7 +2260,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             .collect();
                         self.hot_reload.set_positions(positions);
                     }
+                    for ws in &mut self.windows {
+                        ws.store.set_dirty_cause(DirtyCause::Reload);
+                    }
                     self.hot_reload.reload(&mut self.windows, &mut self.assets);
+                    for ws in &mut self.windows {
+                        ws.store.set_dirty_cause(DirtyCause::Other);
+                    }
                 }
                 // The faults the games raised last frame: to `viso run` when
                 // it is attached, to stderr otherwise.
@@ -2250,6 +2289,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // steps are no-ops when nothing is animating (the steady
                     // case) — the queue is empty and the registry has nothing to
                     // tick.
+                    ws.store.set_dirty_cause(DirtyCause::Animation);
                     ws.store.take_animation_requests(&mut ws.anim_requests);
                     for anim in ws.anim_requests.drain(..) {
                         ws.animations.start(anim);
@@ -2260,6 +2300,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if ws.store.is_transitioning() {
                         ws.store.tick_transitions(cx.frame_delta());
                     }
+                    ws.store.set_dirty_cause(DirtyCause::Other);
                     // Advance the games the window's views run — the ticks
                     // their clocks owe, then their frame hooks — after the
                     // reload above committed, so a patch staged during the
@@ -2275,6 +2316,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // and the loop can halt again — a timer costs no frame while
                     // it waits, only the one frame it fires on. Both steps are
                     // no-ops when no timer is armed or pending (the steady case).
+                    ws.store.set_dirty_cause(DirtyCause::Task);
                     ws.store.take_timer_requests(&mut ws.timer_requests);
                     for req in ws.timer_requests.drain(..) {
                         ws.timers.arm_request(req, cx.frame_now());
@@ -2296,6 +2338,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             ));
                         }
                     }
+                    ws.store.set_dirty_cause(DirtyCause::Other);
                     // Flush this frame's pending state writes through the
                     // derivations, bindings, structure hooks, semantic-state
                     // projections and effects, re-flushing any write a hook
@@ -2319,6 +2362,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // decoded since the last frame reaches every window, and each
                 // window whose table moved gets its decodes started and its
                 // rasters uploaded, so this frame measures and paints them.
+                for ws in &mut self.windows {
+                    ws.store.set_dirty_cause(DirtyCause::Asset);
+                }
                 self.assets
                     .provide(self.windows.iter_mut().map(|ws| &mut ws.store));
                 for ws in &mut self.windows {
@@ -2328,6 +2374,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     let gpu = ws.gpu.as_mut().map(|g| (&mut g.backend, &mut g.renderer));
                     self.assets.serve(&mut ws.store, gpu, &|| cx.loop_waker());
                     ws.assets_served = ws.store.assets().revision();
+                }
+                for ws in &mut self.windows {
+                    ws.store.set_dirty_cause(DirtyCause::Other);
                 }
                 // Install the programs the settle's shader views took and
                 // release the ones no node paints with any more, so this
@@ -2449,6 +2498,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // within a row is a no-op here (the scroll's TRANSFORM already
                     // moved the mounted rows), so the relayout below stays
                     // confined to the changed canvas subtree.
+                    ws.store.set_dirty_cause(DirtyCause::Layout);
                     virtual_list::reconcile(
                         &mut ws.store,
                         &mut ws.virtual_lists,
@@ -2466,6 +2516,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // last frame, within the commit budget, so this frame's
                     // measure sees them; what the budget leaves waits for the
                     // next frame, drawing its last good layout meanwhile.
+                    ws.store.set_dirty_cause(DirtyCause::Text);
                     {
                         let _text = profile::time(Span::Text);
                         ws.commit_text_work();
@@ -2481,6 +2532,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // Incrementally re-place invalidated subtrees and repaint if
                     // any paint-affecting class is pending; a clean frame touches
                     // nothing.
+                    ws.store.set_dirty_cause(DirtyCause::Layout);
                     ws.relayout_and_paint();
                     // Width-aware text reflow (DL1): the layout just above records
                     // a reflow for each wrap-eligible leaf whose assigned box width
@@ -2491,6 +2543,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // `absorb_measurements` so a virtualized list's height model
                     // sees the final wrapped row heights, not the unconstrained
                     // single-line ones.
+                    ws.store.set_dirty_cause(DirtyCause::Text);
                     let reflow_passes = {
                         let _text = profile::time(Span::Text);
                         let passes = ws.reflow_wrapped_text();
@@ -2507,6 +2560,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if reflow_passes > 0 && std::env::var_os("VISO_DEBUG").is_some() {
                         eprintln!("[viso] text reflow: {reflow_passes} pass(es)");
                     }
+                    ws.store.set_dirty_cause(DirtyCause::Layout);
                     // Feed measured row heights back into each list's height model
                     // so a variable-height list corrects its extent and anchor
                     // next frame. Bounded to this frame's newly-mounted rows — no
@@ -2689,6 +2743,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     self.count_frame();
                 }
                 for ws in &mut self.windows {
+                    // What the frame marked, for the inspector following the
+                    // window.
+                    ws.store.set_dirty_cause(DirtyCause::Other);
+                    #[cfg(any(feature = "hot-reload", feature = "headless"))]
+                    if let Some(journal) = &mut ws.journal {
+                        journal.settle(&mut ws.store, &ws.states);
+                    }
                     // The incremental passes have consumed this frame's
                     // invalidation; clear every node's dirty set so the next frame
                     // starts clean and an idle frame recomputes nothing.

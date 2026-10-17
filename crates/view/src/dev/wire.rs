@@ -50,7 +50,7 @@ use crate::profile::{FrameSample, read_frames, write_frames};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 17;
+pub const DEV_PROTOCOL_VERSION: u16 = 18;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -2146,6 +2146,13 @@ mod tests {
             HostMessage::Inspect {
                 id: 5,
                 ask: InspectAsk::Frame { window: 0 },
+            },
+            HostMessage::Inspect {
+                id: 7,
+                ask: InspectAsk::Events {
+                    window: 0,
+                    after: u64::MAX - 1,
+                },
             },
             HostMessage::Profile { id: 6, hud: true },
             HostMessage::ProfileEnd { id: 6 },

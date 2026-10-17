@@ -23,7 +23,7 @@ zune-core = { workspace = true, optional = true }
 hot-reload = ["inspect"]
 # Records every `view!` mount, for the development session or a headless run
 # to tell which view each node comes from. Off, a mount records nothing.
-inspect = []
+inspect = ["viso-ui/inspect"]
 # Headless snapshots: the PNG a scenario's snapshot step writes and the
 # comparison that holds it to its golden.
 snapshot = ["dep:miniz_oxide", "dep:zune-png", "dep:zune-core"]

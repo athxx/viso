@@ -885,6 +885,7 @@ Options:
       --browser <NAME>   The browser to open (`web-*` only): `chrome`, `safari`, `firefox`, or `none` to only serve
       --no-hot-reload    Keep the dev session up but apply no edit to the app: each is compiled and reported, not sent
       --profile-frame    Draw the frame time over the app's windows, and report every frame it draws: a `profile` event each under `--json`, a line a second otherwise
+      --inspect          Follow what happens in the app's first window, as `viso inspect` does: an `inspect` event each under `--json`, a line each otherwise
       --open             Open the page in a browser (`web-*` only), under `--json` too
       --env <KEY=VALUE>  A variable the app is launched with; repeatable. A value whose name looks secret is never printed
       --cwd <PATH>       The app's working directory (this machine only): the project root when omitted
@@ -1335,21 +1336,27 @@ Global options:
 $ viso inspect --help
 Inspect the running app: its nodes and their source, what it holds for them, what it drew
 
-Usage: viso inspect [OPTIONS] <COMMAND>
+Usage: viso inspect [OPTIONS]
+       viso inspect <COMMAND>
 
 Examples:
-  viso inspect tree                            # every node the running app shows, with its source
-  viso inspect node '#save'                    # what the app holds for the node named `save`
-  viso inspect frame --target headless --json  # a headless run's last frame, as JSON events
+  viso inspect                     # attach to the running app and follow what happens in it
+  viso inspect --run --target ios  # start `viso run ios` and follow its app
+  viso inspect --attach 5e55       # the session whose ID starts with `5e55`
 
 Commands:
-  tree   Show every node the app shows, window by window, with its box, semantics and the source that declares it
-  node   Show everything the app holds for the nodes a selector selects: resolved layout, style and content, transform chain, dirty classes, interaction states, event route, bound states and paint primitives
-  frame  Show what a window's last frame drew and holds: its counters, draw batches, GPU resources and caches
-  query  Find the nodes a selector selects, with their box, semantics and the source that declares them
+  tree    Show every node the app shows, window by window, with its box, semantics and the source that declares it
+  node    Show everything the app holds for the nodes a selector selects: resolved layout, style and content, transform chain, dirty classes, interaction states, event route, bound states and paint primitives
+  frame   Show what a window's last frame drew and holds: its counters, draw batches, GPU resources and caches
+  events  Follow what happens in a window: each input event and the nodes it reached, focus moving, and each node marked dirty with why
+  query   Find the nodes a selector selects, with their box, semantics and the source that declares them
 
 Options:
-  -h, --help  Print help
+      --target <TARGET>   The session's target: the `viso run` session on this machine when omitted [possible values: ios, android, web-gpu, web-dom, web-hybrid]
+      --device <ID>       The simulator or emulator profile of the session (`ios` and `android` only): the only session of the target when omitted
+      --attach <SESSION>  The session, by the ID `viso run` reports (`dev` events' `session`), or its first characters
+      --run               Start `viso run` for the target first, and attach once its app connects; the session stops with the inspector
+  -h, --help              Print help
 
 Global options:
       --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
@@ -1364,8 +1371,10 @@ Global options:
       --target-dir <PATH>  Put build output under PATH instead of `target/`
 
 Notes:
-  It asks the app of this project's running `viso run` session, or a headless run
-  of it with `--target headless`.
+  Commands ask the app of this project's running `viso run` session, or a headless
+  run of it with `--target headless`. Without one, it attaches to the session and
+  follows its first window, as `viso inspect events` does, until interrupted;
+  `--run` starts the session first and stops it after.
 
 $ viso inspect tree --help
 Show every node the app shows, window by window, with its box, semantics and the source that declares it
@@ -1465,6 +1474,42 @@ Notes:
   Counters are those of the window's last frame; batches are its draw calls in
   submission order; resources are the GPU memory, caches and assets the window
   holds, with their budget where one bounds them.
+
+$ viso inspect events --help
+Follow what happens in a window: each input event and the nodes it reached, focus moving, and each node marked dirty with why
+
+Usage: viso inspect events [OPTIONS]
+
+Examples:
+  viso inspect events --seconds 10 --json                 # ten seconds of input, focus and dirty marks, as JSON events
+  viso inspect events --target headless --scenario login  # every event of the `login` scenario in a headless run
+
+Options:
+      --window <N>         The window, by its index in the tree: the first when omitted [default: 0]
+      --seconds <SECONDS>  How long to follow, in seconds: until interrupted when omitted. A headless run reports every event of its scenario instead
+      --target <TARGET>    The app to inspect: the `viso run` session on this machine when omitted, the session of a target, or `headless`, a headless run of the app built for it [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+      --device <ID>        The simulator or emulator profile of the session (`ios` and `android` only): the only session of the target when omitted
+      --scenario <NAME>    The UI scenario a headless run plays before it is inspected, by its name under `tests/ui/` (`--target headless` only)
+  -h, --help               Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+Notes:
+  Each input event names the node it reached; each dirty mark names its classes and
+  why: input, a state's change (with its value and declaration), a computed value,
+  an animation, a timer or task, a reload, text, an asset, the window, or layout.
+  The app keeps the journal while it is asked for, about twenty seconds of frames
+  after the last ask; a headless run keeps it from its start.
 
 $ viso inspect query --help
 Find the nodes a selector selects, with their box, semantics and the source that declares them

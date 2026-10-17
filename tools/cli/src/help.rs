@@ -414,16 +414,29 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
         "inspect",
         &[
             (
-                "viso inspect tree",
-                "every node the running app shows, with its source",
+                "viso inspect",
+                "attach to the running app and follow what happens in it",
             ),
             (
-                "viso inspect node '#save'",
-                "what the app holds for the node named `save`",
+                "viso inspect --run --target ios",
+                "start `viso run ios` and follow its app",
             ),
             (
-                "viso inspect frame --target headless --json",
-                "a headless run's last frame, as JSON events",
+                "viso inspect --attach 5e55",
+                "the session whose ID starts with `5e55`",
+            ),
+        ],
+    ),
+    (
+        "inspect events",
+        &[
+            (
+                "viso inspect events --seconds 10 --json",
+                "ten seconds of input, focus and dirty marks, as JSON events",
+            ),
+            (
+                "viso inspect events --target headless --scenario login",
+                "every event of the `login` scenario in a headless run",
             ),
         ],
     ),
@@ -835,8 +848,18 @@ const NOTES: &[(&str, &str)] = &[
     ),
     (
         "inspect",
-        "It asks the app of this project's running `viso run` session, or a headless run\n\
-         of it with `--target headless`.",
+        "Commands ask the app of this project's running `viso run` session, or a headless\n\
+         run of it with `--target headless`. Without one, it attaches to the session and\n\
+         follows its first window, as `viso inspect events` does, until interrupted;\n\
+         `--run` starts the session first and stops it after.",
+    ),
+    (
+        "inspect events",
+        "Each input event names the node it reached; each dirty mark names its classes and\n\
+         why: input, a state's change (with its value and declaration), a computed value,\n\
+         an animation, a timer or task, a reload, text, an asset, the window, or layout.\n\
+         The app keeps the journal while it is asked for, about twenty seconds of frames\n\
+         after the last ask; a headless run keeps it from its start.",
     ),
     (
         "inspect node",

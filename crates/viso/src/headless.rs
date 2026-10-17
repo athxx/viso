@@ -24,8 +24,8 @@ use viso_platform::backend::headless::HeadlessApp;
 use viso_runtime::{FixedStepClock, Scheduler};
 use viso_ui::{DirtyClass, NodeId};
 use viso_view::headless::{
-    CENSUS_ENV, DETAIL_ENV, FRAMES_ENV, HeadlessSurface, REPORT_ENV, SCRIPT_ENV, SNAPSHOT_ENV,
-    SOURCES_ENV, SURFACE_ENV, VIEW_ENV,
+    CENSUS_ENV, DETAIL_ENV, EVENTS_ENV, FRAMES_ENV, HeadlessSurface, REPORT_ENV, SCRIPT_ENV,
+    SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, VIEW_ENV,
 };
 use viso_view::inspect::{self, CensusView, WindowCensus, static_nodes};
 use viso_view::profile::{PROFILE_ENV, Trace};
@@ -64,6 +64,7 @@ pub(crate) fn run<A: Application>() {
             sources: viso_platform::launch_var(SOURCES_ENV),
             census: viso_platform::launch_var(CENSUS_ENV).map(PathBuf::from),
             detail: viso_platform::launch_var(DETAIL_ENV).map(PathBuf::from),
+            events: viso_platform::launch_var(EVENTS_ENV).map(PathBuf::from),
         };
         match ScriptRunner::open(&path, outputs, Input::Feed(app.feed())) {
             Ok(runner) => driver.script = Some(runner),
@@ -120,6 +121,10 @@ impl Harness {
         }
         if *self.first.get_or_insert(ws.window) == ws.window {
             self.mounts.append(&mut records);
+            // A run asked for its journal keeps it from its first frame.
+            if ws.journal.is_none() && viso_platform::launch_var(EVENTS_ENV).is_some() {
+                ws.journal = Some(crate::inspect::Journal::keep(&mut ws.store));
+            }
         }
     }
 
