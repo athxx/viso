@@ -280,10 +280,7 @@ fn report(
     }
 
     let (metrics, missing) = summarize(&trace.frames);
-    let mut unavailable: Vec<&str> = missing;
-    // The runtime does not count allocations: a counting allocator is the
-    // app's to install.
-    unavailable.push("allocations");
+    let unavailable: Vec<&str> = missing;
     let caveats = caveats(&trace.target);
     let duration_ms = trace.nanos as f64 / 1e6;
     out.profile(

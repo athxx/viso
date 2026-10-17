@@ -59,6 +59,7 @@ use viso_view::profile::Span;
 use viso_widgets::caption_bar;
 
 mod accessibility;
+pub mod alloc;
 mod assets;
 pub mod audio;
 mod environment;

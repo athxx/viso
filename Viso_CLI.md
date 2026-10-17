@@ -2035,9 +2035,11 @@ primitives / draw_calls / batches / instances / upload_bytes
 shaped_runs / glyph_rasters / glyph_upload_bytes
 glyph_cache_bytes / atlas_pages
 resource_loads      解码的 asset
+allocations         app 装了计数 allocator 时该帧的堆分配次数（所有线程）
+allocated_bytes     这些分配申请的字节
 ```
 
-Summary 中 span 按全部帧统计（帧没有运行该 span 记 0）；`gpu` 与计数只按报告了它的帧统计。没有任何帧报告的指标列入 `unavailable`；`allocations` 始终在其中：runtime 不计分配，计数 allocator 由 app 自己安装。p50/p95 为 nearest rank。
+Summary 中 span 按全部帧统计（帧没有运行该 span 记 0）；`gpu` 与计数只按报告了它的帧统计。没有任何帧报告的指标列入 `unavailable`。Runtime 不装 allocator；要计分配，app 在自己的 crate 里声明 `#[global_allocator] static ALLOCATOR: viso::alloc::Counting = viso::alloc::Counting::system();`（或以 `Counting::new(inner)` 包住已用的 allocator），每次分配多两次 relaxed atomic add；没装时 `allocations`、`allocated_bytes` 列入 `unavailable`。p50/p95 为 nearest rank。
 
 ### 25.3 Trace output
 
@@ -2053,14 +2055,14 @@ viso profile --output trace.ende
 viso profile --chrome trace.json
 ```
 
-Ende trace（`viso_view::profile::Trace`）：protocol tag + `trace` + u16 版本，之后为 `app`、`target`、`device`、`started_ms`（UTC 毫秒）、`nanos`（采集时长）、`dropped`、每帧 `{frame, at, nanos, spans[9], gpu, counts[19]}`（时间为 ns，`at` 相对首帧，缺失的 span/计数以位掩码省略）。不带 `--output` 时写到 `target/viso/traces/profile-YYYYMMDD-HHMMSS-mmm.ende`（UTC），只保留最新 20 个。Chrome trace 为 trace-event JSON：每帧一个 `frame` X event、每个 span 一个 X event（tid 1 "UI"），计数与 `gpu_ms` 为 C event，可在 Perfetto/`chrome://tracing` 打开。文件经临时文件 + rename 写出。
+Ende trace（`viso_view::profile::Trace`）：protocol tag + `trace` + u16 版本，之后为 `app`、`target`、`device`、`started_ms`（UTC 毫秒）、`nanos`（采集时长）、`dropped`、每帧 `{frame, at, nanos, spans[9], gpu, counts[21]}`（时间为 ns，`at` 相对首帧，缺失的 span/计数以位掩码省略）。不带 `--output` 时写到 `target/viso/traces/profile-YYYYMMDD-HHMMSS-mmm.ende`（UTC），只保留最新 20 个。Chrome trace 为 trace-event JSON：每帧一个 `frame` X event、每个 span 一个 X event（tid 1 "UI"），计数与 `gpu_ms` 为 C event，可在 Perfetto/`chrome://tracing` 打开。文件经临时文件 + rename 写出。
 
 `--json`：采样期间 `progress`，结束时一条 `profile`（`payload: {target, device, frames, duration_ms, dropped, metrics: {<§25.2 指标>: {p50, p95, max}}, unavailable, caveats}`，时间以 ms、计数以整数）、每个写出的文件一条 `artifact`（`kind: "trace" | "chrome-trace"`，带 sha256）、`summary`。Human 输出为一行概要、每个指标一行 p50/p95/max、未测量项与 caveat。
 
 ```json
 {"type":"profile","payload":{"target":"macos","device":null,"frames":238,"duration_ms":2004.1,"dropped":0,
  "metrics":{"frame":{"p50":8.29,"p95":8.97,"max":11.2},"gpu":{"p50":0.087,"p95":0.09,"max":0.12},"draw_calls":{"p50":3,"p95":3,"max":3}},
- "unavailable":["allocations"],"caveats":[]}}
+ "unavailable":["allocations","allocated_bytes"],"caveats":[]}}
 ```
 
 ### 25.4 当前实现

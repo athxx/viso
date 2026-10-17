@@ -822,8 +822,9 @@ and traced from the CLI and from Studio over the same services.
 - [x] Trace output (§25.3): `--output trace.ende` (Ende binary trace), `--chrome`
       (Chrome trace JSON); traces under `target/viso/traces/` (newest 20 kept).
 - [x] `run --profile-frame` HUD and per-frame `profile` events.
-- [ ] Allocation counts: a counting allocator the app opts into, reported as
-      `allocations` (always `unavailable` today).
+- [x] Allocation counts: `viso::alloc::Counting`, a counting allocator the app
+      declares as its global allocator, reported per frame as `allocations` and
+      `allocated_bytes`; `unavailable` without it.
 - [ ] GPU time on Vulkan, D3D12 and WebGPU (timestamp queries); Metal and the
       headless raster report it today.
 - [ ] HUD checked on screen (golden of a window with `--profile-frame`); only its

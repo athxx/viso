@@ -151,6 +151,9 @@ mod live {
         pub(crate) dynamic_evals: u64,
         pub(crate) dynamic_fallbacks: u64,
         pub(crate) resource_loads: u64,
+        /// The allocations and their bytes, `None` without a counting
+        /// allocator.
+        pub(crate) allocations: Option<(u64, u64)>,
     }
 
     /// What a capture handed over: its id, its samples and those it could
@@ -268,6 +271,14 @@ mod live {
                 ),
             ] {
                 capture.counts[count as usize] = Some(now.saturating_sub(before));
+            }
+            if let (Some((made, bytes)), Some((made_before, bytes_before))) =
+                (now.allocations, before.allocations)
+            {
+                capture.counts[Count::Allocations as usize] =
+                    Some(made.saturating_sub(made_before));
+                capture.counts[Count::AllocatedBytes as usize] =
+                    Some(bytes.saturating_sub(bytes_before));
             }
         }
 
@@ -393,6 +404,7 @@ mod live {
         pub(crate) fn profile_baseline(&self) -> Baseline {
             let mut baseline = Baseline {
                 resource_loads: self.assets.counters().decodes,
+                allocations: crate::alloc::counts(),
                 ..Baseline::default()
             };
             for ws in &self.windows {
@@ -591,6 +603,30 @@ mod live {
             profiler.end_frame(|_| {});
             let (_, samples, _) = profiler.end().expect("the capture");
             assert_eq!(samples[0].count(Count::ReactiveEvals), Some(30));
+        }
+
+        #[test]
+        fn allocations_are_counted_only_with_a_counting_allocator() {
+            let mut profiler = Profiler::default();
+            let at = |allocations| Baseline {
+                allocations,
+                ..Baseline::default()
+            };
+            profiler.start(1, false, true, at(None));
+            profiler.begin_frame();
+            profiler.grew(at(None));
+            profiler.end_frame(|_| {});
+            profiler.begin_frame();
+            profiler.grew(at(Some((10, 640))));
+            profiler.end_frame(|_| {});
+            profiler.begin_frame();
+            profiler.grew(at(Some((13, 700))));
+            profiler.end_frame(|_| {});
+            let (_, samples, _) = profiler.end().expect("the capture");
+            assert_eq!(samples[0].count(Count::Allocations), None);
+            assert_eq!(samples[1].count(Count::Allocations), None);
+            assert_eq!(samples[2].count(Count::Allocations), Some(3));
+            assert_eq!(samples[2].count(Count::AllocatedBytes), Some(60));
         }
     }
 }

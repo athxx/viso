@@ -196,7 +196,8 @@ fn a_headless_run_is_profiled_frame_by_frame() {
             .iter()
             .filter_map(JsonValue::as_str)
             .collect::<Vec<_>>(),
-        ["allocations"]
+        ["allocations", "allocated_bytes"],
+        "the probe installs no counting allocator"
     );
 
     let artifacts = payloads(&out, "artifact");
@@ -236,4 +237,39 @@ fn a_headless_run_is_profiled_frame_by_frame() {
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.starts_with("Profiled 2 frames"), "{text}");
     assert!(text.contains("note: a headless run draws through the software raster"));
+
+    // With a counting allocator the frames' allocations are measured.
+    let main = fs::read_to_string(app.join("src/main.rs")).unwrap();
+    fs::write(
+        app.join("src/main.rs"),
+        format!(
+            "#[global_allocator]\nstatic ALLOCATOR: viso::alloc::Counting = \
+             viso::alloc::Counting::system();\n{main}"
+        ),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_viso"))
+        .args(["profile", "headless", "--scenario", "taps", "--json"])
+        .current_dir(&app)
+        .env("CARGO_TARGET_DIR", &target)
+        .output()
+        .unwrap();
+    fs::write(app.join("src/main.rs"), main).unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let profile = &payloads(&out, "profile")[0];
+    let metrics = profile.get("metrics").unwrap();
+    let max = |name: &str| {
+        metrics
+            .get(name)
+            .and_then(|m| m.get("max"))
+            .and_then(JsonValue::as_f64)
+            .unwrap_or_else(|| panic!("no `{name}` metric"))
+    };
+    assert!(max("allocations") > 0.0, "a tap formats a new label");
+    assert!(max("allocated_bytes") >= max("allocations"));
+    let unavailable = profile
+        .get("unavailable")
+        .and_then(JsonValue::as_array)
+        .unwrap();
+    assert!(unavailable.is_empty(), "{unavailable:?}");
 }

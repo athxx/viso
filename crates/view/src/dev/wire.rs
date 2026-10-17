@@ -50,7 +50,7 @@ use crate::profile::{FrameSample, read_frames, write_frames};
 pub use viso_behavior::game::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 19;
+pub const DEV_PROTOCOL_VERSION: u16 = 20;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.

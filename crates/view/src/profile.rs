@@ -117,10 +117,15 @@ pub enum Count {
     AtlasPages,
     /// Assets decoded.
     ResourceLoads,
+    /// Heap allocations made, on every thread, with a counting allocator
+    /// installed.
+    Allocations,
+    /// The bytes they asked for.
+    AllocatedBytes,
 }
 
 impl Count {
-    pub const COUNT: usize = 19;
+    pub const COUNT: usize = 21;
 
     /// Every count, in the order metrics list them.
     pub const ALL: [Count; Count::COUNT] = [
@@ -143,6 +148,8 @@ impl Count {
         Count::GlyphCacheBytes,
         Count::AtlasPages,
         Count::ResourceLoads,
+        Count::Allocations,
+        Count::AllocatedBytes,
     ];
 
     /// The count as metrics and traces name it.
@@ -167,6 +174,8 @@ impl Count {
             Count::GlyphCacheBytes => "glyph_cache_bytes",
             Count::AtlasPages => "atlas_pages",
             Count::ResourceLoads => "resource_loads",
+            Count::Allocations => "allocations",
+            Count::AllocatedBytes => "allocated_bytes",
         }
     }
 }
@@ -298,7 +307,7 @@ pub struct Trace {
 
 /// What follows the stream tag of a trace file, then its version.
 const TRACE_KIND: &[u8; 5] = b"trace";
-const TRACE_VERSION: u16 = 1;
+const TRACE_VERSION: u16 = 2;
 
 impl Trace {
     /// The trace as its `.ende` file holds it.
