@@ -1,7 +1,8 @@
 //! The `--json` contract across commands: every line one event in the one
 //! envelope, `seq` counting up from 0, a `summary` last and only once whose
 //! `exit_code` is the process's, and every diagnostic code one the registry
-//! explains.
+//! explains — held for every command the help lists but `lsp` and
+//! `completion`, each invoked the quick way, a failure as good as a success.
 
 use std::path::Path;
 use std::process::Command;
@@ -23,11 +24,11 @@ fn project(dir: &Path) {
     .unwrap();
 }
 
-/// The events `viso <args> --json` writes, and its exit code.
+/// The events `viso --json <args>` writes, and its exit code.
 fn events(dir: &Path, args: &[&str]) -> (Vec<JsonValue>, i32) {
     let out = Command::new(env!("CARGO_BIN_EXE_viso"))
-        .args(args)
         .arg("--json")
+        .args(args)
         .current_dir(dir)
         .env_remove("VISO_PROFILE")
         .output()
@@ -64,11 +65,51 @@ fn every_command_keeps_the_event_contract() {
         &["inspect", "tree"],
         &["inspect", "node", "Button >"],
         &["inspect", "frame", "--window", "1"],
+        &["inspect", "events", "--seconds", "1"],
+        &["inspect", "query", "Button"],
+        &["inspect"],
         &["clean"],
+        &["new"],
+        &["doctor", "web-dom"],
+        &["dump", "hir", "src/app.vs"],
+        &["config", "path"],
+        &["android", "list"],
+        &["android", "use", "1"],
+        &["android", "doctor"],
+        &["android", "adb", "--device", "no-such-profile", "devices"],
+        &["android", "emulator", "list"],
+        &["android", "emulator", "create"],
+        &["android", "emulator", "start", "no-such-profile"],
+        &["android", "emulator", "stop", "no-such-profile"],
+        &["android", "emulator", "delete", "no-such-profile"],
+        &["ios", "list"],
+        &["ios", "use", "not-a-runtime"],
+        &["ios", "doctor"],
+        &["ios", "simulator", "list"],
+        &["ios", "simulator", "create"],
+        &["ios", "simulator", "start", "no-such-profile"],
+        &["ios", "simulator", "stop", "no-such-profile"],
+        &["ios", "simulator", "delete", "no-such-profile"],
+        &["game", "peek"],
+        &["game", "record"],
+        &["run", "web-dom"],
+        &["serve", "web-dom"],
+        &["snapshot", "capture"],
+        &["snapshot", "compare"],
+        &["snapshot", "update"],
+        &["test", "ui"],
     ];
     let mut codes = Vec::new();
+    let mut covered = std::collections::BTreeSet::new();
     for args in commands {
         let (events, exit) = events(&dir, args);
+        if let Some(command) = events
+            .first()
+            .and_then(|e| e.get("command"))
+            .and_then(JsonValue::as_str)
+        {
+            covered.insert(command.to_owned());
+        }
         assert!(!events.is_empty(), "{args:?} wrote nothing");
         for (seq, event) in events.iter().enumerate() {
             assert_eq!(
@@ -126,6 +167,28 @@ fn every_command_keeps_the_event_contract() {
         );
     }
 
+    // Every command the help lists is held to the contract.
+    let listed = leaves(&[]);
+    for path in [
+        "new",
+        "android adb",
+        "ios simulator delete",
+        "inspect",
+        "inspect events",
+        "snapshot update",
+    ] {
+        assert!(
+            listed.iter().any(|p| p == path),
+            "the help lists no `{path}`: {listed:?}"
+        );
+    }
+    let missing: Vec<String> = listed
+        .into_iter()
+        .filter(|path| !["lsp", "completion"].contains(&path.as_str()))
+        .filter(|path| !covered.contains(path))
+        .collect();
+    assert!(missing.is_empty(), "not held to the contract: {missing:?}");
+
     // Every code reported is one `viso explain` knows.
     codes.sort();
     codes.dedup();
@@ -142,4 +205,48 @@ fn every_command_keeps_the_event_contract() {
         );
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The command paths under `viso <path>` the help lists, each with no
+/// subcommands of its own, or with one it runs bare (`inspect`).
+fn leaves(path: &[&str]) -> Vec<String> {
+    let out = Command::new(env!("CARGO_BIN_EXE_viso"))
+        .args(path)
+        .arg("--help")
+        .output()
+        .unwrap();
+    let help = String::from_utf8(out.stdout).unwrap();
+    let mut names = Vec::new();
+    let mut listing = false;
+    for line in help.lines() {
+        let heading = line == "Commands:"
+            || (!line.is_empty()
+                && line
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c == ' ' || c == '/'));
+        if heading {
+            listing = true;
+        } else if line.is_empty() {
+            listing = false;
+        } else if listing
+            && let Some(name) = line.strip_prefix("  ")
+            && let Some(name) = name.split_whitespace().next().filter(|n| *n != "help")
+        {
+            names.push(name.to_owned());
+        }
+    }
+    let here = path.join(" ");
+    if names.is_empty() {
+        return vec![here];
+    }
+    let mut leaves = Vec::new();
+    if here == "inspect" {
+        leaves.push(here);
+    }
+    for name in &names {
+        let mut next = path.to_vec();
+        next.push(name);
+        leaves.extend(self::leaves(&next));
+    }
+    leaves
 }

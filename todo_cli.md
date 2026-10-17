@@ -857,8 +857,9 @@ and traced from the CLI and from Studio over the same services.
       `runtime`, `log`, `trace`, `test`, `result`, `artifact`, `summary`.
 - [x] Every event type emitted (`doctor_check`, `profile` and `inspect` among them)
       in the `Viso_CLI.md` §36 table, each payload with an example.
-- [ ] Every command except `lsp`, `studio`, `completion` supports `--json`; a test
-      runs each command with `--json` and checks the stream (C7.6).
+- [x] Every command except `lsp`, `studio`, `completion` supports `--json`
+      (`android adb` relays adb's lines as `log` events); `tests/json.rs` finds
+      every command the help lists and holds each one's stream to the contract.
 - [x] stdout carries only events under `--json` (child output becomes `log`),
       human output never writes events; every human write goes through one writer
       that drops what a gone reader would have read, so a closed pipe (`EPIPE`) ends

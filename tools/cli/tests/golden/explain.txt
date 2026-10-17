@@ -303,6 +303,7 @@ DEVICE_EXISTS                 A profile of that ID exists already.
 DEVICE_SYSTEM                 No installed system image or runtime fits the profile.
 DUMP_INPUT                    The file `viso dump` is given is not a `.vs` source of the project.
 ANDROID_API_UNSUPPORTED       The Android API level is not one Viso supports.
+ANDROID_ADB_FAILED            `adb` reported a failure.
 IOS_RUNTIME_INVALID           The iOS runtime given is not a version.
 IOS_RUNTIME_MISSING           The iOS runtime is not installed, and installing it was not asked for.
 INSPECT_SELECTOR              The selector `viso inspect query` is given does not parse.

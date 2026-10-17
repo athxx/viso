@@ -21,14 +21,103 @@ use crate::args::{
 use crate::context::Context;
 use crate::device::emulator;
 use crate::error::{
-    ANDROID_API_UNSUPPORTED, CLI_USAGE, DEVICE_UNKNOWN, ENV_ANDROID_LICENSE, ENV_ANDROID_SDK,
-    ENV_DEVICE, ENV_DOWNLOAD, ENV_DOWNLOAD_INTEGRITY, ENV_INSTALL, ENV_OFFLINE, INTERRUPTED,
-    SUCCESS,
+    ANDROID_ADB_FAILED, ANDROID_API_UNSUPPORTED, DEVICE_UNKNOWN, ENV_ANDROID_LICENSE,
+    ENV_ANDROID_SDK, ENV_DEVICE, ENV_DOWNLOAD, ENV_DOWNLOAD_INTEGRITY, ENV_INSTALL, ENV_OFFLINE,
+    INTERRUPTED, SUCCESS,
 };
 use crate::output::{Output, human::size};
 use crate::toolchain::android::components::{self, APIS, Api, Component, Host, License};
 use crate::toolchain::android::{self as toolchain, Home, InstallError, installed};
 use crate::toolchain::download::{self, Curl, Failure};
+
+/// Runs `adb` with no input, each line it writes a `log` event from the
+/// device — its errors at `warn` — until it exits; a failure carries its
+/// status. The first interrupt ends it.
+fn relay_adb(mut command: Command, out: &mut Output) -> u8 {
+    use std::io::{BufRead as _, BufReader};
+    use std::process::Stdio;
+    use std::sync::mpsc;
+
+    let mut child = match command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            return out.failure(ENV_ANDROID_SDK, &format!("cannot run `adb`: {error}"), &[]);
+        }
+    };
+    crate::interrupt::catch();
+    let (tx, rx) = mpsc::channel::<(&'static str, String)>();
+    let streams: [(Option<Box<dyn std::io::Read + Send>>, &'static str); 2] = [
+        (
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+            "info",
+        ),
+        (
+            child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+            "warn",
+        ),
+    ];
+    let readers: Vec<_> = streams
+        .into_iter()
+        .filter_map(|(stream, level)| Some((stream?, level)))
+        .map(|(stream, level)| {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    if tx.send((level, line)).is_err() {
+                        break;
+                    }
+                }
+            })
+        })
+        .collect();
+    drop(tx);
+    let mut interrupted = false;
+    loop {
+        if !interrupted && crate::interrupt::count() > 0 {
+            interrupted = true;
+            let _ = child.kill();
+        }
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok((level, line)) => out.log(level, "device", &line),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    for reader in readers {
+        let _ = reader.join();
+    }
+    let status = child.wait();
+    if interrupted {
+        return INTERRUPTED;
+    }
+    match status {
+        Ok(status) if status.success() => SUCCESS,
+        Ok(status) => out.failure(
+            ANDROID_ADB_FAILED,
+            &match status.code() {
+                Some(code) => format!("`adb` exited with status {code}"),
+                None => "`adb` was ended by a signal".to_owned(),
+            },
+            &[],
+        ),
+        Err(error) => out.failure(
+            ENV_ANDROID_SDK,
+            &format!("cannot wait for `adb`: {error}"),
+            &[],
+        ),
+    }
+}
 
 /// How a level stands on this machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,13 +557,6 @@ pub fn doctor(ctx: &Context<'_>, args: &PlatformDoctorArgs, out: &mut Output) ->
 }
 
 pub fn adb(ctx: &Context<'_>, args: &AdbArgs, out: &mut Output) -> u8 {
-    if ctx.global.json {
-        return out.failure(
-            CLI_USAGE,
-            "`viso android adb` passes adb's own output through, which has no event form",
-            &["drop `--json`".to_owned()],
-        );
-    }
     let sdk = match toolchain::sdk() {
         Ok(sdk) => sdk,
         Err(why) => return toolchain::no_sdk(out, &why),
@@ -508,6 +590,9 @@ pub fn adb(ctx: &Context<'_>, args: &AdbArgs, out: &mut Output) -> u8 {
     }
     command.args(&args.args);
     out.verbose(|| format!("running {}", sdk.adb.display()));
+    if ctx.global.json {
+        return relay_adb(command, out);
+    }
     let error = super::lsp::replace(command);
     out.failure(
         ENV_ANDROID_SDK,

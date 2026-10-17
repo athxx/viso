@@ -492,6 +492,12 @@ codes! {
         fix: "Pick a level `viso android list` shows.",
         commands: ["viso android list"],
     }
+    ANDROID_ADB_FAILED = ENVIRONMENT {
+        summary: "`adb` reported a failure.",
+        explanation: "`viso android adb --json` ran the SDK's `adb`, which exited with a failure status: the device it addressed, or what it was asked, did not let it finish.",
+        fix: "Read the `log` events it wrote; check the emulator is running and the arguments are ones `adb` takes.",
+        commands: ["viso android emulator list"],
+    }
     IOS_RUNTIME_INVALID = USAGE {
         summary: "The iOS runtime given is not a version.",
         explanation: "`viso ios use` takes a Simulator runtime version — `27`, `26.3`, `iOS 27.0` — of up to three numbers.",
@@ -615,7 +621,7 @@ mod tests {
                 "NEW" => &[USAGE, ENVIRONMENT, INTERNAL],
                 "INSPECT" => &[USAGE, ENVIRONMENT, INTERNAL],
                 "PROFILE" => &[ENVIRONMENT, RUNTIME, INTERNAL],
-                "ANDROID" => &[USAGE],
+                "ANDROID" => &[USAGE, ENVIRONMENT],
                 "IOS" => &[USAGE],
                 "DEVICE" | "GAME" => &[DIAGNOSTICS, USAGE, ENVIRONMENT, RUNTIME, INTERNAL],
                 other => panic!("`{}` has no known prefix `{other}`", code.name),

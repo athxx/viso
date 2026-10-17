@@ -898,7 +898,7 @@ viso android adb --device pixel-local logcat
 - `use`：`progress`（下载/安装阶段）+ `result{api, installed, default}`。
 - `doctor`：同 §9.4 的 `doctor_check`。
 - `emulator create|start|stop|delete`：`device` 事件 + `summary`。
-- `adb`：不接受 `--json`，stdout/stderr 与 exit code 原样来自 adb；Viso 自身解析 SDK 失败时 exit 3。
+- `adb`：human 模式下 stdout/stderr 与 exit code 原样来自 adb；`--json`（写在 adb 的参数之前，之后的一切原样交给 adb）下 adb 不接 stdin，每行输出一条 `log`（`source: "device"`，stderr 为 `warn`），adb 以失败状态退出为 `ANDROID_ADB_FAILED`（exit 3，message 带其状态），第一次 Ctrl-C 结束它（exit 130）；Viso 自身解析 SDK 失败时 exit 3。
 
 Exit code：不在支持矩阵的 API（`ANDROID_API_UNSUPPORTED`）或未知 profile 2；SDK/emulator/host virtualization 不可用 3；emulator 启动失败 5。
 
@@ -2687,6 +2687,7 @@ ENV_DOWNLOAD_INTEGRITY  下载内容与固定的大小/SHA-1 不符           ex
 ENV_INSTALL             组件无法解包或移动到位，或本机状态写不出  exit 3
 ENV_OFFLINE             `--offline` 时仍有组件需要下载            exit 3
 ANDROID_API_UNSUPPORTED API level 不在 Viso 支持矩阵中             exit 2
+ANDROID_ADB_FAILED      `android adb --json` 中 adb 以失败状态退出   exit 3
 ENV_IOS_HOST            host 不是 macOS                          exit 3
 ENV_XCODE               Xcode 未安装或未被选为 developer directory exit 3
 ENV_XCODE_LICENSE       Xcode license 未接受                      exit 3
