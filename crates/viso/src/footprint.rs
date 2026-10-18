@@ -70,6 +70,17 @@ impl Footprint {
         }
     }
 
+    /// The edge of the renderer's first clip/mask page: on a desktop the
+    /// masks of a busy scene stay on at most three textures, on a board
+    /// three icons cost 16 KiB.
+    pub const fn first_mask_page(self) -> u32 {
+        match self {
+            Footprint::Desktop | Footprint::Web => 512,
+            Footprint::Mobile => 256,
+            Footprint::EmbeddedGpu | Footprint::EmbeddedCpu => 128,
+        }
+    }
+
     /// The budget the profile plans for before the build's and the app's
     /// overrides.
     pub const fn default_budget(self) -> MemoryBudget {
@@ -190,6 +201,16 @@ pub(crate) fn install(budget: MemoryBudget) {
 /// The session's budget: the installed one, else the build's.
 pub(crate) fn budget() -> &'static MemoryBudget {
     SESSION.get_or_init(MemoryBudget::of_build)
+}
+
+/// A renderer for `surface`, planned for this build's profile.
+pub(crate) fn renderer<B: viso_gpu::GpuBackend>(
+    backend: &mut B,
+    surface: viso_gpu::SurfaceId,
+) -> viso_render::Renderer {
+    let mut renderer = viso_render::Renderer::for_surface(backend, surface);
+    renderer.set_first_mask_page(Footprint::of_build().first_mask_page());
+    renderer
 }
 
 /// The threads this build runs work on besides the main one: the build's

@@ -1672,6 +1672,13 @@ impl Renderer {
         Self::for_target(backend, surface_format, ColorSpace::Srgb)
     }
 
+    /// The edge of the first clip/mask page, in texels (128 unless set): each
+    /// later page is twice the last, up to 2048. A larger first page keeps a
+    /// mask-heavy scene on fewer textures; a smaller one costs a board less.
+    pub fn set_first_mask_page(&mut self, edge: u32) {
+        self.mask_cache.set_min_edge(edge);
+    }
+
     /// Create a renderer for `surface`, taking both its color-attachment format
     /// and its color space from the backend.
     ///

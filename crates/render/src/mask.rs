@@ -241,6 +241,12 @@ impl MaskCache {
         }
     }
 
+    /// Pages added from now on are at least `edge` texels square (within the
+    /// maximum); the pages there are stay as they are.
+    pub fn set_min_edge(&mut self, edge: u32) {
+        self.min_edge = edge.clamp(1, self.max_edge);
+    }
+
     /// Each page's edge in texels, in page order.
     pub fn page_edges(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
         self.pages.iter().map(|p| p.edge)
@@ -568,6 +574,20 @@ mod tests {
         let r = cache.resolve(&wide).unwrap();
         assert_eq!(r.slot.page, 1);
         assert_eq!(cache.page_edges().collect::<Vec<_>>(), [64, 512]);
+    }
+
+    /// A raised minimum sizes the pages added after it.
+    #[test]
+    fn a_raised_minimum_sizes_the_next_page() {
+        let mut cache = MaskCache::new(64, 2048);
+        cache.set_min_edge(512);
+        cache.resolve(&request(MaskKind::Path, false, 1)).unwrap();
+        assert_eq!(cache.page_edges().collect::<Vec<_>>(), [512]);
+        cache.set_min_edge(4096);
+        let mut big = request(MaskKind::Path, false, 2);
+        big.roi = roi(600.0, 600.0);
+        cache.resolve(&big).unwrap();
+        assert_eq!(cache.page_edges().collect::<Vec<_>>(), [512, 2048]);
     }
 
     /// A full page is followed by one twice its edge; masks fill earlier

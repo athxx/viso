@@ -1032,7 +1032,7 @@ ClipChain 必须 retained：`ClipChainId -> pre-resolved ClipChainDescriptor`。
 | Mask source | image（`ImageMask`）、path/geometry（`PathMask`）、rendered content |
 
 - 稳定 mask 进入独立 mask cache（mask page 分配）；
-- page 按需出现：没有 mask 时不占任何 texture；第一页 128²（R8，16 KiB），满了追加一页，边长为上一页的两倍且不小于 ROI 向上取的 2 的幂，上限 2048²；ROI 在各页 first-fit。驱逐后重排幸存者，尾部空页归还。设备侧不保留 CPU 镜像：每个新建的 mask 只上传自己的 slot，新页创建时清零，使 slot 边缘的线性采样读到 0；
+- page 按需出现：没有 mask 时不占任何 texture；第一页的边长随 footprint profile 定（desktop / web 512²，mobile 256²，embedded 128²，即 16 KiB；`Renderer::set_first_mask_page`），满了追加一页，边长为上一页的两倍且不小于 ROI 向上取的 2 的幂，上限 2048²；ROI 在各页 first-fit。驱逐后重排幸存者，尾部空页归还。设备侧不保留 CPU 镜像：每个新建的 mask 只上传自己的 slot，新页创建时清零，使 slot 边缘的线性采样读到 0；
 - 存储：能用 R8 就用 R8、tight ROI、tile/page allocation；只有真正需要 color 信息时才使用 RGBA；禁止把 mask 永久存成全屏 RGBA texture；
 - 高级 mask boolean 可以后续 lane 建立，但不改变基础 mask composition 语义。
 

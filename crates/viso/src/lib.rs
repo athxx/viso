@@ -1028,7 +1028,7 @@ impl WindowState {
             // Both the format and the color space come from the surface, so the
             // renderer's intermediate targets are planned for the domain this
             // window actually composites in (§19).
-            let renderer = Renderer::for_surface(&mut backend, surface);
+            let renderer = footprint::renderer(&mut backend, surface);
 
             ws.gpu = Some(GpuState {
                 backend,
@@ -2297,7 +2297,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         if gpu.backend.surface_format(surface) != gpu.renderer.surface_format()
             || gpu.backend.surface_color_space(surface) != gpu.renderer.color_space()
         {
-            gpu.renderer = Renderer::for_surface(&mut gpu.backend, surface);
+            gpu.renderer = footprint::renderer(&mut gpu.backend, surface);
         }
         gpu.surface = Some(surface);
         gpu.renderer.damage_all();
