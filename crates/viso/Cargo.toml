@@ -186,3 +186,10 @@ harness = false
 [[bench]]
 name = "list_scroll"
 harness = false
+
+# What a frame that changes a little costs as the tree grows: one leaf
+# recolored on a page of 100 vs 2000 cards, and one row mounted in a virtual
+# list showing 30 vs 160 rows (Rendering §9.7).
+[[bench]]
+name = "paint_scale"
+harness = false

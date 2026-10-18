@@ -174,3 +174,19 @@ and the affected crates' tests green.
 - [x] `Viso_Rendering.md`: transform roots, damage, CpuRaster, GLES3 (§6.8.1–§6.8.2, §8.4, §24.2.1)
 - [x] `Viso_Text_Font_Runtime.md`: embedded font policy, text without gpu (§3.4–§3.5)
 - [x] `Viso_Hot_Reload.md`: commit in `viso-view`, remote board session (§27A)
+
+## A19 — Incremental paint (Rendering §9.7)
+
+Phase 1 — a frame that only repaints:
+
+- [x] `paint_scale` bench: hover and mount cost against tree size (cards 100 / 2000, rows 30 / 160)
+- [ ] UI records each node's own drawables on every whole paint (stream span, enclosing root, opacity, flags); a PAINT-only frame re-emits just the dirty nodes and rewrites their primitives in place (`Painted::Patched`), falling back to a whole paint when a node's shape moved
+- [ ] Renderer `patch`: re-ingest the rewritten primitives at their store slots, re-lower them into their recorded scratch positions and upload only those slots; a whole upload when a precondition fails (kind, count, bounds, resource, backdrop capture)
+- [ ] Present: a patched entry re-keys its surface draw (through its offscreen pass's composite); when nothing moved since the last present the damage is the rewritten draws alone
+- [ ] Differential tests: patch and whole upload leave the same scratch, segments, pool shadows, keys and damage
+- [ ] Facade drives the patch path; footprint and headless scenarios unchanged
+- [ ] Rendering §9.7 and Architecture describe the patch path with the measured numbers
+
+Phase 2 — a frame that changes shape:
+
+- [ ] Splice: a subtree whose shape changed replaces its span of the stream, and the renderer re-ingests and re-lowers only that span (a virtual list mounting a row, a text edit)
