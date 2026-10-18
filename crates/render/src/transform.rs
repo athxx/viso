@@ -102,6 +102,8 @@ pub(crate) struct Transforms {
     pinned: bool,
     /// Some root's current displacement differs from its baked one.
     moved: bool,
+    /// Bumped whenever an upload or a move changes where anything draws.
+    epoch: u64,
 }
 
 impl Transforms {
@@ -118,6 +120,12 @@ impl Transforms {
         self.plain.resize(painted.len(), true);
         self.pinned = false;
         self.moved = false;
+        self.epoch += 1;
+    }
+
+    /// Where everything draws, as a counter: equal epochs, equal placement.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// Record whether the ingested frame captures a backdrop.
@@ -193,20 +201,33 @@ impl Transforms {
 
     /// Take the roots' displacements now.
     pub(crate) fn set(&mut self, current: &[[f32; 2]]) -> TransformUpdate {
-        self.current.clear();
-        self.current.extend_from_slice(&self.baked);
-        let mut moved = false;
-        for (slot, now) in current.iter().take(self.baked.len()).enumerate() {
-            if *now == self.baked[slot] {
-                continue;
-            }
-            if self.pinned || !self.plain.get(slot).copied().unwrap_or(true) {
+        let stuck = current
+            .iter()
+            .zip(&self.baked)
+            .enumerate()
+            .any(|(slot, (now, then))| {
+                now != then && (self.pinned || !self.plain.get(slot).copied().unwrap_or(true))
+            });
+        if stuck {
+            if self.moved {
                 self.current.copy_from_slice(&self.baked);
                 self.moved = false;
-                return TransformUpdate::NeedsUpload;
+                self.epoch += 1;
             }
-            self.current[slot] = *now;
-            moved = true;
+            return TransformUpdate::NeedsUpload;
+        }
+        let mut moved = false;
+        let mut changed = false;
+        for (slot, then) in self.baked.iter().enumerate() {
+            let now = current.get(slot).copied().unwrap_or(*then);
+            moved |= now != *then;
+            if self.current[slot] != now {
+                self.current[slot] = now;
+                changed = true;
+            }
+        }
+        if changed {
+            self.epoch += 1;
         }
         self.moved = moved;
         if moved {

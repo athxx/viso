@@ -39,6 +39,137 @@ use super::bounds::Bounds;
 use super::ids::{ClipChainId, PrimitiveId};
 use super::store::{Brush, ClipChainDescriptor, ClipMaskKey, DirtyPlanes, StoreRef};
 use super::{EmitContext, Scene};
+use crate::primitive::Primitive;
+
+/// A primitive that is one instance in one store, as it ingests: its instance
+/// with the group opacity `fold` applied.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Instance {
+    Quad(QuadInstance),
+    AnalyticRRect(AnalyticRRectInstance),
+    AnalyticEllipse(AnalyticEllipseInstance),
+    AnalyticCapsule(AnalyticCapsuleInstance),
+    AnalyticLine(AnalyticLineInstance),
+    AnalyticShadow(ShadowInstance),
+    Image(ImageInstance, TextureId, SamplerDesc),
+}
+
+impl Instance {
+    /// `prim`'s instance with `fold` applied and its bounds under `clip`, or
+    /// `None` for a kind that is not one instance in one store.
+    pub(crate) fn of(
+        prim: &Primitive,
+        fold: f32,
+        clip: Option<Rect>,
+    ) -> Option<(Instance, Bounds)> {
+        fn rect(pos: [f32; 2], size: [f32; 2]) -> Rect {
+            Rect {
+                x: pos[0],
+                y: pos[1],
+                w: size[0],
+                h: size[1],
+            }
+        }
+        let folded = fold < 1.0;
+        Some(match prim {
+            Primitive::Quad(quad) => {
+                let mut inst = quad.to_instance();
+                if folded {
+                    inst.color[3] *= fold;
+                    inst.border_color[3] *= fold;
+                }
+                let world = rect(inst.rect_pos, inst.rect_size);
+                (
+                    Instance::Quad(inst),
+                    Bounds::from_world(world, clip, 0.0, 0.0),
+                )
+            }
+            Primitive::AnalyticRRect(rrect) => {
+                let mut inst = rrect.to_instance();
+                if folded {
+                    inst.color[3] *= fold;
+                    inst.border_color[3] *= fold;
+                }
+                let world = rect(inst.rect_pos, inst.rect_size);
+                (
+                    Instance::AnalyticRRect(inst),
+                    Bounds::from_world(world, clip, 0.0, 0.0),
+                )
+            }
+            Primitive::AnalyticEllipse(ellipse) => {
+                let mut inst = ellipse.to_instance();
+                if folded {
+                    inst.color[3] *= fold;
+                    inst.border_color[3] *= fold;
+                }
+                let world = rect(inst.rect_pos, inst.rect_size);
+                (
+                    Instance::AnalyticEllipse(inst),
+                    Bounds::from_world(world, clip, 0.0, 0.0),
+                )
+            }
+            Primitive::AnalyticCapsule(capsule) => {
+                let mut inst = capsule.to_instance();
+                if folded {
+                    inst.color[3] *= fold;
+                    inst.border_color[3] *= fold;
+                }
+                let world = rect(inst.rect_pos, inst.rect_size);
+                (
+                    Instance::AnalyticCapsule(inst),
+                    Bounds::from_world(world, clip, 0.0, 0.0),
+                )
+            }
+            Primitive::AnalyticLine(line) => {
+                let mut inst = line.to_instance();
+                if folded {
+                    inst.color[3] *= fold;
+                    inst.border_color[3] *= fold;
+                }
+                // The AABB over both endpoints, inflated by half the stroke width
+                // plus the border on every side (a square cap's extension along
+                // the axis never exceeds the perpendicular half-width already
+                // added).
+                let min = [inst.p0[0].min(inst.p1[0]), inst.p0[1].min(inst.p1[1])];
+                let max = [inst.p0[0].max(inst.p1[0]), inst.p0[1].max(inst.p1[1])];
+                let world = rect(min, [max[0] - min[0], max[1] - min[1]]);
+                let stroke = inst.width + 2.0 * inst.border_width;
+                (
+                    Instance::AnalyticLine(inst),
+                    Bounds::from_world(world, clip, stroke, 0.0),
+                )
+            }
+            Primitive::AnalyticShadow(shadow) => {
+                let mut inst = shadow.to_instance();
+                if folded {
+                    inst.color[3] *= fold;
+                }
+                // The footprint extends past the shape by the blur reach (3σ
+                // covers a Gaussian), the outward spread and the drop offset.
+                let filter = 3.0 * inst.sigma
+                    + inst.spread.max(0.0)
+                    + inst.offset[0].abs().max(inst.offset[1].abs());
+                let world = rect(inst.rect_pos, inst.rect_size);
+                (
+                    Instance::AnalyticShadow(inst),
+                    Bounds::from_world(world, clip, 0.0, filter),
+                )
+            }
+            Primitive::Image(image) => {
+                let mut inst = image.to_instance();
+                if folded {
+                    inst.color[3] *= fold;
+                }
+                let world = rect(inst.rect_pos, inst.rect_size);
+                (
+                    Instance::Image(inst, image.texture, image.sampler),
+                    Bounds::from_world(world, clip, 0.0, 0.0),
+                )
+            }
+            _ => return None,
+        })
+    }
+}
 
 /// Per-frame ingest tallies (§61), accumulated as the frame's primitives are
 /// folded in. Plain integer counters — no allocation, reset each `begin_frame`.
@@ -89,6 +220,33 @@ impl Scene {
     /// Bump the revision planes flagged by a store's field-wise diff, and tally
     /// the primitive as dirty if anything moved. Shared by every `ingest_*`.
     fn apply_planes(&mut self, dirty: DirtyPlanes) {
+        self.bump_planes(dirty);
+        if dirty.any() {
+            self.ingest_stats.dirty_primitives += 1;
+        }
+        // Handed to the `record` call that follows, which stamps this primitive's
+        // paint-order slot only if something about it moved (§3202).
+        self.set_pending_dirty(dirty.any());
+        self.ingest_stats.visible_primitives += 1;
+    }
+
+    /// Fold a rewrite of paint-order slot `index`'s store entry in place,
+    /// outside a frame's walk: bump the planes `dirty` moved and, when any did,
+    /// restamp the slot and recompute its damage key.
+    pub(crate) fn restamp(&mut self, index: usize, dirty: DirtyPlanes) {
+        if !dirty.any() {
+            return;
+        }
+        self.bump_planes(dirty);
+        self.ingest_stats.dirty_primitives += 1;
+        self.content_stamps[index] = self.revisions.content();
+        let store = self.paint_order[index].store;
+        let (key, extent) = self.entry_key(store);
+        self.keys[index] = (store, key, extent);
+    }
+
+    /// Bump the revision planes `dirty` flags.
+    fn bump_planes(&mut self, dirty: DirtyPlanes) {
         if dirty.appended {
             // A cold structural append: the slot did not exist last frame, so
             // its geometry is new. Its paint/transform ride along with the new
@@ -108,13 +266,6 @@ impl Scene {
                 self.revisions.bump_resource();
             }
         }
-        if dirty.any() {
-            self.ingest_stats.dirty_primitives += 1;
-        }
-        // Handed to the `record` call that follows, which stamps this primitive's
-        // paint-order slot only if something about it moved (§3202).
-        self.set_pending_dirty(dirty.any());
-        self.ingest_stats.visible_primitives += 1;
     }
 
     /// Ingest a solid/bordered quad: diff into the quad store, bump the moved
@@ -129,6 +280,27 @@ impl Scene {
         self.apply_planes(dirty);
         self.ingest_stats.quad_instances += 1;
         self.record(StoreRef::Quad(slot), context, bounds)
+    }
+
+    /// Ingest a primitive that is one instance in one store: diff it into its
+    /// store, bump the moved planes, and record its paint-order slot.
+    pub(crate) fn ingest_instance(
+        &mut self,
+        instance: Instance,
+        context: EmitContext,
+        bounds: Bounds,
+    ) -> PrimitiveId {
+        match instance {
+            Instance::Quad(i) => self.ingest_quad(i, context, bounds),
+            Instance::AnalyticRRect(i) => self.ingest_analytic_rrect(i, context, bounds),
+            Instance::AnalyticEllipse(i) => self.ingest_analytic_ellipse(i, context, bounds),
+            Instance::AnalyticCapsule(i) => self.ingest_analytic_capsule(i, context, bounds),
+            Instance::AnalyticLine(i) => self.ingest_analytic_line(i, context, bounds),
+            Instance::AnalyticShadow(i) => self.ingest_analytic_shadow(i, context, bounds),
+            Instance::Image(i, texture, sampler) => {
+                self.ingest_image(i, texture, sampler, context, bounds)
+            }
+        }
     }
 
     /// Ingest an analytic rounded rectangle: diff into the rrect store, bump the

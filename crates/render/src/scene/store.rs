@@ -156,20 +156,7 @@ impl SolidQuadStore {
     pub fn ingest(&mut self, instance: QuadInstance) -> (GeometryId, DirtyPlanes) {
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
-            let prev = &self.entries[index].instance;
-            let dirty = DirtyPlanes {
-                transform: prev.rect_pos != instance.rect_pos,
-                geometry: prev.rect_size != instance.rect_size
-                    || prev.radius != instance.radius
-                    || prev.border_width != instance.border_width,
-                paint: prev.color != instance.color || prev.border_color != instance.border_color,
-                resource: false,
-                appended: false,
-            };
-            if dirty.any() {
-                self.entries[index].instance = instance;
-            }
-            dirty
+            self.set(GeometryId::new(index as u32), instance)
         } else {
             let idx = index as u32;
             self.entries.push(QuadEntry {
@@ -181,6 +168,26 @@ impl SolidQuadStore {
         };
         self.cursor += 1;
         (GeometryId::new(index as u32), dirty)
+    }
+
+    /// Diff `instance` into the retained entry at `id` in place, outside a
+    /// frame's walk, and return the planes it moved.
+    pub fn set(&mut self, id: GeometryId, instance: QuadInstance) -> DirtyPlanes {
+        let entry = &mut self.entries[id.index() as usize];
+        let prev = &entry.instance;
+        let dirty = DirtyPlanes {
+            transform: prev.rect_pos != instance.rect_pos,
+            geometry: prev.rect_size != instance.rect_size
+                || prev.radius != instance.radius
+                || prev.border_width != instance.border_width,
+            paint: prev.color != instance.color || prev.border_color != instance.border_color,
+            resource: false,
+            appended: false,
+        };
+        if dirty.any() {
+            entry.instance = instance;
+        }
+        dirty
     }
 
     /// The entry at `id`, or `None` if the slot is out of range.
@@ -245,20 +252,7 @@ impl AnalyticRRectStore {
     pub fn ingest(&mut self, instance: AnalyticRRectInstance) -> (GeometryId, DirtyPlanes) {
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
-            let prev = &self.entries[index].instance;
-            let dirty = DirtyPlanes {
-                transform: prev.rect_pos != instance.rect_pos,
-                geometry: prev.rect_size != instance.rect_size
-                    || prev.radius != instance.radius
-                    || prev.border_width != instance.border_width,
-                paint: prev.color != instance.color || prev.border_color != instance.border_color,
-                resource: false,
-                appended: false,
-            };
-            if dirty.any() {
-                self.entries[index].instance = instance;
-            }
-            dirty
+            self.set(GeometryId::new(index as u32), instance)
         } else {
             let idx = index as u32;
             self.entries.push(AnalyticRRectEntry {
@@ -270,6 +264,26 @@ impl AnalyticRRectStore {
         };
         self.cursor += 1;
         (GeometryId::new(index as u32), dirty)
+    }
+
+    /// Diff `instance` into the retained entry at `id` in place, outside a
+    /// frame's walk, and return the planes it moved.
+    pub fn set(&mut self, id: GeometryId, instance: AnalyticRRectInstance) -> DirtyPlanes {
+        let entry = &mut self.entries[id.index() as usize];
+        let prev = &entry.instance;
+        let dirty = DirtyPlanes {
+            transform: prev.rect_pos != instance.rect_pos,
+            geometry: prev.rect_size != instance.rect_size
+                || prev.radius != instance.radius
+                || prev.border_width != instance.border_width,
+            paint: prev.color != instance.color || prev.border_color != instance.border_color,
+            resource: false,
+            appended: false,
+        };
+        if dirty.any() {
+            entry.instance = instance;
+        }
+        dirty
     }
 
     /// The entry at `id`, or `None` if the slot is out of range.
@@ -332,19 +346,7 @@ impl AnalyticEllipseStore {
     pub fn ingest(&mut self, instance: AnalyticEllipseInstance) -> (GeometryId, DirtyPlanes) {
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
-            let prev = &self.entries[index].instance;
-            let dirty = DirtyPlanes {
-                transform: prev.rect_pos != instance.rect_pos,
-                geometry: prev.rect_size != instance.rect_size
-                    || prev.border_width != instance.border_width,
-                paint: prev.color != instance.color || prev.border_color != instance.border_color,
-                resource: false,
-                appended: false,
-            };
-            if dirty.any() {
-                self.entries[index].instance = instance;
-            }
-            dirty
+            self.set(GeometryId::new(index as u32), instance)
         } else {
             let idx = index as u32;
             self.entries.push(AnalyticEllipseEntry {
@@ -356,6 +358,25 @@ impl AnalyticEllipseStore {
         };
         self.cursor += 1;
         (GeometryId::new(index as u32), dirty)
+    }
+
+    /// Diff `instance` into the retained entry at `id` in place, outside a
+    /// frame's walk, and return the planes it moved.
+    pub fn set(&mut self, id: GeometryId, instance: AnalyticEllipseInstance) -> DirtyPlanes {
+        let entry = &mut self.entries[id.index() as usize];
+        let prev = &entry.instance;
+        let dirty = DirtyPlanes {
+            transform: prev.rect_pos != instance.rect_pos,
+            geometry: prev.rect_size != instance.rect_size
+                || prev.border_width != instance.border_width,
+            paint: prev.color != instance.color || prev.border_color != instance.border_color,
+            resource: false,
+            appended: false,
+        };
+        if dirty.any() {
+            entry.instance = instance;
+        }
+        dirty
     }
 
     /// The entry at `id`, or `None` if the slot is out of range.
@@ -418,19 +439,7 @@ impl AnalyticCapsuleStore {
     pub fn ingest(&mut self, instance: AnalyticCapsuleInstance) -> (GeometryId, DirtyPlanes) {
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
-            let prev = &self.entries[index].instance;
-            let dirty = DirtyPlanes {
-                transform: prev.rect_pos != instance.rect_pos,
-                geometry: prev.rect_size != instance.rect_size
-                    || prev.border_width != instance.border_width,
-                paint: prev.color != instance.color || prev.border_color != instance.border_color,
-                resource: false,
-                appended: false,
-            };
-            if dirty.any() {
-                self.entries[index].instance = instance;
-            }
-            dirty
+            self.set(GeometryId::new(index as u32), instance)
         } else {
             let idx = index as u32;
             self.entries.push(AnalyticCapsuleEntry {
@@ -442,6 +451,25 @@ impl AnalyticCapsuleStore {
         };
         self.cursor += 1;
         (GeometryId::new(index as u32), dirty)
+    }
+
+    /// Diff `instance` into the retained entry at `id` in place, outside a
+    /// frame's walk, and return the planes it moved.
+    pub fn set(&mut self, id: GeometryId, instance: AnalyticCapsuleInstance) -> DirtyPlanes {
+        let entry = &mut self.entries[id.index() as usize];
+        let prev = &entry.instance;
+        let dirty = DirtyPlanes {
+            transform: prev.rect_pos != instance.rect_pos,
+            geometry: prev.rect_size != instance.rect_size
+                || prev.border_width != instance.border_width,
+            paint: prev.color != instance.color || prev.border_color != instance.border_color,
+            resource: false,
+            appended: false,
+        };
+        if dirty.any() {
+            entry.instance = instance;
+        }
+        dirty
     }
 
     /// The entry at `id`, or `None` if the slot is out of range.
@@ -504,22 +532,7 @@ impl AnalyticLineStore {
     pub fn ingest(&mut self, instance: AnalyticLineInstance) -> (GeometryId, DirtyPlanes) {
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
-            let prev = &self.entries[index].instance;
-            let dirty = DirtyPlanes {
-                transform: prev.p0 != instance.p0 || prev.p1 != instance.p1,
-                geometry: prev.width != instance.width
-                    || prev.cap != instance.cap
-                    || prev.join != instance.join
-                    || prev.miter_limit != instance.miter_limit
-                    || prev.border_width != instance.border_width,
-                paint: prev.color != instance.color || prev.border_color != instance.border_color,
-                resource: false,
-                appended: false,
-            };
-            if dirty.any() {
-                self.entries[index].instance = instance;
-            }
-            dirty
+            self.set(GeometryId::new(index as u32), instance)
         } else {
             let idx = index as u32;
             self.entries.push(AnalyticLineEntry {
@@ -531,6 +544,28 @@ impl AnalyticLineStore {
         };
         self.cursor += 1;
         (GeometryId::new(index as u32), dirty)
+    }
+
+    /// Diff `instance` into the retained entry at `id` in place, outside a
+    /// frame's walk, and return the planes it moved.
+    pub fn set(&mut self, id: GeometryId, instance: AnalyticLineInstance) -> DirtyPlanes {
+        let entry = &mut self.entries[id.index() as usize];
+        let prev = &entry.instance;
+        let dirty = DirtyPlanes {
+            transform: prev.p0 != instance.p0 || prev.p1 != instance.p1,
+            geometry: prev.width != instance.width
+                || prev.cap != instance.cap
+                || prev.join != instance.join
+                || prev.miter_limit != instance.miter_limit
+                || prev.border_width != instance.border_width,
+            paint: prev.color != instance.color || prev.border_color != instance.border_color,
+            resource: false,
+            appended: false,
+        };
+        if dirty.any() {
+            entry.instance = instance;
+        }
+        dirty
     }
 
     /// The entry at `id`, or `None` if the slot is out of range.
@@ -592,22 +627,7 @@ impl AnalyticShadowStore {
     pub fn ingest(&mut self, instance: ShadowInstance) -> (GeometryId, DirtyPlanes) {
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
-            let prev = &self.entries[index].instance;
-            let dirty = DirtyPlanes {
-                transform: prev.rect_pos != instance.rect_pos || prev.offset != instance.offset,
-                geometry: prev.rect_size != instance.rect_size
-                    || prev.radius != instance.radius
-                    || prev.sigma != instance.sigma
-                    || prev.spread != instance.spread
-                    || prev.shape != instance.shape,
-                paint: prev.color != instance.color,
-                resource: false,
-                appended: false,
-            };
-            if dirty.any() {
-                self.entries[index].instance = instance;
-            }
-            dirty
+            self.set(GeometryId::new(index as u32), instance)
         } else {
             let idx = index as u32;
             self.entries.push(AnalyticShadowEntry {
@@ -619,6 +639,28 @@ impl AnalyticShadowStore {
         };
         self.cursor += 1;
         (GeometryId::new(index as u32), dirty)
+    }
+
+    /// Diff `instance` into the retained entry at `id` in place, outside a
+    /// frame's walk, and return the planes it moved.
+    pub fn set(&mut self, id: GeometryId, instance: ShadowInstance) -> DirtyPlanes {
+        let entry = &mut self.entries[id.index() as usize];
+        let prev = &entry.instance;
+        let dirty = DirtyPlanes {
+            transform: prev.rect_pos != instance.rect_pos || prev.offset != instance.offset,
+            geometry: prev.rect_size != instance.rect_size
+                || prev.radius != instance.radius
+                || prev.sigma != instance.sigma
+                || prev.spread != instance.spread
+                || prev.shape != instance.shape,
+            paint: prev.color != instance.color,
+            resource: false,
+            appended: false,
+        };
+        if dirty.any() {
+            entry.instance = instance;
+        }
+        dirty
     }
 
     /// The entry at `id`, or `None` if the slot is out of range.
@@ -860,25 +902,7 @@ impl ImageStore {
     ) -> (ImageId, DirtyPlanes) {
         let index = self.cursor;
         let dirty = if index < self.entries.len() {
-            let prev = &self.entries[index];
-            let pi = &prev.instance;
-            let dirty = DirtyPlanes {
-                transform: pi.rect_pos != instance.rect_pos,
-                geometry: pi.rect_size != instance.rect_size
-                    || pi.uv_pos != instance.uv_pos
-                    || pi.uv_size != instance.uv_size,
-                paint: pi.color != instance.color,
-                resource: prev.texture != texture || prev.sampler != sampler,
-                appended: false,
-            };
-            if dirty.any() {
-                self.entries[index] = ImageEntry {
-                    instance,
-                    texture,
-                    sampler,
-                };
-            }
-            dirty
+            self.set(ImageId::new(index as u32), instance, texture, sampler)
         } else {
             self.entries.push(ImageEntry {
                 instance,
@@ -889,6 +913,36 @@ impl ImageStore {
         };
         self.cursor += 1;
         (ImageId::new(index as u32), dirty)
+    }
+
+    /// Diff an image into the retained entry at `id` in place, outside a
+    /// frame's walk, and return the planes it moved.
+    pub fn set(
+        &mut self,
+        id: ImageId,
+        instance: ImageInstance,
+        texture: viso_gpu::TextureId,
+        sampler: viso_gpu::SamplerDesc,
+    ) -> DirtyPlanes {
+        let entry = &mut self.entries[id.index() as usize];
+        let pi = &entry.instance;
+        let dirty = DirtyPlanes {
+            transform: pi.rect_pos != instance.rect_pos,
+            geometry: pi.rect_size != instance.rect_size
+                || pi.uv_pos != instance.uv_pos
+                || pi.uv_size != instance.uv_size,
+            paint: pi.color != instance.color,
+            resource: entry.texture != texture || entry.sampler != sampler,
+            appended: false,
+        };
+        if dirty.any() {
+            *entry = ImageEntry {
+                instance,
+                texture,
+                sampler,
+            };
+        }
+        dirty
     }
 
     /// The entry at `id`, or `None` if out of range.
@@ -1009,6 +1063,43 @@ impl GlyphRunStore {
         };
         self.cursor += 1;
         (index as u32, dirty)
+    }
+
+    /// Whether `glyphs` can replace run `run`'s glyphs in place: as many, on
+    /// the same atlas and lane, each covering the same rect.
+    pub fn fits(
+        &self,
+        run: u32,
+        glyphs: impl ExactSizeIterator<Item = GlyphInstance>,
+        atlas: viso_gpu::TextureId,
+        lane: crate::primitive::GlyphLane,
+    ) -> bool {
+        let Some(entry) = self.runs.get(run as usize) else {
+            return false;
+        };
+        entry.count as usize == glyphs.len()
+            && entry.atlas == atlas
+            && entry.lane == lane
+            && self
+                .glyphs(entry)
+                .iter()
+                .zip(glyphs)
+                .all(|(a, b)| a.rect_pos == b.rect_pos && a.rect_size == b.rect_size)
+    }
+
+    /// Write `glyphs` over run `run`'s in place, outside a frame's walk; the
+    /// run [`fits`](Self::fits) them. Returns the planes it moved.
+    pub fn set(&mut self, run: u32, glyphs: impl Iterator<Item = GlyphInstance>) -> DirtyPlanes {
+        let entry = self.runs[run as usize];
+        let start = entry.start as usize;
+        let now = &mut self.instances[start..start + entry.count as usize];
+        let mut dirty = DirtyPlanes::default();
+        for (slot, g) in now.iter_mut().zip(glyphs) {
+            dirty.geometry |= slot.uv_pos != g.uv_pos || slot.uv_size != g.uv_size;
+            dirty.paint |= slot.color != g.color;
+            *slot = g;
+        }
+        dirty
     }
 
     /// The run entry at slot `run`, or `None` if out of range.
@@ -1841,7 +1932,7 @@ impl BrushStore {
 pub fn glyph_instances<'a>(
     glyphs: &'a [GlyphInstanceData],
     color: [f32; 4],
-) -> impl Iterator<Item = GlyphInstance> + 'a {
+) -> impl ExactSizeIterator<Item = GlyphInstance> + 'a {
     glyphs.iter().map(move |g| GlyphInstance {
         rect_pos: [g.rect.x, g.rect.y],
         rect_size: [g.rect.w, g.rect.h],

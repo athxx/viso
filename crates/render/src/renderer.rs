@@ -46,12 +46,14 @@ use crate::primitive::{
 };
 use crate::program::{BrushProgram, ProgramError, ProgramTable};
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
+use crate::scene::ingest::Instance;
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
 use crate::scene::{EmitContext, PaintEntry, Scene};
 use crate::transform::{NO_CHAIN, Space, TransformUpdate, Transforms};
 use crate::transient::{TargetDesc, TargetId, TargetUsage, TransientTargets};
 use viso_math::InterpolationSpace;
 
+mod patch;
 mod present;
 
 use crate::damage::Region;
@@ -1244,6 +1246,14 @@ pub struct Renderer {
     mesh_index_scratch: Vec<u32>,
     /// Draw segments in submission order, reused each frame.
     segments: Vec<Segment>,
+    /// Each paint-order entry's first instance in its family's scratch, or
+    /// [`patch::NOT_LOWERED`]: where a patch re-lowers it.
+    lowered: Vec<u32>,
+    /// How many primitives the last upload ingested.
+    stream_len: usize,
+    /// A patch's validated rewrites and the scratch slots they wrote, reused.
+    edits: Vec<patch::Edit>,
+    edit_slots: Vec<(patch::Family, u32, u32)>,
     /// Layer stack used while lowering the flat primitive stream, reused each
     /// frame. The top carries the current effective clip (already intersected
     /// with its ancestors), the pass its segments are routed to, and the origin
@@ -1952,6 +1962,10 @@ impl Renderer {
             mesh_vertex_scratch: Vec::with_capacity(1024),
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
+            lowered: Vec::new(),
+            stream_len: 0,
+            edits: Vec::new(),
+            edit_slots: Vec::new(),
             layer_stack: Vec::with_capacity(8),
             transforms: Transforms::default(),
             offscreen_passes: Vec::with_capacity(4),
@@ -2491,6 +2505,7 @@ impl Renderer {
         painted: &[[f32; 2]],
     ) {
         self.transforms.begin_frame(painted);
+        self.stream_len = primitives.len();
         self.layer_stack.clear();
         self.offscreen_passes.clear();
         self.blur_passes.clear();
@@ -2534,6 +2549,7 @@ impl Renderer {
                 },
                 origin,
                 space: self.transforms.space(self.active_chain()),
+                fold,
             };
             // Paint-order slots this primitive records, so its paint bounds can
             // be folded into the innermost offscreen layer's content union after
@@ -2543,132 +2559,19 @@ impl Renderer {
             // *parent* target and must not be folded into the layer it opens.
             let mut record_start = self.scene.paint_order.len();
             match prim {
-                Primitive::Quad(quad) => {
+                Primitive::Quad(_)
+                | Primitive::AnalyticRRect(_)
+                | Primitive::AnalyticEllipse(_)
+                | Primitive::AnalyticCapsule(_)
+                | Primitive::AnalyticLine(_)
+                | Primitive::AnalyticShadow(_)
+                | Primitive::Image(_) => {
                     // Diff the world-space instance (origin not yet subtracted)
-                    // into the retained store, bumping only the moved planes, and
+                    // into its retained store, bumping only the moved planes, and
                     // record its paint-order slot.
-                    let mut inst = quad.to_instance();
-                    if fold < 1.0 {
-                        inst.color[3] *= fold;
-                        inst.border_color[3] *= fold;
+                    if let Some((inst, bounds)) = Instance::of(prim, fold, clip) {
+                        self.scene.ingest_instance(inst, ctx, bounds);
                     }
-                    let bounds = crate::scene::bounds::Bounds::from_world(
-                        Rect {
-                            x: inst.rect_pos[0],
-                            y: inst.rect_pos[1],
-                            w: inst.rect_size[0],
-                            h: inst.rect_size[1],
-                        },
-                        clip,
-                        0.0,
-                        0.0,
-                    );
-                    self.scene.ingest_quad(inst, ctx, bounds);
-                }
-                Primitive::AnalyticRRect(rrect) => {
-                    let mut inst = rrect.to_instance();
-                    if fold < 1.0 {
-                        inst.color[3] *= fold;
-                        inst.border_color[3] *= fold;
-                    }
-                    let bounds = crate::scene::bounds::Bounds::from_world(
-                        Rect {
-                            x: inst.rect_pos[0],
-                            y: inst.rect_pos[1],
-                            w: inst.rect_size[0],
-                            h: inst.rect_size[1],
-                        },
-                        clip,
-                        0.0,
-                        0.0,
-                    );
-                    self.scene.ingest_analytic_rrect(inst, ctx, bounds);
-                }
-                Primitive::AnalyticEllipse(ellipse) => {
-                    let mut inst = ellipse.to_instance();
-                    if fold < 1.0 {
-                        inst.color[3] *= fold;
-                        inst.border_color[3] *= fold;
-                    }
-                    let bounds = crate::scene::bounds::Bounds::from_world(
-                        Rect {
-                            x: inst.rect_pos[0],
-                            y: inst.rect_pos[1],
-                            w: inst.rect_size[0],
-                            h: inst.rect_size[1],
-                        },
-                        clip,
-                        0.0,
-                        0.0,
-                    );
-                    self.scene.ingest_analytic_ellipse(inst, ctx, bounds);
-                }
-                Primitive::AnalyticCapsule(capsule) => {
-                    let mut inst = capsule.to_instance();
-                    if fold < 1.0 {
-                        inst.color[3] *= fold;
-                        inst.border_color[3] *= fold;
-                    }
-                    let bounds = crate::scene::bounds::Bounds::from_world(
-                        Rect {
-                            x: inst.rect_pos[0],
-                            y: inst.rect_pos[1],
-                            w: inst.rect_size[0],
-                            h: inst.rect_size[1],
-                        },
-                        clip,
-                        0.0,
-                        0.0,
-                    );
-                    self.scene.ingest_analytic_capsule(inst, ctx, bounds);
-                }
-                Primitive::AnalyticLine(line) => {
-                    let mut inst = line.to_instance();
-                    if fold < 1.0 {
-                        inst.color[3] *= fold;
-                        inst.border_color[3] *= fold;
-                    }
-                    // AABB over both endpoints, inflated by half the stroke width
-                    // plus the border on every side (a square cap can extend by a
-                    // further half-width along the axis; `from_world`'s uniform
-                    // inflation covers it, since cap extension never exceeds the
-                    // perpendicular half-width already added).
-                    let min_x = inst.p0[0].min(inst.p1[0]);
-                    let min_y = inst.p0[1].min(inst.p1[1]);
-                    let max_x = inst.p0[0].max(inst.p1[0]);
-                    let max_y = inst.p0[1].max(inst.p1[1]);
-                    let world = Rect {
-                        x: min_x,
-                        y: min_y,
-                        w: max_x - min_x,
-                        h: max_y - min_y,
-                    };
-                    let bounds = crate::scene::bounds::Bounds::from_world(
-                        world,
-                        clip,
-                        inst.width + 2.0 * inst.border_width,
-                        0.0,
-                    );
-                    self.scene.ingest_analytic_line(inst, ctx, bounds);
-                }
-                Primitive::Image(image) => {
-                    let mut inst = image.to_instance();
-                    if fold < 1.0 {
-                        inst.color[3] *= fold;
-                    }
-                    let bounds = crate::scene::bounds::Bounds::from_world(
-                        Rect {
-                            x: inst.rect_pos[0],
-                            y: inst.rect_pos[1],
-                            w: inst.rect_size[0],
-                            h: inst.rect_size[1],
-                        },
-                        clip,
-                        0.0,
-                        0.0,
-                    );
-                    self.scene
-                        .ingest_image(inst, image.texture, image.sampler, ctx, bounds);
                 }
                 Primitive::Gradient(gradient) => {
                     // The LUT decision is a lowering-time property the renderer
@@ -2708,31 +2611,6 @@ impl Renderer {
                     );
                     self.scene
                         .ingest_gradient(inst, self.gradient_lut.texture(), ctx, bounds);
-                }
-                Primitive::AnalyticShadow(shadow) => {
-                    let mut inst = shadow.to_instance();
-                    if fold < 1.0 {
-                        inst.color[3] *= fold;
-                    }
-                    // The shadow footprint extends past the shape rect by the
-                    // blur reach (3σ covers a Gaussian), the outward spread, and
-                    // the drop offset. Fed as the `filter` inflation term so the
-                    // paint/effect bounds cover the soft-edged, offset quad.
-                    let shadow_filter = 3.0 * inst.sigma
-                        + inst.spread.max(0.0)
-                        + inst.offset[0].abs().max(inst.offset[1].abs());
-                    let bounds = crate::scene::bounds::Bounds::from_world(
-                        Rect {
-                            x: inst.rect_pos[0],
-                            y: inst.rect_pos[1],
-                            w: inst.rect_size[0],
-                            h: inst.rect_size[1],
-                        },
-                        clip,
-                        0.0,
-                        shadow_filter,
-                    );
-                    self.scene.ingest_analytic_shadow(inst, ctx, bounds);
                 }
                 Primitive::Path(path) => {
                     // A path drop shadow lowers first so it sits under the fill:
@@ -3290,6 +3168,7 @@ impl Renderer {
         self.mesh_index_scratch.clear();
         self.programs.begin_lowering();
         self.segments.clear();
+        self.lowered.clear();
 
         // Take the paint-order record so the store/backend borrows below do not
         // overlap the record borrow. It is swapped back before returning, so the
@@ -3316,14 +3195,17 @@ impl Renderer {
                     let hit = paint.intersect(roi);
                     if hit.w <= 0.0 || hit.h <= 0.0 {
                         self.culled_this_frame += 1;
+                        self.lowered.push(patch::NOT_LOWERED);
                         continue;
                     }
                 }
             }
             if self.program_draw_unseen(entry) {
                 self.culled_this_frame += 1;
+                self.lowered.push(patch::NOT_LOWERED);
                 continue;
             }
+            self.lowered.push(self.lowering_cursor(entry.store));
             self.lower_entry(backend, entry, clip, target, origin);
         }
 
@@ -4994,6 +4876,7 @@ impl Renderer {
                 offscreen: None,
                 origin: [0.0, 0.0],
                 space: self.transforms.space(self.active_chain()),
+                fold: 1.0,
             },
             bounds,
         );

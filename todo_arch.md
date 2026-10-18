@@ -181,9 +181,9 @@ Phase 1 — a frame that only repaints:
 
 - [x] `paint_scale` bench: hover and mount cost against tree size (cards 100 / 2000, rows 30 / 160)
 - [ ] UI records each node's own drawables on every whole paint (stream span, enclosing root, opacity, flags); a PAINT-only frame re-emits just the dirty nodes and rewrites their primitives in place (`Painted::Patched`), falling back to a whole paint when a node's shape moved
-- [ ] Renderer `patch`: re-ingest the rewritten primitives at their store slots, re-lower them into their recorded scratch positions and upload only those slots; a whole upload when a precondition fails (kind, count, bounds, resource, backdrop capture)
-- [ ] Present: a patched entry re-keys its surface draw (through its offscreen pass's composite); when nothing moved since the last present the damage is the rewritten draws alone
-- [ ] Differential tests: patch and whole upload leave the same scratch, segments, pool shadows, keys and damage
+- [x] Renderer `patch`: re-ingest the rewritten primitives at their store slots, re-lower them into their recorded scratch positions and upload only those slots; a whole upload when a precondition fails (kind, count, bounds, resource, backdrop capture)
+- [x] Present: a patched entry re-keys its surface draw (through its offscreen pass's composite); when nothing moved since the last present the damage is the rewritten draws alone
+- [x] Differential tests: patch and whole upload leave the same scratch, segments, pool shadows, keys and damage
 - [ ] Facade drives the patch path; footprint and headless scenarios unchanged
 - [ ] Rendering §9.7 and Architecture describe the patch path with the measured numbers
 

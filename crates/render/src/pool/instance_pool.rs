@@ -132,6 +132,12 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
         self.shadow.is_empty()
     }
 
+    /// What the device buffer holds, slot by slot.
+    #[cfg(test)]
+    pub(crate) fn shadow(&self) -> &[T] {
+        &self.shadow
+    }
+
     /// Bytes uploaded by the most recent [`sync`](Self::sync): the changed slots
     /// (or the whole array on a grow) times the element stride. Zero after an
     /// unchanged frame. The renderer sums this across its pools into
@@ -202,6 +208,43 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
         // The shadow now mirrors exactly `instances`.
         self.shadow.clear();
         self.shadow.extend_from_slice(instances);
+        writes
+    }
+
+    /// Upload the slots of `ranges` (each `(start, len)`, ascending) that
+    /// differ from the device buffer, after a frame rewrote only those slots
+    /// of the array the last [`sync`](Self::sync) uploaded. Coalesces and
+    /// counts like `sync`; returns the number of `write_buffer` calls.
+    pub fn write_slots<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        instances: &[T],
+        ranges: impl Iterator<Item = (usize, usize)>,
+    ) -> usize {
+        debug_assert_eq!(instances.len(), self.shadow.len(), "same array as synced");
+        let mut runs = Runs::default();
+        let mut writes = 0;
+        let mut uploaded_slots = 0;
+        let mut upload = |pool: &mut Self, backend: &mut B, run: Range| {
+            let slots = run.start..run.start + run.len;
+            pool.upload_run(backend, run.start, &instances[slots.clone()]);
+            pool.shadow[slots].copy_from_slice(&instances[run.start..run.start + run.len]);
+            writes += 1;
+            uploaded_slots += run.len;
+        };
+        for (start, len) in ranges {
+            for i in start..start + len {
+                if self.shadow[i] != instances[i]
+                    && let Some(run) = runs.push(i)
+                {
+                    upload(self, backend, run);
+                }
+            }
+        }
+        if let Some(run) = runs.finish() {
+            upload(self, backend, run);
+        }
+        self.last_upload_bytes = uploaded_slots * Self::STRIDE;
         writes
     }
 

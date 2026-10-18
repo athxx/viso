@@ -76,8 +76,14 @@ pub struct DamageStats {
 #[derive(Debug)]
 pub(super) struct Presenter {
     draws: Vec<SurfaceDraw>,
-    /// Each offscreen pass's content key, folded in paint order.
-    pass_keys: Vec<Key>,
+    /// Each paint-order entry's surface draw, or [`NONE`] for one drawn into
+    /// an offscreen pass.
+    draw_of: Vec<u32>,
+    /// Each offscreen pass's content: the sum of its entries' keys, each mixed
+    /// with its position, so one entry's change updates it in place.
+    pass_sums: Vec<u64>,
+    /// Each offscreen pass's composite entry.
+    composite_of: Vec<u32>,
     /// Each backdrop capture's content key, once a composite reads it.
     capture_keys: Vec<Option<u64>>,
     /// Every paint-order entry's key, this upload.
@@ -86,6 +92,14 @@ pub(super) struct Presenter {
     drawn: Vec<Drawn>,
     /// What the last presented frame drew.
     presented: Vec<Drawn>,
+    /// Each surface draw's entry in `presented`, or [`NONE`] where it drew
+    /// nothing; valid while `placed` is.
+    drawn_of: Vec<u32>,
+    /// The transform epoch `presented` was placed at from this upload's
+    /// draws, or `None` once either changed.
+    placed: Option<u64>,
+    /// New keys of `presented` entries a patch rewrote since it was shown.
+    restaged: Vec<(u32, u64)>,
     history: History,
     /// The next frame is redrawn whole.
     full: bool,
@@ -106,11 +120,16 @@ impl Default for Presenter {
     fn default() -> Presenter {
         Presenter {
             draws: Vec::new(),
-            pass_keys: Vec::new(),
+            draw_of: Vec::new(),
+            pass_sums: Vec::new(),
+            composite_of: Vec::new(),
             capture_keys: Vec::new(),
             keys: Vec::new(),
             drawn: Vec::new(),
             presented: Vec::new(),
+            drawn_of: Vec::new(),
+            placed: None,
+            restaged: Vec::new(),
             history: History::default(),
             full: true,
             viewport: [0.0, 0.0],
@@ -128,6 +147,30 @@ impl Presenter {
     pub(super) fn atlas_written(&mut self, atlas: Atlas) {
         self.atlas_writes[atlas as usize] += 1;
     }
+
+    /// Every entry's key and every surface draw's key and paint rect.
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> (Vec<u64>, Vec<(u64, Rect)>) {
+        let draws = self.draws.iter().map(|d| (d.key, d.paint)).collect();
+        (self.keys.clone(), draws)
+    }
+}
+
+/// No entry.
+const NONE: u32 = u32::MAX;
+
+/// What entry `i` keyed `key` adds to its offscreen pass's content.
+fn pass_term(key: u64, i: usize) -> u64 {
+    Key::new(key).word(i as u64).finish()
+}
+
+/// The key of a surface draw keyed `key` whose root moved by `shift`.
+fn placed_key(key: u64, shift: [f32; 2]) -> u64 {
+    if shift == [0.0, 0.0] {
+        key
+    } else {
+        Key::new(key).f32s(&shift).finish()
+    }
 }
 
 impl Renderer {
@@ -137,86 +180,149 @@ impl Renderer {
         let mut p = std::mem::take(&mut self.present);
         p.draws.clear();
         p.keys.clear();
-        p.pass_keys.clear();
-        p.pass_keys
-            .extend(self.offscreen_passes.iter().map(|pass| Key::new(pass.key)));
+        p.draw_of.clear();
+        p.pass_sums.clear();
+        p.pass_sums.resize(self.offscreen_passes.len(), 0);
+        p.composite_of.clear();
+        p.composite_of.resize(self.offscreen_passes.len(), NONE);
         p.capture_keys.clear();
         p.capture_keys.resize(self.backdrop_captures.len(), None);
+        p.placed = None;
+        p.restaged.clear();
         for (i, entry) in self.scene.paint_order.iter().enumerate() {
-            let (content, extent) = self.scene.key(i);
-            let ctx = entry.context;
-            let mut key = Key::new(content)
-                .f32s(&ctx.origin)
-                .word(u64::from(ctx.space.slot) << 32 | u64::from(ctx.space.chain));
-            key = match ctx.clip {
-                Some(clip) => key.rect(clip),
-                None => key.word(u64::MAX),
-            };
-            match entry.store {
-                StoreRef::Composite { pass, .. } => {
-                    if let Some(content) = p.pass_keys.get(pass) {
-                        key = key.word(content.finish());
-                    }
-                }
-                StoreRef::BackdropComposite { capture, .. } => {
-                    key = key.word(self.capture_key(&mut p, capture));
-                }
-                StoreRef::MaterialComposite { capture, material } => {
-                    key = key.word(self.capture_key(&mut p, capture));
-                    if let Some(m) = self.material_records.get(material) {
-                        key = key.rect(m.rect).f32s(&m.radius).f32s(&[m.noise, m.opacity]);
-                        for row in &m.op.matrix.rows {
-                            key = key.f32s(row);
-                        }
-                        key = key.f32s(&[m.op.gamma]);
-                    }
-                }
-                StoreRef::Gradient(_) => {
-                    key = key.word(p.atlas_writes[Atlas::GradientLut as usize]);
-                }
-                StoreRef::GlyphRun(run)
-                    if self
-                        .scene
-                        .glyph_runs
-                        .run(run)
-                        .is_some_and(|e| self.mask_pages.contains(e.atlas)) =>
-                {
-                    key = key.word(p.atlas_writes[Atlas::MaskPage as usize]);
-                }
-                StoreRef::Shader(id) => {
-                    // The slot's program can be replaced under the same entry,
-                    // and a program that reads the clock follows it.
-                    if let Some(e) = self.scene.shaders.get(id) {
-                        if let Some((pipeline, _)) = self.programs.get(e.program) {
-                            let raw: viso_gpu::slots::RawId = pipeline.into();
-                            key = key.word(u64::from(raw.index) << 32 | u64::from(raw.generation));
-                        }
-                        if let Some(time) = self.programs.clock(e.program) {
-                            key = key.f32s(&[time]);
-                        }
-                    }
-                }
-                _ => {}
-            }
-            let key = key.finish();
+            let key = self.draw_key(&mut p, i);
             p.keys.push(key);
-            if let Some(pass) = ctx.offscreen {
-                if let Some(content) = p.pass_keys.get_mut(pass) {
-                    *content = content.word(key);
+            if let StoreRef::Composite { pass, .. } = entry.store
+                && let Some(slot) = p.composite_of.get_mut(pass)
+            {
+                *slot = i as u32;
+            }
+            if let Some(pass) = entry.context.offscreen {
+                if let Some(sum) = p.pass_sums.get_mut(pass) {
+                    *sum = sum.wrapping_add(pass_term(key, i));
                 }
+                p.draw_of.push(NONE);
                 continue;
             }
+            let (_, extent) = self.scene.key(i);
             let bounds = entry.bounds.paint;
             let paint = match extent {
                 Some(extent) if !bounds.has_area() => extent,
                 _ => bounds,
             };
+            p.draw_of.push(p.draws.len() as u32);
             p.draws.push(SurfaceDraw {
                 key,
                 paint,
-                clip: ctx.clip,
-                space: ctx.space,
+                clip: entry.context.clip,
+                space: entry.context.space,
             });
+        }
+        self.present = p;
+    }
+
+    /// The key of paint-order entry `i`: its retained content, the context it
+    /// was lowered under, and whatever it samples.
+    fn draw_key(&self, p: &mut Presenter, i: usize) -> u64 {
+        let entry = &self.scene.paint_order[i];
+        let (content, _) = self.scene.key(i);
+        let ctx = entry.context;
+        let mut key = Key::new(content)
+            .f32s(&ctx.origin)
+            .word(u64::from(ctx.space.slot) << 32 | u64::from(ctx.space.chain));
+        key = match ctx.clip {
+            Some(clip) => key.rect(clip),
+            None => key.word(u64::MAX),
+        };
+        match entry.store {
+            StoreRef::Composite { pass, .. } => {
+                if let (Some(sum), Some(pass)) =
+                    (p.pass_sums.get(pass), self.offscreen_passes.get(pass))
+                {
+                    key = key.word(pass.key).word(*sum);
+                }
+            }
+            StoreRef::BackdropComposite { capture, .. } => {
+                key = key.word(self.capture_key(p, capture));
+            }
+            StoreRef::MaterialComposite { capture, material } => {
+                key = key.word(self.capture_key(p, capture));
+                if let Some(m) = self.material_records.get(material) {
+                    key = key.rect(m.rect).f32s(&m.radius).f32s(&[m.noise, m.opacity]);
+                    for row in &m.op.matrix.rows {
+                        key = key.f32s(row);
+                    }
+                    key = key.f32s(&[m.op.gamma]);
+                }
+            }
+            StoreRef::Gradient(_) => {
+                key = key.word(p.atlas_writes[Atlas::GradientLut as usize]);
+            }
+            StoreRef::GlyphRun(run)
+                if self
+                    .scene
+                    .glyph_runs
+                    .run(run)
+                    .is_some_and(|e| self.mask_pages.contains(e.atlas)) =>
+            {
+                key = key.word(p.atlas_writes[Atlas::MaskPage as usize]);
+            }
+            StoreRef::Shader(id) => {
+                // The slot's program can be replaced under the same entry,
+                // and a program that reads the clock follows it.
+                if let Some(e) = self.scene.shaders.get(id) {
+                    if let Some((pipeline, _)) = self.programs.get(e.program) {
+                        let raw: viso_gpu::slots::RawId = pipeline.into();
+                        key = key.word(u64::from(raw.index) << 32 | u64::from(raw.generation));
+                    }
+                    if let Some(time) = self.programs.clock(e.program) {
+                        key = key.f32s(&[time]);
+                    }
+                }
+            }
+            _ => {}
+        }
+        key.finish()
+    }
+
+    /// Re-key paint-order entry `index` after a patch rewrote it, and every
+    /// composite its change reaches up to the surface draw. When the last
+    /// presented frame was placed as things stand, the surface draw's new key
+    /// is staged against it, so the next frame's damage is the rewritten draws
+    /// alone.
+    pub(super) fn rekey(&mut self, index: usize) {
+        let mut p = std::mem::take(&mut self.present);
+        let mut i = index;
+        loop {
+            let old = p.keys[i];
+            let new = self.draw_key(&mut p, i);
+            if new == old {
+                break;
+            }
+            p.keys[i] = new;
+            if let Some(pass) = self.scene.paint_order[i].context.offscreen {
+                let sum = &mut p.pass_sums[pass];
+                *sum = sum
+                    .wrapping_sub(pass_term(old, i))
+                    .wrapping_add(pass_term(new, i));
+                match p.composite_of[pass] {
+                    NONE => break,
+                    composite => i = composite as usize,
+                }
+                continue;
+            }
+            let d = p.draw_of[i] as usize;
+            p.draws[d].key = new;
+            if p.placed.is_some() {
+                match p.drawn_of[d] {
+                    NONE => {}
+                    at => {
+                        let shift = self.transforms.shift(p.draws[d].space.slot);
+                        p.restaged.push((at, placed_key(new, shift)));
+                    }
+                }
+            }
+            break;
         }
         self.present = p;
     }
@@ -254,7 +360,21 @@ impl Renderer {
     fn frame_region(&mut self, clear: [f32; 4], viewport: [f32; 2]) -> Region {
         let p = &mut self.present;
         let surface = Rect::new(0.0, 0.0, viewport[0], viewport[1]);
+        let same = p.partial && !p.full && p.viewport == viewport && p.clear == clear;
+        if same && p.placed == Some(self.transforms.epoch()) {
+            let mut merger = Merger::new(FRINGE, surface);
+            for &(at, key) in &p.restaged {
+                let shown = p.presented[at as usize];
+                if shown.key != key {
+                    merger.add(shown.rect);
+                }
+            }
+            return merger.finish();
+        }
+        p.placed = None;
+        p.restaged.clear();
         p.drawn.clear();
+        p.drawn_of.clear();
         for d in &p.draws {
             let shift = self.transforms.shift(d.space.slot);
             let mut rect = Rect::new(
@@ -268,16 +388,16 @@ impl Renderer {
             }
             let rect = rect.intersect(surface);
             if !rect.has_area() {
+                p.drawn_of.push(NONE);
                 continue;
             }
-            let key = if shift == [0.0, 0.0] {
-                d.key
-            } else {
-                Key::new(d.key).f32s(&shift).finish()
-            };
-            p.drawn.push(Drawn { key, rect });
+            p.drawn_of.push(p.drawn.len() as u32);
+            p.drawn.push(Drawn {
+                key: placed_key(d.key, shift),
+                rect,
+            });
         }
-        if !p.partial || p.full || p.viewport != viewport || p.clear != clear {
+        if !same {
             return Region::Full;
         }
         let mut merger = Merger::new(FRINGE, surface);
@@ -329,10 +449,16 @@ impl Renderer {
     ) {
         let region = self.frame_region(clear, viewport);
         if region.is_empty() {
-            self.present.stats.skipped_frames += 1;
-            self.present.stats.damage_px = 0;
-            self.present.stats.damage_rects = 0;
-            self.present.region = Region::Empty;
+            let epoch = self.transforms.epoch();
+            let p = &mut self.present;
+            // Nothing differs from what is shown, so what is shown is placed
+            // as things stand.
+            p.restaged.clear();
+            p.placed = Some(epoch);
+            p.stats.skipped_frames += 1;
+            p.stats.damage_px = 0;
+            p.stats.damage_rects = 0;
+            p.region = Region::Empty;
             return;
         }
         // The drawable can be momentarily unavailable (surface out of date after a
@@ -381,9 +507,18 @@ impl Renderer {
             _ => 0,
         };
         backend.present_with_damage(frame, &damage[..shown]);
+        let epoch = self.transforms.epoch();
         let p = &mut self.present;
         p.history.push(region);
-        std::mem::swap(&mut p.presented, &mut p.drawn);
+        if p.placed.is_some() {
+            for &(at, key) in &p.restaged {
+                p.presented[at as usize].key = key;
+            }
+            p.restaged.clear();
+        } else {
+            std::mem::swap(&mut p.presented, &mut p.drawn);
+            p.placed = Some(epoch);
+        }
         p.full = false;
         p.viewport = viewport;
         p.clear = clear;

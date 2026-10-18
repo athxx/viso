@@ -79,6 +79,9 @@ pub struct EmitContext {
     pub origin: [f32; 2],
     /// The transform root and moving clips this emit follows.
     pub space: Space,
+    /// The group opacity an enclosing layer pushed into this emit's colors
+    /// (`1.0` outside a folded group).
+    pub fold: f32,
 }
 
 /// One entry in the paint-order record: which store slot the Nth emitted
