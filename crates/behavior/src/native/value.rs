@@ -1,11 +1,15 @@
 //! Conversions between Rust values and [`Value`]s at the native boundary, and
 //! native handles.
 
-use std::any::Any;
-use std::fmt;
-use std::marker::PhantomData;
-use std::ops::Deref;
-use std::rc::Rc;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::any::Any;
+use core::fmt;
+use core::marker::PhantomData;
+use core::ops::Deref;
 
 use super::SchemaTy;
 use crate::value::Value;
@@ -73,13 +77,13 @@ impl NativeValue for f32 {
 }
 
 /// A `Duration`: finite and never negative.
-impl NativeValue for std::time::Duration {
+impl NativeValue for core::time::Duration {
     const TY: SchemaTy = SchemaTy::Duration;
 
-    fn from_value(value: &Value) -> Option<std::time::Duration> {
+    fn from_value(value: &Value) -> Option<core::time::Duration> {
         value
             .as_float()
-            .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
+            .and_then(|seconds| core::time::Duration::try_from_secs_f64(seconds).ok())
     }
 
     fn into_value(self) -> Value {
@@ -124,7 +128,7 @@ impl NativeValue for String {
     }
 
     fn into_value(self) -> Value {
-        Value::Str(Rc::new(self))
+        Value::Str(Rc::new(self.into()))
     }
 }
 

@@ -36,7 +36,7 @@ WebGPU through gstack `/browse`. Windows/D3D12 is `cargo check`/`clippy` only.
 ## P0 — Target routing and platform vocabulary
 
 - [x] `viso-gpu`: `Backend` alias per target — `target_vendor = "apple"` → Metal (macOS
-      `NSView` and iOS `UIView` surfaces); every other target resolves to `HeadlessRaster`
+      `NSView` and iOS `UIView` surfaces); every other target resolves to `CpuRaster`
       until its backend lands in P2 (`windows` → D3D12, `linux`/`android` → Vulkan,
       `wasm32` → WebGPU).
 - [x] `viso-platform` routing: macOS, Windows, Linux/BSD (X11) compiled; Android no longer

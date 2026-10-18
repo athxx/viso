@@ -14,13 +14,19 @@
 
 mod translate;
 
-use std::fmt;
-use std::rc::Rc;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 
 use viso_ende::{DecodeError, Decoder, Encoder};
 
 use crate::native::{NativeError, NativeLibrary, NativeType};
-use crate::wire::{malformed, read_list, write_list};
+use crate::value::Text;
+use crate::wire::{Keep, malformed, read_list, read_text, write_list};
+use viso_schema::AssetBytes;
 
 pub(crate) use translate::Translator;
 
@@ -42,7 +48,7 @@ pub struct Catalog {
 /// call passes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageInfo {
-    pub key: Box<str>,
+    pub key: Text,
     pub args: u16,
 }
 
@@ -50,8 +56,8 @@ pub struct MessageInfo {
 /// [`Table`], decoded on first use.
 #[derive(Debug, Clone, PartialEq)]
 struct LocaleTable {
-    tag: Box<str>,
-    bytes: Rc<[u8]>,
+    tag: Text,
+    bytes: AssetBytes,
 }
 
 /// One locale's patterns: the literal text they show, their ops, and where
@@ -165,7 +171,7 @@ impl fmt::Display for CatalogError {
     }
 }
 
-impl std::error::Error for CatalogError {}
+impl core::error::Error for CatalogError {}
 
 impl Catalog {
     /// A catalog of `messages` and each locale's table, the source locale
@@ -201,7 +207,7 @@ impl Catalog {
                     write_table(&mut enc, &table);
                     LocaleTable {
                         tag: tag.into(),
-                        bytes: enc.into_bytes().into(),
+                        bytes: AssetBytes::Shared(enc.into_bytes().into()),
                     }
                 })
                 .collect(),
@@ -250,17 +256,20 @@ impl Catalog {
         });
     }
 
-    pub(crate) fn decode(dec: &mut Decoder<'_>) -> Result<Catalog, DecodeError> {
+    pub(crate) fn decode<'a>(
+        dec: &mut Decoder<'a>,
+        keep: impl Keep<'a>,
+    ) -> Result<Catalog, DecodeError> {
         let messages = read_list(dec, |dec| {
             Ok(MessageInfo {
-                key: dec.read_str()?.into(),
+                key: read_text(dec, keep)?,
                 args: dec.read_u16()?,
             })
         })?;
         let locales = read_list(dec, |dec| {
             Ok(LocaleTable {
-                tag: dec.read_str()?.into(),
-                bytes: dec.read_bytes()?.into(),
+                tag: read_text(dec, keep)?,
+                bytes: keep.bytes(dec.read_bytes()?),
             })
         })?;
         if locales.is_empty()
@@ -547,6 +556,9 @@ pub(crate) static I18N: NativeLibrary = NativeLibrary {
 mod tests {
     use super::*;
     use crate::Value;
+    use alloc::rc::Rc;
+    use alloc::string::ToString;
+    use alloc::vec;
 
     fn info(key: &str, args: u16) -> MessageInfo {
         MessageInfo {
@@ -630,7 +642,8 @@ mod tests {
         let mut enc = Encoder::new();
         catalog.encode(&mut enc);
         let bytes = enc.into_bytes();
-        let decoded = Catalog::decode(&mut Decoder::new(&bytes)).expect("decodes");
+        let decoded =
+            Catalog::decode(&mut Decoder::new(&bytes), crate::wire::Copied).expect("decodes");
         assert_eq!(decoded, catalog);
         assert_eq!(decoded.table(1).expect("valid").text, "Salut");
         assert_eq!(decoded.position("b"), Some(1));

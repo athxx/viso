@@ -36,6 +36,7 @@
 //! same key. This mirrors the family split the lowering walk produces.
 
 use crate::primitive::Rect;
+use crate::transform::Space;
 use viso_gpu::BindGroupId;
 
 /// Which built-in pipeline family a primitive draws through — the coarsest
@@ -358,6 +359,9 @@ pub struct BatchItem {
     /// The effective clip rect, or `None` for unclipped. A rect is not packed
     /// into the integer key; it is compared structurally next to it.
     pub clip: Option<Rect>,
+    /// The transform root and moving clips the primitive follows: draws that
+    /// move differently cannot share one.
+    pub space: Space,
     /// Whether this primitive's family can absorb — and be absorbed into — an
     /// adjacent primitive with an equal key and clip. Quad/mesh: `true`;
     /// image/glyph/composite: `false`.
@@ -370,10 +374,14 @@ pub struct BatchItem {
 /// through, so the segment boundaries the encoder emits, the batch dump, and the
 /// primitive→batch map can never drift apart. A primitive joins the previous
 /// draw only when both are mergeable, their packed keys are equal, and their
-/// structural clips match — the adjacency-only, order-preserving policy (§8.6,
-/// §9.6).
+/// structural clips and spaces match — the adjacency-only, order-preserving
+/// policy (§8.6, §9.6).
 pub fn joins(prev: &BatchItem, next: &BatchItem) -> bool {
-    prev.mergeable && next.mergeable && prev.key == next.key && prev.clip == next.clip
+    prev.mergeable
+        && next.mergeable
+        && prev.key == next.key
+        && prev.clip == next.clip
+        && prev.space == next.space
 }
 
 #[cfg(test)]
@@ -506,6 +514,7 @@ mod tests {
         let quad = BatchItem {
             key: BatchKey::pack(BatchFamily::Quad, BatchTarget::Main, None),
             clip: None,
+            space: Space::STATIC,
             mergeable: true,
         };
         assert!(joins(&quad, &quad));
@@ -516,6 +525,7 @@ mod tests {
         let img = BatchItem {
             key: BatchKey::pack(BatchFamily::Image, BatchTarget::Main, Some(bg(1))),
             clip: None,
+            space: Space::STATIC,
             mergeable: false,
         };
         // Two byte-identical images still never merge (each binds its own draw).
@@ -539,6 +549,7 @@ mod tests {
                 w: 10.0,
                 h: 10.0,
             }),
+            space: Space::STATIC,
             mergeable: true,
         };
         let b = BatchItem {
@@ -549,8 +560,29 @@ mod tests {
                 w: 10.0,
                 h: 10.0,
             }),
+            space: Space::STATIC,
             mergeable: true,
         };
+        assert!(!joins(&a, &b));
+    }
+
+    #[test]
+    fn a_different_space_splits_a_mergeable_run() {
+        let key = BatchKey::pack(BatchFamily::Quad, BatchTarget::Main, None);
+        let a = BatchItem {
+            key,
+            clip: None,
+            space: Space::STATIC,
+            mergeable: true,
+        };
+        let b = BatchItem {
+            space: Space {
+                slot: 0,
+                chain: a.space.chain,
+            },
+            ..a
+        };
+        assert!(joins(&a, &a));
         assert!(!joins(&a, &b));
     }
 }

@@ -365,9 +365,9 @@ fn file(top: &str, path: &Path, executable: bool) -> Result<Entry, BuildFailure>
 mod tests {
     use std::sync::Arc;
 
+    use viso_image::snapshot::Image;
     use viso_package::archive;
     use viso_project::{Env, ProfileSettings, Project, Target};
-    use viso_view::snapshot::Image;
 
     use super::*;
     use crate::delivery::{Policy, Signing, metadata};

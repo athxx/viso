@@ -1,7 +1,9 @@
 //! `viso build [<target>]`: check the project's sources, compile the app for
 //! the target with the profile (`--profile`, `--release`, `VISO_PROFILE`,
 //! `dev` when none names one), package it for the target, and publish it to
-//! `dist/<platform>/` with its `artifact.json`, without running it.
+//! `dist/<platform>/` with its `artifact.json`, without running it. A device
+//! target of `Viso.toml` builds for its triple with its footprint profile and
+//! is published to `dist/<name>/`, for its board.
 //!
 //! The build cache's lock of the target is held throughout; a `viso run` of
 //! the target waits for it before each of its own builds. Ctrl-C kills the
@@ -45,7 +47,10 @@ enum Message {
 }
 
 pub fn run(ctx: &Context<'_>, args: &BuildArgs, out: &mut Output) -> u8 {
-    let target = args.target.map_or(Target::Host, BuildTarget::target);
+    let target = args
+        .target
+        .as_ref()
+        .map_or(Target::Host, |target| target.target(BuildTarget::target));
     let named = ctx.global.profile.map(|p| p.profile());
     let profile = match (args.release, named) {
         (true, Some(other)) if other != Profile::Release => {
@@ -267,8 +272,35 @@ pub(super) fn stage_loaded(
     let manifest = canonical.join("Cargo.toml");
     let mut plan = match &delivery {
         Some(delivery) => build::package_plan(delivery, profile, sdk.as_ref()),
-        None => build::rust_plan(target, profile, sdk.as_ref()),
+        None => build::rust_plan(target, config.device.as_ref(), profile, sdk.as_ref()),
     };
+    if delivery.is_none()
+        && let Err(why) = build::add_text_data(&mut plan, config.device.as_ref(), &project, &layout)
+    {
+        return Err(out.failure(ENV_BUILD_WRITE, &why, &[]));
+    }
+    let image_target = delivery.as_ref().map_or(target, |delivery| delivery.target);
+    match build::images::add_converted_images(
+        &mut plan,
+        image_target,
+        config.device.as_ref(),
+        profile,
+        &project,
+        &layout,
+    ) {
+        Ok(Some(converted)) if converted.images > 0 => out.progress(
+            "images",
+            &format!(
+                "{} images converted ({} from cache): {} bytes as written, {} converted",
+                converted.images,
+                converted.cached,
+                converted.source_bytes,
+                converted.converted_bytes
+            ),
+        ),
+        Ok(_) => {}
+        Err(why) => return Err(out.failure(ENV_BUILD_WRITE, &why, &[])),
+    }
     if let Some(delivery) = &delivery
         && delivery.platform == Platform::Windows
     {
@@ -293,9 +325,9 @@ pub(super) fn stage_loaded(
         }
         None => None,
     };
-    // A headless build is for tests and tooling, which reload nothing.
+    warn_kept_defaults(plan.no_default_features, &manifest, ctx, out);
     let mut features = plan.features;
-    if config.dev_runtime() == viso_project::DevRuntime::Present && target != Target::Headless {
+    if config.dev_runtime() == viso_project::DevRuntime::Present && cargo::reloads(target) {
         features.push(cargo::HOT_RELOAD);
     }
     let job = Job {
@@ -310,6 +342,7 @@ pub(super) fn stage_loaded(
             profile,
             profile_args: cargo::profile_args(profile, &config.settings, target),
             features,
+            no_default_features: plan.no_default_features,
             target: plan.target,
             rustc_args: plan.rustc_args,
             env: plan.env,
@@ -353,6 +386,28 @@ pub(super) fn stage_loaded(
 }
 
 /// `viso build` of `target` with `profile`, as typed.
+/// Warns when the build turns the app's default features off but the app's
+/// `viso` dependency keeps the facade's on, so the embedded build links the
+/// desktop stack after all.
+pub(crate) fn warn_kept_defaults(
+    no_default_features: bool,
+    manifest: &Path,
+    ctx: &Context<'_>,
+    out: &mut Output,
+) {
+    if no_default_features
+        && crate::dev::cargo::facade_defaults(manifest, &ctx.cargo_args()) == Some(true)
+    {
+        out.log(
+            "warn",
+            "tool",
+            "the app's `viso` dependency keeps its default features, so this embedded \
+             build links the desktop stack; depend on it with `default-features = false` \
+             and give the app `default = [\"viso/vm\", \"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]`",
+        );
+    }
+}
+
 fn command_line(target: Target, profile: Profile) -> String {
     match target {
         Target::Host => format!("viso build --profile {profile}"),

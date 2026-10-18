@@ -6,6 +6,10 @@
 //! its own leaf crate so both can name it without `viso-gpu` depending on
 //! `viso-platform` directly.
 //!
+//! The one non-data variant is [`RawWindowHandle::Scanout`]: a display with
+//! no compositor is presented to through the platform's page flips, so the
+//! handle carries the [`Scanout`] the backend hands its frames to.
+//!
 //! Deliberately minimal and dependency-free: we do NOT pull in the
 //! `raw-window-handle` crate. Viso's RHI is the sole consumer of these handles,
 //! so a small owned enum avoids coupling the whole workspace to that crate's
@@ -81,6 +85,63 @@ pub enum RawWindowHandle {
         canvas_id: u32,
     },
 
+    /// Linux with no compositor: the display itself, scanned out through
+    /// KMS (§48.1.1). The platform owns the planes, the buffers and the page
+    /// flips; the backend draws a frame and hands it over through the
+    /// [`Scanout`].
+    Scanout {
+        /// The window's scanout, alive as long as the window.
+        scanout: *const dyn Scanout,
+    },
+
     /// No native surface — the headless backend renders into a CPU framebuffer.
     Headless,
+}
+
+/// The pixel layouts a scanout buffer is in, both little-endian as DRM
+/// names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanoutFormat {
+    /// `DRM_FORMAT_XRGB8888`: bytes B, G, R, X.
+    Xrgb8888,
+    /// `DRM_FORMAT_RGB565`: red in the high five bits.
+    Rgb565,
+}
+
+/// The GBM device and surface a GPU backend renders a [`Scanout`] through
+/// (`EGL_PLATFORM_GBM_KHR`).
+#[derive(Debug, Clone, Copy)]
+pub struct GbmTarget {
+    /// `*mut gbm_device`.
+    pub device: *mut c_void,
+    /// `*mut gbm_surface`, of the scanout's size and format.
+    pub surface: *mut c_void,
+}
+
+/// A display a backend presents to by handing over finished frames; the
+/// platform turns each into a page flip. Every method is called on the
+/// thread that runs the platform's loop, between its events.
+///
+/// Damage rects are `(x, y, w, h)` in pixels from the top-left: what changed
+/// since the frame presented before. An empty slice is the whole frame.
+pub trait Scanout {
+    /// The mode's size in pixels.
+    fn size(&self) -> (u32, u32);
+    /// The layout of the buffers scanned out.
+    fn format(&self) -> ScanoutFormat;
+    /// The GBM surface to render into, when the frame comes from a GPU; `None`
+    /// when the display takes CPU pixels ([`present_pixels`](Self::present_pixels)).
+    fn gbm(&self) -> Option<GbmTarget>;
+    /// Quarter turns counter-clockwise a GPU draws each frame with, onto a
+    /// GBM surface the panel's shape (`size` with its sides swapped for an
+    /// odd count): non-zero only when the panel is turned and the display
+    /// cannot turn the image itself. Damage stays in the image's
+    /// coordinates. A CPU frame is always the image's shape.
+    fn turns(&self) -> u8;
+    /// A CPU-drawn frame: `pixels` in [`format`](Self::format), row-major from
+    /// the top, `stride` bytes a row. The scanout copies what it needs before
+    /// returning.
+    fn present_pixels(&self, pixels: &[u8], stride: usize, damage: &[(u32, u32, u32, u32)]);
+    /// A GPU-drawn frame was swapped into the GBM surface.
+    fn presented(&self, damage: &[(u32, u32, u32, u32)]);
 }

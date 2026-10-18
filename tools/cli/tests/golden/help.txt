@@ -875,7 +875,7 @@ Examples:
   viso run web-gpu --browser none  # serve it, opening no browser
 
 Arguments:
-  [TARGET]       Where to run: this machine when omitted [possible values: ios, android, web-gpu, web-dom, web-hybrid]
+  [TARGET]       Where to run: this machine when omitted; a device target of `Viso.toml` by its name, on the board its `deploy` names, or here when this machine is the board [possible values: ios, android, web-gpu, web-dom, web-hybrid]
   [APP_ARGS]...  Arguments for the app, after `--`
 
 Options:
@@ -885,6 +885,7 @@ Options:
       --profile-frame    Draw the frame time over the app's windows, and report every frame it draws: a `profile` event each under `--json`, a line a second otherwise
       --inspect          Follow what happens in the app's first window, as `viso inspect` does: an `inspect` event each under `--json`, a line each otherwise
       --open             Open the page in a browser (`web-*` only), under `--json` too
+      --emulate          Run an `embedded-cpu` device target in a window on this Mac, with its panel's size, format and rotation, its budgets and its workers
       --env <KEY=VALUE>  A variable the app is launched with; repeatable. A value whose name looks secret is never printed
       --cwd <PATH>       The app's working directory (this machine only): the project root when omitted
   -h, --help             Print help
@@ -906,7 +907,9 @@ Notes:
   `viso ios simulator list` and `viso android emulator list`. The web targets
   build for a browser and serve it as `viso serve` does. The app's own arguments
   follow `--`. `--profile-frame` draws the frame time over the app's windows and
-  reports its frames as `viso profile` measures them.
+  reports its frames as `viso profile` measures them. A device target runs on the
+  board its `deploy` names, over SSH; `--emulate` runs an `embedded-cpu` one in a
+  window on a Mac; without either it runs only where this machine is its board.
 
 $ viso build --help
 Build the app for a target and write it to `dist/`, without running it
@@ -919,7 +922,7 @@ Examples:
   viso build ios --release --json        # a release `.app`, as JSON events
 
 Arguments:
-  [TARGET]  What to build for: this machine when omitted [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+  [TARGET]  What to build for: this machine when omitted, or a device target of `Viso.toml` by its name [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
 
 Options:
       --release  Build the release profile: `--profile release`
@@ -940,7 +943,8 @@ Global options:
 Notes:
   The sources are checked first. The output replaces `dist/<platform>/` whole, with
   its `artifact.json`; `ios` builds for the Simulator and `android` for the Emulator.
-  `[profile.<name>.web]` in `Viso.toml` shapes a web bundle.
+  `[profile.<name>.web]` in `Viso.toml` shapes a web bundle. A device target, a
+  `[target.<name>]` of `Viso.toml`, builds for its board into `dist/<name>/`.
 
 $ viso serve --help
 Build a dev artifact for a browser and serve it, hot reloading it
@@ -1021,7 +1025,7 @@ Examples:
   viso check --watch --json  # again after every change, as JSON events
 
 Arguments:
-  [TARGET]  The target the sources are checked for: its configuration and the input its devices have. The host and the targets `Viso.toml` configures when none is named [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
+  [TARGET]  The target the sources are checked for: its configuration and the input its devices have; a device target of `Viso.toml` by its name. The host and the targets `Viso.toml` configures when none is named [possible values: headless, ios, android, web-gpu, web-dom, web-hybrid]
 
 Options:
       --watch         Check again after every change to the sources, until Ctrl-C
@@ -1044,7 +1048,8 @@ Global options:
 
 Notes:
   A named target is checked as its build would be: its configuration, and the input
-  its devices have. `--a11y strict` and `--i18n strict` make those findings errors.
+  its devices have; a device target's profile also fixes its shader languages.
+  `--a11y strict` and `--i18n strict` make those findings errors.
 
 $ viso schema --help
 Show the typed schema of a widget, component, native library, function or type

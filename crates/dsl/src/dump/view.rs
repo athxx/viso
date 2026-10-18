@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use viso_ende::JsonWriter;
-use viso_ui::DirtyClass;
+use viso_schema::DirtyClass;
 
 use super::{Dump, FileCx, strings};
 use crate::frontend::{Compiled, SourceKind};
@@ -278,7 +278,9 @@ fn node(cx: &FileCx<'_>, node: &UiNode, key: &mut u32) -> Node {
             .iter()
             .flat_map(|s| s.looks.iter().map(|l| l.property.clone()))
             .collect(),
-        role: node.role.map(|r| viso_view::source_name(r).to_owned()),
+        role: node
+            .role
+            .map(|r| viso_schema::view::source_name(r).to_owned()),
         live: node.live.map(|l| l.label().to_owned()),
         instance: node.instance,
         at: At::new(cx, node.origin),

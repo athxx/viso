@@ -22,7 +22,7 @@
 //! stride mismatch — is rejected here rather than silently corrupting GPU memory
 //! at draw time (architecture section 30 / 53).
 
-use viso_gpu::{InstanceLayout, LayoutError, SchemaAttr};
+use viso_gpu_abi::{InstanceLayout, LayoutError, SchemaAttr};
 
 use crate::CompileStage;
 use crate::diag::Diagnostic;
@@ -176,7 +176,7 @@ mod tests {
     use super::*;
     use crate::diag::Severity;
     use crate::ir::module::{image_ir, quad_ir};
-    use viso_gpu::{AttrFormat, InstanceField};
+    use viso_gpu_abi::{AttrFormat, InstanceField};
 
     // A CPU layout matching `quad_ir`, tightly packed exactly as the shader
     // expects. Offsets are the packed prefix-sums of the quad attribute sizes:

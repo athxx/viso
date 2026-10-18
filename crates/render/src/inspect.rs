@@ -710,6 +710,7 @@ impl Renderer {
                     resources.get(self.sampled_source(entry.store)),
                 ),
                 clip,
+                space: entry.context.space,
                 mergeable: family.mergeable(),
             };
             let merges = last_item.is_some_and(|prev| joins(&prev, &item));
@@ -870,6 +871,7 @@ impl Renderer {
                     resources.get(self.sampled_source(entry.store)),
                 ),
                 clip,
+                space: entry.context.space,
                 mergeable: family.mergeable(),
             };
             let merges = last_item.is_some_and(|prev| joins(&prev, &item));
@@ -969,9 +971,7 @@ mod tests {
         Border, GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Primitive, Quad,
         Rgba,
     };
-    use viso_gpu::{
-        GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat, TextureId,
-    };
+    use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat, TextureId};
 
     fn quad(x: f32, y: f32) -> Primitive {
         Primitive::Quad(Quad {
@@ -996,7 +996,7 @@ mod tests {
     /// renderer to `f` so it can read `inspect_batches`/`frame_stats` in the same
     /// window (after `upload`, before `submit`).
     fn with_upload(prims: &[Primitive], f: impl FnOnce(&Renderer)) {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -1005,7 +1005,7 @@ mod tests {
     }
 
     /// A 2×2 BGRA test texture, so image batches have a real texture to bind.
-    fn make_texture(gpu: &mut HeadlessRaster) -> TextureId {
+    fn make_texture(gpu: &mut CpuRaster) -> TextureId {
         gpu.create_texture(&TextureDesc {
             width: 2,
             height: 2,
@@ -1070,7 +1070,7 @@ mod tests {
 
     #[test]
     fn pipeline_is_derived_per_kind() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
         let format = gpu.surface_format(surface);
         let tex = make_texture(&mut gpu);
@@ -1203,7 +1203,7 @@ mod tests {
 
     #[test]
     fn distinct_kinds_are_distinct_batches() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
         let format = gpu.surface_format(surface);
         let tex = make_texture(&mut gpu);

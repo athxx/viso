@@ -106,7 +106,7 @@ impl PlatformApp for X11App {
     fn run(&mut self, handler: &mut dyn AppHandler) {
         let x11 = self.x11.clone();
         let wakes = self.wakes.clone();
-        super::run(&x11, &wakes, handler);
+        super::run(self, &x11, &wakes, handler);
     }
 
     fn window(&self, id: WindowId) -> Option<&dyn Window> {
@@ -145,8 +145,8 @@ impl PlatformApp for X11App {
         });
     }
 
-    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
-        self.x11.borrow_mut().pump.update_access(window, update);
+    fn update_accessibility(&mut self, window: WindowId, delta: crate::SemanticsDelta) {
+        self.x11.borrow_mut().pump.update_access(window, delta);
     }
 
     fn close_window(&mut self, window: WindowId) {

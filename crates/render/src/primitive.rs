@@ -30,107 +30,10 @@ pub use viso_shader::{
     gradient_schema, image_schema, mesh_schema, quad_schema,
 };
 
-/// An axis-aligned rectangle in physical pixels, top-left origin.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Rect {
-    /// Top-left corner x.
-    pub x: f32,
-    /// Top-left corner y.
-    pub y: f32,
-    /// Width.
-    pub w: f32,
-    /// Height.
-    pub h: f32,
-}
-
-impl Rect {
-    /// An effectively unbounded rect — the identity for [`intersect`](Self::intersect):
-    /// intersecting any finite rect with `INFINITE` yields that rect back. Useful
-    /// as the top-level clip when nothing above encloses a subtree. Its origin is
-    /// far negative and its extent huge, chosen so `x + w` stays finite (no
-    /// overflow) while covering every realistic coordinate.
-    pub const INFINITE: Rect = Rect {
-        x: -f32::MAX / 4.0,
-        y: -f32::MAX / 4.0,
-        w: f32::MAX / 2.0,
-        h: f32::MAX / 2.0,
-    };
-
-    /// The intersection of two rects (both top-left-origin, physical pixels).
-    ///
-    /// Used to combine nested [`Primitive::Layer`] clip rects: a child clip is
-    /// constrained to its parent. If the rects do not overlap, the result is an
-    /// empty rect (`w`/`h` clamped to 0) — a clip that draws nothing.
-    pub fn intersect(self, other: Rect) -> Rect {
-        let x0 = self.x.max(other.x);
-        let y0 = self.y.max(other.y);
-        let x1 = (self.x + self.w).min(other.x + other.w);
-        let y1 = (self.y + self.h).min(other.y + other.h);
-        Rect {
-            x: x0,
-            y: y0,
-            w: (x1 - x0).max(0.0),
-            h: (y1 - y0).max(0.0),
-        }
-    }
-
-    /// The bounding box of two rects (both top-left-origin, physical pixels).
-    ///
-    /// An empty operand (`w <= 0 || h <= 0`) is the identity, so [`Rect::ZERO`]
-    /// seeds a running union: `ZERO.union(a) == a`. Used to accumulate an
-    /// offscreen pass's content bounds as its subtree is walked, before sizing
-    /// the pass's tight render-target ROI (§16.2).
-    pub fn union(self, other: Rect) -> Rect {
-        if self.w <= 0.0 || self.h <= 0.0 {
-            return other;
-        }
-        if other.w <= 0.0 || other.h <= 0.0 {
-            return self;
-        }
-        let x0 = self.x.min(other.x);
-        let y0 = self.y.min(other.y);
-        let x1 = (self.x + self.w).max(other.x + other.w);
-        let y1 = (self.y + self.h).max(other.y + other.h);
-        Rect {
-            x: x0,
-            y: y0,
-            w: x1 - x0,
-            h: y1 - y0,
-        }
-    }
-
-    /// Whether the point `(px, py)` (physical px, same space as the rect) lies
-    /// inside this rect. Near edges are inclusive, far edges exclusive
-    /// (`[x, x+w)` / `[y, y+h)`), so two rects tiling a shared boundary do not
-    /// both claim a point on that seam.
-    #[inline]
-    pub fn contains(self, px: f32, py: f32) -> bool {
-        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
-    }
-
-    /// The empty rect at the origin — the identity a retained bound starts from
-    /// before its geometry resolves.
-    pub const ZERO: Rect = Rect {
-        x: 0.0,
-        y: 0.0,
-        w: 0.0,
-        h: 0.0,
-    };
-
-    /// This rect grown by `amount` physical pixels on every side (origin moves
-    /// out, extent grows by twice the amount). A negative `amount` shrinks it;
-    /// the extent is clamped at zero. Used to inflate a fill bound by half a
-    /// stroke width or a filter radius without re-parsing geometry (§8).
-    #[inline]
-    pub fn inflate(self, amount: f32) -> Rect {
-        Rect {
-            x: self.x - amount,
-            y: self.y - amount,
-            w: (self.w + amount * 2.0).max(0.0),
-            h: (self.h + amount * 2.0).max(0.0),
-        }
-    }
-}
+/// Geometry is owned by `viso-math`: a [`Rect`] is an axis-aligned rectangle
+/// and a [`Point`] a position, both in physical pixels, top-left origin, in the
+/// space of the primitive's transform root.
+pub use viso_math::{Point, Rect};
 
 /// A straight-alpha (non-premultiplied) linear RGBA color — the wire shape a
 /// primitive carries. The backend premultiplies at the point of blend; keeping
@@ -1604,23 +1507,6 @@ impl GlyphRunDraw {
     }
 }
 
-/// A 2D point in physical pixels, top-left origin. The building block of
-/// [`Path`] commands and mesh vertices.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Point {
-    /// x in physical pixels.
-    pub x: f32,
-    /// y in physical pixels.
-    pub y: f32,
-}
-
-impl Point {
-    /// Construct a point.
-    pub const fn new(x: f32, y: f32) -> Point {
-        Point { x, y }
-    }
-}
-
 /// One command of a [`Path`] outline. Curves are flattened to line segments by
 /// the tessellator (De Casteljau, `tolerance`-bounded). Coordinates are physical
 /// pixels, top-left origin.
@@ -1969,7 +1855,24 @@ pub enum Primitive {
     /// Pop the most recent [`Primitive::Layer`] clip (and, for a translucent
     /// layer, close its offscreen pass and emit the composite).
     LayerEnd,
+    /// Open transform root `slot`: what follows, up to the matching
+    /// [`Primitive::TransformEnd`], moves with that root (§21). Geometry is
+    /// still written in world space as of the frame it was painted; when only
+    /// the roots' displacements change, [`Renderer::set_transforms`] moves the
+    /// draws of each root by the difference, so a scroll or a slide re-encodes
+    /// draws and rewrites no instance. Roots nest; a clip opened inside a root
+    /// moves with it.
+    ///
+    /// [`Renderer::set_transforms`]: crate::Renderer::set_transforms
+    Transform(TransformSlot),
+    /// Close the most recent [`Primitive::Transform`].
+    TransformEnd,
 }
+
+/// A transform root's index in the displacement table handed to
+/// [`Renderer::set_transforms`](crate::Renderer::set_transforms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TransformSlot(pub u32);
 
 impl Primitive {
     /// What it draws, lowercase, for an inspector's readout.
@@ -1992,6 +1895,8 @@ impl Primitive {
             Primitive::ColorEffect(_) => "color_effect",
             Primitive::Blend(_) => "blend",
             Primitive::LayerEnd => "layer_end",
+            Primitive::Transform(_) => "transform",
+            Primitive::TransformEnd => "transform_end",
         }
     }
 }

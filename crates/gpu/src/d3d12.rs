@@ -78,7 +78,7 @@ use crate::program::{
 };
 use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
-    PipelineDesc, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
+    PipelineDesc, SampledFormats, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
@@ -208,6 +208,12 @@ struct D3D12Surface {
     extent: (u32, u32),
     /// The buffers must be rebuilt before the next frame.
     stale: bool,
+    /// Presents so far, and the present count at which each buffer was last
+    /// presented (`0`: never since it was built): a flip-sequential buffer
+    /// keeps what it showed, so the frame drawn into it next is that many
+    /// presents newer.
+    presents: u64,
+    presented: [u64; SWAP_BUFFERS as usize],
 }
 
 /// An upload-heap buffer texture uploads are copied out of.
@@ -485,6 +491,7 @@ impl D3D12Backend {
         let rtv_increment =
             unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) };
         let slots = std::array::from_fn(|_| create_frame_slot(&device));
+        let sampled = sampled_formats(&device);
 
         let mut backend = Self {
             factory,
@@ -527,6 +534,8 @@ impl D3D12Backend {
                 bindless_texture_slots: 0,
                 indirect_draw: false,
                 program_instance_align: 4,
+                coverage_paths: false,
+                sampled,
             },
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
@@ -639,9 +648,10 @@ impl D3D12Backend {
         );
         self.ensure_recording();
         let t = self.texture(id);
-        let (width, height, texel) = (t.width, t.height, t.format.bytes_per_texel());
+        let (width, height) = (t.width, t.height);
         let resource = t.resource.clone();
-        let row = width * texel as u32;
+        let row = t.format.row_bytes(width) as u32;
+        let height = t.format.block_rows(height);
         let pitch = row.next_multiple_of(PITCH_ALIGN);
         let size = pitch as u64 * height as u64;
         let readback = self.create_buffer_resource(
@@ -1168,6 +1178,7 @@ impl D3D12Backend {
         s.buffers = buffers;
         s.extent = (w, h);
         s.stale = false;
+        s.presented = [0; SWAP_BUFFERS as usize];
         true
     }
 
@@ -1768,28 +1779,31 @@ impl GpuBackend for D3D12Backend {
 
     fn write_texture(&mut self, id: TextureId, x: u32, y: u32, w: u32, h: u32, bytes: &[u8]) {
         let t = self.texture(id);
-        let row = w * t.format.bytes_per_texel() as u32;
-        let len = row as usize * h as usize;
+        // A block format's rows are rows of blocks, its footprint whole blocks.
+        let block = t.format.block();
+        let row = t.format.row_bytes(w) as u32;
+        let rows = t.format.block_rows(h);
+        let len = t.format.data_size(w, h);
         assert!(
             bytes.len() >= len,
-            "write_texture: {} bytes < {}x{} region of {}-byte texels",
+            "write_texture: {} bytes < a {}x{} region of {:?}",
             bytes.len(),
             w,
             h,
-            t.format.bytes_per_texel()
+            t.format
         );
         if len == 0 {
             return;
         }
         let (resource, format) = (t.resource.clone(), dxgi_format(t.format));
         self.ensure_recording();
-        let (chunk, offset, pitch) = self.stage_rows(&bytes[..len], row, h);
+        let (chunk, offset, pitch) = self.stage_rows(&bytes[..len], row, rows);
         let footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
             Offset: offset,
             Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
                 Format: format,
-                Width: w,
-                Height: h,
+                Width: w.next_multiple_of(block.width),
+                Height: h.next_multiple_of(block.height),
                 Depth: 1,
                 RowPitch: pitch,
             },
@@ -1836,7 +1850,9 @@ impl GpuBackend for D3D12Backend {
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: SWAP_BUFFERS,
             Scaling: DXGI_SCALING_STRETCH,
-            SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            // Sequential, not discard: a back buffer keeps the frame it last
+            // showed, so a frame redraws only what changed since (§30.3).
+            SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
             Flags: SWAP_FLAGS.0 as u32,
         };
@@ -1871,6 +1887,8 @@ impl GpuBackend for D3D12Backend {
                 height,
                 extent,
                 stale: extent != (width, height),
+                presents: 0,
+                presented: [0; SWAP_BUFFERS as usize],
             })
             .into()
     }
@@ -1951,6 +1969,20 @@ impl GpuBackend for D3D12Backend {
     }
 
     fn present(&mut self, frame: Frame) {
+        self.present_with_damage(frame, &[]);
+    }
+
+    fn frame_age(&self, frame: Frame) -> u32 {
+        let Some(s) = self.surfaces.get(frame.surface.into()) else {
+            return 0;
+        };
+        match s.presented.get(frame.drawable as usize) {
+            Some(&at) if at > 0 => u32::try_from(s.presents + 1 - at).unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    fn present_with_damage(&mut self, frame: Frame, damage: &[(u32, u32, u32, u32)]) {
         let Some(acq) = self.acquired.filter(|a| a.surface == frame.surface) else {
             return;
         };
@@ -1993,9 +2025,33 @@ impl GpuBackend for D3D12Backend {
         self.submit();
         let s = self.surface_mut(frame.surface);
         s.waited = false;
+        let mut rects: Vec<RECT> = damage
+            .iter()
+            .map(|&(x, y, w, h)| RECT {
+                left: x as i32,
+                top: y as i32,
+                right: (x + w) as i32,
+                bottom: (y + h) as i32,
+            })
+            .collect();
+        let params = DXGI_PRESENT_PARAMETERS {
+            DirtyRectsCount: rects.len() as u32,
+            pDirtyRects: if rects.is_empty() {
+                std::ptr::null_mut()
+            } else {
+                rects.as_mut_ptr()
+            },
+            pScrollRect: std::ptr::null_mut(),
+            pScrollOffset: std::ptr::null_mut(),
+        };
         // SAFETY: the back buffer's commands were just submitted on the
-        // swapchain's queue, ending in PRESENT.
-        let hr = unsafe { s.swapchain.Present(1, DXGI_PRESENT(0)) };
+        // swapchain's queue, ending in PRESENT; `rects` outlives the call.
+        let hr = unsafe { s.swapchain.Present1(1, DXGI_PRESENT(0), &params) };
+        s.presents += 1;
+        let presents = s.presents;
+        if let Some(at) = s.presented.get_mut(acq.image as usize) {
+            *at = presents;
+        }
         if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
             // SAFETY: querying the removal reason has no preconditions.
             let reason = unsafe { self.device.GetDeviceRemovedReason() };
@@ -2546,11 +2602,68 @@ fn dxgi_format(format: TextureFormat) -> DXGI_FORMAT {
         // a data plane and a color plane of the same width share one format.
         TextureFormat::Rgba8Unorm | TextureFormat::Rgba8Data => DXGI_FORMAT_R8G8B8A8_UNORM,
         TextureFormat::R8Unorm => DXGI_FORMAT_R8_UNORM,
+        // DXGI names packed formats from the low bits up: red sits high, as
+        // Viso stores it.
+        TextureFormat::Rgb565Unorm => DXGI_FORMAT_B5G6R5_UNORM,
         TextureFormat::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
         // Depth is only ever sampled or copied here, never a depth attachment,
         // so it is stored as a single-channel float color texture.
         TextureFormat::Depth32Float => DXGI_FORMAT_R32_FLOAT,
+        TextureFormat::Bc1RgbaUnorm => DXGI_FORMAT_BC1_UNORM,
+        TextureFormat::Bc3RgbaUnorm => DXGI_FORMAT_BC3_UNORM,
+        TextureFormat::Bc7RgbaUnorm => DXGI_FORMAT_BC7_UNORM,
+        // DXGI's 4:4:4:4 and 5:5:5:1 put alpha high and red in the middle,
+        // and it has no ETC2 or ASTC: `Caps::sampled` leaves them out, so an
+        // image in one is decoded before it is uploaded.
+        unsampled @ (TextureFormat::Rgba4444Unorm
+        | TextureFormat::Rgba5551Unorm
+        | TextureFormat::Etc2Rgb8Unorm
+        | TextureFormat::Etc2Rgb8A1Unorm
+        | TextureFormat::Etc2Rgba8Unorm
+        | TextureFormat::Astc4x4Unorm
+        | TextureFormat::Astc6x6Unorm
+        | TextureFormat::Astc8x8Unorm) => {
+            panic!("Direct3D 12 samples no {unsampled:?} texture (Caps::sampled)")
+        }
     }
+}
+
+/// The formats beyond the baseline `device` samples with filtering: BC on
+/// every feature level 11 device, B5G6R5 where the driver reports it.
+fn sampled_formats(device: &ID3D12Device) -> SampledFormats {
+    let samples = |format: DXGI_FORMAT| {
+        let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+            Format: format,
+            ..Default::default()
+        };
+        // SAFETY: `support` is the structure the format-support query fills,
+        // passed with its own size.
+        let queried = unsafe {
+            device.CheckFeatureSupport(
+                D3D12_FEATURE_FORMAT_SUPPORT,
+                (&mut support as *mut D3D12_FEATURE_DATA_FORMAT_SUPPORT).cast(),
+                core::mem::size_of::<D3D12_FEATURE_DATA_FORMAT_SUPPORT>() as u32,
+            )
+        };
+        queried.is_ok()
+            && (support.Support1.0 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE.0) != 0
+            && (support.Support1.0 & D3D12_FORMAT_SUPPORT1_TEXTURE2D.0) != 0
+    };
+    let mut sampled = SampledFormats::empty();
+    if samples(DXGI_FORMAT_B5G6R5_UNORM) {
+        sampled |= SampledFormats::RGB565;
+    }
+    if [
+        DXGI_FORMAT_BC1_UNORM,
+        DXGI_FORMAT_BC3_UNORM,
+        DXGI_FORMAT_BC7_UNORM,
+    ]
+    .into_iter()
+    .all(samples)
+    {
+        sampled |= SampledFormats::BC;
+    }
+    sampled
 }
 
 /// Map an attribute format to its DXGI vertex format.

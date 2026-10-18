@@ -227,6 +227,157 @@ fn a_headless_build_is_apart_from_the_host_build() {
     );
 }
 
+/// A device target builds for its board with its profile's features and
+/// table, into `dist/<name>/`, and only runs where this machine is the board.
+#[test]
+fn a_device_target_builds_for_its_board() {
+    let root = project("device");
+    fs::write(
+        root.join("Viso.toml"),
+        "[package]\nname = \"probe\"\nversion = \"1.2.0\"\n\n\
+         [target.kiosk]\nprofile = \"embedded-cpu\"\n\
+         display = { width = 800, height = 480, format = \"rgb565\", rotation = 270 }\n\
+         budget = { heap = \"16MiB\", images = \"2MiB\" }\nworkers = 0\n\
+         fonts = { charset = [\"latin\", \"U+4E00-4E0F\"] }\n",
+    )
+    .unwrap();
+    // The static text the fonts are subset to: a view's literals and an
+    // inline view's.
+    fs::write(
+        root.join("src/app.vs"),
+        "export component App {\n    view { Text { text: \"Grüße\"; } }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/panel.rs"),
+        "fn panel() { let _ = viso::ui! { Text { text: \"温度\"; } }; }\n",
+    )
+    .unwrap();
+    // The app turns the facade's defaults on through its own, as `viso new`
+    // writes it.
+    let cargo = "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
+                 [features]\ndefault = [\"viso/vm\", \"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]\n\
+                 [dependencies]\nviso = { path = \"viso\", default-features = false }\n[workspace]\n";
+    fs::write(root.join("Cargo.toml"), cargo).unwrap();
+    fs::write(
+        root.join("src/main.rs"),
+        "fn main() {\n    let env = |v: Option<&str>| v.unwrap_or(\"-\").to_owned();\n    \
+         println!(\"{} {} {} {} {} {} {} {} {} {} {}\", env(option_env!(\"VISO_FOOTPRINT\")), \
+         env(option_env!(\"VISO_BUDGET\")), env(option_env!(\"VISO_WORKERS\")), \
+         env(option_env!(\"VISO_KMS_MODE\")), env(option_env!(\"VISO_KMS_FORMAT\")), \
+         env(option_env!(\"VISO_KMS_ROTATION\")), viso::CPU, viso::KMS, viso::HOT_RELOAD, \
+         viso::VM, viso::DESKTOP);\n    \
+         println!(\"{}\", env(option_env!(\"VISO_FONT_CHARSET\")));\n    \
+         println!(\"{}\", env(option_env!(\"VISO_FONT_TEXT\")));\n    \
+         println!(\"{} {} {}\", viso::RASTERIZER, viso::COMPLEX_LINE_BREAK, \
+         env(option_env!(\"VISO_FONT_BAKE\")));\n}\n",
+    )
+    .unwrap();
+    let out = viso(&root, &["build", "kiosk", "--json"]);
+    let stdout = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}{}", text(&out.stderr));
+    let binary = events(&stdout, "artifact")[0];
+    assert_eq!(field(binary, "target"), Some("kiosk"));
+    let path = field(binary, "path").unwrap();
+    assert_eq!(path, "dist/kiosk/probe");
+    let said = ran(&root, path);
+    let mut said = said.lines();
+    assert_eq!(
+        said.next(),
+        Some(
+            "embedded-cpu heap=16777216,images=2097152 0 800x480 rgb565 270 true true false true false"
+        ),
+        "the profile's features and table, the interpreter of a debug build, \
+         no desktop stack and nothing to reload"
+    );
+    assert_eq!(said.next(), Some("latin,U+4E00-4E0F"));
+    let font_text = Path::new(said.next().unwrap());
+    assert!(font_text.is_absolute(), "{}", font_text.display());
+    let font_text = fs::read_to_string(font_text).unwrap();
+    assert_eq!(font_text, "Grüße\n温度\n", "each static string once");
+    assert_eq!(
+        said.next(),
+        Some("true false -"),
+        "the glyph rasterizer, and no Thai, Lao, Khmer or Myanmar to break"
+    );
+    assert!(!stdout.contains("keeps its default features"), "{stdout}");
+
+    // A `viso` dependency that keeps its defaults links the desktop stack
+    // whatever the build turns off, and the build says so.
+    fs::write(
+        root.join("Cargo.toml"),
+        cargo.replace(", default-features = false", ""),
+    )
+    .unwrap();
+    let out = viso(&root, &["build", "kiosk"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("keeps its default features"), "{stderr}");
+    assert!(
+        ran(&root, "dist/kiosk/probe")
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with("true true")
+    );
+
+    // A desktop build subsets nothing.
+    let out = viso(&root, &["build"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let host = fs::read_dir(root.join("dist"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|dir| !dir.ends_with("kiosk"))
+        .unwrap();
+    let said = ran(
+        &root,
+        &format!("{}/probe", host.strip_prefix(&root).unwrap().display()),
+    );
+    assert!(said.ends_with("-\n-\ntrue true -"), "{said}");
+
+    // A board in Thai keeps its line breaking; one that bakes its sizes may
+    // leave the rasterizer out.
+    fs::write(root.join("Cargo.toml"), cargo).unwrap();
+    let manifest = fs::read_to_string(root.join("Viso.toml")).unwrap();
+    fs::write(
+        root.join("Viso.toml"),
+        manifest.replace(
+            "fonts = { charset = [\"latin\", \"U+4E00-4E0F\"] }\n",
+            "fonts = { charset = [\"latin\"], bake = [24, 16], rasterizer = false }\n\
+             locales = [\"th-TH\"]\n",
+        ),
+    )
+    .unwrap();
+    let out = viso(&root, &["build", "kiosk"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let said = ran(&root, "dist/kiosk/probe");
+    assert_eq!(said.lines().nth(3), Some("false true 24,16"), "{said}");
+    fs::write(root.join("Viso.toml"), manifest).unwrap();
+
+    // A name the manifest does not declare lists the ones it does.
+    let out = viso(&root, &["build", "kiosc"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("`kiosc` is not a target"), "{stderr}");
+    assert!(
+        stderr.contains("device targets in Viso.toml: kiosk"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("did you mean `kiosk`?"), "{stderr}");
+
+    // An embedded board's display is driven through DRM/KMS, on Linux only.
+    if !cfg!(target_os = "linux") {
+        let out = viso(&root, &["run", "kiosk"]);
+        assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
+        let stderr = text(&out.stderr);
+        assert!(
+            stderr.contains("error[ENV_DEVICE_TARGET]: `kiosk` builds for"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("viso build kiosk"), "{stderr}");
+    }
+}
+
 /// Whether `program` runs here.
 fn installed(program: &str) -> bool {
     Command::new(program)

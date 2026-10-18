@@ -3,3 +3,5 @@ docs/
 *.stderr
 *.stdout
 *.bgra*
+examples/*/dist/
+examples/*/target/

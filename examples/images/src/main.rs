@@ -88,10 +88,8 @@ mod tests {
             while let Some(node) = stack.pop() {
                 out.push(node);
                 let mut children = Vec::new();
-                let mut child = arena.links(node).and_then(|l| l.first_child);
-                while let Some(id) = child {
+                for id in arena.children(node) {
                     children.push(id);
-                    child = arena.links(id).and_then(|l| l.next_sibling);
                 }
                 stack.extend(children.into_iter().rev());
             }

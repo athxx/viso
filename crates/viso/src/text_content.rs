@@ -26,14 +26,15 @@ use viso_text::fallback::{FallbackPlan, FontFallback};
 use viso_text::font_manifest::{AssetRef, FontManifest};
 use viso_text::inspect::{MissLedger, TextInspection};
 use viso_text::paragraph::{LineLayout, line_index_at};
+#[cfg(feature = "rasterizer")]
 use viso_text::raster_color::rasterize_color;
 use viso_text::system_fonts::ColorGlyph;
 use viso_text::text_work::Priority;
 use viso_text::{
     Admission, ColorGlyphRasterizer, CoverageBitmap, FontCache, FontFaceId, FontRequest,
     FontResolver, FontRole, FontTarget, GlyphImageKind, GlyphKey, GlyphResidency,
-    LineBreakTailoring, MemoryClass, OUTLINE_POOL, PackagedFirst, PackagedFonts, PackagedSource,
-    PoolBudget, Reclaimed, ReplacedFiles, Resolved, TextBudgets, TextPosition, inspect_face,
+    LineBreakTailoring, OUTLINE_POOL, PackagedFirst, PackagedFonts, PackagedSource, PoolBudget,
+    Reclaimed, ReplacedFiles, Resolved, TextBudgets, TextPosition, inspect_face,
 };
 use viso_ui::{Content, EditGeometry, EditLayout, NodeId, TextRequest, Vec2};
 
@@ -453,10 +454,30 @@ pub(crate) struct TextShaper {
 
 impl TextShaper {
     pub(crate) fn new() -> Self {
+        Self::for_budget(crate::footprint::budget())
+    }
+
+    /// The bytes of the glyph atlas planes allocated on the device.
+    pub(crate) fn atlas_bytes(&self) -> u64 {
+        let plane = u64::from(self.atlas_size) * u64::from(self.atlas_size);
+        let coverage = self.coverage_atlas.as_ref().map_or(0, |_| plane);
+        let color = self
+            .color_atlas
+            .as_ref()
+            .map_or(0, |_| plane * COLOR_BYTES_PER_TEXEL as u64);
+        coverage + color
+    }
+
+    /// A shaper whose face and shaping caches and glyph atlas planes are
+    /// sized from `budget`.
+    pub(crate) fn for_budget(budget: &crate::MemoryBudget) -> Self {
         Self::with_atlas_geometry(
-            ATLAS_SIZE,
+            budget.atlas_edge(ATLAS_PAGE).min(4 * ATLAS_SIZE),
             ATLAS_PAGE,
-            MemoryClass::for_target().text_budgets(),
+            TextBudgets {
+                face_cache_bytes: budget.faces,
+                shaping_cache_bytes: budget.shaping,
+            },
         )
     }
 
@@ -483,7 +504,7 @@ impl TextShaper {
             next_asset: 0,
             slots: HashMap::new(),
             pending: Vec::new(),
-            worker: TextWorker::spawn(budgets.shaping_cache_bytes),
+            worker: TextWorker::spawn(budgets.shaping_cache_bytes, crate::footprint::workers() > 0),
             worker_faces: HashSet::new(),
             outbox: Vec::new(),
             ready: VecDeque::new(),
@@ -1127,12 +1148,7 @@ impl TextShaper {
         if matches!(self.fate.get(&key), Some(Fate::Blank | Fate::Refused)) {
             return None;
         }
-        let portable = self
-            .resolver
-            .face_bytes(key.face)
-            .or_else(|| self.fallback.face_bytes(key.face))
-            .and_then(|(bytes, index)| rasterize_color(bytes, index, key.glyph, key.bucket));
-        let color = portable.or_else(|| {
+        let color = self.portable_color(key).or_else(|| {
             self.color_raster
                 .rasterize_color_glyph(key.face, key.glyph, key.bucket)
         });
@@ -1145,6 +1161,23 @@ impl TextShaper {
             self.fate.insert(key, Fate::Refused);
         }
         placed
+    }
+
+    /// A color glyph painted from the face's own color tables.
+    #[cfg(feature = "rasterizer")]
+    fn portable_color(&self, key: GlyphKey) -> Option<ColorGlyph> {
+        let (bytes, index) = self
+            .resolver
+            .face_bytes(key.face)
+            .or_else(|| self.fallback.face_bytes(key.face))?;
+        rasterize_color(bytes, index, key.glyph, key.bucket)
+    }
+
+    /// No rasterizer paints a face's color tables: a color glyph is the
+    /// platform's, or draws as its baked coverage.
+    #[cfg(not(feature = "rasterizer"))]
+    fn portable_color(&self, _: GlyphKey) -> Option<ColorGlyph> {
+        None
     }
 
     /// A coverage glyph the atlas does not hold: rasterized here when only
@@ -1253,7 +1286,8 @@ impl TextShaper {
         }
     }
 
-    /// Hand `face`'s bytes to the worker once, ahead of any job that uses it.
+    /// Hand `face`'s bytes to the worker once, ahead of any job that uses it,
+    /// with the glyphs the build baked when it is a packaged face that did.
     /// `false` when the face has no bytes to hand over.
     fn ensure_worker_face(&mut self, face: FontFaceId) -> bool {
         if self.worker_faces.contains(&face) {
@@ -1266,8 +1300,9 @@ impl TextShaper {
         let Some(data) = data else {
             return false;
         };
+        let baked = self.packaged.baked_face(&data.0, data.1);
         self.worker_faces.insert(face);
-        self.outbox.push(ToWorker::Face { face, data });
+        self.outbox.push(ToWorker::Face { face, data, baked });
         true
     }
 
@@ -1340,6 +1375,9 @@ impl TextShaper {
         updated: &mut Vec<ParagraphSlot>,
     ) {
         self.dispatch();
+        // Without a worker thread the shaping itself runs here, in an idle
+        // slice of eight commit budgets: 4 ms of a 60Hz frame.
+        self.worker.run_inline(budget.saturating_mul(8));
         loop {
             match self.worker.try_recv() {
                 Ok(message) => self.receive(message),
@@ -1624,6 +1662,7 @@ impl TextShaper {
 
     #[cfg(all(
         test,
+        feature = "rasterizer",
         any(target_os = "macos", target_os = "ios"),
         not(feature = "headless")
     ))]
@@ -1932,10 +1971,10 @@ fn push_once(slots: &mut Vec<ParagraphSlot>, slot: ParagraphSlot) {
 mod tests {
     use super::*;
     use crate::text_worker::{FaceData, WorkerState};
-    use viso_gpu::{HeadlessRaster, RawWindowHandle};
+    use viso_gpu::{CpuRaster, RawWindowHandle};
     use viso_render::Rgba;
     use viso_text::fallback::{FallbackPlanKey, FallbackStyle};
-    use viso_text::{TextOffset, rasterize_coverage};
+    use viso_text::{BakedFace, MemoryClass, TextOffset, rasterize_coverage};
 
     const TEST_FONT: &[u8] = include_bytes!("../fixtures/DejaVuSans-subset.ttf");
     const WHITE: Rgba = Rgba {
@@ -1964,6 +2003,7 @@ mod tests {
         color: false,
         mono: false,
         scripts: &["Latn"],
+        baked: &[],
     }];
 
     #[test]
@@ -2192,6 +2232,7 @@ mod tests {
         assert!(shaper.fallback.face_bytes(first).is_none());
     }
 
+    #[cfg(feature = "rasterizer")]
     #[test]
     fn dropping_a_face_leaves_every_other_face_intact() {
         let mut shaper = tiny_shaper();
@@ -2456,7 +2497,7 @@ mod tests {
     }
 
     /// A headless build shapes on the main thread by design.
-    #[cfg(not(feature = "headless"))]
+    #[cfg(all(feature = "rasterizer", not(feature = "headless")))]
     #[test]
     fn an_edit_cadence_shapes_nothing_on_the_main_thread() {
         let mut shaper = tiny_shaper();
@@ -2481,6 +2522,7 @@ mod tests {
         assert!(counters.commits() >= 21);
     }
 
+    #[cfg(feature = "rasterizer")]
     #[test]
     fn an_over_budget_frame_defers_the_rest_of_the_commits() {
         let mut shaper = tiny_shaper();
@@ -2546,7 +2588,7 @@ mod tests {
 
     /// Run the worker until it owes nothing, committing everything it
     /// returns; the slots whose drawn layout changed.
-    fn drain(shaper: &mut TextShaper, gpu: &mut HeadlessRaster) -> Vec<ParagraphSlot> {
+    fn drain(shaper: &mut TextShaper, gpu: &mut CpuRaster) -> Vec<ParagraphSlot> {
         let mut updated = Vec::new();
         while shaper.has_pending_work() {
             shaper.wait_idle();
@@ -2559,7 +2601,7 @@ mod tests {
     /// draws is resident.
     fn settle(
         shaper: &mut TextShaper,
-        gpu: &mut HeadlessRaster,
+        gpu: &mut CpuRaster,
         at: ParagraphSlot,
         request: &TextRequest,
         width: Option<f32>,
@@ -2567,6 +2609,116 @@ mod tests {
         shaper.shape(gpu, at, request, 1.0, width);
         drain(shaper, gpu);
         shaper.shape(gpu, at, request, 1.0, width)
+    }
+
+    /// `TEST_FONT` baked at `ppem`, every glyph its rasterized self but
+    /// `marked`, which bakes as a 3 × 3 square, so a drawn glyph tells which
+    /// source it came from.
+    fn baked_test_font(ppem: u16, marked: u16) -> &'static [u8] {
+        use viso_text::raster_a8::BakedStrike;
+        let count = ttf_parser::Face::parse(TEST_FONT, 0)
+            .unwrap()
+            .number_of_glyphs();
+        let glyphs = (0..count)
+            .filter_map(|glyph| {
+                let bitmap = if glyph == marked {
+                    CoverageBitmap {
+                        width: 3,
+                        height: 3,
+                        left: 1.0,
+                        top: 9.0,
+                        coverage: vec![77; 9],
+                    }
+                } else {
+                    rasterize_coverage(TEST_FONT, 0, glyph, f32::from(ppem))?
+                };
+                Some((glyph, bitmap))
+            })
+            .collect();
+        let blob = BakedStrike::encode(&[BakedStrike { ppem, glyphs }]).unwrap();
+        Box::leak(blob.into_boxed_slice())
+    }
+
+    fn glyph_of(ch: char) -> u16 {
+        ttf_parser::Face::parse(TEST_FONT, 0)
+            .unwrap()
+            .glyph_index(ch)
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn a_packaged_face_draws_its_baked_glyphs_and_rasterizes_other_sizes() {
+        let b = glyph_of('b');
+        let packaged: &'static [viso_text::PackagedFace] =
+            Box::leak(Box::new([viso_text::PackagedFace {
+                file: "DejaVuSans-subset.ttf",
+                file_index: 0,
+                bytes: TEST_FONT,
+                face_index: 0,
+                family: "DejaVu Sans",
+                weight: 400,
+                width: 5,
+                slant: viso_text::FontSlant::Normal,
+                color: false,
+                mono: false,
+                scripts: &["Latn"],
+                baked: baked_test_font(30, b),
+            }]));
+        let mut gpu = headless();
+        let mut shaper = TextShaper::new();
+        shaper.use_packaged_fonts(PackagedFonts::__new(packaged));
+        let content = settle(&mut shaper, &mut gpu, slot(0), &request("bd", 30.0), None);
+        assert_eq!(glyph_count(&content), 2);
+        let face = shaper.primary.expect("the packaged family");
+        let key = |glyph, bucket| GlyphKey {
+            face,
+            glyph,
+            bucket,
+            kind: GlyphImageKind::MaskA8,
+        };
+        assert_eq!(
+            shaper.coverage_uv[&key(b, 30)].size,
+            [3, 3],
+            "the baked page"
+        );
+        let d = rasterize_coverage(TEST_FONT, 0, glyph_of('d'), 30.0).unwrap();
+        assert_eq!(
+            shaper.coverage_uv[&key(glyph_of('d'), 30)].size,
+            [d.width, d.height]
+        );
+
+        settle(&mut shaper, &mut gpu, slot(1), &request("bd", 20.0), None);
+        let drawn = shaper.coverage_uv[&key(b, 20)].size;
+        if cfg!(feature = "rasterizer") {
+            let raster = rasterize_coverage(TEST_FONT, 0, b, 20.0).unwrap();
+            assert_eq!(drawn, [raster.width, raster.height], "rasterized");
+        } else {
+            assert_eq!(drawn, [2, 2], "scaled from the 30 px page");
+        }
+    }
+
+    #[test]
+    fn the_worker_decodes_a_baked_size_and_rasterizes_or_scales_the_rest() {
+        let b = glyph_of('b');
+        let baked = BakedFace::parse(baked_test_font(30, b)).unwrap();
+        let mut worker = WorkerState::new(4 * 1024);
+        let face = FontFaceId(1);
+        worker.add_baked_face(face, (Arc::from(TEST_FONT), 0), baked);
+        let key = |bucket| GlyphKey {
+            face,
+            glyph: b,
+            bucket,
+            kind: GlyphImageKind::MaskA8,
+        };
+        assert_eq!(worker.coverage_of(key(30)).unwrap().coverage, [77; 9]);
+        let other = worker.coverage_of(key(15)).unwrap();
+        if cfg!(feature = "rasterizer") {
+            assert_eq!(Some(other), rasterize_coverage(TEST_FONT, 0, b, 15.0));
+        } else {
+            // Scaled from the 30 px square: half of 3 rounds up to 2.
+            assert_eq!((other.width, other.height), (2, 2));
+        }
     }
 
     #[cfg(feature = "hot-reload")]
@@ -2623,8 +2775,8 @@ mod tests {
         *natural
     }
 
-    fn headless() -> HeadlessRaster {
-        let mut gpu = HeadlessRaster::new();
+    fn headless() -> CpuRaster {
+        let mut gpu = CpuRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
         gpu
     }
@@ -2642,7 +2794,8 @@ mod tests {
     /// Draw the hot pair plus one never-before-seen resolution bucket per frame,
     /// closing every frame the way the runtime does. Eighteen glyphs are demanded
     /// of nine pages, so the pool must turn over. Returns the pages reclaimed.
-    fn flood(shaper: &mut TextShaper, gpu: &mut HeadlessRaster) -> u64 {
+    #[cfg(feature = "rasterizer")]
+    fn flood(shaper: &mut TextShaper, gpu: &mut CpuRaster) -> u64 {
         let mut evictions = 0;
         for size in [27.0, 28.0, 29.0, 31.0, 32.0, 33.0, 34.0] {
             shaper.shape(gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
@@ -2656,6 +2809,7 @@ mod tests {
         evictions
     }
 
+    #[cfg(feature = "rasterizer")]
     #[test]
     fn a_memory_trim_keeps_the_mounted_text_and_sheds_only_the_dropped_runs() {
         let mut gpu = headless();
@@ -2717,6 +2871,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rasterizer")]
     #[test]
     fn a_memory_trim_with_no_text_mounted_retires_the_plane() {
         let mut gpu = headless();
@@ -2749,6 +2904,7 @@ mod tests {
         assert_eq!(shaper.counters().rasters(), 2);
     }
 
+    #[cfg(feature = "rasterizer")]
     #[test]
     fn filling_the_pool_reclaims_cold_pages_and_keeps_the_hot_glyphs() {
         let mut gpu = headless();
@@ -2780,6 +2936,7 @@ mod tests {
         assert_eq!(shaper.counters().atlas_upload_bytes(), 0);
     }
 
+    #[cfg(feature = "rasterizer")]
     #[test]
     fn a_reclaimed_glyph_readmits_without_a_whole_atlas_upload() {
         let mut gpu = headless();
@@ -2822,7 +2979,11 @@ mod tests {
     /// Runs on every target with a system-font provider: the provider resolves a
     /// color emoji face and the platform or portable color raster fills the RGBA
     /// pool from it.
-    #[cfg(all(not(target_arch = "wasm32"), not(feature = "headless")))]
+    #[cfg(all(
+        feature = "rasterizer",
+        not(target_arch = "wasm32"),
+        not(feature = "headless")
+    ))]
     #[test]
     fn filling_the_color_pool_reclaims_nothing_from_the_coverage_pool() {
         let mut gpu = headless();
@@ -2875,6 +3036,7 @@ mod tests {
         assert_eq!(shaper.counters().atlas_upload_bytes(), 0);
     }
 
+    #[cfg(feature = "rasterizer")]
     #[test]
     fn a_warm_working_set_admits_nothing_and_uploads_zero_bytes() {
         let mut gpu = headless();
@@ -2924,9 +3086,10 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rasterizer")]
     #[test]
     fn shapes_and_reuses_residency() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
         let mut shaper = shaper();
         let request = TextRequest {
@@ -2980,10 +3143,14 @@ mod tests {
     ///
     /// Runs on every target with a system-font provider; the host must have CJK,
     /// Devanagari and color emoji faces installed.
-    #[cfg(all(not(target_arch = "wasm32"), not(feature = "headless")))]
+    #[cfg(all(
+        feature = "rasterizer",
+        not(target_arch = "wasm32"),
+        not(feature = "headless")
+    ))]
     #[test]
     fn multilingual_sample_rasterizes_cjk_devanagari_emoji() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 1024, 256);
         // No app font loaded: every script falls through to the system provider,
         // exactly as the hello-world example does.
@@ -3101,10 +3268,14 @@ mod tests {
     /// refusal regressed, the static path would return `Some` and this fails.
     ///
     /// Apple-only: depends on the CoreText provider resolving `.SFDevanagari`.
-    #[cfg(all(any(target_os = "macos", target_os = "ios"), not(feature = "headless")))]
+    #[cfg(all(
+        feature = "rasterizer",
+        any(target_os = "macos", target_os = "ios"),
+        not(feature = "headless")
+    ))]
     #[test]
     fn cff2_devanagari_routes_through_live_raster_not_static_parser() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 512, 128);
         let mut shaper = TextShaper::new();
         // Shape once so the CJK/Devanagari fallback face is resolved and its live
@@ -3164,7 +3335,7 @@ mod tests {
 
     #[test]
     fn wrapping_reduces_width_and_increases_height() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 256, 256);
         let mut shaper = shaper();
         let request = TextRequest {

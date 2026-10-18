@@ -92,6 +92,12 @@ pub struct WindowConfig {
     /// ignored, and so is any point where the platform places windows itself
     /// (Wayland, mobile, the browser).
     pub position: Option<(f64, f64)>,
+    /// The app draws its frames on the CPU and hands each one over as pixels:
+    /// the window's [`raw_handle`](crate::Window::raw_handle) is a
+    /// [`Scanout`](crate::RawWindowHandle::Scanout) that shows them, where the
+    /// platform has one (macOS, and a KMS display, which always does), in
+    /// place of the native surface a GPU renders into.
+    pub cpu_frames: bool,
 }
 
 impl Default for WindowConfig {
@@ -101,6 +107,7 @@ impl Default for WindowConfig {
             logical_size: (800.0, 600.0),
             chrome: WindowChrome::Native,
             position: None,
+            cpu_frames: false,
         }
     }
 }
@@ -190,4 +197,58 @@ mod tests {
             "a default window keeps the OS-drawn title bar"
         );
     }
+}
+
+/// What a backend offers beyond the one window every backend has. Tooling
+/// checks a target's capabilities at build time; at run time an app asks
+/// before it reaches for one (a second window, a menu bar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformCaps {
+    /// More than one window at a time.
+    pub multi_window: bool,
+    /// A system menu bar or application menu ([`PlatformApp::set_menu`](crate::PlatformApp::set_menu));
+    /// without one, a menu's accelerators still work.
+    pub menus: bool,
+    /// Desktop portals: system appearance, file pickers and the like.
+    pub portals: bool,
+    /// A clipboard shared with other applications; without one, copy and
+    /// paste stay inside the app.
+    pub system_clipboard: bool,
+    /// An input method: composition and an on-screen keyboard.
+    pub ime: bool,
+    /// An accessibility bridge that announces the published semantics to
+    /// assistive technology; without one, the app derives semantics for
+    /// tests and the Inspector only and publishes nothing.
+    pub accessibility: bool,
+}
+
+impl PlatformCaps {
+    /// A desktop backend: everything.
+    pub const DESKTOP: PlatformCaps = PlatformCaps {
+        multi_window: true,
+        menus: true,
+        portals: true,
+        system_clipboard: true,
+        ime: true,
+        accessibility: true,
+    };
+    /// A phone or tablet backend: one window, the system's clipboard and IME.
+    pub const MOBILE: PlatformCaps = PlatformCaps {
+        multi_window: false,
+        menus: false,
+        portals: false,
+        system_clipboard: true,
+        ime: true,
+        accessibility: true,
+    };
+    /// A display driven with no display server (KMS): one window, nothing
+    /// from a desktop and no accessibility bridge.
+    pub const FULLSCREEN: PlatformCaps = PlatformCaps {
+        multi_window: false,
+        menus: false,
+        portals: false,
+        system_clipboard: false,
+        ime: false,
+        accessibility: false,
+    };
 }

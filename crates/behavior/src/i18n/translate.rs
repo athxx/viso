@@ -3,8 +3,12 @@
 //! its own locale; a locale's table decodes on first use, with the plural
 //! rules of its language; a message of plain text is one shared string.
 
-use std::fmt::Write as _;
-use std::rc::Rc;
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::fmt::Write as _;
 
 use fixed_decimal::{Decimal, FloatPrecision};
 use icu_decimal::DecimalFormatter;
@@ -14,6 +18,7 @@ use icu_plurals::{PluralCategory, PluralRules};
 
 use super::{CaseKey, Catalog, Category, PatternOp, Table};
 use crate::Value;
+use crate::value::Text;
 
 /// The readers a VM remembers the resolution of; a view shows a handful of
 /// locales at most.
@@ -28,8 +33,8 @@ pub(crate) struct Translator {
     scratch: String,
 }
 
-impl std::fmt::Debug for Translator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Translator {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Translator")
             .field(
                 "tables",
@@ -50,7 +55,7 @@ struct Decoded {
 }
 
 struct Reader {
-    tag: Rc<String>,
+    tag: Rc<Text>,
     /// The catalog locale it reads.
     table: usize,
     numbers: DecimalFormatter,
@@ -132,7 +137,7 @@ impl Translator {
         };
         self.scratch.clear();
         cx.write(&mut self.scratch, ops, args, None)?;
-        Ok(Value::Str(Rc::new(self.scratch.clone())))
+        Ok(Value::Str(Rc::new(self.scratch.as_str().into())))
     }
 
     /// The index of the reader of `locale`, resolving it the first time.
@@ -288,7 +293,7 @@ impl Cx<'_> {
                     };
                     let (body, next) = choose(ops, i, cases, |key| match key {
                         CaseKey::Text { start, len } => {
-                            (self.text[start as usize..(start + len) as usize] == **chosen)
+                            (self.text[start as usize..(start + len) as usize] == ***chosen)
                                 .then_some(0)
                         }
                         _ => None,

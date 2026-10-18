@@ -5,7 +5,7 @@
 #![allow(unreachable_code, unreachable_patterns, non_snake_case)]
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 
-use viso_behavior::aot::{self as rt, NativeCode, PathStep};
+use viso_behavior::aot::{self as rt, NativeCode, PathStep, Poll, TaskFrame};
 use viso_behavior::{Arith, ArithOp, DisplayKind, FaultKind, Instance, Num, Value, Vm};
 
 macro_rules! t {
@@ -27,6 +27,8 @@ pub static NATIVE: NativeCode = NativeCode {
         (3, s3),
         (4, s4),
         (5, s5),
+    ],
+    resumable: &[
     ],
 };
 
@@ -170,9 +172,9 @@ fn c1(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 1, 1, rt::tick(vm));
                 r2 = Value::Int(0);
                 t!(vm, 1, 2, rt::tick(vm));
-                r3 = t!(vm, 1, 3, rt::load_state(inst, 2));
+                r3 = t!(vm, 1, 3, rt::load_state(vm, inst, 2));
                 t!(vm, 1, 3, rt::tick(vm));
-                r4 = t!(vm, 1, 4, rt::load_state(inst, 1));
+                r4 = t!(vm, 1, 4, rt::load_state(vm, inst, 1));
                 t!(vm, 1, 4, rt::tick(vm));
                 r5 = Value::Int(0);
                 t!(vm, 1, 5, rt::tick(vm));
@@ -195,7 +197,7 @@ fn c1(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 1, 10, rt::tick(vm));
                 r10 = r7.clone();
                 t!(vm, 1, 11, rt::tick(vm));
-                r11 = t!(vm, 1, 12, rt::load_state(inst, 0));
+                r11 = t!(vm, 1, 12, rt::load_state(vm, inst, 0));
                 t!(vm, 1, 12, rt::tick(vm));
                 r12 = t!(vm, 1, 13, rt::index(vm, &r11, &r10));
                 t!(vm, 1, 13, rt::tick(vm));
@@ -217,9 +219,9 @@ fn c1(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 1, 21, rt::tick(vm));
                 r21 = r10.clone();
                 t!(vm, 1, 22, rt::tick(vm));
-                r22 = t!(vm, 1, 23, rt::load_state(inst, 0));
+                r22 = t!(vm, 1, 23, rt::load_state(vm, inst, 0));
                 t!(vm, 1, 23, rt::tick(vm));
-                { let src = r20.clone(); t!(vm, 1, 24, rt::set_path(vm, &mut r22, &[PathStep::Index(&r21)], src)); }
+                { let src = r20.clone(); let i0 = r21.clone(); t!(vm, 1, 24, rt::set_path(vm, &mut r22, &[PathStep::Index(&i0)], src)); }
                 t!(vm, 1, 24, rt::tick(vm));
                 t!(vm, 1, 25, rt::store_state(vm, inst, 0, r22.clone()));
                 t!(vm, 1, 25, rt::tick(vm));
@@ -269,7 +271,7 @@ fn c1(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
             }
             45 => {
                 t!(vm, 1, 45, rt::tick(vm));
-                r38 = t!(vm, 1, 46, rt::load_state(inst, 3));
+                r38 = t!(vm, 1, 46, rt::load_state(vm, inst, 3));
                 t!(vm, 1, 46, rt::tick(vm));
                 r39 = Value::Int(t!(vm, 1, 47, t!(vm, 1, 47, rt::int(&r38)).checked_add(t!(vm, 1, 47, rt::int(&r2))).ok_or(FaultKind::Overflow)));
                 t!(vm, 1, 47, rt::tick(vm));

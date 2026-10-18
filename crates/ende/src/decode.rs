@@ -81,8 +81,9 @@ impl core::fmt::Display for DecodeError {
     }
 }
 
-impl std::error::Error for DecodeError {}
+impl core::error::Error for DecodeError {}
 
+#[cfg(feature = "std")]
 impl From<DecodeError> for std::io::Error {
     fn from(err: DecodeError) -> Self {
         std::io::Error::new(std::io::ErrorKind::InvalidData, err)
@@ -109,10 +110,25 @@ impl<'a> Decoder<'a> {
         Self { data, offset: 0 }
     }
 
+    /// A decoder over `data` whose cursor starts at `offset`, which is at
+    /// most `data.len()`.
+    #[inline]
+    pub(crate) fn starting_at(data: &'a [u8], offset: usize) -> Self {
+        debug_assert!(offset <= data.len());
+        Self { data, offset }
+    }
+
     /// The current cursor position (bytes consumed so far).
     #[inline]
     pub fn position(&self) -> usize {
         self.offset
+    }
+
+    /// The whole input, consumed or not: what offsets the stream records are
+    /// relative to.
+    #[inline]
+    pub fn input(&self) -> &'a [u8] {
+        self.data
     }
 
     /// The number of unconsumed bytes.
@@ -157,6 +173,37 @@ impl<'a> Decoder<'a> {
         let start = self.offset;
         self.offset += len;
         Ok(&self.data[start..start + len])
+    }
+
+    /// Reads exactly `N` bytes as an array reference into the input.
+    #[inline]
+    pub fn read_array<const N: usize>(&mut self) -> Result<&'a [u8; N], DecodeError> {
+        let bytes = self.read_raw(N)?;
+        Ok(bytes.try_into().expect("read_raw returned N bytes"))
+    }
+
+    /// Skips the padding [`Encoder::align`](crate::Encoder::align) wrote: up
+    /// to the next multiple of `align`, measured from the start of the input.
+    ///
+    /// # Errors
+    ///
+    /// [`DecodeError::UnexpectedEof`] when the input ends inside the padding,
+    /// [`DecodeError::Malformed`] when a padding byte is not zero; the cursor
+    /// does not move.
+    ///
+    /// # Panics
+    ///
+    /// If `align` is not a power of two.
+    #[inline]
+    pub fn align(&mut self, align: usize) -> Result<(), DecodeError> {
+        assert!(align.is_power_of_two(), "an alignment is a power of two");
+        let start = self.offset;
+        let padding = self.read_raw(start.next_multiple_of(align) - start)?;
+        if let Some(at) = padding.iter().position(|&byte| byte != 0) {
+            self.offset = start;
+            return Err(DecodeError::Malformed { offset: start + at });
+        }
+        Ok(())
     }
 
     /// Reads a `bool`: `0` is false, any nonzero byte is true.
@@ -319,6 +366,7 @@ decode_scalar! {
 mod tests {
     use super::*;
     use crate::encode::{Encode, Encoder};
+    use alloc::vec::Vec;
 
     // Encode a value, decode it back requiring full consumption, and assert the
     // round trip is the identity. The whole point of the mirrored codec.
@@ -440,6 +488,56 @@ mod tests {
             u8::decode_from_slice(&bytes),
             Err(DecodeError::TrailingBytes { remaining: 1 })
         ));
+    }
+
+    #[test]
+    fn alignment_padding_round_trips_and_must_be_zero() {
+        let mut enc = Encoder::new();
+        enc.write_u8(1);
+        enc.align(8);
+        enc.write_u16(2);
+        enc.align(4);
+        enc.align(4);
+        enc.write_u8(3);
+        let bytes = enc.into_bytes();
+        assert_eq!(bytes.len(), 13);
+        let mut dec = Decoder::new(&bytes);
+        assert_eq!(dec.read_u8(), Ok(1));
+        dec.align(8).unwrap();
+        assert_eq!(dec.position(), 8);
+        assert_eq!(dec.read_u16(), Ok(2));
+        dec.align(4).unwrap();
+        dec.align(4).unwrap();
+        assert_eq!(dec.read_u8(), Ok(3));
+        dec.finish().unwrap();
+
+        let mut bad = bytes.clone();
+        bad[5] = 0xaa;
+        let mut dec = Decoder::new(&bad);
+        dec.read_u8().unwrap();
+        assert_eq!(dec.align(8), Err(DecodeError::Malformed { offset: 5 }));
+        assert_eq!(
+            dec.position(),
+            1,
+            "a rejected skip does not move the cursor"
+        );
+
+        let mut dec = Decoder::new(&bytes[..4]);
+        dec.read_u8().unwrap();
+        assert!(matches!(
+            dec.align(8),
+            Err(DecodeError::UnexpectedEof { .. })
+        ));
+        assert_eq!(dec.position(), 1);
+    }
+
+    #[test]
+    fn fixed_arrays_borrow_the_input() {
+        let bytes = [1u8, 2, 3, 4, 5];
+        let mut dec = Decoder::new(&bytes);
+        let head: &[u8; 4] = dec.read_array().unwrap();
+        assert_eq!(head.as_ptr(), bytes.as_ptr());
+        assert!(dec.read_array::<2>().is_err());
     }
 
     // Fuzz smoke: a deterministic pseudo-random byte stream fed to every reader

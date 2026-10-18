@@ -37,7 +37,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, Content, ImeEvent, Inset, Key, KeyEvent,
@@ -121,8 +121,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId) {
     };
     let field_id = store
         .arena()
-        .links(root)
-        .and_then(|l| l.first_child)
+        .first_child(root)
         .expect("the view has the text input as its only child");
     (root, field_id)
 }
@@ -130,7 +129,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId) {
 /// Attach the shared deterministic glyph run to the field leaf so the golden is
 /// font/atlas-stable without a real font stack — the same fixture bypass the
 /// other widget goldens use.
-fn attach_glyphs(gpu: &mut HeadlessRaster, store: &mut NodeStore, field_id: NodeId) {
+fn attach_glyphs(gpu: &mut CpuRaster, store: &mut NodeStore, field_id: NodeId) {
     let tg = test_glyphs([0.0, 0.0], 26.0);
     let atlas = gpu.create_texture(&TextureDesc {
         width: tg.atlas_size,
@@ -162,7 +161,7 @@ fn attach_glyphs(gpu: &mut HeadlessRaster, store: &mut NodeStore, field_id: Node
 
 #[test]
 fn text_input_renders_its_text_and_matches_golden() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -562,7 +561,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -571,7 +570,7 @@ struct Harness {
 }
 
 fn setup_alloc() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);

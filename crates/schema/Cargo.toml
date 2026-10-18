@@ -1,0 +1,14 @@
+[package]
+name = "viso-schema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The data that crosses the compile boundary (ADR 0042): dirty classes, state
+# identity and values, roles, layout vocabulary, environment fields, resource
+# identity, the widget tables and the AOT and view package formats. The
+# compiler builds against these and nothing of the runtime; the runtime
+# crates re-export them. Pure data and its codecs: no algorithms, no runtime.
+[dependencies]
+viso-ende = { workspace = true }

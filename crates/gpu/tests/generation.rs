@@ -9,7 +9,7 @@
 //! surface here as `Some(<the new value>)` for the stale handle.
 
 use viso_gpu::slots::{RawId, SlotMap};
-use viso_gpu::{BufferDesc, BufferUsage, GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso_gpu::{BufferDesc, BufferUsage, CpuRaster, GpuBackend, RawWindowHandle};
 
 /// Reusing a reclaimed slot bumps its generation, so successive occupants of
 /// one index are told apart by generation.
@@ -110,7 +110,7 @@ fn buf() -> BufferDesc {
 /// the free-list — and the next create reuses it, at a bumped generation.
 #[test]
 fn destroyed_slot_is_reclaimed_only_after_its_frame_completes() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
 
     let first = gpu.create_buffer(&buf());
@@ -169,7 +169,7 @@ fn destroyed_slot_is_reclaimed_only_after_its_frame_completes() {
 /// by exactly one per frame.
 #[test]
 fn repeated_growth_keeps_the_retire_queue_bounded() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
 
     let mut current = gpu.create_buffer(&buf());
@@ -225,7 +225,7 @@ fn repeated_growth_keeps_the_retire_queue_bounded() {
 /// an unrelated live slot.
 #[test]
 fn destroying_a_stale_handle_is_a_no_op() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
 
     let live = gpu.create_buffer(&buf());
@@ -263,7 +263,7 @@ fn destroying_a_stale_handle_is_a_no_op() {
 /// current epoch as finished and drains the stalled queue.
 #[test]
 fn device_lost_unblocks_a_stalled_retire_queue() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
 
     let victim = gpu.create_buffer(&buf());
@@ -312,7 +312,7 @@ fn device_lost_unblocks_a_stalled_retire_queue() {
 /// the new dimensions exactly, with no stale pixels left over.
 #[test]
 fn resize_reallocates_the_surface_without_leaking_the_old_drawable() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
 
     // Four bytes (BGRA8) per pixel at the initial size.

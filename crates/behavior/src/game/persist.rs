@@ -14,15 +14,20 @@
 //! [`Scheduler`]: super::Scheduler
 //! [`Scheduler::suspend`]: super::Scheduler::suspend
 
-use std::cell::RefCell;
-use std::collections::BTreeMap;
-use std::rc::Rc;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use viso_ende::{DecodeError, Decoder, Encoder};
 
 use crate::module::{Module, PersistSlot};
-use crate::retype::{Retyping, ValueSchema};
-use crate::value::Value;
+use crate::retype::{RetypeValue, Retyping, ValueSchema};
+use crate::value::{Text, Value};
 use crate::vm::{Instance, Vm};
 use crate::wire::{read_value, write_value};
 
@@ -65,8 +70,8 @@ impl Persist {
     }
 }
 
-impl std::fmt::Debug for Persist {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Persist {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Persist")
     }
 }
@@ -75,7 +80,7 @@ impl std::fmt::Debug for Persist {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistReport {
     /// The state's key; empty for a failed flush.
-    pub key: Box<str>,
+    pub key: Text,
     /// The stable diagnostic code: `E6103` when the module was not granted
     /// `storage.persist`, otherwise `E9111`.
     pub code: &'static str,
@@ -131,8 +136,8 @@ impl SharedStore {
     }
 }
 
-impl std::fmt::Debug for SharedStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for SharedStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("SharedStore")
     }
 }
@@ -212,8 +217,8 @@ impl PersistStore for LazyStore {
     }
 }
 
-impl std::fmt::Debug for LazyStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for LazyStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(if self.is_open() {
             "LazyStore(open)"
         } else {
@@ -222,12 +227,16 @@ impl std::fmt::Debug for LazyStore {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "std", not(target_family = "wasm")))]
 pub use dir::DirStore;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "std", not(target_family = "wasm")))]
 mod dir {
-    use std::collections::BTreeMap;
+    use alloc::borrow::ToOwned;
+    use alloc::collections::BTreeMap;
+    use alloc::format;
+    use alloc::string::String;
+    use alloc::vec::Vec;
     use std::fs;
     use std::io::{self, Write};
     use std::path::{Path, PathBuf};
@@ -314,7 +323,7 @@ mod dir {
                     Job::Flush(ack) => acks.push(ack),
                 }
             }
-            for (key, blob) in std::mem::take(&mut pending) {
+            for (key, blob) in core::mem::take(&mut pending) {
                 if let Err(error) = write_atomically(dir, &key, &blob) {
                     let mut errors = errors.lock().unwrap_or_else(|e| e.into_inner());
                     errors.push(format!("writing `{key}`: {error}"));
@@ -378,6 +387,8 @@ mod dir {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use alloc::format;
+        use alloc::vec;
 
         #[test]
         fn a_key_names_one_file_inside_the_directory() {
@@ -412,7 +423,7 @@ const MAGIC: [u8; 4] = *b"VPS1";
 /// A value as a build stored it: its type's spelling and schema.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Stored {
-    pub(crate) spelling: Box<str>,
+    pub(crate) spelling: Text,
     pub(crate) schema: ValueSchema,
     pub(crate) value: Value,
 }
@@ -500,7 +511,7 @@ impl Stored {
 pub struct Persistence {
     pub(crate) store: Box<dyn PersistStore>,
     /// The value last loaded or stored under each key.
-    pub(crate) written: BTreeMap<Box<str>, Value>,
+    pub(crate) written: BTreeMap<Text, Value>,
     /// Ticks between writes.
     pub(crate) interval: u64,
     /// The tick boundaries to pass before the next write.
@@ -573,8 +584,8 @@ impl Persistence {
     }
 }
 
-impl std::fmt::Debug for Persistence {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Persistence {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Persistence")
             .field("written", &self.written.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
@@ -585,6 +596,7 @@ impl std::fmt::Debug for Persistence {
 mod tests {
     use super::*;
     use crate::retype::TypeDesc;
+    use alloc::vec;
 
     #[test]
     fn a_stored_blob_round_trips_and_rejects_corruption() {
@@ -608,7 +620,7 @@ mod tests {
 
     #[test]
     fn a_lazy_store_opens_at_its_first_use_and_shares_through_its_handles() {
-        let opened = Rc::new(std::cell::Cell::new(0));
+        let opened = Rc::new(core::cell::Cell::new(0));
         let memory = MemoryStore::default();
         let lazy = {
             let (opened, memory) = (Rc::clone(&opened), memory.clone());

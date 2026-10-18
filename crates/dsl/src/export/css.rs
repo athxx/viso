@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn the_theme_schema_matches_the_default_theme() {
-        let theme = viso_view::default_theme();
+        let theme = viso_behavior::theme::default_theme();
         for (at, (_, fields)) in THEME.iter().enumerate() {
             let Some(Value::Agg(group)) = field(&theme, at) else {
                 panic!("group {at}");

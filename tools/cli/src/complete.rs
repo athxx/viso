@@ -10,9 +10,10 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
 
+use clap::ValueEnum;
 use clap_complete::CompletionCandidate;
 use clap_complete::env::{EnvCompleter, Shells};
-use viso_project::{DeviceStore, KEYS, Platform};
+use viso_project::{DeviceStore, KEYS, MANIFEST_NAME, Manifest, Platform};
 
 use crate::args::Shell;
 
@@ -84,6 +85,27 @@ pub fn device_ids() -> Vec<CompletionCandidate> {
             ))
         })
         .collect()
+}
+
+/// The built-in targets `T` names, then the device targets of the project the
+/// current directory lies in.
+pub fn targets<T: ValueEnum>() -> Vec<CompletionCandidate> {
+    let mut candidates: Vec<CompletionCandidate> = T::value_variants()
+        .iter()
+        .filter_map(ValueEnum::to_possible_value)
+        .filter(|value| !value.is_hide_set())
+        .map(|value| CompletionCandidate::new(value.get_name()).help(value.get_help().cloned()))
+        .collect();
+    let manifest = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| viso_project::find_root(&cwd))
+        .and_then(|root| Manifest::load(root.join(MANIFEST_NAME)).ok().ok());
+    for device in manifest.iter().flat_map(|m| &m.targets.devices) {
+        candidates.push(CompletionCandidate::new(&device.name.value).help(Some(
+            format!("A device target, {}", device.profile.value).into(),
+        )));
+    }
+    candidates
 }
 
 /// The UI and game scenarios of the project the current directory lies in.

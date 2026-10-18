@@ -5,7 +5,7 @@
 #![allow(unreachable_code, unreachable_patterns, non_snake_case)]
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 
-use viso_behavior::aot::{self as rt, NativeCode, PathStep};
+use viso_behavior::aot::{self as rt, NativeCode, PathStep, Poll, TaskFrame};
 use viso_behavior::{Arith, ArithOp, DisplayKind, FaultKind, Instance, Num, Value, Vm};
 
 macro_rules! t {
@@ -51,6 +51,8 @@ pub static NATIVE: NativeCode = NativeCode {
         (27, s27),
         (28, s28),
         (29, s29),
+    ],
+    resumable: &[
     ],
 };
 
@@ -553,7 +555,7 @@ fn c4(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 4, 43, rt::tick(vm));
                 r43 = Value::Int(1);
                 t!(vm, 4, 44, rt::tick(vm));
-                r44 = t!(vm, 4, 45, rt::load_state(inst, 0));
+                r44 = t!(vm, 4, 45, rt::load_state(vm, inst, 0));
                 t!(vm, 4, 45, rt::tick(vm));
                 r45 = Value::Int(t!(vm, 4, 46, t!(vm, 4, 46, rt::int(&r44)).checked_add(t!(vm, 4, 46, rt::int(&r43))).ok_or(FaultKind::Overflow)));
                 t!(vm, 4, 46, rt::tick(vm));
@@ -661,7 +663,7 @@ fn c4(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 4, 87, rt::tick(vm));
                 r81 = Value::Int(1);
                 t!(vm, 4, 88, rt::tick(vm));
-                r82 = t!(vm, 4, 89, rt::load_state(inst, 0));
+                r82 = t!(vm, 4, 89, rt::load_state(vm, inst, 0));
                 t!(vm, 4, 89, rt::tick(vm));
                 r83 = Value::Int(t!(vm, 4, 90, t!(vm, 4, 90, rt::int(&r82)).checked_add(t!(vm, 4, 90, rt::int(&r81))).ok_or(FaultKind::Overflow)));
                 t!(vm, 4, 90, rt::tick(vm));
@@ -849,7 +851,7 @@ fn c6(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 6, 33, rt::tick(vm));
                 r30 = Value::Int(1);
                 t!(vm, 6, 34, rt::tick(vm));
-                r31 = t!(vm, 6, 35, rt::load_state(inst, 0));
+                r31 = t!(vm, 6, 35, rt::load_state(vm, inst, 0));
                 t!(vm, 6, 35, rt::tick(vm));
                 r32 = Value::Int(t!(vm, 6, 36, t!(vm, 6, 36, rt::int(&r31)).checked_add(t!(vm, 6, 36, rt::int(&r30))).ok_or(FaultKind::Overflow)));
                 t!(vm, 6, 36, rt::tick(vm));
@@ -868,7 +870,7 @@ fn c6(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 6, 41, rt::tick(vm));
                 r36 = r35.clone();
                 t!(vm, 6, 42, rt::tick(vm));
-                r37 = t!(vm, 6, 43, rt::load_state(inst, 1));
+                r37 = t!(vm, 6, 43, rt::load_state(vm, inst, 1));
                 t!(vm, 6, 43, rt::tick(vm));
                 r38 = t!(vm, 6, 44, rt::index(vm, &r37, &r35));
                 t!(vm, 6, 44, rt::tick(vm));
@@ -884,9 +886,9 @@ fn c6(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 6, 49, rt::tick(vm));
                 r44 = Value::Int(t!(vm, 6, 50, t!(vm, 6, 50, rt::int(&r42)).checked_add(t!(vm, 6, 50, rt::int(&r43))).ok_or(FaultKind::Overflow)));
                 t!(vm, 6, 50, rt::tick(vm));
-                r45 = t!(vm, 6, 51, rt::load_state(inst, 1));
+                r45 = t!(vm, 6, 51, rt::load_state(vm, inst, 1));
                 t!(vm, 6, 51, rt::tick(vm));
-                { let src = r44.clone(); t!(vm, 6, 52, rt::set_path(vm, &mut r45, &[PathStep::Index(&r36)], src)); }
+                { let src = r44.clone(); let i0 = r36.clone(); t!(vm, 6, 52, rt::set_path(vm, &mut r45, &[PathStep::Index(&i0)], src)); }
                 t!(vm, 6, 52, rt::tick(vm));
                 t!(vm, 6, 53, rt::store_state(vm, inst, 1, r45.clone()));
                 t!(vm, 6, 53, rt::tick(vm));
@@ -1054,7 +1056,7 @@ fn c9(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 9, 0, rt::tick(vm));
                 { let mut a = rt::scratch(vm); a.push(r0.clone()); r1 = t!(vm, 9, 1, rt::native(vm, 17, a)); }
                 t!(vm, 9, 1, rt::tick(vm));
-                r2 = t!(vm, 9, 2, rt::load_state(inst, 0));
+                r2 = t!(vm, 9, 2, rt::load_state(vm, inst, 0));
                 t!(vm, 9, 2, rt::tick(vm));
                 r3 = t!(vm, 9, 3, rt::field(&r2, 0));
                 t!(vm, 9, 3, rt::tick(vm));
@@ -1068,13 +1070,13 @@ fn c9(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                     None => { t!(vm, 9, 5, rt::depth(vm, depth)); c2(vm, inst, depth + 1, r4.clone())? }
                 };
                 t!(vm, 9, 5, rt::tick(vm));
-                r6 = t!(vm, 9, 6, rt::load_state(inst, 1));
+                r6 = t!(vm, 9, 6, rt::load_state(vm, inst, 1));
                 t!(vm, 9, 6, rt::tick(vm));
                 r7 = Value::Int(t!(vm, 9, 7, t!(vm, 9, 7, rt::int(&r6)).checked_add(t!(vm, 9, 7, rt::int(&r5))).ok_or(FaultKind::Overflow)));
                 t!(vm, 9, 7, rt::tick(vm));
                 t!(vm, 9, 8, rt::store_state(vm, inst, 1, r7.clone()));
                 t!(vm, 9, 8, rt::tick(vm));
-                r8 = t!(vm, 9, 9, rt::load_state(inst, 2));
+                r8 = t!(vm, 9, 9, rt::load_state(vm, inst, 2));
                 t!(vm, 9, 9, rt::tick(vm));
                 r9 = Value::Int(31);
                 t!(vm, 9, 10, rt::tick(vm));
@@ -1127,7 +1129,7 @@ fn c9(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 9, 30, rt::tick(vm));
                 { let mut a = rt::scratch(vm); a.push(r27.clone()); a.push(r26.clone()); r28 = t!(vm, 9, 31, rt::native(vm, 19, a)); }
                 t!(vm, 9, 31, rt::tick(vm));
-                r29 = t!(vm, 9, 32, rt::load_state(inst, 3));
+                r29 = t!(vm, 9, 32, rt::load_state(vm, inst, 3));
                 t!(vm, 9, 32, rt::tick(vm));
                 r30 = Value::Float(f64::from_bits(0x3fe0000000000000));
                 t!(vm, 9, 33, rt::tick(vm));
@@ -1209,7 +1211,7 @@ fn c9(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
             }
             67 => {
                 t!(vm, 9, 67, rt::tick(vm));
-                r62 = t!(vm, 9, 68, rt::load_state(inst, 0));
+                r62 = t!(vm, 9, 68, rt::load_state(vm, inst, 0));
                 t!(vm, 9, 68, rt::tick(vm));
                 r63 = Value::Int(2);
                 t!(vm, 9, 69, rt::tick(vm));
@@ -1245,7 +1247,7 @@ fn c9(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
             }
             79 => {
                 t!(vm, 9, 79, rt::tick(vm));
-                r68 = t!(vm, 9, 80, rt::load_state(inst, 0));
+                r68 = t!(vm, 9, 80, rt::load_state(vm, inst, 0));
                 t!(vm, 9, 80, rt::tick(vm));
                 r69 = t!(vm, 9, 81, rt::field(&r68, 0));
                 t!(vm, 9, 81, rt::tick(vm));
@@ -1260,13 +1262,13 @@ fn c9(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 9, 84, rt::tick(vm));
                 r72 = Value::Int(100);
                 t!(vm, 9, 85, rt::tick(vm));
-                r73 = t!(vm, 9, 86, rt::load_state(inst, 0));
+                r73 = t!(vm, 9, 86, rt::load_state(vm, inst, 0));
                 t!(vm, 9, 86, rt::tick(vm));
                 { let src = r72.clone(); t!(vm, 9, 87, rt::set_path(vm, &mut r73, &[PathStep::Field(0)], src)); }
                 t!(vm, 9, 87, rt::tick(vm));
                 t!(vm, 9, 88, rt::store_state(vm, inst, 0, r73.clone()));
                 t!(vm, 9, 88, rt::tick(vm));
-                r74 = t!(vm, 9, 89, rt::load_state(inst, 0));
+                r74 = t!(vm, 9, 89, rt::load_state(vm, inst, 0));
                 t!(vm, 9, 89, rt::tick(vm));
                 r75 = t!(vm, 9, 90, rt::field(&r74, 2));
                 t!(vm, 9, 90, rt::tick(vm));
@@ -1274,7 +1276,7 @@ fn c9(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<V
                 t!(vm, 9, 91, rt::tick(vm));
                 r77 = Value::Float(t!(vm, 9, 92, rt::float(&r75)) + t!(vm, 9, 92, rt::float(&r76)));
                 t!(vm, 9, 92, rt::tick(vm));
-                r78 = t!(vm, 9, 93, rt::load_state(inst, 0));
+                r78 = t!(vm, 9, 93, rt::load_state(vm, inst, 0));
                 t!(vm, 9, 93, rt::tick(vm));
                 { let src = r77.clone(); t!(vm, 9, 94, rt::set_path(vm, &mut r78, &[PathStep::Field(2)], src)); }
                 t!(vm, 9, 94, rt::tick(vm));
@@ -1408,7 +1410,7 @@ fn c14(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 14, 1, rt::tick(vm));
                 r2 = Value::Int(t!(vm, 14, 2, t!(vm, 14, 2, rt::int(&r0)).checked_mul(t!(vm, 14, 2, rt::int(&r1))).ok_or(FaultKind::Overflow)));
                 t!(vm, 14, 2, rt::tick(vm));
-                r3 = t!(vm, 14, 3, rt::load_state(inst, 1));
+                r3 = t!(vm, 14, 3, rt::load_state(vm, inst, 1));
                 t!(vm, 14, 3, rt::tick(vm));
                 r4 = Value::Int(11);
                 t!(vm, 14, 4, rt::tick(vm));
@@ -1526,7 +1528,7 @@ fn c15(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 15, 16, rt::tick(vm));
                 r14 = Value::Int(1);
                 t!(vm, 15, 17, rt::tick(vm));
-                r15 = t!(vm, 15, 18, rt::load_state(inst, 0));
+                r15 = t!(vm, 15, 18, rt::load_state(vm, inst, 0));
                 t!(vm, 15, 18, rt::tick(vm));
                 r16 = Value::Int(t!(vm, 15, 19, t!(vm, 15, 19, rt::int(&r15)).checked_add(t!(vm, 15, 19, rt::int(&r14))).ok_or(FaultKind::Overflow)));
                 t!(vm, 15, 19, rt::tick(vm));
@@ -1542,7 +1544,7 @@ fn c15(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 15, 24, rt::tick(vm));
                 { let mut a = rt::scratch(vm); a.push(r19.clone()); a.push(r20.clone()); r21 = t!(vm, 15, 25, rt::native(vm, 27, a)); }
                 t!(vm, 15, 25, rt::tick(vm));
-                r22 = t!(vm, 15, 26, rt::load_state(inst, 0));
+                r22 = t!(vm, 15, 26, rt::load_state(vm, inst, 0));
                 t!(vm, 15, 26, rt::tick(vm));
                 { let mut a = rt::scratch(vm); a.push(r0.clone()); r23 = t!(vm, 15, 27, rt::native(vm, 28, a)); }
                 t!(vm, 15, 27, rt::tick(vm));
@@ -1576,7 +1578,7 @@ fn c15(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 15, 38, rt::tick(vm));
                 r32 = Value::Int(1);
                 t!(vm, 15, 39, rt::tick(vm));
-                r33 = t!(vm, 15, 40, rt::load_state(inst, 1));
+                r33 = t!(vm, 15, 40, rt::load_state(vm, inst, 1));
                 t!(vm, 15, 40, rt::tick(vm));
                 r34 = Value::Int(t!(vm, 15, 41, t!(vm, 15, 41, rt::int(&r33)).checked_add(t!(vm, 15, 41, rt::int(&r32))).ok_or(FaultKind::Overflow)));
                 t!(vm, 15, 41, rt::tick(vm));
@@ -1588,7 +1590,7 @@ fn c15(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 15, 44, rt::tick(vm));
                 { let mut a = rt::scratch(vm); a.push(r35.clone()); a.push(r36.clone()); r37 = t!(vm, 15, 45, rt::native(vm, 27, a)); }
                 t!(vm, 15, 45, rt::tick(vm));
-                r38 = t!(vm, 15, 46, rt::load_state(inst, 2));
+                r38 = t!(vm, 15, 46, rt::load_state(vm, inst, 2));
                 t!(vm, 15, 46, rt::tick(vm));
                 r39 = k[2].clone();
                 t!(vm, 15, 47, rt::tick(vm));
@@ -1845,7 +1847,7 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 19, 0, rt::tick(vm));
                 r1 = Value::Int(1);
                 t!(vm, 19, 1, rt::tick(vm));
-                r2 = t!(vm, 19, 2, rt::load_state(inst, 0));
+                r2 = t!(vm, 19, 2, rt::load_state(vm, inst, 0));
                 t!(vm, 19, 2, rt::tick(vm));
                 r3 = Value::Int(t!(vm, 19, 3, t!(vm, 19, 3, rt::int(&r2)).checked_add(t!(vm, 19, 3, rt::int(&r1))).ok_or(FaultKind::Overflow)));
                 t!(vm, 19, 3, rt::tick(vm));
@@ -1879,9 +1881,9 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 19, 17, rt::tick(vm));
                 r17 = Value::Int(t!(vm, 19, 18, t!(vm, 19, 18, rt::int(&r14)).checked_add(t!(vm, 19, 18, rt::int(&r16))).ok_or(FaultKind::Overflow)));
                 t!(vm, 19, 18, rt::tick(vm));
-                { let src = r17.clone(); t!(vm, 19, 19, rt::set_path(vm, &mut r11, &[PathStep::Index(&r12)], src)); }
+                { let src = r17.clone(); let i0 = r12.clone(); t!(vm, 19, 19, rt::set_path(vm, &mut r11, &[PathStep::Index(&i0)], src)); }
                 t!(vm, 19, 19, rt::tick(vm));
-                r18 = t!(vm, 19, 20, rt::load_state(inst, 2));
+                r18 = t!(vm, 19, 20, rt::load_state(vm, inst, 2));
                 t!(vm, 19, 20, rt::tick(vm));
                 r19 = match t!(vm, 19, 21, rt::memo_enter(vm, inst, 3)) {
                     Some(v) => v,
@@ -1905,11 +1907,11 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
             }
             28 => {
                 t!(vm, 19, 28, rt::tick(vm));
-                r25 = t!(vm, 19, 29, rt::load_state(inst, 2));
+                r25 = t!(vm, 19, 29, rt::load_state(vm, inst, 2));
                 t!(vm, 19, 29, rt::tick(vm));
-                r26 = t!(vm, 19, 30, rt::load_state(inst, 0));
+                r26 = t!(vm, 19, 30, rt::load_state(vm, inst, 0));
                 t!(vm, 19, 30, rt::tick(vm));
-                r27 = t!(vm, 19, 31, rt::load_state(inst, 1));
+                r27 = t!(vm, 19, 31, rt::load_state(vm, inst, 1));
                 t!(vm, 19, 31, rt::tick(vm));
                 r28 = match t!(vm, 19, 32, rt::memo_enter(vm, inst, 3)) {
                     Some(v) => v,
@@ -1942,7 +1944,7 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 19, 43, rt::tick(vm));
                 r36 = Value::Int(0);
                 t!(vm, 19, 44, rt::tick(vm));
-                r37 = t!(vm, 19, 45, rt::load_state(inst, 2));
+                r37 = t!(vm, 19, 45, rt::load_state(vm, inst, 2));
                 t!(vm, 19, 45, rt::tick(vm));
                 r38 = Value::Int(9);
                 t!(vm, 19, 46, rt::tick(vm));
@@ -2114,7 +2116,7 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
             }
             103 => {
                 t!(vm, 19, 103, rt::tick(vm));
-                r74 = t!(vm, 19, 104, rt::load_state(inst, 2));
+                r74 = t!(vm, 19, 104, rt::load_state(vm, inst, 2));
                 t!(vm, 19, 104, rt::tick(vm));
                 r75 = Value::Int(t!(vm, 19, 105, t!(vm, 19, 105, rt::int(&r74)).checked_add(t!(vm, 19, 105, rt::int(&r69))).ok_or(FaultKind::Overflow)));
                 t!(vm, 19, 105, rt::tick(vm));
@@ -2178,7 +2180,7 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
             }
             123 => {
                 t!(vm, 19, 123, rt::tick(vm));
-                r85 = t!(vm, 19, 124, rt::load_state(inst, 2));
+                r85 = t!(vm, 19, 124, rt::load_state(vm, inst, 2));
                 t!(vm, 19, 124, rt::tick(vm));
                 r86 = Value::Int(t!(vm, 19, 125, t!(vm, 19, 125, rt::int(&r85)).checked_add(t!(vm, 19, 125, rt::int(&r80))).ok_or(FaultKind::Overflow)));
                 t!(vm, 19, 125, rt::tick(vm));
@@ -2207,7 +2209,7 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 19, 131, rt::tick(vm));
                 r88 = t!(vm, 19, 132, rt::len(&r32));
                 t!(vm, 19, 132, rt::tick(vm));
-                r89 = t!(vm, 19, 133, rt::load_state(inst, 1));
+                r89 = t!(vm, 19, 133, rt::load_state(vm, inst, 1));
                 t!(vm, 19, 133, rt::tick(vm));
                 { let item = r88.clone(); t!(vm, 19, 134, rt::push(vm, &mut r89, item)); }
                 t!(vm, 19, 134, rt::tick(vm));
@@ -2215,7 +2217,7 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 19, 135, rt::tick(vm));
                 t!(vm, 19, 136, rt::store_state(vm, inst, 1, r89.clone()));
                 t!(vm, 19, 136, rt::tick(vm));
-                r91 = t!(vm, 19, 137, rt::load_state(inst, 1));
+                r91 = t!(vm, 19, 137, rt::load_state(vm, inst, 1));
                 t!(vm, 19, 137, rt::tick(vm));
                 r92 = t!(vm, 19, 138, rt::len(&r91));
                 t!(vm, 19, 138, rt::tick(vm));
@@ -2228,7 +2230,7 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
             }
             141 => {
                 t!(vm, 19, 141, rt::tick(vm));
-                r95 = t!(vm, 19, 142, rt::load_state(inst, 1));
+                r95 = t!(vm, 19, 142, rt::load_state(vm, inst, 1));
                 t!(vm, 19, 142, rt::tick(vm));
                 r96 = Value::Int(0);
                 t!(vm, 19, 143, rt::tick(vm));
@@ -2289,7 +2291,7 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 19, 164, rt::tick(vm));
                 r113 = Value::Int(1);
                 t!(vm, 19, 165, rt::tick(vm));
-                r114 = t!(vm, 19, 166, rt::load_state(inst, 4));
+                r114 = t!(vm, 19, 166, rt::load_state(vm, inst, 4));
                 t!(vm, 19, 166, rt::tick(vm));
                 r115 = Value::Int(t!(vm, 19, 167, t!(vm, 19, 167, rt::int(&r114)).checked_add(t!(vm, 19, 167, rt::int(&r113))).ok_or(FaultKind::Overflow)));
                 t!(vm, 19, 167, rt::tick(vm));
@@ -2324,7 +2326,7 @@ fn c19(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 19, 177, rt::tick(vm));
                 r121 = Value::Int(1);
                 t!(vm, 19, 178, rt::tick(vm));
-                r122 = t!(vm, 19, 179, rt::load_state(inst, 3));
+                r122 = t!(vm, 19, 179, rt::load_state(vm, inst, 3));
                 t!(vm, 19, 179, rt::tick(vm));
                 r123 = Value::Int(t!(vm, 19, 180, t!(vm, 19, 180, rt::int(&r122)).checked_add(t!(vm, 19, 180, rt::int(&r121))).ok_or(FaultKind::Overflow)));
                 t!(vm, 19, 180, rt::tick(vm));
@@ -2532,7 +2534,7 @@ fn c26(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 26, 1, rt::tick(vm));
                 r2 = Value::Int(0);
                 t!(vm, 26, 2, rt::tick(vm));
-                r3 = t!(vm, 26, 3, rt::load_state(inst, 1));
+                r3 = t!(vm, 26, 3, rt::load_state(vm, inst, 1));
                 t!(vm, 26, 3, rt::tick(vm));
                 r4 = Value::Int(0);
                 t!(vm, 26, 4, rt::tick(vm));
@@ -2555,7 +2557,7 @@ fn c26(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 26, 9, rt::tick(vm));
                 r9 = r6.clone();
                 t!(vm, 26, 10, rt::tick(vm));
-                r10 = t!(vm, 26, 11, rt::load_state(inst, 0));
+                r10 = t!(vm, 26, 11, rt::load_state(vm, inst, 0));
                 t!(vm, 26, 11, rt::tick(vm));
                 r11 = t!(vm, 26, 12, rt::index(vm, &r10, &r9));
                 t!(vm, 26, 12, rt::tick(vm));
@@ -2577,9 +2579,9 @@ fn c26(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
                 t!(vm, 26, 20, rt::tick(vm));
                 r20 = r9.clone();
                 t!(vm, 26, 21, rt::tick(vm));
-                r21 = t!(vm, 26, 22, rt::load_state(inst, 0));
+                r21 = t!(vm, 26, 22, rt::load_state(vm, inst, 0));
                 t!(vm, 26, 22, rt::tick(vm));
-                { let src = r19.clone(); t!(vm, 26, 23, rt::set_path(vm, &mut r21, &[PathStep::Index(&r20)], src)); }
+                { let src = r19.clone(); let i0 = r20.clone(); t!(vm, 26, 23, rt::set_path(vm, &mut r21, &[PathStep::Index(&i0)], src)); }
                 t!(vm, 26, 23, rt::tick(vm));
                 t!(vm, 26, 24, rt::store_state(vm, inst, 0, r21.clone()));
                 t!(vm, 26, 24, rt::tick(vm));
@@ -2614,7 +2616,7 @@ fn c26(vm: &mut Vm, inst: &mut Instance, depth: usize, mut r0: Value) -> Result<
             }
             38 => {
                 t!(vm, 26, 38, rt::tick(vm));
-                r32 = t!(vm, 26, 39, rt::load_state(inst, 2));
+                r32 = t!(vm, 26, 39, rt::load_state(vm, inst, 2));
                 t!(vm, 26, 39, rt::tick(vm));
                 r33 = Value::Int(t!(vm, 26, 40, t!(vm, 26, 40, rt::int(&r32)).checked_add(t!(vm, 26, 40, rt::int(&r2))).ok_or(FaultKind::Overflow)));
                 t!(vm, 26, 40, rt::tick(vm));

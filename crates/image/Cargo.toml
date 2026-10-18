@@ -1,0 +1,28 @@
+[package]
+name = "viso-image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Raster images on the CPU: PNG/JPEG asset decode to premultiplied RGBA8, the
+# build-time conversion of an image to the texel format its target samples
+# (16-bit packed, BC, ETC2, ASTC) with the decoders that are its fallback,
+# SVG rasterized at build time, and the snapshot image with its PNG writer and
+# perceptual comparison. Pure CPU, shared by the renderer and the CLI.
+[dependencies]
+# The asset formats an asset's bytes are sniffed as.
+viso-schema = { workspace = true }
+# The texture formats a converted image is stored in, the vocabulary the
+# backends sample (a leaf: no backend is linked).
+viso-gpu-abi = { workspace = true }
+# An SVG rasterized at build time: the parsed document, its geometry, and the
+# coverage accumulation the renderer's mask and text lanes use.
+viso-svg = { workspace = true }
+viso-math = { workspace = true, features = ["std"] }
+ab_glyph_rasterizer = { workspace = true }
+zune-png = { workspace = true }
+zune-jpeg = { workspace = true }
+zune-core = { workspace = true }
+# A snapshot's PNG is written compressed.
+miniz_oxide = { workspace = true }

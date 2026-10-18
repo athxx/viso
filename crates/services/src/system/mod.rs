@@ -119,11 +119,16 @@ fn android_files_dir() -> Option<std::path::PathBuf> {
 #[cfg(any(
     target_vendor = "apple",
     target_os = "windows",
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "dragonfly"
+    all(
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ),
+        feature = "desktop"
+    )
 ))]
 fn read_picked(path: std::path::PathBuf) -> crate::reply::ServiceResult<crate::files::PickedFile> {
     let contents =

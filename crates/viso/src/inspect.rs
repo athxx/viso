@@ -9,6 +9,7 @@
 
 use std::collections::VecDeque;
 
+use viso_render::damage::Region;
 use viso_text::GlyphImageKind;
 use viso_ui::{
     AssetState, DirtyCause, DirtyMark, NodeId, NodeStore, PaintRanges, StateStore, paint_ranges,
@@ -16,7 +17,7 @@ use viso_ui::{
 #[cfg(feature = "headless")]
 use viso_view::inspect::WindowDetail;
 use viso_view::inspect::{
-    BatchDetail, Cause, EventKind, EventLog, FrameDetail, InspectEvent, NodeDetails,
+    BatchDetail, Cause, EventKind, EventLog, FrameDamage, FrameDetail, InspectEvent, NodeDetails,
     ResourceDetail, node_detail,
 };
 
@@ -86,6 +87,7 @@ pub(crate) fn frame(ws: &WindowState, window: u32, assets: &Assets) -> FrameDeta
     ];
     let mut batches = Vec::new();
     let mut resources = Vec::new();
+    let mut damage = FrameDamage::None;
     let mut add = |group: &str, name: &str, count: u64, bytes: Option<u64>, budget: Option<u64>| {
         resources.push(ResourceDetail {
             group: group.to_owned(),
@@ -125,6 +127,11 @@ pub(crate) fn frame(ws: &WindowState, window: u32, assets: &Assets) -> FrameDeta
             ]
             .map(|(name, value)| (name.to_owned(), value)),
         );
+        damage = match renderer.last_damage() {
+            Region::Empty => FrameDamage::None,
+            Region::Full => FrameDamage::Whole,
+            Region::Rects(rects) => FrameDamage::Rects(rects.to_vec()),
+        };
         batches = renderer
             .inspect_batches()
             .batches
@@ -238,6 +245,31 @@ pub(crate) fn frame(ws: &WindowState, window: u32, assets: &Assets) -> FrameDeta
         Some(decoded.upload_bytes),
         None,
     );
+    // What the session's memory budget limits, and how close this window is:
+    // the heap is the process's.
+    let budget = crate::footprint::budget();
+    let mut limit = |name: &str, bytes: u64, budget: Option<u64>| {
+        resources.push(ResourceDetail {
+            group: "budget".into(),
+            name: name.to_owned(),
+            count: 1,
+            bytes: Some(bytes),
+            budget,
+            note: budget
+                .filter(|b| bytes > *b)
+                .map(|_| "BudgetExceeded".to_owned()),
+        });
+    };
+    if let Some(heap) = crate::alloc::heap() {
+        limit("heap", heap.live, budget.heap);
+        limit("heap_peak", heap.peak, None);
+    }
+    limit("gpu", ws.device_bytes(), budget.gpu);
+    limit(
+        "images",
+        ws.store.assets().texture_bytes(),
+        Some(budget.images),
+    );
     for (id, state) in ws.store.assets().states() {
         let pixels = |[w, h]: [f32; 2]| (w.max(0.0) as u64) * (h.max(0.0) as u64) * 4;
         let sized = |state: &str, [w, h]: [f32; 2]| format!("{state} {w}x{h}");
@@ -262,6 +294,7 @@ pub(crate) fn frame(ws: &WindowState, window: u32, assets: &Assets) -> FrameDeta
         counters,
         batches,
         resources,
+        damage,
     }
 }
 

@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, Key, KeyEvent, KeyRouter, LeafStyle, Modifiers,
@@ -121,7 +121,7 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
 
 #[test]
 fn splitter_renders_two_panes_and_a_divider_and_matches_golden() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -479,7 +479,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -488,7 +488,7 @@ struct Harness {
 }
 
 fn setup_alloc() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);

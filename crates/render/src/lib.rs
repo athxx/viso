@@ -20,6 +20,7 @@ pub mod clip;
 pub mod color_atlas;
 pub mod color_effect;
 pub mod cull;
+pub mod damage;
 pub mod effect_cost;
 pub mod effect_plan;
 pub mod frame;
@@ -28,7 +29,7 @@ pub mod gradient_lut;
 pub mod graph;
 pub mod inspect;
 pub mod mask;
-pub mod mask_page;
+pub mod mask_pages;
 pub mod mtsdf_atlas;
 pub mod opacity;
 pub mod path;
@@ -39,6 +40,8 @@ pub mod raster_mask;
 pub mod rect_packer;
 pub mod renderer;
 pub mod scene;
+pub mod svg;
+pub mod transform;
 pub mod transient;
 pub mod vector_lane;
 
@@ -74,7 +77,7 @@ pub use inspect::{
 // Consumed by the render walk and the widget layer, not by normal apps (§3.2 —
 // not in the prelude).
 pub use mask::{MaskCache, MaskFormat, MaskKey, MaskKind, MaskRequest, MaskResolution, MaskSlot};
-pub use mask_page::MaskPage;
+pub use mask_pages::MaskPages;
 pub use mtsdf_atlas::{MtsdfAlloc, MtsdfAtlas};
 pub use raster_mask::{path_bounds, rasterize_path_coverage};
 // The opacity planner (§14.5): fold group opacity into children for free, or pay
@@ -94,7 +97,7 @@ pub use primitive::{
     LineCap, LineJoin, MaterialLane, MaterialLaneNeeds, Mesh, MeshVertex, NativeMaterialRegion,
     NineSlice, Path, PathCmd, PathShadow, Point, Primitive, ProgramSlot, ProgramTextures, Quad,
     QuadInstance, Rect, ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba, ShaderDraw,
-    ShadowInstance, ShadowShape, SpriteRegion, Stroke, StrokeAlign, TiledImage,
+    ShadowInstance, ShadowShape, SpriteRegion, Stroke, StrokeAlign, TiledImage, TransformSlot,
     analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
     analytic_shadow_schema, color_transform_schema, glyphrun_schema, gradient_schema, image_schema,
     mesh_schema, quad_schema,
@@ -103,6 +106,7 @@ pub use program::{BrushProgram, IDLE_PIPELINES, ProgramError};
 // The brush profile a `ShaderDraw`'s parameters are encoded by, named in this
 // crate's program API.
 pub use renderer::{BackdropDependency, FrameStats, Renderer};
+pub use transform::TransformUpdate;
 pub use viso_shader::program::{
     BrushLayout, BrushParam, PackedBrush, PackedCode, ParamKind, ParamValue,
 };

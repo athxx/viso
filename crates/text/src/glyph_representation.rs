@@ -31,7 +31,7 @@
 //! representations only while a transition is in flight and never keeps
 //! coverage, a field, and an outline resident at once.
 
-use std::time::Duration;
+use core::time::Duration;
 
 use crate::inspect::RepresentationExplanation;
 use crate::mtsdf::{self, BUCKETS, MtsdfPlan};

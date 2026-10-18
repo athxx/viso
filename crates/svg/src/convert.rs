@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use crate::color::Color;
-use crate::geom::{PathData, Rect, Transform};
+use crate::geom::{Affine2, PathData, Rect};
 use crate::path_data::{self, CmdSpan};
 use crate::style::{PaintLayer, PaintSpec, Style, StyledDoc};
 use crate::syntax::{self, Length, Unit};
@@ -67,8 +67,8 @@ pub(crate) struct Converter<'a> {
 }
 
 /// The transform mapping the unit square onto `r`.
-pub(crate) fn bbox_transform(r: Rect) -> Transform {
-    Transform::new(r.w, 0.0, 0.0, r.h, r.x, r.y)
+pub(crate) fn bbox_transform(r: Rect) -> Affine2 {
+    Affine2::new(r.w, 0.0, 0.0, r.h, r.x, r.y)
 }
 
 /// Convert a styled document into a render tree.
@@ -82,7 +82,7 @@ pub(crate) fn convert_doc(sd: &StyledDoc) -> Result<Tree, ParseError> {
         .doc
         .attr(root, "viewBox")
         .and_then(syntax::parse_view_box)
-        .filter(Rect::is_valid);
+        .filter(|r| r.has_area());
     let aspect = sd
         .doc
         .attr(root, "preserveAspectRatio")
@@ -115,7 +115,7 @@ pub(crate) fn convert_doc(sd: &StyledDoc) -> Result<Tree, ParseError> {
         in_clip: false,
         context: None,
     };
-    let vb_ts = view_box.map_or(Transform::IDENTITY, |vb| {
+    let vb_ts = view_box.map_or(Affine2::IDENTITY, |vb| {
         syntax::view_box_transform(vb, aspect, w, h)
     });
     let mut c = Converter {
@@ -124,7 +124,7 @@ pub(crate) fn convert_doc(sd: &StyledDoc) -> Result<Tree, ParseError> {
         budget: ELEMENT_BUDGET,
     };
     let mut out = Vec::new();
-    c.with_group(root, &st, Transform::IDENTITY, &mut out, |c, st, kids| {
+    c.with_group(root, &st, Affine2::IDENTITY, &mut out, |c, st, kids| {
         let mut inner = Group {
             transform: vb_ts,
             ..Group::default()
@@ -245,10 +245,10 @@ impl<'a> Converter<'a> {
             ..parent.clone()
         };
         match name {
-            "g" | "a" => self.with_group(node, &st, Transform::IDENTITY, out, |c, st, kids| {
+            "g" | "a" => self.with_group(node, &st, Affine2::IDENTITY, out, |c, st, kids| {
                 c.convert_children(node, st, kids)
             }),
-            "switch" => self.with_group(node, &st, Transform::IDENTITY, out, |c, st, kids| {
+            "switch" => self.with_group(node, &st, Affine2::IDENTITY, out, |c, st, kids| {
                 let child =
                     c.sd.doc
                         .element_children(node)
@@ -260,21 +260,21 @@ impl<'a> Converter<'a> {
             "svg" => self.convert_nested_svg(node, None, &st, out),
             "use" => self.convert_use(node, &st, out),
             "image" => self.convert_image(node, &st, out),
-            _ => self.with_group(node, &st, Transform::IDENTITY, out, |c, st, kids| {
+            _ => self.with_group(node, &st, Affine2::IDENTITY, out, |c, st, kids| {
                 c.convert_shape(node, name, st, kids)
             }),
         }
     }
 
     /// The element's own transform (`transform` + `transform-origin`).
-    fn element_transform(&self, st: &State) -> Transform {
+    fn element_transform(&self, st: &State) -> Affine2 {
         let t = st.style.transform;
         match st.style.transform_origin {
             Some((ox, oy)) if !t.is_identity() => {
                 let (ox, oy) = (st.resolve(ox, Axis::X), st.resolve(oy, Axis::Y));
-                Transform::translate(ox, oy)
+                Affine2::translate(ox, oy)
                     .pre_concat(&t)
-                    .pre_concat(&Transform::translate(-ox, -oy))
+                    .pre_concat(&Affine2::translate(-ox, -oy))
             }
             _ => t,
         }
@@ -287,7 +287,7 @@ impl<'a> Converter<'a> {
         &mut self,
         node: NodeId,
         st: &State,
-        extra: Transform,
+        extra: Affine2,
         out: &mut Vec<Node>,
         build: impl FnOnce(&mut Self, &State, &mut Vec<Node>),
     ) {
@@ -363,26 +363,26 @@ impl<'a> Converter<'a> {
 
     /// `<svg>`/`<symbol>` content placed into viewport `rect`.
     fn viewport_element(&mut self, node: NodeId, st: &State, rect: Rect, out: &mut Vec<Node>) {
-        if !rect.is_valid() {
+        if !rect.has_area() {
             return;
         }
         let view_box = self.attr(node, "viewBox").and_then(syntax::parse_view_box);
-        if view_box.is_some_and(|v| !v.is_valid()) {
+        if view_box.is_some_and(|v| !v.has_area()) {
             return;
         }
         let aspect = self
             .attr(node, "preserveAspectRatio")
             .map(syntax::parse_aspect)
             .unwrap_or_default();
-        let inner_ts = Transform::translate(rect.x, rect.y).pre_concat(
-            &view_box.map_or(Transform::IDENTITY, |vb| {
+        let inner_ts = Affine2::translate(rect.x, rect.y).pre_concat(
+            &view_box.map_or(Affine2::IDENTITY, |vb| {
                 syntax::view_box_transform(vb, aspect, rect.w, rect.h)
             }),
         );
         let mut inner_st = st.clone();
         inner_st.vp = view_box.map_or((rect.w, rect.h), |v| (v.w, v.h));
         let clip = !st.style.overflow_visible;
-        self.with_group(node, st, Transform::IDENTITY, out, |c, _, kids| {
+        self.with_group(node, st, Affine2::IDENTITY, out, |c, _, kids| {
             let mut inner = Group {
                 transform: inner_ts,
                 ..Group::default()
@@ -420,7 +420,7 @@ impl<'a> Converter<'a> {
         self.with_group(
             node,
             st,
-            Transform::translate(x, y),
+            Affine2::translate(x, y),
             out,
             |c, st, kids| match tname {
                 "symbol" => {
@@ -497,16 +497,16 @@ impl<'a> Converter<'a> {
             let w = self.opt_length(node, "width", st, Axis::X).unwrap_or(iw);
             let h = self.opt_length(node, "height", st, Axis::Y).unwrap_or(ih);
             let rect = Rect::new(x, y, w, h);
-            if !rect.is_valid() {
+            if !rect.has_area() {
                 return;
             }
-            let ts = Transform::translate(x, y).pre_concat(&syntax::view_box_transform(
+            let ts = Affine2::translate(x, y).pre_concat(&syntax::view_box_transform(
                 Rect::new(0.0, 0.0, iw, ih),
                 aspect,
                 w,
                 h,
             ));
-            self.with_group(node, st, Transform::IDENTITY, out, |_, _, kids| {
+            self.with_group(node, st, Affine2::IDENTITY, out, |_, _, kids| {
                 let inner = Group {
                     transform: ts,
                     children: vec![Node::Group(Box::new(tree.root))],
@@ -531,7 +531,7 @@ impl<'a> Converter<'a> {
             .opt_length(node, "height", st, Axis::Y)
             .unwrap_or(ih as f32);
         let viewport = Rect::new(x, y, w, h);
-        if !viewport.is_valid() || iw == 0 || ih == 0 {
+        if !viewport.has_area() || iw == 0 || ih == 0 {
             return;
         }
         // Fit the intrinsic size into the viewport per preserveAspectRatio;
@@ -541,7 +541,7 @@ impl<'a> Converter<'a> {
         let fitted = Rect::new(x + ts.e, y + ts.f, iw as f32 * ts.a, ih as f32 * ts.d);
         let pixelated = st.style.pixelated;
         let id = self.attr(node, "id").unwrap_or("").to_string();
-        self.with_group(node, st, Transform::IDENTITY, out, |_, _, kids| {
+        self.with_group(node, st, Affine2::IDENTITY, out, |_, _, kids| {
             let img = Node::Image(Box::new(Image {
                 id,
                 view_rect: fitted,
@@ -806,7 +806,7 @@ impl<'a> Converter<'a> {
         let cstyle = self.sd.style_from_ancestors(cp);
         let mut transform = cstyle.transform;
         if self.attr(cp, "clipPathUnits") == Some("objectBoundingBox") {
-            let Some(b) = bbox.filter(Rect::is_valid) else {
+            let Some(b) = bbox.filter(|r| r.has_area()) else {
                 return Ref::Invalid;
             };
             transform = bbox_transform(b).pre_concat(&transform);
@@ -863,7 +863,7 @@ impl<'a> Converter<'a> {
             context: None,
         };
         let rect = if obb_units {
-            let Some(b) = bbox.filter(Rect::is_valid) else {
+            let Some(b) = bbox.filter(|r| r.has_area()) else {
                 return Ref::Invalid;
             };
             let f = |name: &str, d: f32| self.attr(m, name).and_then(obb_fraction).unwrap_or(d);
@@ -882,13 +882,13 @@ impl<'a> Converter<'a> {
                 self.length(m, "height", &mst, Axis::Y, pc(120.0)),
             )
         };
-        if !rect.is_valid() {
+        if !rect.has_area() {
             return Ref::Invalid;
         }
         self.stack.push(m);
         let mut content = Group::default();
         if obb_content {
-            let Some(b) = bbox.filter(Rect::is_valid) else {
+            let Some(b) = bbox.filter(|r| r.has_area()) else {
                 self.stack.pop();
                 return Ref::Invalid;
             };
@@ -933,12 +933,12 @@ pub(crate) fn obb_fraction(s: &str) -> Option<f32> {
 pub(crate) fn rect_clip(r: Rect) -> ClipPath {
     ClipPath {
         id: String::new(),
-        transform: Transform::IDENTITY,
+        transform: Affine2::IDENTITY,
         clip_path: None,
         root: Group {
             children: vec![Node::Path(Box::new(Path {
                 id: String::new(),
-                data: Arc::new(r.to_path()),
+                data: Arc::new(PathData::from_rect(r)),
                 fill: Some(Fill {
                     paint: Paint::Color(Color::BLACK),
                     opacity: 1.0,

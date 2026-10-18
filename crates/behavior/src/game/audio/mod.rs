@@ -8,12 +8,15 @@
 //! `block.send` arrives at `AudioListener.audio_event` in the next frame;
 //! and the [`AudioHost`] running the hooks on the audio callback.
 
+#[cfg(feature = "std")]
 mod host;
 mod message;
 mod queue;
 
-use std::cell::{Cell, RefCell};
+use alloc::boxed::Box;
+use core::cell::{Cell, RefCell};
 
+#[cfg(feature = "std")]
 pub use host::{
     AudioFault, AudioHost, AudioLink, AudioProgram, AudioStatus, AudioSwap, COMMAND_CAPACITY,
     EVENT_CAPACITY,
@@ -22,7 +25,7 @@ pub use message::{AudioMessage, MESSAGE_TOKENS, MessageSlot};
 pub use queue::{RealtimeReceiver, RealtimeSender, realtime_queue};
 
 use crate::native::{
-    NativeError, NativeFunction, NativeId, NativeObject, NativeValue, Obj, SchemaTy,
+    NativeCx, NativeError, NativeFunction, NativeId, NativeObject, NativeValue, Obj, SchemaTy,
 };
 use crate::value::Value;
 
@@ -119,11 +122,13 @@ impl AudioBlock {
 
     /// Takes the queue its events leave through, as a swapped-in program's
     /// block takes it over.
+    #[cfg(feature = "std")]
     pub(super) fn take_events(&self) -> Option<RealtimeSender<i64>> {
         self.events.take()
     }
 
     /// Sends its events through `events` from now on.
+    #[cfg(feature = "std")]
     pub(super) fn set_events(&self, events: Option<RealtimeSender<i64>>) {
         self.events.replace(events);
     }
@@ -253,10 +258,21 @@ pub(super) static AUDIO_BLOCK_METHODS: [NativeFunction; 6] = [
 /// Presentation command, so a Simulation hook's sends once per tick.
 pub(super) static AUDIO_FUNCTIONS: [NativeFunction; 1] = [crate::native!(
     action "send_audio" |cx, command: AudioCommandValue| -> bool {
-        let Ok(link) = cx.service::<AudioLink>() else {
-            return Ok(false);
-        };
-        Ok(link.send(&command.0))
+        Ok(send_audio(cx, &command.0))
     }
 )
 .presentation()];
+
+/// Queues `command` on the [`AudioLink`] installed in `cx`; false when none
+/// is or its queue is full.
+#[cfg(feature = "std")]
+fn send_audio(cx: &mut NativeCx<'_>, command: &Value) -> bool {
+    cx.service::<AudioLink>()
+        .is_ok_and(|link| link.send(command))
+}
+
+/// False: without `std` no audio thread runs.
+#[cfg(not(feature = "std"))]
+fn send_audio(_cx: &mut NativeCx<'_>, _command: &Value) -> bool {
+    false
+}

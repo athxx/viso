@@ -28,16 +28,22 @@
 //! The committed state is shared with snapshots and copied only when a commit
 //! or step changes it.
 
-use std::cell::{Cell, RefCell};
-use std::fmt;
-use std::rc::Rc;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cell::{Cell, RefCell};
+use core::fmt;
 
 use super::input::schema_enum;
 use super::kit::Model;
 use super::kit::steer::{self, Control};
 use super::physics::{Kinematic, Physics, PhysicsError, StepBodies};
 use crate::native::{
-    Determinism, NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy, Vec3F32,
+    Determinism, NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy, Vec3,
 };
 use crate::value::{Aggregate, Value};
 use crate::wire::{canonical_f32_bits, malformed, read_list, read_u32_varint, write_list};
@@ -189,7 +195,7 @@ impl SpawnDesc {
 
     /// A body of `kind` and full `size` at the origin, without tags; a
     /// negative size counts as its magnitude.
-    pub fn new(kind: BodyKind, size: Vec3F32) -> SpawnDesc {
+    pub fn new(kind: BodyKind, size: Vec3) -> SpawnDesc {
         let half = |v: f32| v.abs() * 0.5;
         SpawnDesc {
             kind,
@@ -202,11 +208,11 @@ impl SpawnDesc {
 
     /// The player-sized character: 0.8 × 1.8 × 0.8.
     pub fn player() -> SpawnDesc {
-        SpawnDesc::new(BodyKind::Character, Vec3F32::new(0.8, 1.8, 0.8))
+        SpawnDesc::new(BodyKind::Character, Vec3::new(0.8, 1.8, 0.8))
     }
 
     /// Placed with its centre at `at`.
-    pub fn at(self, at: Vec3F32) -> SpawnDesc {
+    pub fn at(self, at: Vec3) -> SpawnDesc {
         SpawnDesc {
             at: at.to_array(),
             ..self
@@ -498,9 +504,9 @@ pub struct Extracted {
     /// Its tags, one bit per tag variant.
     pub tags: u64,
     /// Its centre, interpolated between the last two ticks.
-    pub position: Vec3F32,
+    pub position: Vec3,
     /// Its half extents.
-    pub half_extents: Vec3F32,
+    pub half_extents: Vec3,
     /// What it is drawn as.
     pub model: Model,
     /// The horizontal direction it faces, a unit `(x, z)`.
@@ -590,7 +596,7 @@ impl GameWorld {
     }
 
     /// What the engine keeps between steps, `None` when it cannot save it.
-    pub(super) fn save_physics(&self) -> Option<std::rc::Rc<[u8]>> {
+    pub(super) fn save_physics(&self) -> Option<alloc::rc::Rc<[u8]>> {
         self.physics.borrow().save().map(Into::into)
     }
 
@@ -600,20 +606,19 @@ impl GameWorld {
     }
 
     /// The position of `id` at the last tick, if it is alive.
-    pub fn position(&self, id: EntityId) -> Option<Vec3F32> {
+    pub fn position(&self, id: EntityId) -> Option<Vec3> {
         let bodies = self.bodies.borrow();
         bodies
             .live(id)
-            .map(|slot| Vec3F32::from_array(bodies.pos[slot]))
+            .map(|slot| Vec3::from_array(bodies.pos[slot]))
     }
 
     /// The position of `id` drawn `alpha` of the way from the previous tick
     /// to the last, if it is alive.
-    pub fn interpolated(&self, id: EntityId, alpha: f32) -> Option<Vec3F32> {
+    pub fn interpolated(&self, id: EntityId, alpha: f32) -> Option<Vec3> {
         let bodies = self.bodies.borrow();
         bodies.live(id).map(|slot| {
-            Vec3F32::from_array(bodies.prev[slot])
-                .lerp(Vec3F32::from_array(bodies.pos[slot]), alpha)
+            Vec3::from_array(bodies.prev[slot]).lerp(Vec3::from_array(bodies.pos[slot]), alpha)
         })
     }
 
@@ -638,9 +643,9 @@ impl GameWorld {
                 id: bodies.id(slot),
                 kind: bodies.kind[slot],
                 tags: bodies.tags[slot],
-                position: Vec3F32::from_array(bodies.prev[slot])
-                    .lerp(Vec3F32::from_array(bodies.pos[slot]), alpha),
-                half_extents: Vec3F32::from_array(bodies.half[slot]),
+                position: Vec3::from_array(bodies.prev[slot])
+                    .lerp(Vec3::from_array(bodies.pos[slot]), alpha),
+                half_extents: Vec3::from_array(bodies.half[slot]),
                 model: bodies.model[slot],
                 facing: bodies.facing[slot],
             }
@@ -981,7 +986,7 @@ impl GameWorld {
             return;
         }
         let b = Rc::make_mut(&mut bodies);
-        let order = std::mem::take(&mut b.order);
+        let order = core::mem::take(&mut b.order);
         steer::steer(b, &order, dt, &self.rng);
         let scratch = &mut *self.contacts.borrow_mut();
         scratch.pairs.clear();
@@ -1080,14 +1085,14 @@ pub(super) static GAME_WORLD_METHODS: [NativeFunction; 14] = [
         }),
     ),
     world(
-        crate::native!(fn "position" |_cx, this: Obj<GameWorld>, id: EntityId| -> Vec3F32 {
+        crate::native!(fn "position" |_cx, this: Obj<GameWorld>, id: EntityId| -> Vec3 {
             this.position(id).ok_or_else(|| dead(id))
         }),
     ),
     world(
-        crate::native!(fn "velocity" |_cx, this: Obj<GameWorld>, id: EntityId| -> Vec3F32 {
+        crate::native!(fn "velocity" |_cx, this: Obj<GameWorld>, id: EntityId| -> Vec3 {
             let slot = live(&this, id)?;
-            Ok(Vec3F32::from_array(this.bodies.borrow().vel[slot]))
+            Ok(Vec3::from_array(this.bodies.borrow().vel[slot]))
         }),
     ),
     world(
@@ -1135,7 +1140,7 @@ pub(super) static GAME_WORLD_METHODS: [NativeFunction; 14] = [
         }),
     ),
     world(
-        crate::native!(action "teleport" |_cx, this: Obj<GameWorld>, id: EntityId, to: Vec3F32| -> () {
+        crate::native!(action "teleport" |_cx, this: Obj<GameWorld>, id: EntityId, to: Vec3| -> () {
             this.push(Command::Teleport(id, to.to_array()))
         }),
     ),
@@ -1162,19 +1167,19 @@ pub(super) static SPAWN_DESC_METHODS: [NativeFunction; 8] = [
         Ok(prefab.desc())
     })
     .constant(),
-    crate::native!(fn "character" |_cx, size: Vec3F32| -> SpawnDesc {
+    crate::native!(fn "character" |_cx, size: Vec3| -> SpawnDesc {
         Ok(SpawnDesc::new(BodyKind::Character, size))
     })
     .constant(),
-    crate::native!(fn "block" |_cx, size: Vec3F32| -> SpawnDesc {
+    crate::native!(fn "block" |_cx, size: Vec3| -> SpawnDesc {
         Ok(SpawnDesc::new(BodyKind::Block, size))
     })
     .constant(),
-    crate::native!(fn "sensor" |_cx, size: Vec3F32| -> SpawnDesc {
+    crate::native!(fn "sensor" |_cx, size: Vec3| -> SpawnDesc {
         Ok(SpawnDesc::new(BodyKind::Sensor, size))
     })
     .constant(),
-    crate::native!(fn "at" |_cx, this: SpawnDesc, at: Vec3F32| -> SpawnDesc { Ok(this.at(at)) })
+    crate::native!(fn "at" |_cx, this: SpawnDesc, at: Vec3| -> SpawnDesc { Ok(this.at(at)) })
         .deterministic(),
     crate::native!(fn "tag" |_cx, this: SpawnDesc, tag: Tag| -> SpawnDesc { Ok(this.tag(tag)) })
         .deterministic(),

@@ -38,6 +38,6 @@ pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};
 pub use scheduler::Scheduler;
 pub use task::{TaskId, TaskSet};
 pub use viso_platform::{
-    Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, Insets, Instant,
-    LoopWaker,
+    Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, Instant,
+    LogicalInsets, LoopWaker,
 };

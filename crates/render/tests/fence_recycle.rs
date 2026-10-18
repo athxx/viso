@@ -9,7 +9,7 @@
 //! in the draw command, and offscreen layers reuse a texture pool. So §9.2's
 //! intent — no per-frame buffer realloc, fence-safe reclaim of what does churn —
 //! reduces to the grow path, which these tests exercise against a real
-//! [`HeadlessRaster`] through its observable surface:
+//! [`CpuRaster`] through its observable surface:
 //!
 //! - `retired_count()` — how many slots are parked awaiting reclamation;
 //! - `buffer_count()` — cumulative buffer creates (never decreases on reclaim);
@@ -19,7 +19,7 @@
 //! buffer retired while building frame N is reclaimed by the `begin_frame` that
 //! opens frame N+1 (a genuine one-frame deferral), and not before.
 
-use viso_gpu::{BufferUsage, GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso_gpu::{BufferUsage, CpuRaster, GpuBackend, RawWindowHandle};
 use viso_render::QuadInstance;
 use viso_render::pool::InstancePool;
 
@@ -46,7 +46,7 @@ fn frame(n: usize) -> Vec<QuadInstance> {
 /// it stays parked and is not reclaimed.
 #[test]
 fn grow_parks_old_buffer_without_freeing_it_in_flight() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 16, 16);
     let mut pool: InstancePool<QuadInstance> = InstancePool::new(BufferUsage::INSTANCE, "quads");
 
@@ -73,7 +73,7 @@ fn grow_parks_old_buffer_without_freeing_it_in_flight() {
 /// was retired in is presented — exactly once, never earlier, never leaked.
 #[test]
 fn presented_frame_reclaims_the_retired_buffer_next_begin() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 16, 16);
     let mut pool: InstancePool<QuadInstance> = InstancePool::new(BufferUsage::INSTANCE, "quads");
 
@@ -117,7 +117,7 @@ fn presented_frame_reclaims_the_retired_buffer_next_begin() {
 /// single frame churns the buffer more than once.
 #[test]
 fn multiple_grows_in_one_frame_all_reclaim_one_frame_later() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 16, 16);
     let mut pool: InstancePool<QuadInstance> = InstancePool::new(BufferUsage::INSTANCE, "quads");
 
@@ -155,7 +155,7 @@ fn multiple_grows_in_one_frame_all_reclaim_one_frame_later() {
 /// leaves the queue empty frame after frame.
 #[test]
 fn steady_state_retires_nothing() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 16, 16);
     let mut pool: InstancePool<QuadInstance> = InstancePool::new(BufferUsage::INSTANCE, "quads");
 
@@ -186,7 +186,7 @@ fn steady_state_retires_nothing() {
 /// in-flight frame is freed rather than leaked when no further `begin_frame` comes.
 #[test]
 fn device_loss_drains_parked_buffers() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 16, 16);
     let mut pool: InstancePool<QuadInstance> = InstancePool::new(BufferUsage::INSTANCE, "quads");
 

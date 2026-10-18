@@ -35,11 +35,7 @@ fn mount(build: impl FnOnce(&mut BuildCx<'_>) -> viso::ui::Handle) -> (NodeStore
 
 /// The program the shader view of the card at `root` paints with.
 fn painted(store: &NodeStore, root: NodeId) -> Arc<viso_ui::shader::BrushProgram> {
-    let view = store
-        .arena()
-        .links(root)
-        .and_then(|l| l.first_child)
-        .unwrap();
+    let view = store.arena().first_child(root).unwrap();
     let Some(Content::Shader {
         program, params, ..
     }) = store.content_payload(view)

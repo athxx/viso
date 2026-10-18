@@ -12,10 +12,15 @@ repository.workspace = true
 # event stream is written with `viso-ende`'s writer, the one JSON emitter.
 [dependencies]
 viso-dsl = { workspace = true }
-# The dev channel's wire protocol, shared with the running app.
-viso-view = { workspace = true, features = ["hot-reload", "snapshot"] }
-# A changed asset is decoded as the app would before it is sent: an image
-# through the SVG lane's asset decoder, a font through the text runtime's.
+# The dev channel's wire protocol and the inspection, profile and scenario
+# data a running app reports, shared with it.
+viso-dev-protocol = { workspace = true }
+# The asset formats a changed asset is sniffed as.
+viso-schema = { workspace = true }
+# A changed asset is decoded as the app would before it is sent: a raster
+# through the image decoder, an SVG through its parser, a font through the
+# text runtime's. Snapshots and icons are images too.
+viso-image = { workspace = true }
 viso-svg = { workspace = true }
 viso-text = { workspace = true }
 viso-ende = { workspace = true }

@@ -10,11 +10,22 @@ use crate::control::PlatformError;
 
 pub mod headless;
 
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "ios",
+    all(target_arch = "wasm32", target_os = "unknown")
+))]
+mod drive;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 
 #[cfg(target_os = "macos")]
 mod macos_access;
+
+#[cfg(target_os = "macos")]
+mod macos_panel;
 
 #[cfg(target_os = "macos")]
 mod memory_pressure;

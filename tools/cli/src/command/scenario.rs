@@ -27,14 +27,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use viso_project::Target;
-use viso_view::headless::{
+use viso_dev_protocol::headless::{
     Action, CENSUS_ENV, DETAIL_ENV, EVENTS_ENV, Expectation, FRAMES_ENV, HeadlessSurface,
     REPORT_ENV, Reported, SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, Script, Selector,
     VIEW_ENV, is_snapshot_name,
 };
-use viso_view::inspect::SourceTable;
-use viso_view::profile::PROFILE_ENV;
+use viso_dev_protocol::inspect::SourceTable;
+use viso_dev_protocol::profile::PROFILE_ENV;
+use viso_project::Target;
 
 use crate::command::build::{self as build_command, Check};
 use crate::context::Context;
@@ -742,8 +742,8 @@ mod tests {
     #[test]
     fn the_project_and_a_headless_run_agree_on_surfaces() {
         use viso_project::{SurfaceScale, TestSurface};
-        assert_eq!(TestSurface::MAX_EDGE, viso_view::headless::MAX_EDGE);
-        assert_eq!(SurfaceScale::MAX, viso_view::headless::MAX_SCALE);
+        assert_eq!(TestSurface::MAX_EDGE, viso_dev_protocol::headless::MAX_EDGE);
+        assert_eq!(SurfaceScale::MAX, viso_dev_protocol::headless::MAX_SCALE);
         let default = HeadlessSurface::default();
         assert_eq!(
             (

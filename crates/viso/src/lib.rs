@@ -41,7 +41,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use viso_gpu::{Backend, GpuBackend, SurfaceId};
-use viso_platform::{Insets, LogicalRect, RawWindowHandle, WindowId};
+use viso_platform::{LogicalInsets, LogicalRect, RawWindowHandle, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::context::UpdateCx;
@@ -63,6 +63,7 @@ pub mod alloc;
 mod assets;
 pub mod audio;
 mod environment;
+mod footprint;
 #[cfg(feature = "headless")]
 mod headless;
 #[cfg(any(feature = "hot-reload", feature = "headless"))]
@@ -82,6 +83,7 @@ use text_content::{ParagraphSlot, TextShaper};
 #[cfg(feature = "hot-reload")]
 mod hot_reload;
 mod window;
+pub use footprint::{BudgetExceeded, BudgetKind, Footprint, MemoryBudget};
 pub use window::{WindowBuilder, WindowHandle, window};
 
 pub use viso_ui::context::AppCx;
@@ -110,25 +112,55 @@ pub use viso_ui_macros::{asset, component, ui, view};
 /// builds with. Not an API: its paths change with the macros.
 #[doc(hidden)]
 pub mod __private {
+    pub use viso_behavior;
+    pub use viso_ende;
     pub use viso_ui;
     pub use viso_view;
+}
+
+/// The form of a view's behavior the expansion of `view!` keeps, as its
+/// module's bytes and the module compiled to Rust: in a release build, and
+/// in any build without the `vm` feature, the compiled code, run in place of
+/// the interpreter, and the module without bytecode beside it; a debug build
+/// with the interpreter keeps the bytecode it can hot-reload, and compiles
+/// none of the Rust. The form not kept is compiled out, its bytes with it.
+#[doc(hidden)]
+#[macro_export]
+#[cfg(any(not(debug_assertions), not(feature = "vm")))]
+macro_rules! __behavior {
+    (bytecode: $bytecode:block, compiled: $compiled:block, native: { $($code:tt)* } $(,)?) => {
+        ($compiled, ::core::option::Option::Some({ $($code)* }))
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+#[cfg(all(debug_assertions, feature = "vm"))]
+macro_rules! __behavior {
+    (bytecode: $bytecode:block, compiled: $compiled:block, native: { $($code:tt)* } $(,)?) => {
+        ($bytecode, ::core::option::Option::None)
+    };
 }
 
 // The facade's own code and tests expand the macros too.
 extern crate self as viso;
 
 // The SVG input lane (§13), re-exported as `viso::svg` so an app that has SVG
-// bytes calls `viso::svg::parse_svg(..)` without naming the internal
-// `viso-svg` crate. A cold-path input codec (parse once, cache the resulting
+// bytes calls `viso::svg::parse_svg(..)` without naming the internal crates. A cold-path input codec (parse once, cache the resulting
 // primitives), deliberately kept out of the default prelude (§3.2): most apps
 // never touch it, and `SvgScene`/`SvgError` are not part of the default mental
 // model.
-pub use viso_svg as svg;
+pub use viso_render::svg;
 
 /// Fonts packaged into the binary from the crate's `assets/fonts/`:
 /// `cx.use_packaged_fonts(viso::packaged_fonts!())` in `Application::new`.
 pub mod fonts {
     pub use viso_text::{FontSlant, PackagedFace, PackagedFonts};
+
+    /// Whether this build rasterizes glyphs at run time (the `rasterizer`
+    /// feature); `packaged_fonts!` checks its faces against it.
+    #[doc(hidden)]
+    pub const __RASTERIZER: bool = cfg!(feature = "rasterizer");
 }
 pub use viso_macros::packaged_fonts;
 
@@ -178,6 +210,14 @@ pub trait Application: Sized + 'static {
     /// follows flushes it. The default ignores every command.
     fn on_menu_command(&mut self, command: viso_platform::MenuCommandId) {
         let _ = command;
+    }
+
+    /// The memory budget the app's caches share, read once before the first
+    /// window opens. The default is the build's: its footprint profile's
+    /// figures with the target's `budget` overrides
+    /// ([`MemoryBudget::of_build`]).
+    fn memory_budget() -> MemoryBudget {
+        MemoryBudget::of_build()
     }
 }
 
@@ -501,6 +541,13 @@ struct AppDriver<A: Application> {
     services: Option<Rc<dyn Any>>,
     /// The assets the windows show, decoded once for all of them.
     assets: assets::Assets,
+    /// The session's hard memory limits, checked after every frame.
+    budget_watch: footprint::BudgetWatch,
+    /// Whether the backend announces semantics to assistive technology
+    /// ([`PlatformCaps::accessibility`](viso_platform::PlatformCaps::accessibility)),
+    /// read on launch. Without a bridge no window derives deltas; the
+    /// semantics tree still serves tests and the Inspector.
+    accessibility: bool,
     /// The development session: the mounted views, their watched files and
     /// the reloads staged for the next frame.
     #[cfg(feature = "hot-reload")]
@@ -586,7 +633,7 @@ struct WindowState {
     /// system UI (`None` on a framed desktop window), with the last reported
     /// safe area and on-screen keyboard height, in logical points.
     safe_area_root: Option<NodeId>,
-    safe_area: Insets,
+    safe_area: LogicalInsets,
     keyboard_inset: f64,
     /// The accessibility tree published to the OS, present only while an
     /// assistive technology listens to this window.
@@ -686,6 +733,11 @@ struct WindowState {
     /// How much each layer recomputed on the most recent frame — surfaced for
     /// diagnostics and asserted by tests to confirm only the dirty subtree moved.
     recompute: FrameRecompute,
+    /// The measure/layout counts of the frame in progress, folded into
+    /// `recompute` when its paint phase runs.
+    laid: (u32, u32),
+    /// How far into this frame's STYLE worklist the style phase resolved.
+    style_seen: usize,
     /// True until the first frame has been submitted. Lets the Submit phase emit
     /// a one-shot diagnostic (gated on `VISO_DEBUG`) proving the first
     /// frame reached the GPU, then fall dark for every steady-state frame.
@@ -774,6 +826,7 @@ impl<A: Application> Drop for AppDriver<A> {
 
 impl<A: Application> AppDriver<A> {
     fn new(services: Option<services::Services>) -> Self {
+        footprint::install(A::memory_budget());
         Self {
             app: None,
             cx: AppCx::__new(),
@@ -783,6 +836,8 @@ impl<A: Application> AppDriver<A> {
             fonts: SessionFonts::default(),
             services: services.map(|s| Rc::new(s) as Rc<dyn Any>),
             assets: assets::Assets::default(),
+            budget_watch: footprint::BudgetWatch::default(),
+            accessibility: true,
             #[cfg(feature = "hot-reload")]
             hot_reload: hot_reload::HotReloadSession::default(),
             #[cfg(feature = "headless")]
@@ -791,6 +846,35 @@ impl<A: Application> AppDriver<A> {
             harness: headless::Harness::default(),
             #[cfg(any(feature = "hot-reload", feature = "headless"))]
             profiler: profile::Profiler::default(),
+        }
+    }
+
+    /// Checks the frame against the session's hard limits: over one, every
+    /// window drops what the next frame can rebuild; still over after that,
+    /// the excess is reported once. The device is only measured under a GPU
+    /// limit.
+    fn watch_budget(&mut self, cx: &mut RuntimeCx<'_>) {
+        let budget = footprint::budget();
+        let mut used = footprint::Usage {
+            heap: alloc::heap().map(|h| h.live),
+            ..footprint::Usage::default()
+        };
+        for ws in &self.windows {
+            used.images += ws.store.assets().texture_bytes();
+            if budget.gpu.is_some() {
+                used.gpu += ws.device_bytes();
+            }
+        }
+        match self.budget_watch.check(budget, used) {
+            footprint::Verdict::Within => {}
+            footprint::Verdict::Trim => {
+                for ws in &mut self.windows {
+                    ws.store.request_memory_trim(&mut ws.states);
+                    ws.trim_memory();
+                    cx.request_redraw(ws.window);
+                }
+            }
+            footprint::Verdict::Exceeded(exceeded) => eprintln!("[viso] {exceeded}"),
         }
     }
 
@@ -818,7 +902,7 @@ impl WindowState {
             caption: None,
             access: None,
             safe_area_root: None,
-            safe_area: Insets::default(),
+            safe_area: LogicalInsets::default(),
             keyboard_inset: 0.0,
             store: NodeStore::new(),
             states: StateStore::new(),
@@ -848,6 +932,8 @@ impl WindowState {
             #[cfg(feature = "hot-reload")]
             dev_hud: None,
             recompute: FrameRecompute::default(),
+            laid: (0, 0),
+            style_seen: 0,
             awaiting_first_frame: true,
             assets_served: 0,
             shaders: shaders::InstalledShaders::default(),
@@ -936,6 +1022,8 @@ impl WindowState {
         let native_handle = native_handle.filter(|_| viso_gpu::webgpu::is_prepared());
         if let Some(raw) = native_handle {
             let mut backend = viso_gpu::create_device();
+            #[cfg(not(feature = "headless"))]
+            backend.set_cpu_workers(footprint::workers());
             let surface = backend.create_surface(raw, w.max(1), h.max(1));
             // Both the format and the color space come from the surface, so the
             // renderer's intermediate targets are planned for the domain this
@@ -1194,6 +1282,22 @@ impl WindowState {
         }
     }
 
+    /// The bytes this window holds on the device: the renderer's buffers,
+    /// ramps, masks and targets, the glyph atlas planes and the image
+    /// textures. Cold: it reads the pools' sizes.
+    fn device_bytes(&self) -> u64 {
+        let Some(gpu) = &self.gpu else {
+            return 0;
+        };
+        let r = gpu.renderer.resources();
+        r.buffer_bytes
+            + r.gradient_lut_bytes
+            + r.mask_page_bytes
+            + r.transient_bytes
+            + self.text.as_ref().map_or(0, TextShaper::atlas_bytes)
+            + self.store.assets().texture_bytes()
+    }
+
     /// Give back every GPU cache the next frame can rebuild: idle pooled
     /// targets, and every glyph page no mounted text draws from. Unmounted
     /// text is pruned first so it holds no page. Mounted text is then
@@ -1237,14 +1341,48 @@ impl WindowState {
         (w as f32 / scale, h as f32 / scale)
     }
 
-    /// Incrementally relayout and repaint against the current surface size,
-    /// recording how much each layer touched. Only the subtrees carrying
-    /// measure/layout invalidation are re-placed; paint is rebuilt only when a
-    /// paint-affecting class is pending, otherwise the primitive buffer is left
-    /// intact for reuse. A no-op if the tree is absent. Runs with no GPU too (a
-    /// headless window): layout/transform resolve against `surface_size` and
-    /// paint fills `primitives`; only the GPU upload/submit phases skip.
+    /// Every render phase at once, outside the frame loop: style, layout,
+    /// transforms and paint — what a test of a commit landing between frames
+    /// shows its result with.
+    #[cfg(all(test, feature = "hot-reload"))]
     fn relayout_and_paint(&mut self) {
+        self.resolve_style();
+        self.relayout();
+        self.update_transforms();
+        self.repaint();
+    }
+
+    /// The `ResolveStyle` phase: re-select interaction-state boxes when a
+    /// STYLE class is pending. A press/hover flip marks its node STYLE (and
+    /// PAINT) through the flush; this folds the winning variant (pressed >
+    /// hover > resting) into the warm `style` the measure and paint passes
+    /// read. Theme-free (it reads only the reactive cells), so it runs in the
+    /// live loop where the theme-token `resolve_styles` pass does not yet. The
+    /// STYLE worklist is empty on a frame with no interaction change, which
+    /// then pays one length check.
+    ///
+    /// It resolves only what gained STYLE since it last ran this frame, so the
+    /// paint phase calls it again to pick up a node a virtual list mounted
+    /// during layout.
+    fn resolve_style(&mut self) {
+        let listed = self.store.dirty_lists().of(DirtyClass::STYLE).len();
+        // A clear outside the frame loop emptied the lists under the cursor.
+        if listed < self.style_seen {
+            self.style_seen = 0;
+        }
+        if listed > self.style_seen {
+            let _style = profile::time(Span::Style);
+            let (_, seen) = self
+                .store
+                .resolve_interaction_styles_since(&self.states, self.style_seen);
+            self.style_seen = seen;
+        }
+    }
+
+    /// The `Measure` and `Layout` phases: re-measure and re-place the dirty
+    /// subtrees, then settle the adaptive environment against the boxes just
+    /// placed. Counts accumulate into the frame's recompute until its paint.
+    fn relayout(&mut self) {
         let Some(root) = self.root else {
             return;
         };
@@ -1262,7 +1400,7 @@ impl WindowState {
             w: lw,
             h: lh,
         };
-        let layout = profile::time(Span::Layout);
+        let _layout = profile::time(Span::Layout);
         let (mut measured, mut laid_out) =
             self.store
                 .relayout_dirty(root, surface, &mut self.scratch, &mut self.redo_roots);
@@ -1271,7 +1409,7 @@ impl WindowState {
         // writes flush, and the tree lays out again until nothing moves. A frame
         // that placed nothing and changed no environment input resolves nothing.
         let (scratch, redo_roots) = (&mut self.scratch, &mut self.redo_roots);
-        if let Err(cycle) = viso_ui::settle_adaptive(
+        let settled = viso_ui::settle_adaptive(
             &mut self.store,
             &mut self.states,
             &mut self.bindings,
@@ -1286,8 +1424,14 @@ impl WindowState {
                 laid_out += l;
                 m + l > 0
             },
-        ) {
-            eprintln!("[viso] {cycle}");
+        );
+        match settled {
+            // A settle that flushed may have flipped an interaction cell of a
+            // node resolved earlier this frame, which stays listed: resolve
+            // the whole STYLE worklist again before paint reads the box.
+            Ok(rounds) if rounds > 0 => self.style_seen = 0,
+            Ok(_) => {}
+            Err(cycle) => eprintln!("[viso] {cycle}"),
         }
         for warning in self.store.take_length_warnings() {
             eprintln!(
@@ -1297,42 +1441,100 @@ impl WindowState {
                 warning.issue
             );
         }
-        // Re-derive world rects when a transform-only class is pending. A frame
-        // that relaid anything already resolved transforms inside `relayout_dirty`
-        // (which folds fresh `bounds` into `world` from the root, as the whole-tree
-        // `NodeStore::layout` does), but a pure TRANSFORM frame (a scroll step, an
-        // animation tick) marks no MEASURE/LAYOUT and so triggers no redo — its
-        // moved translate would otherwise not reach `world`, and paint/hit-test
-        // read only world. Gated on the TRANSFORM class so a paint-only frame (a
-        // colour change) skips it; harmlessly idempotent on a layout frame that
-        // also carried TRANSFORM. This is the wiring that makes section 8.7
-        // transform-only updates land in a real frame loop, for scroll and
-        // animation alike.
-        if self.store.any_dirty_class(DirtyClass::TRANSFORM) {
-            self.store.resolve_transforms(root);
+        self.laid.0 += measured;
+        self.laid.1 += laid_out;
+    }
+
+    /// The `UpdateTransforms` phase: recompute the transform roots'
+    /// displacements when a scroll or translate is pending — one add per root,
+    /// no node visited. The TRANSFORM worklist is empty on a frame that moved
+    /// nothing, which skips it.
+    fn update_transforms(&mut self) {
+        if self.root.is_some() && self.store.any_dirty_class(DirtyClass::TRANSFORM) {
+            let _layout = profile::time(Span::Layout);
+            self.store.update_transforms();
         }
-        drop(layout);
-        // Re-select interaction-state boxes when a STYLE class is pending. A
-        // press/hover flip marks its node STYLE (and PAINT) through the flush;
-        // this folds the winning variant (pressed > hover > resting) into the
-        // warm `style` the paint walk reads, before the repaint below. Theme-free
-        // (it reads only the reactive cells), so it runs here in the live loop
-        // where the theme-token `resolve_styles` pass does not yet. Gated on
-        // STYLE so a pure paint/transform frame skips it; a steady frame with no
-        // interaction change carries no STYLE dirt and pays nothing.
-        if self.store.any_dirty_class(DirtyClass::STYLE) {
-            let _style = profile::time(Span::Style);
-            self.store.resolve_interaction_styles(&self.states);
-        }
+    }
+
+    /// The `BuildPaintChanges` phase: re-emit the primitives when a
+    /// paint-affecting class is pending, and close the frame's recompute
+    /// counts.
+    fn repaint(&mut self) {
+        self.paint(false);
+    }
+
+    /// Re-emit the primitives — when a paint-affecting class is pending, or
+    /// whatever is dirty when `force`d — and close the frame's recompute counts.
+    fn paint(&mut self, force: bool) {
+        let Some(root) = self.root else {
+            return;
+        };
+        self.resolve_style();
         let _paint = profile::time(Span::Paint);
-        let painted = self.store.repaint_dirty(root, &mut self.primitives);
+        let painted = if force {
+            self.store.repaint(root, &mut self.primitives)
+        } else {
+            self.store.repaint_dirty(root, &mut self.primitives)
+        };
         #[cfg(feature = "hot-reload")]
-        let painted = painted + hot_reload::overlay::paint(self, surface, painted);
+        let painted = {
+            let (lw, lh) = self.logical_surface();
+            let surface = Rect {
+                x: 0.0,
+                y: 0.0,
+                w: lw,
+                h: lh,
+            };
+            painted + hot_reload::overlay::paint(self, surface, painted)
+        };
+        if force {
+            // A repaint the upload asked for: the frame's layout counts stand.
+            self.recompute.painted = painted;
+            return;
+        }
+        let (measured, laid_out) = core::mem::take(&mut self.laid);
         self.recompute = FrameRecompute {
             measured,
             laid_out,
             painted,
         };
+    }
+
+    /// The `UploadGpuChanges` phase. Only a frame that painted uploads, the
+    /// primitives at the displacements they were painted at; one that only
+    /// moved transform roots, advanced the clock or moved a root by less than
+    /// a device pixel keeps the retained draws. Then the renderer takes the
+    /// displacements as they are now, and when a moved root holds content a
+    /// shift cannot move, the tree is painted again there.
+    fn upload_gpu_changes(&mut self) {
+        let Some(gpu) = &mut self.gpu else {
+            return;
+        };
+        if self.recompute.painted > 0 {
+            gpu.renderer.upload_with_transforms(
+                &mut gpu.backend,
+                &self.primitives,
+                self.store.transforms().painted(),
+            );
+        }
+        let update = gpu
+            .renderer
+            .set_transforms(self.store.transforms().current());
+        if update == viso_render::TransformUpdate::NeedsUpload {
+            self.paint(true);
+            if let Some(gpu) = &mut self.gpu {
+                gpu.renderer.upload_with_transforms(
+                    &mut gpu.backend,
+                    &self.primitives,
+                    self.store.transforms().painted(),
+                );
+            }
+        }
+        if let Some(gpu) = &self.gpu {
+            // A brush reading the clock on screen draws something new every
+            // frame; one culled or gone stops the beat.
+            self.draws_clock = gpu.renderer.reads_time();
+        }
     }
 
     /// Recompute the caption's draggable regions from the just-laid-out tree and,
@@ -1507,7 +1709,7 @@ impl WindowState {
             // Re-place the tree so a run whose height grew pushes its siblings;
             // the next pass's layout may assign a still-different width (nested
             // wrap-in-wrap), which re-enqueues and reshapes again until settled.
-            self.relayout_and_paint();
+            self.relayout();
             passes += 1;
         }
         passes
@@ -1528,6 +1730,9 @@ fn to_platform_config(cfg: &WindowConfig) -> viso_platform::WindowConfig {
             WindowChrome::SelfDrawn => viso_platform::WindowChrome::SelfDrawn,
         },
         position: None,
+        cpu_frames: !cfg!(feature = "headless")
+            && <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG
+                == viso_gpu::ShaderLang::None,
     }
 }
 
@@ -1640,6 +1845,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // faces it registered through `AppCx::load_font` so every window opened
         // this session loads them ahead of the system fallbacks.
         self.app = Some(A::new(&mut self.cx));
+        self.accessibility = cx.capabilities().accessibility;
         self.fonts = SessionFonts {
             loaded: self.cx.__take_fonts(),
             packaged: self.cx.__packaged_fonts(),
@@ -1775,6 +1981,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             if let Some(surface) = gpu.surface {
                 gpu.backend.resize_surface(surface, w, h);
             }
+            // A resized swapchain holds no earlier frame to keep.
+            gpu.renderer.damage_all();
             gpu.size = (w, h);
         }
         if let Some(root) = ws.root {
@@ -2092,6 +2300,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             gpu.renderer = Renderer::for_surface(&mut gpu.backend, surface);
         }
         gpu.surface = Some(surface);
+        gpu.renderer.damage_all();
         if let Some(root) = ws.root {
             ws.store.mark_dirty(root, DirtyClass::PAINT);
         }
@@ -2135,7 +2344,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
     }
 
-    fn on_safe_area(&mut self, window: WindowId, insets: Insets) {
+    fn on_safe_area(&mut self, window: WindowId, insets: LogicalInsets) {
         if let Some(ws) = self.window_mut(window) {
             ws.safe_area = insets;
             ws.apply_safe_area();
@@ -2174,6 +2383,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     }
 
     fn on_accessibility(&mut self, window: WindowId, request: viso_platform::AccessRequest) {
+        if !self.accessibility {
+            return;
+        }
         let Some(ws) = self.window_mut(window) else {
             return;
         };
@@ -2247,28 +2459,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             _ => None,
         };
         match phase {
-            FramePhase::FlushStateTransactions => {
-                // Commit the edits the watcher staged before the windows flush,
-                // so a reload's writes settle and paint this frame; a snapshot
-                // the host asked for takes where each window is.
-                #[cfg(feature = "hot-reload")]
-                {
-                    if self.hot_reload.snapshot_asked() {
-                        let positions = self
-                            .windows
-                            .iter()
-                            .map(|ws| (ws.window, cx.window_position(ws.window)))
-                            .collect();
-                        self.hot_reload.set_positions(positions);
-                    }
-                    for ws in &mut self.windows {
-                        ws.store.set_dirty_cause(DirtyCause::Reload);
-                    }
-                    self.hot_reload.reload(&mut self.windows, &mut self.assets);
-                    for ws in &mut self.windows {
-                        ws.store.set_dirty_cause(DirtyCause::Other);
-                    }
-                }
+            FramePhase::RunContinuations => {
                 // The faults the games raised last frame: to `viso run` when
                 // it is attached, to stderr otherwise.
                 let faults = viso_view::take_game_faults();
@@ -2278,35 +2469,6 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     eprintln!("[viso] {line}");
                 }
                 for ws in &mut self.windows {
-                    // Start any animations a handler requested this frame — a
-                    // sheet sliding in queued a `TranslateAnim` through
-                    // `EventCx`, which the router handed to the store's queue;
-                    // drain it into the registry now. Then advance every live
-                    // animation by this frame's delta, writing each node's
-                    // interpolated translate through `set_translate` (a
-                    // TRANSFORM|HIT_TEST|PAINT write). This runs before the state
-                    // flush and the Layout phase below, so the moved translate is
-                    // resolved into `world` and painted this same frame. Both
-                    // steps are no-ops when nothing is animating (the steady
-                    // case) — the queue is empty and the registry has nothing to
-                    // tick.
-                    ws.store.set_dirty_cause(DirtyCause::Animation);
-                    ws.store.take_animation_requests(&mut ws.anim_requests);
-                    for anim in ws.anim_requests.drain(..) {
-                        ws.animations.start(anim);
-                    }
-                    if !ws.animations.is_empty() {
-                        ws.animations.tick(&mut ws.store, cx.frame_delta());
-                    }
-                    if ws.store.is_transitioning() {
-                        ws.store.tick_transitions(cx.frame_delta());
-                    }
-                    ws.store.set_dirty_cause(DirtyCause::Other);
-                    // Advance the games the window's views run — the ticks
-                    // their clocks owe, then their frame hooks — after the
-                    // reload above committed, so a patch staged during the
-                    // last frame's ticks runs from the next tick on.
-                    ws.store.run_frame_clients(cx.frame_delta().as_secs_f64());
                     // Arm any one-shot timers a handler requested this frame (a
                     // toast's auto-dismiss), then fire every timer whose deadline
                     // this frame's instant has crossed. Arming resolves each
@@ -2326,9 +2488,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         ws.timers.fire_due(&mut ws.store, cx.frame_now());
                     }
                     // Poll the tasks spawned or woken since the last frame and
-                    // run each finished one's continuation, so the state it
-                    // writes flushes below in this same frame. No woken task
-                    // (the steady case) takes no lock and polls nothing.
+                    // run each finished one's continuation; what it writes joins
+                    // this frame's transaction. No woken task (the steady case)
+                    // takes no lock and polls nothing.
                     if ws.store.tasks_woken() {
                         ws.store.poll_tasks(&mut ws.continuations);
                         for then in ws.continuations.drain(..).flatten() {
@@ -2340,13 +2502,76 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         }
                     }
                     ws.store.set_dirty_cause(DirtyCause::Other);
-                    // Flush this frame's pending state writes through the
-                    // derivations, bindings, structure hooks, semantic-state
-                    // projections and effects, re-flushing any write a hook
-                    // makes while settling, in this same frame. Many writes in
-                    // one transaction collapse into one round; a frame with no
-                    // writes touches nothing. A flush that never settles is a
-                    // reactive cycle: it stops at a bound and drops the rest.
+                }
+            }
+            #[cfg(feature = "hot-reload")]
+            FramePhase::ApplyDevPatches => {
+                // Commit the edits the watcher staged at the frame boundary, so
+                // a reload's writes join this frame's transaction and paint
+                // this frame; a snapshot the host asked for takes where each
+                // window is.
+                {
+                    if self.hot_reload.snapshot_asked() {
+                        let positions = self
+                            .windows
+                            .iter()
+                            .map(|ws| (ws.window, cx.window_position(ws.window)))
+                            .collect();
+                        self.hot_reload.set_positions(positions);
+                    }
+                    for ws in &mut self.windows {
+                        ws.store.set_dirty_cause(DirtyCause::Reload);
+                    }
+                    self.hot_reload.reload(&mut self.windows, &mut self.assets);
+                    for ws in &mut self.windows {
+                        ws.store.set_dirty_cause(DirtyCause::Other);
+                    }
+                }
+            }
+            FramePhase::AdvanceAnimations => {
+                for ws in &mut self.windows {
+                    // Start any animations a handler requested this frame — a
+                    // sheet sliding in queued a `TranslateAnim` through
+                    // `EventCx`, which the router handed to the store's queue;
+                    // drain it into the registry now. Then advance every live
+                    // animation by this frame's delta, writing each node's
+                    // interpolated translate through `set_translate` (a
+                    // TRANSFORM|HIT_TEST|PAINT write). This runs before the state
+                    // flush and the Layout phase, so the moved translate is
+                    // resolved into `world` and painted this same frame. Both
+                    // steps are no-ops when nothing is animating (the steady
+                    // case) — the queue is empty and the registry has nothing to
+                    // tick.
+                    ws.store.set_dirty_cause(DirtyCause::Animation);
+                    ws.store.take_animation_requests(&mut ws.anim_requests);
+                    for anim in ws.anim_requests.drain(..) {
+                        ws.animations.start(anim);
+                    }
+                    if !ws.animations.is_empty() {
+                        ws.animations.tick(&mut ws.store, cx.frame_delta());
+                    }
+                    if ws.store.is_transitioning() {
+                        ws.store.tick_transitions(cx.frame_delta());
+                    }
+                    ws.store.set_dirty_cause(DirtyCause::Other);
+                    // Advance the games the window's views run — the ticks
+                    // their clocks owe, then their frame hooks — after the dev
+                    // patches committed, so a patch staged during the last
+                    // frame's ticks runs from the next tick on.
+                    ws.store.run_frame_clients(cx.frame_delta().as_secs_f64());
+                }
+            }
+            FramePhase::FlushStateTransactions => {
+                for ws in &mut self.windows {
+                    // Flush this frame's one transaction — the handlers',
+                    // continuations', dev patches' and animations' writes —
+                    // through the derivations, bindings, structure hooks and
+                    // semantic-state projections, re-flushing any write a hook
+                    // makes while settling, and queue the effects it wakes for
+                    // `RunEffects`. Many writes collapse into one round; a frame
+                    // with no writes touches nothing. A flush that never settles
+                    // is a reactive cycle: it stops at a bound and drops the
+                    // rest.
                     if let Err(cycle) = viso_ui::settle_states(
                         &mut ws.store,
                         &mut ws.states,
@@ -2373,8 +2598,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         continue;
                     }
                     let gpu = ws.gpu.as_mut().map(|g| (&mut g.backend, &mut g.renderer));
-                    self.assets.serve(&mut ws.store, gpu, &|| cx.loop_waker());
-                    ws.assets_served = ws.store.assets().revision();
+                    if self.assets.serve(&mut ws.store, gpu, &|| cx.loop_waker()) {
+                        // Decodes left for the next frame's slice.
+                        cx.request_redraw(ws.window);
+                    } else {
+                        ws.assets_served = ws.store.assets().revision();
+                    }
                 }
                 for ws in &mut self.windows {
                     ws.store.set_dirty_cause(DirtyCause::Other);
@@ -2530,11 +2759,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         // (the steady case).
                         ws.shape_pending_text();
                     }
-                    // Incrementally re-place invalidated subtrees and repaint if
-                    // any paint-affecting class is pending; a clean frame touches
-                    // nothing.
+                    // Incrementally re-place invalidated subtrees; a clean frame
+                    // touches nothing.
                     ws.store.set_dirty_cause(DirtyCause::Layout);
-                    ws.relayout_and_paint();
+                    ws.relayout();
                     // Width-aware text reflow (DL1): the layout just above records
                     // a reflow for each wrap-eligible leaf whose assigned box width
                     // differs from the width it was shaped at. Drain and reshape
@@ -2567,6 +2795,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // next frame. Bounded to this frame's newly-mounted rows — no
                     // full-list sweep.
                     virtual_list::absorb_measurements(&ws.store, &mut ws.virtual_lists);
+                }
+            }
+            FramePhase::ResolveStyle => {
+                for ws in &mut self.windows {
+                    ws.resolve_style();
+                }
+            }
+            FramePhase::UpdateTransforms => {
+                for ws in &mut self.windows {
+                    ws.update_transforms();
                     // Push the caption's draggable regions to the platform, but only
                     // when this frame's layout moved them (or first established them).
                     // The world boxes are final now; a caption that held still — the
@@ -2590,6 +2828,27 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     }
                 }
             }
+            FramePhase::BuildPaintChanges => {
+                for ws in &mut self.windows {
+                    ws.repaint();
+                }
+            }
+            FramePhase::RunEffects => {
+                for ws in &mut self.windows {
+                    // The effects this frame's flush queued run now, after the
+                    // frame presented; what they write is the next frame's
+                    // transaction, so that frame is scheduled.
+                    ws.store.set_dirty_cause(DirtyCause::Task);
+                    let done = viso_ui::run_effects(&mut ws.store, &mut ws.states, &mut ws.effects);
+                    if let Some(cycle) = done.cycle {
+                        eprintln!("[viso] {cycle}");
+                    }
+                    if done.pending {
+                        cx.request_redraw(ws.window);
+                    }
+                    ws.store.set_dirty_cause(DirtyCause::Other);
+                }
+            }
             FramePhase::UpdateSemantics => {
                 for ws in &mut self.windows {
                     let (Some(access), Some(root)) = (&mut ws.access, ws.root) else {
@@ -2602,12 +2861,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             }
             FramePhase::UploadGpuChanges => {
                 for ws in &mut self.windows {
-                    if let Some(gpu) = &mut ws.gpu {
-                        gpu.renderer.upload(&mut gpu.backend, &ws.primitives);
-                        // A brush reading the clock on screen draws something
-                        // new every frame; one culled or gone stops the beat.
-                        ws.draws_clock = gpu.renderer.reads_time();
-                    }
+                    ws.upload_gpu_changes();
                 }
             }
             FramePhase::Submit => {
@@ -2723,12 +2977,28 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             }
                         }
                         if let Some(surface) = gpu.surface {
+                            #[cfg(any(feature = "hot-reload", feature = "headless"))]
+                            let before = gpu.renderer.damage_stats();
                             gpu.renderer.submit(
                                 &mut gpu.backend,
                                 surface,
                                 [0.1, 0.1, 0.1, 1.0],
                                 viewport,
                             );
+                            #[cfg(any(feature = "hot-reload", feature = "headless"))]
+                            if self.profiler.is_on() {
+                                let after = gpu.renderer.damage_stats();
+                                for (count, value) in [
+                                    (Count::DamagePx, after.damage_px),
+                                    (Count::DamageRects, u64::from(after.damage_rects)),
+                                    (
+                                        Count::FullFrameFallbacks,
+                                        after.full_frame_fallbacks - before.full_frame_fallbacks,
+                                    ),
+                                ] {
+                                    self.profiler.count(count, value);
+                                }
+                            }
                         }
                     }
                 }
@@ -2755,6 +3025,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // invalidation; clear every node's dirty set so the next frame
                     // starts clean and an idle frame recomputes nothing.
                     ws.store.clear_dirty();
+                    ws.style_seen = 0;
                     // Close the text frame: fold the glyph pages drawn this frame
                     // into page recency once, and zero the counters so each
                     // frame's trace reflects only that frame's shaping / raster /
@@ -2776,6 +3047,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         cx.request_redraw(ws.window);
                     }
                 }
+                self.watch_budget(cx);
                 #[cfg(feature = "headless")]
                 if let (Some(script), Some(ws)) = (&mut self.script, self.windows.first()) {
                     let mounts = self.harness.mounts();
@@ -2914,9 +3186,11 @@ pub mod prelude {
     // The declarative view-fragment entry point (§21.5): a small local `ui! { … }`
     // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.
     pub use crate::ui;
-    // Text, List, Computed, Event, Task, Route, Theme, Color, Vec2, Rect,
-    // Constraints and the component!/view!/routes! macros join this as their
-    // subsystems land in later phases.
+    // 2D geometry, owned by `viso-math`.
+    pub use viso_math::{Point, Rect, Vec2};
+    // Text, List, Computed, Event, Task, Route, Theme, Color, Constraints and the
+    // component!/view!/routes! macros join this as their subsystems land in later
+    // phases.
 }
 
 // -- Advanced escape hatches. Opt-in, clearly namespaced. --
@@ -2925,6 +3199,9 @@ pub mod ui {
 }
 pub mod widgets {
     pub use viso_widgets::*;
+}
+pub mod math {
+    pub use viso_math::*;
 }
 pub mod render {
     pub use viso_render::*;

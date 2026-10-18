@@ -151,20 +151,18 @@ High-level conceptual direction:
 ```text
 viso facade
       ↓
-widgets / dsl / services
+widgets / view / services
       ↓
-ui
+ui ──────────→ runtime → platform → handle
       ↓
 render
       ↓
-text / shader
+text (pure CPU) / shader
       ↓
-gpu
-      ↓
-runtime / platform
+gpu → handle
 ```
 
-Leaf crates (`math`, `ende`, `handle`, `macros`) sit outside this chain; `svg` sits on `render`; `ui-macros` and `lsp` sit on `dsl`. The exact allowed edges are the allowlist in `xtask/src/main.rs` (§3.6, Architecture §10).
+The compiler side is separate: `dsl -> schema / dev-protocol / behavior / shader`, with `lsp` and `ui-macros` on `dsl` (ADR 0042). `ui` and `view` re-export `schema`; `dev-protocol` is the CLI↔runtime dev link both sides depend on; `shader` sees GPU types only through `gpu-abi`. Leaf crates (`math`, `ende`, `handle`, `glyph-a8`, `schema`, `gpu-abi`) sit outside this chain, with `macros` on `glyph-a8` (the A8 glyph rasterizer and baked pages `text` also reads); `render` sits on `svg` (parser) and `image` (raster decode). The transitive closure of `dsl`/`lsp`/`ui-macros`/`cli` must not contain runtime, platform or gpu; `check-deps` enforces it. The exact allowed edges are the allowlist in `xtask/src/main.rs` (§3.6, Architecture §10).
 
 Exact low-level edges can differ where required by surface creation and runtime ownership, but the following are forbidden:
 
@@ -177,6 +175,12 @@ ui       -> widgets
 render   -> widgets
 gpu      -> ui
 text     -> platform
+text     -> gpu
+gpu      -> runtime
+shader   -> gpu
+svg      -> render
+dsl      -> ui / view
+cli      -> view
 runtime  -> studio
 ```
 
@@ -193,7 +197,7 @@ xtask/src/main.rs   allowed_edges() — per-crate allowlist of internal dependen
 cargo xtask check-deps
 ```
 
-The checker enforces crate dependency edges: any internal edge not in the allowlist fails, and every workspace member must have an entry. Module-level forbidden-import scanning is a target, not yet implemented. `cargo-modules` or similar tools may be used for visualization, but the repository-owned checker is the source of truth.
+The checker enforces crate dependency edges (dev-dependencies listed separately): any internal edge not in the allowlist fails, every workspace member must have an entry, and the normal-dependency closure of the compiler/tooling crates must not reach runtime, platform or gpu. Module-level forbidden-import scanning is a target, not yet implemented. `cargo-modules` or similar tools may be used for visualization, but the repository-owned checker is the source of truth.
 
 ## 3.7 Self-build vs dependency policy
 
@@ -218,7 +222,8 @@ Top-level layout (`integrations/`, `extras/`, `vendor/` are target directories, 
 ```text
 crates/
     viso/        facade
-    macros/      GpuPod derive
+    macros/      GpuPod derive, packaged_fonts!
+    glyph-a8/    A8 glyph raster + baked glyph pages
     ui-macros/   ui! / component! / view!
     handle/
     math/
@@ -226,12 +231,16 @@ crates/
     runtime/
     platform/
     gpu/
+    gpu-abi/
     shader/
     text/
     svg/
+    image/
     render/
     ui/
     widgets/
+    schema/
+    dev-protocol/
     dsl/
     lsp/
     services/
@@ -484,7 +493,7 @@ Public `Handle<T>` MUST NOT expose long-lived `&T`/`&mut T` access to component 
 
 ## 8.7 Transform invalidation is separate from layout invalidation
 
-Scroll/translate/scale/transform-only animation MUST be able to update `TRANSFORM/HIT_TEST/PAINT` without marking `MEASURE/LAYOUT` dirty by default. Layout and transform share `NodeId` but use separate hot stores and propagation rules.
+Scroll/translate/transform-only animation MUST mark only `TRANSFORM`: no `MEASURE`, `LAYOUT`, `PAINT` or `HIT_TEST` (ADR 0043; a node's first translate also paints once, to record it as a root). Transform roots (a scroll container's content, a translated node) own transform-table entries, recorded by paint. Primitives are written in world space as painted; a frame that only moves roots hands the table to `Renderer::set_transforms`, which shifts each root's retained draws through the draw's `shift` uniform — no instance is rewritten or uploaded. On-screen rects are derived (`NodeStore::world`), and hit testing carries the displacement down its walk. Layout and transform share `NodeId` but use separate hot stores and propagation rules.
 
 ---
 
@@ -610,7 +619,7 @@ text content       -> MEASURE + LAYOUT + PAINT + SEMANTICS
 text color         -> PAINT
 background         -> PAINT
 width              -> MEASURE + LAYOUT
-transform          -> TRANSFORM + HIT_TEST + PAINT bounds
+transform          -> TRANSFORM (transform-table entry; damage from subtree bounds)
 accessibility text -> SEMANTICS
 ```
 
@@ -2022,7 +2031,11 @@ Windows   -> D3D12
 Linux     -> Vulkan
 Android   -> Vulkan
 Web       -> WebGPU
+Embedded Linux (GPU)    -> GLES 3.0+ / Vulkan 1.1   (embedded-gpu profile)
+Embedded Linux (no GPU) -> CpuRaster                (embedded-cpu profile, Tier-2)
 ```
+
+Embedded backends are selected by Footprint Profile feature, not by `target_os`, and remain static (Architecture §50A, ADR 0044). Core crates must keep the MCU-ready invariants (Architecture §50A.6) even though MCU is not a 1.0 target.
 
 This is a performance/support baseline, not a lowest-common-denominator contract. Compatibility backends (for example GL/GLES or a reduced Web path) may be added as Tier-2 when adoption data justifies them. They must not weaken Tier-1 RHI/render semantics; capability differences must be explicit and testable.
 

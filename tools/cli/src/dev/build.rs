@@ -299,6 +299,7 @@ mod tests {
             profile: viso_project::Profile::Dev,
             profile_args: Vec::new(),
             features: vec![crate::build::cargo::HOT_RELOAD],
+            no_default_features: false,
             target: None,
             rustc_args: Vec::new(),
             env: Vec::new(),

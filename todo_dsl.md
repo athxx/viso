@@ -1051,7 +1051,7 @@ timers (§104–§111).
         `suspend` and drop flush; carried through World Rebuild and Logic Reload.
   - [x] Component state `@persist`: only the view's own component persists
         (`E9106` when one persisting state mounts inside another view); the view
-        host loads before mount (`load_view_with` / `instantiate_view_with`
+        host loads before mount (`load_view_with` / `load_static_view`
         `setup`, hot-reload mount), stores changed values after each committed
         write-back, `suspend` flushes; `E6103` once per state when not granted;
         a hot reload keeps loaded values and loads a newly persisted state.

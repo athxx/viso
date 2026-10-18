@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use viso::__test_support::{drive_scripted, drive_scripted_full_screen};
-use viso::platform::{Insets, RawEvent, WindowId};
+use viso::platform::{LogicalInsets, RawEvent, WindowId};
 use viso::prelude::*;
 use viso::ui::{NodeId, NodeStore, Size};
 
@@ -45,7 +45,7 @@ fn resize() -> RawEvent {
 fn safe_area() -> RawEvent {
     RawEvent::SafeAreaChanged {
         window: WINDOW,
-        insets: Insets {
+        insets: LogicalInsets {
             top: 47.0,
             left: 0.0,
             bottom: 34.0,
@@ -57,10 +57,9 @@ fn safe_area() -> RawEvent {
 fn only_child(store: &NodeStore, parent: NodeId) -> NodeId {
     let arena = store.arena();
     let child = arena
-        .links(parent)
-        .and_then(|l| l.first_child)
+        .first_child(parent)
         .expect("the root wraps the app's content");
-    assert!(arena.links(child).and_then(|l| l.next_sibling).is_none());
+    assert!(arena.next_sibling(child).is_none());
     child
 }
 
@@ -98,6 +97,6 @@ fn a_framed_window_ignores_the_safe_area() {
     let store = app.store();
     let root = app.root().expect("launch window declares a root");
     // The desktop wrap: caption band first, body second.
-    let caption = store.arena().links(root).and_then(|l| l.first_child);
+    let caption = store.arena().first_child(root);
     assert!(caption.is_some_and(|c| store.semantics(c).is_some()));
 }

@@ -64,7 +64,7 @@ fn scroll_scene() -> (NodeStore, viso::ui::NodeId, viso::ui::NodeId) {
 }
 
 #[test]
-fn wheel_scrolls_the_viewport_and_dirties_only_transform_paint() {
+fn wheel_scrolls_the_viewport_and_dirties_only_its_transform() {
     let (mut store, viewport, content) = scroll_scene();
     store.clear_dirty();
 
@@ -72,15 +72,16 @@ fn wheel_scrolls_the_viewport_and_dirties_only_transform_paint() {
     assert!(consumed, "the wheel landed on the viewport");
     assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 60.0 });
 
-    // A scroll marks transform/hit-test/paint but never relayouts.
+    // A scroll moves the content's transform root: no relayout, no repaint,
+    // no hit-test rebuild (ADR 0043).
     let d = store.dirty(viewport);
     assert!(d.contains(DirtyClass::TRANSFORM));
-    assert!(d.contains(DirtyClass::PAINT));
-    assert!(!d.intersects(DirtyClass::LAYOUT | DirtyClass::MEASURE));
+    assert!(!d.intersects(
+        DirtyClass::LAYOUT | DirtyClass::MEASURE | DirtyClass::PAINT | DirtyClass::HIT_TEST
+    ));
 
-    // Re-deriving world rects shifts the content up by the offset; bounds (the
+    // The world rects shift the content up by the offset; bounds (the
     // unscrolled layout truth) are untouched.
-    store.resolve_transforms(viewport);
     let b = store.bounds(content);
     assert_eq!(store.world(content).y, b.y - 60.0);
     assert_eq!(store.bounds(content).y, b.y);

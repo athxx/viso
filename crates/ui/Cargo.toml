@@ -10,6 +10,10 @@ rust-version.workspace = true
 # paint-node bridge. Retained tree + generational IDs, NOT Rc<RefCell<dyn
 # Widget>>. `ui -> widgets` is forbidden.
 [dependencies]
+viso-math = { workspace = true, features = ["std"] }
+# The data the compiler and the runtime share (dirty classes, state values,
+# roles, layout vocabulary, package formats), re-exported at its paths here.
+viso-schema = { workspace = true }
 viso-render = { workspace = true }
 viso-runtime = { workspace = true }
 # AOT package codec (Slice P, architecture section 41): the release loader decodes a

@@ -39,7 +39,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, Content, Inset, Key, KeyEvent, KeyRouter,
@@ -130,23 +130,21 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, Vec<NodeId>) {
     };
     let group_id = store
         .arena()
-        .links(root)
-        .and_then(|l| l.first_child)
+        .first_child(root)
         .expect("the view has the group as its only child");
 
     // Walk the group's option rows in order; each row's caption leaf is the
     // second child (after the dot leaf).
     let mut captions = Vec::new();
-    let mut row = store.arena().links(group_id).and_then(|l| l.first_child);
+    let mut row = store.arena().first_child(group_id);
     while let Some(r) = row {
         let caption = store
             .arena()
-            .links(r)
-            .and_then(|l| l.first_child)
-            .and_then(|dot| store.arena().links(dot).and_then(|l| l.next_sibling))
+            .first_child(r)
+            .and_then(|dot| store.arena().next_sibling(dot))
             .expect("each option row has a caption leaf as its second child");
         captions.push(caption);
-        row = store.arena().links(r).and_then(|l| l.next_sibling);
+        row = store.arena().next_sibling(r);
     }
     (root, group_id, captions)
 }
@@ -154,7 +152,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, Vec<NodeId>) {
 /// Attach the shared deterministic glyph run to each caption leaf so the golden
 /// is font/atlas-stable without a real font stack — the same fixture bypass
 /// `toggle_widget.rs` uses. All captions share one atlas.
-fn attach_captions(gpu: &mut HeadlessRaster, store: &mut NodeStore, captions: &[NodeId]) {
+fn attach_captions(gpu: &mut CpuRaster, store: &mut NodeStore, captions: &[NodeId]) {
     let tg = test_glyphs([0.0, 0.0], 18.0);
     let atlas = gpu.create_texture(&TextureDesc {
         width: tg.atlas_size,
@@ -188,7 +186,7 @@ fn attach_captions(gpu: &mut HeadlessRaster, store: &mut NodeStore, captions: &[
 
 #[test]
 fn radio_group_renders_dots_and_captions_and_matches_golden() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -301,10 +299,8 @@ impl Interactive {
 
         // Collect the option rows in order for targeting.
         let mut rows = Vec::new();
-        let mut row = store.arena().links(group).and_then(|l| l.first_child);
-        while let Some(r) = row {
+        for r in store.arena().children(group) {
             rows.push(r);
-            row = store.arena().links(r).and_then(|l| l.next_sibling);
         }
 
         Interactive {
@@ -583,7 +579,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -592,7 +588,7 @@ struct Harness {
 }
 
 fn setup_alloc() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);

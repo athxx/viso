@@ -11,7 +11,9 @@ rust-version.workspace = true
 # implementation order follow Viso_Text_Font_Runtime.md; the GPU texture/page
 # machinery stays in viso-render.
 [dependencies]
-viso-gpu = { workspace = true }
+# Exact A8 coverage, rasterized or read from baked pages: one crate, so the
+# pages `packaged_fonts!` bakes are the pixels this crate would rasterize.
+viso-glyph-a8 = { workspace = true, features = ["raster"] }
 ttf-parser = { workspace = true }
 rustybuzz = { workspace = true }
 ab_glyph_rasterizer = { workspace = true }
@@ -25,6 +27,14 @@ zune-png = { workspace = true }
 zune-core = { workspace = true }
 
 [features]
+default = ["complex-line-break"]
+# Line breaking inside Thai, Lao, Khmer and Myanmar runs, which have no spaces
+# between words: ICU4X's LSTM models for the four scripts, the largest Unicode
+# data the text runtime carries. Off, those runs break only where UAX #14 lets
+# any text break (spaces, punctuation) and a run wider than the line falls back
+# to grapheme breaks. A build turns it off when no locale it declares, and no
+# text it ships, is written in one of the four scripts (§3.5).
+complex-line-break = ["icu_segmenter/auto"]
 # Records fallback walks, cache misses and evictions for the Inspector
 # (`inspect`). Off, every record site compiles out.
 inspector = []

@@ -11,6 +11,8 @@
 //! [`Stage`]: super::Stage
 
 use super::{Sfx, Wave};
+#[cfg(not(feature = "std"))]
+use crate::float::FloatMath as _;
 
 /// The most voices sounding at once; another steals the one nearest its end.
 pub const MAX_VOICES: usize = 24;
@@ -272,7 +274,7 @@ impl Synth {
                 v.t += dt;
             }
             if channels == 1 {
-                frame[0] += soft_clip((l + r) * std::f32::consts::FRAC_1_SQRT_2);
+                frame[0] += soft_clip((l + r) * core::f32::consts::FRAC_1_SQRT_2);
             } else {
                 frame[0] += soft_clip(l);
                 frame[1] += soft_clip(r);
@@ -301,7 +303,7 @@ impl Synth {
 fn wave(v: &mut Voice, step: f32) -> f32 {
     let t = v.phase;
     match v.wave {
-        Wave::Sine => (t * std::f32::consts::TAU).sin(),
+        Wave::Sine => (t * core::f32::consts::TAU).sin(),
         Wave::Square => {
             let square = if t < 0.5 { 1.0 } else { -1.0 };
             square + blep(t, step) - blep((t + 0.5).fract(), step)
@@ -342,6 +344,8 @@ fn soft_clip(x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     fn render(cue: Cue, seconds: f32) -> (Synth, Vec<f32>) {
         let mut synth = Synth::new(48000.0);
@@ -415,7 +419,7 @@ mod tests {
         // At 48 kHz the 15th and 31st harmonics of 3.1 kHz fold back to
         // 1.5 kHz and 100 Hz, where a square wave has no energy of its own.
         let power = |samples: &[f32], hz: f32| {
-            let coeff = 2.0 * (std::f32::consts::TAU * hz / 48000.0).cos();
+            let coeff = 2.0 * (core::f32::consts::TAU * hz / 48000.0).cos();
             let (mut s1, mut s2) = (0.0f32, 0.0f32);
             for &x in samples {
                 let s0 = x + coeff * s1 - s2;

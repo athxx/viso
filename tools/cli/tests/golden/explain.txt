@@ -242,8 +242,11 @@ ENV_SOURCE_UNREADABLE         A source file the command needs could not be read.
 ENV_CARGO_MANIFEST            The project root has no `Cargo.toml` to build.
 ENV_CARGO                     Cargo could not be run.
 ENV_NO_EXECUTABLE             The build produced no executable, or more than one.
-ENV_DEV_CHANNEL               The dev channel could not be opened on the loopback interface.
+ENV_DEV_CHANNEL               The dev channel could not be opened.
 ENV_DEVICE                    The simulator or emulator toolchain is missing or failed.
+ENV_DEVICE_TARGET             The device target runs on its board, not on this machine.
+ENV_DEPLOY                    The board could not be reached, or the app could not be copied to it.
+ENV_EMULATE                   The device target's profile cannot be emulated on this machine.
 ENV_NO_DEV_SESSION            No `viso run` session is running for the project, or it cannot be reached.
 ENV_TAPE_WRITE                A recorded tape could not be written.
 ENV_TEST_INPUT                A test scenario or tape could not be found or read.

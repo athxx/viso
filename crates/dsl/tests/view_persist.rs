@@ -5,14 +5,18 @@
 //! `E6103` at run time when the view is not granted `storage.persist`; a
 //! host with no store of its own persisting through the one the app installed.
 
+#[path = "support/reload.rs"]
+mod reload;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use reload::{LiveRuntime, transact};
 use viso_behavior::game::{MemoryStore, PERSIST_CAPABILITY, Persist, PersistReport};
 use viso_dsl::aot::build_view_package_for;
 use viso_dsl::frontend::{Origin, compile_file_for};
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
-use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, plan_view_for, transact};
+use viso_dsl::hotreload::{CandidatePlan, plan_view_for};
 use viso_dsl::schema::Natives;
 use viso_dsl::view_behavior::view_behavior;
 use viso_ui::virtual_list::VirtualLists;
@@ -21,7 +25,7 @@ use viso_ui::{
     PointerPhase, PointerRouter, Rect, SemanticProjector, StateStore, TextEdits, settle_states,
 };
 use viso_view::persist::SharedStore;
-use viso_view::{Value, ViewHost, load_view_with};
+use viso_view::{Value, ViewHost, ViewLoad, load_view_with};
 
 const SOURCE: &str = r#"
 export component Counter {
@@ -88,7 +92,10 @@ impl Rt {
             &mut rt.states,
             &mut rt.bindings,
             &mut rt.lists,
-            &mut |host| host.services_mut().insert(Persist::new(store.clone())),
+            ViewLoad {
+                setup: Some(&mut |host| host.services_mut().insert(Persist::new(store.clone()))),
+                ..ViewLoad::default()
+            },
         )
         .expect("loads");
         rt.root = view.root;
@@ -259,7 +266,7 @@ fn a_view_without_a_store_of_its_own_persists_through_the_installed_one() {
             &mut rt.states,
             &mut rt.bindings,
             &mut rt.lists,
-            &mut |_| {},
+            ViewLoad::default(),
         )
         .expect("loads");
         rt.root = view.root;

@@ -6,7 +6,7 @@
 
 use std::cmp::Ordering;
 
-use viso_gpu::{CpuTexture, SamplerDesc};
+use viso_gpu_abi::{CpuTexture, SamplerDesc};
 
 use super::code::{
     Bin, CFunction, CLoop, CStmt, Cmp, Code, Derivative, Op, Reg, Run, Target, Un, Word,

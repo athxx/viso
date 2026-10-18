@@ -12,6 +12,12 @@
 //! a resident image costs its texture and nothing on the CPU. A payload that
 //! does not decode is reported once and never retried at that revision.
 //!
+//! An image the build converted to its target's texel format is read, not
+//! decoded: an embedded one is handed to the device where it lies in the
+//! binary. One in a format the device does not sample — an image converted
+//! for another GPU, or a reload's — decodes on the worker to RGBA8 instead,
+//! the formats every device samples.
+//!
 //! Textures live on the window's device, which keeps them across a renderer
 //! rebuild and a device loss; a replaced one is released through the
 //! renderer, whose device destroys it once no frame in flight draws it.
@@ -26,12 +32,10 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Weak};
 use std::thread;
 
-use viso_gpu::{GpuBackend, TextureDesc, TextureFormat};
+use viso_gpu::{GpuBackend, SampledFormats, TextureDesc};
 use viso_platform::LoopWaker;
 use viso_render::Renderer;
-use viso_render::asset::{
-    AssetError, DecodedAsset, RasterImage, ResourceId, ResourceRevision, VectorScene,
-};
+use viso_render::asset::{AssetError, RasterImage, ResourceId, ResourceRevision, VectorScene};
 use viso_ui::{AssetBytes, AssetPayload, NodeStore};
 
 /// What the app's assets cost, counted since it started.
@@ -74,6 +78,8 @@ struct Job {
     id: ResourceId,
     revision: ResourceRevision,
     bytes: AssetBytes,
+    /// The formats the devices it is uploaded into sample.
+    sampled: SampledFormats,
 }
 
 /// A decoded payload, or why it did not decode.
@@ -82,6 +88,10 @@ struct Done {
     revision: ResourceRevision,
     result: Result<AssetPayload, AssetError>,
 }
+
+/// The main thread's slice for decoding where no worker thread runs: a
+/// quarter of a 60Hz frame.
+const INLINE_SLICE: std::time::Duration = std::time::Duration::from_millis(4);
 
 /// The decode thread.
 struct Worker {
@@ -102,7 +112,7 @@ impl Worker {
                     let done = Done {
                         id: job.id,
                         revision: job.revision,
-                        result: decode(&job.bytes),
+                        result: decode(&job.bytes, job.sampled),
                     };
                     if outbox.send(done).is_err() {
                         break;
@@ -115,12 +125,46 @@ impl Worker {
     }
 }
 
-/// `bytes` decoded by the format they are in.
-pub(crate) fn decode(bytes: &[u8]) -> Result<AssetPayload, AssetError> {
-    viso_svg::decode_asset(bytes).map(|asset| match asset {
-        DecodedAsset::Raster(image) => AssetPayload::Raster(Arc::new(image)),
-        DecodedAsset::Vector(scene) => AssetPayload::Vector(Arc::new(scene)),
-    })
+/// `bytes` decoded by the format they are in, a raster in a format outside
+/// `sampled` decoded on to RGBA8.
+///
+/// A build whose images were all converted links no decoder for what it
+/// never ships: no PNG and JPEG decoder (`viso_converted_rasters`), no SVG
+/// parser (`viso_converted_svg`); such a file is reported as not decoding.
+pub(crate) fn decode(
+    bytes: &AssetBytes,
+    sampled: SampledFormats,
+) -> Result<AssetPayload, AssetError> {
+    use viso_render::asset::AssetFormat;
+    let raster = |image| Ok(AssetPayload::Raster(Arc::new(sampleable(image, sampled)?)));
+    if viso_image::texture::is_texture(bytes) {
+        return raster(viso_image::texture::read(bytes)?);
+    }
+    match AssetFormat::sniff(bytes).map(AssetFormat::kind) {
+        #[cfg(not(viso_converted_rasters))]
+        Some(viso_render::asset::AssetKind::Raster) => {
+            raster(viso_render::asset::decode_raster_asset(bytes)?)
+        }
+        #[cfg(not(viso_converted_svg))]
+        Some(viso_render::asset::AssetKind::Vector) => viso_render::svg::parse_svg(bytes)
+            .map(|scene| AssetPayload::Vector(Arc::new(scene.into_vector())))
+            .map_err(|error| AssetError::Decode(error.to_string())),
+        #[cfg(any(viso_converted_rasters, viso_converted_svg))]
+        Some(_) => Err(AssetError::Decode(
+            "the build converted every image of this kind, and this one is not".to_owned(),
+        )),
+        None => Err(AssetError::Format),
+    }
+}
+
+/// `image`, or its texels decoded to RGBA8 when `sampled` lacks its format.
+fn sampleable(image: RasterImage, sampled: SampledFormats) -> Result<RasterImage, AssetError> {
+    if sampled.contains(image.format.sampled_class()) {
+        return Ok(image);
+    }
+    image
+        .to_rgba8()
+        .ok_or_else(|| AssetError::Decode(format!("{image:?} does not hold its texels")))
 }
 
 /// The app's assets.
@@ -142,6 +186,9 @@ pub(crate) struct Assets {
     /// Reused per window: the resources to serve.
     scratch: Vec<(ResourceId, ResourceRevision, AssetBytes)>,
     rasters: Vec<(ResourceId, ResourceRevision, Arc<RasterImage>)>,
+    /// The formats every device served so far samples; every format until
+    /// one is.
+    sampled: Option<SampledFormats>,
     counters: AssetCounters,
 }
 
@@ -249,12 +296,23 @@ impl Assets {
     /// holds of what it shows, provides what the app decoded, sends the rest to
     /// the worker (`waker` wakes the loop when it is done), and uploads the
     /// rasters not resident into `gpu`, releasing what they replace.
+    ///
+    /// With no worker the decodes run here, in an idle slice
+    /// ([`INLINE_SLICE`], at least one decode); `true` when some wait for the
+    /// next frame's.
     pub(crate) fn serve<B: GpuBackend>(
         &mut self,
         store: &mut NodeStore,
         gpu: Option<(&mut B, &mut Renderer)>,
         waker: &dyn Fn() -> LoopWaker,
-    ) {
+    ) -> bool {
+        let start = viso_platform::Instant::now();
+        let mut deferred = false;
+        if let Some((backend, _)) = &gpu {
+            let caps = backend.caps().sampled;
+            self.sampled = Some(self.sampled.map_or(caps, |s| s & caps));
+        }
+        let sampled = self.sampled.unwrap_or(SampledFormats::all());
         let mut todo = std::mem::take(&mut self.scratch);
         if !self.latest.is_empty() {
             // What shows with no bytes, or with older bytes than a reload's.
@@ -293,13 +351,20 @@ impl Assets {
                 continue;
             }
             if self.worker.is_none() && !self.inline {
-                self.worker = Worker::spawn(waker());
+                self.worker = (crate::footprint::workers() > 0)
+                    .then(|| Worker::spawn(waker()))
+                    .flatten();
                 self.inline = self.worker.is_none();
+            }
+            if self.inline && start.elapsed() >= INLINE_SLICE {
+                deferred = true;
+                continue;
             }
             let job = Job {
                 id,
                 revision,
                 bytes: bytes.clone(),
+                sampled,
             };
             match &self.worker {
                 Some(worker) if worker.jobs.send(job).is_ok() => {
@@ -309,7 +374,7 @@ impl Assets {
                     let done = Done {
                         id,
                         revision,
-                        result: decode(&bytes),
+                        result: decode(&bytes, sampled),
                     };
                     if let Some((id, revision, payload)) = self.settle(done) {
                         store.provide_asset(id, revision, payload);
@@ -321,6 +386,7 @@ impl Assets {
         if let Some((backend, renderer)) = gpu {
             self.upload(store, backend, renderer);
         }
+        deferred
     }
 
     /// Uploads the rasters of `store` not resident into `backend`, releasing
@@ -338,17 +404,48 @@ impl Assets {
                 .unresident()
                 .map(|(id, revision, image)| (id, revision, Arc::clone(image))),
         );
+        let sampled = backend.caps().sampled;
         for (id, revision, image) in self.rasters.drain(..) {
-            let texture = backend.create_texture(&TextureDesc {
+            // Decoded before this device was served: one lacking its format
+            // takes it as RGBA8, decoded here once.
+            let fallback;
+            let image = if sampled.contains(image.format.sampled_class()) {
+                &*image
+            } else {
+                match sampleable((*image).clone(), sampled) {
+                    Ok(decoded) => {
+                        fallback = decoded;
+                        &fallback
+                    }
+                    Err(error) => {
+                        self.counters.decode_failures += 1;
+                        eprintln!(
+                            "[viso] asset {:016x} (revision {}) does not decode: {error}",
+                            id.0, revision.0
+                        );
+                        continue;
+                    }
+                }
+            };
+            let desc = TextureDesc {
                 width: image.width,
                 height: image.height,
-                format: TextureFormat::Rgba8Unorm,
+                format: image.format,
                 render_target: false,
                 label: "asset",
-            });
-            backend.write_texture(texture, 0, 0, image.width, image.height, &image.pixels);
+            };
+            // An embedded converted image is created from where it lies; a
+            // device sampling it in place never copies it.
+            let texture = match image.texels.as_static() {
+                Some(texels) => backend.create_texture_static(&desc, texels),
+                None => {
+                    let texture = backend.create_texture(&desc);
+                    backend.write_texture(texture, 0, 0, image.width, image.height, &image.texels);
+                    texture
+                }
+            };
             self.counters.uploads += 1;
-            self.counters.upload_bytes += image.pixels.len() as u64;
+            self.counters.upload_bytes += image.texels.len() as u64;
             if let Some(released) = store.attach_texture(id, revision, texture) {
                 renderer.release_texture(backend, released);
             }
@@ -360,21 +457,21 @@ impl Assets {
 mod tests {
     use super::*;
     use std::time::Duration;
-    use viso_gpu::{HeadlessRaster, RawWindowHandle};
+    use viso_gpu::{CpuRaster, RawWindowHandle};
     use viso_ui::{AssetDraw, AssetFit, BoxStyle, BuildCx, Content, LeafStyle, NodeId, Size};
 
-    const JPEG: &[u8] = include_bytes!("../../render/src/fixtures/two_tone.jpg");
+    const JPEG: &[u8] = include_bytes!("../../image/src/fixtures/two_tone.jpg");
     const SVG: &[u8] =
         b"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 20\"><rect width=\"10\" height=\"20\" fill=\"#f00\"/></svg>";
 
     struct Gpu {
-        backend: HeadlessRaster,
+        backend: CpuRaster,
         renderer: Renderer,
     }
 
     impl Gpu {
         fn new() -> Gpu {
-            let mut backend = HeadlessRaster::new();
+            let mut backend = CpuRaster::new();
             let surface = backend.create_surface(RawWindowHandle::Headless, 64, 64);
             let format = backend.surface_format(surface);
             let renderer = Renderer::new(&mut backend, format);
@@ -496,11 +593,7 @@ mod tests {
         // The same size, other pixels: only the photo's node repaints, with a
         // new texture.
         let next = ResourceRevision(2);
-        let image = RasterImage {
-            width: 8,
-            height: 4,
-            pixels: vec![0x80; 8 * 4 * 4],
-        };
+        let image = RasterImage::rgba8(8, 4, vec![0x80; 8 * 4 * 4]);
         let bytes = AssetBytes::Shared(Arc::from(JPEG));
         assets.replace(
             photo,
@@ -538,6 +631,58 @@ mod tests {
             Some((next, bytes)),
             "the newest bytes, to decode"
         );
+    }
+
+    /// A converted image: the photo as RGB565, 8×4 texels laid out at 4×2.
+    fn converted() -> &'static [u8] {
+        static BYTES: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        BYTES.get_or_init(|| {
+            let decoded = viso_render::asset::decode_raster(JPEG).expect("decodes");
+            let plan = viso_image::convert::Plan {
+                sampler: viso_image::convert::Sampler::Cpu { rgb565: true },
+                quality: viso_image::convert::Quality::High,
+                format: None,
+                surface: None,
+                effort: viso_image::codec::Effort::Fast,
+            };
+            let texels = decoded.rgba8_texels().expect("texels");
+            let image = plan.convert(&texels, decoded.width, decoded.height, [4.0, 2.0]);
+            viso_image::texture::write(&image)
+        })
+    }
+
+    #[test]
+    fn a_converted_image_borrows_its_texels_and_a_device_lacking_its_format_gets_rgba8() {
+        let bytes = AssetBytes::Static(converted());
+        let Ok(AssetPayload::Raster(image)) = decode(&bytes, SampledFormats::all()) else {
+            panic!("a raster");
+        };
+        assert_eq!(image.format, viso_gpu::TextureFormat::Rgb565Unorm);
+        assert_eq!(image.size(), [4.0, 2.0], "lays out at its natural size");
+        let texels = image.texels.as_static().expect("borrowed");
+        assert_eq!(texels.as_ptr(), converted()[32..].as_ptr());
+
+        let Ok(AssetPayload::Raster(fallback)) = decode(&bytes, SampledFormats::empty()) else {
+            panic!("a raster");
+        };
+        assert_eq!(fallback.format, viso_gpu::TextureFormat::Rgba8Unorm);
+        assert_eq!(
+            (fallback.width, fallback.height, fallback.size()),
+            (8, 4, [4.0, 2.0])
+        );
+        assert_eq!(fallback.to_rgba8(), image.to_rgba8(), "the same texels");
+
+        // The CPU raster samples RGB565: uploaded from where it lies.
+        let photo = ResourceId::of("photo.jpg");
+        let mut assets = Assets::default();
+        let mut gpu = Gpu::new();
+        let (mut store, nodes) = store(&[(photo, converted())]);
+        serve(&mut assets, &mut store, &mut gpu);
+        assert!(matches!(
+            drawn(&store, nodes[0]),
+            (AssetDraw::Raster(_), [4.0, 2.0])
+        ));
+        assert_eq!(assets.counters().upload_bytes, 8 * 4 * 2);
     }
 
     #[test]

@@ -11,7 +11,7 @@
 use viso_platform::Instant;
 
 use viso_platform::{
-    AccessRequest, Appearance, DisplayFeature, Insets, LogicalRect, MenuCommandId, WindowId,
+    AccessRequest, Appearance, DisplayFeature, LogicalInsets, LogicalRect, MenuCommandId, WindowId,
 };
 
 use crate::context::RuntimeCx;
@@ -107,7 +107,7 @@ pub trait FrameDriver {
 
     /// The region of `window` covered by system UI changed, in logical points.
     /// Default no-op.
-    fn on_safe_area(&mut self, _window: WindowId, _insets: Insets) {}
+    fn on_safe_area(&mut self, _window: WindowId, _insets: LogicalInsets) {}
 
     /// The on-screen keyboard now covers `height` logical points at the bottom
     /// of `window`. Default no-op.

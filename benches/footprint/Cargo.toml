@@ -1,0 +1,16 @@
+[package]
+name = "viso-footprint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The reference app `cargo xtask footprint` measures for each footprint
+# profile (Architecture §50A.5): a label and a button, with a 10k-row list in
+# the `list` scene. The profile's facade features are chosen as `viso build`
+# chooses them, so the facade's defaults are this package's defaults.
+[features]
+default = ["viso/default"]
+
+[dependencies]
+viso = { path = "../../crates/viso", default-features = false }

@@ -1,10 +1,12 @@
 //! The UIKit backend's pure translation tables: HID usages to [`KeyCode`],
 //! `UIKeyModifierFlags` bits to [`Modifiers`], the touch-to-pointer-id table,
-//! touch pressure, key repeat classes, and the keyboard's overlap with the
-//! view. Nothing here calls UIKit, so it is compiled and tested on every host.
+//! touch pressure, key repeat classes, the keyboard's overlap with the view,
+//! and how a semantics node reads as a UIAccessibility element. Nothing here
+//! calls UIKit, so it is compiled and tested on every host.
 
 #![cfg_attr(not(target_os = "ios"), allow(dead_code))]
 
+use crate::accessibility::{AccessAction, AccessNode, SemanticsRole};
 use crate::event::{KeyCode, Modifiers, PointerId};
 
 /// `UIKeyModifierFlags` bits.
@@ -278,6 +280,68 @@ impl TouchIds {
     }
 }
 
+/// The trait a node's element announces its kind with; UIKit's own trait
+/// constants are only read where the element is described.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ElementKind {
+    Button,
+    Adjustable,
+    StaticText,
+    Image,
+    Plain,
+}
+
+/// Whether a node becomes an element. Containers only structure the tree,
+/// which UIKit reads flat.
+pub(crate) fn announced(role: SemanticsRole) -> bool {
+    use SemanticsRole as R;
+    !matches!(
+        role,
+        R::Window
+            | R::Container
+            | R::Group
+            | R::Region
+            | R::Navigation
+            | R::TabList
+            | R::Tree
+            | R::Dialog
+    )
+}
+
+/// The kind trait of a node's element: by role, else a button when the node
+/// can be clicked.
+pub(crate) fn element_kind(node: &AccessNode) -> ElementKind {
+    use SemanticsRole as R;
+    match node.role {
+        R::Button | R::CheckBox | R::Radio | R::Tab => ElementKind::Button,
+        R::Slider => ElementKind::Adjustable,
+        R::Label | R::Status => ElementKind::StaticText,
+        R::Image => ElementKind::Image,
+        _ if node.actions.contains(AccessAction::Click) => ElementKind::Button,
+        _ => ElementKind::Plain,
+    }
+}
+
+/// Whether the element carries the selected trait: a checked toggle or a
+/// selected item.
+pub(crate) fn shows_selected(node: &AccessNode) -> bool {
+    node.state.toggled == Some(true) || node.state.selected == Some(true)
+}
+
+/// The spoken value: a slider's position as a percentage of its range, or
+/// its bare value without one; else the node's value text.
+pub(crate) fn spoken_value(node: &AccessNode) -> Option<String> {
+    let Some(value) = node.state.numeric_value else {
+        return node.value.clone();
+    };
+    Some(match node.state.numeric_range {
+        Some((min, max)) if max > min => {
+            format!("{}%", ((value - min) / (max - min) * 100.0).round())
+        }
+        _ => format!("{value}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +402,60 @@ mod tests {
     fn keyboard_overlap_clamps_at_zero() {
         assert_eq!(keyboard_overlap(800.0, 500.0), 300.0);
         assert_eq!(keyboard_overlap(800.0, 900.0), 0.0);
+    }
+
+    #[test]
+    fn containers_stay_out_of_the_flat_element_list() {
+        assert!(!announced(SemanticsRole::Window));
+        assert!(!announced(SemanticsRole::Container));
+        assert!(!announced(SemanticsRole::TabList));
+        assert!(announced(SemanticsRole::Button));
+        assert!(announced(SemanticsRole::Label));
+    }
+
+    #[test]
+    fn a_node_reads_as_its_element_kind_selection_and_value() {
+        use crate::accessibility::{AccessActions, SemanticsState};
+        let slider = AccessNode {
+            role: SemanticsRole::Slider,
+            state: SemanticsState {
+                numeric_value: Some(2.5),
+                numeric_range: Some((0.0, 10.0)),
+                ..SemanticsState::default()
+            },
+            ..AccessNode::default()
+        };
+        assert_eq!(element_kind(&slider), ElementKind::Adjustable);
+        assert_eq!(spoken_value(&slider).as_deref(), Some("25%"));
+        let unbounded = AccessNode {
+            state: SemanticsState {
+                numeric_value: Some(3.0),
+                ..SemanticsState::default()
+            },
+            ..AccessNode::default()
+        };
+        assert_eq!(spoken_value(&unbounded).as_deref(), Some("3"));
+
+        let item = AccessNode {
+            role: SemanticsRole::ListItem,
+            value: Some("Step 2".into()),
+            actions: AccessActions::NONE.with(AccessAction::Click),
+            state: SemanticsState {
+                selected: Some(true),
+                ..SemanticsState::default()
+            },
+            ..AccessNode::default()
+        };
+        assert_eq!(element_kind(&item), ElementKind::Button, "clickable");
+        assert!(shows_selected(&item));
+        assert_eq!(spoken_value(&item).as_deref(), Some("Step 2"));
+
+        let unchecked = AccessNode {
+            role: SemanticsRole::CheckBox,
+            state: SemanticsState::default(),
+            ..AccessNode::default()
+        };
+        assert!(!shows_selected(&unchecked));
+        assert_eq!(element_kind(&AccessNode::default()), ElementKind::Plain);
     }
 }

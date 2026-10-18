@@ -138,10 +138,7 @@ export component Probe {{
 fn first_fill(rt: &Rt) -> Rgba {
     let root = rt.root.expect("mounted");
     let arena = rt.store.arena();
-    let first: NodeId = arena
-        .links(root)
-        .and_then(|l| l.first_child)
-        .expect("a child");
+    let first: NodeId = arena.first_child(root).expect("a child");
     rt.store.style(first).fill
 }
 

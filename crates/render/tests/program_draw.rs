@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use viso_gpu::{
-    AddressMode, FilterMode, GpuBackend, HeadlessRaster, RawWindowHandle, SamplerDesc, ShaderLang,
+    AddressMode, CpuRaster, FilterMode, GpuBackend, RawWindowHandle, SamplerDesc, ShaderLang,
     SurfaceId, TextureDesc, TextureFormat, TextureId,
 };
 use viso_render::{
@@ -163,14 +163,14 @@ fn imaged(name: &str) -> Program {
 }
 
 struct Frame {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     surface: SurfaceId,
     renderer: Renderer,
 }
 
 impl Frame {
     fn new() -> Frame {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
         let format = gpu.surface_format(surface);
         let mut renderer = Renderer::new(&mut gpu, format);
@@ -539,7 +539,7 @@ fn program_scene<B: GpuBackend>(gpu: &mut B, lang: ShaderLang) -> viso_gpu::Text
 
 #[test]
 fn the_program_scene_draws_on_the_headless_raster() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let target = program_scene(&mut gpu, ShaderLang::None);
     let px = gpu.read_texture(target);
     let at = |x: u32, y: u32| {
@@ -559,7 +559,7 @@ fn the_program_scene_draws_on_the_headless_raster() {
 #[cfg(target_vendor = "apple")]
 #[test]
 fn the_program_scene_matches_the_headless_raster_on_metal() {
-    let mut headless = HeadlessRaster::new();
+    let mut headless = CpuRaster::new();
     let target = program_scene(&mut headless, ShaderLang::None);
     let reference = headless.read_texture(target);
     let mut metal = viso_gpu::MetalBackend::new();

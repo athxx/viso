@@ -224,10 +224,8 @@ fn children(rt: &Rt) -> Vec<NodeId> {
     let root = rt.root.expect("mounted");
     let arena = rt.store.arena();
     let mut out = Vec::new();
-    let mut at = arena.links(root).and_then(|l| l.first_child);
-    while let Some(node) = at {
+    for node in arena.children(root) {
         out.push(node);
-        at = arena.links(node).and_then(|l| l.next_sibling);
     }
     out
 }

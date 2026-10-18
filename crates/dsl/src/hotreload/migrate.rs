@@ -9,7 +9,7 @@
 //! - **State** is matched by [`SymbolId`], the name-derived compile-stable identity
 //!   both templates agree on. A symbol present in both is *kept* (its live cell and
 //!   value carry over; the commit's value-level keep/widen/reset is decided against
-//!   the live [`viso_ui::StateValue`] variant it finds, using the widen policy the
+//!   the live [`viso_schema::StateValue`] variant it finds, using the widen policy the
 //!   commit supplies). A symbol only in the candidate is *new* (allocated from its
 //!   initializer). A symbol only in the last-good set is *dropped* (its cell is
 //!   freed). Matching by identity — not position — is what makes editing one line

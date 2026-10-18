@@ -1,5 +1,6 @@
 //! The macOS accessibility bridge (ADR 0030): an AccessKit subclassing adapter
-//! on each window's content view.
+//! on each window's content view, fed the tree updates each
+//! [`SemanticsDelta`] converts to.
 //!
 //! AppKit asks for the tree from inside the pump's `nextEventMatchingMask:`,
 //! while the adapter holds its own state borrowed, so the tree cannot be built
@@ -15,7 +16,7 @@ use accesskit_macos::SubclassingAdapter;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSView};
 use objc2_foundation::{MainThreadMarker, NSPoint};
 
-use crate::accessibility::AccessRequest;
+use crate::accessibility::{AccessRequest, SemanticsDelta, accesskit_bridge};
 use crate::control::WindowId;
 use crate::event::RawEvent;
 
@@ -44,9 +45,12 @@ impl MacAccess {
         Self { adapter }
     }
 
-    /// Apply `update` if an assistive technology has asked for the tree.
-    pub(super) fn update(&mut self, update: TreeUpdate) {
-        if let Some(events) = self.adapter.update_if_active(|| update) {
+    /// Apply `delta` if an assistive technology has asked for the tree.
+    pub(super) fn update(&mut self, delta: SemanticsDelta) {
+        if let Some(events) = self
+            .adapter
+            .update_if_active(|| accesskit_bridge::tree_update(delta))
+        {
             events.raise();
         }
     }
@@ -86,7 +90,7 @@ impl ActivationHandler for Requests {
 
 impl ActionHandler for Requests {
     fn do_action(&mut self, request: ActionRequest) {
-        if let Some(request) = AccessRequest::from_accesskit(&request) {
+        if let Some(request) = accesskit_bridge::request(&request) {
             self.send(request);
         }
     }

@@ -5,15 +5,57 @@
 //! each file to sniff its format; a file in no format the asset system draws is
 //! skipped. Compiling checks every `asset("…")` against the catalog; packaging
 //! reads the bytes of the assets a view uses, and nothing else.
+//!
+//! A release build converts its images to the texel format its target samples
+//! into a directory of its own, named by [`OVERLAY_ENV`]: an asset embeds its
+//! converted file when there is one ([`embedded_file`]), its source otherwise.
 
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub use viso_ui::resource::{AssetFormat, AssetKind, ResourceId, normalize_path};
+pub use viso_schema::resource::{AssetFormat, AssetKind, ResourceId, normalize_path};
 
 /// The directory of a package's assets, beside its `Viso.toml`.
 pub const ASSET_DIR: &str = "assets";
+
+/// The variable naming the directory a build's converted assets lie in: under
+/// it, each asset directory's files at [`overlay_of`], by the same paths.
+pub const OVERLAY_ENV: &str = "VISO_ASSET_OVERLAY";
+
+/// Where the converted files of the asset directory `dir` lie under the
+/// build's directory `overlay`: a directory named by `dir`'s canonical path,
+/// so every package's assets keep apart.
+pub fn overlay_of(overlay: &Path, dir: &Path) -> PathBuf {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    overlay.join(format!("{:016x}", ResourceId::of(&dir.to_string_lossy()).0))
+}
+
+/// The file the asset at `path` of the asset directory `dir` embeds: the file
+/// the build converted it to, when [`OVERLAY_ENV`] names a directory holding
+/// one, else the source.
+pub fn embedded_file(dir: &Path, path: &str) -> PathBuf {
+    if let Some(overlay) = std::env::var_os(OVERLAY_ENV) {
+        let file = overlay_of(Path::new(&overlay), dir).join(path);
+        if file.is_file() {
+            return file;
+        }
+    }
+    dir.join(path)
+}
+
+/// [`embedded_file`] of the asset at `path`, in `format` as written, with the
+/// kind it draws as: a converted file is always a raster — an SVG the build
+/// rasterized included.
+pub fn embedded_asset(dir: &Path, path: &str, format: AssetFormat) -> (PathBuf, AssetKind) {
+    let file = embedded_file(dir, path);
+    let kind = if file == dir.join(path) {
+        format.kind()
+    } else {
+        AssetKind::Raster
+    };
+    (file, kind)
+}
 
 /// The diagnostic code of every misuse of an asset.
 pub const ASSET_ERROR: &str = "E3713";

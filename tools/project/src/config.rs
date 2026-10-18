@@ -27,7 +27,7 @@ use std::fmt;
 use crate::diag::{ConfigCode, ConfigDiagnostic, Span};
 use crate::discovery::Project;
 use crate::fingerprint::{BuildId, Hash128, Hasher, ProjectFingerprint, Toolchain};
-use crate::manifest::{Manifest, Spanned};
+use crate::manifest::{DeviceTarget, Manifest, Spanned, nearest};
 use crate::target::{ArtifactKind, Auto, DevRuntime, OptLevel, Profile, Target, WebOptimize};
 
 /// Where a resolved value came from.
@@ -350,6 +350,9 @@ pub struct ResolvedConfig {
     /// named nothing. No configuration layer chooses it, so it carries no
     /// origin.
     pub target: Target,
+    /// The `[target.<name>]` table of a [`Target::Device`]; `None` for every
+    /// other target.
+    pub device: Option<DeviceTarget>,
     /// How it is compiled.
     pub profile: Sourced<Profile>,
     /// What the profile builds with.
@@ -384,6 +387,22 @@ impl ResolvedConfig {
         // Only a browser build reads the web settings.
         if self.target.is_web() {
             self.settings.web.hash(&mut hasher);
+        }
+        // What a device target's build is cut to; where the board is reached
+        // is not the build's.
+        if let Some(device) = &self.device {
+            hasher.str(device.profile.value.as_str());
+            hasher.str(device.triple.as_ref().map_or("", |t| t.value.as_str()));
+            hasher.str(device.gpu_api().map_or("", |gpu| gpu.as_str()));
+            for (name, value) in device.build_env() {
+                hasher.str(name);
+                hasher.str(&value);
+            }
+            // The locales decide which Unicode data the build links.
+            hasher.u64(device.locales.len() as u64);
+            for locale in &device.locales {
+                hasher.str(&locale.value);
+            }
         }
         hasher.str(self.artifact.as_str());
         hasher.finish()
@@ -430,6 +449,16 @@ pub fn resolve(
     if let Err(diag) = target.require_available() {
         errors.push(diag);
     }
+    let device = match target {
+        Target::Device(name) => match project.manifest.targets.device(name) {
+            Some(device) => Some(device.clone()),
+            None => {
+                errors.push(undeclared_device(&project.manifest, name));
+                None
+            }
+        },
+        _ => None,
+    };
 
     if !errors.is_empty() {
         warnings.extend(errors);
@@ -439,12 +468,43 @@ pub fn resolve(
     Ok(Resolved {
         config: ResolvedConfig {
             target,
+            device,
             profile,
             settings,
             artifact,
         },
         warnings,
     })
+}
+
+/// The diagnostic for a target name that is neither built in nor a device
+/// target `manifest` declares: the built-in names, the declared device
+/// targets, and the nearest of them all.
+fn undeclared_device(manifest: &Manifest, name: &str) -> ConfigDiagnostic {
+    let devices: Vec<&str> = manifest
+        .targets
+        .devices
+        .iter()
+        .map(|d| d.name.value.as_str())
+        .collect();
+    let mut diag = ConfigDiagnostic::error(
+        ConfigCode::InvalidValue,
+        format!("`{name}` is not a target"),
+    )
+    .at(&manifest.path)
+    .note(format!("built-in targets: {}", Target::names().join(", ")))
+    .note(if devices.is_empty() {
+        "Viso.toml declares no device target; a `[target.<name>]` table with a `profile` \
+         declares one"
+            .to_owned()
+    } else {
+        format!("device targets in Viso.toml: {}", devices.join(", "))
+    });
+    let known: Vec<&str> = Target::names().into_iter().chain(devices).collect();
+    if let Some(suggestion) = nearest(name, &known) {
+        diag = diag.note(format!("did you mean `{suggestion}`?"));
+    }
+    diag
 }
 
 /// The precedence rule itself, once, for every key.
@@ -915,6 +975,121 @@ opt_level = 2
         assert_eq!(
             dev.build_id(fingerprint, &toolchain),
             dev.build_id(fingerprint, &toolchain)
+        );
+    }
+
+    /// A device target resolves to its own table, and what the table says is
+    /// part of the identity: two boards never share a build.
+    #[test]
+    fn a_device_target_resolves_to_its_table_and_its_own_identity() {
+        let manifest = "[package]\nname = \"hmi\"\n\n\
+                        [target.panel]\nprofile = \"embedded-gpu\"\nworkers = 1\n\n\
+                        [target.dash]\nprofile = \"embedded-gpu\"\nworkers = 1\n\n\
+                        [target.slim]\nprofile = \"embedded-gpu\"\nworkers = 2\n";
+        let (_s, project) = project(manifest);
+        let of = |name: &str| {
+            resolve(
+                &project,
+                Target::device(name),
+                ArtifactKind::Build,
+                &Overrides::default(),
+                &Env::empty(),
+            )
+            .unwrap()
+            .config
+        };
+        let panel = of("panel");
+        assert_eq!(panel.target.as_str(), "panel");
+        assert_eq!(
+            panel.device.as_ref().unwrap().profile.value,
+            crate::target::Footprint::EmbeddedGpu
+        );
+        let host = resolve(
+            &project,
+            Target::Host,
+            ArtifactKind::Build,
+            &Overrides::default(),
+            &Env::empty(),
+        )
+        .unwrap()
+        .config;
+        assert!(host.device.is_none());
+
+        let fingerprint = ProjectFingerprint::from_sources([("a.rs", b"x".as_slice())]);
+        let toolchain = Toolchain::new("rustc 1.98.1", Toolchain::current_host());
+        let ids =
+            [panel, of("dash"), of("slim"), host].map(|c| c.build_id(fingerprint, &toolchain));
+        for (i, id) in ids.iter().enumerate() {
+            assert!(!ids[..i].contains(id), "{i} shares a build id");
+        }
+        // Two tables alike still hash apart: the name is the target.
+        assert_ne!(of("panel").hash(), of("dash").hash());
+    }
+
+    #[test]
+    fn a_device_target_s_locales_and_baked_sizes_move_its_hash() {
+        let hash = |table: &str| {
+            let (_s, project) = project(&format!(
+                "[package]\nname = \"hmi\"\n\n[target.panel]\nprofile = \"embedded-cpu\"\n{table}"
+            ));
+            resolve(
+                &project,
+                Target::device("panel"),
+                ArtifactKind::Build,
+                &Overrides::default(),
+                &Env::empty(),
+            )
+            .unwrap()
+            .config
+            .hash()
+        };
+        let plain = hash("");
+        let thai = hash("locales = [\"th\"]\n");
+        assert_ne!(plain, thai);
+        assert_ne!(thai, hash("locales = [\"th\", \"en\"]\n"));
+        let baked = hash("fonts = { bake = [16] }\n");
+        assert_ne!(plain, baked);
+        assert_ne!(baked, hash("fonts = { bake = [16], rasterizer = false }\n"));
+        assert_eq!(plain, hash(""));
+    }
+
+    #[test]
+    fn an_undeclared_device_target_lists_the_declared_ones() {
+        let (_s, declared) =
+            project("[package]\nname = \"hmi\"\n\n[target.panel]\nprofile = \"embedded-cpu\"\n");
+        let errors = resolve(
+            &declared,
+            Target::device("pnael"),
+            ArtifactKind::Build,
+            &Overrides::default(),
+            &Env::empty(),
+        )
+        .unwrap_err();
+        let diag = errors.iter().find(|d| d.is_error()).unwrap();
+        assert_eq!(diag.code, ConfigCode::InvalidValue);
+        assert_eq!(diag.message, "`pnael` is not a target");
+        let notes = diag.notes.join("\n");
+        assert!(
+            notes.contains("device targets in Viso.toml: panel"),
+            "{notes}"
+        );
+        assert!(notes.contains("did you mean `panel`?"), "{notes}");
+        assert!(notes.contains("web-gpu"), "{notes}");
+
+        let (_s, bare) = project(MINIMAL);
+        let errors = resolve(
+            &bare,
+            Target::device("panel"),
+            ArtifactKind::Build,
+            &Overrides::default(),
+            &Env::empty(),
+        )
+        .unwrap_err();
+        assert!(
+            errors[0]
+                .notes
+                .join(" ")
+                .contains("declares no device target")
         );
     }
 

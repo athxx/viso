@@ -5,14 +5,18 @@
 //! the menu tree to an accelerator table. Nothing here calls the OS, so it is
 //! compiled and tested on every host.
 
+// Off Linux, or in a build with no Linux backend, the tests alone use these.
 #![cfg_attr(
-    not(any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    )),
+    any(
+        not(any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )),
+        not(any(feature = "x11", feature = "wayland", feature = "kms"))
+    ),
     allow(dead_code)
 )]
 
@@ -185,6 +189,7 @@ pub(crate) fn is_text(text: &str) -> bool {
 /// Xcursor theme names for `icon`, most specific first: the CSS name every
 /// current theme ships, then the legacy X cursor-font names older themes use.
 /// Empty for [`CursorIcon::Hidden`].
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) fn cursor_names(icon: CursorIcon) -> &'static [&'static str] {
     use CursorIcon as C;
     match icon {
@@ -217,6 +222,7 @@ pub(crate) fn cursor_names(icon: CursorIcon) -> &'static [&'static str] {
 
 /// The `wp_cursor_shape_device_v1.shape` value for `icon`; `None` hides the
 /// cursor.
+#[cfg_attr(not(feature = "wayland"), allow(dead_code))]
 pub(crate) fn cursor_shape(icon: CursorIcon) -> Option<u32> {
     use CursorIcon as C;
     Some(match icon {
@@ -254,6 +260,7 @@ pub(crate) fn wheel_notches(notches: f64) -> f64 {
 }
 
 /// The scale an `Xft.dpi` resource asks for, if it is a sane value.
+#[cfg_attr(not(feature = "x11"), allow(dead_code))]
 pub(crate) fn xft_scale(dpi: f64) -> Option<f64> {
     (dpi.is_finite() && dpi >= 48.0).then(|| dpi / 96.0)
 }
@@ -275,6 +282,7 @@ pub(crate) fn monitor_scale(width_px: u32, width_mm: u32) -> f64 {
 /// `org.gnome.desktop.interface enable-animations` and
 /// `org.gnome.desktop.interface text-scaling-factor`. Unset values keep the
 /// light, standard-contrast, animated, unscaled default.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) fn portal_appearance(
     color_scheme: Option<u32>,
     contrast: Option<u32>,
@@ -296,6 +304,7 @@ pub(crate) fn portal_appearance(
 }
 
 /// The byte offset of character `chars` in `text`, clamped to its end.
+#[cfg_attr(not(feature = "x11"), allow(dead_code))]
 pub(crate) fn char_to_byte(text: &str, chars: usize) -> usize {
     text.char_indices()
         .nth(chars)
@@ -303,6 +312,7 @@ pub(crate) fn char_to_byte(text: &str, chars: usize) -> usize {
 }
 
 /// The largest char boundary at or below `byte`.
+#[cfg_attr(not(feature = "wayland"), allow(dead_code))]
 pub(crate) fn floor_boundary(text: &str, byte: usize) -> usize {
     let mut byte = byte.min(text.len());
     while !text.is_char_boundary(byte) {
@@ -313,14 +323,18 @@ pub(crate) fn floor_boundary(text: &str, byte: usize) -> usize {
 
 /// How far inside a self-drawn window's edge a press resizes, in logical
 /// points.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) const RESIZE_BORDER: f64 = 6.0;
 
 /// Two primary presses on a caption this close in time (milliseconds) and
 /// space (logical points) toggle maximize.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) const DOUBLE_CLICK_MS: u32 = 400;
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) const DOUBLE_CLICK_SLOP: f64 = 4.0;
 
 /// The edge or corner of a self-drawn window a press resizes from.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Edge {
     TopLeft,
@@ -333,6 +347,7 @@ pub(crate) enum Edge {
     Left,
 }
 
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 impl Edge {
     pub(crate) fn cursor(self) -> CursorIcon {
         match self {
@@ -346,6 +361,7 @@ impl Edge {
 
 /// The edge a point within `border` of a `size`d window's edge resizes;
 /// corners take a band twice as long so they are easy to hit.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) fn resize_edge(x: f64, y: f64, size: (f64, f64), border: f64) -> Option<Edge> {
     let corner = border * 2.0;
     let (left, right) = (x < border, x >= size.0 - border);
@@ -367,6 +383,7 @@ pub(crate) fn resize_edge(x: f64, y: f64, size: (f64, f64), border: f64) -> Opti
 
 /// Whether a press at `(x, y)` at `time` follows `last` closely enough to
 /// be a double click.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) fn is_double_click(last: Option<(u32, f64, f64)>, time: u32, x: f64, y: f64) -> bool {
     last.is_some_and(|(t, px, py)| {
         time.wrapping_sub(t) <= DOUBLE_CLICK_MS
@@ -375,6 +392,7 @@ pub(crate) fn is_double_click(last: Option<(u32, f64, f64)>, time: u32, x: f64, 
     })
 }
 
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) fn rect_contains(r: &crate::LogicalRect, x: f64, y: f64) -> bool {
     x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height
 }
@@ -572,21 +590,37 @@ fn accel_key(key: &str) -> Option<AccelKey> {
     }))
 }
 
-/// Which windowing system to connect to, from the session's environment:
-/// Wayland whenever a compositor is advertised, X11 otherwise.
+/// Which display system to connect to, from the session's environment:
+/// Wayland whenever a compositor is advertised, then X11, and the card
+/// directly (KMS) when there is neither. `VISO_SESSION` (`wayland`, `x11`,
+/// `kms`) names the one to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Session {
     Wayland,
     X11,
+    Kms,
 }
 
-pub(crate) fn session_order(wayland_display: Option<&str>, display: Option<&str>) -> Vec<Session> {
+pub(crate) fn session_order(
+    wayland_display: Option<&str>,
+    display: Option<&str>,
+    forced: Option<&str>,
+) -> Vec<Session> {
+    match forced {
+        Some("wayland") => return vec![Session::Wayland],
+        Some("x11") => return vec![Session::X11],
+        Some("kms") => return vec![Session::Kms],
+        _ => {}
+    }
     let mut order = Vec::with_capacity(2);
     if wayland_display.is_some_and(|v| !v.is_empty()) {
         order.push(Session::Wayland);
     }
     if display.is_some_and(|v| !v.is_empty()) {
         order.push(Session::X11);
+    }
+    if order.is_empty() {
+        order.push(Session::Kms);
     }
     order
 }
@@ -808,13 +842,20 @@ mod tests {
     #[test]
     fn wayland_is_preferred_when_advertised() {
         assert_eq!(
-            session_order(Some("wayland-0"), Some(":0")),
+            session_order(Some("wayland-0"), Some(":0"), None),
             vec![Session::Wayland, Session::X11]
         );
-        assert_eq!(session_order(Some(""), Some(":0")), vec![Session::X11]);
-        assert_eq!(session_order(None, None), vec![]);
         assert_eq!(
-            session_order(Some("wayland-1"), None),
+            session_order(Some(""), Some(":0"), None),
+            vec![Session::X11]
+        );
+        assert_eq!(session_order(None, None, None), vec![Session::Kms]);
+        assert_eq!(
+            session_order(Some("wayland-0"), None, Some("kms")),
+            vec![Session::Kms]
+        );
+        assert_eq!(
+            session_order(Some("wayland-1"), None, None),
             vec![Session::Wayland]
         );
     }

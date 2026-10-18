@@ -7,10 +7,20 @@
 //! truncated or corrupt blob is a [`LoadError`], never a panic — and the result
 //! goes through [`Module::new`], so a loaded module is verified exactly like a
 //! freshly compiled one.
+//!
+//! A chunk body is bytecode, a reason it has none, or — in a
+//! [`compiled`](Module::compiled) module — the constant pool and reads its
+//! compiled code needs, with the build hash of the module it was compiled
+//! from after the catalog. [`Module::decode_static`] reads a `'static` blob
+//! without copying its text: every name, path, key and string constant
+//! borrows the blob, and so do the catalog's locale tables.
 
-use std::fmt;
-use std::rc::Rc;
-use std::time::Duration;
+use alloc::boxed::Box;
+use alloc::rc::Rc;
+use alloc::vec::Vec;
+use core::fmt;
+
+pub(crate) use viso_schema::id::{read_stable_id, write_stable_id};
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
@@ -18,15 +28,17 @@ use crate::game::{
     Action, InputBindings, InputSchema, Key, KeySet, MoveSource, PadButton, PadStick, TouchButton,
 };
 use crate::i18n::Catalog;
+use viso_schema::AssetBytes;
+
 use crate::module::{
-    Chunk, ChunkKind, Code, CollisionDelivery, Component, ComponentEffect, EffectRun, Migrator,
-    Module, NativeImport, PersistSlot, ResourceLoad, SnapshotSlot, Span, StableId, System,
+    Body, BodyReads, Chunk, ChunkKind, Code, CollisionDelivery, Compiled, Component,
+    ComponentEffect, Migrator, Module, NativeImport, PersistSlot, SnapshotSlot, Span, System,
     VerifyError,
 };
 use crate::native::{Determinism, NativeId};
 use crate::op::{Arith, ArithOp, DisplayKind, Num, Op};
 use crate::retype::ValueSchema;
-use crate::value::{Aggregate, Value};
+use crate::value::{Aggregate, Text, Value};
 
 /// Why a module blob failed to load.
 #[derive(Debug, Clone, PartialEq)]
@@ -46,7 +58,7 @@ impl fmt::Display for LoadError {
     }
 }
 
-impl std::error::Error for LoadError {}
+impl core::error::Error for LoadError {}
 
 impl From<DecodeError> for LoadError {
     fn from(e: DecodeError) -> LoadError {
@@ -111,23 +123,41 @@ impl Module {
         if let Some(catalog) = self.catalog() {
             catalog.encode(&mut enc);
         }
+        if let Some(build) = self.build {
+            enc.write_u64(build);
+        }
         enc.into_bytes()
     }
 
-    /// Loads and verifies a blob [`Module::encode`] wrote.
+    /// Loads and verifies a blob [`Module::encode`] wrote, copying its text.
     ///
     /// # Errors
     ///
     /// A [`LoadError`] when the bytes are malformed, from another wire version,
     /// or hold code that does not verify.
     pub fn decode(bytes: &[u8]) -> Result<Module, LoadError> {
+        Module::decode_with(bytes, Copied)
+    }
+
+    /// [`decode`](Self::decode) for a blob that outlives the program — one a
+    /// build embeds, or memory-mapped flash — read where it lies: the module's
+    /// names, paths, keys, string constants and catalog tables borrow it.
+    ///
+    /// # Errors
+    ///
+    /// As [`decode`](Self::decode).
+    pub fn decode_static(bytes: &'static [u8]) -> Result<Module, LoadError> {
+        Module::decode_with(bytes, Borrowed)
+    }
+
+    fn decode_with<'a>(bytes: &'a [u8], keep: impl Keep<'a>) -> Result<Module, LoadError> {
         let mut dec = Decoder::new(bytes);
         let offset = dec.position();
         if !ProtocolTag::decode(&mut dec)?.is_compatible() {
             return Err(DecodeError::Malformed { offset }.into());
         }
-        let chunks = read_list(&mut dec, read_chunk)?;
-        let components = read_list(&mut dec, read_component)?;
+        let chunks = read_list(&mut dec, |dec| read_chunk(dec, keep))?;
+        let components = read_list(&mut dec, |dec| read_component(dec, keep))?;
         let systems = read_list(&mut dec, |dec| {
             Ok(System {
                 component: read_u32_varint(dec)?,
@@ -138,12 +168,12 @@ impl Module {
                 id: read_stable_id(dec)?,
                 snapshot: read_list(dec, read_state)?.into(),
                 locals: read_list(dec, read_state)?.into(),
-                persist: read_list(dec, read_persist)?.into(),
+                persist: read_list(dec, |dec| read_persist(dec, keep))?.into(),
             })
         })?;
         let natives = read_list(&mut dec, |dec| {
             Ok(NativeImport {
-                path: dec.read_str()?.into(),
+                path: read_text(dec, keep)?,
                 signature: dec.read_u64()?,
                 params: dec.read_u16()?,
             })
@@ -169,23 +199,31 @@ impl Module {
         };
         let migrators = read_list(&mut dec, |dec| {
             Ok(Migrator {
-                from: dec.read_str()?.into(),
+                from: read_text(dec, keep)?,
                 param: ValueSchema::decode(dec)?,
                 ret: ValueSchema::decode(dec)?,
                 chunk: read_u32_varint(dec)?,
             })
         })?;
-        let capabilities = read_list(&mut dec, |dec| Ok(Box::<str>::from(dec.read_str()?)))?;
+        let capabilities = read_list(&mut dec, |dec| read_text(dec, keep))?;
         let themes = read_list(&mut dec, |dec| {
-            Ok((Box::<str>::from(dec.read_str()?), read_u32_varint(dec)?))
+            Ok((read_text(dec, keep)?, read_u32_varint(dec)?))
         })?;
         let catalog = if dec.read_bool()? {
-            Some(Catalog::decode(&mut dec)?)
+            Some(Catalog::decode(&mut dec, keep)?)
+        } else {
+            None
+        };
+        let compiled = chunks
+            .iter()
+            .any(|chunk| matches!(chunk.body, Body::Compiled(_)));
+        let build = if compiled {
+            Some(dec.read_u64()?)
         } else {
             None
         };
         dec.finish()?;
-        let module = Module::new(chunks, components, systems, natives)
+        let mut module = Module::new(chunks, components, systems, natives)
             .and_then(|m| m.with_tick_rate(tick_rate))
             .map(|m| m.with_game_profile(determinism, delivery))
             .and_then(|m| m.with_migrators(migrators))
@@ -193,11 +231,62 @@ impl Module {
             .and_then(|m| m.with_catalog(catalog))
             .map_err(LoadError::Verify)?
             .with_capabilities(capabilities);
+        module.build = build;
         match input {
             Some(input) => module.with_input(input).map_err(LoadError::Verify),
             None => Ok(module),
         }
     }
+}
+
+/// How a decode keeps the text and bytes it reads off a blob it borrows for
+/// `'a`: copied, or borrowed when the blob is `'static`.
+pub(crate) trait Keep<'a>: Copy {
+    /// The text `s` of the blob, kept.
+    fn text(self, s: &'a str) -> Text;
+    /// The bytes `b` of the blob, kept.
+    fn bytes(self, b: &'a [u8]) -> AssetBytes;
+}
+
+/// Copies what it keeps.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Copied;
+
+impl<'a> Keep<'a> for Copied {
+    #[inline]
+    fn text(self, s: &'a str) -> Text {
+        Text::from(s)
+    }
+
+    #[inline]
+    fn bytes(self, b: &'a [u8]) -> AssetBytes {
+        AssetBytes::Shared(b.into())
+    }
+}
+
+/// Borrows what it keeps from a `'static` blob.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Borrowed;
+
+impl Keep<'static> for Borrowed {
+    #[inline]
+    fn text(self, s: &'static str) -> Text {
+        Text::Static(s)
+    }
+
+    #[inline]
+    fn bytes(self, b: &'static [u8]) -> AssetBytes {
+        AssetBytes::Static(b)
+    }
+}
+
+/// Reads a string and keeps it as `keep` says.
+#[inline]
+pub(crate) fn read_text<'a>(
+    dec: &mut Decoder<'a>,
+    keep: impl Keep<'a>,
+) -> Result<Text, DecodeError> {
+    Ok(keep.text(dec.read_str()?))
 }
 
 /// The largest count a decoder preallocates for, so a corrupt length cannot
@@ -233,18 +322,6 @@ pub(crate) fn malformed(dec: &Decoder<'_>) -> DecodeError {
     }
 }
 
-pub(crate) fn write_stable_id(enc: &mut Encoder, id: StableId) {
-    enc.write_u64(id.hi);
-    enc.write_u64(id.lo);
-}
-
-pub(crate) fn read_stable_id(dec: &mut Decoder<'_>) -> Result<StableId, DecodeError> {
-    Ok(StableId {
-        hi: dec.read_u64()?,
-        lo: dec.read_u64()?,
-    })
-}
-
 fn read_state(dec: &mut Decoder<'_>) -> Result<SnapshotSlot, DecodeError> {
     Ok(SnapshotSlot {
         id: read_stable_id(dec)?,
@@ -253,12 +330,12 @@ fn read_state(dec: &mut Decoder<'_>) -> Result<SnapshotSlot, DecodeError> {
     })
 }
 
-fn write_names(enc: &mut Encoder, names: &[Box<str>]) {
+fn write_names(enc: &mut Encoder, names: &[Text]) {
     write_list(enc, names, |enc, n| enc.write_str(n));
 }
 
-fn read_names(dec: &mut Decoder<'_>) -> Result<Box<[Box<str>]>, DecodeError> {
-    Ok(read_list(dec, |dec| dec.read_str().map(Into::into))?.into())
+fn read_names<'a>(dec: &mut Decoder<'a>, keep: impl Keep<'a>) -> Result<Box<[Text]>, DecodeError> {
+    Ok(read_list(dec, |dec| read_text(dec, keep))?.into())
 }
 
 fn write_refs(enc: &mut Encoder, refs: &[Option<u32>]) {
@@ -384,102 +461,36 @@ fn write_persist(enc: &mut Encoder, state: &PersistSlot) {
     enc.write_str(&state.spelling);
 }
 
-fn read_persist(dec: &mut Decoder<'_>) -> Result<PersistSlot, DecodeError> {
+fn read_persist<'a>(
+    dec: &mut Decoder<'a>,
+    keep: impl Keep<'a>,
+) -> Result<PersistSlot, DecodeError> {
     Ok(PersistSlot {
-        key: dec.read_str()?.into(),
+        key: read_text(dec, keep)?,
         slot: read_u32_varint(dec)?,
         schema: ValueSchema::decode(dec)?,
-        spelling: dec.read_str()?.into(),
+        spelling: read_text(dec, keep)?,
     })
 }
 
-impl Encode for ComponentEffect {
-    fn encode(&self, enc: &mut Encoder) {
-        enc.write_varint(self.deps.map_or(0, |d| u64::from(d) + 1));
-        enc.write_varint(u64::from(self.body));
-        enc.write_u8(match self.run {
-            EffectRun::Mount => 0,
-            EffectRun::Change => 1,
-            EffectRun::MountAndChange => 2,
-        });
-        match &self.resource {
-            None => enc.write_u8(0),
-            Some(load) => {
-                enc.write_u8(1);
-                enc.write_varint(u64::from(load.state));
-                enc.write_varint(u64::from(load.write));
-                write_duration(enc, load.debounce);
-                write_duration(enc, load.cache_for);
-                enc.write_bool(load.cache_errors);
-                enc.write_bool(load.keep_latest);
-            }
-        }
-    }
-}
-
-/// An optional duration: `0` for none, else its nanoseconds plus one.
-fn write_duration(enc: &mut Encoder, duration: Option<Duration>) {
-    let nanos = duration.map_or(0, |d| {
-        u64::try_from(d.as_nanos()).unwrap_or(u64::MAX - 1) + 1
-    });
-    enc.write_varint(nanos);
-}
-
-fn read_duration(dec: &mut Decoder<'_>) -> Result<Option<Duration>, DecodeError> {
-    Ok(dec.read_varint()?.checked_sub(1).map(Duration::from_nanos))
-}
-
-fn read_resource(dec: &mut Decoder<'_>) -> Result<ResourceLoad, DecodeError> {
-    Ok(ResourceLoad {
-        state: read_u32_varint(dec)?,
-        write: read_u32_varint(dec)?,
-        debounce: read_duration(dec)?,
-        cache_for: read_duration(dec)?,
-        cache_errors: dec.read_bool()?,
-        keep_latest: dec.read_bool()?,
-    })
-}
-
-impl Decode for ComponentEffect {
-    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        let deps = read_u32_varint(dec)?.checked_sub(1);
-        let body = read_u32_varint(dec)?;
-        let offset = dec.position();
-        let run = match dec.read_u8()? {
-            0 => EffectRun::Mount,
-            1 => EffectRun::Change,
-            2 => EffectRun::MountAndChange,
-            _ => return Err(DecodeError::Malformed { offset }),
-        };
-        let resource = match dec.read_u8()? {
-            0 => None,
-            1 => Some(read_resource(dec)?),
-            _ => return Err(DecodeError::Malformed { offset }),
-        };
-        Ok(ComponentEffect {
-            deps,
-            body,
-            run,
-            resource,
-        })
-    }
-}
-
-fn read_component(dec: &mut Decoder<'_>) -> Result<Component, DecodeError> {
+fn read_component<'a>(
+    dec: &mut Decoder<'a>,
+    keep: impl Keep<'a>,
+) -> Result<Component, DecodeError> {
     Ok(Component {
-        name: dec.read_str()?.into(),
-        states: read_names(dec)?,
-        inputs: read_names(dec)?,
-        events: read_names(dec)?,
+        name: read_text(dec, keep)?,
+        states: read_names(dec, keep)?,
+        inputs: read_names(dec, keep)?,
+        events: read_names(dec, keep)?,
         state_inits: read_refs(dec)?,
         input_defaults: read_refs(dec)?,
         members: read_list(dec, |dec| {
-            Ok((dec.read_str()?.into(), read_u32_varint(dec)?))
+            Ok((read_text(dec, keep)?, read_u32_varint(dec)?))
         })?
         .into(),
         handlers: read_list(dec, read_u32_varint)?.into(),
         effects: read_list(dec, ComponentEffect::decode)?.into(),
-        persist: read_list(dec, read_persist)?.into(),
+        persist: read_list(dec, |dec| read_persist(dec, keep))?.into(),
     })
 }
 
@@ -507,12 +518,12 @@ fn write_chunk(enc: &mut Encoder, c: &Chunk) {
     enc.write_u16(c.regs);
     write_list(enc, &c.captures, |enc, r| enc.write_u16(*r));
     match &c.body {
-        Err(reason) => {
-            enc.write_u8(0);
+        Body::Missing(reason) => {
+            enc.write_u8(BODY_MISSING);
             enc.write_str(reason);
         }
-        Ok(code) => {
-            enc.write_u8(1);
+        Body::Code(code) => {
+            enc.write_u8(BODY_CODE);
             write_list(enc, &code.ops, write_op);
             write_list(enc, &code.consts, write_value);
             write_list(enc, &code.ext, |enc, w| enc.write_varint(u64::from(*w)));
@@ -521,11 +532,25 @@ fn write_chunk(enc: &mut Encoder, c: &Chunk) {
                 enc.write_varint(u64::from(s.end));
             });
         }
+        Body::Compiled(compiled) => {
+            enc.write_u8(BODY_COMPILED);
+            write_list(enc, &compiled.consts, write_value);
+            let reads = &compiled.reads;
+            for slots in [&reads.states, &reads.inputs, &reads.calls] {
+                write_list(enc, slots, |enc, w| enc.write_varint(u64::from(*w)));
+            }
+            enc.write_bool(reads.opaque);
+        }
     }
 }
 
-fn read_chunk(dec: &mut Decoder<'_>) -> Result<Chunk, DecodeError> {
-    let name = dec.read_str()?.into();
+/// Body kinds.
+const BODY_MISSING: u8 = 0;
+const BODY_CODE: u8 = 1;
+const BODY_COMPILED: u8 = 2;
+
+fn read_chunk<'a>(dec: &mut Decoder<'a>, keep: impl Keep<'a>) -> Result<Chunk, DecodeError> {
+    let name = read_text(dec, keep)?;
     let kind = *CHUNK_KINDS
         .get(usize::from(dec.read_u8()?))
         .ok_or_else(|| malformed(dec))?;
@@ -533,11 +558,12 @@ fn read_chunk(dec: &mut Decoder<'_>) -> Result<Chunk, DecodeError> {
     let params = dec.read_u16()?;
     let regs = dec.read_u16()?;
     let captures = read_list(dec, Decoder::read_u16)?.into();
+    let value = |dec: &mut Decoder<'a>| read_value_kept(dec, keep);
     let body = match dec.read_u8()? {
-        0 => Err(dec.read_str()?.into()),
-        1 => Ok(Code {
+        BODY_MISSING => Body::Missing(read_text(dec, keep)?),
+        BODY_CODE => Body::Code(Code {
             ops: read_list(dec, read_op)?.into(),
-            consts: read_list(dec, read_value)?.into(),
+            consts: read_list(dec, value)?.into(),
             ext: read_list(dec, read_u32_varint)?.into(),
             spans: read_list(dec, |dec| {
                 Ok(Span {
@@ -547,6 +573,28 @@ fn read_chunk(dec: &mut Decoder<'_>) -> Result<Chunk, DecodeError> {
             })?
             .into(),
         }),
+        BODY_COMPILED => {
+            let consts = read_list(dec, value)?.into();
+            let slots = |dec: &mut Decoder<'a>| -> Result<Box<[u32]>, DecodeError> {
+                let offset = dec.position();
+                let slots: Box<[u32]> = read_list(dec, read_u32_varint)?.into();
+                if slots.is_sorted_by(|a, b| a < b) {
+                    Ok(slots)
+                } else {
+                    Err(DecodeError::Malformed { offset })
+                }
+            };
+            let (states, inputs, calls) = (slots(dec)?, slots(dec)?, slots(dec)?);
+            Body::Compiled(Compiled {
+                consts,
+                reads: BodyReads {
+                    states,
+                    inputs,
+                    calls,
+                    opaque: dec.read_bool()?,
+                },
+            })
+        }
         _ => return Err(malformed(dec)),
     };
     Ok(Chunk {
@@ -637,19 +685,28 @@ pub(crate) fn write_value(enc: &mut Encoder, value: &Value) {
 }
 
 pub(crate) fn read_value(dec: &mut Decoder<'_>) -> Result<Value, DecodeError> {
-    read_nested_value(dec, 0)
+    read_value_kept(dec, Copied)
 }
 
-fn read_nested_value(dec: &mut Decoder<'_>, depth: u32) -> Result<Value, DecodeError> {
+/// Reads a value, keeping its strings as `keep` says.
+fn read_value_kept<'a>(dec: &mut Decoder<'a>, keep: impl Keep<'a>) -> Result<Value, DecodeError> {
+    read_nested_value(dec, keep, 0)
+}
+
+fn read_nested_value<'a>(
+    dec: &mut Decoder<'a>,
+    keep: impl Keep<'a>,
+    depth: u32,
+) -> Result<Value, DecodeError> {
     if depth > MAX_VALUE_DEPTH {
         return Err(malformed(dec));
     }
-    let nested = |dec: &mut Decoder<'_>| read_nested_value(dec, depth + 1);
+    let nested = |dec: &mut Decoder<'a>| read_nested_value(dec, keep, depth + 1);
     Ok(match dec.read_u8()? {
         VALUE_NIL => Value::Nil,
         VALUE_INT => Value::Int(dec.read_varint_signed()?),
         VALUE_FLOAT => Value::Float(dec.read_f64()?),
-        VALUE_STR => Value::Str(Rc::new(dec.read_str()?.to_owned())),
+        VALUE_STR => Value::Str(Rc::new(read_text(dec, keep)?)),
         VALUE_LIST => Value::List(Rc::new(read_list(dec, nested)?)),
         VALUE_AGG => {
             let tag = read_u32_varint(dec)?;
@@ -1098,6 +1155,8 @@ fn read_op(dec: &mut Decoder<'_>) -> Result<Op, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::module::StableId;
+    use alloc::vec;
 
     fn sample() -> Module {
         let ops = vec![
@@ -1137,7 +1196,7 @@ mod tests {
             params: 1,
             regs: 4,
             captures: Box::new([]),
-            body: Ok(Code {
+            body: Body::Code(Code {
                 ops: ops.into(),
                 consts: Box::new([
                     Value::Float(1.5),
@@ -1159,7 +1218,7 @@ mod tests {
             params: 0,
             regs: 1,
             captures: Box::new([]),
-            body: Err("unsupported".into()),
+            body: Body::Missing("unsupported".into()),
         };
         let tick = Chunk {
             name: "Counter.tick".into(),
@@ -1237,13 +1296,97 @@ mod tests {
     }
 
     #[test]
+    fn a_compiled_module_drops_its_code_and_keeps_its_build() {
+        let module = sample();
+        let compiled = module.compiled();
+        assert!(compiled.is_compiled() && !module.is_compiled());
+        assert_eq!(
+            crate::aot::build_hash(&compiled),
+            crate::aot::build_hash(&module)
+        );
+        let bytes = compiled.encode();
+        assert!(bytes.len() < module.encode().len());
+        let decoded = Module::decode(&bytes).unwrap();
+        assert_eq!(decoded, compiled);
+        assert!(decoded.chunks().iter().all(|c| c.body.code().is_none()));
+        let Body::Compiled(handler) = &decoded.chunk(0).body else {
+            panic!("the handler is compiled");
+        };
+        assert_eq!(handler.consts, module.chunk(0).body.consts().into());
+        assert_eq!(
+            (&*handler.reads.states, handler.reads.opaque),
+            (&[0][..], false)
+        );
+        assert!(matches!(decoded.chunk(1).body, Body::Missing(_)));
+        // The build hash closes the blob.
+        assert!(Module::decode(&bytes[..bytes.len() - 8]).is_err());
+        // A module without bytecode has nothing to compile.
+        let plain = Module::new(vec![], vec![], vec![], vec![]).unwrap();
+        assert_eq!(plain.compiled(), plain);
+    }
+
+    #[test]
+    fn a_compiled_body_is_checked() {
+        let module = sample();
+        let compiled = module.compiled();
+        let with_calls = |calls: &[u32]| {
+            let mut chunks = compiled.chunks().to_vec();
+            let Body::Compiled(body) = &mut chunks[0].body else {
+                unreachable!()
+            };
+            body.reads.calls = calls.into();
+            chunks
+        };
+        // A call past the chunks is a verify error.
+        let past = Module::new(
+            with_calls(&[9]),
+            module.components().to_vec(),
+            vec![],
+            vec![],
+        );
+        assert!(past.is_err());
+        // Reads off canonical order are malformed.
+        let mut module = Module::new(
+            with_calls(&[2, 1]),
+            module.components().to_vec(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        module.build = compiled.build;
+        assert!(matches!(
+            Module::decode(&module.encode()),
+            Err(LoadError::Decode(DecodeError::Malformed { .. }))
+        ));
+    }
+
+    #[test]
+    fn a_static_blob_lends_its_text() {
+        let bytes: &'static [u8] = Vec::leak(sample().compiled().encode());
+        let blob = bytes.as_ptr_range();
+        let lent =
+            |s: &str| blob.start <= s.as_ptr() && s.as_bytes().as_ptr_range().end <= blob.end;
+        let module = Module::decode_static(bytes).unwrap();
+        assert_eq!(module, Module::decode(bytes).unwrap());
+        for chunk in module.chunks() {
+            assert!(matches!(chunk.name, Text::Static(_)) && lent(&chunk.name));
+        }
+        assert!(lent(&module.layout(0).name) && lent(&module.layout(0).states[0]));
+        assert!(module.capabilities().iter().all(|c| lent(c)));
+        assert!(lent(&module.natives()[0].path));
+        let text = module.chunk(0).body.consts()[1].as_str().unwrap();
+        assert_eq!(text, "x");
+        assert!(lent(text), "a string constant borrows the blob");
+    }
+
+    #[test]
     fn a_module_round_trips() {
         let module = sample();
         let decoded = Module::decode(&module.encode()).unwrap();
         assert_eq!(decoded.tick_rate(), 30);
         assert_eq!(
             decoded.capabilities(),
-            [Box::from("network.http"), Box::from("storage.persist")]
+            [Text::from("network.http"), Text::from("storage.persist")]
         );
         assert_eq!(decoded.theme("Dark"), Some(3));
         assert_eq!(decoded.theme("Light"), None);
@@ -1331,6 +1474,7 @@ mod tests {
             capabilities: Box::new([]),
             themes: Box::new([]),
             catalog: None,
+            build: None,
         };
         bytes = bad.encode();
         assert!(matches!(Module::decode(&bytes), Err(LoadError::Verify(_))));

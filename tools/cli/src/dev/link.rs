@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use viso_view::dev::wire::{
+use viso_dev_protocol::wire::{
     BuildId, DEV_PROTOCOL_VERSION, DevSessionId, FrameError, HostExpect, HostHello, HostMessage,
     ProjectFingerprint, Reject, RuntimeHello, RuntimeMessage, RuntimeSessionId, SchemaFingerprint,
     WireError, accept_runtime, read_frame, write_frame,
@@ -260,7 +260,7 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::sync::Mutex;
 
-    use viso_view::dev::wire::{self, Domains, LogLevel, Revision, RuntimeTarget, same_token};
+    use viso_dev_protocol::wire::{self, Domains, LogLevel, Revision, RuntimeTarget, same_token};
 
     use super::*;
 
@@ -285,8 +285,8 @@ mod tests {
             schema_fingerprint: SchemaFingerprint(55),
             capabilities: Domains::NONE,
             target: RuntimeTarget::DesktopHost,
-            shader_lang: viso_view::dev::wire::ShaderLang::Msl,
-            inspector: viso_view::inspect::InspectorCaps::TREE,
+            shader_lang: viso_dev_protocol::wire::ShaderLang::Msl,
+            inspector: viso_dev_protocol::inspect::InspectorCaps::TREE,
         }
     }
 

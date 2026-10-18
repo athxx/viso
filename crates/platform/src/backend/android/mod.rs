@@ -41,7 +41,7 @@ use crate::accessibility::AccessRequest;
 use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
 use crate::event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
-    DisplayFeature, DisplayFeatureKind, Insets, PointerButtons, PointerKind, RawEvent,
+    DisplayFeature, DisplayFeatureKind, LogicalInsets, PointerButtons, PointerKind, RawEvent,
     RawImePreedit, RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
 };
 use crate::handler::AppHandler;
@@ -93,7 +93,7 @@ pub(super) enum Msg {
     Visible(bool),
     Focus(bool),
     /// System bars + cutout, and the keyboard's height, in pixels.
-    Insets {
+    LogicalInsets {
         bars: [i32; 4],
         ime: i32,
     },
@@ -402,7 +402,7 @@ fn display_features() -> Vec<DisplayFeature> {
     })
 }
 
-fn safe_area() -> Insets {
+fn safe_area() -> LogicalInsets {
     LOOP.with(|l| translate::insets(l.bars.get(), l.density.get()))
 }
 
@@ -507,7 +507,7 @@ fn apply(msg: Msg) {
                 });
             }
         }
-        Msg::Insets { bars, ime } => {
+        Msg::LogicalInsets { bars, ime } => {
             let (old_bars, old_ime) = LOOP.with(|l| (l.bars.replace(bars), l.ime.replace(ime)));
             if old_bars != bars {
                 push_to_window(RawEvent::SafeAreaChanged {
@@ -753,12 +753,16 @@ fn apply_touch(touch: &Touch) {
 }
 
 /// Hand one event to the handler, completing the copy handshake.
-fn deliver(handler: &mut dyn AppHandler, event: RawEvent) -> ControlFlow {
+fn deliver(
+    app: &mut dyn PlatformApp,
+    handler: &mut dyn AppHandler,
+    event: RawEvent,
+) -> ControlFlow {
     let reply = match &event {
         RawEvent::CopyRequested { reply, .. } => Some(reply.clone()),
         _ => None,
     };
-    let flow = handler.handle(event);
+    let flow = handler.handle(app, event);
     if let Some(text) = reply.and_then(|r| r.take()) {
         jni::set_clipboard(&text);
     }
@@ -766,9 +770,13 @@ fn deliver(handler: &mut dyn AppHandler, event: RawEvent) -> ControlFlow {
 }
 
 /// Deliver every queued event; the last answer, or `flow` if none.
-fn deliver_all(handler: &mut dyn AppHandler, mut flow: ControlFlow) -> ControlFlow {
+fn deliver_all(
+    app: &mut dyn PlatformApp,
+    handler: &mut dyn AppHandler,
+    mut flow: ControlFlow,
+) -> ControlFlow {
     while let Some(event) = LOOP.with(|l| l.events.borrow_mut().pop_front()) {
-        flow = deliver(handler, event);
+        flow = deliver(app, handler, event);
         if flow == ControlFlow::Exit {
             break;
         }
@@ -857,7 +865,7 @@ impl PlatformApp for AndroidApp {
         let mut flow = ControlFlow::Wait;
         loop {
             if LOOP.with(|l| !l.events.borrow().is_empty()) {
-                flow = deliver_all(handler, flow);
+                flow = deliver_all(self, handler, flow);
                 if flow == ControlFlow::Exit {
                     break;
                 }
@@ -865,7 +873,7 @@ impl PlatformApp for AndroidApp {
             }
             if let Some((msg, ticket)) = receive() {
                 apply(msg);
-                flow = deliver_all(handler, flow);
+                flow = deliver_all(self, handler, flow);
                 // The loss is delivered: the swapchain is gone, the window
                 // may go.
                 drop(LOOP.with(|l| l.retired.borrow_mut().take()));
@@ -980,7 +988,7 @@ impl PlatformApp for AndroidApp {
         }
     }
 
-    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+    fn update_accessibility(&mut self, window: WindowId, delta: crate::SemanticsDelta) {
         if window != WINDOW {
             return;
         }
@@ -988,13 +996,17 @@ impl PlatformApp for AndroidApp {
         // back into the loop, so nothing re-enters the borrow.
         LOOP.with(|l| {
             if let Some(adapter) = l.access.borrow_mut().as_mut() {
-                access::update(adapter, update);
+                access::update(adapter, delta);
             }
         });
     }
 
     fn framed_windows(&self) -> bool {
         false
+    }
+
+    fn capabilities(&self) -> crate::PlatformCaps {
+        crate::PlatformCaps::MOBILE
     }
 
     fn loop_waker(&self) -> crate::LoopWaker {

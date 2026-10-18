@@ -95,7 +95,7 @@ fn rect_hit_test(c: &mut Criterion) {
                 // outside branches are exercised.
                 let x = (i % 200) as f32 * 0.6;
                 let y = (i % 137) as f32 * 0.8;
-                if r.contains(Point::new(x, y)) {
+                if r.contains(x, y) {
                     hits += 1;
                 }
                 i += 1;
@@ -160,7 +160,7 @@ fn point_bounds_bench(c: &mut Criterion) {
             let mut acc = 0.0f32;
             for _ in 0..10_000u64 {
                 let r = point_bounds(black_box(&pts));
-                acc += r.size.w + r.size.h;
+                acc += r.w + r.h;
             }
             black_box(acc)
         })

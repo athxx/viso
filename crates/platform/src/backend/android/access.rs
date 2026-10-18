@@ -13,7 +13,7 @@ use accesskit_android::jni::JNIEnv;
 use accesskit_android::jni::objects::JObject;
 
 use super::{Msg, jni, send};
-use crate::accessibility::AccessRequest;
+use crate::accessibility::{AccessRequest, SemanticsDelta, accesskit_bridge};
 
 /// An adapter on the current activity's host view, or `None` when there is
 /// no activity to attach to.
@@ -29,9 +29,9 @@ pub(super) fn attach() -> Option<InjectingAdapter> {
     .flatten()
 }
 
-/// Apply `update` if an assistive technology has asked for the tree.
-pub(super) fn update(adapter: &mut InjectingAdapter, update: TreeUpdate) {
-    adapter.update_if_active(|| update);
+/// Apply `delta` if an assistive technology has asked for the tree.
+pub(super) fn update(adapter: &mut InjectingAdapter, delta: SemanticsDelta) {
+    adapter.update_if_active(|| accesskit_bridge::tree_update(delta));
 }
 
 /// Both handlers: each request becomes a [`Msg::Access`] for the loop.
@@ -46,7 +46,7 @@ impl ActivationHandler for Requests {
 
 impl ActionHandler for Requests {
     fn do_action(&mut self, request: ActionRequest) {
-        if let Some(request) = AccessRequest::from_accesskit(&request) {
+        if let Some(request) = accesskit_bridge::request(&request) {
             send(Msg::Access(request));
         }
     }

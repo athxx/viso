@@ -20,9 +20,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use viso_dev_protocol::headless::{Reported, Script};
 use viso_ende::JsonValue;
 use viso_project::{DeviceProfile, LockGuard, LockKind, Platform, Target};
-use viso_view::headless::{Reported, Script};
 
 use super::{Run, relative, report};
 use crate::command::scenario::{Case, Ended, Kind};

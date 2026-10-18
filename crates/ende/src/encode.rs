@@ -9,6 +9,8 @@
 //! The encoder cannot fail: it only ever grows an owned `Vec<u8>`. That keeps
 //! the trait signatures free of `Result` and makes `Encode` cheap to implement.
 
+use alloc::vec::Vec;
+
 /// An append-only byte writer producing the binary wire format.
 ///
 /// Wraps an owned buffer; every `write_*` appends and never seeks, so encoding
@@ -125,6 +127,33 @@ impl Encoder {
         // Zig-zag: map small-magnitude signed values to small unsigned ones so
         // -1, 1, -2, 2 … stay one byte instead of ten for every negative.
         self.write_varint(((value << 1) ^ (value >> 63)) as u64);
+    }
+
+    /// Appends zero bytes until the length is a multiple of `align`, measured
+    /// from the start of the buffer: what [`Decoder::align`](crate::Decoder::align)
+    /// skips. A blob that starts at an `align`-aligned address (see
+    /// [`Aligned`](crate::Aligned)) then has what follows at an aligned
+    /// address too.
+    ///
+    /// # Panics
+    ///
+    /// If `align` is not a power of two.
+    #[inline]
+    pub fn align(&mut self, align: usize) {
+        assert!(align.is_power_of_two(), "an alignment is a power of two");
+        let len = self.buf.len().next_multiple_of(align);
+        self.buf.resize(len, 0);
+    }
+
+    /// Overwrites the four bytes at `at` with a little-endian `u32`: fills in
+    /// a length or offset reserved before what it describes was written.
+    ///
+    /// # Panics
+    ///
+    /// If fewer than four bytes were written at `at`.
+    #[inline]
+    pub fn patch_u32(&mut self, at: usize, value: u32) {
+        self.buf[at..at + 4].copy_from_slice(&value.to_le_bytes());
     }
 }
 

@@ -71,7 +71,7 @@ mod tests {
     use viso_dsl::aot::pack_brush;
     use viso_dsl::frontend::{Origin, compile_file};
     use viso_dsl::view_behavior::ViewBrush;
-    use viso_gpu::{HeadlessRaster, ShaderLang, TextureFormat};
+    use viso_gpu::{CpuRaster, ShaderLang, TextureFormat};
     use viso_ui::reactive::EffectStore;
     use viso_ui::{BuildCx, FlexStyle, LeafStyle, NodeStore};
 
@@ -113,7 +113,7 @@ shader Fill {
 
     #[test]
     fn a_window_installs_the_programs_its_nodes_paint_with_and_releases_the_unused() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let mut renderer = Renderer::new(&mut gpu, TextureFormat::Bgra8Unorm);
         let mut installed = InstalledShaders::default();
         let mut store = NodeStore::new();

@@ -8,12 +8,16 @@
 //! Debug shapes a tick drew last until the next tick delivers; those a frame
 //! drew, until the next frame.
 
+use alloc::vec::Vec;
+
 use super::camera::{Camera, CameraRig, CameraView};
 use super::particles::{Particles, Sprite};
 use super::synth::{Cue, Sound};
 use super::{Particle, Sfx, Wave};
+#[cfg(not(feature = "std"))]
+use crate::float::FloatMath as _;
 use crate::game::world::{EntityId, GameWorld};
-use crate::native::Vec3F32;
+use crate::native::Vec3;
 
 /// The most cues waiting; more are dropped until the host drains them.
 pub const MAX_CUES: usize = 64;
@@ -26,14 +30,8 @@ const PAN: f32 = 0.8;
 /// A debug shape: removed from release builds with the calls that draw it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DebugShape {
-    Line {
-        from: Vec3F32,
-        to: Vec3F32,
-    },
-    Box {
-        center: Vec3F32,
-        half_extents: Vec3F32,
-    },
+    Line { from: Vec3, to: Vec3 },
+    Box { center: Vec3, half_extents: Vec3 },
 }
 
 /// What the Kit's Presentation commands produce.
@@ -75,7 +73,7 @@ impl Stage {
 
     /// Takes the sound cues, in issue order, for the audio thread's
     /// [`Synth`](super::Synth).
-    pub fn drain_cues(&mut self) -> std::vec::Drain<'_, Cue> {
+    pub fn drain_cues(&mut self) -> alloc::vec::Drain<'_, Cue> {
         self.cues.drain(..)
     }
 
@@ -92,7 +90,7 @@ impl Stage {
         self.camera.shake(strength, seconds);
     }
 
-    pub(super) fn burst(&mut self, kind: Particle, at: Vec3F32, count: i64) {
+    pub(super) fn burst(&mut self, kind: Particle, at: Vec3, count: i64) {
         self.particles.burst(kind, at.to_array(), count);
     }
 
@@ -106,7 +104,7 @@ impl Stage {
 
     /// Cues `sfx`, placed at `at` when given: panned and quieted by where
     /// it is from the camera.
-    pub(super) fn sound(&mut self, sfx: Sfx, at: Option<Vec3F32>) {
+    pub(super) fn sound(&mut self, sfx: Sfx, at: Option<Vec3>) {
         let (gain, pan) = at.map_or((1.0, 0.0), |at| self.placed(at));
         self.cue(Cue {
             sound: Sound::Sfx(sfx),
@@ -172,9 +170,9 @@ impl Stage {
     }
 
     /// The gain and pan of a sound at `at` heard from the camera.
-    fn placed(&self, at: Vec3F32) -> (f32, f32) {
+    fn placed(&self, at: Vec3) -> (f32, f32) {
         let view = self.camera.view();
-        let sub = |a: Vec3F32, b: Vec3F32| [a.x - b.x, a.y - b.y, a.z - b.z];
+        let sub = |a: Vec3, b: Vec3| [a.x - b.x, a.y - b.y, a.z - b.z];
         let to = sub(at, view.eye);
         let distance = to.iter().map(|c| c * c).sum::<f32>().sqrt();
         if !distance.is_finite() || distance <= f32::EPSILON {

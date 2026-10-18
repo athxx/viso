@@ -12,107 +12,21 @@ use crate::grid::{AdaptiveColumns, AutoRepeat, GridPlacement, TrackMax, TrackSiz
 use crate::length::LengthIssue;
 use viso_render::Rect;
 
-/// A two-component vector in physical pixels — a scroll offset or a
-/// translation. Kept in the ui tier because `viso_render` carries only `Rect`
-/// and `Point`; a scroll offset is a ui-model quantity, not a render primitive.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Vec2 {
-    pub x: f32,
-    pub y: f32,
+pub use viso_math::Vec2;
+pub use viso_schema::layout::{Align, Axis, Inset, Justify, Length};
+
+/// A [`Vec2`]'s component along a layout [`Axis`] (x for Row, y for Column).
+pub trait OnAxis {
+    /// The component along `axis`.
+    fn on(self, axis: Axis) -> f32;
 }
 
-impl Vec2 {
-    /// The zero vector (no offset).
-    pub const ZERO: Vec2 = Vec2 { x: 0.0, y: 0.0 };
-
-    /// A vector from its two components.
+impl OnAxis for Vec2 {
     #[inline]
-    pub const fn new(x: f32, y: f32) -> Self {
-        Vec2 { x, y }
-    }
-
-    /// This vector's component along `axis` (x for Row, y for Column).
-    #[inline]
-    pub fn on(self, axis: Axis) -> f32 {
+    fn on(self, axis: Axis) -> f32 {
         match axis {
             Axis::Row => self.x,
             Axis::Column => self.y,
-        }
-    }
-
-    /// Linearly interpolate toward `to` by `t`: `t == 0` returns `self`,
-    /// `t == 1` returns `to`. Used to advance a translate animation from its
-    /// start offset to its target as the eased progress sweeps `[0, 1]`.
-    #[inline]
-    pub fn lerp(self, to: Vec2, t: f32) -> Vec2 {
-        Vec2 {
-            x: self.x + (to.x - self.x) * t,
-            y: self.y + (to.y - self.y) * t,
-        }
-    }
-}
-
-/// The main axis a Flex container lays its children along.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Axis {
-    /// Children flow left-to-right; main = x, cross = y.
-    Row,
-    /// Children flow top-to-bottom; main = y, cross = x.
-    Column,
-}
-
-/// How a single length resolves against its container.
-///
-/// Every extent is in logical pixels (dp). A `Fixed` length is an exact dp
-/// size. A `Relative` length is `fixed + pct × basis`, where the basis is the
-/// parent's content box on the same axis — `50%` is a ratio of that box, not a
-/// share of what siblings leave over. A `Fill` length claims a share of the
-/// leftover space along the main axis, split between siblings by `weight`. A
-/// `Fit` length shrinks to the node's measured natural size.
-///
-/// The measure pass runs before any basis is known, so a `Relative` length
-/// measures like `Fit` (a percentage of an indefinite size is its content) and
-/// resolves against the basis only when the parent places it. A resolved
-/// `Relative` extent is never negative.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Length {
-    /// An exact extent in dp.
-    Fixed(f32),
-    /// `fixed + pct × basis`, with `pct` a fraction of the basis (`0.5` is `50%`).
-    Relative { fixed: f32, pct: f32 },
-    /// A share of leftover main-axis space, proportional to `weight`.
-    Fill { weight: f32 },
-    /// Shrink to the measured natural size.
-    Fit,
-}
-
-impl Length {
-    /// A unit-weight fill (the common "take the rest" case).
-    pub const fn fill() -> Self {
-        Length::Fill { weight: 1.0 }
-    }
-
-    /// An exact extent in dp.
-    pub const fn dp(v: f32) -> Self {
-        Length::Fixed(v)
-    }
-
-    /// A percentage of the basis: `Length::pct(50.0)` is `50%`.
-    pub const fn pct(percent: f32) -> Self {
-        Length::Relative {
-            fixed: 0.0,
-            pct: percent / 100.0,
-        }
-    }
-
-    /// The extent this length takes against `basis`, or `None` for `Fill`/`Fit`,
-    /// whose extent the container decides.
-    #[inline]
-    pub fn resolve(self, basis: f32) -> Option<f32> {
-        match self {
-            Length::Fixed(v) => Some(v),
-            Length::Relative { fixed, pct } => Some((fixed + pct * basis).max(0.0)),
-            Length::Fill { .. } | Length::Fit => None,
         }
     }
 }
@@ -162,47 +76,6 @@ impl Size {
     }
 }
 
-/// Cross-axis placement of children within a container.
-///
-/// `Start`/`Center`/`End` position a child of its natural cross size at the
-/// near edge, middle, or far edge of the container's cross extent. `Stretch`
-/// grows the child to fill the cross extent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Align {
-    /// Pin to the near cross edge (top for Row, left for Column).
-    Start,
-    /// Center within the cross extent.
-    Center,
-    /// Pin to the far cross edge.
-    End,
-    /// Grow to fill the cross extent.
-    Stretch,
-}
-
-/// How a grid cell's content is aligned within the cell along the block (row /
-/// vertical) axis. `Stretch` (the default) grows a fillable child to the cell
-/// height; the others place the child at its natural height and shift it.
-/// Main-axis placement of the children as a group within a container.
-///
-/// [`Align`] handles the cross axis (each child within the line); `Justify`
-/// handles the main axis (the whole packed group within the container's main
-/// extent). It only has a visible effect when the children leave main-axis
-/// slack — i.e. none of them is [`Length::Fill`], since a Fill child consumes
-/// the free space and leaves nothing to distribute (the same relationship
-/// [`Align::Center`] has with [`Align::Stretch`]). `Center`/`End` shift the
-/// group by the leftover free space; `Start` (the default) pins it to the near
-/// edge, preserving the historical near-edge packing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Justify {
-    /// Pack the group at the near main edge (left for Row, top for Column).
-    #[default]
-    Start,
-    /// Center the group within the container's main extent.
-    Center,
-    /// Pack the group at the far main edge.
-    End,
-}
-
 /// How a grid cell's content is aligned within the cell along the block (row /
 /// vertical) axis. `Stretch` (the default) grows a fillable child to the cell
 /// height; the others place the child at its natural height and shift it.
@@ -222,67 +95,6 @@ pub enum AlignItems {
     End,
     /// Align the child's first-line baseline to its row's tallest baseline.
     Baseline,
-}
-
-/// Four-edge inset in pixels (padding for a container).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Inset {
-    /// Left edge.
-    pub left: f32,
-    /// Top edge.
-    pub top: f32,
-    /// Right edge.
-    pub right: f32,
-    /// Bottom edge.
-    pub bottom: f32,
-}
-
-impl Inset {
-    /// A uniform inset on all four edges.
-    pub const fn all(v: f32) -> Self {
-        Inset {
-            left: v,
-            top: v,
-            right: v,
-            bottom: v,
-        }
-    }
-
-    /// Total inset along the main axis (both edges).
-    #[inline]
-    fn main(self, axis: Axis) -> f32 {
-        match axis {
-            Axis::Row => self.left + self.right,
-            Axis::Column => self.top + self.bottom,
-        }
-    }
-
-    /// Total inset across the cross axis (both edges).
-    #[inline]
-    fn cross(self, axis: Axis) -> f32 {
-        match axis {
-            Axis::Row => self.top + self.bottom,
-            Axis::Column => self.left + self.right,
-        }
-    }
-
-    /// Near-edge inset along the main axis (left for Row, top for Column).
-    #[inline]
-    fn main_start(self, axis: Axis) -> f32 {
-        match axis {
-            Axis::Row => self.left,
-            Axis::Column => self.top,
-        }
-    }
-
-    /// Near-edge inset across the cross axis (top for Row, left for Column).
-    #[inline]
-    fn cross_start(self, axis: Axis) -> f32 {
-        match axis {
-            Axis::Row => self.top,
-            Axis::Column => self.left,
-        }
-    }
 }
 
 /// The warm-tier layout parameters for one node: either a Flex container or a
@@ -502,6 +314,18 @@ pub trait LayoutTree {
     /// percent term met an indefinite basis. A no-op by default.
     fn report_length(&mut self, index: u32, issue: LengthIssue) {
         let _ = (index, issue);
+    }
+    /// A set of grid layout working buffers, from the tree's pool when it
+    /// keeps one; [`put_grid_scratch`](Self::put_grid_scratch) gives it back.
+    /// A fresh set by default, so a tree that keeps no pool allocates per
+    /// grid laid out.
+    fn take_grid_scratch(&mut self) -> GridScratch {
+        GridScratch::default()
+    }
+    /// Gives back a set [`take_grid_scratch`](Self::take_grid_scratch)
+    /// handed out. Dropped by default.
+    fn put_grid_scratch(&mut self, scratch: GridScratch) {
+        let _ = scratch;
     }
 }
 
@@ -1052,25 +876,23 @@ fn layout_absolute_rows(
     scratch.truncate(start);
 }
 
-/// Lay out a grid: place children into cells (auto-flow + explicit), solve the
-/// The reusable per-`layout_grid`-call buffers. `layout_grid` needs about a
-/// dozen temporary `Vec`s (placements, the occupied bitset, cell regions, the
-/// two track templates, per-track auto maxes, resolved sizes, prefix offsets,
-/// and row baselines). Allocating them fresh on every call would heap-allocate
-/// on the layout hot path for every grid node every frame; instead each call
-/// checks a `GridScratch` out of a thread-local pool ([`with_grid_scratch`]),
-/// clears the buffers (retaining capacity — clear, not free), and returns it on
-/// exit, so a warmed-up steady-state grid relayout does no per-frame allocation.
+/// The working buffers of one grid layout. `layout_grid` needs about a dozen
+/// temporary `Vec`s (placements, the occupied bitset, cell regions, the two
+/// track templates, per-track auto maxes, resolved sizes, prefix offsets, and
+/// row baselines). Allocating them fresh on every call would heap-allocate on
+/// the layout hot path for every grid node every frame; instead each call takes
+/// a set from the tree ([`LayoutTree::take_grid_scratch`]), clears it (clear,
+/// not free) and gives it back on exit, so a warmed-up steady-state grid
+/// relayout over a tree that pools them does no per-frame allocation.
 ///
-/// A pool rather than a single threaded buffer because `layout_grid` is
-/// *reentrant*: a subgrid child recurses into `layout_grid` from inside the
-/// parent's per-child loop while the parent still holds live slices of its own
-/// `col_sizes`/`row_sizes`. The recursive call checks out a *distinct*
-/// `GridScratch`, so nested grids never clobber an ancestor's buffers, and the
-/// pool grows only to the deepest grid nesting seen (one entry for the common
-/// non-nested case).
+/// A pool rather than a single buffer because `layout_grid` is *reentrant*: a
+/// subgrid child recurses into `layout_grid` from inside the parent's
+/// per-child loop while the parent still holds live slices of its own
+/// `col_sizes`/`row_sizes`. The recursive call takes a *distinct* set, so
+/// nested grids never clobber an ancestor's buffers, and the pool grows only to
+/// the deepest grid nesting seen (one set for the common non-nested case).
 #[derive(Default)]
-struct GridScratch {
+pub struct GridScratch {
     placements: Vec<GridPlacement>,
     occupied: Vec<u64>,
     regions: Vec<crate::grid::CellRegion>,
@@ -1104,27 +926,21 @@ impl GridScratch {
     }
 }
 
-thread_local! {
-    /// Free-list of grid scratch buffers, one per live grid nesting level. The
-    /// layout pass is main-thread-owned (section 26), so a thread-local pool
-    /// carries no locking and no cross-frame allocation once warm.
-    static GRID_SCRATCH_POOL: std::cell::RefCell<Vec<GridScratch>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// Run `f` with a cleared `GridScratch` checked out of the thread-local pool,
-/// returning it to the pool afterward. Reentrant: a nested call checks out a
-/// distinct buffer, so a subgrid recursion never aliases its ancestor's scratch.
-fn with_grid_scratch<R>(f: impl FnOnce(&mut GridScratch) -> R) -> R {
-    let mut s = GRID_SCRATCH_POOL
-        .with(|p| p.borrow_mut().pop())
-        .unwrap_or_default();
+/// Run `f` over a cleared `GridScratch` taken from `tree`, giving it back
+/// afterward. Reentrant: a nested call takes a distinct set, so a subgrid
+/// recursion never aliases its ancestor's scratch.
+fn with_grid_scratch<T: LayoutTree, R>(
+    tree: &mut T,
+    f: impl FnOnce(&mut T, &mut GridScratch) -> R,
+) -> R {
+    let mut s = tree.take_grid_scratch();
     s.clear();
-    let r = f(&mut s);
-    GRID_SCRATCH_POOL.with(|p| p.borrow_mut().push(s));
+    let r = f(tree, &mut s);
+    tree.put_grid_scratch(s);
     r
 }
 
+/// Lay out a grid: place children into cells (auto-flow + explicit), solve the
 /// column and row track extents (Fixed/Percent/Auto/Fr), then lay each child
 /// into its cell rect honoring its own `Size`. The grid's inner content area is
 /// its box minus padding; cell offsets are prefix sums of the resolved tracks
@@ -1212,11 +1028,11 @@ fn layout_grid(
         },
     };
 
-    // Check a `GridScratch` out of the thread-local pool for the ~dozen working
-    // buffers, instead of allocating them fresh per call. `with_grid_scratch`
-    // clears (not frees) and returns it on exit; a subgrid recursion below
-    // checks out a distinct buffer, so it never clobbers `s`.
-    with_grid_scratch(|s| {
+    // Take a `GridScratch` from the tree for the ~dozen working buffers,
+    // instead of allocating them fresh per call. `with_grid_scratch` clears
+    // (not frees) and gives it back on exit; a subgrid recursion below takes a
+    // distinct set, so it never clobbers `s`.
+    with_grid_scratch(tree, |tree, s| {
         s.placements
             .extend((0..child_count).map(|i| tree.grid_placement(scratch[start + i])));
 

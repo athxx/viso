@@ -1,8 +1,7 @@
 //! Column-major matrices: [`Mat2`], [`Mat3`], [`Mat4`].
 //!
 //! All three use a **uniform flat storage story** — a plain `[f32; N]` in
-//! column-major order — rather than the reference framework's mix of
-//! column-vector `Mat3` and flat `Mat4`. Column `c`, row `r` lives at index
+//! column-major order. Column `c`, row `r` lives at index
 //! `c * dim + r`. Column-major with the `M * v` convention is what the GPU
 //! backends expect, so the upload path stays a memcpy.
 //!
@@ -13,6 +12,7 @@
 //! [`simd`](crate::simd)) accelerate the hot `Mat4` paths internally and must
 //! match this layout bit-for-bit.
 
+use crate::float::{sin_cos, tan};
 use crate::vec::{Vec2, Vec3, Vec4};
 
 /// A 2×2 column-major matrix, stored as `[f32; 4]`.
@@ -83,7 +83,7 @@ impl Mat2 {
     /// A counter-clockwise rotation of `angle` radians.
     #[inline]
     pub fn from_angle(angle: f32) -> Mat2 {
-        let (s, c) = angle.sin_cos();
+        let (s, c) = sin_cos(angle);
         Mat2 { v: [c, s, -s, c] }
     }
 
@@ -273,7 +273,7 @@ impl Mat4 {
     }
 
     /// The inverse. Returns [`Mat4::IDENTITY`] when the matrix is singular
-    /// (determinant ≈ 0), matching the reference's non-panicking guard.
+    /// (determinant ≈ 0) instead of panicking.
     pub fn invert(&self) -> Mat4 {
         let a = &self.v;
         let (a00, a01, a02, a03) = (a[0], a[1], a[2], a[3]);
@@ -348,7 +348,7 @@ impl Mat4 {
     /// view in **radians**; `aspect` is width / height. Maps to the OpenGL-style
     /// `[-1, 1]` clip depth range.
     pub fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
-        let f = 1.0 / (fov_y * 0.5).tan();
+        let f = 1.0 / tan(fov_y * 0.5);
         let nf = 1.0 / (near - far);
         Mat4 {
             v: [

@@ -1,13 +1,14 @@
 //! Batch geometry reductions over `[Point]` slices — the SIMD-accelerated
 //! reductions behind the render tessellator's cold-path preprocessing (§13.6).
 //!
-//! Two reductions live here, both shaped for lane-parallel evaluation and both
-//! with a scalar reference that the hardware kernels must reproduce bit-for-bit:
+//! Two reductions live here:
 //!
 //! - [`point_bounds`] folds a point ring to its axis-aligned bounding box (a
-//!   min/max reduction — the `geo_bounds` oracle in `viso-render`);
-//! - [`segment_lengths`] emits the Euclidean length of each consecutive segment
-//!   of a polyline (the arc-length preprocessing a dash splitter consumes).
+//!   min/max reduction — the `geo_bounds` oracle in `viso-render`), with a
+//!   scalar reference the hardware kernels must reproduce bit-for-bit;
+//! - [`segment_lengths`] writes the Euclidean length of each consecutive
+//!   segment of a polyline (the arc-length preprocessing a dash splitter
+//!   consumes) into a caller's slice.
 //!
 //! Like [`mat4_mul`](super::mat4_mul), this is an **internal optimization
 //! boundary**: the entry points take/return the scalar `[f32]`/`Point` ABI and
@@ -40,18 +41,18 @@ pub fn point_bounds(points: &[Point]) -> Rect {
 }
 
 /// Euclidean length of each consecutive segment `points[i]..points[i+1]`,
-/// appended to `out` (one length per window; empty for `< 2` points).
-/// Dispatches to the target SIMD kernel; bit-identical to the scalar reference.
+/// written to `out[i]`: `min(out.len(), points.len() - 1)` lengths. A
+/// per-window `sqrt` in a fixed order, so every target gets the same bits.
 #[inline]
-pub fn segment_lengths(points: &[Point], out: &mut Vec<f32>) {
-    if points.len() < 2 {
-        return;
+pub fn segment_lengths(points: &[Point], out: &mut [f32]) {
+    for (o, w) in out.iter_mut().zip(points.windows(2)) {
+        let dx = w[1].x - w[0].x;
+        let dy = w[1].y - w[0].y;
+        *o = crate::float::sqrt(dx * dx + dy * dy);
     }
-    out.reserve(points.len() - 1);
-    seg_lengths_into(points, out);
 }
 
-// ---- scalar reference kernels -------------------------------------------------
+// ---- scalar reference kernel ---------------------------------------------------
 
 // Exposed under a distinct name for two callers: the fallback on targets without
 // a SIMD path, and the bit-exact oracle the equivalence tests compare against.
@@ -82,23 +83,6 @@ fn extent_scalar(points: &[Point]) -> Extent {
     e
 }
 
-#[cfg(any(
-    test,
-    not(any(
-        target_arch = "x86_64",
-        target_arch = "aarch64",
-        all(target_arch = "wasm32", target_feature = "simd128")
-    ))
-))]
-#[inline]
-fn seg_lengths_scalar(points: &[Point], out: &mut Vec<f32>) {
-    for w in points.windows(2) {
-        let dx = w[1].x - w[0].x;
-        let dy = w[1].y - w[0].y;
-        out.push((dx * dx + dy * dy).sqrt());
-    }
-}
-
 // ---- dispatch: x86_64 (SSE2 base ABI) ----------------------------------------
 
 #[cfg(target_arch = "x86_64")]
@@ -107,13 +91,6 @@ fn extent(points: &[Point]) -> Extent {
     // SAFETY: SSE2 is part of the x86_64 base ABI, so the intrinsics in
     // `sse2_extent` are always legal on this target; the `cfg` is sufficient.
     unsafe { sse2_extent(points) }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn seg_lengths_into(points: &[Point], out: &mut Vec<f32>) {
-    // SAFETY: SSE2 is part of the x86_64 base ABI (see above).
-    unsafe { sse2_seg_lengths(points, out) }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -142,18 +119,6 @@ unsafe fn sse2_extent(points: &[Point]) -> Extent {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse2")]
-unsafe fn sse2_seg_lengths(points: &[Point], out: &mut Vec<f32>) {
-    // The reduction is a per-window scalar sqrt; the win here is the fused
-    // dx*dx + dy*dy done in-register in the scalar order, so it stays bit-exact.
-    for w in points.windows(2) {
-        let dx = w[1].x - w[0].x;
-        let dy = w[1].y - w[0].y;
-        out.push((dx * dx + dy * dy).sqrt());
-    }
-}
-
 // ---- dispatch: aarch64 (NEON base ABI) ---------------------------------------
 
 #[cfg(target_arch = "aarch64")]
@@ -162,13 +127,6 @@ fn extent(points: &[Point]) -> Extent {
     // SAFETY: NEON is part of the aarch64 base ABI, so the intrinsics in
     // `neon_extent` are always legal on this target; the `cfg` is sufficient.
     unsafe { neon_extent(points) }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn seg_lengths_into(points: &[Point], out: &mut Vec<f32>) {
-    // SAFETY: NEON is part of the aarch64 base ABI (see above).
-    unsafe { neon_seg_lengths(points, out) }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -195,32 +153,12 @@ unsafe fn neon_extent(points: &[Point]) -> Extent {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn neon_seg_lengths(points: &[Point], out: &mut Vec<f32>) {
-    for w in points.windows(2) {
-        let dx = w[1].x - w[0].x;
-        let dy = w[1].y - w[0].y;
-        out.push((dx * dx + dy * dy).sqrt());
-    }
-}
-
 // ---- dispatch: wasm32 + simd128 ----------------------------------------------
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[inline]
 fn extent(points: &[Point]) -> Extent {
     wasm_extent(points)
-}
-
-#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-#[inline]
-fn seg_lengths_into(points: &[Point], out: &mut Vec<f32>) {
-    for w in points.windows(2) {
-        let dx = w[1].x - w[0].x;
-        let dy = w[1].y - w[0].y;
-        out.push((dx * dx + dy * dy).sqrt());
-    }
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -256,19 +194,11 @@ fn extent(points: &[Point]) -> Extent {
     extent_scalar(points)
 }
 
-#[cfg(not(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    all(target_arch = "wasm32", target_feature = "simd128")
-)))]
-#[inline]
-fn seg_lengths_into(points: &[Point], out: &mut Vec<f32>) {
-    seg_lengths_scalar(points, out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
+    use std::vec::Vec;
 
     // A ring whose coordinates are not round numbers, so a lax kernel that reorders
     // the min/max fold or the dx*dx+dy*dy sum would drift off the scalar bits.
@@ -296,20 +226,22 @@ mod tests {
     }
 
     #[test]
-    fn segment_lengths_matches_scalar_bit_exact() {
+    fn segment_lengths_fill_what_fits() {
         let pts = ring();
-        let mut scalar = Vec::new();
-        seg_lengths_scalar(&pts, &mut scalar);
-        let mut dispatched = Vec::new();
-        segment_lengths(&pts, &mut dispatched);
-        assert_eq!(scalar.len(), dispatched.len());
-        for (i, (s, d)) in scalar.iter().zip(dispatched.iter()).enumerate() {
+        let mut out = vec![-1.0; pts.len()];
+        segment_lengths(&pts, &mut out);
+        for (i, w) in pts.windows(2).enumerate() {
+            let (dx, dy) = (w[1].x - w[0].x, w[1].y - w[0].y);
             assert_eq!(
-                s.to_bits(),
-                d.to_bits(),
-                "segment {i} differs: scalar {s} vs dispatched {d}"
+                out[i].to_bits(),
+                (dx * dx + dy * dy).sqrt().to_bits(),
+                "segment {i}"
             );
         }
+        assert_eq!(out[pts.len() - 1], -1.0, "one length fewer than points");
+        let mut short = [0.0; 2];
+        segment_lengths(&pts, &mut short);
+        assert_eq!(short[..], out[..2]);
     }
 
     #[test]
@@ -333,9 +265,9 @@ mod tests {
     }
 
     #[test]
-    fn segment_lengths_of_short_ring_is_empty() {
-        let mut out = Vec::new();
+    fn segment_lengths_of_one_point_writes_nothing() {
+        let mut out = [7.0];
         segment_lengths(&[Point::new(1.0, 1.0)], &mut out);
-        assert!(out.is_empty());
+        assert_eq!(out, [7.0]);
     }
 }

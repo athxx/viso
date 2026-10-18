@@ -1,16 +1,26 @@
 //! The keymap, modifier state and compose (dead-key) sequences through
 //! libxkbcommon, loaded at runtime. Wayland hands over a keymap file; X11
-//! reads the core keyboard's keymap through the XKB extension. Both then feed
-//! modifier masks in and read physical-key text out the same way.
+//! reads the core keyboard's keymap through the XKB extension; KMS compiles
+//! the system's default layout (`XKB_DEFAULT_*`) and tracks the state from
+//! its own key events. All then read physical-key text out the same way.
 
-use std::ffi::{c_char, c_void};
+// A build with no Linux backend keeps the keymap unused.
+#![cfg_attr(
+    not(any(feature = "x11", feature = "wayland", feature = "kms")),
+    allow(dead_code)
+)]
+
+use std::ffi::c_char;
+#[cfg(feature = "x11")]
+use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 
 use xkbcommon_dl::{
     XKB_MOD_NAME_ALT, XKB_MOD_NAME_CTRL, XKB_MOD_NAME_LOGO, XKB_MOD_NAME_SHIFT, XkbCommon,
     XkbCommonCompose, xkb_compose_compile_flags, xkb_compose_feed_result, xkb_compose_state,
-    xkb_compose_state_flags, xkb_compose_status, xkb_context, xkb_context_flags, xkb_keymap,
-    xkb_keymap_compile_flags, xkb_keymap_format, xkb_state, xkb_state_component,
+    xkb_compose_state_flags, xkb_compose_status, xkb_context, xkb_context_flags, xkb_key_direction,
+    xkb_keymap, xkb_keymap_compile_flags, xkb_keymap_format, xkb_rule_names, xkb_state,
+    xkb_state_component,
 };
 
 use crate::event::Modifiers;
@@ -63,6 +73,7 @@ impl Keyboard {
 
     /// Adopt a keymap in XKB text format, as a Wayland compositor sends it.
     /// A trailing NUL, which the protocol includes, is allowed.
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     pub(crate) fn set_keymap_text(&mut self, text: &[u8]) -> bool {
         let text = text.strip_suffix(&[0]).unwrap_or(text);
         // SAFETY: `text` is a live buffer of the given length; the keymap is
@@ -85,6 +96,7 @@ impl Keyboard {
     ///
     /// `connection` must be a live `xcb_connection_t` whose XKB extension
     /// was set up with [`setup_x11`].
+    #[cfg(feature = "x11")]
     pub(crate) unsafe fn set_keymap_x11(&mut self, connection: *mut c_void, device: i32) -> bool {
         let Some(x11) = xkbcommon_dl::x11::xkbcommon_x11_option() else {
             return false;
@@ -103,6 +115,44 @@ impl Keyboard {
             };
             let state = (x11.xkb_x11_state_new_from_device)(map.as_ptr(), connection, device);
             self.adopt(keymap, NonNull::new(state))
+        }
+    }
+
+    /// Adopt the system's default keymap: the `XKB_DEFAULT_*` layout, model,
+    /// variant and options from the environment, else xkbcommon's own.
+    #[cfg_attr(not(feature = "kms"), allow(dead_code))]
+    pub(crate) fn set_keymap_default(&mut self) -> bool {
+        let names = xkb_rule_names {
+            rules: ptr::null(),
+            model: ptr::null(),
+            layout: ptr::null(),
+            variant: ptr::null(),
+            options: ptr::null(),
+        };
+        // SAFETY: all-null names select the defaults; the keymap is owned by
+        // `self` from here.
+        let keymap = unsafe {
+            (self.lib.xkb_keymap_new_from_names)(
+                self.context.as_ptr(),
+                &names,
+                xkb_keymap_compile_flags::XKB_KEYMAP_COMPILE_NO_FLAGS,
+            )
+        };
+        self.adopt(keymap, None)
+    }
+
+    /// Track a key transition in the state, where no server reports the
+    /// modifier masks (KMS).
+    #[cfg_attr(not(feature = "kms"), allow(dead_code))]
+    pub(crate) fn update_key(&mut self, keycode: u32, pressed: bool) {
+        if let Some(map) = &self.keymap {
+            let direction = if pressed {
+                xkb_key_direction::XKB_KEY_DOWN
+            } else {
+                xkb_key_direction::XKB_KEY_UP
+            };
+            // SAFETY: a live state; any keycode is accepted.
+            unsafe { (self.lib.xkb_state_update_key)(map.state.as_ptr(), keycode, direction) };
         }
     }
 
@@ -138,6 +188,7 @@ impl Keyboard {
     }
 
     /// Apply the modifier and layout masks the server reports.
+    #[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
     pub(crate) fn update_mask(
         &mut self,
         depressed: u32,
@@ -214,6 +265,7 @@ impl Keyboard {
     }
 
     /// Whether holding `keycode` auto-repeats.
+    #[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
     pub(crate) fn repeats(&self, keycode: u32) -> bool {
         self.keymap.as_ref().is_some_and(|map| {
             // SAFETY: a live keymap.
@@ -284,6 +336,7 @@ impl Keyboard {
         text_of(self.key_utf8(keycode))
     }
 
+    #[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
     pub(crate) fn reset_compose(&self) {
         if let Some(compose) = &self.compose {
             compose.reset();
@@ -392,6 +445,7 @@ fn compose_locale() -> std::ffi::CString {
 /// # Safety
 ///
 /// `connection` must be a live `xcb_connection_t`.
+#[cfg(feature = "x11")]
 pub(crate) unsafe fn setup_x11(connection: *mut c_void) -> Option<i32> {
     let x11 = xkbcommon_dl::x11::xkbcommon_x11_option()?;
     let (mut major, mut minor, mut event, mut error) = (0u16, 0u16, 0u8, 0u8);

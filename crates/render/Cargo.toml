@@ -10,7 +10,9 @@ rust-version.workspace = true
 # frame packet. Decides batching/atlas/clip/passes; UI never owns backend
 # command submission (§16.1). `render -> widgets` is forbidden.
 [dependencies]
-viso-math = { workspace = true }
+# Resource identity is schema data the compiler names assets by.
+viso-schema = { workspace = true }
+viso-math = { workspace = true, features = ["std"] }
 viso-text = { workspace = true }
 viso-shader = { workspace = true }
 viso-gpu = { workspace = true }
@@ -20,11 +22,10 @@ viso-gpu = { workspace = true }
 # gates only viso-internal edges).
 ab_glyph_rasterizer = { workspace = true }
 
-# The raster asset decoders (PNG, JPEG): pure Rust, bounded by the header
-# before any pixel is allocated.
-zune-png = { workspace = true }
-zune-jpeg = { workspace = true }
-zune-core = { workspace = true }
+# The raster asset decoders (PNG, JPEG), bounded by the header before any
+# pixel is allocated, and the SVG parser whose tree `svg` lowers.
+viso-image = { workspace = true }
+viso-svg = { workspace = true }
 
 # Benches only. criterion is a dev-dependency: it never ships in the renderer and
 # is not an architecture DAG edge (external crate, ignored by `xtask check-deps`).
@@ -38,6 +39,11 @@ vulkan = ["viso-gpu/vulkan"]
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"
 
+# The Vulkan backend tests draw on the native Vulkan device on Linux and
+# Android.
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dev-dependencies]
+viso-gpu = { workspace = true, features = ["native-vulkan"] }
+
 # The WGSL → MSL semantic cross-check on the Metal device: a test-only
 # translator, never linked into the renderer.
 [target.'cfg(target_vendor = "apple")'.dev-dependencies]
@@ -49,4 +55,8 @@ wasm-bindgen-test = "0.3"
 
 [[bench]]
 name = "renderer_steady_state"
+harness = false
+
+[[bench]]
+name = "cpu_raster"
 harness = false

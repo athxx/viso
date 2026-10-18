@@ -3,5 +3,11 @@ name = "{name}"
 version = "0.1.0"
 edition = "{edition}"
 
+# `viso build <device-target>` turns the defaults off for an embedded board,
+# which keeps the facade's `kms` and its profile's backend, and adds back the
+# glyph rasterizer and the Thai/Lao/Khmer/Myanmar line breaking it needs.
+[features]
+default = ["viso/vm", "viso/desktop", "viso/native-vulkan", "viso/rasterizer", "viso/complex-line-break"]
+
 [dependencies]
 viso = {viso}

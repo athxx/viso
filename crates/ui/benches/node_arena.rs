@@ -10,7 +10,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use viso_ui::{NodeArena, NodeId};
+use viso_ui::{NodeArena, NodeId, NodeIndex};
 
 const NODE_COUNT: usize = 100_000;
 /// Children per interior node: a bushy tree (fanout 16) is closer to real UI
@@ -35,23 +35,29 @@ fn build_tree() -> (NodeArena, Vec<NodeId>) {
     (arena, ids)
 }
 
-/// Depth-first walk from the root over the sibling/child links, summing raw
+/// Depth-first walk from the root over the bare index links, summing raw
 /// indices so the traversal is not optimized away. Uses an explicit stack (no
 /// recursion) — the same shape the layout/paint/hit-test walks use.
-fn traverse(arena: &NodeArena, root: NodeId, stack: &mut Vec<NodeId>) -> u64 {
+fn traverse(arena: &NodeArena, root: NodeIndex, stack: &mut Vec<NodeIndex>) -> u64 {
+    stack.clear();
+    stack.push(root);
+    let mut acc: u64 = 0;
+    while let Some(index) = stack.pop() {
+        acc = acc.wrapping_add(u64::from(index.get()));
+        stack.extend(arena.children_of(index));
+    }
+    acc
+}
+
+/// The same walk through live handles, each link paired with its generation:
+/// the cost of the checked external API, for comparison with [`traverse`].
+fn traverse_checked(arena: &NodeArena, root: NodeId, stack: &mut Vec<NodeId>) -> u64 {
     stack.clear();
     stack.push(root);
     let mut acc: u64 = 0;
     while let Some(id) = stack.pop() {
-        acc = acc.wrapping_add(id.index() as u64);
-        let Some(links) = arena.links(id) else {
-            continue;
-        };
-        let mut child = links.first_child;
-        while let Some(c) = child {
-            stack.push(c);
-            child = arena.links(c).and_then(|l| l.next_sibling);
-        }
+        acc = acc.wrapping_add(u64::from(id.index()));
+        stack.extend(arena.children(id));
     }
     acc
 }
@@ -63,12 +69,26 @@ fn create(c: &mut Criterion) {
             black_box((arena, ids));
         });
     });
+    c.bench_function("node_arena_create_100k_fixed", |b| {
+        b.iter(|| {
+            let mut arena = NodeArena::with_fixed_capacity(NODE_COUNT as u32);
+            let root = arena.alloc();
+            let mut parents = Vec::with_capacity(NODE_COUNT);
+            parents.push(root);
+            for i in 1..NODE_COUNT {
+                let child = arena.alloc();
+                arena.append_child(parents[(i - 1) / FANOUT], child);
+                parents.push(child);
+            }
+            black_box((arena, parents));
+        });
+    });
 }
 
 fn traverse_bench(c: &mut Criterion) {
     let (arena, ids) = build_tree();
-    let root = ids[0];
-    let mut stack: Vec<NodeId> = Vec::new();
+    let root = ids[0].node_index();
+    let mut stack: Vec<NodeIndex> = Vec::new();
 
     // Startup zero-growth assertion: repeated traversal reuses one stack and must
     // not grow it per walk — a scratch-realloc regression fails the bench binary.
@@ -90,6 +110,14 @@ fn traverse_bench(c: &mut Criterion) {
     c.bench_function("node_arena_traverse_100k", |b| {
         b.iter(|| {
             black_box(traverse(&arena, black_box(root), &mut stack));
+        });
+    });
+
+    let mut checked: Vec<NodeId> = Vec::new();
+    assert_eq!(traverse_checked(&arena, ids[0], &mut checked), sum);
+    c.bench_function("node_arena_traverse_100k_checked", |b| {
+        b.iter(|| {
+            black_box(traverse_checked(&arena, black_box(ids[0]), &mut checked));
         });
     });
 }

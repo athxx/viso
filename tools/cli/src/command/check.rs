@@ -18,6 +18,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use viso_dev_protocol::inspect::SourceTable;
+use viso_dsl::aot::ShaderLang;
 use viso_dsl::frontend::Origin;
 use viso_dsl::hir::{CapabilitySet, CollisionDelivery, Determinism, InputDevices, TargetProfile};
 use viso_dsl::hotreload::plan_view_for;
@@ -26,9 +28,9 @@ use viso_dsl::inspect::file_sources;
 use viso_dsl::package::{LoadedPackage, PackageManifest, load_package};
 use viso_dsl::{Diagnostic, TextRange, TextSize};
 use viso_project::{
-    ArtifactKind, DevRuntime, GameDeterminism, Project, ResolvedConfig, Span, Target,
+    ArtifactKind, DevRuntime, DeviceTarget, Footprint, GameDeterminism, Project, ResolvedConfig,
+    ShaderLanguage, Span, Target,
 };
-use viso_view::inspect::SourceTable;
 
 use crate::args::{BuildTarget, CheckArgs, Strictness};
 use crate::build;
@@ -37,8 +39,8 @@ use crate::context::{Context, Loaded};
 use crate::dev::cargo::RustScope;
 use crate::dev::watch::{WatchScope, Watcher};
 use crate::error::{
-    BUILD_FAILED, DIAGNOSTICS, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_SOURCE_UNREADABLE, ENVIRONMENT,
-    INTERRUPTED, SUCCESS,
+    BUILD_FAILED, DIAGNOSTICS, ENV_BUILD_WRITE, ENV_CARGO, ENV_CARGO_MANIFEST,
+    ENV_SOURCE_UNREADABLE, ENVIRONMENT, INTERRUPTED, SUCCESS,
 };
 use crate::interrupt;
 use crate::output::{Output, Source};
@@ -74,7 +76,10 @@ impl Options {
 
 pub fn run(ctx: &Context<'_>, args: &CheckArgs, out: &mut Output) -> u8 {
     let options = Options {
-        target: args.target.map(BuildTarget::target),
+        target: args
+            .target
+            .as_ref()
+            .map(|target| target.target(BuildTarget::target)),
         a11y_strict: args.a11y == Some(Strictness::Strict),
         i18n_strict: args.i18n == Some(Strictness::Strict),
     };
@@ -138,9 +143,14 @@ fn rust(ctx: &Context<'_>, project: &Project, config: &ResolvedConfig, out: &mut
     let sdk = (target == Target::Android)
         .then(|| crate::toolchain::android::sdk().ok())
         .flatten();
-    let plan = build::rust_plan(target, profile, sdk.as_ref());
+    let mut plan = build::rust_plan(target, config.device.as_ref(), profile, sdk.as_ref());
+    let layout = ctx.layout(&project.root);
+    if let Err(why) = build::add_text_data(&mut plan, config.device.as_ref(), project, &layout) {
+        return out.failure(ENV_BUILD_WRITE, &why, &[]);
+    }
+    super::build::warn_kept_defaults(plan.no_default_features, &manifest, ctx, out);
     let mut features = plan.features;
-    if config.dev_runtime() == DevRuntime::Present && target != Target::Headless {
+    if config.dev_runtime() == DevRuntime::Present && cargo::reloads(target) {
         features.push(cargo::HOT_RELOAD);
     }
     let command = BuildCommand {
@@ -154,6 +164,7 @@ fn rust(ctx: &Context<'_>, project: &Project, config: &ResolvedConfig, out: &mut
         profile,
         profile_args: cargo::profile_args(profile, &config.settings, target),
         features,
+        no_default_features: plan.no_default_features,
         target: plan.target,
         rustc_args: Vec::new(),
         env: plan.env,
@@ -216,7 +227,11 @@ fn watch(ctx: &Context<'_>, cargo: bool, options: &Options, out: &mut Output) ->
         .unwrap_or_else(|_| project.root.clone());
     let rust = if cargo {
         let target = options.target.unwrap_or(Target::Host);
-        let triple = build::rust_plan(target, viso_project::Profile::Dev, None).target;
+        let device = match target {
+            Target::Device(name) => project.manifest.targets.device(name),
+            _ => None,
+        };
+        let triple = build::rust_plan(target, device, viso_project::Profile::Dev, None).target;
         RustScope::read(
             &root.join("Cargo.toml"),
             triple.as_deref(),
@@ -507,12 +522,63 @@ pub(super) fn package_for(
             &[],
         );
     }
-    Ok(Checked {
+    let checked = Checked {
         project,
         name,
         package,
         profile,
-    })
+    };
+    if fixed_langs(&checked.project, options.target).is_some() {
+        for file in &checked.package.files {
+            let source = Source::new(&file.path, &checked.project.root, &file.source)
+                .of_module(file.module.join("::"));
+            for diagnostic in checked.unpacked_shaders(file) {
+                out.source(Some(&source), &[], &diagnostic);
+            }
+        }
+    }
+    Ok(checked)
+}
+
+impl Checked {
+    /// Why a view of `file` cannot ship in a package of the languages the
+    /// build's profile fixes: a shader it paints with that does not build in
+    /// one of them. Nothing for a file that does not compile, which says so
+    /// already.
+    fn unpacked_shaders(&self, file: &viso_dsl::package::LoadedFile) -> Vec<Diagnostic> {
+        if file
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == viso_dsl::Severity::Error)
+        {
+            return Vec::new();
+        }
+        let origin = Origin {
+            package: self.name.clone(),
+            module: file.module.clone(),
+            language: self.language(),
+        };
+        let Ok(plan) = plan_view_for(&file.source, &origin, self.view_profile()) else {
+            return Vec::new();
+        };
+        match viso_dsl::aot::package_shaders(&plan, &self.profile.shader_langs) {
+            Ok(_) => Vec::new(),
+            Err(error) => vec![Diagnostic::error(
+                "E3711",
+                TextRange::empty(TextSize::from(0)),
+                format!(
+                    "a shader the view paints with does not build in {}, which the target's \
+                     package carries: {error}",
+                    self.profile
+                        .shader_langs
+                        .iter()
+                        .map(|lang| format!("{lang:?}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )],
+        }
+    }
 }
 
 /// What the project's targets are and how it is built, checked for
@@ -549,21 +615,66 @@ pub(super) fn profile(project: &Project, options: &Options) -> TargetProfile {
         i18n_strict: options.i18n_strict,
         messages: None,
         assets: None,
-        shader_langs: TargetProfile::default().shader_langs,
+        shader_langs: shader_langs(project, options.target),
+    }
+}
+
+/// The languages the package carries its shaders in for `target`: a device
+/// target's as its footprint profile fixes them, the reference
+/// interpreter's alone for any other.
+fn shader_langs(project: &Project, target: Option<Target>) -> Vec<ShaderLang> {
+    match fixed_langs(project, target) {
+        Some(langs) => langs
+            .iter()
+            .map(|lang| match lang {
+                ShaderLanguage::None => ShaderLang::None,
+                ShaderLanguage::Wgsl => ShaderLang::Wgsl,
+                ShaderLanguage::Glsl => ShaderLang::Glsl,
+                ShaderLanguage::SpirV => ShaderLang::SpirV,
+            })
+            .collect(),
+        None => TargetProfile::default().shader_langs,
+    }
+}
+
+/// The languages a device target's footprint profile fixes for its
+/// package; `None` for any other target, whose backend decides.
+fn fixed_langs(project: &Project, target: Option<Target>) -> Option<&'static [ShaderLanguage]> {
+    match target {
+        Some(Target::Device(name)) => project
+            .manifest
+            .targets
+            .device(name)
+            .and_then(DeviceTarget::shader_langs),
+        _ => None,
     }
 }
 
 /// The input devices of `target`, which each game input action needs a
 /// binding for: a desktop host's keyboard, mouse and gamepads, a phone's or
-/// a browser's touch besides, and a headless run's keyboard and pointer
-/// alone. Without a target, the host's and those of the mobile targets
-/// `Viso.toml` configures.
+/// a browser's touch besides, a headless run's keyboard and pointer alone,
+/// and a device target's as its profile has them: an embedded panel's touch
+/// and keys. Without a target, the host's and those of the mobile and device
+/// targets `Viso.toml` configures.
 fn devices(project: &Project, target: Option<Target>) -> InputDevices {
+    let targets = &project.manifest.targets;
     match target {
         None => InputDevices {
             gamepad: true,
-            touch: project.manifest.targets != Default::default(),
+            touch: targets.android != Default::default()
+                || targets.ios != Default::default()
+                || targets
+                    .devices
+                    .iter()
+                    .any(|device| footprint_devices(device.profile.value).touch),
         },
+        Some(Target::Device(name)) => targets.device(name).map_or(
+            InputDevices {
+                gamepad: true,
+                touch: false,
+            },
+            |device| footprint_devices(device.profile.value),
+        ),
         Some(Target::Host) => InputDevices {
             gamepad: true,
             touch: false,
@@ -581,6 +692,24 @@ fn devices(project: &Project, target: Option<Target>) -> InputDevices {
     }
 }
 
+/// The input devices a board of `footprint` has.
+fn footprint_devices(footprint: Footprint) -> InputDevices {
+    match footprint {
+        Footprint::Desktop => InputDevices {
+            gamepad: true,
+            touch: false,
+        },
+        Footprint::Mobile | Footprint::Web => InputDevices {
+            gamepad: true,
+            touch: true,
+        },
+        Footprint::EmbeddedGpu | Footprint::EmbeddedCpu => InputDevices {
+            gamepad: false,
+            touch: true,
+        },
+    }
+}
+
 /// A manifest span as the compiler's range into `Viso.toml`.
 fn text_range(span: Span) -> TextRange {
     TextRange::new(TextSize::new(span.start), TextSize::new(span.end))
@@ -588,4 +717,57 @@ fn text_range(span: Span) -> TextRange {
 
 fn relative<'a>(root: &Path, path: &'a Path) -> &'a Path {
     path.strip_prefix(root).unwrap_or(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project(manifest: &str) -> Project {
+        Project {
+            root: std::path::PathBuf::from("/p"),
+            manifest: viso_project::Manifest::parse("/p/Viso.toml", manifest)
+                .ok()
+                .unwrap(),
+            members: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// A device target's profile fixes the languages its package carries
+    /// and the input its board has.
+    #[test]
+    fn a_device_target_is_checked_for_its_profile() {
+        let boards = project(
+            "[package]\nname = \"hmi\"\n\n[target.panel]\nprofile = \"embedded-gpu\"\n\n\
+             [target.kiosk]\nprofile = \"embedded-cpu\"\n\n[target.wall]\nprofile = \"desktop\"\n",
+        );
+        let of = |target: Option<Target>| {
+            profile(
+                &boards,
+                &Options {
+                    target,
+                    ..Options::default()
+                },
+            )
+        };
+        assert_eq!(
+            of(Some(Target::device("panel"))).shader_langs,
+            [ShaderLang::Glsl]
+        );
+        let kiosk = of(Some(Target::device("kiosk")));
+        assert_eq!(kiosk.shader_langs, [ShaderLang::None]);
+        assert!(kiosk.devices.touch && !kiosk.devices.gamepad);
+        let wall = of(Some(Target::device("wall")));
+        assert_eq!(wall.shader_langs, TargetProfile::default().shader_langs);
+        assert!(!wall.devices.touch && wall.devices.gamepad);
+        assert_eq!(
+            of(Some(Target::Host)).shader_langs,
+            TargetProfile::default().shader_langs
+        );
+        // Without a target the boards' touch counts, as a phone's does.
+        assert!(of(None).devices.touch);
+        let bare = project("[package]\nname = \"a\"\n");
+        assert!(!profile(&bare, &Options::default()).devices.touch);
+    }
 }

@@ -1,7 +1,14 @@
 //! Runtime values.
 
-use std::fmt;
-use std::rc::Rc;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::borrow::Borrow;
+use core::fmt;
+use core::hash::{Hash, Hasher};
+use core::ops::Deref;
 
 use crate::native::NativeHandle;
 
@@ -33,7 +40,7 @@ pub enum Value {
     /// as `f32`.
     Float(f64),
     /// A `String`.
-    Str(Rc<String>),
+    Str(Rc<Text>),
     /// A `List`.
     List(Rc<Vec<Value>>),
     /// An aggregate.
@@ -44,7 +51,7 @@ pub enum Value {
     Handle(Rc<NativeHandle>),
 }
 
-const _: () = assert!(std::mem::size_of::<Value>() == 16);
+const _: () = assert!(core::mem::size_of::<Value>() == 16);
 
 /// A record, tuple, range or payload enum variant.
 #[derive(Clone, Debug, PartialEq)]
@@ -73,7 +80,7 @@ impl Value {
 
     /// A `String`.
     pub fn str(s: impl Into<String>) -> Value {
-        Value::Str(Rc::new(s.into()))
+        Value::Str(Rc::new(Text::Owned(s.into())))
     }
 
     /// The integer, if this is `Int`.
@@ -113,7 +120,7 @@ impl Value {
     /// allocation of it charges against the memory budget.
     pub(crate) fn heap_bytes(&self) -> u64 {
         const HEADER: u64 = 16;
-        let slot = std::mem::size_of::<Value>() as u64;
+        let slot = core::mem::size_of::<Value>() as u64;
         match self {
             Value::Nil | Value::Int(_) | Value::Float(_) => 0,
             Value::Str(s) => HEADER + s.len() as u64,
@@ -162,5 +169,140 @@ impl fmt::Debug for Value {
             Value::Closure(c) => write!(f, "closure fn#{}", c.func),
             Value::Handle(h) => write!(f, "{h:?}"),
         }
+    }
+}
+
+/// Text a module carries — a name, a string constant — or a `String` value
+/// holds: owned, or borrowed from the `'static` blob a release build embeds,
+/// so loading an embedded module copies none of its text
+/// ([`Module::decode_static`](crate::Module::decode_static)).
+///
+/// It reads, compares, orders and hashes as the `str` it holds, whichever way
+/// it holds it.
+#[derive(Clone)]
+pub enum Text {
+    /// Borrowed from a `'static` blob.
+    Static(&'static str),
+    /// Owned.
+    Owned(String),
+}
+
+impl Text {
+    /// The text.
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Text::Static(s) => s,
+            Text::Owned(s) => s,
+        }
+    }
+}
+
+impl Default for Text {
+    fn default() -> Text {
+        Text::Static("")
+    }
+}
+
+impl Deref for Text {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for Text {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for Text {
+    #[inline]
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<&str> for Text {
+    fn from(s: &str) -> Text {
+        Text::Owned(s.to_owned())
+    }
+}
+
+impl From<String> for Text {
+    fn from(s: String) -> Text {
+        Text::Owned(s)
+    }
+}
+
+impl From<Box<str>> for Text {
+    fn from(s: Box<str>) -> Text {
+        Text::Owned(s.into())
+    }
+}
+
+impl From<&String> for Text {
+    fn from(s: &String) -> Text {
+        Text::Owned(s.clone())
+    }
+}
+
+impl PartialEq for Text {
+    #[inline]
+    fn eq(&self, other: &Text) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for Text {}
+
+impl PartialEq<str> for Text {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for Text {
+    #[inline]
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialOrd for Text {
+    #[inline]
+    fn partial_cmp(&self, other: &Text) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Text {
+    #[inline]
+    fn cmp(&self, other: &Text) -> core::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl Hash for Text {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl fmt::Debug for Text {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl fmt::Display for Text {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }

@@ -260,6 +260,7 @@ use crate::component::NodeStore;
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
 use crate::hit_test::HitTestTree;
+use crate::layout::OnAxis;
 use crate::layout::{Axis, Vec2};
 use crate::node::NodeId;
 use crate::state::StateStore;
@@ -561,7 +562,7 @@ fn can_scroll(store: &NodeStore, from: NodeId, axis: Axis, delta: f32) -> bool {
                 return true;
             }
         }
-        node = store.arena().links(n).and_then(|l| l.parent);
+        node = store.arena().parent(n);
     }
     false
 }
@@ -659,7 +660,7 @@ fn scroll_chain(store: &mut NodeStore, target: NodeId, delta: Vec2) -> bool {
                 }
             }
         }
-        node = store.arena().links(n).and_then(|l| l.parent);
+        node = store.arena().parent(n);
     }
 
     consumed
@@ -697,7 +698,7 @@ fn dispatch_chain(
     // reversing in place: chain[0] = root … chain[n-1] = target.
     chain.push(target);
     let mut cur = target;
-    while let Some(parent) = store.arena().links(cur).and_then(|l| l.parent) {
+    while let Some(parent) = store.arena().parent(cur) {
         chain.push(parent);
         cur = parent;
     }
@@ -1057,10 +1058,8 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
         // Push children so the first child is visited next: gather them, then
         // push in reverse so the leftmost is popped first.
         let mut kids: Vec<NodeId> = Vec::new();
-        let mut child = store.arena().links(node).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in store.arena().children(node) {
             kids.push(c);
-            child = store.arena().links(c).and_then(|l| l.next_sibling);
         }
         for &c in kids.iter().rev() {
             stack.push(c);
@@ -1151,7 +1150,7 @@ pub fn unpark_focus(store: &mut NodeStore, parked: ParkedFocus) {
 
 /// The root of the tree `node` is linked into.
 fn topmost(store: &NodeStore, mut node: NodeId) -> NodeId {
-    while let Some(parent) = store.arena().links(node).and_then(|l| l.parent) {
+    while let Some(parent) = store.arena().parent(node) {
         node = parent;
     }
     node
@@ -2969,12 +2968,8 @@ mod tests {
         let consumed = route_scroll(&mut store, viewport, wheel(50.0, 50.0, 0.0, 40.0));
         assert!(consumed);
         assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 40.0 });
-        // A scroll dirties only transform/hit-test/paint, never layout/measure.
-        let d = store.dirty(viewport);
-        assert!(d.contains(DirtyClass::TRANSFORM));
-        assert!(d.contains(DirtyClass::HIT_TEST));
-        assert!(d.contains(DirtyClass::PAINT));
-        assert!(!d.intersects(DirtyClass::LAYOUT | DirtyClass::MEASURE));
+        // A scroll only moves its content: TRANSFORM, nothing else.
+        assert_eq!(store.dirty(viewport), DirtyClass::TRANSFORM);
     }
 
     #[test]

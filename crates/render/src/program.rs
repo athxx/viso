@@ -259,6 +259,13 @@ impl ProgramTable {
         self.clock_instances
     }
 
+    /// The time the program in `slot` reads, `None` for a program that reads
+    /// none (or an empty slot): what, beyond its parameters, its pixels follow.
+    pub(crate) fn clock(&self, slot: ProgramSlot) -> Option<f32> {
+        let installed = self.slots.get(slot.0 as usize)?.as_ref()?;
+        installed.layout.reads_time().then_some(self.time)
+    }
+
     /// The pipeline built from `code` for `abi`, if the table holds one.
     pub(crate) fn cached(&self, code: &ProgramCode, abi: ProgramAbi) -> Option<PipelineId> {
         self.pipelines
@@ -629,7 +636,7 @@ fn check_layout(layout: &BrushLayout) -> Result<(), ProgramError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viso_gpu::HeadlessRaster;
+    use viso_gpu::CpuRaster;
 
     fn layout(stride: u32) -> BrushLayout {
         BrushLayout {
@@ -648,7 +655,7 @@ mod tests {
 
     #[test]
     fn a_run_starts_aligned_and_an_extending_draw_follows_its_run() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         // A Vulkan-like alignment over a stride that does not divide it.
         let mut table = ProgramTable::new(256);
         let pipeline = PipelineId {
@@ -696,7 +703,7 @@ mod tests {
         use viso_gpu::{SamplerDesc, TextureDesc, TextureFormat};
         use viso_shader::program::BrushTexture;
 
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let mut table = ProgramTable::new(4);
         let pipeline = PipelineId {
             index: 0,
@@ -712,7 +719,7 @@ mod tests {
         table
             .set(&mut gpu, ProgramSlot(0), pipeline, sampled, vec![sampler])
             .unwrap();
-        let texture = |gpu: &mut HeadlessRaster| {
+        let texture = |gpu: &mut CpuRaster| {
             gpu.create_texture(&TextureDesc {
                 width: 1,
                 height: 1,
@@ -754,7 +761,7 @@ mod tests {
 
     #[test]
     fn a_pipeline_is_kept_by_its_code_and_idles_within_a_bound() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let mut table = ProgramTable::new(4);
         let id = |index| PipelineId {
             index,

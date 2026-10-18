@@ -30,19 +30,37 @@ pub mod handler;
 mod launch;
 mod locale;
 pub mod menu;
+#[cfg(any(
+    all(
+        feature = "kms",
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )
+    ),
+    all(feature = "emulate", target_os = "macos"),
+    test
+))]
+mod panel;
 pub mod time;
 pub mod wake;
 
-pub use accessibility::{AccessAction, AccessRequest, accesskit};
+pub use accessibility::{
+    AccessAction, AccessActions, AccessNode, AccessRequest, SemanticsDelta, SemanticsId,
+    SemanticsLive, SemanticsRect, SemanticsRole, SemanticsState,
+};
 pub use control::{
-    ControlFlow, DEFAULT_FRAME_BUDGET, LogicalRect, PlatformError, WindowChrome, WindowConfig,
-    WindowId,
+    ControlFlow, DEFAULT_FRAME_BUDGET, LogicalRect, PlatformCaps, PlatformError, WindowChrome,
+    WindowConfig, WindowId,
 };
 pub use event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
-    DisplayFeature, DisplayFeatureKind, Insets, KeyCode, Modifiers, PointerButtons, PointerId,
-    PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
-    clipboard_shortcut,
+    DisplayFeature, DisplayFeatureKind, KeyCode, LogicalInsets, Modifiers, PointerButtons,
+    PointerId, PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll,
+    RawText, clipboard_shortcut,
 };
 pub use handler::AppHandler;
 pub use launch::launch_var;
@@ -120,11 +138,12 @@ pub trait PlatformApp {
         let _ = (window, fullscreen);
     }
 
-    /// Publish an accessibility tree update for `window` (ADR 0030). The app
+    /// Publish a semantics delta for `window` (ADR 0030, ADR 0042). The app
     /// sends a full tree after [`AccessRequest::Activated`] and only changed
-    /// nodes after that. A no-op on backends without an accessibility bridge.
-    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
-        let _ = (window, update);
+    /// nodes after that. A no-op on backends without an accessibility bridge
+    /// ([`PlatformCaps::accessibility`] is `false`).
+    fn update_accessibility(&mut self, window: WindowId, delta: SemanticsDelta) {
+        let _ = (window, delta);
     }
 
     /// Programmatically close `window`, destroying its OS shell.
@@ -184,6 +203,11 @@ pub trait PlatformApp {
     /// caption and insets content by the reported safe area instead.
     fn framed_windows(&self) -> bool {
         true
+    }
+
+    /// What this backend offers beyond its one window.
+    fn capabilities(&self) -> PlatformCaps {
+        PlatformCaps::DESKTOP
     }
 
     /// A handle that wakes this loop from any thread with a

@@ -1,16 +1,31 @@
-//! Linux and the BSDs: a Wayland backend and an X11 backend, picked at
-//! startup from the session's environment (Wayland first when a compositor is
-//! advertised), with system appearance from the XDG desktop portal.
+//! Linux and the BSDs: a Wayland backend (`wayland`) and an X11 backend
+//! (`x11`), picked at startup from the session's environment (Wayland first
+//! when a compositor is advertised), with system appearance from the XDG
+//! desktop portal and AT-SPI accessibility; and, with the `kms` feature, a
+//! backend that drives the card directly where there is no display server at
+//! all (embedded Linux). A build with none of them reports no backend.
 //!
-//! Both backends share the event loop below. The OS side of each lives
+//! Every backend shares the event loop below. The OS side of each lives
 //! behind [`Display`]: read what the connection has ready, sleep on its file
 //! descriptor, finish the handshakes the handler answered. The handler runs
 //! with no borrow of backend state held, so the calls it makes back into the
 //! app during `run` see consistent state.
 
+// A build with no backend keeps the shared loop and reports `NoBackend`.
+#![cfg_attr(
+    not(any(feature = "x11", feature = "wayland", feature = "kms")),
+    allow(dead_code, unused_imports)
+)]
+
+#[cfg(any(feature = "x11", feature = "wayland"))]
 mod access;
+#[cfg(feature = "kms")]
+mod kms;
+#[cfg(any(feature = "x11", feature = "wayland"))]
 mod portal;
+#[cfg(feature = "wayland")]
 mod wayland;
+#[cfg(feature = "x11")]
 mod x11;
 mod xkb;
 
@@ -22,6 +37,7 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 
 use super::linux_translate as translate;
+#[cfg(any(feature = "x11", feature = "wayland"))]
 use crate::accessibility::AccessRequest;
 use crate::control::{ControlFlow, PlatformError, WindowId};
 use crate::event::{
@@ -37,11 +53,26 @@ use translate::{AccelTable, MenuAction, Session};
 pub(crate) fn create() -> Result<Box<dyn PlatformApp>, PlatformError> {
     let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
     let display = std::env::var("DISPLAY").ok();
+    let forced = std::env::var("VISO_SESSION").ok();
     let mut last = PlatformError::NoBackend;
-    for session in translate::session_order(wayland_display.as_deref(), display.as_deref()) {
+    for session in translate::session_order(
+        wayland_display.as_deref(),
+        display.as_deref(),
+        forced.as_deref(),
+    ) {
         let app = match session {
+            #[cfg(feature = "wayland")]
             Session::Wayland => wayland::WaylandApp::new().map(|a| Box::new(a) as Box<_>),
+            #[cfg(not(feature = "wayland"))]
+            Session::Wayland => Err(PlatformError::NoBackend),
+            #[cfg(feature = "x11")]
             Session::X11 => x11::X11App::new().map(|a| Box::new(a) as Box<_>),
+            #[cfg(not(feature = "x11"))]
+            Session::X11 => Err(PlatformError::NoBackend),
+            #[cfg(feature = "kms")]
+            Session::Kms => kms::KmsApp::new().map(|a| Box::new(a) as Box<_>),
+            #[cfg(not(feature = "kms"))]
+            Session::Kms => Err(PlatformError::NoBackend),
         };
         match app {
             Ok(app) => return Ok(app),
@@ -55,10 +86,13 @@ pub(crate) fn create() -> Result<Box<dyn PlatformApp>, PlatformError> {
 #[derive(Debug)]
 pub(crate) enum Wake {
     /// The portal reported a new system appearance.
+    #[cfg(any(feature = "x11", feature = "wayland"))]
     Appearance(Appearance),
     /// A clipboard read finished.
+    #[cfg_attr(not(feature = "wayland"), allow(dead_code))]
     Paste { window: WindowId, text: String },
     /// An assistive technology asked something of a window.
+    #[cfg(any(feature = "x11", feature = "wayland"))]
     Access {
         window: WindowId,
         request: AccessRequest,
@@ -146,6 +180,7 @@ pub(crate) fn wake_channel() -> io::Result<(Waker, WakeReceiver)> {
 
 /// Which of `fds` turned readable before `deadline` (`None` waits
 /// indefinitely). An interrupted wait returns with none readable.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) fn poll_readable<const N: usize>(
     fds: [RawFd; N],
     deadline: Option<Instant>,
@@ -196,11 +231,13 @@ pub(crate) struct Pump {
     pub(crate) appearance: Appearance,
     pub(crate) accels: AccelTable,
     /// Each window's accessibility adapter.
+    #[cfg(any(feature = "x11", feature = "wayland"))]
     access: Vec<(WindowId, access::LinuxAccess)>,
 }
 
 impl Pump {
     pub(crate) fn push(&mut self, event: RawEvent) {
+        #[cfg(any(feature = "x11", feature = "wayland"))]
         if let RawEvent::WindowFocused { window, focused } = event
             && let Some((_, access)) = self.access.iter_mut().find(|(w, _)| *w == window)
         {
@@ -211,14 +248,16 @@ impl Pump {
 
     /// Give `window` an accessibility adapter whose requests arrive through
     /// `waker`.
+    #[cfg(any(feature = "x11", feature = "wayland"))]
     pub(crate) fn attach_access(&mut self, window: WindowId, waker: &Waker) {
         self.access
             .push((window, access::LinuxAccess::attach(window, waker)));
     }
 
-    pub(crate) fn update_access(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+    #[cfg(any(feature = "x11", feature = "wayland"))]
+    pub(crate) fn update_access(&mut self, window: WindowId, delta: crate::SemanticsDelta) {
         if let Some((_, access)) = self.access.iter_mut().find(|(w, _)| *w == window) {
-            access.update(update);
+            access.update(delta);
         }
     }
 
@@ -243,13 +282,16 @@ impl Pump {
 
     pub(crate) fn forget_window(&mut self, window: WindowId) {
         self.redraws.retain(|w| *w != window);
+        #[cfg(any(feature = "x11", feature = "wayland"))]
         self.access.retain(|(w, _)| *w != window);
     }
 
     fn wake(&mut self, wake: Wake) {
         match wake {
+            #[cfg(any(feature = "x11", feature = "wayland"))]
             Wake::Appearance(appearance) => self.set_appearance(appearance),
             Wake::Paste { window, text } => self.push(RawEvent::Paste { window, text }),
+            #[cfg(any(feature = "x11", feature = "wayland"))]
             Wake::Access { window, request } => {
                 self.push(RawEvent::Accessibility { window, request });
             }
@@ -257,6 +299,7 @@ impl Pump {
         }
     }
 
+    #[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
     pub(crate) fn set_appearance(&mut self, appearance: Appearance) {
         if self.appearance != appearance {
             self.appearance = appearance;
@@ -363,13 +406,15 @@ pub(crate) trait Display {
     fn finish(&mut self, after: After);
 }
 
-/// Run the shared loop over `display` until the handler or the user exits.
+/// Run the shared loop over `display` until the handler or the user exits,
+/// lending `app` (the backend whose loop this is) to every delivery.
 pub(crate) fn run<D: Display>(
+    app: &mut dyn PlatformApp,
     display: &Rc<RefCell<D>>,
     wakes: &WakeReceiver,
     handler: &mut dyn AppHandler,
 ) {
-    if handler.handle(RawEvent::AppLaunched) == ControlFlow::Exit {
+    if handler.handle(app, RawEvent::AppLaunched) == ControlFlow::Exit {
         return;
     }
     let mut flow = ControlFlow::Wait;
@@ -390,7 +435,7 @@ pub(crate) fn run<D: Display>(
             next
         };
         if let Some(event) = next {
-            flow = deliver(display, handler, event);
+            flow = deliver(app, display, handler, event);
             if flow == ControlFlow::Exit {
                 break;
             }
@@ -412,7 +457,7 @@ pub(crate) fn run<D: Display>(
                 }
                 let idle = !display.borrow().pump_ref().has_work();
                 if idle && Instant::now() >= deadline {
-                    flow = deliver(display, handler, RawEvent::Wakeup);
+                    flow = deliver(app, display, handler, RawEvent::Wakeup);
                     if flow == ControlFlow::Exit {
                         break;
                     }
@@ -425,6 +470,7 @@ pub(crate) fn run<D: Display>(
 /// Hand one event to the handler, with no backend borrow held, then finish
 /// its handshake.
 fn deliver<D: Display>(
+    app: &mut dyn PlatformApp,
     display: &Rc<RefCell<D>>,
     handler: &mut dyn AppHandler,
     event: RawEvent,
@@ -442,7 +488,7 @@ fn deliver<D: Display>(
         RawEvent::RedrawRequested { window } => Some(Pending::Redrawn(*window)),
         _ => None,
     };
-    let flow = handler.handle(event);
+    let flow = handler.handle(app, event);
     let after = match pending {
         Some(Pending::Copy(reply)) => reply.take().map(After::Copy),
         Some(Pending::Close(accept, window)) => {

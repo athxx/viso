@@ -1,10 +1,12 @@
 //! The command grammar.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueHint};
+use clap::builder::{EnumValueParser, PossibleValue, TypedValueParser};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
 use clap_complete::ArgValueCandidates;
 
 use crate::complete;
@@ -148,12 +150,95 @@ pub enum Command {
     Test(TestArgs),
 }
 
+/// A positional target: one of the built-in targets `T` names, or a device
+/// target `Viso.toml` declares as `[target.<name>]`, by its name. Whether the
+/// manifest declares it is the project's question, answered when the
+/// configuration resolves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetArg<T> {
+    /// A built-in target.
+    Builtin(T),
+    /// A device target's name.
+    Device(String),
+}
+
+impl<T: Copy> TargetArg<T> {
+    /// The target it names, a built-in one as `builtin` maps it.
+    pub fn target(&self, builtin: impl FnOnce(T) -> viso_project::Target) -> viso_project::Target {
+        match self {
+            TargetArg::Builtin(target) => builtin(*target),
+            TargetArg::Device(name) => viso_project::Target::device(name),
+        }
+    }
+}
+
+/// Parses a [`TargetArg`]: a value `T` names is the built-in target, any other
+/// word a device target's name could be is that name. A built-in target's
+/// name `T` leaves out, a platform's (`macos`), or a word no device target
+/// could take, is the usage error `T`'s own parser gives, listing `T`'s
+/// values.
+#[derive(Clone)]
+pub struct TargetParser<T>(PhantomData<T>);
+
+impl<T> TargetParser<T> {
+    pub fn new() -> Self {
+        TargetParser(PhantomData)
+    }
+}
+
+impl<T> Default for TargetParser<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: ValueEnum + Clone + Send + Sync + 'static> TypedValueParser for TargetParser<T> {
+    type Value = TargetArg<T>;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &OsStr,
+    ) -> Result<TargetArg<T>, clap::Error> {
+        if let Some(text) = value.to_str() {
+            let builtin = T::value_variants().iter().find(|variant| {
+                variant
+                    .to_possible_value()
+                    .is_some_and(|possible| possible.matches(text, false))
+            });
+            if let Some(builtin) = builtin {
+                return Ok(TargetArg::Builtin(builtin.clone()));
+            }
+            if viso_project::device_target_name(text).is_ok() {
+                return Ok(TargetArg::Device(text.to_owned()));
+            }
+        }
+        EnumValueParser::<T>::new()
+            .parse_ref(cmd, arg, value)
+            .map(TargetArg::Builtin)
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        Some(Box::new(
+            T::value_variants()
+                .iter()
+                .filter_map(ValueEnum::to_possible_value),
+        ))
+    }
+}
+
 /// What `viso build` builds.
 #[derive(Debug, Args)]
 pub struct BuildArgs {
-    /// What to build for: this machine when omitted.
-    #[arg(value_enum)]
-    pub target: Option<BuildTarget>,
+    /// What to build for: this machine when omitted, or a device target of
+    /// `Viso.toml` by its name.
+    #[arg(
+        value_name = "TARGET",
+        value_parser = TargetParser::<BuildTarget>::new(),
+        add = ArgValueCandidates::new(complete::targets::<BuildTarget>),
+    )]
+    pub target: Option<TargetArg<BuildTarget>>,
     /// Build the release profile: `--profile release`.
     #[arg(long)]
     pub release: bool,
@@ -379,10 +464,14 @@ impl Edition {
 #[derive(Debug, Args)]
 pub struct CheckArgs {
     /// The target the sources are checked for: its configuration and the
-    /// input its devices have. The host and the targets `Viso.toml`
-    /// configures when none is named.
-    #[arg(value_enum)]
-    pub target: Option<BuildTarget>,
+    /// input its devices have; a device target of `Viso.toml` by its name. The
+    /// host and the targets `Viso.toml` configures when none is named.
+    #[arg(
+        value_name = "TARGET",
+        value_parser = TargetParser::<BuildTarget>::new(),
+        add = ArgValueCandidates::new(complete::targets::<BuildTarget>),
+    )]
+    pub target: Option<TargetArg<BuildTarget>>,
     /// Check again after every change to the sources, until Ctrl-C.
     #[arg(long)]
     pub watch: bool,
@@ -1010,9 +1099,15 @@ pub enum RunTarget {
 /// What `viso run` runs, and passes on.
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Where to run: this machine when omitted.
-    #[arg(value_enum)]
-    pub target: Option<RunTarget>,
+    /// Where to run: this machine when omitted; a device target of
+    /// `Viso.toml` by its name, on the board its `deploy` names, or here
+    /// when this machine is the board.
+    #[arg(
+        value_name = "TARGET",
+        value_parser = TargetParser::<RunTarget>::new(),
+        add = ArgValueCandidates::new(complete::targets::<RunTarget>),
+    )]
+    pub target: Option<TargetArg<RunTarget>>,
     /// The simulator or emulator profile (`ios` and `android` only).
     #[arg(long, value_name = "ID", add = ArgValueCandidates::new(complete::device_ids))]
     pub device: Option<String>,
@@ -1036,6 +1131,10 @@ pub struct RunArgs {
     /// Open the page in a browser (`web-*` only), under `--json` too.
     #[arg(long)]
     pub open: bool,
+    /// Run an `embedded-cpu` device target in a window on this Mac, with
+    /// its panel's size, format and rotation, its budgets and its workers.
+    #[arg(long)]
+    pub emulate: bool,
     /// A variable the app is launched with; repeatable. A value whose name
     /// looks secret is never printed.
     #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_env)]
@@ -1552,7 +1651,7 @@ mod tests {
                 .unwrap()
                 .command,
             Command::Run(RunArgs {
-                target: Some(RunTarget::Headless),
+                target: Some(TargetArg::Builtin(RunTarget::Headless)),
                 ..
             })
         ));
@@ -1561,18 +1660,68 @@ mod tests {
             Cli::try_parse_from(["viso", "run", "android", "--device", "pixel-local"]).unwrap();
         assert!(matches!(
             &cli.command,
-            Command::Run(RunArgs { target: Some(RunTarget::Android), device: Some(d), .. }) if d == "pixel-local"
+            Command::Run(RunArgs { target: Some(TargetArg::Builtin(RunTarget::Android)), device: Some(d), .. }) if d == "pixel-local"
         ));
         let cli = Cli::try_parse_from(["viso", "run", "web-gpu", "--browser", "none"]).unwrap();
         assert!(matches!(
             &cli.command,
             Command::Run(RunArgs {
-                target: Some(RunTarget::WebGpu),
+                target: Some(TargetArg::Builtin(RunTarget::WebGpu)),
                 browser: Some(_),
                 ..
             })
         ));
         assert!(!wants_json(&["run", "--", "--json"]));
+    }
+
+    /// A word that is no built-in target is a device target's name, for the
+    /// project to know; a built-in target the command does not take, and a
+    /// word no device target could be named, are usage errors.
+    #[test]
+    fn a_positional_target_is_built_in_or_a_device_targets_name() {
+        let cli = Cli::try_parse_from(["viso", "build", "panel", "--release"]).unwrap();
+        assert!(matches!(
+            &cli.command,
+            Command::Build(BuildArgs { target: Some(TargetArg::Device(name)), release: true }) if name == "panel"
+        ));
+        let cli = Cli::try_parse_from(["viso", "build", "ios"]).unwrap();
+        assert!(matches!(
+            &cli.command,
+            Command::Build(BuildArgs {
+                target: Some(TargetArg::Builtin(BuildTarget::Ios)),
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(["viso", "run", "panel"]).unwrap();
+        assert!(matches!(
+            &cli.command,
+            Command::Run(RunArgs { target: Some(TargetArg::Device(name)), .. }) if name == "panel"
+        ));
+        let cli = Cli::try_parse_from(["viso", "check", "kiosk-2"]).unwrap();
+        assert!(matches!(
+            &cli.command,
+            Command::Check(CheckArgs { target: Some(TargetArg::Device(name)), .. }) if name == "kiosk-2"
+        ));
+        for argv in [
+            ["viso", "build", "host"],
+            ["viso", "run", "linux"],
+            ["viso", "build", "Panel"],
+            ["viso", "run", "my/panel"],
+        ] {
+            let error = Cli::try_parse_from(argv).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::InvalidValue,
+                "{argv:?}"
+            );
+            assert!(error.to_string().contains("web-gpu"), "{argv:?}: {error}");
+        }
+        assert_eq!(
+            TargetArg::<BuildTarget>::Device("panel".into())
+                .target(BuildTarget::target)
+                .as_str(),
+            "panel"
+        );
     }
 
     #[test]

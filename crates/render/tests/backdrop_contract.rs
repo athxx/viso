@@ -19,7 +19,7 @@
 //! vs full-screen) and pick scene geometry that is unambiguous under any sane
 //! threshold.
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureFormat};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureFormat};
 use viso_render::{Border, FrameStats, LayerClip, Primitive, Quad, Rect, Renderer, Rgba};
 
 /// The blur reach a backdrop pads its clip by, per side, in pixels: the same
@@ -30,8 +30,8 @@ fn reach(sigma: f32) -> f32 {
     (3.0 * sigma).ceil()
 }
 
-fn renderer(w: u32, h: u32) -> (HeadlessRaster, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer(w: u32, h: u32) -> (CpuRaster, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
@@ -77,7 +77,7 @@ fn background() -> Primitive {
     quad(rect(0.0, 0.0, 512.0, 512.0))
 }
 
-fn frame(r: &mut Renderer, gpu: &mut HeadlessRaster, primitives: &[Primitive]) -> FrameStats {
+fn frame(r: &mut Renderer, gpu: &mut CpuRaster, primitives: &[Primitive]) -> FrameStats {
     r.upload(gpu, primitives);
     r.frame_stats()
 }

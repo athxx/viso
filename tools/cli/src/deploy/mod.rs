@@ -18,15 +18,21 @@
 //!   its glue, and the web dev server ([`web`]) serves it with the dev
 //!   variables in the page and carries its dev channel; a restart serves the
 //!   new bundle and has the open pages load it.
+//! - A device target's board ([`board`]): the executable is copied to it and
+//!   started over SSH with the dev variables in its environment; its output
+//!   and its exit status come back over the connection.
 //!
 //! A restart installs the new artifact only once it is built and packaged
 //! and the old app has handed over its snapshot, so the old app runs on
 //! through the build.
 
+pub(crate) mod board;
 pub(crate) mod web;
 
 #[cfg(all(test, unix))]
 mod android_fake;
+#[cfg(all(test, unix))]
+mod board_fake;
 #[cfg(all(test, unix))]
 mod ios_fake;
 
@@ -38,13 +44,13 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use viso_package::android::{self, Abi, Sdk, Shell};
-use viso_package::{apple, web as bundle};
-use viso_project::{DeviceProfile, Profile, Target};
-use viso_view::dev::wire::{
+use viso_dev_protocol::wire::{
     DEV_BUILD_ENV, DEV_PREWARM_ENV, DEV_RESTORE_ENV, DEV_RUNTIME_ENV, DEV_SESSION_ENV,
     DEV_TOKEN_ENV, DEV_WINDOW_ENV, WindowGeometry,
 };
+use viso_package::android::{self, Abi, Sdk, Shell};
+use viso_package::{apple, web as bundle};
+use viso_project::{DeviceProfile, Profile, Target};
 
 use crate::build::cargo::Package;
 use crate::build::{RustPlan, rust_plan};
@@ -109,6 +115,8 @@ pub(crate) enum Deploy {
         shell: Shell,
         reversed: Option<u16>,
     },
+    /// A device target's board, over SSH.
+    Board(Box<board::Board>),
     /// The pages `server` serves; the first launch opens `browser` (the
     /// default one when `None`) unless it is not to `open` one.
     Browser {
@@ -172,6 +180,8 @@ enum Stop {
         package: String,
         pid: u32,
     },
+    /// A signal sent over SSH to the app on the board.
+    Board(board::Remote),
     /// Nothing: a page is not stopped from here.
     Page,
 }
@@ -251,6 +261,12 @@ impl App {
             Stop::Simulator {
                 exits: Some(exits), ..
             } => Box::new(|| exits.record()),
+            Stop::Board(_) => {
+                return Ok(Some(match board::ended(status) {
+                    Some(how) => Ended::Recorded { clean: false, how },
+                    None => Ended::Status(status),
+                }));
+            }
             _ => return Ok(Some(Ended::Status(status))),
         };
         let since = Instant::now();
@@ -278,6 +294,7 @@ impl App {
             Stop::Emulator {
                 device, package, ..
             } => device.force_stop(package),
+            Stop::Board(remote) => remote.signal("TERM"),
             Stop::Page => self.ended.set(true),
         }
     }
@@ -290,6 +307,7 @@ impl App {
             Stop::Emulator {
                 device, package, ..
             } => device.force_stop(package),
+            Stop::Board(remote) => remote.signal("KILL"),
             Stop::Page => self.ended.set(true),
         }
         if let Some(process) = &mut self.process {
@@ -346,15 +364,20 @@ fn signal(child: &Child) {
 }
 
 impl Deploy {
-    /// How the dev artifact is built for this deploy.
+    /// How the dev artifact is built for this deploy; a board's build is
+    /// its device target's.
     pub(crate) fn plan(&self) -> BuildPlan {
         match self {
+            Deploy::Board(_) => BuildPlan {
+                rust: RustPlan::default(),
+                package: None,
+            },
             Deploy::Host { .. } => BuildPlan {
-                rust: rust_plan(Target::Host, Profile::Dev, None),
+                rust: rust_plan(Target::Host, None, Profile::Dev, None),
                 package: None,
             },
             Deploy::Simulator { .. } => BuildPlan {
-                rust: rust_plan(Target::Ios, Profile::Dev, None),
+                rust: rust_plan(Target::Ios, None, Profile::Dev, None),
                 package: Some(once_per_executable(|exe, bin, dir| {
                     let app = apple::bundle(exe, dir, &apple::Info::dev(bin), true)?;
                     apple::sign(&app.path, None, None, &dir.join("sign"))?;
@@ -365,7 +388,7 @@ impl Deploy {
                 let abi = Abi::host();
                 let (sdk, shell) = (sdk.clone(), shell.clone());
                 BuildPlan {
-                    rust: rust_plan(Target::Android, Profile::Dev, Some(&sdk)),
+                    rust: rust_plan(Target::Android, None, Profile::Dev, Some(&sdk)),
                     package: Some(once_per_executable(move |exe, bin, dir| {
                         sdk.package(&android::Packing::dev(
                             exe,
@@ -384,7 +407,7 @@ impl Deploy {
                 // while the next is written.
                 let turn = std::sync::atomic::AtomicBool::new(false);
                 BuildPlan {
-                    rust: rust_plan(Target::WebGpu, Profile::Dev, None),
+                    rust: rust_plan(Target::WebGpu, None, Profile::Dev, None),
                     package: Some(once_per_executable(move |exe, bin, dir| {
                         let slot = if turn.fetch_xor(true, std::sync::atomic::Ordering::Relaxed) {
                             "web-b"
@@ -401,14 +424,19 @@ impl Deploy {
         }
     }
 
-    /// Runs the new executable `artifact` once to exit as it starts, while
-    /// the old app runs on: the desktop checks a newly linked executable at
-    /// its first launch. `None` where there is nothing to warm.
+    /// Readies the new executable `artifact` while the old app runs on, a
+    /// process that ends when it is ready: on the desktop, a run of it that
+    /// exits as it starts, since the desktop checks a newly linked
+    /// executable at its first launch; on a board, its copy beside the old
+    /// one. `None` where there is nothing to ready.
     pub(crate) fn prewarm(
         &self,
         artifact: &Path,
         args: &[OsString],
     ) -> Option<std::io::Result<Child>> {
+        if let Deploy::Board(board) = self {
+            return Some(board.stage(artifact));
+        }
         let Deploy::Host { cwd } = self else {
             return None;
         };
@@ -422,6 +450,18 @@ impl Deploy {
                 .stderr(Stdio::null())
                 .launch(),
         )
+    }
+
+    /// What readying the new executable is, as the session reports it, and
+    /// how long it may take before the restart goes on without it.
+    pub(crate) fn prewarm_says(&self) -> (&'static str, Duration) {
+        match self {
+            Deploy::Board(_) => (
+                "copying the new build to the board",
+                Duration::from_secs(300),
+            ),
+            _ => ("starting the new build once", Duration::from_secs(10)),
+        }
     }
 
     /// Installs and starts `artifact` with `args` and the dev variables of
@@ -448,6 +488,10 @@ impl Deploy {
                     .launch()
                     .map_err(|e| format!("cannot launch `{}`: {e}", artifact.display()))?;
                 Ok(App::of(process, Vec::new(), Stop::Signal))
+            }
+            Deploy::Board(board) => {
+                let process = board.launch(artifact, args, &vars.of(restore, window), piped)?;
+                Ok(App::of(process, Vec::new(), Stop::Board(board.remote())))
             }
             Deploy::Simulator { profile } => {
                 let udid = profile.device.clone();

@@ -15,3 +15,8 @@ rust-version.workspace = true
 # compatibility lives in integrations/serde, not here; RON and image/audio/video
 # media codecs are out of scope. It must never depend on any framework crate.
 [dependencies]
+
+[features]
+default = ["std"]
+# `std::io::Error` from a `DecodeError`.
+std = []

@@ -187,6 +187,44 @@ impl RustScope {
     }
 }
 
+/// Whether the package of `manifest`, a canonical path, depends on the
+/// facade with its default features on, as its manifest says: an embedded
+/// build then links the desktop stack whatever features it turns off.
+/// `None` when Cargo does not answer or the package has no `viso`.
+pub(crate) fn facade_defaults(manifest: &Path, cargo_args: &[OsString]) -> Option<bool> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let mut command = Command::new(&cargo);
+    command
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .args(cargo_args)
+        .arg("--manifest-path")
+        .arg(manifest);
+    let output = crate::process::capture(&mut command, None).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    defaults_of(&JsonValue::parse(&output.stdout).ok()?, manifest)
+}
+
+/// Whether `metadata` has the package of `manifest` depend on the facade, as
+/// a normal dependency, with its default features.
+fn defaults_of(metadata: &JsonValue, manifest: &Path) -> Option<bool> {
+    let package = metadata.get("packages")?.as_array()?.iter().find(|p| {
+        p.get("manifest_path")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|m| Path::new(m) == manifest)
+    })?;
+    let viso = package
+        .get("dependencies")?
+        .as_array()?
+        .iter()
+        .find(|dep| {
+            dep.get("name").and_then(JsonValue::as_str) == Some("viso")
+                && dep.get("kind").is_none_or(JsonValue::is_null)
+        })?;
+    viso.get("uses_default_features")?.as_bool()
+}
+
 /// Cargo's home, whose configuration every build reads: `$CARGO_HOME`, or
 /// `.cargo` in the user's home.
 fn cargo_home() -> Option<PathBuf> {
@@ -309,5 +347,25 @@ mod tests {
             .unwrap();
         assert!(scope.packages.contains(&dsl), "{:?}", scope.packages);
         assert!(scope.contains(&dsl.join("src/lib.rs")));
+    }
+
+    #[test]
+    fn the_facade_dependency_says_whether_it_keeps_its_defaults() {
+        let metadata = |defaults: bool| {
+            JsonValue::parse(&format!(
+                r#"{{"packages": [{{"manifest_path": "/w/app/Cargo.toml", "dependencies": [
+                    {{"name": "viso", "kind": "dev", "uses_default_features": true}},
+                    {{"name": "viso", "kind": null, "uses_default_features": {defaults}}}
+                ]}}]}}"#
+            ))
+            .unwrap()
+        };
+        let app = Path::new("/w/app/Cargo.toml");
+        assert_eq!(defaults_of(&metadata(true), app), Some(true));
+        assert_eq!(defaults_of(&metadata(false), app), Some(false));
+        assert_eq!(
+            defaults_of(&metadata(false), Path::new("/w/other/Cargo.toml")),
+            None
+        );
     }
 }

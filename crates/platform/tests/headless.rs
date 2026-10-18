@@ -32,7 +32,7 @@ impl Recorder {
 }
 
 impl AppHandler for Recorder {
-    fn handle(&mut self, event: RawEvent) -> ControlFlow {
+    fn handle(&mut self, _app: &mut dyn PlatformApp, event: RawEvent) -> ControlFlow {
         self.seen.borrow_mut().push(event);
         let flow = self
             .flows

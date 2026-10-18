@@ -40,7 +40,8 @@ fn flush(
     states.take_pending(&mut changed);
     let dirtied = computeds.wake_computed(&changed, states, store);
     let applied = store.flush_state_transactions(&changed, bindings);
-    let ran = effects.wake(&changed, states);
+    effects.wake(&changed);
+    let ran = effects.run_queued(states);
     (dirtied, applied, ran)
 }
 

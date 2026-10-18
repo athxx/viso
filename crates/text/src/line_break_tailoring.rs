@@ -21,8 +21,6 @@
 //! maps them honestly — `ja`/`zh`/`zh-*` to the CJK bucket, `ko` and the rest
 //! to the Latin bucket — rather than pretending to four distinct tables.
 
-use std::sync::OnceLock;
-
 use icu_locale_core::LanguageIdentifier;
 use icu_locale_core::subtags::{Language, language};
 use icu_segmenter::options::{
@@ -126,7 +124,7 @@ impl LineBreakTailoring {
             WordBreak::BreakAll => IcuWordOption::BreakAll,
             WordBreak::KeepAll => IcuWordOption::KeepAll,
         });
-        options.content_locale = self.cjk.then(cjk_content_locale);
+        options.content_locale = self.cjk.then_some(CJK_CONTENT_LOCALE);
         options
     }
 }
@@ -140,10 +138,7 @@ fn is_cjk_language(language: Language) -> bool {
     matches!(language, JA | ZH)
 }
 
-/// A shared `'static` `ja` identifier for the CJK bucket. Any `ja`/`zh`
-/// identifier flips the provider's `ja_zh` bit identically, so one owned value
-/// serves every CJK policy without leaking per-locale allocations.
-fn cjk_content_locale() -> &'static LanguageIdentifier {
-    static JA: OnceLock<LanguageIdentifier> = OnceLock::new();
-    JA.get_or_init(|| LanguageIdentifier::from(language!("ja")))
-}
+/// The `ja` identifier for the CJK bucket. Any `ja`/`zh` identifier flips
+/// the provider's `ja_zh` bit identically, so one constant serves every CJK
+/// policy.
+const CJK_CONTENT_LOCALE: &LanguageIdentifier = &icu_locale_core::langid!("ja");

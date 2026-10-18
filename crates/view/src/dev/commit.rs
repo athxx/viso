@@ -51,8 +51,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use viso_behavior::native::MigratableState;
+use viso_behavior::retype::RetypeValue;
 use viso_behavior::{Fault, Module, Value};
-use viso_ui::aot::{build_nodes, restyle_aot_node};
+use viso_ui::aot::{AotNode, build_nodes, restyle_aot_node};
+use viso_ui::shader::BrushProgram;
 use viso_ui::state::{StateKey, StateMigration};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -72,6 +74,7 @@ use crate::host::{HostError, ViewHost, cell_value, vm_value};
 pub use crate::inspect::static_nodes;
 use crate::regions::{ItemKey, mount_regions};
 use crate::scope::Scope;
+use crate::shaders::load_shaders;
 use crate::tasks::release_tasks;
 use crate::values::mount_values;
 use crate::{ViewPackage, ViewState};
@@ -82,15 +85,17 @@ use crate::{ViewPackage, ViewState};
 pub struct Candidate {
     pub package: ViewPackage,
     module: Option<Rc<Module>>,
+    shaders: Vec<Arc<BrushProgram>>,
 }
 
 impl Candidate {
-    /// Decodes and verifies `package`'s behavior module and checks it holds
-    /// the component the view mounts.
+    /// Decodes and verifies `package`'s behavior module, checks it holds the
+    /// component the view mounts, and loads its shaders.
     ///
     /// # Errors
     ///
-    /// A [`HostError`] when the module does not load or lacks the component.
+    /// A [`HostError`] when the module does not load or lacks the component,
+    /// or a shader is not a packed brush.
     pub fn load(package: ViewPackage) -> Result<Candidate, HostError> {
         let module = if package.behavior.is_empty() {
             None
@@ -101,18 +106,40 @@ impl Candidate {
             }
             Some(Rc::new(module))
         };
-        Ok(Candidate { package, module })
+        let shaders = load_shaders(&package.shaders).map_err(HostError::Shader)?;
+        Ok(Candidate {
+            package,
+            module,
+            shaders,
+        })
     }
 
     /// A candidate whose behavior module an in-process host already
     /// verified: `module` is `package.behavior` decoded.
-    pub fn verified(package: ViewPackage, module: Option<Rc<Module>>) -> Candidate {
-        Candidate { package, module }
+    ///
+    /// # Errors
+    ///
+    /// A [`HostError::Shader`] when a shader is not a packed brush.
+    pub fn verified(
+        package: ViewPackage,
+        module: Option<Rc<Module>>,
+    ) -> Result<Candidate, HostError> {
+        let shaders = load_shaders(&package.shaders).map_err(HostError::Shader)?;
+        Ok(Candidate {
+            package,
+            module,
+            shaders,
+        })
     }
 
     /// The verified behavior module, `None` for a view without behavior.
     pub fn module(&self) -> Option<&Rc<Module>> {
         self.module.as_ref()
+    }
+
+    /// The program of each shader of the view's table, in order.
+    pub fn shaders(&self) -> &[Arc<BrushProgram>] {
+        &self.shaders
     }
 
     /// The number of static nodes of the view.
@@ -295,7 +322,7 @@ fn commit_from(
         None => ViewHost::new(Rc::clone(module), &package.component),
     });
     if let Some(Ok(next)) = next.as_mut() {
-        next.set_shaders(package.shaders.iter().map(|s| Arc::clone(s.program())));
+        next.set_shaders(candidate.shaders.iter().cloned());
     }
     let mut changed = Vec::new();
     let cells = {
@@ -350,7 +377,7 @@ fn apply_structural(
         let nodes = std::mem::take(rt.nodes);
         for (node, live) in package.ui.nodes.iter().zip(&nodes) {
             if let Some(live) = *live {
-                restyle_aot_node(rt.store, rt.states, node, live);
+                restyle_aot_node(rt.store, rt.states, &node.record(), live);
             }
         }
         return (nodes, None);
@@ -384,10 +411,11 @@ fn rebuild(
     let mut placement = None;
     let old_root = rt.root;
     if let Some(old) = rt.root.take() {
-        let before = rt.store.arena().links(old).and_then(|l| l.next_sibling);
+        let before = rt.store.arena().next_sibling(old);
         placement = rt.store.parent(old).map(|parent| (parent, before));
         rt.store.free_tree(old, rt.effects, rt.scratch);
     }
+    rt.bindings.collect(rt.store, rt.states);
     let arena = rt.store.arena();
     rt.bindings.retain_static(|node| arena.is_live(node));
     rt.nodes.clear();
@@ -401,7 +429,11 @@ fn rebuild(
             rt.text_edits,
             rt.projectors,
         );
-        build_nodes(&mut cx, &package.ui.nodes, &mut nodes);
+        build_nodes(
+            &mut cx,
+            package.ui.nodes.iter().map(AotNode::record),
+            &mut nodes,
+        );
         cx.root()
     };
     if let (Some((parent, before)), Some(root)) = (placement, new_root) {
@@ -512,7 +544,7 @@ fn apply_structural_ops(
 
                 let is_root = rt.root == Some(live);
                 let parent = rt.store.parent(live);
-                let before = rt.store.arena().links(live).and_then(|l| l.next_sibling);
+                let before = rt.store.arena().next_sibling(live);
                 rt.store.free_tree(live, rt.effects, rt.scratch);
 
                 let mut built = Vec::new();
@@ -525,7 +557,7 @@ fn apply_structural_ops(
                         rt.text_edits,
                         rt.projectors,
                     );
-                    build_nodes(&mut cx, subtree, &mut built);
+                    build_nodes(&mut cx, subtree.iter().map(AotNode::record), &mut built);
                     cx.root()
                 };
                 if is_root {
@@ -571,7 +603,7 @@ fn apply_structural_ops(
                         rt.text_edits,
                         rt.projectors,
                     );
-                    build_nodes(&mut cx, subtree, &mut built);
+                    build_nodes(&mut cx, subtree.iter().map(AotNode::record), &mut built);
                     cx.root()
                 };
                 if let Some(root) = new_root {
@@ -685,8 +717,7 @@ pub(super) enum CarriedText {
 pub(super) fn active_child(store: &NodeStore, parent: NodeId) -> Option<u32> {
     let mut index = 0u32;
     let mut found = None;
-    let mut child = store.arena().links(parent).and_then(|l| l.first_child);
-    while let Some(id) = child {
+    for id in store.arena().children(parent) {
         if !store.hidden(id) {
             if found.is_some() {
                 return None;
@@ -694,7 +725,6 @@ pub(super) fn active_child(store: &NodeStore, parent: NodeId) -> Option<u32> {
             found = Some(index);
         }
         index += 1;
-        child = store.arena().links(id).and_then(|l| l.next_sibling);
     }
     found
 }
@@ -702,12 +732,12 @@ pub(super) fn active_child(store: &NodeStore, parent: NodeId) -> Option<u32> {
 /// Shows `node`'s immediate child at ordinal `index` and hides every other —
 /// the [`active_child`] carry's inverse, applied to the rebuilt node.
 fn restore_active_child(store: &mut NodeStore, node: NodeId, index: u32) {
+    let mut child = store.arena().first_child(node);
     let mut ordinal = 0u32;
-    let mut child = store.arena().links(node).and_then(|l| l.first_child);
     while let Some(id) = child {
         store.set_hidden(id, ordinal != index);
+        child = store.arena().next_sibling(id);
         ordinal += 1;
-        child = store.arena().links(id).and_then(|l| l.next_sibling);
     }
 }
 
@@ -800,10 +830,8 @@ fn census(rt: &mut LiveRuntime<'_>, root: NodeId) -> (bool, u32) {
     while let Some(node) = stack.pop() {
         focus |= focused == Some(node);
         scrolled += u32::from(rt.store.scroll(node) != Vec2::ZERO);
-        let mut child = rt.store.arena().links(node).and_then(|l| l.first_child);
-        while let Some(id) = child {
+        for id in rt.store.arena().children(node) {
             stack.push(id);
-            child = rt.store.arena().links(id).and_then(|l| l.next_sibling);
         }
     }
     (focus, scrolled)
@@ -1106,7 +1134,6 @@ fn rebind_static(
         let bound = rt
             .bindings
             .for_state(state)
-            .iter()
             .any(|binding| binding.node == node && binding.class == class);
         if !bound {
             marks.push((node, class));

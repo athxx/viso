@@ -15,4 +15,4 @@
 mod lower;
 
 pub use crate::vm::native_code::*;
-pub use lower::lower_systems;
+pub use lower::{lower_module, lower_systems};

@@ -1,6 +1,9 @@
 //! Off-main text work: paragraph shaping and line breaking, and exact-coverage
 //! glyph rasterization, run on a worker thread against face bytes the main
-//! thread hands over (§12.20, §14.4).
+//! thread hands over (§12.20, §14.4). A glyph a packaged face baked at its
+//! size is decoded from the face's pages instead of rasterized; a build
+//! without the `rasterizer` feature has nothing else, and draws a size it did
+//! not bake from the nearest one it did (§3.6).
 //!
 //! The unit of work is a whole paragraph. The worker keeps each paragraph's
 //! retained lines, applies the new text as a range edit, and lays it out with
@@ -18,14 +21,17 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle, ThreadId};
+use std::time::Duration;
 
 use viso_text::fallback::{FallbackPlanKey, FallbackStyle, FontFallback};
 use viso_text::inspect::{self, BudgetState, CacheKey, MissLedger};
 use viso_text::paragraph::{LineLayout, Paragraph, ShapedSegment, ShapedSpan};
+#[cfg(feature = "rasterizer")]
+use viso_text::rasterize_coverage;
 use viso_text::text_work::{JobKind, Priority, TextJob, TextWork};
 use viso_text::{
-    BaseDirection, Coverage, CoverageBitmap, Direction, FontFaceId, GlyphImageKind, GlyphKey,
-    LineBreakTailoring, Segmenter, ShapedGlyph, ShapedRun, Shaper, TextOffset, rasterize_coverage,
+    BakedFace, BaseDirection, Coverage, CoverageBitmap, Direction, FontFaceId, GlyphImageKind,
+    GlyphKey, LineBreakTailoring, Segmenter, ShapedGlyph, ShapedRun, Shaper, TextOffset,
 };
 
 /// Longest source substring the cross-paragraph span cache keeps. Labels,
@@ -72,10 +78,12 @@ pub(crate) struct LayoutJob {
 /// Messages from the main thread, sent in one batch per dispatch.
 #[derive(Debug)]
 pub(crate) enum ToWorker {
-    /// A face's bytes, sent once before any job that uses it.
+    /// A face's bytes, sent once before any job that uses it, with the pages
+    /// the build baked its glyphs into when it is a packaged face that did.
     Face {
         face: FontFaceId,
         data: FaceData,
+        baked: Option<BakedFace<'static>>,
     },
     /// The face was dropped: forget everything keyed by it.
     Forget(FontFaceId),
@@ -403,6 +411,12 @@ fn segment_bytes(span: &ShapedSpan) -> u64 {
 #[derive(Debug)]
 pub(crate) struct WorkerState {
     faces: HashMap<FontFaceId, FaceData>,
+    /// The faces of `faces` whose glyphs the build baked.
+    baked: HashMap<FontFaceId, BakedFace<'static>>,
+    /// Each face and size drawn from another size's baked glyphs, reported
+    /// once: a build without a rasterizer that did not bake a size it draws.
+    #[cfg(not(feature = "rasterizer"))]
+    resampled: HashSet<(FontFaceId, u16)>,
     coverage: Coverage,
     /// `coverage` built or dropped a set since a layout last reported it.
     coverage_changed: bool,
@@ -432,6 +446,9 @@ impl WorkerState {
     pub(crate) fn new(span_budget_bytes: u64) -> Self {
         Self {
             faces: HashMap::new(),
+            baked: HashMap::new(),
+            #[cfg(not(feature = "rasterizer"))]
+            resampled: HashSet::new(),
             coverage: Coverage::new(),
             coverage_changed: false,
             coverage_reported: 0,
@@ -455,8 +472,12 @@ impl WorkerState {
     fn accept(&mut self, batch: Vec<ToWorker>, out: &Sender<FromWorker>) {
         for message in batch {
             match message {
-                ToWorker::Face { face, data } => {
+                ToWorker::Face { face, data, baked } => {
                     self.faces.insert(face, data);
+                    match baked {
+                        Some(baked) => self.baked.insert(face, baked),
+                        None => self.baked.remove(&face),
+                    };
                 }
                 ToWorker::Forget(face) => self.forget_face(face),
                 ToWorker::Route { key, face } => {
@@ -609,16 +630,45 @@ impl WorkerState {
         (inspect::ENABLED && changed).then(|| self.coverage.ledger().clone())
     }
 
-    fn raster(&self, key: GlyphKey) -> Rastered {
-        let bitmap = self.faces.get(&key.face).and_then(|(bytes, index)| {
-            rasterize_coverage(bytes, *index, key.glyph, f32::from(key.bucket))
-        });
-        (key, bitmap)
+    /// The coverage of `key`: decoded from the face's baked pages when it
+    /// baked the size, otherwise rasterized from the outline.
+    fn raster(&mut self, key: GlyphKey) -> Rastered {
+        let baked = self.baked.get(&key.face);
+        if let Some(bitmap) = baked.and_then(|baked| baked.coverage(key.glyph, key.bucket)) {
+            return (key, Some(bitmap));
+        }
+        (key, self.unbaked(key))
+    }
+
+    #[cfg(feature = "rasterizer")]
+    fn unbaked(&mut self, key: GlyphKey) -> Option<CoverageBitmap> {
+        let (bytes, index) = self.faces.get(&key.face)?;
+        rasterize_coverage(bytes, *index, key.glyph, f32::from(key.bucket))
+    }
+
+    /// With no rasterizer linked, a size the face did not bake draws scaled
+    /// from the nearest one it did, and says so once per face and size.
+    #[cfg(not(feature = "rasterizer"))]
+    fn unbaked(&mut self, key: GlyphKey) -> Option<CoverageBitmap> {
+        let baked = self.baked.get(&key.face)?;
+        let from = baked.nearest_size(key.bucket)?;
+        if self.resampled.insert((key.face, key.bucket)) {
+            let sizes: Vec<String> = baked.sizes().map(|size| size.to_string()).collect();
+            eprintln!(
+                "viso: text at {} px draws scaled from the glyphs baked at {from} px: this build \
+                 links no rasterizer and bakes {} px; add {} to the target's `fonts.bake`",
+                key.bucket,
+                sizes.join(", "),
+                key.bucket,
+            );
+        }
+        baked.resampled(key.glyph, key.bucket)
     }
 
     /// Drop exactly what is keyed by `face`; every other face keeps its state.
     fn forget_face(&mut self, face: FontFaceId) {
         self.faces.remove(&face);
+        self.baked.remove(&face);
         self.coverage.forget(face);
         self.coverage_changed = true;
         self.spans.forget_face(face);
@@ -780,6 +830,22 @@ impl WorkerState {
     }
 
     #[cfg(test)]
+    pub(crate) fn add_baked_face(
+        &mut self,
+        face: FontFaceId,
+        data: FaceData,
+        baked: BakedFace<'static>,
+    ) {
+        self.faces.insert(face, data);
+        self.baked.insert(face, baked);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coverage_of(&mut self, key: GlyphKey) -> Option<CoverageBitmap> {
+        self.raster(key).1
+    }
+
+    #[cfg(test)]
     pub(crate) fn drop_face(&mut self, face: FontFaceId) {
         self.forget_face(face);
     }
@@ -855,13 +921,15 @@ impl std::fmt::Debug for TextWorker {
 
 impl TextWorker {
     /// Start the worker thread with a span cache of `span_budget_bytes`. A
-    /// target that cannot spawn threads runs the same state inline instead, on
-    /// the sending thread, and so does a headless build, whose every layout
-    /// lands on the frame that asked for it.
-    pub(crate) fn spawn(span_budget_bytes: u64) -> Self {
+    /// build with no worker threads (`threaded` false: the embedded-cpu
+    /// profile) or a target that cannot spawn them runs the same state inline
+    /// instead, on the main thread in idle slices ([`run_inline`](Self::run_inline));
+    /// a headless build runs it inline to completion, so every layout lands on
+    /// the frame that asked for it.
+    pub(crate) fn spawn(span_budget_bytes: u64, threaded: bool) -> Self {
         let (to, inbox) = mpsc::channel::<Vec<ToWorker>>();
         let (outbox, from) = mpsc::channel();
-        let spawned = if cfg!(feature = "headless") {
+        let spawned = if cfg!(feature = "headless") || !threaded {
             None
         } else {
             let outbox = outbox.clone();
@@ -886,13 +954,30 @@ impl TextWorker {
         }
     }
 
-    /// Hand a batch to the worker. Inline, the batch runs to completion here.
+    /// Hand a batch to the worker. Inline, a headless build runs it to
+    /// completion here; otherwise it waits for [`run_inline`](Self::run_inline).
     pub(crate) fn send(&mut self, batch: Vec<ToWorker>) {
         if let Some(to) = &self.to {
             let _ = to.send(batch);
         } else if let Some((state, out)) = &mut self.inline {
             state.accept(batch, out);
-            while state.run_next(out) {}
+            if cfg!(feature = "headless") {
+                while state.run_next(out) {}
+            }
+        }
+    }
+
+    /// Inline, runs the jobs waiting until `slice` is spent — at least one,
+    /// so a backlog always drains; the results are the threaded path's.
+    pub(crate) fn run_inline(&mut self, slice: Duration) {
+        let Some((state, out)) = &mut self.inline else {
+            return;
+        };
+        let start = viso_platform::Instant::now();
+        while state.run_next(out) {
+            if start.elapsed() >= slice {
+                break;
+            }
         }
     }
 
@@ -904,7 +989,8 @@ impl TextWorker {
 
     /// Block for the next reply.
     #[cfg(test)]
-    pub(crate) fn recv(&self) -> Option<FromWorker> {
+    pub(crate) fn recv(&mut self) -> Option<FromWorker> {
+        self.run_inline(Duration::MAX);
         self.from.recv().ok()
     }
 }

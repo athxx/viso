@@ -78,21 +78,27 @@ mod tape;
 mod timer;
 mod world;
 
-use std::cell::Cell;
+use alloc::boxed::Box;
+use alloc::format;
+use core::cell::Cell;
 
 use kit::Kit;
 
 use crate::native::{
     HookDomain, NativeError, NativeFunction, NativeHook, NativeId, NativeLibrary, NativeObject,
-    NativeTrait, NativeType, Obj, Param, SchemaTy, Vec3F32,
+    NativeTrait, NativeType, Obj, Param, SchemaTy, Vec3,
 };
 
 pub use crate::module::CollisionDelivery;
 pub use audio::{
     AUDIO_COMMAND, AUDIO_COMMAND_DERIVE, AUDIO_EVENT, AUDIO_EVENT_DERIVE, AUDIO_PROCESS,
-    AudioBlock, AudioCommandValue, AudioEventValue, AudioFault, AudioHost, AudioLink, AudioMessage,
-    AudioProgram, AudioStatus, AudioSwap, COMMAND_CAPACITY, EVENT_CAPACITY, MESSAGE_TOKENS,
-    MessageSlot, RealtimeReceiver, RealtimeSender, realtime_queue,
+    AudioBlock, AudioCommandValue, AudioEventValue, AudioMessage, MESSAGE_TOKENS, MessageSlot,
+    RealtimeReceiver, RealtimeSender, realtime_queue,
+};
+#[cfg(feature = "std")]
+pub use audio::{
+    AudioFault, AudioHost, AudioLink, AudioProgram, AudioStatus, AudioSwap, COMMAND_CAPACITY,
+    EVENT_CAPACITY,
 };
 pub use clock::{Clock, TickOverrun};
 pub use history::{DEFAULT_HISTORY_SECONDS, ReplayError, Replayed};
@@ -101,7 +107,7 @@ pub use input::{
     InputSnapshot, Key, KeySet, MoveAxes, MoveSource, PadButton, PadStick, TickInput, TouchButton,
 };
 pub use net::{Desync, PacketError, RollbackSession, SessionConfig, SessionError, SessionStats};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "std", not(target_family = "wasm")))]
 pub use persist::DirStore;
 pub use persist::{
     LazyStore, MemoryStore, PERSIST_CAPABILITY, Persist, PersistReport, PersistStore, Persistence,
@@ -296,7 +302,7 @@ static RENDER_FRAME_METHODS: [NativeFunction; 6] = [
         .deterministic()
         .realtime_safe()
         .property(),
-    crate::native!(fn "position" |_cx, this: Obj<RenderFrame>, id: EntityId| -> Vec3F32 {
+    crate::native!(fn "position" |_cx, this: Obj<RenderFrame>, id: EntityId| -> Vec3 {
         this.world
             .interpolated(id, this.alpha.get())
             .ok_or_else(|| NativeError::new(format!("entity {id} is not alive")))

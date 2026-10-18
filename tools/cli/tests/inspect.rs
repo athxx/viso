@@ -18,11 +18,11 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 
-use viso_ende::Encoder;
-use viso_view::inspect::{
+use viso_dev_protocol::inspect::{
     Census, CensusMount, CensusNode, FileSources, InspectKind, NodeOrigin, NodeSemantics,
     NodeSource, Rect, Role, SemanticState, SourceTable, WindowCensus,
 };
+use viso_ende::Encoder;
 
 struct Scratch(PathBuf);
 

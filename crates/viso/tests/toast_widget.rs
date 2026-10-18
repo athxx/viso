@@ -55,7 +55,7 @@ use std::time::Duration;
 use viso::ui::Instant;
 
 use viso::__test_support::drive_scripted;
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::platform::{
     Modifiers as RawModifiers, PointerButtons as RawButtons, PointerPhase as RawPhase, RawEvent,
     RawPointer, WindowId,
@@ -152,10 +152,8 @@ fn build_shown_scene(store: &mut NodeStore) -> NodeId {
 fn children_of(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
     let arena = store.arena();
     let mut out = Vec::new();
-    let mut child = arena.links(parent).and_then(|l| l.first_child);
-    while let Some(c) = child {
+    for c in arena.children(parent) {
         out.push(c);
-        child = arena.links(c).and_then(|l| l.next_sibling);
     }
     out
 }
@@ -173,7 +171,7 @@ fn content_of(store: &NodeStore, root: NodeId) -> NodeId {
 
 #[test]
 fn shown_toast_paints_the_panel_pinned_to_the_top_edge_and_matches_golden() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -689,7 +687,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -703,7 +701,7 @@ struct Harness {
 /// Build a shown top toast (content revealed) with the auto-dismiss timer armed in a local
 /// registry, so the harness can paint a steady shown frame or fire the timer.
 fn setup_alloc() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);

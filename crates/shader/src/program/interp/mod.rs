@@ -21,13 +21,13 @@
 //! `Unorm8` attachment stores it (an extended-range target keeps the floats).
 //!
 //! [`CpuShader`] is a program as the headless raster runs it: the
-//! [`CpuProgram`] its [`ProgramCode::Cpu`](viso_gpu::ProgramCode::Cpu) carries,
+//! [`CpuProgram`] its [`ProgramCode::Cpu`](viso_gpu_abi::ProgramCode::Cpu) carries,
 //! binding the draw's uniform and instance bytes through the program's layout.
 
 mod code;
 mod exec;
 
-use viso_gpu::{
+use viso_gpu_abi::{
     AddressMode, BlendMode, CpuDraw, CpuProgram, CpuTarget, CpuTexture, FilterMode, SamplerDesc,
 };
 
@@ -138,6 +138,8 @@ impl Raster {
             pixels: &mut self.pixels,
             width: self.width,
             height: self.height,
+            origin: [0, 0],
+            stride: self.width,
             scissor: [0, 0, self.width, self.height],
             unorm8: true,
         };
@@ -334,7 +336,7 @@ impl Canvas<'_, '_> {
             let (true, Some(src)) = (px.covered, color) else {
                 continue;
             };
-            let at = (px.y as u32 * self.0.width + px.x as u32) as usize;
+            let at = self.0.index(px.x as u32, px.y as u32);
             let dst = self.0.pixels[at];
             let out = match blend {
                 BlendMode::Replace => src,
@@ -393,7 +395,7 @@ fn sample(texture: &CpuTexture<'_>, sampler: &SamplerDesc, u: f32, v: f32) -> [f
             }
         }
     };
-    let texel = |x: i64, y: i64| texture.texels[(wrap(y, h) * w + wrap(x, w)) as usize];
+    let texel = |x: i64, y: i64| texture.texels.get((wrap(y, h) * w + wrap(x, w)) as usize);
     let (x, y) = (u * w as f32, v * h as f32);
     if sampler.filter == FilterMode::Nearest {
         return texel(x.floor() as i64, y.floor() as i64);
@@ -422,7 +424,7 @@ mod tests {
         BinaryOp, Binding, Block, Builtin, Expr, ExprKind, Function, Intrinsic, Local, Span, Stage,
         Stmt, Ty,
     };
-    use viso_gpu::CpuDraw;
+    use viso_gpu_abi::CpuDraw;
 
     #[test]
     fn a_quad_covers_each_pixel_once() {
@@ -545,6 +547,8 @@ mod tests {
             pixels: &mut pixels,
             width: 8,
             height: 8,
+            origin: [0, 0],
+            stride: 8,
             scissor: [3, 2, 8, 8],
             unorm8: false,
         };

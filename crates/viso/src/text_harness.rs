@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso_platform::Instant;
 use viso_render::Rgba;
 use viso_text::inspect::TextInspection;
@@ -92,7 +92,7 @@ pub struct TextStats {
 /// The text runtime over a headless raster backend, driven frame by frame.
 pub struct TextHarness {
     shaper: TextShaper,
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     updated: Vec<ParagraphSlot>,
 }
 
@@ -120,7 +120,7 @@ impl TextHarness {
     }
 
     fn over(shaper: TextShaper) -> Self {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let _ = gpu.create_surface(RawWindowHandle::Headless, 128, 128);
         Self {
             shaper,

@@ -3,6 +3,19 @@
 /// `tag` as a BCP 47 language tag: a POSIX locale (`en_US.UTF-8@euro`) or
 /// an OS tag with underscores becomes `en-US`, `C` and `POSIX` become `und`,
 /// and anything that is not a well-formed tag is `und`.
+#[cfg_attr(
+    all(
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ),
+        not(any(feature = "x11", feature = "wayland", feature = "kms", test))
+    ),
+    allow(dead_code)
+)]
 pub(crate) fn bcp47(tag: &str) -> String {
     let tag = tag.split(['.', '@']).next().unwrap_or_default().trim();
     if tag.is_empty() || tag.eq_ignore_ascii_case("c") || tag.eq_ignore_ascii_case("posix") {
@@ -37,11 +50,16 @@ pub(crate) fn bcp47(tag: &str) -> String {
 /// `LANG`, the first one set and not empty.
 #[cfg_attr(
     not(any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly",
+        all(
+            any(
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ),
+            any(feature = "x11", feature = "wayland", feature = "kms")
+        ),
         test
     )),
     allow(dead_code)

@@ -12,8 +12,8 @@ use std::ops::Range;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::dev::report::{RebuildEvent, ReloadEvent, RuntimeStatus};
+use viso_dev_protocol::wire::Stage;
 use viso_ende::JsonWriter;
-use viso_view::dev::wire::Stage;
 
 use super::{Artifact, DevIds, Location, Report, Source};
 
@@ -774,7 +774,7 @@ mod tests {
             candidate_revision: 3,
             last_good_revision: 2,
             outcome: Outcome::Rejected,
-            stage: viso_view::dev::wire::Stage::Parse,
+            stage: viso_dev_protocol::wire::Stage::Parse,
             elapsed_us: 1500,
             counts: Default::default(),
             codes: vec!["E1001".into(), "E1001".into()],
@@ -811,7 +811,7 @@ mod tests {
         let patch = PatchStatus {
             candidate_revision: 4,
             outcome: Outcome::Rejected,
-            stage: viso_view::dev::wire::Stage::ShaderCompile,
+            stage: viso_dev_protocol::wire::Stage::ShaderCompile,
             scoped_resets: 0,
             compile_us: 2500,
             commit_us: None,

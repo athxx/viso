@@ -60,7 +60,7 @@ use crate::instance::{AttrFormat, InstanceLayout};
 use crate::program::{PROGRAM_TEXTURES, ProgramCode, ProgramCompiler, ProgramDesc};
 use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
-    PipelineDesc, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
+    PipelineDesc, SampledFormats, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
@@ -68,6 +68,9 @@ use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
 /// Frames the CPU may record ahead of the GPU.
 const FRAMES_IN_FLIGHT: usize = 2;
+
+/// The most damage rects a present names; more name the whole image.
+const PRESENT_RECTS: usize = 8;
 /// The smallest staging chunk a frame slot allocates for texture uploads.
 const STAGING_CHUNK: u64 = 4 << 20;
 /// Descriptor sets per descriptor pool; a full pool is followed by a new one.
@@ -150,9 +153,10 @@ struct SwapImage {
     image: vk::Image,
     view: vk::ImageView,
     framebuffer: vk::Framebuffer,
-    /// Whether the image has been presented since the swapchain was built — its
-    /// contents are then in `PRESENT_SRC_KHR`, otherwise undefined.
-    presented: bool,
+    /// The surface's present count when the image was last presented (`0`:
+    /// not since the swapchain was built). A presented image keeps its pixels
+    /// in `PRESENT_SRC_KHR`; otherwise its contents are undefined.
+    presented: u64,
 }
 
 /// A window surface and its swapchain.
@@ -174,6 +178,8 @@ struct VulkanSurface {
     extent: vk::Extent2D,
     /// The swapchain must be rebuilt before the next acquire.
     stale: bool,
+    /// Presents so far.
+    presents: u64,
 }
 
 /// A host-visible buffer texture uploads are copied out of.
@@ -266,6 +272,8 @@ pub struct VulkanBackend {
     queue: vk::Queue,
     queue_family: u32,
     swapchain_fn: Option<khr::swapchain::Device>,
+    /// `VK_KHR_incremental_present` is on: a present names its damage.
+    incremental_present: bool,
     set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     pipeline_cache: vk::PipelineCache,
@@ -506,13 +514,26 @@ impl VulkanBackend {
         if has_device_ext(khr::portability_subset::NAME) {
             device_enabled.push(khr::portability_subset::NAME.as_ptr());
         }
+        let incremental_present = has_swapchain && has_device_ext(vk::KHR_INCREMENTAL_PRESENT_NAME);
+        if incremental_present {
+            device_enabled.push(vk::KHR_INCREMENTAL_PRESENT_NAME.as_ptr());
+        }
         let priorities = [1.0f32];
         let queue_info = [vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family)
             .queue_priorities(&priorities)];
+        // The block-compressed families the device samples, enabled so their
+        // images can be created.
+        // SAFETY: `physical` belongs to `instance`.
+        let supported = unsafe { instance.get_physical_device_features(physical) };
+        let features = vk::PhysicalDeviceFeatures::default()
+            .texture_compression_bc(supported.texture_compression_bc == vk::TRUE)
+            .texture_compression_etc2(supported.texture_compression_etc2 == vk::TRUE)
+            .texture_compression_astc_ldr(supported.texture_compression_astc_ldr == vk::TRUE);
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_info)
-            .enabled_extension_names(&device_enabled);
+            .enabled_extension_names(&device_enabled)
+            .enabled_features(&features);
         // SAFETY: `queue_family` has a graphics queue on `physical`, and every
         // extension was enumerated as supported by it.
         let device = unsafe { instance.create_device(physical, &device_info, None) }
@@ -526,6 +547,8 @@ impl VulkanBackend {
                 instance.get_physical_device_properties(physical).limits,
             )
         };
+
+        let sampled = sampled_formats(&instance, physical, &features);
 
         let surface_fn = has_surface.then(|| khr::surface::Instance::new(&entry, &instance));
         let swapchain_fn = has_swapchain.then(|| khr::swapchain::Device::new(&instance, &device));
@@ -568,6 +591,7 @@ impl VulkanBackend {
             queue,
             queue_family,
             swapchain_fn,
+            incremental_present,
             set_layout,
             pipeline_layout,
             pipeline_cache,
@@ -591,6 +615,8 @@ impl VulkanBackend {
                 indirect_draw: false,
                 program_instance_align: (limits.min_storage_buffer_offset_alignment.max(4) as u32)
                     .next_power_of_two(),
+                coverage_paths: false,
+                sampled,
             },
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
@@ -631,7 +657,7 @@ impl VulkanBackend {
         self.ensure_recording();
         let tex = self.texture(id);
         let (image, width, height) = (tex.image, tex.width, tex.height);
-        let size = width as u64 * height as u64 * tex.format.bytes_per_texel() as u64;
+        let size = tex.format.data_size(width, height) as u64;
         let aspect = aspect_of(tex.format);
         let (buffer, memory, ptr) =
             self.create_host_buffer(size.max(1), vk::BufferUsageFlags::TRANSFER_DST);
@@ -1352,7 +1378,10 @@ impl VulkanBackend {
             .pre_transform(caps.current_transform)
             .composite_alpha(composite)
             .present_mode(vk::PresentModeKHR::FIFO)
-            .clipped(true)
+            // Unclipped, so a presented image keeps every pixel, including
+            // ones another window covered: a frame redrawn in part relies on
+            // them when the window is uncovered.
+            .clipped(false)
             .old_swapchain(old);
         let vk_format = s.vk_format;
 
@@ -1387,7 +1416,7 @@ impl VulkanBackend {
                 image,
                 view,
                 framebuffer,
-                presented: false,
+                presented: 0,
             });
         }
         while self.surface(id).finished.len() < built.len() {
@@ -2101,15 +2130,15 @@ impl GpuBackend for VulkanBackend {
 
     fn write_texture(&mut self, id: TextureId, x: u32, y: u32, w: u32, h: u32, bytes: &[u8]) {
         let t = self.texture(id);
-        let bytes_per_row = w as usize * t.format.bytes_per_texel();
-        let len = bytes_per_row * h as usize;
+        // A block format's region is rows of whole blocks, tightly packed.
+        let len = t.format.data_size(w, h);
         assert!(
             bytes.len() >= len,
-            "write_texture: {} bytes < {}x{} region of {}-byte texels",
+            "write_texture: {} bytes < a {}x{} region of {:?}",
             bytes.len(),
             w,
             h,
-            t.format.bytes_per_texel()
+            t.format
         );
         if len == 0 {
             return;
@@ -2249,6 +2278,7 @@ impl GpuBackend for VulkanBackend {
                 height,
                 extent: vk::Extent2D::default(),
                 stale: true,
+                presents: 0,
             })
             .into()
     }
@@ -2330,7 +2360,7 @@ impl GpuBackend for VulkanBackend {
             }
             Err(e) => panic!("Vulkan swapchain acquire failed: {e}"),
         };
-        let presented = self.surface(surface).images[image as usize].presented;
+        let presented = self.surface(surface).images[image as usize].presented > 0;
         self.acquired = Some(Acquired {
             surface,
             image,
@@ -2360,6 +2390,22 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn present(&mut self, frame: Frame) {
+        self.present_with_damage(frame, &[]);
+    }
+
+    fn frame_age(&self, frame: Frame) -> u32 {
+        let Some(s) = self.surfaces.get(frame.surface.into()) else {
+            return 0;
+        };
+        match s.images.get(frame.drawable as usize) {
+            Some(img) if img.presented > 0 => {
+                u32::try_from(s.presents + 1 - img.presented).unwrap_or(0)
+            }
+            _ => 0,
+        }
+    }
+
+    fn present_with_damage(&mut self, frame: Frame, damage: &[(u32, u32, u32, u32)]) {
         let Some(acq) = self.acquired.filter(|a| a.surface == frame.surface) else {
             return;
         };
@@ -2384,15 +2430,41 @@ impl GpuBackend for VulkanBackend {
                 vk::ImageLayout::PRESENT_SRC_KHR,
             );
         }
-        self.surface_mut(frame.surface).images[acq.image as usize].presented = true;
+        let s = self.surface_mut(frame.surface);
+        s.presents += 1;
+        s.images[acq.image as usize].presented = s.presents;
         self.submit(Some(acquire), Some(finished));
         let wait = [finished];
         let swapchains = [swapchain];
         let indices = [acq.image];
-        let info = vk::PresentInfoKHR::default()
+        // More rects than fit name no damage: the whole image.
+        let mut rects = [vk::RectLayerKHR::default(); PRESENT_RECTS];
+        let named = if damage.len() <= PRESENT_RECTS {
+            damage.len()
+        } else {
+            0
+        };
+        for (out, &(x, y, w, h)) in rects.iter_mut().zip(&damage[..named]) {
+            *out = vk::RectLayerKHR::default()
+                .offset(vk::Offset2D {
+                    x: x as i32,
+                    y: y as i32,
+                })
+                .extent(vk::Extent2D {
+                    width: w,
+                    height: h,
+                });
+        }
+        let rects = &rects[..named];
+        let region = [vk::PresentRegionKHR::default().rectangles(rects)];
+        let mut regions = vk::PresentRegionsKHR::default().regions(&region);
+        let mut info = vk::PresentInfoKHR::default()
             .wait_semaphores(&wait)
             .swapchains(&swapchains)
             .image_indices(&indices);
+        if self.incremental_present && !rects.is_empty() {
+            info = info.push_next(&mut regions);
+        }
         // SAFETY: the image was acquired from `swapchain` and the submission
         // just made signals `finished` once it is in PRESENT_SRC_KHR.
         match unsafe { self.swapchain_fn().queue_present(self.queue, &info) } {
@@ -3121,9 +3193,63 @@ fn vk_format(format: TextureFormat) -> vk::Format {
         // a data plane and a color plane of the same width share one format.
         TextureFormat::Rgba8Unorm | TextureFormat::Rgba8Data => vk::Format::R8G8B8A8_UNORM,
         TextureFormat::R8Unorm => vk::Format::R8_UNORM,
+        // Vulkan names packed formats from the high bits down, as Viso stores
+        // them.
+        TextureFormat::Rgb565Unorm => vk::Format::R5G6B5_UNORM_PACK16,
+        TextureFormat::Rgba4444Unorm => vk::Format::R4G4B4A4_UNORM_PACK16,
+        TextureFormat::Rgba5551Unorm => vk::Format::R5G5B5A1_UNORM_PACK16,
         TextureFormat::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
         TextureFormat::Depth32Float => vk::Format::D32_SFLOAT,
+        TextureFormat::Bc1RgbaUnorm => vk::Format::BC1_RGBA_UNORM_BLOCK,
+        TextureFormat::Bc3RgbaUnorm => vk::Format::BC3_UNORM_BLOCK,
+        TextureFormat::Bc7RgbaUnorm => vk::Format::BC7_UNORM_BLOCK,
+        TextureFormat::Etc2Rgb8Unorm => vk::Format::ETC2_R8G8B8_UNORM_BLOCK,
+        TextureFormat::Etc2Rgb8A1Unorm => vk::Format::ETC2_R8G8B8A1_UNORM_BLOCK,
+        TextureFormat::Etc2Rgba8Unorm => vk::Format::ETC2_R8G8B8A8_UNORM_BLOCK,
+        TextureFormat::Astc4x4Unorm => vk::Format::ASTC_4X4_UNORM_BLOCK,
+        TextureFormat::Astc6x6Unorm => vk::Format::ASTC_6X6_UNORM_BLOCK,
+        TextureFormat::Astc8x8Unorm => vk::Format::ASTC_8X8_UNORM_BLOCK,
     }
+}
+
+/// The formats beyond the baseline `physical` samples with linear filtering:
+/// a block-compressed family when its feature is enabled (`features`), a
+/// packed 16-bit format when its optimal-tiling properties say so.
+fn sampled_formats(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    features: &vk::PhysicalDeviceFeatures,
+) -> SampledFormats {
+    let filters = |format: TextureFormat| {
+        // SAFETY: `physical` belongs to `instance`.
+        let props =
+            unsafe { instance.get_physical_device_format_properties(physical, vk_format(format)) };
+        props.optimal_tiling_features.contains(
+            vk::FormatFeatureFlags::SAMPLED_IMAGE
+                | vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR
+                | vk::FormatFeatureFlags::TRANSFER_DST,
+        )
+    };
+    let mut sampled = SampledFormats::empty();
+    for (format, class) in [
+        (TextureFormat::Rgb565Unorm, SampledFormats::RGB565),
+        (TextureFormat::Rgba4444Unorm, SampledFormats::RGBA4444),
+        (TextureFormat::Rgba5551Unorm, SampledFormats::RGBA5551),
+    ] {
+        if filters(format) {
+            sampled |= class;
+        }
+    }
+    for (enabled, class) in [
+        (features.texture_compression_bc, SampledFormats::BC),
+        (features.texture_compression_etc2, SampledFormats::ETC2),
+        (features.texture_compression_astc_ldr, SampledFormats::ASTC),
+    ] {
+        if enabled == vk::TRUE {
+            sampled |= class;
+        }
+    }
+    sampled
 }
 
 /// Map an attribute format to its Vulkan vertex format.

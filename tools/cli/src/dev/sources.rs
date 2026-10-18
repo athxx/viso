@@ -32,6 +32,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use viso_dev_protocol::inspect::FileSources;
+use viso_dev_protocol::wire::{FileId, MAX_LINE, MAX_LINES, MountEntry, content_hash, source_hash};
 use viso_dsl::assets::{AssetCatalog, AssetFormat, ResourceId, normalize_path};
 use viso_dsl::frontend::Origin;
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
@@ -41,8 +43,6 @@ use viso_dsl::inspect::file_sources;
 use viso_dsl::syntax::{Edit, Entry, IncrementalParse, TextRange, TextSize};
 use viso_dsl::{Diagnostic, LineIndex, Severity};
 use viso_text::font_format;
-use viso_view::dev::wire::{FileId, MAX_LINE, MAX_LINES, MountEntry, content_hash, source_hash};
-use viso_view::inspect::FileSources;
 
 /// How many of a file's latest distinct versions the session keeps, to find
 /// the one a build compiled.

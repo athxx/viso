@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use super::world;
 use super::*;
 use crate::native::Natives;
@@ -286,10 +288,7 @@ fn timer_values_round_trip_and_are_schema_value_types() {
 fn spawn_block(world: &GameWorld, system: usize, at: [f32; 3]) -> EntityId {
     world.open(system);
     let id = world
-        .spawn(
-            SpawnDesc::new(BodyKind::Block, Vec3F32::new(1.0, 1.0, 1.0))
-                .at(Vec3F32::from_array(at)),
-        )
+        .spawn(SpawnDesc::new(BodyKind::Block, Vec3::new(1.0, 1.0, 1.0)).at(Vec3::from_array(at)))
         .expect("open");
     world.close();
     id
@@ -388,13 +387,10 @@ fn a_character_lands_on_a_block_and_stands() {
     let world = GameWorld::new(0);
     world.open(0);
     let floor = world
-        .spawn(SpawnDesc::new(
-            BodyKind::Block,
-            Vec3F32::new(10.0, 1.0, 10.0),
-        ))
+        .spawn(SpawnDesc::new(BodyKind::Block, Vec3::new(10.0, 1.0, 10.0)))
         .expect("open");
     let player = world
-        .spawn(SpawnDesc::player().at(Vec3F32::new(0.0, 2.0, 0.0)))
+        .spawn(SpawnDesc::player().at(Vec3::new(0.0, 2.0, 0.0)))
         .expect("open");
     world.close();
     world.commit();
@@ -403,10 +399,7 @@ fn a_character_lands_on_a_block_and_stands() {
         world.begin_tick();
         world.step(1.0 / 240.0, &mut began);
     }
-    assert_eq!(
-        world.position(player),
-        Some(Vec3F32::new(0.0, 0.5 + 0.9, 0.0))
-    );
+    assert_eq!(world.position(player), Some(Vec3::new(0.0, 0.5 + 0.9, 0.0)));
     assert!(world.bodies().floor[player.index() as usize]);
     assert!(began.is_empty(), "blocks report no contacts: {floor}");
 }
@@ -420,7 +413,7 @@ fn reference_step(b: &mut world::Bodies, dt: f32, began: &mut Vec<(EntityId, Ent
         if b.kind[slot] != BodyKind::Character {
             continue;
         }
-        let push = std::mem::take(&mut b.push[slot]);
+        let push = core::mem::take(&mut b.push[slot]);
         b.vel[slot][0] = push[0];
         b.vel[slot][2] = push[2];
         b.vel[slot][1] += push[1] - GRAVITY * dt;
@@ -499,19 +492,19 @@ fn random_desc(rng: &mut Lcg) -> SpawnDesc {
         BodyKind::Sensor,
     ][rng.pick(4) as usize];
     let size = if rng.pick(10) == 0 {
-        Vec3F32::new(
+        Vec3::new(
             rng.range(10.0, 60.0),
             rng.range(0.5, 2.0),
             rng.range(10.0, 60.0),
         )
     } else {
-        Vec3F32::new(
+        Vec3::new(
             rng.range(0.2, 3.0),
             rng.range(0.2, 3.0),
             rng.range(0.2, 3.0),
         )
     };
-    let at = Vec3F32::new(
+    let at = Vec3::new(
         rng.range(-20.0, 20.0),
         rng.range(-3.0, 6.0),
         rng.range(-20.0, 20.0),

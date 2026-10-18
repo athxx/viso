@@ -8,6 +8,7 @@ fn the_per_backend_choice_is_the_target_backends_language() {
         msl: ShaderLang::Msl,
         hlsl: ShaderLang::Hlsl,
         spirv: ShaderLang::SpirV,
+        glsl: ShaderLang::Glsl,
         wgsl: ShaderLang::Wgsl,
         none: ShaderLang::None,
     );

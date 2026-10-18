@@ -4,7 +4,9 @@
 //! thread decodes it into a value it reuses, so a warm decode allocates
 //! nothing.
 
-use std::rc::Rc;
+use alloc::rc::Rc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::value::{Aggregate, Value};
 

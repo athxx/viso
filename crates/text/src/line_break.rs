@@ -13,12 +13,20 @@
 //! *wraps* a provider rather than reimplementing the rules (the Ownership
 //! Ladder: prefer a proven algorithm for a Unicode primitive). It wraps
 //! `icu_segmenter` specifically — not a smaller pure pair-table crate — for one
-//! world-ready reason: the no-space scripts (Thai, Lao, Khmer, and CJK) have no
-//! useful break opportunities in a pair table at all; they need dictionary or
-//! LSTM segmentation. [`LineSegmenter::new_auto`] carries that segmentation, so
-//! the candidate set is correct for those scripts from the base up, and the
-//! locale-aware provider seam UAX#14 calls for is the provider itself rather
-//! than a bolt-on.
+//! world-ready reason: the no-space scripts (Thai, Lao, Khmer, and Myanmar)
+//! have no useful break opportunities in a pair table at all; they need
+//! dictionary or LSTM segmentation. [`LineSegmenter::new_auto`] carries that
+//! segmentation, so the candidate set is correct for those scripts from the
+//! base up, and the locale-aware provider seam UAX#14 calls for is the provider
+//! itself rather than a bolt-on. CJK needs none: UAX#14 breaks between
+//! ideographs and kana by rule.
+//!
+//! The LSTM models are the largest Unicode data the text runtime carries, so
+//! they come with the `complex-line-break` feature. A build whose declared
+//! locales and shipped text use none of the four scripts turns it off
+//! (Text/Font Runtime §3.7): the segmenter is then the rule table alone, those
+//! runs break only where any text may (spaces, punctuation), and the width fit
+//! falls back to grapheme breaks for a run wider than the line.
 //!
 //! `icu_segmenter` gives break *positions*; it does not classify them as
 //! mandatory or allowed on its stable surface. UAX#14 rule LB4/LB5 make a break
@@ -29,11 +37,14 @@
 //! dictionary) produced the position — this is the classification ICU's own
 //! documentation recommends.
 
+use icu_locale_core::LanguageIdentifier;
 use icu_properties::CodePointMapData;
 use icu_properties::props::LineBreak;
 use icu_segmenter::{LineSegmenter, LineSegmenterBorrowed};
-// `LineSegmenter::new_auto` returns the borrowed, `'static` form backed by baked
-// data; `LineSegmenter` itself is only the constructor namespace here.
+// The constructors return the borrowed, `'static` form backed by baked data;
+// `LineSegmenter` itself is only the constructor namespace here.
+
+use unicode_script::{Script, UnicodeScript};
 
 use crate::line_break_tailoring::LineBreakTailoring;
 use crate::text_position::TextOffset;
@@ -76,8 +87,9 @@ impl Default for LineBreaker {
 
 impl LineBreaker {
     /// A world-ready analyzer with the default policy: the auto provider selects
-    /// dictionary/LSTM segmentation for no-space scripts and the pair table
-    /// elsewhere, with no locale tailoring and the strictest level.
+    /// LSTM segmentation for no-space scripts (with `complex-line-break`) and
+    /// the pair table elsewhere, with no locale tailoring and the strictest
+    /// level.
     ///
     /// This is the base candidate set. Strictness levels and CJK tailoring are
     /// chosen through [`LineBreakTailoring`] and applied by
@@ -95,10 +107,14 @@ impl LineBreaker {
     /// provider offers, never the mandatory hard breaks.
     pub fn with_tailoring(tailoring: LineBreakTailoring) -> Self {
         Self {
-            segmenter: LineSegmenter::new_auto(tailoring.to_icu_options()),
+            segmenter: segmenter(tailoring),
             line_break: CodePointMapData::<LineBreak>::new().static_to_owned(),
         }
     }
+
+    /// Whether runs of Thai, Lao, Khmer and Myanmar break between words: this
+    /// build carries the `complex-line-break` models.
+    pub const COMPLEX_SCRIPTS: bool = cfg!(feature = "complex-line-break");
 
     /// Every break opportunity in `text`, in order, each with its class.
     ///
@@ -145,6 +161,43 @@ impl LineBreaker {
     ) -> Option<(TextOffset, BreakOpportunity)> {
         self.break_opportunities(text).find(|&(at, _)| at > from)
     }
+}
+
+/// Whether `ch` is written in a script whose words only the
+/// `complex-line-break` models find: Thai, Lao, Khmer or Myanmar.
+pub fn is_complex_script(ch: char) -> bool {
+    matches!(
+        ch.script(),
+        Script::Thai | Script::Lao | Script::Khmer | Script::Myanmar
+    )
+}
+
+/// Whether text in the BCP 47 `locale` is written in one of the
+/// [`is_complex_script`] scripts: its script subtag names one, or it has none
+/// and its language is usually written in one (CLDR likely subtags). `false`
+/// for a tag that does not parse.
+pub fn is_complex_script_locale(locale: &str) -> bool {
+    /// Languages whose likely script is Thai, Lao, Khmer or Myanmar.
+    const LANGUAGES: [&str; 11] = [
+        "th", "lo", "km", "my", "shn", "mnw", "ksw", "kxm", "tts", "sou", "kdt",
+    ];
+    let Ok(id) = locale.parse::<LanguageIdentifier>() else {
+        return false;
+    };
+    match id.script {
+        Some(script) => matches!(script.as_str(), "Thai" | "Laoo" | "Khmr" | "Mymr"),
+        None => LANGUAGES.contains(&id.language.as_str()),
+    }
+}
+
+#[cfg(feature = "complex-line-break")]
+fn segmenter(tailoring: LineBreakTailoring) -> LineSegmenterBorrowed<'static> {
+    LineSegmenter::new_auto(tailoring.to_icu_options())
+}
+
+#[cfg(not(feature = "complex-line-break"))]
+fn segmenter(tailoring: LineBreakTailoring) -> LineSegmenterBorrowed<'static> {
+    LineSegmenter::new_for_non_complex_scripts(tailoring.to_icu_options())
 }
 
 /// Whether a break *following* a character of this `LineBreak` class is a
@@ -253,6 +306,7 @@ mod tests {
     /// pair table would offer only the end-of-text break. The auto provider's
     /// dictionary/LSTM segmentation finds interior word boundaries — this is the
     /// reason the heavier provider was chosen, so prove it holds.
+    #[cfg(feature = "complex-line-break")]
     #[test]
     fn no_space_script_breaks_via_dictionary_segmentation() {
         let breaker = LineBreaker::new();
@@ -274,6 +328,42 @@ mod tests {
             breaks.last().map(|&(_, c)| c),
             Some(BreakOpportunity::Mandatory)
         );
+    }
+
+    /// Without the models a Thai run is one unbreakable word: it breaks at its
+    /// edges, never between two of its letters.
+    #[cfg(not(feature = "complex-line-break"))]
+    #[test]
+    fn without_the_models_a_no_space_run_breaks_only_at_its_edges() {
+        let breaker = LineBreaker::new();
+        let text = "ภาษาไทย ง่ายนิดเดียว";
+        let space = text.find(' ').unwrap();
+        for (at, _) in breaker.break_opportunities(text) {
+            assert!(
+                [space, space + 1, text.len()].contains(&at.0),
+                "a break inside a Thai word at {}",
+                at.0
+            );
+        }
+        assert!(!LineBreaker::COMPLEX_SCRIPTS);
+    }
+
+    #[test]
+    fn the_complex_scripts_are_thai_lao_khmer_and_myanmar() {
+        for ch in ['ภ', 'ກ', 'ក', 'က'] {
+            assert!(is_complex_script(ch), "{ch}");
+        }
+        for ch in ['a', '中', 'あ', 'ا', ' '] {
+            assert!(!is_complex_script(ch), "{ch}");
+        }
+        for locale in [
+            "th", "th-TH", "lo", "km-KH", "my", "shn", "pi-Thai", "und-Mymr",
+        ] {
+            assert!(is_complex_script_locale(locale), "{locale}");
+        }
+        for locale in ["en", "zh-Hant", "ja", "ar", "th-Latn", "not a locale"] {
+            assert!(!is_complex_script_locale(locale), "{locale}");
+        }
     }
 
     /// `next_break` scans forward from an arbitrary offset to the next candidate.
@@ -529,6 +619,7 @@ mod tailoring_tests {
     /// Thai run still gains interior breaks under a Thai locale, under a CJK
     /// locale, and under the default policy. Tailoring adjusts CJK punctuation
     /// rules; it never turns off complex-script segmentation.
+    #[cfg(feature = "complex-line-break")]
     #[test]
     fn no_space_script_breaks_under_any_locale() {
         let thai = "ภาษาไทยง่ายนิดเดียว";

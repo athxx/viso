@@ -114,7 +114,7 @@ pub fn emit_view(
             quote! { ::viso::__private::viso_view::__link_env(cx, &__viso_host, &__viso_ids, &[#(#reads),*]); }
         };
         let mount = regions.map(|behavior| {
-            let bytes = Literal::byte_string(&behavior.region_bytes());
+            let bytes = aligned_bytes(&behavior.region_bytes());
             let mut cells: Vec<(&SymbolId, &Ident)> = sources.iter().collect();
             cells.sort_unstable_by_key(|(symbol, _)| (symbol.hi, symbol.lo));
             let cells = cells.into_iter().map(|(symbol, local)| {
@@ -782,6 +782,40 @@ fn axis_tokens(axis: AxisIr) -> TokenStream {
         AxisIr::Row => quote! { ::viso::__private::viso_ui::Axis::Row },
         AxisIr::Column => quote! { ::viso::__private::viso_ui::Axis::Column },
     }
+}
+
+/// An expression of `bytes` as a `&'static [u8]` at an 8-aligned address,
+/// which a blob's aligned sections are read in place at: a `static` only the
+/// expression names, so a branch that compiles the expression out leaves no
+/// bytes in the binary.
+pub(crate) fn aligned_bytes(bytes: &[u8]) -> TokenStream {
+    let len = bytes.len();
+    let literal = Literal::byte_string(bytes);
+    quote! {{
+        static BYTES: ::viso::__private::viso_ende::Aligned<[u8; #len]> =
+            ::viso::__private::viso_ende::Aligned(*#literal);
+        BYTES.as_slice()
+    }}
+}
+
+/// [`aligned_bytes`] of the file at `path`, embedded with `include_bytes!`,
+/// so editing it rebuilds the crate.
+pub(crate) fn aligned_file(path: &str) -> TokenStream {
+    quote! {{
+        static BYTES: ::viso::__private::viso_ende::Aligned<
+            [u8; ::core::include_bytes!(#path).len()],
+        > = ::viso::__private::viso_ende::Aligned(*::core::include_bytes!(#path));
+        BYTES.as_slice()
+    }}
+}
+
+/// The item making the expansion depend on [`OVERLAY_ENV`]: switching a
+/// build between converted and source assets rebuilds the crate.
+///
+/// [`OVERLAY_ENV`]: viso_dsl::assets::OVERLAY_ENV
+pub(crate) fn overlay_dependency() -> TokenStream {
+    let env = viso_dsl::assets::OVERLAY_ENV;
+    quote! { const _: ::core::option::Option<&str> = ::core::option_env!(#env); }
 }
 
 /// Decomposes a [`DirtyClass`] bitset into a `::viso::__private::viso_ui::DirtyClass` `|` chain.

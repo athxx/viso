@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use crate::convert::{Axis, Converter, State, rect_clip};
-use crate::geom::{PathData, Point, Rect, Segment, Transform};
+use crate::geom::{Affine2, PathData, Rect, Segment, Vec2};
 use crate::path_data::{CmdKind, CmdSpan};
 use crate::syntax::{self, Length, Stream};
 use crate::tree::*;
@@ -16,9 +16,9 @@ use crate::tree::*;
 /// A marker vertex: position plus incoming/outgoing tangent directions.
 #[derive(Debug, Clone, Copy)]
 struct Vertex {
-    p: Point,
-    dir_in: Option<Point>,
-    dir_out: Option<Point>,
+    p: Vec2,
+    dir_in: Option<Vec2>,
+    dir_out: Option<Vec2>,
     /// Start or end vertex of a closed subpath (oriented by the bisector).
     closed: bool,
 }
@@ -30,21 +30,21 @@ enum Orient {
     Angle(f32),
 }
 
-fn nonzero(v: Point) -> Option<Point> {
+fn nonzero(v: Vec2) -> Option<Vec2> {
     (v.x != 0.0 || v.y != 0.0).then_some(v)
 }
 
 /// Start/end tangents and end point of each canonical segment.
 struct SegGeom {
-    to: Point,
-    start: Option<Point>,
-    end: Option<Point>,
+    to: Vec2,
+    start: Option<Vec2>,
+    end: Option<Vec2>,
 }
 
 fn segment_geometry(data: &PathData) -> Vec<SegGeom> {
     let mut out = Vec::with_capacity(data.len());
-    let mut cur = Point::default();
-    let mut sub_start = Point::default();
+    let mut cur = Vec2::default();
+    let mut sub_start = Vec2::default();
     for s in data.segments() {
         let g = match *s {
             Segment::MoveTo(p) => {
@@ -149,7 +149,7 @@ fn vertices(data: &PathData, spans: &[CmdSpan]) -> Vec<Vertex> {
     out
 }
 
-fn angle(d: Option<Point>) -> f32 {
+fn angle(d: Option<Vec2>) -> f32 {
     d.map_or(0.0, |d| d.y.atan2(d.x).to_degrees())
 }
 
@@ -255,7 +255,7 @@ pub(crate) fn convert_markers(
 fn instance(
     c: &mut Converter,
     m: crate::xml::NodeId,
-    at: Point,
+    at: Vec2,
     rot: f32,
     stroke_width: f32,
     st: &State,
@@ -279,14 +279,14 @@ fn instance(
         return;
     }
     let view_box = c.attr(m, "viewBox").and_then(syntax::parse_view_box);
-    if view_box.is_some_and(|v| !v.is_valid()) {
+    if view_box.is_some_and(|v| !v.has_area()) {
         return;
     }
     let aspect = c
         .attr(m, "preserveAspectRatio")
         .map(syntax::parse_aspect)
         .unwrap_or_default();
-    let vb_ts = view_box.map_or(Transform::IDENTITY, |vb| {
+    let vb_ts = view_box.map_or(Affine2::IDENTITY, |vb| {
         syntax::view_box_transform(vb, aspect, mw, mh)
     });
     if let Some(vb) = view_box {
@@ -294,16 +294,16 @@ fn instance(
     }
     let ref_x = c.length(m, "refX", &mst, Axis::X, Length::ZERO);
     let ref_y = c.length(m, "refY", &mst, Axis::Y, Length::ZERO);
-    let r = vb_ts.apply(Point::new(ref_x, ref_y));
+    let r = vb_ts.transform_point(Vec2::new(ref_x, ref_y));
     let scale = if c.attr(m, "markerUnits") == Some("userSpaceOnUse") {
         1.0
     } else {
         stroke_width
     };
-    let ts = Transform::translate(at.x, at.y)
-        .pre_concat(&Transform::rotate(rot))
-        .pre_concat(&Transform::scale(scale, scale))
-        .pre_concat(&Transform::translate(-r.x, -r.y));
+    let ts = Affine2::translate(at.x, at.y)
+        .pre_concat(&Affine2::from_rotation(rot.to_radians()))
+        .pre_concat(&Affine2::scale(scale, scale))
+        .pre_concat(&Affine2::translate(-r.x, -r.y));
 
     c.stack.push(m);
     let mut content = Group {
@@ -337,7 +337,7 @@ mod tests {
         let (p, spans) = parse_path("M0 0 L10 0 A5 5 0 0 1 10 10 Z");
         let v = vertices(&p, &spans);
         assert_eq!(v.len(), 4, "move, line, arc, close");
-        assert_eq!(v[1].p, Point::new(10.0, 0.0));
+        assert_eq!(v[1].p, Vec2::new(10.0, 0.0));
         assert_eq!(angle(v[0].dir_out), 0.0);
         // The close vertex's in-direction points back to the start (-x, -y).
         let d = v[3].dir_in.unwrap();

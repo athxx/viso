@@ -1,4 +1,5 @@
-//! One printer, three dialects: a checked body tree → MSL, WGSL, or HLSL text.
+//! One printer, four dialects: a checked body tree → MSL, WGSL, HLSL, or GLSL
+//! ES 3.00 text.
 //!
 //! MSL printing is the identity (the subset is spelled as MSL), which is what
 //! the round-trip test pins. WGSL and HLSL printing lower the few constructs
@@ -14,6 +15,13 @@
 //! | `tex.sample(s, uv)`  | `textureSampleLevel(tex, s, uv, 0.0)`  | `tex.SampleLevel(s, uv, 0.0)` |
 //! | `tex.get_width()`    | `textureDimensions(tex).x`             | `viso_width(tex)`             |
 //! | attribute fetch      | the entry's `viso_attrs` parameter     | the entry's `viso_attrs`      |
+//!
+//! GLSL ES 3.00 converts nothing implicitly, so an integer literal is spelled
+//! in the type its context gives it (`1` → `1.0` beside a `float`, `1u` beside
+//! a `uint`, a `uint` case label `0u`); a sample is `textureLod(tex, uv, 0.0)`
+//! (the sampler state rides the texture unit), a size `uint(textureSize(tex,
+//! 0).x)`, `saturate(x)` is `clamp(x, 0.0, 1.0)`, and a declaration without an
+//! initializer is zeroed as in HLSL.
 //!
 //! Textures carry a single mip level, so an implicit-LOD sample is level 0;
 //! spelling it explicitly keeps sampling legal under non-uniform control flow
@@ -40,6 +48,8 @@ pub enum Lang {
     Wgsl,
     /// HLSL shader model 5.1.
     Hlsl,
+    /// GLSL ES 3.00.
+    Glsl,
 }
 
 /// The name of the vertex entry's attribute-struct parameter in WGSL and HLSL.
@@ -399,11 +409,126 @@ const HLSL_COLLISIONS: &[&str] = &[
     "verts",
 ];
 
+const GLSL_COLLISIONS: &[&str] = &[
+    // keywords and reserved words
+    "active",
+    "asm",
+    "attribute",
+    "buffer",
+    "case",
+    "cast",
+    "centroid",
+    "class",
+    "coherent",
+    "common",
+    "const",
+    "default",
+    "discard",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extern",
+    "external",
+    "filter",
+    "fixed",
+    "flat",
+    "goto",
+    "half",
+    "highp",
+    "in",
+    "inline",
+    "inout",
+    "input",
+    "interface",
+    "invariant",
+    "layout",
+    "long",
+    "lowp",
+    "mediump",
+    "namespace",
+    "noinline",
+    "noperspective",
+    "out",
+    "output",
+    "packed",
+    "partition",
+    "patch",
+    "precise",
+    "precision",
+    "public",
+    "readonly",
+    "resource",
+    "restrict",
+    "sample",
+    "sampler",
+    "shared",
+    "short",
+    "sizeof",
+    "smooth",
+    "static",
+    "struct",
+    "subroutine",
+    "superp",
+    "template",
+    "this",
+    "typedef",
+    "union",
+    "uniform",
+    "unsigned",
+    "using",
+    "varying",
+    "volatile",
+    "writeonly",
+    // type names the printer spells that the source does not
+    "vec2",
+    "vec3",
+    "vec4",
+    "ivec2",
+    "ivec3",
+    "ivec4",
+    "uvec2",
+    "uvec3",
+    "uvec4",
+    "bvec2",
+    "bvec3",
+    "bvec4",
+    "mat2",
+    "mat3",
+    "mat4",
+    "sampler2D",
+    // the functions the printer emits under a different name than the source
+    "inversesqrt",
+    "dFdx",
+    "dFdy",
+    "atan",
+    "texture",
+    "textureLod",
+    "textureSize",
+    "trunc",
+    "mod",
+    "main",
+    // global names the GLSL codegen declares
+    "vid",
+    "iid",
+    "vin",
+    "tex",
+    "dst_tex",
+    "samp",
+    "instances",
+    "verts",
+];
+
 /// Prints checked body trees in one dialect.
 pub struct Printer {
     lang: Lang,
     out: String,
     depth: usize,
+    /// The helpers' parameter types, for spelling the literals passed to
+    /// them in GLSL.
+    signatures: Vec<(String, Vec<Ty>)>,
+    /// The return type of the function being printed.
+    ret: Option<Ty>,
 }
 
 impl Printer {
@@ -413,7 +538,28 @@ impl Printer {
             lang,
             out: String::new(),
             depth: 0,
+            signatures: Vec::new(),
+            ret: None,
         }
+    }
+
+    /// Know the parameter types of `helpers`, which the bodies printed next
+    /// call.
+    pub fn with_signatures(mut self, helpers: &[Item]) -> Printer {
+        for item in helpers {
+            if let Item::Function { func, .. } = item {
+                self.signature(func);
+            }
+        }
+        self
+    }
+
+    fn signature(&mut self, func: &Function) {
+        let params = func.locals[..func.params]
+            .iter()
+            .map(|p| p.ty.ty())
+            .collect();
+        self.signatures.push((func.name.clone(), params));
     }
 
     /// Start at `depth` levels of four-space indentation.
@@ -429,6 +575,7 @@ impl Printer {
 
     /// Print an entry point's body statements.
     pub fn entry_body(&mut self, func: &Function) {
+        self.ret = Some(func.ret.ty());
         self.block(&func.body, &func.locals);
     }
 
@@ -458,6 +605,7 @@ impl Printer {
             Lang::Msl => return Cow::Borrowed(name),
             Lang::Wgsl => WGSL_COLLISIONS,
             Lang::Hlsl => HLSL_COLLISIONS,
+            Lang::Glsl => GLSL_COLLISIONS,
         };
         if collisions.contains(&name) {
             Cow::Owned(format!("{name}_"))
@@ -473,6 +621,15 @@ impl Printer {
             TypeName::Vector(s, n) => match self.lang {
                 Lang::Wgsl => format!("vec{n}<{}>", self.scalar(s)),
                 Lang::Msl | Lang::Hlsl => format!("{}{n}", self.scalar(s)),
+                Lang::Glsl => {
+                    let prefix = match s {
+                        Scalar::Bool => "b",
+                        Scalar::I32 => "i",
+                        Scalar::U32 => "u",
+                        Scalar::F32 => "",
+                    };
+                    format!("{prefix}vec{n}")
+                }
             },
             TypeName::Struct(s) => struct_name(s).to_string(),
         }
@@ -524,7 +681,7 @@ impl Printer {
         let params = &l[..func.params];
         let name = self.ident(&func.name).into_owned();
         let header = match self.lang {
-            Lang::Msl | Lang::Hlsl => {
+            Lang::Msl | Lang::Hlsl | Lang::Glsl => {
                 let ps: Vec<String> = params
                     .iter()
                     .map(|p| format!("{} {}", self.type_name(p.ty), self.ident(&p.name)))
@@ -561,6 +718,8 @@ impl Printer {
             }
         };
         self.line(&header);
+        self.signature(func);
+        self.ret = Some(func.ret.ty());
         self.depth += 1;
         if self.lang == Lang::Wgsl {
             for p in params.iter().filter(|p| p.mutated) {
@@ -597,7 +756,7 @@ impl Printer {
             }
             StmtKind::Return(v) => match v {
                 Some(v) => {
-                    let text = self.expr(v, l);
+                    let text = self.expr_as(v, self.ret, l);
                     self.line(&format!("return {text};"));
                 }
                 None => self.line("return;"),
@@ -613,7 +772,7 @@ impl Printer {
                 self.depth += 1;
                 for case in cases {
                     let label = match &case.label {
-                        Some(e) => format!("case {}:", self.expr(e, l)),
+                        Some(e) => format!("case {}:", self.expr_as(e, Some(selector.ty), l)),
                         None => "default:".to_string(),
                     };
                     if self.lang == Lang::Wgsl {
@@ -686,7 +845,7 @@ impl Printer {
             } => {
                 let local = &l[*local as usize];
                 let name = self.local_name(local);
-                let init = init.as_ref().map(|e| self.expr(e, l));
+                let init = init.as_ref().map(|e| self.expr_as(e, Some(ty.ty()), l));
                 match (self.lang, init) {
                     (Lang::Msl, Some(i)) => format!("{} {name} = {i}", self.type_name(*ty)),
                     (Lang::Msl, None) => format!("{} {name}", self.type_name(*ty)),
@@ -694,6 +853,14 @@ impl Printer {
                     (Lang::Hlsl, None) => {
                         let t = self.type_name(*ty);
                         format!("{t} {name} = ({t})0")
+                    }
+                    (Lang::Glsl, Some(i)) => format!("{} {name} = {i}", self.type_name(*ty)),
+                    (Lang::Glsl, None) => {
+                        let t = self.type_name(*ty);
+                        match ty {
+                            TypeName::Struct(_) => format!("{t} {name}"),
+                            _ => format!("{t} {name} = {t}(0)"),
+                        }
                     }
                     (Lang::Wgsl, Some(i)) => {
                         let kw = if local.mutated { "var" } else { "let" };
@@ -706,11 +873,13 @@ impl Printer {
                 if self.lang == Lang::Wgsl {
                     return self.wgsl_assign(target, *op, value, l);
                 }
+                let shift = matches!(op, AssignOp::Compound(BinOp::Shl | BinOp::Shr));
+                let want = (!shift).then_some(target.ty);
                 format!(
                     "{} {} {}",
                     self.expr(target, l),
                     op.text(),
-                    self.expr(value, l)
+                    self.expr_as(value, want, l)
                 )
             }
             StmtKind::Step {
@@ -831,7 +1000,7 @@ impl Printer {
             return text;
         }
         match self.lang {
-            Lang::Wgsl => format!("{}({text})", self.ty_text(to)),
+            Lang::Wgsl | Lang::Glsl => format!("{}({text})", self.ty_text(to)),
             _ => format!("(({})({text}))", self.ty_text(to)),
         }
     }
@@ -843,15 +1012,43 @@ impl Printer {
             .join(", ")
     }
 
+    /// `e`, an integer literal (or an expression of them) spelled as the
+    /// scalar of `want` where GLSL needs the conversion written.
+    fn expr_as(&self, e: &Expr, want: Option<Ty>, l: &[Local]) -> String {
+        let want = want.and_then(Ty::scalar);
+        // A case label keeps no type of its own; it is a literal either way.
+        let literal = e.ty == Ty::AbsInt || matches!(e.kind, ExprKind::Int(_));
+        if self.lang != Lang::Glsl || !literal || want.is_none() {
+            return self.expr(e, l);
+        }
+        let again = |x: &Expr| self.expr_as(x, want.map(Ty::Scalar), l);
+        match &e.kind {
+            ExprKind::Int(t) => match (want, parse_int(t)) {
+                (Some(Scalar::F32), Some(v)) => format!("{v}.0"),
+                (Some(Scalar::U32), _) => format!("{t}u"),
+                _ => t.clone(),
+            },
+            ExprKind::Paren(inner) => format!("({})", again(inner)),
+            ExprKind::Unary(op, inner) => format!("{}{}", op_text(*op), again(inner)),
+            ExprKind::Binary(op, a, b) if !matches!(op, BinOp::Shl | BinOp::Shr) => {
+                format!("{} {} {}", again(a), op.text(), again(b))
+            }
+            ExprKind::Ternary(c, a, b) => {
+                format!("{} ? {} : {}", self.expr(c, l), again(a), again(b))
+            }
+            _ => self.expr(e, l),
+        }
+    }
+
     fn expr(&self, e: &Expr, l: &[Local]) -> String {
         match &e.kind {
             ExprKind::Float(t) => t.clone(),
             ExprKind::Uint(t) => t.clone(),
             ExprKind::Int(t) => {
-                // HLSL types an unsuffixed literal as `int`; one past `i32::MAX`
-                // is only meaningful as `uint`.
-                let big =
-                    self.lang == Lang::Hlsl && parse_int(t).is_some_and(|v| v > i32::MAX as u64);
+                // HLSL and GLSL type an unsuffixed literal as `int`; one past
+                // `i32::MAX` is only meaningful as `uint`.
+                let big = matches!(self.lang, Lang::Hlsl | Lang::Glsl)
+                    && parse_int(t).is_some_and(|v| v > i32::MAX as u64);
                 if big { format!("{t}u") } else { t.clone() }
             }
             ExprKind::Var { name, res } => match res {
@@ -863,7 +1060,11 @@ impl Printer {
             ExprKind::Unary(op, inner) => format!("{}{}", op_text(*op), self.expr(inner, l)),
             ExprKind::Binary(op, a, b) => self.binary(*op, a, b, e.ty, l),
             ExprKind::Ternary(c, a, b) => {
-                let (c, a, b) = (self.expr(c, l), self.expr(a, l), self.expr(b, l));
+                let (c, a, b) = (
+                    self.expr(c, l),
+                    self.expr_as(a, Some(b.ty), l),
+                    self.expr_as(b, Some(a.ty), l),
+                );
                 match self.lang {
                     Lang::Wgsl => format!("select({b}, {a}, {c})"),
                     _ => format!("{c} ? {a} : {b}"),
@@ -888,6 +1089,11 @@ impl Printer {
                     (Lang::Hlsl, "sample") => format!("{b}.SampleLevel({a}, 0.0)"),
                     (Lang::Hlsl, "get_width") => format!("viso_width({b})"),
                     (Lang::Hlsl, "get_height") => format!("viso_height({b})"),
+                    (Lang::Glsl, "sample") => {
+                        format!("textureLod({b}, {}, 0.0)", self.expr(&args[1], l))
+                    }
+                    (Lang::Glsl, "get_width") => format!("uint(textureSize({b}, 0).x)"),
+                    (Lang::Glsl, "get_height") => format!("uint(textureSize({b}, 0).y)"),
                     (_, m) => unreachable!("the checker admits no method `{m}`"),
                 }
             }
@@ -899,19 +1105,43 @@ impl Printer {
                 let t = self.type_name(*ty);
                 match (self.lang, args.as_slice()) {
                     (Lang::Hlsl, [one]) => format!("(({t})({}))", self.expr(one, l)),
+                    (Lang::Glsl, _) => {
+                        let want = Some(ty.ty());
+                        let parts: Vec<String> =
+                            args.iter().map(|a| self.expr_as(a, want, l)).collect();
+                        format!("{t}({})", parts.join(", "))
+                    }
                     _ => format!("{t}({})", self.args(args, l)),
                 }
             }
             ExprKind::Call { name, args } => match Builtin::from_name(name) {
                 Some(b) => self.builtin(b, name, args, e.ty, l),
+                None if self.lang == Lang::Glsl => {
+                    let params = self
+                        .signatures
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, p)| &p[..]);
+                    let parts: Vec<String> = args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| self.expr_as(a, params.and_then(|p| p.get(i)).copied(), l))
+                        .collect();
+                    format!("{}({})", self.ident(name), parts.join(", "))
+                }
                 None => format!("{}({})", self.ident(name), self.args(args, l)),
             },
         }
     }
 
     fn binary(&self, op: BinOp, a: &Expr, b: &Expr, ty: Ty, l: &[Local]) -> String {
-        let mut at = self.expr(a, l);
-        let mut bt = self.expr(b, l);
+        let shift = matches!(op, BinOp::Shl | BinOp::Shr);
+        let mut at = self.expr_as(a, Some(if shift { ty } else { b.ty }), l);
+        let mut bt = if shift {
+            self.expr(b, l)
+        } else {
+            self.expr_as(b, Some(a.ty), l)
+        };
         if self.lang == Lang::Wgsl {
             if let ExprKind::Binary(child, ..) = a.kind
                 && wgsl_needs_parens(op, child, true)
@@ -950,17 +1180,32 @@ impl Printer {
             (Lang::Hlsl, Builtin::Dfdy) => "ddy",
             (Lang::Hlsl, Builtin::Fract) => "frac",
             (Lang::Hlsl, Builtin::Mix) => "lerp",
+            (Lang::Glsl, Builtin::Fabs) => "abs",
+            (Lang::Glsl, Builtin::Rsqrt) => "inversesqrt",
+            (Lang::Glsl, Builtin::Dfdx) => "dFdx",
+            (Lang::Glsl, Builtin::Dfdy) => "dFdy",
+            (Lang::Glsl, Builtin::Atan2) => "atan",
             _ => name,
         };
         let widen = self.lang != Lang::Msl
             && (b.broadcasts().is_some() || (self.lang == Lang::Hlsl && b == Builtin::Mix));
+        // A literal argument takes the lanes' scalar of its siblings, else of
+        // the result.
+        let want = args
+            .iter()
+            .map(|a| a.ty)
+            .find(|t| *t != Ty::AbsInt && t.scalar().is_some())
+            .or(Some(ty));
         let parts: Vec<String> = args
             .iter()
             .map(|a| {
-                let t = self.expr(a, l);
+                let t = self.expr_as(a, want, l);
                 if widen { self.splat(t, a.ty, ty) } else { t }
             })
             .collect();
+        if self.lang == Lang::Glsl && b == Builtin::Saturate {
+            return format!("clamp({}, 0.0, 1.0)", parts[0]);
+        }
         let call = format!("{spelled}({})", parts.join(", "));
         // HLSL's `sign` returns `int`; the subset's returns its argument type.
         if self.lang == Lang::Hlsl && b == Builtin::Sign && ty.scalar() == Some(Scalar::F32) {

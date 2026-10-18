@@ -10,12 +10,13 @@ rust-version.workspace = true
 # input / animation subsystems: vectors, matrices, quaternion, 2D/3D transform,
 # rect/insets, and basic spatial geometry.
 #
-# Dependency-free by design: it uses only `core`/`std` math (`f32::sqrt` etc.),
-# no third-party math crate. SIMD is an internal implementation detail behind a
+# `no_std`: the platform's `f32::sqrt` etc. through `std` (default), else
+# `libm`'s, its one dependency. SIMD is an internal implementation detail behind a
 # scalar-matching public ABI; it never leaks into a public type. Its Rust memory
 # layout is NOT a GPU wire ABI — uploads go through the validated explicit layout
 # in viso-shader / viso-gpu, and the wire representation is defined by viso-ende.
 [dependencies]
+libm = { workspace = true }
 
 # Benches only. criterion is a dev-dependency: it never ships in viso-math and is
 # not an architecture DAG edge (external crate, ignored by `xtask check-deps`).
@@ -26,3 +27,8 @@ criterion = "0.7"
 [[bench]]
 name = "math"
 harness = false
+
+[features]
+default = ["std"]
+# The platform's float functions instead of `libm`'s.
+std = []

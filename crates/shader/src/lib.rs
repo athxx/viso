@@ -7,7 +7,7 @@
 //!
 //! The pipeline is real: a typed shader [`ir`] describes each built-in
 //! primitive's GPU interface once, and both the emitted MSL and the validated
-//! [`InstanceSchema`](viso_gpu::InstanceSchema) project from that single value
+//! [`InstanceSchema`](viso_gpu_abi::InstanceSchema) project from that single value
 //! (see the [`ir`] module docs). Packing rules and per-primitive math are
 //! represented directly in a typed IR
 //! without sharing a script VM, the divergence AGENTS 19 mandates.

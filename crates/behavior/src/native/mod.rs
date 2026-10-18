@@ -43,11 +43,15 @@ mod vector;
 mod widget;
 mod widgets;
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
+use core::any::{Any, TypeId};
+use core::fmt;
+use core::future::Future;
+use core::pin::Pin;
 
 use crate::value::Value;
 
@@ -56,9 +60,11 @@ pub use registry::{
     SchemaConflict,
 };
 pub use standard::{Clipboard, STANDARD, Stopwatch};
-pub use timers::{Timers, sleep};
+pub use timers::Timers;
+#[cfg(feature = "std")]
+pub use timers::sleep;
 pub use value::{NativeHandle, NativeObject, NativeValue, Obj, Ticks};
-pub use vector::{Vec2F32, Vec3F32};
+pub use vector::{VEC2_PATH, VEC3_PATH, Vec2, Vec3};
 pub use widget::{
     FlexAxis, MigratableState, NativeWidget, PropertyGroup, SlotCardinality, WidgetEvent,
     WidgetNode, WidgetProperty, WidgetSlot,
@@ -627,13 +633,13 @@ impl fmt::Display for NativeError {
     }
 }
 
-impl std::error::Error for NativeError {}
+impl core::error::Error for NativeError {}
 
 /// Host services by type: the clipboard, a clock, a platform bridge. The host
 /// installs them on a [`Vm`](crate::Vm); natives look them up by type.
 #[derive(Default)]
 pub struct Services {
-    map: HashMap<TypeId, Box<dyn Any>>,
+    map: BTreeMap<TypeId, Box<dyn Any>>,
 }
 
 impl Services {
@@ -701,7 +707,7 @@ impl<'a> NativeCx<'a> {
         self.services.get_mut().ok_or_else(|| {
             NativeError::new(format!(
                 "the host provides no `{}` service",
-                std::any::type_name::<T>()
+                core::any::type_name::<T>()
             ))
         })
     }

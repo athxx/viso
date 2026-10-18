@@ -22,12 +22,12 @@
 //!
 //! # Allocation
 //!
-//! Coalescing is a hot-path, per-frame step (§9.3, §28): it writes its output
-//! ranges into a caller-owned scratch buffer and allocates nothing itself. The
-//! pool keeps a persistent `Vec<Range>` reused across frames — a steady frame
-//! fills the same capacity it reached at its high-water mark, so no frame after
-//! warm-up touches the heap. A frame with no changed slots produces zero ranges
-//! and therefore issues zero uploads for that family.
+//! Coalescing is a hot-path, per-frame step (§9.3, §28). [`Runs`] folds the
+//! changed slots in as the diff meets them and hands back each range as it
+//! closes, so the pool uploads while it diffs and keeps no list of changed
+//! slots or ranges: whatever changed, no frame touches the heap. A frame with
+//! no changed slots produces zero ranges and therefore issues zero uploads
+//! for that family.
 
 /// The most clean slots the coalescer will re-upload to bridge two changed runs
 /// into one range instead of splitting into two `write_buffer` calls.
@@ -52,53 +52,58 @@ pub struct Range {
     pub len: usize,
 }
 
-/// Coalesce a sorted, de-duplicated list of changed slot indices into upload
-/// ranges, appending them to `out` (which is cleared first).
-///
-/// `dirty` MUST be strictly increasing (each slot listed once, in order) — the
-/// pool produces exactly that when it walks the diff left to right. Two changed
-/// slots whose gap of clean slots between them is at most [`GAP_THRESHOLD`] are
-/// merged into one range spanning both (and the clean slots between them);
-/// a larger gap starts a new range.
-///
-/// `out` is the caller's reused scratch: it is cleared and refilled, never
-/// grown when the frame's range count stays within its capacity, so a warmed
-/// steady frame allocates nothing here.
-///
-/// An empty `dirty` yields zero ranges (the unchanged-frame / zero-upload case).
-pub fn coalesce(dirty: &[usize], out: &mut Vec<Range>) {
-    out.clear();
-    let mut iter = dirty.iter().copied();
-    let Some(first) = iter.next() else {
-        return;
-    };
+/// Coalesces changed slots met in strictly increasing order into upload
+/// ranges: two changed slots whose gap of clean slots between them is at most
+/// [`GAP_THRESHOLD`] fall in one range spanning both (and the clean slots
+/// between them); a larger gap closes the range and opens another.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Runs {
+    open: Option<Range>,
+}
 
-    // The run currently being extended: [start, end) in slots. `end` is one past
-    // the last changed slot folded in so far.
-    let mut start = first;
-    let mut end = first + 1;
-    for slot in iter {
-        debug_assert!(slot >= end, "dirty slots must be strictly increasing");
-        // Clean slots strictly between the current run's end and this slot.
-        let gap = slot - end;
-        if gap <= GAP_THRESHOLD {
-            // Bridge: absorb the gap's clean slots into the current run.
-            end = slot + 1;
-        } else {
-            // Split: the gap is too wide to re-upload — emit the run and start
-            // a fresh one at this slot.
-            out.push(Range {
-                start,
-                len: end - start,
+impl Runs {
+    /// Fold in the changed `slot`; the range it closed, if its gap from the
+    /// open range is too wide to bridge.
+    #[inline]
+    pub fn push(&mut self, slot: usize) -> Option<Range> {
+        let Some(open) = &mut self.open else {
+            self.open = Some(Range {
+                start: slot,
+                len: 1,
             });
-            start = slot;
-            end = slot + 1;
+            return None;
+        };
+        let end = open.start + open.len;
+        debug_assert!(slot >= end, "dirty slots must be strictly increasing");
+        if slot - end <= GAP_THRESHOLD {
+            open.len = slot + 1 - open.start;
+            None
+        } else {
+            self.open.replace(Range {
+                start: slot,
+                len: 1,
+            })
         }
     }
-    out.push(Range {
-        start,
-        len: end - start,
-    });
+
+    /// The range still open, once every changed slot is in.
+    #[inline]
+    pub fn finish(self) -> Option<Range> {
+        self.open
+    }
+}
+
+/// Coalesce a sorted, de-duplicated list of changed slot indices into upload
+/// ranges, appending them to `out` (which is cleared first), as [`Runs`]
+/// does. An empty `dirty` yields zero ranges (the unchanged-frame /
+/// zero-upload case).
+pub fn coalesce(dirty: &[usize], out: &mut Vec<Range>) {
+    out.clear();
+    let mut runs = Runs::default();
+    for &slot in dirty {
+        out.extend(runs.push(slot));
+    }
+    out.extend(runs.finish());
 }
 
 #[cfg(test)]

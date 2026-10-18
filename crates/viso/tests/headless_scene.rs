@@ -9,7 +9,7 @@
 //! instance per visible node), and the colored leaves land where layout places
 //! them (sampled pixels match their fills).
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::Rect;
 use viso::render::{Renderer, Rgba};
 use viso::ui::{
@@ -113,7 +113,7 @@ fn demo_tree_lays_out_and_rasterizes() {
     // Container background + three leaves = four visible quads.
     assert_eq!(primitives.len(), 4, "one quad per visible node");
 
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);

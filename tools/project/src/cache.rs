@@ -193,9 +193,11 @@ impl Layout {
     /// Named by *platform*, not by target: `host` and `headless` both produce a macOS
     /// binary on a Mac, and a user looking for their app should find one directory per
     /// thing they can ship rather than one per way of asking for it. Headless keeps its
-    /// own directory because it is a distinct artifact, not a distinct platform.
+    /// own directory because it is a distinct artifact, not a distinct platform, and a
+    /// device target its own name, since each is a board of its own.
     fn platform_dir(&self, target: Target) -> &'static str {
         match target {
+            Target::Device(name) => name,
             Target::Host => self.host.map_or("host", HostOs::as_str),
             Target::Headless => "headless",
             Target::Ios => "ios",
@@ -744,6 +746,10 @@ mod tests {
         for web in [Target::WebGpu, Target::WebDom, Target::WebHybrid] {
             assert_eq!(mac.dist(web), Path::new("/p/dist/web"));
         }
+        assert_eq!(
+            mac.dist(Target::device("panel")),
+            Path::new("/p/dist/panel")
+        );
 
         // Only the host target follows the host.
         let windows = Layout::with_host("/p", HostOs::Windows);

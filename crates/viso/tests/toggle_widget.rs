@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs};
 use viso::ui::{
     Axis, BindingTable, BoxStyle, BuildCx, Component, Content, Inset, Key, KeyEvent, KeyRouter,
@@ -125,20 +125,17 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
     };
     let toggle_id = store
         .arena()
-        .links(root)
-        .and_then(|l| l.first_child)
+        .first_child(root)
         .expect("the view has the toggle as its only child");
     // The track flex is the first child (it holds the thumb); the caption `Label`
     // leaf is the second child.
     let track_id = store
         .arena()
-        .links(toggle_id)
-        .and_then(|l| l.first_child)
+        .first_child(toggle_id)
         .expect("the toggle has a track flex as its first child");
     let caption_id = store
         .arena()
-        .links(track_id)
-        .and_then(|l| l.next_sibling)
+        .next_sibling(track_id)
         .expect("the toggle has the caption leaf as its second child");
     (root, toggle_id, caption_id)
 }
@@ -146,7 +143,7 @@ fn build_scene(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
 /// Attach the shared deterministic glyph run to the toggle's caption leaf so the
 /// golden is font/atlas-stable without a real font stack — the same fixture
 /// bypass `checkbox_widget.rs` uses.
-fn attach_caption(gpu: &mut HeadlessRaster, store: &mut NodeStore, caption_id: NodeId) {
+fn attach_caption(gpu: &mut CpuRaster, store: &mut NodeStore, caption_id: NodeId) {
     let tg = test_glyphs([0.0, 0.0], 26.0);
     let atlas = gpu.create_texture(&TextureDesc {
         width: tg.atlas_size,
@@ -178,7 +175,7 @@ fn attach_caption(gpu: &mut HeadlessRaster, store: &mut NodeStore, caption_id: N
 
 #[test]
 fn toggle_renders_track_thumb_and_caption_and_matches_golden() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -532,7 +529,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -541,7 +538,7 @@ struct Harness {
 }
 
 fn setup_alloc() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);

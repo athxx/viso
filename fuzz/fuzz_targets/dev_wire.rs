@@ -5,7 +5,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use viso_view::dev::wire::{HostMessage, Message, RuntimeMessage, encode, read_frame};
+use viso_dev_protocol::wire::{HostMessage, Message, RuntimeMessage, encode, read_frame};
 
 fn canonical<M: Message>(body: &[u8]) {
     if let Ok(message) = M::from_frame(body) {

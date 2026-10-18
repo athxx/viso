@@ -12,9 +12,9 @@
 
 use std::time::Duration;
 
+use viso_dev_protocol::wire::{GameAsk, MAX_RECORD_TICKS, RecordSpan};
 use viso_dsl::scenario::read_tape;
 use viso_project::{LockGuard, LockKind, Target};
-use viso_view::dev::wire::{GameAsk, MAX_RECORD_TICKS, RecordSpan};
 
 use crate::args::{GameCommand, PeekArgs, RecordArgs};
 use crate::context::Context;

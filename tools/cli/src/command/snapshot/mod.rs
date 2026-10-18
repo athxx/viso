@@ -27,8 +27,8 @@ pub(super) use golden::{Held, Store, Taken};
 use std::collections::HashMap;
 use std::fs;
 
+use viso_dev_protocol::headless::HeadlessSurface;
 use viso_dsl::Diagnostic;
-use viso_view::headless::HeadlessSurface;
 
 use super::check;
 use super::scenario::{self, Case, Ended, Kind, Played, SCENARIOS, TAPE, Unplanned};

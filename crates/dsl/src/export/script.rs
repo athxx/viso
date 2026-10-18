@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 
 use viso_behavior::Value;
 use viso_behavior::i18n::{CaseKey, Catalog, Category, PatternOp, Table};
-use viso_view::ControlKind;
+use viso_schema::view::ControlKind;
 
 use super::eval::{Deps, Eval};
 use super::html::{Content, Lowered, Prop, RegionKind, VarToken, Wire};
@@ -417,7 +417,7 @@ pub(super) fn effect_literal(
 
 /// Whether the `env` field of tag `tag` depends on where its reader sits.
 fn is_anchored(tag: u8) -> bool {
-    viso_ui::adaptive::EnvField::from_tag(tag).is_some_and(|f| f.anchored())
+    viso_schema::EnvField::from_tag(tag).is_some_and(|f| f.anchored())
 }
 
 /// The `[slot, tag]` of each `env` field instance `instance` reads that

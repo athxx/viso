@@ -112,7 +112,6 @@ impl Mounted {
             .map(|state| {
                 self.bindings
                     .for_state(state)
-                    .iter()
                     .map(|binding| {
                         let at = nodes.iter().position(|&n| n == binding.node).unwrap();
                         (at, binding.class)

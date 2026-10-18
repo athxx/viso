@@ -21,7 +21,7 @@
 //! columns and the driver ticks it each frame, a PAINT-only write
 //! ([`NodeStore::transition`]).
 
-use std::time::Duration;
+use core::time::Duration;
 
 use crate::component::NodeStore;
 use crate::layout::Vec2;
@@ -412,7 +412,6 @@ mod tests {
         // Half the duration under a linear curve → exactly half the translate.
         // world = bounds − translate, so a translate of −50 shifts world by +50.
         reg.tick(&mut store, Duration::from_millis(50));
-        store.resolve_transforms(node);
         assert_eq!(
             store.world(node).y,
             base.y + 50.0,
@@ -439,7 +438,6 @@ mod tests {
         ));
         // A single tick that meets the duration finishes the run.
         reg.tick(&mut store, Duration::from_millis(100));
-        store.resolve_transforms(node);
         // to.y = −100 → world shifts by −translate = +100.
         assert_eq!(store.world(node).y, base.y + 100.0, "lands on the target");
         assert!(reg.is_empty(), "a finished animation removes itself");
@@ -460,7 +458,6 @@ mod tests {
         ));
         // A delta far larger than the duration clamps progress to 1.0.
         reg.tick(&mut store, Duration::from_secs(10));
-        store.resolve_transforms(node);
         assert_eq!(
             store.world(node).x,
             base.x - 40.0,

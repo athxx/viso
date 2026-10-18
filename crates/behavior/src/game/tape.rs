@@ -35,7 +35,13 @@
 //! (`same_binary` or `cross_platform`), `tick_rate` and `ticks`, the ticks
 //! the tape covers (by default, through its last change).
 
-use std::fmt::{self, Write as _};
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::fmt::{self, Write as _};
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
@@ -120,7 +126,7 @@ impl fmt::Display for TapeError {
     }
 }
 
-impl std::error::Error for TapeError {}
+impl core::error::Error for TapeError {}
 
 /// The tag a tape blob starts with after its protocol header.
 const MAGIC: [u8; 4] = *b"GTP1";

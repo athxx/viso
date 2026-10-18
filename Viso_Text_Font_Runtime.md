@@ -222,6 +222,159 @@ App/theme default family 存在？
 
 WASM 不因为 `Text` 需要显示就偷偷内置一个框架字体。
 
+## 3.4 Embedded profile：构建期字体子集
+
+Embedded target 没有系统字体（Architecture §37.8），packaged font 就是全部字体，flash 体积直接取决于嵌入了多少 glyph。因此 `viso build` 为 embedded target 构建时给编译器设置两个环境变量，`packaged_fonts!()` 据此把每个 face 子集后再嵌入：
+
+| 变量 | 含义 |
+|---|---|
+| `VISO_FONT_CHARSET` | 动态文本可能出现的字符，逗号分隔；每项是命名字符集或码点/区间 |
+| `VISO_FONT_TEXT` | UTF-8 文本文件路径，内容是构建收集到的全部静态字符串（`src/**/*.vs` 的字符串字面量、`src/**/*.rs` 中每个 `ui!`/`component!` 内的字符串字面量，以及 `i18n/` 下每个 locale catalog 的消息文本——经 `tr` 显示的文本也是静态文本）；相对路径相对调用宏的 crate 根目录，`viso build` 传绝对路径 |
+
+两者都未设置（或为空）时行为不变：desktop 构建照常嵌入完整字体。`VISO_FONT_BAKE` 与 `VISO_FONT_RASTERIZER` 另决定构建期 baked glyph 与是否链接 rasterizer（§3.6）。
+
+`VISO_FONT_CHARSET` 的项（名字大小写不敏感，空项忽略）：
+
+```text
+ascii       U+0020–007E
+latin       U+0020–007E, U+00A0–024F（Basic Latin、Latin-1 Supplement、Latin Extended-A/B）
+greek       U+0370–03FF, U+1F00–1FFF（Greek and Coptic、Greek Extended）
+cyrillic    U+0400–052F（Cyrillic、Cyrillic Supplement）
+gb2312      GB 2312 的 7445 个字符：6763 个汉字 + 682 个符号/标点/全角字符（不含 ASCII）
+U+XXXX      单个码点
+U+XXXX-YYYY 闭区间（区间内的 surrogate 跳过）
+```
+
+`gb2312` 的码点表由 EUC-CN 双字节编码（符号区 0xA1–0xA9 的已分配码位，汉字区 0xB0–0xF7 × 0xA1–0xFE，除 0xD7FA–0xD7FE）经 GBK 解码得到，预先生成在 `crates/macros/src/font_subset/gb2312_table.rs`，测试用 `encoding_rs` 重新解码校验。未知项是编译错误，列出该项与全部合法名字。
+
+子集规则：
+
+```text
+保留字符 K = charset ∪ 文本字符 ∪ {U+0020, U+00A0, U+FFFD}（face 映射了才保留）
+    ↓
+glyph 闭包 G = .notdef + cmap(K) + cmap format 14 中 K 的变体序列
+             + GSUB 闭包（single/multiple/alternate/ligature/reverse-chain，
+               所有 lookup 都参与，不检查上下文，迭代到不动点）
+             + glyf composite 引用的 component（迭代到不动点）
+    ↓
+保持 glyph id 不变地重写
+```
+
+- **glyph id 不重编号**：不在 G 中的 glyph 变成空 outline（`glyf` 零长度 / CFF charstring 只有 `endchar`），所以 `GSUB`、`GPOS`、`kern`、`hmtx`、`post`、`gvar` 等按 glyph 索引的表逐字节保留仍然有效；
+- `glyf` + `loca` 重写，必要时切换到 long `loca` 并更新 `head.indexToLocFormat`；
+- `cmap` 重建为 format 4（platform 0/3, encoding 3/1）+ format 12（encoding 4/10），只映射 K 中原 face 已映射的字符；原 format 14 原样保留；
+- 丢弃 `hdmx`、`LTSH`、`VDMX`、`DSIG`；其余表逐字节保留；重算表 checksum 与 `head.checkSumAdjustment`，表 4 字节对齐；
+- **CFF（`OTTO`）**：重写 CharStrings INDEX，删去的 glyph 只剩 `endchar`；charset、Encoding、FDSelect、Private DICT 与 local/global Subrs 原样保留（subroutine 不裁剪，保留的 glyph 可能调用任意一个），Top DICT 与 FDArray 中的偏移全部以定长 5 字节整数重写，CID-keyed 字体同样支持；
+- **整 face 保留**：`CFF2`、`COLR`、`CBDT`、`sbix`、`SVG ` face 以及没有 Unicode cmap 的 face 不做子集，原样嵌入，并在宏调用处产生一条 warning（`deprecated` lint 承载）说明原因；
+- **TTC/OTC**：每个 face 单独子集，再打包回一个 collection，face 顺序与 `face_index` 不变，字节相同的表只存一份。
+
+元数据（family、weight、width、slant、color、mono）仍取自原 face；`ScriptCoverageSummary` 反映子集：保留原 face 摘要中子集仍映射至少一个字符的 script（只留下几个汉字的子集仍是 Han face）。
+
+**缺字诊断**：`VISO_FONT_TEXT` 中的每个字符（控制字符、行/段分隔符与 default-ignorable 码点除外）若没有任何 packaged face 的原 cmap 映射它，就是编译错误，列出全部缺失字符（`U+XXXX '字'`）与文本文件路径——构建期报 diagnostic，而不是运行时显示 tofu。只出现在声明 charset 中、但没有 face 覆盖的字符不报错，静默跳过。
+
+增量构建：宏展开中包含 `option_env!("VISO_FONT_CHARSET")`、`option_env!("VISO_FONT_TEXT")`、`option_env!("VISO_FONT_BAKE")`、`option_env!("VISO_FONT_RASTERIZER")` 与对文本文件、原字体文件的 `include_bytes!`，因此变量或文件变化都会让调用 crate 重新编译。
+
+## 3.5 Embedded profile：运行时字体与无 GPU 文本
+
+字体链只有 packaged font。`embedded-*` profile 的 build 带 `cfg(viso_no_system_fonts)`（facade 的 `build.rs`；headless 也是），不编译系统字体 provider，不链接 fontconfig / CoreText / DirectWrite，也没有系统 fallback 与系统字体目录服务（§4.3）；fallback 只在 packaged face 之间走，§3.4 的构建期缺字诊断保证静态文本都有字形。确需系统字体的嵌入式 Linux 产品打开 facade 的 `system-fonts` feature，恢复 fontconfig provider 作为 packaged font 之后的 fallback。
+
+文本内存来自 build 的 Footprint Profile（Architecture §50A.3，`VISO_BUDGET` 可逐项覆盖）：
+
+| | `faces` | `shaping` | `glyph_atlas` |
+|---|---|---|---|
+| `embedded-gpu` | 16 MiB | 2 MiB | 1 MiB |
+| `embedded-cpu` | 4 MiB | 512 KiB | 256 KiB |
+
+`faces` 与 `shaping` 是 face cache（§9）与 shaping cache（§11）的字节预算；`glyph_atlas` 决定 coverage plane 的边长：`√glyph_atlas` 向下取整到 page 的整数倍（`embedded-cpu` 为 512×512 A8），page 间按 §9 的 SLRU 回收，不随文本增长。color plane（RGBA8，同边长）只在第一次画 color glyph 时分配；MTSDF 与 OutlineVector lane 目前在任何 profile 下都不分配 plane（§13 的 lane 选择接入绘制之前，所有文本都以 coverage 或 color 画出），`embedded-*` 也就不付它们的内存。两个 plane 的字节计入窗口的 GPU 账目（`BudgetExceeded`、Inspector 的 `budget` 组）。
+
+无 GPU（`embedded-cpu`，CpuRaster）时文本走同一条管线：shaping、line layout 与 glyph cache 不变，atlas plane 是 raster 持有的内存纹理，`write_texture` 只写新放入的 glyph 区域；glyph quad 由 span raster 以 A8 coverage 与 color 合成进 framebuffer，最后按 scanout 格式（XRGB8888 或 RGB565）量化。整条路径没有 shader、没有 driver，桌面仿真（Architecture §50A.7）与板卡输出 bit-exact。
+
+字号固定的产品可以在构建期 bake glyph 并去掉 rasterizer（§3.6）；不用 Thai、Lao、Khmer、Myanmar 的产品不带它们的换行模型（§3.7）。
+
+## 3.6 Embedded profile：构建期 baked A8 glyph 与不链接 rasterizer 的 build
+
+字号固定的产品（面板、仪表、kiosk）在构建期把 packaged face 的 glyph 按 UI 实际绘制的字号 raster 好，运行时 glyph cache 先读这些 baked page，读不到才 raster；所有 face 都 baked 时可以不链接 rasterizer，字体的 outline 表也随之不嵌入。
+
+**配置**：device target 的 `fonts.bake` 列出字号（panel 绘制时的 pixels per em，即 `round(font_size × scale)`，1–1024），`fonts.rasterizer = false` 去掉 rasterizer（必须同时写 `bake`）。`viso build` 把它们作为两个环境变量交给 `packaged_fonts!()`，并决定 facade 的 `rasterizer` feature：
+
+| 变量 | 含义 |
+|---|---|
+| `VISO_FONT_BAKE` | 逗号分隔的字号，宏排序去重；超出 1–1024 或不是整数是编译错误 |
+| `VISO_FONT_RASTERIZER` | `on`（缺省）或 `off`；`off` 而 `VISO_FONT_BAKE` 为空是编译错误 |
+
+embedded 构建在 `fonts.rasterizer` 不为 `false` 时加 `viso/rasterizer`（facade 的默认 feature，embedded 构建以 `--no-default-features` 起步，所以由 CLI 加回）。字号不从 theme 推导：font size 可以由 state 驱动，只有产品声明的字号是可靠的。
+
+**Bake 集合**：glyph cache 的 coverage key 是 `(face, glyph, ppem)`，ppem 即 `round(font_size × scale)`，没有 subpixel phase（§13.1），所以一个 face 在一个字号下的 baked strike 是一组按 glyph id 的 bitmap。glyph 集合是子集器的 drawable 闭包：`.notdef + cmap(K) + cmap 14 变体 + GSUB 闭包`（§3.4 的 G 去掉只被 composite 引用的 component）——运行时对保留字符做的任何 shaping 都只会画出其中的 glyph，因此不需要在构建期 shaping。没有子集时（未设 charset/text）bake 全部 glyph。整 face 保留的 face（`CFF2`、color、无 Unicode cmap，§3.4）以及 outline 读不出的 glyph 不 bake：rasterizer 在时是一条 `deprecated` lint 承载的 warning，face 照常运行时 raster；`VISO_FONT_RASTERIZER=off` 时是编译错误。
+
+Baked pixel 与运行时 raster 逐字节相同：两边调用的是同一个函数（`viso-glyph-a8` 的 `rasterize_coverage`，`ttf-parser` outline + `ab_glyph_rasterizer`），宏与 `viso-text` 都依赖这个 leaf crate，宏不链接 text runtime。
+
+**格式**（`viso_glyph_a8::baked`，"VBA8" v1，little-endian，每 face 一个 blob）：
+
+```text
+header        16 B   magic "VBA8", version u16 = 1, strike 数 u16, blob 长度 u32, reserved u32
+strike × S    16 B   ppem u16（升序）, reserved u16, glyph 数 u32, records 偏移 u32（4 对齐）, data 偏移 u32
+record × G    20 B   glyph u16（升序）, width u16, height u16, reserved u16,
+                     left f32, top f32, end u32（本 glyph code 结束于 data + end，起点是上一条的 end）
+data                 每个 glyph 的 run-length code
+```
+
+Run-length code 每个 token 一字节加 payload：`00nnnnnn` n+1 个 0，`01nnnnnn` n+1 个 255，`10nnnnnn` n+1 个与上一行相同的像素，`11nnnnnn` 后跟 n+1 个字面字节（n+1 ≤ 64）。像素按行连续、不分行，run 跨行延续。解码对每个 token 只做 fill 或 copy，只用整数、无分配、无损。没有 ink 的 glyph（空格等）不写 record：strike 里查不到的 glyph 在该字号画为空。
+
+宏把 blob 作为 `Aligned<[u8; N]>` static 嵌入（8 字节对齐，与其他嵌入 blob 一致），`PackagedFace::baked` 借用它；reader 逐字节读、不做指针转换，blob 留在 flash/XIP 或 mmap 原处读取，不复制。`BakedFace::parse` 一次检查全部布局（表、record、code 的范围、顺序、不重叠），之后一次查找是 strike 与 record 上的二分查找，解码按已校验的表做边界检查；损坏或版本不符的 blob 被拒绝，face 视为没有 baked page。
+
+**运行时**：facade 把 packaged face 交给 text worker 时，`PackagedFonts::baked_face(bytes, index)` 按字节找到该 face 的 baked page（只在 face 首次进入 worker 时比较一次，cold path）。worker 的 raster 顺序：
+
+```text
+baked strike 有该字号  → 解码（查不到的 glyph 为空）
+否则，链接了 rasterizer → rasterize_coverage
+否则                   → 从最近的 baked 字号（优先比它大的最小字号，没有则取最大）面积重采样，
+                          每个 face × 字号在 stderr 报一次，提示把该字号加进 fonts.bake
+```
+
+重采样是有理比例 `to/from` 上的可分离整数面积滤波：每个目标像素是其下源像素按重叠面积加权的平均，全程整数，结果确定。它是 §13.1"不长期放大低分辨率 A8"的唯一例外：不链接 rasterizer 的 build 没有精确 Coverage 可等，画出近似字形好于不画；产品应声明全部字号，诊断只为指出遗漏。portable color raster（`rasterize_color`）同由 `rasterizer` feature 控制；color face（`COLR`、`sbix`、`CBDT`、`SVG `）整 face 保留、不能 bake（§3.4），所以不链接 rasterizer 的 build 不能打包 color face，宏在编译期报错。
+
+**编译期保证**：宏展开带 `const _: () = assert!(...)`，以 facade 的 `viso::fonts::__RASTERIZER`（`cfg!(feature = "rasterizer")`）为条件：
+
+- 有 face 没有 baked（没写 `VISO_FONT_BAKE`，或某个 face 不能 bake）时，断言 rasterizer 存在——facade 去掉 `rasterizer` 却仍有 glyph 要 raster 就是编译错误，消息列出未 bake 的 face 与原因；
+- `VISO_FONT_RASTERIZER=off` 时断言 rasterizer 不存在——outline 已删去，链接 rasterizer 也无从 raster；
+- `off` 时不能 bake 的 face 本身就是编译错误（见上）；
+- 系统字体从不 baked：编入系统字体 provider 的 build（desktop、mobile、web，或带 `system-fonts` 的 embedded build）缺 `rasterizer` 时 facade 的 build script 直接失败，提示 app 在自己的默认 feature 中列出 `viso/rasterizer`（`viso new` 生成的 `Cargo.toml` 即如此）。
+
+因此一个能编译的不带 `rasterizer` 的 build，每个 packaged glyph 都有 baked pixel。去掉的是 worker 的 `rasterize_coverage` 调用与 `rasterize_color`；`ab_glyph_rasterizer` 仍随 render 的 path mask（`raster_mask`）链接，`ttf-parser` 仍供 shaping 与 metrics 使用。
+
+**删去 outline**：`VISO_FONT_RASTERIZER=off` 时每个嵌入的 face 删去 `glyf`、`loca`、`CFF `、`gvar`，其余表逐字节保留（shaping 读的 `cmap`、`GSUB`、`GPOS`、`GDEF`、`kern`、`hmtx`、`hhea`、`head`、`maxp`、`OS/2`、`post`、`name` 都在），重算 checksum；collection 每个 face 分别处理后再打包。子集照常先做（`hmtx` 等仍按 glyph id 全长，见 §3.4）。
+
+**实测**（macOS arm64 host，facade `cpu` feature 的 release build，thin LTO，`codegen-units = 1`，strip；`fonts.bake = [14, 16, 24]`）：
+
+| | Arial，`latin`（526 glyph） | Arial Unicode MS，`latin,gb2312`（11431 glyph） |
+|---|---|---|
+| 子集后字体 | 234,322 B（`glyf` 105,580 + `loca` 6,764） | 6,727,253 B（`glyf` 6,154,352 + `loca` 201,512） |
+| 删去 outline 后 | 121,946 B | 371,357 B |
+| baked blob（3 个字号） | 178,581 B（每字号 record 10,520 B；code 34,324 / 41,038 / 71,593 B，raw A8 的 76% / 71% / 56%） | 7,514,647 B（每字号 record 228,620 B；code 为 raw A8 的 87% / 81% / 64%） |
+| 二进制 `__text` | −43,048 B（去掉 rasterizer） | −42,984 B |
+| 代码 + 只读数据合计，相对只 raster | +19,185 B | +1,111,801 B |
+| 同上，相对 raster + bake | −159,399 B | — |
+
+结论：bake 用 flash 换运行时 CPU 与确定性。Latin 三个字号与 outline + rasterizer 基本持平；CJK 每个字号约 2.5 MB，一到两个字号时比 outline 小，三个字号多 17%。RAM 方面，没有 rasterizer 的 worker 不再为 raster 解析 outline，也不需要 raster scratch；packaged face 的字节目前在 `PackagedSource` 读取时复制到堆上一次（`Arc::from(face.bytes)`），因此删去 outline 同时把这份堆占用从 6.7 MB 降到 371 KB（CJK）、234 KB 降到 122 KB（Latin）。Baked pixel 在 atlas 中的占用与运行时 raster 相同。
+
+## 3.7 Embedded profile：按 locale 裁剪 Unicode 数据
+
+Unicode 数据里最大的一块是 Thai、Lao、Khmer、Myanmar 的换行 LSTM 模型（§12.8）：这四种文字词间无空格，UAX #14 的 pair table 在其中没有断点，`icu_segmenter` 的 `new_auto` 用 LSTM 分词。CJK 不需要任何模型或字典：UAX #14 按规则在表意字与假名之间断行，CJ 字典只用于 word segmentation，换行从不加载。
+
+模型由 `viso-text` 的 `complex-line-break` feature（即 `icu_segmenter/auto`）带入，facade 的同名 feature 转发它，二者都在默认 feature 中。没有它时 `LineBreaker` 只用规则表（`LineSegmenter::new_for_non_complex_scripts`）：四种文字的连续 run 只在任何文本都能断的位置（空格、标点、run 边界）断开，比行宽更宽的 run 按 grapheme 强制断行。`LineBreaker::COMPLEX_SCRIPTS` 报告当前 build 是否带模型。
+
+embedded 构建以 `--no-default-features` 起步，`viso build`/`check`/`run` 在下列任一成立时加 `viso/complex-line-break`：
+
+- 声明的 locale 中有一个以这四种文字书写：device target 的 `locales`（BCP 47），没写时取 `i18n/` 下 catalog 的 locale，再没有时取 `i18n.source`；判定看 script 子标签（`Thai`、`Laoo`、`Khmr`、`Mymr`），没有 script 子标签时看语言（`th`、`lo`、`km`、`my`、`shn`、`mnw`、`ksw`、`kxm`、`tts`、`sou`、`kdt`）；
+- 构建收集的静态文本（§3.4）含这四种文字的字符；
+- `fonts.charset` 的 `U+` 码点或区间含这四种文字的字符（命名字符集都不含）。
+
+静态文本里出现这些文字时，无论 locale 怎么写都保留模型，构建显示的文本不会失去断点。desktop、mobile、web 构建保留 facade 的默认 feature，模型始终在。
+
+实测（同 §3.6 的 Latin build）：`complex-line-break` 占 327,175 B（`__text` 14,896 B，只读数据 311,872 B），是不带它时代码与只读数据的 12%。
+
+不裁剪的部分：BiDi（`unicode-bidi`）、grapheme/word 边界（`unicode-segmentation`）与 UAX #14 规则表是任何动态文本都需要的数据，按 locale 删去会让输入框里的文本出错，因此不按 locale 裁剪；四个 LSTM 模型在 icu4x 的 compiled data 中是一个整体，按 script 单独保留需要以 icu4x datagen 生成自有 data provider；`viso-behavior` 的 CLDR plural/decimal 数据（`icu_plurals`、`icu_decimal`）按 locale 裁剪同样需要 datagen，未做。
+
 ---
 
 # 4. Native：不扫描系统字体
@@ -975,7 +1128,7 @@ application no-break spans
 UAX #14 是 base，不等于所有语言的完整排版需求。特别是：
 
 - East Asian line-start/line-end prohibition 需要 locale tailoring；
-- Thai/Lao/Khmer 等无空格语言可能需要 dictionary/locale segmenter；
+- Thai/Lao/Khmer/Myanmar 等无空格语言需要 dictionary/LSTM segmenter（`icu_segmenter` 的 LSTM，`complex-line-break` feature，embedded 构建按 locale 与文本决定是否带上，§3.7）；
 - hyphenation 需要单独 language data/service；
 - emergency break 不能无视 grapheme/cluster correctness。
 
@@ -1555,7 +1708,7 @@ variation coordinates
 
 Viso 可以对小字号启用**灰度 Coverage 的 subpixel-position phase quantization**，以减少亚像素移动导致的跳动；这不是 RGB/LCD subpixel AA。是否启用以及 phase 数量由 backend/reference-device benchmark 决定，高 DPI 下可以减少或关闭 phase bucket。
 
-禁止为了减少 bucket 数量而把低分辨率 A8 glyph 长期放大。稳定 transform 改变到新的有效像素尺寸后，应异步准备新的精确 Coverage bucket。
+禁止为了减少 bucket 数量而把低分辨率 A8 glyph 长期放大。稳定 transform 改变到新的有效像素尺寸后，应异步准备新的精确 Coverage bucket。唯一的例外是不链接 rasterizer 的 embedded build（§3.6）：没有声明 bake 的字号从最近的 baked 字号重采样，并报告该字号。
 
 ## 13.2 可缩放 lane 采用 MTSDF，而不是普通 SDF
 
@@ -3007,6 +3160,7 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 | TextInput 局部编辑无 IO/parse | `typing_into_a_covered_paragraph_loads_queries_and_parses_nothing`（face miss、system query、fallback 与 worker coverage parse 全程不变） |
 | Inspector 解释 fallback 与 cache miss | `FallbackTrace` 与 face / shaping / coverage（fallback 与 worker 两份）/ 四个 glyph pool 的 `MissLedger`；`the_inspection_explains_a_reclaimed_glyph_and_what_it_draws_from`，`the_worker_s_coverage_builds_reach_the_inspection`，`a_span_miss_names_the_turnover_or_face_drop_that_evicted_it`（`inspector` feature，不在 CI 默认 feature 集） |
 | assets/fonts 自动进入 FontManifest，不 eager parse | `viso::packaged_fonts!()` 构建期扫描、校验、抽取元数据并嵌入；`PackagedFonts::manifest` 只搬元数据；`a_packaged_ui_family_becomes_the_primary_on_first_use`（首次使用才读字节），`crates/viso/tests/packaged_fonts.rs`。无需 `Viso.toml`；增删文件需重新编译调用 crate |
+| embedded 构建期子集 + 缺字诊断（§3.4） | `crates/macros/src/font_subset/tests.rs`：glyph id 与 outline 不变、删去的字符不再映射、`fi` ligature 闭包、composite component 闭包、CFF 与 CID-keyed CFF、collection、checksum；`a_text_character_no_face_maps_is_an_error_listing_it`；`gb2312_table_matches_gbk` |
 
 未勾选：
 

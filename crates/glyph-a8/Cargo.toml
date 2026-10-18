@@ -1,0 +1,25 @@
+[package]
+name = "viso-glyph-a8"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# LEAF, depends on no other viso-* crate. The exact A8 coverage of a glyph:
+# rasterized from its outline (`raster`), or read from a baked page that a build
+# rasterized ahead of time. `packaged_fonts!` bakes with the same rasterizer the
+# runtime runs, so a baked glyph is the pixels the runtime would have drawn; the
+# shared crate is what keeps the two bit-identical without the proc macro
+# linking the text runtime.
+#
+# Without `raster` it is `no_std` + `alloc`: a baked page is read in place
+# (flash / XIP) and decoded with integer arithmetic alone.
+[dependencies]
+ttf-parser = { workspace = true, optional = true }
+ab_glyph_rasterizer = { workspace = true, optional = true }
+
+[features]
+default = ["raster"]
+# Rasterize a glyph outline (`ttf-parser` outlines, `ab_glyph_rasterizer`
+# accumulation) and bake a face's glyphs into pages.
+raster = ["dep:ttf-parser", "dep:ab_glyph_rasterizer"]

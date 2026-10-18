@@ -25,7 +25,7 @@
 //! downstream slice actually trips, and because it can only see the *public*
 //! surface — which is precisely what "frozen" has to mean.
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, SamplerDesc, TextureFormat};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SamplerDesc, TextureFormat};
 use viso_render::graph::{GraphStats, PassLoad, PassWork, RenderGraph};
 use viso_render::transient::{
     SURFACE_SLOT, TRANSIENT_TARGET_IDLE_FRAMES, TargetDesc, TargetId, TargetKey, TargetUsage,
@@ -36,8 +36,8 @@ use viso_render::{Border, FrameStats, LayerClip, Primitive, Quad, Rect, Renderer
 /// Bytes per texel of every target the offscreen pipeline allocates today.
 const BPT: usize = 4;
 
-fn renderer(w: u32, h: u32) -> (HeadlessRaster, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer(w: u32, h: u32) -> (CpuRaster, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
     let format = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
@@ -219,7 +219,7 @@ fn an_opaque_unblurred_layer_allocates_nothing() {
 // ---------------------------------------------------------------------------
 
 /// The ladder for one 64x64 blurred layer, keyed by sigma only.
-fn blur_frame(r: &mut Renderer, gpu: &mut HeadlessRaster, sigma: f32) -> FrameStats {
+fn blur_frame(r: &mut Renderer, gpu: &mut CpuRaster, sigma: f32) -> FrameStats {
     r.upload(
         gpu,
         &[
@@ -398,8 +398,8 @@ fn blurred_siblings_share_the_pool() {
 // 3. Transient pool keys + alias-reuse discipline
 // ---------------------------------------------------------------------------
 
-fn new_pool() -> (HeadlessRaster, TransientTargets) {
-    (HeadlessRaster::new(), TransientTargets::new())
+fn new_pool() -> (CpuRaster, TransientTargets) {
+    (CpuRaster::new(), TransientTargets::new())
 }
 
 fn desc(width: u32, height: u32) -> TargetDesc {
@@ -414,7 +414,7 @@ fn desc(width: u32, height: u32) -> TargetDesc {
 }
 
 /// Assign `pool` against a frame of `timeline_len` texture passes.
-fn assign(gpu: &mut HeadlessRaster, pool: &mut TransientTargets, timeline_len: u32) {
+fn assign(gpu: &mut CpuRaster, pool: &mut TransientTargets, timeline_len: u32) {
     let sampler = gpu.create_sampler(&SamplerDesc::LINEAR_CLAMP);
     pool.assign(gpu, sampler, timeline_len);
 }

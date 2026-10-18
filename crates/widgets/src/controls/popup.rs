@@ -506,10 +506,8 @@ mod tests {
     fn children(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
         let arena = store.arena();
         let mut out = Vec::new();
-        let mut child = arena.links(parent).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in arena.children(parent) {
             out.push(c);
-            child = arena.links(c).and_then(|l| l.next_sibling);
         }
         out
     }
@@ -748,7 +746,7 @@ mod tests {
         // Author order: scrim before content, so the top-layer pass paints the
         // scrim first (under) and the content after (over).
         let arena = rx.store.arena();
-        let scrim_next = arena.links(scrim_node).and_then(|l| l.next_sibling);
+        let scrim_next = arena.next_sibling(scrim_node);
         assert_eq!(
             scrim_next,
             Some(content),

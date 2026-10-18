@@ -12,7 +12,10 @@
 
 mod absence;
 mod bundle;
+mod footprint;
 mod frame_tax;
+mod mcu;
+mod profiles;
 mod targets;
 
 use std::collections::BTreeMap;
@@ -26,6 +29,9 @@ struct Allowed {
     dir: &'static str,
     /// Internal crates this one may name. Anything else fails.
     deps: &'static [&'static str],
+    /// Internal crates its tests, benches and examples may also name, as
+    /// dev-dependencies only: they never reach the crate's own closure.
+    dev: &'static [&'static str],
 }
 
 /// Whether a crate is tooling rather than framework, from its directory.
@@ -57,7 +63,8 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-behavior",
                     "viso-services",
                     "viso-render",
-                    "viso-svg",
+                    "viso-image",
+                    "viso-dev-protocol",
                     "viso-gpu",
                     "viso-platform",
                     "viso-handle",
@@ -65,26 +72,43 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-shader",
                     "viso-macros",
                     "viso-ende",
+                    "viso-math",
+                    "viso-schema",
                 ],
+                dev: &[],
             },
         ),
+        // The proc macro bakes glyphs with the rasterizer the text runtime
+        // runs, so it carries the one leaf both share and no runtime.
         (
             "viso-macros",
             Allowed {
                 dir: "crates/macros",
+                deps: &["viso-glyph-a8"],
+                dev: &[],
+            },
+        ),
+        // A8 glyph coverage, rasterized or read from baked pages: a leaf that
+        // the text runtime and the font baker in `viso-macros` both depend on.
+        (
+            "viso-glyph-a8",
+            Allowed {
+                dir: "crates/glyph-a8",
                 deps: &[],
+                dev: &[],
             },
         ),
         // The `ui!` proc-macro crate. A proc-macro crate is a compile-time dylib,
-        // so it MAY carry an ordinary library dependency (unlike the leaf
-        // `viso-macros`): it drives the shared DSL frontend via `viso-dsl` and
-        // emits `viso_ui::` builder tokens. The `viso-dsl -> viso-ui` edge above
-        // keeps the emitted paths within the allowed DAG.
+        // so it MAY carry an ordinary library dependency: it drives the shared
+        // DSL frontend via `viso-dsl` and
+        // emits `viso_ui::` builder tokens, which resolve in the app that
+        // expands them; it links no runtime itself (ADR 0042).
         (
             "viso-ui-macros",
             Allowed {
                 dir: "crates/ui-macros",
                 deps: &["viso-dsl"],
+                dev: &[],
             },
         ),
         // Two owned foundations, both DAG leaves (section 10.1 forbidden edges):
@@ -96,6 +120,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             Allowed {
                 dir: "crates/math",
                 deps: &[],
+                dev: &[],
             },
         ),
         (
@@ -103,31 +128,57 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             Allowed {
                 dir: "crates/ende",
                 deps: &[],
+                dev: &[],
+            },
+        ),
+        // The data crossing the compile boundary (ADR 0042): the compiler
+        // builds against it and the runtime re-exports it. Pure data over the
+        // encode/decode base, nothing of the runtime.
+        (
+            "viso-schema",
+            Allowed {
+                dir: "crates/schema",
+                deps: &["viso-ende"],
+                dev: &[],
+            },
+        ),
+        // The dev link between the CLI and a dev runtime (ADR 0042): framed
+        // messages, the patch bundle, and what a running app reports to a
+        // tool. Both sides build against it, so the CLI links no runtime.
+        (
+            "viso-dev-protocol",
+            Allowed {
+                dir: "crates/dev-protocol",
+                deps: &["viso-ende", "viso-math", "viso-schema", "viso-gpu-abi"],
+                dev: &[],
             },
         ),
         (
             "viso-widgets",
             Allowed {
                 dir: "crates/widgets",
-                deps: &["viso-ui"],
+                deps: &["viso-ui", "viso-math"],
+                dev: &[],
             },
         ),
-        // dsl works against a schema/registry, NOT concrete widgets (section 10.1).
-        // `viso-ende` is the AOT package codec: the release emitter (Slice P) turns a
-        // compiled fragment into a compact `viso_ende`-serialized package. Leaf edge,
-        // no cycle. A `shader` declaration lowers into `viso-shader`'s program IR,
-        // which sits below ui already.
+        // dsl works against a schema/registry, NOT concrete widgets or the
+        // runtime (section 10.1, ADR 0042): it emits schema data (`viso-schema`)
+        // and dev-link patches (`viso-dev-protocol`), encodes them with
+        // `viso-ende`, lowers behavior to `viso-behavior` and shaders to
+        // `viso-shader`. Its integration tests mount what it compiles, so they
+        // link the runtime as dev-dependencies.
         (
             "viso-dsl",
             Allowed {
                 dir: "crates/dsl",
                 deps: &[
-                    "viso-ui",
+                    "viso-schema",
+                    "viso-dev-protocol",
                     "viso-ende",
                     "viso-behavior",
-                    "viso-view",
                     "viso-shader",
                 ],
+                dev: &["viso-ui", "viso-view"],
             },
         ),
         // The runtime a compiled view's behavior runs in: a component instance on
@@ -137,7 +188,14 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-view",
             Allowed {
                 dir: "crates/view",
-                deps: &["viso-ui", "viso-behavior", "viso-ende"],
+                deps: &[
+                    "viso-ui",
+                    "viso-schema",
+                    "viso-dev-protocol",
+                    "viso-behavior",
+                    "viso-ende",
+                ],
+                dev: &[],
             },
         ),
         // The behavior bytecode and interpreter the DSL compiler lowers `fn`/`action`
@@ -148,7 +206,8 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-behavior",
             Allowed {
                 dir: "crates/behavior",
-                deps: &["viso-ende"],
+                deps: &["viso-ende", "viso-math", "viso-schema"],
+                dev: &[],
             },
         ),
         // The formatter / language-server tooling for `.vs` (Slice R). A pure
@@ -162,6 +221,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             Allowed {
                 dir: "crates/lsp",
                 deps: &["viso-dsl"],
+                dev: &[],
             },
         ),
         // Services reach platform only on Android, for the activity their JNI
@@ -171,6 +231,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             Allowed {
                 dir: "crates/services",
                 deps: &["viso-runtime", "viso-platform"],
+                dev: &[],
             },
         ),
         // `viso-ende` is the AOT package codec: the release loader (Slice P) decodes a
@@ -182,48 +243,91 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-ui",
             Allowed {
                 dir: "crates/ui",
-                deps: &["viso-render", "viso-runtime", "viso-ende", "viso-text"],
+                deps: &[
+                    "viso-render",
+                    "viso-runtime",
+                    "viso-ende",
+                    "viso-text",
+                    "viso-math",
+                    "viso-schema",
+                ],
+                dev: &[],
             },
         ),
         (
             "viso-render",
             Allowed {
                 dir: "crates/render",
-                deps: &["viso-math", "viso-text", "viso-shader", "viso-gpu"],
+                deps: &[
+                    "viso-math",
+                    "viso-schema",
+                    "viso-text",
+                    "viso-image",
+                    "viso-svg",
+                    "viso-shader",
+                    "viso-gpu",
+                ],
+                dev: &[],
             },
         ),
-        // The SVG input lane (§13) sits above render: it lowers parsed SVG into
-        // `viso_render::Path`/`Stroke`/`Primitive`, converting colors through
-        // `viso-math`. The dependency-free parser lives here too, isolated
-        // (§3.3) out of render/ui.
+        // The SVG input lane (§13): the dependency-free parser to a normalized
+        // document, over `viso-math` geometry. The renderer lowers the document
+        // (`viso_render::svg`); tooling checks an SVG with this crate alone.
         (
             "viso-svg",
             Allowed {
                 dir: "crates/svg",
-                deps: &["viso-render", "viso-math"],
+                deps: &["viso-math"],
+                dev: &[],
+            },
+        ),
+        // Raster images on the CPU: asset decode, the build-time conversion to
+        // a target's texel format (stored in the `gpu-abi` formats, a leaf; SVG
+        // rasterized from the parsed document) and the snapshot image, shared
+        // by the renderer and the CLI.
+        (
+            "viso-image",
+            Allowed {
+                dir: "crates/image",
+                deps: &["viso-schema", "viso-gpu-abi", "viso-svg", "viso-math"],
+                dev: &[],
             },
         ),
         (
             "viso-text",
             Allowed {
                 dir: "crates/text",
-                deps: &["viso-gpu"],
+                deps: &["viso-glyph-a8"],
+                dev: &[],
             },
         ),
         // `viso-ende` is the codec a view package carries a brush's layout
-        // and code in. Leaf edge, no cycle.
+        // and code in. A program is laid out and coded for the GPU ABI, never a
+        // backend (ADR 0042).
         (
             "viso-shader",
             Allowed {
                 dir: "crates/shader",
-                deps: &["viso-gpu", "viso-ende"],
+                deps: &["viso-gpu-abi", "viso-ende"],
+                dev: &[],
+            },
+        ),
+        // The GPU ABI description: layouts, program ABI, descriptors, handles.
+        // A leaf, so the compiler side describes GPU data without a backend.
+        (
+            "viso-gpu-abi",
+            Allowed {
+                dir: "crates/gpu-abi",
+                deps: &[],
+                dev: &[],
             },
         ),
         (
             "viso-gpu",
             Allowed {
                 dir: "crates/gpu",
-                deps: &["viso-runtime", "viso-handle", "viso-macros"],
+                deps: &["viso-handle", "viso-macros", "viso-gpu-abi"],
+                dev: &[],
             },
         ),
         (
@@ -231,6 +335,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             Allowed {
                 dir: "crates/runtime",
                 deps: &["viso-platform"],
+                dev: &[],
             },
         ),
         (
@@ -238,6 +343,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             Allowed {
                 dir: "crates/platform",
                 deps: &["viso-handle"],
+                dev: &[],
             },
         ),
         (
@@ -245,6 +351,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             Allowed {
                 dir: "crates/handle",
                 deps: &[],
+                dev: &[],
             },
         ),
         // Tooling (`Viso_CLI.md` section 41). The project/config model answers "what
@@ -257,6 +364,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             Allowed {
                 dir: "tools/project",
                 deps: &[],
+                dev: &[],
             },
         ),
         // The packager: an iOS `.app`, an Android APK, a web bundle around a
@@ -267,13 +375,15 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             Allowed {
                 dir: "tools/package",
                 deps: &[],
+                dev: &[],
             },
         ),
         // The `viso` command: argument parsing, output and exit codes over the
         // project model and the compiler it orchestrates (CLI sections 39-41).
-        // A dev session decodes each changed asset as the app would before it
-        // sends it: an image through the SVG lane's asset decoder, a font
-        // through the text runtime's sfnt parser.
+        // It talks to a dev runtime over `viso-dev-protocol`, and decodes each
+        // changed asset as the app would before it sends it: a raster through
+        // `viso-image`, an SVG through its parser, a font through the text
+        // runtime's sfnt parser. It links no runtime (ADR 0042).
         (
             "viso-cli",
             Allowed {
@@ -282,15 +392,57 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-project",
                     "viso-package",
                     "viso-dsl",
-                    "viso-view",
+                    "viso-dev-protocol",
+                    "viso-schema",
                     "viso-ende",
+                    "viso-image",
                     "viso-svg",
                     "viso-text",
                 ],
+                dev: &[],
             },
         ),
     ])
 }
+
+/// Edges that stay forbidden however the allowlist evolves (Architecture
+/// section 10.1). The allowlist already rejects them; listing them here also
+/// rejects an allowlist entry that would admit one, so widening the DAG cannot
+/// quietly reopen a boundary that an ADR closed.
+const NEVER: &[(&str, &str)] = &[
+    ("viso-platform", "viso-ui"),
+    ("viso-platform", "viso-widgets"),
+    ("viso-platform", "viso-dsl"),
+    ("viso-ui", "viso-widgets"),
+    ("viso-ui", "viso-dsl"),
+    ("viso-ui", "viso-behavior"),
+    ("viso-runtime", "viso-behavior"),
+    ("viso-widgets", "viso-behavior"),
+    ("viso-render", "viso-widgets"),
+    ("viso-gpu", "viso-ui"),
+    ("viso-gpu", "viso-runtime"),
+    ("viso-gpu", "viso-platform"),
+    ("viso-text", "viso-platform"),
+    ("viso-text", "viso-gpu"),
+    ("viso-text", "viso-render"),
+    ("viso-shader", "viso-gpu"),
+    ("viso-svg", "viso-render"),
+    ("viso-dsl", "viso-ui"),
+    ("viso-dsl", "viso-view"),
+    ("viso-cli", "viso-view"),
+    ("viso-schema", "viso-ui"),
+    ("viso-dev-protocol", "viso-ui"),
+];
+
+/// Crates on the compiler and tooling side (ADR 0042) whose dependency
+/// closure holds no runtime, platform or GPU backend, so the compiler, the
+/// language server and `viso check` build without any GPU or windowing code.
+const COMPILER_SIDE: &[&str] = &["viso-dsl", "viso-lsp", "viso-ui-macros", "viso-cli"];
+
+/// What [`COMPILER_SIDE`] closures must not reach: the runtime stack below
+/// `viso-ui`. Everything else of the runtime (`viso-ui`, `viso-render`,
+/// `viso-view`, …) reaches one of these, so listing them closes it all.
+const RUNTIME_STACK: &[&str] = &["viso-runtime", "viso-platform", "viso-gpu"];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -301,9 +453,12 @@ fn main() -> ExitCode {
         "check-targets" => targets::check_targets(&args[1..]),
         "check-release-absence" => absence::check_release_absence(&args[1..]),
         "check-frame-tax" => frame_tax::check_frame_tax(&args[1..]),
+        "check-profiles" => profiles::check_profiles(&args[1..]),
+        "mcu-smoke" => mcu::mcu_smoke(&args[1..]),
+        "footprint" => footprint::footprint(&args[1..]),
         other => {
             eprintln!(
-                "unknown xtask: {other:?}\nusage: cargo xtask check-deps | check-targets | check-release-absence | check-frame-tax | bundle"
+                "unknown xtask: {other:?}\nusage: cargo xtask check-deps | check-targets | check-release-absence | check-frame-tax | check-profiles | mcu-smoke | footprint | bundle"
             );
             ExitCode::FAILURE
         }
@@ -316,6 +471,8 @@ fn check_deps() -> ExitCode {
     let mut violations: Vec<String> = Vec::new();
     let mut checked = 0usize;
     let mut tools = 0usize;
+    // Each crate's normal internal dependencies, as its manifest declares them.
+    let mut normal: BTreeMap<&str, Vec<String>> = BTreeMap::new();
 
     for (name, entry) in &allowed {
         let toml_path = root.join(entry.dir).join("Cargo.toml");
@@ -328,7 +485,15 @@ fn check_deps() -> ExitCode {
             tools += 1;
         }
 
-        for dep in internal_deps(&text) {
+        let deps = internal_deps(&text);
+        normal.insert(
+            name,
+            deps.iter()
+                .filter(|(_, dev)| !dev)
+                .map(|(dep, _)| dep.clone())
+                .collect(),
+        );
+        for (dep, dev) in deps {
             // The section 41 direction gets its own message. The allowlist already
             // rejects the edge, but "framework depends on tooling" is a different
             // mistake from "this edge skips a layer", and the two are fixed
@@ -344,17 +509,34 @@ fn check_deps() -> ExitCode {
                 ));
                 continue;
             }
-            if !entry.deps.contains(&dep.as_str()) {
+            let admitted =
+                entry.deps.contains(&dep.as_str()) || (dev && entry.dev.contains(&dep.as_str()));
+            if !admitted {
+                let kind = if dev { "dev-depends" } else { "depends" };
                 violations.push(format!(
-                    "FORBIDDEN EDGE: `{name}` depends on `{dep}` (not in the section 10 allowlist)"
+                    "FORBIDDEN EDGE: `{name}` {kind} on `{dep}` (not in the section 10 allowlist)"
                 ));
             }
         }
     }
 
+    for &(from, to) in NEVER {
+        if allowed
+            .get(from)
+            .is_some_and(|entry| entry.deps.contains(&to))
+        {
+            violations.push(format!(
+                "FORBIDDEN EDGE: the allowlist admits `{from}` -> `{to}`, which section 10.1 forbids"
+            ));
+        }
+    }
+
+    violations.extend(runtime_in_closure(&normal));
+
     // Every workspace member must appear above, or the allowlist checks a shrinking
     // fraction of the repository while continuing to report OK.
     violations.extend(unlisted_members(&root, &allowed));
+    violations.extend(duplicate_geometry(&root, &allowed));
 
     if violations.is_empty() {
         println!(
@@ -370,18 +552,109 @@ fn check_deps() -> ExitCode {
     }
 }
 
-/// Extract `viso-*` dependency names from a Cargo.toml. Minimal parser: scans
-/// lines inside any `[dependencies]`-family table for keys/entries that name a
-/// `viso-*` crate. Good enough for our own manifests, which we control.
-fn internal_deps(toml: &str) -> Vec<String> {
+/// A [`COMPILER_SIDE`] crate whose normal-dependency closure reaches the
+/// [`RUNTIME_STACK`], with the path it takes.
+fn runtime_in_closure(normal: &BTreeMap<&str, Vec<String>>) -> Vec<String> {
+    let mut out = Vec::new();
+    for &root in COMPILER_SIDE {
+        // Breadth first, each crate's path from `root` kept for the message.
+        let mut paths: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        paths.insert(root.to_owned(), vec![root.to_owned()]);
+        let mut queue = vec![root.to_owned()];
+        while let Some(at) = queue.pop() {
+            let path = paths[&at].clone();
+            for dep in normal.get(at.as_str()).into_iter().flatten() {
+                if paths.contains_key(dep) {
+                    continue;
+                }
+                let mut next = path.clone();
+                next.push(dep.clone());
+                if RUNTIME_STACK.contains(&dep.as_str()) {
+                    out.push(format!(
+                        "RUNTIME IN CLOSURE: `{root}` reaches `{dep}` ({}) — ADR 0042 keeps the \
+                         compiler and tooling off the runtime stack",
+                        next.join(" -> ")
+                    ));
+                }
+                paths.insert(dep.clone(), next);
+                queue.push(dep.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Geometry vocabulary owned by `viso-math` (Architecture section 10.1): no other
+/// crate defines a public type of the same name, so a rect is one type from
+/// layout to the GPU upload.
+const MATH_OWNED: &[&str] = &[
+    "Rect", "Point", "Vec2", "Vec3", "Vec4", "Affine2", "Mat2", "Mat3", "Mat4", "Quat",
+];
+
+/// Public geometry types declared outside `crates/math`.
+fn duplicate_geometry(root: &Path, allowed: &BTreeMap<&'static str, Allowed>) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in allowed.values() {
+        if entry.dir == "crates/math" {
+            continue;
+        }
+        let mut files = Vec::new();
+        rust_files(&root.join(entry.dir).join("src"), &mut files);
+        for file in files {
+            let Ok(text) = fs::read_to_string(&file) else {
+                continue;
+            };
+            for (line_no, line) in text.lines().enumerate() {
+                let Some(rest) = line.trim_start().strip_prefix("pub struct ") else {
+                    continue;
+                };
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if MATH_OWNED.contains(&name.as_str()) {
+                    out.push(format!(
+                        "DUPLICATE GEOMETRY: `{name}` declared at {}:{} — use `viso_math::{name}`",
+                        file.strip_prefix(root).unwrap_or(&file).display(),
+                        line_no + 1
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Extract `viso-*` dependency names from a Cargo.toml, each with whether it
+/// is a dev-dependency. Minimal parser: scans lines inside any
+/// `[dependencies]`-family table for keys/entries that name a `viso-*` crate.
+/// Good enough for our own manifests, which we control.
+fn internal_deps(toml: &str) -> Vec<(String, bool)> {
     let mut deps = Vec::new();
     let mut in_deps_table = false;
+    let mut dev_table = false;
     for line in toml.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
             // Any table whose name ends in `dependencies` counts (including
             // target-specific `[target.'..'.dependencies]`).
-            in_deps_table = trimmed.trim_end_matches(']').ends_with("dependencies");
+            let table = trimmed.trim_end_matches(']');
+            in_deps_table = table.ends_with("dependencies");
+            dev_table = table.ends_with("dev-dependencies");
             continue;
         }
         if !in_deps_table || trimmed.is_empty() || trimmed.starts_with('#') {
@@ -391,7 +664,7 @@ fn internal_deps(toml: &str) -> Vec<String> {
         if let Some((key, _)) = trimmed.split_once('=') {
             let key = key.trim();
             if key.starts_with("viso") {
-                deps.push(key.to_string());
+                deps.push((key.to_string(), dev_table));
             }
         }
     }
@@ -436,13 +709,17 @@ fn unlisted_members(root: &Path, allowed: &BTreeMap<&'static str, Allowed>) -> V
 
 /// Whether a member sits outside the dependency DAG entirely.
 ///
-/// Examples are applications: they consume the facade and nothing consumes them
-/// (AGENTS 4), so an allowlist entry would only restate that. `libs/` holds
-/// standalone libraries with no framework dependency of their own, and `xtask` is the
-/// checker itself. None of them can weaken the DAG, because a framework crate that
-/// named one would still fail the allowlist above.
+/// Examples and the apps under `benches/` are applications: they consume the
+/// facade and nothing consumes them (AGENTS 4), so an allowlist entry would only
+/// restate that. `libs/` holds standalone libraries with no framework dependency
+/// of their own, and `xtask` is the checker itself. None of them can weaken the
+/// DAG, because a framework crate that named one would still fail the allowlist
+/// above.
 fn outside_the_dag(dir: &str) -> bool {
-    dir == "xtask" || dir.starts_with("examples/") || dir.starts_with("libs/")
+    dir == "xtask"
+        || dir.starts_with("examples/")
+        || dir.starts_with("benches/")
+        || dir.starts_with("libs/")
 }
 
 /// Member paths from `[workspace] members = [...]`.
@@ -512,4 +789,43 @@ fn parent_or_self(p: &Path) -> PathBuf {
     p.parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| p.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dev_dependency_is_told_apart_and_stays_out_of_the_closure() {
+        let manifest = "[dependencies]\nviso-schema = { workspace = true }\n\n\
+                        [dev-dependencies]\nviso-view = { workspace = true }\n";
+        assert_eq!(
+            internal_deps(manifest),
+            [
+                ("viso-schema".to_owned(), false),
+                ("viso-view".to_owned(), true)
+            ]
+        );
+        let normal = BTreeMap::from([
+            ("viso-dsl", vec!["viso-schema".to_owned()]),
+            ("viso-lsp", vec!["viso-dsl".to_owned()]),
+        ]);
+        assert!(runtime_in_closure(&normal).is_empty());
+    }
+
+    #[test]
+    fn a_runtime_crate_reached_through_another_is_named_with_its_path() {
+        let normal = BTreeMap::from([
+            ("viso-lsp", vec!["viso-dsl".to_owned()]),
+            ("viso-dsl", vec!["viso-ui".to_owned()]),
+            ("viso-ui", vec!["viso-runtime".to_owned()]),
+        ]);
+        let found = runtime_in_closure(&normal);
+        assert!(
+            found
+                .iter()
+                .any(|v| v.contains("`viso-lsp` reaches `viso-runtime` (viso-lsp -> viso-dsl -> viso-ui -> viso-runtime)")),
+            "{found:?}"
+        );
+    }
 }

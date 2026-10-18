@@ -9,7 +9,7 @@ use std::rc::Rc;
 use viso_behavior::game::{
     BodyKind, EntityId, Extracted, GameError, GameSnapshot, Key, Rebuild, Scheduler, SystemFault,
 };
-use viso_behavior::native::{NativeValue, Natives, Vec3F32};
+use viso_behavior::native::{NativeValue, Natives, Vec3};
 use viso_behavior::{Budget, Module, Value, Vm};
 use viso_dsl::frontend::{Origin, compile_file_in};
 
@@ -198,7 +198,7 @@ fn the_last_teleport_wins_and_puts_the_body_at_rest() {
     let start = drawn.iter().find(|e| e.id == player).expect("drawn");
     assert_eq!(
         start.position,
-        Vec3F32::new(7.0, 0.0, 0.0).lerp(Vec3F32::new(7.0, rest, 0.0), 0.5),
+        Vec3::new(7.0, 0.0, 0.0).lerp(Vec3::new(7.0, rest, 0.0), 0.5),
         "the frame interpolates from the teleport, not across it"
     );
 }

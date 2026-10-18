@@ -39,11 +39,11 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::Duration;
 
-use viso_ende::JsonWriter;
-use viso_package::web;
-use viso_view::dev::wire::{
+use viso_dev_protocol::wire::{
     DEV_RESTORE_ENV, DEV_RUNTIME_ENV, MAX_FRAME, MAX_LOG, WEB_DEV_PATH, WEB_RELOAD_CLOSE,
 };
+use viso_ende::JsonWriter;
+use viso_package::web;
 
 use crate::dev::link::{self, Deliver, DevStream, Expect};
 use crate::process::Launch;
@@ -1226,7 +1226,9 @@ mod tests {
 
     #[test]
     fn the_server_hands_out_the_bundles_page_and_files_with_their_headers() {
-        use viso_view::dev::wire::{BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint};
+        use viso_dev_protocol::wire::{
+            BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint,
+        };
 
         let dir = std::env::temp_dir().join(format!("viso-serve-page-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1398,7 +1400,9 @@ mod tests {
 
     #[test]
     fn a_page_logs_through_its_channel_and_reloads_on_a_new_build() {
-        use viso_view::dev::wire::{BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint};
+        use viso_dev_protocol::wire::{
+            BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint,
+        };
 
         let expect = Expect {
             token: "token".into(),
@@ -1450,7 +1454,9 @@ mod tests {
     #[test]
     #[ignore = "opens the page in a headless Chrome"]
     fn a_browser_page_forwards_its_console_and_reloads_without_an_app() {
-        use viso_view::dev::wire::{BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint};
+        use viso_dev_protocol::wire::{
+            BuildId, DevSessionId, ProjectFingerprint, SchemaFingerprint,
+        };
 
         let dir = std::env::temp_dir().join(format!("viso-page-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

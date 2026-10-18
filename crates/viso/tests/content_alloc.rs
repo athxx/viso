@@ -18,7 +18,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::Ordering;
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba};
 use viso::render::{test_glyphs, test_texture};
 use viso::ui::{
@@ -115,7 +115,7 @@ const WHITE: Rgba = Rgba {
 /// one-time creations made before any steady-state measurement, so they are not
 /// counted against the per-frame budget.
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -176,7 +176,7 @@ fn build(store: &mut NodeStore) -> (NodeId, NodeId, NodeId) {
 /// and lay the tree out once. Mirrors `content_scene.rs::render_scene` up to the
 /// point of drawing.
 fn setup() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);

@@ -11,6 +11,8 @@
 //! strings per the JSON spec. It intentionally does not pretty-print: tool
 //! interchange wants compact, stable output.
 
+use alloc::string::String;
+
 /// A compact JSON writer.
 ///
 /// Drive it with the structural methods (`begin_object` / `end_object`,

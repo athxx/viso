@@ -254,7 +254,7 @@ fn a_value_that_does_not_load_takes_the_initializer_and_reports() {
         reports[0].message.contains("does not convert"),
         "{reports:?}"
     );
-    assert_eq!(state(&game, "best"), Value::Str(Rc::new(String::new())));
+    assert_eq!(state(&game, "best"), Value::str(""));
 }
 
 #[test]

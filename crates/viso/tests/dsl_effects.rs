@@ -1,12 +1,12 @@
 //! A `component!`'s `effect` runs under the macros: the build mounts it on the
-//! view's root, the next settle runs it, and a write that changes its
-//! dependency runs it again in the settle after.
+//! view's root, the frame's effect phase after the next settle runs it, and a
+//! write that changes its dependency runs it again a frame later.
 
 use viso::render::Rect;
 use viso::ui::{
     BindingTable, BuildCx, ComputedStore, EffectStore, NodeStore, PointerButtons, PointerEvent,
     PointerPhase, PointerRouter, SemanticProjector, StateStore, StateValue, TextEdits,
-    VirtualLists, settle_states,
+    VirtualLists, run_effects, settle_states,
 };
 
 viso::component! {
@@ -66,7 +66,9 @@ fn a_component_effect_runs_after_the_build_and_on_change() {
                 &mut effects,
                 &mut changed,
             )
-            .expect("settles")
+            .expect("settles");
+            // The frame's `RunEffects` phase, after it presented.
+            run_effects(store, states, &mut effects);
         };
     assert!(store.has_pending_effects(), "the build mounts the effect");
     settle(&mut store, &mut states, &mut bindings);

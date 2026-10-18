@@ -5,20 +5,19 @@ fn tree(s: &str) -> Tree {
 }
 
 /// All paths with their absolute transforms.
-fn paths(t: &Tree) -> Vec<(Path, Transform)> {
+fn paths(t: &Tree) -> Vec<(Path, Affine2)> {
     let mut out = Vec::new();
-    t.root.for_each_path(&Transform::IDENTITY, &mut |p, ts| {
-        out.push((p.clone(), *ts))
-    });
+    t.root
+        .for_each_path(&Affine2::IDENTITY, &mut |p, ts| out.push((p.clone(), *ts)));
     out
 }
 
-fn abs_points(p: &Path, ts: &Transform) -> Vec<(f32, f32)> {
+fn abs_points(p: &Path, ts: &Affine2) -> Vec<(f32, f32)> {
     p.data
         .segments()
         .iter()
         .filter_map(|s| match *s {
-            Segment::MoveTo(q) | Segment::LineTo(q) => Some(ts.apply(q)),
+            Segment::MoveTo(q) | Segment::LineTo(q) => Some(ts.transform_point(q)),
             _ => None,
         })
         .map(|q| ((q.x * 100.0).round() / 100.0, (q.y * 100.0).round() / 100.0))
@@ -113,8 +112,8 @@ fn gradients_resolve_to_user_space() {
     assert_eq!(g.stops.len(), 2);
     // Unit square → bbox.
     assert_eq!(
-        g.transform.apply(Point::new(g.x2, g.y2)),
-        Point::new(10.0, 40.0)
+        g.transform.transform_point(Vec2::new(g.x2, g.y2)),
+        Vec2::new(10.0, 40.0)
     );
     assert_eq!(fill_color(&ps[1].0), Color::new(0, 255, 0, 255));
     assert_eq!(fill_color(&ps[2].0), Color::new(0, 128, 0, 255));

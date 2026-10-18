@@ -66,7 +66,7 @@ use crate::program::{
 };
 use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
-    PipelineDesc, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
+    PipelineDesc, SampledFormats, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
@@ -332,6 +332,8 @@ struct Opened {
     preferred: TextureFormat,
     float32_filterable: bool,
     timestamps: bool,
+    /// The texture-compression families the adapter offered, requested.
+    sampled: SampledFormats,
 }
 
 /// Open the best adapter's device.
@@ -352,6 +354,19 @@ async fn open() -> Option<Opened> {
     }
     if timestamps {
         features.push(&"timestamp-query".into());
+    }
+    // Every block-compressed family the adapter samples. WebGPU has no 16-bit
+    // packed color format, so those images are decoded before upload.
+    let mut sampled = SampledFormats::empty();
+    for (feature, class) in [
+        ("texture-compression-bc", SampledFormats::BC),
+        ("texture-compression-etc2", SampledFormats::ETC2),
+        ("texture-compression-astc", SampledFormats::ASTC),
+    ] {
+        if adapter.features().has(feature) {
+            features.push(&feature.into());
+            sampled |= class;
+        }
     }
     let limits = adapter.limits();
     let required = obj(&[
@@ -380,6 +395,7 @@ async fn open() -> Option<Opened> {
         preferred,
         float32_filterable,
         timestamps,
+        sampled,
     })
 }
 
@@ -797,6 +813,7 @@ impl WebGpuBackend {
             preferred,
             float32_filterable,
             timestamps,
+            sampled,
         } = opened;
         let queue = device.queue();
         let limits = device.device_limits();
@@ -936,6 +953,8 @@ impl WebGpuBackend {
             bindless_texture_slots: 0,
             indirect_draw: false,
             program_instance_align: limits.min_storage_buffer_offset_alignment().max(4),
+            coverage_paths: false,
+            sampled,
         };
         let clock = timestamps.then(|| Clock::new(&device));
         Self {
@@ -1008,9 +1027,10 @@ impl WebGpuBackend {
     pub async fn read_texture(&mut self, id: TextureId) -> Vec<u8> {
         let t = self.texture(id);
         let (width, height) = (t.width, t.height);
-        let row = width as usize * t.format.bytes_per_texel();
+        let row = t.format.row_bytes(width);
         let pitch = row.next_multiple_of(COPY_ROW_ALIGN);
-        let size = pitch * height as usize;
+        let rows = t.format.block_rows(height);
+        let size = pitch * rows as usize;
         let buffer = self.device.create_buffer(&obj(&[
             ("size", (size as f64).into()),
             ("usage", (BUFFER_MAP_READ | BUFFER_COPY_DST).into()),
@@ -1021,7 +1041,7 @@ impl WebGpuBackend {
             &obj(&[
                 ("buffer", buffer.clone()),
                 ("bytesPerRow", (pitch as u32).into()),
-                ("rowsPerImage", height.into()),
+                ("rowsPerImage", rows.into()),
             ]),
             &extent(width, height),
         );
@@ -1034,8 +1054,8 @@ impl WebGpuBackend {
         mapped.copy_to(&mut pitched);
         buffer.unmap();
         buffer.destroy_buffer();
-        let mut out = Vec::with_capacity(row * height as usize);
-        for y in 0..height as usize {
+        let mut out = Vec::with_capacity(row * rows as usize);
+        for y in 0..rows as usize {
             out.extend_from_slice(&pitched[y * pitch..y * pitch + row]);
         }
         self.reclaim_completed();
@@ -1632,10 +1652,24 @@ fn gpu_format(format: TextureFormat) -> &'static str {
         // a data plane and a color plane of the same width share one format.
         TextureFormat::Rgba8Unorm | TextureFormat::Rgba8Data => "rgba8unorm",
         TextureFormat::R8Unorm => "r8unorm",
+        packed @ (TextureFormat::Rgb565Unorm
+        | TextureFormat::Rgba4444Unorm
+        | TextureFormat::Rgba5551Unorm) => {
+            panic!("WebGPU has no {packed:?} texture format (Caps::sampled)")
+        }
         TextureFormat::Rgba16Float => "rgba16float",
         // A depth texture cannot be sampled through a float layout; the plane is
         // stored as a colour float instead, same bytes per texel.
         TextureFormat::Depth32Float => "r32float",
+        TextureFormat::Bc1RgbaUnorm => "bc1-rgba-unorm",
+        TextureFormat::Bc3RgbaUnorm => "bc3-rgba-unorm",
+        TextureFormat::Bc7RgbaUnorm => "bc7-rgba-unorm",
+        TextureFormat::Etc2Rgb8Unorm => "etc2-rgb8unorm",
+        TextureFormat::Etc2Rgb8A1Unorm => "etc2-rgb8a1unorm",
+        TextureFormat::Etc2Rgba8Unorm => "etc2-rgba8unorm",
+        TextureFormat::Astc4x4Unorm => "astc-4x4-unorm",
+        TextureFormat::Astc6x6Unorm => "astc-6x6-unorm",
+        TextureFormat::Astc8x8Unorm => "astc-8x8-unorm",
     }
 }
 
@@ -1958,15 +1992,18 @@ impl GpuBackend for WebGpuBackend {
 
     fn write_texture(&mut self, id: TextureId, x: u32, y: u32, w: u32, h: u32, bytes: &[u8]) {
         let t = self.texture(id);
-        let bytes_per_row = w as usize * t.format.bytes_per_texel();
-        let len = bytes_per_row * h as usize;
+        // A block format's rows are rows of blocks, and the copy whole blocks.
+        let block = t.format.block();
+        let bytes_per_row = t.format.row_bytes(w);
+        let rows = t.format.block_rows(h);
+        let len = t.format.data_size(w, h);
         assert!(
             bytes.len() >= len,
-            "write_texture: {} bytes < {}x{} region of {}-byte texels",
+            "write_texture: {} bytes < a {}x{} region of {:?}",
             bytes.len(),
             w,
             h,
-            t.format.bytes_per_texel()
+            t.format
         );
         if len == 0 {
             return;
@@ -1979,9 +2016,12 @@ impl GpuBackend for WebGpuBackend {
             &bytes[..len],
             &obj(&[
                 ("bytesPerRow", (bytes_per_row as u32).into()),
-                ("rowsPerImage", h.into()),
+                ("rowsPerImage", rows.into()),
             ]),
-            &extent(w, h),
+            &extent(
+                w.next_multiple_of(block.width),
+                h.next_multiple_of(block.height),
+            ),
         );
     }
 

@@ -692,7 +692,7 @@ on it.
       framebuffer under the scissor (float targets keep the floats) — so the headless
       backend and its goldens draw user shaders; a draw hands the program its bind
       group's textures and samplers in slot order (`CpuDraw::{textures, samplers}`,
-      `CpuTexture`), and `HeadlessRaster::read_texture` reads a target back as a GPU
+      `CpuTexture`), and `CpuRaster::read_texture` reads a target back as a GPU
       backend does. `shader_golden` draws every scene headless too, on every
       platform.
 - [x] Shader: the brush profile (`shader/src/program/brush.rs`) — reserved members

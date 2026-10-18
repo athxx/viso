@@ -11,8 +11,8 @@ use std::time::Duration;
 use viso_platform::{Instant, LoopWaker};
 
 use viso_platform::{
-    Appearance, CursorIcon, LogicalRect, PlatformApp, PlatformError, RawEvent, RawWindowHandle,
-    WindowConfig, WindowId, accesskit,
+    Appearance, CursorIcon, LogicalRect, PlatformApp, PlatformCaps, PlatformError, RawEvent,
+    RawWindowHandle, SemanticsDelta, WindowConfig, WindowId,
 };
 
 /// Capabilities available to a frame driver for the duration of one callback.
@@ -150,11 +150,11 @@ impl<'a> RuntimeCx<'a> {
         self.app.set_draggable_regions(window, regions);
     }
 
-    /// Publish an accessibility tree update for `window` to the OS bridge. A
-    /// no-op on backends without one. Called only while an assistive
-    /// technology listens.
-    pub fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
-        self.app.update_accessibility(window, update);
+    /// Publish a semantics delta for `window` to the OS bridge. A no-op on
+    /// backends without one. Called only while an assistive technology
+    /// listens.
+    pub fn update_accessibility(&mut self, window: WindowId, delta: SemanticsDelta) {
+        self.app.update_accessibility(window, delta);
     }
 
     /// Enter or leave fullscreen for `window`; the platform reports the
@@ -267,6 +267,12 @@ impl<'a> RuntimeCx<'a> {
     /// [`PlatformApp::framed_windows`](viso_platform::PlatformApp::framed_windows).
     pub fn framed_windows(&self) -> bool {
         self.app.framed_windows()
+    }
+
+    /// What the backend offers beyond its one window; see
+    /// [`PlatformApp::capabilities`](viso_platform::PlatformApp::capabilities).
+    pub fn capabilities(&self) -> PlatformCaps {
+        self.app.capabilities()
     }
 
     /// A handle that kicks this loop from any thread.

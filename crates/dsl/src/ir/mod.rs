@@ -44,7 +44,7 @@ pub use ui_ir::{
 use std::collections::HashMap;
 
 use viso_behavior::native::{FlexAxis, MigratableState, Natives, WidgetNode};
-use viso_view::ControlKind;
+use viso_schema::view::ControlKind;
 
 use crate::ast::{
     AstNode, ComponentDecl, Expr, NodeBody, PathExpr, PropertyBinding, PropertyPath, TypePath,
@@ -1377,19 +1377,19 @@ fn fold_axis(value: &Expr) -> Option<AxisIr> {
 
 /// The live setting a `semantics.live` value names: a constant
 /// `LiveRegion::<variant>`.
-fn authored_live(value: &Expr) -> Result<viso_ui::LiveRegion, String> {
+fn authored_live(value: &Expr) -> Result<viso_schema::LiveRegion, String> {
     let segments: Vec<String> = PathExpr::cast(value.syntax().clone())
         .map(|path| path.segments().map(|t| t.text()).collect())
         .unwrap_or_default();
     match segments.as_slice() {
-        [owner, variant] if owner == "LiveRegion" => viso_view::source_live(variant)
+        [owner, variant] if owner == "LiveRegion" => viso_schema::view::source_live(variant)
             .ok_or_else(|| format!("`LiveRegion` has no variant `{variant}`")),
         _ => Err("`semantics.live` is a constant `LiveRegion::…`".to_string()),
     }
 }
 
 /// The role a `semantics.role` value names: a constant `Role::<variant>`.
-fn authored_role(value: &Expr) -> Result<viso_ui::Role, String> {
+fn authored_role(value: &Expr) -> Result<viso_schema::Role, String> {
     let segments: Vec<String> = PathExpr::cast(value.syntax().clone())
         .map(|path| path.segments().map(|t| t.text()).collect())
         .unwrap_or_default();
@@ -1399,10 +1399,10 @@ fn authored_role(value: &Expr) -> Result<viso_ui::Role, String> {
     if owner != "Role" {
         return Err("`semantics.role` is a constant `Role::…`".to_string());
     }
-    viso_view::source_role(variant).ok_or_else(|| {
+    viso_schema::view::source_role(variant).ok_or_else(|| {
         format!(
             "`Role` has no variant `{variant}`; it is one of {}",
-            viso_view::SOURCE_ROLES.join(", ")
+            viso_schema::view::SOURCE_ROLES.join(", ")
         )
     })
 }

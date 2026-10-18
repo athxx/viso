@@ -247,6 +247,13 @@ pub trait GpuBackend {
     /// Whether [`time_frames`](Self::time_frames) measures anything.
     const TIMES_FRAMES: bool = false;
 
+    /// Spreads the drawing a backend does on the CPU over `threads` threads
+    /// besides the caller (`0`: the caller alone); the pixels are the same
+    /// either way. A backend that draws on a GPU ignores it.
+    fn set_cpu_workers(&mut self, threads: usize) {
+        let _ = threads;
+    }
+
     /// Create a GPU buffer.
     fn create_buffer(&mut self, desc: &BufferDesc) -> BufferId;
     /// Create a texture.
@@ -300,8 +307,28 @@ pub trait GpuBackend {
     /// Overwrite a region of a buffer with CPU bytes (ring/persistent upload).
     fn write_buffer(&mut self, id: BufferId, offset: usize, bytes: &[u8]);
 
-    /// Overwrite a region of a texture (atlas dirty-rect upload).
+    /// Overwrite a region of a texture (atlas dirty-rect upload). `bytes` hold
+    /// the region's rows top first, each [`TextureFormat::row_bytes`] long;
+    /// for a block-compressed format they are rows of blocks, and the region
+    /// is block-aligned: `x` and `y` on block boundaries, `w` and `h` whole
+    /// blocks or reaching the texture's edge.
+    ///
+    /// [`TextureFormat::row_bytes`]: crate::TextureFormat::row_bytes
     fn write_texture(&mut self, id: TextureId, x: u32, y: u32, w: u32, h: u32, bytes: &[u8]);
+
+    /// Create a sampled texture holding `texels` whole, laid out as
+    /// [`write_texture`](Self::write_texture) takes them, and never written
+    /// again. The format must be one the backend samples
+    /// ([`Caps::samples`](crate::Caps::samples)).
+    ///
+    /// A device copies the texels into its memory; a backend that samples
+    /// system memory keeps reading them where they are, so an image embedded
+    /// in the binary costs no RAM.
+    fn create_texture_static(&mut self, desc: &TextureDesc, texels: &'static [u8]) -> TextureId {
+        let texture = self.create_texture(desc);
+        self.write_texture(texture, 0, 0, desc.width, desc.height, texels);
+        texture
+    }
 
     /// Create a swapchain surface bound to a native window.
     fn create_surface(&mut self, raw: RawWindowHandle, width: u32, height: u32) -> SurfaceId;
@@ -337,6 +364,25 @@ pub trait GpuBackend {
     /// the backend's fence advances so the next [`begin_frame`](Self::begin_frame)
     /// can reclaim anything that was awaiting this frame's completion.
     fn present(&mut self, frame: Frame);
+
+    /// How many presents ago the drawable of `frame` was last presented — `1`
+    /// when it holds the frame presented just before, `n` when it holds the
+    /// one `n` presents ago — or `0` when its contents are undefined (a fresh
+    /// or resized swapchain, a backend that does not preserve them). A
+    /// renderer redraws only what changed since that frame.
+    fn frame_age(&self, frame: Frame) -> u32 {
+        let _ = frame;
+        0
+    }
+
+    /// [`present`](Self::present) `frame`, whose pixels differ from the frame
+    /// presented before it only inside `damage` (scissor rects, in the units
+    /// of [`DrawCommand::scissor`]), so a compositor that can update part of
+    /// the screen updates only that. An empty `damage` is the whole surface.
+    fn present_with_damage(&mut self, frame: Frame, damage: &[(u32, u32, u32, u32)]) {
+        let _ = damage;
+        self.present(frame);
+    }
 
     /// Recover from a lost or reset device on `surface` (§6.4).
     ///

@@ -1,9 +1,14 @@
 //! The native registry: the libraries a compiler resolves native paths against
 //! and an interpreter links to.
 
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::{Arc, OnceLock};
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::format;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::fmt;
 
 use super::{
     NativeFunction, NativeId, NativeLibrary, NativeTrait, NativeType, NativeWidget, standard,
@@ -104,7 +109,7 @@ impl fmt::Display for SchemaConflict {
     }
 }
 
-impl std::error::Error for SchemaConflict {}
+impl core::error::Error for SchemaConflict {}
 
 /// A variant of a registered schema enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,9 +137,9 @@ pub struct Natives {
     functions: Vec<NativeEntry>,
     types: Vec<NativeTypeEntry>,
     traits: Vec<NativeTraitEntry>,
-    ids: HashMap<NativeId, Item>,
+    ids: BTreeMap<NativeId, Item>,
     widgets: Vec<NativeWidgetEntry>,
-    widget_names: HashMap<&'static str, u32>,
+    widget_names: BTreeMap<&'static str, u32>,
 }
 
 impl Natives {
@@ -144,17 +149,26 @@ impl Natives {
     }
 
     /// The standard libraries, one registry shared by every caller.
+    #[cfg(feature = "std")]
     pub fn standard() -> Arc<Natives> {
-        static STANDARD: OnceLock<Arc<Natives>> = OnceLock::new();
-        STANDARD
-            .get_or_init(|| {
-                let mut natives = Natives::new();
-                natives
-                    .extend(standard::STANDARD)
-                    .expect("the standard libraries do not conflict");
-                Arc::new(natives)
-            })
-            .clone()
+        static STANDARD: std::sync::OnceLock<Arc<Natives>> = std::sync::OnceLock::new();
+        STANDARD.get_or_init(Natives::build_standard).clone()
+    }
+
+    /// The standard libraries. Without `std` there is no lazy static to share
+    /// one registry through, so each call builds its own: a caller keeps the
+    /// `Arc` it gets rather than asking again.
+    #[cfg(not(feature = "std"))]
+    pub fn standard() -> Arc<Natives> {
+        Natives::build_standard()
+    }
+
+    fn build_standard() -> Arc<Natives> {
+        let mut natives = Natives::new();
+        natives
+            .extend(standard::STANDARD)
+            .expect("the standard libraries do not conflict");
+        Arc::new(natives)
     }
 
     /// A registry of the standard libraries and `libraries`.
@@ -202,7 +216,7 @@ impl Natives {
                     ),
                 ));
             }
-            if std::ptr::eq(*other, library) {
+            if core::ptr::eq(*other, library) {
                 return Ok(());
             }
         }
@@ -260,7 +274,7 @@ impl Natives {
                 owner: None,
             });
         }
-        let mut fresh: HashMap<NativeId, &str> = HashMap::new();
+        let mut fresh: BTreeMap<NativeId, &str> = BTreeMap::new();
         let paths = functions
             .iter()
             .map(|f| (f.id, &*f.path))
@@ -310,10 +324,10 @@ impl Natives {
                 ));
             }
         }
-        let mut names: HashMap<&str, ()> = HashMap::new();
+        let mut names: BTreeSet<&str> = BTreeSet::new();
         for widget in library.widgets {
             let path = format!("{}::{}", library.path, widget.name);
-            if names.insert(widget.name, ()).is_some() {
+            if !names.insert(widget.name) {
                 return Err(conflict(&path, format!("`{path}` is declared twice")));
             }
             if let Some(&i) = self.widget_names.get(widget.name)

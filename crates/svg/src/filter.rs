@@ -80,7 +80,7 @@ fn parse_filter_list(s: &str) -> Option<Vec<FilterItem>> {
 
 /// Default filter region: the bounding box grown by 10% on each side.
 fn default_region(bbox: Option<Rect>) -> Option<Rect> {
-    let b = bbox.filter(Rect::is_valid)?;
+    let b = bbox.filter(|r| r.has_area())?;
     Some(Rect::new(
         b.x - 0.1 * b.w,
         b.y - 0.1 * b.h,
@@ -334,7 +334,7 @@ fn url_filter(
     bbox: Option<Rect>,
 ) -> Option<Filter> {
     let chain = href_chain(c, node, &["filter"]);
-    let valid_bbox = bbox.filter(Rect::is_valid);
+    let valid_bbox = bbox.filter(|r| r.has_area());
     let obb_units = chain_attr(c, &chain, "filterUnits") != Some("userSpaceOnUse");
     let obb_prims = chain_attr(c, &chain, "primitiveUnits") == Some("objectBoundingBox");
 
@@ -368,7 +368,7 @@ fn url_filter(
             l("height", Axis::Y, pc(120.0)),
         )
     };
-    if !region.is_valid() {
+    if !region.has_area() {
         return None;
     }
     let units = Units {

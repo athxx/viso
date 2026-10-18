@@ -1070,6 +1070,22 @@ Viso CLI 负责 emulator profile → adb serial。
 
 已实现：Dev build 为 emulator ABI（host 为 arm64 时 `aarch64-linux-android`，否则 `x86_64-linux-android`）构建 `cdylib`，在 build 线程上打包成 dev APK（debug keystore 签名，dex 与 `base.apk` 按输入缓存，dev 额外声明 `INTERNET`）；旧 app 只在 build、打包与 snapshot 都完成后才被停止，之后 `adb install -r`，`am start -W -S` 以 intent string extras 传入 launch 变量（`viso_platform::launch_var` 在 Android 上读它们），`pidof` 取得 pid；`logcat --pid` 的输出按优先级成为 `log`，app 退出由轮询 `/proc/<pid>` 的 adb shell 观察，退出状态取自 `dumpsys activity exit-info` 记录的 `ApplicationExitInfo`（`main` 返回非零时——panic 为 101——进程以该值结束）；在被看到之前就结束的 app，错误附上它启动以来的 `viso` log。AVD 使用 `hw.gpu.mode=auto`（有 GPU 用 host，否则 SwiftShader），无 display 的 host 上 emulator 不开窗口。
 
+## 27A. Embedded board session
+
+```text
+cross build for the device target's triple and footprint profile
+copy the dev artifact and its assets to the board over SSH
+host listener on the host's address on the route to the board
+launch over SSH with the dev variables
+patch / restart / restore as on desktop
+```
+
+板子是 `Viso.toml` 的 device target（`[target.<name>]`，`Viso_CLI.md`）加上 `deploy = "user@host[:port]"`：`viso run <name>` 为该 target 的 triple 与 footprint profile 构建 dev artifact（`hot-reload` 开启，profile 的 budget、worker 数与字体照常烘入，§50A），经 `ssh`/`scp` 把可执行文件与 assets 放进板子上的 session 目录，再经 `ssh` 启动它；app 的 stdout/stderr 经同一 SSH 连接成为 `log`，SSH 会话的退出状态即 app 的退出状态。不需要板子上有 Rust 工具链、`.vs` 编译器或 watcher：patch 由 host 编译（§9），板子只运行 app。
+
+dev channel 与桌面相同（§34–§36），只有地址不同：host 在通往板子的那个本机地址（私有、link-local 或 unique-local，§46）上开临时端口，`VISO_DEV_RUNTIME` 指向它，token、session 与 build 照常随 launch 变量交给 app；app 只接受本机或本地网络上的 host 地址。LAN 上的 listener 只为这一 session 打开、只接受带该 session token 的 runtime，session 结束即关闭；channel 不加密，同一网络上的设备能看到 patch，CLI 对此给出提示。Rust 改动走 warm restart（§26）：新 artifact 交给板子前先取 snapshot，旧进程在新 artifact 就位后才停止。
+
+已实现（`tools/cli/src/deploy/board.rs`，`Viso_CLI.md` §13.11）：写了 `deploy` 的 device target 总在该板卡上运行（即使本机 triple 相同）。构建开始前先经 `ssh`（batch mode，不问密码）清空并创建 `~/viso-dev/<project>` 作为 session 目录，同一次连接读出 `$SSH_CONNECTION`；listener 的地址取对其中板卡一侧地址 connect 的 UDP socket 的本地地址，即本机通往板子那一跳的地址，它不是 loopback、私有、link-local 或 unique-local 地址时 session 不启动。dev artifact 为 target 的 triple 构建，feature 为 embedded 集（facade 默认 feature 关闭）加 `viso/hot-reload`。可执行文件经 `scp` 进 session 目录，第一次 launch 时连同 `assets/`；远程 `sh` 把自己的 pid 写进 `.pid` 后 `exec env VISO_DEV_*=… ./<bin>`。启动 app 的 `ssh` 在自己的进程组里：Ctrl-C 只到 session，session 经另一条连接向 `.pid` 发 `SIGTERM`（再次 Ctrl-C 为 `SIGKILL`），app 如在桌面上一样关闭。SSH 的退出状态即 app 的，255（SSH 自身的失败或断线）报为连接失败。warm restart 用桌面的 prewarm 一步做复制：旧 app 仍运行时新 artifact 先 `scp` 为 `.next-<bin>`（最多 300 s），旧 app 交出 snapshot 并退出后，一次 SSH 校验其字节数并 `mv` 到位再启动，未完整到达时直接重新复制——与上文「新 artifact 就位后才停止旧进程」一致，只是「就位」是复制到旁边、启动前一刻才替换。listener 打开后 CLI 打印一条 `warn` 说明 channel 不加密。测试以 `ssh`/`scp` 脚本扮演板卡（`deploy/board_fake.rs`、`tests/run.rs`）。
+
 ---
 
 ## 28. iOS Simulator warm restart
@@ -1548,7 +1564,7 @@ control inspector
 - malformed Ende payload bounded decode；
 - Release artifact 根本没有此 endpoint。
 
-当前实现：`viso run` 在 `127.0.0.1` 临时端口监听，经 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD` 交给 app；app 拒绝非 loopback 地址；handshake（§34）绑定 token、dev session、runtime session、build 与编译器 schema，host 的 `HostHello` 带 project fingerprint；host 为每个接受的 runtime 起一条 writer 线程，session 从不阻塞在读得慢的 app 上；每个 patch 再按 session、launch 与 build 检查（§36）；所有解码有界（§35），帧长上限 4 MiB。Android emulator 经 `adb reverse` 连同一 loopback listener；web 的 dev server 默认同样只绑定 `127.0.0.1`；LAN 只经 `viso serve --lan` 显式 opt-in（绑定 loopback 与本机私有地址，非私有地址须 `--host` 指明），每个请求的 `Host` 必须是所绑定的 IP 字面量或 `localhost`（挡 DNS rebinding），WebSocket 只接受 `Origin` 与该 `Host` 一致的页面；页面中带有 session token，LAN 下网络上任何设备都能加载页面并以 runtime 身份连入该 session，CLI 对此给出警告。
+当前实现：`viso run` 在 `127.0.0.1` 临时端口监听，经 `VISO_DEV_RUNTIME`/`VISO_DEV_TOKEN`/`VISO_DEV_SESSION`/`VISO_DEV_BUILD` 交给 app；app 只接受本机（loopback）或本地网络（IPv4 私有与 link-local、IPv6 unique-local 与 link-local）上的 host 地址，可路由的公网地址一律拒绝——本地网络地址只用于部署到板子的 session（§27A），host 只在显式要求时才在 LAN 上监听；handshake（§34）绑定 token、dev session、runtime session、build 与编译器 schema，host 的 `HostHello` 带 project fingerprint；host 为每个接受的 runtime 起一条 writer 线程，session 从不阻塞在读得慢的 app 上；每个 patch 再按 session、launch 与 build 检查（§36）；所有解码有界（§35），帧长上限 4 MiB。Android emulator 经 `adb reverse` 连同一 loopback listener；web 的 dev server 默认同样只绑定 `127.0.0.1`；LAN 只经 `viso serve --lan` 显式 opt-in（绑定 loopback 与本机私有地址，非私有地址须 `--host` 指明），每个请求的 `Host` 必须是所绑定的 IP 字面量或 `localhost`（挡 DNS rebinding），WebSocket 只接受 `Origin` 与该 `Host` 一致的页面；页面中带有 session token，LAN 下网络上任何设备都能加载页面并以 runtime 身份连入该 session，CLI 对此给出警告。
 
 ---
 

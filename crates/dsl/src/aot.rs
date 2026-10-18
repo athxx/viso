@@ -1,5 +1,5 @@
 //! The build-time release AOT emitter: lower a compiled [`CandidatePlan`] into a
-//! compact [`viso_ui::aot::AotPackage`] and encode it (architecture section 41;
+//! compact [`viso_schema::aot::AotPackage`] and encode it (architecture section 41;
 //! AGENTS 21.6, 60).
 //!
 //! This is the third lowering target of the one shared frontend. Slice N lowers the
@@ -29,17 +29,19 @@
 //! compiler absent.
 
 use viso_ende::Encode;
-use viso_shader::program::PackedBrush;
-use viso_ui::AssetBytes;
-use viso_ui::aot::{
+use viso_schema::AssetBytes;
+use viso_schema::StateKey;
+use viso_schema::aot::{
     AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotScope, AotStyle,
 };
-use viso_ui::layout::Inset;
-use viso_ui::state::StateKey;
-use viso_ui::{EdgeTerms, LengthTerms, NodeLengths, StateValue};
+use viso_schema::layout::Inset;
+use viso_schema::{EdgeTerms, LengthTerms, NodeLengths, StateValue};
+use viso_shader::program::PackedBrush;
 // The languages a package's shaders are built for.
+use viso_schema::view::{
+    ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewShader, ViewState,
+};
 pub use viso_shader::program::ShaderLang;
-use viso_view::{ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewShader, ViewState};
 
 use crate::diag::Diagnostic;
 use crate::frontend::Origin;
@@ -104,6 +106,48 @@ pub fn build_mount_package_for(
     )
 }
 
+/// The behavior of the encoded [`ViewPackage`] `blob` compiled to Rust, every
+/// chunk, for the app to build beside the package and hand the loader
+/// (`viso_view::ViewLoad::native`), which then runs it in place of the
+/// interpreter (ADR 0041); `None` for a view without behavior. `krate` is the
+/// path the code names `viso_behavior` by where it is compiled. The code is
+/// tied to the module's build hash: the loader refuses it for any other build.
+///
+/// # Errors
+///
+/// The package or its behavior module does not decode.
+pub fn package_native_code(
+    blob: &[u8],
+    krate: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    use viso_ende::Decode;
+    let package = ViewPackage::decode_from_slice(blob)?;
+    if package.behavior.is_empty() {
+        return Ok(None);
+    }
+    let module = viso_behavior::Module::decode(&package.behavior)?;
+    Ok(Some(viso_behavior::aot::lower_module(&module, krate)))
+}
+
+/// The encoded [`ViewPackage`] `blob` as the build running its
+/// [`package_native_code`] ships it: its behavior module
+/// [`compiled`](viso_behavior::Module::compiled), without the bytecode that
+/// code replaces. The loader takes it with that code only.
+///
+/// # Errors
+///
+/// The package or its behavior module does not decode.
+pub fn compile_package(blob: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use viso_ende::{Decode, Encode};
+    let mut package = ViewPackage::decode_from_slice(blob)?;
+    if !package.behavior.is_empty() {
+        package.behavior = viso_behavior::Module::decode(&package.behavior)?
+            .compiled()
+            .encode();
+    }
+    Ok(package.encode_to_vec())
+}
+
 /// Where `profile` reads assets from and the languages it packs shaders in.
 fn packed(profile: &TargetProfile) -> (Option<std::path::PathBuf>, Vec<ShaderLang>) {
     let dir = profile
@@ -141,7 +185,8 @@ fn package_plan(
 }
 
 /// The encoded bytes of every asset `plan` names, read from `dir`, the
-/// package's asset directory, ascending by resource.
+/// package's asset directory — or the build's converted files of it
+/// ([`crate::assets::embedded_file`]) — ascending by resource.
 ///
 /// # Errors
 ///
@@ -154,7 +199,7 @@ pub fn package_assets(
         .assets
         .iter()
         .map(|asset| {
-            let bytes = std::fs::read(dir.join(&asset.path))
+            let bytes = std::fs::read(crate::assets::embedded_file(dir, &asset.path))
                 .map_err(|error| (asset.path.clone(), error))?;
             Ok(ViewAsset {
                 id: asset.id,
@@ -181,7 +226,7 @@ pub fn package_shaders(
     };
     view.shaders
         .iter()
-        .map(|brush| ViewShader::new(pack_brush(brush, langs)?).map_err(|error| error.to_string()))
+        .map(|brush| Ok(ViewShader::new(pack_brush(brush, langs)?)))
         .collect()
 }
 
@@ -347,11 +392,7 @@ fn emit_node(node: &UiNode, nodes: &mut Vec<AotNode>) {
     // children are authored, so the index stays this node's static index even as the
     // children push higher indices.
     let index = nodes.len();
-    nodes.push(AotNode {
-        kind,
-        style: aot_style(&node.style),
-        child_count: 0,
-    });
+    nodes.push(aot_node(node));
 
     // A container descends into exactly its children; a leaf (or a collapsed
     // VirtualList) authors none, matching the commit's builder-closure recursion.
@@ -369,6 +410,16 @@ fn emit_node(node: &UiNode, nodes: &mut Vec<AotNode>) {
         }
     }
     nodes[index].child_count = child_count;
+}
+
+/// The packaged form of `node`, its child count still to fill in.
+pub(crate) fn aot_node(node: &UiNode) -> AotNode {
+    AotNode {
+        kind: aot_kind(node.kind),
+        style: aot_style(&node.style),
+        lengths: node_lengths(node.style.lengths()).map(Box::new),
+        child_count: 0,
+    }
 }
 
 /// The package builder kind for a lowered [`NodeKind`], mirroring the commit's
@@ -396,7 +447,6 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
         height: style.height.map(aot_length),
         gap: style.gap,
         padding: style.padding.map(inset_of),
-        lengths: node_lengths(style.lengths()).map(Box::new),
         scope: style.scope.map(|scope| AotScope { basis: scope.basis }),
         avoid: style.avoid,
     }
@@ -491,7 +541,7 @@ mod tests {
             .expect("label is a source");
         assert_eq!(
             edge.state,
-            viso_ui::state::StateKey::from_parts(sym.hi, sym.lo)
+            viso_schema::StateKey::from_parts(sym.hi, sym.lo)
         );
     }
 
@@ -519,7 +569,7 @@ mod tests {
         // produce a well-formed blob (the full load closure is exercised in the
         // headless integration test, which imports only viso-ui).
         let blob = build_package("Row { Text { text: label; } }").expect("compiles");
-        let pkg = viso_ui::aot::AotPackage::decode_from_slice(&blob).expect("decodes");
+        let pkg = viso_schema::aot::AotPackage::decode_from_slice(&blob).expect("decodes");
         assert_eq!(pkg.nodes.len(), 2, "Row + Text");
         assert_eq!(pkg.edges.len(), 1);
     }

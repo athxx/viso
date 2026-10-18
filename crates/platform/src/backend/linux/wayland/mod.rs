@@ -125,7 +125,7 @@ impl PlatformApp for WaylandApp {
     fn run(&mut self, handler: &mut dyn AppHandler) {
         let wl = self.wl.clone();
         let wakes = self.wakes.clone();
-        super::run(&wl, &wakes, handler);
+        super::run(self, &wl, &wakes, handler);
     }
 
     fn window(&self, id: WindowId) -> Option<&dyn Window> {
@@ -165,8 +165,8 @@ impl PlatformApp for WaylandApp {
         });
     }
 
-    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
-        self.with_state(|state| state.pump.update_access(window, update));
+    fn update_accessibility(&mut self, window: WindowId, delta: crate::SemanticsDelta) {
+        self.with_state(|state| state.pump.update_access(window, delta));
     }
 
     fn close_window(&mut self, window: WindowId) {

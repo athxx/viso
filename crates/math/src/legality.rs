@@ -93,17 +93,14 @@ pub fn classify_extent(v: f32) -> GeometryLegality {
 /// linear part (which would flatten geometry and has no inverse).
 #[inline]
 pub fn classify_transform(t: &Affine2) -> GeometryLegality {
-    let m = &t.matrix;
-    let tx = t.translation;
-    let all = [m[0], m[1], m[2], m[3], tx.x, tx.y];
+    let all = [t.a, t.b, t.c, t.d, t.e, t.f];
     if all.iter().any(|v| v.is_nan()) {
         return GeometryLegality::NaN;
     }
     if all.iter().any(|v| !v.is_finite()) {
         return GeometryLegality::NonFinite;
     }
-    let det = m[0] * m[3] - m[2] * m[1];
-    if det == 0.0 {
+    if t.determinant() == 0.0 {
         return GeometryLegality::SingularTransform;
     }
     GeometryLegality::Ok
@@ -113,7 +110,6 @@ pub fn classify_transform(t: &Affine2) -> GeometryLegality {
 mod tests {
     use super::*;
     use crate::transform::Affine2;
-    use crate::vec::Vec2;
 
     #[test]
     fn ok_rect_is_drawable() {
@@ -168,10 +164,7 @@ mod tests {
 
     #[test]
     fn singular_transform_rejected() {
-        let degenerate = Affine2 {
-            matrix: [0.0, 0.0, 0.0, 0.0],
-            translation: Vec2::ZERO,
-        };
+        let degenerate = Affine2::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(
             classify_transform(&degenerate),
             GeometryLegality::SingularTransform
@@ -180,10 +173,7 @@ mod tests {
 
     #[test]
     fn nan_transform_rejected() {
-        let bad = Affine2 {
-            matrix: [f32::NAN, 0.0, 0.0, 1.0],
-            translation: Vec2::ZERO,
-        };
+        let bad = Affine2::new(f32::NAN, 0.0, 0.0, 1.0, 0.0, 0.0);
         assert_eq!(classify_transform(&bad), GeometryLegality::NaN);
     }
 }

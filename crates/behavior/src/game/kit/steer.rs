@@ -9,10 +9,13 @@
 //! wandering character draws its goals from the world's seeded random
 //! source, so steering replays bit for bit on every target.
 
-use std::cell::Cell;
-use std::rc::Rc;
+use alloc::rc::Rc;
+use alloc::vec::Vec;
+use core::cell::Cell;
 
 use super::super::world::{Bodies, BodyKind};
+#[cfg(not(feature = "std"))]
+use crate::float::FloatMath as _;
 use crate::wire::{malformed, read_list, read_u32_varint, write_list};
 use viso_ende::{DecodeError, Decoder, Encoder};
 
@@ -201,7 +204,7 @@ pub(in crate::game) fn steer(b: &mut Bodies, order: &[u32], dt: f32, rng: &Cell<
         if b.kind[s] != BodyKind::Character || b.control[s] == Control::None {
             continue;
         }
-        let mut control = std::mem::take(&mut b.control[s]);
+        let mut control = core::mem::take(&mut b.control[s]);
         let at = b.pos[s];
         let walk = match &mut control {
             Control::None => [0.0; 2],
@@ -278,8 +281,8 @@ pub(in crate::game) fn settle(b: &mut Bodies, order: &[u32]) {
 /// Integrates a vehicle's throttle and steer over `dt`, turning `facing`;
 /// returns its `walk`.
 fn drive(v: &mut Vehicle, facing: &mut [f32; 2], dt: f32) -> [f32; 2] {
-    let throttle = clamp_unit(std::mem::take(&mut v.throttle));
-    let steer = clamp_unit(std::mem::take(&mut v.steer));
+    let throttle = clamp_unit(core::mem::take(&mut v.throttle));
+    let steer = clamp_unit(core::mem::take(&mut v.steer));
     if throttle != 0.0 {
         let rate = if throttle * v.speed < 0.0 {
             BRAKE
@@ -372,6 +375,7 @@ fn pick(home: [f32; 3], range: f32, rng: &Cell<u64>) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn the_rotation_polynomial_matches_the_host_within_rounding() {

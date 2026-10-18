@@ -1,0 +1,14 @@
+[package]
+name = "viso-gpu-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The GPU ABI description (ADR 0042): instance layouts and schemas, the user
+# program ABI and code, resource descriptors, formats and typed handles. The
+# shader compiler and the dev protocol build against it without linking a
+# backend; `viso-gpu` re-exports it and implements it per backend.
+[dependencies]
+# Typed bitflags for resource-usage descriptors (BufferUsage).
+bitflags = "2"

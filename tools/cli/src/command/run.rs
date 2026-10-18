@@ -1,5 +1,8 @@
 //! `viso run` on the desktop host, an iOS Simulator, an
-//! Android Emulator or a browser page: take the dev session's lock, read the
+//! Android Emulator, a browser page, or a device target's board — this
+//! machine when it is one (Linux, the target's triple), the board its
+//! `deploy` names over SSH, or this desktop emulating an `embedded-cpu`
+//! profile under `--emulate`: take the dev session's lock, read the
 //! Rust scope from Cargo, start the watcher, build the project's Cargo
 //! package as a dev artifact (packaged for the device, which boots while it
 //! builds), launch it with the dev channel's loopback address and session
@@ -14,7 +17,8 @@
 //! Ctrl-C is the command's own: the first kills the build and asks the app to
 //! close, a second kills the app, and the command exits 130.
 //!
-//! The app connects back to a listener bound to `127.0.0.1` on a free port and
+//! The app connects back to a listener bound to `127.0.0.1` on a free port — a
+//! board over SSH to this machine's address on the route to it — and
 //! must open with a hello carrying the token it was launched with; a connection
 //! that does not is dropped. Under `--json` the app's stdout and stderr, and the
 //! build's stderr, reach the stream only as `log` events.
@@ -25,7 +29,7 @@
 
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -33,20 +37,23 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use viso_package::android::Sdk;
-use viso_project::{DeviceProfile, LockKind, Platform, Profile, ProjectFingerprint, Target};
-use viso_view::dev::wire::{
+use viso_dev_protocol::wire::{
     self, DevSessionId, ProjectFingerprint as WireProject, SchemaFingerprint,
+};
+use viso_package::android::Sdk;
+use viso_project::{
+    DeployAddress, DeviceProfile, DeviceTarget, Footprint, LockKind, Platform, Profile,
+    ProjectFingerprint, Target,
 };
 
 use super::inspect;
-use crate::args::{RunArgs, RunTarget};
+use crate::args::{RunArgs, RunTarget, TargetArg};
 use crate::build::{
     self,
     cargo::{self, BuildCommand, BuildFailure, CargoEvent},
 };
 use crate::context::{Context, Loaded, in_its_file};
-use crate::deploy::{self, App, Deploy, Ended, Lines, Vars, web};
+use crate::deploy::{self, App, Deploy, Ended, Lines, Vars, board::Board, web};
 use crate::dev::build::{BuildEvent, RustBuild};
 use crate::dev::cargo::RustScope;
 use crate::dev::{
@@ -55,8 +62,9 @@ use crate::dev::{
 };
 use crate::device::{self as devices, emulator, simulator};
 use crate::error::{
-    BUILD_FAILED, CLI_USAGE, ENV_BUILD_WRITE, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_DEV_CHANNEL,
-    ENV_DEVICE, ENV_LOCK_HELD, ENV_NO_EXECUTABLE, INTERRUPTED, RUN_APP_FAILED, SUCCESS,
+    BUILD_FAILED, CLI_USAGE, ENV_BUILD_WRITE, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_DEPLOY,
+    ENV_DEV_CHANNEL, ENV_DEVICE, ENV_DEVICE_TARGET, ENV_EMULATE, ENV_LOCK_HELD, ENV_NO_EXECUTABLE,
+    INTERRUPTED, RUN_APP_FAILED, SUCCESS,
 };
 use crate::interrupt;
 use crate::output::Output;
@@ -68,10 +76,6 @@ const POLL: Duration = Duration::from_millis(50);
 /// How often the session polls the old app while it closes for a restart:
 /// the new one starts as soon as it is gone.
 const CLOSING_POLL: Duration = Duration::from_millis(1);
-
-/// How long the prewarm run of a new executable may take before the restart
-/// goes on without it.
-const PREWARM_WAIT: Duration = Duration::from_secs(10);
 
 /// How long a warm restart waits for the old app's snapshot, then for it to
 /// close before it is killed.
@@ -134,15 +138,122 @@ enum Incoming {
 /// Where a run goes, as the command line asks: the target, and the device
 /// platform of a simulator or emulator target.
 fn target_of(args: &RunArgs) -> (Target, Option<Platform>) {
-    match args.target {
+    match &args.target {
         None => (Target::Host, None),
-        Some(RunTarget::Ios) => (Target::Ios, Some(Platform::Ios)),
-        Some(RunTarget::Android) => (Target::Android, Some(Platform::Android)),
-        Some(RunTarget::WebGpu) => (Target::WebGpu, None),
-        Some(RunTarget::WebDom) => (Target::WebDom, None),
-        Some(RunTarget::WebHybrid) => (Target::WebHybrid, None),
-        Some(RunTarget::Headless) => (Target::Headless, None),
+        Some(TargetArg::Builtin(RunTarget::Ios)) => (Target::Ios, Some(Platform::Ios)),
+        Some(TargetArg::Builtin(RunTarget::Android)) => (Target::Android, Some(Platform::Android)),
+        Some(TargetArg::Builtin(RunTarget::WebGpu)) => (Target::WebGpu, None),
+        Some(TargetArg::Builtin(RunTarget::WebDom)) => (Target::WebDom, None),
+        Some(TargetArg::Builtin(RunTarget::WebHybrid)) => (Target::WebHybrid, None),
+        Some(TargetArg::Builtin(RunTarget::Headless)) => (Target::Headless, None),
+        Some(TargetArg::Device(name)) => (Target::device(name), None),
     }
+}
+
+/// Where a device target's dev session runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OnBoard {
+    /// This machine is the board.
+    Here,
+    /// The board at the address, over SSH.
+    Remote(DeployAddress),
+    /// This desktop, emulating the board's profile.
+    Emulated,
+}
+
+/// Where the dev session of `device` runs, as `--emulate` (`emulate`), its
+/// `deploy` and this machine, whose Rust target is `host`, have it; the
+/// exit code of the failure it reported when nowhere.
+fn on_board(
+    device: &DeviceTarget,
+    emulate: bool,
+    host: Option<&str>,
+    out: &mut Output,
+) -> Result<OnBoard, u8> {
+    let name = &device.name.value;
+    let profile = device.profile.value;
+    if emulate {
+        if !profile.is_embedded() {
+            return Err(out.failure(
+                CLI_USAGE,
+                &format!(
+                    "`--emulate` runs an embedded profile on this desktop; `{name}` is `{profile}`"
+                ),
+                &[format!("`viso run {name}` runs it where it builds for")],
+            ));
+        }
+        if profile == Footprint::EmbeddedGpu {
+            return Err(out.failure(
+                ENV_EMULATE,
+                &format!(
+                    "`{name}` is `embedded-gpu`, which draws through its card's GLES 3 or Vulkan; \
+                     this desktop emulates `embedded-cpu` alone"
+                ),
+                &[
+                    "the CPU raster is bit-exact on the desktop and the board; a GPU board's \
+                   driver is not"
+                        .to_owned(),
+                ],
+            ));
+        }
+        if !cfg!(target_os = "macos") {
+            return Err(out.failure(
+                ENV_EMULATE,
+                &format!("`{name}` is emulated in a macOS window; this machine is not a Mac"),
+                &[],
+            ));
+        }
+        return Ok(OnBoard::Emulated);
+    }
+    if let Some(deploy) = &device.deploy {
+        return Ok(OnBoard::Remote(deploy.value.clone()));
+    }
+    let Some(why) = elsewhere(device, host) else {
+        return Ok(OnBoard::Here);
+    };
+    let mut notes = vec![format!(
+        "`deploy = \"user@host\"` in `[target.{name}]` runs the session on the board over SSH"
+    )];
+    if profile == Footprint::EmbeddedCpu {
+        notes.push(format!(
+            "`viso run {name} --emulate` runs it in a window on a Mac"
+        ));
+    }
+    notes.push(format!(
+        "`viso build {name}` puts the build in `dist/{name}/`; copy it to the board and start it there"
+    ));
+    Err(out.failure_next(
+        ENV_DEVICE_TARGET,
+        &why,
+        &notes,
+        &[format!("viso build {name}")],
+    ))
+}
+
+/// Why a device target cannot run on this machine, `None` when it can: the
+/// board's own triple is this machine's, and an embedded profile's display is
+/// driven through DRM/KMS, which Linux alone has.
+fn elsewhere(device: &DeviceTarget, host: Option<&str>) -> Option<String> {
+    let triple = device
+        .triple
+        .as_ref()
+        .map(|triple| triple.value.as_str())
+        .or(host);
+    let here = triple.is_some() && triple == host;
+    let display = !device.profile.value.is_embedded() || cfg!(target_os = "linux");
+    if here && display {
+        return None;
+    }
+    Some(match triple {
+        Some(triple) => format!(
+            "`{}` builds for {triple} and runs on its board, not on this machine",
+            device.name.value
+        ),
+        None => format!(
+            "`{}` runs on its board, not on this machine",
+            device.name.value
+        ),
+    })
 }
 
 /// The usage error of an option the target does not take.
@@ -160,7 +271,13 @@ fn misplaced(args: &RunArgs, platform: Option<Platform>, target: Target) -> Opti
     if args.open && args.browser.as_deref() == Some("none") {
         return Some("`--open` and `--browser none` ask for opposite things".into());
     }
-    if args.cwd.is_some() && target != Target::Host {
+    if args.emulate && !matches!(target, Target::Device(_)) {
+        return Some(
+            "`--emulate` runs a device target on this desktop: `viso run <device-target> --emulate`"
+                .into(),
+        );
+    }
+    if args.cwd.is_some() && !matches!(target, Target::Host | Target::Device(_)) {
         return Some(
             "`--cwd` is the working directory of an app on this machine: `viso run --cwd <dir>`"
                 .into(),
@@ -228,6 +345,34 @@ pub(super) fn session(
         Ok(loaded) => loaded,
         Err(code) => return code,
     };
+    let device = resolved.config.device.as_ref();
+    let runs_on = match device {
+        Some(device) => {
+            match on_board(device, args.emulate, build::host_triple().as_deref(), out) {
+                Ok(runs_on) => Some(runs_on),
+                Err(code) => return code,
+            }
+        }
+        None => None,
+    };
+    if args.cwd.is_some() && matches!(runs_on, Some(OnBoard::Remote(_))) {
+        return out.failure(
+            CLI_USAGE,
+            "`--cwd` is the working directory of an app on this machine; a board's app runs in \
+             its session directory",
+            &[],
+        );
+    }
+    // A device target builds as its table says: for its board, or for this
+    // desktop with the emulated panel.
+    let device_plan = device.map(|device| {
+        let mut plan = build::rust_plan(target, Some(device), Profile::Dev, None);
+        if runs_on == Some(OnBoard::Emulated) {
+            plan.target = build::host_triple();
+            plan.features.push(cargo::EMULATE);
+        }
+        plan
+    });
     let root = project.root.clone();
     let cargo_manifest = root.join("Cargo.toml");
     if !cargo_manifest.is_file() {
@@ -304,7 +449,10 @@ pub(super) fn session(
     // `viso run` again.
     let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
     let manifest = canonical.join("Cargo.toml");
-    let triple = build::rust_plan(target, Profile::Dev, None).target;
+    let triple = match &device_plan {
+        Some(plan) => plan.target.clone(),
+        None => build::rust_plan(target, None, Profile::Dev, None).target,
+    };
     let rust = match RustScope::read(&manifest, triple.as_deref(), &ctx.cargo_args()) {
         Ok(rust) => rust,
         Err(why) => {
@@ -325,8 +473,17 @@ pub(super) fn session(
         let tx = tx.clone();
         Arc::new(move |event| tx.send(Incoming::Link(event)).is_ok())
     };
-    let mut deploy = match (&profile, sdk) {
-        (None, _) if target == Target::WebGpu => {
+    let board = match &runs_on {
+        Some(OnBoard::Remote(address)) => Some(Board::new(
+            address.clone(),
+            project.name().unwrap_or("app"),
+            Some(root.join(viso_dsl::assets::ASSET_DIR)),
+        )),
+        _ => None,
+    };
+    let mut deploy = match (&profile, sdk, board) {
+        (_, _, Some(board)) => Deploy::Board(Box::new(board)),
+        (None, _, None) if target == Target::WebGpu => {
             let port = project
                 .manifest
                 .web
@@ -365,13 +522,13 @@ pub(super) fn session(
                 }
             }
         }
-        (None, _) => Deploy::Host {
+        (None, _, None) => Deploy::Host {
             cwd: cwd.unwrap_or_else(|| root.clone()),
         },
-        (Some(profile), _) if profile.platform == Platform::Ios => Deploy::Simulator {
+        (Some(profile), _, None) if profile.platform == Platform::Ios => Deploy::Simulator {
             profile: profile.clone(),
         },
-        (Some(_), Some(sdk)) => match deploy::android_shell(&rust.linked) {
+        (Some(_), Some(sdk), None) => match deploy::android_shell(&rust.linked) {
             Ok(shell) => Deploy::Emulator {
                 device: emulator::Device {
                     adb: sdk.adb.clone(),
@@ -385,8 +542,48 @@ pub(super) fn session(
                 return out.failure(ENV_DEVICE, &why, &[]);
             }
         },
-        (Some(_), None) => unreachable!("an emulator profile has its SDK"),
+        (Some(_), None, None) => unreachable!("an emulator profile has its SDK"),
     };
+    // The board is reached before the build, so one that cannot be fails
+    // at once; the dev channel listens on this machine's address on the
+    // route to it.
+    let channel_ip: IpAddr =
+        match &deploy {
+            Deploy::Board(board) => {
+                out.progress(
+                    "deploy",
+                    &format!("opening the session on `{}`", board.address()),
+                );
+                match board.open() {
+                    Ok(ip) if dev_host(ip) => ip,
+                    Ok(ip) => {
+                        return out.failure(
+                        ENV_DEV_CHANNEL,
+                        &format!(
+                            "the route to `{}` leaves this machine from {ip}, which is not on a \
+                             local network",
+                            board.address()
+                        ),
+                        &["the app takes a dev channel on a loopback, private, link-local or \
+                           unique-local address alone"
+                            .to_owned()],
+                    );
+                    }
+                    Err(why) => {
+                        return out.failure(
+                            ENV_DEPLOY,
+                            &why,
+                            &[format!(
+                                "`ssh {}` must log in without a password: the board takes this \
+                             machine's key, or an agent's",
+                                board.address()
+                            )],
+                        );
+                    }
+                }
+            }
+            _ => Ipv4Addr::LOCALHOST.into(),
+        };
     if matches!(deploy, Deploy::Emulator { .. } | Deploy::Browser { .. })
         && !args.app_args.is_empty()
     {
@@ -441,7 +638,16 @@ pub(super) fn session(
         }
     };
 
-    let plan = deploy.plan();
+    let mut plan = deploy.plan();
+    if let Some(device_plan) = device_plan {
+        plan.rust = device_plan;
+        if let Err(why) = build::add_text_data(&mut plan.rust, device, &project, &layout) {
+            return out.failure(ENV_BUILD_WRITE, &why, &[]);
+        }
+    }
+    super::build::warn_kept_defaults(plan.rust.no_default_features, &manifest, ctx, out);
+    let mut features = plan.rust.features;
+    features.push(cargo::HOT_RELOAD);
     let built = Mutex::new(tx.clone());
     let build = BuildCommand {
         cargo: cargo::program(),
@@ -453,7 +659,8 @@ pub(super) fn session(
         build_args: ctx.cargo_build_args(),
         profile: Profile::Dev,
         profile_args: cargo::profile_args(Profile::Dev, &resolved.config.settings, target),
-        features: vec![cargo::HOT_RELOAD],
+        features,
+        no_default_features: plan.rust.no_default_features,
         target: plan.rust.target,
         rustc_args: plan.rust.rustc_args,
         env: plan.rust.env,
@@ -481,17 +688,18 @@ pub(super) fn session(
     }
 
     // A page's dev channel comes through the web dev server; any other app
-    // connects to a loopback listener of its own.
+    // connects to a listener of its own, on the loopback interface or, for a
+    // board, on the address on the route to it.
     let listener = match &deploy {
         Deploy::Browser { .. } => None,
-        _ => match TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        _ => match TcpListener::bind((channel_ip, 0))
             .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
         {
             Ok(listener) => Some(listener),
             Err(error) => {
                 return out.failure(
                     ENV_DEV_CHANNEL,
-                    &format!("cannot open the dev channel on the loopback interface: {error}"),
+                    &format!("cannot open the dev channel on {channel_ip}: {error}"),
                     &[],
                 );
             }
@@ -541,6 +749,17 @@ pub(super) fn session(
         }
     };
     device_event(out, "launched");
+    if let Deploy::Board(board) = &deploy {
+        out.log(
+            "warn",
+            "tool",
+            &format!(
+                "the dev channel to `{}` is unencrypted on the local network: a device on it \
+                 sees the patches this session sends",
+                board.address()
+            ),
+        );
+    }
     if let Deploy::Browser { server, .. } = &deploy {
         out.server(server.addr(), server.network_addr());
         if server.network_addr().is_some() {
@@ -636,7 +855,7 @@ pub(super) fn session(
                 since,
             }) => {
                 let done = matches!(run.try_wait(), Ok(Some(_)) | Err(_));
-                if done || since.elapsed() >= PREWARM_WAIT {
+                if done || since.elapsed() >= deploy.prewarm_says().1 {
                     let _ = run.kill();
                     let _ = run.wait();
                     Some(snapshot(exe, &mut dev, &app, out))
@@ -840,7 +1059,7 @@ fn prewarm(
     match deploy.prewarm(&exe, args) {
         Some(Ok(run)) => {
             dev.prewarm_started();
-            out.progress("restart", "starting the new build once");
+            out.progress("restart", deploy.prewarm_says().0);
             Restart::Prewarm {
                 exe,
                 run,
@@ -978,7 +1197,7 @@ fn dev_artifact(
     build_id: &str,
 ) {
     let (kind, path) = match deploy {
-        Deploy::Host { .. } => ("binary", exe.to_owned()),
+        Deploy::Host { .. } | Deploy::Board(_) => ("binary", exe.to_owned()),
         Deploy::Simulator { .. } => ("app-bundle", exe.to_owned()),
         Deploy::Emulator { .. } => ("apk", exe.to_owned()),
         Deploy::Browser { .. } => {
@@ -1013,15 +1232,58 @@ fn dev_artifact(
     );
 }
 
+/// Whether the app takes a dev channel at `ip`: a loopback address, or one on
+/// a local network (IPv4 private and link-local, IPv6 unique-local and
+/// link-local), as the runtime's link checks it.
+fn dev_host(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local(),
+    }
+}
+
 fn relative<'a>(root: &Path, path: &'a Path) -> &'a Path {
     path.strip_prefix(root).unwrap_or(path)
 }
 
 #[cfg(test)]
 mod tests {
-    use viso_view::dev::wire::same_token;
+    use viso_dev_protocol::wire::same_token;
 
     use super::*;
+
+    /// A board runs here only where this machine is one: its triple, and Linux
+    /// for a display driven through DRM/KMS.
+    #[test]
+    fn a_device_target_runs_only_on_its_own_board() {
+        let manifest = viso_project::Manifest::parse(
+            "Viso.toml",
+            "[target.panel]\nprofile = \"embedded-gpu\"\ntriple = \"aarch64-unknown-linux-gnu\"\n\n\
+             [target.kiosk]\nprofile = \"embedded-cpu\"\n\n\
+             [target.wall]\nprofile = \"desktop\"\n",
+        )
+        .ok()
+        .unwrap();
+        let device = |name: &str| manifest.targets.device(name).unwrap();
+        let why = elsewhere(device("panel"), Some("aarch64-apple-darwin")).unwrap();
+        assert_eq!(
+            why,
+            "`panel` builds for aarch64-unknown-linux-gnu and runs on its board, not on this machine"
+        );
+        let linux = Some("aarch64-unknown-linux-gnu");
+        assert_eq!(
+            elsewhere(device("panel"), linux).is_none(),
+            cfg!(target_os = "linux")
+        );
+        // No triple builds for this machine; an embedded profile still needs
+        // Linux, a desktop one runs anywhere.
+        assert_eq!(
+            elsewhere(device("kiosk"), Some("x86_64-unknown-linux-gnu")).is_none(),
+            cfg!(target_os = "linux")
+        );
+        assert!(elsewhere(device("wall"), Some("aarch64-apple-darwin")).is_none());
+        assert!(elsewhere(device("wall"), None).is_some());
+    }
 
     #[test]
     fn tokens_are_distinct_hex() {

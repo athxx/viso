@@ -4,6 +4,8 @@
 
 #![allow(dead_code)]
 
+pub mod reload;
+
 use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::pin::Pin;
@@ -11,11 +13,12 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
+use reload::{LiveRuntime, hot_reload_view};
 use viso_behavior::native::Timers;
 use viso_dsl::aot::{build_view_package, build_view_package_for};
 use viso_dsl::frontend::{Compiled, Origin, compile_file, compile_file_for};
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
-use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
+use viso_dsl::hotreload::CandidatePlan;
 use viso_dsl::schema::Natives;
 use viso_dsl::view_behavior::view_behavior;
 use viso_ui::adaptive::Environment;
@@ -23,8 +26,8 @@ use viso_ui::context::UpdateCx;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     BindingTable, ComputedStore, EffectStore, LengthEnv, NodeId, NodeStore, PointerButtons,
-    PointerEvent, PointerPhase, PointerRouter, Rect, SemanticProjector, StateStore, TextEdits,
-    settle_states,
+    PointerEvent, PointerPhase, PointerRouter, Rect, SETTLE_ROUNDS, SemanticProjector, StateStore,
+    TextEdits, run_effects, settle_states,
 };
 use viso_view::{Value, ViewHost, load_view};
 
@@ -229,7 +232,8 @@ impl Rt {
         }
     }
 
-    /// The due tasks' continuations and the settle, without the layout.
+    /// The due tasks' continuations and the settle, effects included, without
+    /// the layout.
     pub fn settle(&mut self) {
         let mut continuations = Vec::new();
         if self.store.tasks_woken() {
@@ -242,17 +246,25 @@ impl Rt {
                 &mut self.store,
             ));
         }
+        // The flush, then the effects it queued — which run after a frame
+        // presents and write into the next frame's transaction — until a
+        // frame leaves nothing pending.
         let mut changed = Vec::new();
-        settle_states(
-            &mut self.store,
-            &mut self.states,
-            &mut self.bindings,
-            &mut self.computeds,
-            &mut self.projectors,
-            &mut self.effects,
-            &mut changed,
-        )
-        .expect("settles");
+        for _ in 0..SETTLE_ROUNDS {
+            settle_states(
+                &mut self.store,
+                &mut self.states,
+                &mut self.bindings,
+                &mut self.computeds,
+                &mut self.projectors,
+                &mut self.effects,
+                &mut changed,
+            )
+            .expect("settles");
+            if !run_effects(&mut self.store, &mut self.states, &mut self.effects).pending {
+                break;
+            }
+        }
     }
 
     /// Changes the environment as the platform reports it — the text scale
@@ -339,10 +351,8 @@ impl Rt {
     pub fn children(&self, node: NodeId) -> Vec<NodeId> {
         let arena = self.store.arena();
         let mut out = Vec::new();
-        let mut child = arena.links(node).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in arena.children(node) {
             out.push(c);
-            child = arena.links(c).and_then(|l| l.next_sibling);
         }
         out
     }

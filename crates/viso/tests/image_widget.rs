@@ -26,7 +26,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso::render::{FrameStats, Rect, Renderer, Rgba, test_texture};
 use viso::ui::{
     Axis, BoxStyle, BuildCx, Component, Inset, NodeId, NodeStore, Role, Size, TextureId, Vec2,
@@ -50,7 +50,7 @@ const DARK: Rgba = Rgba {
 /// Upload the shared deterministic checkerboard texture and return its resident
 /// id plus its intrinsic pixel size — the fixture bypass every content golden
 /// uses so the baseline is stable without an image decode path.
-fn upload_texture(gpu: &mut HeadlessRaster) -> (TextureId, Vec2) {
+fn upload_texture(gpu: &mut CpuRaster) -> (TextureId, Vec2) {
     let (tw, th, texels) = test_texture();
     let texture = gpu.create_texture(&TextureDesc {
         width: tw,
@@ -93,8 +93,7 @@ fn build_scene(store: &mut NodeStore, texture: TextureId, natural: Vec2) -> (Nod
     };
     let image_id = store
         .arena()
-        .links(root)
-        .and_then(|l| l.first_child)
+        .first_child(root)
         .expect("the view has the image leaf as its only child");
     (root, image_id)
 }
@@ -112,7 +111,7 @@ fn surface_rect() -> Rect {
 
 #[test]
 fn image_fixed_leaf_measures_to_texture_and_matches_golden() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -272,7 +271,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -281,7 +280,7 @@ struct Harness {
 }
 
 fn setup_alloc() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);

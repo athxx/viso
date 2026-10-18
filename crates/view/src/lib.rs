@@ -28,21 +28,17 @@ pub mod dev;
 mod effects;
 mod env;
 mod game;
-pub mod headless;
 mod host;
 pub mod inspect;
 #[cfg(feature = "inspect")]
 mod mounts;
 mod package;
 mod persistence;
-pub mod profile;
 mod regions;
 mod resources;
 mod route;
 mod scope;
 mod shaders;
-#[cfg(feature = "snapshot")]
-pub mod snapshot;
 mod tasks;
 mod theme;
 mod values;
@@ -62,8 +58,8 @@ pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value
 #[cfg(feature = "inspect")]
 pub use mounts::{__mounted_view, MountRecord, take_mounts};
 pub use package::{
-    LoadedView, ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewLoadError, ViewPackage,
-    ViewShader, ViewState, instantiate_view, instantiate_view_with, load_view, load_view_with,
+    LoadedView, ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewLoad, ViewLoadError, ViewPackage,
+    ViewPackageView, ViewShader, ViewState, load_static_view, load_view, load_view_with,
 };
 pub use persistence::{
     __load_persisted, __mount_persisted, install_persistence, take_persist_reports,
@@ -75,7 +71,8 @@ pub use regions::{
 };
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use scope::Scope;
-pub use shaders::{__embedded_shader, load_shader};
+pub use shaders::{__embedded_shader, load_shader, load_shaders};
+pub use viso_dev_protocol::{headless, profile};
 // The expression `view!` picks the target backend's code of a shader with.
 pub use tasks::release_tasks;
 pub use theme::{default_theme, set_theme};

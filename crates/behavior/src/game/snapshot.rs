@@ -10,7 +10,9 @@
 //! snapshot hashes. A snapshot of an engine that cannot save its state is
 //! degraded: it restores the bodies, and the engine starts afresh over them.
 
-use std::rc::Rc;
+use alloc::boxed::Box;
+use alloc::rc::Rc;
+use alloc::vec::Vec;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
@@ -183,13 +185,6 @@ impl GameSnapshot {
     /// one build agree on it exactly when their worlds, random states and
     /// Simulation states are bit for bit equal.
     pub fn hash(&self) -> u64 {
-        fnv(&self.encode())
+        viso_ende::content_hash(&self.encode())
     }
-}
-
-/// 64-bit FNV-1a.
-pub(super) fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    })
 }

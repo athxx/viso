@@ -10,11 +10,17 @@
 //! operation is IEEE arithmetic or an integer hash, so a seed builds the
 //! same terrain on every target.
 
-use std::rc::Rc;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use super::Model;
+#[cfg(not(feature = "std"))]
+use crate::float::FloatMath as _;
 use crate::game::world::{BodyKind, SpawnDesc};
-use crate::native::{NativeError, NativeValue, SchemaTy, Vec3F32};
+use crate::native::{NativeError, NativeValue, SchemaTy, Vec3};
 use crate::value::{Aggregate, Value};
 
 /// The most cells a side of a terrain has.
@@ -108,8 +114,8 @@ impl Terrain {
             )));
         }
         let block = |at: [f32; 3], size: [f32; 3]| {
-            SpawnDesc::new(BodyKind::Block, Vec3F32::new(size[0], size[1], size[2]))
-                .at(Vec3F32::from_array(at))
+            SpawnDesc::new(BodyKind::Block, Vec3::new(size[0], size[1], size[2]))
+                .at(Vec3::from_array(at))
                 .model(Model::Ground)
         };
         let mut blocks = vec![block(

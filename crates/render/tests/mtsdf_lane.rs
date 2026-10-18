@@ -28,7 +28,7 @@
 //! MTSDF fragment decode with the same median-of-three and the same screen-space
 //! distance range the MSL emits, so the numbers below are real sampled pixels.
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc};
 use viso_render::{
     AtlasAlloc, BatchPipeline, GlyphAtlas, GlyphInstanceData, GlyphLane, GlyphRunDraw, MtsdfAlloc,
     MtsdfAtlas, Primitive, Rect, Renderer, Rgba,
@@ -62,7 +62,7 @@ fn glyph_id() -> u16 {
 
 /// Generate the MTSDF field for [`GLYPH`] at [`BUCKET`], pack it into a fresh
 /// atlas, and upload that atlas as a `Rgba8Data` texture.
-fn mtsdf_run(gpu: &mut HeadlessRaster, at_px_per_em: f32, origin: [f32; 2]) -> GlyphRunDraw {
+fn mtsdf_run(gpu: &mut CpuRaster, at_px_per_em: f32, origin: [f32; 2]) -> GlyphRunDraw {
     let mut generator = MtsdfGenerator::default();
     let mut field = Vec::new();
     let meta: MtsdfGlyph = generator
@@ -116,7 +116,7 @@ fn mtsdf_run(gpu: &mut HeadlessRaster, at_px_per_em: f32, origin: [f32; 2]) -> G
 /// and then drawn at `at_px_per_em`, so passing the two equal is the exact path
 /// and passing a larger `at_px_per_em` is a stretched bitmap.
 fn coverage_run(
-    gpu: &mut HeadlessRaster,
+    gpu: &mut CpuRaster,
     raster_px_per_em: f32,
     at_px_per_em: f32,
     origin: [f32; 2],
@@ -157,8 +157,8 @@ fn coverage_run(
 /// with — the run is opaque white, so the blue channel *is* the alpha the lane
 /// resolved.
 fn coverage_of(
-    gpu: &mut HeadlessRaster,
-    build: impl FnOnce(&mut HeadlessRaster) -> Vec<Primitive>,
+    gpu: &mut CpuRaster,
+    build: impl FnOnce(&mut CpuRaster) -> Vec<Primitive>,
 ) -> Vec<f32> {
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
@@ -195,7 +195,7 @@ fn soft_pixels(cov: &[f32]) -> usize {
 /// the introspection surface names it.
 #[test]
 fn an_mtsdf_run_draws_through_the_scalable_text_pipeline() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let run = mtsdf_run(&mut gpu, BUCKET, [24.0, 120.0]);
@@ -218,7 +218,7 @@ fn an_mtsdf_run_draws_through_the_scalable_text_pipeline() {
 /// so the planner keeps them as two batches in paint order.
 #[test]
 fn the_two_text_lanes_are_separate_batches_over_one_buffer() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let a8 = coverage_run(&mut gpu, BUCKET, BUCKET, [24.0, 60.0]);
@@ -258,11 +258,11 @@ fn the_two_text_lanes_are_separate_batches_over_one_buffer() {
 #[test]
 fn a_field_reproduces_the_coverage_it_was_generated_from() {
     let origin = [40.0, 120.0];
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let exact = coverage_of(&mut gpu, |g| {
         vec![Primitive::GlyphRun(coverage_run(g, BUCKET, BUCKET, origin))]
     });
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let field = coverage_of(&mut gpu, |g| {
         vec![Primitive::GlyphRun(mtsdf_run(g, BUCKET, origin))]
     });
@@ -285,11 +285,11 @@ fn magnifying_a_field_keeps_the_edge_crisp() {
     let origin = [24.0, 160.0];
     let big = BUCKET * 4.0;
 
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let stretched = coverage_of(&mut gpu, |g| {
         vec![Primitive::GlyphRun(coverage_run(g, BUCKET, big, origin))]
     });
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let field = coverage_of(&mut gpu, |g| {
         vec![Primitive::GlyphRun(mtsdf_run(g, big, origin))]
     });
@@ -321,11 +321,11 @@ fn magnifying_a_field_keeps_the_edge_crisp() {
 #[test]
 fn the_edge_band_tracks_the_quad_scale() {
     let origin = [24.0, 160.0];
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let one_x = coverage_of(&mut gpu, |g| {
         vec![Primitive::GlyphRun(mtsdf_run(g, BUCKET, origin))]
     });
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let four_x = coverage_of(&mut gpu, |g| {
         vec![Primitive::GlyphRun(mtsdf_run(g, BUCKET * 4.0, origin))]
     });

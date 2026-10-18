@@ -22,8 +22,12 @@
 //! to the new. The audio thread only ever exchanges pointers: it neither
 //! allocates nor frees.
 
-use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use core::ptr;
+use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::message::{AudioMessage, MessageSlot};
@@ -162,7 +166,10 @@ impl AudioProgram {
     ) -> Result<AudioProgram, String> {
         let module = Module::decode(module).map_err(|e: LoadError| e.to_string())?;
         let mut systems = Vec::new();
-        let mut vm = Vm::new(std::rc::Rc::new(module), block_budget(channels, max_frames));
+        let mut vm = Vm::new(
+            alloc::rc::Rc::new(module),
+            block_budget(channels, max_frames),
+        );
         vm.link(natives, &[]).map_err(|e| e.to_string())?;
         let module = vm.module().clone();
         for (index, system) in module.systems().iter().enumerate() {
@@ -205,9 +212,11 @@ impl AudioProgram {
                 continue;
             };
             let kept = system.instance.clone();
-            let _ = self
-                .vm
-                .call(&mut system.instance, chunk, std::slice::from_ref(&self.arg));
+            let _ = self.vm.call(
+                &mut system.instance,
+                chunk,
+                core::slice::from_ref(&self.arg),
+            );
             system.instance = kept;
         }
         self.block.clear_output();
@@ -290,8 +299,8 @@ impl AudioSwap {
     }
 }
 
-impl std::fmt::Debug for AudioSwap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for AudioSwap {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AudioSwap")
             .field("channels", &self.channels)
             .field("max_frames", &self.max_frames)
@@ -387,7 +396,7 @@ impl AudioHost {
         let next = unsafe { Box::from_raw(next) };
         // The event queue moves to the new block: the link stays valid.
         next.block.set_events(self.program.block.take_events());
-        let old = std::mem::replace(&mut self.program, next);
+        let old = core::mem::replace(&mut self.program, next);
         // Only this thread fills `retired`, and it was empty.
         self.handoff
             .retired
@@ -463,8 +472,8 @@ fn settle<T>(system: &mut AudioSystem, result: Result<T, Fault>, status: &AudioS
     }
 }
 
-impl std::fmt::Debug for AudioHost {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for AudioHost {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AudioHost")
             .field("systems", &self.program.systems.len())
             .field("channels", &self.program.block.channels())

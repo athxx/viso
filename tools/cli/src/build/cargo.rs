@@ -55,6 +55,21 @@ pub(crate) const HOT_RELOAD: &str = "viso/hot-reload";
 /// The facade's feature that makes the build headless.
 pub(crate) const HEADLESS: &str = "viso/headless";
 
+/// The facade's feature that links the behavior interpreter a debug build
+/// runs.
+pub(crate) const VM: &str = "viso/vm";
+
+/// The facade's feature that shows an embedded profile's panel in a desktop
+/// window.
+pub(crate) const EMULATE: &str = "viso/emulate";
+
+/// Whether a dev build of `target` carries [`HOT_RELOAD`]: not a headless
+/// build, which is for tests and tooling that reload nothing, nor a device
+/// target's, deployed to a board no dev session reaches.
+pub(crate) fn reloads(target: Target) -> bool {
+    !matches!(target, Target::Headless | Target::Device(_))
+}
+
 /// How the app is built.
 #[derive(Clone)]
 pub(crate) struct BuildCommand {
@@ -80,6 +95,9 @@ pub(crate) struct BuildCommand {
     /// The features of the app's dependencies turned on: [`HOT_RELOAD`],
     /// [`HEADLESS`].
     pub(crate) features: Vec<&'static str>,
+    /// Whether the app's default features are off, and so the facade's
+    /// where the app turns them on through its own.
+    pub(crate) no_default_features: bool,
     /// The Rust target, when not the host.
     pub(crate) target: Option<String>,
     /// The arguments after `cargo rustc --`; the build is `cargo build` when
@@ -112,6 +130,9 @@ impl BuildCommand {
         args.push("--manifest-path".into());
         args.push(self.manifest.clone().into_os_string());
         args.extend(self.profile_args.iter().map(OsString::from));
+        if self.no_default_features {
+            args.push("--no-default-features".into());
+        }
         if !self.features.is_empty() {
             args.extend(["--features".into(), self.features.join(",").into()]);
         }
@@ -646,6 +667,7 @@ mod tests {
             profile: Profile::Release,
             profile_args: Vec::new(),
             features: Vec::new(),
+            no_default_features: false,
             target: None,
             rustc_args: Vec::new(),
             env: Vec::new(),
@@ -670,6 +692,15 @@ mod tests {
         );
         assert_eq!(args(&command, true)[0], "check");
         assert!(!args(&command, true).contains(&"--".to_owned()));
+        assert!(!args(&command, true).contains(&"--no-default-features".to_owned()));
+        command.no_default_features = true;
+        command.features = vec!["viso/cpu", "viso/kms"];
+        let embedded = args(&command, true);
+        let at = embedded.iter().position(|a| a == "--no-default-features");
+        assert_eq!(
+            embedded[at.unwrap() + 1..at.unwrap() + 3],
+            ["--features", "viso/cpu,viso/kms"]
+        );
     }
 
     fn rendered(messages: &mut Messages, lines: &[&str]) -> Vec<String> {

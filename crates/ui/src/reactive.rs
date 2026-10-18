@@ -19,8 +19,8 @@
 //!   value) and may return a cleanup closure. When a dependency changes the
 //!   prior cleanup runs first and then the body re-runs (dependency restart);
 //!   when the owning node is freed or unmounted the cleanup runs and the effect
-//!   is cancelled. This slice runs effects synchronously — no timers or async
-//!   yet; those layer on later without changing this contract.
+//!   is cancelled. Effects run after the frame presents, never inside the
+//!   flush: their writes are the next frame's transaction.
 //!
 //! Both constructs wake off their own compact reverse index from [`StateId`] to
 //! the ids that read it — not the dirty bitset — but their wakes differ in kind
@@ -30,7 +30,7 @@
 //! memo boundary in the wake itself. An [`Effect`] has no dirty class — its
 //! output is the side effect — so routing it through the dirty bitset would
 //! overload a bit that means "recompute layout/paint for this node"; instead
-//! [`EffectStore::wake`] re-runs each affected effect body. Keeping both off the
+//! [`EffectStore::wake`] queues each affected effect for the post-present run. Keeping both off the
 //! bitset leaves the dirty classes a clean eight, one meaning each; the compiled
 //! [`BindingTable`](crate::binding::BindingTable) stays reserved for direct
 //! state→node value bindings and the dynamic-script fallback.
@@ -165,6 +165,13 @@ impl<'a> ComputeCx<'a> {
     pub fn env(&self) -> &crate::adaptive::AdaptiveEnv {
         self.states.env()
     }
+
+    /// The state store's [epoch](crate::StateStore::epoch): while it stands,
+    /// every cell reads as it did.
+    #[inline]
+    pub fn state_epoch(&self) -> u64 {
+        self.states.epoch()
+    }
 }
 
 /// The context an [`Effect`] body runs in: it reads state like a
@@ -176,6 +183,9 @@ pub struct EffectCx<'a> {
     states: &'a mut StateStore,
     cursor: &'a mut DepCursor,
     tasks: &'a mut TaskOps,
+    /// The dense indices of the cells this run wrote, for the cross-frame
+    /// cycle check.
+    written: &'a mut Vec<u32>,
 }
 
 impl EffectCx<'_> {
@@ -196,6 +206,7 @@ impl EffectCx<'_> {
     /// Write a state value; returns whether the id was live.
     #[inline]
     pub fn set(&mut self, id: StateId, value: StateValue) -> bool {
+        self.written.push(id.index());
         self.states.set(id, value)
     }
 
@@ -203,6 +214,13 @@ impl EffectCx<'_> {
     #[inline]
     pub fn env(&self) -> &crate::adaptive::AdaptiveEnv {
         self.states.env()
+    }
+
+    /// The state store's [epoch](crate::StateStore::epoch): while it stands,
+    /// every cell reads as it did.
+    #[inline]
+    pub fn state_epoch(&self) -> u64 {
+        self.states.epoch()
     }
 
     /// Run `future` as a task owned by `owner`, spawned when the flush round
@@ -306,8 +324,19 @@ struct EffectSlot {
     body: EffectFn,
     /// The cleanup returned by the most recent run, if any.
     cleanup: Option<Cleanup>,
+    /// The neighbours in the owning node's effect chain.
+    prev: u32,
+    next: u32,
     generation: u32,
     occupied: bool,
+    /// Whether the effect waits in the run queue.
+    queued: bool,
+    /// Whether everything that queued it this frame was a cell effects wrote
+    /// last frame.
+    chained: bool,
+    /// How many frames in a row it ran only because effects wrote what it
+    /// reads: a chain past [`SETTLE_ROUNDS`] is a cycle.
+    chain: u8,
 }
 
 /// The store of pure cached derivations, keyed by generational [`ComputedId`].
@@ -558,32 +587,63 @@ impl ComputedStore {
 
 /// The store of side effects, keyed by generational [`EffectId`].
 ///
-/// Effects run synchronously this slice. Each holds the node it is scoped to,
-/// its recorded dependency set, its body, and the cleanup its last run returned.
-/// A dependency change restarts the effect (cleanup then re-run); freeing the
-/// owning node cancels it (cleanup then drop).
+/// Each effect holds the node it is scoped to, its recorded dependency set,
+/// its body, and the cleanup its last run returned. A dependency change
+/// restarts the effect (cleanup then re-run); freeing the owning node cancels
+/// it (cleanup then drop).
+///
+/// Effects never run inside the state flush. [`adopt`] and [`wake`] only queue
+/// them; the frame runs the queue once, after `Submit`, through
+/// [`run_queued`]. So a frame presents what its flush derived without waiting
+/// on side effects, and an effect's writes land in the next frame's
+/// transaction. A value the same frame must show is a `Computed`, never an
+/// effect.
 ///
 /// Waking is driven by a reverse index rather than the dirty bitset: [`wake`]
-/// looks up the effects that read a changed [`StateId`] and re-runs each. The
-/// index is `dep_index[state.index()] -> the effects depending on it`, rebuilt
-/// for an effect's dependencies on every run so a dependency an effect stops
-/// reading stops waking it.
+/// looks up the effects that read a changed [`StateId`]. The index is
+/// `dep_index[state.index()] -> the effects depending on it`, rebuilt for an
+/// effect's dependencies on every run so a dependency an effect stops reading
+/// stops waking it. A second index chains each node's effects, so unmounting a
+/// node cancels its effects without a scan.
 ///
+/// [`adopt`]: EffectStore::adopt
 /// [`wake`]: EffectStore::wake
+/// [`run_queued`]: EffectStore::run_queued
 #[derive(Default)]
 pub struct EffectStore {
     slots: Vec<EffectSlot>,
     free: Vec<u32>,
+    /// How many slots are occupied: zero lets a node free skip the lookup.
+    live: u32,
     /// Reverse dependency index, aligned to [`StateStore`] dense indices:
     /// `dep_index[i]` holds every effect that read the state at dense index `i`
-    /// on its last run. A scratch reuse target for [`wake`] avoids reallocating.
+    /// on its last run.
     dep_index: Vec<Vec<EffectId>>,
-    /// Reused buffer of effects to re-run this wake, so a wake allocates nothing
-    /// on the steady path.
-    wake_scratch: Vec<EffectId>,
+    /// Head of each node's effect chain, by node slot index; [`NO_EFFECT`]
+    /// when the node owns none.
+    node_head: Vec<u32>,
+    /// The effects to run after `Submit`, in the order they were queued, each
+    /// once. A stale id (cancelled since) is skipped.
+    queue: Vec<EffectId>,
+    /// The queue being run, kept to reuse its capacity.
+    running: Vec<EffectId>,
+    /// The dense indices of the cells this frame's effects wrote, and, sorted
+    /// and deduplicated, those last frame's wrote: a wake by one of the
+    /// latter continues an effect chain.
+    writes: Vec<u32>,
+    last_writes: Vec<u32>,
+    /// The nodes of the effects the last run cut as a cycle.
+    cycles: Vec<NodeId>,
     /// The tasks effect bodies spawned and cancelled, for the node store.
     tasks: TaskOps,
 }
+
+/// The end of a node's effect chain.
+const NO_EFFECT: u32 = u32::MAX;
+
+/// How many frames in a row an effect may run only because effects wrote what
+/// it reads before it is cut as a cycle: the same bound one frame's flush has.
+const EFFECT_CHAIN: u8 = crate::flush::SETTLE_ROUNDS as u8;
 
 impl EffectStore {
     /// A fresh, empty store.
@@ -592,7 +652,7 @@ impl EffectStore {
     }
 
     /// Register an effect scoped to `node`. The `body` is stored but not run
-    /// until [`EffectStore::run`]; the returned [`EffectId`] is the handle.
+    /// until it is queued and the queue runs, or [`EffectStore::run`].
     pub fn alloc(
         &mut self,
         node: NodeId,
@@ -604,7 +664,8 @@ impl EffectStore {
     /// Register an effect scoped to `node` whose dependencies `when` declares:
     /// the states `when` reads are the dependency set, and a run whose `when`
     /// returns `false` leaves the effect as it was — no cleanup, no body. The
-    /// body's own reads record nothing. Not run until [`EffectStore::run`].
+    /// body's own reads record nothing. Not run until it is queued and the
+    /// queue runs, or [`EffectStore::run`].
     pub fn alloc_when(
         &mut self,
         node: NodeId,
@@ -615,34 +676,45 @@ impl EffectStore {
     }
 
     /// Moves the effects registered on `store` since the last call into the
-    /// store and runs each once, in registration order; an effect whose node
-    /// was freed meanwhile is dropped unrun. Returns how many ran.
-    pub fn adopt(&mut self, store: &mut crate::NodeStore, states: &mut StateStore) -> u32 {
+    /// store and queues each for its first run, in registration order; an
+    /// effect whose node was freed meanwhile is dropped. Returns how many it
+    /// queued.
+    pub fn adopt(&mut self, store: &mut crate::NodeStore) -> u32 {
         let pending = std::mem::take(&mut store.pending_effects_mut().0);
-        let mut ran = 0;
+        let mut queued = 0;
         for effect in pending {
             if !store.arena().is_live(effect.node) {
                 continue;
             }
             let id = self.insert(effect.node, Some(effect.when), effect.body);
-            if self.run(id, states) {
-                ran += 1;
+            if self.enqueue(id, false) {
+                queued += 1;
             }
         }
-        ran
+        queued
     }
 
     fn insert(&mut self, node: NodeId, when: Option<WhenFn>, body: EffectFn) -> EffectId {
-        if let Some(index) = self.free.pop() {
+        let n = node.index() as usize;
+        if n >= self.node_head.len() {
+            self.node_head.resize(n + 1, NO_EFFECT);
+        }
+        let next = self.node_head[n];
+        let id = if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index as usize];
             debug_assert!(!slot.occupied);
             debug_assert!(slot.cleanup.is_none(), "freed effect kept a cleanup");
             slot.occupied = true;
+            slot.queued = false;
+            slot.chained = false;
+            slot.chain = 0;
             slot.node = node;
             slot.deps.clear();
             slot.when = when;
             slot.body = body;
             slot.cleanup = None;
+            slot.prev = NO_EFFECT;
+            slot.next = next;
             EffectId {
                 index,
                 generation: slot.generation,
@@ -655,14 +727,25 @@ impl EffectStore {
                 when,
                 body,
                 cleanup: None,
+                prev: NO_EFFECT,
+                next,
                 generation: 0,
                 occupied: true,
+                queued: false,
+                chained: false,
+                chain: 0,
             });
             EffectId {
                 index,
                 generation: 0,
             }
+        };
+        if next != NO_EFFECT {
+            self.slots[next as usize].prev = id.index;
         }
+        self.node_head[n] = id.index;
+        self.live += 1;
+        id
     }
 
     /// Whether `id` refers to a currently-live effect.
@@ -674,8 +757,86 @@ impl EffectStore {
         )
     }
 
-    /// Run (or re-run) an effect: run any prior cleanup first, then the body,
-    /// recording its dependency set into the reverse index that [`wake`] reads.
+    /// Whether an effect waits to run.
+    #[inline]
+    pub fn has_queued(&self) -> bool {
+        !self.queue.is_empty()
+    }
+
+    /// Queue a live effect to run after `Submit`, once however often it is
+    /// queued before the queue runs. `by_effects` says the cell that queued it
+    /// was written by last frame's effects. Returns whether it was newly
+    /// queued.
+    fn enqueue(&mut self, id: EffectId, by_effects: bool) -> bool {
+        let slot = &mut self.slots[id.index as usize];
+        if !slot.occupied || slot.generation != id.generation {
+            return false;
+        }
+        if slot.queued {
+            slot.chained &= by_effects;
+            return false;
+        }
+        slot.queued = true;
+        slot.chained = by_effects;
+        self.queue.push(id);
+        true
+    }
+
+    /// Moves the nodes of the effects the last [`run_queued`] cut as a cycle
+    /// onto `out`.
+    ///
+    /// [`run_queued`]: Self::run_queued
+    pub fn take_cycles(&mut self, out: &mut Vec<NodeId>) {
+        out.append(&mut self.cycles);
+    }
+
+    /// Run every queued effect once, in queue order — the frame's `RunEffects`
+    /// phase. What a body writes stays pending for the next frame's flush; an
+    /// effect a run wakes is not run again here. Returns how many ran.
+    ///
+    /// An effect that ran [`EFFECT_CHAIN`] frames in a row only because
+    /// effects wrote what it reads is a cycle across frames: it is skipped,
+    /// and its node waits in [`take_cycles`](Self::take_cycles).
+    pub fn run_queued(&mut self, states: &mut StateStore) -> u32 {
+        if self.queue.is_empty() {
+            self.last_writes.clear();
+            return 0;
+        }
+        let mut running = core::mem::take(&mut self.running);
+        core::mem::swap(&mut running, &mut self.queue);
+        let mut ran = 0;
+        for &id in &running {
+            let Some(slot) = self.slots.get_mut(id.index as usize) else {
+                continue;
+            };
+            if slot.generation != id.generation || !slot.occupied {
+                continue;
+            }
+            slot.queued = false;
+            slot.chain = if slot.chained { slot.chain + 1 } else { 0 };
+            if slot.chain >= EFFECT_CHAIN {
+                slot.chain = 0;
+                if !self.cycles.contains(&slot.node) {
+                    self.cycles.push(slot.node);
+                }
+                continue;
+            }
+            if self.run(id, states) {
+                ran += 1;
+            }
+        }
+        running.clear();
+        self.running = running;
+        core::mem::swap(&mut self.last_writes, &mut self.writes);
+        self.writes.clear();
+        self.last_writes.sort_unstable();
+        self.last_writes.dedup();
+        ran
+    }
+
+    /// Run (or re-run) an effect now: run any prior cleanup first, then the
+    /// body, recording its dependency set into the reverse index that [`wake`]
+    /// reads.
     ///
     /// This is both the first run and the dependency restart — a restart is just
     /// "cleanup then run again". The recorded dependencies replace the effect's
@@ -712,6 +873,7 @@ impl EffectStore {
                 states,
                 cursor,
                 tasks: &mut self.tasks,
+                written: &mut self.writes,
             };
             let next_cleanup = (slot.body)(&mut cx);
             self.slots[id.index as usize].cleanup = next_cleanup;
@@ -734,44 +896,25 @@ impl EffectStore {
         std::mem::take(&mut self.tasks)
     }
 
-    /// Re-run every effect that read any of the `changed` states — the flush's
-    /// effect pass. Each affected effect restarts once even if several of its
-    /// dependencies changed in the same transaction. Returns how many effects
-    /// were re-run.
-    ///
-    /// A re-run may itself change an effect's dependency set (recorded fresh in
-    /// [`run`]); the newly gathered set takes effect for the *next* wake, so a
-    /// single wake is a fixed pass over the effects the current index names — no
-    /// cascade within one flush.
-    pub fn wake(&mut self, changed: &[StateId], states: &mut StateStore) -> u32 {
-        // Gather the affected effects into the reused scratch, deduplicating so
-        // an effect reading two changed states restarts once.
-        self.wake_scratch.clear();
+    /// Queue every effect that read any of the `changed` states — the flush's
+    /// effect pass. Each affected effect is queued once even if several of its
+    /// dependencies changed, or several flush rounds woke it. Returns how many
+    /// it newly queued.
+    pub fn wake(&mut self, changed: &[StateId]) -> u32 {
+        let mut queued = 0;
         for &state in changed {
             let Some(deps) = self.dep_index.get(state.index() as usize) else {
                 continue;
             };
-            for &eff in deps {
-                if !self.wake_scratch.contains(&eff) {
-                    self.wake_scratch.push(eff);
+            let by_effects = self.last_writes.binary_search(&state.index()).is_ok();
+            for i in 0..deps.len() {
+                let id = self.dep_index[state.index() as usize][i];
+                if self.enqueue(id, by_effects) {
+                    queued += 1;
                 }
             }
         }
-
-        // Take the scratch out so `run` can borrow `self` mutably; put it back
-        // (empty) afterward to keep its capacity for the next wake.
-        let mut targets = core::mem::take(&mut self.wake_scratch);
-        let mut ran = 0;
-        for &eff in &targets {
-            // A stale id here means the effect was cancelled since indexing;
-            // `run` rejects it, so no cleanup fires on a dead effect.
-            if self.run(eff, states) {
-                ran += 1;
-            }
-        }
-        targets.clear();
-        self.wake_scratch = targets;
-        ran
+        queued
     }
 
     /// Appends to `out` the nodes of the effects a change of `changed` would
@@ -792,51 +935,43 @@ impl EffectStore {
         }
     }
 
-    /// Cancel an effect: run its pending cleanup, drop its reverse-index entries,
-    /// and free the slot. Returns whether the id was live. Idempotent for a stale
+    /// Cancel an effect: run its pending cleanup, drop its index entries, and
+    /// free the slot. Returns whether the id was live. Idempotent for a stale
     /// handle.
     pub fn cancel(&mut self, id: EffectId) -> bool {
-        let Some(slot) = self.slots.get_mut(id.index as usize) else {
-            return false;
-        };
-        if !slot.occupied || slot.generation != id.generation {
+        if !self.is_live(id) {
             return false;
         }
-        if let Some(cleanup) = slot.cleanup.take() {
-            cleanup();
-        }
-        self.deindex(id);
-        let slot = &mut self.slots[id.index as usize];
-        slot.occupied = false;
-        slot.generation = slot.generation.wrapping_add(1);
-        slot.deps.clear();
-        self.free.push(id.index);
+        self.release(id);
         true
     }
 
     /// Cancel every effect scoped to `node`, running each pending cleanup — the
     /// unmount path. Called when a node is freed so its effects release their
-    /// resources deterministically. Returns how many effects were cancelled.
+    /// resources deterministically. Walks the node's own chain, so its cost is
+    /// the node's effect count. Returns how many effects were cancelled.
     pub fn cancel_for_node(&mut self, node: NodeId) -> u32 {
+        if self.live == 0 {
+            return 0;
+        }
+        let Some(&head) = self.node_head.get(node.index() as usize) else {
+            return 0;
+        };
         let mut cancelled = 0;
-        for index in 0..self.slots.len() {
-            if !self.slots[index].occupied || self.slots[index].node != node {
-                continue;
-            }
+        let mut cursor = head;
+        while cursor != NO_EFFECT {
+            let slot = &self.slots[cursor as usize];
+            let next = slot.next;
+            // A chain holds only the effects of the node now in this slot: a
+            // freed node's effects were cancelled with it.
+            debug_assert_eq!(slot.node, node, "effect chain crossed nodes");
             let id = EffectId {
-                index: index as u32,
-                generation: self.slots[index].generation,
+                index: cursor,
+                generation: slot.generation,
             };
-            if let Some(cleanup) = self.slots[index].cleanup.take() {
-                cleanup();
-            }
-            self.deindex(id);
-            let slot = &mut self.slots[index];
-            slot.occupied = false;
-            slot.generation = slot.generation.wrapping_add(1);
-            slot.deps.clear();
-            self.free.push(index as u32);
+            self.release(id);
             cancelled += 1;
+            cursor = next;
         }
         cancelled
     }
@@ -856,18 +991,42 @@ impl EffectStore {
                 index: index as u32,
                 generation: self.slots[index].generation,
             };
-            if let Some(cleanup) = self.slots[index].cleanup.take() {
-                cleanup();
-            }
-            self.deindex(id);
-            let slot = &mut self.slots[index];
-            slot.occupied = false;
-            slot.generation = slot.generation.wrapping_add(1);
-            slot.deps.clear();
-            self.free.push(index as u32);
+            self.release(id);
             cancelled += 1;
         }
+        self.queue.clear();
         cancelled
+    }
+
+    /// Run a live effect's cleanup, unlink it from both indexes and free its
+    /// slot. A queue entry for it goes stale with the generation bump.
+    fn release(&mut self, id: EffectId) {
+        if let Some(cleanup) = self.slots[id.index as usize].cleanup.take() {
+            cleanup();
+        }
+        self.deindex(id);
+        let EffectSlot {
+            node, prev, next, ..
+        } = self.slots[id.index as usize];
+        if prev == NO_EFFECT {
+            self.node_head[node.index() as usize] = next;
+        } else {
+            self.slots[prev as usize].next = next;
+        }
+        if next != NO_EFFECT {
+            self.slots[next as usize].prev = prev;
+        }
+        let slot = &mut self.slots[id.index as usize];
+        slot.occupied = false;
+        slot.queued = false;
+        slot.chained = false;
+        slot.chain = 0;
+        slot.generation = slot.generation.wrapping_add(1);
+        slot.deps.clear();
+        slot.prev = NO_EFFECT;
+        slot.next = NO_EFFECT;
+        self.free.push(id.index);
+        self.live -= 1;
     }
 
     /// Add `id` to the reverse index for each of its currently recorded
@@ -1192,6 +1351,12 @@ mod tests {
     fn node(arena: &mut NodeArena) -> NodeId {
         arena.alloc()
     }
+    /// Queue the effects `changed` wakes and run the queue, as a frame's flush
+    /// and `RunEffects` phase do; how many ran.
+    fn wake_run(effects: &mut EffectStore, changed: &[StateId], states: &mut StateStore) -> u32 {
+        effects.wake(changed);
+        effects.run_queued(states)
+    }
 
     /// Build a single leaf into `store` and return its id — a real
     /// `NodeStore`-resident node so `mark_dirty`/`dirty` have somewhere to land
@@ -1437,7 +1602,11 @@ mod tests {
         states.set(n, StateValue::Int(2));
         let mut changed = Vec::new();
         states.take_pending(&mut changed);
-        assert_eq!(effects.wake(&changed, &mut states), 1, "one effect re-ran");
+        assert_eq!(
+            wake_run(&mut effects, &changed, &mut states),
+            1,
+            "one effect re-ran"
+        );
         assert_eq!(*log.borrow(), ["run", "cleanup", "run"]);
     }
 
@@ -1465,14 +1634,14 @@ mod tests {
         states.set(other, StateValue::Int(9));
         let mut changed = Vec::new();
         states.take_pending(&mut changed);
-        assert_eq!(effects.wake(&changed, &mut states), 0);
+        assert_eq!(wake_run(&mut effects, &changed, &mut states), 0);
         assert_eq!(*runs.borrow(), 1, "unrelated write does not re-run");
 
         // Writing the watched state does.
         states.set(watched, StateValue::Int(1));
         changed.clear();
         states.take_pending(&mut changed);
-        assert_eq!(effects.wake(&changed, &mut states), 1);
+        assert_eq!(wake_run(&mut effects, &changed, &mut states), 1);
         assert_eq!(*runs.borrow(), 2);
     }
 
@@ -1503,7 +1672,7 @@ mod tests {
         let mut changed = Vec::new();
         states.take_pending(&mut changed);
         assert_eq!(
-            effects.wake(&changed, &mut states),
+            wake_run(&mut effects, &changed, &mut states),
             1,
             "restarts once, not twice"
         );
@@ -1540,7 +1709,7 @@ mod tests {
         let mut changed = Vec::new();
         states.take_pending(&mut changed);
         assert_eq!(
-            effects.wake(&changed, &mut states),
+            wake_run(&mut effects, &changed, &mut states),
             0,
             "a cancelled effect is out of the reverse index"
         );
@@ -1587,16 +1756,16 @@ mod tests {
         // The body's read is not a dependency.
         states.set(read, StateValue::Int(5));
         states.take_pending(&mut changed);
-        assert_eq!(effects.wake(&changed, &mut states), 0);
+        assert_eq!(wake_run(&mut effects, &changed, &mut states), 0);
         // A change the gate rejects keeps the effect and its cleanup.
         states.set(watched, StateValue::Int(9));
         states.take_pending(&mut changed);
-        assert_eq!(effects.wake(&changed, &mut states), 1);
+        assert_eq!(wake_run(&mut effects, &changed, &mut states), 1);
         assert_eq!(log.borrow().len(), 3, "{:?}", log.borrow());
         // One it accepts cleans up and re-runs.
         states.set(watched, StateValue::Int(12));
         states.take_pending(&mut changed);
-        effects.wake(&changed, &mut states);
+        wake_run(&mut effects, &changed, &mut states);
         assert_eq!(
             log.borrow()[3..],
             [
@@ -1637,7 +1806,7 @@ mod tests {
         states.set(gate, StateValue::Bool(false));
         let mut changed = Vec::new();
         states.take_pending(&mut changed);
-        assert_eq!(effects.wake(&changed, &mut states), 1); // runs=2, deps={gate}
+        assert_eq!(wake_run(&mut effects, &changed, &mut states), 1); // runs=2, deps={gate}
         assert_eq!(*runs.borrow(), 2);
 
         // Now writing `inner` must wake nothing — it is no longer a dependency.
@@ -1645,7 +1814,7 @@ mod tests {
         changed.clear();
         states.take_pending(&mut changed);
         assert_eq!(
-            effects.wake(&changed, &mut states),
+            wake_run(&mut effects, &changed, &mut states),
             0,
             "dropped dep stops waking"
         );

@@ -5,12 +5,16 @@
 //! across a reload that rebuilds the view, the nodes a region mounts carry
 //! their focus and scroll offset to the nodes built for the same items.
 
+#[path = "support/reload.rs"]
+mod reload;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use reload::{HotReloadReport, LiveRuntime, hot_reload_view};
 use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
-use viso_dsl::hotreload::{CandidatePlan, HotReloadReport, LiveRuntime, hot_reload_view};
+use viso_dsl::hotreload::CandidatePlan;
 use viso_ui::Rect;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -190,10 +194,8 @@ impl Rt {
     fn children(&self, node: NodeId) -> Vec<NodeId> {
         let arena = self.store.arena();
         let mut out = Vec::new();
-        let mut child = arena.links(node).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in arena.children(node) {
             out.push(c);
-            child = arena.links(c).and_then(|l| l.next_sibling);
         }
         out
     }

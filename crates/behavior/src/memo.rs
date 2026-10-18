@@ -13,9 +13,12 @@
 //! A computed whose body, or anything it calls, invokes a closure value is not
 //! cached: the callee is not known statically, so neither are its reads.
 
-use std::collections::BTreeSet;
+use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
+use alloc::vec;
+use alloc::vec::Vec;
 
-use crate::module::{ChunkKind, Module};
+use crate::module::{Body, ChunkKind, Module};
 use crate::op::Op;
 use crate::value::Value;
 
@@ -42,26 +45,35 @@ pub(crate) fn reads(module: &Module, chunk: u32) -> Reads {
             opaque = true;
             continue;
         };
-        if std::mem::replace(visited, true) {
+        if core::mem::replace(visited, true) {
             continue;
         }
-        let Ok(code) = &module.chunk(at).body else {
-            continue;
-        };
-        for op in &code.ops {
-            match *op {
-                Op::LoadState { slot, .. } => {
-                    states.insert(slot);
+        match &module.chunk(at).body {
+            Body::Code(code) => {
+                for op in &code.ops {
+                    match *op {
+                        Op::LoadState { slot, .. } => {
+                            states.insert(slot);
+                        }
+                        Op::LoadInput { slot, .. } => {
+                            inputs.insert(slot);
+                        }
+                        Op::Call { ext, .. } | Op::Closure { ext, .. } => {
+                            pending.push(code.ext[ext as usize]);
+                        }
+                        Op::CallValue { .. } => opaque = true,
+                        _ => {}
+                    }
                 }
-                Op::LoadInput { slot, .. } => {
-                    inputs.insert(slot);
-                }
-                Op::Call { ext, .. } | Op::Closure { ext, .. } => {
-                    pending.push(code.ext[ext as usize]);
-                }
-                Op::CallValue { .. } => opaque = true,
-                _ => {}
             }
+            Body::Compiled(compiled) => {
+                let reads = &compiled.reads;
+                states.extend(reads.states.iter().copied());
+                inputs.extend(reads.inputs.iter().copied());
+                pending.extend(reads.calls.iter().copied());
+                opaque |= reads.opaque;
+            }
+            Body::Missing(_) => {}
         }
     }
     Reads {
@@ -99,7 +111,7 @@ impl ReadGraph {
             let cacheable = chunk.kind == ChunkKind::Computed
                 && chunk.params == 0
                 && chunk.captures.is_empty()
-                && chunk.body.is_ok();
+                && chunk.body.exists();
             if !cacheable {
                 continue;
             }

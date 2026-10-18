@@ -5,21 +5,25 @@
 //! created it. An effect of a component region content mounts runs per
 //! mount; one feeding itself stops as a reactive cycle naming it.
 
+#[path = "support/reload.rs"]
+mod reload;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use reload::{LiveRuntime, hot_reload_view};
 use viso_behavior::native::Clipboard;
 use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::{Origin, compile_file, compile_file_for};
 use viso_dsl::hir::{CapabilitySet, TargetProfile};
-use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
+use viso_dsl::hotreload::CandidatePlan;
 use viso_dsl::schema::Natives;
 use viso_dsl::view_behavior::view_behavior;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
     BindingTable, ComputedStore, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent,
     PointerPhase, PointerRouter, ReactiveCycle, Rect, SemanticProjector, StateStore, TextEdits,
-    settle_states,
+    run_effects, settle_states,
 };
 use viso_view::{Value, ViewHost, load_view};
 
@@ -169,17 +173,31 @@ impl Rt {
         self.settle().expect("settles");
     }
 
+    /// Frames until nothing is pending: each one's flush, then the effects
+    /// it queued, whose writes are the next frame's. A cycle — within a
+    /// flush or across frames of effects — stops it.
     fn settle(&mut self) -> Result<u32, ReactiveCycle> {
         let mut changed = Vec::new();
-        settle_states(
-            &mut self.store,
-            &mut self.states,
-            &mut self.bindings,
-            &mut self.computeds,
-            &mut self.projectors,
-            &mut self.effects,
-            &mut changed,
-        )
+        let mut frames = 0;
+        loop {
+            settle_states(
+                &mut self.store,
+                &mut self.states,
+                &mut self.bindings,
+                &mut self.computeds,
+                &mut self.projectors,
+                &mut self.effects,
+                &mut changed,
+            )?;
+            frames += 1;
+            let done = run_effects(&mut self.store, &mut self.states, &mut self.effects);
+            if let Some(cycle) = done.cycle {
+                return Err(cycle);
+            }
+            if !done.pending {
+                return Ok(frames);
+            }
+        }
     }
 
     fn layout(&mut self) {

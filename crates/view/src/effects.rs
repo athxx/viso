@@ -217,6 +217,10 @@ impl Gate {
 struct Reads<'a, 'b>(&'a ComputeCx<'b>);
 
 impl StateCells for Reads<'_, '_> {
+    fn epoch(&self) -> Option<u64> {
+        Some(self.0.state_epoch())
+    }
+
     fn get(&self, id: StateId) -> Option<StateValue> {
         self.0.peek(id)
     }
@@ -235,6 +239,10 @@ impl StateCells for Reads<'_, '_> {
 pub(crate) struct Writes<'a, 'b>(pub(crate) &'a mut EffectCx<'b>);
 
 impl StateCells for Writes<'_, '_> {
+    fn epoch(&self) -> Option<u64> {
+        Some(self.0.state_epoch())
+    }
+
     fn get(&self, id: StateId) -> Option<StateValue> {
         self.0.peek(id)
     }

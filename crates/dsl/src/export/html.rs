@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use viso_behavior::Value;
-use viso_ui::{Align, Justify, LiveRegion, Role};
-use viso_view::{Control, ControlKind, EventRoute};
+use viso_schema::view::{Control, ControlKind, EventRoute};
+use viso_schema::{Align, Justify, LiveRegion, Role};
 
 use super::css::{self, Sheet, Token};
 use super::eval::Eval;
@@ -379,7 +379,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         let role = node
             .role
             .or(item.map(|(role, _)| role))
-            .or_else(|| viso_view::widget_role(&node.type_name));
+            .or_else(|| viso_schema::view::widget_role(&node.type_name));
         let masked = control.as_ref().is_some_and(|c| c.tint.is_some());
         el.tag = match (node.type_name.as_str(), role) {
             ("Button", _) => "button",
@@ -978,13 +978,13 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         for (base, input, property, token) in [
             (
                 look.background,
-                viso_view::ControlInput::Background,
+                viso_schema::view::ControlInput::Background,
                 "background-color",
                 VarToken::Color,
             ),
             (
                 look.opacity,
-                viso_view::ControlInput::Opacity,
+                viso_schema::view::ControlInput::Opacity,
                 "opacity",
                 VarToken::Opacity,
             ),
@@ -1065,10 +1065,10 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             let next = match *step {
                 When::State(state) => Some(
                     match state {
-                        viso_ui::Interaction::Hovered => ":hover",
-                        viso_ui::Interaction::Pressed => ":active",
-                        viso_ui::Interaction::Focused => ":focus",
-                        viso_ui::Interaction::FocusVisible => ":focus-visible",
+                        viso_schema::Interaction::Hovered => ":hover",
+                        viso_schema::Interaction::Pressed => ":active",
+                        viso_schema::Interaction::Focused => ":focus",
+                        viso_schema::Interaction::FocusVisible => ":focus-visible",
                     }
                     .to_owned(),
                 ),

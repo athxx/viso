@@ -177,8 +177,8 @@ impl ArithOp {
     }
 }
 
-impl std::fmt::Debug for ArithOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for ArithOp {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}.{}", self.op().name(), self.num().name())
     }
 }
@@ -343,4 +343,4 @@ pub enum Op {
     Unreachable,
 }
 
-const _: () = assert!(std::mem::size_of::<Op>() == 8);
+const _: () = assert!(core::mem::size_of::<Op>() == 8);

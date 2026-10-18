@@ -21,7 +21,7 @@
 //! [`LAYOUT_VERSION`] enters [`ShaderInterface::layout_key`], so a change to
 //! these rules changes every pipeline cache key.
 
-use viso_gpu::{AttrFormat, InstanceLayout, ProgramAbi};
+use viso_gpu_abi::{AttrFormat, InstanceLayout, ProgramAbi};
 
 use super::{Binding, ExprKind, Program, ProgramError, Scalar, Span, Stage, Ty};
 
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn a_host_instance_struct_is_checked_against_the_layout() {
-        use viso_gpu::InstanceField;
+        use viso_gpu_abi::InstanceField;
         let p = Program {
             name: "S".into(),
             instance: vec![binding("pos", Ty::VEC2), binding("radius", Ty::F32)],

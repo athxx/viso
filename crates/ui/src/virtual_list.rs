@@ -232,10 +232,11 @@ pub const DEFAULT_ROW_HEIGHT: f32 = 30.0;
 /// for unseen rows, not a per-row store (the tree owns real heights).
 #[derive(Debug, Clone)]
 pub struct HeightCache {
-    /// Sum of all measured heights folded so far.
-    sum: f64,
+    /// The mean of the measured heights folded so far, kept incrementally
+    /// in `f32` (no running sum to lose precision as it grows).
+    mean: f32,
     /// How many measurements have been folded.
-    count: u64,
+    count: u32,
     /// The fallback returned before any measurement.
     fallback: f32,
 }
@@ -244,7 +245,7 @@ impl HeightCache {
     /// A cache with the default fallback ([`DEFAULT_ROW_HEIGHT`]).
     pub fn new() -> Self {
         HeightCache {
-            sum: 0.0,
+            mean: 0.0,
             count: 0,
             fallback: DEFAULT_ROW_HEIGHT,
         }
@@ -253,7 +254,7 @@ impl HeightCache {
     /// A cache with an explicit fallback estimate.
     pub fn with_fallback(fallback: f32) -> Self {
         HeightCache {
-            sum: 0.0,
+            mean: 0.0,
             count: 0,
             fallback,
         }
@@ -261,8 +262,8 @@ impl HeightCache {
 
     /// Fold a measured row height into the running mean.
     pub fn push_measured(&mut self, h: f32) {
-        self.sum += h as f64;
-        self.count += 1;
+        self.count = self.count.saturating_add(1);
+        self.mean += (h - self.mean) / self.count as f32;
     }
 
     /// The current estimate for an unmeasured row: the running mean, or the
@@ -271,7 +272,7 @@ impl HeightCache {
         if self.count == 0 {
             self.fallback
         } else {
-            (self.sum / self.count as f64) as f32
+            self.mean
         }
     }
 }
@@ -282,10 +283,11 @@ impl Default for HeightCache {
     }
 }
 
-use crate::binding::BindingTable;
+use crate::binding::{BindingTable, Template};
 use crate::component::{BuildCx, NodeStore};
 use crate::dirty::DirtyClass;
 use crate::layout::Axis;
+use crate::layout::OnAxis;
 use crate::node::NodeId;
 use crate::reactive::EffectStore;
 use crate::state::StateStore;
@@ -369,6 +371,9 @@ pub struct VirtualListState {
     axis: Axis,
     /// Builds one item's body; cold, invoked only on mount/rebind.
     builder: ItemBuilder,
+    /// The rows' template: every row built the same way shares its binding
+    /// edges and adds only its base (§18.1).
+    template: Template,
     /// Optional stable-identity map. `None` = the logical index is identity (the
     /// original behavior: a survivor is matched by index, so a reorder rebuilds
     /// the row at each position). `Some` = keyed: a survivor is matched by its
@@ -437,6 +442,7 @@ impl VirtualListState {
             overscan,
             axis,
             builder,
+            template: Template::new(),
             key_of,
             canvas,
             last_reconciled_scroll: f32::NAN,
@@ -714,8 +720,11 @@ fn reconcile_one(
             let host = match state.pool.pop() {
                 Some(parked) => {
                     store.arena_append_child(state.canvas, parked);
-                    // Empty the parked host's body so it can hold a new item.
+                    // Empty the parked host's body so it can hold a new item,
+                    // and drop the row instance it held, so the new row takes
+                    // over its blocks.
                     store.free_subtree(parked, effects, &mut state.scratch_free);
+                    bindings.collect(store, states);
                     parked
                 }
                 None => store.alloc_row_host(state.canvas, axis),
@@ -724,7 +733,8 @@ fn reconcile_one(
             // Author the item body under the host.
             {
                 let mut cx = BuildCx::with_parent(store, states, bindings, host);
-                (state.builder)(logical, &mut cx);
+                let builder = &mut state.builder;
+                cx.instance(&mut state.template, |cx| builder(logical, cx));
             }
             store.mark_dirty(
                 host,
@@ -1619,8 +1629,7 @@ mod tests {
         let body = h
             .store
             .arena()
-            .links(host)
-            .and_then(|l| l.first_child)
+            .first_child(host)
             .expect("the mounted row has an authored body");
         let cleaned = Rc::new(Cell::new(false));
         let effect_id = {
@@ -1648,5 +1657,64 @@ mod tests {
             cleaned.get(),
             "the freed body's effect ran its cleanup on unmount"
         );
+    }
+
+    #[test]
+    fn recycled_rows_share_one_template_and_leak_nothing() {
+        // Each row keeps a state of its own bound to its body, and binds the
+        // list's shared selection. Scrolling far, again and again, rebuilds
+        // rows on recycled hosts: their states, edges and slots must be reused,
+        // not accumulated, and every row shares one template.
+        let mut h = ListHarness::new(10_000, 30.0, 2, 300.0);
+        let selection = h.states.alloc(crate::state::StateValue::Int(0));
+        h.state_mut().builder = Box::new(move |_i, cx| {
+            let count = cx.state(crate::state::StateValue::Int(0));
+            let leaf = cx.leaf(LeafStyle {
+                size: Size {
+                    width: Length::fill(),
+                    height: Length::Fixed(30.0),
+                },
+                ..Default::default()
+            });
+            cx.bind(count, leaf, DirtyClass::PAINT);
+            cx.bind(selection, leaf, DirtyClass::STYLE);
+        });
+        h.frame();
+        let mut warm = None;
+        for step in 1..40 {
+            h.store.scroll_by(
+                h.viewport,
+                Vec2 {
+                    x: 0.0,
+                    y: 3000.0 * (step % 3) as f32,
+                },
+            );
+            h.frame();
+            let sizes = (
+                h.store.arena().slot_count(),
+                h.states.slot_count(),
+                h.bindings.footprint(),
+            );
+            if step == 4 {
+                warm = Some(sizes);
+            } else if let Some(warm) = warm {
+                assert_eq!(sizes, warm, "step {step}: recycling grew the stores");
+            }
+        }
+        let footprint = h.bindings.footprint();
+        assert_eq!(footprint.templates, 1);
+        assert_eq!(footprint.template_edges, 2);
+        assert_eq!(footprint.absolute_edges, 0);
+        assert_eq!(footprint.instances, h.state().mounted_count());
+
+        // The shared selection reaches every mounted row through the template.
+        h.states.set(selection, crate::state::StateValue::Int(1));
+        let mut pending = Vec::new();
+        h.states.take_pending(&mut pending);
+        h.store.flush_state_transactions(&pending, &h.bindings);
+        for row in &h.state().mounted {
+            let body = h.store.arena().first_child(row.host).unwrap();
+            assert!(h.store.dirty(body).contains(DirtyClass::STYLE));
+        }
     }
 }

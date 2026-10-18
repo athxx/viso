@@ -1,5 +1,5 @@
 //! The app's end of the dev channel to `viso run` (`Viso_Hot_Reload.md` §34,
-//! §46): connect to the loopback address the CLI passed, introduce the launch
+//! §46): connect to the address the CLI passed, introduce the launch
 //! with a [`RuntimeHello`], and once the host accepts it carry patches in and
 //! ACKs, NACKs and reports out.
 //!
@@ -15,7 +15,8 @@
 //! blob chunks, so it never fills the queue; and the reader assembles the
 //! snapshot a restore carries before the loop sees the restore. A failed
 //! connect, handshake or write ends the threads, and later messages are
-//! dropped. An address that is not loopback is refused.
+//! dropped. The host is on this machine or, for a board, on the local
+//! network; any other address is refused.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::hash_map::RandomState;
@@ -152,17 +153,31 @@ pub(crate) use web::DevLink;
 
 /// The address and hello of the link `viso run` asked for through the launch
 /// variables, if any, for a runtime compiled against `schema` that applies
-/// `capabilities`. An address that is not loopback is refused.
+/// `capabilities`. An address [`dev_host`] does not accept is refused.
 #[cfg(not(target_arch = "wasm32"))]
 fn launch_hello(
     schema: SchemaFingerprint,
     capabilities: Domains,
 ) -> Option<(SocketAddr, RuntimeHello)> {
     let addr: SocketAddr = launch_var(DEV_RUNTIME_ENV)?.parse().ok()?;
-    if !addr.ip().is_loopback() {
+    if !dev_host(addr.ip()) {
         return None;
     }
     Some((addr, launch_identity(schema, capabilities)?))
+}
+
+/// Whether the dev host may be at `ip`: this machine, or a machine on the
+/// local network — a private, unique-local or link-local address — for a
+/// board `viso run` deployed to, whose host listens there only when asked.
+/// A routable public address never is.
+#[cfg(not(target_arch = "wasm32"))]
+fn dev_host(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local()
+        }
+    }
 }
 
 /// The hello of the launch `viso run` asked for through the launch
@@ -486,9 +501,12 @@ fn load_assets(patch: &PatchBundle, blobs: &mut Blobs) -> Vec<LoadedAsset> {
                         Err("does not decode: a face of it does not parse".to_owned())
                     }
                 }
-                Some(bytes) => crate::assets::decode(&bytes)
-                    .map(|payload| Loaded::Image(AssetBytes::Shared(bytes), payload))
-                    .map_err(|error| format!("does not decode: {error}")),
+                Some(bytes) => {
+                    let bytes = AssetBytes::Shared(bytes);
+                    crate::assets::decode(&bytes, viso_gpu::SampledFormats::all())
+                        .map(|payload| Loaded::Image(bytes, payload))
+                        .map_err(|error| format!("does not decode: {error}"))
+                }
                 None => Err("its bytes did not arrive whole".to_owned()),
             };
             assets.push(LoadedAsset {
@@ -679,6 +697,25 @@ mod tests {
         RuntimeMessage::Log {
             level: LogLevel::Info,
             line: line.into(),
+        }
+    }
+
+    #[test]
+    fn the_dev_host_is_this_machine_or_the_local_network() {
+        for local in [
+            "127.0.0.1",
+            "10.0.0.2",
+            "172.16.4.1",
+            "192.168.1.20",
+            "169.254.3.4",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+        ] {
+            assert!(dev_host(local.parse().unwrap()), "{local}");
+        }
+        for public in ["8.8.8.8", "172.32.0.1", "2001:db8::1", "0.0.0.0"] {
+            assert!(!dev_host(public.parse().unwrap()), "{public}");
         }
     }
 

@@ -16,8 +16,8 @@
 use std::sync::Arc;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder};
-use viso_gpu::{AddressMode, FilterMode, SamplerDesc};
-pub use viso_gpu::{ProgramCode, ShaderLang};
+use viso_gpu_abi::{AddressMode, FilterMode, SamplerDesc};
+pub use viso_gpu_abi::{ProgramCode, ShaderLang};
 
 use super::ops::{BinaryOp, Intrinsic, UnaryOp};
 use super::{
@@ -37,7 +37,7 @@ pub struct PackedBrush {
 /// A brush's code as a package carries it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PackedCode {
-    /// Source text in `Msl`, `Wgsl` or `Hlsl`.
+    /// Source text in `Msl`, `Wgsl`, `Hlsl` or `Glsl`.
     Text(ShaderLang, String),
     /// A SPIR-V module, its words as little-endian bytes.
     SpirV(Vec<u8>),
@@ -70,6 +70,7 @@ impl PackedBrush {
                     ProgramCode::Msl(t) => PackedCode::Text(ShaderLang::Msl, t),
                     ProgramCode::Wgsl(t) => PackedCode::Text(ShaderLang::Wgsl, t),
                     ProgramCode::Hlsl(t) => PackedCode::Text(ShaderLang::Hlsl, t),
+                    ProgramCode::Glsl(t) => PackedCode::Text(ShaderLang::Glsl, t),
                     ProgramCode::SpirV(b) => PackedCode::SpirV(b),
                     ProgramCode::Cpu(_) => unreachable!("a GPU language gives GPU code"),
                 },
@@ -142,6 +143,7 @@ impl PackedCode {
         match self {
             PackedCode::Text(ShaderLang::Msl, t) => ProgramCode::Msl(t),
             PackedCode::Text(ShaderLang::Wgsl, t) => ProgramCode::Wgsl(t),
+            PackedCode::Text(ShaderLang::Glsl, t) => ProgramCode::Glsl(t),
             PackedCode::Text(_, t) => ProgramCode::Hlsl(t),
             PackedCode::SpirV(b) => ProgramCode::SpirV(b),
             PackedCode::Program(p) => ProgramCode::Cpu(Arc::new(CpuShader::new(*p))),
@@ -154,7 +156,7 @@ impl PackedCode {
 const MAX_DEPTH: u32 = 256;
 
 /// How many languages a brush can carry: each GPU language and the program.
-const LANGS: usize = 5;
+const LANGS: usize = 6;
 
 fn malformed(dec: &Decoder<'_>) -> DecodeError {
     DecodeError::Malformed {
@@ -742,6 +744,7 @@ impl Encode for PackedBrush {
                     enc.write_u8(match lang {
                         ShaderLang::Msl => 0,
                         ShaderLang::Wgsl => 1,
+                        ShaderLang::Glsl => 5,
                         _ => 2,
                     });
                     enc.write_str(text);
@@ -777,6 +780,7 @@ impl Decode for PackedBrush {
                 1 => PackedCode::Text(ShaderLang::Wgsl, text(dec)?),
                 2 => PackedCode::Text(ShaderLang::Hlsl, text(dec)?),
                 3 => PackedCode::SpirV(dec.read_bytes()?.to_vec()),
+                5 => PackedCode::Text(ShaderLang::Glsl, text(dec)?),
                 4 => {
                     let program = Program::decode(dec)?;
                     // The samplers' state is the shader's, not the program's:

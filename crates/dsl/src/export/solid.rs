@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 
 use viso_behavior::Value;
 use viso_behavior::i18n::Catalog;
-use viso_view::EventRoute;
+use viso_schema::view::EventRoute;
 
 use super::eval::Eval;
 use super::html::{
@@ -374,7 +374,7 @@ fn component(input: &Input<'_>, name: &str) -> Result<(String, Option<String>), 
         let wide: Vec<String> = eval
             .browser_env()
             .filter(|&(_, tag, _)| {
-                !viso_ui::adaptive::EnvField::from_tag(tag).is_some_and(|f| f.anchored())
+                !viso_schema::EnvField::from_tag(tag).is_some_and(|f| f.anchored())
             })
             .map(|(slot, tag, _)| format!("[{slot}, {tag}]"))
             .collect();

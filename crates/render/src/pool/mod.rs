@@ -19,5 +19,5 @@
 mod coalescer;
 mod instance_pool;
 
-pub use coalescer::{GAP_THRESHOLD, Range, coalesce};
+pub use coalescer::{GAP_THRESHOLD, Range, Runs, coalesce};
 pub use instance_pool::InstancePool;

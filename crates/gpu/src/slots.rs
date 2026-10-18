@@ -132,6 +132,11 @@ impl<T> SlotMap<T> {
         })
     }
 
+    /// Every live value, in slot order.
+    pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
+        self.slots.iter().filter_map(|slot| slot.value.as_ref())
+    }
+
     /// The number of live values currently stored.
     pub fn len(&self) -> usize {
         self.live

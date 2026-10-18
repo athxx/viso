@@ -1,15 +1,24 @@
 //! Chunks, component layouts, systems and the verified module.
 
-use std::fmt;
-use std::rc::Rc;
-use std::time::Duration;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use core::fmt;
+
+pub use viso_schema::id::StableId;
 
 use crate::game::InputSchema;
 use crate::i18n::Catalog;
 use crate::native::{Determinism, NativeId};
 use crate::op::Op;
 use crate::retype::ValueSchema;
-use crate::value::Value;
+use crate::value::{Text, Value};
+
+pub use viso_schema::effect::{ComponentEffect, EffectRun, ResourceLoad};
 
 /// A byte range in a chunk's source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -88,53 +97,7 @@ impl TaskPolicy {
     }
 }
 
-/// When an `effect` runs, after the commit that mounts its component and the
-/// commits that change its dependencies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EffectRun {
-    /// Once, after the mount.
-    Mount,
-    /// After each commit that changes a dependency's value.
-    Change,
-    /// After the mount and after each commit that changes a dependency's value.
-    MountAndChange,
-}
-
-/// An `effect` of a component's view: its entries in the handler table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ComponentEffect {
-    /// The region entry computing the dependency values as a list; `None` for
-    /// an effect without dependencies.
-    pub deps: Option<u32>,
-    /// The [`ChunkKind::Effect`] body.
-    pub body: u32,
-    /// When it runs.
-    pub run: EffectRun,
-    /// What it loads, for a `resource`: its dependencies are then the key and
-    /// its body starts the loader.
-    pub resource: Option<ResourceLoad>,
-}
-
-/// How a `resource` loads: the effect carrying it runs on mount and on each
-/// key change, and its body starts the loader task without handlers; the view
-/// host moves the state through `loading`, `ready`, `error` and `reloading`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResourceLoad {
-    /// The region entry reading the resource's state.
-    pub state: u32,
-    /// The [`ChunkKind::Handler`] writing its payload to the state.
-    pub write: u32,
-    /// How long a key must hold before its loader starts.
-    pub debounce: Option<Duration>,
-    /// How long a loaded value stays cached under its key.
-    pub cache_for: Option<Duration>,
-    /// Whether an error is cached as a value is.
-    pub cache_errors: bool,
-    /// Whether a key change cancels the load in flight.
-    pub keep_latest: bool,
-}
-
-/// A runnable body.
+/// A bytecode body: what the interpreter runs and [`crate::aot`] lowers.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Code {
     /// The instructions.
@@ -147,11 +110,110 @@ pub struct Code {
     pub spans: Box<[Span]>,
 }
 
+/// What a chunk runs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Body {
+    /// Bytecode.
+    Code(Code),
+    /// Code compiled to Rust with the app ([`crate::aot::lower_module`]),
+    /// which [`Vm::install_native`](crate::Vm::install_native) installs: the
+    /// bytecode it replaces is not carried, only what that code and the VM
+    /// read of it.
+    Compiled(Compiled),
+    /// Why the compiler could not produce one; calling the chunk faults.
+    Missing(Text),
+}
+
+impl Body {
+    /// The bytecode, for a body that has it.
+    #[inline]
+    pub fn code(&self) -> Option<&Code> {
+        match self {
+            Body::Code(code) => Some(code),
+            _ => None,
+        }
+    }
+
+    /// Whether the chunk has a body, bytecode or compiled.
+    #[inline]
+    pub fn exists(&self) -> bool {
+        !matches!(self, Body::Missing(_))
+    }
+
+    /// The constant pool [`Op::Const`] and [`Op::DisplayDim`] index, which
+    /// compiled code reads too.
+    #[inline]
+    pub fn consts(&self) -> &[Value] {
+        match self {
+            Body::Code(code) => &code.consts,
+            Body::Compiled(compiled) => &compiled.consts,
+            Body::Missing(_) => &[],
+        }
+    }
+}
+
+/// What a module keeps of a body compiled to Rust.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Compiled {
+    /// The constant pool the compiled code reads its strings, lists and
+    /// aggregates from.
+    pub consts: Box<[Value]>,
+    /// What the body reads, which computed caching and a region's
+    /// dependencies follow.
+    pub reads: BodyReads,
+}
+
+/// What one body reads directly: the operands of its `LoadState` and
+/// `LoadInput` instructions, the chunks it calls or makes closures of, and
+/// whether it calls a closure value.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BodyReads {
+    /// The state slots, ascending.
+    pub states: Box<[u32]>,
+    /// The input slots, ascending.
+    pub inputs: Box<[u32]>,
+    /// The chunks called or closed over, ascending.
+    pub calls: Box<[u32]>,
+    /// Whether it calls a closure value, whose reads are not known.
+    pub opaque: bool,
+}
+
+impl BodyReads {
+    /// What `code` reads directly.
+    pub fn of(code: &Code) -> BodyReads {
+        let mut states = alloc::collections::BTreeSet::new();
+        let mut inputs = alloc::collections::BTreeSet::new();
+        let mut calls = alloc::collections::BTreeSet::new();
+        let mut opaque = false;
+        for op in code.ops.iter() {
+            match *op {
+                Op::LoadState { slot, .. } => {
+                    states.insert(slot);
+                }
+                Op::LoadInput { slot, .. } => {
+                    inputs.insert(slot);
+                }
+                Op::Call { ext, .. } | Op::Closure { ext, .. } => {
+                    calls.insert(code.ext[ext as usize]);
+                }
+                Op::CallValue { .. } => opaque = true,
+                _ => {}
+            }
+        }
+        BodyReads {
+            states: states.into_iter().collect(),
+            inputs: inputs.into_iter().collect(),
+            calls: calls.into_iter().collect(),
+            opaque,
+        }
+    }
+}
+
 /// One function of a module.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chunk {
     /// The declared name (`Component.member` for a component member).
-    pub name: Box<str>,
+    pub name: Text,
     /// What it runs.
     pub kind: ChunkKind,
     /// The index of the source file it is declared in.
@@ -162,28 +224,27 @@ pub struct Chunk {
     pub regs: u16,
     /// The registers a closure's captured values arrive in, in capture order.
     pub captures: Box<[u16]>,
-    /// The body, or why the compiler could not produce one; calling a chunk
-    /// without a body faults.
-    pub body: Result<Code, Box<str>>,
+    /// What it runs.
+    pub body: Body,
 }
 
 /// A component's runtime layout.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Component {
     /// Its name.
-    pub name: Box<str>,
+    pub name: Text,
     /// The state names, by slot.
-    pub states: Box<[Box<str>]>,
+    pub states: Box<[Text]>,
     /// The input names, by slot.
-    pub inputs: Box<[Box<str>]>,
+    pub inputs: Box<[Text]>,
     /// The event names, by index.
-    pub events: Box<[Box<str>]>,
+    pub events: Box<[Text]>,
     /// Each state slot's initializer chunk; a slot without one starts `Nil`.
     pub state_inits: Box<[Option<u32>]>,
     /// Each input slot's default chunk; an input without one is required.
     pub input_defaults: Box<[Option<u32>]>,
     /// The `fn`/`action`/`computed` members, by name.
-    pub members: Box<[(Box<str>, u32)]>,
+    pub members: Box<[(Text, u32)]>,
     /// The view's handler table, in source order: its event handlers, which a
     /// view node names by index, its regions' entries, and the initializers of
     /// the states region content keeps.
@@ -219,23 +280,12 @@ impl Component {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeImport {
     /// The function's full path, such as `viso::text::upper`.
-    pub path: Box<str>,
+    pub path: Text,
     /// The [`NativeFunction::signature`](crate::native::NativeFunction::signature)
     /// it was compiled against.
     pub signature: u64,
     /// The number of arguments a call passes.
     pub params: u16,
-}
-
-/// The durable identity of a declaration: the 128-bit fingerprint of its
-/// package, module, kind and path, unchanged by edits elsewhere and by
-/// source reordering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct StableId {
-    /// The high 64 bits.
-    pub hi: u64,
-    /// The low 64 bits.
-    pub lo: u64,
 }
 
 /// A Simulation state of a system that a game snapshot captures.
@@ -277,21 +327,21 @@ pub struct System {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistSlot {
     /// Its key, unique in the module.
-    pub key: Box<str>,
+    pub key: Text,
     /// Its slot in the system's layout.
     pub slot: u32,
     /// Its type, which a value stored by a build of another type converts
     /// into.
     pub schema: ValueSchema,
     /// Its type as source spells it, which a `@migrate(from:)` names.
-    pub spelling: Box<str>,
+    pub spelling: Text,
 }
 
 /// A `@migrate` function: it carries a value of the type spelled `from`, once
 /// converted into its parameter, into its return type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Migrator {
-    pub from: Box<str>,
+    pub from: Text,
     pub param: ValueSchema,
     pub ret: ValueSchema,
     /// The function's chunk.
@@ -323,9 +373,13 @@ pub struct Module {
     pub(crate) determinism: Determinism,
     pub(crate) collision_delivery: CollisionDelivery,
     pub(crate) migrators: Box<[Migrator]>,
-    pub(crate) capabilities: Box<[Box<str>]>,
-    pub(crate) themes: Box<[(Box<str>, u32)]>,
+    pub(crate) capabilities: Box<[Text]>,
+    pub(crate) themes: Box<[(Text, u32)]>,
     pub(crate) catalog: Option<Rc<Catalog>>,
+    /// The build hash of the module its compiled bodies were compiled from,
+    /// which a module with a [`Body::Compiled`] carries: its own encoding is
+    /// not that module's.
+    pub(crate) build: Option<u64>,
 }
 
 /// The tick rate of a module that declares none, 60 Hz.
@@ -374,7 +428,7 @@ impl fmt::Display for VerifyError {
     }
 }
 
-impl std::error::Error for VerifyError {}
+impl core::error::Error for VerifyError {}
 
 impl Module {
     /// Verifies and builds a module; `systems` are in the order a scheduler
@@ -398,6 +452,7 @@ impl Module {
             capabilities: Box::new([]),
             themes: Box::new([]),
             catalog: None,
+            build: None,
         };
         let mut max_states = 0;
         let mut max_inputs = 0;
@@ -562,7 +617,7 @@ impl Module {
                 module.field_defaults(&state.schema)?;
             }
         }
-        let mut keys = std::collections::BTreeSet::new();
+        let mut keys = alloc::collections::BTreeSet::new();
         let persisted = module
             .systems
             .iter()
@@ -702,11 +757,11 @@ impl Module {
 
     /// The module granted `capabilities`, the package's grant a host links
     /// its natives with.
-    pub fn with_capabilities<S: Into<Box<str>>>(
+    pub fn with_capabilities<S: Into<Text>>(
         mut self,
         capabilities: impl IntoIterator<Item = S>,
     ) -> Module {
-        let mut capabilities: Vec<Box<str>> = capabilities.into_iter().map(Into::into).collect();
+        let mut capabilities: Vec<Text> = capabilities.into_iter().map(Into::into).collect();
         capabilities.sort_unstable();
         capabilities.dedup();
         self.capabilities = capabilities.into();
@@ -714,7 +769,7 @@ impl Module {
     }
 
     /// The capabilities the package is granted, sorted.
-    pub fn capabilities(&self) -> &[Box<str>] {
+    pub fn capabilities(&self) -> &[Text] {
         &self.capabilities
     }
 
@@ -725,7 +780,7 @@ impl Module {
     ///
     /// A [`VerifyError`] if a theme's chunk is no constant, or two themes
     /// share a name.
-    pub fn with_themes(mut self, mut themes: Vec<(Box<str>, u32)>) -> Result<Module, VerifyError> {
+    pub fn with_themes(mut self, mut themes: Vec<(Text, u32)>) -> Result<Module, VerifyError> {
         themes.sort_unstable();
         for (at, (name, chunk)) in themes.iter().enumerate() {
             let constant = self
@@ -758,7 +813,7 @@ impl Module {
     }
 
     /// The themes, by name.
-    pub fn themes(&self) -> &[(Box<str>, u32)] {
+    pub fn themes(&self) -> &[(Text, u32)] {
         &self.themes
     }
 
@@ -771,8 +826,7 @@ impl Module {
         if catalog.is_none()
             && let Some((chunk, pc)) = self.chunks.iter().enumerate().find_map(|(i, c)| {
                 c.body
-                    .as_ref()
-                    .ok()?
+                    .code()?
                     .ops
                     .iter()
                     .position(|op| matches!(op, Op::Translate { .. }))
@@ -864,6 +918,38 @@ impl Module {
     pub fn natives(&self) -> &[NativeImport] {
         &self.natives
     }
+
+    /// The module as a build running it as Rust compiled by
+    /// [`lower_module`](crate::aot::lower_module) from this module carries
+    /// it: every bytecode body replaced by what the compiled code and the VM
+    /// read of it — its constant pool and its [`BodyReads`] — and the build
+    /// hash of this module, which [`Vm::install_native`](crate::Vm::install_native)
+    /// checks the compiled code against. Its instructions, operand tables and
+    /// source spans are gone, so it runs only with that code installed. A
+    /// module without a bytecode body is its own compiled form.
+    pub fn compiled(&self) -> Module {
+        let mut module = self.clone();
+        let mut converted = false;
+        for chunk in module.chunks.iter_mut() {
+            if let Body::Code(code) = &chunk.body {
+                chunk.body = Body::Compiled(Compiled {
+                    consts: code.consts.clone(),
+                    reads: BodyReads::of(code),
+                });
+                converted = true;
+            }
+        }
+        if converted {
+            module.build = Some(crate::aot::build_hash(self));
+        }
+        module
+    }
+
+    /// Whether a body of the module is compiled, so the module runs only
+    /// with its compiled code installed.
+    pub fn is_compiled(&self) -> bool {
+        self.build.is_some()
+    }
 }
 
 /// What instructions may reference.
@@ -892,8 +978,28 @@ fn verify_chunk(index: u32, chunk: &Chunk, limits: &Limits) -> Result<(), Verify
             format!("capture register r{r} is out of the frame"),
         ));
     }
-    let Ok(code) = &chunk.body else {
-        return Ok(());
+    let plain = |consts: &[Value]| {
+        consts
+            .iter()
+            .all(|c| !matches!(c, Value::Closure(_) | Value::Handle(_)))
+    };
+    let code = match &chunk.body {
+        Body::Code(code) => code,
+        Body::Missing(_) => return Ok(()),
+        Body::Compiled(compiled) => {
+            if !plain(&compiled.consts) {
+                return Err(fail(None, "a constant that is not plain data".into()));
+            }
+            let reads = &compiled.reads;
+            let within = |slots: &[u32], limit: usize| slots.iter().all(|&s| (s as usize) < limit);
+            if !within(&reads.states, limits.states)
+                || !within(&reads.inputs, limits.inputs)
+                || !within(&reads.calls, limits.chunks.len())
+            {
+                return Err(fail(None, "the compiled body reads out of range".into()));
+            }
+            return Ok(());
+        }
     };
     if code.spans.len() != code.ops.len() {
         return Err(fail(
@@ -901,11 +1007,7 @@ fn verify_chunk(index: u32, chunk: &Chunk, limits: &Limits) -> Result<(), Verify
             "the span table does not match the instructions".into(),
         ));
     }
-    if code
-        .consts
-        .iter()
-        .any(|c| matches!(c, Value::Closure(_) | Value::Handle(_)))
-    {
+    if !plain(&code.consts) {
         return Err(fail(None, "a constant that is not plain data".into()));
     }
     let Some(last) = code.ops.last() else {
@@ -1178,6 +1280,7 @@ impl Verifier<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     fn chunk(params: u16, regs: u16, ops: Vec<Op>) -> Chunk {
         let spans = vec![Span::default(); ops.len()].into();
@@ -1188,7 +1291,7 @@ mod tests {
             params,
             regs,
             captures: Box::new([]),
-            body: Ok(Code {
+            body: Body::Code(Code {
                 ops: ops.into(),
                 consts: Box::new([]),
                 ext: Box::new([]),
@@ -1237,7 +1340,7 @@ mod tests {
             vec![Op::Call { dst: 0, ext: 0 }, Op::Return { src: 0 }],
         );
         // `f(r0)` against a callee without parameters.
-        if let Ok(code) = &mut caller.body {
+        if let Body::Code(code) = &mut caller.body {
             code.ext = Box::new([1, 1, 0]);
         }
         let callee = chunk(0, 1, vec![Op::Nil { dst: 0 }, Op::Return { src: 0 }]);

@@ -68,4 +68,9 @@ test.surface.width                1280         default
 test.surface.height               720          default
 test.surface.scale                1            default
 i18n.source                       en           default
+images.convert                    true         default
+images.quality                    high         default
+images.svg                        vector       default
+images.svg_scale                  (unset)      default
+images.fit                        true         default
 workspace.members                 []           default

@@ -14,7 +14,7 @@
 //! scratch is identical to the first frame — the steady-state "0 primitive
 //! reconstruction" guarantee (§8.4) under a whole-tree re-emit.
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso_render::{GlyphLane, GlyphRunDraw, Renderer, test_glyphs, test_scene, test_texture};
 
 const W: u32 = 128;
@@ -22,7 +22,7 @@ const H: u32 = 96;
 
 #[test]
 fn scene_lowering_is_stable_across_frames() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);

@@ -1,16 +1,19 @@
-//! A program as backend source: Metal Shading Language, WGSL and HLSL from
-//! one walk of the typed body, each spelling its interface from the layout.
+//! A program as backend source: Metal Shading Language, WGSL, HLSL and GLSL
+//! ES 3.00 from one walk of the typed body, each spelling its interface from
+//! the layout.
 //!
 //! Every target reads the same buffers:
 //!
 //! - the uniform block at the layout's offsets: a `constant` struct at
 //!   `buffer(0)` with explicit padding (MSL), a `var<uniform>` at
 //!   `@group(0) @binding(0)` with `@size` where the layout pads (WGSL), a
-//!   `cbuffer` at `b0` with a `packoffset` per leaf (HLSL);
+//!   `cbuffer` at `b0` with a `packoffset` per leaf (HLSL), `uvec4` words of
+//!   a `std140` block at binding 0 each leaf is rebuilt from (GLSL);
 //! - the tightly packed instance array: a `device` buffer of packed vectors at
 //!   `buffer(1)` (MSL), a read-only storage buffer at `@group(0) @binding(1)`
 //!   (WGSL) or a `StructuredBuffer` at `t0, space1` (HLSL) of 4-byte scalar
-//!   leaves, which no layout rule can pad;
+//!   leaves, which no layout rule can pad; `uvec4` words of a uniform block at
+//!   binding 1 holding a chunk of the draw (GLSL, [`INSTANCE_BLOCK_BYTES`]);
 //! - textures and samplers by index (`@group(1)`, textures first, on WGSL).
 //!
 //! Instance members the fragment entry reads cross as flat varyings after the
@@ -19,14 +22,17 @@
 //! rows are the program's columns), so `m * v` is `mul(v, m)` and a column is
 //! a row index.
 
+mod glsl;
 mod hlsl;
 mod msl;
 mod wgsl;
 
+pub use self::glsl::INSTANCE_BLOCK_BYTES;
+
 use std::fmt::Write;
 use std::sync::Arc;
 
-use viso_gpu::{ProgramCode, ShaderLang};
+use viso_gpu_abi::{ProgramCode, ShaderLang};
 
 use super::interp::CpuShader;
 use super::layout::{ShaderInterface, VERTEX_ENTRY};
@@ -44,10 +50,13 @@ pub enum Target {
     Wgsl,
     /// HLSL shader model 5.1, for Direct3D 12.
     Hlsl,
+    /// GLSL ES 3.00 (both stages in one source), for OpenGL ES 3.
+    Glsl,
 }
 
 /// The program, laid out by `interface`, as code in `lang` for a backend's
-/// program compiler: source for Metal, WebGPU and Direct3D 12; for Vulkan,
+/// program compiler: source for Metal, WebGPU, Direct3D 12 and OpenGL ES;
+/// for Vulkan,
 /// SPIR-V from the WGSL through naga (the `spirv` feature), clip-space y
 /// flipped in the vertex stage as the built-in shaders do; for the headless
 /// raster, the reference interpreter.
@@ -64,6 +73,7 @@ pub fn code(
         ShaderLang::Msl => ProgramCode::Msl(emit(program, interface, Target::Msl)),
         ShaderLang::Wgsl => ProgramCode::Wgsl(emit(program, interface, Target::Wgsl)),
         ShaderLang::Hlsl => ProgramCode::Hlsl(emit(program, interface, Target::Hlsl)),
+        ShaderLang::Glsl => ProgramCode::Glsl(emit(program, interface, Target::Glsl)),
         ShaderLang::SpirV => ProgramCode::SpirV(spirv(&emit(program, interface, Target::Wgsl))?),
         ShaderLang::None => ProgramCode::Cpu(Arc::new(CpuShader::new(program.clone()))),
     })
@@ -111,6 +121,7 @@ pub fn emit(program: &Program, interface: &ShaderInterface, target: Target) -> S
         Target::Msl => msl::module(&mut g),
         Target::Wgsl => wgsl::module(&mut g),
         Target::Hlsl => hlsl::module(&mut g),
+        Target::Glsl => glsl::module(&mut g),
     }
     g.out
 }
@@ -168,6 +179,27 @@ impl Gen<'_> {
             Target::Msl => msl::ty(ty),
             Target::Wgsl => wgsl::ty(ty),
             Target::Hlsl => hlsl::ty(ty),
+            Target::Glsl => glsl::ty(ty),
+        }
+    }
+
+    /// The zero value of `ty`.
+    fn zero(&self, ty: Ty) -> String {
+        match ty {
+            Ty::Scalar(Scalar::Bool) => "false".into(),
+            Ty::Scalar(Scalar::I32) => "0".into(),
+            Ty::Scalar(Scalar::U32) => "0u".into(),
+            Ty::Scalar(Scalar::F32) => self.float(0.0),
+            Ty::Record(r) => {
+                let parts: Vec<String> = self.p.records[r as usize]
+                    .fields
+                    .iter()
+                    .map(|f| self.zero(f.ty))
+                    .collect();
+                self.record(ty, &parts)
+            }
+            Ty::VertexOutput => self.record(ty, &[self.zero(Ty::VEC4)]),
+            other => self.convert(other, "0"),
         }
     }
 
@@ -178,6 +210,7 @@ impl Gen<'_> {
                 Target::Msl => format!("as_type<float>({bits:#x}u)"),
                 Target::Wgsl => format!("bitcast<f32>({bits:#x}u)"),
                 Target::Hlsl => format!("asfloat({bits:#x}u)"),
+                Target::Glsl => format!("uintBitsToFloat({bits:#x}u)"),
             };
         }
         let text = format!("{v:?}f");
@@ -221,7 +254,7 @@ impl Gen<'_> {
         let name = self.ty(ty);
         match self.t {
             Target::Msl => format!("{name}{{{}}}", parts.join(", ")),
-            Target::Wgsl => format!("{name}({})", parts.join(", ")),
+            Target::Wgsl | Target::Glsl => format!("{name}({})", parts.join(", ")),
             Target::Hlsl => format!("make_{name}({})", parts.join(", ")),
         }
     }
@@ -237,6 +270,7 @@ impl Gen<'_> {
             (_, Some(v)) => format!("{ty} l{local} = {v};"),
             (Target::Msl, None) => format!("{ty} l{local} = {{}};"),
             (Target::Hlsl, None) => format!("{ty} l{local} = ({ty})0;"),
+            (Target::Glsl, None) => format!("{ty} l{local} = {};", self.zero(l.ty)),
         };
         self.line(&text);
     }
@@ -294,10 +328,12 @@ impl Gen<'_> {
                 Target::Msl => "VOut vout = {};",
                 Target::Wgsl => "var vout: VOut;",
                 Target::Hlsl => "VOut vout = (VOut)0;",
+                Target::Glsl => "VOut vout = viso_vout_zero();",
             });
             if !self.i.instance.fields.is_empty() {
                 self.line(match self.t {
                     Target::Wgsl => "let inst = instances[iid];",
+                    Target::Glsl => "Instance inst = viso_instance(iid - viso_base_instance);",
                     _ => "Instance inst = instances[iid];",
                 });
             }
@@ -375,6 +411,7 @@ impl Gen<'_> {
                     Target::Msl => ("discard_fragment();", "return float4(0.0f);"),
                     Target::Wgsl => ("discard;", "return vec4<f32>(0.0f);"),
                     Target::Hlsl => ("discard;", "return (float4)0;"),
+                    Target::Glsl => ("discard;", "return vec4(0.0f);"),
                 };
                 self.line(discard);
                 self.line(zero);
@@ -442,8 +479,10 @@ impl Gen<'_> {
             self.depth -= 1;
             self.line("}");
         } else {
+            // The guard shares the counter's declaration, so its type.
+            let zero = self.zero(local.ty);
             self.line(&format!(
-                "for ({ty} l{v} = {start}, g{g} = 0; l{v} {cmp} {end} && uint(g{g}) < {max}u; ++l{v}, ++g{g}) {{"
+                "for ({ty} l{v} = {start}, g{g} = {zero}; l{v} {cmp} {end} && uint(g{g}) < {max}u; ++l{v}, ++g{g}) {{"
             ));
             self.nested(&l.body, f);
             self.line("}");
@@ -517,6 +556,7 @@ impl Gen<'_> {
                     matrix((0..n).map(|c| format!("u{k}_{c}")).collect())
                 }
                 (Target::Hlsl, _) => format!("u{k}"),
+                (Target::Glsl, _) => format!("viso_uniform{k}()"),
             };
         }
         match (self.stage, ty) {
@@ -655,6 +695,9 @@ impl Gen<'_> {
             BinaryOp::Mul if self.t == Target::Hlsl && matrix && !scalar(a) && !scalar(b) => {
                 format!("mul({}, {})", self.expr(b), self.expr(a))
             }
+            BinaryOp::Rem if ty.is_float() && self.t == Target::Glsl => {
+                format!("viso_fmod({}, {})", self.splat(a, ty), self.splat(b, ty))
+            }
             BinaryOp::Rem if ty.is_float() && self.t != Target::Wgsl => {
                 format!("fmod({}, {})", self.splat(a, ty), self.splat(b, ty))
             }
@@ -703,10 +746,12 @@ impl Gen<'_> {
         let a = |k: usize| self.expr(&args[k]);
         let s = |k: usize| self.splat(&args[k], ty);
         let call = |name: &str, parts: Vec<String>| format!("{name}({})", parts.join(", "));
+        let glsl = self.t == Target::Glsl;
         let by = |msl: &'static str, wgsl: &'static str, hlsl: &'static str| match self.t {
             Target::Msl => msl,
             Target::Wgsl => wgsl,
             Target::Hlsl => hlsl,
+            Target::Glsl => unreachable!("GLSL spells its own"),
         };
         match i {
             I::Abs if ty.scalar() == Some(Scalar::U32) => a(0),
@@ -716,10 +761,13 @@ impl Gen<'_> {
             I::Sign => call("sign", vec![a(0)]),
             I::Floor => call("floor", vec![a(0)]),
             I::Ceil => call("ceil", vec![a(0)]),
+            I::Round if glsl => call("roundEven", vec![a(0)]),
             I::Round => call(by("rint", "round", "round"), vec![a(0)]),
             I::Trunc => call("trunc", vec![a(0)]),
+            I::Fract if glsl => call("fract", vec![a(0)]),
             I::Fract => call(by("fract", "fract", "frac"), vec![a(0)]),
             I::Sqrt => call("sqrt", vec![a(0)]),
+            I::InverseSqrt if glsl => call("inversesqrt", vec![a(0)]),
             I::InverseSqrt => call(by("rsqrt", "inverseSqrt", "rsqrt"), vec![a(0)]),
             I::Exp => call("exp", vec![a(0)]),
             I::Exp2 => call("exp2", vec![a(0)]),
@@ -736,12 +784,14 @@ impl Gen<'_> {
             I::Tanh => call("tanh", vec![a(0)]),
             I::Radians => format!("({} * {})", a(0), self.float(0.017_453_292)),
             I::Degrees => format!("({} * {})", a(0), self.float(57.295_78)),
+            I::Atan2 if glsl => call("atan", vec![a(0), a(1)]),
             I::Atan2 => call("atan2", vec![a(0), a(1)]),
             I::Pow => call("pow", vec![a(0), a(1)]),
             I::Step => call("step", vec![s(0), a(1)]),
             I::Min => call("min", vec![a(0), a(1)]),
             I::Max => call("max", vec![a(0), a(1)]),
             I::Clamp => call("clamp", vec![a(0), s(1), s(2)]),
+            I::Mix if glsl => call("mix", vec![a(0), a(1), s(2)]),
             I::Mix => call(by("mix", "mix", "lerp"), vec![a(0), a(1), s(2)]),
             I::Smoothstep => call("smoothstep", vec![s(0), s(1), a(2)]),
             I::Length => call("length", vec![a(0)]),
@@ -750,6 +800,8 @@ impl Gen<'_> {
             I::Normalize => call("normalize", vec![a(0)]),
             I::Cross => call("cross", vec![a(0), a(1)]),
             I::Transpose => call("transpose", vec![a(0)]),
+            I::Dpdx if glsl => call("dFdx", vec![a(0)]),
+            I::Dpdy if glsl => call("dFdy", vec![a(0)]),
             I::Dpdx => call(by("dfdx", "dpdx", "ddx"), vec![a(0)]),
             I::Dpdy => call(by("dfdy", "dpdy", "ddy"), vec![a(0)]),
             I::Fwidth => call("fwidth", vec![a(0)]),
@@ -768,6 +820,9 @@ impl Gen<'_> {
                         format!("{}.SampleLevel({}, {}, {})", a(0), a(1), a(2), a(3))
                     }
                     Target::Hlsl => format!("{}.Sample({}, {})", a(0), a(1), a(2)),
+                    // The sampler state rides the texture's unit.
+                    Target::Glsl if level => call("textureLod", vec![a(0), a(2), a(3)]),
+                    Target::Glsl => call("texture", vec![a(0), a(2)]),
                 };
                 match args[0].ty {
                     Ty::Texture(Texel::F32) => format!("{sampled}.x"),

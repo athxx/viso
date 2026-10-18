@@ -339,7 +339,7 @@ impl ChunkedCull {
             return;
         }
 
-        let extent = bounds.iter().fold(Rect::ZERO, |acc, b| acc.union(*b));
+        let extent = bounds.iter().fold(Rect::ZERO, |acc, b| acc.accumulate(*b));
         let grid = ChunkGrid::over(extent, bounds.len() as u32);
         self.grid = Some(grid);
 
@@ -351,7 +351,7 @@ impl ChunkedCull {
         for b in bounds {
             let c = grid.chunk_of(b.x, b.y);
             self.chunk_start[c + 1] += 1;
-            self.chunk_bounds[c] = self.chunk_bounds[c].union(*b);
+            self.chunk_bounds[c] = self.chunk_bounds[c].accumulate(*b);
         }
         for c in 0..grid.len() {
             self.chunk_start[c + 1] += self.chunk_start[c];

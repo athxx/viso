@@ -12,8 +12,8 @@
 use std::fs;
 use std::path::Path;
 
+use viso_dev_protocol::headless::HeadlessSurface;
 use viso_dsl::Diagnostic;
-use viso_view::headless::HeadlessSurface;
 
 use super::{Run, invalid, line_range, relative, report};
 use viso_project::Platform;

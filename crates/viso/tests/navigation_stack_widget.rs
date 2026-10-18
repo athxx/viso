@@ -43,7 +43,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, EventCx, Key, KeyEvent, KeyRouter, LeafStyle,
@@ -127,10 +127,8 @@ fn build_scene(store: &mut NodeStore) -> NodeId {
 fn children_of(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
     let arena = store.arena();
     let mut out = Vec::new();
-    let mut child = arena.links(parent).and_then(|l| l.first_child);
-    while let Some(c) = child {
+    for c in arena.children(parent) {
         out.push(c);
-        child = arena.links(c).and_then(|l| l.next_sibling);
     }
     out
 }
@@ -139,7 +137,7 @@ fn children_of(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
 
 #[test]
 fn navigation_stack_renders_only_the_top_page_and_matches_golden() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -514,7 +512,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -523,7 +521,7 @@ struct Harness {
 }
 
 fn setup_alloc() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);

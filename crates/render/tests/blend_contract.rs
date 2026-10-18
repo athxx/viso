@@ -21,7 +21,7 @@
 //! Everything is asserted through the public surface: `Primitive::Blend` markers
 //! in, `FrameStats` and read-back pixels out.
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureFormat};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
 use viso_render::{
     Blend, BlendRealization, Border, ColorEffect, FrameStats, LayerClip, Primitive, Quad, Rect,
     Renderer, Rgba, plan_blend,
@@ -55,8 +55,8 @@ const ADVANCED: [Blend; 15] = [
     Blend::Luminosity,
 ];
 
-fn renderer() -> (HeadlessRaster, SurfaceId, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer() -> (CpuRaster, SurfaceId, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
@@ -94,7 +94,7 @@ fn quad(r: Rect, color: Rgba) -> Primitive {
     })
 }
 
-fn frame(r: &mut Renderer, gpu: &mut HeadlessRaster, primitives: &[Primitive]) -> FrameStats {
+fn frame(r: &mut Renderer, gpu: &mut CpuRaster, primitives: &[Primitive]) -> FrameStats {
     r.upload(gpu, primitives);
     r.frame_stats()
 }

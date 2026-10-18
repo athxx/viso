@@ -16,13 +16,49 @@ rust-version.workspace = true
 # headless/CI on a non-matching target pulls zero external crates. These are
 # published, memory-safe bindings — Viso owns the window/event/loop
 # *semantics*, not the FFI scaffolding.
+[features]
+default = ["x11", "wayland"]
+# Linux and the BSDs: the X11 backend, with the desktop portal and AT-SPI.
+x11 = [
+    "dep:x11rb",
+    "dep:xim",
+    "xkbcommon-dl/x11",
+    "dep:zbus",
+    "dep:accesskit",
+    "dep:accesskit_unix",
+]
+# Linux and the BSDs: the Wayland backend, with the desktop portal and AT-SPI.
+wayland = [
+    "dep:wayland-client",
+    "dep:wayland-backend",
+    "dep:wayland-protocols",
+    "dep:wayland-cursor",
+    "dep:zbus",
+    "dep:accesskit",
+    "dep:accesskit_unix",
+]
+# macOS: a CPU-drawn window stands in for the embedded panel the build is
+# configured for (`VISO_KMS_MODE`, `VISO_KMS_FORMAT`, `VISO_KMS_ROTATION`,
+# `VISO_SCALE`): its size, pixel format and scale, each panel pixel a square of
+# screen pixels. No effect elsewhere.
+emulate = []
+# The embedded Linux backend: the card driven through DRM/KMS with no display
+# server, evdev input and uevent hotplug (libgbm and libseat loaded at run
+# time when present). Picked when no Wayland or X11 session is advertised.
+kms = []
+
 [dependencies]
 # The shared native-window-handle vocabulary (leaf crate). Produced here by
 # `Window::raw_handle`, consumed by viso-gpu — kept in its own crate so gpu
 # needn't depend on platform (§10 DAG).
 viso-handle = { workspace = true }
-# The accessibility tree vocabulary the bridge speaks (ADR 0030): data types
-# only; each backend's adapter crate sits with that backend below.
+
+# The tree vocabulary of the AccessKit adapters (ADR 0030, ADR 0042): data
+# types only, which the bridge converts each `SemanticsDelta` to on the
+# targets whose adapter is AccessKit's; each adapter crate sits with its
+# backend below (on Linux, with the desktop backends). iOS and the Web run
+# Viso's own adapters and link none of it.
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))'.dependencies]
 accesskit = "0.25"
 
 # macOS: AppKit via objc2.
@@ -149,12 +185,13 @@ windows = { version = "0.62", features = [
     "Win32_Security",
 ] }
 
-# Linux and the BSDs: X11 through XCB (libxcb loaded at runtime), Wayland
-# through libwayland-client (also loaded at runtime), xkbcommon for keymaps
-# and compose on both, the desktop portal over D-Bus for appearance, and
-# AT-SPI over the accessibility bus.
+# Linux and the BSDs: X11 through XCB (libxcb loaded at runtime, `x11`),
+# Wayland through libwayland-client (also loaded at runtime, `wayland`),
+# xkbcommon for keymaps and compose on every backend, and with a desktop
+# backend the desktop portal over D-Bus for appearance and AT-SPI over the
+# accessibility bus. A KMS-only build links none of the desktop stack.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
-x11rb = { version = "0.13", features = [
+x11rb = { version = "0.13", optional = true, features = [
     "allow-unsafe-code",
     "dl-libxcb",
     "cursor",
@@ -164,12 +201,13 @@ x11rb = { version = "0.13", features = [
     "xinput",
     "xkb",
 ] }
-xim = { version = "0.5", default-features = false, features = ["x11rb-client", "x11rb-xcb"] }
-xkbcommon-dl = { version = "0.4", features = ["x11"] }
-wayland-client = "0.31"
-wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
-wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
-wayland-cursor = "0.31"
-zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
-accesskit_unix = "0.23"
+xim = { version = "0.5", optional = true, default-features = false, features = ["x11rb-client", "x11rb-xcb"] }
+xkbcommon-dl = "0.4"
+wayland-client = { version = "0.31", optional = true }
+wayland-backend = { version = "0.3", optional = true, features = ["client_system", "dlopen"] }
+wayland-protocols = { version = "0.32", optional = true, features = ["client", "staging", "unstable"] }
+wayland-cursor = { version = "0.31", optional = true }
+zbus = { version = "5", optional = true, default-features = false, features = ["blocking-api", "async-io"] }
+accesskit = { version = "0.25", optional = true }
+accesskit_unix = { version = "0.23", optional = true }
 libc = "0.2"

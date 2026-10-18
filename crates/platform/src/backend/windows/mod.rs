@@ -18,7 +18,6 @@ mod system;
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,6 +40,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 };
 use ::windows::core::{PCWSTR, w};
 
+use super::drive::Drive;
 use super::win32_translate as translate;
 use crate::control::{ControlFlow, PlatformError, WindowConfig, WindowId};
 use crate::event::{Appearance, CursorIcon, PointerButtons, PointerKind, RawEvent};
@@ -63,10 +63,11 @@ struct PumpQueue {
     redraws: VecDeque<WindowId>,
     /// Set by the menu's Quit action.
     should_exit: bool,
-    /// The pump's handler, exposed to the window procedure for the lifetime of
-    /// `run()` so a modal size/move loop can drive frames. `run()` installs it
-    /// before its loop and [`DriveGuard`] clears it on every exit path.
-    drive: Option<NonNull<dyn AppHandler>>,
+    /// The pump's app and handler, exposed to the window procedure while a
+    /// pump turn has handed the thread to the OS, so a modal size/move loop
+    /// can drive frames. `run()` installs it around each turn, holding no
+    /// borrow of either across it, and [`DriveGuard`] clears it on unwind.
+    drive: Option<Drive>,
     /// True while the handler runs. A message the handler itself causes (a
     /// `SetWindowPos`, a `DestroyWindow`) is dispatched synchronously inside
     /// that call; the procedure must then only queue, never drive.
@@ -232,15 +233,15 @@ impl Drop for DriveGuard {
 
 /// Deliver every queued event now, from inside a modal loop.
 fn drive(shared: &Shared) {
-    let handler = {
+    let drive = {
         let q = shared.borrow();
         if q.handling { None } else { q.drive }
     };
-    if let Some(handler) = handler {
-        // SAFETY: the pointer is the one `run` installed and `DriveGuard`
-        // clears, so it is live; `handling` is false, so no `handle` call is
-        // on the stack and the reborrow is unaliased.
-        unsafe { drain_and_drive(handler, shared) };
+    if let Some(drive) = drive {
+        // SAFETY: the drive is the one `run` installed for the OS turn this
+        // runs inside, while it holds no borrow of the app or handler;
+        // `handling` is false, so no `handle` call is on the stack either.
+        unsafe { drain_and_drive(drive, shared) };
     }
 }
 
@@ -249,13 +250,15 @@ fn drive(shared: &Shared) {
 ///
 /// # Safety
 ///
-/// `handler` must be live and not borrowed anywhere else for the call.
-unsafe fn drain_and_drive(mut handler: NonNull<dyn AppHandler>, shared: &Shared) {
+/// The app and handler behind `drive` must be live and not borrowed anywhere
+/// else for the call.
+unsafe fn drain_and_drive(drive: Drive, shared: &Shared) {
     loop {
         let event = shared.borrow_mut().next_synthetic();
         let Some(event) = event else { break };
         // SAFETY: per the function contract.
-        deliver(unsafe { handler.as_mut() }, shared, event);
+        let (app, handler) = unsafe { drive.get() };
+        deliver(app, handler, shared, event);
     }
 }
 
@@ -263,7 +266,12 @@ unsafe fn drain_and_drive(mut handler: NonNull<dyn AppHandler>, shared: &Shared)
 /// `CopyRequested` reply goes to the clipboard, and an accepted
 /// `CloseRequested` destroys the window (whose `WM_DESTROY` then reports
 /// `WindowClosed`).
-fn deliver(handler: &mut dyn AppHandler, shared: &Shared, event: RawEvent) -> ControlFlow {
+fn deliver(
+    app: &mut dyn PlatformApp,
+    handler: &mut dyn AppHandler,
+    shared: &Shared,
+    event: RawEvent,
+) -> ControlFlow {
     enum After {
         Copy(crate::ClipboardReply, WindowId),
         Close(crate::AcceptCell, WindowId),
@@ -274,7 +282,7 @@ fn deliver(handler: &mut dyn AppHandler, shared: &Shared, event: RawEvent) -> Co
         _ => None,
     };
     let outer = std::mem::replace(&mut shared.borrow_mut().handling, true);
-    let flow = handler.handle(event);
+    let flow = handler.handle(app, event);
     {
         let mut q = shared.borrow_mut();
         q.handling = outer;
@@ -390,8 +398,8 @@ impl WinApp {
             .find(|s| s.id == window && s.alive.get())
     }
 
-    fn dispatch(&self, msg: &MSG) {
-        let accel = self.shared.borrow().menu.as_ref().and_then(|m| m.accel());
+    fn dispatch(shared: &Shared, msg: &MSG) {
+        let accel = shared.borrow().menu.as_ref().and_then(|m| m.accel());
         // SAFETY: `msg` came from this thread's queue; the accelerator table
         // is owned by the installed menu, alive while it is installed.
         unsafe {
@@ -415,6 +423,71 @@ impl WinApp {
 fn peek(msg: &mut MSG) -> bool {
     // SAFETY: `msg` is a valid out-pointer.
     unsafe { PeekMessageW(msg, None, 0, 0, PM_REMOVE).as_bool() }
+}
+
+/// How one OS turn of the pump ended.
+enum Turn {
+    /// A message was dispatched, or nothing is due yet.
+    Done,
+    /// `WM_QUIT`, or the queue failed.
+    Quit,
+    /// A poll found nothing: block on the next turn.
+    Idle,
+    /// The timer deadline passed with nothing queued.
+    Due,
+}
+
+/// Take and dispatch one OS message, blocking or polling per `flow`. After a
+/// beat (`yielding`) only what is already queued is taken.
+fn os_turn(shared: &Shared, yielding: bool, flow: ControlFlow) -> Turn {
+    let mut msg = MSG::default();
+    if yielding {
+        if !peek(&mut msg) {
+            return Turn::Done;
+        }
+    } else {
+        match flow {
+            // Sleep until input arrives or the timer deadline passes; a
+            // timeout with nothing queued means the deadline arrived, so a
+            // `Wakeup` beat lets the runtime fire it.
+            ControlFlow::WaitUntil(deadline) => {
+                if !peek(&mut msg) {
+                    let ms = deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis()
+                        .min(u128::from(u32::MAX - 1)) as u32;
+                    // SAFETY: no handles; waits on this thread's queue.
+                    unsafe {
+                        MsgWaitForMultipleObjectsEx(None, ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                    }
+                    if !peek(&mut msg) {
+                        return if Instant::now() >= deadline {
+                            Turn::Due
+                        } else {
+                            Turn::Done
+                        };
+                    }
+                }
+            }
+            ControlFlow::Wait => {
+                // SAFETY: `msg` is a valid out-pointer.
+                let got = unsafe { GetMessageW(&mut msg, None, 0, 0) };
+                if got.0 <= 0 {
+                    return Turn::Quit;
+                }
+            }
+            _ => {
+                if !peek(&mut msg) {
+                    return Turn::Idle;
+                }
+            }
+        }
+    }
+    if msg.message == WM_QUIT {
+        return Turn::Quit;
+    }
+    WinApp::dispatch(shared, &msg);
+    Turn::Done
 }
 
 impl PlatformApp for WinApp {
@@ -504,21 +577,13 @@ impl PlatformApp for WinApp {
     }
 
     fn run(&mut self, handler: &mut dyn AppHandler) {
-        if handler.handle(RawEvent::AppLaunched) == ControlFlow::Exit {
+        if handler.handle(self, RawEvent::AppLaunched) == ControlFlow::Exit {
             return;
         }
-        // SAFETY: `handler` outlives `_drive_guard`, whose `Drop` clears the
-        // stored pointer before `run` returns; the `transmute` only erases the
-        // borrow's lifetime, which the guard upholds dynamically.
-        let drive: NonNull<dyn AppHandler> = unsafe {
-            let ptr: *mut dyn AppHandler = handler;
-            NonNull::new_unchecked(std::mem::transmute::<
-                *mut dyn AppHandler,
-                *mut (dyn AppHandler + 'static),
-            >(ptr))
-        };
-        self.shared.borrow_mut().drive = Some(drive);
-        let _drive_guard = DriveGuard(self.shared.clone());
+        // Clears the drive on every exit path, including unwind out of an OS
+        // turn.
+        let queue = self.shared.clone();
+        let _drive_guard = DriveGuard(queue.clone());
 
         let mut flow = ControlFlow::Wait;
         // Whether a redraw beat was just delivered: the pump then takes what
@@ -526,18 +591,18 @@ impl PlatformApp for WinApp {
         // draws every beat does not starve input.
         let mut drew = false;
         loop {
-            if self.shared.borrow().should_exit {
+            if queue.borrow().should_exit {
                 break;
             }
             let synthetic = if drew {
                 None
             } else {
-                self.shared.borrow_mut().next_synthetic()
+                queue.borrow_mut().next_synthetic()
             };
             if let Some(event) = synthetic {
                 let closed = matches!(event, RawEvent::WindowClosed { .. });
                 drew = matches!(event, RawEvent::RedrawRequested { .. });
-                flow = deliver(handler, &self.shared, event);
+                flow = deliver(self, handler, &queue, event);
                 if closed {
                     self.prune_closed();
                 }
@@ -547,60 +612,23 @@ impl PlatformApp for WinApp {
                 continue;
             }
 
-            let mut msg = MSG::default();
-            if std::mem::take(&mut drew) {
-                if !peek(&mut msg) {
-                    continue;
-                }
-                if msg.message == WM_QUIT {
-                    break;
-                }
-                self.dispatch(&msg);
-                continue;
-            }
-            match flow {
-                // Sleep until input arrives or the timer deadline passes; a
-                // timeout with nothing queued means the deadline arrived, so a
-                // `Wakeup` beat lets the runtime fire it.
-                ControlFlow::WaitUntil(deadline) => {
-                    if !peek(&mut msg) {
-                        let ms = deadline
-                            .saturating_duration_since(Instant::now())
-                            .as_millis()
-                            .min(u128::from(u32::MAX - 1)) as u32;
-                        // SAFETY: no handles; waits on this thread's queue.
-                        unsafe {
-                            MsgWaitForMultipleObjectsEx(None, ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-                        }
-                        if !peek(&mut msg) {
-                            if Instant::now() >= deadline {
-                                flow = deliver(handler, &self.shared, RawEvent::Wakeup);
-                                if flow == ControlFlow::Exit {
-                                    break;
-                                }
-                            }
-                            continue;
-                        }
-                    }
-                }
-                ControlFlow::Wait => {
-                    // SAFETY: `msg` is a valid out-pointer.
-                    let got = unsafe { GetMessageW(&mut msg, None, 0, 0) };
-                    if got.0 <= 0 {
+            // The window procedure may drive frames during the turn (a modal
+            // size/move loop), reaching the app and handler through the drive
+            // alone: the turn touches neither.
+            queue.borrow_mut().drive = Some(Drive::new(self, handler));
+            let turn = os_turn(&queue, std::mem::take(&mut drew), flow);
+            queue.borrow_mut().drive = None;
+            match turn {
+                Turn::Done => {}
+                Turn::Quit => break,
+                Turn::Idle => flow = ControlFlow::Wait,
+                Turn::Due => {
+                    flow = deliver(self, handler, &queue, RawEvent::Wakeup);
+                    if flow == ControlFlow::Exit {
                         break;
                     }
                 }
-                _ => {
-                    if !peek(&mut msg) {
-                        flow = ControlFlow::Wait;
-                        continue;
-                    }
-                }
             }
-            if msg.message == WM_QUIT {
-                break;
-            }
-            self.dispatch(&msg);
         }
     }
 
@@ -644,9 +672,9 @@ impl PlatformApp for WinApp {
         self.shared.borrow_mut().menu = native;
     }
 
-    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+    fn update_accessibility(&mut self, window: WindowId, delta: crate::SemanticsDelta) {
         if let Some(win) = self.windows.iter_mut().find(|w| w.state.id == window) {
-            access::update(&mut win.access, update);
+            access::update(&mut win.access, delta);
         }
     }
 

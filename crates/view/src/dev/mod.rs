@@ -5,8 +5,6 @@
 //! dev artifact (`hot-reload`) compiles it.
 
 pub mod commit;
-mod patch;
-mod query;
-mod resource;
 pub mod snapshot;
-pub mod wire;
+
+pub use viso_dev_protocol::wire;

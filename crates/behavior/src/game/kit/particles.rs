@@ -6,9 +6,11 @@
 //! A fixed pool holds every particle: a full pool recycles its particles in
 //! turn, so a storm of bursts costs a bounded amount of memory and time.
 
+use alloc::vec::Vec;
+
 use super::Particle;
 use crate::game::world::{EntityId, GameWorld};
-use crate::native::Vec3F32;
+use crate::native::Vec3;
 
 /// The most particles alive at once.
 pub const MAX_PARTICLES: usize = 4096;
@@ -116,7 +118,7 @@ const CONFETTI: [[f32; 4]; 6] = [
 /// A particle as the frame draws it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sprite {
-    pub position: Vec3F32,
+    pub position: Vec3,
     /// Its diameter, in metres.
     pub size: f32,
     /// Linear RGBA, faded with age.
@@ -220,7 +222,7 @@ impl Particles {
             true
         });
         self.oldest = 0;
-        let mut emitters = std::mem::take(&mut self.emitters);
+        let mut emitters = core::mem::take(&mut self.emitters);
         emitters.retain_mut(|e| {
             let Some(at) = world.interpolated(e.entity, alpha) else {
                 return false;
@@ -242,7 +244,7 @@ impl Particles {
             let t = p.age / look.life;
             let [r, g, b, a] = p.color;
             Sprite {
-                position: Vec3F32::from_array(p.pos),
+                position: Vec3::from_array(p.pos),
                 size: look.size[0] + (look.size[1] - look.size[0]) * t,
                 color: [r, g, b, a * (1.0 - t)],
             }

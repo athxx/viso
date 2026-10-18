@@ -1,9 +1,12 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use alloc::borrow::ToOwned;
+use alloc::rc::Rc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use super::*;
 use crate::{
-    Budget, Chunk, ChunkKind, Code, FaultKind, Instance, Module, NativeImport, Op, Span, Vm,
+    Body, Budget, Chunk, ChunkKind, Code, FaultKind, Instance, Module, NativeImport, Op, Span, Vm,
 };
 
 static UPPER: NativeFunction =
@@ -136,7 +139,7 @@ fn call_module(path: &str, params: u16) -> (Vm, u32) {
         params,
         regs: params.max(1),
         captures: Box::new([]),
-        body: Ok(Code {
+        body: Body::Code(Code {
             spans: vec![Span::default(); ops.len()].into(),
             ops: ops.into(),
             consts: Box::new([]),
@@ -174,7 +177,7 @@ fn a_linked_native_runs_and_is_budgeted() {
     let mut vm = linked("test::sum", 1, &[]);
     let items = Value::List(Rc::new(vec![Value::Int(2), Value::Int(3)]));
     assert_eq!(
-        run(&mut vm, std::slice::from_ref(&items)),
+        run(&mut vm, core::slice::from_ref(&items)),
         Ok(Value::Int(5))
     );
     assert_eq!(vm.cost().instructions, 11, "a call spends its schema cost");
@@ -283,7 +286,7 @@ fn handles_carry_native_objects() {
     let handle = (start.function.call)(&mut cx, &[]).expect("start");
     assert!(matches!(&handle, Value::Handle(h) if h.path() == "viso::time::Stopwatch"));
     assert_eq!(handle, handle.clone(), "handles compare by identity");
-    let ms = (elapsed.function.call)(&mut cx, std::slice::from_ref(&handle)).expect("elapsed");
+    let ms = (elapsed.function.call)(&mut cx, core::slice::from_ref(&handle)).expect("elapsed");
     assert!(ms.as_float().is_some_and(|ms| ms >= 0.0));
     let e = (elapsed.function.call)(&mut cx, &[Value::Int(1)]).unwrap_err();
     assert_eq!(e.message, "argument `this` does not match its schema type");

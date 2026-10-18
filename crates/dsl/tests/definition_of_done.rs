@@ -497,9 +497,11 @@ fn the_verifier_refuses_a_register_out_of_range() {
         .expect("has behavior");
     // The wire form decodes and verifies; truncating it is refused, never
     // run past its end.
-    assert!(viso_view::ViewHost::from_bytes(&view.bytes, &view.component).is_ok());
+    assert!(viso_view::ViewHost::from_bytes(&view.bytes, &view.component, None).is_ok());
     for cut in [1, view.bytes.len() / 2, view.bytes.len() - 1] {
-        assert!(viso_view::ViewHost::from_bytes(&view.bytes[..cut], &view.component).is_err());
+        assert!(
+            viso_view::ViewHost::from_bytes(&view.bytes[..cut], &view.component, None).is_err()
+        );
     }
     let mut corrupt = view.bytes.to_vec();
     let mut refused = 0;
@@ -508,7 +510,7 @@ fn the_verifier_refuses_a_register_out_of_range() {
         corrupt[at] = 0xFF;
         // Whatever loads must still be safe to run: a load either verifies or
         // is refused.
-        if viso_view::ViewHost::from_bytes(&corrupt, &view.component).is_err() {
+        if viso_view::ViewHost::from_bytes(&corrupt, &view.component, None).is_err() {
             refused += 1;
         }
         corrupt[at] = byte;

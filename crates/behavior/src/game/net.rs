@@ -20,8 +20,14 @@
 //! scheduler, so a Presentation command of a tick already delivered is not
 //! delivered again; only Simulation state is rolled back.
 
-use std::collections::VecDeque;
-use std::fmt;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::fmt;
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
@@ -81,7 +87,7 @@ impl fmt::Display for SessionError {
     }
 }
 
-impl std::error::Error for SessionError {}
+impl core::error::Error for SessionError {}
 
 /// Why a packet was not taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +118,7 @@ impl fmt::Display for PacketError {
     }
 }
 
-impl std::error::Error for PacketError {}
+impl core::error::Error for PacketError {}
 
 impl From<DecodeError> for PacketError {
     fn from(error: DecodeError) -> PacketError {

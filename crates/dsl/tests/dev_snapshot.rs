@@ -5,13 +5,17 @@
 //! its initializer, and the focus, scroll offset and text of each kept node
 //! on the node it became.
 
+#[path = "support/reload.rs"]
+mod reload;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use reload::{LiveRuntime, hot_reload_view};
 use viso_behavior::Value;
 use viso_dsl::aot::{ShaderLang, emit_view_package, package_shaders};
 use viso_dsl::frontend::Origin;
-use viso_dsl::hotreload::{Candidate, CandidatePlan, LiveRuntime, hot_reload_view, reload_plan};
+use viso_dsl::hotreload::{CandidatePlan, reload_plan};
 use viso_ui::state::StateKey;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -19,6 +23,7 @@ use viso_ui::{
     StateValue, TextEdits, TextOffset, TextPosition, Vec2,
 };
 use viso_view::ViewHost;
+use viso_view::dev::commit::Candidate;
 use viso_view::dev::commit::{CommitReport, restore};
 use viso_view::dev::snapshot::{
     DevSnapshot, MountRef, RustCell, ViewSnapshot, WindowCells, capture_view,
@@ -184,7 +189,7 @@ impl Live {
             .view
             .as_ref()
             .map(|view| Rc::clone(&view.module));
-        let candidate = Candidate::verified(package, module);
+        let candidate = Candidate::verified(package, module).expect("a packed brush loads");
         let report = restore(&mut self.runtime(), &candidate, &plan, snapshot);
         self.root = self.nodes.first().copied().flatten();
         self.lay_out();

@@ -11,7 +11,11 @@ rust-version.workspace = true
 # codec of its module wire form. `viso-runtime` and `viso-ui` do not depend on
 # it, so a pure Rust app never links a VM.
 [dependencies]
-viso-ende = { path = "../ende" }
+viso-math = { workspace = true }
+# The effect descriptors a module carries are schema data the view package
+# shares.
+viso-schema = { workspace = true }
+viso-ende = { workspace = true }
 # Formatting translated messages: plural rules, locale numbers and the
 # locale fallback chain.
 icu_plurals = { workspace = true }
@@ -20,3 +24,17 @@ icu_locale_core = { workspace = true }
 icu_locale_fallback = { workspace = true }
 fixed_decimal = { workspace = true }
 libm = { workspace = true }
+
+[features]
+default = ["std", "interpreter"]
+# What needs an operating system: the timer thread `viso::time::sleep`
+# falls back to and the clock behind `viso::time::Stopwatch`, the directory
+# persistence backend (`DirStore`), the audio host and its cross-thread link,
+# catching a native's panic as a fault, the process-wide standard registry
+# and the platform's float functions. Without it the crate is `no_std` +
+# `alloc`, for a microcontroller.
+std = ["viso-math/std"]
+# The bytecode interpreter. Without it a module runs only the chunks
+# installed as compiled code (`aot::lower_module`, ADR 0041): the release
+# and embedded builds of an app whose behavior is all compiled.
+interpreter = []

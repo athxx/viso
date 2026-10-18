@@ -669,7 +669,7 @@ extern "system" fn native_insets(
     right: jint,
     ime: jint,
 ) {
-    send(Msg::Insets {
+    send(Msg::LogicalInsets {
         bars: [top, left, bottom, right],
         ime,
     });

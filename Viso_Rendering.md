@@ -401,6 +401,21 @@ RGBA16Float  Depth / DepthStencil (backend-required format)
 
 用途：sampled、render attachment、storage where supported、copy src/dst。Format 的 color-space 属性（Srgb vs Unorm）必须随 texture metadata 传递，供 §5.4 的“只编码一次”规则检查。
 
+Sampled-only 的转换图像格式（构建期转换的 asset，Architecture §51.1）：
+
+```text
+16-bit packed  Rgb565Unorm  Rgba4444Unorm (R 在高 nibble)  Rgba5551Unorm (A 在 bit 0)
+BC             Bc1RgbaUnorm  Bc3RgbaUnorm  Bc7RgbaUnorm
+ETC2 / EAC     Etc2Rgb8Unorm  Etc2Rgb8A1Unorm  Etc2Rgba8Unorm
+ASTC LDR       Astc4x4Unorm  Astc6x6Unorm  Astc8x8Unorm
+```
+
+- texel 与其它 texture 同一约定：premultiplied、按存储的 sRGB 编码、以 unorm 采样；
+- 块格式（`TextureFormat::block`）只作 sampled texture，尺寸必须是整块（转换器保证；D3D12 / WebGPU 要求）；`write_texture` 收按块行排列的数据、块对齐的区域，`row_bytes` / `block_rows` / `data_size` 给出布局；
+- 设备采样哪些族由 `Caps::sampled: SampledFormats` 报告，`Caps::samples(format)` 查询：Metal 按 GPU family（Apple2+ ETC2/ASTC，BC 取 `supportsBCTextureCompression`）；D3D12 `CheckFeatureSupport`（B5G6R5、BC）；Vulkan 设备特性 `textureCompressionBC/ETC2/ASTC_LDR`（创建设备时开启）与 packed 格式的 optimal-tiling 特性；GLES3 packed 与 ETC2 为 core，ASTC 经 `KHR_texture_compression_astc_ldr`，BC 需 S3TC + BPTC；WebGPU 按 adapter feature 请求 `texture-compression-*`（packed 格式不可用）；`CpuRaster` 只采样 16-bit packed；
+- 不采样的格式由 asset worker 用 `viso_image::codec` 软件解码为 RGBA8 后上传；`create_texture` 收到不采样的格式是调用方错误；
+- `create_texture_static(desc, &'static [u8])`：texel 在程序生命期内不变（嵌入 binary / 映射 flash），默认实现为 create + write；`CpuRaster` 对可原地采样的格式直接借用，不复制。
+
 ## 6.4 Surface 与 device loss
 
 Surface 必须支持：acquire、present、resize、DPI change、format/color-space change、occlusion/minimize、out-of-date recovery。
@@ -448,7 +463,29 @@ discrete GPU                       mapped upload/staging -> transfer/copy -> dev
 
 ## 6.8 Backend 静态选择与 fast path
 
-Backend 由 cfg 在编译期静态选定（ADR 0029）：`viso_gpu::Backend` 是 type alias —— apple → Metal，Windows → D3D12，Linux/Android → Vulkan，wasm32 → WebGpu，其余 → HeadlessRaster。`vulkan` feature 只用于交叉测试编译 Vulkan 模块。Tier-2 backend 以 module + cfg 加入，能力差异通过 `Caps` 表达。
+Backend 由 cfg 在编译期静态选定（ADR 0029）：`viso_gpu::Backend` 是 type alias —— apple → Metal，Windows → D3D12，Linux/Android → Vulkan（`native-vulkan`，facade 默认开启），wasm32 → WebGpu，其余 → CpuRaster。Footprint profile 的 feature 改选（ADR 0044）：`gles` → `Gles3Backend`（Linux / Android，embedded-gpu），`cpu` 或 `headless` → `CpuRaster`（embedded-cpu、测试与 golden）；embedded build 关闭 facade 默认 feature，`embedded-cpu` 与 GLES 板卡不开 `native-vulkan`，不链接 Vulkan bindings（`ash`），Linux/Android 上 `gles` 与 `native-vulkan` 都没开时 Backend 是 CpuRaster。`vulkan` feature 在其他平台额外编译 Vulkan 模块（macOS 的 MoltenVK、Windows 的 Vulkan runtime），只用于交叉测试。Tier-2 backend 以 module + cfg 加入，能力差异通过 `Caps` 表达。
+
+### 6.8.1 CpuRaster
+
+`viso_gpu::cpu` 是唯一的 CPU backend，同时承担 headless / golden 角色：
+- 64×64 tile binning，按提交顺序；只访问被触及的 tile，所以 damage 多大代价就多大；band 在常驻 worker pool 上并行，输出与 worker 数无关（worker 数取 footprint 的 `workers`，`0` 时只用调用线程）；
+- 格式：XRGB8888 / ARGB8888（`Bgra8Unorm`，整数 src-over）、RGB565（渐变 4×4 Bayer dither）、`f32` HDR、A8 atlas；sampled image 另有 RGB565 / RGBA4444 / RGBA5551（构建期转换，§6.3），从 `create_texture_static` 借用的 texel 原地采样（嵌入 binary / XIP flash，不复制、不计 texture 内存）；不接收块压缩格式（`Caps::sampled` 不含，fallback 为 RGBA8）；
+- analytic AA lane；填充 path 走 scanline coverage 的 mask lane；A8 glyph / mask cache 在系统内存；
+- NEON / SSE2 / SIMD128 kernel 与标量逐位一致；
+- 只用于合成的 offscreen pass 推迟到 tile 内求值，不分配 target，结果与整张 target 逐位一致；
+- `Blitter` capability seam：板卡的 2D 加速器可以接 clear / copy，拒绝的工作留在 CPU；
+- 每个 brush 都打包了 `ShaderLang::None` 程序（寄存器码解释器），custom shader 没有缺失 CPU 路径的可能；
+- 呈现到 `RawWindowHandle::Scanout`：KMS dumb buffer 双缓冲，或桌面窗口的 layer（embedded profile 仿真）。
+
+### 6.8.2 Gles3Backend
+
+`viso_gpu::gles` 面向 GLES 3.0+ 的嵌入式 GPU：
+- EGL / GLES 运行时加载；Wayland / XCB / Android / GBM（KMS）/ pbuffer surface；
+- 着色器是 `viso-shader` 生成的 GLSL ES 3.00，一个程序一份源码，顶点半部在 `VISO_VERTEX` 下；
+- uniform ring、texture unit + sampler object 承载 bind group，程序实例按 16 KB uniform chunk；shared context 上任意线程编译；
+- 能力表：无 compute、无 bindless、无 indirect；
+- partial update：`EGL_EXT_buffer_age` → `frame_age`，`EGL_KHR_partial_update` 区域来自 surface pass 的 scissor，`eglSwapBuffersWithDamage`；
+- 面板旋转而 plane 不能旋转时，顶点阶段按 `viso_target` 的四分之一圈数旋转绘制（`viso_place` / `viso_frag_position`），damage 与 scissor 同步旋转。
 
 禁止在热路径对每个 primitive 做 `Box<dyn GpuBackend>::draw(...)` 式 virtual dispatch。
 
@@ -494,9 +531,8 @@ user .vs shaders:    build-time Parser / Type Checker
 struct SolidRectInstance {
     rect: [f32; 4],
     color: [f32; 4],      // LinearStraight (§5.4)
-    transform_id: u32,
-    flags: u32,
-    _pad: [u32; 2],
+    radius: f32,
+    border_width: f32,
 }
 ```
 
@@ -618,6 +654,12 @@ Public 层可以对象化；Render hot storage 使用 dense typed arrays / index
 ## 8.4 Transform 与 primitive 分离
 
 纯移动/动画只使 `TransformStore` 条目与 `TransformRevision` 变化，不得 rebuild Rect geometry、rebuild Brush、retessellate Path（例外见 §13.4 quality bucket）。
+
+Transform root 合同（ADR 0043）：
+- scroll 容器的 content 与被平移的节点是 transform root；paint 按前序把它们记进 `TransformTable`，并用 `Primitive::Transform` 括住其子树；
+- primitive 按绘制时的 world space 写入；segment 携带自己的 root 与移动 clip 链（`Space`），从不跨 root 合批；instance 里没有 per-instance transform 字节；
+- 只移动 root 的一帧把表交给 `Renderer::set_transforms`：每个 built-in 读 per-draw `shift` uniform，draw 与 clip 一起平移，不重写也不上传任何 instance；offscreen、backdrop、material、program 等被污染的 root 回答 `NeedsUpload`，走正常 paint；
+- 位移按设备像素取整（length-env scale factor）；屏幕上的 rect 由 `NodeStore::world` 推导，hit test 沿遍历携带位移。
 
 ## 8.5 Bounds
 
@@ -866,6 +908,8 @@ video / camera                     -> external texture / platform image path
 heavy downscale                    -> mipmaps
 ```
 
+Release 构建的 asset 图像在构建期转换为 target 采样的格式（§6.3、Architecture §51.1）：runtime 读 `VTX1` header 借用 texel 直接上传，不解码；`natural` size 是图像布局用的尺寸（构建期预缩小或从 SVG 以 `svg_scale` 光栅化后 texel 尺寸与之不同）。转换图像不生成 mip 链。
+
 ## 12.5 Image edge behavior
 
 明确 `Clamp / Repeat / Mirror`。Atlas/sprite sampling 必须防止相邻 texel bleeding：atlas region 之间保留 gutter（linear sampling 至少 1 texel，mip 链按级别放大），或把 UV clamp 到 region 内缩半 texel。
@@ -988,6 +1032,7 @@ ClipChain 必须 retained：`ClipChainId -> pre-resolved ClipChainDescriptor`。
 | Mask source | image（`ImageMask`）、path/geometry（`PathMask`）、rendered content |
 
 - 稳定 mask 进入独立 mask cache（mask page 分配）；
+- page 按需出现：没有 mask 时不占任何 texture；第一页 128²（R8，16 KiB），满了追加一页，边长为上一页的两倍且不小于 ROI 向上取的 2 的幂，上限 2048²；ROI 在各页 first-fit。驱逐后重排幸存者，尾部空页归还。设备侧不保留 CPU 镜像：每个新建的 mask 只上传自己的 slot，新页创建时清零，使 slot 边缘的线性采样读到 0；
 - 存储：能用 R8 就用 R8、tight ROI、tile/page allocation；只有真正需要 color 信息时才使用 RGBA；禁止把 mask 永久存成全屏 RGBA texture；
 - 高级 mask boolean 可以后续 lane 建立，但不改变基础 mask composition 语义。
 
@@ -1323,11 +1368,19 @@ UI 侧 dirty class 只有 `STRUCTURE STYLE MEASURE LAYOUT TRANSFORM PAINT HIT_TE
 | `STRUCTURE` | primitive 插入/删除/kind 变化：slot reslot（generation bump）、相关 RenderChunk 重建 |
 | `STYLE` | 由 style resolve 落为下列某一类；render 不直接消费 |
 | `MEASURE` / `LAYOUT` | 尺寸/形状变化 → `GeometryRevision` + bounds；仅位置变化 → `TransformRevision` |
-| `TRANSFORM` | `TransformRevision`（UI 同时标 `HIT_TEST \| PAINT`，从不标 `MEASURE`/`LAYOUT`） |
+| `TRANSFORM` | `TransformRevision`：transform table 条目，damage 来自子树 bounds（只标 `TRANSFORM`，不标 `MEASURE` / `LAYOUT` / `PAINT` / `HIT_TEST`；节点第一次平移时 paint 一次以记录 root） |
 | `PAINT` | `PaintRevision`；引用资源变化 → `ResourceRevision`；effect 参数 → `EffectRevision`；clip → `ClipRevision`；可见性 → `VisibilityRevision` |
 | `HIT_TEST` / `SEMANTICS` | 无 render revision |
 
 规则：只 bump 实际变化的 plane；一个颜色改变不得升级成 geometry rebuild；backdrop 依赖按 §17.7 另行追踪。
+
+### 24.2.1 Damage-driven present
+
+- damage 由每个 entry 的 content key（store entry + context + 采样的 pass / capture / material / clock）与上一次 present 的列表按序比较得出；transform root 的移动与 clip 在 submit 时放置（`viso_render::damage`、`renderer/present.rs`）；
+- 合并成最多 4 个不相交 rect；超过 surface 60% 退回整帧；尺寸变化、clear 变化、`damage_all()` 强制整帧；
+- buffer-age 感知的局部重绘：`frame_age`（D3D12、Vulkan、GLES3、CpuRaster、headless；4 帧历史），`LoadOp::Load` + 每个 rect 的 clear quad + scissor 回放；空 damage 跳过整帧；与整帧逐像素一致（`crates/render/tests/damage.rs`）；
+- `present_with_damage`：D3D12 `Present1` dirty rects、Vulkan `VK_KHR_incremental_present`、GLES3 `eglSwapBuffersWithDamage`、KMS `FB_DAMAGE_CLIPS`；Metal / WebGPU 不知道 drawable 年龄，变化的帧整帧重绘；
+- 计数器 `damage_px`、`damage_rects`、`full_frame_fallbacks`；`viso inspect frame` 报告该帧 damage 供 Inspector overlay。
 
 ## 24.3 120/144/240Hz 稳态合同
 

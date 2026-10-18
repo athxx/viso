@@ -27,7 +27,7 @@
 //! `OnceLock`; the renderer consumes it at device init to create every standard
 //! pipeline before the first frame.
 
-use viso_gpu::{BlendMode, BuiltinShader, InstanceSchema, ShaderCode, ShaderLang};
+use viso_gpu_abi::{BlendMode, BuiltinShader, InstanceSchema, ShaderCode, ShaderLang};
 
 use crate::code::shader_code;
 use crate::msl::{
@@ -206,7 +206,7 @@ pub struct PipelineEntry {
 
 impl PipelineEntry {
     /// The program in `lang` — the backend's
-    /// [`GpuBackend::SHADER_LANG`](viso_gpu::GpuBackend::SHADER_LANG). Only the
+    /// `GpuBackend::SHADER_LANG`. Only the
     /// requested language is materialized; compiled once at device-init
     /// prewarm, never on a draw.
     pub fn code(&self, lang: ShaderLang) -> ShaderCode {

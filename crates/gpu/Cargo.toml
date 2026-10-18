@@ -11,10 +11,11 @@ rust-version.workspace = true
 #
 # MUST NOT leak widgets/layout/state (§17.1). `gpu -> ui` is forbidden.
 [dependencies]
-viso-runtime = { workspace = true }
 # The shared native-window-handle vocabulary (leaf crate) consumed by
 # `GpuBackend::create_surface`. Not a platform dependency — see §10 DAG.
 viso-handle = { workspace = true }
+# The ABI this crate implements per backend; re-exported whole.
+viso-gpu-abi = { workspace = true }
 # Typed bitflags for resource-usage descriptors (BufferUsage). External crate,
 # not a viso-* edge, so it doesn't affect `xtask check-deps`.
 bitflags = "2"
@@ -22,19 +23,35 @@ bitflags = "2"
 # layout types, so it re-exports the derive that generates their impls; this is
 # the single allowed viso-gpu -> viso-macros edge (§10).
 viso-macros = { workspace = true }
-# Vulkan bindings (loader resolved at runtime, no link-time dependency). Always
-# on for Linux/Android, where Vulkan is the native backend; elsewhere opt-in via
-# the `vulkan` feature (MoltenVK on macOS, the Vulkan runtime on Windows).
-ash = { version = "0.38", optional = true }
+
+# OpenGL ES 3 through EGL (and `libwayland-egl`), loaded at run time; no
+# link-time dependency. External crate, not a viso-* edge.
+libloading = { version = "0.8", optional = true }
 
 [features]
-vulkan = ["dep:ash"]
+default = ["native-vulkan"]
+# Vulkan as the native backend on Linux and Android; no effect elsewhere. A
+# CPU-drawn or GLES build leaves it off and links no Vulkan bindings.
+native-vulkan = ["dep:ash"]
+# The Vulkan backend on every target: beside the native one where another is
+# native (MoltenVK on macOS, the Vulkan runtime on Windows).
+vulkan = ["dep:ash", "dep:ash-portable"]
+# The OpenGL ES 3 backend as this build's backend on Linux and Android, for
+# the GPUs whose drivers are GL only (the embedded-gpu profile, ADR 0044).
+gles = ["dep:libloading"]
 # The software raster as this build's backend on every target: a headless
 # build draws to memory, with no device and no window.
 headless = []
+# The software raster as this build's backend, drawing to the windows the
+# platform gives it (a KMS scanout): the embedded-cpu profile (ADR 0044).
+cpu = []
 
+# Vulkan bindings (loader resolved at runtime, no link-time dependency): on
+# Linux and Android for `native-vulkan` or `vulkan`, elsewhere for `vulkan`.
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
-ash = "0.38"
+ash = { version = "0.38", optional = true }
+[target.'cfg(not(any(target_os = "linux", target_os = "android")))'.dependencies]
+ash-portable = { package = "ash", version = "0.38", optional = true }
 
 # Windows: the native Direct3D 12 backend (DXGI swapchains, FXC for HLSL).
 # External crate, not a viso-* edge.

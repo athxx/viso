@@ -18,7 +18,7 @@ use viso_behavior::native::{NativeEntry, NativeId};
 use viso_behavior::retype::ValueSchema;
 use viso_behavior::{Migrator, PersistSlot, TaskPolicy};
 
-use viso_ui::adaptive::EnvField;
+use viso_schema::EnvField;
 
 use super::ir::{
     Body, ComponentLayout, Const, EffectEntry, EnvSlot, FuncId, Function, FunctionKind, Inst,
@@ -751,7 +751,7 @@ impl ProgramBuilder {
         *self.natives.entry(entry.id).or_insert_with(|| {
             let imports = &mut self.program.natives;
             imports.push(NativeImport {
-                path: entry.path.clone(),
+                path: (*entry.path).into(),
                 signature: entry.function.signature(),
                 params: entry.function.params.len() as u16,
             });
@@ -1114,7 +1114,7 @@ pub(crate) enum RegionEntry<'e> {
     /// A `match` region's scrutinee.
     Value(&'e Expr),
     /// A `for` region's iterable: a list, or an integer range tagged
-    /// [`viso_view::HALF_OPEN`] or [`viso_view::CLOSED`].
+    /// [`viso_schema::view::HALF_OPEN`] or [`viso_schema::view::CLOSED`].
     Items(&'e Expr),
     /// A `for` item's key: the item arrives after the scope and is bound by
     /// `pattern` (of type `element`) before `key` runs.
@@ -1222,7 +1222,7 @@ pub(crate) fn lower_region_entry(
                         src = l.reg();
                         l.emit(Inst::Make {
                             dst: src,
-                            tag: viso_view::CLOSED,
+                            tag: viso_schema::view::CLOSED,
                             fields: bounds.to_vec(),
                         });
                     }

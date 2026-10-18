@@ -3,12 +3,16 @@
 //! the running state and swaps the handler; a reload whose handler does not mount
 //! keeps the last-good handler; a faulting handler is kept, not a panic.
 
+#[path = "support/reload.rs"]
+mod reload;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_dsl::aot::build_view_package;
+use reload::{LiveRuntime, hot_reload_view};
+use viso_dsl::aot::{build_view_package, compile_package};
 use viso_dsl::frontend::Origin;
-use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
+use viso_dsl::hotreload::CandidatePlan;
 use viso_dsl::view_behavior::UNMOUNTED_HANDLER;
 use viso_ui::Rect;
 use viso_ui::virtual_list::VirtualLists;
@@ -16,7 +20,7 @@ use viso_ui::{
     BindingTable, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
     PointerRouter, SemanticProjector, StateStore, StateValue, TextEdits,
 };
-use viso_view::{ViewHost, load_view};
+use viso_view::{ViewHost, ViewLoad, load_static_view, load_view};
 
 /// A clicker whose handler body is `body`.
 fn clicker(body: &str) -> String {
@@ -268,6 +272,69 @@ fn the_release_package_runs_the_same_handler() {
     click(&mut store, &mut states, &bindings, root);
     click(&mut store, &mut states, &bindings, root);
     assert_eq!(count(), Some(viso_view::Value::Int(2)));
+}
+
+#[test]
+fn a_static_release_package_runs_where_it_lies() {
+    let blob =
+        build_view_package(&clicker("on click { count += 1; }"), &origin()).expect("packages");
+    let blob: &'static [u8] = Vec::leak(blob);
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut lists = VirtualLists::new();
+    let view = load_static_view(
+        blob,
+        &mut store,
+        &mut states,
+        &mut bindings,
+        &mut lists,
+        ViewLoad::default(),
+    )
+    .expect("loads");
+    let root = view.root.expect("a root");
+    layout(&mut store, Some(root));
+    let host = view.host.as_ref().expect("a host");
+    {
+        let host = host.borrow();
+        let range = blob.as_ptr_range();
+        for chunk in host.module().chunks() {
+            assert!(
+                matches!(chunk.name, viso_behavior::Text::Static(_))
+                    && range.contains(&chunk.name.as_ptr()),
+                "`{}` borrows the blob",
+                &*chunk.name
+            );
+        }
+    }
+    click(&mut store, &mut states, &bindings, root);
+    assert_eq!(
+        host.borrow().state(0).cloned(),
+        Some(viso_view::Value::Int(1))
+    );
+
+    // The package without bytecode runs only with its compiled code.
+    let compiled = compile_package(blob).expect("compiles");
+    assert!(compiled.len() < blob.len());
+    let mut store = NodeStore::new();
+    let view = load_view(
+        &compiled,
+        &mut store,
+        &mut states,
+        &mut bindings,
+        &mut lists,
+    )
+    .expect("loads");
+    let root = view.root.expect("a root");
+    layout(&mut store, Some(root));
+    click(&mut store, &mut states, &bindings, root);
+    let host = view.host.as_ref().expect("a host").borrow();
+    assert_eq!(
+        host.state(0),
+        None,
+        "neither the initializer nor the handler runs"
+    );
+    assert!(host.last_fault().is_some(), "no bytecode to interpret");
 }
 
 /// A clipboard the test reads back.

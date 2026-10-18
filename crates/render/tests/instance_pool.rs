@@ -4,7 +4,7 @@
 //! [`InstancePool`] keeps a CPU shadow of what currently sits in its device
 //! buffer and, on [`sync`](InstancePool::sync), diffs the freshly lowered
 //! draw-order array against that shadow, uploading only the maximal runs of
-//! changed slots. These tests drive `sync` against a real [`HeadlessRaster`]
+//! changed slots. These tests drive `sync` against a real [`CpuRaster`]
 //! and assert the §9.1 contract through its observable surface — the write
 //! count `sync` returns, `buffer()`/`capacity()`/`len()`, and the backend's
 //! `buffer_count()` (create/retire accounting) — to prove:
@@ -18,7 +18,7 @@
 //! - exceeding capacity grows once (buffer_count +1, a new buffer identity,
 //!   the old buffer retired) and forces a single full upload.
 
-use viso_gpu::{BufferUsage, HeadlessRaster};
+use viso_gpu::{BufferUsage, CpuRaster};
 use viso_render::QuadInstance;
 use viso_render::pool::InstancePool;
 
@@ -39,7 +39,7 @@ fn quad(tag: f32) -> QuadInstance {
 /// A new empty pool never touches the GPU.
 #[test]
 fn empty_pool_has_no_buffer() {
-    let gpu = HeadlessRaster::new();
+    let gpu = CpuRaster::new();
     let pool: InstancePool<QuadInstance> = InstancePool::new(BufferUsage::INSTANCE, "test-quads");
     assert_eq!(pool.buffer(), None);
     assert_eq!(pool.capacity(), 0);
@@ -52,7 +52,7 @@ fn empty_pool_has_no_buffer() {
 /// re-syncing the identical array uploads nothing.
 #[test]
 fn first_frame_uploads_once_then_unchanged_uploads_zero() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut pool: InstancePool<QuadInstance> =
         InstancePool::new(BufferUsage::INSTANCE, "test-quads");
 
@@ -78,7 +78,7 @@ fn first_frame_uploads_once_then_unchanged_uploads_zero() {
 /// their place and are not re-uploaded.
 #[test]
 fn one_slot_change_uploads_one_run() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut pool: InstancePool<QuadInstance> =
         InstancePool::new(BufferUsage::INSTANCE, "test-quads");
 
@@ -104,7 +104,7 @@ fn one_slot_change_uploads_one_run() {
 /// own unit tests; here we confirm the pool routes uploads through it.
 #[test]
 fn separated_changes_split_near_changes_merge() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut pool: InstancePool<QuadInstance> =
         InstancePool::new(BufferUsage::INSTANCE, "test-quads");
 
@@ -128,7 +128,7 @@ fn separated_changes_split_near_changes_merge() {
 /// (no shrink); re-adding slots re-uploads them.
 #[test]
 fn empty_frame_clears_live_slots_without_destroying_buffer() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut pool: InstancePool<QuadInstance> =
         InstancePool::new(BufferUsage::INSTANCE, "test-quads");
 
@@ -154,7 +154,7 @@ fn empty_frame_clears_live_slots_without_destroying_buffer() {
 /// The grow forces a single full upload.
 #[test]
 fn growth_creates_new_buffer_and_retires_old() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut pool: InstancePool<QuadInstance> =
         InstancePool::new(BufferUsage::INSTANCE, "test-quads");
 
@@ -186,7 +186,7 @@ fn growth_creates_new_buffer_and_retires_old() {
 /// `#[derive(GpuPod)]` instance struct): the same diff/upload contract holds.
 #[test]
 fn u32_index_stream_diffs_like_instances() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut pool: InstancePool<u32> = InstancePool::new(BufferUsage::INDEX, "test-indices");
 
     let base = [0u32, 1, 2, 0, 2, 3];

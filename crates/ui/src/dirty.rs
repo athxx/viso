@@ -5,148 +5,115 @@
 //! must stop at valid boundaries — a paint-only change must not make ancestors
 //! layout-dirty.
 
-use core::ops::{BitAnd, BitOr, BitOrAssign};
+pub use viso_schema::DirtyClass;
 
 use crate::node::NodeId;
 use crate::state::StateId;
 
-/// A set of invalidation classes, stored as a bitset.
+/// Per-class dirty worklists (ADR 0043): for each class, the slots that gained
+/// it since the last [`clear`](DirtyLists::clear), each appended once on that
+/// class's 0→1 transition. A pass reads its class's list instead of scanning
+/// every node, so an idle frame's passes cost O(1) and a busy frame's cost the
+/// nodes it marked. The buffers keep their capacity frame to frame.
 ///
-/// Examples of what bindings map to:
-/// - text content → MEASURE | LAYOUT | PAINT | SEMANTICS
-/// - text color   → PAINT
-/// - width        → MEASURE | LAYOUT
-/// - transform    → TRANSFORM | HIT_TEST | PAINT
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DirtyClass(u8);
-
-impl DirtyClass {
-    pub const EMPTY: Self = Self(0);
-    pub const STRUCTURE: Self = Self(1 << 0);
-    pub const STYLE: Self = Self(1 << 1);
-    pub const MEASURE: Self = Self(1 << 2);
-    pub const LAYOUT: Self = Self(1 << 3);
-    pub const TRANSFORM: Self = Self(1 << 4);
-    pub const PAINT: Self = Self(1 << 5);
-    pub const HIT_TEST: Self = Self(1 << 6);
-    pub const SEMANTICS: Self = Self(1 << 7);
-
-    /// The classes that propagate up the parent chain when a node is marked.
-    /// STRUCTURE, MEASURE, and SEMANTICS bubble; the rest stay local — most
-    /// importantly PAINT, so a paint-only change never dirties ancestor layout.
-    pub const BUBBLING: Self = Self(Self::STRUCTURE.0 | Self::MEASURE.0 | Self::SEMANTICS.0);
-
-    /// Whether every class in `other` is set.
-    #[inline]
-    pub fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
-    /// Whether any class in `other` is also set here.
-    #[inline]
-    pub fn intersects(self, other: Self) -> bool {
-        self.0 & other.0 != 0
-    }
-
-    #[inline]
-    pub fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// The raw bitset byte.
-    ///
-    /// This is the stable wire form of a class set: the release AOT package
-    /// (architecture section 41) stores a binding's invalidation classes as this
-    /// byte and rebuilds them with [`from_bits`](Self::from_bits) at load time. The
-    /// bit positions are the `1 << n` constants above; they are the format's own
-    /// contract, so the emitter and loader read and write the same byte directly.
-    #[inline]
-    pub fn bits(self) -> u8 {
-        self.0
-    }
-
-    /// A class set from a raw bitset byte, keeping only defined bits.
-    ///
-    /// The inverse of [`bits`](Self::bits): any bit not backing a named class is
-    /// dropped, so a corrupt or forward-versioned byte can never smuggle in an
-    /// undefined class. This is what the AOT loader uses to reconstruct a binding's
-    /// classes without reinterpreting an untrusted byte wholesale.
-    #[inline]
-    pub fn from_bits(bits: u8) -> Self {
-        const DEFINED: u8 = DirtyClass::STRUCTURE.0
-            | DirtyClass::STYLE.0
-            | DirtyClass::MEASURE.0
-            | DirtyClass::LAYOUT.0
-            | DirtyClass::TRANSFORM.0
-            | DirtyClass::PAINT.0
-            | DirtyClass::HIT_TEST.0
-            | DirtyClass::SEMANTICS.0;
-        Self(bits & DEFINED)
-    }
-
-    /// The set bits paired with their names, low bit first, for introspection.
-    ///
-    /// This is the readable form the debug surfaces render — a NodeId's pending
-    /// invalidation shown as `["MEASURE", "LAYOUT"]` rather than a raw byte, and
-    /// the same list a JSON snapshot or the Studio transport serializes. Names
-    /// are the constant identifiers above; a cleared set yields an empty iterator.
-    pub fn iter_names(self) -> impl Iterator<Item = &'static str> {
-        const NAMES: [(u8, &str); 8] = [
-            (DirtyClass::STRUCTURE.0, "STRUCTURE"),
-            (DirtyClass::STYLE.0, "STYLE"),
-            (DirtyClass::MEASURE.0, "MEASURE"),
-            (DirtyClass::LAYOUT.0, "LAYOUT"),
-            (DirtyClass::TRANSFORM.0, "TRANSFORM"),
-            (DirtyClass::PAINT.0, "PAINT"),
-            (DirtyClass::HIT_TEST.0, "HIT_TEST"),
-            (DirtyClass::SEMANTICS.0, "SEMANTICS"),
-        ];
-        let bits = self.0;
-        NAMES
-            .into_iter()
-            .filter_map(move |(bit, name)| (bits & bit != 0).then_some(name))
-    }
+/// A list may name a slot whose class was since reset (a node freed and its
+/// slot reused within the frame); a reader checks the slot's current classes,
+/// so such an entry costs one load and changes nothing.
+#[derive(Debug, Default)]
+pub struct DirtyLists {
+    by_class: [Vec<u32>; 8],
+    /// Every slot marked at all, once: what `clear` resets.
+    marked: Vec<u32>,
+    /// Per slot, the classes whose list holds it. Survives a slot reset within
+    /// the frame, so no list holds a slot twice.
+    listed: Vec<DirtyClass>,
 }
 
-impl core::fmt::Display for DirtyClass {
-    /// Renders the set classes as `MEASURE | LAYOUT`, or `EMPTY` when none are
-    /// set — the one-line form a dirty-reason readout prints.
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        if self.is_empty() {
-            return f.write_str("EMPTY");
+impl DirtyLists {
+    /// Record that slot `index` gained `added`. A class the slot is already
+    /// listed under appends nothing.
+    #[inline]
+    pub fn note(&mut self, index: u32, added: DirtyClass) {
+        let i = index as usize;
+        if i >= self.listed.len() {
+            self.listed.resize(i + 1, DirtyClass::EMPTY);
         }
-        let mut first = true;
-        for name in self.iter_names() {
-            if !first {
-                f.write_str(" | ")?;
+        let listed = self.listed[i];
+        let new = added.without(listed);
+        if new.is_empty() {
+            return;
+        }
+        if listed.is_empty() {
+            self.marked.push(index);
+        }
+        self.listed[i] = listed | new;
+        let mut bits = new.bits();
+        while bits != 0 {
+            let bit = bits.trailing_zeros() as usize;
+            self.by_class[bit].push(index);
+            bits &= bits - 1;
+        }
+    }
+
+    /// The slots listed under the single class `class`, in marking order.
+    #[inline]
+    pub fn of(&self, class: DirtyClass) -> &[u32] {
+        debug_assert_eq!(class.bits().count_ones(), 1, "one class at a time");
+        &self.by_class[class.bits().trailing_zeros() as usize]
+    }
+
+    /// Every slot marked since the last clear, once each.
+    #[inline]
+    pub fn marked(&self) -> &[u32] {
+        &self.marked
+    }
+
+    /// Whether some slot listed under a class of `class` still carries it in
+    /// `dirty`. O(1) when those lists are empty.
+    pub fn any(&self, class: DirtyClass, dirty: &[DirtyClass]) -> bool {
+        let mut bits = class.bits();
+        while bits != 0 {
+            let bit = bits.trailing_zeros() as usize;
+            let one = DirtyClass::bit(bit as u32);
+            if self.by_class[bit]
+                .iter()
+                .any(|&i| dirty[i as usize].intersects(one))
+            {
+                return true;
             }
-            f.write_str(name)?;
-            first = false;
+            bits &= bits - 1;
         }
-        Ok(())
+        false
     }
-}
 
-impl BitAnd for DirtyClass {
-    type Output = Self;
-    #[inline]
-    fn bitand(self, rhs: Self) -> Self {
-        Self(self.0 & rhs.0)
+    /// Reserve room for `slots` slots, so marking allocates nothing.
+    pub fn reserve_slots(&mut self, slots: usize) {
+        self.listed.reserve(slots.saturating_sub(self.listed.len()));
     }
-}
 
-impl BitOr for DirtyClass {
-    type Output = Self;
-    #[inline]
-    fn bitor(self, rhs: Self) -> Self {
-        Self(self.0 | rhs.0)
+    /// Reset every marked slot's classes in `dirty` and empty the lists,
+    /// keeping their capacity. Costs the marked slots, not the store.
+    pub fn clear(&mut self, dirty: &mut [DirtyClass]) {
+        for &i in &self.marked {
+            let i = i as usize;
+            if let Some(d) = dirty.get_mut(i) {
+                *d = DirtyClass::EMPTY;
+            }
+            self.listed[i] = DirtyClass::EMPTY;
+        }
+        self.marked.clear();
+        for list in &mut self.by_class {
+            list.clear();
+        }
     }
-}
 
-impl BitOrAssign for DirtyClass {
-    #[inline]
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
+    /// Forget everything, for a store dropping every node.
+    pub fn reset(&mut self) {
+        self.marked.clear();
+        self.listed.clear();
+        for list in &mut self.by_class {
+            list.clear();
+        }
     }
 }
 
@@ -228,7 +195,42 @@ impl DirtyJournal {
 
 #[cfg(test)]
 mod tests {
-    use super::DirtyClass;
+    use super::{DirtyClass, DirtyLists};
+
+    #[test]
+    fn a_worklist_lists_each_slot_once_per_class() {
+        let mut lists = DirtyLists::default();
+        let mut dirty = vec![DirtyClass::EMPTY; 4];
+        for (slot, class) in [
+            (2, DirtyClass::PAINT | DirtyClass::LAYOUT),
+            (2, DirtyClass::PAINT),
+            (0, DirtyClass::PAINT),
+            (2, DirtyClass::STYLE),
+        ] {
+            dirty[slot as usize] |= class;
+            lists.note(slot, class);
+        }
+        assert_eq!(lists.of(DirtyClass::PAINT), [2, 0]);
+        assert_eq!(lists.of(DirtyClass::LAYOUT), [2]);
+        assert_eq!(lists.of(DirtyClass::STYLE), [2]);
+        assert_eq!(lists.marked(), [2, 0]);
+        assert!(lists.any(DirtyClass::LAYOUT | DirtyClass::MEASURE, &dirty));
+        assert!(!lists.any(DirtyClass::MEASURE, &dirty));
+
+        // A slot reset within the frame is not listed again when re-marked.
+        dirty[2] = DirtyClass::EMPTY;
+        assert!(!lists.any(DirtyClass::LAYOUT, &dirty));
+        dirty[2] |= DirtyClass::PAINT;
+        lists.note(2, DirtyClass::PAINT);
+        assert_eq!(lists.of(DirtyClass::PAINT), [2, 0]);
+
+        lists.clear(&mut dirty);
+        assert!(dirty.iter().all(|d| d.is_empty()));
+        assert!(lists.marked().is_empty());
+        assert!(lists.of(DirtyClass::PAINT).is_empty());
+        lists.note(1, DirtyClass::PAINT);
+        assert_eq!(lists.of(DirtyClass::PAINT), [1]);
+    }
 
     #[test]
     fn compose_and_query() {

@@ -4,7 +4,7 @@
 use super::{Gen, entry_name, leaf_lanes, put};
 use crate::program::layout::Interpolation;
 use crate::program::{Scalar, Stage, Ty};
-use viso_gpu::PROGRAM_TEXTURES;
+use viso_gpu_abi::PROGRAM_TEXTURES;
 
 pub(super) fn ty(ty: Ty) -> String {
     let scalar = |s: Scalar| match s {

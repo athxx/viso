@@ -151,13 +151,15 @@ pub struct MaskKey {
     pub fill_rule: ClipFillRule,
 }
 
-/// Where a retained mask lives in the cache: its page origin and texel extent in
-/// the shared R8/RGBA page, plus the format it was stored in. The renderer turns
-/// this into the sampled sub-rect of the mask page.
+/// Where a retained mask lives in the cache: its page, its origin and texel
+/// extent in that page, plus the format it was stored in. The renderer turns
+/// this into the sampled sub-rect of the page's texture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaskSlot {
     /// The stored format (R8 unless a color image mask).
     pub format: MaskFormat,
+    /// The page, an index into [`MaskCache::page_edges`].
+    pub page: u16,
     /// Texel origin of the ROI within the mask page.
     pub x: u32,
     /// Texel origin of the ROI within the mask page.
@@ -198,8 +200,13 @@ struct MaskEntry {
 /// masked draw when it is planned, not per pixel or per frame for an unchanged
 /// mask.
 ///
-/// Storage is a single page allocated by the shared max-rects
-/// [`RectPacker`](crate::rect_packer); ROIs pack in tight. A frame calls
+/// Storage is a list of square pages, each allocated by the shared max-rects
+/// [`RectPacker`](crate::rect_packer); ROIs pack in tight, first fit across
+/// the pages. There are no pages until a mask needs one; when none has room a
+/// page is added at twice the edge of the last (at least the ROI's, rounded
+/// up to a power of two, between the cache's minimum and maximum edge), so
+/// the pages hold about what the masks need and few are ever bound. A frame
+/// calls
 /// [`begin_frame`](Self::begin_frame), [`resolve`](Self::resolve)s each mask it
 /// needs, then [`end_frame`](Self::end_frame) to reclaim entries no frame has
 /// touched — a purely retained mask survives untouched-free across frames only
@@ -207,25 +214,36 @@ struct MaskEntry {
 #[derive(Debug)]
 pub struct MaskCache {
     entries: HashMap<MaskKey, MaskEntry>,
-    packer: RectPacker,
-    page_size: u32,
+    pages: Vec<Page>,
+    min_edge: u32,
+    max_edge: u32,
     frame: u64,
 }
 
+/// One page: its edge in texels and what of it is free.
+#[derive(Debug)]
+struct Page {
+    edge: u32,
+    packer: RectPacker,
+}
+
 impl MaskCache {
-    /// A fresh cache backed by a `page_size × page_size` texel page.
-    pub fn new(page_size: u32) -> MaskCache {
+    /// An empty cache whose pages are `min_edge` to `max_edge` texels square;
+    /// an ROI wider or taller than `max_edge` is declined.
+    pub fn new(min_edge: u32, max_edge: u32) -> MaskCache {
+        let max_edge = max_edge.max(1);
         MaskCache {
             entries: HashMap::new(),
-            packer: RectPacker::new(page_size),
-            page_size,
+            pages: Vec::new(),
+            min_edge: min_edge.clamp(1, max_edge),
+            max_edge,
             frame: 0,
         }
     }
 
-    /// The page edge length in texels.
-    pub fn page_size(&self) -> u32 {
-        self.page_size
+    /// Each page's edge in texels, in page order.
+    pub fn page_edges(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
+        self.pages.iter().map(|p| p.edge)
     }
 
     /// Number of retained masks currently cached.
@@ -251,8 +269,9 @@ impl MaskCache {
     /// no re-raster (§14.4). On a miss, the ROI is page-allocated (tight, in the
     /// request's [`format`](MaskRequest::format)), an entry is recorded, and
     /// `rasterized` is `true` so the caller knows a build is owed and
-    /// `clip_mask_builds` advances. Returns `None` only when the ROI does not fit
-    /// the page (the caller falls back to a per-frame mask target).
+    /// `clip_mask_builds` advances. A miss no page has room for adds a page.
+    /// Returns `None` only when the ROI is empty or wider or taller than the
+    /// largest page (the caller falls back to a per-frame mask target).
     pub fn resolve(&mut self, request: &MaskRequest) -> Option<MaskResolution> {
         let frame = self.frame;
         if let Some(entry) = self.entries.get_mut(&request.key) {
@@ -269,9 +288,10 @@ impl MaskCache {
         if w == 0 || h == 0 {
             return None;
         }
-        let (x, y) = self.packer.allocate(w, h)?;
+        let (page, x, y) = place(&mut self.pages, self.min_edge, self.max_edge, w, h)?;
         let slot = MaskSlot {
             format: request.format(),
+            page,
             x,
             y,
             w,
@@ -290,10 +310,11 @@ impl MaskCache {
         })
     }
 
-    /// Reclaim masks not touched this frame, repacking the page from the survivors.
-    /// Returns whether anything was evicted. A steady scene touches every retained
-    /// mask each frame and evicts nothing, so the page stays stable and no mask is
-    /// rebuilt.
+    /// Reclaim masks not touched this frame, repacking the pages from the
+    /// survivors and releasing the trailing pages none of them landed in.
+    /// Returns whether anything was evicted. A steady scene touches every
+    /// retained mask each frame and evicts nothing, so the pages stay stable
+    /// and no mask is rebuilt.
     pub fn end_frame(&mut self) -> bool {
         let frame = self.frame;
         let before = self.entries.len();
@@ -305,19 +326,85 @@ impl MaskCache {
         // re-packing every surviving ROI. Origins may move; the caller re-blits
         // survivors it still needs (they carry no persistent GPU-side identity
         // beyond the slot returned each frame).
-        self.packer.reset();
+        for page in &mut self.pages {
+            page.packer.reset();
+        }
         let mut survivors: Vec<(&MaskKey, &mut MaskEntry)> = self.entries.iter_mut().collect();
-        // Deterministic repack order (largest first) keeps placement stable frame
-        // to frame for an unchanged survivor set.
-        survivors.sort_by_key(|s| std::cmp::Reverse(s.1.slot.w * s.1.slot.h));
-        for (_, entry) in survivors {
-            if let Some((x, y)) = self.packer.allocate(entry.slot.w, entry.slot.h) {
-                entry.slot.x = x;
-                entry.slot.y = y;
+        // Deterministic repack order (largest first, then by key) keeps
+        // placement stable frame to frame for an unchanged survivor set.
+        survivors.sort_by_key(|(key, e)| {
+            (
+                std::cmp::Reverse(e.slot.w * e.slot.h),
+                key.source_revision,
+                key.transform_bucket,
+                key.device_scale_q,
+                key.kind as u8,
+                key.fill_rule as u8,
+            )
+        });
+        let mut lost = Vec::new();
+        for (key, entry) in survivors {
+            // Every survivor fit before; one that no longer packs (the order
+            // changed) gets a new page, or failing that leaves the cache.
+            match place(
+                &mut self.pages,
+                self.min_edge,
+                self.max_edge,
+                entry.slot.w,
+                entry.slot.h,
+            ) {
+                Some((page, x, y)) => {
+                    entry.slot.page = page;
+                    entry.slot.x = x;
+                    entry.slot.y = y;
+                }
+                None => lost.push(*key),
             }
         }
+        for key in lost {
+            self.entries.remove(&key);
+        }
+        let used = self
+            .entries
+            .values()
+            .map(|e| usize::from(e.slot.page) + 1)
+            .max()
+            .unwrap_or(0);
+        self.pages.truncate(used);
         true
     }
+}
+
+/// Packs a `w × h` ROI first fit across `pages`, adding a page when none has
+/// room: twice the last page's edge, at least the ROI's rounded up to a power
+/// of two, within `min_edge..=max_edge`. `None` when the ROI exceeds
+/// `max_edge` or the page count its index can name.
+fn place(
+    pages: &mut Vec<Page>,
+    min_edge: u32,
+    max_edge: u32,
+    w: u32,
+    h: u32,
+) -> Option<(u16, u32, u32)> {
+    if w > max_edge || h > max_edge {
+        return None;
+    }
+    for (index, page) in pages.iter_mut().enumerate() {
+        if let Some((x, y)) = page.packer.allocate(w, h) {
+            return Some((index as u16, x, y));
+        }
+    }
+    let index = u16::try_from(pages.len()).ok()?;
+    let grown = pages.last().map_or(min_edge, |p| p.edge.saturating_mul(2));
+    let edge = w
+        .max(h)
+        .next_power_of_two()
+        .max(grown)
+        .clamp(min_edge, max_edge);
+    let mut packer = RectPacker::new(edge);
+    let (x, y) = packer.allocate(w, h)?;
+    pages.push(Page { edge, packer });
+    Some((index, x, y))
 }
 
 /// The whole-pixel texel extent of an ROI: width/height rounded out to cover any
@@ -387,7 +474,7 @@ mod tests {
     /// texel extent is the ROI rounded out, not the page size.
     #[test]
     fn cold_resolve_rasterizes_a_tight_roi() {
-        let mut cache = MaskCache::new(256);
+        let mut cache = MaskCache::new(256, 256);
         let r = cache.resolve(&request(MaskKind::Path, false, 1)).unwrap();
         assert!(r.rasterized);
         assert_eq!((r.slot.w, r.slot.h), (32, 24));
@@ -399,7 +486,7 @@ mod tests {
     /// reused and nothing is re-rastered (§14.4).
     #[test]
     fn stable_mask_hits_without_re_raster() {
-        let mut cache = MaskCache::new(256);
+        let mut cache = MaskCache::new(256, 256);
         cache.begin_frame();
         let first = cache.resolve(&request(MaskKind::Path, false, 1)).unwrap();
         assert!(first.rasterized);
@@ -415,7 +502,7 @@ mod tests {
     /// into its own slot.
     #[test]
     fn changed_revision_re_rasters() {
-        let mut cache = MaskCache::new(256);
+        let mut cache = MaskCache::new(256, 256);
         cache.begin_frame();
         cache.resolve(&request(MaskKind::Path, false, 1)).unwrap();
         cache.begin_frame();
@@ -431,7 +518,7 @@ mod tests {
     /// every frame survives.
     #[test]
     fn untouched_masks_are_reclaimed() {
-        let mut cache = MaskCache::new(256);
+        let mut cache = MaskCache::new(256, 256);
         cache.begin_frame();
         cache.resolve(&request(MaskKind::Path, false, 1)).unwrap();
         cache.resolve(&request(MaskKind::Path, false, 2)).unwrap();
@@ -449,7 +536,7 @@ mod tests {
     /// An empty ROI carries no mask (no allocation, no entry).
     #[test]
     fn empty_roi_resolves_to_none() {
-        let mut cache = MaskCache::new(256);
+        let mut cache = MaskCache::new(256, 256);
         let mut req = request(MaskKind::Path, false, 1);
         req.roi = roi(0.0, 10.0);
         assert!(cache.resolve(&req).is_none());
@@ -460,10 +547,72 @@ mod tests {
     /// allocating past the page.
     #[test]
     fn oversize_roi_falls_back_to_none() {
-        let mut cache = MaskCache::new(16);
+        let mut cache = MaskCache::new(16, 16);
         let mut req = request(MaskKind::Path, false, 1);
         req.roi = roi(64.0, 64.0);
         assert!(cache.resolve(&req).is_none());
+    }
+
+    /// No page exists until a mask needs one, and the first is the smallest
+    /// that holds it.
+    #[test]
+    fn pages_appear_with_the_first_mask() {
+        let mut cache = MaskCache::new(64, 1024);
+        assert_eq!(cache.page_edges().len(), 0);
+        let r = cache.resolve(&request(MaskKind::Path, false, 1)).unwrap();
+        assert_eq!(r.slot.page, 0);
+        assert_eq!(cache.page_edges().collect::<Vec<_>>(), [64]);
+
+        let mut wide = request(MaskKind::Path, false, 2);
+        wide.roi = roi(300.0, 10.0);
+        let r = cache.resolve(&wide).unwrap();
+        assert_eq!(r.slot.page, 1);
+        assert_eq!(cache.page_edges().collect::<Vec<_>>(), [64, 512]);
+    }
+
+    /// A full page is followed by one twice its edge; masks fill earlier
+    /// pages first.
+    #[test]
+    fn a_full_page_is_followed_by_a_larger_one() {
+        let mut cache = MaskCache::new(32, 1024);
+        let mut req = |rev| {
+            let mut r = request(MaskKind::Path, false, rev);
+            r.roi = roi(32.0, 32.0);
+            cache.resolve(&r).unwrap().slot
+        };
+        assert_eq!(req(1).page, 0);
+        assert_eq!(req(2).page, 1);
+        assert_eq!(req(3).page, 1);
+        assert_eq!(cache.page_edges().collect::<Vec<_>>(), [32, 64]);
+    }
+
+    /// Evicting the masks of a trailing page releases it.
+    #[test]
+    fn an_emptied_trailing_page_is_released() {
+        let mut cache = MaskCache::new(32, 1024);
+        cache.begin_frame();
+        let mut small = request(MaskKind::Path, false, 1);
+        small.roi = roi(16.0, 16.0);
+        let mut big = request(MaskKind::Path, false, 2);
+        big.roi = roi(100.0, 100.0);
+        cache.resolve(&small).unwrap();
+        assert_eq!(cache.resolve(&big).unwrap().slot.page, 1);
+        assert_eq!(cache.page_edges().len(), 2);
+
+        cache.begin_frame();
+        cache.resolve(&small).unwrap();
+        assert!(cache.end_frame());
+        assert_eq!(cache.page_edges().collect::<Vec<_>>(), [32]);
+    }
+
+    /// An ROI larger than the largest page is declined.
+    #[test]
+    fn an_roi_past_the_largest_page_is_declined() {
+        let mut cache = MaskCache::new(32, 128);
+        let mut req = request(MaskKind::Path, false, 1);
+        req.roi = roi(129.0, 8.0);
+        assert!(cache.resolve(&req).is_none());
+        assert_eq!(cache.page_edges().len(), 0);
     }
 
     /// A fractional ROI edge rounds out to whole texels so the mask covers every

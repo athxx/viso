@@ -3,8 +3,8 @@
 //! logic reload the game can go back and run that stretch again on the new
 //! code ([`Scheduler::replay_from`](super::Scheduler::replay_from)).
 
-use std::collections::VecDeque;
-use std::fmt;
+use alloc::collections::VecDeque;
+use core::fmt;
 
 use super::snapshot::{GameSnapshot, Restored};
 use super::tape::{InputTape, Recorder};
@@ -135,4 +135,4 @@ impl fmt::Display for ReplayError {
     }
 }
 
-impl std::error::Error for ReplayError {}
+impl core::error::Error for ReplayError {}

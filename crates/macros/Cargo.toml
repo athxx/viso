@@ -9,16 +9,17 @@ rust-version.workspace = true
 # instance layout (GpuInstance derive), .vs schema, static template
 # generation, compile-time diagnostics.
 #
-# A proc-macro crate is a leaf with no viso deps by construction.
+# A proc-macro crate links no runtime: its one viso dependency is the leaf
+# `viso-glyph-a8`, the A8 rasterizer and baked page format it shares with the
+# text runtime.
 [lib]
 proc-macro = true
 
 [dependencies]
-# Standard proc-macro toolchain. External crates only — a proc-macro crate is a
-# DAG leaf with no viso-* edges. The `#[derive(GpuInstance)]` output refers to
+# Standard proc-macro toolchain. The `#[derive(GpuInstance)]` output refers to
 # `viso_gpu::...` paths, but macros itself does NOT depend on viso-gpu: the edge
 # is the other way (viso-gpu depends on viso-macros and re-exports the derive),
-# so integration tests of generated code live in viso-gpu, keeping this a leaf.
+# so integration tests of generated code live in viso-gpu.
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
@@ -26,3 +27,12 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 # font manifest keeps at build time.
 ttf-parser = { workspace = true }
 unicode-script = { workspace = true }
+# Bakes each face's glyphs with the rasterizer the text runtime runs, into the
+# page format it reads. A leaf crate with no runtime in it, so the proc macro
+# stays fast to build.
+viso-glyph-a8 = { workspace = true, features = ["raster"] }
+
+[dev-dependencies]
+# The GB 2312 table test decodes every GB 2312 code through GBK to check the
+# table the `gb2312` charset reads.
+encoding_rs = "0.8.41"

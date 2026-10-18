@@ -1,16 +1,11 @@
 //! Unit quaternion for 3D rotation: [`Quat`].
 //!
 //! Stored as `#[repr(C)]` `(x, y, z, w)` `f32` — the imaginary part first, real
-//! part last, matching the GPU-friendly memory order. Where the reference
-//! framework exposes `Quat::multiply(a, b)` / `Quat::from_slerp(a, b, t)` as
-//! associated functions, this crate makes them **methods** (`a.mul(b)`,
-//! `a.slerp(b, t)`) for the same reason the vectors do.
-//!
-//! One reference bug is fixed here: its `from_slerp` reads the wrong `.w`
-//! component when the two quaternions are already close (the linear-blend
-//! fallback), pulling the interpolation toward the wrong endpoint. `slerp`
-//! below uses the correct component.
+//! part last, matching the GPU-friendly memory order. Products and interpolation
+//! are **methods** (`a.mul(b)`, `a.slerp(b, t)`) for the same reason the vectors
+//! are.
 
+use crate::float::{acos, sin, sin_cos, sqrt};
 use crate::mat::Mat4;
 use crate::vec::{Vec3, Vec4};
 
@@ -57,7 +52,7 @@ impl Quat {
     #[inline]
     pub fn from_axis_angle(axis: Vec3, angle: f32) -> Quat {
         let half = angle * 0.5;
-        let (s, c) = half.sin_cos();
+        let (s, c) = sin_cos(half);
         Quat {
             x: axis.x * s,
             y: axis.y * s,
@@ -102,7 +97,7 @@ impl Quat {
     /// The length (norm).
     #[inline]
     pub fn length(self) -> f32 {
-        self.dot(self).sqrt()
+        sqrt(self.dot(self))
     }
 
     /// The unit quaternion in the same direction. Returns [`Quat::IDENTITY`]
@@ -135,8 +130,8 @@ impl Quat {
     /// Spherical linear interpolation from `self` (at `t == 0`) to `rhs` (at
     /// `t == 1`), taking the shorter arc.
     ///
-    /// Unlike the reference, the near-parallel fallback uses the correct
-    /// endpoint `w` component.
+    /// The near-parallel fallback blends toward the endpoint's own components,
+    /// `w` included.
     pub fn slerp(self, rhs: Quat, t: f32) -> Quat {
         let mut cos_theta = self.dot(rhs);
         // Take the shorter arc by flipping one quaternion if needed.
@@ -158,10 +153,10 @@ impl Quat {
             .normalize();
         }
 
-        let theta = cos_theta.clamp(-1.0, 1.0).acos();
-        let sin_theta = theta.sin();
-        let scale0 = ((1.0 - t) * theta).sin() / sin_theta;
-        let scale1 = (t * theta).sin() / sin_theta;
+        let theta = acos(cos_theta.clamp(-1.0, 1.0));
+        let sin_theta = sin(theta);
+        let scale0 = sin((1.0 - t) * theta) / sin_theta;
+        let scale1 = sin(t * theta) / sin_theta;
         Quat::new(
             scale0 * self.x + scale1 * end.x,
             scale0 * self.y + scale1 * end.y,
@@ -280,8 +275,8 @@ mod tests {
     #[test]
     fn slerp_near_parallel_uses_correct_endpoint() {
         // Two nearly-identical quaternions hit the linear-blend fallback; the
-        // result at t=1 must land on `b`, not drift toward `-b` (the reference
-        // .w bug). dot with b stays ~1.
+        // result at t=1 must land on `b`, not drift toward `-b`. dot with b
+        // stays ~1.
         let a = Quat::from_axis_angle(Vec3::Z, 0.10);
         let b = Quat::from_axis_angle(Vec3::Z, 0.1001);
         assert!(a.slerp(b, 1.0).dot(b) > 0.9999);

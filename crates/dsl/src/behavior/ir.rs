@@ -27,7 +27,7 @@ pub use viso_behavior::NativeImport;
 use viso_behavior::game::InputSchema;
 use viso_behavior::native::NativeId;
 use viso_behavior::{PersistSlot, TaskPolicy};
-use viso_ui::adaptive::EnvField;
+use viso_schema::EnvField;
 
 use super::probe::SystemState;
 use crate::resolve::SymbolId;

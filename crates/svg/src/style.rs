@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use crate::color::{Color, parse_color};
 use crate::css::{self, Declaration};
-use crate::geom::Transform;
+use crate::geom::Affine2;
 use crate::syntax::{self, Length, Stream, Unit};
 use crate::tree::{BlendMode, FillRule, LineCap, LineJoin, MaskType};
 use crate::xml::{NodeId, XmlDoc, XmlKind};
@@ -59,7 +59,7 @@ pub(crate) enum Prop {
     StrokeMiterlimit,
     StrokeOpacity,
     StrokeWidth,
-    Transform,
+    Affine2,
     TransformOrigin,
     VectorEffect,
     Visibility,
@@ -113,7 +113,7 @@ fn prop_from_name(name: &str) -> Option<Prop> {
         "stroke-miterlimit" => Prop::StrokeMiterlimit,
         "stroke-opacity" => Prop::StrokeOpacity,
         "stroke-width" => Prop::StrokeWidth,
-        "transform" => Prop::Transform,
+        "transform" => Prop::Affine2,
         "transform-origin" => Prop::TransformOrigin,
         "vector-effect" => Prop::VectorEffect,
         "visibility" => Prop::Visibility,
@@ -411,7 +411,7 @@ pub(crate) struct Style {
     pub overflow_visible: bool,
     pub non_scaling_stroke: bool,
     pub mask_type: MaskType,
-    pub transform: Transform,
+    pub transform: Affine2,
     pub transform_origin: Option<(Length, Length)>,
 }
 
@@ -456,7 +456,7 @@ impl Style {
             overflow_visible: false,
             non_scaling_stroke: false,
             mask_type: MaskType::Luminance,
-            transform: Transform::IDENTITY,
+            transform: Affine2::IDENTITY,
             transform_origin: None,
         }
     }
@@ -481,7 +481,7 @@ impl Style {
         s.overflow_visible = init.overflow_visible;
         s.non_scaling_stroke = init.non_scaling_stroke;
         s.mask_type = init.mask_type;
-        s.transform = Transform::IDENTITY;
+        s.transform = Affine2::IDENTITY;
         s.transform_origin = None;
 
         // `color` and `font-size` first: other values may depend on them.
@@ -529,7 +529,7 @@ impl Style {
             Prop::Overflow => self.overflow_visible = parent.overflow_visible,
             Prop::VectorEffect => self.non_scaling_stroke = parent.non_scaling_stroke,
             Prop::MaskType => self.mask_type = parent.mask_type,
-            Prop::Transform => self.transform = parent.transform,
+            Prop::Affine2 => self.transform = parent.transform,
             Prop::TransformOrigin => self.transform_origin = parent.transform_origin,
             // Inherited properties already hold the parent's value.
             _ => {}
@@ -674,7 +674,7 @@ impl Style {
                     _ => None,
                 },
             ),
-            Prop::Transform => set(&mut self.transform, syntax::parse_transform(t)),
+            Prop::Affine2 => set(&mut self.transform, syntax::parse_transform(t)),
             Prop::TransformOrigin => set(
                 &mut self.transform_origin,
                 parse_transform_origin(t).map(Some),

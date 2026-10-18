@@ -155,6 +155,11 @@ pub const KEYS: &[&str] = &[
     "test.surface.height",
     "test.surface.scale",
     "i18n.source",
+    "images.convert",
+    "images.quality",
+    "images.svg",
+    "images.svg_scale",
+    "images.fit",
     "workspace.members",
 ];
 
@@ -434,6 +439,39 @@ pub fn settings(project: &Project, config: &ResolvedConfig, env: &Env) -> Vec<En
         &m.i18n.source,
         Some(defaults::I18N_SOURCE),
     );
+    let images = &m.images;
+    let flag = |b: Option<Spanned<bool>>| b.map(|b| b.map(Value::Bool));
+    push_value(
+        &mut push,
+        "images.convert",
+        flag(images.convert),
+        Value::Bool(true),
+    );
+    push_value(
+        &mut push,
+        "images.quality",
+        images.quality.map(|q| q.map(|q| text(&q.as_str()))),
+        Value::Text(crate::ImageQuality::High.as_str().into()),
+    );
+    push_value(
+        &mut push,
+        "images.svg",
+        images.svg.map(|v| {
+            v.map(|v| match v {
+                crate::SvgImages::Vector => text(&"vector"),
+                crate::SvgImages::Raster => text(&"raster"),
+            })
+        }),
+        Value::Text("vector".into()),
+    );
+    // The target's surface scale when unset.
+    push_value(
+        &mut push,
+        "images.svg_scale",
+        images.svg_scale.map(|s| s.map(|s| Value::Number(s.get()))),
+        Value::Unset,
+    );
+    push_value(&mut push, "images.fit", flag(images.fit), Value::Bool(true));
     push_list(&mut push, "workspace.members", &m.workspace.members);
 
     debug_assert!(entries.iter().map(|e| e.key).eq(KEYS.iter().copied()));

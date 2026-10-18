@@ -20,12 +20,16 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use viso_behavior::Value;
 use viso_ende::{Decode, DecodeError, content_hash};
+use viso_ui::AssetBytes;
 use viso_ui::Srgb;
 use viso_ui::resource::ResourceId;
 use viso_ui::shader::{BrushLayout, BrushProgram, PackedBrush, ParamKind, ParamValue};
 
-/// A program loaded and still held: the hash of its bytes, the bytes, and it.
-type Loaded = (u64, Box<[u8]>, Weak<BrushProgram>);
+use crate::package::ViewShader;
+
+/// A program loaded and still held: the hash of its bytes, the bytes —
+/// borrowed where they are embedded — and it.
+type Loaded = (u64, AssetBytes, Weak<BrushProgram>);
 
 /// Every program loaded and still held.
 static LOADED: Mutex<Vec<Loaded>> = Mutex::new(Vec::new());
@@ -37,6 +41,15 @@ static LOADED: Mutex<Vec<Loaded>> = Mutex::new(Vec::new());
 ///
 /// Bytes that are not a packed brush.
 pub fn load_shader(bytes: &[u8]) -> Result<Arc<BrushProgram>, DecodeError> {
+    load_kept(bytes, |bytes| AssetBytes::Shared(bytes.into()))
+}
+
+/// [`load_shader`], keeping the bytes a new program is held by as `keep`
+/// says: borrowed when they are `'static`, else copied.
+pub(crate) fn load_kept<'a>(
+    bytes: &'a [u8],
+    keep: fn(&'a [u8]) -> AssetBytes,
+) -> Result<Arc<BrushProgram>, DecodeError> {
     let key = content_hash(bytes);
     let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(program) = loaded
@@ -48,11 +61,24 @@ pub fn load_shader(bytes: &[u8]) -> Result<Arc<BrushProgram>, DecodeError> {
     }
     let program = Arc::new(BrushProgram::from(PackedBrush::decode_from_slice(bytes)?));
     loaded.retain(|(_, _, program)| program.strong_count() > 0);
-    loaded.push((key, bytes.into(), Arc::downgrade(&program)));
+    loaded.push((key, keep(bytes), Arc::downgrade(&program)));
     Ok(program)
 }
 
-/// [`load_shader`] for the bytes `view!` embeds.
+/// [`load_shader`] for each shader of `shaders`, in order.
+///
+/// # Errors
+///
+/// The first shader that is not a packed brush.
+pub fn load_shaders(shaders: &[ViewShader]) -> Result<Vec<Arc<BrushProgram>>, DecodeError> {
+    shaders
+        .iter()
+        .map(|shader| load_shader(shader.bytes()))
+        .collect()
+}
+
+/// [`load_shader`] for the bytes `view!` embeds, which the program is held
+/// by where they lie.
 ///
 /// # Panics
 ///
@@ -60,7 +86,8 @@ pub fn load_shader(bytes: &[u8]) -> Result<Arc<BrushProgram>, DecodeError> {
 /// this does not happen for bytes it produced.
 #[doc(hidden)]
 pub fn __embedded_shader(bytes: &'static [u8]) -> Arc<BrushProgram> {
-    load_shader(bytes).unwrap_or_else(|error| panic!("an embedded shader does not load: {error}"))
+    load_kept(bytes, AssetBytes::Static)
+        .unwrap_or_else(|error| panic!("an embedded shader does not load: {error}"))
 }
 
 /// What `value`, a shader's record, gives under `layout`: its parameters as

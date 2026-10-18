@@ -16,10 +16,10 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
+use viso_dev_protocol::headless::HeadlessSurface;
+use viso_dev_protocol::profile::{Metric, Trace, Unit, chrome_trace, summarize};
 use viso_ende::JsonWriter;
 use viso_project::Target;
-use viso_view::headless::HeadlessSurface;
-use viso_view::profile::{Metric, Trace, Unit, chrome_trace, summarize};
 
 use super::build::relative_name;
 use super::check;

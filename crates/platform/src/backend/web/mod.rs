@@ -22,7 +22,6 @@ mod input;
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::ptr::NonNull;
 use std::rc::Rc;
 
 use js_sys::{Array, Reflect};
@@ -34,11 +33,12 @@ use web_sys::{
     ResizeObserverEntry, ResizeObserverOptions, ResizeObserverSize,
 };
 
+use super::drive::Drive;
 use super::web_translate::{css_cursor, css_px, is_apple, keyboard_inset, pixels};
-use crate::accessibility::accesskit;
+use crate::accessibility::SemanticsDelta;
 use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
 use crate::event::{
-    Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, Insets,
+    Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, LogicalInsets,
     PointerButtons, RawEvent,
 };
 use crate::handler::AppHandler;
@@ -74,9 +74,9 @@ struct Loop {
     events: RefCell<VecDeque<RawEvent>>,
     /// A redraw is due at the next animation frame.
     redraw: Cell<bool>,
-    /// The runtime's handler, installed by `run` and never removed: the
-    /// caller keeps it alive for the rest of the page's life.
-    handler: Cell<Option<NonNull<dyn AppHandler>>>,
+    /// The app and the runtime's handler, installed by `run` and never
+    /// removed: the caller keeps both alive for the rest of the page's life.
+    drive: Cell<Option<Drive>>,
     /// A drain is on the stack; nested callbacks only queue.
     driving: Cell<bool>,
     appearance: Cell<Appearance>,
@@ -103,7 +103,7 @@ thread_local! {
     static LOOP: Loop = Loop {
         events: RefCell::new(VecDeque::new()),
         redraw: Cell::new(false),
-        handler: Cell::new(None),
+        drive: Cell::new(None),
         driving: Cell::new(false),
         appearance: Cell::new(Appearance::default()),
         locale: RefCell::new(String::new()),
@@ -146,23 +146,24 @@ fn document() -> Document {
 /// running drain picks the new events up. A panic aborts the module, so
 /// there is no unwinding to reset `driving` for.
 fn drive() {
-    let Some(mut handler) = LOOP.with(|l| {
+    let Some(drive) = LOOP.with(|l| {
         if l.driving.get() {
             return None;
         }
-        let handler = l.handler.get()?;
+        let drive = l.drive.get()?;
         l.driving.set(true);
-        Some(handler)
+        Some(drive)
     }) else {
         return;
     };
     let mut last = None;
     while let Some(event) = LOOP.with(|l| l.events.borrow_mut().pop_front()) {
-        // SAFETY: the pointer was taken from the `&mut dyn AppHandler` passed
-        // to `run`, whose caller keeps it alive for the rest of the page
-        // (`Scheduler::run_detached` leaks it). `driving` admits one drain at
-        // a time, so this is the only live reborrow.
-        last = Some(deliver(unsafe { handler.as_mut() }, event));
+        // SAFETY: the drive was taken from the borrows passed to `run`, whose
+        // caller keeps both alive for the rest of the page and reaches them
+        // no other way (`Scheduler::run_detached` leaks them). `driving`
+        // admits one drain at a time, so these are the only live reborrows.
+        let (app, handler) = unsafe { drive.get() };
+        last = Some(deliver(app, handler, event));
     }
     LOOP.with(|l| l.driving.set(false));
     if let Some(flow) = last {
@@ -172,12 +173,16 @@ fn drive() {
 
 /// Hand one event to the handler, completing the copy handshake: the
 /// answer to a `CopyRequested` is kept for the clipboard event in progress.
-fn deliver(handler: &mut dyn AppHandler, event: RawEvent) -> ControlFlow {
+fn deliver(
+    app: &mut dyn PlatformApp,
+    handler: &mut dyn AppHandler,
+    event: RawEvent,
+) -> ControlFlow {
     let reply = match &event {
         RawEvent::CopyRequested { reply, .. } => Some(reply.clone()),
         _ => None,
     };
-    let flow = handler.handle(event);
+    let flow = handler.handle(app, event);
     if let Some(reply) = reply {
         LOOP.with(|l| *l.copied.borrow_mut() = Some(reply.take()));
     }
@@ -325,7 +330,7 @@ struct Page {
     /// sent `229`), so edits arriving as input events stand in for it.
     unidentified: Cell<bool>,
     keyboard: Cell<f64>,
-    insets: Cell<Insets>,
+    insets: Cell<LogicalInsets>,
     /// The viewport segments' hinges and folds over the canvas.
     features: RefCell<Vec<DisplayFeature>>,
     soft_keyboard: Cell<bool>,
@@ -459,7 +464,7 @@ fn report_safe_area(page: &Page) {
         return;
     };
     let side = |name: &str| css_px(&style.get_property_value(name).unwrap_or_default());
-    let insets = Insets {
+    let insets = LogicalInsets {
         top: side("padding-top"),
         left: side("padding-left"),
         bottom: side("padding-bottom"),
@@ -857,7 +862,7 @@ impl PlatformApp for WebApp {
             composing: Cell::new(false),
             unidentified: Cell::new(false),
             keyboard: Cell::new(0.0),
-            insets: Cell::new(Insets::default()),
+            insets: Cell::new(LogicalInsets::default()),
             features: RefCell::new(Vec::new()),
             soft_keyboard: Cell::new(false),
             cursor: Cell::new(CursorIcon::Default),
@@ -889,17 +894,11 @@ impl PlatformApp for WebApp {
     }
 
     fn run(&mut self, handler: &mut dyn AppHandler) {
-        // SAFETY: only the trait object's lifetime is erased. The browser
-        // loop outlives `run`, and the caller keeps `handler` alive for the
-        // rest of the page (the contract of `PlatformApp::run` on a target
-        // whose loop cannot block), so every use `drive` makes of the pointer
-        // is within the borrow.
-        let handler: NonNull<dyn AppHandler> = unsafe {
-            std::mem::transmute::<NonNull<dyn AppHandler + '_>, NonNull<dyn AppHandler + 'static>>(
-                NonNull::from(handler),
-            )
-        };
-        LOOP.with(|l| l.handler.set(Some(handler)));
+        // The browser loop outlives `run`, and the caller keeps the app and
+        // `handler` alive for the rest of the page (the contract of
+        // `PlatformApp::run` on a target whose loop cannot block), so every
+        // use `drive` makes of them is within the borrows.
+        LOOP.with(|l| l.drive.set(Some(Drive::new(self, handler))));
         push(RawEvent::AppLaunched);
         drive();
     }
@@ -919,7 +918,7 @@ impl PlatformApp for WebApp {
 
     fn set_menu(&mut self, _menu: &Menu) {}
 
-    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+    fn update_accessibility(&mut self, window: WindowId, delta: SemanticsDelta) {
         let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) else {
             return;
         };
@@ -927,7 +926,7 @@ impl PlatformApp for WebApp {
         let rect = page.canvas.get_bounding_client_rect();
         let canvas = (rect.left(), rect.top(), rect.width(), rect.height());
         if let Some(access) = page.access.borrow_mut().as_mut() {
-            access.update(&document(), update, canvas, page.scale.get());
+            access.update(&document(), delta, canvas, page.scale.get());
         }
     }
 
@@ -1038,6 +1037,19 @@ impl PlatformApp for WebApp {
 
     fn framed_windows(&self) -> bool {
         false
+    }
+
+    fn capabilities(&self) -> crate::PlatformCaps {
+        // One page, the browser's clipboard and input methods, and the ARIA
+        // mirror.
+        crate::PlatformCaps {
+            multi_window: false,
+            menus: false,
+            portals: false,
+            system_clipboard: true,
+            ime: true,
+            accessibility: true,
+        }
     }
 
     fn loop_waker(&self) -> crate::LoopWaker {

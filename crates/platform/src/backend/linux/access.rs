@@ -11,7 +11,7 @@ use accesskit::{ActionHandler, ActionRequest, ActivationHandler, DeactivationHan
 use accesskit_unix::Adapter;
 
 use super::{Wake, Waker};
-use crate::accessibility::AccessRequest;
+use crate::accessibility::{AccessRequest, SemanticsDelta, accesskit_bridge};
 use crate::control::WindowId;
 
 /// One window's adapter.
@@ -30,9 +30,10 @@ impl LinuxAccess {
         }
     }
 
-    /// Apply `update` if an assistive technology has asked for the tree.
-    pub(crate) fn update(&mut self, update: TreeUpdate) {
-        self.adapter.update_if_active(|| update);
+    /// Apply `delta` if an assistive technology has asked for the tree.
+    pub(crate) fn update(&mut self, delta: SemanticsDelta) {
+        self.adapter
+            .update_if_active(|| accesskit_bridge::tree_update(delta));
     }
 
     /// Tell the adapter whether the window has keyboard focus, which decides
@@ -67,7 +68,7 @@ impl ActivationHandler for Requests {
 
 impl ActionHandler for Requests {
     fn do_action(&mut self, request: ActionRequest) {
-        if let Some(request) = AccessRequest::from_accesskit(&request) {
+        if let Some(request) = accesskit_bridge::request(&request) {
             self.send(request);
         }
     }

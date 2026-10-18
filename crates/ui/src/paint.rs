@@ -9,13 +9,18 @@
 //! caller-owned `Vec` so frames reuse the buffer. The renderer decides
 //! batching/ordering downstream; this only produces the primitive data.
 //!
-//! Node rects come from `world`, not `bounds`: a scrolling ancestor shifts the
-//! world rect so a scrolled child paints at its on-screen position. A scroll
-//! viewport additionally wraps its children in a
+//! Node rects are on-screen rects: `bounds` displaced by the scrolls and
+//! translates around the node, carried down the walk (see
+//! [`crate::transform`]). A scroll viewport additionally wraps its children in a
 //! [`viso_render::Primitive::Layer`]/[`viso_render::Primitive::LayerEnd`] pair
-//! clipped to the viewport's own world rect, so content scrolled past the edge
-//! is clipped away. The viewport's own background quad paints before the clip is
+//! clipped to the viewport's own rect, so content scrolled past the edge is
+//! clipped away. The viewport's own background quad paints before the clip is
 //! pushed, so it fills the whole box regardless of scroll.
+//!
+//! Each transform root — a scroll viewport's content, a translated node — is
+//! bracketed by [`viso_render::Primitive::Transform`] and recorded in a
+//! [`TransformTable`], so a frame that only scrolls or slides moves the
+//! retained draws instead of painting again.
 
 use std::sync::Arc;
 
@@ -24,9 +29,10 @@ use crate::component::NodeStore;
 use crate::content::Content;
 use crate::layout::Vec2;
 use crate::node::NodeId;
+use crate::transform::TransformTable;
 use viso_render::{
     GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point,
-    Primitive, ProgramTextures, Quad, Rect, Rgba, SamplerDesc, ShaderDraw,
+    Primitive, ProgramTextures, Quad, Rect, Rgba, SamplerDesc, ShaderDraw, TransformSlot,
 };
 
 /// The opaque white tint that passes a premultiplied color-atlas texel through
@@ -48,31 +54,106 @@ const WHITE: Rgba = Rgba {
 /// they were met (author order). So a popup declared deep in the tree still draws
 /// over the whole scene, with no z-index sort. A tree with no overlay node emits
 /// exactly the pre-order stream it did before — the deferred pass is empty.
+///
+/// The transform roots met are recorded into a table this call discards; the
+/// frame loop paints through [`paint_with_transforms`] to keep it.
 pub fn paint_tree(store: &NodeStore, root: NodeId, out: &mut Vec<Primitive>) {
-    // The top-layer roots met during the main walk. A thread/scene-local scratch
-    // that a hot caller could hoist; here it is a small once-per-paint Vec, empty
-    // (never heap-allocating) in the common no-overlay case.
-    let mut overlays: Vec<NodeId> = Vec::new();
+    paint_with_transforms(store, root, out, &mut TransformTable::default());
+}
+
+/// [`paint_tree`], recording every transform root met into `table` (cleared
+/// first) in paint order, each root's primitives bracketed by a
+/// [`Primitive::Transform`] naming its slot.
+pub fn paint_with_transforms(
+    store: &NodeStore,
+    root: NodeId,
+    out: &mut Vec<Primitive>,
+    table: &mut TransformTable,
+) {
+    paint_walk(store, root, out, table, &mut ());
+}
+
+/// What a paint walk records besides its primitives: the span of the stream
+/// each node emitted, its own primitives through its last descendant's.
+pub(crate) trait PaintSpans {
+    /// `node` starts emitting at `start`; the returned token closes its span.
+    fn open(&mut self, node: NodeId, start: usize) -> usize;
+    /// The span opened as `token` ends at `end`.
+    fn close(&mut self, token: usize, end: usize);
+}
+
+/// The frame's walk records no spans; the calls compile away.
+impl PaintSpans for () {
+    #[inline(always)]
+    fn open(&mut self, _: NodeId, _: usize) -> usize {
+        0
+    }
+
+    #[inline(always)]
+    fn close(&mut self, _: usize, _: usize) {}
+}
+
+/// The one paint walk, shared by the frame and the inspector.
+pub(crate) fn paint_walk<S: PaintSpans>(
+    store: &NodeStore,
+    root: NodeId,
+    out: &mut Vec<Primitive>,
+    table: &mut TransformTable,
+    spans: &mut S,
+) {
+    table.clear();
+    // The top-layer roots met during the main walk, each with the space it was
+    // met in; the table's scratch, so a retained table allocates nothing.
+    let mut overlays = core::mem::take(&mut table.overlays);
+    overlays.clear();
+    let top = Space {
+        slot: None,
+        raw: if store.arena().is_live(root) {
+            store.shift_above(root)
+        } else {
+            Vec2::ZERO
+        },
+    };
     // The `root` itself paints even if flagged overlay — it is the entry, not a
     // child boundary — so the main walk starts unconditionally.
-    paint_subtree(store, root, out, &mut overlays);
-    // Deferred top layer: paint each overlay root in the order it was met. An
-    // overlay's own subtree may in turn contain further overlays, appended past
-    // the current end, so the index walk naturally drains nested ones too.
+    paint_subtree(store, root, top, out, table, &mut overlays, spans);
+    // Deferred top layer: paint each overlay root in the order it was met, inside
+    // the root it was met in so it moves with it. An overlay's own subtree may in
+    // turn contain further overlays, appended past the current end, so the index
+    // walk naturally drains nested ones too.
     let mut i = 0;
     while i < overlays.len() {
-        paint_subtree(store, overlays[i], out, &mut overlays);
+        let (node, space) = overlays[i];
+        if let Some(slot) = space.slot {
+            out.push(Primitive::Transform(TransformSlot(slot)));
+        }
+        paint_subtree(store, node, space, out, table, &mut overlays, spans);
+        if space.slot.is_some() {
+            out.push(Primitive::TransformEnd);
+        }
         i += 1;
     }
+    table.overlays = overlays;
+}
+
+/// Where a node sits: the innermost transform root around it, and that root's
+/// unsnapped displacement.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Space {
+    slot: Option<u32>,
+    raw: Vec2,
 }
 
 /// Paint one subtree in pre-order, diverting any overlay child into `overlays`
 /// instead of descending into it (the caller drains that list into a top layer).
-fn paint_subtree(
+fn paint_subtree<S: PaintSpans>(
     store: &NodeStore,
     root: NodeId,
+    space: Space,
     out: &mut Vec<Primitive>,
-    overlays: &mut Vec<NodeId>,
+    table: &mut TransformTable,
+    overlays: &mut Vec<(NodeId, Space)>,
+    spans: &mut S,
 ) {
     let arena = store.arena();
     if !arena.is_live(root) {
@@ -85,7 +166,21 @@ fn paint_subtree(
         return;
     }
 
-    let world = store.world(root);
+    let span = spans.open(root, out.len());
+    // A translated node is a transform root: it and its subtree move together.
+    let mut space = space;
+    let own = store.is_transform_root(root);
+    if own {
+        let raw = space.raw + store.self_shift(root);
+        let slot = table.push(root, space.slot, false, raw, store.snap_shift(raw));
+        out.push(Primitive::Transform(TransformSlot(slot)));
+        space = Space {
+            slot: Some(slot),
+            raw,
+        };
+    }
+
+    let world = store.bounds(root).translate(store.snap_shift(space.raw));
     // A translucent node composites itself and its subtree as one layer over
     // its own box.
     let faded = opacity < 1.0;
@@ -114,38 +209,50 @@ fn paint_subtree(
         paint_content(content, world, out);
     }
 
-    // A scroll viewport clips its content to its own box: push a clip layer
-    // around the children (the viewport's background already painted above, so
-    // it is not clipped). An ordinary container pushes nothing.
-    let scroll_clip = store.is_scroll(root);
-    if scroll_clip {
+    // A scroll viewport clips its content to its own box — the viewport's
+    // background already painted above, so it is not clipped — and its content
+    // is a transform root moved by the scroll. An ordinary container pushes
+    // nothing.
+    let scroll = store.is_scroll(root);
+    let mut inner = space;
+    if scroll {
         out.push(Primitive::Layer(LayerClip {
             clip: world,
             opacity: 1.0,
             blur_sigma: 0.0,
             backdrop_sigma: 0.0,
         }));
+        let raw = space.raw + store.content_shift(root);
+        let slot = table.push(root, space.slot, true, raw, store.snap_shift(raw));
+        out.push(Primitive::Transform(TransformSlot(slot)));
+        inner = Space {
+            slot: Some(slot),
+            raw,
+        };
     }
 
     // Recurse into children in sibling order (pre-order: parent already painted).
     // An overlay child is diverted to the deferred top layer rather than painted
     // in place — it draws after the whole scene, so it must not descend here.
-    let mut child = arena.links(root).and_then(|l| l.first_child);
-    while let Some(c) = child {
+    for c in arena.children(root) {
         if store.is_overlay(c) {
-            overlays.push(c);
+            overlays.push((c, inner));
         } else {
-            paint_subtree(store, c, out, overlays);
+            paint_subtree(store, c, inner, out, table, overlays, spans);
         }
-        child = arena.links(c).and_then(|l| l.next_sibling);
     }
 
-    if scroll_clip {
+    if scroll {
+        out.push(Primitive::TransformEnd);
         out.push(Primitive::LayerEnd);
     }
     if faded {
         out.push(Primitive::LayerEnd);
     }
+    if own {
+        out.push(Primitive::TransformEnd);
+    }
+    spans.close(span, out.len());
 }
 
 /// Lower one node's [`Content`] to a primitive, translating its node-local
@@ -535,25 +642,27 @@ mod tests {
             &mut scratch,
         );
         store.scroll_by(root, Vec2 { x: 0.0, y: 40.0 });
-        store.resolve_transforms(root);
 
         let mut out = Vec::new();
         paint_tree(&store, root, &mut out);
 
-        // viewport background quad, then the clip layer, then the content quad,
-        // then the layer end — the background is outside the clip, the content in.
-        assert_eq!(out.len(), 4);
+        // viewport background quad, then the clip layer, then the content in its
+        // transform root, then the layer end — the background is outside the
+        // clip, the content in.
+        assert_eq!(out.len(), 6);
         assert!(matches!(out[0], Primitive::Quad(q) if q.rect == store.world(root)));
         let clip = match out[1] {
             Primitive::Layer(l) => l,
             _ => panic!("expected a clip layer around the content"),
         };
         assert_eq!(clip.clip, store.world(root), "clip is the viewport box");
+        assert!(matches!(out[2], Primitive::Transform(TransformSlot(0))));
         // The content quad is shifted up by the scroll offset.
         let cw = store.world(content.unwrap());
-        assert!(matches!(out[2], Primitive::Quad(q) if q.rect == cw));
+        assert!(matches!(out[3], Primitive::Quad(q) if q.rect == cw));
         assert_eq!(cw.y, store.bounds(content.unwrap()).y - 40.0);
-        assert!(matches!(out[3], Primitive::LayerEnd));
+        assert!(matches!(out[4], Primitive::TransformEnd));
+        assert!(matches!(out[5], Primitive::LayerEnd));
     }
 
     #[test]
@@ -1228,11 +1337,11 @@ mod tests {
         use viso_render::asset::{RasterImage, ResourceId, ResourceRevision, VectorScene};
 
         let raster = |w: u32, h: u32| {
-            AssetPayload::Raster(Arc::new(RasterImage {
-                width: w,
-                height: h,
-                pixels: vec![255; (w * h * 4) as usize],
-            }))
+            AssetPayload::Raster(Arc::new(RasterImage::rgba8(
+                w,
+                h,
+                vec![255; (w * h * 4) as usize],
+            )))
         };
         let logo = ResourceId::of("images/logo.png");
         let other = ResourceId::of("images/other.png");

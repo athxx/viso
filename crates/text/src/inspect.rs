@@ -8,8 +8,8 @@
 //! any path. The logs keep the most recent [`TRACE_CAPACITY`] entries and are
 //! read through `&self` accessors — data for a tool, never a print path.
 
+use core::time::Duration;
 use std::collections::VecDeque;
-use std::time::Duration;
 
 use unicode_script::Script;
 

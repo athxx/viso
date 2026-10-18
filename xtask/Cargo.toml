@@ -11,3 +11,7 @@ publish = false
 # `cargo xtask bundle` packages a release build with the packager `viso run`
 # packages each dev build with.
 viso-package = { workspace = true }
+# `cargo xtask footprint` reads the frame samples and the window detail a
+# headless run writes, and keeps its baseline as JSON.
+viso-dev-protocol = { workspace = true }
+viso-ende = { workspace = true }

@@ -11,9 +11,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
+use viso_dev_protocol::headless::HeadlessSurface;
 use viso_ende::{JsonValue, JsonWriter};
-use viso_view::headless::HeadlessSurface;
-use viso_view::snapshot::{Comparison, Image, Tolerance, compare, diff};
+use viso_image::snapshot::{Comparison, Image, Tolerance, compare, diff};
 
 /// The directory below the project root that holds the goldens.
 pub(in crate::command) const GOLDENS: &str = "tests/snapshots";

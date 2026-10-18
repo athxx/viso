@@ -11,7 +11,7 @@
 //! submission order (no cross-barrier merge).
 
 use viso_gpu::{
-    BindGroupId, GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat, TextureId,
+    BindGroupId, CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat, TextureId,
 };
 use viso_render::{
     BatchFamily, BatchKey, BatchPipeline, BatchTarget, Border, ImageDraw, Primitive, Quad, Rect,
@@ -48,11 +48,8 @@ fn pipeline_family(pipeline: BatchPipeline) -> BatchFamily {
 /// in the read window (after `upload`, before `submit`) so it can read the
 /// batch/chunk introspection surfaces. `setup` runs first so a test can create
 /// textures on the same backend before building its primitive list.
-fn with_scene(
-    setup: impl FnOnce(&mut HeadlessRaster) -> Vec<Primitive>,
-    f: impl FnOnce(&Renderer),
-) {
-    let mut gpu = HeadlessRaster::new();
+fn with_scene(setup: impl FnOnce(&mut CpuRaster) -> Vec<Primitive>, f: impl FnOnce(&Renderer)) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let prims = setup(&mut gpu);
@@ -80,7 +77,7 @@ fn quad(x: f32, y: f32) -> Primitive {
     })
 }
 
-fn make_texture(gpu: &mut HeadlessRaster) -> TextureId {
+fn make_texture(gpu: &mut CpuRaster) -> TextureId {
     gpu.create_texture(&TextureDesc {
         width: 2,
         height: 2,

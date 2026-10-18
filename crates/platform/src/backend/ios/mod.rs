@@ -25,7 +25,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::ptr::NonNull;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
@@ -55,12 +54,13 @@ use objc2_ui_kit::{
 };
 
 use self::view::VisoView;
+use super::drive::Drive;
 use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
 use crate::event::{Appearance, ColorScheme, CursorIcon, RawEvent};
 use crate::handler::AppHandler;
 use crate::locale;
 use crate::menu::Menu;
-use crate::{Instant, PlatformApp, RawWindowHandle, Window, accesskit};
+use crate::{Instant, PlatformApp, RawWindowHandle, SemanticsDelta, Window};
 
 /// The only window's id.
 const WINDOW: WindowId = WindowId(1);
@@ -72,10 +72,10 @@ struct Loop {
     events: RefCell<VecDeque<RawEvent>>,
     /// A redraw is due at the next display beat.
     redraw: Cell<bool>,
-    /// The runtime's handler, installed by `run` and never removed:
-    /// `UIApplicationMain` does not return, so the borrow it came from lives
-    /// for the rest of the process.
-    handler: Cell<Option<NonNull<dyn AppHandler>>>,
+    /// The app and the runtime's handler, installed by `run` and never
+    /// removed: `UIApplicationMain` does not return, so the borrows they came
+    /// from live for the rest of the process.
+    drive: Cell<Option<Drive>>,
     /// A drain is on the stack; nested callbacks only queue.
     driving: Cell<bool>,
     appearance: Cell<Appearance>,
@@ -95,7 +95,7 @@ thread_local! {
     static LOOP: Loop = Loop {
         events: RefCell::new(VecDeque::new()),
         redraw: Cell::new(false),
-        handler: Cell::new(None),
+        drive: Cell::new(None),
         driving: Cell::new(false),
         appearance: Cell::new(Appearance::default()),
         locale: RefCell::new(String::new()),
@@ -130,24 +130,25 @@ impl Drop for DrivingGuard {
 /// callback triggered by the handler's own request) returns at once: the
 /// running drain picks the new events up.
 fn drive() {
-    let Some(mut handler) = LOOP.with(|l| {
+    let Some(drive) = LOOP.with(|l| {
         if l.driving.get() {
             return None;
         }
-        let handler = l.handler.get()?;
+        let drive = l.drive.get()?;
         l.driving.set(true);
-        Some(handler)
+        Some(drive)
     }) else {
         return;
     };
     let _guard = DrivingGuard;
     let mut last = None;
     while let Some(event) = LOOP.with(|l| l.events.borrow_mut().pop_front()) {
-        // SAFETY: the pointer was taken from the `&mut dyn AppHandler` passed
-        // to `run`, which is never released (`UIApplicationMain` does not
-        // return). `driving` admits one drain at a time, so this is the only
-        // live reborrow.
-        last = Some(deliver(unsafe { handler.as_mut() }, event));
+        // SAFETY: the drive was taken from the borrows passed to `run`, which
+        // are never released (`UIApplicationMain` does not return) and which
+        // `run` no longer touches. `driving` admits one drain at a time, so
+        // these are the only live reborrows.
+        let (app, handler) = unsafe { drive.get() };
+        last = Some(deliver(app, handler, event));
     }
     if let Some(flow) = last {
         schedule_wake(flow);
@@ -157,12 +158,16 @@ fn drive() {
 /// Hand one event to the handler, completing the copy handshake: a
 /// `CopyRequested` reply the handler filled is written to the pasteboard once
 /// the handler returns.
-fn deliver(handler: &mut dyn AppHandler, event: RawEvent) -> ControlFlow {
+fn deliver(
+    app: &mut dyn PlatformApp,
+    handler: &mut dyn AppHandler,
+    event: RawEvent,
+) -> ControlFlow {
     let reply = match &event {
         RawEvent::CopyRequested { reply, .. } => Some(reply.clone()),
         _ => None,
     };
-    let flow = handler.handle(event);
+    let flow = handler.handle(app, event);
     if let Some(text) = reply.and_then(|r| r.take()) {
         write_pasteboard(&text);
     }
@@ -451,18 +456,13 @@ impl PlatformApp for IosApp {
     }
 
     fn run(&mut self, handler: &mut dyn AppHandler) {
-        // SAFETY: only the trait object's lifetime is erased.
-        // `UIApplicationMain` never returns, so `handler`'s borrow outlives
-        // every use `drive` makes of the pointer.
-        let handler: NonNull<dyn AppHandler> = unsafe {
-            std::mem::transmute::<NonNull<dyn AppHandler + '_>, NonNull<dyn AppHandler + 'static>>(
-                NonNull::from(handler),
-            )
-        };
-        LOOP.with(|l| l.handler.set(Some(handler)));
+        // `UIApplicationMain` never returns, so both borrows outlive every use
+        // `drive` makes of them; from here on only the drive reaches them.
+        let mtm = self.mtm;
+        LOOP.with(|l| l.drive.set(Some(Drive::new(self, handler))));
         // Register the classes UIKit instantiates by name.
         let _ = (AppDelegate::class(), SceneDelegate::class());
-        UIApplication::main(None, Some(ns_string!("VisoAppDelegate")), self.mtm);
+        UIApplication::main(None, Some(ns_string!("VisoAppDelegate")), mtm);
     }
 
     fn window(&self, id: WindowId) -> Option<&dyn Window> {
@@ -478,9 +478,9 @@ impl PlatformApp for IosApp {
         }
     }
 
-    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+    fn update_accessibility(&mut self, window: WindowId, delta: SemanticsDelta) {
         if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) {
-            access::update(&w.view, update);
+            access::update(&w.view, delta);
         }
     }
 
@@ -522,6 +522,10 @@ impl PlatformApp for IosApp {
 
     fn framed_windows(&self) -> bool {
         false
+    }
+
+    fn capabilities(&self) -> crate::PlatformCaps {
+        crate::PlatformCaps::MOBILE
     }
 
     fn loop_waker(&self) -> crate::LoopWaker {

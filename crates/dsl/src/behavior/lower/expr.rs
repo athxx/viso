@@ -1,7 +1,7 @@
 //! Expressions: every expression lowers to the register holding its value.
 
 use viso_behavior::native::SchemaTy;
-use viso_ui::adaptive::EnvField;
+use viso_schema::EnvField;
 
 use super::super::ir::{
     BinaryOp, Const, DisplayKind, FuncId, Function, FunctionKind, Inst, Num, Reg, UnaryOp,

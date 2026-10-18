@@ -11,7 +11,7 @@
 
 use std::mem::size_of;
 
-use viso_gpu::{BindGroupId, BufferUsage, GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso_gpu::{BindGroupId, BufferUsage, CpuRaster, GpuBackend, RawWindowHandle};
 use viso_render::batch::planner::{BatchItem, joins};
 use viso_render::pool::{GAP_THRESHOLD, InstancePool, Range, coalesce};
 use viso_render::{BatchFamily, BatchKey, BatchTarget, Rect, RenderChunk, RenderChunkId};
@@ -152,6 +152,7 @@ fn joins_adjacency_predicate_is_frozen() {
     let item = |key, clip, mergeable| BatchItem {
         key,
         clip,
+        space: viso_render::transform::Space::STATIC,
         mergeable,
     };
 
@@ -240,7 +241,7 @@ fn coalescer_ranges_and_thresholds_are_frozen() {
 /// bytes; the buffer grows (never shrinks) and its capacity is a high-water mark.
 #[test]
 fn instance_pool_upload_discipline_is_frozen() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     // A surface is created so the headless backend is fully live, matching how a
     // renderer drives its pools.
     let surface = gpu.create_surface(RawWindowHandle::Headless, 16, 16);

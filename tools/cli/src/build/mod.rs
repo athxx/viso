@@ -3,9 +3,15 @@
 //!
 //! - [`rust_plan`]: the Rust target, the compiler arguments and the
 //!   environment of a target — the simulator triple, the emulator ABI linked
-//!   as the Java shell's library with the NDK, `wasm32-unknown-unknown`.
+//!   as the Java shell's library with the NDK, `wasm32-unknown-unknown`, a
+//!   device target's triple with its footprint profile's features and
+//!   variables.
 //! - [`cargo`]: one `cargo build` with the profile's flags, killable with
 //!   every process under it.
+//! - [`fonts`]: the static text an embedded build subsets its packaged fonts
+//!   to.
+//! - [`images`]: the images a release build converts to the texel format its
+//!   target samples.
 //! - [`produce`]: a build packaged for its target into
 //!   `target/viso/build/<build-id>/out/` — the executable, the simulator
 //!   `.app` signed ad hoc, the APK, or the web bundle as the profile's web
@@ -18,6 +24,8 @@
 //!   SHA-256.
 
 pub(crate) mod cargo;
+pub(crate) mod fonts;
+pub(crate) mod images;
 pub(crate) mod web;
 
 use std::ffi::OsString;
@@ -31,7 +39,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 use viso_package::android::{self, Abi, Sdk, Shell};
 use viso_package::{apple, web as bundle};
-use viso_project::{Layout, Profile, Target, Toolchain, WebSettings};
+use viso_project::{DeviceTarget, Layout, Profile, Target, Toolchain, WebSettings};
 
 use cargo::{BuildCommand, BuildFailure, Sink, is_cancelled};
 
@@ -45,6 +53,9 @@ pub(crate) struct RustPlan {
     pub(crate) target: Option<String>,
     /// The features of the app's dependencies the target turns on.
     pub(crate) features: Vec<&'static str>,
+    /// Whether the app builds with its default features off: an embedded
+    /// profile's, which has its own features alone.
+    pub(crate) no_default_features: bool,
     /// The arguments after `cargo rustc --`; `cargo build` when empty.
     pub(crate) rustc_args: Vec<String>,
     /// The variables Cargo runs with.
@@ -52,9 +63,18 @@ pub(crate) struct RustPlan {
 }
 
 /// How the app is compiled for `target` with `profile`; an Android build
-/// links with the NDK of `sdk`.
-pub(crate) fn rust_plan(target: Target, profile: Profile, sdk: Option<&Sdk>) -> RustPlan {
+/// links with the NDK of `sdk`, a device target builds as `device`, its
+/// `[target.<name>]` table, says.
+pub(crate) fn rust_plan(
+    target: Target,
+    device: Option<&DeviceTarget>,
+    profile: Profile,
+    sdk: Option<&Sdk>,
+) -> RustPlan {
     match target {
+        Target::Device(_) => {
+            device.map_or_else(RustPlan::default, |device| device_plan(device, profile))
+        }
         Target::Host => RustPlan::default(),
         Target::Headless => RustPlan {
             target: host_triple(),
@@ -63,18 +83,76 @@ pub(crate) fn rust_plan(target: Target, profile: Profile, sdk: Option<&Sdk>) -> 
         },
         Target::Ios => RustPlan {
             target: Some(apple::simulator_triple().to_owned()),
-            features: Vec::new(),
-            rustc_args: Vec::new(),
             env: vec![(
                 "IPHONEOS_DEPLOYMENT_TARGET".to_owned(),
                 apple::MIN_IOS.into(),
             )],
+            ..RustPlan::default()
         },
         Target::Android => android_plan(Abi::host(), profile, sdk),
         Target::WebGpu | Target::WebDom | Target::WebHybrid => RustPlan {
             target: Some(bundle::TRIPLE.to_owned()),
             ..RustPlan::default()
         },
+    }
+}
+
+/// Cuts an embedded `device`'s build of `project` to the text it ships: the
+/// static text its packaged fonts are subset to, as [`fonts::FONT_TEXT_ENV`]
+/// written under the generated sources of `layout`, and the line-break
+/// models of Thai, Lao, Khmer and Myanmar ([`fonts::COMPLEX_LINE_BREAK`])
+/// only when its locales or its text need them. Nothing for any other build,
+/// which keeps the facade's defaults.
+///
+/// # Errors
+///
+/// A source that cannot be read, or the text that cannot be written.
+pub(crate) fn add_text_data(
+    plan: &mut RustPlan,
+    device: Option<&DeviceTarget>,
+    project: &viso_project::Project,
+    layout: &viso_project::Layout,
+) -> Result<(), String> {
+    let Some(device) = device.filter(|device| device.profile.value.is_embedded()) else {
+        return Ok(());
+    };
+    let shipped = fonts::Shipped::of(project)?;
+    let path = fonts::write(&shipped, layout, &device.name.value)?;
+    plan.env
+        .push((fonts::FONT_TEXT_ENV.to_owned(), path.into_os_string()));
+    if shipped.complex_line_break(device) {
+        plan.features.push(fonts::COMPLEX_LINE_BREAK);
+    }
+    Ok(())
+}
+
+/// How the app is compiled for the board `device` describes with `profile`:
+/// for its triple, the host's when it names none, so its output lies apart
+/// from the host build's; with its footprint profile's features, and for an
+/// embedded one with those alone (the behavior interpreter again in a debug
+/// build); and with the variables the facade's build script and the KMS
+/// backend read its profile, budget, workers and display from.
+fn device_plan(device: &DeviceTarget, profile: Profile) -> RustPlan {
+    let footprint = device.profile.value;
+    let mut features = device.features();
+    let no_default_features = !footprint.keeps_default_features();
+    if no_default_features && profile == Profile::Dev {
+        features.push(cargo::VM);
+    }
+    RustPlan {
+        target: device
+            .triple
+            .as_ref()
+            .map(|triple| triple.value.clone())
+            .or_else(host_triple),
+        features,
+        no_default_features,
+        rustc_args: Vec::new(),
+        env: device
+            .build_env()
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value.into()))
+            .collect(),
     }
 }
 
@@ -94,9 +172,9 @@ fn android_plan(abi: Abi, profile: Profile, sdk: Option<&Sdk>) -> RustPlan {
     }
     RustPlan {
         target: Some(abi.triple().to_owned()),
-        features: Vec::new(),
         rustc_args: android::RUSTC_ARGS.iter().map(|&a| a.to_owned()).collect(),
         env,
+        ..RustPlan::default()
     }
 }
 
@@ -113,7 +191,7 @@ pub(crate) fn package_plan(plan: &Plan, profile: Profile, sdk: Option<&Sdk>) -> 
             ..RustPlan::default()
         },
         Platform::Android => android_plan(plan.abis[0], profile, sdk),
-        _ => rust_plan(plan.target, profile, sdk),
+        _ => rust_plan(plan.target, None, profile, sdk),
     }
 }
 
@@ -375,7 +453,7 @@ pub(crate) fn produce(
             });
         }
         None => match job.target {
-            Target::Host | Target::Headless => {
+            Target::Host | Target::Headless | Target::Device(_) => {
                 let path = out.join(file);
                 fs::copy(&exe, &path).map_err(|e| written(e, &path))?;
                 (vec![("binary", path)], "none")
@@ -750,19 +828,19 @@ mod tests {
     #[test]
     fn a_target_compiles_for_its_device() {
         assert_eq!(
-            rust_plan(Target::Host, Profile::Release, None),
+            rust_plan(Target::Host, None, Profile::Release, None),
             RustPlan::default()
         );
         // Headless builds for this machine, apart from its host build.
-        let headless = rust_plan(Target::Headless, Profile::Dev, None);
+        let headless = rust_plan(Target::Headless, None, Profile::Dev, None);
         let host = headless.target.expect("rustc names its host");
         assert!(host.contains(std::env::consts::ARCH), "{host}");
         assert_eq!(headless.features, [cargo::HEADLESS]);
-        let web = rust_plan(Target::WebGpu, Profile::Dev, None);
+        let web = rust_plan(Target::WebGpu, None, Profile::Dev, None);
         assert_eq!(web.target.as_deref(), Some("wasm32-unknown-unknown"));
-        let ios = rust_plan(Target::Ios, Profile::Dev, None);
+        let ios = rust_plan(Target::Ios, None, Profile::Dev, None);
         assert_eq!(ios.target.as_deref(), Some(apple::simulator_triple()));
-        let android = rust_plan(Target::Android, Profile::Release, None);
+        let android = rust_plan(Target::Android, None, Profile::Release, None);
         assert!(!android.rustc_args.is_empty());
         assert!(
             android
@@ -770,13 +848,60 @@ mod tests {
                 .iter()
                 .all(|(k, _)| k != "CARGO_PROFILE_DEV_STRIP")
         );
-        let android = rust_plan(Target::Android, Profile::Dev, None);
+        let android = rust_plan(Target::Android, None, Profile::Dev, None);
         assert!(
             android
                 .env
                 .iter()
                 .any(|(k, _)| k == "CARGO_PROFILE_DEV_STRIP")
         );
+    }
+
+    /// A device target builds for its triple with its profile's features, and
+    /// hands its table to the facade's build script and the KMS backend.
+    #[test]
+    fn a_device_target_compiles_as_its_table_says() {
+        let manifest = viso_project::Manifest::parse(
+            "Viso.toml",
+            "[target.panel]\nprofile = \"embedded-gpu\"\ntriple = \"aarch64-unknown-linux-gnu\"\n\
+             display = { width = 1024, height = 600, rotation = 90 }\nbudget = { heap = \"48MiB\" }\n\
+             workers = 1\n\n[target.kiosk]\nprofile = \"embedded-cpu\"\n",
+        )
+        .ok()
+        .unwrap();
+        let panel = manifest.targets.device("panel");
+        let plan = rust_plan(Target::device("panel"), panel, Profile::Release, None);
+        assert_eq!(plan.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
+        // An embedded profile has its own features alone, and the glyph
+        // rasterizer its defaults would have given it.
+        assert_eq!(plan.features, ["viso/gles", "viso/kms", "viso/rasterizer"]);
+        assert!(plan.no_default_features);
+        let env: Vec<(&str, &str)> = plan
+            .env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            env,
+            [
+                ("VISO_FOOTPRINT", "embedded-gpu"),
+                ("VISO_BUDGET", "heap=50331648"),
+                ("VISO_WORKERS", "1"),
+                ("VISO_KMS_MODE", "1024x600"),
+                ("VISO_KMS_ROTATION", "90"),
+            ]
+        );
+        // No triple is the host's, named, so the output lies apart.
+        let kiosk = manifest.targets.device("kiosk");
+        let plan = rust_plan(Target::device("kiosk"), kiosk, Profile::Dev, None);
+        assert_eq!(plan.target, host_triple());
+        // A debug build runs behavior on the interpreter.
+        assert_eq!(
+            plan.features,
+            ["viso/cpu", "viso/kms", "viso/rasterizer", "viso/vm"]
+        );
+        assert!(plan.no_default_features);
+        assert!(!rust_plan(Target::Host, None, Profile::Dev, None).no_default_features);
     }
 
     #[test]

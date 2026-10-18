@@ -9,14 +9,15 @@
 //! (read by measure/layout/paint). This is the data-oriented internal that
 //! backs the object-oriented external API.
 
+use crate::layout::OnAxis;
+use core::time::Duration;
 use std::any::Any;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::animation::{LookTransition, LookValue, Timing, TranslateAnim};
 use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetTable};
-use crate::binding::BindingTable;
+use crate::binding::{BindingTable, Template};
 use crate::content::{BrushImage, Content, TextRequest};
 use crate::context::EventCx;
 use crate::dirty::{DirtyCause, DirtyClass, DirtyMark};
@@ -25,7 +26,7 @@ use crate::input::{PointerContacts, PointerId};
 use crate::layout::{
     self, Align, Axis, Inset, Justify, LayoutInput, LayoutTree, Length, Measured, Size, Vec2,
 };
-use crate::node::{NodeArena, NodeId};
+use crate::node::{NodeArena, NodeId, NodeIndex};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
 use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 use crate::shader::ShaderSlots;
@@ -182,6 +183,61 @@ pub type PointerHandler = Box<dyn FnMut(&mut EventCx<'_>)>;
 /// pointer events fire only pointer handlers, key/IME events only key handlers.
 pub type KeyHandler = Box<dyn FnMut(&mut EventCx<'_>)>;
 
+/// Applies one method call to every index-aligned column of [`NodeStore`] in
+/// lockstep, so a column added to the store is added in one place.
+macro_rules! node_columns {
+    ($store:ident . $op:ident ( $($arg:expr),* )) => {
+        $store.bounds.$op($($arg),*);
+        $store.transform_root.$op($($arg),*);
+        $store.scroll.$op($($arg),*);
+        $store.translate.$op($($arg),*);
+        $store.content.$op($($arg),*);
+        $store.row_offset.$op($($arg),*);
+        $store.grid_tracks.$op($($arg),*);
+        $store.grid_placement.$op($($arg),*);
+        $store.dirty.$op($($arg),*);
+        $store.layout.$op($($arg),*);
+        $store.style.$op($($arg),*);
+        $store.measured.$op($($arg),*);
+        $store.hittable.$op($($arg),*);
+        $store.hidden.$op($($arg),*);
+        $store.overlay.$op($($arg),*);
+        $store.opacity.$op($($arg),*);
+        $store.handlers.$op($($arg),*);
+        $store.focusable.$op($($arg),*);
+        $store.key_handlers.$op($($arg),*);
+        $store.styled.$op($($arg),*);
+        $store.interaction.$op($($arg),*);
+        $store.semantics.$op($($arg),*);
+        $store.semantic_state.$op($($arg),*);
+        $store.content_payload.$op($($arg),*);
+        $store.text_request.$op($($arg),*);
+        $store.owner.$op($($arg),*);
+    };
+}
+
+/// A node no template instance built.
+pub(crate) const NO_OWNER: u32 = u32::MAX;
+/// Tags an owner whose node sits in the instance's block.
+pub(crate) const OWNER_KEPT: u32 = 1 << 31;
+
+/// An open instance scope's node cursor.
+#[derive(Debug, Clone, Copy)]
+struct NodeScope {
+    owner: u32,
+    /// The next slot of the scope's block; `None` for a scope without one.
+    next: Option<u32>,
+    base: u32,
+    end: u32,
+    /// Where the scope's ordinary nodes begin in `scope_log`.
+    log: u32,
+}
+
+/// Slots a growing store adds at once when it runs out: every column grows to
+/// the same capacity in the same step, so a burst of creations reallocates
+/// each column O(log n) times, together.
+const GROW_MIN: usize = 64;
+
 /// The retained node store: the arena plus parallel side-storage arrays, all
 /// indexed by [`NodeId::index`]. Allocation pushes to every array in lockstep
 /// so the index stays aligned; freeing leaves stale values in place and relies
@@ -193,12 +249,10 @@ pub struct NodeStore {
     /// Hot: resolved layout box, written by layout, read by measure caching.
     /// This is the *unscrolled* layout truth; a scroll offset never rewrites it.
     bounds: Vec<Rect>,
-    /// Hot: the scrolled, world-space rect — `bounds` shifted by the accumulated
-    /// ancestor scroll. Derived by [`resolve_transforms`](NodeStore::resolve_transforms)
-    /// on a TRANSFORM-dirty frame; equals `bounds` for any node with no scrolling
-    /// ancestor (the common case). Paint clip and hit testing read this, not
-    /// `bounds`.
-    world: Vec<Rect>,
+    /// Warm: whether a node moves its own box without a relayout — set by its
+    /// first translate and kept, so it stays a transform root (§21) while it
+    /// lives. Scroll viewports move their content and need no flag.
+    transform_root: Vec<bool>,
     /// Hot: per-node scroll offset, nonzero only on [`LayoutInput::Scroll`]
     /// nodes; default `(0,0)`. A scroll node shifts its content subtree's world
     /// rect by `-scroll` without a relayout (TRANSFORM-class, not LAYOUT).
@@ -233,6 +287,13 @@ pub struct NodeStore {
     /// Hot: pending invalidation per node, set by `mark_dirty` and consumed by
     /// the incremental measure/layout/paint passes, cleared at frame end.
     dirty: Vec<DirtyClass>,
+    /// The per-class worklists over `dirty`: what each pass visits.
+    dirty_lists: crate::dirty::DirtyLists,
+    /// Scratch for [`relayout_dirty`](Self::relayout_dirty): the candidate
+    /// redo roots with their depths, and per slot whether it is an accepted
+    /// root. Both are empty between calls.
+    redo_candidates: Vec<(u32, NodeId)>,
+    redo_flag: Vec<bool>,
     /// Warm: layout parameters (Flex container or leaf size).
     layout: Vec<LayoutInput>,
     /// Warm: paint style.
@@ -463,6 +524,25 @@ pub struct NodeStore {
     /// Cold: the clients the frame loop advances, each owned by a node.
     /// Empty in a window that runs no game.
     frame_clients: crate::frame_client::FrameClients,
+    /// The transform roots of the last paint (§21).
+    transforms: crate::transform::TransformTable,
+    /// The next frame repaints though no node is paint-dirty (the device scale
+    /// moved every snapped displacement).
+    repaint_pending: bool,
+    /// Warm: the template instance each node belongs to (§18.1), tagged
+    /// [`OWNER_KEPT`] when its slot is part of the instance's block;
+    /// [`NO_OWNER`] for a node no instance built.
+    owner: Vec<u32>,
+    /// The open instance scopes, innermost last.
+    scopes: Vec<NodeScope>,
+    /// The ordinary nodes the open scopes allocated.
+    scope_log: Vec<NodeId>,
+    /// The instance of each owned node freed since the binding table last
+    /// collected, one entry per node.
+    freed_owners: Vec<u32>,
+    /// The grid layouts' working buffers, one set per grid nesting level
+    /// seen, reused frame after frame.
+    grid_scratch: Vec<crate::layout::GridScratch>,
     /// Cold: the marks recorded while an inspector watches the store; `None`
     /// while none does, and then a mark records nothing.
     #[cfg(feature = "inspect")]
@@ -475,38 +555,49 @@ impl NodeStore {
         Self::default()
     }
 
+    /// A store that holds at most `capacity` live nodes and allocates every
+    /// column once, up front: creation never reallocates, and exceeding the
+    /// budget is [`ArenaFull`](crate::node::ArenaFull) rather than growth. The
+    /// embedded profiles build their stores this way.
+    pub fn with_fixed_capacity(capacity: u32) -> Self {
+        let mut store = NodeStore {
+            arena: NodeArena::with_fixed_capacity(capacity),
+            ..Self::default()
+        };
+        let n = capacity as usize;
+        node_columns!(store.reserve_exact(n));
+        store.dirty_lists.reserve_slots(n);
+        store.redo_flag.reserve_exact(n);
+        store
+    }
+
+    /// Reserve room for `additional` more slots in the arena and every column,
+    /// together. A builder that knows its node count (a template instantiation,
+    /// an AOT package load) calls this once before creating them.
+    pub fn reserve_nodes(&mut self, additional: usize) {
+        if self.arena.fixed_capacity().is_some() {
+            return;
+        }
+        self.arena.reserve(additional);
+        node_columns!(self.reserve(additional));
+    }
+
+    /// Whether another node fits: always for a growing store, while slots
+    /// remain for a fixed-capacity one.
+    #[inline]
+    pub fn has_room(&self) -> bool {
+        self.arena.has_room()
+    }
+
     /// Drop every node, resetting to empty. Used when a structural rebuild
     /// replaces the whole tree (this slice rebuilds wholesale; targeted
     /// structural diffing lands later).
     pub fn clear(&mut self) {
-        self.arena = NodeArena::new();
-        self.bounds.clear();
-        self.world.clear();
-        self.scroll.clear();
-        self.translate.clear();
-        self.content.clear();
-        self.row_offset.clear();
-        self.grid_tracks.clear();
-        self.grid_placement.clear();
-        self.dirty.clear();
-        self.layout.clear();
-        self.style.clear();
-        self.measured.clear();
-        self.hittable.clear();
-        self.hidden.clear();
-        self.overlay.clear();
-        self.opacity.clear();
-        self.handlers.clear();
-        self.focusable.clear();
-        self.key_handlers.clear();
-        self.styled.clear();
-        self.interaction.clear();
-        self.semantics.clear();
-        self.semantic_state.clear();
-        self.content_payload.clear();
+        self.arena.clear();
+        node_columns!(self.clear());
+        self.dirty_lists.reset();
         self.shaders.clear();
         self.assets.clear();
-        self.text_request.clear();
         self.animation_requests.clear();
         self.transitions.clear();
         self.timer_requests.clear();
@@ -516,6 +607,7 @@ impl NodeStore {
         self.edit_requests.clear();
         self.text_seeds.clear();
         self.scroll_restores.clear();
+        self.transforms.clear();
         self.focused = None;
         self.contacts.clear();
         self.hovered = None;
@@ -528,6 +620,9 @@ impl NodeStore {
         self.pending_effects.clear();
         self.suspend_hooks.clear();
         self.frame_clients.clear();
+        self.scopes.clear();
+        self.scope_log.clear();
+        self.freed_owners.clear();
     }
 
     /// Registers an effect scoped to `node` whose dependencies `when` declares
@@ -567,13 +662,87 @@ impl NodeStore {
         self.bounds[id.index() as usize]
     }
 
-    /// A node's scrolled, world-space rect (valid after
-    /// [`resolve_transforms`](Self::resolve_transforms)). Equals
-    /// [`bounds`](Self::bounds) when the node has no scrolling ancestor. Paint
-    /// clip and hit testing read this.
-    #[inline]
+    /// A node's on-screen rect: its [`bounds`](Self::bounds) displaced by its
+    /// own translate and its ancestors' translates and scrolls, the displacement
+    /// snapped to device pixels (see [`transform`](crate::transform)). Equals
+    /// `bounds` for a node nothing moves. Derived on demand by walking the
+    /// ancestors — paint and hit testing carry it down their walks instead.
     pub fn world(&self, id: NodeId) -> Rect {
-        self.world[id.index() as usize]
+        let shift = self.snap_shift(self.shift_above(id) + self.self_shift(id));
+        self.bounds[id.index() as usize].translate(shift)
+    }
+
+    /// The unsnapped displacement `id`'s ancestors apply to it: the sum of their
+    /// negated translates and scrolls.
+    pub fn shift_above(&self, id: NodeId) -> Vec2 {
+        let mut shift = Vec2::ZERO;
+        let mut at = self.arena.parent_of(id.node_index());
+        while let Some(i) = at.get_some() {
+            shift = shift - self.translate[i.slot()] - self.scroll[i.slot()];
+            at = self.arena.parent_of(at);
+        }
+        shift
+    }
+
+    /// The displacement a node applies to itself and its subtree: its negated
+    /// translate.
+    #[inline]
+    pub fn self_shift(&self, id: NodeId) -> Vec2 {
+        -self.translate[id.index() as usize]
+    }
+
+    /// The displacement a scroll viewport adds for its content: its negated
+    /// scroll.
+    #[inline]
+    pub fn content_shift(&self, id: NodeId) -> Vec2 {
+        -self.scroll[id.index() as usize]
+    }
+
+    /// `raw` rounded to the device pixel grid.
+    #[inline]
+    pub fn snap_shift(&self, raw: Vec2) -> Vec2 {
+        let scale = self.device_scale();
+        Vec2 {
+            x: (raw.x * scale).round() / scale,
+            y: (raw.y * scale).round() / scale,
+        }
+    }
+
+    /// Device pixels per logical point — the length environment's scale
+    /// factor; displacements snap to this grid.
+    #[inline]
+    pub fn device_scale(&self) -> f32 {
+        let scale = self.length_env().scale_factor;
+        if scale > 0.0 { scale } else { 1.0 }
+    }
+
+    /// Repaint the next frame though no node is paint-dirty.
+    pub(crate) fn request_repaint(&mut self) {
+        self.repaint_pending = true;
+    }
+
+    /// Whether a node moves its own box without a relayout (it has been
+    /// translated). Scroll viewports move their content instead: see
+    /// [`is_scroll`](Self::is_scroll).
+    #[inline]
+    pub fn is_transform_root(&self, id: NodeId) -> bool {
+        self.transform_root[id.index() as usize]
+    }
+
+    /// The transform roots of the last paint and their displacements.
+    #[inline]
+    pub fn transforms(&self) -> &crate::transform::TransformTable {
+        &self.transforms
+    }
+
+    /// Recompute the transform roots' displacements after scrolls and
+    /// translates, and report whether any moved. One add per root: no node is
+    /// visited.
+    pub fn update_transforms(&mut self) -> bool {
+        let mut table = core::mem::take(&mut self.transforms);
+        let moved = table.update(self);
+        self.transforms = table;
+        moved
     }
 
     /// A node's scroll offset (nonzero only on scroll viewports).
@@ -815,7 +984,7 @@ impl NodeStore {
     /// never a per-frame path (AGENTS section 8.3).
     #[inline]
     pub fn parent(&self, child: NodeId) -> Option<NodeId> {
-        self.arena.links(child).and_then(|l| l.parent)
+        self.arena.parent(child)
     }
 
     /// Allocate a fresh host node and append it under `canvas`, returning its id.
@@ -1158,11 +1327,12 @@ impl NodeStore {
     }
 
     /// Add `delta` to a scroll viewport's offset, clamped per axis to
-    /// `[0, scroll_range]`, and mark the node `TRANSFORM | HIT_TEST | PAINT` so
-    /// the next frame re-derives its subtree's world rects and repaints — a
-    /// scroll never dirties MEASURE/LAYOUT and never bubbles to ancestors. A
-    /// live-guarded write; a stale handle is a no-op. A delta that does not move
-    /// the (already-clamped) offset schedules nothing.
+    /// `[0, scroll_range]`, and mark the node `TRANSFORM` only: its content is a
+    /// transform root, so the next frame moves the retained draws and hit
+    /// testing reads the new offset directly — a scroll never dirties MEASURE,
+    /// LAYOUT, PAINT or HIT_TEST and never bubbles to ancestors. A live-guarded
+    /// write; a stale handle is a no-op. A delta that does not move the
+    /// (already-clamped) offset schedules nothing.
     pub fn scroll_by(&mut self, id: NodeId, delta: Vec2) {
         if !self.arena.is_live(id) {
             return;
@@ -1179,15 +1349,12 @@ impl NodeStore {
             return;
         }
         self.scroll[i] = next;
-        self.mark_dirty(
-            id,
-            DirtyClass::TRANSFORM | DirtyClass::HIT_TEST | DirtyClass::PAINT,
-        );
+        self.mark_dirty(id, DirtyClass::TRANSFORM);
     }
 
     /// Set a scroll viewport's offset to an absolute `offset`, clamped per axis
-    /// to `[0, scroll_range]`, marking the node `TRANSFORM | HIT_TEST | PAINT`
-    /// exactly like [`scroll_by`](Self::scroll_by) — the absolute-value sibling of
+    /// to `[0, scroll_range]`, marking the node `TRANSFORM` exactly like
+    /// [`scroll_by`](Self::scroll_by) — the absolute-value sibling of
     /// that delta setter, sharing its clamp, its dirty classes, and its no-bubble
     /// rule.
     ///
@@ -1211,10 +1378,7 @@ impl NodeStore {
             return;
         }
         self.scroll[i] = next;
-        self.mark_dirty(
-            id,
-            DirtyClass::TRANSFORM | DirtyClass::HIT_TEST | DirtyClass::PAINT,
-        );
+        self.mark_dirty(id, DirtyClass::TRANSFORM);
     }
 
     /// Restore a scroll viewport's offset once the next layout has measured its
@@ -1237,10 +1401,9 @@ impl NodeStore {
     }
 
     /// Set a node's world-space translate to an absolute `offset`, moving the
-    /// node itself (and its subtree) without a relayout, and mark it
-    /// `TRANSFORM | HIT_TEST | PAINT` so the next frame re-derives its world rect
-    /// and repaints — a translate never dirties MEASURE/LAYOUT and never bubbles
-    /// to ancestors.
+    /// node itself (and its subtree) without a relayout, and mark it `TRANSFORM`
+    /// — plus `PAINT` the first time, when it becomes a transform root. A
+    /// translate never dirties MEASURE/LAYOUT and never bubbles to ancestors.
     ///
     /// Unlike [`set_scroll`](Self::set_scroll) this is **not clamped**: a
     /// transform-only slide starts a node fully off-screen (a translate of one
@@ -1257,10 +1420,7 @@ impl NodeStore {
             return;
         }
         self.translate[i] = offset;
-        self.mark_dirty(
-            id,
-            DirtyClass::TRANSFORM | DirtyClass::HIT_TEST | DirtyClass::PAINT,
-        );
+        self.mark_moved(id);
     }
 
     /// Add `delta` to a node's world-space translate — the delta sibling of
@@ -1280,10 +1440,19 @@ impl NodeStore {
             return;
         }
         self.translate[i] = next;
-        self.mark_dirty(
-            id,
-            DirtyClass::TRANSFORM | DirtyClass::HIT_TEST | DirtyClass::PAINT,
-        );
+        self.mark_moved(id);
+    }
+
+    /// Mark a translated node: `TRANSFORM` once it is a transform root; the
+    /// first translate makes it one, which the paint that records it needs.
+    fn mark_moved(&mut self, id: NodeId) {
+        let i = id.index() as usize;
+        if self.transform_root[i] {
+            self.mark_dirty(id, DirtyClass::TRANSFORM);
+        } else {
+            self.transform_root[i] = true;
+            self.mark_dirty(id, DirtyClass::TRANSFORM | DirtyClass::PAINT);
+        }
     }
 
     /// A node's layout parameters: its kind, its size request and what it
@@ -1664,7 +1833,9 @@ impl NodeStore {
         }
     }
 
-    /// Frees node `node`'s slot, letting go of the program it paints with.
+    /// Frees node `node`'s slot, letting go of the program it paints with. A
+    /// node an instance built is reported to the binding table, and a slot of
+    /// an instance's block stays with the block.
     fn free_node(&mut self, node: NodeId) -> bool {
         if !self.arena.is_live(node) {
             return false;
@@ -1672,6 +1843,15 @@ impl NodeStore {
         let index = node.index() as usize;
         self.leave_shader(index);
         self.content_payload[index] = None;
+        let owner = self.owner[index];
+        if owner == NO_OWNER {
+            return self.arena.free(node);
+        }
+        self.freed_owners.push(owner & !OWNER_KEPT);
+        if owner & OWNER_KEPT != 0 {
+            return self.arena.free_kept(node);
+        }
+        self.owner[index] = NO_OWNER;
         self.arena.free(node)
     }
 
@@ -1991,10 +2171,9 @@ impl NodeStore {
     /// a stale handle is a no-op rather than an out-of-bounds write.
     ///
     /// Hit testing reads a node's [`world`](Self::world) rect, not `bounds`, so a
-    /// scroll offset shifts what a node hits without disturbing its layout. That
-    /// world rect is re-derived by [`resolve_transforms`](Self::resolve_transforms)
-    /// on the TRANSFORM-dirty subtree; flipping the hittable flag here only gates
-    /// participation and needs no recompute of its own.
+    /// scroll offset shifts what a node hits without disturbing its layout;
+    /// flipping the hittable flag here only gates participation and needs no
+    /// recompute of its own.
     pub fn set_hittable(&mut self, id: NodeId, hit: bool) {
         if !self.arena.is_live(id) {
             return;
@@ -2395,6 +2574,7 @@ impl NodeStore {
         }
         // Everything lands on the node itself.
         self.dirty[id.index() as usize] |= class;
+        self.dirty_lists.note(id.index(), class);
 
         let bubbling = class & DirtyClass::BUBBLING;
         if bubbling.is_empty() {
@@ -2407,7 +2587,7 @@ impl NodeStore {
         let mut measure_alive = bubbling.intersects(DirtyClass::MEASURE);
 
         let mut current = id;
-        while let Some(parent) = self.arena.links(current).and_then(|l| l.parent) {
+        while let Some(parent) = self.arena.parent(current) {
             let mut add = unconditional;
             if measure_alive {
                 if fixed_on_both_axes(self.layout[parent.index() as usize]) {
@@ -2424,6 +2604,7 @@ impl NodeStore {
             let slot = &mut self.dirty[parent.index() as usize];
             let before = *slot;
             *slot |= add;
+            self.dirty_lists.note(parent.index(), add);
             // If this ancestor already carried everything we add and MEASURE is
             // no longer rising, higher ancestors were reached on a prior mark.
             if *slot == before && !measure_alive {
@@ -2434,32 +2615,47 @@ impl NodeStore {
     }
 
     /// Clear every node's pending invalidation. Run at frame end once the
-    /// incremental passes have consumed the dirty set.
+    /// incremental passes have consumed the dirty set; costs the nodes marked
+    /// this frame, not the store.
     #[inline]
     pub fn clear_dirty(&mut self) {
-        self.dirty.fill(DirtyClass::EMPTY);
+        self.dirty_lists.clear(&mut self.dirty);
     }
 
     /// Whether any node currently carries any dirty class. Lets a frame skip
-    /// the incremental passes entirely when nothing changed.
+    /// the incremental passes entirely when nothing changed; O(1) on an idle
+    /// frame.
     #[inline]
     pub fn any_dirty(&self) -> bool {
-        self.dirty.iter().any(|d| !d.is_empty())
+        self.dirty_lists
+            .marked()
+            .iter()
+            .any(|&i| !self.dirty[i as usize].is_empty())
     }
 
     /// How many nodes carry a dirty class: what the frame's changes
     /// invalidated, until [`clear_dirty`](Self::clear_dirty).
     pub fn dirty_count(&self) -> usize {
-        self.dirty.iter().filter(|d| !d.is_empty()).count()
+        self.dirty_lists
+            .marked()
+            .iter()
+            .filter(|&&i| !self.dirty[i as usize].is_empty())
+            .count()
+    }
+
+    /// The per-class worklists: which nodes each pass visits this frame.
+    #[inline]
+    pub fn dirty_lists(&self) -> &crate::dirty::DirtyLists {
+        &self.dirty_lists
     }
 
     /// Whether any node carries a dirty class intersecting `class`. Lets a frame
-    /// gate a specific pass precisely — the facade runs `resolve_transforms`
-    /// only when a `TRANSFORM`-dirty node exists, so a pure paint-only frame
-    /// (a color change, no motion) never re-derives world rects.
+    /// gate a specific pass precisely — the facade recomputes the transform
+    /// roots only when a `TRANSFORM`-dirty node exists, so a pure paint-only
+    /// frame (a color change, no motion) never touches them.
     #[inline]
     pub fn any_dirty_class(&self, class: DirtyClass) -> bool {
-        self.dirty.iter().any(|d| d.intersects(class))
+        self.dirty_lists.any(class, &self.dirty)
     }
 
     /// Free every **descendant** of `root`, leaving `root` itself live. Each
@@ -2490,26 +2686,23 @@ impl NodeStore {
         // (each free is independent), so a simple stack walk suffices; effect
         // cleanup is per-node and order-independent too.
         let base = scratch.len();
-        let mut child = self.arena.links(root).and_then(|l| l.first_child);
+        let mut child = self.arena.first_child(root);
         while let Some(c) = child {
-            let next = self.arena.links(c).and_then(|l| l.next_sibling);
+            let next = self.arena.next_sibling(c);
             scratch.push(c);
             child = next;
         }
         // `root` now conceptually has no children; clear its child endpoints.
-        if let Some(links) = self.arena.links_mut(root) {
-            links.first_child = None;
-            links.last_child = None;
-        }
+        self.arena.forget_children(root);
 
         let mut freed = 0;
         while scratch.len() > base {
             let node = scratch.pop().unwrap();
             // Push this node's children before freeing it (we still can read its
             // links while it is live).
-            let mut c = self.arena.links(node).and_then(|l| l.first_child);
+            let mut c = self.arena.first_child(node);
             while let Some(cc) = c {
-                let next = self.arena.links(cc).and_then(|l| l.next_sibling);
+                let next = self.arena.next_sibling(cc);
                 scratch.push(cc);
                 c = next;
             }
@@ -2555,7 +2748,7 @@ impl NodeStore {
         if !self.arena.is_live(old) || !self.arena.is_live(parent) {
             return 0;
         }
-        if self.arena.links(old).and_then(|l| l.parent) != Some(parent) {
+        if self.arena.parent(old) != Some(parent) {
             return 0;
         }
         // Free `old`'s subtree (descendants + their effect cleanups), then unlink,
@@ -2603,57 +2796,6 @@ impl NodeStore {
         freed
     }
 
-    /// Derive every node's `world` rect from its `bounds` and the scroll of its
-    /// ancestors, in a pre-order walk from `root`. A node's world rect is its
-    /// layout box shifted by the accumulated scroll of all scrolling ancestors;
-    /// entering a scroll viewport adds that viewport's own `scroll` to the offset
-    /// carried into its subtree. Paint clip and hit testing read this.
-    ///
-    /// Runs only when the tree carries a TRANSFORM-dirty node — a clean frame
-    /// skips it entirely (the caller gates on [`any_dirty`](Self::any_dirty) /
-    /// the TRANSFORM class). Mirrors [`paint_tree`](crate::paint::paint_tree)'s
-    /// recursive pre-order descent; no allocation, worst case the tree depth.
-    pub fn resolve_transforms(&mut self, root: NodeId) {
-        self.resolve_transforms_from(root, Vec2::ZERO);
-    }
-
-    /// Pre-order recursion carrying `offset`, the summed scroll+translate of
-    /// `root`'s ancestors. Writes `world[root] = bounds[root] − offset −
-    /// translate[root]`, then folds `root`'s own scroll and translate into the
-    /// offset handed to its children.
-    fn resolve_transforms_from(&mut self, root: NodeId, offset: Vec2) {
-        if !self.arena.is_live(root) {
-            return;
-        }
-        let i = root.index() as usize;
-        let b = self.bounds[i];
-        // A translate moves the node itself (and its subtree), so it subtracts
-        // from this node's own world rect — unlike scroll, which shifts only the
-        // content subtree and leaves the viewport's own rect in place. Nonzero
-        // only on a sliding/animated node, so this is a subtract of zero for the
-        // common case.
-        let t = self.translate[i];
-        self.world[i] = Rect {
-            x: b.x - offset.x - t.x,
-            y: b.y - offset.y - t.y,
-            w: b.w,
-            h: b.h,
-        };
-        // Fold this node's own scroll and translate into the offset its subtree
-        // sees: a scroll viewport shifts its content, and a translate carries its
-        // whole subtree along with it. Both are zero for an ordinary container,
-        // so this is an add of zero in the common case.
-        let child_offset = Vec2 {
-            x: offset.x + self.scroll[i].x + t.x,
-            y: offset.y + self.scroll[i].y + t.y,
-        };
-        let mut child = self.arena.links(root).and_then(|l| l.first_child);
-        while let Some(c) = child {
-            self.resolve_transforms_from(c, child_offset);
-            child = self.arena.links(c).and_then(|l| l.next_sibling);
-        }
-    }
-
     /// Apply a frame's batch of changed states to the tree: for each changed
     /// [`StateId`], walk its bindings (static then dynamic) and mark the bound
     /// node dirty with the edge's classes. This is the flush phase's core —
@@ -2672,12 +2814,16 @@ impl NodeStore {
         let counters = bindings.counters();
         for &state in changed {
             let cause = self.set_dirty_cause(DirtyCause::State(state));
-            let statics = bindings.for_state(state);
-            for edge in statics {
-                self.mark_dirty(edge.node, edge.class);
-            }
-            counters.record_static_eval(statics.len() as u64);
-            applied += statics.len() as u32;
+            let statics = bindings.targets(state, |target, class| match target {
+                Ok(slot) => {
+                    if let Some(id) = self.arena.live_id(slot) {
+                        self.mark_dirty(id, class);
+                    }
+                }
+                Err(id) => self.mark_dirty(id, class),
+            });
+            counters.record_static_eval(u64::from(statics));
+            applied += statics;
 
             let dynamics = bindings.dynamic_for_state(state);
             for edge in dynamics {
@@ -2735,62 +2881,74 @@ impl NodeStore {
         0
     }
 
-    /// Allocate a node and push its side-storage in lockstep so array indices
-    /// stay aligned with the arena. Newly reused slots overwrite stale values.
+    /// Allocate a node and reset its slot in every column. Inside an open
+    /// instance scope the node takes the scope's next block slot, or is an
+    /// ordinary node the scope records; a reused slot is overwritten in place,
+    /// and a fresh one extends every column by one, after growing them
+    /// together when they are full.
     fn alloc(&mut self, input: LayoutInput, style: BoxStyle) -> NodeId {
-        let id = self.arena.alloc();
+        let (id, owner) = match self.scopes.last_mut() {
+            Some(scope) => match scope.next {
+                Some(next) if next < scope.end => {
+                    scope.next = Some(next + 1);
+                    (self.arena.alloc_at(next), scope.owner | OWNER_KEPT)
+                }
+                _ => {
+                    let owner = scope.owner;
+                    let id = self.arena.alloc();
+                    self.scope_log.push(id);
+                    (id, owner)
+                }
+            },
+            None => (self.arena.alloc(), NO_OWNER),
+        };
         let i = id.index() as usize;
-        // Reused slots already have an array entry; fresh slots extend the tail.
-        if i < self.bounds.len() {
-            self.bounds[i] = Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 0.0,
-                h: 0.0,
-            };
-            self.world[i] = Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 0.0,
-                h: 0.0,
-            };
-            self.scroll[i] = Vec2::ZERO;
-            self.translate[i] = Vec2::ZERO;
-            self.content[i] = Vec2::ZERO;
-            self.row_offset[i] = f32::NAN;
-            self.grid_tracks[i] = None;
-            self.grid_placement[i] = GridPlacement::default();
-            self.dirty[i] = DirtyClass::EMPTY;
-            self.layout[i] = input;
-            self.style[i] = style;
-            self.measured[i] = Measured::default();
-            self.hittable[i] = true;
-            self.hidden[i] = false;
-            self.overlay[i] = false;
-            self.opacity[i] = 1.0;
-            self.handlers[i] = None;
-            self.focusable[i] = false;
-            self.key_handlers[i] = None;
-            self.styled[i] = None;
-            self.interaction[i] = None;
-            self.semantics[i] = None;
-            self.semantic_state[i] = None;
-            self.content_payload[i] = None;
-            self.text_request[i] = None;
-        } else {
+        if i >= self.bounds.len() {
             debug_assert_eq!(i, self.bounds.len(), "arena index must stay dense");
-            self.bounds.push(Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 0.0,
-                h: 0.0,
-            });
-            self.world.push(Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 0.0,
-                h: 0.0,
-            });
+            self.grow_columns(i + 1);
+        }
+        self.bounds[i] = Rect::ZERO;
+        self.transform_root[i] = false;
+        self.scroll[i] = Vec2::ZERO;
+        self.translate[i] = Vec2::ZERO;
+        self.content[i] = Vec2::ZERO;
+        self.row_offset[i] = f32::NAN;
+        self.grid_tracks[i] = None;
+        self.grid_placement[i] = GridPlacement::default();
+        self.dirty[i] = DirtyClass::EMPTY;
+        self.layout[i] = input;
+        self.style[i] = style;
+        self.measured[i] = Measured::default();
+        self.hittable[i] = true;
+        self.hidden[i] = false;
+        self.overlay[i] = false;
+        self.opacity[i] = 1.0;
+        self.handlers[i] = None;
+        self.focusable[i] = false;
+        self.key_handlers[i] = None;
+        self.styled[i] = None;
+        self.interaction[i] = None;
+        self.semantics[i] = None;
+        self.semantic_state[i] = None;
+        self.content_payload[i] = None;
+        self.text_request[i] = None;
+        self.owner[i] = owner;
+        id
+    }
+
+    /// Extend every column to `len` slots, growing them together when they
+    /// are full. The new slots hold placeholders until a node takes them.
+    fn grow_columns(&mut self, len: usize) {
+        let more = len - self.bounds.len();
+        if self.bounds.len() + more > self.bounds.capacity()
+            && self.arena.fixed_capacity().is_none()
+        {
+            let grow = self.bounds.len().max(GROW_MIN).max(more);
+            node_columns!(self.reserve_exact(grow));
+        }
+        for _ in 0..more {
+            self.bounds.push(Rect::ZERO);
+            self.transform_root.push(false);
             self.scroll.push(Vec2::ZERO);
             self.translate.push(Vec2::ZERO);
             self.content.push(Vec2::ZERO);
@@ -2798,8 +2956,13 @@ impl NodeStore {
             self.grid_tracks.push(None);
             self.grid_placement.push(GridPlacement::default());
             self.dirty.push(DirtyClass::EMPTY);
-            self.layout.push(input);
-            self.style.push(style);
+            self.layout.push(LayoutInput::Leaf {
+                size: Size {
+                    width: Length::Fixed(0.0),
+                    height: Length::Fixed(0.0),
+                },
+            });
+            self.style.push(BoxStyle::NONE);
             self.measured.push(Measured::default());
             self.hittable.push(true);
             self.hidden.push(false);
@@ -2814,19 +2977,96 @@ impl NodeStore {
             self.semantic_state.push(None);
             self.content_payload.push(None);
             self.text_request.push(None);
+            self.owner.push(NO_OWNER);
         }
-        id
+    }
+
+    /// Open an instance scope for instance `owner` (§18.1): the nodes built
+    /// until it closes fill a block of `len` slots, or, with `None`, are
+    /// ordinary nodes the scope lists. A fixed-capacity store with no room
+    /// for the block opens a scope without one.
+    pub(crate) fn open_scope(&mut self, owner: u32, len: Option<u32>) {
+        let block = len.and_then(|len| {
+            let base = self.arena.reserve_block(len)?;
+            if self.bounds.len() < self.arena.slot_count() {
+                self.grow_columns(self.arena.slot_count());
+            }
+            Some((base, len))
+        });
+        let (next, base, end) = match block {
+            Some((base, len)) => (Some(base), base, base + len),
+            None => (None, 0, 0),
+        };
+        self.scopes.push(NodeScope {
+            owner,
+            next,
+            base,
+            end,
+            log: self.scope_log.len() as u32,
+        });
+    }
+
+    /// Close the innermost instance scope and report its nodes. Its logged
+    /// nodes stay listed until [`drop_scope_log`](Self::drop_scope_log).
+    pub(crate) fn close_scope(&mut self) -> crate::state::ScopeSlots {
+        let scope = self.scopes.pop().expect("an open instance scope");
+        crate::state::ScopeSlots {
+            base: scope.base,
+            len: scope.end - scope.base,
+            filled: scope.next.map_or(0, |next| next - scope.base),
+            log: scope.log,
+        }
+    }
+
+    /// The ordinary nodes of a closed scope, from its `log` position.
+    pub(crate) fn scope_log(&self, log: u32) -> &[NodeId] {
+        &self.scope_log[log as usize..]
+    }
+
+    /// Forget the ordinary nodes logged from `log` on.
+    pub(crate) fn drop_scope_log(&mut self, log: u32) {
+        self.scope_log.truncate(log as usize);
+    }
+
+    /// Re-tag nodes `nodes` of instance `owner` as its block, kept until
+    /// [`release_block`](Self::release_block).
+    pub(crate) fn keep_block(&mut self, owner: u32, base: u32, len: u32) {
+        for slot in &mut self.owner[base as usize..(base + len) as usize] {
+            *slot = owner | OWNER_KEPT;
+        }
+    }
+
+    /// Give back the block of `len` slots at `base`, whose nodes are all
+    /// freed, for the next block of the same length.
+    pub(crate) fn release_block(&mut self, base: u32, len: u32) {
+        for slot in &mut self.owner[base as usize..(base + len) as usize] {
+            *slot = NO_OWNER;
+        }
+        self.arena.release_block(base, len);
+    }
+
+    /// The instance of each owned node freed since the last call.
+    pub(crate) fn take_freed_owners(&mut self, out: &mut Vec<u32>) {
+        out.append(&mut self.freed_owners);
+    }
+
+    /// The template instance node `id` belongs to, if one built it.
+    #[inline]
+    pub fn instance_of(&self, id: NodeId) -> Option<u32> {
+        if !self.arena.is_live(id) {
+            return None;
+        }
+        let owner = self.owner[id.index() as usize];
+        (owner != NO_OWNER).then_some(owner & !OWNER_KEPT)
     }
 
     /// Run the bottom-up measure pass then the top-down layout pass over the
     /// subtree at `root`, placing the root into `surface`. `scratch` is a
     /// reusable child-id buffer owned by the caller so frames allocate nothing.
     ///
-    /// Layout writes `bounds` (the unscrolled layout truth); this then derives
-    /// the `world` rects from it so paint and hit testing — which read `world` —
-    /// are consistent immediately after a layout, without a scroll offset (any
-    /// existing scroll is re-applied). A later scroll updates `world` on its own
-    /// via [`resolve_transforms`](Self::resolve_transforms) without re-laying out.
+    /// Layout writes `bounds` (the unscrolled layout truth); the on-screen
+    /// [`world`](Self::world) rects follow from it and the current scrolls and
+    /// translates, so a later scroll moves them without re-laying out.
     pub fn layout(&mut self, root: NodeId, surface: Rect, scratch: &mut Vec<u32>) {
         self.fold_lengths();
         scratch.clear();
@@ -2834,7 +3074,6 @@ impl NodeStore {
         scratch.clear();
         layout::layout(self, root.index(), surface, scratch);
         self.settle_scroll_restores();
-        self.resolve_transforms(root);
     }
 
     /// Re-resolve the warm `style` of every STYLE-dirty node that carries a
@@ -2852,7 +3091,8 @@ impl NodeStore {
     /// Allocation-free; touches only the dirty bound nodes.
     pub fn resolve_styles(&mut self, theme: &Theme, states: &StateStore) -> u32 {
         let mut resolved = 0;
-        for index in 0..self.dirty.len() {
+        for &index in self.dirty_lists.of(DirtyClass::STYLE) {
+            let index = index as usize;
             if !self.dirty[index].intersects(DirtyClass::STYLE) {
                 continue;
             }
@@ -2882,8 +3122,24 @@ impl NodeStore {
     /// idempotent across frames and needs no separate base column.
     /// Allocation-free; touches only the dirty selecting nodes.
     pub fn resolve_interaction_styles(&mut self, states: &StateStore) -> u32 {
+        self.resolve_interaction_styles_since(states, 0).0
+    }
+
+    /// [`resolve_interaction_styles`](Self::resolve_interaction_styles) over
+    /// the STYLE worklist from entry `from` on: the nodes that gained STYLE
+    /// since a resolve that returned `from` as its cursor. Returns how many it
+    /// re-selected and the cursor for the next call. The worklist only grows
+    /// within a frame, so a frame that resolves early and again before paint
+    /// visits each node once.
+    pub fn resolve_interaction_styles_since(
+        &mut self,
+        states: &StateStore,
+        from: usize,
+    ) -> (u32, usize) {
+        let list = self.dirty_lists.of(DirtyClass::STYLE);
         let mut resolved = 0;
-        for index in 0..self.dirty.len() {
+        for &index in list.get(from..).unwrap_or_default() {
+            let index = index as usize;
             if !self.dirty[index].intersects(DirtyClass::STYLE) {
                 continue;
             }
@@ -2893,7 +3149,7 @@ impl NodeStore {
             self.style[index] = interaction.resolve(states);
             resolved += 1;
         }
-        resolved
+        (resolved, list.len())
     }
 
     /// Re-measure and re-place only the subtrees carrying MEASURE or LAYOUT
@@ -2923,25 +3179,46 @@ impl NodeStore {
         // Roots for the redo: the shallowest nodes whose subtree must be
         // recomputed. A MEASURE change flows through its parent's child
         // distribution, so redo from the parent (clamped to `root`, which owns
-        // the whole surface); a LAYOUT-only container redoes itself.
-        let relayout = DirtyClass::MEASURE | DirtyClass::LAYOUT;
-        for index in 0..self.dirty.len() as u32 {
-            let Some(id) = self.arena.live_id(index) else {
-                continue;
-            };
-            if !self.dirty[index as usize].intersects(relayout) {
-                continue;
-            }
-            let redo_from = if self.dirty[index as usize].intersects(DirtyClass::MEASURE) {
-                self.arena.links(id).and_then(|l| l.parent).unwrap_or(root)
-            } else {
-                id
-            };
-            if !self.is_ancestor_in(redo_roots, redo_from) {
-                redo_roots.retain(|&r| !self.is_ancestor(redo_from, r));
-                redo_roots.push(redo_from);
+        // the whole surface); a LAYOUT-only container redoes itself. The
+        // candidates come from the MEASURE and LAYOUT worklists, shallowest
+        // first, and one under an accepted root is subsumed by it — O(marked ×
+        // depth), nothing on a frame with no layout dirt.
+        let mut candidates = core::mem::take(&mut self.redo_candidates);
+        for class in [DirtyClass::MEASURE, DirtyClass::LAYOUT] {
+            for &index in self.dirty_lists.of(class) {
+                let d = self.dirty[index as usize];
+                // A node carrying both enters once, as MEASURE.
+                if !d.intersects(class)
+                    || (class == DirtyClass::LAYOUT && d.intersects(DirtyClass::MEASURE))
+                {
+                    continue;
+                }
+                let Some(id) = self.arena.live_id(index) else {
+                    continue;
+                };
+                let redo_from = if class == DirtyClass::MEASURE {
+                    self.arena.parent(id).unwrap_or(root)
+                } else {
+                    id
+                };
+                candidates.push((self.depth_of(redo_from), redo_from));
             }
         }
+        candidates.sort_unstable_by_key(|&(depth, id)| (depth, id.index()));
+        if self.redo_flag.len() < self.arena.slot_count() {
+            self.redo_flag.resize(self.arena.slot_count(), false);
+        }
+        for &(_, candidate) in &candidates {
+            if !self.under_flagged(candidate) {
+                self.redo_flag[candidate.index() as usize] = true;
+                redo_roots.push(candidate);
+            }
+        }
+        for r in redo_roots.iter() {
+            self.redo_flag[r.index() as usize] = false;
+        }
+        candidates.clear();
+        self.redo_candidates = candidates;
 
         let mut measured = 0;
         let mut laid_out = 0;
@@ -2959,20 +3236,35 @@ impl NodeStore {
             layout::layout_on(self, redo.index(), bounds, basis, scratch);
             laid_out += self.subtree_len(redo);
         }
-        // Re-place `bounds` into `world`, exactly as the whole-tree
-        // `NodeStore::layout` does after its passes: a relaid subtree wrote fresh
-        // `bounds` but `world` (which paint and hit testing read) is derived only
-        // by `resolve_transforms`. A redo root can sit under scrolling/translating
-        // ancestors, so its correct world needs their accumulated offset — hence
-        // resolving from the tree root, not from each redo root in isolation.
-        // Skipped entirely on a redo-free frame (a pure TRANSFORM/PAINT frame,
-        // whose world the facade resolves through its own TRANSFORM-gated call).
-        // A waiting scroll restore marks TRANSFORM, so it is resolved either way.
+        // A waiting scroll restore applies once layout knows the range.
         self.settle_scroll_restores();
-        if !redo_roots.is_empty() {
-            self.resolve_transforms(root);
-        }
         (measured, laid_out)
+    }
+
+    /// How many parent links lie between `id` and the top of its tree.
+    fn depth_of(&self, id: NodeId) -> u32 {
+        let mut depth = 0;
+        let mut at = id.node_index();
+        loop {
+            let parent = self.arena.parent_of(at);
+            if parent.is_none() {
+                return depth;
+            }
+            depth += 1;
+            at = parent;
+        }
+    }
+
+    /// Whether `id` or one of its ancestors is an accepted redo root.
+    fn under_flagged(&self, id: NodeId) -> bool {
+        let mut at = id.node_index();
+        while !at.is_none() {
+            if self.redo_flag[at.slot()] {
+                return true;
+            }
+            at = self.arena.parent_of(at);
+        }
+        false
     }
 
     /// The percent basis node `id`'s box gives its children, as a layout from
@@ -2990,21 +3282,34 @@ impl NodeStore {
     /// Rebuild the primitive list when any paint-affecting invalidation is
     /// pending, and report how many primitives were emitted (0 when skipped).
     ///
-    /// Paint is coarse this slice: a paint-affecting change anywhere re-emits
-    /// the whole tree into `out`. Relayout implies repaint (moved boxes must
-    /// re-emit their quads); an isolated PAINT or TRANSFORM mark repaints
-    /// without any relayout. The renderer still reuses `out` frame to frame.
-    pub fn repaint_dirty(&self, root: NodeId, out: &mut Vec<viso_render::Primitive>) -> u32 {
+    /// A paint-affecting change anywhere re-emits the whole tree into `out`;
+    /// relayout implies repaint (moved boxes must re-emit their quads). A
+    /// `TRANSFORM` mark alone does not repaint: its roots move through
+    /// [`update_transforms`](Self::update_transforms) and the renderer shifts
+    /// their retained draws. The renderer still reuses `out` frame to frame.
+    pub fn repaint_dirty(&mut self, root: NodeId, out: &mut Vec<viso_render::Primitive>) -> u32 {
         if !self.arena.is_live(root) {
             return 0;
         }
-        let paint_classes =
-            DirtyClass::PAINT | DirtyClass::TRANSFORM | DirtyClass::MEASURE | DirtyClass::LAYOUT;
-        if !self.dirty.iter().any(|d| d.intersects(paint_classes)) {
+        let paint_classes = DirtyClass::PAINT | DirtyClass::MEASURE | DirtyClass::LAYOUT;
+        if !self.repaint_pending && !self.any_dirty_class(paint_classes) {
             return 0;
         }
+        self.repaint(root, out)
+    }
+
+    /// Re-emit the whole tree at `root` into `out` and record its transform
+    /// roots, whatever is dirty. Reports how many primitives were emitted.
+    pub fn repaint(&mut self, root: NodeId, out: &mut Vec<viso_render::Primitive>) -> u32 {
+        self.repaint_pending = false;
         out.clear();
-        crate::paint::paint_tree(self, root, out);
+        if !self.arena.is_live(root) {
+            self.transforms.clear();
+            return 0;
+        }
+        let mut table = core::mem::take(&mut self.transforms);
+        crate::paint::paint_with_transforms(self, root, out, &mut table);
+        self.transforms = table;
         out.len() as u32
     }
 
@@ -3055,15 +3360,13 @@ impl NodeStore {
             bounds: self.bounds(id),
             children: Vec::new(),
         });
-        let mut child = self.arena.links(id).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in self.arena.children(id) {
             // A subtree authored hidden is shown but not read; one folded out
             // of layout is neither.
             if !self.hidden[c.index() as usize] && !self.semantics(c).is_some_and(|s| s.hidden) {
                 let ci = self.derive_into(c, tree);
                 tree.nodes[my_index].children.push(ci);
             }
-            child = self.arena.links(c).and_then(|l| l.next_sibling);
         }
         my_index
     }
@@ -3074,43 +3377,18 @@ impl NodeStore {
     /// this slice — SEMANTICS bubbles to the root, so any change reaches `root`;
     /// per-subtree caching is a later refinement once a consumer needs it.
     pub fn derive_semantics_dirty(&self, root: NodeId) -> Option<SemanticsTree> {
-        if !self
-            .dirty
-            .iter()
-            .any(|d| d.intersects(DirtyClass::SEMANTICS))
-        {
+        if !self.any_dirty_class(DirtyClass::SEMANTICS) {
             return None;
         }
         Some(self.derive_semantics(root))
-    }
-
-    /// Whether any node in `roots` is `node` itself or an ancestor of it.
-    fn is_ancestor_in(&self, roots: &[NodeId], node: NodeId) -> bool {
-        roots
-            .iter()
-            .any(|&r| r == node || self.is_ancestor(r, node))
-    }
-
-    /// Whether `ancestor` lies strictly above `node` on the parent chain.
-    fn is_ancestor(&self, ancestor: NodeId, node: NodeId) -> bool {
-        let mut cur = self.arena.links(node).and_then(|l| l.parent);
-        while let Some(p) = cur {
-            if p == ancestor {
-                return true;
-            }
-            cur = self.arena.links(p).and_then(|l| l.parent);
-        }
-        false
     }
 
     /// Count of live nodes in the subtree rooted at `id` (inclusive). Used to
     /// report recompute work; walks ancestry links, no allocation.
     fn subtree_len(&self, id: NodeId) -> u32 {
         let mut count = 1;
-        let mut child = self.arena.links(id).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in self.arena.children(id) {
             count += self.subtree_len(c);
-            child = self.arena.links(c).and_then(|l| l.next_sibling);
         }
         count
     }
@@ -3144,13 +3422,15 @@ impl LayoutTree for NodeStore {
         self.layout[index as usize]
     }
 
+    #[inline]
     fn children(&self, index: u32, out: &mut Vec<u32>) {
-        let id = self.arena_id(index);
-        let mut child = self.arena.links(id).and_then(|l| l.first_child);
-        while let Some(c) = child {
-            out.push(c.index());
-            child = self.arena.links(c).and_then(|l| l.next_sibling);
-        }
+        // Layout walks live nodes only, and internal links always point at live
+        // slots: the bare index chain is the whole traversal.
+        out.extend(
+            self.arena
+                .children_of(NodeIndex::new(index))
+                .map(NodeIndex::get),
+        );
     }
 
     #[inline]
@@ -3236,6 +3516,14 @@ impl LayoutTree for NodeStore {
         self.report_length_issue(index, issue);
     }
 
+    fn take_grid_scratch(&mut self) -> crate::layout::GridScratch {
+        self.grid_scratch.pop().unwrap_or_default()
+    }
+
+    fn put_grid_scratch(&mut self, scratch: crate::layout::GridScratch) {
+        self.grid_scratch.push(scratch);
+    }
+
     fn request_text_reflow(&mut self, index: u32, width: f32) {
         // Eligibility lives entirely here (the trait method is a pure data
         // write). A reflow is enqueued only for a soft-wrapping text run whose
@@ -3280,17 +3568,6 @@ impl LayoutTree for NodeStore {
         if let Some(id) = self.arena.live_id(index) {
             self.text_reflows.push((id, qwidth));
         }
-    }
-}
-
-impl NodeStore {
-    /// Reconstruct a live [`NodeId`] from a dense index by reading the arena's
-    /// current generation for that slot. Used by the layout bridge, which works
-    /// in bare indices for cache density.
-    fn arena_id(&self, index: u32) -> NodeId {
-        // The layout passes only ever walk live nodes reachable from the root,
-        // so the slot is occupied; pair the index with its live generation.
-        self.arena.live_id(index).expect("layout walks live nodes")
     }
 }
 
@@ -4027,7 +4304,7 @@ impl<'a> BuildCx<'a> {
             .states
             .as_mut()
             .expect("state() requires a with_reactive BuildCx")
-            .alloc(initial);
+            .alloc_local(initial);
         #[cfg(feature = "hot-reload")]
         crate::state_origin::allocated(
             id,
@@ -4045,7 +4322,7 @@ impl<'a> BuildCx<'a> {
             .states
             .as_mut()
             .expect("state() requires a with_reactive BuildCx")
-            .alloc(initial);
+            .alloc_local(initial);
         #[cfg(feature = "hot-reload")]
         if let Some(key) = key {
             crate::state_origin::allocated(id, key);
@@ -4065,6 +4342,29 @@ impl<'a> BuildCx<'a> {
             .expect("bind() requires a with_reactive BuildCx")
             .bind(state, node.id, class);
         node
+    }
+
+    /// Build `f` as one instance of `template` (§18.1): the nodes and states
+    /// it creates fill blocks of their own and the edges it binds are the
+    /// instance's, shared through `template` with every instance that binds
+    /// the same way. The instance lives while one of its nodes does; once its
+    /// last node is freed, [`BindingTable::collect`] frees its states and
+    /// edges and keeps its blocks for the next instance. Without a
+    /// [`BuildCx::with_reactive`] cx it just runs `f`.
+    pub fn instance<R>(&mut self, template: &mut Template, f: impl FnOnce(&mut Self) -> R) -> R {
+        let (Some(states), Some(bindings)) =
+            (self.states.as_deref_mut(), self.bindings.as_deref_mut())
+        else {
+            return f(self);
+        };
+        bindings.begin_instance(template, self.store, states);
+        let out = f(self);
+        if let (Some(states), Some(bindings)) =
+            (self.states.as_deref_mut(), self.bindings.as_deref_mut())
+        {
+            bindings.end_instance(template, self.store, states);
+        }
+        out
     }
 
     /// Runs `f` over this build's stores as a [`StructureCx`], for a view that
@@ -4203,6 +4503,68 @@ mod tests {
             w,
             h,
         }
+    }
+
+    #[test]
+    fn an_idle_frame_visits_nothing() {
+        let mut store = NodeStore::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                for _ in 0..64 {
+                    cx.leaf(LeafStyle::default());
+                }
+            })
+            .id()
+        };
+        let mut scratch = Vec::new();
+        let mut roots = Vec::new();
+        store.layout(root, surface(400.0, 300.0), &mut scratch);
+        store.clear_dirty();
+
+        assert!(!store.any_dirty());
+        assert!(store.dirty_lists().marked().is_empty(), "nothing to visit");
+        assert_eq!(
+            store.relayout_dirty(root, surface(400.0, 300.0), &mut scratch, &mut roots),
+            (0, 0)
+        );
+        let mut out = Vec::new();
+        assert_eq!(store.repaint_dirty(root, &mut out), 0);
+        assert!(store.derive_semantics_dirty(root).is_none());
+    }
+
+    #[test]
+    fn a_relayout_redoes_only_the_shallowest_dirty_roots() {
+        let mut store = NodeStore::new();
+        let (root, a, a_leaf, b) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut ids = (None, None, None);
+            let root = cx
+                .flex(FlexStyle::default(), |cx| {
+                    let a = cx.flex(FlexStyle::default(), |cx| {
+                        ids.1 = Some(cx.leaf(LeafStyle::default()).id());
+                    });
+                    ids.0 = Some(a.id());
+                    ids.2 = Some(cx.flex(FlexStyle::default(), |_| {}).id());
+                })
+                .id();
+            (root, ids.0.unwrap(), ids.1.unwrap(), ids.2.unwrap())
+        };
+        let mut scratch = Vec::new();
+        let mut roots = Vec::new();
+        store.layout(root, surface(400.0, 300.0), &mut scratch);
+        store.clear_dirty();
+
+        // A LAYOUT container and a LAYOUT node inside it redo once, from the
+        // container; an unrelated sibling is its own root.
+        store.mark_dirty(a_leaf, DirtyClass::LAYOUT);
+        store.mark_dirty(a, DirtyClass::LAYOUT);
+        store.mark_dirty(b, DirtyClass::LAYOUT);
+        store.relayout_dirty(root, surface(400.0, 300.0), &mut scratch, &mut roots);
+        roots.sort_by_key(|r| r.index());
+        let mut want = vec![a, b];
+        want.sort_by_key(|r| r.index());
+        assert_eq!(roots, want);
     }
 
     #[cfg(feature = "inspect")]
@@ -4454,7 +4816,7 @@ mod tests {
         assert_eq!(b.index(), 1);
         // Every parallel array grew in lockstep with the arena.
         assert_eq!(store.bounds.len(), 2);
-        assert_eq!(store.world.len(), 2);
+        assert_eq!(store.transform_root.len(), 2);
         assert_eq!(store.scroll.len(), 2);
         assert_eq!(store.content.len(), 2);
         assert_eq!(store.layout.len(), 2);
@@ -5649,7 +6011,6 @@ mod tests {
         assert_eq!(store.world(content), store.bounds(content));
 
         store.scroll_by(viewport, Vec2 { x: 0.0, y: 40.0 });
-        store.resolve_transforms(viewport);
 
         // The viewport itself does not move; its content shifts up by the offset.
         assert_eq!(store.world(viewport), store.bounds(viewport));
@@ -5677,9 +6038,11 @@ mod tests {
             Vec2 { x: 0.0, y: 200.0 },
             "x clamps to 0 (no horizontal range), y clamps to 200"
         );
-        assert!(store.dirty(viewport).contains(DirtyClass::TRANSFORM));
-        assert!(store.dirty(viewport).contains(DirtyClass::HIT_TEST));
-        assert!(store.dirty(viewport).contains(DirtyClass::PAINT));
+        assert_eq!(
+            store.dirty(viewport),
+            DirtyClass::TRANSFORM,
+            "a scroll only moves"
+        );
 
         // Setting the same (clamped) offset again moves nothing and schedules
         // no work — the reload restore of an unchanged offset is free.
@@ -5722,7 +6085,6 @@ mod tests {
         assert_eq!(store.world(content), store.bounds(content));
 
         store.set_translate(viewport, Vec2 { x: 12.0, y: -34.0 });
-        store.resolve_transforms(viewport);
 
         // Both the node itself and its subtree shift by −translate (the node
         // moves, carrying its content along).
@@ -5768,25 +6130,59 @@ mod tests {
     }
 
     #[test]
-    fn translate_marks_transform_hit_test_paint_only() {
+    fn a_first_translate_makes_a_root_and_later_ones_only_move_it() {
         let (mut store, root) = translate_scene();
         store.clear_dirty();
         store.set_translate(root, Vec2 { x: 0.0, y: 50.0 });
-        let d = store.dirty(root);
-        assert!(d.contains(DirtyClass::TRANSFORM));
-        assert!(d.contains(DirtyClass::HIT_TEST));
-        assert!(d.contains(DirtyClass::PAINT));
-        assert!(
-            !d.intersects(DirtyClass::MEASURE | DirtyClass::LAYOUT),
-            "a translate never re-measures or re-lays out"
+        assert!(store.is_transform_root(root));
+        assert_eq!(
+            store.dirty(root),
+            DirtyClass::TRANSFORM | DirtyClass::PAINT,
+            "the paint that records the new root is the only paint"
         );
+        store.clear_dirty();
+        store.set_translate(root, Vec2 { x: 0.0, y: 0.0 });
+        assert_eq!(store.dirty(root), DirtyClass::TRANSFORM);
+        assert!(store.is_transform_root(root), "a root stays one");
+    }
+
+    #[test]
+    fn a_scroll_moves_its_root_without_painting_again() {
+        let (mut store, viewport, content) = scroll_scene();
+        let mut out = Vec::new();
+        store.repaint(viewport, &mut out);
+        assert_eq!(store.transforms().len(), 1);
+        assert_eq!(store.transforms().painted(), &[[0.0, 0.0]]);
+        store.clear_dirty();
+
+        store.scroll_by(viewport, Vec2 { x: 0.0, y: 40.0 });
+        assert_eq!(
+            store.repaint_dirty(viewport, &mut out),
+            0,
+            "nothing repaints"
+        );
+        assert!(store.update_transforms());
+        assert_eq!(store.transforms().current(), &[[0.0, -40.0]]);
+        assert_eq!(store.transforms().painted(), &[[0.0, 0.0]]);
+        assert!(!store.update_transforms(), "a second update moves nothing");
+        assert_eq!(store.world(content).y, store.bounds(content).y - 40.0);
+    }
+
+    #[test]
+    fn a_displacement_snaps_to_the_device_grid() {
+        let (mut store, viewport, content) = scroll_scene();
+        store.set_length_env(crate::length::LengthEnv {
+            scale_factor: 2.0,
+            ..store.length_env()
+        });
+        store.scroll_by(viewport, Vec2 { x: 0.0, y: 10.3 });
+        assert_eq!(store.world(content).y, store.bounds(content).y - 10.5);
     }
 
     #[test]
     fn zero_translate_leaves_world_equal_to_bounds() {
-        let (mut store, root) = translate_scene();
+        let (store, root) = translate_scene();
         // A never-translated node resolves world byte-equal to bounds.
-        store.resolve_transforms(root);
         assert_eq!(store.world(root), store.bounds(root));
     }
 
@@ -5842,11 +6238,7 @@ mod tests {
             })
             .id()
         };
-        let old = store
-            .arena()
-            .links(parent)
-            .and_then(|l| l.first_child)
-            .unwrap();
+        let old = store.arena().first_child(parent).unwrap();
         let grandchild = sink.borrow()[0];
 
         // A freshly built replacement, parked as an orphan until it is mounted.
@@ -5864,7 +6256,7 @@ mod tests {
         assert!(!store.arena().is_live(grandchild), "old's subtree is gone");
         assert!(store.arena().is_live(new), "the replacement stays live");
         assert_eq!(
-            store.arena().links(parent).and_then(|l| l.first_child),
+            store.arena().first_child(parent),
             Some(new),
             "new is mounted under parent",
         );
@@ -5898,11 +6290,7 @@ mod tests {
         );
         assert!(store.arena().is_live(new), "the replacement is not mounted");
         assert!(
-            store
-                .arena()
-                .links(parent)
-                .and_then(|l| l.first_child)
-                .is_none(),
+            store.arena().first_child(parent).is_none(),
             "parent is left untouched",
         );
     }

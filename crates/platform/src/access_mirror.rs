@@ -1,25 +1,26 @@
-//! The backend's copy of a published accessibility tree (ADR 0030), for the
-//! bridges Viso builds itself out of native objects (iOS, Web).
+//! The backend's copy of a published semantics tree (ADR 0030, ADR 0042), for
+//! the bridges Viso builds itself out of native objects (iOS, Web). They fold
+//! each [`SemanticsDelta`] in directly.
 
 use std::collections::{HashMap, HashSet};
 
-use accesskit::{Node, TreeUpdate};
+use crate::accessibility::{AccessNode, SemanticsDelta, SemanticsId};
 
-/// The tree as of the last update: applies each incremental update and
-/// reports which nodes the native side has to patch.
+/// The tree as of the last delta: applies each one and reports which nodes
+/// the native side has to patch.
 pub(crate) struct TreeMirror {
-    nodes: HashMap<u64, Node>,
-    root: Option<u64>,
-    focus: u64,
+    nodes: HashMap<SemanticsId, AccessNode>,
+    root: Option<SemanticsId>,
+    focus: SemanticsId,
 }
 
-/// What one update changed in a [`TreeMirror`].
+/// What one delta changed in a [`TreeMirror`].
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct MirrorChanges {
-    /// Nodes the update carried that are still in the tree.
-    pub(crate) changed: Vec<u64>,
+    /// Nodes the delta carried that are still in the tree.
+    pub(crate) changed: Vec<SemanticsId>,
     /// Nodes no longer reachable from the root, now dropped.
-    pub(crate) removed: Vec<u64>,
+    pub(crate) removed: Vec<SemanticsId>,
     /// The focus moved.
     pub(crate) focus_moved: bool,
 }
@@ -29,27 +30,27 @@ impl TreeMirror {
         Self {
             nodes: HashMap::new(),
             root: None,
-            focus: 0,
+            focus: SemanticsId::default(),
         }
     }
 
-    /// Fold `update` in, dropping every node it left unreachable.
-    pub(crate) fn apply(&mut self, update: TreeUpdate) -> MirrorChanges {
-        if let Some(tree) = &update.tree {
-            self.root = Some(tree.root.0);
+    /// Fold `delta` in, dropping every node it left unreachable.
+    pub(crate) fn apply(&mut self, delta: SemanticsDelta) -> MirrorChanges {
+        if let Some(root) = delta.root {
+            self.root = Some(root);
         }
-        let focus_moved = self.focus != update.focus.0;
-        self.focus = update.focus.0;
-        let mut changed = Vec::with_capacity(update.nodes.len());
-        for (id, node) in update.nodes {
-            changed.push(id.0);
-            self.nodes.insert(id.0, node);
+        let focus_moved = self.focus != delta.focus;
+        self.focus = delta.focus;
+        let mut changed = Vec::with_capacity(delta.nodes.len());
+        for node in delta.nodes {
+            changed.push(node.id);
+            self.nodes.insert(node.id, node);
         }
         let mut reachable = HashSet::with_capacity(self.nodes.len());
-        self.walk(|id, _, _| {
-            reachable.insert(id);
+        self.walk(|node, _| {
+            reachable.insert(node.id);
         });
-        let mut removed: Vec<u64> = self
+        let mut removed: Vec<SemanticsId> = self
             .nodes
             .keys()
             .copied()
@@ -67,35 +68,30 @@ impl TreeMirror {
         }
     }
 
-    pub(crate) fn get(&self, id: u64) -> Option<&Node> {
+    pub(crate) fn get(&self, id: SemanticsId) -> Option<&AccessNode> {
         self.nodes.get(&id)
     }
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) fn root(&self) -> Option<u64> {
+    #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+    pub(crate) fn root(&self) -> Option<SemanticsId> {
         self.root
     }
 
     #[cfg(any(target_os = "ios", test))]
-    pub(crate) fn focus(&self) -> u64 {
+    pub(crate) fn focus(&self) -> SemanticsId {
         self.focus
     }
 
     /// Visit every node in document order with its parent's id.
-    pub(crate) fn walk(&self, mut visit: impl FnMut(u64, &Node, Option<u64>)) {
+    pub(crate) fn walk(&self, mut visit: impl FnMut(&AccessNode, Option<SemanticsId>)) {
         let Some(root) = self.root else { return };
         let mut stack = vec![(root, None)];
         while let Some((id, parent)) = stack.pop() {
             let Some(node) = self.nodes.get(&id) else {
                 continue;
             };
-            visit(id, node, parent);
-            stack.extend(
-                node.children()
-                    .iter()
-                    .rev()
-                    .map(|child| (child.0, Some(id))),
-            );
+            visit(node, parent);
+            stack.extend(node.children.iter().rev().map(|&child| (child, Some(id))));
         }
     }
 }
@@ -103,61 +99,94 @@ impl TreeMirror {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accessibility::SemanticsRole;
 
-    fn node(role: accesskit::Role, children: &[u64]) -> accesskit::Node {
-        let mut node = accesskit::Node::new(role);
-        node.set_children(
-            children
-                .iter()
-                .map(|&id| accesskit::NodeId(id))
-                .collect::<Vec<_>>(),
-        );
-        node
-    }
-
-    fn update(
-        nodes: Vec<(u64, accesskit::Node)>,
-        root: Option<u64>,
-        focus: u64,
-    ) -> accesskit::TreeUpdate {
-        accesskit::TreeUpdate {
-            nodes: nodes
-                .into_iter()
-                .map(|(id, n)| (accesskit::NodeId(id), n))
-                .collect(),
-            tree: root.map(|id| accesskit::TreeInfo::new(accesskit::NodeId(id))),
-            tree_id: accesskit::TreeId::ROOT,
-            focus: accesskit::NodeId(focus),
+    fn node(id: u64, role: SemanticsRole, children: &[u64]) -> AccessNode {
+        AccessNode {
+            id: SemanticsId(id),
+            role,
+            children: children.iter().map(|&c| SemanticsId(c)).collect(),
+            ..AccessNode::default()
         }
     }
 
+    fn delta(nodes: Vec<AccessNode>, root: Option<u64>, focus: u64) -> SemanticsDelta {
+        SemanticsDelta {
+            root: root.map(SemanticsId),
+            nodes,
+            focus: SemanticsId(focus),
+        }
+    }
+
+    fn ids(ids: &[u64]) -> Vec<SemanticsId> {
+        ids.iter().map(|&id| SemanticsId(id)).collect()
+    }
+
     #[test]
-    fn the_mirror_folds_diffs_and_drops_what_they_orphan() {
-        use accesskit::Role;
+    fn the_mirror_folds_deltas_and_drops_what_they_orphan() {
+        use SemanticsRole as R;
         let mut mirror = TreeMirror::new();
-        let first = mirror.apply(update(
+        let first = mirror.apply(delta(
             vec![
-                (1, node(Role::Window, &[2, 3])),
-                (2, node(Role::Button, &[])),
-                (3, node(Role::Group, &[4])),
-                (4, node(Role::Label, &[])),
+                node(1, R::Window, &[2, 3]),
+                node(2, R::Button, &[]),
+                node(3, R::Group, &[4]),
+                node(4, R::Label, &[]),
             ],
             Some(1),
             1,
         ));
-        assert_eq!(first.changed, [1, 2, 3, 4]);
+        assert_eq!(first.changed, ids(&[1, 2, 3, 4]));
         assert!(first.removed.is_empty());
+        assert_eq!(mirror.root(), Some(SemanticsId(1)));
 
         let mut order = Vec::new();
-        mirror.walk(|id, _, parent| order.push((id, parent)));
+        mirror.walk(|node, parent| order.push((node.id.0, parent.map(|p| p.0))));
         assert_eq!(order, [(1, None), (2, Some(1)), (3, Some(1)), (4, Some(3))]);
 
-        let second = mirror.apply(update(vec![(1, node(Role::Window, &[2]))], None, 2));
-        assert_eq!(second.changed, [1]);
-        assert_eq!(second.removed, [3, 4], "the group and its label left");
+        let second = mirror.apply(delta(vec![node(1, R::Window, &[2])], None, 2));
+        assert_eq!(second.changed, ids(&[1]));
+        assert_eq!(second.removed, ids(&[3, 4]), "the group and its label left");
         assert!(second.focus_moved);
-        assert_eq!(mirror.focus(), 2);
-        assert!(mirror.get(4).is_none());
-        assert!(mirror.get(2).is_some(), "an unchanged node stays");
+        assert_eq!(mirror.focus(), SemanticsId(2));
+        assert!(mirror.get(SemanticsId(4)).is_none());
+        assert!(
+            mirror.get(SemanticsId(2)).is_some(),
+            "an unchanged node stays"
+        );
+        assert_eq!(
+            mirror.root(),
+            Some(SemanticsId(1)),
+            "an incremental delta keeps the root"
+        );
+    }
+
+    #[test]
+    fn a_changed_node_replaces_its_facts_and_a_moved_child_keeps_its_node() {
+        use SemanticsRole as R;
+        let mut mirror = TreeMirror::new();
+        mirror.apply(delta(
+            vec![
+                node(1, R::Window, &[2, 3]),
+                node(2, R::Group, &[]),
+                node(3, R::Slider, &[]),
+            ],
+            Some(1),
+            1,
+        ));
+        let mut slider = node(3, R::Slider, &[]);
+        slider.label = Some("Volume".into());
+        let changes = mirror.apply(delta(
+            vec![node(1, R::Window, &[2]), node(2, R::Group, &[3]), slider],
+            None,
+            1,
+        ));
+        assert!(changes.removed.is_empty(), "the slider only moved");
+        assert!(!changes.focus_moved);
+        assert_eq!(changes.changed, ids(&[1, 2, 3]));
+        assert_eq!(
+            mirror.get(SemanticsId(3)).and_then(|n| n.label.as_deref()),
+            Some("Volume")
+        );
     }
 }

@@ -12,12 +12,14 @@ rust-version.workspace = true
 # `dsl -> concrete widget implementation` is forbidden — it works against a
 # schema/registry, so it must NOT depend on viso-widgets.
 [dependencies]
-viso-ui = { workspace = true }
+# What the compiler emits for the runtime: the view and AOT package formats,
+# the control, route and region tables, the state and layout vocabulary.
+viso-schema = { workspace = true }
+# The hot reload patch the compiler plans and the source tables a tool joins
+# an inspection with, as the dev link carries them.
+viso-dev-protocol = { workspace = true }
 viso-ende = { workspace = true }
-viso-behavior = { workspace = true }
-# Mounting a view's handlers: the route table and the host the macros, the
-# hot reload commit and the release package all dispatch through.
-viso-view = { workspace = true, features = ["hot-reload"] }
+viso-behavior = { workspace = true, features = ["std", "interpreter"] }
 # A `shader` declaration lowers into the shader program IR, and a package
 # carries its code in the target backend's language, SPIR-V included.
 viso-shader = { workspace = true, features = ["spirv"] }
@@ -29,6 +31,11 @@ icu_normalizer = { workspace = true }
 toml_edit = { workspace = true }
 icu_locale_core = { workspace = true }
 icu_locale_fallback = { workspace = true }
+
+[dev-dependencies]
+# The runtime the integration tests mount, reload and drive compiled views in.
+viso-ui = { workspace = true }
+viso-view = { workspace = true, features = ["hot-reload", "vm"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"
@@ -51,4 +58,8 @@ harness = false
 
 [[bench]]
 name = "game_native"
+harness = false
+
+[[bench]]
+name = "behavior_native"
 harness = false

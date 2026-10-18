@@ -5,7 +5,7 @@
 //! pass turns each pending property into a *binding edge*: the reactive sources it
 //! reads, the template node it targets, and the dirty class a write invalidates.
 //! These edges are the compiled fast path — at mount the emitter replays them into
-//! [`viso_ui::BindingTable::bind`], so a state write becomes a direct
+//! `viso_ui::BindingTable::bind`, so a state write becomes a direct
 //! `StateId -> (node, DirtyClass)` invalidation with no per-signal subscriber list
 //! and no runtime dependency discovery.
 //!

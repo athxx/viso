@@ -239,11 +239,11 @@ impl PlatformApp for HeadlessApp {
 
     fn run(&mut self, handler: &mut dyn AppHandler) {
         // Boot: launch first, exactly once, before anything else.
-        if handler.handle(RawEvent::AppLaunched) == ControlFlow::Exit {
+        if handler.handle(self, RawEvent::AppLaunched) == ControlFlow::Exit {
             return;
         }
         while let Some(event) = self.next_event() {
-            if handler.handle(event) == ControlFlow::Exit {
+            if handler.handle(self, event) == ControlFlow::Exit {
                 break;
             }
             // Poll/Wait/WaitUntil all continue draining: there is no OS to
@@ -411,7 +411,7 @@ mod tests {
     struct Recorder(Vec<RawEvent>);
 
     impl AppHandler for Recorder {
-        fn handle(&mut self, event: RawEvent) -> ControlFlow {
+        fn handle(&mut self, _app: &mut dyn PlatformApp, event: RawEvent) -> ControlFlow {
             self.0.push(event);
             ControlFlow::Wait
         }
@@ -426,7 +426,7 @@ mod tests {
             fed: bool,
         }
         impl AppHandler for Feeder {
-            fn handle(&mut self, event: RawEvent) -> ControlFlow {
+            fn handle(&mut self, _app: &mut dyn PlatformApp, event: RawEvent) -> ControlFlow {
                 if let RawEvent::RedrawRequested { .. } = event
                     && !self.fed
                 {

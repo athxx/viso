@@ -50,7 +50,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use viso::__test_support::drive_scripted;
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso::platform::{
     Modifiers as RawModifiers, PointerButtons as RawButtons, PointerPhase as RawPhase, RawEvent,
     RawPointer, WindowId,
@@ -126,7 +126,7 @@ fn raster_window(fill: Rgba, w: u32, h: u32) -> Vec<u8> {
     let mut primitives = Vec::new();
     paint_tree(&store, root, &mut primitives);
 
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -580,7 +580,7 @@ static ALLOCATOR: CountingAlloc = CountingAlloc;
 /// real handle, so the pack drives each window's renderer directly, as the widget
 /// packs drive a single scene.
 struct WindowRaster {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: SurfaceId,
     store: NodeStore,
@@ -592,7 +592,7 @@ struct WindowRaster {
 
 impl WindowRaster {
     fn new(fill: Rgba, w: u32, h: u32) -> Self {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
         let format = gpu.surface_format(surface);
         let renderer = Renderer::new(&mut gpu, format);

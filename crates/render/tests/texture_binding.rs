@@ -22,9 +22,7 @@
 //! bound is pinned instead — `bindless_texture_slots == 0` — so the day a backend
 //! grows one, this file is where the new cost has to be proven.
 
-use viso_gpu::{
-    GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat, TextureId,
-};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat, TextureId};
 use viso_render::{
     BindingModel, Border, ExtendMode, FrameStats, GlyphInstanceData, GlyphLane, GlyphRunDraw,
     Gradient, GradientKind, GradientStop, ImageDraw, InterpolationSpace, Point, Primitive, Quad,
@@ -44,7 +42,7 @@ fn rect(x: f32, y: f32) -> Rect {
 }
 
 /// A distinct 2x2 BGRA texture — one unatlasable resource.
-fn texture(gpu: &mut HeadlessRaster, label: &'static str) -> TextureId {
+fn texture(gpu: &mut CpuRaster, label: &'static str) -> TextureId {
     gpu.create_texture(&TextureDesc {
         width: 2,
         height: 2,
@@ -55,7 +53,7 @@ fn texture(gpu: &mut HeadlessRaster, label: &'static str) -> TextureId {
 }
 
 /// An A8 coverage atlas, the resource a page of text shares.
-fn atlas(gpu: &mut HeadlessRaster) -> TextureId {
+fn atlas(gpu: &mut CpuRaster) -> TextureId {
     gpu.create_texture(&TextureDesc {
         width: 64,
         height: 64,
@@ -132,8 +130,8 @@ fn gradient(x: f32) -> Primitive {
 
 /// Build a scene against a live backend (so it can create the textures the scene
 /// samples) and report the frame's counters.
-fn scene(build: impl FnOnce(&mut HeadlessRaster) -> Vec<Primitive>) -> FrameStats {
-    let mut gpu = HeadlessRaster::new();
+fn scene(build: impl FnOnce(&mut CpuRaster) -> Vec<Primitive>) -> FrameStats {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let prims = build(&mut gpu);
@@ -291,7 +289,7 @@ fn an_ordinary_textured_frame_stays_on_the_portable_model() {
 /// creation and have no table to index.
 #[test]
 fn no_backend_here_offers_a_resource_table() {
-    let gpu = HeadlessRaster::new();
+    let gpu = CpuRaster::new();
     assert_eq!(gpu.caps().bindless_texture_slots, 0);
     assert_eq!(
         BindingModel::select(TextureWorkload {
@@ -308,7 +306,7 @@ fn no_backend_here_offers_a_resource_table() {
 /// Bind-group batching is a property of the frame, not a cache that warms up.
 #[test]
 fn a_steady_textured_scene_keeps_its_draw_count() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let tex = texture(&mut gpu, "shared");

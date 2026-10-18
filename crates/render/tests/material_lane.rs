@@ -24,7 +24,7 @@
 //! 4. **The lanes coexist.** A screen mixing both pays for exactly the GPU-lane
 //!    panels and reports exactly the native-lane ones.
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureFormat};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
 use viso_render::{
     Border, ColorOp, Corners, FrameStats, FrostedMaterial, MaterialLane, MaterialLaneNeeds,
     Primitive, Quad, Rect, Renderer, Rgba,
@@ -34,8 +34,8 @@ const W: u32 = 128;
 const H: u32 = 128;
 const SIGMA: f32 = 4.0;
 
-fn renderer() -> (HeadlessRaster, SurfaceId, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer() -> (CpuRaster, SurfaceId, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);

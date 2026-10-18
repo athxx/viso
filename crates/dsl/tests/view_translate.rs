@@ -5,13 +5,17 @@
 //! translated locale, a locale switch re-showing every translated label, and
 //! the same under hot reload and in the release package.
 
+#[path = "support/reload.rs"]
+mod reload;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use reload::{LiveRuntime, transact};
 use viso_dsl::aot::build_view_package_for;
 use viso_dsl::frontend::{Origin, compile_file_for};
 use viso_dsl::hir::TargetProfile;
-use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, plan_view_for, transact};
+use viso_dsl::hotreload::{CandidatePlan, plan_view_for};
 use viso_dsl::i18n::{ArgKind, CatalogFile, Messages};
 use viso_dsl::schema::Natives;
 use viso_ui::adaptive::Environment;
@@ -20,7 +24,7 @@ use viso_ui::{
     BindingTable, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
     PointerRouter, Rect, SemanticProjector, StateStore, TextEdits, run_structure_hooks,
 };
-use viso_view::{ViewHost, load_view_with};
+use viso_view::{ViewHost, ViewLoad, load_view_with};
 
 const EN: &str = r#"
 [inbox]
@@ -392,7 +396,7 @@ impl Rt {
             &mut rt.states,
             &mut rt.bindings,
             &mut rt.lists,
-            &mut |_| {},
+            ViewLoad::default(),
         )
         .expect("loads");
         rt.root = view.root;

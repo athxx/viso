@@ -25,7 +25,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{FrameStats, Rect, Renderer, Rgba};
 use viso::ui::{
     Axis, BoxStyle, BuildCx, Component, DirtyClass, LeafStyle, Length, NodeId, NodeStore, Role,
@@ -86,7 +86,7 @@ fn surface_rect() -> Rect {
 // --- golden screenshot -----------------------------------------------------
 
 fn render_scene() -> Vec<u8> {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -219,7 +219,7 @@ fn scroll_scene() -> (NodeStore, NodeId) {
 }
 
 #[test]
-fn wheel_scrolls_the_viewport_and_dirties_only_transform_paint() {
+fn wheel_scrolls_the_viewport_and_dirties_only_its_transform() {
     let (mut store, viewport) = scroll_scene();
     store.clear_dirty();
 
@@ -228,10 +228,12 @@ fn wheel_scrolls_the_viewport_and_dirties_only_transform_paint() {
     assert_eq!(store.scroll(viewport), Vec2 { x: 0.0, y: 60.0 });
 
     let d = store.dirty(viewport);
-    assert!(d.contains(DirtyClass::TRANSFORM) && d.contains(DirtyClass::PAINT));
+    assert!(d.contains(DirtyClass::TRANSFORM));
     assert!(
-        !d.intersects(DirtyClass::LAYOUT | DirtyClass::MEASURE),
-        "a scroll re-derives world rects and repaints without a relayout"
+        !d.intersects(
+            DirtyClass::LAYOUT | DirtyClass::MEASURE | DirtyClass::PAINT | DirtyClass::HIT_TEST
+        ),
+        "a scroll moves the content's transform root without a relayout or repaint"
     );
 }
 
@@ -322,7 +324,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -331,7 +333,7 @@ struct Harness {
 }
 
 fn setup_alloc() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);

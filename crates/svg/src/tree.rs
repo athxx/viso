@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 pub use crate::color::Color;
-pub use crate::geom::{PathData, Point, Rect, Segment, Transform};
+pub use crate::geom::{Affine2, PathData, Rect, Segment, Vec2};
 pub use crate::xml::XmlError;
 
 /// A parsed, normalized SVG document.
@@ -63,8 +63,8 @@ pub enum BlendMode {
 pub struct Group {
     /// Element id, when the source element had one.
     pub id: String,
-    /// Transform relative to the parent group.
-    pub transform: Transform,
+    /// Affine2 relative to the parent group.
+    pub transform: Affine2,
     /// Group opacity in `[0, 1]`.
     pub opacity: f32,
     pub blend_mode: BlendMode,
@@ -81,7 +81,7 @@ impl Default for Group {
     fn default() -> Self {
         Group {
             id: String::new(),
-            transform: Transform::IDENTITY,
+            transform: Affine2::IDENTITY,
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
             isolate: false,
@@ -107,7 +107,7 @@ impl Group {
 
     /// Visit every path in this subtree with its transform relative to this
     /// group's parent (i.e. `self.transform` already applied).
-    pub fn for_each_path(&self, parent: &Transform, f: &mut dyn FnMut(&Path, &Transform)) {
+    pub fn for_each_path(&self, parent: &Affine2, f: &mut dyn FnMut(&Path, &Affine2)) {
         let ts = parent.pre_concat(&self.transform);
         for c in &self.children {
             match c {
@@ -122,11 +122,11 @@ impl Group {
     /// system (before `self.transform`). Strokes are not included.
     pub fn children_bbox(&self) -> Option<Rect> {
         let mut out: Option<Rect> = None;
-        let mut add = |r: Rect| out = Some(out.map_or(r, |o| o.union(&r)));
+        let mut add = |r: Rect| out = Some(out.map_or(r, |o| o.union(r)));
         for c in &self.children {
             match c {
                 Node::Group(g) => {
-                    if let Some(b) = g.bbox_in_parent(&Transform::IDENTITY) {
+                    if let Some(b) = g.bbox_in_parent(&Affine2::IDENTITY) {
                         add(b);
                     }
                 }
@@ -141,17 +141,17 @@ impl Group {
         out
     }
 
-    fn bbox_in_parent(&self, parent: &Transform) -> Option<Rect> {
+    fn bbox_in_parent(&self, parent: &Affine2) -> Option<Rect> {
         let ts = parent.pre_concat(&self.transform);
         let mut out: Option<Rect> = None;
         for c in &self.children {
             let b = match c {
                 Node::Group(g) => g.bbox_in_parent(&ts),
                 Node::Path(p) => p.data.bounds_with(&ts),
-                Node::Image(i) => Some(i.view_rect.transform(&ts)),
+                Node::Image(i) => Some(i.view_rect.transform_bounds(&ts)),
             };
             if let Some(b) = b {
-                out = Some(out.map_or(b, |o| o.union(&b)));
+                out = Some(out.map_or(b, |o| o.union(b)));
             }
         }
         out
@@ -210,7 +210,7 @@ pub struct LinearGradient {
     pub y1: f32,
     pub x2: f32,
     pub y2: f32,
-    pub transform: Transform,
+    pub transform: Affine2,
     pub spread: SpreadMethod,
     pub stops: Vec<Stop>,
 }
@@ -226,7 +226,7 @@ pub struct RadialGradient {
     pub fx: f32,
     pub fy: f32,
     pub fr: f32,
-    pub transform: Transform,
+    pub transform: Affine2,
     pub spread: SpreadMethod,
     pub stops: Vec<Stop>,
 }
@@ -238,7 +238,7 @@ pub struct RadialGradient {
 pub struct Pattern {
     pub id: String,
     pub rect: Rect,
-    pub transform: Transform,
+    pub transform: Affine2,
     pub root: Group,
 }
 
@@ -315,7 +315,7 @@ pub struct ClipPath {
     pub id: String,
     /// Maps clip content to the clipped element's user space (includes the
     /// `objectBoundingBox` mapping when `clipPathUnits` asks for it).
-    pub transform: Transform,
+    pub transform: Affine2,
     /// A clip path may itself be clipped.
     pub clip_path: Option<Arc<ClipPath>>,
     pub root: Group,

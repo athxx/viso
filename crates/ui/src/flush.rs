@@ -2,8 +2,10 @@
 //! downstream of state, repeated until no reactor writes more.
 //!
 //! One round drains the pending set once and runs, in order, the memo-gated
-//! derivations, the direct bindings, the structure hooks, the semantic-state
-//! projections and the effects. A structure hook may write a cell while it
+//! derivations, the direct bindings, the structure hooks and the
+//! semantic-state projections, and queues the effects it woke. Effects run
+//! once per frame after `Submit` ([`run_effects`]); what they write is the
+//! next frame's transaction. A structure hook may write a cell while it
 //! mounts (a region's instance state), so the flush runs another round over
 //! those writes in the same frame; the frame settles when a round leaves
 //! nothing pending. A round whose writes keep causing writes is a reactive
@@ -52,6 +54,15 @@ impl ReactiveCycle {
 
 impl std::fmt::Display for ReactiveCycle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.cells.is_empty() {
+            return write!(
+                f,
+                "{}: effects kept waking each other for {SETTLE_ROUNDS} frames; \
+                 stopped the effects of nodes {:?}",
+                Self::CODE,
+                self.effects
+            );
+        }
         write!(
             f,
             "{}: state writes did not settle within {SETTLE_ROUNDS} rounds; \
@@ -67,7 +78,7 @@ impl std::fmt::Display for ReactiveCycle {
     }
 }
 
-/// Flushes the pending state writes, and runs the effects builds registered,
+/// Flushes the pending state writes, and queues the effects builds registered,
 /// until they settle and returns how many rounds ran: `0` for a frame with
 /// nothing pending, which touches nothing.
 /// `changed` is reused scratch for each round's drained set, left empty.
@@ -81,9 +92,8 @@ impl std::fmt::Display for ReactiveCycle {
 /// 3. the structure hooks, after the bindings so a node a hook frees has taken
 ///    its marks;
 /// 4. the semantic-state projections, writing each node's `semantic_state`;
-/// 5. the effects: first runs of those mounted since the last round, then
-///    re-runs of those whose dependencies changed. An effect's writes are
-///    the next round's.
+/// 5. the effects: those mounted since the last round, then those whose
+///    dependencies changed, are queued for [`run_effects`]; none runs here.
 ///
 /// # Errors
 ///
@@ -118,16 +128,62 @@ pub fn settle_states(
         store.flush_state_transactions(changed, bindings);
         run_structure_hooks(store, states, bindings, effects, changed);
         projectors.wake(changed, states, store);
-        // The effects the commit mounted run first, then those it woke.
-        effects.adopt(store, states);
-        effects.wake(changed, states);
+        // The effects the commit mounted queue first, then those it woke;
+        // they run after the frame presents (`run_effects`).
+        effects.adopt(store);
+        effects.wake(changed);
+    }
+    // The instances whose last node the round freed release their blocks.
+    bindings.collect(store, states);
+    changed.clear();
+    Ok(rounds)
+}
+
+/// What a frame's [`run_effects`] did.
+#[derive(Debug, Default)]
+pub struct EffectsRan {
+    /// How many effects ran.
+    pub ran: u32,
+    /// Whether writes or newly registered effects wait for the next frame,
+    /// which the caller schedules.
+    pub pending: bool,
+    /// The effects cut because they kept waking each other frame after frame:
+    /// a reactive cycle across frames. `cells` is empty; their last writes
+    /// stand.
+    pub cycle: Option<ReactiveCycle>,
+}
+
+/// The frame's `RunEffects` phase, after `Submit`: runs the effects the
+/// frame's flush queued, once each, then hands the tasks their bodies spawned
+/// or cancelled to the node store. What they write stays pending for the next
+/// frame's flush.
+pub fn run_effects(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    effects: &mut EffectStore,
+) -> EffectsRan {
+    let mut done = EffectsRan::default();
+    // Run even with nothing queued: an empty run ends the last frame's effect
+    // chain.
+    let queued = effects.has_queued();
+    done.ran = effects.run_queued(states);
+    if queued {
         let tasks = effects.take_task_ops();
         if !tasks.is_empty() {
             store.apply_owned_task_ops(tasks);
         }
+        let mut cut = Vec::new();
+        effects.take_cycles(&mut cut);
+        if !cut.is_empty() {
+            done.cycle = Some(ReactiveCycle {
+                dropped: 0,
+                cells: Vec::new(),
+                effects: cut,
+            });
+        }
     }
-    changed.clear();
-    Ok(rounds)
+    done.pending = states.has_pending() || store.has_pending_effects();
+    done
 }
 
 /// A frame whose layout did not settle the adaptive environment within
@@ -256,6 +312,15 @@ mod tests {
                 &mut self.changed,
             )
         }
+
+        /// One frame's flush, then its `RunEffects` phase.
+        fn frame(&mut self) -> (u32, EffectsRan) {
+            let rounds = self.settle().expect("settles");
+            (
+                rounds,
+                run_effects(&mut self.store, &mut self.states, &mut self.effects),
+            )
+        }
     }
 
     fn int(states: &StateStore, id: StateId) -> i32 {
@@ -266,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn a_registered_effect_first_runs_in_the_next_settle_and_its_writes_settle_too() {
+    fn a_registered_effect_runs_after_the_frame_and_its_writes_are_the_next_frames() {
         let mut stores = Stores::default();
         let count = stores.states.alloc(StateValue::Int(3));
         let doubled = stores.states.alloc(StateValue::Int(0));
@@ -289,17 +354,30 @@ mod tests {
             },
         );
         assert!(stores.store.has_pending_effects());
-        // Nothing is written, yet the mount runs, and its write settles.
-        assert_eq!(stores.settle(), Ok(2));
+        // The flush only queues the mounted effect; it runs after the frame,
+        // and its write waits for the next frame's flush.
+        assert_eq!(stores.settle(), Ok(1));
+        assert_eq!(int(&stores.states, doubled), 0, "not run inside the flush");
+        let done = run_effects(&mut stores.store, &mut stores.states, &mut stores.effects);
+        assert_eq!((done.ran, done.pending), (1, true));
         assert_eq!(int(&stores.states, doubled), 6);
+        assert_eq!(
+            stores.frame().1.ran,
+            0,
+            "the write flushes; nothing re-runs"
+        );
         assert!(!stores.store.has_pending_effects());
+
         stores.states.set(count, StateValue::Int(4));
-        assert_eq!(stores.settle(), Ok(2));
+        let (_, done) = stores.frame();
+        assert_eq!(done.ran, 1);
         assert_eq!(int(&stores.states, doubled), 8);
+        let (_, done) = stores.frame();
+        assert!(!done.pending, "the frame after settles");
     }
 
     #[test]
-    fn an_effect_feeding_itself_stops_at_the_settle_cap() {
+    fn an_effect_feeding_itself_is_cut_after_a_chain_of_frames() {
         let mut stores = Stores::default();
         let count = stores.states.alloc(StateValue::Int(0));
         let root = BuildCx::new(&mut stores.store)
@@ -315,18 +393,34 @@ mod tests {
                 None
             },
         );
-        let cycle = stores.settle().expect_err("a cycle");
+        // The mount run is not a chain; each frame after runs it only because
+        // it wrote what it reads, until the chain reaches the bound.
+        let mut frames = 0;
+        let cycle = loop {
+            frames += 1;
+            assert!(frames <= SETTLE_ROUNDS + 2, "the chain is bounded");
+            let (_, done) = stores.frame();
+            if let Some(cycle) = done.cycle {
+                break cycle;
+            }
+            assert!(done.pending);
+        };
         assert_eq!(ReactiveCycle::CODE, "E4202");
-        assert_eq!(cycle.dropped, 1);
-        assert_eq!(
-            (&*cycle.cells, &*cycle.effects),
-            (&[count][..], &[root][..])
-        );
+        assert_eq!(&*cycle.effects, &[root][..]);
         assert!(
-            cycle.to_string().contains("re-run the effects of nodes"),
+            cycle.to_string().contains("kept waking each other"),
             "{cycle}"
         );
         assert_eq!(int(&stores.states, count), SETTLE_ROUNDS as i32);
+        // Cut, it stays quiet: the last write flushes and nothing runs.
+        let (_, done) = stores.frame();
+        assert_eq!((done.ran, done.pending), (0, false));
+
+        // A write from outside the effects starts it again, as a fresh chain.
+        stores.states.set(count, StateValue::Int(0));
+        let (_, done) = stores.frame();
+        assert_eq!(done.ran, 1);
+        assert!(done.cycle.is_none());
     }
 
     #[test]

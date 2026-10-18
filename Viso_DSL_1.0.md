@@ -3600,7 +3600,7 @@ State 修改只能发生在：
 
 同一外层 Transaction 中对同一 State 多次写入只产生一次 Revision 和一次下游调度。
 
-一帧的 State Flush 取出该帧已提交的写集合，依次调度 Computed、直接 Binding、控制流区域与节点值、语义状态投影和 Effect；调度中产生的新写入（如区域挂载写入实例 State）在同一帧再调度一轮，直到没有待处理写入。连续 16 轮后仍有待处理写入即 Reactive Cycle：Runtime 停止本帧调度，报告 `E4202`（列出被丢弃的单元，以及它们会再次唤醒的 Effect 所在的节点），丢弃尚未调度的变化（已写入的值保留，只是其下游不再运行），下一帧不继承这些变化。
+一帧的 State Flush 取出该帧已提交的写集合，依次调度 Computed、直接 Binding、控制流区域与节点值、语义状态投影，并把被唤醒的 Effect 排入队列（Effect 不在 flush 内运行，见 §86 与 Architecture §11.2）；调度中产生的新写入（如区域挂载写入实例 State）在同一帧再调度一轮，直到没有待处理写入。连续 16 轮后仍有待处理写入即 Reactive Cycle：Runtime 停止本帧调度，报告 `E4202`（列出被丢弃的单元，以及它们会再次唤醒的 Effect 所在的节点），丢弃尚未调度的变化（已写入的值保留，只是其下游不再运行），下一帧不继承这些变化。
 
 写入就地发生：每个 State Slot 在一个 Transaction 内的首次写入把旧值记入 undo log。外层调用成功结束时，若有写入则 Revision 加一并标记被写 Slot 为 dirty；Action 体内不存在中途提交。嵌套调用（Action 调用 Action 或 `fn`）加入外层 Transaction。读取 Computed 是无写入的 Transaction，不增加 Revision。
 
@@ -3765,7 +3765,7 @@ Commit UI Patch
 - 重入被排到下一 Microtask Epoch；
 - 一个 Epoch 的 Effect 重跑次数有上限；超限报告 ReactiveCycle。
 
-当前实现：Effect 由节点存储的 Effect 调度器在每轮 State Flush 的最后运行（§86）：先运行上一轮以来挂载的 Effect，再运行依赖单元被本轮写入的 Effect，同一轮每个 Effect 至多一次。Effect 先登记 `when` 读取的单元为依赖，再求值依赖列表并与上次的值按值比较（`==`），由 Run Policy 决定是否运行 Body：`mount` 只在首次，`change` 在首次之后值变化时，`mount_and_change` 在首次与值变化时；值未变的唤醒什么都不做。Body 作为一个 Transaction 运行，读取不登记依赖，写入在下一轮生效；运行前先执行上一次运行返回的 Cleanup，节点释放时同样执行。连续 16 轮仍有待处理写入即 `E4202`。
+当前实现：State Flush 的每一轮只把 Effect 排入队列（§86）：先是上一轮以来挂载的 Effect，再是依赖单元被本轮写入的 Effect；整帧在 `Submit` 之后的 `RunEffects` 阶段按入队顺序运行队列，每个 Effect 每帧至多一次。Effect 先登记 `when` 读取的单元为依赖，再求值依赖列表并与上次的值按值比较（`==`），由 Run Policy 决定是否运行 Body：`mount` 只在首次，`change` 在首次之后值变化时，`mount_and_change` 在首次与值变化时；值未变的唤醒什么都不做。Body 作为一个 Transaction 运行，读取不登记依赖，写入进入下一帧的 Transaction；运行前先执行上一次运行返回的 Cleanup，节点释放时同样执行。一帧 flush 连续 16 轮仍有待处理写入即 `E4202`；一个 Effect 连续 16 帧仅因 Effect 的写入被唤醒，同样是 `E4202`（跨帧反应环），该 Effect 停止运行，直到外部写入再次唤醒它。
 
 ---
 
@@ -6110,7 +6110,7 @@ export system Progress implements FixedUpdate {
 - 写入在 Tick Boundary 合并，按 Profile 策略节流，并在 App Suspend 时落盘；Tick 内不做同步 IO；
 - 类型变化走 §94.1 迁移规则与 `@migrate`。
 
-当前实现：`@persist` 标在 System 或 Component 的 `state` 上，标在其他成员上报 `E9106`；Component 的持久化状态只属于视图自身挂载的 Component（一个键对应一个实例），持久化状态的 Component 被嵌入另一视图时报 `E9106`；键为唯一的非空字符串字面量参数，包内重复报 `E9106` 并指向第一处；授权来自 `Viso.toml [package] capabilities`（CLI §38）。编译器把每个持久化状态的键、槽位、类型 Schema（Record/Enum 按 Stable ID 描述字段、变体与字段默认值 Chunk）和类型拼写写入 Module，包内有持久化状态时一并写入 `@migrate` 函数。运行时宿主在 VM 上安装 `Persist` 服务（`PersistStore`：`MemoryStore`，或目录存储 `DirStore`——后台线程写临时文件、fsync 后原子 rename）；链接时未授予 `storage.persist` 则不加载也不写入，并报 `E6103`。Scheduler 在 `start` 之前逐个加载：存储的 Blob 带类型拼写与 Schema，类型相同则直接使用，否则按 §94.1 矩阵转换，再否则用 `from` 等于旧类型拼写、返回新类型的 `@migrate` 函数；任何失败使用 Initializer 并记录 `E9111` 报告（`take_persist_reports`），原 Blob 保留到该状态首次改变。写入发生在 Tick Boundary，只写值有变化的状态，默认每秒（`tick_rate` 个 Tick）至多一次（`set_persist_interval`）；Store 不阻塞 Tick；`suspend()` 与 Scheduler 析构写入变化并阻塞到落盘。World Rebuild 与 Logic Reload 把运行中的持久化值按键带入新实例（类型变化同样转换）；启动失败或影子游戏不写入。视图宿主（`ViewHost`）在视图首次挂载时取走其 `Persist` 服务（`load_view_with` / `instantiate_view_with` 的 `setup` 在挂载前安装服务），在状态连到 Cell 之后、Effect 与 `start` 运行之前加载（未授予时每个状态报一次 `E6103`）；每次提交的写回之后只写值有变化的状态，未存储过的状态在首次写回时写入；`suspend()` 写入变化并阻塞到落盘；Hot Reload 带过已加载的值，编辑新标 `@persist` 的状态按键加载。宿主自身没有 `Persist` 服务时使用 App 安装的存储（`install_persistence`）：`view!` / `component!` 嵌入的宿主在构建节点树之前加载，Release Package 与 Hot Reload 挂载走同一路径；每个持久化的宿主在窗口的 `NodeStore` 上登记一个 suspend 钩子（弱引用宿主，视图释放后自动移除）。App Facade 启动时安装 App 数据目录下 `persist/` 的 `DirStore`（首次读写时才打开；数据目录：macOS/iOS 为 Application Support，Linux/BSD 为 `$XDG_STATE_HOME`，Windows 为 `%LOCALAPPDATA%`，Android 为 `getFilesDir()`；Web 为页面源的 `localStorage`），在 App 进入后台、窗口关闭与事件循环结束时调用 suspend；加载与写入失败的报告输出到 stderr。
+当前实现：`@persist` 标在 System 或 Component 的 `state` 上，标在其他成员上报 `E9106`；Component 的持久化状态只属于视图自身挂载的 Component（一个键对应一个实例），持久化状态的 Component 被嵌入另一视图时报 `E9106`；键为唯一的非空字符串字面量参数，包内重复报 `E9106` 并指向第一处；授权来自 `Viso.toml [package] capabilities`（CLI §38）。编译器把每个持久化状态的键、槽位、类型 Schema（Record/Enum 按 Stable ID 描述字段、变体与字段默认值 Chunk）和类型拼写写入 Module，包内有持久化状态时一并写入 `@migrate` 函数。运行时宿主在 VM 上安装 `Persist` 服务（`PersistStore`：`MemoryStore`，或目录存储 `DirStore`——后台线程写临时文件、fsync 后原子 rename）；链接时未授予 `storage.persist` 则不加载也不写入，并报 `E6103`。Scheduler 在 `start` 之前逐个加载：存储的 Blob 带类型拼写与 Schema，类型相同则直接使用，否则按 §94.1 矩阵转换，再否则用 `from` 等于旧类型拼写、返回新类型的 `@migrate` 函数；任何失败使用 Initializer 并记录 `E9111` 报告（`take_persist_reports`），原 Blob 保留到该状态首次改变。写入发生在 Tick Boundary，只写值有变化的状态，默认每秒（`tick_rate` 个 Tick）至多一次（`set_persist_interval`）；Store 不阻塞 Tick；`suspend()` 与 Scheduler 析构写入变化并阻塞到落盘。World Rebuild 与 Logic Reload 把运行中的持久化值按键带入新实例（类型变化同样转换）；启动失败或影子游戏不写入。视图宿主（`ViewHost`）在视图首次挂载时取走其 `Persist` 服务（`load_view_with` / `load_static_view` 的 `setup` 在挂载前安装服务），在状态连到 Cell 之后、Effect 与 `start` 运行之前加载（未授予时每个状态报一次 `E6103`）；每次提交的写回之后只写值有变化的状态，未存储过的状态在首次写回时写入；`suspend()` 写入变化并阻塞到落盘；Hot Reload 带过已加载的值，编辑新标 `@persist` 的状态按键加载。宿主自身没有 `Persist` 服务时使用 App 安装的存储（`install_persistence`）：`view!` / `component!` 嵌入的宿主在构建节点树之前加载，Release Package 与 Hot Reload 挂载走同一路径；每个持久化的宿主在窗口的 `NodeStore` 上登记一个 suspend 钩子（弱引用宿主，视图释放后自动移除）。App Facade 启动时安装 App 数据目录下 `persist/` 的 `DirStore`（首次读写时才打开；数据目录：macOS/iOS 为 Application Support，Linux/BSD 为 `$XDG_STATE_HOME`，Windows 为 `%LOCALAPPDATA%`，Android 为 `getFilesDir()`；Web 为页面源的 `localStorage`），在 App 进入后台、窗口关闭与事件循环结束时调用 suspend；加载与写入失败的报告输出到 stderr。
 
 ### 106.9 渲染插值
 

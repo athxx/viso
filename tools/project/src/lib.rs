@@ -48,12 +48,17 @@ pub use discovery::{MANIFEST_NAME, Project, find_root};
 pub use fingerprint::{BuildId, FINGERPRINT_VERSION, Hash128, ProjectFingerprint, Toolchain};
 pub use format::format_manifest;
 pub use manifest::{
-    ANDROID_ABIS, AndroidPackage, CollisionDelivery, GameDeterminism, IosPackage, MAX_BUILD,
-    MacosPackage, Manifest, Orientation, ParseOutcome, Permission, Spanned, SurfaceScale,
-    TestSurface, WebProfileConfig, WindowsPackage, nearest,
+    ANDROID_ABIS, AndroidPackage, BudgetKey, CollisionDelivery, DeployAddress, DeviceDisplay,
+    DeviceTarget, GameDeterminism, GpuApi, ImageQuality, Images, IosPackage, MAX_BUILD,
+    MacosPackage, Manifest, Orientation, ParseOutcome, Permission, PixelFormat, RASTERIZER_FEATURE,
+    Rotation, Spanned, SurfaceScale, SvgImages, TestSurface, WebProfileConfig, WindowsPackage,
+    byte_size, charset_entry, device_target_name, locale_tag, nearest,
 };
 pub use settings::{Entry, KEYS, Value, setting, settings};
-pub use target::{ArtifactKind, Auto, DevRuntime, HostOs, OptLevel, Profile, Target, WebOptimize};
+pub use target::{
+    ArtifactKind, Auto, DevRuntime, Footprint, HostOs, OptLevel, Profile, ShaderLanguage, Target,
+    WebOptimize,
+};
 
 /// Locates a project and resolves its configuration in one step.
 ///

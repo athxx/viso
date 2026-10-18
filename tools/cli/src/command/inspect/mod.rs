@@ -18,15 +18,15 @@ pub(crate) use events::{Streamed, stream};
 use std::path::Path;
 use std::time::Duration;
 
+use viso_dev_protocol::headless::HeadlessSurface;
+use viso_dev_protocol::inspect::{
+    Census, EventLog, FileSources, FrameDamage, FrameDetail, InspectAsk, Inspected, Inspection,
+    InspectorCaps, MAX_ASKED_NODES, NodeDetail, NodeDetails, Rect, Selector, SourceTable,
+    StateSource, WindowDetail, dirty_names, resolve, state_names,
+};
 use viso_dsl::Diagnostic;
 use viso_ende::JsonWriter;
 use viso_project::{LockGuard, LockKind, Target};
-use viso_view::headless::HeadlessSurface;
-use viso_view::inspect::{
-    Census, EventLog, FileSources, FrameDetail, InspectAsk, Inspected, Inspection, InspectorCaps,
-    MAX_ASKED_NODES, NodeDetail, NodeDetails, Rect, Selector, SourceTable, StateSource,
-    WindowDetail, dirty_names, resolve, state_names,
-};
 
 use super::check;
 use super::scenario::{self, Case, Ended, Unplanned};
@@ -915,6 +915,18 @@ fn frame(ctx: &Context<'_>, args: &FrameArgs, out: &mut Output) -> Result<(), u8
                 w.end_object();
             }
             w.end_array();
+            w.name("damage");
+            match &frame.damage {
+                FrameDamage::None => w.null(),
+                FrameDamage::Whole => w.string("whole"),
+                FrameDamage::Rects(rects) => {
+                    w.begin_array();
+                    for &r in rects {
+                        write_rect(w, r);
+                    }
+                    w.end_array();
+                }
+            }
             w.name("resources");
             w.begin_array();
             for resource in &frame.resources {
@@ -964,6 +976,14 @@ fn describe_frame(frame: &FrameDetail) -> String {
         counter("draw_calls"),
         frame.batches.len()
     );
+    match &frame.damage {
+        FrameDamage::None => lines.push_str("damage  none\n"),
+        FrameDamage::Whole => lines.push_str("damage  whole surface\n"),
+        FrameDamage::Rects(rects) => {
+            let rects: Vec<String> = rects.iter().map(|&r| rect(r)).collect();
+            lines.push_str(&format!("damage  {}\n", rects.join(" ")));
+        }
+    }
     lines.push_str("counters\n");
     let width = frame
         .counters
@@ -1298,7 +1318,7 @@ fn describe(node: &Inspected<'_>) -> String {
     }
     if let Some(semantics) = &census.semantics {
         line.push_str("  ");
-        line.push_str(viso_view::source_name(semantics.role));
+        line.push_str(viso_schema::view::source_name(semantics.role));
         if let Some(label) = &semantics.label {
             line.push_str(&format!(" {label:?}"));
         }
@@ -1386,7 +1406,7 @@ fn write_fields(w: &mut JsonWriter, node: &Inspected<'_>) {
         Some(semantics) => {
             w.begin_object();
             w.name("role");
-            w.string(viso_view::source_name(semantics.role));
+            w.string(viso_schema::view::source_name(semantics.role));
             w.name("label");
             optional(w, semantics.label.as_deref());
             w.name("hint");

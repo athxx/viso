@@ -16,10 +16,13 @@
 //!
 //! [`Stage`]: super::Stage
 
-use std::rc::Rc;
+use alloc::boxed::Box;
+use alloc::rc::Rc;
 
+#[cfg(not(feature = "std"))]
+use crate::float::FloatMath as _;
 use crate::game::world::{EntityId, GameWorld};
-use crate::native::{NativeValue, SchemaTy, Vec3F32};
+use crate::native::{NativeValue, SchemaTy, Vec3};
 use crate::value::{Aggregate, Value};
 
 /// The camera's near plane, in metres.
@@ -113,7 +116,7 @@ impl CameraRig {
     }
 
     /// At `eye` looking at `look`.
-    pub fn fixed(eye: Vec3F32, look: Vec3F32) -> CameraRig {
+    pub fn fixed(eye: Vec3, look: Vec3) -> CameraRig {
         CameraRig {
             eye: eye.to_array(),
             look: look.to_array(),
@@ -127,9 +130,9 @@ impl CameraRig {
 /// direction and its projection.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CameraView {
-    pub eye: Vec3F32,
-    pub target: Vec3F32,
-    pub up: Vec3F32,
+    pub eye: Vec3,
+    pub target: Vec3,
+    pub up: Vec3,
     /// The vertical field of view, in degrees.
     pub fov: f32,
     pub near: f32,
@@ -218,9 +221,9 @@ impl Camera {
     pub(super) fn view(&self) -> CameraView {
         let Some(rig) = self.rig.filter(|_| self.settled) else {
             return CameraView {
-                eye: Vec3F32::new(0.0, 10.0, 14.0),
-                target: Vec3F32::new(0.0, 0.0, 0.0),
-                up: Vec3F32::new(0.0, 1.0, 0.0),
+                eye: Vec3::new(0.0, 10.0, 14.0),
+                target: Vec3::new(0.0, 0.0, 0.0),
+                up: Vec3::new(0.0, 1.0, 0.0),
                 fov: 60.0,
                 near: NEAR,
                 far: FAR,
@@ -233,7 +236,7 @@ impl Camera {
             _ => {
                 let p = pitch.to_radians();
                 let forward = [along[0] * p.cos(), p.sin(), along[1] * p.cos()];
-                let eye = std::array::from_fn(|i| self.pivot[i] - forward[i] * rig.distance);
+                let eye = core::array::from_fn(|i| self.pivot[i] - forward[i] * rig.distance);
                 let up = if pitch.abs() >= VERTICAL {
                     [along[0], 0.0, along[1]]
                 } else {
@@ -243,12 +246,11 @@ impl Camera {
             }
         };
         let offset = self.shake_offset();
-        let moved =
-            |v: [f32; 3]| Vec3F32::new(v[0] + offset[0], v[1] + offset[1], v[2] + offset[2]);
+        let moved = |v: [f32; 3]| Vec3::new(v[0] + offset[0], v[1] + offset[1], v[2] + offset[2]);
         CameraView {
             eye: moved(eye),
             target: moved(look),
-            up: Vec3F32::from_array(up),
+            up: Vec3::from_array(up),
             fov: rig.fov.clamp(20.0, 120.0),
             near: NEAR,
             far: FAR,

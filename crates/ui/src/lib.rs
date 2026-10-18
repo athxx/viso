@@ -42,22 +42,25 @@ pub mod task;
 pub mod text_edit;
 pub mod timer;
 pub mod token;
+pub mod transform;
 pub mod virtual_list;
 pub mod window;
 
 pub use animation::{AnimationRegistry, Easing, LookTransition, LookValue, Timing, TranslateAnim};
 // The frame clock's time point (wasm-safe), named by timers and deadlines.
-pub use binding::{Binding, BindingTable};
+pub use binding::{
+    Binding, BindingFootprint, BindingTable, InstanceBase, StateRef, Template, TemplateBinding,
+};
 pub use component::{
     BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, PointerHandler,
     ScrollStyle, VirtualListStyle,
 };
 pub use content::{BrushImage, Content, TextRequest};
 pub use context::EventCx;
-pub use dirty::{DirtyCause, DirtyClass, DirtyMark};
+pub use dirty::{DirtyCause, DirtyClass, DirtyLists, DirtyMark};
 pub use flush::{
-    ADAPTIVE_ROUNDS, AdaptiveCycle, ReactiveCycle, SETTLE_ROUNDS, Unsettled, settle_adaptive,
-    settle_states,
+    ADAPTIVE_ROUNDS, AdaptiveCycle, EffectsRan, ReactiveCycle, SETTLE_ROUNDS, Unsettled,
+    run_effects, settle_adaptive, settle_states,
 };
 pub use frame_client::{FrameClient, SharedClient};
 pub use grid::{
@@ -71,8 +74,8 @@ pub use input::{
     focus_next, focus_node, route_contact, route_pointer, route_scroll,
 };
 pub use inspect::{
-    InspectFlags, InspectKind, InspectNode, InspectSnapshot, InspectTree, PaintRange, PaintRanges,
-    paint_ranges, snapshot_ui,
+    InspectFlags, InspectNode, InspectSnapshot, InspectTree, PaintRange, PaintRanges, paint_ranges,
+    snapshot_ui,
 };
 pub use interaction::Interaction;
 pub use layout::{Align, AlignItems, Axis, Basis, Inset, Justify, LayoutInput, Length, Size, Vec2};
@@ -80,8 +83,9 @@ pub use length::{
     EdgeTerms, LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms, LengthWarning,
     NodeLengths,
 };
-pub use node::{NodeArena, NodeId, NodeLinks};
-pub use paint::paint_tree;
+pub use node::{ArenaFull, ChildIds, Children, NodeArena, NodeId, NodeIndex, NodeLinks, TreeLinks};
+pub use paint::{paint_tree, paint_with_transforms};
+pub use transform::TransformTable;
 pub use viso_runtime::Instant;
 // Render primitive data types that already appear in this crate's public API —
 // `Content`'s payload fields (content.rs), `TextRequest::color`, and
@@ -95,7 +99,9 @@ pub use reactive::{
     Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
     ProjectId, SemanticProjector,
 };
-pub use semantics::{LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
+pub use semantics::{
+    InspectKind, LiveRegion, Role, SemanticState, Semantics, SemanticsNode, SemanticsTree,
+};
 pub use shader::ShaderSlots;
 pub use state::{StateId, StateStore, StateValue};
 pub use structure::{StructureCx, StructureHookId, run_structure_hooks};

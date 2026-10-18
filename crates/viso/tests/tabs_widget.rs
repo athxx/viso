@@ -40,7 +40,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso::render::{FrameStats, GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs};
 use viso::ui::{
     BindingTable, BoxStyle, BuildCx, Component, Content, Key, KeyEvent, KeyRouter, LeafStyle,
@@ -142,10 +142,8 @@ fn glyph_run_natural(glyphs: &[GlyphInstanceData]) -> Vec2 {
 fn children_of(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
     let arena = store.arena();
     let mut out = Vec::new();
-    let mut child = arena.links(parent).and_then(|l| l.first_child);
-    while let Some(c) = child {
+    for c in arena.children(parent) {
         out.push(c);
-        child = arena.links(c).and_then(|l| l.next_sibling);
     }
     out
 }
@@ -155,7 +153,7 @@ fn children_of(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
 /// growing after build — the same fixture bypass `button_widget.rs` uses. A tabs
 /// root is `[strip, panel_area]`; the strip's children are the tab buttons; each
 /// tab button's first child is its caption leaf (`Label` maps to one leaf).
-fn attach_captions(gpu: &mut HeadlessRaster, store: &mut NodeStore, root: NodeId) {
+fn attach_captions(gpu: &mut CpuRaster, store: &mut NodeStore, root: NodeId) {
     let tg = test_glyphs([0.0, 0.0], 26.0);
     let atlas = gpu.create_texture(&TextureDesc {
         width: tg.atlas_size,
@@ -191,7 +189,7 @@ fn attach_captions(gpu: &mut HeadlessRaster, store: &mut NodeStore, root: NodeId
 
 #[test]
 fn tabs_render_the_strip_and_selected_panel_and_match_golden() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -325,10 +323,8 @@ impl Interactive {
     fn children(&self, parent: NodeId) -> Vec<NodeId> {
         let arena = self.store.arena();
         let mut out = Vec::new();
-        let mut child = arena.links(parent).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in arena.children(parent) {
             out.push(c);
-            child = arena.links(c).and_then(|l| l.next_sibling);
         }
         out
     }
@@ -600,7 +596,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -609,7 +605,7 @@ struct Harness {
 }
 
 fn setup_alloc() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);

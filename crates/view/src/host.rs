@@ -8,12 +8,14 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
+use viso_behavior::aot::{NativeCode, NativeCodeMismatch};
 use viso_behavior::game::{PERSIST_CAPABILITY, Persist, PersistReport, Persistence};
 use viso_behavior::native::{Natives, SchemaConflict, Services};
 use viso_behavior::{
     Budget, ChunkKind, ComponentEffect, Event, Fault, FaultKind, Instance, LoadError, Module,
-    Start, Value, Vm,
+    Start, Text, Value, Vm,
 };
+use viso_ende::DecodeError;
 use viso_ui::adaptive::{AdaptiveEnv, AnchorId, EnvField};
 use viso_ui::context::UpdateCx;
 use viso_ui::resource::ResourceId;
@@ -38,6 +40,12 @@ pub trait StateCells {
     fn set(&mut self, id: StateId, value: StateValue) -> bool;
     /// The adaptive environment the view's `env` reads see.
     fn env(&self) -> &AdaptiveEnv;
+    /// A number that rises with every change to what [`get`](Self::get)
+    /// returns, `None` where the cells keep none: a host that saw it copies no
+    /// cell again while it stands.
+    fn epoch(&self) -> Option<u64> {
+        None
+    }
     /// Runs `future` as a UI task owned by `owner`; `None` where no task can
     /// run, or when `owner` was freed.
     fn spawn(&mut self, owner: NodeId, future: TaskFuture) -> Option<TaskId> {
@@ -51,6 +59,10 @@ pub trait StateCells {
 }
 
 impl StateCells for StateStore {
+    fn epoch(&self) -> Option<u64> {
+        Some(StateStore::epoch(self))
+    }
+
     fn get(&self, id: StateId) -> Option<StateValue> {
         StateStore::get(self, id)
     }
@@ -65,6 +77,10 @@ impl StateCells for StateStore {
 }
 
 impl StateCells for EventCx<'_> {
+    fn epoch(&self) -> Option<u64> {
+        Some(self.state_epoch())
+    }
+
     fn get(&self, id: StateId) -> Option<StateValue> {
         EventCx::get(self, id)
     }
@@ -87,6 +103,10 @@ impl StateCells for EventCx<'_> {
 }
 
 impl StateCells for UpdateCx<'_> {
+    fn epoch(&self) -> Option<u64> {
+        Some(self.state_epoch())
+    }
+
     fn get(&self, id: StateId) -> Option<StateValue> {
         UpdateCx::get(self, id)
     }
@@ -117,6 +137,10 @@ pub enum HostError {
     NoComponent(String),
     /// A native import did not link against the standard registry.
     Link(SchemaConflict),
+    /// A shader of the view is not a packed brush.
+    Shader(DecodeError),
+    /// The compiled code was lowered from another build of the module.
+    Native(NativeCodeMismatch),
 }
 
 impl fmt::Display for HostError {
@@ -127,6 +151,10 @@ impl fmt::Display for HostError {
                 write!(f, "the behavior module has no component `{name}`")
             }
             HostError::Link(conflict) => write!(f, "the behavior module does not link: {conflict}"),
+            HostError::Shader(error) => write!(f, "a shader of the view does not load: {error}"),
+            HostError::Native(mismatch) => {
+                write!(f, "the view's compiled code is stale: {mismatch}")
+            }
         }
     }
 }
@@ -193,6 +221,9 @@ pub struct ViewHost {
     args: Vec<Value>,
     /// Reused list of slots a dispatch wrote.
     written: Vec<usize>,
+    /// The cells' epoch and the instance's revision when the mirrored slots
+    /// last matched their cells: while both stand, a sync copies none.
+    synced: Option<(u64, u64)>,
     pub(crate) fault: Option<Fault>,
     pub(crate) events: Vec<Event>,
     /// The cells the view's mounted regions allocated: each region mount's
@@ -240,7 +271,7 @@ enum Persisting {
     Absent,
     /// The view is not granted `storage.persist`; holds the states already
     /// reported.
-    Denied(Vec<Box<str>>),
+    Denied(Vec<Text>),
     /// The store, taken from the host's [`Persist`] service.
     Active(Persistence),
 }
@@ -289,6 +320,32 @@ impl ViewHost {
         component: &str,
         capabilities: &[&str],
     ) -> Result<ViewHost, HostError> {
+        ViewHost::build(module, component, capabilities, None)
+    }
+
+    /// A host for component `component` of `module` running `native`, the
+    /// module compiled to Rust, in place of the interpreter — from its state
+    /// initializers on — granted what the module's package is granted.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::Native`] when `native` was lowered from another build of
+    /// the module.
+    pub fn with_native(
+        module: Rc<Module>,
+        component: &str,
+        native: &'static NativeCode,
+    ) -> Result<ViewHost, HostError> {
+        let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
+        ViewHost::build(Rc::clone(&module), component, &grant, Some(native))
+    }
+
+    fn build(
+        module: Rc<Module>,
+        component: &str,
+        capabilities: &[&str],
+        native: Option<&'static NativeCode>,
+    ) -> Result<ViewHost, HostError> {
         let index = module
             .component(component)
             .ok_or_else(|| HostError::NoComponent(component.to_owned()))?;
@@ -298,6 +355,9 @@ impl ViewHost {
         let mut vm = Vm::new(Rc::clone(&module), Budget::default());
         vm.link(&Natives::standard(), capabilities)
             .map_err(HostError::Link)?;
+        if let Some(native) = native {
+            vm.install_native(native).map_err(HostError::Native)?;
+        }
         let (instance, broken) = match vm.instantiate(index, []) {
             Ok(instance) => (instance, None),
             Err(fault) => (Instance::detached(), Some(fault)),
@@ -310,6 +370,7 @@ impl ViewHost {
             mirror: vec![None; states],
             args: Vec::new(),
             written: Vec::new(),
+            synced: None,
             fault: None,
             events: Vec::new(),
             regions: RegionCells::default(),
@@ -367,15 +428,31 @@ impl ViewHost {
         })
     }
 
-    /// A host for component `component` of the module encoded in `bytes`.
-    pub fn from_bytes(bytes: &[u8], component: &str) -> Result<ViewHost, HostError> {
-        let module = Module::decode(bytes).map_err(HostError::Load)?;
-        ViewHost::new(Rc::new(module), component)
+    /// A host for component `component` of the module encoded in `bytes`,
+    /// running `native` when given (see [`with_native`](Self::with_native)).
+    pub fn from_bytes(
+        bytes: &[u8],
+        component: &str,
+        native: Option<&'static NativeCode>,
+    ) -> Result<ViewHost, HostError> {
+        let module = Rc::new(Module::decode(bytes).map_err(HostError::Load)?);
+        match native {
+            Some(native) => ViewHost::with_native(module, component, native),
+            None => ViewHost::new(module, component),
+        }
     }
 
     /// The module the host runs.
     pub fn module(&self) -> &Rc<Module> {
         self.vm.module()
+    }
+
+    /// Whether the host runs every chunk of its module that has a body as
+    /// compiled code, interpreting none.
+    pub fn runs_native(&self) -> bool {
+        let module = self.vm.module();
+        (0..module.chunks().len() as u32)
+            .all(|c| !module.chunk(c).body.exists() || self.vm.is_native(c))
     }
 
     /// The capabilities the host's natives are linked with.
@@ -418,9 +495,15 @@ impl ViewHost {
         if slot >= self.instance.states().len() {
             return false;
         }
-        self.instance.set_state(slot, value);
+        self.put_state(slot, value);
         self.instance.clear_dirty();
         true
+    }
+
+    /// Sets the instance's state slot `slot` outside a transaction.
+    fn put_state(&mut self, slot: usize, value: Value) {
+        self.instance.set_state(slot, value);
+        self.synced = None;
     }
 
     /// Runs chunk `chunk`, a record field default or a `fn`, with `args`
@@ -555,6 +638,7 @@ impl ViewHost {
         match self.mirror.get_mut(slot) {
             Some(cell) => {
                 *cell = Some(link);
+                self.synced = None;
                 true
             }
             None => false,
@@ -562,15 +646,20 @@ impl ViewHost {
     }
 
     /// Copies each mirrored cell, each `env` field whose revision moved, and
-    /// each state `scope` keeps, into the instance.
+    /// each state `scope` keeps, into the instance. The mirrored cells are
+    /// copied only when a cell or the instance changed since they last matched.
     pub(crate) fn sync(&mut self, scope: &Scope, cells: &dyn StateCells) {
-        for (slot, link) in self.mirror.iter().enumerate() {
-            let Some(Link::Mirror(id)) = *link else {
-                continue;
-            };
-            if let Some(value) = cells.get(id).and_then(vm_value) {
-                self.instance.set_state(slot, value);
+        let now = cells.epoch().map(|epoch| (epoch, self.instance.revision()));
+        if now.is_none() || now != self.synced {
+            for (slot, link) in self.mirror.iter().enumerate() {
+                let Some(Link::Mirror(id)) = *link else {
+                    continue;
+                };
+                if let Some(value) = cells.get(id).and_then(vm_value) {
+                    self.instance.set_state(slot, value);
+                }
             }
+            self.synced = now;
         }
         for link in &mut self.env {
             let revision = cells.get(link.cell);
@@ -686,8 +775,7 @@ impl ViewHost {
             match result {
                 Ok(initial) => {
                     if (local.slot as usize) < self.instance.states().len() {
-                        self.instance
-                            .set_state(local.slot as usize, initial.clone());
+                        self.put_state(local.slot as usize, initial.clone());
                     }
                     *value = initial;
                 }
@@ -861,31 +949,46 @@ impl ViewHost {
         self.written.clear();
         self.written.extend(self.instance.dirty());
         self.instance.clear_dirty();
+        // The cells matched the instance before the call: they match it again
+        // once every written slot lands in its cell as the instance holds it.
+        let matched = self
+            .synced
+            .is_some_and(|(epoch, _)| cells.epoch() == Some(epoch));
+        let mut exact = true;
         for &slot in &self.written {
-            self.push_slot(slot, scope, cells);
+            exact &= self.push_slot(slot, scope, cells);
         }
+        self.synced = match cells.epoch() {
+            Some(epoch) if matched && exact => Some((epoch, self.instance.revision())),
+            _ => None,
+        };
         if !self.written.is_empty() {
             self.store_persisted();
         }
     }
 
-    /// Writes state slot `slot` to the cell that holds it.
-    fn push_slot(&self, slot: usize, scope: &Scope, cells: &mut dyn StateCells) {
+    /// Writes state slot `slot` to the cell that holds it. Returns whether a
+    /// mirrored cell now reads back as the instance holds the slot.
+    fn push_slot(&self, slot: usize, scope: &Scope, cells: &mut dyn StateCells) -> bool {
         match self.mirror[slot] {
             Some(Link::Mirror(id)) => {
                 let Some(witness) = cells.get(id) else {
-                    return;
+                    return true;
                 };
-                if let Some(value) = cell_value(&self.instance.states()[slot], witness) {
-                    cells.set(id, value);
-                }
+                let held = &self.instance.states()[slot];
+                let Some(value) = cell_value(held, witness) else {
+                    return false;
+                };
+                cells.set(id, value);
+                vm_value(value).as_ref() == Some(held)
             }
             Some(Link::Track(id)) => {
                 if let Some(StateValue::Int(revision)) = cells.get(id) {
                     cells.set(id, StateValue::Int(revision.wrapping_add(1)));
                 }
+                true
             }
-            Some(Link::Env(_)) => {}
+            Some(Link::Env(_)) => true,
             None => {
                 let value = &self.instance.states()[slot];
                 for locals in scope.locals.iter().rev() {
@@ -893,6 +996,7 @@ impl ViewHost {
                         break;
                     }
                 }
+                true
             }
         }
     }
@@ -950,6 +1054,7 @@ impl ViewHost {
             match persistence.load(slot, &module, &mut self.vm, &mut self.instance) {
                 Ok(Some(value)) => {
                     self.instance.set_state(at, value);
+                    self.synced = None;
                     loaded.push(at);
                 }
                 // Nothing stored: the first write stores what it holds.
@@ -1228,7 +1333,10 @@ pub fn cell_value(value: &Value, witness: StateValue) -> Option<StateValue> {
 }
 
 /// The host for an embedded, build-time-verified module, sharing one decoded
-/// module per thread across every mount of the same view.
+/// module per thread across every mount of the same view, running `native`,
+/// the module compiled to Rust beside it, when the build carries it. The
+/// module borrows `bytes` ([`Module::decode_static`]): its names and string
+/// constants stay in the binary.
 ///
 /// # Panics
 ///
@@ -1236,7 +1344,11 @@ pub fn cell_value(value: &Value, witness: StateValue) -> Option<StateValue> {
 /// embeds it decodes, verifies and links it at build time, so this does not
 /// happen for bytes it produced.
 #[doc(hidden)]
-pub fn __embedded(bytes: &'static [u8], component: &str) -> Rc<RefCell<ViewHost>> {
+pub fn __embedded(
+    bytes: &'static [u8],
+    component: &str,
+    native: Option<&'static NativeCode>,
+) -> Rc<RefCell<ViewHost>> {
     thread_local! {
         static MODULES: RefCell<Vec<(usize, Rc<Module>)>> = const { RefCell::new(Vec::new()) };
     }
@@ -1247,13 +1359,17 @@ pub fn __embedded(bytes: &'static [u8], component: &str) -> Rc<RefCell<ViewHost>
             return Rc::clone(module);
         }
         let module =
-            Rc::new(Module::decode(bytes).unwrap_or_else(|error| {
+            Rc::new(Module::decode_static(bytes).unwrap_or_else(|error| {
                 panic!("an embedded behavior module does not load: {error}")
             }));
         modules.push((key, Rc::clone(&module)));
         module
     });
-    match ViewHost::new(module, component) {
+    let host = match native {
+        Some(native) => ViewHost::with_native(module, component, native),
+        None => ViewHost::new(module, component),
+    };
+    match host {
         Ok(host) => host.shared(),
         Err(error) => panic!("an embedded view does not mount: {error}"),
     }

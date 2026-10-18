@@ -14,12 +14,12 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use viso_ende::JsonWriter;
-use viso_project::{LockGuard, Target};
-use viso_view::inspect::{
+use viso_dev_protocol::inspect::{
     Cause, Census, EventKind, EventLog, InspectAsk, InspectEvent, Inspected, InspectorCaps,
     SourceTable, StateSource, dirty_names, resolve,
 };
+use viso_ende::JsonWriter;
+use viso_project::{LockGuard, Target};
 
 use super::{App, Asked, connect, endpoint, invalid, write_inspector};
 use crate::args::{AttachArgs, EventsArgs};

@@ -35,7 +35,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant, SystemTime};
 
-use viso_view::dev::wire::content_hash;
+use viso_dev_protocol::wire::content_hash;
 
 use super::cargo::RustScope;
 

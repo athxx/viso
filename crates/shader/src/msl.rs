@@ -31,7 +31,7 @@
 
 use std::sync::OnceLock;
 
-use viso_gpu::{InstanceSchema, SchemaAttr};
+use viso_gpu_abi::{InstanceSchema, SchemaAttr};
 
 use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
@@ -413,7 +413,7 @@ pub fn COLOR_TRANSFORM_MSL() -> &'static str {
 /// at index 0; the blurred backdrop at `[[texture(0)]]`, sampler at
 /// `[[sampler(0)]]`. The fragment tints, grains, masks and fades in one pass and
 /// returns premultiplied linear, so the pipeline blends it with
-/// [`BlendMode::PremultipliedOver`](viso_gpu::BlendMode::PremultipliedOver) like
+/// [`BlendMode::PremultipliedOver`](viso_gpu_abi::BlendMode::PremultipliedOver) like
 /// any other composite.
 #[allow(non_snake_case)]
 pub fn MATERIAL_MSL() -> &'static str {
@@ -433,7 +433,7 @@ pub fn MATERIAL_MSL() -> &'static str {
 /// `[[texture(1)]]`, one shared sampler at `[[sampler(0)]]`. The fragment
 /// evaluates the *whole* composite — Porter-Duff on premultiplied operands, the
 /// W3C artistic and HSL modes on straight color — so the pipeline must bind it
-/// with [`BlendMode::Replace`](viso_gpu::BlendMode::Replace); mixing the
+/// with [`BlendMode::Replace`](viso_gpu_abi::BlendMode::Replace); mixing the
 /// destination in again in the fixed-function stage would double-count it.
 #[allow(non_snake_case)]
 pub fn ADVANCED_BLEND_MSL() -> &'static str {
@@ -810,7 +810,7 @@ mod tests {
         // `in.local` is the pixel position and the instance fields are the only
         // other inputs: the IR declares no clock/frame uniform to read.
         let uniforms: Vec<&str> = material_ir().uniforms.iter().map(|f| f.name).collect();
-        assert_eq!(uniforms, ["viewport"]);
+        assert_eq!(uniforms, ["viewport", "shift"]);
         // An integer-lattice hash, not `fract(sin(...))`: exactly reproducible on
         // the CPU rasterizer and across devices.
         assert!(msl.contains("uint x = uint(int(floor(p.x)));"));

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::color::Color;
 use crate::convert::{Axis, Converter, State, bbox_transform, obb_fraction};
-use crate::geom::{Rect, Transform};
+use crate::geom::{Affine2, Rect};
 use crate::syntax::{self, Length, Unit};
 use crate::tree::*;
 use crate::xml::NodeId;
@@ -61,7 +61,7 @@ pub(crate) fn gradient(
         .and_then(syntax::parse_transform)
         .unwrap_or_default();
     if obb {
-        let b = bbox.filter(Rect::is_valid)?;
+        let b = bbox.filter(|r| r.has_area())?;
         transform = bbox_transform(b).pre_concat(&transform);
     }
     if !transform.is_valid() {
@@ -194,7 +194,7 @@ pub(crate) fn pattern(
     let obb_content = chain_attr(c, &chain, "patternContentUnits") == Some("objectBoundingBox");
     let view_box = chain_attr(c, &chain, "viewBox")
         .and_then(syntax::parse_view_box)
-        .filter(Rect::is_valid);
+        .filter(|r| r.has_area());
     let aspect = chain_attr(c, &chain, "preserveAspectRatio")
         .map(syntax::parse_aspect)
         .unwrap_or_default();
@@ -206,7 +206,7 @@ pub(crate) fn pattern(
     }
 
     let rect = if obb_units {
-        let b = bbox.filter(Rect::is_valid)?;
+        let b = bbox.filter(|r| r.has_area())?;
         let f = |name: &str| {
             chain_attr(c, &chain, name)
                 .and_then(obb_fraction)
@@ -234,7 +234,7 @@ pub(crate) fn pattern(
             l("height", Axis::Y),
         )
     };
-    if !rect.is_valid() {
+    if !rect.has_area() {
         return None;
     }
 
@@ -250,11 +250,11 @@ pub(crate) fn pattern(
             syntax::view_box_transform(vb, aspect, rect.w, rect.h)
         }
         None if obb_content => {
-            let b = bbox.filter(Rect::is_valid)?;
+            let b = bbox.filter(|r| r.has_area())?;
             cst.vp = (1.0, 1.0);
-            Transform::scale(b.w, b.h)
+            Affine2::scale(b.w, b.h)
         }
-        None => Transform::IDENTITY,
+        None => Affine2::IDENTITY,
     };
     c.stack.push(content);
     let mut inner = Group {

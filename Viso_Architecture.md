@@ -91,16 +91,19 @@ Viso 1.0 将以下地基问题定义为正式架构决策：
 
 1. **Node hot storage：采用 hybrid indexed SoA。** `NodeMeta` 保持紧凑 AoS 以服务树遍历；Layout/Transform/Paint/Interaction 等高频字段使用与 `NodeIndex` 同索引的连续数组；低频/可选数据进入 sparse cold side tables。暂不采用全 ECS/chunked archetype。
 2. **`Handle<T>`：只表达 typed identity/capability，不直接暴露跨帧 `&T`/`&mut T`。** 读写必须通过受 context 约束的 query/action/property API，避免绕过 reactive invalidation 和生命周期检查。
-3. **Transform：与 Layout 使用独立的失效/传播平面。** 二者默认共享 `NodeId` 和结构语义，但 transform/scroll/animation 可在不触发布局的情况下局部更新。
+3. **Transform：与 Layout、Paint 都使用独立的失效/传播平面。** 三者共享 `NodeId` 和结构语义；transform/scroll/transform animation 只重算 transform table 中各 root 的位移，renderer 按位移差移动 retained draw，不触发布局，不重建 primitive，也不上传 instance（§19.2，ADR 0043）。
 4. **自研与依赖必须分级。** Viso 只在决定差异化、热路径和语义所有权的部分强制自研；Unicode/shaping、accessibility bridge、async executor、网络/TLS、媒体 codec 等优先复用成熟实现，并由 Viso 自己掌握 integration/cache/ABI contract。
 5. **模块边界必须机器化验证。** crate DAG 由 `cargo xtask check-deps`（`xtask/src/main.rs` 中的 allowlist）在 CI 验证，不再只依赖 AGENTS.md 和 code review；module 级 import 规则检查仍是目标（§10.2）。
 6. **Reactive dynamic fallback 必须显式、可计数、可 benchmark。** 编译器能够静态解析的绑定不得静默掉入动态路径。
-7. **Web/Mobile/Linux backend 采用 tier + capability 模型。** Tier-1 明确优化现代主后端；兼容后端可追加，但不得反向把 renderer 设计压成最低公分母。
+7. **Backend 采用 Device Class × tier × capability 模型。** 每个 Device Class（Desktop / Mobile / Web / Embedded-GPU / Embedded-CPU，§50A）有自己的 Tier-1 后端，并针对现代主后端优化；兼容后端可以追加，但不得反向把 renderer 设计压成最低公分母。
 8. **Viso DSL 使用 `ui!` / `view!` / `component!` 三个语义化 Rust 入口。** `ui!` 解析 View Fragment，`component!` 解析 Component，`view!("...vs")` 编译外部 `.vs`；三者共享同一 schema/HIR/IR/runtime 语义。`.vs` 是唯一 canonical 外部 DSL 文件扩展名。
 9. **Identity 分层。** 源码名字使用 compiler-local `NameId`，跨编译稳定身份使用 128-bit `SymbolId`，运行时热路径 lower 为 `PropertyId`/`EventId`/`ComponentTypeId` 等 typed dense ID，实例使用 generational `NodeId`；禁止一个万能 ID 贯穿所有 subsystem。
 10. **Viso 自研 Ende。** `viso-ende` 负责内部 Binary/JSON Encode/Decode、wire schema、协议版本、cache/snapshot/tool transport；RON 不属于 Viso；Serde 只作为生态 integration。
 11. **Hot Reload 是 Dev-only build capability。** Dev Runtime、patch transport、DevSnapshot endpoint 与 hot-reload-only metadata 只编入 Dev artifact；Release/Shipping 完全不编入这些路径，不能靠运行时配置重新开启，release frame hot path 不承担热更税。
-12. **`viso run` 的 desktop host 是隐式且唯一的。** macOS/Windows/Linux 开发统一使用无参数 `viso run`；`viso run ios/android` 只面向 Simulator/Emulator；Android/iOS 开发环境分别由 `viso android` / `viso ios` 管理，不把 physical-device debugging 作为 Viso 1.0 开发闭环的一部分。
+12. **`viso run` 的 desktop host 是隐式且唯一的。** macOS/Windows/Linux 开发统一使用无参数 `viso run`；`viso run ios/android` 只面向 Simulator/Emulator；Android/iOS 开发环境分别由 `viso android` / `viso ios` 管理，不把手机 physical-device debugging 作为 Viso 1.0 开发闭环的一部分。Embedded class 的开发闭环是：在桌面上按 Footprint Profile 仿真，加上远程板卡 Dev session（§50A.7）。
+13. **Release 不解释执行 UI 行为。** `ui!` / `component!` / `view!` 都是构建期入口；Release 中模块的每个 chunk（handler、region entry、显示值、computed、effect、state 初始化、函数、闭包、task）都 lower 为生成的 Rust 函数（按 chunk 索引的静态函数表），task 是可恢复状态机。Behavior bytecode 解释器只用于 Dev 热更新 patch、显式 `dynamic` 构造和 sandbox/AI preview，是 `vm` feature（§41，ADR 0041）。
+14. **编译器不依赖运行时栈。** `viso-dsl` frontend 只依赖纯数据的 `viso-schema`、`viso-ende` 以及 shader ABI；LSP、`viso check` 与 CI 分析不链接 GPU/platform/runtime。`gpu` 不依赖 `runtime`，`text` 不依赖 `gpu`（§10，ADR 0042）。
+15. **资源占用是一等合同。** 每个 Device Class 都有 Footprint Profile，在编译期裁剪能力，并在 CI 中度量二进制体积、静态内存、峰值 heap 与首帧时间。Embedded-GPU（嵌入式 Linux + GLES3/Vulkan）属于 1.0 目标；Embedded-CPU（无 GPU，CPU 光栅 + damage 局部刷新）是 1.0 Tier-2；MCU 不在 1.0 交付，但 core crates 必须保持 MCU-ready（§50A，ADR 0044）。
 
 这些条目属于 Viso 1.0 的架构合同；如果要改变，必须新增/修改 ADR 并附 benchmark 或实现证据。
 
@@ -115,7 +118,8 @@ Viso 的产品与技术方向固定为：
 - Rust-native application runtime；
 - GPU-first 2D/3D rendering；
 - 自绘 UI，而不是依赖平台原生控件拼装；
-- 跨 macOS / Windows / Linux / iOS / Android / Web；
+- 跨 macOS / Windows / Linux / iOS / Android / Web，并覆盖嵌入式 Linux（有 GPU 与无 GPU 两类）；
+- 资源占用是一等目标：同一套 core 在桌面上做到更低的内存/功耗，也能裁剪进嵌入式设备的内存与 flash 预算；
 - `.vs` + Rust 宏入口的一等声明式 authoring layer；
 - retained UI tree + targeted invalidation，而不是默认 Virtual DOM；
 - Shader 与 UI 深度结合，同时允许高级用户下钻 renderer/GPU；
@@ -199,7 +203,10 @@ Release 默认走 AOT/预编译结果：
 - 不要求属性名字符串查找；
 - 不要求保留完整 AST/CST；
 - 不要求每帧动态 dependency discovery；
-- 可以 strip 调试符号与 inspector metadata。
+- 可以 strip 调试符号与 inspector metadata；
+- 不解释执行 UI 行为：模块的每个 chunk 在构建期生成 Rust 代码，Release 不经解释器执行（ADR 0041）。
+
+Dev 与 Release 执行同一份 Typed HIR / UI IR 语义：Dev 用 VM 解释执行（以支持热更新），Release 生成原生代码。二者的语义一致性由 differential test 保证（同一组 IR fixture 分别跑 VM 与生成代码，逐 transaction 比较 state 与 dirty 输出），而不是靠维护者记忆。
 
 ### 2.4 冷路径可以抽象，热路径拒绝抽象税
 
@@ -247,6 +254,8 @@ Viso 必须做到：
 10. Studio/Inspector 只能通过 public/internal-tools API 观察系统，不能反向污染 runtime 核心。
 11. CLI / Studio / IDE / CI 复用同一套 compiler、build、inspection 与 packaging service，不复制实现。
 12. 性能回归进入 CI，不能只依靠人工感知。
+13. 资源占用回归同样进入 CI：每个 Footprint Profile 记录二进制体积、静态内存、峰值 heap、空闲 RSS 与首帧时间（§50A.5）。
+14. Damage-driven present：任何 Device Class 上的局部变化都只重绘、只上屏受影响区域（§30.3）。
 
 ### 3.2 非目标
 
@@ -260,7 +269,9 @@ Viso 不追求：
 - 一创建页面就生成 5~10 个文件；
 - 默认提供一套强制的 Redux/Elm 全局消息架构；
 - 为所有平台强制使用同一种底层 GPU abstraction implementation；
-- 让用户理解 GPU batching、DrawPass、shader ABI 才能画普通 UI。
+- 让用户理解 GPU batching、DrawPass、shader ABI 才能画普通 UI；
+- 在 1.0 交付 MCU（bare-metal / RTOS、无 MMU）平台。但 1.0 必须守住 MCU-ready 不变量（§50A.6），避免以后重写 core；
+- 支持 GLES2 / WebGL1 级别 GPU：这类设备走 Embedded-CPU 路径。
 
 ---
 
@@ -313,7 +324,9 @@ Viso 不以“全部自研”为荣，也不以“尽量依赖现成库”为目
 - Shader IR、Viso shader ABI 与 UI/GPU schema bridge；
 - frame scheduler / phase ownership / main-loop integration；
 - Viso semantics tree；
-- ResourceId / asset lifetime / framework-level profiling counters。
+- ResourceId / asset lifetime / framework-level profiling counters；
+- Footprint Profile、memory budget accounting 与 damage region 计算；
+- CPU raster 后端的 primitive 光栅化（与 GPU 路径共享同一 primitive/batch 合同）。
 - Identity/Symbol lowering contract：`NameId -> SymbolId -> typed dense runtime ID`；
 - `viso-ende` Binary/JSON internal encoding、wire schema、protocol/version contract；
 - `viso-math` 基础数值/几何 ABI 与 allocation-free hot math primitives。
@@ -331,7 +344,7 @@ Viso 不以“全部自研”为荣，也不以“尽量依赖现成库”为目
 
 Viso 在这些领域拥有的是 **cache policy、数据布局、生命周期、增量接口、性能 instrumentation 与替换边界**。例如 `viso-text` 可以使用成熟 shaping/Unicode crate，但 paragraph cache、glyph atlas、增量 line layout 与 UI invalidation 仍属于 Viso。
 
-Accessibility 的 canonical model 是 Viso 自有 semantics tree；平台 adapter 优先复用 AccessKit 等成熟桥接能力，只在能力或性能不满足时实现平台专用 adapter。平台桥的边界格式（`accesskit::TreeUpdate` 经 `PlatformApp::update_accessibility` 推送，请求以 `RawEvent::Accessibility` 回流）、仅在辅助技术激活时发布，以及 iOS（UIAccessibility container）与 Web（ARIA DOM mirror）两个 Viso 自有 adapter，见 [ADR 0030](docs/adr/0030-accessibility-os-bridge.md)。
+Accessibility 的 canonical model 是 Viso 自有 semantics tree；平台 adapter 优先复用 AccessKit 等成熟桥接能力，只在能力或性能不满足时实现平台专用 adapter。仅在辅助技术激活时发布、请求以 `RawEvent::Accessibility`（`AccessRequest`）回流，以及 iOS（UIAccessibility container）与 Web（ARIA DOM mirror）两个 Viso 自有 adapter，见 [ADR 0030](docs/adr/0030-accessibility-os-bridge.md)。platform 边界格式是 Viso 自有的 `SemanticsDelta`（ADR 0042）：`PlatformApp::update_accessibility(window, SemanticsDelta)` 按值推送，delta 只携带新增或已变化的 `AccessNode`（typed `SemanticsId`、`SemanticsRole`、label/description/value、live、level、物理像素 bounds、`SemanticsState`、`AccessActions`、children），外加新树时的 root 与当前 focus；不再可达的节点由接收端丢弃。AccessKit 只出现在 macOS/Windows/Linux/Android adapter 内部：`viso-platform` 的私有模块把 delta 一次性转成 `accesskit::TreeUpdate`，`accesskit` 依赖仅对这些 target 编译，Linux 上只随桌面 backend（`viso-platform` 的 `x11`/`wayland` feature）编译——只开 `kms` 的 embedded build 不链接 AccessKit、AT-SPI 与 D-Bus；iOS 与 Web adapter 直接把 delta 折叠进自有 mirror，不链接 AccessKit。没有 a11y bridge 的 backend（KMS 的 `PlatformCaps::FULLSCREEN`，`accessibility: false`）上 facade 不建 bridge、不生成 delta；semantics tree 本身仍然保留，供测试与 Inspector 使用。
 
 #### Tier C — Adapter / 可替换依赖
 
@@ -385,6 +398,8 @@ viso = { version = "1", features = ["mobile", "hot-reload"] }
 ```
 
 不推荐暴露一个巨大的 feature 笛卡尔积。底层 executor、平台 backend、GPU backend 应尽可能由 target/adapter 自动解析，而不是让普通用户手工组合。
+
+能力裁剪通过 **Footprint Profile**（`desktop` / `mobile` / `web` / `embedded-gpu` / `embedded-cpu`，§50A）完成。profile 由 `Viso.toml` 的 target 段解析成一组固定的 feature 集合，由 CLI 传给 Cargo。用户只选 profile，不手工组合 feature；CI 只验证这几组固定组合。
 
 ### 5.1 `viso::prelude::*`
 
@@ -604,15 +619,18 @@ viso/
 ├── Viso_Rendering.md / Viso_Text_Font_Runtime.md
 ├── crates/
 │   ├── viso/        facade
-│   ├── macros/      viso-macros（proc-macro 叶子）
+│   ├── macros/      viso-macros（proc-macro）
+│   ├── glyph-a8/    viso-glyph-a8（A8 glyph raster 与 baked page，叶子）
 │   ├── ui-macros/   viso-ui-macros（ui! / component! / view!）
 │   ├── math/  ende/  handle/
 │   ├── runtime/  platform/
 │   ├── gpu/  shader/  text/  render/  svg/
 │   ├── ui/  widgets/
 │   ├── dsl/  lsp/
+│   ├── behavior/  view/   viso-behavior（VM）/ viso-view（compiled view 运行时）
 │   └── services/
 ├── tools/project/   viso-project（项目发现/配置/构建身份）
+├── tools/package/   viso-package（打包/图标/资源转换）
 ├── tools/cli/       viso-cli（`viso` 命令：参数、输出、exit code）
 ├── libs/woff2/      viso-woff2（调用方侧 WOFF2 解压，ADR 0028；libs/base64、libs/lz4 存在但不是 workspace member）
 ├── examples/        hello_world、01-counter
@@ -620,7 +638,7 @@ viso/
 └── xtask/           cargo xtask check-deps 等
 ```
 
-目标（尚未建立）：`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/`（code-editor/markdown/pdf/browser/charts/map/xr）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
+目标（尚未建立）：`crates/schema/`（viso-schema，ADR 0042）、`integrations/`（tokio/tracing/serde/accesskit 等 adapter）、`extras/`（code-editor/markdown/pdf/browser/charts/map/xr）、`tools/inspector`、`tools/studio`、`tools/packager`、`vendor/`。新增目录或 crate 时必须同步 §9、§10 与 xtask allowlist。
 
 ### 8.1 为什么不是几十个 crate
 
@@ -674,10 +692,14 @@ Facade。基本不实现热路径逻辑。
 
 ### `viso-macros`
 
-proc-macro 叶子 crate（DAG 无依赖）。当前提供：
+proc-macro crate，只依赖叶子 `viso-glyph-a8`（构建期 bake 与运行时 raster 共用同一个 rasterizer，宏不链接 text runtime）。当前提供：
 
 - `#[derive(GpuPod)]`：GPU instance/uniform 显式布局（ADR 0001 中称为 `GpuInstance` ABI）；
-- `packaged_fonts!`：build-time 字体登记。
+- `packaged_fonts!`：build-time 字体登记、embedded 字体子集与 baked A8 page（§37.8）。
+
+### `viso-glyph-a8`
+
+叶子 crate：一个 glyph 的精确 A8 coverage 的两个来源——`raster` feature 下的 `rasterize_coverage`（`ttf-parser` outline + `ab_glyph_rasterizer`）与 baked page（"VBA8" 格式的编码、校验与原地读取、整数重采样）。不带 `raster` 时是 `no_std` + `alloc`，只有 reader。`viso-text` 与 `viso-macros` 都依赖它，保证 baked pixel 与运行时 raster 逐字节相同（Text/Font Runtime §3.6）。
 
 目标（尚未实现）：`#[component]`、state/binding metadata 等 derive/attribute 宏。
 
@@ -759,7 +781,7 @@ OS abstraction：
 - lifecycle；
 - app activation；
 - native handles；
-- accessibility bridge（AccessKit `TreeUpdate`，ADR 0030）；
+- accessibility bridge（Viso 自有 `SemanticsDelta`，ADR 0030 / ADR 0042）；
 - `LoopWaker` 跨线程唤醒（ADR 0032）。
 
 系统字体**不**在 `viso-platform`：`SystemFontProvider` / `ColorGlyphRasterizer` trait 在 `viso-text`，CoreText 实现在 facade（ADR 0026）。原生窗口句柄类型在叶子 crate `viso-handle`。平台实现放在同一 crate 的 `backend/` 目录，必要时再拆独立 backend crate。
@@ -770,7 +792,7 @@ OS abstraction：
 
 ### `viso-gpu`
 
-极薄 GPU RHI（backend 由 `viso_gpu::Backend` 按 cfg 静态选择，ADR 0029）：
+极薄 GPU RHI（backend 由 `viso_gpu::Backend` 按 cfg 静态选择，ADR 0029）。只依赖 `viso-handle`、`viso-macros` 与 `viso-gpu-abi`，不依赖 runtime（ADR 0042）：frame 节奏由 runtime 驱动 gpu，而不是反过来。
 
 - device；
 - queue；
@@ -782,16 +804,26 @@ OS abstraction：
 - command encoder；
 - surface；
 - fences/sync；
-- backend resource handles。
+- backend resource handles；
+- transform root 的位移表（每个 transform root 一个条目；draw 按所属 root 的位移差经 `shift` uniform 移动，instance 不带 transform id，§19.2）；
+- present damage（`present_with_damage(rects)`，映射到 `EGL_KHR_partial_update` / `VK_KHR_incremental_present` / DXGI dirty rects / KMS `FB_DAMAGE_CLIPS`，§30.3）。
+
+Backend 集合：Metal、D3D12、Vulkan、WebGPU、`Gles3`（Embedded-GPU，GLES 3.0+，§48.1）、`CpuRaster`（Embedded-CPU 与无 GPU 环境，由 `CpuRaster` 升级为生产级，§30.4）。shader 编译器与 tooling 只需要 ABI 描述类型（`InstanceSchema`、`ShaderCode`、`BlendMode` 等）；它们由 `viso-gpu-abi` 定义，`viso-gpu` 整体 re-export 并按 backend 实现（ADR 0042）。
+
+### `viso-gpu-abi`
+
+GPU ABI 描述（ADR 0042），叶子 crate：instance layout 与 shader 声明的 `InstanceSchema`、用户 program 的 ABI / code / `CpuProgram` 接口、buffer/texture/sampler/pipeline 描述与格式、typed resource handle。不含任何 backend，`viso-shader` 与 `viso-dev-protocol` 只依赖它。
 
 ### `viso-shader`
 
-- shader parser/type checker；
-- Shader IR；
+- Shader IR（`viso_shader::program::Program`，唯一 owner）；
+- validation；
 - platform codegen；
 - reflection；
 - instance/uniform schema；
 - shader cache key。
+
+只依赖 `viso-gpu-abi` 与 `viso-ende`，不链接 GPU backend（ADR 0042）。
 
 ### `viso-text`
 
@@ -810,6 +842,8 @@ OS abstraction：
 
 完整实现规范见 `Viso_Text_Font_Runtime.md`。
 
+`viso-text` 是纯 CPU crate，不依赖 `viso-gpu`（ADR 0042）。glyph 的 GPU atlas texture/page/upload 归 `viso-render`，text 只产出 raster bitmap 与 residency 决策。shaping / line break / BiDi / paragraph cache 路径保持 MCU-ready（`no_std + alloc` 可编译，§50A.6）；系统字体、worker 调度等 std 能力经 trait 注入。
+
 ### `viso-render`
 
 - paint primitive；
@@ -819,13 +853,20 @@ OS abstraction：
 - image/glyph atlas management；
 - render graph；
 - GPU upload plan；
-- frame packet。
+- frame packet；
+- damage region（由 changed primitive range 的旧/新 bounds 合并而成，§30.3）。
+
+几何基础类型（`Rect`/`Point`/`Size`/`Affine2`）直接使用 `viso-math`，不另定义同名类型。primitive/batch 前端与 GPU 提交后端分离：GPU backend 和 `CpuRaster` 消费同一份 frame packet。asset 解码：raster 经 `viso-image`，SVG 由 `viso-svg` 解析为规范化文档后在 `viso_render::svg` lower 为 primitive。
 
 详细规范见 `Viso_Rendering.md`。
 
 ### `viso-svg`
 
-SVG 输入通道：bytes 一次性解析为规范化 vector scene，lower 为与其他来源相同的 retained `viso_render::Primitive` 流；不是逐帧 renderer。
+SVG 输入通道：bytes 一次性解析为规范化 vector 文档（`tree::Tree`），只依赖 `viso-math`，不依赖 renderer；不是逐帧 renderer。lower 为 retained `viso_render::Primitive` 流的一步在 `viso_render::svg`，因此 tooling 校验 SVG asset 不链接 render/gpu。
+
+### `viso-image`
+
+CPU 上的 raster 图像：PNG/JPEG asset 解码为 premultiplied RGBA8（header 先行检查尺寸上限）；构建期把图像转换为 target 采样的 texel 格式（`convert`：16-bit packed、BC1/BC3/BC7、ETC2、ASTC 4×4/6×6/8×8 的 Viso 自有纯 Rust 编解码器 `codec`，Mitchell 重采样 `resample`，SVG 构建期光栅化 `vector`）与其容器 `texture`（`VTX1`）——解码器同时是不支持该格式的设备的 fallback；headless snapshot 的 straight-alpha 图像及其 PNG 写出与感知比较。renderer 与 CLI 共用；格式词汇来自 leaf `viso-gpu-abi`，不链接任何 backend。
 
 ### `viso-ui`
 
@@ -839,7 +880,9 @@ SVG 输入通道：bytes 一次性解析为规范化 vector scene，lower 为与
 - semantics；
 - animation；
 - paint node bridge；
-- Release AOT package loader（`crates/ui/src/aot`，ADR 0016）。
+- Release AOT package loader（`crates/ui/src/aot`，ADR 0016）；package 是 8 字节对齐的 section 布局，`AotView` 在 mmap / XIP 的原地字节上一次校验、逐条解码 node 与 edge，不拷贝（§50A.6 第 5 条）。
+
+Layout / hit test / transform 的几何类型来自 `viso-math`（目标边 `ui -> math`，ADR 0042）。
 
 ### `viso-widgets`
 
@@ -858,17 +901,38 @@ PDF/browser/chart/map 等不是基础 widget，放 optional package/integration�
 ### `viso-dsl`
 
 - tokenizer/CST/AST/HIR；
-- type checker；
+- type checker（schema 来自 `viso-schema` 的纯数据，不来自 `viso-ui` 的 Rust 类型，ADR 0042）；
 - module graph；
 - UI IR / Binding IR（ADR 0014）、Shader IR（ADR 0017）；
-- transactional hot reload engine（`crates/dsl/src/hotreload`：plan → diff → migrate → commit，ADR 0015）；
-- Release AOT emitter（ADR 0016）；
+- transactional hot reload 的 compile 侧（`crates/dsl/src/hotreload`：plan → diff → migrate，产出 `viso-dev-protocol` 的 patch 数据，ADR 0015）。commit（修改 retained state）是 apply 侧职责，只在 `viso-view` 的 dev 模块（ADR 0042）；进程内驱动 commit 的只有测试；
+- Release AOT emitter（ADR 0016）：UI IR / Binding IR 以 compact asset 输出，handler / binding evaluator / computed 以生成的 Rust 源码输出（ADR 0041）；
 - source map；
-- Behavior IR → bytecode lowering（`Program::bytecode`，ADR 0035）。
+- Behavior IR → bytecode lowering（`Program::bytecode`，ADR 0035），只服务 Dev 热更新与显式 dynamic。
+
+`viso-dsl` 只依赖 `viso-schema`、`viso-dev-protocol`、`viso-ende`、`viso-behavior`、`viso-shader`；传递依赖闭包不含 `ui`/`render`/`gpu`（backend）/`runtime`/`platform`，这样 LSP、`viso check` 与 CI 分析不链接运行时栈（`check-deps` 的闭包规则执行）。Shader IR 的唯一 owner 是 `viso-shader`：`viso-dsl` 解析、检查 `.vs` 中的 shader 声明（与其余 DSL 共用 CST、resolver 与诊断），lower 为 `viso_shader::program::Program`，validation 与 codegen 由 `viso-shader` 完成。
 
 ### `viso-behavior`
 
-Behavior bytecode 格式、verifier 与 interpreter（ADR 0035）：寄存器 VM、8 字节指令、事务 undo log、执行预算与 Runtime Fault（`E7101`–`E7105`）。叶子 crate，不依赖任何 workspace crate；`runtime` / `ui` / `widgets` 不得依赖它。
+Behavior bytecode 格式、verifier 与 interpreter（ADR 0035）：寄存器 VM、8 字节指令、事务 undo log、执行预算与 Runtime Fault（`E7101`–`E7105`）。只依赖 `viso-ende`；`runtime` / `ui` / `widgets` 不得依赖它。
+
+解释器（`interpreter` feature，`viso-view`/`viso` 的 `vm`）用途限定为 Dev 热更新 patch、显式 `dynamic` 构造、sandbox/AI preview。`aot::lower_module` 把模块的每个 chunk lower 为 Rust（task 为可恢复状态机，`TaskFrame` + `Poll`），`Vm::install_native` 按 build hash 安装；生成代码仍在 VM 的运行时外壳上执行——事务与 undo log、预算、fault 位置（报告 bytecode pc）、computed memo、native、事件与 task 启动——所以两条路径的语义只有一份（ADR 0041）。不带解释器的构建中没有编译代码的 chunk 报 `E7105`。
+
+### `viso-view`
+
+Compiled view 的运行时（ADR 0037–0040）：handler table、state layout、control response、task/resource/persist 接线。三种入口（宏、热更新 commit、release package）都经它挂载，因此 handler 的执行语义只有一份。
+
+目标（ADR 0041）：
+- Release 下每个 chunk 是生成的 Rust 函数：`view!` 在宏展开时 lower 模块并把代码嵌在模块字节旁（`viso::__behavior!` 在 release 或无 `vm` 的构建中保留代码与去掉 bytecode 的 `Module::compiled()` 字节，debug + `vm` 时只保留完整 bytecode、代码不编译）；view package 带 bytecode，`viso_dsl::aot::package_native_code` 生成代码由 app 编译，经 `ViewLoad::native` 交给 loader，`viso_dsl::aot::compile_package` 给出与之配套、去掉 bytecode 的 package；
+- 富类型 state（字符串、列表、记录）没有 UI cell，实例保留自己的 state 向量；镜像到 UI cell 的标量 state 按 `StateStore::epoch` 门控：cell 与实例 revision 都未变时 sync 不拷贝任何 cell，dispatch 对镜像数是 O(1)；
+- Dev 下解释执行与 Release 生成代码共享同一 handler table 布局（entry → chunk 索引），热更新只替换 table 条目。
+
+### `viso-schema`（ADR 0042）
+
+DSL compiler 与 runtime 之间交换的**纯数据合同**：widget / property / event / slot 描述与标准 widget 表、`DirtyClass`、state 身份与值、role / interaction / layout / env 词汇、length 项、resource 身份与 asset 格式、`StableId`、值类型 schema 与 `Retyping`、AOT package 与 view package（control / route / region 表）格式。`no_std + alloc`，只依赖 `viso-ende`。`viso-ui` / `viso-view` / `viso-behavior` 在原路径 re-export，`viso-dsl` 消费它。它不是 `core/common`：只放跨编译边界的数据类型及其 codec 与定义其含义的小纯函数，不放运行时逻辑。
+
+### `viso-dev-protocol`（ADR 0042）
+
+`viso`（CLI）与 dev runtime 之间的开发链路：framed host/runtime message 与其携带的 patch bundle（UI / game section）、asset blob、game query，以及 running app 报告给工具的数据——inspection census / node detail / event log / source table / selector、profile frame、headless scenario。两侧都依赖它，CLI 因此不链接 runtime；runtime 侧的采集（census、node detail）留在 `viso-view`。依赖 `viso-schema`、`viso-ende`、`viso-math`、`viso-gpu-abi`。
 
 ### `viso-lsp`
 
@@ -876,7 +940,9 @@ Behavior bytecode 格式、verifier 与 interpreter（ADR 0035）：寄存器 VM
 
 ### `viso-cli`
 
-`viso` 命令（`Viso_CLI.md` §39–§41）：参数解析、project/config resolution、调用 `viso-project` 与 `viso-dsl`、human 输出与 JSON event stream（经 `viso-ende` 的 `JsonWriter`）、exit code；不实现任何 domain service。当前命令：`check`。
+`viso` 命令（`Viso_CLI.md` §39–§41）：参数解析、project/config resolution、调用 `viso-project` / `viso-package` / `viso-dsl`、human 输出与 JSON event stream（经 `viso-ende` 的 `JsonWriter`）、exit code；不实现任何 domain service。
+
+CLI 依赖 `viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-image`、`viso-svg`、`viso-text`，传递依赖不含 `runtime` / `platform` / GPU backend（`check-deps` 闭包规则）。需要运行 app 的命令（snapshot、headless test）启动构建出的 app artifact 子进程，通过 `viso-dev-protocol` 通信；asset 校验、图标与 snapshot 比较只用 `viso-image` / `viso-svg`；需要栅格化的 build-time 处理（预烘焙 glyph atlas）只使用 `CpuRaster`。
 
 ### `viso-services`
 
@@ -890,26 +956,39 @@ Behavior bytecode 格式、verifier 与 interpreter（ADR 0035）：寄存器 VM
 
 **当前合同**是 `xtask/src/main.rs` 的 `allowed_edges()` allowlist，由 `cargo xtask check-deps` 在 CI 执行；不在表中的 workspace 内部边一律拒绝。本节与该 allowlist 不一致时以 allowlist 为准，并应同步修正本节。
 
-| crate | 允许依赖 |
-|---|---|
-| `viso`（facade） | runtime, ui, ui-macros, widgets, dsl, services, render, svg, gpu, platform, handle, text, shader, macros |
-| `viso-widgets` | ui |
-| `viso-ui-macros` | dsl |
-| `viso-lsp` | dsl |
-| `viso-cli` | project, dsl, ende |
-| `viso-dsl` | ui, ende, behavior |
-| `viso-services` | runtime, platform |
-| `viso-ui` | render, runtime, ende, text |
-| `viso-svg` | render, math |
-| `viso-render` | math, text, shader, gpu |
-| `viso-text` | gpu |
-| `viso-shader` | gpu |
-| `viso-gpu` | runtime, handle, macros |
-| `viso-runtime` | platform |
-| `viso-platform` | handle |
-| `viso-math` / `viso-ende` / `viso-handle` / `viso-macros` / `viso-project` / `viso-behavior` | —（叶子） |
+| crate | allowlist（ADR 0042 之后） | 仍待调整 |
+|---|---|---|
+| `viso`（facade） | runtime, ui, ui-macros, widgets, dsl（dev）, view, behavior, services, render, image, dev-protocol, gpu, platform, handle, text, shader, macros, ende, math, schema | `behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
+| `viso-widgets` | ui, math | — |
+| `viso-ui-macros` | dsl | — |
+| `viso-lsp` | dsl | — |
+| `viso-cli` | project, package, dsl, dev-protocol, schema, ende, image, svg, text | — |
+| `viso-dsl` | schema, dev-protocol, ende, behavior, shader；测试另 dev-depend ui、view | — |
+| `viso-view` | ui, schema, dev-protocol, behavior, ende | `behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
+| `viso-behavior` | ende, math, schema | — |
+| `viso-services` | runtime, platform | — |
+| `viso-ui` | render, runtime, ende, text, math, schema | — |
+| `viso-render` | math, schema, text, image, svg, shader, gpu | — |
+| `viso-svg` | math | — |
+| `viso-image` | schema, gpu-abi, svg, math | — |
+| `viso-text` | glyph-a8 | — |
+| `viso-shader` | gpu-abi, ende | — |
+| `viso-gpu` | handle, macros, gpu-abi | — |
+| `viso-runtime` | platform | — |
+| `viso-platform` | handle | — |
+| `viso-dev-protocol` | ende, math, schema, gpu-abi | — |
+| `viso-schema` | ende | — |
+| `viso-macros` | glyph-a8 | — |
+| `viso-gpu-abi` / `viso-math` / `viso-ende` / `viso-handle` / `viso-glyph-a8` / `viso-project` / `viso-package` | —（叶子） | — |
 
-`viso-math` 当前只被 render/svg 使用；其他 crate 需要时必须先加 allowlist 边。`viso-ende` 被 ui/dsl 使用，不位于 frame 数据流主链。
+调整的理由：
+- `gpu -> runtime` 与 `text -> gpu` 在源码中没有任何引用，属于历史残留边；它们让 runtime 位于 gpu 之下，也让纯 CPU 的 text 被迫链接 GPU backend。
+- `dsl -> ui` 让 LSP / `viso check` 传递链接 render、gpu、runtime、platform。改为 `dsl -> schema` 后，编译器与运行时只通过纯数据合同耦合；dev 链路的协议数据单独成 `viso-dev-protocol`，CLI 与 runtime 共用而互不依赖。
+- `shader -> gpu` 让编译器链接 GPU backend；ABI 描述拆为 `viso-gpu-abi` 后，shader 只描述 GPU 数据。
+- `svg -> render` 让 CLI 为校验 SVG 链接 renderer；SVG 解析与 lowering 拆开后，`render -> svg`，CLI 只用解析器。
+- `math` 是几何类型的唯一 owner；ui/widgets 直接使用它，render 删除重复的 `Rect`/`Point`。
+
+`viso-ende` 被 ui/dsl/schema/behavior 使用，不位于 frame 数据流主链。
 
 ### 10.1 禁止依赖
 
@@ -927,14 +1006,21 @@ Behavior bytecode 格式、verifier 与 interpreter（ADR 0035）：寄存器 VM
 - `runtime / ui / widgets -> behavior`：禁止，Pure Rust UI 不依赖 DSL 执行器；
 - `viso-math` public ABI 依赖 pointer width、`usize` 或 backend SIMD type：禁止；
 - `viso-math` struct 内存布局直接作为 GPU uniform/instance wire ABI：禁止；
-- frame hot path 通过 Ende encode/decode 传递 Node/Layout/Paint 数据：禁止。
+- frame hot path 通过 Ende encode/decode 传递 Node/Layout/Paint 数据：禁止；
+- `gpu -> runtime / platform`：禁止（ADR 0042）；
+- `text -> gpu / render`：禁止；
+- `viso-dsl` / `viso-lsp` / `viso-ui-macros` / `viso-cli` 的传递依赖包含 `runtime` / `platform` / `gpu`：禁止（`check-deps` 的传递闭包检查执行）；
+- `shader -> gpu`、`svg -> render`、`dsl -> ui / view`、`cli -> view`：禁止（ADR 0042）；
+- 同一几何概念在 `viso-math` 之外重复定义 public 类型：禁止；
+- Release / embedded profile 的默认 feature 集链接 `viso-behavior`：禁止（显式 dynamic 能力除外）。
 
 ### 10.2 边界必须由 CI 机器化验证
 
-AGENTS.md 里的 dependency 规则不是“建议”。当前 `cargo xtask check-deps` 基于各 crate `Cargo.toml` 验证 crate allow/deny edge。
+AGENTS.md 里的 dependency 规则不是“建议”。`cargo xtask check-deps` 基于各 crate `Cargo.toml` 验证 crate allow/deny edge（dev-dependency 单列，不进入 crate 自身闭包），并对 compiler/tooling 侧（dsl/lsp/ui-macros/cli）计算普通依赖的传递闭包，闭包中出现 runtime/platform/gpu 即失败并给出路径。
 
 目标（尚未实现）：
 
+- profile 规则：`cargo xtask check-profiles` 以 `viso build` 为 embedded 板卡解析的 feature 集（facade 默认 feature 关闭，加 profile 的 feature 与 `vm`；`embedded-gpu` 分 GLES 与 Vulkan 两种板卡）为 aarch64 与 armv7 Linux 解析 facade 的 normal 依赖闭包（不含 proc-macro 子树），检查禁止项：Linux 桌面栈（`x11rb*`、`wayland-*`、`zbus*`、`accesskit*`）、DSL 编译器与 hot reload watcher（`viso-dsl`、`viso-lsp`、`notify*`、`kqueue*`、`inotify*`）、其他平台的图形与系统 API（`windows*`、`objc2*`、`metal`、`wgpu*`）；GLES 板卡另禁 `ash`，Vulkan 板卡另禁 `glow`、`khronos-egl`，`embedded-cpu` 禁一切 GPU API（`ash`、`d3d12`、`glow`、`khronos-egl`）。命中的 crate 连同依赖路径一起报告。`viso-behavior` 是 `no_std` 的必需依赖，不在禁止项内；fontconfig 不是 crate 依赖（运行时 dlopen，embedded 构建经 `cfg(viso_no_system_fonts)` 编译掉，§50A.4）。`no_std` crate 的 `thumbv7em-none-eabihf` 交叉编译 smoke check 由 `cargo xtask mcu-smoke` 执行（§50A.6）；
 - framework crate 不得反向依赖 `tools/`、`examples/`、Studio 的自动检查；
 - `platform/ui/render/gpu/dsl` 等关键 module 的 forbidden import 扫描（first-party AST/import scanner）；
 - target-only dependency 不得泄漏到其他 target；
@@ -2066,24 +2152,34 @@ Viso Runtime
 
 ### 11.2 Frame phases
 
-一帧固定为十二个语义阶段（ADR 0001；代码中为 `viso_runtime::FramePhase::ORDER`）：
+一帧的语义阶段如下（ADR 0043，取代 ADR 0001 的十二阶段表；代码中为 `viso_runtime::FramePhase::ORDER`）：
 
 ```text
-1. CollectInput
-2. DispatchInput
-3. FlushStateTransactions
-4. ResolveStyle
-5. Measure
-6. Layout
-7. UpdateSemantics
-8. BuildPaintChanges
-9. BuildRenderBatches
-10. UploadGpuChanges
-11. Submit
-12. PostFrameCleanup
+ 1. CollectInput
+ 2. DispatchInput           // hit-test 结构在此按需重建（HIT_TEST dirty），不单设阶段
+ 3. RunContinuations        // spawn_then 续体、到期 timer、async completion；写入当前 transaction
+ 4. ApplyDevPatches         // Dev-only：已 stage 的 PatchBundle 在帧边界 commit；Release build graph 中不存在
+ 5. AdvanceAnimations       // 推进 AnimationTrack；transform 动画直接写 TransformStore
+ 6. FlushStateTransactions  // 全帧唯一一次 flush：binding 求值 + dirty 标记
+ 7. ResolveStyle
+ 8. Measure
+ 9. Layout
+10. UpdateTransforms        // transform root 位移重算（每 root 一次加法）、subtree bounds
+11. BuildPaintChanges
+12. BuildRenderBatches      // 同时计算 damage region（§30.3）
+13. UploadGpuChanges        // GPU：range upload；只移动 root 的帧不上传，renderer 取新位移；CpuRaster：damage tile 光栅化
+14. Submit                  // present_with_damage
+15. RunEffects              // effect 重启 / cleanup；产生的 state 写入进入下一帧
+16. UpdateSemantics         // present 之后执行，不在 input-to-photon 关键路径上；只在 AT 激活时发布
+17. PostFrameCleanup
 ```
 
-实际可以合并阶段，但语义必须存在。
+规则：
+- 实现可以合并阶段，但语义顺序必须保留；空阶段的成本必须是 O(1)（按 dirty worklist 是否为空判断，而不是遍历树）。
+- 3–5 产生的所有写入与 2 中 handler 的写入合并为同一个 transaction，在 6 一次性 flush。不允许出现「动画 flush 一次，事件再 flush 一次」。
+- 需要同帧可见的派生值必须使用 computed，不能用 effect。effect 只承载副作用，它的写入最早在下一帧可见。
+- effect 环跨帧检测：一个 effect 连续 `SETTLE_ROUNDS`（16）帧仅因 effect 写入而被唤醒，即判定为跨帧反应环，停止运行并报告 `E4202`；帧内 flush 环仍由 settle 轮数上限截断。
+- Semantics 放到 present 之后，是为了不拉长输入到上屏的延迟。辅助技术读到的树最多滞后本帧 present 几百微秒，不会跨帧。
 
 ### 11.3 Phase-specific Context
 
@@ -2186,6 +2282,10 @@ Tokio/Smol 作为 adapter（目标，尚未建立）：`viso-tokio`、`viso-smol
 - `cx.services()` 由 facade prelude 中的 `ServicesExt` 提供；store 以 `Rc<dyn Any>` 借出 `Services`，所以 `ui` 不依赖 `services`。
 - 暂缓：`UpdateCx` / `BuildCx` / `TaskCx` 上的 spawn 与 services、detached spawn、adapter crate。
 
+### 13.3 Worker 数量由 profile 决定
+
+worker 线程池是可选资源，不是正确性前提。`embedded-cpu` profile 默认 `workers = 0`：text shaping、image decode、font parse 这类 TextWork / AssetWork 在主线程的 idle slice 内按时间预算执行（预算由 frame deadline 推算），结果与多线程路径一致。任何 subsystem 都不得假设「至少存在一个 worker」。
+
 ---
 
 # Part V — UI Runtime 数据模型
@@ -2220,14 +2320,22 @@ UI 仍然是真正的树，不做“everything is ECS”。
 推荐：
 
 ```rust
+/// u32::MAX 表示无。树内部链接由 arena 不变量保证有效，不携带 generation。
+#[repr(C)]
 struct NodeLinks {
-    parent: Option<NodeId>,
-    first_child: Option<NodeId>,
-    last_child: Option<NodeId>,
-    prev_sibling: Option<NodeId>,
-    next_sibling: Option<NodeId>,
-}
+    parent: NodeIndex,
+    first_child: NodeIndex,
+    last_child: NodeIndex,
+    prev_sibling: NodeIndex,
+    next_sibling: NodeIndex,
+} // 20 bytes
 ```
+
+内部链接与外部 handle 分开：
+- **外部 handle**（`NodeId` / `Handle<T>`、Inspector、DSL runtime、跨帧持有者）携带 generation，用于检测 stale；
+- **内部链接**（parent/child/sibling、binding target、dirty worklist、paint range owner）只存 `NodeIndex(u32)`。节点释放时 arena 先解链，因此内部链接永远不会指向已释放的 slot。
+
+当前实现用 5 个 `Option<NodeId>`（每个 12 bytes，共 60 bytes）。改为 index 链接后，热遍历每条 cache line 能装下约 3 倍的节点。
 
 Node 的热数据分区存储：
 
@@ -2355,14 +2463,18 @@ pub struct NodeArena {
 }
 
 struct NodeSlot {
-    generation: u32,
-    occupied: bool,
+    generation: u32,   // 奇数 = occupied，偶数 = free；释放与复用各 +1
     links: NodeLinks,
     flags: NodeFlags,
 }
 ```
 
-实际优化版可以把 `generation/occupied/links/flags` 分离成更紧凑数组。
+实际优化版可以把 `generation/links/flags` 分离成更紧凑数组。
+
+容量策略：
+- 默认按需增长；
+- `NodeArena::with_fixed_capacity(n)`：mount 后不再增长，超出时返回结构化错误（`E7xxx ArenaFull`），不触发 realloc。embedded profile 用它把峰值内存变成编译期/启动期可知的量；
+- 所有 hot store 与 arena 同步扩容，一次扩容只做一次批量 realloc。
 
 ### 16.1 ID 验证
 
@@ -2443,17 +2555,18 @@ Patch retained tree
 概念：
 
 ```rust
-#[repr(transparent)]
-pub struct StateId(u32);
+pub struct StateId { index: u32, generation: u32 }
 
 struct StateSlot {
-    version: u32,
-    flags: StateFlags,
-    value_offset: u32,
-    binding_start: u32,
-    binding_len: u16,
+    value: StateValue,
+    generation: u32,
+    occupied: bool,
+    kept: bool,     // 属于某个模板实例的 block（§18.1），释放后不进 free list
+    pending: bool,  // 已在本帧 pending 写集里：去重 O(1)
 }
 ```
+
+state 与 binding 分开存：slot 不记录 binding 区间，边集由 binding table 按 slot 索引（§18.1）。
 
 状态实际值可以：
 
@@ -2472,20 +2585,38 @@ State(count) → Binding(label_text)
 State(count) → Binding(progress_value)
 ```
 
-Binding metadata：
+Binding 只是失效边：源 cell 变化时给目标节点标哪些 dirty class。属性值由节点自己的读取者（content、control、`Shown`）在对应阶段取，不挂在边上。
+
+反复挂载的结构——VirtualList 的行、`for` 的 item、`if` / `match` 的 arm——按 **模板实例** 构建（`BuildCx::instance(&mut Template, ..)`，region 内部由 `mount_regions` 自动包裹）：
+
+- 实例的节点占 arena 中一段连续 slot（block），实例自己的 state（`cx.state`、region 保留的 local）占 state store 中一段连续 slot；
+- 于是实例的每条边都是 `(cell 偏移, 节点偏移, class)`，对同一模板的所有实例完全相同，模板只存一份：
 
 ```rust
-struct Binding {
-    target: NodeId,
-    kind: BindingKind,
+/// 模板级：同一模板的所有实例共享一份。
+struct TemplateBinding {
+    state: StateRef,        // Local(相对实例 state base 的偏移) | Import(实例外的 StateId)
+    target: u32,            // 相对实例 node base 的偏移
     dirty: DirtyClass,
-    evaluator: BindingEvaluator,
+}
+
+/// 实例级：每个 regular 实例只存基址（12 bytes）。
+struct InstanceBase {
+    template: u32,
+    node_base: u32,
+    state_base: u32,
 }
 ```
 
-对于纯 Rust 静态模板，`evaluator` 优先是 monomorphized/static function ID，而非通用 closure box。
+规则：
 
-对于 Viso DSL UI，使用 compact bytecode/IR function。
+- **录制**：模板的第一个连续实例录下边集与 block 尺寸；之后的实例按尺寸预留 block，构建结束时边集与模板一致即为 regular 实例，不存任何自己的边。
+- **Import**：实例外的 cell（列表共享的 selection、主题）的边也存在模板里；它变化时扇出到模板的每个 regular 实例。
+- **不一致**：绑定方式不同、尺寸不同或节点不连续的实例退回绝对边 `(StateId, NodeId, class)`，归该实例所有。绑定到实例外节点的边同样是该实例的绝对边。
+- **生命周期**：实例活到它最后一个节点被释放。block 内被释放的 slot 留在 block 里，不进普通 free list，所以按偏移标脏永远不会命中别人的节点。`BindingTable::collect` 回收死实例：释放它的 state 与边，并把两个 block 按长度保留给下一个同尺寸实例——行回收复用彼此的 block，滚动不增长任何存储。没有任何实例的模板随之释放，下次重新录制。
+- **Flush**：`state → state_owner[slot] → InstanceBase → 模板 run[offset]`，命中节点 `node_base + target`；import 走模板的实例表；绝对边是按 cell 链接的 slab，插入、删除都是 O(1)。
+
+Release 原生 lowering（ADR 0041）生成的是节点读取者的求值函数，与失效边分开；`EvaluatorId` 就是 chunk 索引，Dev 热更新期间同一索引指向解释执行的 chunk。
 
 ---
 
@@ -2512,7 +2643,7 @@ pub struct DirtyClass(u8);
 | text 内容 | MEASURE + LAYOUT + PAINT + SEMANTICS |
 | text color / background | PAINT |
 | width | MEASURE + LAYOUT |
-| transform / scroll offset | TRANSFORM + HIT_TEST + PAINT（永不 MEASURE/LAYOUT；`scroll_by`，ADR 0007） |
+| transform / scroll offset | TRANSFORM（永不 MEASURE/LAYOUT/PAINT；hit test 在查询时按逆 world transform 换算，不需要 HIT_TEST，ADR 0043） |
 | aria/label | SEMANTICS |
 | hover/pressed/focus 状态 | STYLE，随后由 style diff 决定 PAINT/LAYOUT；命中区域变化另标 HIT_TEST |
 | visibility | LAYOUT/PAINT/HIT_TEST/SEMANTICS，具体取决于模式 |
@@ -2530,6 +2661,15 @@ pub struct DirtyClass(u8);
 
 需要专门的 propagation rules，而不是简单 `parent.redraw()`。
 
+### 19.1.1 Dirty worklist 合同
+
+dirty bit 只回答「这个节点脏不脏」，不能用来找出脏节点。每个 dirty class 必须有自己的 worklist：
+- 标脏时，若该 bit 原来为 0，就把 `NodeIndex` 追加进对应 class 的 worklist（追加前不检查重复，bit 本身就是去重）；
+- 每个阶段只消费自己的 worklist，成本是 O(脏节点数)，与树的总节点数无关；
+- `MEASURE` / `LAYOUT` 的 worklist 先归约成脏根集合（祖先已在集合中的节点丢弃），再按 depth 升序处理，同一祖先在一帧内只 relayout 一次；
+- 所有 worklist 的 buffer 跨帧复用，稳态零分配；
+- worklist 为空的阶段直接跳过，这是「idle 真正 idle」的机制保证。
+
 ### 19.2 Viso 1.0：Transform 是独立失效平面
 
 Layout tree 定义结构与几何约束；Transform plane 定义最终局部/世界变换、滚动偏移和动画变换。两者使用同一个 `NodeId` 索引，但 dirty propagation 分离：
@@ -2539,13 +2679,27 @@ Layout change
   -> MEASURE/LAYOUT
   -> may update transform base rect
 
-Scroll / translate / scale / rotate
-  -> TRANSFORM | HIT_TEST | PAINT
-  -> never MEASURE/LAYOUT
+Scroll / translate
+  -> TRANSFORM
+  -> 写该节点的 scroll / translate
+  -> UpdateTransforms 按 paint 顺序重算 transform table 中每个 root 的位移
+  -> UploadGpuChanges 不上传；Renderer::set_transforms 取新位移，
+     encode 时每个 draw 按所属 root 的 current - painted 平移
+  -> damage = subtree 旧 world bounds ∪ 新 world bounds
+  -> never MEASURE/LAYOUT/PAINT/HIT_TEST
 
 opacity / color-only animation
   -> PAINT
 ```
+
+为什么 transform 不需要 PAINT：transform table 只为 **transform root** 分配条目——scroll container 的内容，以及被 translate 过的节点（首次 translate 时成为 root，此后一直是）。paint 用 `Primitive::Transform(slot)` / `TransformEnd` 括住每个 root 的 primitive，并按先序记录 root，外层 root 总在内层之前。primitive 按绘制时的世界坐标写入，table 同时记下各 root 当时的位移（painted）；之后只有 root 移动的帧，UI 重算 table（每个 root 一次加法，与内容多少无关），renderer 在 encode 时让每个 draw 平移 `current - painted`——平移量走每个 built-in 都已读取的 16 字节 inline uniform 中的 `shift`，root 内打开的 clip 跟着移动。instance 不带 transform id，不重写，不上传：代价按 draw 计，不按 primitive 计，也不需要 storage buffer（GLES 3.0、CpuRaster 同样适用）。不同 root 的 draw 不合批。普通节点的 layout 变化会改变它的世界坐标，这本来就属于 PAINT。
+
+为什么 transform 不需要 HIT_TEST：屏幕上的 rect 不存储，由 `bounds` 加上方 root 的位移推导；hit test 自顶向下携带位移（即把指针按各 root 的逆变换换算），滚动后无需任何重算。
+
+例外（必须显式处理）：
+- **平移无法表达的内容**：offscreen layer（ROI 按绘制时裁剪）、backdrop / material（采样背后内容）、用户 program（自写 uniform）会污染所在 root；移动被污染的 root，或帧内存在 backdrop capture 时移动任何 root，`set_transforms` 返回 `NeedsUpload`，该帧按新位移重新 paint 并上传，结果总是正确；
+- **可见集变化**：paint 发出 root 内的全部节点，滚入视口的节点总有 retained paint；VirtualList 的新行走 STRUCTURE/LAYOUT 路径（ADR 0008）；
+- **glyph 像素对齐**：位移按 device pixel snap（scale factor 取 length 环境），保证 A8 glyph raster 不因小数偏移失效。当前 transform 只有平移；作者可写 scale / rotate 时扩展 uniform，并遵循 Text 规范的 promotion 规则（§37.3）。
 
 默认 transform parent 跟随 UI parent；overlay、portal、独立 layer 等场景可以显式拥有不同的 transform/paint parent。该能力必须通过受控 API 表达，不能靠任意矩阵引用形成不可追踪图。
 
@@ -2911,7 +3065,9 @@ AnimationTrack {
 
 对 transform/opacity/color 等属性使用 specialized evaluator。
 
-animation dirty 按属性限定：transform 动画标 `TRANSFORM | HIT_TEST | PAINT`，opacity/color 动画只标 `PAINT`；只有 width/height 等 layout property animation 才标 `MEASURE | LAYOUT`。
+animation dirty 按属性限定：transform 动画只标 `TRANSFORM`，opacity/color 动画只标 `PAINT`；只有 width/height 等 layout property animation 才标 `MEASURE | LAYOUT`。
+
+transform / opacity 动画的 evaluator 在 AdvanceAnimations 阶段直接写入 TransformStore / PaintStore 中的单个字段，不经过 binding 求值。
 
 ---
 
@@ -2990,6 +3146,31 @@ GPU
 
 ADR 0001 固定的最小 primitive 合同是 `Quad` / `GlyphRun` / `Image` / `Path` / `Mesh` / `Layer`（§15.3）。当前 `viso_render::Primitive` 在此之上增加了 analytic shape（RRect/Ellipse/Capsule/Line）、Gradient、AnalyticShadow、material 等 lane；完整分类、lane 选择与 Layer 合成（opacity == 1 用 scissor clip，< 1 走 offscreen + composite，ADR 0002）见 `Viso_Rendering.md`。
 
+### 30.3 Damage-driven present（所有 Device Class）
+
+局部变化只重绘、只上屏受影响的区域。这对桌面/移动是功耗问题，对嵌入式是内存带宽问题（RGB565 800×480 全屏重绘约 750 KB/帧）。
+
+- **damage 来源**：每次 upload 后，renderer 为 surface pass 的每个 paint-order 条目生成 64 位内容 key（retained store 条目的全部像素决定字段、lower 时的 context：origin / space / clip、所采样的 offscreen pass 内容与 pass 参数（rect、opacity、blur、color op、blend）、backdrop capture 下方内容、material 参数、program 读的时钟）与可触及的 rect。Submit 时按 transform root 的当前位移与移动 clip 放置，再与上次 present 的列表按序 diff：相同的前缀/后缀，中间 32 条窗口内重新同步，所以插入/删除一行只 damage 那一行。每个未匹配条目贡献它的旧/新 rect，外扩 1px 抗锯齿边缘。只移动 root 的帧（§19.2）因此 damage = root subtree 旧 ∪ 新 world bounds，且被 clip 限定。
+- **合并**：合并为最多 4 个不相交矩形（每次挑并集面积增量最小的一对合并）；合并后面积超过 surface 的 60% 时退化为整帧重绘。size、clear color 变化、`set_partial_redraw`、`damage_all()`（surface 重建、纹理就地改写）都强制整帧。
+- **GPU 路径**：backend 报告 drawable 的 buffer age（`GpuBackend::frame_age`：D3D12 flip-sequential、Vulkan 按 image 计数、`EGL_EXT_buffer_age`、CpuRaster/Headless）。age ≥ 1 时，surface pass 用 `LoadOp::Load` 保留像素，renderer 保留最近 4 帧 damage，重绘区 = 本帧 ∪ drawable 错过的 age − 1 帧；每个矩形先用 Replace blend 的 clear quad 清空，再把全部 surface draw 以「原 scissor ∩ 矩形」重放。age 未知（0，Metal / WebGPU 的 drawable）时整帧重绘，但仍然跳过空 damage、上报 damage。present 时附带 damage（`present_with_damage`：DXGI `Present1` dirty rects、`VK_KHR_incremental_present`、`EGL_KHR_partial_update`、KMS `FB_DAMAGE_CLIPS`），compositor 据此只更新这些区域。局部重绘与整帧重绘逐像素一致（`crates/render/tests/damage.rs`）。
+- **CPU 路径**：只光栅化与 damage 相交的 tile（§30.4）。
+- **空 damage 不 Submit**：不 begin frame、不 encode、不 present，GPU 不被唤醒，KMS 也不 page flip。
+- **调试**：profiler counter `damage_px` / `damage_rects` / `full_frame_fallbacks`（`viso profile`）；`viso inspect frame` 的 `damage` 给出该帧重画的区域（`null` / `"whole"` / 矩形列表），Studio/Inspector 据此叠加 damage rect。`Renderer::last_damage()` / `damage_stats()` 是同一数据的 Rust 入口。
+
+### 30.4 CpuRaster 后端
+
+`CpuRaster`（`viso_gpu::cpu`）是 Embedded-CPU 的 Tier-1 后端，同时是 Web 无 WebGPU 时的兼容路径（canvas `putImageData`），以及 golden test / headless 的确定性参考。它是唯一的 CPU 后端，不另起一套 renderer。
+
+- 消费与 GPU 完全相同的 frame packet / draw list，不新增 primitive 类型；每个内置 pipeline 由 `BuiltinShader` 标签选择其 shader IR 的 CPU 逐操作复述（SDF、AA ramp、采样约定），pipeline 的 blend state（`Replace` / premultiplied over）照常生效；
+- **按格式存储**：8-bit 目标按格式字节序存四字节（`Bgra8Unorm` 即 XRGB8888/ARGB8888 扫描布局，可直接作为 KMS dumb buffer），合成走整数 src-over（`div255` 精确舍入，同 8-bit attachment）；`Rgb565Unorm` 存 16 bit、不透明，gradient 走 4×4 Bayer ordered dither；HDR 目标存 `f32`；glyph / mask atlas（A8）存一字节每 texel，就是系统内存中的 A8 cache，residency 合同与 GPU atlas 相同；
+- **tile**：64×64，draw 按 tile 分 bin（保持提交顺序），只访问被 draw 触及的 tile —— `LoadOp::Load` 的 partial redraw（§30.3）只花 damage 的代价；一行 tile 为一个 band，band 之间像素不相交，`workers > 0` 时在常驻 worker pool 上并行，输出与 worker 数无关；
+- **SIMD**：行合成与打包有 SSE2 / NEON / SIMD128 kernel，与 scalar 定义 bit-exact（单元测试穷举 / 随机对比，golden 共用一套）；
+- **analytic AA**：RRect / Ellipse / Capsule / Line / Shadow 在像素中心求 SDF 覆盖；path 填充走 sparse scanline coverage —— 后端声明 `Caps::coverage_paths`，renderer 把所有实心 path（凸的也一样）走 mask lane，coverage 每个轮廓只光栅一次、按 glyph 合成；描边仍走三角形 lane；
+- **layer**：只被区域合成（Image / ColorTransform、clamp-to-edge）读取的 offscreen pass 被 defer：只分 bin、不分配目标；合成它的每个 tile 把要读的 texel 区域（+1 texel 边距）求值到 worker 本地窗口再采样，所以 opacity < 1 / 融合色彩滤镜的 group 只占一个 tile 的 scratch，不分配整块 offscreen，像素与整目标绘制 bit-exact。被 blur、advanced blend、backdrop 或用户 program 读取的 layer 照常整块绘制。无 alpha 的面板（RGB565）的中间目标为 `Bgra8Unorm`；
+- **`Blitter` capability**：2D 加速器（i.MX PXP、Allwinner G2D、STM32 DMA2D 类）实现 `viso_gpu::cpu::Blitter`，raster 把 solid fill（pass clear）交给它，它拒绝的部分由 CPU 完成，像素不变；
+- **自定义 shader**：每个 brush program 在打包时都带有 `ShaderLang::None` 代码（编译成扁平四 lane 寄存器码的参考解释器，`CpuShader`），`CpuRaster` 直接运行它，不存在可遗漏的 `cpu_fallback`；`embedded-cpu` profile 把包的 shader 语言固定为 `None`（§50A.3），缺少 CPU 代码的包在构建期即不满足 profile。从 Shader IR 构建期生成 Rust 片元函数（ADR 0044）是后续性能目标；
+- **测量**：`pixel_bytes()`（目标与 surface 像素）、`scratch_bytes()`（worker 窗口）、`deferred_layers()`；bench `cpu_raster_800x480_{full,damage_5pct}_{xrgb8888,xrgb8888_4t,rgb565}`。
+
 ---
 
 ## 31. Batching
@@ -3051,12 +3232,12 @@ struct QuadInstance {
     color: [f32; 4],
     radius: [f32; 4],
     border: [f32; 4],
-    transform_id: u32,
-    flags: u32,
 }
 ```
 
 宏必须生成明确 layout descriptor，并验证 shader 声明。
+
+instance 不携带 transform：`rect` 是绘制时的世界坐标，所属 transform root 之后的位移由 draw 的 `shift` uniform 施加（§19.2）。因此滚动和 transform 动画不需要重写任何 instance，每个 instance 也不为此多付字节。
 
 禁止依赖：
 
@@ -3117,8 +3298,26 @@ Windows   → D3D12（必要时兼容路径）
 Linux     → Vulkan
 Android   → Vulkan
 Web       → WebGPU
-其它      → HeadlessRaster（软件光栅，测试/无原生后端）
+Embedded Linux（GPU）   → GLES 3.0+（Vulkan 1.1 驱动成熟的 SoC 可选 Vulkan）
+Embedded Linux（无 GPU）→ CpuRaster
+其它      → CpuRaster（由 CpuRaster 升级，测试/无原生后端）
 ```
+
+Desktop Linux 与 Embedded Linux 的 target triple 相同（例如 `aarch64-unknown-linux-gnu`），因此 embedded backend 由 Footprint Profile 的 feature 选择，而不是由 `cfg(target_os)` 选择；仍然是编译期静态选择，一个 artifact 只含一个 backend。
+
+GLES 3.0 是 Embedded-GPU 的 Tier-1：嵌入式 SoC（Mali、Vivante、PowerVR、VideoCore 等）的 GLES 驱动普遍比 Vulkan 驱动成熟。它在 Embedded-GPU 上是 Tier-1，在桌面 Linux 上只是 Tier-2 兼容路径。这不违反「不做最低公分母」：GLES3 backend 声明自己的 capability profile（无 compute、bind group 由 backend 模拟），renderer 按 capability 选择 lane，Tier-1 RHI 的语义不因此降级。
+
+`Gles3Backend`（`viso-gpu` 的 `gles` feature，Linux / Android 上替代 Vulkan 成为 `Backend`）的实现合同：
+
+- EGL 1.5 与 GLES 3.0 运行时加载（`libEGL` / `libGLESv2`，Wayland 另加 `libwayland-egl`），不链接；display 与 context 在第一个 surface 上按其平台创建（Wayland、XCB、Android、无窗口时 pbuffer）。
+- shader：GLSL ES 3.00，一份源码含两个 stage，vertex 半部在 `VISO_VERTEX` 下，backend 各加 `#version 300 es` prelude 编译两次。built-in 由 `viso-shader` 从 shader IR 打印（`emit_glsl`），用户 program 由 program codegen 打印（`ShaderLang::Glsl`），两者都过 glslang 的 GLSL ES 3.00 检查。GLSL ES 不做隐式转换，整数字面量按上下文类型拼写。
+- uniform：built-in 读 `std140` 的 `ViewBlock`（binding 0）；一帧所有 draw 的 inline uniform 打进一个 uniform ring，按 `UNIFORM_BUFFER_OFFSET_ALIGNMENT` 对齐、按 range 绑定。
+- instance：built-in 用 divisor 1 的 vertex attribute（每个 draw 重设指针到 `instance_offset`）；用户 program 没有 storage buffer，instance 作为 `uvec4` 字读自 binding 1 的 uniform block，每块 16 KB（GLES 3.0 保证的最小 block 大小），`glCopyBufferSubData` 拷进 ring 中各自的槽，`viso_base_instance` 给出块首索引。
+- bind group：texture 依次绑到 texture unit，sampler 状态是绑到同一 unit 的 sampler object。
+- 方向：texture target 的 clip-space y 取反（`viso_target`），行仍自上而下存储，`v = 0` 采样顶行，与其它 backend 一致；fragment 位置由 `gl_FragCoord` 还原成左上原点。
+- `Bgra8Unorm` 纹理存为 `RGBA8`（核心 GLES 无 BGRA 存储），上传时交换 R/B。
+- 用户 program 在共享对象的第二个 context 上编译，编译器可在任意线程运行，结束后恢复调用线程原有的 current context；vertex array 不共享，安装时在主 context 创建。
+- 局部刷新：`EGL_EXT_buffer_age` 给出 `frame_age`；`EGL_KHR_partial_update` 在第一笔绘制前声明本帧的 surface pass 的 scissor 区域（tiler 只加载这些 tile）；`eglSwapBuffersWithDamage{KHR,EXT}` 上屏 damage。
 
 选择由 `viso_gpu::Backend` 类型别名按 `cfg` 在编译期完成，facade 按值持有，帧路径无 `dyn` 分派；详见 [ADR 0029](docs/adr/0029-gpu-backend-static-selection.md)。
 
@@ -3285,6 +3484,17 @@ Text profiler counter 列表以 Text 规范为准。Benchmark 至少覆盖：Nat
 
 `viso-text` 拥有 FontManifest 语义、resolver/fallback policy、Face SLRU、coverage accelerator、shaping/paragraph cache、Unicode integration、typed text position 与 caret/selection/hit-test/IME 映射、TextWork 调度、font revision/invalidation、glyph residency 合同与 profiler counters。标准算法复用成熟实现（`unicode-bidi`、`rustybuzz`、`ttf-parser` 等，ADR 0025）。facade 拥有系统字体 binding；`viso-render` 拥有 GPU atlas texture/page/upload 机制。
 
+### 37.8 Embedded 字体策略
+
+Embedded profile 下默认：
+- 没有系统字体 provider（不链接 fontconfig/CoreText 等），只使用 packaged font；
+- **build-time subset**：字体按「静态字符串用到的字符 + `Viso.toml` 声明的 charset」做子集。动态文本可能出现子集外的字符时，必须声明 charset，否则构建期报 diagnostic，而不是运行时显示 tofu；
+- **baked atlas（可选）**：UI 字号固定的产品在 device target 的 `fonts.bake` 声明字号，构建期把子集的 drawable glyph 闭包按这些字号预光栅化为压缩的 A8 page（`viso-glyph-a8` 的 "VBA8" 格式，8 字节对齐 static，原地读取）；运行时 glyph cache 先读 baked page 再 raster，pixel 与运行时 raster 逐字节相同。`fonts.rasterizer = false` 时 build 不链接 font rasterizer（facade 的 `rasterizer` feature），嵌入字体删去 outline 表（`glyf`/`loca`/`CFF `/`gvar`），只留 shaping 所需；任何 glyph 无 baked pixel 或 feature 与之不符都是编译错误，未声明的字号从最近的 baked 字号重采样。合同与实测见 Text/Font Runtime §3.6；
+- 默认关闭 MTSDF / OutlineVector / ColorVector；ColorRgba8 emoji 可选；
+- Unicode 数据表按声明的 locale 集合裁剪：Thai/Lao/Khmer/Myanmar 的换行 LSTM 模型（Unicode 数据中最大的一块）只在 device target 的 `locales`（缺省为 i18n catalog 的 locale）、静态文本或 charset 用到这四种文字时链接（facade 的 `complex-line-break` feature）；BiDi、grapheme 与 UAX #14 规则表是任何动态文本都需要的，不裁剪（Text/Font Runtime §3.7）。
+
+以上都是 profile 的默认值，不是额外的语义：同一份 `.vs` 在 desktop profile 下照常使用系统字体 fallback。
+
 ---
 
 # Part XIV — Viso DSL、热更新与语言工程
@@ -3293,7 +3503,7 @@ Text profiler counter 列表以 Text 规范为准。Benchmark 至少覆盖：Nat
 
 ## 38. 定位：Viso DSL 是一等 Authoring Layer，不是 UI Runtime 的地基
 
-- 依赖方向固定为 `viso-dsl -> viso-ui`，`viso-ui` 永不依赖 `viso-dsl` 或 Script VM（§10）。纯 Rust 应用完全关闭 `hot-reload` feature 时，UI runtime、layout、renderer、widgets 的基础能力仍然成立。
+- 依赖方向固定为编译器到运行时单向：`viso-dsl -> viso-schema <- viso-ui`（ADR 0042）。`viso-ui` 永不依赖 `viso-dsl` 或 Script VM（§10）。纯 Rust 应用完全关闭 `hot-reload` feature 时，UI runtime、layout、renderer、widgets 的基础能力仍然成立。
 - Release 加载路径只在 `viso-ui::aot`，不得触达 `viso-dsl`（ADR 0016）。
 
 ### 38.1 三个 Rust 入口，一套语言语义
@@ -3349,7 +3559,7 @@ Source → Streaming Tokenizer → Lossless CST → AST → Name Resolution / Mo
 
 ## 40. Rust Schema Bridge
 
-Viso DSL compiler 依赖 `ComponentSchema { type_id, name, properties, events, slots }` 一类 schema，不直接操作 Rust 对象内存布局。自动生成 schema 的 `#[derive(Component, Reflect)]` 属于**目标**；当前 schema 由 `viso-dsl` 内的 native schema 表与 `viso-ui` 描述提供。
+Viso DSL compiler 依赖 `ComponentSchema { type_id, name, properties, events, slots }` 一类 schema，不直接操作 Rust 对象内存布局。自动生成 schema 的 `#[derive(Component, Reflect)]` 属于**目标**；当前 schema 由 `viso-dsl` 内的 native schema 表与 `viso-ui` 描述提供；目标是统一由纯数据的 `viso-schema` 承载。`viso-ui` 和 widgets 在构建期导出 schema 表，compiler 只读取这些数据，不链接 widget 实现（ADR 0042）。
 
 IR/runtime 使用 `PropertyId`、`TokenId`、`NodeKey`、`ComponentTypeId` 等数值 ID；开发模式保留字符串用于 diagnostics；**release hot path 不做字符串属性查找**。
 
@@ -3357,6 +3567,8 @@ IR/runtime 使用 `PropertyId`、`TokenId`、`NodeKey`、`ComponentTypeId` 等�
 
 - **Dev artifact**（`viso run`）可以保留 CST/HIR incremental cache、source map/debug name、schema reflection、hot-reload Symbol/source metadata、Dev Runtime、PatchBundle receiver/apply path、DevSnapshot endpoint 与 Inspector hooks。
 - **Release artifact**：`.vs` / `ui!` / `component!` 在构建期经同一 frontend 生成 compact UI IR / Shader blobs，以 embedded asset 或 generated Rust data 形式打包（ADR 0016）。启动时不 parse、不 type-check、不需要完整 source symbol string table。
+- **Release 执行模型**（ADR 0041）：模块的每个 chunk（handler、binding evaluator、computed、effect body、初始化、函数、闭包、task）由 `aot::lower_module` 生成 Rust 源码，与 app 一起由 rustc 编译优化（内联、常量折叠、LTO）。handler table 的 `EvaluatorId` 是 chunk 索引；模块字节仍随 artifact 携带布局、常量与 span，供运行时外壳与 fault 位置使用，但其中的指令不再被解释。镜像 state 的拷贝由 `StateStore::epoch` 门控。
+- **语义一致性**：同一份 IR 在 Dev（解释器）与 Release（生成代码）下必须产生相同的结果。`crates/dsl/tests/differential.rs` 对 `differential/*.vs` fixture 双跑，逐步（调用、task 启动、每次恢复、`done` handler）比较值或 fault（种类、位置、消息）、states、revision、dirty 集合、事件、task 启动与 cost；不一致视为 compiler bug。
 - Release **完全不编入** Dev transport listener、PatchBundle decoder/apply engine、DevSnapshot endpoint、hot-reload command handler、hot-reload-only 元数据与远程开发控制面。这是 build graph/feature boundary，不是运行时开关；不得通过环境变量、配置或隐藏端口重新开启。Release 稳态帧不得有 per-frame dev socket poll、`hot_reload_enabled` 分支、SymbolId lookup 或 patch revision check。Debug symbols/crash source map 是另一项 build policy。
 
 ## 42. Development Runtime & Transactional Hot Reload
@@ -3370,6 +3582,7 @@ IR/runtime 使用 `PropertyId`、`TokenId`、`NodeKey`、`ComponentTypeId` 等�
 5. **不注入任意 Rust 机器码**：不以 JIT、machine-code page replacement 或通用 dylib swap 作为跨平台方案；Rust 修改走 incremental build → DevSnapshot → relaunch → restore。iOS/Android 只要求 Simulator/Emulator。
 6. **协议**：Host ↔ Dev Runtime patch 使用 `viso-ende` Binary，CLI/Studio diagnostics 使用 Ende JSON；Patch 带 session/build/revision/schema identity，禁止乱序 blind apply。
 7. **Last-good**：失败 candidate 不得把画面替换成 half-built tree 或 invalid pipeline。
+8. **Remote Dev session（Embedded）**：Dev artifact 在板卡上运行，Host 通过 TCP 上的 Ende Binary 协议推送 PatchBundle。这与桌面 Dev transport 是同一个协议，只是 transport 不同。Rust 修改走 cross build → 部署（rsync/scp）→ Warm Restart。板卡上的 Dev artifact 不含 compiler，compile 只在 Host 上执行。
 
 ## 43. Viso 模块系统
 
@@ -3466,7 +3679,9 @@ Viso 不把“跨平台”理解成所有设备都走同一个最低能力后端
 | Linux | Vulkan | first-class | `VulkanBackend` |
 | Android | Vulkan | first-class；设备能力不足时由兼容策略处理 | `VulkanBackend` |
 | Web | WebGPU | first-class | `WebGpuBackend`（`wasm32-unknown-unknown`） |
-| 其它 target | — | 测试 / 回退 | `HeadlessRaster` |
+| Embedded Linux（GPU） | GLES 3.0+ / Vulkan 1.1 | first-class（`embedded-gpu` profile） | `Gles3Backend` / `VulkanBackend` |
+| Embedded Linux（无 GPU） | CpuRaster | Tier-2（`embedded-cpu` profile） | `CpuRaster` |
+| 其它 target | — | 测试 / 回退 | `CpuRaster`（原 `CpuRaster`） |
 
 编译期静态选择规则见 [ADR 0029](docs/adr/0029-gpu-backend-static-selection.md)。
 
@@ -3477,6 +3692,28 @@ Tier-2 compatibility backend 可以存在，例如 Linux OpenGL、Android GLES �
 3. 是否投入 Tier-2 由真实 adoption/device telemetry、维护成本和 benchmark 决定，而不是为了纸面“全覆盖”提前背负多个后端。
 
 因此 Viso 的长期策略是 **WebGPU-first，不把 public architecture 写死成 WebGPU-only**；Linux 同理是 Vulkan-first，而不是永远禁止兼容后端。
+
+### 48.1.1 Embedded Linux platform backend（`backend/linux/kms`）
+
+没有 compositor 的全屏单 surface backend，与 Wayland kiosk（cage/weston）并列；Wayland 继续走现有的 wayland backend。
+
+- **显示**：DRM/KMS atomic modesetting。GPU 路径用 GBM + EGL；CPU 路径用 dumb buffer 双缓冲。page flip 完成事件就是 vsync 信号。支持 `FB_DAMAGE_CLIPS`（§30.3）。视频与光标优先使用硬件 overlay/cursor plane。面板旋转优先使用 KMS plane rotation，硬件不支持时由 renderer 在根 transform 上处理。
+- **输入**：直接读取 evdev（multi-touch protocol B、按键、相对设备、旋钮/encoder），libinput 是可选 adapter；hotplug 经 udev netlink。旋钮与物理按键映射为标准 focus navigation 事件，嵌入式 UI 的 focus 路径因此与桌面键盘导航是同一套。
+- **事件循环**：drm fd、evdev fd、timerfd、`LoopWaker` 的 eventfd 都进同一个 epoll；空闲时 0 wakeup，不轮询。
+- **Session**：可选 seatd/logind 获取 DRM master，也支持以专用用户直接打开 `/dev/dri` 运行（嵌入式常见）。
+- **不提供**：多窗口、X11、桌面 portal、系统菜单。这些能力以 capability 声明为不可用，tooling 在构建期报 diagnostic。
+
+实现合同（`viso-platform` 的 `kms` feature；没有 `WAYLAND_DISPLAY` / `DISPLAY` 时自动选用，`VISO_SESSION=kms` 强制；embedded profile 关闭 facade 默认的 `desktop` feature，X11、Wayland、desktop portal 与 AT-SPI 都不编译，桌面 Linux 的默认 build 三者并存）：
+
+- **窗口即 scanout**：唯一窗口的 `raw_handle()` 是 `RawWindowHandle::Scanout`，指向平台的 `Scanout`（`viso-handle`）。CpuRaster 每次 present 调 `present_pixels(像素, stride, damage)`，平台把每个 dumb buffer 缺失的区域（本帧 ∪ 它错过的帧）拷进 back buffer，再提交；GLES 后端经 `Scanout::gbm()` 拿到 GBM device/surface（EGL `EGL_PLATFORM_GBM_KHR`，config 的 `NATIVE_VISUAL_ID` 等于扫描格式 fourcc），swap 之后调 `presented(damage)`，平台锁定 front bo、为它建 FB 并提交。两条路径都只在 page flip 完成后释放被替换的 buffer。
+- **DRM 不经 libdrm**：直接 ioctl（结构尺寸与 ioctl 号由单测钉住）；atomic 优先，驱动没有 atomic 时退回 `SETCRTC` / `PAGE_FLIP`（`VISO_KMS_LEGACY` 可强制）。atomic 提交带 `FB_DAMAGE_CLIPS`，首帧与恢复时 `ALLOW_MODESET`，其余 `NONBLOCK | PAGE_FLIP_EVENT`。libgbm、libseat 运行时 dlopen；CPU 路径不加载 libgbm。
+- **帧节奏**：flip 在途时 `request_redraw` 只记标记，flip 完成事件到达后才投递 `RedrawRequested`；空 damage 不提交、不 flip。
+- **旋转**：`VISO_KMS_ROTATION` 先用 plane `rotation`（启动时用 `TEST_ONLY` 提交探测，部分 plane 只能旋转 tiled buffer）；不支持时 CPU 路径在拷贝时旋转，GPU 路径由 `Scanout::turns` 告诉 GLES 后端在 clip space 旋转、scissor 与 damage 一并换算，fragment 看到的仍是图像坐标。触摸坐标按 `VISO_KMS_TOUCH_ROTATION`（默认同显示）换回图像坐标；硬件光标图像与热点同样旋转。
+- **输入**：evdev 设备按声明的事件码分类——键盘/按键、鼠标、旋钮（无左键的 REL 设备 → Tab / Shift+Tab）、触摸屏（MT protocol B，`SYN_DROPPED` 后用 `EVIOCGMTSLOTS` 重同步；或单点 `BTN_TOUCH`）、绝对指针、触摸板（单指移动 + 按键）。按键经 xkbcommon 默认 keymap（`XKB_DEFAULT_*`）出文本，缺 xkbcommon 时退回 US 布局；重复键用内核 autorepeat，不设定时器。装有 libinput 时（运行时 dlopen，`VISO_KMS_INPUT=evdev` 关闭），鼠标、触摸板、触摸屏与绝对指针改由 libinput 读取（path context，设备经 seat 打开，与 evdev 设备共用同一个 epoll）：指针加速、触摸板 tap / 双指与边缘滚动（像素级 `Scroll`）/ 防误触、触摸屏校准矩阵（`VISO_KMS_TOUCH_CALIBRATION`）；键盘与旋钮仍走 evdev 解码器（保留内核 autorepeat 与 focus 步进），libinput 拒绝的设备也退回解码器；VT 切换时 `libinput_suspend` / `resume`。
+- **热插拔**：内核 uevent netlink（不依赖 udev 守护进程）：输入设备增删（权限未就绪时短暂重试），connector 变化重新探测；断开/恢复以 `Suspended` / `Resumed` 报告，mode 尺寸变化以 `SurfaceDestroyed` → `ScaleFactorChanged` → `SurfaceCreated` 报告。
+- **Session**：有 seatd/logind 时经 libseat 打开设备并在 VT 切换时暂停/恢复（暂停期间不碰 card，恢复时重开输入设备、重设 mode 并显示最新帧）；否则直接打开节点，并把控制 VT 切到 `KD_GRAPHICS` + `K_OFF`，退出时恢复。
+- **能力**：`PlatformApp::capabilities()` 返回 `PlatformCaps::FULLSCREEN`（单窗口、无菜单栏但 accelerator 仍生效、无 portal、应用内剪贴板、无 IME）；`framed_windows()` 为 false。
+- **未做**：视频 overlay plane（平台尚无视频 surface）；触摸板 pinch / swipe 手势（`RawEvent` 尚无手势事件）。
 
 ### 48.2 Platform 不负责
 
@@ -3577,6 +3814,143 @@ Location
 
 ---
 
+## 50A. Device Class、Footprint Profile 与嵌入式（ADR 0044）
+
+### 50A.1 为什么在 1.0 设计
+
+- **市场**：车机、工控 HMI、家电与智能家居面板、医疗与 POS 设备，是 Rust UI 最有机会的场景之一；目前主要由 Qt、Slint、LVGL 覆盖。
+- **架构契合**：retained tree、构建期 AOT、稳态零分配、静态 backend 选择、idle 零唤醒，这些本来就是嵌入式需要的性质，Viso 不需要为嵌入式另起一套模型。
+- **成本不对称**：现在定下 MCU-ready 不变量几乎没有成本；等 core 写完再补，就要重写 arena、store、text、AOT 加载这些部分。
+- **收益外溢**：damage present、固定容量 arena、profile 裁剪、CPU raster 同样降低桌面和移动端的内存与功耗。
+
+### 50A.2 Device Class
+
+| Class | 典型硬件 | OS | 图形 | RAM | 1.0 |
+|---|---|---|---|---|---|
+| Desktop | x86_64 / arm64 PC | macOS / Windows / Linux | Metal / D3D12 / Vulkan | — | Tier-1 |
+| Mobile | 手机 / 平板 | iOS / Android | Metal / Vulkan | — | Tier-1 |
+| Web | 浏览器 | — | WebGPU（CpuRaster 兼容） | — | Tier-1 |
+| Embedded-GPU | Cortex-A53/A55/A72 级；Mali-G52/G610、Vivante GC7000、PowerVR、VideoCore VI（例如 i.MX 8M Plus、RK3566/RK3588、树莓派 4/5） | Linux（KMS 或 Wayland kiosk） | GLES 3.0+ / Vulkan 1.1 | ≥ 128 MB | Tier-1 |
+| Embedded-CPU | Cortex-A7/A35 单核到双核，无 GPU 或只有 GLES2（例如 i.MX 6ULL、全志 T113） | Linux（KMS dumb buffer / fbdev） | CpuRaster + 可选 2D blitter | ≥ 32 MB | Tier-2 |
+| MCU | Cortex-M7/M33、ESP32-S3、RP2350 | bare-metal / RTOS | line/tile buffer + DMA2D | 256 KB – 8 MB | 不在 1.0；core 保持 MCU-ready |
+
+### 50A.3 Footprint Profile
+
+Profile 是一组固定的编译期 feature 加上运行时预算默认值。用户只选择 profile，CI 只验证这几组组合（§5）。
+
+| | desktop | mobile | web | embedded-gpu | embedded-cpu |
+|---|---|---|---|---|---|
+| GPU backend | 原生 Tier-1 | 原生 Tier-1 | WebGPU / CpuRaster | GLES3 / Vulkan | CpuRaster |
+| 包内 shader 语言 | 后端语言 + `None` | 后端语言 + `None` | WGSL + `None` | GLSL ES / SPIR-V | 仅 `None` |
+| 默认 worker 数 | N | N | 0–N | 0–2 | 0 |
+| 系统字体 provider | 是 | 是 | 否 | 否（可开） | 否 |
+| a11y OS bridge | 是 | 是 | ARIA mirror | 可选 | 否（可开） |
+| behavior VM（Release） | 否 | 否 | 否 | 否 | 否 |
+| MTSDF / vector glyph | 是 | 是 | 是 | 否 | 否 |
+| arena 容量 | 增长 | 增长 | 增长 | 增长 / 固定 | 固定 |
+| hot reload | Dev artifact | Dev artifact | Dev artifact | Remote Dev | Remote Dev |
+
+示意配置（字段语法以 `Viso_CLI.md` 为准，目标）：
+
+```toml
+[target.panel]
+profile = "embedded-gpu"
+triple  = "aarch64-unknown-linux-gnu"
+display = { width = 1024, height = 600, format = "xrgb8888", rotation = 90 }
+budget  = { heap = "48MiB", glyph_atlas = "4MiB", images = "16MiB" }
+workers = 1
+fonts   = { charset = ["latin", "gb2312"] }
+```
+
+### 50A.4 Memory budget 是运行时合同
+
+- Face SLRU、glyph atlas、image cache、paragraph cache、paint cache 都从统一的 `MemoryBudget` 领取字节预算，超出时按既有合同从冷到热逐级释放（§37.4）。profile 只提供默认值，app 可以覆盖；
+- GPU 资源（texture / buffer 字节）同样计入预算；
+- 可选的 accounting allocator（profile feature）统计 heap 峰值。超过 hard budget 时发出 `BudgetExceeded` 诊断事件并在 Inspector 中显示，不静默 OOM；
+- 预算违规必须能在桌面仿真中复现（§50A.7）。
+
+实现合同：
+- profile 在构建期固定：`viso build <target>` 把 target 段的 `profile` / `budget` / `workers` 以 `VISO_FOOTPRINT` / `VISO_BUDGET` / `VISO_WORKERS` 交给 facade 的 build script 烘焙进二进制；普通 `cargo build` 按 target 与后端 feature 推断 profile。profile 与后端 feature 不一致（例如 `embedded-cpu` 带 `viso/gles`）是构建错误；后端的 shader 语言不在 profile 允许的集合内由 `const` 断言拒绝；
+- `MemoryBudget { heap, gpu, faces, shaping, glyph_atlas, images }`：profile 给默认值，target 的 `budget` 覆盖，`Application::memory_budget()` 在第一个窗口打开前读一次。`faces` / `shaping` 直接成为 face SLRU 与 shaping cache 的字节预算，`glyph_atlas` 决定 atlas plane 边长（整页取整）；
+- 每帧结束检查三条硬限制：heap（安装 `viso::alloc::Counting` 时统计的 live bytes）、gpu（renderer 的 buffer / gradient ramp / mask pages / transient target 加 glyph atlas plane 与图片 texture 字节，仅在设了 gpu 限制时测量）、images（窗口内驻留图片 texture，增量计数）。第一次超出时所有窗口执行与 `LowMemory` 相同的 trim（丢弃可重建的缓存与切走的分支），仍超出则报告一次 `BudgetExceeded`（stderr 与 Inspector 的 `budget` 资源组），回到限制内后重新计；
+- worker 数：target 的 `workers`，否则 profile 默认，否则按机器；`0` 时 text shaping 与 asset decode 在主线程按时间片（text 按 span 预算的 8 倍，asset 4 ms）执行，结果与多线程一致；CpuRaster 的光栅线程数取同一个值；
+- embedded profile 默认不读系统字体（`cfg(viso_no_system_fonts)`，facade feature `system-fonts` 可打开），只用 packaged font。
+
+### 50A.5 Footprint 指标与 CI 预算
+
+每个 profile 在 CI 中记录：stripped + LTO 二进制体积、静态内存（`.data` + `.bss`）、空闲 RSS、峰值 heap、冷启动到首帧时间、空闲 wakeup 次数、每帧 damage 像素。
+
+初始预算如下。这些数字是**假设**，需要用第一批板卡的 benchmark 校准（AGENTS §7.3）：
+
+| 场景 | embedded-gpu | embedded-cpu |
+|---|---|---|
+| `01-counter` 二进制 | ≤ 4 MB | ≤ 2.5 MB |
+| `01-counter` 空闲 RSS（不含 GPU 驱动） | ≤ 12 MB | ≤ 6 MB |
+| 冷启动到首帧 | ≤ 250 ms | ≤ 400 ms |
+| 空闲 wakeup | 0 次/s | 0 次/s |
+
+Desktop / Mobile 不设绝对上限，只做趋势回归（§59.1）。同时与 Makepad 的同等示例在同一台机器上对比二进制体积、RSS、首帧时间和空闲 CPU，作为「比 Makepad 更省资源」的可度量依据（AGENTS §38.6）。
+
+#### 50A.5.1 测量：`cargo xtask footprint`
+
+- **参照 app**：`benches/footprint`，`counter` 是一个 label 加一个使计数加一的按钮（`.vs`），`list` 再加一个 10 000 行的 `VirtualList`（每行一个 label）；字体为包内 Noto Sans Latin。Makepad 侧是 `benches/footprint/makepad`：`counter` 即 Makepad `examples/counter`，`list` 按 `examples/portallist_hit` 的 `PortalList` 写法；它们对 Makepad checkout（`--makepad`、`$MAKEPAD_DIR` 或 workspace 旁的 `../makepad`）在独立 crate 中构建，沿用 checkout 的 `Cargo.lock` 与 `.cargo/config.toml`，另量 Makepad 原样 `examples/counter` 的体积。两侧装同一种计数 allocator（Viso 为 `viso::alloc::Counting`），经 stdin 报告 heap。
+- **构建**：共用 `CARGO_TARGET_DIR`，命令行定义的 `footprint` Cargo profile（opt-level 3、thin LTO、1 个 codegen unit、strip、unwind），不受两个 workspace 与用户 `[profile.release]` 影响。Viso 各 profile 的 feature 与 `viso build` 相同：desktop 为默认 feature；embedded-cpu 为 `--no-default-features --features viso/cpu,viso/kms,viso/rasterizer`，`VISO_FOOTPRINT=embedded-cpu`、`VISO_FONT_CHARSET=ascii`；两者各加 `viso/headless` 即 headless subject。
+- **窗口 subject**（macOS）：在 `/usr/bin/time -l` 下运行，首帧为 spawn 到 app 报告首帧提交（Viso `VISO_DEBUG`，Makepad `MAKEPAD_TOTAL_DRAWCALLS_DEBUG` 的首个 pass）；首帧 2 s 后 `top` 计 3 s 空闲的 CPU 时间与 idle wakeup，`ps` 取 RSS，`footprint` 取 memory footprint 与其中 `IOAccelerator`/`IOSurface`（GPU (OS)）；峰值 RSS 与峰值 footprint 取自 `time -l`。
+- **headless subject**：播放 scenario（120 次点击按钮，`list` 另 120 次滚轮，每次 36 px），读 `VISO_HEADLESS_PROFILE` 中每帧 UI 线程时间（含 raster）的 p50/p95，与 `VISO_HEADLESS_DETAIL` 的 `budget` 组（heap、GPU (budget)）。不改变任何东西的输入不运行帧，所以没有可计时的「空闲帧」：空闲成本即窗口 subject 的空闲 CPU 与 wakeup。
+- 每个值取一次 warm-up 之后 3 次运行的中位数。`--record` 写 `benches/footprint/baseline.json` 与 `baseline.md`（机器、rustc、日期、Makepad 版本）；`--check` 只量 Viso，任一指标超过 baseline 的容差（体积 3–5%，RSS 20%，footprint 50%，时间 50%，各带绝对下限）即失败，用于 CI 趋势报告。
+
+当前数字（2026-10-18，Apple M4 16 GiB，macOS 27.0.1，rustc 1.99.1，Makepad `70c90b7c0bc0`），桌面窗口：
+
+| | Viso counter | Makepad counter | Viso list | Makepad list |
+|---|---:|---:|---:|---:|
+| 二进制（stripped） | 5.01 MiB | 12.24 MiB（原样示例 11.67） | 5.01 MiB | 12.29 MiB |
+| 首帧提交 | 110 ms | 2179 ms | 98 ms | 2232 ms |
+| 峰值 / 空闲 RSS | 81 / 81 MiB | 346 / 282 MiB | 81 / 81 MiB | 348 / 285 MiB |
+| 峰值 / 空闲 footprint | 76 / 25 MiB | 319 / 166 MiB | 81 / 59 MiB | 326 / 172 MiB |
+| GPU (OS) | 5.4 MiB | 18.9 MiB | 10.3 MiB | 21.4 MiB |
+| heap 驻留 / 峰值 | 5.5 / 5.5 MiB | 103 / 138 MiB | 5.6 / 5.6 MiB | 104 / 138 MiB |
+| 空闲 CPU / wakeup | 0 ms/s / 0 次/s | 3.3 ms/s / 0.3 次/s | 0 / 0 | 0 / 0.3 |
+
+embedded-cpu（桌面窗口，CpuRaster）：二进制 4.53 MiB，空闲 footprint 25 / 31 MiB（counter / list），heap 7.7 / 12.7 MiB（含 CPU 帧缓冲）。headless（CpuRaster，420×600@1）：点击帧 p50 18–25 µs，滚动帧 p50 149–152 µs、p95 174–178 µs（desktop 与 embedded-cpu 两种 feature 集相同量级）；heap 3.0 / 4.0 MiB（desktop feature 集，counter / list），其中 GPU (budget) 1.07 MiB（1024² 的 glyph coverage atlas）；embedded-cpu feature 集 heap 1.5 / 2.5 MiB，GPU (budget) 326–337 KiB（mask page 按需分页，三个 9×9 图标只占一页 128²）。桌面窗口那几行是 mask 分页之前测的，需在解锁的屏幕上重新 `--record`。全部 subject 见 `benches/footprint/baseline.md`。
+
+尚未测到的：
+- 桌面窗口的逐帧 CPU 时间（两侧都没有向真实窗口注入输入的手段；Viso 的逐帧数字来自 headless）；Makepad 的逐帧时间（其 headless 是 `--cfg headless` 加运行时 JIT 编译 shader 的另一条路径，输入只能经 Studio 远程协议注入，与 Viso 不等价）。
+- Viso 桌面的首帧提交时 text 尚未 shape（shaping 在 worker 上，文字在下一帧出现），故桌面 Viso 的「首个含文字帧」约晚一帧；Makepad 首帧前的约 2 s 是主线程在其自身代码中的 CPU 时间（stripped 构建，未进一步归因）。
+- RSS 含 AppKit / Metal 共享页，跨框架比较以 footprint 为准；嵌入式板卡上的 RSS、首帧与 wakeup 需板卡实测（§50A.5 预算仍是假设）。
+
+### 50A.6 MCU-ready 不变量（1.0 必须守住）
+
+1. `viso-math`、`viso-ende`、`viso-schema`、`viso-behavior` 是 `#![no_std]`（math 不需要 `alloc`，其余需要）。`viso-text` 的 shaping / segmentation 路径和 `viso-ui` 的 arena / reactive / layout 模块不直接使用 `std::thread`、`std::time`、`std::fs`、`std::sync::Mutex`：时间经注入的 `Clock`，并发与唤醒经 runtime trait。CI 用 `thumbv7em-none-eabihf` 做交叉编译 smoke check，逐个 crate 推进：`cargo xtask mcu-smoke` 以 `--no-default-features` 检查 `viso-math`、`viso-ende`、`viso-schema`、`viso-behavior`（另含 `interpreter` feature 的 `viso-behavior`）与 `viso-glyph-a8`。
+2. hot data 只使用 `f32` 与整数，不使用 `f64`（Cortex-M 只有单精度 FPU）。
+3. 不假设 `usize == u64`（§10.4.4 已有）。
+4. arena、hot store、worklist 都支持固定容量模式（§16）。
+5. AOT package 支持 XIP：Ende borrowed decode 直接读 memory-mapped flash，不要求先拷贝进 RAM。
+   - **布局**：AOT package 与 view package 以 `ProtocolTag` 加 4 字节 magic（`AOT1` / `VPK1`）开头，后接 Ende section table（`viso_ende::SectionWriter` / `Sections`：section 数，再每项 offset、长度、条目数三个 LE `u32`）。每个 section 从 blob 起点算按 8 字节（`SECTION_ALIGN`）对齐，间隙为 0，布局唯一；reader 先校验整张表，越界、重叠、乱序或非零 padding 都是 `Malformed`。能定宽的记录定宽：AOT edge 24 字节，view 的 state 40 字节，handler 与 env 各 12 字节；AOT node 是变长记录（kind、style mask、payload、child 数）。view package 内嵌的 AOT blob 本身也在对齐 offset 上，内部 section 因此同样对齐。
+   - **对齐地址**：宏把 behavior module、control-flow region 和 shader 字节 embed 成 `viso_ende::Aligned`（`#[repr(C, align(8))]`）`static`，blob 起点对齐，section 就落在对齐地址上。
+   - **读取**：`AotView` / `ViewPackageView` 在 mount 之前一次校验整个 blob（forest 结构、节点下标、记录取值、升序约束、无尾随字节），之后 node / edge / state / handler / env / asset / shader 迭代器在栈上逐条解码，不生成 `Vec`。Release loader（`viso_ui::aot::load_from_bytes`、`viso_view::load_static_view`）只走 borrowed 路径，asset 与 shader 是借用 blob 的 `AssetBytes::Static`。owned 的 `AotPackage` / `ViewPackage` 只给 emitter 和 dev commit 用，其 `Decode` 建在同一个 view 上，没有第二套解码。
+   - **Behavior**：`Module::decode_static` 借用 `'static` blob——chunk、component、state、native、capability、theme 名，persist key，catalog 的 message key 与 locale table，以及字符串常量都是借 blob 的 `Text::Static`。运行 Rust 编译代码的 build（`viso::__behavior!` 选取，cfg 与选取 native code 相同：release，或没有 `vm` feature）embed `Module::compiled()`：没有 bytecode、operand 表和 source span，只留常量池、`BodyReads`（memo 的读集）和 build hash，install 时不再整模块重编码求 hash；debug 且有 `vm` 时 embed 完整 bytecode，hot reload 不变。未选取的那份字节在编译期整个丢弃。
+   - **仍然进 RAM 的**：每个 string 常量一个 `Rc` 盒子（文本本身借 blob）；control-flow region 模板（`ViewRegions`）与 control 是活的 runtime 结构，mount 时解码为 owned；`ValueSchema` 与 game input schema 的名字是 owned。
+6. renderer 前端（primitive / batch / damage）与 backend 分离，以后可以增加 line-buffer rasterizer，适配 SRAM 放不下整帧 framebuffer 的设备。
+7. 文本可以完全 baked（§37.8），二进制中可以不含 font rasterizer：`fonts.rasterizer = false` 的 build 由 `packaged_fonts!` 的编译期断言保证每个 packaged glyph 都有 baked pixel；baked page 的 reader（`viso-glyph-a8` 不带 `raster` feature）是 `no_std` + `alloc`，在 `mcu-smoke` 中检查。
+8. core 不假设存在线程、文件系统、动态加载或网络。
+
+MCU platform 本身（bare-metal / Embassy / Zephyr 集成）的决策门槛是：Embedded-CPU 交付，并且上面 1–8 条在 CI 中全部通过。届时另开 ADR。
+
+### 50A.7 Embedded 开发闭环
+
+- **桌面仿真**：`embedded-*` profile 可以在桌面 host 上以窗口运行，使用该 profile 完全相同的 feature 集、分辨率、像素格式（RGB565 量化模拟）、面板旋转、内存预算与 worker 数。footprint 与预算违规在桌面上就能复现；CpuRaster 在桌面与板卡上输出 bit-exact。
+- **远程板卡**：Dev artifact 部署到板卡，经 TCP 接收 PatchBundle（§42 第 8 条）；部署、listener 与地址规则见 `Viso_Hot_Reload.md` §27A。
+- 具体 CLI 命令由 `Viso_CLI.md` 定义。
+
+桌面仿真的实现合同（macOS，facade 的 `emulate` feature，与 `cpu` 一起用于 `embedded-cpu`）：
+
+- 帧走与板卡相同的路径：CpuRaster 画进 profile 的像素格式，按 damage 交给 `RawWindowHandle::Scanout`；macOS 窗口的 scanout 把 damage 区域（RGB565 按位扩展到 8 bit，色带保留）拷进保留帧，作为 content view layer 的 image 显示，`nearest` 放大，每个面板像素是整数个屏幕像素（能放进主屏可用区域 90% 的最大整数，1–8）。没有 `emulate` 时 CPU 画的 macOS 窗口同样经这条路径显示，按屏幕 backing scale、可缩放。
+- 面板由 `VISO_KMS_MODE`（缺省 800×480）、`VISO_KMS_FORMAT`、`VISO_KMS_ROTATION` 与 `VISO_SCALE`（缺省 1）给出，运行时环境优先，其次是构建时烘入的值——与 KMS backend 读同一组变量（`viso-platform` 的 `panel` 模块）。旋转是面板安装后的朝向：窗口取图像的形状（四分之一圈时宽高互换），CPU 帧本身永远是图像的形状，与板卡一致。
+- 窗口不可缩放，标题注明面板（`480×272 rgb565 0° @1`）；向 app 报告的 scale 与 surface 尺寸是面板的，pointer、scroll 与 IME caret 在窗口 point 与 app 逻辑单位之间按 `面板像素/point ÷ 面板 scale` 换算；窗口移到另一 backing scale 的屏幕时保持每面板像素的屏幕像素数不变。
+- 预算、worker 数与字体策略由 build 的 Footprint Profile 烘入（§50A.3），桌面与板卡相同。
+
+---
+
 # Part XVII — Assets 与 Resource System
 
 ## 51. 统一 ResourceId
@@ -3609,6 +3983,17 @@ assets/
 ```
 
 需要高级 manifest 时再增加声明能力。
+
+Build scanner 按 target profile 做资源转换，runtime 不再做格式转换：
+- release 构建（`viso build`，非 dev）由 CLI 把 `assets/` 的每张 PNG/JPEG（`images.svg = "raster"` 时连同 SVG）经 `viso_image::convert` 转换为 target 采样的格式，写入 `VISO_ASSET_OVERLAY` 指向的 overlay 目录（按 asset 目录规范路径分目录，路径不变；结果按 sha256(converter 版本, plan, 源字节) 缓存，字节不变不重写，未变 asset 不触发重编译）；`asset!` / `view!` / AOT package 经 `viso_dsl::assets::embedded_file` 嵌入转换后的文件，没有时嵌入源文件；
+- 格式族由 target 决定：desktop → BC，iOS/Android → ASTC，embedded-gpu → ETC2，embedded-cpu → `CpuRaster` 原样采样的 RGBA8 / RGB565 / RGBA5551 / RGBA4444；web 与 headless 保留源文件。族内按 alpha（无 / 1-bit / soft）与 `images.quality`（`lossless` / `high` / `balanced` / `compact`）选格式（表见 `viso_image::convert`）；
+- 有 display 尺寸的 board 把超出 cover fit 所示 texel 的图像预缩小（旋转后的面板尺寸），块压缩格式拉伸到整块；两者都保留 natural size，布局不变；
+- 容器 `VTX1`：32 字节 header（格式码、texel 尺寸、natural size、字节数）+ texel，texel 偏移 32、相对 blob 8 字节对齐；runtime 读 header 后借用 texel（`AssetBytes::Static` 直接交给 `create_texture_static`，`CpuRaster` 在 flash/binary 原地采样，不复制），无解码；
+- 设备不采样该格式（`Caps::samples` / `SampledFormats`）时，asset worker 用同一软件解码器解为 RGBA8 再上传——转换永远不让图像不可显示；
+- 全部转换后 facade 不链接对应解码器：board 上 `VISO_IMAGES_CONVERTED=raster`（`cfg(viso_converted_rasters)`，无 PNG/JPEG 解码），`svg = "raster"` 时 `svg`（`cfg(viso_converted_svg)`，无 SVG 解析/lower）；
+- SVG 默认在构建期解析，运行时 lower 为 primitive 流（`viso-svg`）；
+- 字体子集与 baked atlas 见 §37.8；
+- 转换结果进入 AOT package，可以 XIP 读取（§50A.6）。
 
 `assets/fonts/` 是 canonical packaged-font 目录。Build scanner 自动识别 TTF/OTF/TTC/OTC，并只提取必要 metadata 生成 compact `FontManifest`；**runtime 不因此 eager parse/load 全部字体**。第一次真正使用某个 face 时才 lazy load 并进入 Font Face SLRU。Native App 没有 packaged/dynamic font 时直接按需使用系统字体与系统 CJK/Emoji fallback；WASM/Canvas 不拥有系统字体，但 packaged fonts 同样可由 `FontManifest` lazy fetch，外部动态字体通过 `FontProvider` 注入。持有 WOFF2 的调用方须先自行解压为 SFNT 再纳入 `assets/fonts/` 或经 `FontProvider` 注入。
 
@@ -4036,6 +4421,19 @@ startup_minimal
 startup_complex_app
 memory_10k_nodes
 
+damage_single_label_update
+damage_scroll_list_partial_present
+cpu_raster_800x480_rgb565_full
+cpu_raster_800x480_damage_5pct
+cpu_raster_glyphs_10k
+gles3_batch_10k_quads
+footprint_binary_size_{profile}
+footprint_idle_rss_{profile}
+footprint_first_frame_cold_{profile}
+footprint_idle_wakeups_{profile}
+footprint_vs_makepad_{example}
+release_handler_native_vs_vm
+
 math_vec2_ops_10m
 math_mat4_mul_1m
 math_affine2_transform_points_10m
@@ -4102,6 +4500,8 @@ gpu bytes/instance
 ```
 
 CI 记录典型 tree 的 memory-per-node 趋势。
+
+per-node 不设绝对上限，但 Embedded profile 有整机级预算（§50A.5），各 cache 预算由 `MemoryBudget` 统一分配（§50A.4）。NodeLinks 改为 index 链接后（§14.1），`hot bytes/node` 的目标是不超过一条 64-byte cache line。
 
 ---
 
@@ -4248,6 +4648,12 @@ Makepad 的实时编辑、紧凑 UI authoring、固定步长 game update、host-
 ### 63.7 Studio / CLI
 
 Makepad 在跨平台构建、Studio、远程 UI 操作、截图、profile 等方向上的经验可作为 Viso 工具链的产品参考。Viso 的实现统一收敛到 `viso` CLI、Studio 与共享 tooling services；命令语法、协议和项目模型全部由 Viso 自己定义。
+
+### 63.8 Embedded
+
+Makepad 的 Linux direct backend（`platform/src/os/linux/direct`）验证了「DRM/KMS + GBM + EGL 全屏、不依赖 compositor」这条路径可行。它的边界是：只支持 GLES2，每帧从 evdev 轮询输入，没有 damage 局部上屏，没有 CPU 光栅路径，也没有资源预算或 profile 裁剪。
+
+Viso 在这条路径上的差异：GLES3 / Vulkan / CpuRaster 三种后端、epoll 事件驱动且空闲零唤醒、damage-driven present、Footprint Profile 与 memory budget 合同、MCU-ready core（§50A）。
 
 ---
 
@@ -4453,7 +4859,7 @@ color change
 → PAINT
 
 transform change
-→ TRANSFORM | HIT_TEST | PAINT
+→ TRANSFORM
 
 aria label change
 → SEMANTICS
@@ -4614,6 +5020,32 @@ CLI、Studio、IDE、CI 都是共享 tooling services 的客户，不允许各�
 - `--json` 可供 CI、IDE 与 AI agent 稳定消费；
 - Web target 与 HTML/Solid export 有明确 capability diagnostics；
 - 性能问题可通过工具直接定位。
+
+---
+
+## 73A. Phase 10 — Architecture 修正与 Embedded（ADR 0041–0044）
+
+### 工作
+
+1. DAG 修正：删除 `gpu -> runtime`、`text -> gpu`；新增 `viso-schema`，把 `dsl -> ui` 改为 `dsl -> schema`；`check-deps` 增加传递闭包检查；
+2. Release native lowering：`lower_module` 把每个 chunk（含 task 状态机）生成 Rust；`view!` 与 view package 都走 native 路径，解释器成为 `vm` feature；镜像 sync 按 epoch 门控；补 differential test；
+3. Frame phases 改为 17 阶段并同步 `FramePhase::ORDER`；dirty worklist；
+4. Transform root + 位移表，draw 级 `shift` uniform；TRANSFORM 不再连带 PAINT / HIT_TEST；
+5. NodeLinks 改为 index 链接；binding 表改为模板级；
+6. Damage-driven present（GPU 与 CPU）；
+7. `CpuRaster` 生产化（tile、RGB565、SIMD、damage tile）；
+8. `Gles3Backend` 与 GLSL ES 3.00 codegen；
+9. `backend/linux/kms`：KMS atomic、GBM/EGL、dumb buffer、evdev、epoll；
+10. Footprint Profile、`MemoryBudget`、`check-profiles`、footprint benchmark、与 Makepad 的对比基线；
+11. Embedded 字体：subset、baked atlas；资源构建期转换；
+12. MCU-ready 不变量的 `no_std` CI。
+
+### 退出标准
+
+- `01-counter` 在一块 Embedded-GPU 板卡与一块 Embedded-CPU 板卡上运行，满足 §50A.5 的预算（或给出校准后的新预算）；
+- 桌面仿真与板卡输出 bit-exact（CpuRaster）；
+- LSP / `viso check` 的依赖闭包不含 runtime / platform / GPU backend；
+- Release 二进制中不含 behavior VM；`release_handler_native_vs_vm` 有基线数据。
 
 ---
 
@@ -4830,6 +5262,16 @@ trait Painter {
 | 0032 | UI task protocol：loop-thread task、cross-thread wake、node-scoped cancellation | Accepted |
 | 0033 | Relative length units：`em`、Percent basis、`MixedLength` | Accepted |
 | 0034 | DSL keyword tiers 与 label positions | Proposed |
+| 0035 | Behavior bytecode VM in a leaf crate | Proposed |
+| 0036 | Native schema bridge in the behavior crate | Proposed |
+| 0037 | Mounting a view's handlers on the behavior VM | Proposed（Release 路径由 ADR 0041 修订） |
+| 0038 | Mounting a view's control-flow regions | Proposed |
+| 0039 | Inlining user-component instances into the mounting view | Proposed |
+| 0040 | Native control responses mounted from the handler table | Proposed |
+| 0041 | Release native lowering：handler / binding / computed 生成 Rust，VM 仅 Dev 与 dynamic | Accepted |
+| 0042 | Crate DAG 修正：`viso-schema`、编译器不依赖运行时、删除 gpu→runtime 与 text→gpu | Proposed |
+| 0043 | Frame phases 与 transform plane：17 阶段、dirty worklist、transform root | Proposed |
+| 0044 | Device Class、Footprint Profile 与 Embedded（GLES3、CpuRaster、KMS、MCU-ready） | Proposed |
 
 ## 文内架构取舍摘要（AD-01 … AD-24）
 
@@ -4867,7 +5309,7 @@ trait Painter {
 
 *对应 ADR 0014/0015/0016 的依赖方向约束。*
 
-**决定**：`dsl -> ui`，不是 `ui -> dsl`。  
+**决定**：编译器单向依赖运行时合同，不是 `ui -> dsl`；目标为 `dsl -> schema <- ui`（ADR 0042）。  
 **原因**：纯 Rust、AOT、测试、可维护性。  
 **代价**：需要 schema/IR bridge。
 
@@ -4929,9 +5371,9 @@ trait Painter {
 
 ### AD-13：Transform 与 Layout 使用独立失效平面
 
-*对应 ADR 0007（TRANSFORM|HIT_TEST|PAINT，§19.2）。*
+*对应 ADR 0007；ADR 0043 收紧为 transform 只标 TRANSFORM（§19.2）。*
 
-**决定**：共享 `NodeId`，独立 TransformStore/dirty propagation；scroll/transform animation 默认不触发布局。
+**决定**：共享 `NodeId`，独立 TransformStore/dirty propagation；transform table 只为 transform root 分配条目，primitive 按绘制时世界坐标存储，renderer 按 root 位移差移动 draw；scroll / transform animation 不触发布局、不重建 primitive、不上传、不重建 hit-test 结构。
 
 **理由**：保证高频滚动/动画走窄路径。
 
@@ -5088,10 +5530,10 @@ Viso 1.0 进一步规定：
 
 解决：Dev 和 Release 执行同一种 UI IR 语义。
 
-- Dev：IR 来自增量 compiler；
-- Release：IR 来自 build-time compiler。
+- Dev：IR 来自增量 compiler，行为由 VM 解释执行；
+- Release：IR 来自 build-time compiler，行为生成 Rust 代码（ADR 0041）。
 
-不是维护两套 UI runtime。
+不维护两套 UI runtime：结构、binding 表、state layout、handler table 是同一份；只有行为函数体有 VM 与 native 两种执行方式，二者由 differential test 锁定为同一语义（§2.3）。
 
 ---
 
@@ -5135,6 +5577,7 @@ Viso 的目标架构可以拥有 RHI、Shader IR、DSL、text integration、reac
 3. profiler/capability 证明成为瓶颈后，再 fork、替换或自研对应实现；
 4. 不允许“为了最终纯自研”阻塞从 input → state → layout → paint → GPU 的可测量 native vertical slice；
 5. 每个替换项目必须同时删除被替换 adapter 路径，避免永久双实现。
+6. Embedded 范围按 Device Class 逐级推进：Embedded-GPU → Embedded-CPU → MCU。前一级没有板卡实测数据之前，不开始下一级的 platform 实现；MCU 在 1.0 只守不变量（§50A.6）。
 
 优先做到 100 分的部分是：
 
@@ -5234,6 +5677,13 @@ fn main() {
 - Web GPU/DOM/Hybrid target 可构建；
 - HTML/Solid exporter 对 unsupported feature 给出结构化诊断；
 
+### Footprint / Embedded
+
+- 每个 Footprint Profile 的体积、内存、首帧、空闲唤醒进入 CI；
+- Embedded-GPU 板卡达到 §50A.5 预算；Embedded-CPU 可运行官方 Tier 1–3 widget；
+- 空闲时所有 Device Class 0 wakeup；局部变化走 damage present；
+- MCU-ready 不变量在 CI 中通过。
+
 ---
 
 # Appendix A — 一帧完整数据流
@@ -5265,19 +5715,25 @@ Dirty Propagation
     ├── HIT_TEST
     └── SEMANTICS
     ↓
-Incremental UI phases
+Incremental UI phases（按 dirty worklist）
+    ├── Style / Measure / Layout
+    └── UpdateTransforms ──→ root 位移 → Renderer::set_transforms（不经过 paint）
     ↓
 Paint Cache Changes
     ↓
 Primitive Ranges
     ↓
-Batch Builder
+Batch Builder + Damage Region
     ↓
 Frame Packet
     ↓
-viso-gpu
+viso-gpu（damage 为空则不 Submit）
     ↓
-Metal / D3D12 / Vulkan / WebGPU
+Metal / D3D12 / Vulkan / WebGPU / GLES3 / CpuRaster
+    ↓
+present_with_damage
+    ↓
+RunEffects → UpdateSemantics（present 之后）
 ```
 
 ---
@@ -5471,7 +5927,11 @@ Box<dyn HitTestNode>
 8. Math：**独立 `viso-math`，allocation-free 基础数值/几何 ABI，Math ABI 与 GPU ABI 分离**（AD-18）；
 9. CLI：**`viso` 是统一 Tooling Facade，CLI/Studio/IDE/CI 共用 tooling services**（AD-19）；
 10. Hot Reload：**仅 Dev artifact 编入，Release/Shipping 完全移除 Dev Runtime/patch/DevSnapshot 路径**（AD-20）；
-11. Development target：**desktop host implicit；iOS/Android 只面向 Simulator/Emulator，平台开发环境使用 `viso ios/android`**（AD-21）。
+11. Development target：**desktop host implicit；iOS/Android 只面向 Simulator/Emulator，平台开发环境使用 `viso ios/android`**（AD-21）；
+12. Release 执行：**行为生成 Rust，VM 仅 Dev/dynamic**（ADR 0041）；
+13. 编译器依赖：**`dsl -> schema`，编译器不链接运行时栈**（ADR 0042）；
+14. Transform：**transform root + draw 级位移，TRANSFORM 不连带 PAINT/HIT_TEST**（ADR 0043）；
+15. Embedded：**Device Class + Footprint Profile；Embedded-GPU 为 1.0 Tier-1，Embedded-CPU 为 Tier-2，MCU 只守不变量**（ADR 0044）。
 
 这些决定应尽早被 prototype/benchmark 验证，但验证的默认动作是调整实现参数，而不是重新打开核心语义。若要推翻，必须新 ADR。
 
@@ -5480,15 +5940,19 @@ Box<dyn HitTestNode>
 1. clip cache 的最佳结构；
 2. text shaping cache key 与跨 paragraph 共享粒度；
 3. GPU instance buffer 是 per-type persistent pool 还是 frame ring + retained ranges 混合；
-4. Tier-2 Web compatibility backend（例如 reduced-profile fallback）是否值得长期维护；
-5. Linux/OpenGL 与 Android/GLES compatibility backend 的投入时机；
+4. Web 无 WebGPU 时的兼容路径：默认使用 CpuRaster（§30.4）；是否另做 WebGL2 backend 视 adoption 数据决定；
+5. Desktop Linux / Android 上 GLES3 兼容路径的投入时机（Embedded-GPU 的 GLES3 backend 已是 Tier-1，可以直接复用）；
 6. dynamic scripting VM 的保留范围；
 7. platform backend 何时从 module 升格独立 crate；
 8. AccessKit adapter 覆盖 macOS/Windows/Linux/Android，iOS 与 Web 由 Viso 自有 adapter 补齐（ADR 0030）；剩余能力缺口（Web 焦点跟随、文本编辑语义）待定；
 9. Rust declarative API 除 `ui!` / `component!` / `view!` 外是否还需要 builder/function syntax；
 10. 3D scene graph 放 render、extras 还是独立 crate；
 11. paragraph cache 是否跨 component 共享以及内存上限；
-12. GPU retained instance range 的碎片整理策略。
+12. GPU retained instance range 的碎片整理策略；
+13. Embedded-GPU 上 GLES3 与 Vulkan 的默认选择（按 SoC 驱动质量逐板决定，还是统一 GLES3）；
+14. damage rect 合并上限 N 与整帧退化阈值的 per-profile 取值；
+15. 作者可写 scale / rotate 时，draw 级 uniform 扩为 Affine2（24 bytes），还是对非平移 root 退回 PAINT；
+16. MCU line-buffer rasterizer 的行缓冲高度与 DMA 双缓冲策略（MCU ADR 开启时）。
 
 原则：**先确定不可妥协的性能/边界语义，再通过 benchmark 和实现经验决定具体容器、cache 和兼容层级。**
 

@@ -5,8 +5,8 @@
 
 use std::sync::{Mutex, OnceLock};
 
+use viso_dev_protocol::wire::{CommitCounts, GameCommit, Stage};
 use viso_dsl::{Diagnostic, Severity};
-use viso_view::dev::wire::{CommitCounts, GameCommit, Stage};
 
 /// How a candidate ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

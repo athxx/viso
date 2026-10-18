@@ -11,19 +11,23 @@ rust-version.workspace = true
 # it; `viso-ui` never depends on it, so a pure Rust app links no VM.
 [dependencies]
 viso-ui = { workspace = true }
-viso-behavior = { workspace = true }
+# The view package format, shared with the compiler that emits it.
+viso-schema = { workspace = true }
+# What the runtime reports to a tool (inspection, profile, headless scenarios)
+# and, in a dev artifact, the dev link it speaks.
+viso-dev-protocol = { workspace = true }
+viso-behavior = { workspace = true, features = ["std"] }
 viso-ende = { workspace = true }
-# A headless snapshot's PNG: written compressed, read in any form.
-miniz_oxide = { workspace = true, optional = true }
-zune-png = { workspace = true, optional = true }
-zune-core = { workspace = true, optional = true }
 
 [features]
-# The development session that hot-reloads every `view!` mount.
-hot-reload = ["inspect"]
+default = ["vm"]
+# The behavior interpreter. Without it every chunk a view runs must come
+# compiled to Rust (`view!` in any build without it, a package's
+# `ViewLoad::native`); a chunk that does not faults `E7105`.
+vm = ["viso-behavior/interpreter"]
+# The development session that hot-reloads every `view!` mount: reloaded
+# bytecode runs on the interpreter.
+hot-reload = ["inspect", "vm"]
 # Records every `view!` mount, for the development session or a headless run
 # to tell which view each node comes from. Off, a mount records nothing.
 inspect = ["viso-ui/inspect"]
-# Headless snapshots: the PNG a scenario's snapshot step writes and the
-# comparison that holds it to its golden.
-snapshot = ["dep:miniz_oxide", "dep:zune-png", "dep:zune-core"]

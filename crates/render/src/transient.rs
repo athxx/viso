@@ -517,7 +517,7 @@ impl TransientTargets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viso_gpu::{HeadlessRaster, SamplerDesc};
+    use viso_gpu::{CpuRaster, SamplerDesc};
 
     /// Size classes are a pure, monotonic rounding-up of the request with a
     /// bounded relative slack, so the class is a stable reuse key rather than a
@@ -592,8 +592,8 @@ mod tests {
 
     /// A pool plus the sampler every target is paired with, as the renderer holds
     /// them.
-    fn pool() -> (HeadlessRaster, SamplerId, TransientTargets) {
-        let mut gpu = HeadlessRaster::new();
+    fn pool() -> (CpuRaster, SamplerId, TransientTargets) {
+        let mut gpu = CpuRaster::new();
         let sampler = gpu.create_sampler(&SamplerDesc::LINEAR_CLAMP);
         (gpu, sampler, TransientTargets::new())
     }

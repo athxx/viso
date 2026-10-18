@@ -208,7 +208,7 @@ pub fn run(ctx: &Context<'_>, args: &NewArgs, out: &mut Output) -> u8 {
     let viso = match &args.framework {
         Some(path) => match framework(&normalized(&cwd.join(path))) {
             Ok(dir) => format!(
-                "{{ path = {} }}",
+                "{{ path = {}, default-features = false }}",
                 toml_path(&relative(&resolved(&root), &resolved(&dir)))
             ),
             Err(why) => {
@@ -219,7 +219,10 @@ pub fn run(ctx: &Context<'_>, args: &NewArgs, out: &mut Output) -> u8 {
                 );
             }
         },
-        None => toml_string(VISO_VERSION),
+        None => format!(
+            "{{ version = {}, default-features = false }}",
+            toml_string(VISO_VERSION)
+        ),
     };
     let files = files(args.template);
     if let Err(code) = vacant(&root, files, args, out) {

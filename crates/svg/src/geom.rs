@@ -4,179 +4,29 @@
 //! `MoveTo`/`LineTo`/`QuadTo`/`CubicTo`/`Close`, with absolute coordinates.
 //! Arcs, `H`/`V`, smooth curves and basic shapes are all converted at parse time,
 //! so the renderer and downstream consumers only ever see five commands.
+//!
+//! Points, rects and transforms are the `viso-math` types: [`Vec2`] for points
+//! and vectors, [`Rect`], and [`Affine2`] in SVG `matrix(a b c d e f)` order.
 
-/// A 2D point / vector.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Point {
-    pub x: f32,
-    pub y: f32,
-}
-
-impl Point {
-    #[inline]
-    pub const fn new(x: f32, y: f32) -> Self {
-        Point { x, y }
-    }
-
-    #[inline]
-    pub fn length(self) -> f32 {
-        (self.x * self.x + self.y * self.y).sqrt()
-    }
-
-    #[inline]
-    pub fn dot(self, o: Point) -> f32 {
-        self.x * o.x + self.y * o.y
-    }
-
-    #[inline]
-    pub fn cross(self, o: Point) -> f32 {
-        self.x * o.y - self.y * o.x
-    }
-
-    /// Unit vector in the same direction, or `None` for a (near) zero vector.
-    #[inline]
-    pub fn normalized(self) -> Option<Point> {
-        let len = self.length();
-        if len > 1e-9 && len.is_finite() {
-            Some(Point::new(self.x / len, self.y / len))
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    pub fn lerp(self, o: Point, t: f32) -> Point {
-        Point::new(self.x + (o.x - self.x) * t, self.y + (o.y - self.y) * t)
-    }
-
-    #[inline]
-    pub fn is_finite(self) -> bool {
-        self.x.is_finite() && self.y.is_finite()
-    }
-}
-
-impl std::ops::Add for Point {
-    type Output = Point;
-    #[inline]
-    fn add(self, o: Point) -> Point {
-        Point::new(self.x + o.x, self.y + o.y)
-    }
-}
-
-impl std::ops::Sub for Point {
-    type Output = Point;
-    #[inline]
-    fn sub(self, o: Point) -> Point {
-        Point::new(self.x - o.x, self.y - o.y)
-    }
-}
-
-impl std::ops::Mul<f32> for Point {
-    type Output = Point;
-    #[inline]
-    fn mul(self, s: f32) -> Point {
-        Point::new(self.x * s, self.y * s)
-    }
-}
-
-impl std::ops::Neg for Point {
-    type Output = Point;
-    #[inline]
-    fn neg(self) -> Point {
-        Point::new(-self.x, -self.y)
-    }
-}
-
-/// An axis-aligned rectangle (`x`, `y` = top-left).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-}
-
-impl Rect {
-    #[inline]
-    pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
-        Rect { x, y, w, h }
-    }
-
-    #[inline]
-    pub fn from_ltrb(l: f32, t: f32, r: f32, b: f32) -> Self {
-        Rect::new(l, t, r - l, b - t)
-    }
-
-    #[inline]
-    pub fn right(&self) -> f32 {
-        self.x + self.w
-    }
-
-    #[inline]
-    pub fn bottom(&self) -> f32 {
-        self.y + self.h
-    }
-
-    /// Positive, finite width and height.
-    #[inline]
-    pub fn is_valid(&self) -> bool {
-        self.w > 0.0 && self.h > 0.0 && self.w.is_finite() && self.h.is_finite()
-    }
-
-    /// Smallest rect containing both.
-    pub fn union(&self, o: &Rect) -> Rect {
-        Rect::from_ltrb(
-            self.x.min(o.x),
-            self.y.min(o.y),
-            self.right().max(o.right()),
-            self.bottom().max(o.bottom()),
-        )
-    }
-
-    /// Bounding box of this rect's four corners under `ts`.
-    pub fn transform(&self, ts: &Transform) -> Rect {
-        let pts = [
-            ts.apply(Point::new(self.x, self.y)),
-            ts.apply(Point::new(self.right(), self.y)),
-            ts.apply(Point::new(self.x, self.bottom())),
-            ts.apply(Point::new(self.right(), self.bottom())),
-        ];
-        let mut b = Bounds::new();
-        for p in pts {
-            b.add(p);
-        }
-        b.rect().unwrap_or_default()
-    }
-
-    /// The rect as a closed path (`M L L L Z`).
-    pub fn to_path(&self) -> PathData {
-        let mut p = PathData::new();
-        p.move_to(self.x, self.y);
-        p.line_to(self.right(), self.y);
-        p.line_to(self.right(), self.bottom());
-        p.line_to(self.x, self.bottom());
-        p.close();
-        p
-    }
-}
+pub use viso_math::{Affine2, Rect, Vec2};
 
 /// Running min/max accumulator for a bounding box.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Bounds {
-    min: Point,
-    max: Point,
+    min: Vec2,
+    max: Vec2,
 }
 
 impl Bounds {
     pub(crate) fn new() -> Self {
         Bounds {
-            min: Point::new(f32::INFINITY, f32::INFINITY),
-            max: Point::new(f32::NEG_INFINITY, f32::NEG_INFINITY),
+            min: Vec2::new(f32::INFINITY, f32::INFINITY),
+            max: Vec2::new(f32::NEG_INFINITY, f32::NEG_INFINITY),
         }
     }
 
     #[inline]
-    pub(crate) fn add(&mut self, p: Point) {
+    pub(crate) fn add(&mut self, p: Vec2) {
         self.min.x = self.min.x.min(p.x);
         self.min.y = self.min.y.min(p.y);
         self.max.x = self.max.x.max(p.x);
@@ -195,161 +45,15 @@ impl Bounds {
     }
 }
 
-/// A 2D affine transform, SVG `matrix(a b c d e f)` order:
-/// `x' = a·x + c·y + e`, `y' = b·x + d·y + f`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Transform {
-    pub a: f32,
-    pub b: f32,
-    pub c: f32,
-    pub d: f32,
-    pub e: f32,
-    pub f: f32,
-}
-
-impl Default for Transform {
-    fn default() -> Self {
-        Transform::IDENTITY
-    }
-}
-
-impl Transform {
-    pub const IDENTITY: Transform = Transform {
-        a: 1.0,
-        b: 0.0,
-        c: 0.0,
-        d: 1.0,
-        e: 0.0,
-        f: 0.0,
-    };
-
-    #[inline]
-    pub const fn new(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> Self {
-        Transform { a, b, c, d, e, f }
-    }
-
-    #[inline]
-    pub const fn translate(tx: f32, ty: f32) -> Self {
-        Transform::new(1.0, 0.0, 0.0, 1.0, tx, ty)
-    }
-
-    #[inline]
-    pub const fn scale(sx: f32, sy: f32) -> Self {
-        Transform::new(sx, 0.0, 0.0, sy, 0.0, 0.0)
-    }
-
-    /// Rotation by `deg` degrees (clockwise on a y-down canvas).
-    pub fn rotate(deg: f32) -> Self {
-        let (s, c) = deg.to_radians().sin_cos();
-        Transform::new(c, s, -s, c, 0.0, 0.0)
-    }
-
-    pub fn skew_x(deg: f32) -> Self {
-        Transform::new(1.0, 0.0, deg.to_radians().tan(), 1.0, 0.0, 0.0)
-    }
-
-    pub fn skew_y(deg: f32) -> Self {
-        Transform::new(1.0, deg.to_radians().tan(), 0.0, 1.0, 0.0, 0.0)
-    }
-
-    /// `self × other`: `other` is applied to a point first, then `self`. This is
-    /// how SVG composes `transform="A B"` and a parent/child chain
-    /// (`abs = parent.pre_concat(local)`).
-    pub fn pre_concat(&self, o: &Transform) -> Transform {
-        Transform {
-            a: self.a * o.a + self.c * o.b,
-            b: self.b * o.a + self.d * o.b,
-            c: self.a * o.c + self.c * o.d,
-            d: self.b * o.c + self.d * o.d,
-            e: self.a * o.e + self.c * o.f + self.e,
-            f: self.b * o.e + self.d * o.f + self.f,
-        }
-    }
-
-    #[inline]
-    pub fn apply(&self, p: Point) -> Point {
-        Point::new(
-            self.a * p.x + self.c * p.y + self.e,
-            self.b * p.x + self.d * p.y + self.f,
-        )
-    }
-
-    /// Apply only the linear part (no translation) — for direction vectors.
-    #[inline]
-    pub fn apply_vector(&self, p: Point) -> Point {
-        Point::new(self.a * p.x + self.c * p.y, self.b * p.x + self.d * p.y)
-    }
-
-    #[inline]
-    pub fn determinant(&self) -> f32 {
-        self.a * self.d - self.b * self.c
-    }
-
-    pub fn is_identity(&self) -> bool {
-        *self == Transform::IDENTITY
-    }
-
-    /// Finite and non-degenerate (invertible).
-    pub fn is_valid(&self) -> bool {
-        let det = self.determinant();
-        det.is_finite() && det.abs() > 1e-12 && self.e.is_finite() && self.f.is_finite()
-    }
-
-    pub fn invert(&self) -> Option<Transform> {
-        let det = self.determinant() as f64;
-        if !det.is_finite() || det.abs() < 1e-14 {
-            return None;
-        }
-        let (a, b, c, d, e, f) = (
-            self.a as f64,
-            self.b as f64,
-            self.c as f64,
-            self.d as f64,
-            self.e as f64,
-            self.f as f64,
-        );
-        let inv = 1.0 / det;
-        Some(Transform {
-            a: (d * inv) as f32,
-            b: (-b * inv) as f32,
-            c: (-c * inv) as f32,
-            d: (a * inv) as f32,
-            e: ((c * f - d * e) * inv) as f32,
-            f: ((b * e - a * f) * inv) as f32,
-        })
-    }
-
-    /// The largest stretch factor this transform applies to any direction (the
-    /// larger singular value). Used to convert device-space tolerances into
-    /// user space.
-    pub fn max_scale(&self) -> f32 {
-        let (a, b, c, d) = (self.a, self.b, self.c, self.d);
-        let s1 = a * a + b * b + c * c + d * d;
-        let s2 = ((a * a + b * b - c * c - d * d).powi(2) + 4.0 * (a * c + b * d).powi(2)).sqrt();
-        ((s1 + s2) * 0.5).sqrt()
-    }
-
-    /// `sqrt(|det|)`: the geometric-mean scale, the factor SVG uses for
-    /// non-directional lengths under a transform.
-    pub fn mean_scale(&self) -> f32 {
-        self.determinant().abs().sqrt()
-    }
-
-    /// True when the transform only scales and translates (no rotation/skew).
-    pub fn is_scale_translate(&self) -> bool {
-        self.b == 0.0 && self.c == 0.0
-    }
-}
-
 /// One canonical path command (absolute coordinates).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Segment {
-    MoveTo(Point),
-    LineTo(Point),
+    MoveTo(Vec2),
+    LineTo(Vec2),
     /// Control point, end point.
-    QuadTo(Point, Point),
+    QuadTo(Vec2, Vec2),
     /// Two control points, end point.
-    CubicTo(Point, Point, Point),
+    CubicTo(Vec2, Vec2, Vec2),
     Close,
 }
 
@@ -361,13 +65,24 @@ pub enum Segment {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PathData {
     segs: Vec<Segment>,
-    start: Point,
-    last: Point,
+    start: Vec2,
+    last: Vec2,
     /// A subpath is open for drawing (a `MoveTo` was emitted and not closed).
     open: bool,
 }
 
 impl PathData {
+    /// A rect as a closed path (`M L L L Z`).
+    pub fn from_rect(r: Rect) -> PathData {
+        let mut p = PathData::new();
+        p.move_to(r.x, r.y);
+        p.line_to(r.max_x(), r.y);
+        p.line_to(r.max_x(), r.max_y());
+        p.line_to(r.x, r.max_y());
+        p.close();
+        p
+    }
+
     pub fn new() -> Self {
         PathData::default()
     }
@@ -389,12 +104,12 @@ impl PathData {
 
     /// The current point (end of the last command).
     #[inline]
-    pub fn current(&self) -> Point {
+    pub fn current(&self) -> Vec2 {
         self.last
     }
 
     pub fn move_to(&mut self, x: f32, y: f32) {
-        let p = Point::new(x, y);
+        let p = Vec2::new(x, y);
         // Consecutive movetos collapse: only the last one starts a subpath.
         if let Some(Segment::MoveTo(last)) = self.segs.last_mut() {
             *last = p;
@@ -417,23 +132,23 @@ impl PathData {
 
     pub fn line_to(&mut self, x: f32, y: f32) {
         self.ensure_open();
-        let p = Point::new(x, y);
+        let p = Vec2::new(x, y);
         self.segs.push(Segment::LineTo(p));
         self.last = p;
     }
 
     pub fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
         self.ensure_open();
-        let p = Point::new(x, y);
-        self.segs.push(Segment::QuadTo(Point::new(x1, y1), p));
+        let p = Vec2::new(x, y);
+        self.segs.push(Segment::QuadTo(Vec2::new(x1, y1), p));
         self.last = p;
     }
 
     pub fn cubic_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
         self.ensure_open();
-        let p = Point::new(x, y);
+        let p = Vec2::new(x, y);
         self.segs
-            .push(Segment::CubicTo(Point::new(x1, y1), Point::new(x2, y2), p));
+            .push(Segment::CubicTo(Vec2::new(x1, y1), Vec2::new(x2, y2), p));
         self.last = p;
     }
 
@@ -463,7 +178,7 @@ impl PathData {
     ) {
         self.ensure_open();
         let p0 = self.last;
-        let p1 = Point::new(x, y);
+        let p1 = Vec2::new(x, y);
         if p0 == p1 {
             return;
         }
@@ -575,43 +290,47 @@ impl PathData {
     pub fn push_rounded_rect(&mut self, r: Rect, rx: f32, ry: f32) {
         if rx <= 0.0 || ry <= 0.0 {
             self.move_to(r.x, r.y);
-            self.line_to(r.right(), r.y);
-            self.line_to(r.right(), r.bottom());
-            self.line_to(r.x, r.bottom());
+            self.line_to(r.max_x(), r.y);
+            self.line_to(r.max_x(), r.max_y());
+            self.line_to(r.x, r.max_y());
             self.close();
             return;
         }
         self.move_to(r.x + rx, r.y);
-        self.line_to(r.right() - rx, r.y);
-        self.arc_to(rx, ry, 0.0, false, true, r.right(), r.y + ry);
-        self.line_to(r.right(), r.bottom() - ry);
-        self.arc_to(rx, ry, 0.0, false, true, r.right() - rx, r.bottom());
-        self.line_to(r.x + rx, r.bottom());
-        self.arc_to(rx, ry, 0.0, false, true, r.x, r.bottom() - ry);
+        self.line_to(r.max_x() - rx, r.y);
+        self.arc_to(rx, ry, 0.0, false, true, r.max_x(), r.y + ry);
+        self.line_to(r.max_x(), r.max_y() - ry);
+        self.arc_to(rx, ry, 0.0, false, true, r.max_x() - rx, r.max_y());
+        self.line_to(r.x + rx, r.max_y());
+        self.arc_to(rx, ry, 0.0, false, true, r.x, r.max_y() - ry);
         self.line_to(r.x, r.y + ry);
         self.arc_to(rx, ry, 0.0, false, true, r.x + rx, r.y);
         self.close();
     }
 
     /// A copy with every point mapped through `ts`.
-    pub fn transformed(&self, ts: &Transform) -> PathData {
+    pub fn transformed(&self, ts: &Affine2) -> PathData {
         let segs = self
             .segs
             .iter()
             .map(|s| match *s {
-                Segment::MoveTo(p) => Segment::MoveTo(ts.apply(p)),
-                Segment::LineTo(p) => Segment::LineTo(ts.apply(p)),
-                Segment::QuadTo(c, p) => Segment::QuadTo(ts.apply(c), ts.apply(p)),
-                Segment::CubicTo(c0, c1, p) => {
-                    Segment::CubicTo(ts.apply(c0), ts.apply(c1), ts.apply(p))
+                Segment::MoveTo(p) => Segment::MoveTo(ts.transform_point(p)),
+                Segment::LineTo(p) => Segment::LineTo(ts.transform_point(p)),
+                Segment::QuadTo(c, p) => {
+                    Segment::QuadTo(ts.transform_point(c), ts.transform_point(p))
                 }
+                Segment::CubicTo(c0, c1, p) => Segment::CubicTo(
+                    ts.transform_point(c0),
+                    ts.transform_point(c1),
+                    ts.transform_point(p),
+                ),
                 Segment::Close => Segment::Close,
             })
             .collect();
         PathData {
             segs,
-            start: ts.apply(self.start),
-            last: ts.apply(self.last),
+            start: ts.transform_point(self.start),
+            last: ts.transform_point(self.last),
             open: self.open,
         }
     }
@@ -619,22 +338,22 @@ impl PathData {
     /// Exact geometric bounds of the outline (curve extrema, not control
     /// hulls). `None` for a path with no points.
     pub fn bounds(&self) -> Option<Rect> {
-        self.bounds_with(&Transform::IDENTITY)
+        self.bounds_with(&Affine2::IDENTITY)
     }
 
     /// Exact bounds of the outline after mapping through `ts`.
-    pub fn bounds_with(&self, ts: &Transform) -> Option<Rect> {
+    pub fn bounds_with(&self, ts: &Affine2) -> Option<Rect> {
         let mut b = Bounds::new();
-        let mut last = Point::default();
+        let mut last = Vec2::default();
         for s in &self.segs {
             match *s {
                 Segment::MoveTo(p) | Segment::LineTo(p) => {
-                    let p = ts.apply(p);
+                    let p = ts.transform_point(p);
                     b.add(p);
                     last = p;
                 }
                 Segment::QuadTo(c, p) => {
-                    let (c, p) = (ts.apply(c), ts.apply(p));
+                    let (c, p) = (ts.transform_point(c), ts.transform_point(p));
                     b.add(p);
                     for t in quad_extrema(last, c, p).into_iter().flatten() {
                         b.add(eval_quad(last, c, p, t));
@@ -642,7 +361,11 @@ impl PathData {
                     last = p;
                 }
                 Segment::CubicTo(c0, c1, p) => {
-                    let (c0, c1, p) = (ts.apply(c0), ts.apply(c1), ts.apply(p));
+                    let (c0, c1, p) = (
+                        ts.transform_point(c0),
+                        ts.transform_point(c1),
+                        ts.transform_point(p),
+                    );
                     b.add(p);
                     for t in cubic_extrema(last, c0, c1, p).into_iter().flatten() {
                         b.add(eval_cubic(last, c0, c1, p, t));
@@ -657,19 +380,19 @@ impl PathData {
 }
 
 #[inline]
-pub(crate) fn eval_quad(p0: Point, p1: Point, p2: Point, t: f32) -> Point {
+pub(crate) fn eval_quad(p0: Vec2, p1: Vec2, p2: Vec2, t: f32) -> Vec2 {
     let mt = 1.0 - t;
     p0 * (mt * mt) + p1 * (2.0 * mt * t) + p2 * (t * t)
 }
 
 #[inline]
-pub(crate) fn eval_cubic(p0: Point, p1: Point, p2: Point, p3: Point, t: f32) -> Point {
+pub(crate) fn eval_cubic(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f32) -> Vec2 {
     let mt = 1.0 - t;
     p0 * (mt * mt * mt) + p1 * (3.0 * mt * mt * t) + p2 * (3.0 * mt * t * t) + p3 * (t * t * t)
 }
 
 /// Parameters in `(0, 1)` where a quadratic has an x or y extremum.
-fn quad_extrema(p0: Point, p1: Point, p2: Point) -> [Option<f32>; 2] {
+fn quad_extrema(p0: Vec2, p1: Vec2, p2: Vec2) -> [Option<f32>; 2] {
     let axis = |a: f32, b: f32, c: f32| {
         let den = a - 2.0 * b + c;
         if den.abs() < 1e-12 {
@@ -682,7 +405,7 @@ fn quad_extrema(p0: Point, p1: Point, p2: Point) -> [Option<f32>; 2] {
 }
 
 /// Parameters in `(0, 1)` where a cubic has an x or y extremum.
-fn cubic_extrema(p0: Point, p1: Point, p2: Point, p3: Point) -> [Option<f32>; 4] {
+fn cubic_extrema(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2) -> [Option<f32>; 4] {
     let axis = |a: f32, b: f32, c: f32, d: f32| -> [Option<f32>; 2] {
         // Derivative / 3: (b-a)(1-t)^2 + 2(c-b)(1-t)t + (d-c)t^2
         let qa = -a + 3.0 * b - 3.0 * c + d;
@@ -714,10 +437,10 @@ mod tests {
     #[test]
     fn transform_composition_order() {
         // translate(10,0) then scale(2): point (1,0) → scale → (2,0) → +10.
-        let t = Transform::translate(10.0, 0.0).pre_concat(&Transform::scale(2.0, 2.0));
-        assert_eq!(t.apply(Point::new(1.0, 0.0)), Point::new(12.0, 0.0));
+        let t = Affine2::translate(10.0, 0.0).pre_concat(&Affine2::scale(2.0, 2.0));
+        assert_eq!(t.transform_point(Vec2::new(1.0, 0.0)), Vec2::new(12.0, 0.0));
         let inv = t.invert().unwrap();
-        let p = inv.apply(Point::new(12.0, 0.0));
+        let p = inv.transform_point(Vec2::new(12.0, 0.0));
         assert!((p.x - 1.0).abs() < 1e-5 && p.y.abs() < 1e-5);
     }
 
@@ -737,6 +460,6 @@ mod tests {
         p.line_to(5.0, 1.0);
         p.close();
         p.line_to(3.0, 3.0);
-        assert_eq!(p.segments()[3], Segment::MoveTo(Point::new(1.0, 1.0)));
+        assert_eq!(p.segments()[3], Segment::MoveTo(Vec2::new(1.0, 1.0)));
     }
 }

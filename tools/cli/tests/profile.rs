@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use viso_dev_protocol::profile::Trace;
 use viso_ende::JsonValue;
-use viso_view::profile::Trace;
 
 struct Scratch(PathBuf);
 

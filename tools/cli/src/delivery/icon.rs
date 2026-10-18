@@ -6,7 +6,7 @@
 
 use std::sync::OnceLock;
 
-use viso_view::snapshot::Image;
+use viso_image::snapshot::Image;
 
 /// The smallest source: the size the stores show.
 pub(crate) const MIN_SIZE: u32 = 1024;

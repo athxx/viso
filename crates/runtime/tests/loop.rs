@@ -1,7 +1,7 @@
 //! End-to-end frame-loop tests driven by the headless platform backend.
 //!
 //! These exercise the whole `Scheduler` ↔ `PlatformApp` funnel without an OS:
-//! a scripted [`RawEvent`] queue is played through [`Scheduler`] (which is the
+//! a scripted [`RawEvent`] queue is played through [`Scheduler`] (whose loop is the
 //! `AppHandler`), and a counting [`FrameDriver`] records how many times each
 //! phase ran. The invariants under test are the Phase 1 exit criteria: the loop
 //! drives blank frames on beats, does no work when idle, and stops when the last

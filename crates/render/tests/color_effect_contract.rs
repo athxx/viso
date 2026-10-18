@@ -17,7 +17,7 @@
 //! public too, so the fused matrix can be written out independently and compared
 //! against what the renderer actually rasterizes.
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureFormat};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
 use viso_render::{
     Border, ColorEffect, ColorMatrix, ColorOp, FrameStats, LayerClip, Primitive, Quad, Rect,
     Renderer, Rgba, fuse,
@@ -31,8 +31,8 @@ const H: u32 = 64;
 /// missing or doubly-applied effect.
 const TOL: i32 = 2;
 
-fn renderer() -> (HeadlessRaster, SurfaceId, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer() -> (CpuRaster, SurfaceId, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
@@ -64,7 +64,7 @@ fn quad(clip: Rect, color: Rgba) -> Primitive {
     })
 }
 
-fn frame(r: &mut Renderer, gpu: &mut HeadlessRaster, primitives: &[Primitive]) -> FrameStats {
+fn frame(r: &mut Renderer, gpu: &mut CpuRaster, primitives: &[Primitive]) -> FrameStats {
     r.upload(gpu, primitives);
     r.frame_stats()
 }

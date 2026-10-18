@@ -36,7 +36,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use viso_behavior::native::{Natives, SlotCardinality, WidgetNode};
-use viso_view::ControlKind;
+use viso_schema::view::ControlKind;
 
 use super::access;
 use super::generic::Converter;

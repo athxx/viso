@@ -255,6 +255,13 @@ impl<'a> UpdateCx<'a> {
         self.states.env()
     }
 
+    /// The state store's [epoch](crate::StateStore::epoch): while it stands,
+    /// every cell reads as it did.
+    #[inline]
+    pub fn state_epoch(&self) -> u64 {
+        self.states.epoch()
+    }
+
     /// Run `future` as a task owned by `owner`, first polled at the next frame
     /// boundary; `None` when `owner` was freed.
     #[doc(hidden)]
@@ -625,6 +632,13 @@ impl<'a> EventCx<'a> {
         self.states.env()
     }
 
+    /// The state store's [epoch](crate::StateStore::epoch): while it stands,
+    /// every cell reads as it did.
+    #[inline]
+    pub fn state_epoch(&self) -> u64 {
+        self.states.epoch()
+    }
+
     /// Write a state value. Deferred: recorded in this frame's pending set and
     /// applied to bound nodes by the flush phase, not here. Returns whether the
     /// write landed (the handle was live). Setting the current value is a no-op.
@@ -718,16 +732,11 @@ impl<'a> EventCx<'a> {
     pub fn child_index(&self) -> Option<u32> {
         let place = self.place?;
         let through = place.through?;
-        let mut index = 0;
-        let mut child = place.arena.links(place.node)?.first_child;
-        while let Some(c) = child {
-            if c == through {
-                return Some(index);
-            }
-            index += 1;
-            child = place.arena.links(c)?.next_sibling;
-        }
-        None
+        place
+            .arena
+            .children(place.node)
+            .position(|c| c == through)
+            .map(|i| i as u32)
     }
 
     /// How many children the dispatching node has.
@@ -735,13 +744,7 @@ impl<'a> EventCx<'a> {
         let Some(place) = self.place else {
             return 0;
         };
-        let mut count = 0;
-        let mut child = place.arena.links(place.node).and_then(|l| l.first_child);
-        while let Some(c) = child {
-            count += 1;
-            child = place.arena.links(c).and_then(|l| l.next_sibling);
-        }
-        count
+        place.arena.children(place.node).count() as u32
     }
 
     /// Lend the dispatching node's place in the tree: its arena, id, world rect,

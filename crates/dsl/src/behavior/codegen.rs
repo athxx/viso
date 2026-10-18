@@ -10,11 +10,10 @@
 //! body, like any other unsupported function.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use viso_behavior::{
-    Arith, ArithOp, Chunk, ChunkKind, Code, Component, ComponentEffect, DisplayKind, Module, Num,
-    Op, SnapshotSlot, Span, StableId, System, Value, VerifyError,
+    Arith, ArithOp, Body, Chunk, ChunkKind, Code, Component, ComponentEffect, DisplayKind, Module,
+    Num, Op, SnapshotSlot, Span, StableId, System, Text, Value, VerifyError,
 };
 
 use super::ir::{self, BinaryOp, Const, FunctionKind, Inst, PathStep, Program, Reg, UnaryOp};
@@ -120,7 +119,7 @@ fn stable(symbol: SymbolId) -> StableId {
     }
 }
 
-fn names(names: &[String]) -> Box<[Box<str>]> {
+fn names(names: &[String]) -> Box<[Text]> {
     names.iter().map(|n| n.as_str().into()).collect()
 }
 
@@ -159,12 +158,15 @@ fn chunk(function: &ir::Function) -> Chunk {
             params,
             regs: params.max(1),
             captures: vec![0; function.captures.len()].into(),
-            body: Err("the frame has more than 65535 registers".into()),
+            body: Body::Missing("the frame has more than 65535 registers".into()),
         };
     };
     let body = match &function.body {
-        Ok(body) => Emitter::default().body(body),
-        Err(unsupported) => Err(unsupported.reason.as_str().into()),
+        Ok(body) => match Emitter::default().body(body) {
+            Ok(code) => Body::Code(code),
+            Err(reason) => Body::Missing(reason.into()),
+        },
+        Err(unsupported) => Body::Missing(unsupported.reason.as_str().into()),
     };
     Chunk {
         name: function.name.as_str().into(),
@@ -281,7 +283,7 @@ impl Emitter {
                     Const::Char(c) => self.int(dst, i64::from(u32::from(*c))),
                     Const::Str(s) => Op::Const {
                         dst,
-                        index: self.constant(Value::Str(Rc::new(s.clone()))),
+                        index: self.constant(Value::str(s)),
                     },
                     Const::Color(rgba) => self.int(dst, i64::from(*rgba)),
                     Const::Nil => Op::Nil { dst },

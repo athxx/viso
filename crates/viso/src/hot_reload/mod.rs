@@ -1825,8 +1825,7 @@ fn shader_work(
 ) -> Result<Vec<Work>, (PatchNack, String)> {
     let mut work: Vec<Work> = Vec::new();
     for view in &staged.views {
-        for shader in &view.candidate.package.shaders {
-            let program = shader.program();
+        for program in view.candidate.shaders() {
             for ws in windows {
                 let Some(gpu) = &ws.gpu else {
                     continue;
@@ -2093,10 +2092,8 @@ mod tests {
 
     fn children(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
-        let mut child = store.arena().links(parent).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in store.arena().children(parent) {
             out.push(c);
-            child = store.arena().links(c).and_then(|l| l.next_sibling);
         }
         out
     }
@@ -2966,7 +2963,7 @@ mod tests {
         let shaders = &mut ui.views[0].package.shaders;
         let mut brush = PackedBrush::decode_from_slice(shaders[0].bytes()).unwrap();
         brush.code = code(brush.code);
-        shaders[0] = viso_view::ViewShader::new(brush.encode_to_vec()).unwrap();
+        shaders[0] = viso_view::ViewShader::new(brush.encode_to_vec());
     }
 
     /// Sends `patch` to a session that refuses it: the error line saying
@@ -3433,7 +3430,7 @@ mod tests {
         );
     }
 
-    const PHOTO: &[u8] = include_bytes!("../../../render/src/fixtures/two_tone.jpg");
+    const PHOTO: &[u8] = include_bytes!("../../../image/src/fixtures/two_tone.jpg");
 
     /// An SVG of `w × h` filled with `fill`.
     fn star(w: u32, h: u32, fill: &str) -> Vec<u8> {
@@ -3660,7 +3657,7 @@ mod tests {
         later.root = Some(build(&mut later, mount_counter));
         session.adopt(|| unreachable!(), &mut later);
         let icon = children(&later.store, later.root.unwrap())[2];
-        assets.serve::<viso_gpu::HeadlessRaster>(&mut later.store, None, &LoopWaker::inert);
+        assets.serve::<viso_gpu::CpuRaster>(&mut later.store, None, &LoopWaker::inert);
         let deadline = Instant::now() + Duration::from_secs(10);
         while !matches!(shown(&later, icon).0, viso_ui::AssetDraw::Vector(_)) {
             assert!(Instant::now() < deadline, "never served");
@@ -3686,6 +3683,7 @@ mod tests {
             color: false,
             mono: false,
             scripts: &["Latn"],
+            baked: &[],
         }];
         let mut ws = counter();
         let mut assets = Assets::default();

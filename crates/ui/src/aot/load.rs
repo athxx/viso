@@ -20,7 +20,7 @@
 //! criterion of Slice P at the type-system level: an AOT-packaged app links and
 //! runs with the compiler absent from its dependency graph.
 
-use viso_ende::{Decode, DecodeError};
+use viso_ende::DecodeError;
 
 use crate::binding::BindingTable;
 use crate::component::{BuildCx, FlexStyle, Handle, LeafStyle, NodeStore, ScrollStyle};
@@ -32,7 +32,7 @@ use crate::node::NodeId;
 use crate::state::{StateKey, StateStore, StateValue};
 use crate::virtual_list::VirtualLists;
 
-use super::package::{AotAxis, AotLength, AotNode, AotNodeKind, AotPackage, AotStyle};
+use super::package::{AotAxis, AotLength, AotNodeKind, AotRecord, AotStyle, AotView};
 
 /// A neutral value for a state cell the loader has to allocate because the package
 /// referenced a key the app has not authored yet. Mirrors the commit's brand-new
@@ -40,12 +40,15 @@ use super::package::{AotAxis, AotLength, AotNode, AotNodeKind, AotPackage, AotSt
 /// bindings resolve; the app authors the real initial value on its next build.
 const NEUTRAL_STATE: StateValue = StateValue::Int(0);
 
-/// Decode a package blob and instantiate it into the given runtime, the runtime
-/// form of "app startup reads an embedded asset and instantiates it directly".
+/// Validate a package blob and instantiate it into the given runtime, the
+/// runtime form of "app startup reads an embedded asset and instantiates it
+/// directly". The blob is read where it lies — an embedded `static`, mapped
+/// flash, an mmap — one node record at a time, so nothing of it is copied.
 ///
 /// A malformed blob returns a [`DecodeError`] rather than panicking — the bounded
-/// decoder is the safety precondition for loading an untrusted asset (section 30).
-/// A well-formed but empty package instantiates nothing and returns `None`.
+/// decoder is the safety precondition for loading an untrusted asset (section 30) —
+/// and it does so before anything is instantiated. A well-formed but empty
+/// package instantiates nothing and returns `None`.
 pub fn load_from_bytes(
     blob: &[u8],
     store: &mut NodeStore,
@@ -53,34 +56,35 @@ pub fn load_from_bytes(
     bindings: &mut BindingTable,
     lists: &mut VirtualLists,
 ) -> Result<Option<NodeId>, DecodeError> {
-    let pkg = AotPackage::decode_from_slice(blob)?;
-    Ok(instantiate(&pkg, store, states, bindings, lists))
+    let view = AotView::new(blob)?;
+    Ok(instantiate(&view, store, states, bindings, lists))
 }
 
-/// Instantiate an already-decoded package into a live tree, returning its root.
+/// Instantiate a validated package into a live tree, returning its root.
 ///
 /// The node table is walked in pre-order: a shared cursor descends into each
 /// container's `child_count` children exactly as the commit's builder closures
-/// recurse, so a node's pre-order index (its position in [`AotPackage::nodes`]) is
-/// the identity the binding edges reference. Each node's live [`NodeId`] is recorded
-/// in that same pre-order, then — once the build context is dropped and the state
-/// store is free again — each edge is wired by durable [`StateKey`] identity.
+/// recurse, so a node's pre-order index is the identity the binding edges
+/// reference. Each node's live [`NodeId`] is recorded in that same pre-order,
+/// then — once the build context is dropped and the state store is free again —
+/// each edge is wired by durable [`StateKey`] identity. The view validated the
+/// whole package, so this cannot fail partway.
 pub fn instantiate(
-    pkg: &AotPackage,
+    view: &AotView<'_>,
     store: &mut NodeStore,
     states: &mut StateStore,
     bindings: &mut BindingTable,
     lists: &mut VirtualLists,
 ) -> Option<NodeId> {
     let mut node_ids = Vec::new();
-    instantiate_indexed(pkg, store, states, bindings, lists, &mut node_ids)
+    instantiate_indexed(view, store, states, bindings, lists, &mut node_ids)
 }
 
 /// [`instantiate`], also leaving each package node's live [`NodeId`] in
 /// `node_ids` at its pre-order index, for a caller that attaches more to the
 /// nodes it built (a view's event handlers).
 pub fn instantiate_indexed(
-    pkg: &AotPackage,
+    view: &AotView<'_>,
     store: &mut NodeStore,
     states: &mut StateStore,
     bindings: &mut BindingTable,
@@ -108,7 +112,7 @@ pub fn instantiate_indexed(
             &mut text_edits,
             &mut projectors,
         );
-        build_nodes(&mut cx, &pkg.nodes, node_ids);
+        build_nodes(&mut cx, view.nodes(), node_ids);
         cx.root()
     };
 
@@ -116,9 +120,9 @@ pub fn instantiate_indexed(
     // `rebind_static`. A key already registered (a state the app authored, or a
     // prior load) resolves to its live cell; an unknown key gets a neutral cell
     // allocated and registered, so the binding always resolves — the app authors
-    // the real initial value on its own build. An edge whose node index is out of
-    // range is skipped defensively (a corrupt-but-well-typed package).
-    for edge in &pkg.edges {
+    // the real initial value on its own build. The view checked every edge names
+    // a node of the table.
+    for edge in view.edges() {
         let Some(Some(node)) = node_ids.get(edge.node as usize).copied() else {
             continue;
         };
@@ -143,14 +147,18 @@ fn resolve_state(states: &mut StateStore, key: StateKey) -> crate::state::StateI
 }
 
 /// Authors the pre-order node table `nodes` through `cx`, leaving each
-/// node's live [`NodeId`] in `node_ids` at its pre-order index.
-pub fn build_nodes(cx: &mut BuildCx<'_>, nodes: &[AotNode], node_ids: &mut Vec<Option<NodeId>>) {
+/// node's live [`NodeId`] in `node_ids` at its pre-order index. The table
+/// is a forest that closes, as [`AotView`] checks: a container's subtrees
+/// are all in it.
+pub fn build_nodes(
+    cx: &mut BuildCx<'_>,
+    nodes: impl ExactSizeIterator<Item = AotRecord>,
+    node_ids: &mut Vec<Option<NodeId>>,
+) {
     node_ids.clear();
     node_ids.resize(nodes.len(), None);
-    let mut cursor = 0usize;
-    while cursor < nodes.len() {
-        build_node(cx, nodes, &mut cursor, node_ids);
-    }
+    let mut nodes = nodes.enumerate();
+    while build_node(cx, &mut nodes, node_ids) {}
 }
 
 /// Re-applies packaged node `node`'s style to `live`, a node built from an
@@ -162,24 +170,24 @@ pub fn build_nodes(cx: &mut BuildCx<'_>, nodes: &[AotNode], node_ids: &mut Vec<O
 pub fn restyle_aot_node(
     store: &mut NodeStore,
     states: &mut StateStore,
-    node: &AotNode,
+    node: &AotRecord,
     live: NodeId,
 ) {
     let style = &node.style;
     let (mut size, gap, padding) = match node.kind {
         AotNodeKind::Flex => {
-            let built = flex_style(style);
+            let built = flex_style(node);
             store.set_flex_arrangement(live, (built.axis, built.justify, built.align));
             (built.size, Some(built.gap), Some(built.padding))
         }
         AotNodeKind::Grid => {
-            let built = grid_style(style);
+            let built = grid_style(node);
             (built.size, Some(built.column_gap), Some(built.padding))
         }
-        AotNodeKind::Scroll => (scroll_style(style).size, None, None),
-        AotNodeKind::Leaf => (leaf_style(style).size, None, None),
+        AotNodeKind::Scroll => (scroll_style(node).size, None, None),
+        AotNodeKind::Leaf => (leaf_style(node).size, None, None),
     };
-    let lengths = style.lengths.as_deref();
+    let lengths = node.lengths.as_ref();
     if let Some(current) = store.size_request(live) {
         if lengths.is_some_and(|lengths| lengths.width.is_some()) {
             size.width = current.width;
@@ -219,31 +227,30 @@ pub fn restyle_aot_node(
     }
 }
 
-/// Author one node and its subtree, advancing the shared pre-order `cursor` past the
-/// whole subtree and recording this node's live [`NodeId`] at its own pre-order
-/// index. Mirrors the commit's `build_node`: the builder call is selected by
-/// [`AotNodeKind`], and a container recurses into exactly its `child_count` immediate
-/// children (each of which recurses over its own subtree), so the flat table
-/// reconstructs the tree in one forward pass with `node_ids` staying index-aligned.
+/// Author the next node of `nodes` and its subtree, recording each node's live
+/// [`NodeId`] at its own pre-order index; `false` once the table is done.
+/// Mirrors the commit's `build_node`: the builder call is selected by
+/// [`AotNodeKind`], and a container recurses into exactly its `child_count`
+/// immediate children (each of which recurses over its own subtree), so the flat
+/// table reconstructs the tree in one forward pass with `node_ids` staying
+/// index-aligned.
 fn build_node(
     cx: &mut BuildCx<'_>,
-    nodes: &[AotNode],
-    cursor: &mut usize,
+    nodes: &mut impl Iterator<Item = (usize, AotRecord)>,
     node_ids: &mut [Option<NodeId>],
-) {
-    let index = *cursor;
-    let node = &nodes[index];
-    *cursor += 1;
-    let child_count = node.child_count as usize;
-
+) -> bool {
+    let Some((index, node)) = nodes.next() else {
+        return false;
+    };
     // The handle is recorded at this node's own pre-order `index`, so ordering is
     // independent of when the closure authors children (which fill higher indices).
-    let handle = build_aot_node(cx, node, |cx| {
-        for _ in 0..child_count {
-            build_node(cx, nodes, cursor, node_ids);
+    let handle = build_aot_node(cx, &node, |cx| {
+        for _ in 0..node.child_count {
+            build_node(cx, nodes, node_ids);
         }
     });
     node_ids[index] = Some(handle.id());
+    true
 }
 
 /// Authors one packaged node through the builder its [`AotNodeKind`] selects,
@@ -251,24 +258,25 @@ fn build_node(
 /// builder selection every path that authors from packaged node data shares.
 pub fn build_aot_node(
     cx: &mut BuildCx<'_>,
-    node: &AotNode,
+    node: &AotRecord,
     children: impl FnOnce(&mut BuildCx<'_>),
 ) -> Handle {
+    let style = &node.style;
     let handle = match node.kind {
-        AotNodeKind::Flex => match (node.style.scope, node.style.avoid) {
-            (Some(scope), _) => cx.adaptive_scope(scope.basis, flex_style(&node.style), children),
-            (None, Some(avoid)) => cx.avoiding(avoid, flex_style(&node.style), children),
-            (None, None) => cx.flex(flex_style(&node.style), children),
+        AotNodeKind::Flex => match (style.scope, style.avoid) {
+            (Some(scope), _) => cx.adaptive_scope(scope.basis, flex_style(node), children),
+            (None, Some(avoid)) => cx.avoiding(avoid, flex_style(node), children),
+            (None, None) => cx.flex(flex_style(node), children),
         },
-        AotNodeKind::Grid => cx.grid(grid_style(&node.style), children),
-        AotNodeKind::Scroll => cx.scroll(scroll_style(&node.style), children),
-        // A leaf hosts no child region; the emitter guarantees `child_count == 0`
+        AotNodeKind::Grid => cx.grid(grid_style(node), children),
+        AotNodeKind::Scroll => cx.scroll(scroll_style(node), children),
+        // A leaf hosts no child region; the view guarantees `child_count == 0`
         // for a leaf (a `VirtualList` collapses to a leaf on the package side,
         // exactly as the commit twin treats it).
-        AotNodeKind::Leaf => cx.leaf(leaf_style(&node.style)),
+        AotNodeKind::Leaf => cx.leaf(leaf_style(node)),
     };
-    if let Some(lengths) = &node.style.lengths {
-        cx.bind_lengths(handle, **lengths);
+    if let Some(lengths) = node.lengths {
+        cx.bind_lengths(handle, lengths);
     }
     handle
 }
@@ -276,7 +284,8 @@ pub fn build_aot_node(
 /// The flex builder style for a packaged container, mirroring the commit's
 /// `flex_style`: axis and gap when set, an explicit size only when the node authored
 /// a width or height, else the builder default.
-fn flex_style(style: &AotStyle) -> FlexStyle {
+fn flex_style(node: &AotRecord) -> FlexStyle {
+    let style = &node.style;
     let mut out = FlexStyle::default();
     if let Some(axis) = style.axis {
         out.axis = axis_of(axis);
@@ -293,7 +302,7 @@ fn flex_style(style: &AotStyle) -> FlexStyle {
     if let Some(padding) = style.padding {
         out.padding = padding;
     }
-    if has_size(style) {
+    if has_size(node) {
         out.size = size_of(style);
     }
     out
@@ -302,12 +311,13 @@ fn flex_style(style: &AotStyle) -> FlexStyle {
 /// The grid builder style for a packaged grid: its padding and, when the
 /// node authored one, its size; the rest of a grid's style is the builder
 /// default.
-fn grid_style(style: &AotStyle) -> GridStyle {
+fn grid_style(node: &AotRecord) -> GridStyle {
+    let style = &node.style;
     let mut out = GridStyle {
         padding: style.padding.unwrap_or_default(),
         ..GridStyle::default()
     };
-    if has_size(style) {
+    if has_size(node) {
         out.size = size_of(style);
     }
     out
@@ -315,12 +325,13 @@ fn grid_style(style: &AotStyle) -> GridStyle {
 
 /// The scroll builder style, mirroring the commit's `scroll_style`: the authored
 /// axis (default column) and a size only when authored.
-fn scroll_style(style: &AotStyle) -> ScrollStyle {
+fn scroll_style(node: &AotRecord) -> ScrollStyle {
+    let style = &node.style;
     let mut out = ScrollStyle::default();
     if let Some(axis) = style.axis {
         out.axis = axis_of(axis);
     }
-    if has_size(style) {
+    if has_size(node) {
         out.size = size_of(style);
     }
     out
@@ -328,9 +339,10 @@ fn scroll_style(style: &AotStyle) -> ScrollStyle {
 
 /// The leaf builder style, mirroring the commit's `leaf_style`: a size only when the
 /// node authored a width or height, else the default.
-fn leaf_style(style: &AotStyle) -> LeafStyle {
+fn leaf_style(node: &AotRecord) -> LeafStyle {
+    let style = &node.style;
     let mut out = LeafStyle::default();
-    if has_size(style) {
+    if has_size(node) {
         out.size = size_of(style);
     }
     out
@@ -338,12 +350,12 @@ fn leaf_style(style: &AotStyle) -> LeafStyle {
 
 /// Whether the node authored a width or a height, folded or bound to the
 /// environment, mirroring the commit's `has_size`.
-fn has_size(style: &AotStyle) -> bool {
+fn has_size(node: &AotRecord) -> bool {
+    let style = &node.style;
     style.width.is_some()
         || style.height.is_some()
-        || style
+        || node
             .lengths
-            .as_ref()
             .is_some_and(|lengths| lengths.width.is_some() || lengths.height.is_some())
 }
 
@@ -377,7 +389,7 @@ fn axis_of(axis: AotAxis) -> Axis {
 
 #[cfg(test)]
 mod tests {
-    use super::super::package::AotEdge;
+    use super::super::package::{AotEdge, AotNode, AotPackage};
     use super::*;
     use crate::node::NodeArena;
     use crate::state::StateId;
@@ -405,11 +417,11 @@ mod tests {
     /// The live pre-order node count reachable from `root`, walking arena ancestry.
     fn live_node_count(arena: &NodeArena, root: NodeId) -> usize {
         let mut count = 1;
-        if let Some(child) = arena.links(root).and_then(|l| l.first_child) {
+        if let Some(child) = arena.first_child(root) {
             let mut next = Some(child);
             while let Some(id) = next {
                 count += live_node_count(arena, id);
-                next = arena.links(id).and_then(|l| l.next_sibling);
+                next = arena.next_sibling(id);
             }
         }
         count
@@ -426,16 +438,19 @@ mod tests {
                         gap: Some(4.0),
                         ..AotStyle::default()
                     },
+                    lengths: None,
                     child_count: 2,
                 },
                 AotNode {
                     kind: AotNodeKind::Leaf,
                     style: AotStyle::default(),
+                    lengths: None,
                     child_count: 0,
                 },
                 AotNode {
                     kind: AotNodeKind::Leaf,
                     style: AotStyle::default(),
+                    lengths: None,
                     child_count: 0,
                 },
             ],
@@ -453,9 +468,9 @@ mod tests {
     fn instantiates_the_pre_order_tree() {
         let mut rt = Runtime::new();
         let label = StateKey::from_parts(7, 11);
-        let pkg = sample_package(label);
+        let blob = sample_package(label).encode_to_vec();
         let root = instantiate(
-            &pkg,
+            &AotView::new(&blob).unwrap(),
             &mut rt.store,
             &mut rt.states,
             &mut rt.bindings,
@@ -470,9 +485,9 @@ mod tests {
     fn wires_the_binding_to_the_right_node_and_class() {
         let mut rt = Runtime::new();
         let label = StateKey::from_parts(7, 11);
-        let pkg = sample_package(label);
+        let blob = sample_package(label).encode_to_vec();
         let root = instantiate(
-            &pkg,
+            &AotView::new(&blob).unwrap(),
             &mut rt.store,
             &mut rt.states,
             &mut rt.bindings,
@@ -487,7 +502,7 @@ mod tests {
         // The unknown key was allocated and registered, and its binding reaches the
         // second leaf with exactly the edge's classes.
         let state = rt.states.id_for_key(label).expect("key was registered");
-        let bindings = rt.bindings.for_state(state);
+        let bindings: Vec<_> = rt.bindings.for_state(state).collect();
         assert_eq!(bindings.len(), 1, "one edge for the driven state");
         assert_eq!(bindings[0].node, second);
         assert_eq!(
@@ -504,9 +519,9 @@ mod tests {
         let existing: StateId = rt.states.alloc(StateValue::Int(99));
         assert!(rt.states.bind_key(existing, label));
 
-        let pkg = sample_package(label);
+        let blob = sample_package(label).encode_to_vec();
         instantiate(
-            &pkg,
+            &AotView::new(&blob).unwrap(),
             &mut rt.store,
             &mut rt.states,
             &mut rt.bindings,
@@ -518,14 +533,15 @@ mod tests {
         // so the app's value survives and the binding keys against the same id.
         assert_eq!(rt.states.id_for_key(label), Some(existing));
         assert_eq!(rt.states.get(existing), Some(StateValue::Int(99)));
-        assert_eq!(rt.bindings.for_state(existing).len(), 1);
+        assert_eq!(rt.bindings.for_state(existing).count(), 1);
     }
 
     #[test]
     fn empty_package_instantiates_nothing() {
         let mut rt = Runtime::new();
+        let blob = AotPackage::default().encode_to_vec();
         let root = instantiate(
-            &AotPackage::default(),
+            &AotView::new(&blob).unwrap(),
             &mut rt.store,
             &mut rt.states,
             &mut rt.bindings,

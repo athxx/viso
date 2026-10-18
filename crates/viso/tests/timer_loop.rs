@@ -151,8 +151,7 @@ fn timer_fires_once_and_the_loop_halts() {
     // The marker is the root's first child.
     let marker = store
         .arena()
-        .links(root)
-        .and_then(|l| l.first_child)
+        .first_child(root)
         .expect("TimerApp builds a marker child");
 
     // The timer's `on_fire` ran: the marker is hidden. It runs at most once
@@ -180,8 +179,7 @@ fn a_timer_costs_no_frame_and_stays_pending_before_its_deadline() {
     let store = app.store();
     let marker = store
         .arena()
-        .links(root)
-        .and_then(|l| l.first_child)
+        .first_child(root)
         .expect("TimerApp builds a marker child");
 
     // Before the deadline the timer has not fired: the marker is still shown.

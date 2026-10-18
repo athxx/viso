@@ -5,13 +5,13 @@
 //!
 //! [`InstancePool::sync`] returns the number of `write_buffer` calls it issued,
 //! which equals the number of coalesced ranges. These tests drive `sync`
-//! against a real [`HeadlessRaster`] and assert that count for the shapes §9.3
+//! against a real [`CpuRaster`] and assert that count for the shapes §9.3
 //! cares about; the pure gap-threshold arithmetic is unit-tested inside the
 //! coalescer module. The bytes reaching the GPU are unaffected by bridging —
 //! a bridged clean slot re-uploads the value already there — which the golden
 //! test pins separately.
 
-use viso_gpu::{BufferUsage, HeadlessRaster};
+use viso_gpu::{BufferUsage, CpuRaster};
 use viso_render::QuadInstance;
 use viso_render::pool::{GAP_THRESHOLD, InstancePool};
 
@@ -34,14 +34,8 @@ fn frame(n: usize) -> Vec<QuadInstance> {
 }
 
 /// A pool warmed to `n` live slots against a fresh backend.
-fn warmed(
-    n: usize,
-) -> (
-    HeadlessRaster,
-    InstancePool<QuadInstance>,
-    Vec<QuadInstance>,
-) {
-    let mut gpu = HeadlessRaster::new();
+fn warmed(n: usize) -> (CpuRaster, InstancePool<QuadInstance>, Vec<QuadInstance>) {
+    let mut gpu = CpuRaster::new();
     let mut pool: InstancePool<QuadInstance> = InstancePool::new(BufferUsage::INSTANCE, "quads");
     let base = frame(n);
     pool.sync(&mut gpu, &base);

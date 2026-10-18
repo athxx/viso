@@ -5,12 +5,12 @@
 use std::path::PathBuf;
 
 use viso_ende::JsonWriter;
+use viso_image::snapshot::Image;
 use viso_package::android::{self, MIN_API};
 use viso_package::apple::{self, MIN_IOS};
 use viso_package::windows::msix;
 use viso_package::{Access, Orientations};
 use viso_project::{ConfigCode, ConfigDiagnostic, Orientation, Permission, Project};
-use viso_view::snapshot::Image;
 
 use super::{Platform, icon};
 

@@ -8,7 +8,9 @@
 //! overflow the stack, and an object keeps its members in order, duplicates
 //! included, for the caller to look up.
 
-use std::fmt;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 
 /// How deep arrays and objects may nest.
 const MAX_DEPTH: usize = 128;
@@ -38,7 +40,7 @@ impl fmt::Display for JsonError {
     }
 }
 
-impl std::error::Error for JsonError {}
+impl core::error::Error for JsonError {}
 
 impl JsonValue {
     /// The value `text` holds, whitespace around it allowed.
@@ -233,7 +235,7 @@ impl Reader<'_> {
             }
         }
         // ASCII by construction.
-        let text = std::str::from_utf8(&self.bytes[start..self.at]).expect("ASCII digits");
+        let text = core::str::from_utf8(&self.bytes[start..self.at]).expect("ASCII digits");
         text.parse()
             .map(JsonValue::Number)
             .map_err(|_| self.error("not a number"))
@@ -249,7 +251,7 @@ impl Reader<'_> {
             }
             // The text is a `str` and the run stops only at ASCII bytes, so it
             // is whole UTF-8.
-            out.push_str(std::str::from_utf8(&self.bytes[run..self.at]).expect("UTF-8"));
+            out.push_str(core::str::from_utf8(&self.bytes[run..self.at]).expect("UTF-8"));
             match self.peek() {
                 Some(b'"') => {
                     self.at += 1;

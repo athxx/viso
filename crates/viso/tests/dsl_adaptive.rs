@@ -142,10 +142,8 @@ impl Mounted {
     fn children(&self, node: NodeId) -> Vec<NodeId> {
         let arena = self.store.arena();
         let mut out = Vec::new();
-        let mut child = arena.links(node).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in arena.children(node) {
             out.push(c);
-            child = arena.links(c).and_then(|l| l.next_sibling);
         }
         out
     }
@@ -269,10 +267,8 @@ fn the_frame_loop_settles_the_environment_against_its_layout() {
     let children = |node: NodeId| {
         let arena = store.arena();
         let mut out = Vec::new();
-        let mut child = arena.links(node).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in arena.children(node) {
             out.push(c);
-            child = arena.links(c).and_then(|l| l.next_sibling);
         }
         out
     };
@@ -314,7 +310,7 @@ impl Application for AvoidingApp {
 #[test]
 fn the_platform_feeds_the_environment_and_regions_pad_once() {
     use viso::platform::{
-        Appearance, DisplayFeature, DisplayFeatureKind, Insets, LogicalRect, Modifiers,
+        Appearance, DisplayFeature, DisplayFeatureKind, LogicalInsets, LogicalRect, Modifiers,
         PointerButtons as Buttons, PointerId, PointerKind, PointerPhase as Phase, RawPointer,
     };
     use viso::ui::adaptive::{DisplayFeatureKind as Kind, LayoutDirection, PointerPrecision};
@@ -341,7 +337,7 @@ fn the_platform_feeds_the_environment_and_regions_pad_once() {
             },
             RawEvent::SafeAreaChanged {
                 window,
-                insets: Insets {
+                insets: LogicalInsets {
                     top: 47.0,
                     left: 0.0,
                     bottom: 34.0,
@@ -404,13 +400,7 @@ fn the_platform_feeds_the_environment_and_regions_pad_once() {
     assert!(env.input.touch_available);
 
     let store = app.store();
-    let first = |node: NodeId| {
-        store
-            .arena()
-            .links(node)
-            .and_then(|l| l.first_child)
-            .expect("a child")
-    };
+    let first = |node: NodeId| store.arena().first_child(node).expect("a child");
     let safe_area = first(app.root().expect("a root"));
     let keyboard = first(safe_area);
     for region in [safe_area, keyboard] {

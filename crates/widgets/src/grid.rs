@@ -207,13 +207,7 @@ mod tests {
     /// Count a node's direct children by walking the arena sibling chain.
     fn child_count(store: &NodeStore, parent: NodeId) -> usize {
         let arena = store.arena();
-        let mut n = 0;
-        let mut child = arena.links(parent).and_then(|l| l.first_child);
-        while let Some(c) = child {
-            n += 1;
-            child = arena.links(c).and_then(|l| l.next_sibling);
-        }
-        n
+        arena.children(parent).count()
     }
 
     /// A `Grid` maps to a single Grid node carrying the requested background, and
@@ -288,8 +282,8 @@ mod tests {
         };
 
         let arena = store.arena();
-        let first = arena.links(root).and_then(|l| l.first_child).unwrap();
-        let second = arena.links(first).and_then(|l| l.next_sibling).unwrap();
+        let first = arena.first_child(root).unwrap();
+        let second = arena.next_sibling(first).unwrap();
 
         let mut scratch = Vec::new();
         store.layout(
@@ -345,11 +339,7 @@ mod tests {
             g.build(&mut cx);
             cx.root().expect("grid declares a root node")
         };
-        let child = store
-            .arena()
-            .links(root)
-            .and_then(|l| l.first_child)
-            .unwrap();
+        let child = store.arena().first_child(root).unwrap();
 
         let mut scratch = Vec::new();
         store.layout(

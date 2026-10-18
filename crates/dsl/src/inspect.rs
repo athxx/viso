@@ -1,10 +1,10 @@
 //! What each node of a compiled view is in its source, by the index a
 //! runtime's census names it with: the table
-//! [`viso_view::inspect::resolve`] joins a census with.
+//! [`viso_dev_protocol::inspect::resolve`] joins a census with.
 
 use std::collections::HashSet;
 
-use viso_view::inspect::{FileSources, NodeSource, StateSource};
+use viso_dev_protocol::inspect::{FileSources, NodeSource, StateSource};
 
 use crate::hir::Ty;
 use crate::hotreload::CandidatePlan;

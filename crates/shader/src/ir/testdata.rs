@@ -26,6 +26,7 @@ struct InstanceIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -64,8 +65,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
 
     // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);
@@ -136,6 +138,7 @@ struct InstanceIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -165,8 +168,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
     float2 pixel = pos + corner * size;
 
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);
@@ -206,6 +210,7 @@ struct InstanceIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -235,8 +240,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
     float2 pixel = pos + corner * size;
 
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);
@@ -278,6 +284,7 @@ struct InstanceIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -308,8 +315,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
     float2 pixel = pos + corner * size;
 
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);
@@ -355,6 +363,7 @@ struct VertexIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -370,8 +379,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
 
     float2 pixel = float2(v.pos);
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);
@@ -409,6 +419,7 @@ struct InstanceIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -447,8 +458,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
 
     // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);
@@ -526,6 +538,7 @@ struct InstanceIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -563,8 +576,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
 
     // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);
@@ -635,6 +649,7 @@ struct InstanceIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -672,8 +687,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
 
     // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);
@@ -754,6 +770,7 @@ struct InstanceIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -810,8 +827,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
 
     // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);
@@ -923,6 +941,7 @@ struct InstanceIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -965,8 +984,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
 
     // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);
@@ -1072,6 +1092,7 @@ struct InstanceIn {
 
 struct Uniforms {
     packed_float2 viewport;
+    packed_float2 shift;
 };
 
 struct VOut {
@@ -1116,8 +1137,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
 
     // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
     float2 vp = float2(u.viewport);
-    float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                        1.0 - pixel.y / vp.y * 2.0);
+    float2 at = pixel + float2(u.shift);
+    float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                        1.0 - at.y / vp.y * 2.0);
 
     VOut out;
     out.position = float4(ndc, 0.0, 1.0);

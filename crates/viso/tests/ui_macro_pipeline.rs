@@ -22,7 +22,7 @@
 //! paths and cannot itself depend on `viso-ui`; a normal app sees all of it via
 //! `use viso::prelude::*;`.
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{Rect, Renderer};
 use viso::ui::{
     BindingTable, BuildCx, DirtyClass, NodeStore, SemanticProjector, StateStore, StateValue,
@@ -97,7 +97,7 @@ fn ui_fragment_lays_out_and_drives_the_renderer() {
         "an unstyled ui! tree paints nothing visible this slice"
     );
 
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surf = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surf);
     let mut renderer = Renderer::new(&mut gpu, format);

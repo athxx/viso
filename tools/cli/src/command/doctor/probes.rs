@@ -195,6 +195,7 @@ pub(super) fn plan(target: Option<Target>) -> Vec<Probe> {
         ],
         Some(Target::WebGpu) => &[WASM, BINDGEN, WASM_OPT],
         Some(Target::WebDom | Target::WebHybrid) => &[AVAILABLE],
+        Some(Target::Device(_)) => &[LINKER, FILESYSTEM],
     };
     core.into_iter().chain(own.iter().copied()).collect()
 }

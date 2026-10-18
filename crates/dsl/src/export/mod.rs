@@ -331,7 +331,7 @@ body { font-family: system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif; 
 fn styles(page: &html::Lowered) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "/* {GENERATED} */");
-    out.push_str(&css::theme_rule(&viso_view::default_theme()));
+    out.push_str(&css::theme_rule(&viso_behavior::theme::default_theme()));
     if page.device {
         out.push_str(":root { --viso-px: 1px; }\n");
         out.push_str("@media (resolution >= 2dppx) { :root { --viso-px: 0.5px; } }\n");

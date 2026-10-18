@@ -697,7 +697,7 @@ mod tests {
 
         // t[0] dies at the blur's slot (1), t[1] at the surface's (2).
         assert_eq!(g.surface_slot(), 2);
-        let mut gpu = viso_gpu::HeadlessRaster::new();
+        let mut gpu = viso_gpu::CpuRaster::new();
         let sampler =
             viso_gpu::GpuBackend::create_sampler(&mut gpu, &viso_gpu::SamplerDesc::LINEAR_CLAMP);
         pool.assign(&mut gpu, sampler, g.surface_slot());

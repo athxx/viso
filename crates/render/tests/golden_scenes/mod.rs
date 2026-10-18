@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use viso_gpu::{
-    AddressMode, FilterMode, GpuBackend, HeadlessRaster, RawWindowHandle, SamplerDesc, TextureDesc,
+    AddressMode, CpuRaster, FilterMode, GpuBackend, RawWindowHandle, SamplerDesc, TextureDesc,
     TextureFormat, TextureId,
 };
 use viso_render::{
@@ -87,7 +87,7 @@ pub fn render_to_target<B: GpuBackend>(gpu: &mut B, scene: GoldenScene) -> Textu
 
 /// Render `scene` through the headless reference rasterizer; BGRA8, top-left.
 pub fn reference(scene: GoldenScene) -> Vec<u8> {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);

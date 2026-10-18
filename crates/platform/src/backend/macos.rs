@@ -26,14 +26,16 @@ use crate::Instant;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::drive::Drive;
 use super::macos_access::{MacAccess, Sink, wake_pump};
+use super::macos_panel::{LayerScanout, emulation};
 use super::main_queue::post_to_main;
 use super::memory_pressure::MemoryPressure;
+use viso_handle::{Scanout, ScanoutFormat};
 
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, ProtocolObject, Sel};
@@ -75,19 +77,18 @@ struct PumpQueue {
     redraws: VecDeque<WindowId>,
     /// Set true once a window has been asked to close and accepted.
     should_exit: bool,
-    /// The pump's `handler`, exposed to delegates only for the lifetime of
-    /// `run()`. A live-resize drag hands the thread to AppKit's nested modal
-    /// run loop, which suspends our `nextEventMatchingMask:` loop entirely — so
-    /// events the resize delegate enqueues cannot be drained until the drag
-    /// ends. `windowDidResize:`, which AppKit calls *synchronously* inside that
-    /// modal loop, reads this pointer to drive a frame on the spot so the
-    /// content tracks the drag live. `run()` installs the pointer before its
-    /// loop and clears it on the way out (a guard clears it on unwind too), so
-    /// the pointer is valid for exactly as long as the handler borrow lives and
-    /// is never aliased: the pump's own `handler.handle` calls and a delegate's
-    /// re-entrant drive never overlap in time (the pump is parked in AppKit
-    /// when the delegate runs). See `MacApp::run` and `drain_and_drive`.
-    drive: Option<NonNull<dyn AppHandler>>,
+    /// The pump's app and handler, exposed to delegates only while a pump
+    /// turn has handed the thread to AppKit. A live-resize drag runs AppKit's
+    /// nested modal loop inside that turn, which suspends our
+    /// `nextEventMatchingMask:` loop entirely — so events the resize delegate
+    /// enqueues cannot be drained until the drag ends. `windowDidResize:`,
+    /// which AppKit calls *synchronously* inside that modal loop, reads this to
+    /// drive a frame on the spot so the content tracks the drag live. `run()`
+    /// installs it just before each AppKit turn, holding no borrow of the app
+    /// or handler across the turn, and clears it right after (a guard clears
+    /// it on unwind too), so the pointers are the only live path to either
+    /// while they are set. See `MacApp::run` and `drain_and_drive`.
+    drive: Option<Drive>,
     /// The appearance last reported, so the several AppKit sources that signal
     /// a change (every view's `viewDidChangeEffectiveAppearance`, the workspace
     /// accessibility notification) emit one `AppearanceChanged` per real change.
@@ -230,8 +231,8 @@ impl MacApp {
 }
 
 /// Clears `PumpQueue::drive` when `run`'s loop ends, on every path including
-/// unwind, so the erased handler pointer never outlives the `&mut` borrow it
-/// was taken from.
+/// unwind, so the erased pointers never outlive the `&mut` borrows they were
+/// taken from.
 struct DriveGuard(Shared);
 
 impl Drop for DriveGuard {
@@ -247,31 +248,33 @@ impl Drop for DriveGuard {
 /// `handle` runs, so the handler may re-enter the queue (e.g. request another
 /// redraw) without a borrow conflict.
 ///
-/// SAFETY: the caller passes the pointer stored in `PumpQueue::drive`, which is
-/// valid for the whole of `MacApp::run` (installed before its loop, cleared by
-/// `DriveGuard`). This runs synchronously inside AppKit's nested loop, where the
-/// pump's own `handler.handle` is parked, so the `&mut` reborrow is unaliased.
-unsafe fn drain_and_drive(mut handler: NonNull<dyn AppHandler>, shared: &Shared) {
+/// SAFETY: the caller passes the drive stored in `PumpQueue::drive`, which is
+/// set only while a pump turn has handed the thread to AppKit and holds no
+/// borrow of the app or handler. This runs synchronously inside that turn, so
+/// the `&mut` reborrows are the only live ones.
+unsafe fn drain_and_drive(drive: Drive, shared: &Shared) {
     loop {
         let event = shared.borrow_mut().pop();
         let Some(event) = event else { break };
-        // SAFETY: see the function contract — the pointer is live and unaliased
-        // for the duration of this call (the pump's own `handler.handle` is
-        // parked in AppKit while a delegate drives, so the reborrow never
-        // overlaps another live one).
-        deliver(unsafe { handler.as_mut() }, event);
+        // SAFETY: per the function contract.
+        let (app, handler) = unsafe { drive.get() };
+        deliver(app, handler, event);
     }
 }
 
 /// Hand one event to the handler, completing the copy handshake: a
 /// `CopyRequested` reply the handler filled is written to the pasteboard once
 /// the handler returns.
-fn deliver(handler: &mut dyn AppHandler, event: RawEvent) -> ControlFlow {
+fn deliver(
+    app: &mut dyn PlatformApp,
+    handler: &mut dyn AppHandler,
+    event: RawEvent,
+) -> ControlFlow {
     let reply = match &event {
         RawEvent::CopyRequested { reply, .. } => Some(reply.clone()),
         _ => None,
     };
-    let flow = handler.handle(event);
+    let flow = handler.handle(app, event);
     if let Some(text) = reply.and_then(|r| r.take()) {
         write_pasteboard(&text);
     }
@@ -397,12 +400,26 @@ impl PlatformApp for MacApp {
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
 
-        let (w, h) = config.logical_size;
+        // A window standing in for an embedded panel takes the panel's size,
+        // each panel pixel `zoom` screen pixels a side, and keeps it.
+        let screen = NSScreen::mainScreen(self.mtm);
+        let backing = screen.as_ref().map_or(1.0, |s| s.backingScaleFactor());
+        let room = screen.as_ref().map_or((f64::MAX, f64::MAX), |s| {
+            let free = s.visibleFrame().size;
+            (free.width * 0.9, free.height * 0.9)
+        });
+        let emulated = emulation(config.cpu_frames, backing, room);
+        let (w, h) = match &emulated {
+            Some(e) => panel_points(e.size, e.zoom, backing),
+            None => config.logical_size,
+        };
         let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w, h));
         let mut style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
-            | NSWindowStyleMask::Resizable
             | NSWindowStyleMask::Miniaturizable;
+        if emulated.is_none() {
+            style |= NSWindowStyleMask::Resizable;
+        }
         // Self-drawn chrome keeps the native window (and its traffic lights) but
         // extends the content area under the title bar, so the app paints its own
         // caption over a full-height surface. The affordances stay live — only
@@ -422,7 +439,13 @@ impl PlatformApp for MacApp {
                 false,
             )
         };
-        window.setTitle(&NSString::from_str(&config.title));
+        match &emulated {
+            Some(e) => window.setTitle(&NSString::from_str(&format!(
+                "{} — {}",
+                config.title, e.note
+            ))),
+            None => window.setTitle(&NSString::from_str(&config.title)),
+        }
 
         // Self-drawn chrome: strip the OS title bar's text and background so the
         // full-size content area shows through, then swap the titlebar
@@ -458,6 +481,24 @@ impl PlatformApp for MacApp {
         // one; the Metal backend later attaches a `CAMetalLayer` to it.
         let view = VisoContentView::new(self.mtm, id, self.shared.clone(), content_rect);
         window.setContentView(Some(&view));
+        // A CPU-drawn window shows its frames as the content view layer's
+        // image.
+        let pixels = config.cpu_frames.then(|| {
+            let backing = window.backingScaleFactor();
+            if let Some(e) = &emulated {
+                let (w, h) = panel_points(e.size, e.zoom, backing);
+                window.setContentSize(NSSize::new(w, h));
+            }
+            Rc::new(match &emulated {
+                Some(e) => LayerScanout::new(&view, e.format, backing, e.zoom, Some(e.scale)),
+                None => LayerScanout::new(&view, ScanoutFormat::Xrgb8888, backing, 1.0, None),
+            })
+        });
+        if let Some(pixels) = &pixels {
+            view.ivars().logical.set(pixels.logical_per_point());
+            view.ivars().pixels.replace(Some(pixels.clone()));
+            delegate.ivars().pixels.replace(Some(pixels.clone()));
+        }
         window.makeFirstResponder(Some(&view));
         let access = MacAccess::attach(&view, id, self.access_sink());
 
@@ -484,6 +525,7 @@ impl PlatformApp for MacApp {
             _delegate: delegate,
             chrome: config.chrome,
             access,
+            pixels,
         });
         // The first frame is scheduled by the runtime after launch (paired with a
         // FirstFrame redraw reason), keeping a single beat source across backends.
@@ -497,28 +539,14 @@ impl PlatformApp for MacApp {
             self.launched = true;
         }
 
-        if handler.handle(RawEvent::AppLaunched) == ControlFlow::Exit {
+        if handler.handle(self, RawEvent::AppLaunched) == ControlFlow::Exit {
             return;
         }
 
-        // Expose the handler to the resize delegate for the duration of the
-        // pump loop so a live-resize drag can drive frames re-entrantly (see
-        // `PumpQueue::drive`). The guard clears the pointer on every exit path,
-        // including unwind, so it never outlives this borrow of `handler`.
-        // SAFETY: `handler` outlives `_drive_guard` (both are bound by this
-        // stack frame) and the guard's `Drop` clears the pointer before `run`
-        // returns, so the stored pointer never outlives this `&mut` borrow. The
-        // `transmute` only erases the handler's lifetime to `'static`; the guard
-        // upholds the true (shorter) lifetime dynamically.
-        let drive: NonNull<dyn AppHandler> = unsafe {
-            let ptr: *mut dyn AppHandler = handler;
-            NonNull::new_unchecked(std::mem::transmute::<
-                *mut dyn AppHandler,
-                *mut (dyn AppHandler + 'static),
-            >(ptr))
-        };
-        self.shared.borrow_mut().drive = Some(drive);
-        let _drive_guard = DriveGuard(self.shared.clone());
+        // Clears the drive on every exit path, including unwind out of an
+        // AppKit turn.
+        let queue = self.shared.clone();
+        let _drive_guard = DriveGuard(queue.clone());
 
         let mut flow = ControlFlow::Wait;
         // Whether a redraw beat was just delivered: the pump then takes what
@@ -539,7 +567,7 @@ impl PlatformApp for MacApp {
                     win.access.set_focused(focused);
                 }
                 drew = matches!(event, RawEvent::RedrawRequested { .. });
-                flow = deliver(handler, event);
+                flow = deliver(self, handler, event);
                 if flow == ControlFlow::Exit {
                     break;
                 }
@@ -554,6 +582,12 @@ impl PlatformApp for MacApp {
             // busy spin (it returns immediately instead of blocking on
             // `distantFuture`).
             let block = !yielding && matches!(flow, ControlFlow::Wait | ControlFlow::WaitUntil(_));
+            // AppKit may re-enter during the turn (a live resize drives frames
+            // from `windowDidResize:`), reaching the app and handler through
+            // the drive alone: the turn touches neither, only its own handle
+            // on NSApplication.
+            let nsapp = self.app.clone();
+            queue.borrow_mut().drive = Some(Drive::new(self, handler));
             let got_event = autoreleasepool(|_| {
                 let until = match flow {
                     // After a beat: only what is already queued.
@@ -573,7 +607,7 @@ impl PlatformApp for MacApp {
                 };
                 // SAFETY: main-thread event pump; standard AppKit calls.
                 let event = unsafe {
-                    self.app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                    nsapp.nextEventMatchingMask_untilDate_inMode_dequeue(
                         NSEventMask::Any,
                         Some(&until),
                         NSDefaultRunLoopMode,
@@ -585,12 +619,13 @@ impl PlatformApp for MacApp {
                         // Forward to AppKit so the responder chain fires our
                         // view's overrides (mouse/key/scroll) and the window
                         // draws/interacts.
-                        self.app.sendEvent(&ev);
+                        nsapp.sendEvent(&ev);
                         true
                     }
                     None => false,
                 }
             });
+            queue.borrow_mut().drive = None;
             if !got_event && !yielding {
                 match flow {
                     // A `WaitUntil` that returned no OS event means the timer
@@ -598,7 +633,7 @@ impl PlatformApp for MacApp {
                     // one frame and fires the due timer. The frame's own decision
                     // then re-arms the next deadline (or drops to `Wait`).
                     ControlFlow::WaitUntil(_) => {
-                        flow = handler.handle(RawEvent::Wakeup);
+                        flow = handler.handle(self, RawEvent::Wakeup);
                         if flow == ControlFlow::Exit {
                             break;
                         }
@@ -689,9 +724,9 @@ impl PlatformApp for MacApp {
         }
     }
 
-    fn update_accessibility(&mut self, window: WindowId, update: accesskit::TreeUpdate) {
+    fn update_accessibility(&mut self, window: WindowId, delta: crate::SemanticsDelta) {
         if let Some(win) = self.windows.iter_mut().find(|w| w.id == window) {
-            win.access.update(update);
+            win.access.update(delta);
         }
     }
 
@@ -781,6 +816,38 @@ pub struct MacWindow {
     chrome: WindowChrome,
     /// The content view's accessibility adapter.
     access: MacAccess,
+    /// The frames of a CPU-drawn window.
+    pixels: Option<Rc<LayerScanout>>,
+}
+
+/// The scale a window reports and its surface's size in pixels: the screen's
+/// backing scale and the content view's size at it, or a CPU-drawn window's
+/// frame metrics.
+fn window_metrics(nswin: Option<&NSWindow>, pixels: Option<&LayerScanout>) -> (f64, u32, u32) {
+    if let Some(pixels) = pixels {
+        return pixels.metrics();
+    }
+    let Some(nswin) = nswin else {
+        return (1.0, 0, 0);
+    };
+    let scale = nswin.backingScaleFactor();
+    let size = nswin
+        .contentView()
+        .map_or(NSSize::new(0.0, 0.0), |v| v.frame().size);
+    (
+        scale,
+        (size.width * scale) as u32,
+        (size.height * scale) as u32,
+    )
+}
+
+/// The points a panel of `size` pixels takes, each pixel `zoom` screen pixels
+/// a side on a screen of `backing` scale.
+fn panel_points(size: (u32, u32), zoom: f64, backing: f64) -> (f64, f64) {
+    (
+        f64::from(size.0) * zoom / backing,
+        f64::from(size.1) * zoom / backing,
+    )
 }
 
 /// The height of the primary screen, whose bottom-left is Cocoa's desktop
@@ -824,10 +891,17 @@ impl Window for MacWindow {
     }
 
     fn scale_factor(&self) -> f64 {
-        self.window.backingScaleFactor()
+        match &self.pixels {
+            Some(pixels) => pixels.metrics().0,
+            None => self.window.backingScaleFactor(),
+        }
     }
 
     fn inner_size(&self) -> (u32, u32) {
+        if let Some(pixels) = &self.pixels {
+            let (_, w, h) = pixels.metrics();
+            return (w, h);
+        }
         let frame = self.content_view.frame();
         let scale = self.window.backingScaleFactor();
         (
@@ -845,6 +919,11 @@ impl Window for MacWindow {
     fn raw_handle(&self) -> RawWindowHandle {
         // The `NSView` pointer stays valid for the window's lifetime; the GPU
         // layer must not outlive this `MacWindow`.
+        if let Some(pixels) = &self.pixels {
+            return RawWindowHandle::Scanout {
+                scanout: Rc::as_ptr(pixels) as *const dyn Scanout,
+            };
+        }
         let ns_view = Retained::as_ptr(&self.content_view) as *mut core::ffi::c_void;
         RawWindowHandle::AppKit { ns_view }
     }
@@ -875,6 +954,8 @@ struct DelegateIvars {
     is_fullscreen: Cell<bool>,
     /// The display features last reported for the window.
     features: RefCell<Vec<DisplayFeature>>,
+    /// The frames of a CPU-drawn window, whose metrics it reports.
+    pixels: RefCell<Option<Rc<LayerScanout>>>,
 }
 
 define_class!(
@@ -923,21 +1004,8 @@ define_class!(
                 let nswin = notification
                     .object()
                     .and_then(|o| o.downcast::<NSWindow>().ok());
-                let (scale, width, height) = nswin
-                    .as_ref()
-                    .map(|nswin| {
-                        let scale = nswin.backingScaleFactor();
-                        let size = nswin
-                            .contentView()
-                            .map(|v| v.frame().size)
-                            .unwrap_or(NSSize::new(0.0, 0.0));
-                        (
-                            scale,
-                            (size.width * scale) as u32,
-                            (size.height * scale) as u32,
-                        )
-                    })
-                    .unwrap_or((1.0, 0, 0));
+                let (scale, width, height) =
+                    window_metrics(nswin.as_deref(), ivars.pixels.borrow().as_deref());
                 // Self-drawn chrome: the traffic lights reposition with the title
                 // bar on resize, so re-measure and re-report so the app can keep
                 // its caption aligned. In fullscreen the OS hides the traffic
@@ -976,10 +1044,10 @@ define_class!(
                 // the events just drain on the next pump turn as before.
                 let drive = shared.borrow().drive;
                 if let Some(drive) = drive {
-                    // SAFETY: `drive` is the pointer `MacApp::run` installed for
-                    // the lifetime of its loop; this callback runs on the main
-                    // thread inside that loop, where the pump's own `handle` is
-                    // suspended, so the reborrow is unaliased. See `drain_and_drive`.
+                    // SAFETY: `drive` is what `MacApp::run` installed for the
+                    // AppKit turn this callback runs inside, on the main thread,
+                    // while the pump holds no borrow of the app or handler. See
+                    // `drain_and_drive`.
                     unsafe { drain_and_drive(drive, &shared) };
                 }
             }));
@@ -1096,6 +1164,7 @@ impl WindowDelegate {
             chrome,
             is_fullscreen: Cell::new(false),
             features: RefCell::new(Vec::new()),
+            pixels: RefCell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -1622,6 +1691,11 @@ struct ViewIvars {
     ime_enabled: Cell<bool>,
     /// The focused field's caret, logical points in this view.
     ime_caret: Cell<Option<LogicalRect>>,
+    /// The app's logical points in one of this view's points: one, or the
+    /// emulated panel's pixels over its scale.
+    logical: Cell<f64>,
+    /// The frames of a CPU-drawn window, rescaled when the screen changes.
+    pixels: RefCell<Option<Rc<LayerScanout>>>,
 }
 
 define_class!(
@@ -1645,6 +1719,39 @@ define_class!(
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
+        }
+
+        // The window moved to a screen of another backing scale: its surface
+        // has as many more or fewer pixels, and an emulated panel keeps its
+        // size in screen pixels.
+        #[unsafe(method(viewDidChangeBackingProperties))]
+        fn view_did_change_backing_properties(&self) {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                let Some(nswin) = self.window() else {
+                    return;
+                };
+                let ivars = self.ivars();
+                let backing = nswin.backingScaleFactor();
+                let pixels = ivars.pixels.borrow().clone();
+                if let Some(pixels) = &pixels {
+                    if pixels.zoom() != 1.0 {
+                        let (_, w, h) = pixels.metrics();
+                        let (w, h) = panel_points((w, h), pixels.zoom(), backing);
+                        nswin.setContentSize(NSSize::new(w, h));
+                    }
+                    pixels.rescale(backing);
+                    ivars.logical.set(pixels.logical_per_point());
+                }
+                let (scale, width, height) = window_metrics(Some(&nswin), pixels.as_deref());
+                let mut q = ivars.shared.borrow_mut();
+                q.events.push_back(RawEvent::ScaleFactorChanged {
+                    window: ivars.window,
+                    scale,
+                    width,
+                    height,
+                });
+                q.redraws.push_back(ivars.window);
+            }));
         }
 
         // Rebuild the tracking area on every geometry change so `mouseMoved`
@@ -1823,12 +1930,13 @@ define_class!(
                     (event.scrollingDeltaX() * LINE, event.scrollingDeltaY() * LINE)
                 };
                 let ivars = self.ivars();
+                let k = ivars.logical.get();
                 let sample = RawScroll {
                     window: ivars.window,
                     x,
                     y,
-                    delta_x: -dx,
-                    delta_y: -dy,
+                    delta_x: -dx * k,
+                    delta_y: -dy * k,
                     modifiers: modifiers_of(event),
                 };
                 self.push(RawEvent::Scroll(sample));
@@ -1974,8 +2082,12 @@ define_class!(
         unsafe fn first_rect(&self, _range: NSRange, _actual: NSRangePointer) -> NSRect {
             // The candidate window parks under this rect: the focused field's
             // caret, or the view's origin until the app has reported one.
+            let k = self.ivars().logical.get();
             let local = match self.ivars().ime_caret.get() {
-                Some(r) => NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.width, r.height)),
+                Some(r) => NSRect::new(
+                    NSPoint::new(r.x / k, r.y / k),
+                    NSSize::new(r.width / k, r.height / k),
+                ),
                 None => NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
             };
             let in_window = self.convertRect_toView(local, None);
@@ -2012,6 +2124,8 @@ impl VisoContentView {
             cursor_hidden: Cell::new(false),
             ime_enabled: Cell::new(true),
             ime_caret: Cell::new(None),
+            logical: Cell::new(1.0),
+            pixels: RefCell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         this
@@ -2022,7 +2136,8 @@ impl VisoContentView {
     fn location(&self, event: &NSEvent) -> (f64, f64) {
         let window_point = event.locationInWindow();
         let p = self.convertPoint_fromView(window_point, None);
-        (p.x, p.y)
+        let k = self.ivars().logical.get();
+        (p.x * k, p.y * k)
     }
 
     /// If the press falls inside a declared draggable caption region, start a
@@ -2408,6 +2523,7 @@ fn any_to_string(string: &AnyObject) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::headless::HeadlessApp;
 
     /// A stand-in handler that records the events it receives, so a test can
     /// assert the order `drain_and_drive` delivers them. It may also re-enqueue
@@ -2420,7 +2536,7 @@ mod tests {
     }
 
     impl AppHandler for RecordingHandler {
-        fn handle(&mut self, event: RawEvent) -> ControlFlow {
+        fn handle(&mut self, _app: &mut dyn PlatformApp, event: RawEvent) -> ControlFlow {
             if let Some((shared, window)) = self.reenqueue_once.take() {
                 shared.borrow_mut().redraws.push_back(window);
             }
@@ -2446,10 +2562,11 @@ mod tests {
             seen: Vec::new(),
             reenqueue_once: None,
         };
-        // SAFETY: `handler` outlives the call and no other borrow of it exists,
-        // so the reborrow inside `drain_and_drive` is unaliased.
-        let ptr = NonNull::from(&mut handler as &mut dyn AppHandler);
-        unsafe { drain_and_drive(ptr, &shared) };
+        let mut app = HeadlessApp::new();
+        let drive = Drive::new(&mut app, &mut handler);
+        // SAFETY: `app` and `handler` outlive the call and are not otherwise
+        // borrowed during it.
+        unsafe { drain_and_drive(drive, &shared) };
 
         // Redraw is converted and delivered ahead of the plain event, matching
         // `next_synthetic`'s ordering; nothing is left queued.
@@ -2472,9 +2589,10 @@ mod tests {
             seen: Vec::new(),
             reenqueue_once: Some((shared.clone(), WindowId(3))),
         };
-        // SAFETY: as above — `handler` outlives the call, no aliasing borrow.
-        let ptr = NonNull::from(&mut handler as &mut dyn AppHandler);
-        unsafe { drain_and_drive(ptr, &shared) };
+        let mut app = HeadlessApp::new();
+        let drive = Drive::new(&mut app, &mut handler);
+        // SAFETY: as above — both outlive the call, with no other borrow.
+        unsafe { drain_and_drive(drive, &shared) };
 
         assert_eq!(handler.seen.len(), 2);
         assert!(matches!(handler.seen[0], RawEvent::Wakeup));
@@ -2543,7 +2661,7 @@ mod tests {
     fn deliver_hands_back_the_copy_reply_only_for_copy_requests() {
         struct Answer;
         impl AppHandler for Answer {
-            fn handle(&mut self, event: RawEvent) -> ControlFlow {
+            fn handle(&mut self, _app: &mut dyn PlatformApp, event: RawEvent) -> ControlFlow {
                 if let RawEvent::CopyRequested { reply, .. } = &event {
                     // Answer then take it back, so the test leaves the real
                     // pasteboard untouched while exercising the reply slot.
@@ -2555,6 +2673,7 @@ mod tests {
         }
         let reply = ClipboardReply::new();
         let flow = deliver(
+            &mut HeadlessApp::new(),
             &mut Answer,
             RawEvent::CopyRequested {
                 window: WindowId(1),

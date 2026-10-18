@@ -44,7 +44,7 @@ use std::mem::size_of;
 
 use viso_gpu::{BufferDesc, BufferId, BufferUsage, GpuBackend};
 
-use super::coalescer::{self, Range};
+use super::coalescer::{Range, Runs};
 
 /// A long-lived device buffer for one instance family, uploaded per changed
 /// slot against a CPU shadow.
@@ -73,13 +73,6 @@ pub struct InstancePool<T> {
     usage: BufferUsage,
     /// A debug label for the device buffer (GPU tooling; ignored by headless).
     label: &'static str,
-    /// Reused scratch holding the slot indices that changed this frame, in
-    /// increasing order, before they are coalesced. Retained across frames so a
-    /// steady frame refills the same capacity without touching the heap.
-    dirty_scratch: Vec<usize>,
-    /// Reused scratch holding the coalesced upload ranges for this frame. Same
-    /// steady-state no-alloc property as `dirty_scratch`.
-    range_scratch: Vec<Range>,
     /// Bytes handed to [`write_buffer`](viso_gpu::GpuBackend::write_buffer) by
     /// the last [`sync`](Self::sync): the summed size of the slots uploaded this
     /// frame (`changed slots × stride`). Zero on an unchanged frame. A plain
@@ -102,8 +95,6 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
             shadow: Vec::new(),
             usage: usage | BufferUsage::CPU_WRITE,
             label,
-            dirty_scratch: Vec::new(),
-            range_scratch: Vec::new(),
             last_upload_bytes: 0,
         }
     }
@@ -183,27 +174,29 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
             return 1;
         }
 
-        // Within capacity: diff element by element against the shadow, recording
-        // each changed slot's index. Slots beyond the shadow's current length are
-        // new this frame and always count as changed.
-        self.dirty_scratch.clear();
+        // Within capacity: diff element by element against the shadow,
+        // coalescing the changed slots into a few ranges (bridging short clean
+        // gaps) and uploading each as one contiguous write as it closes. Slots
+        // beyond the shadow's current length are new this frame and always
+        // count as changed. An unchanged frame closes no range and issues zero
+        // uploads.
+        let mut runs = Runs::default();
+        let mut writes = 0;
+        let mut uploaded_slots = 0;
         for (i, inst) in instances.iter().enumerate() {
-            if i >= self.shadow.len() || self.shadow[i] != *inst {
-                self.dirty_scratch.push(i);
+            if (i >= self.shadow.len() || self.shadow[i] != *inst)
+                && let Some(Range { start, len }) = runs.push(i)
+            {
+                self.upload_run(backend, start, &instances[start..start + len]);
+                writes += 1;
+                uploaded_slots += len;
             }
         }
-
-        // Coalesce the changed slots into a few upload ranges (bridging short
-        // clean gaps) and upload each as one contiguous write. An unchanged frame
-        // has no dirty slots, yields no ranges, and issues zero uploads.
-        coalescer::coalesce(&self.dirty_scratch, &mut self.range_scratch);
-        let mut uploaded_slots = 0;
-        for r in 0..self.range_scratch.len() {
-            let Range { start, len } = self.range_scratch[r];
+        if let Some(Range { start, len }) = runs.finish() {
             self.upload_run(backend, start, &instances[start..start + len]);
+            writes += 1;
             uploaded_slots += len;
         }
-        let writes = self.range_scratch.len();
         self.last_upload_bytes = uploaded_slots * Self::STRIDE;
 
         // The shadow now mirrors exactly `instances`.

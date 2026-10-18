@@ -4,12 +4,13 @@
 //! feature, on MoltenVK — by Vulkan from the SPIR-V of the WGSL, each
 //! backend's code from `program::code`. Every image
 //! agrees with the reference, and Vulkan with Metal, within a small
-//! per-channel tolerance; the headless one on every platform.
+//! per-channel tolerance; the headless one on every platform. The GLSL ES
+//! code of each passes glslang's GLSL ES 3.00 front end, both stages.
 
 use viso_dsl::frontend::{Origin, compile_file};
 use viso_gpu::{
-    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, DrawCommand, DrawList,
-    FilterMode, Geometry, GpuBackend, HeadlessRaster, InlineUniforms, LoadOp, PipelineId,
+    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, CpuRaster,
+    DrawCommand, DrawList, FilterMode, Geometry, GpuBackend, InlineUniforms, LoadOp, PipelineId,
     ProgramCode, ProgramCompiler, ProgramDesc, RenderPass, RenderTarget, SamplerDesc, ShaderLang,
     TextureDesc, TextureFormat, TextureId,
 };
@@ -128,7 +129,7 @@ fn cpu(e: &Encoded) -> Vec<u8> {
     let textures = [viso_gpu::CpuTexture {
         width: 4,
         height: 4,
-        texels: &texels,
+        texels: viso_gpu::CpuTexels::Float(&texels),
     }];
     let samplers = [SAMPLER];
     let bindings = Bindings {
@@ -150,7 +151,7 @@ const SAMPLER: SamplerDesc = SamplerDesc {
 /// backends read.
 fn headless(e: &Encoded) -> Vec<u8> {
     let p = &e.program;
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let compiled = gpu
         .program_compiler()
         .compile(&ProgramDesc {
@@ -377,6 +378,39 @@ fn compare(name: &str, gpu: &[u8], cpu: &[u8]) {
     );
 }
 
+/// Both stages of `source`'s GLSL through glslang as GLSL ES 3.00; skipped
+/// when glslang is not installed.
+fn check_glsl(source: &str, name: &str) {
+    let program = program(source);
+    let interface = program.interface();
+    let ProgramCode::Glsl(text) =
+        code(&program, &interface, ShaderLang::Glsl).expect("GLSL is source")
+    else {
+        panic!("GLSL is source");
+    };
+    let dir = std::env::temp_dir().join("viso_program_glsl");
+    std::fs::create_dir_all(&dir).expect("a temp dir");
+    for (stage, prelude) in [
+        ("vert", "#version 300 es\n#define VISO_VERTEX 1\n"),
+        ("frag", "#version 300 es\n"),
+    ] {
+        let path = dir.join(format!("{name}.{stage}"));
+        std::fs::write(&path, format!("{prelude}{text}")).expect("written");
+        let Ok(out) = std::process::Command::new("glslangValidator")
+            .arg(&path)
+            .output()
+        else {
+            eprintln!("glslangValidator not installed; GLSL unchecked");
+            return;
+        };
+        assert!(
+            out.status.success(),
+            "{name}.{stage}:\n{}\n{text}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
 #[test]
 fn the_spec_example_matches_the_reference() {
     let source = r#"
@@ -430,6 +464,7 @@ export shader RoundedRect {
     };
     let generic = render(&scene);
     compare_all("RoundedRect", &generic);
+    check_glsl(source, "RoundedRect");
 
     // As a brush: the parameters encoded once per box, the box placed and the
     // viewport written by the renderer, every backend's code from one call.
@@ -572,4 +607,5 @@ shader Fancy {
         texture: true,
     };
     compare_all("Fancy", &render(&scene));
+    check_glsl(source, "Fancy");
 }

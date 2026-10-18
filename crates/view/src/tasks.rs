@@ -467,6 +467,10 @@ struct Frame<'a> {
 }
 
 impl StateCells for Frame<'_> {
+    fn epoch(&self) -> Option<u64> {
+        Some(self.states.epoch())
+    }
+
     fn get(&self, id: viso_ui::StateId) -> Option<viso_ui::StateValue> {
         self.states.get(id)
     }

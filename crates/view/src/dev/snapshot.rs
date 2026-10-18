@@ -37,7 +37,6 @@ use super::wire::{
     read_option, read_string, read_u32, write_string,
 };
 use crate::host::ViewHost;
-use crate::package::{read_state_value, write_state_value};
 use crate::regions::ItemKey;
 
 /// The version of the snapshot's wire form.
@@ -219,15 +218,7 @@ fn node_state(
     at: NodeRef,
 ) -> Option<NodeState> {
     let scroll = store.scroll(node);
-    let children = {
-        let mut count = 0;
-        let mut child = store.arena().links(node).and_then(|l| l.first_child);
-        while let Some(id) = child {
-            count += 1;
-            child = store.arena().links(id).and_then(|l| l.next_sibling);
-        }
-        count
-    };
+    let children = { store.arena().children(node).count() };
     let state = NodeState {
         node: at,
         path: None,
@@ -332,7 +323,7 @@ impl DevSnapshot {
                 enc.write_u64(cell.key.hi);
                 enc.write_u64(cell.key.lo);
                 enc.write_varint(u64::from(cell.nth));
-                write_state_value(&mut enc, cell.value);
+                cell.value.encode(&mut enc);
             }
         }
         enc.write_varint(self.extensions.len() as u64);
@@ -375,7 +366,7 @@ impl DevSnapshot {
                     Ok(RustCell {
                         key: StateKey::from_parts(dec.read_u64()?, dec.read_u64()?),
                         nth: read_u32(dec)?,
-                        value: read_state_value(dec)?,
+                        value: StateValue::decode(dec)?,
                     })
                 })?,
             })
@@ -427,7 +418,7 @@ fn write_view(enc: &mut Encoder, view: &ViewSnapshot) {
     for &(key, value) in &view.cells {
         enc.write_u64(key.hi);
         enc.write_u64(key.lo);
-        write_state_value(enc, value);
+        value.encode(enc);
     }
     enc.write_varint(view.states.len() as u64);
     for state in &view.states {
@@ -449,7 +440,7 @@ fn read_view(dec: &mut Decoder<'_>) -> Result<ViewSnapshot, WireError> {
     let mount = read_mount(dec)?;
     let cells = read_list(dec, MAX_ENTRIES, "snapshot cells", |dec| {
         let key = StateKey::from_parts(dec.read_u64()?, dec.read_u64()?);
-        Ok((key, read_state_value(dec)?))
+        Ok((key, StateValue::decode(dec)?))
     })?;
     if !cells.is_sorted_by_key(|&(key, _)| (key.hi, key.lo)) {
         return Err(malformed(dec));
@@ -488,7 +479,7 @@ fn read_position(dec: &mut Decoder<'_>) -> Result<TextPosition, WireError> {
 }
 
 fn write_node_state(enc: &mut Encoder, state: &NodeState) {
-    super::patch::write_node(enc, state.node);
+    viso_dev_protocol::patch::write_node(enc, state.node);
     match &state.path {
         Some(path) => {
             enc.write_u8(1);
@@ -527,7 +518,7 @@ fn write_node_state(enc: &mut Encoder, state: &NodeState) {
 }
 
 fn read_node_state(dec: &mut Decoder<'_>) -> Result<NodeState, WireError> {
-    let node = super::patch::read_node(dec)?;
+    let node = viso_dev_protocol::patch::read_node(dec)?;
     let path = read_option(dec, |dec| {
         read_list(dec, MAX_ENTRIES, "item keys", |dec| Ok(ItemKey::read(dec)?))
     })?;

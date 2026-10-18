@@ -1,30 +1,37 @@
 //! 2D and 3D transforms: [`Affine2`] and [`Transform3`].
 //!
-//! [`Affine2`] is the 2D affine transform the reference framework lacks — a 2×2
-//! linear part plus a translation, exactly what scroll / zoom / UI transforms
-//! need without paying for a full 3×3 or homogeneous `Mat4`. It composes and
-//! inverts in closed form.
+//! [`Affine2`] is the one 2D affine transform of the framework — UI transform
+//! roots, scroll/zoom, SVG `transform`, path transforms and the GPU transform
+//! buffer all use it. It is six `f32` in canvas/SVG `matrix(a b c d e f)` order,
+//! composes and inverts in closed form.
 //!
 //! [`Transform3`] is a rigid 3D pose — a unit [`Quat`] rotation plus a [`Vec3`]
-//! translation (the reference's `Pose`). It has no scale or shear, so its
-//! inverse is exact and cheap.
+//! translation. It has no scale or shear, so its inverse is exact and cheap.
 
+use crate::float::{sin_cos, sqrt, tan};
 use crate::mat::Mat4;
 use crate::quat::Quat;
 use crate::vec::{Vec2, Vec3};
 
-/// A 2D affine transform: a 2×2 linear map plus a translation.
+/// A 2D affine transform: `x' = a·x + c·y + e`, `y' = b·x + d·y + f`.
 ///
-/// Applies as `p' = M * p + t`, where `M` is column-major `[a, b, c, d]`
-/// (`x' = a·x + c·y + tx`, `y' = b·x + d·y + ty`). The linear columns match
-/// [`Mat2`](crate::Mat2) storage.
+/// The field order is the canvas/SVG `matrix(a b c d e f)` order, and the
+/// `#[repr(C)]` layout is the 24-byte transform-buffer entry.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Affine2 {
-    /// Column-major 2×2 linear part `[m00, m10, m01, m11]` (`c * 2 + r`).
-    pub matrix: [f32; 4],
-    /// Translation applied after the linear part.
-    pub translation: Vec2,
+    /// Linear part, column 0 row 0.
+    pub a: f32,
+    /// Linear part, column 0 row 1.
+    pub b: f32,
+    /// Linear part, column 1 row 0.
+    pub c: f32,
+    /// Linear part, column 1 row 1.
+    pub d: f32,
+    /// Translation x.
+    pub e: f32,
+    /// Translation y.
+    pub f: f32,
 }
 
 impl Default for Affine2 {
@@ -36,98 +43,179 @@ impl Default for Affine2 {
 
 impl Affine2 {
     /// The identity transform.
-    pub const IDENTITY: Affine2 = Affine2 {
-        matrix: [1.0, 0.0, 0.0, 1.0],
-        translation: Vec2::ZERO,
-    };
+    pub const IDENTITY: Affine2 = Affine2::new(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+
+    /// A transform from its six coefficients.
+    #[inline]
+    pub const fn new(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> Affine2 {
+        Affine2 { a, b, c, d, e, f }
+    }
 
     /// A pure translation.
     #[inline]
     pub const fn from_translation(t: Vec2) -> Affine2 {
-        Affine2 {
-            matrix: [1.0, 0.0, 0.0, 1.0],
-            translation: t,
-        }
+        Affine2::new(1.0, 0.0, 0.0, 1.0, t.x, t.y)
+    }
+
+    /// A pure translation by components.
+    #[inline]
+    pub const fn translate(tx: f32, ty: f32) -> Affine2 {
+        Affine2::new(1.0, 0.0, 0.0, 1.0, tx, ty)
     }
 
     /// A pure (possibly non-uniform) scale about the origin.
     #[inline]
     pub const fn from_scale(s: Vec2) -> Affine2 {
-        Affine2 {
-            matrix: [s.x, 0.0, 0.0, s.y],
-            translation: Vec2::ZERO,
-        }
+        Affine2::new(s.x, 0.0, 0.0, s.y, 0.0, 0.0)
     }
 
-    /// A counter-clockwise rotation of `angle` radians about the origin.
+    /// A scale about the origin by components.
+    #[inline]
+    pub const fn scale(sx: f32, sy: f32) -> Affine2 {
+        Affine2::new(sx, 0.0, 0.0, sy, 0.0, 0.0)
+    }
+
+    /// A rotation of `angle` radians about the origin: counter-clockwise on a
+    /// y-up plane, clockwise on a y-down canvas.
     #[inline]
     pub fn from_rotation(angle: f32) -> Affine2 {
-        let (s, c) = angle.sin_cos();
-        Affine2 {
-            matrix: [c, s, -s, c],
-            translation: Vec2::ZERO,
-        }
+        let (s, c) = sin_cos(angle);
+        Affine2::new(c, s, -s, c, 0.0, 0.0)
+    }
+
+    /// A horizontal skew of `angle` radians.
+    #[inline]
+    pub fn skew_x(angle: f32) -> Affine2 {
+        Affine2::new(1.0, 0.0, tan(angle), 1.0, 0.0, 0.0)
+    }
+
+    /// A vertical skew of `angle` radians.
+    #[inline]
+    pub fn skew_y(angle: f32) -> Affine2 {
+        Affine2::new(1.0, tan(angle), 0.0, 1.0, 0.0, 0.0)
+    }
+
+    /// The translation part.
+    #[inline]
+    pub const fn translation(&self) -> Vec2 {
+        Vec2::new(self.e, self.f)
     }
 
     /// Transforms a point (linear part **and** translation).
     #[inline]
     pub fn transform_point(&self, p: Vec2) -> Vec2 {
-        let m = &self.matrix;
         Vec2::new(
-            m[0] * p.x + m[2] * p.y + self.translation.x,
-            m[1] * p.x + m[3] * p.y + self.translation.y,
+            self.a * p.x + self.c * p.y + self.e,
+            self.b * p.x + self.d * p.y + self.f,
         )
     }
 
     /// Transforms a direction vector (linear part only, no translation).
     #[inline]
     pub fn transform_vector(&self, v: Vec2) -> Vec2 {
-        let m = &self.matrix;
-        Vec2::new(m[0] * v.x + m[2] * v.y, m[1] * v.x + m[3] * v.y)
+        Vec2::new(self.a * v.x + self.c * v.y, self.b * v.x + self.d * v.y)
     }
 
-    /// The composite that applies `self` first, then `rhs`
-    /// (`rhs.then(self)` order: `(self.then(rhs)).transform_point(p)` ==
-    /// `rhs.transform_point(self.transform_point(p))`).
+    /// `self × other`: `other` applies to a point first, then `self` — the SVG
+    /// `transform="A B"` and parent/child order (`world = parent.pre_concat(local)`).
+    #[inline]
+    pub fn pre_concat(&self, o: &Affine2) -> Affine2 {
+        Affine2 {
+            a: self.a * o.a + self.c * o.b,
+            b: self.b * o.a + self.d * o.b,
+            c: self.a * o.c + self.c * o.d,
+            d: self.b * o.c + self.d * o.d,
+            e: self.a * o.e + self.c * o.f + self.e,
+            f: self.b * o.e + self.d * o.f + self.f,
+        }
+    }
+
+    /// The composite that applies `self` first, then `rhs`:
+    /// `self.then(rhs).transform_point(p) == rhs.transform_point(self.transform_point(p))`.
+    #[inline]
     pub fn then(&self, rhs: &Affine2) -> Affine2 {
-        let a = &self.matrix;
-        let b = &rhs.matrix;
-        // Linear part: b * a (apply a first).
-        let matrix = [
-            b[0] * a[0] + b[2] * a[1],
-            b[1] * a[0] + b[3] * a[1],
-            b[0] * a[2] + b[2] * a[3],
-            b[1] * a[2] + b[3] * a[3],
-        ];
-        // Translation: b * a.t + b.t.
-        let translation = rhs.transform_point(self.translation);
-        Affine2 {
-            matrix,
-            translation,
-        }
+        rhs.pre_concat(self)
     }
 
-    /// The inverse transform, or [`Affine2::IDENTITY`] if the linear part is
-    /// singular (determinant ≈ 0), matching the matrix guard.
-    pub fn inverse(&self) -> Affine2 {
-        let m = &self.matrix;
-        let det = m[0] * m[3] - m[2] * m[1];
-        if det == 0.0 {
-            return Affine2::IDENTITY;
-        }
-        let idet = 1.0 / det;
-        // Inverse of the 2×2 linear part.
-        let inv = [m[3] * idet, -m[1] * idet, -m[2] * idet, m[0] * idet];
-        // Inverse translation: -inv * t.
-        let t = self.translation;
-        let translation = Vec2::new(
-            -(inv[0] * t.x + inv[2] * t.y),
-            -(inv[1] * t.x + inv[3] * t.y),
+    /// The determinant of the linear part.
+    #[inline]
+    pub fn determinant(&self) -> f32 {
+        self.a * self.d - self.b * self.c
+    }
+
+    /// Whether this is exactly the identity.
+    #[inline]
+    pub fn is_identity(&self) -> bool {
+        *self == Affine2::IDENTITY
+    }
+
+    /// Whether this is a pure translation (linear part exactly identity).
+    #[inline]
+    pub fn is_translation(&self) -> bool {
+        self.a == 1.0 && self.b == 0.0 && self.c == 0.0 && self.d == 1.0
+    }
+
+    /// Whether it only scales and translates (no rotation or skew).
+    #[inline]
+    pub fn is_scale_translate(&self) -> bool {
+        self.b == 0.0 && self.c == 0.0
+    }
+
+    /// Finite and invertible.
+    pub fn is_valid(&self) -> bool {
+        let det = self.determinant();
+        det.is_finite() && det.abs() > 1e-12 && self.e.is_finite() && self.f.is_finite()
+    }
+
+    /// The inverse, or `None` when the linear part is singular or non-finite.
+    /// Computed in `f64` so near-singular transforms keep their precision; it is
+    /// a cold-path operation (hit-test setup, path tolerance), never per vertex.
+    pub fn invert(&self) -> Option<Affine2> {
+        let (a, b, c, d, e, f) = (
+            self.a as f64,
+            self.b as f64,
+            self.c as f64,
+            self.d as f64,
+            self.e as f64,
+            self.f as f64,
         );
-        Affine2 {
-            matrix: inv,
-            translation,
+        let det = a * d - b * c;
+        if !det.is_finite() || det.abs() < 1e-14 {
+            return None;
         }
+        let inv = 1.0 / det;
+        Some(Affine2 {
+            a: (d * inv) as f32,
+            b: (-b * inv) as f32,
+            c: (-c * inv) as f32,
+            d: (a * inv) as f32,
+            e: ((c * f - d * e) * inv) as f32,
+            f: ((b * e - a * f) * inv) as f32,
+        })
+    }
+
+    /// [`invert`](Self::invert), falling back to the identity for a singular
+    /// transform.
+    #[inline]
+    pub fn inverse(&self) -> Affine2 {
+        self.invert().unwrap_or(Affine2::IDENTITY)
+    }
+
+    /// The largest stretch factor applied to any direction (the larger singular
+    /// value) — converts device-space tolerances into local space.
+    pub fn max_scale(&self) -> f32 {
+        let (a, b, c, d) = (self.a, self.b, self.c, self.d);
+        let s1 = a * a + b * b + c * c + d * d;
+        let (p, q) = (a * a + b * b - c * c - d * d, a * c + b * d);
+        let s2 = sqrt(p * p + 4.0 * (q * q));
+        sqrt((s1 + s2) * 0.5)
+    }
+
+    /// `sqrt(|det|)`: the geometric-mean scale, used for non-directional
+    /// lengths under a transform.
+    #[inline]
+    pub fn mean_scale(&self) -> f32 {
+        sqrt(self.determinant().abs())
     }
 }
 
@@ -274,11 +362,17 @@ mod tests {
 
     #[test]
     fn affine_singular_inverts_to_identity() {
-        let degenerate = Affine2 {
-            matrix: [0.0, 0.0, 0.0, 0.0],
-            translation: Vec2::ZERO,
-        };
+        let degenerate = Affine2::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(degenerate.inverse(), Affine2::IDENTITY);
+        assert_eq!(degenerate.invert(), None);
+    }
+
+    #[test]
+    fn pre_concat_is_then_reversed() {
+        let s = Affine2::scale(2.0, 3.0);
+        let t = Affine2::translate(5.0, -1.0);
+        assert_eq!(t.pre_concat(&s), s.then(&t));
+        assert_eq!(core::mem::size_of::<Affine2>(), 24);
     }
 
     #[test]

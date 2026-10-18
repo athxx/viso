@@ -15,7 +15,7 @@
 //!   (`dirty_primitives == 0`), the "0 primitive reconstruction" guarantee under
 //!   a whole-tree re-emit.
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso_render::{
     Border, LineCap, Path, PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, Stroke,
 };
@@ -38,7 +38,10 @@ fn quad_scene(color: Rgba) -> Vec<Primitive> {
     })]
 }
 
-fn new_renderer(gpu: &mut HeadlessRaster) -> Renderer {
+fn new_renderer(gpu: &mut CpuRaster) -> Renderer {
+    // The path planes below are the tessellated lane's, as a device lowers
+    // paths; the raster's own lane takes fills as coverage.
+    gpu.set_coverage_paths(false);
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     Renderer::new(gpu, format)
@@ -68,14 +71,14 @@ fn tri_scene(origin: (f32, f32), fill: Option<Rgba>, stroke: Option<Rgba>) -> Ve
 
 /// Settle a path scene into the store (two identical frames), returning the
 /// steady-state revisions and cumulative tessellation count.
-fn settle(gpu: &mut HeadlessRaster, renderer: &mut Renderer, scene: &[Primitive]) {
+fn settle(gpu: &mut CpuRaster, renderer: &mut Renderer, scene: &[Primitive]) {
     renderer.upload(gpu, scene);
     renderer.upload(gpu, scene);
 }
 
 #[test]
 fn path_geometry_change_retessellates_and_bumps_geometry_alone() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut renderer = new_renderer(&mut gpu);
 
     let fill = Some(Rgba::new(0.2, 0.6, 0.3, 1.0));
@@ -124,7 +127,7 @@ fn path_geometry_change_retessellates_and_bumps_geometry_alone() {
 
 #[test]
 fn path_translation_reuses_geometry_and_bumps_transform_alone() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut renderer = new_renderer(&mut gpu);
 
     let fill = Some(Rgba::new(0.2, 0.6, 0.3, 1.0));
@@ -163,7 +166,7 @@ fn path_translation_reuses_geometry_and_bumps_transform_alone() {
 
 #[test]
 fn path_recolor_reuses_geometry_and_bumps_paint_alone() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut renderer = new_renderer(&mut gpu);
 
     let green = Some(Rgba::new(0.2, 0.6, 0.3, 1.0));
@@ -202,7 +205,7 @@ fn path_recolor_reuses_geometry_and_bumps_paint_alone() {
 
 #[test]
 fn path_unchanged_reuses_geometry_and_bumps_nothing() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut renderer = new_renderer(&mut gpu);
 
     let scene = tri_scene(
@@ -239,7 +242,7 @@ fn path_unchanged_reuses_geometry_and_bumps_nothing() {
 
 #[test]
 fn paint_only_change_bumps_paint_plane_alone() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut renderer = new_renderer(&mut gpu);
 
     let red = Rgba::new(0.8, 0.1, 0.1, 1.0);
@@ -287,7 +290,7 @@ fn paint_only_change_bumps_paint_plane_alone() {
 
 #[test]
 fn identical_reupload_dirties_nothing() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut renderer = new_renderer(&mut gpu);
 
     let scene = quad_scene(Rgba::new(0.3, 0.6, 0.4, 1.0));
@@ -336,7 +339,7 @@ fn tri_stroked(origin: (f32, f32), stroke: Stroke) -> Vec<Primitive> {
 
 #[test]
 fn stroke_style_change_retessellates_and_bumps_geometry_alone() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut renderer = new_renderer(&mut gpu);
 
     let color = Rgba::new(0.1, 0.1, 0.1, 1.0);
@@ -378,7 +381,7 @@ fn stroke_style_change_retessellates_and_bumps_geometry_alone() {
 
 #[test]
 fn stroke_color_change_reuses_geometry_and_bumps_paint_alone() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let mut renderer = new_renderer(&mut gpu);
 
     let dark = Rgba::new(0.1, 0.1, 0.1, 1.0);

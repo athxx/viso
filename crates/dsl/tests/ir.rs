@@ -358,16 +358,9 @@ fn dirty_class_table_maps_property_semantics() {
     assert_eq!(property_dirty_class("background"), D::PAINT);
     // Dimensions re-measure and re-lay-out.
     assert_eq!(property_dirty_class("width"), D::MEASURE | D::LAYOUT);
-    // Transform-only: no measure/layout.
-    assert_eq!(
-        property_dirty_class("transform"),
-        D::TRANSFORM | D::HIT_TEST | D::PAINT
-    );
-    let t = property_dirty_class("transform");
-    assert!(
-        !t.contains(D::MEASURE) && !t.contains(D::LAYOUT),
-        "a transform change never forces re-measure or re-layout"
-    );
+    // Transform-only: the root moves its retained draws, and hit testing
+    // derives the displacement on demand.
+    assert_eq!(property_dirty_class("transform"), D::TRANSFORM);
     // Accessibility-only.
     assert_eq!(property_dirty_class("aria_label"), D::SEMANTICS);
     // Unknown property: the conservative, never-empty default.

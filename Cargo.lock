@@ -2618,16 +2618,18 @@ dependencies = [
  "trybuild",
  "ttf-parser",
  "viso-behavior",
+ "viso-dev-protocol",
  "viso-dsl",
  "viso-ende",
  "viso-gpu",
+ "viso-image",
  "viso-macros",
+ "viso-math",
  "viso-platform",
  "viso-render",
  "viso-runtime",
  "viso-services",
  "viso-shader",
- "viso-svg",
  "viso-text",
  "viso-ui",
  "viso-ui-macros",
@@ -2651,6 +2653,8 @@ dependencies = [
  "icu_plurals",
  "libm",
  "viso-ende",
+ "viso-math",
+ "viso-schema",
 ]
 
 [[package]]
@@ -2665,15 +2669,27 @@ dependencies = [
  "sha1",
  "sha2",
  "toml_edit",
+ "viso-dev-protocol",
  "viso-dsl",
  "viso-ende",
+ "viso-image",
  "viso-package",
  "viso-project",
+ "viso-schema",
  "viso-svg",
  "viso-text",
- "viso-view",
  "windows",
  "windows-core",
+]
+
+[[package]]
+name = "viso-dev-protocol"
+version = "0.0.0"
+dependencies = [
+ "viso-ende",
+ "viso-gpu-abi",
+ "viso-math",
+ "viso-schema",
 ]
 
 [[package]]
@@ -2687,7 +2703,9 @@ dependencies = [
  "icu_properties",
  "toml_edit",
  "viso-behavior",
+ "viso-dev-protocol",
  "viso-ende",
+ "viso-schema",
  "viso-shader",
  "viso-ui",
  "viso-view",
@@ -2741,6 +2759,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-footprint"
+version = "0.0.0"
+dependencies = [
+ "viso",
+]
+
+[[package]]
+name = "viso-glyph-a8"
+version = "0.0.0"
+dependencies = [
+ "ab_glyph_rasterizer",
+ "ttf-parser",
+]
+
+[[package]]
 name = "viso-gpu"
 version = "0.0.0"
 dependencies = [
@@ -2748,23 +2781,46 @@ dependencies = [
  "bitflags",
  "block2 0.6.2",
  "js-sys",
+ "libloading",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "trybuild",
+ "viso-gpu-abi",
  "viso-handle",
  "viso-macros",
- "viso-runtime",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "windows",
 ]
 
 [[package]]
+name = "viso-gpu-abi"
+version = "0.0.0"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "viso-handle"
 version = "0.0.0"
+
+[[package]]
+name = "viso-image"
+version = "0.0.0"
+dependencies = [
+ "ab_glyph_rasterizer",
+ "miniz_oxide",
+ "viso-gpu-abi",
+ "viso-math",
+ "viso-schema",
+ "viso-svg",
+ "zune-core",
+ "zune-jpeg",
+ "zune-png",
+]
 
 [[package]]
 name = "viso-lsp"
@@ -2777,11 +2833,13 @@ dependencies = [
 name = "viso-macros"
 version = "0.0.0"
 dependencies = [
+ "encoding_rs",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
  "ttf-parser",
  "unicode-script",
+ "viso-glyph-a8",
 ]
 
 [[package]]
@@ -2789,6 +2847,7 @@ name = "viso-math"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "libm",
 ]
 
 [[package]]
@@ -2848,13 +2907,13 @@ dependencies = [
  "naga",
  "naga-types",
  "viso-gpu",
+ "viso-image",
  "viso-math",
+ "viso-schema",
  "viso-shader",
+ "viso-svg",
  "viso-text",
  "wasm-bindgen-test",
- "zune-core",
- "zune-jpeg",
- "zune-png",
 ]
 
 [[package]]
@@ -2863,6 +2922,13 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "viso-platform",
+]
+
+[[package]]
+name = "viso-schema"
+version = "0.0.0"
+dependencies = [
+ "viso-ende",
 ]
 
 [[package]]
@@ -2895,7 +2961,7 @@ version = "0.0.0"
 dependencies = [
  "naga",
  "viso-ende",
- "viso-gpu",
+ "viso-gpu-abi",
 ]
 
 [[package]]
@@ -2903,7 +2969,6 @@ name = "viso-svg"
 version = "0.0.0"
 dependencies = [
  "viso-math",
- "viso-render",
 ]
 
 [[package]]
@@ -2920,7 +2985,7 @@ dependencies = [
  "unicode-bidi",
  "unicode-script",
  "unicode-segmentation",
- "viso-gpu",
+ "viso-glyph-a8",
  "zune-core",
  "zune-png",
 ]
@@ -2931,8 +2996,10 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "viso-ende",
+ "viso-math",
  "viso-render",
  "viso-runtime",
+ "viso-schema",
  "viso-text",
 ]
 
@@ -2951,12 +3018,11 @@ dependencies = [
 name = "viso-view"
 version = "0.0.0"
 dependencies = [
- "miniz_oxide",
  "viso-behavior",
+ "viso-dev-protocol",
  "viso-ende",
+ "viso-schema",
  "viso-ui",
- "zune-core",
- "zune-png",
 ]
 
 [[package]]
@@ -2964,6 +3030,7 @@ name = "viso-widgets"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "viso-math",
  "viso-ui",
 ]
 
@@ -3465,6 +3532,8 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "viso-dev-protocol",
+ "viso-ende",
  "viso-package",
 ]
 

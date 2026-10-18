@@ -3,6 +3,11 @@
 - Status: Accepted
 - Date: 2026-09-26
 
+> Note: the boundary format of §1 is superseded by ADR 0042. The seam carries
+> a Viso-owned `SemanticsDelta`; `accesskit::TreeUpdate` is built from it only
+> inside the macOS, Windows, Linux and Android adapters, and the iOS and Web
+> adapters consume the delta directly. The rest of this ADR stands.
+
 ## Context
 
 The canonical accessibility model is Viso's own `SemanticsTree`, derived from the

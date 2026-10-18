@@ -68,7 +68,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use viso::__test_support::drive_scripted;
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::platform::{
     Modifiers as RawModifiers, PointerButtons as RawButtons, PointerPhase as RawPhase, RawEvent,
     RawPointer, WindowId,
@@ -137,10 +137,8 @@ fn fill(color: Rgba) -> impl Fn(&mut BuildCx<'_>) + 'static {
 fn children_of(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
     let arena = store.arena();
     let mut out = Vec::new();
-    let mut child = arena.links(parent).and_then(|l| l.first_child);
-    while let Some(c) = child {
+    for c in arena.children(parent) {
         out.push(c);
-        child = arena.links(c).and_then(|l| l.next_sibling);
     }
     out
 }
@@ -298,14 +296,12 @@ impl Sheeted {
     fn settle(&mut self) {
         self.anims
             .tick(&mut self.store, SLIDE + Duration::from_millis(16));
-        self.store.resolve_transforms(self.root);
     }
 
     /// Tick the registry by one fixed frame step without settling — leaves the slide in
     /// flight (used to observe mid-slide state).
     fn tick_one(&mut self) {
         self.anims.tick(&mut self.store, Duration::from_millis(16));
-        self.store.resolve_transforms(self.root);
     }
 
     /// The current value of the shared open cell (via a throwaway read cx).
@@ -343,7 +339,7 @@ fn key_ev(key: Key, pressed: bool, repeat: bool) -> KeyEvent {
 
 #[test]
 fn open_sheet_paints_the_content_pinned_to_the_bottom_edge_and_matches_golden() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);
@@ -361,7 +357,6 @@ fn open_sheet_paints_the_content_pinned_to_the_bottom_edge_and_matches_golden() 
     // the modal pack.
     let mut scratch = Vec::new();
     ix.store.layout(ix.root, surface_rect(), &mut scratch);
-    ix.store.resolve_transforms(ix.root);
 
     let mut primitives = Vec::new();
     paint_tree(&ix.store, ix.root, &mut primitives);
@@ -967,7 +962,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: viso::gpu::SurfaceId,
     store: NodeStore,
@@ -980,7 +975,7 @@ struct Harness {
 /// (an in-flight animation frame) or settle it (a rested frame). Returns the harness with
 /// the slide *in flight* (not yet settled).
 fn setup_alloc() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);
@@ -1058,15 +1053,13 @@ fn setup_alloc() -> Harness {
 /// of the renderer, and the part section 28 governs ("animation ticks" must not allocate).
 fn tick_step(h: &mut Harness) {
     h.anims.tick(&mut h.store, STEP);
-    h.store.resolve_transforms(h.root);
 }
 
 /// One full in-flight slide frame: the tick/transform step, then paint/upload/submit — the
 /// whole per-frame path an animating sheet takes through the renderer.
 fn slide_frame(h: &mut Harness) {
     tick_step(h);
-    h.primitives.clear();
-    paint_tree(&h.store, h.root, &mut h.primitives);
+    h.store.repaint(h.root, &mut h.primitives);
     h.renderer.upload(&mut h.gpu, &h.primitives);
     h.renderer
         .submit(&mut h.gpu, h.surface, CLEAR, [W as f32, H as f32]);
@@ -1123,22 +1116,22 @@ fn the_animation_tick_step_is_allocation_free() {
 }
 
 #[test]
-fn an_in_flight_slide_frame_is_deterministic_and_reuses_gpu_resources() {
-    // The full animating frame (tick + paint + upload + submit) legitimately re-uploads
-    // the changed geometry each frame — that is the slide. What must hold is that two
-    // identical in-flight frames allocate the same amount (no unbounded scratch churn) and
-    // that no GPU resource is created per frame (buffers/textures/bind groups are reused —
-    // section 17.4). This is the modal steady-frame invariant extended to a moving frame.
+fn an_in_flight_slide_frame_allocates_nothing_and_reuses_gpu_resources() {
+    // The full animating frame (tick + repaint + upload + submit) legitimately re-uploads
+    // the changed geometry each frame — that is the slide. What must hold is that it
+    // touches the heap not at all (every scratch is retained, and the upload coalesces
+    // while it diffs) and that no GPU resource is created per frame (buffers/textures/
+    // bind groups are reused — section 17.4). This is the modal steady-frame invariant
+    // extended to a moving frame.
     let mut h = setup_alloc();
     arm_long_slide(&mut h);
 
     for _ in 0..4 {
         slide_frame(&mut h);
     }
-    // Grow the reused paint buffer to steady capacity so a later `paint_tree` into it does
+    // Grow the reused paint buffer to steady capacity so a later repaint into it does
     // not reallocate.
-    h.primitives.clear();
-    paint_tree(&h.store, h.root, &mut h.primitives);
+    h.store.repaint(h.root, &mut h.primitives);
 
     let buffers = h.gpu.buffer_count();
     let textures = h.gpu.texture_count();
@@ -1171,10 +1164,10 @@ fn an_in_flight_slide_frame_is_deterministic_and_reuses_gpu_resources() {
     }
 
     assert_eq!(
-        frame_allocs[0], frame_allocs[1],
-        "an in-flight slide frame allocated a different amount on two identical frames \
-         ({} vs {}): the paint / encode scratch is not deterministic",
-        frame_allocs[0], frame_allocs[1]
+        frame_allocs,
+        [0, 0],
+        "an in-flight slide frame allocated (frames {frame_allocs:?}): the paint / encode \
+         scratch must be retained across frames"
     );
 
     let FrameStats {
@@ -1194,7 +1187,6 @@ fn a_settled_sheet_registry_is_empty_and_a_forced_re_tick_allocates_nothing() {
     // frames — the zero-CPU-when-idle contract).
     h.anims
         .tick(&mut h.store, SLIDE + Duration::from_millis(16));
-    h.store.resolve_transforms(h.root);
     assert!(
         h.anims.is_empty(),
         "a settled sheet has an empty animation registry (the loop would halt)"

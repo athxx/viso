@@ -1,19 +1,13 @@
-//! 2D UI geometry: [`Point`], [`Size`], [`Rect`], [`Insets`], and the `f64`
-//! layout-accuracy variants [`DPoint`], [`DRect`].
+//! 2D UI geometry: [`Point`], [`Size`], [`Rect`], [`Insets`].
 //!
-//! A [`Rect`] is a position plus a size, top-left origin. Hit-testing is
+//! A [`Rect`] is a top-left position plus an extent, stored flat
+//! (`x, y, w, h`) so it is one 16-byte `#[repr(C)]` value everywhere it travels:
+//! layout, hit testing, paint, damage and the GPU upload path. Hit-testing is
 //! **half-open** — the near edges are inclusive and the far edges exclusive
 //! (`[x, x + w)` / `[y, y + h)`) — so two rects sharing a seam do not both
-//! claim a point on it. This matches the existing render `Rect` convention and
-//! is what UI hit-testing wants; it is a deliberate divergence from the
-//! reference framework's inclusive-both-edges `contains`.
-//!
-//! `f32` is the primary precision. [`DPoint`]/[`DRect`] mirror the layout-facing
-//! subset in `f64` for the accuracy-sensitive path (see [`DVec2`](crate::DVec2)),
-//! with `dpi_snap` to pin an accumulated coordinate to the device-pixel grid
-//! before it crosses back to the `f32` render side.
+//! claim a point on it.
 
-use crate::dvec::DVec2;
+use crate::transform::Affine2;
 use crate::vec::Vec2;
 
 /// A 2D position, top-left origin, in `f32`.
@@ -36,14 +30,18 @@ pub struct Size {
     pub h: f32,
 }
 
-/// An axis-aligned rectangle: a top-left [`Point`] plus a [`Size`].
+/// An axis-aligned rectangle: top-left corner plus extent.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Rect {
-    /// Top-left corner.
-    pub origin: Point,
-    /// Width and height.
-    pub size: Size,
+    /// Top-left corner x.
+    pub x: f32,
+    /// Top-left corner y.
+    pub y: f32,
+    /// Width.
+    pub w: f32,
+    /// Height.
+    pub h: f32,
 }
 
 /// Per-edge insets (padding/margins), in `f32`.
@@ -140,208 +138,189 @@ impl Insets {
 }
 
 impl Rect {
-    /// An effectively unbounded rect — the identity for [`intersect`](Self::intersect):
-    /// intersecting any finite rect with `INFINITE` yields that rect back. Its
-    /// origin is far negative and its extent huge, chosen so `x + w` stays finite
-    /// (no overflow) while covering every realistic coordinate.
-    pub const INFINITE: Rect = Rect {
-        origin: Point {
-            x: -f32::MAX / 4.0,
-            y: -f32::MAX / 4.0,
-        },
-        size: Size {
-            w: f32::MAX / 2.0,
-            h: f32::MAX / 2.0,
-        },
-    };
+    /// The empty rect at the origin.
+    pub const ZERO: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+
+    /// An effectively unbounded rect — the identity for [`intersect`](Self::intersect).
+    /// Its origin is far negative and its extent huge, chosen so `x + w` stays
+    /// finite (no overflow) while covering every realistic coordinate.
+    pub const INFINITE: Rect = Rect::new(
+        -f32::MAX / 4.0,
+        -f32::MAX / 4.0,
+        f32::MAX / 2.0,
+        f32::MAX / 2.0,
+    );
 
     /// Builds a rect from position and size components.
     #[inline]
     pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Rect {
-        Rect {
-            origin: Point { x, y },
-            size: Size { w, h },
-        }
+        Rect { x, y, w, h }
     }
 
-    /// Builds a rect from an [`origin`](Rect::origin) and [`size`](Rect::size).
+    /// Builds a rect from its left, top, right and bottom edges.
+    #[inline]
+    pub fn from_ltrb(l: f32, t: f32, r: f32, b: f32) -> Rect {
+        Rect::new(l, t, r - l, b - t)
+    }
+
+    /// Builds a rect from an origin and a size.
     #[inline]
     pub const fn from_origin_size(origin: Point, size: Size) -> Rect {
-        Rect { origin, size }
+        Rect::new(origin.x, origin.y, size.w, size.h)
+    }
+
+    /// The top-left corner.
+    #[inline]
+    pub const fn origin(self) -> Point {
+        Point::new(self.x, self.y)
+    }
+
+    /// The extent.
+    #[inline]
+    pub const fn size(self) -> Size {
+        Size::new(self.w, self.h)
     }
 
     /// The right edge `x + w`.
     #[inline]
     pub fn max_x(self) -> f32 {
-        self.origin.x + self.size.w
+        self.x + self.w
     }
 
     /// The bottom edge `y + h`.
     #[inline]
     pub fn max_y(self) -> f32 {
-        self.origin.y + self.size.h
+        self.y + self.h
     }
 
     /// The center point.
     #[inline]
     pub fn center(self) -> Point {
-        Point::new(
-            self.origin.x + self.size.w * 0.5,
-            self.origin.y + self.size.h * 0.5,
-        )
+        Point::new(self.x + self.w * 0.5, self.y + self.h * 0.5)
     }
 
-    /// Whether the point lies inside the rect, **half-open** (`[x, x+w)` /
-    /// `[y, y+h)`): near edges inclusive, far edges exclusive, so a point on a
-    /// shared seam belongs to exactly one of two tiling rects.
+    /// Whether the extent is zero or negative on either axis.
     #[inline]
-    pub fn contains(self, p: Point) -> bool {
-        p.x >= self.origin.x && p.x < self.max_x() && p.y >= self.origin.y && p.y < self.max_y()
+    pub fn is_empty(self) -> bool {
+        self.w <= 0.0 || self.h <= 0.0
+    }
+
+    /// Whether the extent is positive and finite on both axes — a rect that can
+    /// cover pixels.
+    #[inline]
+    pub fn has_area(self) -> bool {
+        self.w > 0.0 && self.h > 0.0 && self.w.is_finite() && self.h.is_finite()
+    }
+
+    /// Whether every component is finite.
+    #[inline]
+    pub fn is_finite(self) -> bool {
+        self.x.is_finite() && self.y.is_finite() && self.w.is_finite() && self.h.is_finite()
+    }
+
+    /// Whether `(px, py)` lies inside, **half-open** (`[x, x+w)` / `[y, y+h)`):
+    /// a point on a shared seam belongs to exactly one of two tiling rects.
+    #[inline]
+    pub fn contains(self, px: f32, py: f32) -> bool {
+        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
+    }
+
+    /// [`contains`](Self::contains) for a [`Point`].
+    #[inline]
+    pub fn contains_point(self, p: Point) -> bool {
+        self.contains(p.x, p.y)
     }
 
     /// Whether the two rects overlap. Strict: rects that merely touch on an edge
     /// do not count as intersecting.
     #[inline]
     pub fn intersects(self, other: Rect) -> bool {
-        other.origin.x < self.max_x()
-            && other.max_x() > self.origin.x
-            && other.origin.y < self.max_y()
-            && other.max_y() > self.origin.y
+        other.x < self.max_x()
+            && other.max_x() > self.x
+            && other.y < self.max_y()
+            && other.max_y() > self.y
     }
 
     /// The overlapping region of two rects. A non-overlapping pair yields an
     /// empty rect (`w`/`h` clamped to 0).
+    #[inline]
     pub fn intersect(self, other: Rect) -> Rect {
-        let x0 = self.origin.x.max(other.origin.x);
-        let y0 = self.origin.y.max(other.origin.y);
+        let x0 = self.x.max(other.x);
+        let y0 = self.y.max(other.y);
         let x1 = self.max_x().min(other.max_x());
         let y1 = self.max_y().min(other.max_y());
         Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
     }
 
-    /// The smallest rect containing both (the reference's `hull`).
+    /// The smallest rect containing both, degenerate operands included (the
+    /// bounds of a horizontal line still widen a hull).
+    #[inline]
     pub fn union(self, other: Rect) -> Rect {
-        let x0 = self.origin.x.min(other.origin.x);
-        let y0 = self.origin.y.min(other.origin.y);
-        let x1 = self.max_x().max(other.max_x());
-        let y1 = self.max_y().max(other.max_y());
-        Rect::new(x0, y0, x1 - x0, y1 - y0)
+        Rect::from_ltrb(
+            self.x.min(other.x),
+            self.y.min(other.y),
+            self.max_x().max(other.max_x()),
+            self.max_y().max(other.max_y()),
+        )
+    }
+
+    /// The bounding box of two rects where an empty operand is the identity, so
+    /// [`Rect::ZERO`] seeds a running accumulation: `ZERO.accumulate(a) == a`.
+    #[inline]
+    pub fn accumulate(self, other: Rect) -> Rect {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return self;
+        }
+        self.union(other)
     }
 
     /// A copy translated by `delta`.
     #[inline]
     pub fn translate(self, delta: Vec2) -> Rect {
-        Rect::from_origin_size(
-            Point::new(self.origin.x + delta.x, self.origin.y + delta.y),
-            self.size,
-        )
+        Rect::new(self.x + delta.x, self.y + delta.y, self.w, self.h)
     }
 
     /// Shrinks the rect inward by `insets` (a negative inset grows it). The
     /// result is clamped to a non-negative size.
+    #[inline]
     pub fn inset(self, insets: Insets) -> Rect {
-        let w = (self.size.w - insets.horizontal()).max(0.0);
-        let h = (self.size.h - insets.vertical()).max(0.0);
+        let w = (self.w - insets.horizontal()).max(0.0);
+        let h = (self.h - insets.vertical()).max(0.0);
+        Rect::new(self.x + insets.left, self.y + insets.top, w, h)
+    }
+
+    /// Grows the rect by `amount` on every side (a negative amount shrinks it);
+    /// the extent is clamped at zero.
+    #[inline]
+    pub fn inflate(self, amount: f32) -> Rect {
         Rect::new(
-            self.origin.x + insets.left,
-            self.origin.y + insets.top,
-            w,
-            h,
+            self.x - amount,
+            self.y - amount,
+            (self.w + amount * 2.0).max(0.0),
+            (self.h + amount * 2.0).max(0.0),
         )
     }
-}
 
-/// A 2D position in `f64`, for the accuracy-sensitive layout path.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct DPoint {
-    /// Horizontal coordinate.
-    pub x: f64,
-    /// Vertical coordinate.
-    pub y: f64,
-}
-
-/// An axis-aligned rectangle in `f64`, for the accuracy-sensitive layout path.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct DRect {
-    /// Top-left corner.
-    pub origin: DPoint,
-    /// Width and height, as a [`DVec2`] (`x = w`, `y = h`).
-    pub size: DVec2,
-}
-
-impl DPoint {
-    /// The origin `(0, 0)`.
-    pub const ZERO: DPoint = DPoint { x: 0.0, y: 0.0 };
-
-    /// Builds a point.
-    #[inline]
-    pub const fn new(x: f64, y: f64) -> DPoint {
-        DPoint { x, y }
-    }
-
-    /// Narrows to an `f32` [`Point`] for the render boundary. Explicit because
-    /// it is lossy.
-    #[inline]
-    pub fn to_point(self) -> Point {
-        Point::new(self.x as f32, self.y as f32)
-    }
-}
-
-impl DRect {
-    /// Builds a rect from position and size components.
-    #[inline]
-    pub const fn new(x: f64, y: f64, w: f64, h: f64) -> DRect {
-        DRect {
-            origin: DPoint { x, y },
-            size: DVec2 { x: w, y: h },
+    /// The axis-aligned bounding box of the four corners under `t`.
+    pub fn transform_bounds(self, t: &Affine2) -> Rect {
+        let corners = [
+            t.transform_point(Vec2::new(self.x, self.y)),
+            t.transform_point(Vec2::new(self.max_x(), self.y)),
+            t.transform_point(Vec2::new(self.x, self.max_y())),
+            t.transform_point(Vec2::new(self.max_x(), self.max_y())),
+        ];
+        let (mut x0, mut y0, mut x1, mut y1) =
+            (corners[0].x, corners[0].y, corners[0].x, corners[0].y);
+        for c in &corners[1..] {
+            x0 = x0.min(c.x);
+            y0 = y0.min(c.y);
+            x1 = x1.max(c.x);
+            y1 = y1.max(c.y);
         }
-    }
-
-    /// The right edge `x + w`.
-    #[inline]
-    pub fn max_x(self) -> f64 {
-        self.origin.x + self.size.x
-    }
-
-    /// The bottom edge `y + h`.
-    #[inline]
-    pub fn max_y(self) -> f64 {
-        self.origin.y + self.size.y
-    }
-
-    /// Whether the point lies inside, half-open (matches [`Rect::contains`]).
-    #[inline]
-    pub fn contains(self, p: DPoint) -> bool {
-        p.x >= self.origin.x && p.x < self.max_x() && p.y >= self.origin.y && p.y < self.max_y()
-    }
-
-    /// Snaps origin and size to the device-pixel grid at scale `dpi_factor`
-    /// before crossing to the `f32` side, to avoid sub-pixel shimmer. See
-    /// [`DVec2::dpi_snap`](crate::DVec2::dpi_snap). A non-positive factor is a
-    /// no-op.
-    pub fn dpi_snap(self, dpi_factor: f64) -> DRect {
-        if dpi_factor <= 0.0 {
-            return self;
-        }
-        let snap = |v: f64| (v * dpi_factor).round() / dpi_factor;
-        DRect {
-            origin: DPoint::new(snap(self.origin.x), snap(self.origin.y)),
-            size: DVec2::new(snap(self.size.x), snap(self.size.y)),
-        }
-    }
-
-    /// Narrows to an `f32` [`Rect`] for the render boundary. Explicit because it
-    /// is lossy.
-    #[inline]
-    pub fn to_rect(self) -> Rect {
-        Rect::new(
-            self.origin.x as f32,
-            self.origin.y as f32,
-            self.size.x as f32,
-            self.size.y as f32,
-        )
+        Rect::from_ltrb(x0, y0, x1, y1)
     }
 }
 
@@ -352,11 +331,11 @@ mod tests {
     #[test]
     fn contains_is_half_open() {
         let r = Rect::new(0.0, 0.0, 10.0, 10.0);
-        assert!(r.contains(Point::new(0.0, 0.0))); // near edge inclusive
-        assert!(r.contains(Point::new(9.999, 9.999)));
-        assert!(!r.contains(Point::new(10.0, 5.0))); // far edge exclusive
-        assert!(!r.contains(Point::new(5.0, 10.0)));
-        assert!(!r.contains(Point::new(-0.001, 5.0)));
+        assert!(r.contains_point(Point::new(0.0, 0.0))); // near edge inclusive
+        assert!(r.contains_point(Point::new(9.999, 9.999)));
+        assert!(!r.contains_point(Point::new(10.0, 5.0))); // far edge exclusive
+        assert!(!r.contains_point(Point::new(5.0, 10.0)));
+        assert!(!r.contains_point(Point::new(-0.001, 5.0)));
     }
 
     #[test]
@@ -364,8 +343,8 @@ mod tests {
         let left = Rect::new(0.0, 0.0, 10.0, 10.0);
         let right = Rect::new(10.0, 0.0, 10.0, 10.0);
         let seam = Point::new(10.0, 5.0);
-        assert!(!left.contains(seam));
-        assert!(right.contains(seam));
+        assert!(!left.contains_point(seam));
+        assert!(right.contains_point(seam));
     }
 
     #[test]
@@ -382,7 +361,7 @@ mod tests {
         let b = Rect::new(10.0, 0.0, 10.0, 10.0);
         assert!(!a.intersects(b));
         // Intersection region collapses to zero width.
-        assert_eq!(a.intersect(b).size.w, 0.0);
+        assert_eq!(a.intersect(b).w, 0.0);
     }
 
     #[test]
@@ -390,7 +369,7 @@ mod tests {
         let a = Rect::new(0.0, 0.0, 5.0, 5.0);
         let b = Rect::new(100.0, 100.0, 5.0, 5.0);
         let i = a.intersect(b);
-        assert_eq!(i.size, Size::ZERO);
+        assert_eq!(i.size(), Size::ZERO);
     }
 
     #[test]
@@ -414,7 +393,7 @@ mod tests {
             Rect::new(10.0, 10.0, 80.0, 80.0)
         );
         // Over-inset clamps to zero, does not go negative.
-        assert_eq!(r.inset(Insets::all(60.0)).size, Size::ZERO);
+        assert_eq!(r.inset(Insets::all(60.0)).size(), Size::ZERO);
     }
 
     #[test]
@@ -424,16 +403,24 @@ mod tests {
     }
 
     #[test]
-    fn drect_dpi_snap_rounds_to_grid() {
-        let r = DRect::new(1.24, 1.26, 3.1, 4.9);
-        let snapped = r.dpi_snap(2.0); // grid step 0.5
-        assert_eq!(snapped.origin, DPoint::new(1.0, 1.5));
-        assert_eq!(snapped.size, DVec2::new(3.0, 5.0));
+    fn accumulate_treats_empty_as_identity() {
+        let a = Rect::new(3.0, 4.0, 5.0, 6.0);
+        assert_eq!(Rect::ZERO.accumulate(a), a);
+        assert_eq!(a.accumulate(Rect::ZERO), a);
+        // A degenerate operand still widens a plain hull.
+        let line = Rect::new(20.0, 4.0, 0.0, 6.0);
+        assert_eq!(a.union(line), Rect::new(3.0, 4.0, 17.0, 6.0));
     }
 
     #[test]
-    fn drect_narrows_to_rect() {
-        let r = DRect::new(1.5, 2.5, 3.0, 4.0);
-        assert_eq!(r.to_rect(), Rect::new(1.5, 2.5, 3.0, 4.0));
+    fn transform_bounds_covers_rotated_corners() {
+        let r = Rect::new(0.0, 0.0, 2.0, 1.0);
+        let b = r.transform_bounds(&Affine2::from_rotation(core::f32::consts::FRAC_PI_2));
+        assert!((b.x - -1.0).abs() < 1e-5 && (b.w - 1.0).abs() < 1e-5 && (b.h - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rect_is_sixteen_bytes() {
+        assert_eq!(core::mem::size_of::<Rect>(), 16);
     }
 }

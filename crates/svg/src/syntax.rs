@@ -1,7 +1,7 @@
 //! Microsyntax parsers for SVG attribute values: numbers, lengths, lists,
 //! transform lists, `viewBox`, `preserveAspectRatio` and `url(#id)` references.
 
-use crate::geom::{Rect, Transform};
+use crate::geom::{Affine2, Rect};
 
 /// A byte cursor over an attribute value.
 pub(crate) struct Stream<'a> {
@@ -299,9 +299,9 @@ pub(crate) fn parse_view_box(s: &str) -> Option<Rect> {
 /// syntax (`px`/`deg`/`rad`/`turn` units, `translateX` etc.). A malformed list
 /// yields `None`, which SVG treats as the identity for attributes; callers
 /// decide.
-pub(crate) fn parse_transform(s: &str) -> Option<Transform> {
+pub(crate) fn parse_transform(s: &str) -> Option<Affine2> {
     let mut st = Stream::new(s);
-    let mut ts = Transform::IDENTITY;
+    let mut ts = Affine2::IDENTITY;
     loop {
         st.skip_comma_ws();
         if st.at_end() {
@@ -348,23 +348,23 @@ pub(crate) fn parse_transform(s: &str) -> Option<Transform> {
             }
         }
         let t = match (name.as_str(), args.as_slice()) {
-            ("matrix", &[a, b, c, d, e, f]) => Transform::new(a, b, c, d, e, f),
-            ("translate", &[x]) => Transform::translate(x, 0.0),
-            ("translate", &[x, y]) => Transform::translate(x, y),
-            ("translatex", &[x]) => Transform::translate(x, 0.0),
-            ("translatey", &[y]) => Transform::translate(0.0, y),
-            ("scale", &[x]) => Transform::scale(x, x),
-            ("scale", &[x, y]) => Transform::scale(x, y),
-            ("scalex", &[x]) => Transform::scale(x, 1.0),
-            ("scaley", &[y]) => Transform::scale(1.0, y),
-            ("rotate", &[a]) => Transform::rotate(a),
-            ("rotate", &[a, cx, cy]) => Transform::translate(cx, cy)
-                .pre_concat(&Transform::rotate(a))
-                .pre_concat(&Transform::translate(-cx, -cy)),
-            ("skewx", &[a]) => Transform::skew_x(a),
-            ("skewy", &[a]) => Transform::skew_y(a),
-            ("skew", &[a]) => Transform::skew_x(a),
-            ("skew", &[a, b]) => Transform::new(
+            ("matrix", &[a, b, c, d, e, f]) => Affine2::new(a, b, c, d, e, f),
+            ("translate", &[x]) => Affine2::translate(x, 0.0),
+            ("translate", &[x, y]) => Affine2::translate(x, y),
+            ("translatex", &[x]) => Affine2::translate(x, 0.0),
+            ("translatey", &[y]) => Affine2::translate(0.0, y),
+            ("scale", &[x]) => Affine2::scale(x, x),
+            ("scale", &[x, y]) => Affine2::scale(x, y),
+            ("scalex", &[x]) => Affine2::scale(x, 1.0),
+            ("scaley", &[y]) => Affine2::scale(1.0, y),
+            ("rotate", &[a]) => Affine2::from_rotation(a.to_radians()),
+            ("rotate", &[a, cx, cy]) => Affine2::translate(cx, cy)
+                .pre_concat(&Affine2::from_rotation(a.to_radians()))
+                .pre_concat(&Affine2::translate(-cx, -cy)),
+            ("skewx", &[a]) => Affine2::skew_x(a.to_radians()),
+            ("skewy", &[a]) => Affine2::skew_y(a.to_radians()),
+            ("skew", &[a]) => Affine2::skew_x(a.to_radians()),
+            ("skew", &[a, b]) => Affine2::new(
                 1.0,
                 b.to_radians().tan(),
                 a.to_radians().tan(),
@@ -435,11 +435,11 @@ pub(crate) fn parse_aspect(s: &str) -> AspectRatio {
 
 /// The transform mapping `view_box` into a viewport of `size` at the origin,
 /// honoring `preserveAspectRatio` (SVG 2 §8.2 "viewBox" algorithm).
-pub(crate) fn view_box_transform(view_box: Rect, aspect: AspectRatio, w: f32, h: f32) -> Transform {
+pub(crate) fn view_box_transform(view_box: Rect, aspect: AspectRatio, w: f32, h: f32) -> Affine2 {
     let sx = w / view_box.w;
     let sy = h / view_box.h;
     if aspect.align == Align::None {
-        return Transform::new(sx, 0.0, 0.0, sy, -view_box.x * sx, -view_box.y * sy);
+        return Affine2::new(sx, 0.0, 0.0, sy, -view_box.x * sx, -view_box.y * sy);
     }
     let s = if aspect.slice { sx.max(sy) } else { sx.min(sy) };
     let (ax, ay) = match aspect.align {
@@ -455,7 +455,7 @@ pub(crate) fn view_box_transform(view_box: Rect, aspect: AspectRatio, w: f32, h:
     };
     let tx = -view_box.x * s + (w - view_box.w * s) * ax;
     let ty = -view_box.y * s + (h - view_box.h * s) * ay;
-    Transform::new(s, 0.0, 0.0, s, tx, ty)
+    Affine2::new(s, 0.0, 0.0, s, tx, ty)
 }
 
 /// Extract the fragment id from `url(#id)` / `url("#id")` (plus any trailing
@@ -496,9 +496,9 @@ mod tests {
     #[test]
     fn transform_list_composes_left_to_right() {
         let t = parse_transform("translate(10, 20) scale(2)").unwrap();
-        assert_eq!(t, Transform::new(2.0, 0.0, 0.0, 2.0, 10.0, 20.0));
+        assert_eq!(t, Affine2::new(2.0, 0.0, 0.0, 2.0, 10.0, 20.0));
         let r = parse_transform("rotate(90 10 10)").unwrap();
-        let p = r.apply(crate::geom::Point::new(20.0, 10.0));
+        let p = r.transform_point(crate::geom::Vec2::new(20.0, 10.0));
         assert!((p.x - 10.0).abs() < 1e-4 && (p.y - 20.0).abs() < 1e-4);
         assert!(parse_transform("translate(1,").is_none());
     }
@@ -511,7 +511,7 @@ mod tests {
             100.0,
             100.0,
         );
-        assert_eq!(t, Transform::new(5.0, 0.0, 0.0, 5.0, 25.0, 0.0));
+        assert_eq!(t, Affine2::new(5.0, 0.0, 0.0, 5.0, 25.0, 0.0));
     }
 
     #[test]

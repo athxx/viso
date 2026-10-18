@@ -163,10 +163,8 @@ impl Mounted {
     fn children(&self, node: NodeId) -> Vec<NodeId> {
         let arena = self.store.arena();
         let mut out = Vec::new();
-        let mut child = arena.links(node).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in arena.children(node) {
             out.push(c);
-            child = arena.links(c).and_then(|l| l.next_sibling);
         }
         out
     }

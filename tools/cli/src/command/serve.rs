@@ -5,7 +5,7 @@
 use viso_project::Target;
 
 use super::run::session;
-use crate::args::{RunArgs, RunTarget, ServeArgs, WebTarget};
+use crate::args::{RunArgs, RunTarget, ServeArgs, TargetArg, WebTarget};
 use crate::context::Context;
 use crate::deploy::web;
 use crate::error::{CLI_USAGE, ENV_DEV_CHANNEL};
@@ -25,17 +25,18 @@ pub fn run(ctx: &Context<'_>, args: &ServeArgs, out: &mut Output) -> u8 {
         },
     };
     let run = RunArgs {
-        target: Some(match target {
+        target: Some(TargetArg::Builtin(match target {
             WebTarget::Gpu => RunTarget::WebGpu,
             WebTarget::Dom => RunTarget::WebDom,
             WebTarget::Hybrid => RunTarget::WebHybrid,
-        }),
+        })),
         device: None,
         browser: None,
         no_hot_reload: args.no_hot_reload,
         profile_frame: false,
         inspect: false,
         open: false,
+        emulate: false,
         env: Vec::new(),
         cwd: None,
         app_args: Vec::new(),

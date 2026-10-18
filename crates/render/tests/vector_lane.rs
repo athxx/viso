@@ -24,7 +24,7 @@
 //! the algorithm and its crossovers are not public ABI. What is pinned is the
 //! *shape*: which way each condition points, and that all of them are required.
 
-use viso_gpu::{Caps, GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureFormat};
+use viso_gpu::{Caps, CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
 use viso_render::{
     Border, LayerClip, PathCmd, Point, Primitive, Quad, Rect, Renderer, Rgba, Stroke, VectorLane,
     VectorWorkload,
@@ -33,8 +33,8 @@ use viso_render::{
 const W: u32 = 256;
 const H: u32 = 256;
 
-fn renderer() -> (HeadlessRaster, SurfaceId, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer() -> (CpuRaster, SurfaceId, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
@@ -269,7 +269,7 @@ fn twenty_buttons_and_a_panel_are_never_routed_through_compute() {
 /// compute units still reports `false` while the RHI has no way to call them.
 #[test]
 fn no_backend_offers_a_dispatch_encoder_yet() {
-    let gpu = HeadlessRaster::new();
+    let gpu = CpuRaster::new();
     let caps: &Caps = gpu.caps();
     assert!(!caps.compute_dispatch);
 

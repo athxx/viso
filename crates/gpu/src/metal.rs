@@ -1,7 +1,7 @@
 //! `MetalBackend` — the native macOS Metal implementation of [`GpuBackend`].
 //!
 //! It is built directly on `objc2-metal` 0.3 / `objc2-quartz-core` 0.3 and
-//! compiles only on macOS; other targets use [`HeadlessRaster`].
+//! compiles only on macOS; other targets use [`CpuRaster`].
 //!
 //! ## Design decisions
 //!
@@ -51,7 +51,7 @@ use crate::instance::InstanceLayout;
 use crate::program::{ProgramCode, ProgramCompiler, ProgramDesc};
 use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
-    PipelineDesc, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
+    PipelineDesc, SampledFormats, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
@@ -276,13 +276,14 @@ impl MetalBackend {
     ///
     /// # Panics
     /// Panics if no Metal device is available (Metal is required on the macOS
-    /// path; there is no software fallback here — that is [`HeadlessRaster`]).
+    /// path; there is no software fallback here — that is [`CpuRaster`]).
     pub fn new() -> Self {
         let device = MTLCreateSystemDefaultDevice().expect("no system default Metal device");
         let queue = device
             .newCommandQueue()
             .expect("failed to create a Metal command queue");
         let max_texture_size = 16384;
+        let sampled = sampled_formats(&device);
         Self {
             device,
             queue,
@@ -304,6 +305,8 @@ impl MetalBackend {
                 bindless_texture_slots: 0,
                 indirect_draw: false,
                 program_instance_align: 4,
+                coverage_paths: false,
+                sampled,
             },
             retire_queue: RetireQueue::new(),
             current_epoch: Epoch::START,
@@ -683,14 +686,15 @@ impl GpuBackend for MetalBackend {
 
     fn write_texture(&mut self, id: TextureId, x: u32, y: u32, w: u32, h: u32, bytes: &[u8]) {
         let tex = self.texture(id);
-        let bytes_per_row = w as usize * tex.format.bytes_per_texel();
+        // A block format's rows are rows of blocks, and the region whole blocks.
+        let bytes_per_row = tex.format.row_bytes(w);
         assert!(
-            bytes.len() >= bytes_per_row * h as usize,
-            "write_texture: {} bytes < {}x{} region of {}-byte texels",
+            bytes.len() >= tex.format.data_size(w, h),
+            "write_texture: {} bytes < a {}x{} region of {:?}",
             bytes.len(),
             w,
             h,
-            tex.format.bytes_per_texel()
+            tex.format
         );
         let region = MTLRegion {
             origin: MTLOrigin {
@@ -956,7 +960,7 @@ impl MetalBackend {
         let tex = self.texture(id);
         let w = tex.texture.width();
         let h = tex.texture.height();
-        let bpr = w * tex.format.bytes_per_texel();
+        let bpr = tex.format.row_bytes(w as u32);
 
         // Serial-queue barrier: an empty command buffer completes only after all
         // earlier command buffers on this queue have, so the offscreen render is
@@ -968,7 +972,7 @@ impl MetalBackend {
         barrier.commit();
         barrier.waitUntilCompleted();
 
-        let mut out = vec![0u8; bpr * h];
+        let mut out = vec![0u8; tex.format.data_size(w as u32, h as u32)];
         let region = MTLRegion {
             origin: MTLOrigin { x: 0, y: 0, z: 0 },
             size: MTLSize {
@@ -1268,7 +1272,43 @@ fn pixel_format(f: TextureFormat) -> MTLPixelFormat {
         // a color plane of the same width share one Metal format here.
         TextureFormat::Rgba8Unorm | TextureFormat::Rgba8Data => MTLPixelFormat::RGBA8Unorm,
         TextureFormat::R8Unorm => MTLPixelFormat::R8Unorm,
+        // Metal names packed formats from the low bits up: red sits high in
+        // each, as Viso's 16-bit formats store it.
+        TextureFormat::Rgb565Unorm => MTLPixelFormat::B5G6R5Unorm,
+        TextureFormat::Rgba4444Unorm => MTLPixelFormat::ABGR4Unorm,
+        TextureFormat::Rgba5551Unorm => MTLPixelFormat::A1BGR5Unorm,
         TextureFormat::Rgba16Float => MTLPixelFormat::RGBA16Float,
         TextureFormat::Depth32Float => MTLPixelFormat::Depth32Float,
+        TextureFormat::Bc1RgbaUnorm => MTLPixelFormat::BC1_RGBA,
+        TextureFormat::Bc3RgbaUnorm => MTLPixelFormat::BC3_RGBA,
+        TextureFormat::Bc7RgbaUnorm => MTLPixelFormat::BC7_RGBAUnorm,
+        TextureFormat::Etc2Rgb8Unorm => MTLPixelFormat::ETC2_RGB8,
+        TextureFormat::Etc2Rgb8A1Unorm => MTLPixelFormat::ETC2_RGB8A1,
+        TextureFormat::Etc2Rgba8Unorm => MTLPixelFormat::EAC_RGBA8,
+        TextureFormat::Astc4x4Unorm => MTLPixelFormat::ASTC_4x4_LDR,
+        TextureFormat::Astc6x6Unorm => MTLPixelFormat::ASTC_6x6_LDR,
+        TextureFormat::Astc8x8Unorm => MTLPixelFormat::ASTC_8x8_LDR,
     }
+}
+
+/// The formats beyond the baseline `device` samples: the packed 16-bit ones,
+/// ETC2 and ASTC on an Apple GPU (every iOS device, Apple silicon Macs), BC
+/// where the device reports it (every Mac, iPads with an M-series GPU).
+fn sampled_formats(device: &ProtocolObject<dyn MTLDevice>) -> SampledFormats {
+    let mut sampled = SampledFormats::empty();
+    if device.supportsFamily(objc2_metal::MTLGPUFamily::Apple1) {
+        sampled |= SampledFormats::RGB565 | SampledFormats::RGBA4444 | SampledFormats::RGBA5551;
+    }
+    if device.supportsFamily(objc2_metal::MTLGPUFamily::Apple2) {
+        sampled |= SampledFormats::ETC2 | SampledFormats::ASTC;
+    }
+    #[cfg(target_os = "macos")]
+    let bc = device.supportsBCTextureCompression();
+    #[cfg(not(target_os = "macos"))]
+    let bc = device.supportsFamily(objc2_metal::MTLGPUFamily::Apple7)
+        && device.supportsBCTextureCompression();
+    if bc {
+        sampled |= SampledFormats::BC;
+    }
+    sampled
 }

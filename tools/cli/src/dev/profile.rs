@@ -11,9 +11,9 @@
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use viso_dev_protocol::profile::{Count, FrameSample, MAX_FRAMES, Span, Trace, Unit, summarize};
+use viso_dev_protocol::wire::HostMessage;
 use viso_ende::JsonWriter;
-use viso_view::dev::wire::HostMessage;
-use viso_view::profile::{Count, FrameSample, MAX_FRAMES, Span, Trace, Unit, summarize};
 
 use super::DevSession;
 use super::control::{self, ControlReply};

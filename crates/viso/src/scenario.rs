@@ -353,8 +353,8 @@ impl ScriptRunner {
 /// its size in device pixels.
 #[cfg(feature = "headless")]
 fn capture(ws: &WindowState, dir: Option<&Path>, name: &str) -> Result<(u32, u32), String> {
+    use viso_image::Image;
     use viso_view::headless::SNAPSHOT_ENV;
-    use viso_view::snapshot::Image;
     let dir = dir.ok_or_else(|| {
         format!("the run was given no directory to write the snapshot `{name}` to ({SNAPSHOT_ENV})")
     })?;

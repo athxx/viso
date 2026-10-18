@@ -11,19 +11,23 @@ description = "Rust-native, GPU-first, cross-platform application framework."
 # curates the prelude, and re-exports advanced modules.
 [dependencies]
 viso-runtime = { workspace = true }
+viso-math = { workspace = true, features = ["std"] }
 viso-ui = { workspace = true }
 viso-ui-macros = { workspace = true }
 # The handler host the DSL macros' expansions dispatch into (`::viso_view::…`).
 viso-view = { workspace = true }
 # A game's audio systems on the device (`viso::audio`).
-viso-behavior = { workspace = true }
+viso-behavior = { workspace = true, features = ["std"] }
+# The aligned `static` the macros embed a module's and a view's bytes in.
+viso-ende = { workspace = true }
 viso-widgets = { workspace = true }
 # The view planner the development session turns the host's accepted `.vs`
 # sources into commits with; only a dev artifact (`hot-reload`) links it, so a
 # release app never does.
 viso-services = { workspace = true }
 viso-render = { workspace = true }
-viso-svg = { workspace = true }
+# A headless snapshot step captures and writes its image.
+viso-image = { workspace = true }
 viso-gpu = { workspace = true }
 viso-platform = { workspace = true }
 viso-text = { workspace = true }
@@ -53,14 +57,28 @@ windows-core = "0.62"
 libc = "0.2"
 
 [features]
-default = []
+default = ["vm", "desktop", "native-vulkan", "rasterizer", "complex-line-break"]
 # Kept small and stable on purpose — no giant feature cartesian product
 # (§5). Backends resolve from the target, not from user feature combos.
+# The desktop display backends on Linux and the BSDs (Wayland and X11, with
+# the desktop portal and AT-SPI) and the session-bus services (file chooser,
+# notifications, Secret Service); no effect elsewhere. An embedded build turns
+# defaults off and keeps `kms` alone.
+desktop = ["viso-platform/x11", "viso-platform/wayland", "viso-services/desktop"]
+# Vulkan as the native backend on Linux and Android; no effect elsewhere. An
+# embedded-cpu build, and an embedded-gpu one on GLES, leaves it off and links
+# no Vulkan bindings.
+native-vulkan = ["viso-gpu/native-vulkan"]
 mobile = []
+# The behavior interpreter a debug build runs `view!` behavior on. Off, every
+# view runs the Rust its behavior compiles to, in every build, and no
+# interpreter links.
+vm = ["viso-view/vm"]
 # The development session: every `view!` mount is recorded and reported to
 # `viso run`, and each edit the host accepts commits as one hot reload
 # transaction.
 hot-reload = [
+    "vm",
     "viso-view/hot-reload",
     "viso-ui/hot-reload",
     "dep:wasm-bindgen",
@@ -77,15 +95,43 @@ vulkan = ["viso-gpu/vulkan"]
 # no device; every window draws through the software raster at a fixed
 # surface, frames step a fixed clock, text resolves through the app's own
 # fonts only and shapes on the frame that asks for it.
-headless = ["viso-gpu/headless", "viso-view/snapshot", "viso-view/inspect"]
+headless = ["viso-gpu/headless", "viso-view/inspect"]
+# OpenGL ES 3 as the backend on Linux and Android (the embedded-gpu profile).
+gles = ["viso-gpu/gles"]
+# The embedded Linux display backend: the card driven through DRM/KMS where no
+# Wayland or X11 session runs (the embedded profiles).
+kms = ["viso-platform/kms"]
+# The software raster as the backend, drawing to the display (the
+# embedded-cpu profile).
+cpu = ["viso-gpu/cpu"]
+# Desktop emulation of an embedded-cpu build (macOS): with `cpu`, the window
+# takes the configured panel's size, pixel format and scale, each panel pixel
+# a square of screen pixels; the profile's budgets, workers and fonts apply as
+# they do on the device.
+emulate = ["viso-platform/emulate"]
+# The platform's fonts as fallbacks in an embedded profile, which otherwise
+# draws with the app's packaged fonts alone.
+system-fonts = []
+# Glyphs rasterized from their outlines at run time, and color glyphs painted
+# from a face's color tables. Off, every glyph draws from the pages
+# `packaged_fonts!` baked at build time for the sizes the target declares, and
+# no font rasterizer links: `packaged_fonts!` refuses a build whose packaged
+# faces are not all baked (Text/Font Runtime §3.6). An embedded target keeps it
+# unless its `fonts.rasterizer` is `false`.
+rasterizer = []
+# Line breaking between the words of Thai, Lao, Khmer and Myanmar text (the
+# LSTM models of `viso-text/complex-line-break`). An embedded target keeps it
+# only when a locale it declares, or text it ships, is written in one of them
+# (Text/Font Runtime §3.5).
+complex-line-break = ["viso-text/complex-line-break"]
 
 [dev-dependencies]
-# The DSL tests compile `.vs` sources themselves, with or without `hot-reload`.
+# The DSL tests compile `.vs` sources themselves, with or without `hot-reload`,
+# and reload them in process with the patch the dev link carries.
 viso-dsl = { workspace = true }
+viso-dev-protocol = { workspace = true }
 # The shader goldens draw a program on Vulkan from the SPIR-V its code writes.
 viso-shader = { workspace = true, features = ["spirv"] }
-# The hot reload tests rewrite a packed shader's code.
-viso-ende = { workspace = true }
 # The CoreText provider's sfnt-reassembly tests parse their output to prove the
 # reassembled directory is valid, and the system-font smoke tests shape through
 # the resolved face. Only used in tests, so they stay dev-dependencies.
@@ -133,4 +179,10 @@ harness = false
 # The wired text runtime under the §26 matrix and the per-tier commit budgets.
 [[bench]]
 name = "text_runtime"
+harness = false
+
+# One scroll frame of a 100k-row list: transform roots move, nothing repaints
+# (§21), at two visible row counts.
+[[bench]]
+name = "list_scroll"
 harness = false

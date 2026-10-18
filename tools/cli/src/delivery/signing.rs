@@ -470,7 +470,7 @@ mod tests {
             std::fs::write(dir.join(file), "").unwrap();
         }
         if manifest.contains("icon.png") {
-            let icon = viso_view::snapshot::Image {
+            let icon = viso_image::snapshot::Image {
                 width: 1024,
                 height: 1024,
                 rgba: vec![255; 1024 * 1024 * 4],

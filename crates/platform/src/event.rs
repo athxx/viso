@@ -545,7 +545,7 @@ pub struct DisplayFeature {
 
 /// Edge insets in logical points.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Insets {
+pub struct LogicalInsets {
     pub top: f64,
     pub left: f64,
     pub bottom: f64,
@@ -688,7 +688,10 @@ pub enum RawEvent {
     AppearanceChanged(Appearance),
     /// The part of the window hidden by system UI (notch, status bar, home
     /// indicator, rounded corners) changed. Content should stay clear of it.
-    SafeAreaChanged { window: WindowId, insets: Insets },
+    SafeAreaChanged {
+        window: WindowId,
+        insets: LogicalInsets,
+    },
     /// The on-screen keyboard now covers `height` logical points at the bottom
     /// of the window (`0.0` once it is gone).
     KeyboardInsetChanged { window: WindowId, height: f64 },

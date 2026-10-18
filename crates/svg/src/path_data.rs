@@ -4,7 +4,7 @@
 //! compact number syntax and smooth-curve reflection. Per the SVG error rule,
 //! a malformed path renders up to (not including) the first bad command.
 
-use crate::geom::{PathData, Point};
+use crate::geom::{PathData, Vec2};
 use crate::syntax::Stream;
 
 /// What kind of source command produced a [`CmdSpan`].
@@ -32,7 +32,7 @@ pub(crate) fn parse_path(s: &str) -> (PathData, Vec<CmdSpan>) {
     let mut spans: Vec<CmdSpan> = Vec::new();
     let mut prev: Option<u8> = None;
     // Second control point of the previous C/S, or control of the previous Q/T.
-    let mut last_ctrl = Point::default();
+    let mut last_ctrl = Vec2::default();
 
     loop {
         st.skip_ws();
@@ -114,7 +114,7 @@ pub(crate) fn parse_path(s: &str) -> (PathData, Vec<CmdSpan>) {
                 let x = num!() + ox;
                 let y = num!() + oy;
                 p.cubic_to(x1, y1, x2, y2, x, y);
-                last_ctrl = Point::new(x2, y2);
+                last_ctrl = Vec2::new(x2, y2);
                 prev = Some(cmd);
                 push_draw(&mut spans, start, p.len());
                 continue;
@@ -130,7 +130,7 @@ pub(crate) fn parse_path(s: &str) -> (PathData, Vec<CmdSpan>) {
                     cur
                 };
                 p.cubic_to(c1.x, c1.y, x2, y2, x, y);
-                last_ctrl = Point::new(x2, y2);
+                last_ctrl = Vec2::new(x2, y2);
                 prev = Some(cmd);
                 push_draw(&mut spans, start, p.len());
                 continue;
@@ -141,7 +141,7 @@ pub(crate) fn parse_path(s: &str) -> (PathData, Vec<CmdSpan>) {
                 let x = num!() + ox;
                 let y = num!() + oy;
                 p.quad_to(x1, y1, x, y);
-                last_ctrl = Point::new(x1, y1);
+                last_ctrl = Vec2::new(x1, y1);
                 prev = Some(cmd);
                 push_draw(&mut spans, start, p.len());
                 continue;
@@ -239,12 +239,12 @@ mod tests {
         assert_eq!(
             s,
             vec![
-                Segment::MoveTo(Point::new(10.0, 10.0)),
-                Segment::LineTo(Point::new(30.0, 10.0)),
-                Segment::LineTo(Point::new(30.0, 30.0)),
+                Segment::MoveTo(Vec2::new(10.0, 10.0)),
+                Segment::LineTo(Vec2::new(30.0, 10.0)),
+                Segment::LineTo(Vec2::new(30.0, 30.0)),
                 Segment::Close,
-                Segment::MoveTo(Point::new(10.0, 10.0)),
-                Segment::LineTo(Point::new(15.0, 15.0)),
+                Segment::MoveTo(Vec2::new(10.0, 10.0)),
+                Segment::LineTo(Vec2::new(15.0, 15.0)),
             ]
         );
     }
@@ -255,9 +255,9 @@ mod tests {
         assert_eq!(
             s[2],
             Segment::CubicTo(
-                Point::new(10.0, -10.0),
-                Point::new(20.0, -10.0),
-                Point::new(20.0, 0.0)
+                Vec2::new(10.0, -10.0),
+                Vec2::new(20.0, -10.0),
+                Vec2::new(20.0, 0.0)
             )
         );
         let (p, spans) = parse_path("M0 0a5 5 0 1010 0");

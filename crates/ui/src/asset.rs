@@ -31,6 +31,8 @@ use std::sync::Arc;
 use viso_render::TextureId;
 use viso_render::asset::{AssetKind, RasterImage, ResourceId, ResourceRevision, VectorScene};
 
+pub use viso_schema::resource::AssetBytes;
+
 /// What a node showing an asset draws.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssetDraw {
@@ -50,38 +52,6 @@ pub enum AssetFit {
     Cover,
     /// Stretched to the box.
     Fill,
-}
-
-/// An asset's encoded bytes: embedded in the binary, or loaded and shared.
-#[derive(Clone)]
-pub enum AssetBytes {
-    Static(&'static [u8]),
-    Shared(Arc<[u8]>),
-}
-
-impl std::ops::Deref for AssetBytes {
-    type Target = [u8];
-
-    fn deref(&self) -> &[u8] {
-        match self {
-            AssetBytes::Static(bytes) => bytes,
-            AssetBytes::Shared(bytes) => bytes,
-        }
-    }
-}
-
-impl PartialEq for AssetBytes {
-    fn eq(&self, other: &AssetBytes) -> bool {
-        **self == **other
-    }
-}
-
-impl Eq for AssetBytes {}
-
-impl std::fmt::Debug for AssetBytes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AssetBytes({} bytes)", self.len())
-    }
 }
 
 /// An asset a Rust view shows, as `asset!("…")` embeds it: its resource, how
@@ -135,10 +105,19 @@ pub(crate) struct AssetEntry {
     /// The newest payload provided, and its revision: a vector's for as long
     /// as it draws, a raster's until its texture is attached.
     pub(crate) payload: Option<(ResourceRevision, AssetPayload)>,
-    /// A raster's texture in this store's window, the revision it was uploaded
-    /// from and that raster's size; it draws until the newest payload's
-    /// replaces it.
-    pub(crate) texture: Option<(ResourceRevision, TextureId, [f32; 2])>,
+    /// A raster's texture in this store's window; it draws until the newest
+    /// payload's replaces it.
+    pub(crate) texture: Option<Resident>,
+}
+
+/// A raster's texture, the revision it was uploaded from, that raster's size
+/// and the bytes the texture takes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Resident {
+    pub(crate) revision: ResourceRevision,
+    pub(crate) texture: TextureId,
+    pub(crate) size: [f32; 2],
+    pub(crate) bytes: u64,
 }
 
 impl AssetEntry {
@@ -154,7 +133,7 @@ impl AssetEntry {
     /// The newest revision decoded: provided, or resident.
     fn decoded(&self) -> Option<ResourceRevision> {
         let payload = self.payload.as_ref().map(|(r, _)| *r);
-        let texture = self.texture.map(|(r, ..)| r);
+        let texture = self.texture.map(|t| t.revision);
         payload.max(texture)
     }
 }
@@ -164,6 +143,8 @@ impl AssetEntry {
 pub struct AssetTable {
     entries: HashMap<ResourceId, AssetEntry>,
     revision: u64,
+    /// The bytes of the textures attached, in the formats they are stored in.
+    texture_bytes: u64,
 }
 
 impl AssetTable {
@@ -216,7 +197,7 @@ impl AssetTable {
     ) -> impl Iterator<Item = (ResourceId, ResourceRevision, &Arc<RasterImage>)> {
         self.entries.iter().filter_map(|(id, e)| match &e.payload {
             Some((revision, AssetPayload::Raster(image)))
-                if e.texture.is_none_or(|(r, ..)| r != *revision) =>
+                if e.texture.is_none_or(|t| t.revision != *revision) =>
             {
                 Some((*id, *revision, image))
             }
@@ -232,7 +213,7 @@ impl AssetTable {
             .iter()
             .map(|(id, e)| {
                 let state = match (&e.texture, &e.payload, &e.bytes) {
-                    (Some((_, _, size)), ..) => AssetState::Resident { size: *size },
+                    (Some(t), ..) => AssetState::Resident { size: t.size },
                     (None, Some((_, AssetPayload::Vector(scene))), _) => {
                         AssetState::Vector { size: scene.size }
                     }
@@ -265,8 +246,14 @@ impl AssetTable {
     /// The texture of `id` in this window, and the revision it was uploaded
     /// from.
     pub fn texture(&self, id: ResourceId) -> Option<(ResourceRevision, TextureId)> {
-        let (revision, texture, _) = self.entries.get(&id)?.texture?;
-        Some((revision, texture))
+        let t = self.entries.get(&id)?.texture?;
+        Some((t.revision, t.texture))
+    }
+
+    /// The bytes of the textures resident in this window, in the formats they
+    /// are stored in.
+    pub fn texture_bytes(&self) -> u64 {
+        self.texture_bytes
     }
 
     /// Moves with every change of what the table holds.
@@ -295,7 +282,7 @@ impl AssetTable {
             (Some((_, AssetPayload::Vector(scene))), _) => {
                 (AssetDraw::Vector(Arc::clone(scene)), scene.size)
             }
-            (_, Some((_, texture, size))) => (AssetDraw::Raster(texture), size),
+            (_, Some(t)) => (AssetDraw::Raster(t.texture), t.size),
             (Some((_, payload)), None) => (AssetDraw::Nothing, payload.size()),
             (None, None) => (AssetDraw::Nothing, [0.0; 2]),
         }
@@ -340,14 +327,25 @@ impl AssetTable {
         let Some(entry) = self.entries.get_mut(&id) else {
             return Err(texture);
         };
-        let size = match &entry.payload {
-            Some((r, AssetPayload::Raster(image))) if *r == revision => image.size(),
+        let (size, bytes) = match &entry.payload {
+            Some((r, AssetPayload::Raster(image))) if *r == revision => {
+                (image.size(), image.texture_bytes())
+            }
             _ => return Err(texture),
         };
-        let old = entry.texture.replace((revision, texture, size));
+        let old = entry.texture.replace(Resident {
+            revision,
+            texture,
+            size,
+            bytes,
+        });
+        self.texture_bytes += bytes;
+        if let Some(old) = old {
+            self.texture_bytes -= old.bytes;
+        }
         entry.payload = None;
         self.revision += 1;
-        Ok(old.map(|(_, t, _)| t))
+        Ok(old.map(|t| t.texture))
     }
 
     pub(crate) fn clear(&mut self) {
@@ -355,5 +353,6 @@ impl AssetTable {
             self.revision += 1;
         }
         self.entries.clear();
+        self.texture_bytes = 0;
     }
 }

@@ -1,11 +1,11 @@
-//! The Web accessibility bridge (ADR 0030): an ARIA mirror of the published
-//! tree, transparent elements laid over the canvas where each node draws.
+//! The Web accessibility bridge (ADR 0030, ADR 0042): an ARIA mirror of the
+//! published tree, transparent elements laid over the canvas where each node
+//! draws.
 //!
-//! AccessKit has no Web adapter, and a page cannot tell whether a screen
-//! reader runs. The mirror therefore starts as a single transparent "Enable
+//! A page cannot tell whether a screen reader runs. The mirror therefore starts as a single transparent "Enable
 //! accessibility" button; activating it (a screen reader clicks it) queues
 //! [`AccessRequest::Activated`], and the facade's next frame sends the tree.
-//! From then on each update is folded into a [`TreeMirror`] and only the
+//! From then on each [`SemanticsDelta`] is folded into a [`TreeMirror`] and only the
 //! elements of changed nodes are rewritten. Each element is positioned
 //! against its parent's, so a moved node moves its children's elements too.
 //! The mirror takes no pointer input: the canvas keeps every mouse and touch
@@ -19,11 +19,10 @@ use web_sys::{Document, Element, Event, HtmlElement, KeyboardEvent};
 
 use super::{Listener, WINDOW, drive, push};
 use crate::access_mirror::TreeMirror;
-use crate::accessibility::accesskit::{Action, Node, Rect, Role, TreeUpdate};
-use crate::accessibility::{AccessAction, AccessRequest};
-use crate::backend::web_translate::{
-    aria_checked, aria_live, aria_role, named_by_content, slider_step,
+use crate::accessibility::{
+    AccessAction, AccessNode, AccessRequest, SemanticsDelta, SemanticsId, SemanticsRect,
 };
+use crate::backend::web_translate::{aria_attributes, named_by_content, slider_step};
 use crate::event::RawEvent;
 
 /// The mirror's root: fixed over the canvas, invisible, and transparent to
@@ -42,7 +41,7 @@ pub(super) struct WebAccess {
     /// The activation button, until it is pressed.
     placeholder: Option<HtmlElement>,
     mirror: TreeMirror,
-    elements: HashMap<u64, HtmlElement>,
+    elements: HashMap<SemanticsId, HtmlElement>,
     _listeners: Vec<Listener>,
 }
 
@@ -75,12 +74,12 @@ impl WebAccess {
         self.container.remove();
     }
 
-    /// Fold `update` in and patch the elements it changed. `canvas` is the
+    /// Fold `delta` in and patch the elements it changed. `canvas` is the
     /// canvas's client rect, `scale` device pixels per CSS pixel.
     pub(super) fn update(
         &mut self,
         document: &Document,
-        update: TreeUpdate,
+        delta: SemanticsDelta,
         canvas: (f64, f64, f64, f64),
         scale: f64,
     ) {
@@ -98,13 +97,13 @@ impl WebAccess {
             let _ = style.set_property(name, &format!("{value}px"));
         }
 
-        let changes = self.mirror.apply(update);
+        let changes = self.mirror.apply(delta);
         for id in &changes.removed {
             if let Some(element) = self.elements.remove(id) {
                 element.remove();
             }
         }
-        let changed: HashSet<u64> = changes.changed.iter().copied().collect();
+        let changed: HashSet<SemanticsId> = changes.changed.iter().copied().collect();
         let Self {
             container,
             mirror,
@@ -113,7 +112,8 @@ impl WebAccess {
         } = self;
         // Rewrite changed nodes, and place each node whose own or parent's
         // bounds may have moved.
-        mirror.walk(|id, node, parent| {
+        mirror.walk(|node, parent| {
+            let id = node.id;
             let fresh = !elements.contains_key(&id);
             let Some(element) = element_for(elements, document, id) else {
                 return;
@@ -122,8 +122,8 @@ impl WebAccess {
                 describe(&element, node);
             }
             if fresh || changed.contains(&id) || parent.is_some_and(|p| changed.contains(&p)) {
-                let origin = parent.and_then(|p| mirror.get(p)).and_then(Node::bounds);
-                place(&element, node.bounds(), origin, scale);
+                let origin = parent.and_then(|p| mirror.get(p)).map(|p| p.bounds);
+                place(&element, node.bounds, origin, scale);
             }
         });
         // Put the children of every changed node in order under it; a fresh
@@ -133,8 +133,8 @@ impl WebAccess {
             let Some(parent) = elements.get(&id) else {
                 continue;
             };
-            for child in node.children() {
-                if let Some(element) = elements.get(&child.0) {
+            for child in &node.children {
+                if let Some(element) = elements.get(child) {
                     let _ = parent.append_child(element);
                 }
             }
@@ -155,92 +155,68 @@ impl WebAccess {
         true
     }
 
-    fn supports(&self, id: u64, action: Action) -> bool {
+    fn supports(&self, id: SemanticsId, action: AccessAction) -> bool {
         self.mirror
             .get(id)
-            .is_some_and(|node| node.supports_action(action))
+            .is_some_and(|node| node.actions.contains(action))
     }
 }
 
 /// The element mirroring `id`, created on first use.
 fn element_for(
-    elements: &mut HashMap<u64, HtmlElement>,
+    elements: &mut HashMap<SemanticsId, HtmlElement>,
     document: &Document,
-    id: u64,
+    id: SemanticsId,
 ) -> Option<HtmlElement> {
     if let Some(element) = elements.get(&id) {
         return Some(element.clone());
     }
     let element: HtmlElement = document.create_element("div").ok()?.unchecked_into();
     element.set_attribute("style", ELEMENT_STYLE).ok()?;
-    element.set_attribute(ID_ATTRIBUTE, &id.to_string()).ok()?;
+    element
+        .set_attribute(ID_ATTRIBUTE, &id.0.to_string())
+        .ok()?;
     elements.insert(id, element.clone());
     Some(element)
 }
 
 /// Write `node`'s role, name and state onto its element.
-fn describe(element: &HtmlElement, node: &Node) {
-    let role = node.role();
-    let set = |name: &str, value: Option<&str>| {
+fn describe(element: &HtmlElement, node: &AccessNode) {
+    aria_attributes(node, |name, value| {
         let _ = match value {
             Some(value) => element.set_attribute(name, value),
             None => element.remove_attribute(name),
         };
-    };
-    set("role", aria_role(role));
-    if named_by_content(role) {
-        set("aria-label", None);
-        element.set_text_content(node.label());
-    } else {
-        set("aria-label", node.label());
+    });
+    if named_by_content(node.role) {
+        element.set_text_content(node.label.as_deref());
     }
-    let number = |value: Option<f64>| value.map(|v| v.to_string());
-    set("aria-valuenow", number(node.numeric_value()).as_deref());
-    set("aria-valuemin", number(node.min_numeric_value()).as_deref());
-    set("aria-valuemax", number(node.max_numeric_value()).as_deref());
-    let checkable = matches!(role, Role::CheckBox | Role::RadioButton);
-    set(
-        "aria-checked",
-        node.toggled().filter(|_| checkable).map(aria_checked),
-    );
-    let flag = |value: Option<bool>| value.map(|v| if v { "true" } else { "false" });
-    set("aria-expanded", flag(node.is_expanded()));
-    set("aria-selected", flag(node.is_selected()));
-    set("aria-description", node.description());
-    set("aria-valuetext", node.value());
-    set("aria-live", node.live().map(aria_live));
-    set(
-        "aria-level",
-        node.level().map(|level| level.to_string()).as_deref(),
-    );
-    // Focusable by a screen reader, not by Tab: the canvas's own focus
-    // order stays the only one.
-    set(
-        "tabindex",
-        node.supports_action(Action::Focus).then_some("-1"),
-    );
 }
 
 /// Size and place an element in CSS pixels against its parent's bounds.
-fn place(element: &HtmlElement, bounds: Option<Rect>, origin: Option<Rect>, scale: f64) {
-    let bounds = bounds.unwrap_or_default();
-    let (x, y) = origin.map_or((0.0, 0.0), |o| (o.x0, o.y0));
+fn place(element: &HtmlElement, bounds: SemanticsRect, origin: Option<SemanticsRect>, scale: f64) {
+    let (x, y) = origin.map_or((0.0, 0.0), |o| (o.x, o.y));
     let style = element.style();
     for (name, value) in [
-        ("left", bounds.x0 - x),
-        ("top", bounds.y0 - y),
-        ("width", bounds.width()),
-        ("height", bounds.height()),
+        ("left", bounds.x - x),
+        ("top", bounds.y - y),
+        ("width", bounds.width),
+        ("height", bounds.height),
     ] {
+        let value = f64::from(value);
         let _ = style.set_property(name, &format!("{}px", value / scale));
     }
 }
 
 /// The node whose element (or a descendant of it) `event` targets.
-fn target_node(event: &Event) -> Option<u64> {
+fn target_node(event: &Event) -> Option<SemanticsId> {
     let target: Element = event.target()?.dyn_into().ok()?;
     let element = target.closest(&format!("[{ID_ATTRIBUTE}]")).ok()??;
-    element.get_attribute(ID_ATTRIBUTE)?.parse().ok()
+    element
+        .get_attribute(ID_ATTRIBUTE)?
+        .parse()
+        .ok()
+        .map(SemanticsId)
 }
 
 fn on_click(event: Event) {
@@ -250,7 +226,7 @@ fn on_click(event: Event) {
         }
         let target = target_node(&event)?;
         access
-            .supports(target, Action::Click)
+            .supports(target, AccessAction::Click)
             .then_some(AccessRequest::Action {
                 target,
                 action: AccessAction::Click,
@@ -269,14 +245,10 @@ fn on_key(event: Event) {
     let Some(action) = slider_step(&key) else {
         return;
     };
-    let supported = match action {
-        AccessAction::Decrement => Action::Decrement,
-        _ => Action::Increment,
-    };
     let request = with_access(|access| {
         let target = target_node(&event)?;
         access
-            .supports(target, supported)
+            .supports(target, action)
             .then_some(AccessRequest::Action { target, action })
     });
     if let Some(request) = request {

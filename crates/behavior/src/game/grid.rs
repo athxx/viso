@@ -15,6 +15,11 @@
 //! Building sorts the entries; the buffers are kept, so a warmed-up grid
 //! rebuilds without allocating.
 
+use alloc::vec::Vec;
+
+#[cfg(not(feature = "std"))]
+use crate::float::FloatMath as _;
+
 /// The most cells a box is entered in before it counts as wide.
 const WIDE: i64 = 64;
 

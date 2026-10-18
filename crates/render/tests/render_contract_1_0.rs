@@ -22,7 +22,7 @@
 //! `scene::store`, where `BrushStore` is reachable.
 
 use viso_gpu::{
-    ColorSpace, GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureDesc, TextureFormat,
+    ColorSpace, CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureDesc, TextureFormat,
     f16_to_f32,
 };
 use viso_render::{
@@ -55,8 +55,8 @@ fn quad(r: Rect) -> Primitive {
 }
 
 /// A surface of `w`×`h` with a renderer sized to it.
-fn renderer(w: u32, h: u32) -> (HeadlessRaster, SurfaceId, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer(w: u32, h: u32) -> (CpuRaster, SurfaceId, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
@@ -64,7 +64,7 @@ fn renderer(w: u32, h: u32) -> (HeadlessRaster, SurfaceId, Renderer) {
     (gpu, surface, r)
 }
 
-fn upload(r: &mut Renderer, gpu: &mut HeadlessRaster, prims: &[Primitive]) -> FrameStats {
+fn upload(r: &mut Renderer, gpu: &mut CpuRaster, prims: &[Primitive]) -> FrameStats {
     r.upload(gpu, prims);
     r.frame_stats()
 }
@@ -72,7 +72,7 @@ fn upload(r: &mut Renderer, gpu: &mut HeadlessRaster, prims: &[Primitive]) -> Fr
 /// Draw `prims` all the way to the surface and hand back the presented pixels.
 fn present(
     r: &mut Renderer,
-    gpu: &mut HeadlessRaster,
+    gpu: &mut CpuRaster,
     surface: SurfaceId,
     clear: [f32; 4],
     prims: &[Primitive],
@@ -101,7 +101,7 @@ fn present(
 /// tessellator guessing.
 #[test]
 fn every_shape_has_its_own_primitive() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
 
@@ -848,7 +848,7 @@ fn gpu_alpha_is_premultiplied() {
 #[test]
 fn an_hdr_highlight_is_not_narrowed_mid_pipeline() {
     fn center_red(format: TextureFormat, space: ColorSpace) -> f32 {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
         gpu.set_surface_color_target(surface, format, space);
         let mut r = Renderer::for_surface(&mut gpu, surface);

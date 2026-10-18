@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use viso_behavior::native::NativeWidget;
-use viso_ui::Interaction;
+use viso_schema::Interaction;
 
 use crate::ast::{
     AssignablePath, AstNode, BinaryExpr, Expr, Item, ParenExpr, PathExpr, PropertyBinding,

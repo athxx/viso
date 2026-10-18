@@ -150,6 +150,8 @@ viso build web-hybrid
 
 无 positional target 时构建当前 desktop host。Desktop 不使用 `macos/windows/linux` positional target；移动和 Web 因为不是当前 host process，必须显式指定逻辑 target。
 
+嵌入式板卡由项目在 `Viso.toml` 中声明为 device target（`[target.<name>]`，§38.6），以其名字作 positional target：`viso build panel` 以该 target 的 triple 与 Footprint Profile 构建，产物在 `dist/panel/`（§3.6）；`viso run panel` 在 `deploy` 所指的板卡上经 SSH 运行 dev session，`viso run kiosk --emulate` 在 macOS 上仿真 `embedded-cpu` 板卡（§13.11）。
+
 Artifact 仍由 Viso runtime、Viso generated runtime 或对应 backend 负责执行。
 
 ### 2.2 `package`
@@ -219,6 +221,7 @@ web-gpu
 web-dom
 web-hybrid
 headless        testing/tooling only
+<device-target> `Viso.toml` 的 `[target.<name>]`，嵌入式板卡
 ```
 
 内部仍然会把 desktop host resolve 为 macOS/Windows/Linux，并选择 Metal/D3D12/Vulkan backend，但这是 tooling/platform implementation detail，不进入普通 `run` grammar。
@@ -295,7 +298,7 @@ viso snapshot capture HomePage --target headless
 headless 构建：
 
 - 以 facade 的 `headless` feature 编译（`--features viso/headless`），并以本机 Rust target 显式传给 Cargo（`--target <host triple>`），产物在 `target/<host triple>/<profile>/`，与 host 构建互不覆盖；不编入 hot reload；
-- 没有窗口与设备：platform 为 headless backend，GPU 为软件光栅（`viso-gpu` 的 `HeadlessRaster`，`headless` feature 下即该构建的 `Backend`，内嵌 shader 选其 CPU 版本）；全部 service 为 unsupported；
+- 没有窗口与设备：platform 为 headless backend，GPU 为软件光栅（`viso-gpu` 的 `CpuRaster`，`headless` feature 下即该构建的 `Backend`，内嵌 shader 选其 CPU 版本）；全部 service 为 unsupported；
 - 每个窗口的 surface 固定，取自启动变量 `VISO_HEADLESS_SURFACE=<width>x<height>@<scale>`（逻辑像素；缺省 `1280x720@1`），由 `viso test` / `viso snapshot` 按 `Viso.toml [test.surface]`（`width`、`height` 为 1–16384，缺省 1280×720；`scale` 大于 0、至多 8，缺省 1）传入；
 - 时钟每帧固定前进 1/60 s；文本在请求它的帧内排版与提交（不经后台线程、不受帧预算影响），帧数与机器快慢无关；
 - 字体只来自 project（`assets/fonts/` 与 `load_font`），不读系统字体；框架不内置默认字体；
@@ -307,6 +310,53 @@ headless 构建：
 - positional 已被其他对象占用的命令（`test`、`snapshot`、`inspect`、`studio`）使用 `--target <t>`。
 - `--target` 不是 global option；对接受 positional target 的命令写 `--target` 是 usage error（exit 2），例如 `viso run --target ios`。
 - 任何配置层（`Viso.toml`、`VISO_*` 环境变量）都不能改变“省略 positional = desktop host”的含义（§3.1）。
+- `run`、`build`、`check` 的 positional 另接受 `Viso.toml` 声明的 device target 名（§3.6）。
+
+### 3.6 Device target
+
+Device target 是项目自己命名的板卡（`Viso.toml` 的 `[target.<name>]`，配置见 §38.6），与内建 target 同处 positional 位置：
+
+```bash
+viso build panel                 # dist/panel/
+viso build panel --release
+viso check panel                 # 以 panel 的 profile 检查
+viso run panel                   # deploy 所指的板卡（经 SSH），或本机即该板卡
+viso run kiosk --emulate         # embedded-cpu 在 macOS 窗口中仿真
+```
+
+- positional 先按内建 target 解析；其余符合 device target 命名规则的词作为 device target 名，在解析配置时对照 `Viso.toml`：未声明时为 `C0007`（exit 1），notes 列出内建 target、`Viso.toml` 声明的全部 device target 与最接近的名字。不合命名规则的词、该命令不接受的内建 target 名与平台名（如 `viso build host`、`viso run macos`，§1）仍是 usage error（exit 2）。shell completion 给出内建 target 与当前目录所在项目声明的 device target；
+- device target 只在 `build`、`run`、`check` 上接受；`package`、`serve`、`doctor`、`profile` 与 `--target <t>` 形式的命令不接受；
+- 构建：`--target <triple>`（`triple` 缺省时为本机 triple，同 headless，产物与 host 构建分开），`--features` 为 profile 的 facade feature（`embedded-gpu` → `viso/gles,viso/kms`，`gpu = "vulkan"` 时 `viso/native-vulkan,viso/kms`；`embedded-cpu` → `viso/cpu,viso/kms`；`desktop`/`mobile`/`web` 不加 feature，backend 由 Rust target 决定）。embedded profile 另加 `--no-default-features`，只留 profile 的 feature，加回 `viso/rasterizer`（glyph rasterizer；`fonts.rasterizer = false` 时不加，Text/Font Runtime §3.6），声明的 locale、静态文本或 charset 用到 Thai/Lao/Khmer/Myanmar 时加 `viso/complex-line-break`（这四种文字的换行模型，Text/Font Runtime §3.7），dev profile 再加 `viso/vm`（behavior 解释器）；facade 的默认 feature `vm`、`desktop`（X11、Wayland、desktop portal、AT-SPI）、`native-vulkan`（Linux/Android 上的 Vulkan）都不进 embedded 构建，Vulkan 板卡只把 `native-vulkan` 加回来。为此 app 依赖 facade 时写 `default-features = false`，由 app 自己的默认 feature 打开它们（`viso new` 生成的 `Cargo.toml` 即如此）：
+
+  ```toml
+  [features]
+  default = ["viso/vm", "viso/desktop", "viso/native-vulkan", "viso/rasterizer", "viso/complex-line-break"]
+
+  [dependencies]
+  viso = { version = "…", default-features = false }
+  ```
+
+  app 的 `viso` 依赖仍带默认 feature 时，embedded 构建照常进行，但 desktop stack 照样链接，`build`、`check`、`run` 打一条 `warn` 日志说明此事。Cargo 的环境变量另有：
+
+  ```text
+  VISO_FOOTPRINT     profile 名
+  VISO_BUDGET        budget 的 key=bytes 列表，按书写顺序，如 heap=50331648,glyph_atlas=4194304
+  VISO_WORKERS       workers
+  VISO_KMS_MODE      display 的 WxH（width 与 height 均写时）
+  VISO_KMS_FORMAT    display.format
+  VISO_KMS_ROTATION  display.rotation（度）
+  VISO_FONT_CHARSET  fonts.charset，逗号连接（embedded profile，写了 charset 时）
+  VISO_FONT_TEXT     静态文本文件的绝对路径（embedded profile）
+  VISO_FONT_BAKE     fonts.bake，逗号连接（embedded profile，写了 bake 时）
+  VISO_FONT_RASTERIZER  off（embedded profile，fonts.rasterizer = false 时）
+  ```
+
+  前三者由 facade 的 build script 烘进构建（profile 与 backend feature 不符时构建失败）；`VISO_KMS_*` 是 KMS backend 的编译期默认值，运行时同名变量覆盖。表中未写的项不传，由 profile 与 backend 取默认；
+- 字体子集（Text/Font Runtime §3.4）：embedded profile 的 `build`、`check`、`run` 在 Cargo 运行前把项目的静态文本写进 `target/viso/generated/fonts/<name>.txt`，路径作为 `VISO_FONT_TEXT` 交给 `packaged_fonts!()`；`fonts.charset` 作为 `VISO_FONT_CHARSET`。静态文本是 `src/` 下每个 `.vs` 文件的字符串字面量、`src/` 下 Rust 源码中每个 `ui!` / `component!` 宏体内的字符串字面量，以及 `i18n/` 各 locale 的消息文本，每个字符串一行、去重、按字节序，内容不变时不重写文件（不使增量构建失效）。它是 app 可能显示的文本的超集（asset 路径、theme 名等字面量也算在内）。缺字是宏的编译错误，照原样作为 Rust 诊断报告。desktop、mobile、web 构建不设这两个变量，字体整体嵌入。`fonts.bake` 作为 `VISO_FONT_BAKE` 让宏按这些字号把 glyph bake 成 A8 page，`fonts.rasterizer = false` 作为 `VISO_FONT_RASTERIZER=off` 让宏删去字体的 outline 并在编译期确认每个 glyph 都已 bake（Text/Font Runtime §3.6）。`viso/complex-line-break` 的判定读 device target 的 `locales`，没写时读 `i18n/` 的 catalog locale，再没有时读 `i18n.source`，同时看静态文本与 charset 的 `U+` 项中是否有这四种文字的字符；
+- shader 语言：device target 的包只带其 profile 固定的 shader 语言（GLES 板卡 GLSL ES，Vulkan 板卡 SPIR-V，`embedded-cpu` 仅 `None`）。`check` 与 `build`（构建前的源码检查）对每个 `.vs` 文件按这些语言打包它绘制用的 shader，某个 shader 在其中某个语言下构建不出时报 `E3711`，构建因此失败，不运行 Cargo；
+- `viso build` 的 dev profile device target 构建不带 `viso/hot-reload`：产物部署到板卡由用户自己启动；带 hot reload 的板卡 session 由 `viso run` 构建（§13.11）；
+- 产物在 `dist/<name>/`，`artifact.json` 的 `target` 为该名字；build lock、BuildId 都按名字区分，两块板卡不共用 BuildId。device target 的配置（profile、triple、gpu、display、budget、workers、charset、bake、rasterizer、locales）进入 BuildId，`deploy` 不进入；
+- `viso run <name>`：target 写了 `deploy` 时在该板卡上经 SSH 运行 dev session；`--emulate` 时在本机仿真；都没有时只在本机即该板卡时运行：Rust triple 与本机相同，且 embedded profile 要求本机为 Linux（显示经 DRM/KMS），与 desktop host 走同一 dev session（带 hot reload，`--cwd` 可用）。否则以 `ENV_DEVICE_TARGET`（exit 3）结束，message 指出该 target 构建的 triple，notes 指向 `deploy`、`--emulate`（`embedded-cpu`）与 `viso build <name>`。详见 §13.11。
 
 ---
 
@@ -1168,11 +1218,13 @@ Release / Shipping artifact:
 --open                  # web convenience
 --env KEY=VALUE
 --cwd <path>
+--emulate               # embedded-cpu device target, macOS only
 ```
 
 - `--open`：web target 打开浏览器（`--json` 下同样打开）；非 web target 或与 `--browser none` 同时出现为 usage error；
 - `--env KEY=VALUE`：可重复；KEY 为可移植变量名（字母、数字、`_`，不以数字开头），`VISO_DEV_*` 保留给 dev session；desktop 为进程环境变量，iOS/Android/web 经 launch 变量（§13.10），app 一律以 `viso_platform::launch_var` 读取；名字像 secret（含 TOKEN、SECRET、PASSWORD、KEY、CREDENTIAL、AUTH、PRIVATE、COOKIE、SESSION）的值在 `--verbose` 中显示为 `<hidden>`（§49）；
-- `--cwd <path>`：desktop app 的工作目录，相对调用 `viso` 的目录，默认 project root；非 host target 或不是目录为 usage error；
+- `--cwd <path>`：desktop app 的工作目录，相对调用 `viso` 的目录，默认 project root；非 host target 或不是目录为 usage error；本机运行的 device target 同样可用，经 SSH 的板卡 session 不可用；
+- `--emulate`：device target 的 profile 在本机仿真（§13.11）；
 - `--profile-frame`：session 对每个连上的 runtime 开一个 capture（§25.4），每个窗口右上角显示最近 1 秒的帧与 GPU 时间 p50/p95（每 500 ms 更新）；`--json` 下每帧一条 `profile`（`payload: {frame, at_ms, metrics: {<§25.2 指标>: <该帧的值>}}`，该帧没有的指标省略），human 模式每秒在 stderr 打一行 `[viso] profile  120 frames  frame 8.29/8.97 ms  gpu 0.09/0.09 ms`；
 - `--inspect`：session 跟随首个连上的 runtime 的首个窗口（§24.5），与 `viso inspect events` 同一 journal：`--json` 下每个事件一条 `inspect`，human 模式每个事件一行；runtime 断开后跟随下一个连上的。
 
@@ -1219,6 +1271,26 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
 - 尚未实现：`viso serve --https`。
 
 ---
+
+### 13.11 Device target：板卡 session 与桌面仿真
+
+```bash
+viso run panel                   # [target.panel] 写了 deploy：板卡上的 dev session
+viso run kiosk --emulate         # embedded-cpu：本机 macOS 窗口中的仿真
+```
+
+**板卡 session**（Hot Reload §27A）：`[target.<name>]` 写了 `deploy = "user@host[:port]"` 时，`viso run <name>` 总在该板卡上运行，即使本机 triple 与之相同：
+
+1. 构建前先打开 session：`ssh` 到板卡（batch mode，不问密码：板卡须接受本机或 agent 的 key；`-p` 为 port），清空并创建 `~/viso-dev/<project>`，并读取该连接的 `$SSH_CONNECTION`。dev channel 监听在本机通往板卡那一跳的地址上：对 `$SSH_CONNECTION` 中板卡一侧的地址 connect 一个 UDP socket，取其本地地址（不发包）。该地址须是 loopback、IPv4 私有或 link-local、IPv6 unique-local 或 link-local（与 runtime 的 `dev_host` 规则相同），否则 `ENV_DEV_CHANNEL`；SSH 失败为 `ENV_DEPLOY`（exit 3），在构建开始前结束；
+2. 为 target 的 triple 与 profile 交叉构建 dev artifact：embedded feature 集（§3.6）加 `viso/hot-reload`，budget、workers、display 与字体子集照常烘入；
+3. `scp` 可执行文件进 session 目录，第一次 launch 时连同项目的 `assets/`（之后的 asset 改动经 patch 到达）；
+4. `ssh` 启动：远程 `sh` 进入 session 目录、把自己的 pid 写进 `.pid`，再以 `exec env VISO_DEV_RUNTIME=… VISO_DEV_TOKEN=… VISO_DEV_SESSION=… VISO_DEV_BUILD=… ./<bin> <app args>` 启动 app（`--env` 的变量在前）。app 的 stdout/stderr 经该连接成为 `log`，连接的退出状态即 app 的（255 是 SSH 自己的：连接失败或断开，报为 `the SSH connection to the board failed or was lost`）。启动 app 的 `ssh` 在自己的进程组里，终端的 Ctrl-C 只交给 session：session 经另一条 SSH 连接向 `.pid` 发 `SIGTERM`（第二次 Ctrl-C 为 `SIGKILL`），app 如在桌面上一样关闭；
+5. patch 与桌面相同。Rust 改动走 warm restart：新 artifact 在旧 app 仍运行时先 `scp` 为 session 目录中的 `.next-<bin>`（限 300 s），旧 app 交出 snapshot 并退出后，以一次 SSH 校验其大小并移到位再启动；未完整到达时直接重新复制；
+6. listener 打开后打印一条 `warn`：dev channel 在本地网络上不加密，同一网络上的设备能看到 session 发出的 patch。
+
+`--cwd` 在板卡 session 上是 usage error（app 在 session 目录中运行）。
+
+**桌面仿真**（Architecture §50A.7）：`viso run <name> --emulate` 只接受 `embedded-cpu` 的 device target，只在 macOS 上运行：为本机 triple 构建，feature 为该 target 的 embedded feature 集加 `viso/emulate` 与 `viso/hot-reload`（`--no-default-features`），`VISO_FOOTPRINT`、`VISO_BUDGET`、`VISO_WORKERS`、`VISO_KMS_*` 与字体变量和板卡构建相同；之后如 desktop host 一样在本机启动与 hot reload（`--cwd` 可用）。面板以构建烘入的 `VISO_KMS_MODE`/`FORMAT`/`ROTATION` 显示，运行时同名变量（`--env`）与 `VISO_SCALE` 覆盖。`embedded-gpu` 的 target 为 `ENV_EMULATE`（exit 3：macOS 上没有 GLES，GPU 板卡的驱动不在桌面上），非 macOS 主机同样为 `ENV_EMULATE`；非 embedded 的 device target 与非 device target 的 `--emulate` 是 usage error。`--emulate` 优先于 `deploy`。
 
 ## 14. `viso build`
 
@@ -1322,8 +1394,8 @@ Built web-gpu (shipping) in 41.3 s
 
 1. 先做 `viso check` 的全部检查（manifest、`.vs`、catalog、assets）；有 error 时 exit 1，Cargo 不运行；
 2. 取 `build-<target>.lock`（§44，不等待）；
-3. Cargo profile：`dev`→`--profile dev`，`release`→`--profile release`，`shipping`→ Viso 自有的 Cargo profile（`--config profile.shipping.inherits="release" --profile shipping`）；`VISO_PROFILE` 为该 profile，dev profile 带 `--features viso/hot-reload`（headless 除外），headless 带 `--features viso/headless` 与 `--target <host triple>`（§3.4）。Viso 设置以 `--config profile.<p>.opt-level|debug|strip` 交给 Cargo，只传与 Cargo 该 profile 默认不同、或被某一层显式命名的值（shipping 默认 `opt-level="s"`、`strip=true`）；web target 的 debug 随 web 子表、strip 交给 `wasm-bindgen`；
-4. target：host/headless 原生可执行文件；`ios` 为 simulator triple 的 `.app`（ad-hoc 签名）；`android` 为 emulator ABI 的 `cdylib` 打成 APK（dev 为 dev APK，release/shipping 为 release APK，debug keystore 签名）；`web-gpu` 为 `wasm32-unknown-unknown` 经 §14.3 的 bundle；
+3. Cargo profile：`dev`→`--profile dev`，`release`→`--profile release`，`shipping`→ Viso 自有的 Cargo profile（`--config profile.shipping.inherits="release" --profile shipping`）；`VISO_PROFILE` 为该 profile，dev profile 带 `--features viso/hot-reload`（headless 与 device target 除外），headless 带 `--features viso/headless` 与 `--target <host triple>`（§3.4），device target 带其 triple、profile 的 feature（embedded profile 另带 `--no-default-features`）与 `VISO_FOOTPRINT`/`VISO_BUDGET`/`VISO_WORKERS`/`VISO_KMS_*`/`VISO_FONT_*`（§3.6）。Viso 设置以 `--config profile.<p>.opt-level|debug|strip` 交给 Cargo，只传与 Cargo 该 profile 默认不同、或被某一层显式命名的值（shipping 默认 `opt-level="s"`、`strip=true`）；web target 的 debug 随 web 子表、strip 交给 `wasm-bindgen`；
+4. target：host/headless/device target 原生可执行文件（device target 不打包，`dist/<name>/` 中即该可执行文件）；`ios` 为 simulator triple 的 `.app`（ad-hoc 签名）；`android` 为 emulator ABI 的 `cdylib` 打成 APK（dev 为 dev APK，release/shipping 为 release APK，debug keystore 签名）；`web-gpu` 为 `wasm32-unknown-unknown` 经 §14.3 的 bundle；
 5. 打包输出写入 `target/viso/build/<build-id>/out/`（不同 BuildId 互不覆盖），再整体复制（文件系统支持时 clone）为 `dist/` 下的同级临时目录，写入 `artifact.json`，以一次 rename 交换进 `dist/<platform>/`（macOS `renamex_np(RENAME_SWAP)`、Linux `renameat2(RENAME_EXCHANGE)`，不支持时先移开旧目录），旧输出随后删除——`dist/<platform>/` 只会是旧的完整输出或新的完整输出；
 6. `artifact.json`：`project`、`version`、`target`、`profile`、`build_id`、`toolchain`（`rustc -V`）、`signing`（`none|ad-hoc|debug-keystore`）、`artifacts[{kind, path（相对 artifact.json 所在目录）, size, hash}]`；
 7. Ctrl-C：杀掉 Cargo 与其下全部进程（及进行中的 `wasm-bindgen`/`wasm-opt`），删除 `out/`，`dist/` 不变，exit 130。
@@ -1488,7 +1560,7 @@ mobile permission declaration missing
 invalid signing metadata shape
 ```
 
-当前实现：`viso check <target>`（`headless`、`ios`、`android`、`web-gpu`、`web-dom`、`web-hybrid`）按该 target 的构建解析配置（`Viso.toml`、`VISO_*`，target 不可用为 `C0011`，exit 3），并以该 target 设备具有的输入检查源码：desktop host 有键盘、鼠标与手柄，iOS、Android 与浏览器另有触摸，headless 只有键盘与指针（Input Action 缺少某设备的绑定为 `E9107` 警告）。不写 target 时为 host 加上 `Viso.toml` 配置的移动 target 的设备。`--target <t>` 是 usage error，提示写成位置参数（`build` 同此）。`--a11y strict` 使 `E3704`/`E3708` 成为错误，`--i18n strict` 使 `E3705` 成为错误并覆盖字面量文本（DSL §U8.2、§U10）。
+当前实现：`viso check <target>`（`headless`、`ios`、`android`、`web-gpu`、`web-dom`、`web-hybrid`）按该 target 的构建解析配置（`Viso.toml`、`VISO_*`，target 不可用为 `C0011`，exit 3），并以该 target 设备具有的输入检查源码：desktop host 有键盘、鼠标与手柄，iOS、Android 与浏览器另有触摸，headless 只有键盘与指针（Input Action 缺少某设备的绑定为 `E9107` 警告）。不写 target 时为 host 加上 `Viso.toml` 配置的移动 target 与 device target 的设备。`viso check <device-target>` 按其 profile 检查：embedded profile 的板卡有触摸与按键、没有手柄，`desktop`/`mobile`/`web` 同对应 target；包内 shader 语言按 profile 固定（§3.6、§38.6）：`embedded-cpu` 仅 `None`，`embedded-gpu` 的 GLES 板卡为 GLSL ES、Vulkan 板卡（`gpu = "vulkan"`）为 SPIR-V，`web` 为 WGSL 与 `None`，`desktop`/`mobile` 同其他 target；device target 的包中某个 shader 在其语言下构建不出为 `E3711`（`build` 同此）。`--target <t>` 是 usage error，提示写成位置参数（`build` 同此）。`--a11y strict` 使 `E3704`/`E3708` 成为错误，`--i18n strict` 使 `E3705` 成为错误并覆盖字面量文本（DSL §U8.2、§U10）。
 
 ### 17.2 Fast default
 
@@ -1971,7 +2043,7 @@ viso inspect frame [--window <n>] [--target <t>] …
 
 - `tree`：每个窗口按先序的全部节点，人类输出按深度缩进，每节点一行（同 `query` 的行），末行为节点数；`--json` 一条 `result`：`{windows: [{window, nodes: [<query 的 match 字段>…, parent]}], inspector, unavailable}`，`parent` 为父节点的 `node_id` 或 `null`；
 - `node`：selector（或 `<index>:<generation>`）所选节点，再向 app 询问它们的 detail（`InspectAsk::Nodes`，按窗口分批，一批至多 4096 个；headless 运行在结束时写出窗口全部节点的 detail，`VISO_HEADLESS_DETAIL`）。每个节点：`layout` / `style` / `content` 三组解析后的属性（如 `kind`、`axis`、`gap`、`padding`、`width`、`height`；`background`、`radius`、`opacity`、`hidden`、`hit_test`；内容种类、`font_size`、`color`、`soft_wrap`、`tint`），`world`（窗口坐标）与 `local` box，`transform_chain`（有平移或滚动的祖先，自根向下），`dirty`（当前 dirty class），`states`（hovered、pressed、focused…），`event_route`（自根向下有 pointer / key handler 或可聚焦的节点），`bindings`（使它失效的 cell：source table 给出的属性名、state 名、类型与声明位置，cell 的当前值，它失效的 class，是否 dynamic 边），`paint`（其在 paint stream 中的 span、它自己绘制的 primitive 种类，与这些 primitive 落入的 draw batch：按提交顺序的 batch 序号与各自的 draw 数，被裁剪或不产生 draw 的不计，序号即 `inspect frame` 的 batch 序号；无 renderer 时为空）。人类输出每节点一行加缩进的各项；census 之后已卸载的节点 `detail` 为 `null`（人类输出 `gone since the census`）；
-- `frame`：窗口 `--window`（默认 0，不存在为用法错误）最后一帧：`counters`（nodes、primitives、draw_calls、batches、instances、upload_bytes、culled_primitives 等），`batches`（提交顺序：pipeline、`start`/`count`、clip、offscreen、cost），`resources`（`group` 为 `gpu`：pipelines、buffers、gradient LUT、mask page、offscreen targets、各 glyph atlas pool；`cache`：fonts、shaped runs、atlas 中的 glyph、asset decode/upload 计数；`asset`：每个资源的状态 `wanted` / `encoded` / `decoded WxH` / `resident WxH` / `vector WxH`；附 `bytes`、`budget`、`note`）；
+- `frame`：窗口 `--window`（默认 0，不存在为用法错误）最后一帧：`counters`（nodes、primitives、draw_calls、batches、instances、upload_bytes、culled_primitives 等），`batches`（提交顺序：pipeline、`start`/`count`、clip、offscreen、cost），`damage`（该帧 present 重画的区域，§30.3：`null` 未重画、`"whole"` 整帧、或若干不相交矩形；Studio/Inspector 据此叠加 damage rect），`resources`（`group` 为 `gpu`：pipelines、buffers、gradient LUT、mask pages、offscreen targets、各 glyph atlas pool；`cache`：fonts、shaped runs、atlas 中的 glyph、asset decode/upload 计数；`asset`：每个资源的状态 `wanted` / `encoded` / `decoded WxH` / `resident WxH` / `vector WxH`；附 `bytes`、`budget`、`note`）；
 - detail 在 runtime 的下一帧边界由该窗口最后一帧留下的状态生成，只在工具询问时分配，不在帧路径上；解码失败为 `INSPECT_ANSWER_INVALID`（exit 7）。
 
 ### 24.5 Events
@@ -2032,6 +2104,8 @@ reactive_evals      static binding 求值
 dynamic_evals       dynamic binding 求值
 dynamic_fallbacks   走 dynamic 依赖边的节点
 primitives / draw_calls / batches / instances / upload_bytes
+damage_px / damage_rects 该帧重画的像素与矩形数（无变化的帧为 0、整帧重画矩形数为 0，§30.3）
+full_frame_fallbacks 本可局部重画却整帧重画的帧（damage 超过大半个 surface、drawable 内容未知）
 shaped_runs / glyph_rasters / glyph_upload_bytes
 glyph_cache_bytes / atlas_pages
 resource_loads      解码的 asset
@@ -2667,8 +2741,11 @@ ENV_SOURCE_UNREADABLE   命令需要的源文件不可读                   exit
 ENV_CARGO_MANIFEST      project root 下没有要构建的 Cargo.toml    exit 3
 ENV_CARGO               cargo 无法启动                           exit 3
 ENV_NO_EXECUTABLE       构建没有产出、或产出多个可执行文件       exit 3
-ENV_DEV_CHANNEL         loopback dev transport 无法建立          exit 3
+ENV_DEV_CHANNEL         dev transport 无法建立（loopback，或通往板卡的本地网络地址） exit 3
 ENV_DEVICE              simulator/emulator 工具链缺失或失败       exit 3
+ENV_DEVICE_TARGET       device target 不能在本机运行（§3.6）      exit 3
+ENV_DEPLOY              板卡经 SSH 不可达，或复制失败（§13.11）     exit 3
+ENV_EMULATE             该 profile 不能在本机仿真（§13.11）         exit 3
 ENV_STDOUT              stdout 写不出                            exit 3
 ENV_SOURCE_WRITE        命令改写的源文件写不出                   exit 3
 ENV_LOCK_HELD           命令需要的 lock 被其他 viso 进程持有      exit 3
@@ -2808,6 +2885,22 @@ bundle_id = "com.example.hello"
 
 `[test.surface]` 是 headless 运行（`viso test`、`viso snapshot`）中每个窗口的 surface：`width`、`height` 为逻辑像素（整数 1–16384，缺省 1280、720），`scale` 为每逻辑像素的设备像素（整数或小数，大于 0、至多 8，缺省 1），越界为 C0007（§3.4）。
 
+`[images]` 是 release 构建（`release` / `shipping`，dev 从不转换）把 `assets/` 的图像转换为 target 采样格式的方式（Architecture §51.1，Rendering §6.3）：
+
+```toml
+[images]
+convert   = true       # false：照原样嵌入文件，设备上解码
+quality   = "high"     # lossless | high | balanced | compact
+svg       = "vector"   # vector | raster：构建期光栅化，设备不链接 SVG 解析
+svg_scale = 2          # 光栅化 SVG 每文档单位的像素；缺省 board 1，其余 2
+fit       = true       # 有 display 尺寸的 board 把超出 cover fit 所示的图像预缩小
+```
+
+- 格式族随 target：host / desktop → BC，`ios` / `android` / mobile → ASTC，embedded-gpu → ETC2，embedded-cpu → RGBA8 / RGB565 / RGBA5551 / RGBA4444（`display.format = "rgb565"` 时不透明图像取 RGB565）；`web-*` 与 `headless` 不转换。`quality`：`lossless` 一律 RGBA8；`high` BC7、ASTC 4×4、ETC2、8-bit 面板 RGBA8；`balanced` 不透明 BC1、ASTC 6×6、16-bit；`compact` ASTC 8×8，soft alpha RGBA4444；
+- `build` 在 Cargo 运行前转换，结果写入 `target/viso/generated/images/<target>/`，路径作为 `VISO_ASSET_OVERLAY` 交给 `asset!` / `view!`；转换按 sha256(转换器版本、设置、源字节) 缓存在 `generated/images/cache/`，内容不变不重写；`images` 一条 progress 日志报告张数、缓存命中与前后字节。不能解码的 asset 是 `ENV_BUILD_WRITE`；
+- board 构建另设 `VISO_IMAGES_CONVERTED=raster`（facade 不链接 PNG/JPEG 解码），`svg = "raster"` 时含 `svg`（不链接 SVG 解析）；
+- 设备不采样所转换的格式时在加载时软件解码为 RGBA8（不失败，只多花一次解码与 4 字节/texel）。
+
 `[i18n] source = "en"` 是声明全部消息的源 Locale（缺省 `en`）；消息目录是 `Viso.toml` 旁的 `i18n/<locale>.toml`（DSL §U10.3）。`viso check` 编译目录并报告其问题（`E3706`，指向目录文件的行列），`tr` 与 `MessageKey` 字面量据此检查；`i18n/` 无法读取是环境错误。
 
 ### 38.1 Web
@@ -2905,6 +2998,51 @@ package_manager = "pnpm"
 ```
 
 Exporter config 不影响 Viso runtime semantics。
+
+### 38.6 Device target
+
+`[target.android]`、`[target.ios]` 以外的每个 `[target.<name>]` 都是一个 device target：项目命名的板卡，以 `viso build <name>` 构建（§3.6）。
+
+```toml
+[target.panel]
+profile = "embedded-gpu"
+triple  = "aarch64-unknown-linux-gnu"
+display = { width = 1024, height = 600, format = "xrgb8888", rotation = 90 }
+budget  = { heap = "48MiB", glyph_atlas = "4MiB", images = "16MiB" }
+fonts   = { charset = ["latin", "gb2312"], bake = [14, 18, 24] }
+locales = ["zh-Hans", "en"]
+workers = 1
+deploy  = "root@192.168.1.20"
+```
+
+```text
+profile   必填  desktop|mobile|web|embedded-gpu|embedded-cpu（Architecture §50A.3）
+triple    可选  Rust target triple；缺省为本机。embedded profile 必须是 Linux triple（含 `-linux`）
+gpu       可选  gles|vulkan，仅 embedded-gpu；缺省 gles（§3.6 的 feature 与 shader 语言随之）
+display   可选  width、height：1–16384 像素，须同时写；format：xrgb8888|rgb565|argb8888；
+                rotation：0|90|180|270（顺时针，度）。未写的项取面板的 preferred mode 与 backend 默认
+budget    可选  heap|gpu|faces|shaping|glyph_atlas|images = 大于 0 的大小：
+                字符串 `<整数>[B|KiB|MiB|GiB]`（如 "48MiB"、"4096"），或字节数整数
+workers   可选  主线程以外的 worker 数，0–256；0 为 idle 切片内联执行；缺省为 profile 的
+fonts     可选  charset：字符串数组，仅 embedded profile；每项为 ascii|latin|greek|cyrillic|gb2312
+                （大小写不敏感）、U+XXXX 或 U+XXXX-YYYY（低 ≤ 高，≤ U+10FFFF）。作为 VISO_FONT_CHARSET
+                交给字体子集（§3.6，Text/Font Runtime §3.4）。
+                bake：整数数组，仅 embedded profile；UI 绘制的字号（pixels per em，1–1024），作为
+                VISO_FONT_BAKE 交给宏，构建期把 glyph bake 成 A8 page（Text/Font Runtime §3.6）。
+                rasterizer：布尔，仅 embedded profile，缺省 true；false 时不链接 glyph rasterizer
+                （不加 viso/rasterizer），只画 baked glyph，须同时写 bake
+locales   可选  BCP 47 tag 数组，仅 embedded profile：板卡文本所用的 locale；决定 Unicode 数据
+                的裁剪（是否加 viso/complex-line-break，Text/Font Runtime §3.7）。缺省为 i18n catalog
+                的 locale
+deploy    可选  "user@host[:port]"：`viso run <name>` 经 SSH 部署的板卡（§13.11）。user 可省略（SSH
+                自己的）；带 port 的 IPv6 地址写在方括号中（"root@[fd00::7]:22"）
+images    可选  与 `[images]` 同一组 key（§38），逐项覆盖之
+```
+
+- 名字：小写字母开头，其后为小写字母、数字、`-`、`_`，至多 64 个字符（它是 `dist/<name>/` 目录与命令行词）；内建 target 名（`host`、`headless`、`ios`、`android`、`web-gpu`、`web-dom`、`web-hybrid`）与其他 `dist/` 目录名（`macos`、`windows`、`linux`、`web`）不可用；违反为 C0007；
+- 缺 `profile` 为 C0006；未知 key（含 `display`、`budget`、`fonts` 子表内）为 C0004 并给出最接近的 key；类型错误 C0005；越界或不在取值集合中为 C0007，均指向所写位置；`[target]` 下非 table 的 key 为 C0004；非 embedded-gpu 的 `gpu`、非 embedded profile 的 `fonts.charset`/`fonts.bake`/`fonts.rasterizer`/`locales`、写法不对的 charset 项、越界的 bake 字号、写法不对的 locale 与 `deploy` 为 C0007；`fonts.rasterizer = false` 而没有 `fonts.bake` 为 C0006；
+- profile 只选择一组固定的 feature 与运行时默认值，用户不手工组合 feature（Architecture §50A.3）；embedded profile 关掉 facade 的默认 feature（含 `desktop`），见 §3.6；`budget`、`workers` 只覆盖 profile 的默认值，app 仍可经 `Application::memory_budget` 调整；
+- device target 不出现在 `viso config show` 的 key 列表中（列表是固定 schema，device target 的 key 随项目命名）。
 
 ---
 
@@ -3554,13 +3692,14 @@ snapshot compare
 
 ## 61. Fake target/device backends
 
-CLI 测试不能要求 CI 真有手机。
+CLI 测试不能要求 CI 真有手机或板卡。
 
 Target/Device service 必须支持 fake backend：
 
 ```text
 fake ios simulator
 fake android emulator
+fake board（`ssh`/`scp` 脚本，以本机目录为板卡的 home）
 fake disconnected simulator/emulator
 fake signing error
 fake SDK missing

@@ -226,13 +226,7 @@ mod tests {
     /// Count a node's direct children by walking the arena sibling chain.
     fn child_count(store: &NodeStore, parent: NodeId) -> usize {
         let arena = store.arena();
-        let mut n = 0;
-        let mut child = arena.links(parent).and_then(|l| l.first_child);
-        while let Some(c) = child {
-            n += 1;
-            child = arena.links(c).and_then(|l| l.next_sibling);
-        }
-        n
+        arena.children(parent).count()
     }
 
     /// An image builds a single leaf carrying the declared image content payload

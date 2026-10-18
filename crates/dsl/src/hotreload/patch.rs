@@ -9,13 +9,13 @@
 //! candidate travels in its release form.
 
 use viso_behavior::game::Rebuild;
-use viso_ui::aot::AotNode;
-use viso_ui::state::StateKey;
-use viso_view::ViewPackage;
-use viso_view::dev::wire::{
+use viso_dev_protocol::wire::{
     FileId, GamePatch, GameTier, NodeCarry, NodeRef, ReloadPlan, RetypePlan,
     StateAction as PatchAction, StatePlan, StructuralOp, ViewPatch,
 };
+use viso_schema::StateKey;
+use viso_schema::aot::AotNode;
+use viso_schema::view::ViewPackage;
 
 use viso_shader::program::ShaderLang;
 

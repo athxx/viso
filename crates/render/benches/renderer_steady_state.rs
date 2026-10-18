@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_gpu::{
-    GpuBackend, HeadlessRaster, RawWindowHandle, ShaderLang, SurfaceId, TextureDesc, TextureFormat,
+    CpuRaster, GpuBackend, RawWindowHandle, ShaderLang, SurfaceId, TextureDesc, TextureFormat,
     TextureId,
 };
 use viso_render::{
@@ -87,7 +87,7 @@ const CLEAR: [f32; 4] = [0.1, 0.1, 0.1, 1.0];
 /// before any steady-state measurement, so they are not counted against the
 /// per-frame allocation budget.
 struct Harness {
-    gpu: HeadlessRaster,
+    gpu: CpuRaster,
     renderer: Renderer,
     surface: SurfaceId,
     scene: Vec<Primitive>,
@@ -99,7 +99,7 @@ struct Harness {
 /// the checkerboard image texture and the A8 glyph coverage pool are created and
 /// written once, and their `TextureId`s feed `test_scene`.
 fn setup() -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);
@@ -313,7 +313,7 @@ fn family_grid_scene(family: Family, count: usize) -> Vec<Primitive> {
 /// renderer / surface setup as [`setup`], but no image/glyph resources — the
 /// grid needs none, so the quad pool is the only one that ever uploads.
 fn setup_grid(count: usize) -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);
@@ -330,7 +330,7 @@ fn setup_grid(count: usize) -> Harness {
 /// [`setup_grid`]: no image/glyph resources, and one family only, so that
 /// family's pool is the sole `sync` participant.
 fn setup_family_grid(family: Family, count: usize) -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);
@@ -565,7 +565,7 @@ fn texture_pressure_scene(textures: &[TextureId], per_texture: usize) -> Vec<Pri
 /// A [`Harness`] whose scene is prebuilt, plus any textures it references so the
 /// caller can mutate the scene. Same cold-path setup as [`setup`].
 fn setup_scene(scene: Vec<Primitive>) -> Harness {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);
@@ -578,7 +578,7 @@ fn setup_scene(scene: Vec<Primitive>) -> Harness {
 }
 
 /// Create and upload one BGRA8 checkerboard texture on `gpu`, returning its id.
-fn upload_test_texture(gpu: &mut HeadlessRaster, label: &'static str) -> (TextureId, [u32; 2]) {
+fn upload_test_texture(gpu: &mut CpuRaster, label: &'static str) -> (TextureId, [u32; 2]) {
     let (tw, th, texels) = test_texture();
     let texture = gpu.create_texture(&TextureDesc {
         width: tw,
@@ -660,7 +660,7 @@ fn assert_gradient_grid_steady_and_local() {
 /// shares one (texture, sampler), so the planner emits one binding, and a steady
 /// frame's binding set never churns).
 fn assert_image_grid_shares_one_binding(build: impl Fn(TextureId, [u32; 2]) -> Vec<Primitive>) {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);
@@ -713,7 +713,7 @@ fn assert_texture_pressure_binds_once_per_texture() {
     const N_TEX: usize = 8;
     const PER_TEX: usize = 32;
 
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let renderer = Renderer::new(&mut gpu, format);
@@ -1468,7 +1468,7 @@ fn assert_path_churn_is_local() {
 // headless CPU backend (draw-call / batch / pipeline-switch structure and the
 // shaded-quad-area overdraw proxy) and records the verdict; the register-pressure
 // / shaded-pixel-time half is a real-device measurement `FrameStats` +
-// `HeadlessRaster` cannot express and is flagged, not asserted (§7.3).
+// `CpuRaster` cannot express and is flagged, not asserted (§7.3).
 // ---------------------------------------------------------------------------
 
 /// The decorated-card grid size for the fusion gate: enough cards that the
@@ -1570,7 +1570,7 @@ fn shadow_quad_area(s: &AnalyticShadow) -> f32 {
 ///
 /// NOT observable here (the other half of the §20.1 gate): real-Metal shader
 /// register pressure and shaded-pixel time on device. `FrameStats` has no
-/// overdraw or GPU-timing counter and `HeadlessRaster` is a CPU rasterizer, so
+/// overdraw or GPU-timing counter and `CpuRaster` is a CPU rasterizer, so
 /// whether the fused fragment's extra ALU + the larger shaded area actually beat
 /// the separate path's extra draw/switch cost is a device measurement, not a
 /// headless one (§7.3). The fused pipeline is therefore deferred until that
@@ -1655,7 +1655,7 @@ fn assert_decorated_fusion_gate() {
 // NOT observable here (flagged, not asserted): real-device shaded-pixel time
 // for a thousand overlapping soft shadows, and the visual quality of the sharp
 // E0 path-shadow mask vs a true blurred one. `FrameStats` has no GPU-timing or
-// overdraw counter and `HeadlessRaster` is a CPU rasterizer (§7.3/§36).
+// overdraw counter and `CpuRaster` is a CPU rasterizer (§7.3/§36).
 // ---------------------------------------------------------------------------
 
 /// The analytic-shadow grid size for the §31 gate: 1k shadows, matching the D1/D2
@@ -1859,7 +1859,7 @@ fn assert_path_shadow_reuse_is_local() {
 // the tap budget and asserted only as *pass and byte structure*, never as Metal
 // time (§7.3/§36). "Does not continuously submit" is a present-loop property
 // owned by `runtime/benches/frame_loop.rs::assert_idle_does_no_work`; from the
-// render crate only "an idle upload does no work" is visible. `HeadlessRaster`
+// render crate only "an idle upload does no work" is visible. `CpuRaster`
 // is a CPU rasterizer with no bandwidth or overdraw counter, so the bandwidth
 // saving a reduced-extent ladder buys is inferred from target bytes, not
 // measured.
@@ -3846,7 +3846,7 @@ fn bench_steady_state(c: &mut Criterion) {
     });
 
     // Image grid over one shared texture: steady upload with one texture binding.
-    let mut img_gpu = HeadlessRaster::new();
+    let mut img_gpu = CpuRaster::new();
     let img_surface = img_gpu.create_surface(RawWindowHandle::Headless, W, H);
     let img_format = img_gpu.surface_format(img_surface);
     let img_renderer = Renderer::new(&mut img_gpu, img_format);
@@ -4127,7 +4127,7 @@ fn bench_steady_state(c: &mut Criterion) {
     // screen costs on the CPU (diff, plan, and the §3202 dependency scan, all of
     // which must find nothing to do); `frame` adds encoding every pass. This row is
     // the one to read against a refresh budget — 16.67 / 8.33 / 6.94 / 4.17 ms at
-    // 60 / 120 / 144 / 240 Hz — though it is `HeadlessRaster` CPU rasterization,
+    // 60 / 120 / 144 / 240 Hz — though it is `CpuRaster` CPU rasterization,
     // not device shaded-pixel time, so the budget comparison bounds the framework's
     // own per-frame cost and nothing else (§7.3/§36).
     let mut glass = setup_scene(glass_screen_scene());

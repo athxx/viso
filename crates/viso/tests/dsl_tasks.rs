@@ -10,7 +10,7 @@ use viso::ui::context::UpdateCx;
 use viso::ui::{
     BindingTable, BuildCx, ComputedStore, EffectStore, NodeStore, PointerButtons, PointerEvent,
     PointerPhase, PointerRouter, SemanticProjector, StateStore, StateValue, TextEdits,
-    VirtualLists, settle_states,
+    VirtualLists, run_effects, settle_states,
 };
 
 viso::component! {
@@ -85,6 +85,7 @@ fn a_component_task_hands_its_value_back_at_a_frame_boundary() {
                 &mut changed,
             )
             .expect("settles");
+            run_effects(store, states, &mut effects);
         };
     frame(&mut store, &mut states, &mut bindings);
 
@@ -165,6 +166,7 @@ fn a_component_resource_loads_on_its_root() {
         &mut changed,
     )
     .expect("settles");
+    run_effects(&mut store, &mut states, &mut effects);
     assert_eq!(store.task_count(), 1, "the mount started the loader");
     let mut continuations = Vec::new();
     store.poll_tasks(&mut continuations);

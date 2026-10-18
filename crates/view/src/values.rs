@@ -33,7 +33,7 @@ use viso_ui::{
     Semantics, Srgb, StateId, StructureCx, TextRequest, Timing,
 };
 
-use crate::control::{Control, ControlInput, ControlKind, When};
+use crate::control::{Control, ControlInput, ControlKind, Holds, When};
 use crate::host::ViewHost;
 use crate::scope::Scope;
 use crate::shaders::encode_shader;
@@ -556,7 +556,7 @@ fn describe_node(store: &mut NodeStore, node: NodeId, said: &Said<'_>) {
 
 /// Marks the child of `node` at `selected` selected and each other child not.
 fn select(store: &mut NodeStore, node: NodeId, selected: i64) {
-    let links = |store: &NodeStore, id| store.arena().links(id).copied();
+    let links = |store: &NodeStore, id| store.arena().links(id);
     let mut child = links(store, node).and_then(|l| l.first_child);
     let mut index = 0;
     while let Some(id) = child {

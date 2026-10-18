@@ -71,21 +71,21 @@ use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use viso_dsl::Diagnostic;
-use viso_dsl::assets::{ASSET_ERROR, ResourceId};
-use viso_dsl::behavior::probe::state_json;
-use viso_dsl::hotreload::{CandidatePlan, game_patch, view_patch};
-use viso_project::LockGuard;
-use viso_text::font_format;
-use viso_view::dev::wire::{
+use viso_dev_protocol::headless::Reported;
+use viso_dev_protocol::inspect::{InspectAsk, SourceTable};
+use viso_dev_protocol::wire::{
     BlobRef, Blobs, CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply,
     HostMessage, MAX_FRAME, PatchAck, PatchBundle, PatchNack, PatchSection, Rebuild, ResourceAsset,
     ResourcePatch, RestoreBundle, RestoreReport, Revision, RuntimeHello, RuntimeMessage,
     RuntimeSessionId, RuntimeTarget, ShaderLang, Stage, SystemPatch, UiPatch, WindowGeometry,
     blob_chunks, source_hash,
 };
-use viso_view::headless::Reported;
-use viso_view::inspect::{InspectAsk, SourceTable};
+use viso_dsl::Diagnostic;
+use viso_dsl::assets::{ASSET_ERROR, ResourceId};
+use viso_dsl::behavior::probe::state_json;
+use viso_dsl::hotreload::{CandidatePlan, game_patch, view_patch};
+use viso_project::LockGuard;
+use viso_text::font_format;
 
 pub use control::{Control, ControlAsk, ControlCall, ControlDeliver, ControlReply};
 pub use link::{Deliver, Expect, LinkEvent, Traffic};
@@ -1701,9 +1701,7 @@ impl DevSession {
                             .then_some(())
                             .ok_or_else(|| "a face of it does not parse".to_owned())
                     } else {
-                        viso_svg::decode_asset(&file.bytes)
-                            .map(drop)
-                            .map_err(|error| error.to_string())
+                        check_asset(&file.bytes)
                     }
                 });
             let (outcome, stage, codes) = match decoded {
@@ -1986,17 +1984,32 @@ pub(crate) fn random_hex() -> String {
     format!("{:016x}{:016x}", word(0), word(1))
 }
 
+/// Whether `bytes` decode as the app decodes an asset: a PNG or JPEG to a
+/// raster, an SVG to a document; why not.
+fn check_asset(bytes: &[u8]) -> Result<(), String> {
+    use viso_schema::resource::{AssetFormat, AssetKind};
+    match AssetFormat::sniff(bytes).map(AssetFormat::kind) {
+        Some(AssetKind::Raster) => viso_image::decode_raster(bytes)
+            .map(drop)
+            .map_err(|error| error.to_string()),
+        Some(AssetKind::Vector) => viso_svg::parse(bytes)
+            .map(drop)
+            .map_err(|error| error.to_string()),
+        None => Err(viso_image::AssetError::Format.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
     use std::sync::mpsc::{self, Receiver};
 
-    use viso_dsl::aot::emit_view_package;
-    use viso_project::{Layout, LockKind, Target};
-    use viso_view::dev::wire::{
+    use viso_dev_protocol::wire::{
         BLOB_CHUNK, BuildId, DevSessionId, Domains, FileCommit, FileId, MountEntry, PatchTimings,
         ProjectFingerprint, ReloadPlan, SchemaFingerprint, ViewPatch,
     };
+    use viso_dsl::aot::emit_view_package;
+    use viso_project::{Layout, LockKind, Target};
 
     use super::link::Connection;
     use super::*;
@@ -2152,7 +2165,7 @@ mod tests {
         fn ack(&mut self, revision: u64) {
             self.runtime(RuntimeMessage::Ack(PatchAck {
                 revision: Revision(revision),
-                applied_domains: Domains::NONE.with(viso_view::dev::wire::Domain::Ui),
+                applied_domains: Domains::NONE.with(viso_dev_protocol::wire::Domain::Ui),
                 files: vec![FileCommit {
                     file: FileId(0),
                     counts: CommitCounts {
@@ -2172,7 +2185,7 @@ mod tests {
     /// The hello of runtime `id` of `target`, applying `capabilities`.
     fn hello(id: u128, target: RuntimeTarget, capabilities: Domains) -> RuntimeHello {
         RuntimeHello {
-            protocol_version: viso_view::dev::wire::DEV_PROTOCOL_VERSION,
+            protocol_version: viso_dev_protocol::wire::DEV_PROTOCOL_VERSION,
             token: "t".into(),
             dev_session: DevSessionId(1),
             runtime_session: RuntimeSessionId(id),
@@ -2182,12 +2195,12 @@ mod tests {
             capabilities,
             target,
             shader_lang: match target {
-                RuntimeTarget::Web => viso_view::dev::wire::ShaderLang::Wgsl,
-                RuntimeTarget::AndroidEmulator => viso_view::dev::wire::ShaderLang::SpirV,
-                _ => viso_view::dev::wire::ShaderLang::Msl,
+                RuntimeTarget::Web => viso_dev_protocol::wire::ShaderLang::Wgsl,
+                RuntimeTarget::AndroidEmulator => viso_dev_protocol::wire::ShaderLang::SpirV,
+                _ => viso_dev_protocol::wire::ShaderLang::Msl,
             },
-            inspector: viso_view::inspect::InspectorCaps::TREE
-                .with(viso_view::inspect::InspectorCaps::NODES),
+            inspector: viso_dev_protocol::inspect::InspectorCaps::TREE
+                .with(viso_dev_protocol::inspect::InspectorCaps::NODES),
         }
     }
 
@@ -2240,7 +2253,7 @@ mod tests {
                 FileId(0),
                 Some(&compiled(last_good)),
                 &compiled(text),
-                &[viso_view::dev::wire::ShaderLang::Msl],
+                &[viso_dev_protocol::wire::ShaderLang::Msl],
             )
             .unwrap()
         );
@@ -2282,7 +2295,7 @@ mod tests {
             games: Vec::new(),
             resources: paths
                 .iter()
-                .map(|path| viso_view::dev::wire::ResourceCommit {
+                .map(|path| viso_dev_protocol::wire::ResourceCommit {
                     id: ResourceId::of(path),
                     nodes: 1,
                     dirty: Default::default(),
@@ -2319,7 +2332,7 @@ mod tests {
             patch.assets,
             [ResourceAsset {
                 path: "photos/day.png".into(),
-                hash: viso_view::dev::wire::content_hash(NIGHT),
+                hash: viso_dev_protocol::wire::content_hash(NIGHT),
                 len: NIGHT.len() as u32,
             }]
         );
@@ -2581,7 +2594,7 @@ mod tests {
 
     #[test]
     fn an_inspection_relays_the_census_with_the_source_of_the_views_mounted() {
-        use viso_view::inspect::{
+        use viso_dev_protocol::inspect::{
             Census, CensusMount, CensusNode, InspectKind, NodeOrigin, Rect, Selector, WindowCensus,
             resolve,
         };
@@ -2840,7 +2853,7 @@ mod tests {
 
         // A recording's tape comes back as the app wrote it.
         let record = GameAsk::Record {
-            span: viso_view::dev::wire::RecordSpan::Ticks(60),
+            span: viso_dev_protocol::wire::RecordSpan::Ticks(60),
         };
         let (sent, answer) = ask(&mut f, "./view", record);
         let [HostMessage::Game(query)] = &sent[..] else {
@@ -2910,9 +2923,9 @@ mod tests {
         patches(&sent[0], (1, 2), GAME, &faster);
         assert_eq!(
             systems(&sent[0]).expect("a system section").games,
-            [viso_view::dev::wire::GamePatch {
+            [viso_dev_protocol::wire::GamePatch {
                 file: FileId(0),
-                tier: viso_view::dev::wire::GameTier::Logic,
+                tier: viso_dev_protocol::wire::GameTier::Logic,
             }]
         );
         f.ack(2);
@@ -2931,7 +2944,7 @@ mod tests {
         let sent = f.settle();
         assert_eq!(
             systems(&sent[0]).expect("a system section").games[0].tier,
-            viso_view::dev::wire::GameTier::LogicMigration
+            viso_dev_protocol::wire::GameTier::LogicMigration
         );
     }
 
@@ -2943,7 +2956,7 @@ mod tests {
         let sent = f.settle();
         assert_eq!(
             systems(&sent[0]).expect("a system section").games[0].tier,
-            viso_view::dev::wire::GameTier::WorldRebuild {
+            viso_dev_protocol::wire::GameTier::WorldRebuild {
                 keep: Rebuild::KeepCharacters
             }
         );
@@ -3215,7 +3228,7 @@ mod tests {
                 FileId(0),
                 Some(&compiled(VIEW)),
                 &compiled(&first),
-                &[viso_view::dev::wire::ShaderLang::Wgsl],
+                &[viso_dev_protocol::wire::ShaderLang::Wgsl],
             )
             .unwrap()
         );
@@ -3265,7 +3278,7 @@ mod tests {
                 FileId(0),
                 Some(&compiled(VIEW)),
                 &compiled(&second),
-                &[viso_view::dev::wire::ShaderLang::Wgsl],
+                &[viso_dev_protocol::wire::ShaderLang::Wgsl],
             )
             .unwrap(),
             "planned from the page's last good"

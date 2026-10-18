@@ -44,7 +44,7 @@ impl Platform {
                 HostOs::Windows => Platform::Windows,
                 HostOs::Linux => Platform::Linux,
             },
-            Target::Headless => return None,
+            Target::Headless | Target::Device(_) => return None,
             Target::Ios => Platform::Ios,
             Target::Android => Platform::Android,
             Target::WebGpu | Target::WebDom | Target::WebHybrid => Platform::Web,

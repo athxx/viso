@@ -13,7 +13,7 @@
 //! produced as an identifier — the type printer here emits only `float`/`uint`
 //! spellings, so no `half` token can leak into codegen (see `viso-msl-reserved-half`).
 
-use viso_gpu::AttrFormat;
+use viso_gpu_abi::AttrFormat;
 
 /// A GPU scalar element type. These are the only element types a built-in
 /// instance/vertex field is allowed to carry — 4-byte-aligned, directly

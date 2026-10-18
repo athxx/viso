@@ -11,22 +11,34 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+#[cfg(all(
+    feature = "vulkan",
+    not(any(target_os = "linux", target_os = "android"))
+))]
+extern crate ash_portable as ash;
+
 pub mod backend;
+pub mod cpu;
 /// The native Direct3D 12 backend (compiled only on Windows).
 #[cfg(target_os = "windows")]
 pub mod d3d12;
-pub mod headless;
-pub mod instance;
+/// The OpenGL ES 3 backend (Linux/Android, with the `gles` feature).
+#[cfg(all(feature = "gles", any(target_os = "linux", target_os = "android")))]
+pub mod gles;
 /// The native Metal backend (compiled only on Apple targets; ADR 0029 cfg select).
 #[cfg(target_vendor = "apple")]
 pub mod metal;
-pub mod program;
-pub mod resource;
 pub mod retire;
 pub mod slots;
-/// The native Vulkan backend (Linux/Android, or any target with the `vulkan`
-/// feature).
-#[cfg(any(feature = "vulkan", target_os = "linux", target_os = "android"))]
+/// The Vulkan backend (Linux/Android with `native-vulkan`, or any target with
+/// `vulkan`).
+#[cfg(any(
+    feature = "vulkan",
+    all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "native-vulkan"
+    )
+))]
 pub mod vulkan;
 /// The WebGPU backend (compiled only for `wasm32-unknown-unknown`).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -36,12 +48,20 @@ pub use backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
     ProgramOf, RenderPass, RenderTarget,
 };
+pub use cpu::{CpuCompiler, CpuRaster, CpuRasterProgram};
 #[cfg(target_os = "windows")]
 pub use d3d12::{D3D12Backend, D3D12Compiler, D3D12Program};
-pub use headless::{HeadlessCompiler, HeadlessProgram, HeadlessRaster};
+#[cfg(all(feature = "gles", any(target_os = "linux", target_os = "android")))]
+pub use gles::{Gles3Backend, Gles3Compiler, Gles3Program};
 #[cfg(target_vendor = "apple")]
 pub use metal::{MetalBackend, MetalCompiler, MetalProgram};
-#[cfg(any(feature = "vulkan", target_os = "linux", target_os = "android"))]
+#[cfg(any(
+    feature = "vulkan",
+    all(
+        any(target_os = "linux", target_os = "android"),
+        feature = "native-vulkan"
+    )
+))]
 pub use vulkan::{VulkanBackend, VulkanCompiler, VulkanProgram};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use webgpu::{WebGpuBackend, WebGpuCompiler, WebGpuProgram};
@@ -52,58 +72,77 @@ pub use webgpu::{WebGpuBackend, WebGpuCompiler, WebGpuProgram};
 /// the facade holds *this concrete type* monomorphized so the frame hot path has
 /// no `dyn GpuBackend` dispatch. On macOS and iOS it is the native
 /// [`MetalBackend`]; on Windows the [`D3D12Backend`]; on Linux and Android the
-/// [`VulkanBackend`]; on the web the [`WebGpuBackend`]; on targets
-/// without a native backend, and in a build with the `headless` feature, it is
-/// the software [`HeadlessRaster`], which always compiles and needs no GPU.
-#[cfg(all(target_vendor = "apple", not(feature = "headless")))]
+/// OpenGL ES 3 `Gles3Backend` with the `gles` feature, else the
+/// `VulkanBackend` with `native-vulkan` (on by default); on the web the
+/// [`WebGpuBackend`]; on targets without a native backend, on Linux and
+/// Android with neither, and in a build with the `headless` or `cpu` feature,
+/// it is the software [`CpuRaster`], which always compiles and needs no GPU.
+#[cfg(all(
+    target_vendor = "apple",
+    not(any(feature = "headless", feature = "cpu"))
+))]
 pub type Backend = MetalBackend;
 /// The concrete GPU backend for this target.
-#[cfg(all(target_os = "windows", not(feature = "headless")))]
+#[cfg(all(target_os = "windows", not(any(feature = "headless", feature = "cpu"))))]
 pub type Backend = D3D12Backend;
 /// The concrete GPU backend for this target.
 #[cfg(all(
     any(target_os = "linux", target_os = "android"),
-    not(feature = "headless")
+    not(any(feature = "headless", feature = "cpu")),
+    not(feature = "gles"),
+    any(feature = "native-vulkan", feature = "vulkan")
 ))]
 pub type Backend = VulkanBackend;
 /// The concrete GPU backend for this target.
 #[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    not(any(feature = "headless", feature = "cpu")),
+    feature = "gles"
+))]
+pub type Backend = Gles3Backend;
+/// The concrete GPU backend for this target.
+#[cfg(all(
     target_arch = "wasm32",
     target_os = "unknown",
-    not(feature = "headless")
+    not(any(feature = "headless", feature = "cpu"))
 ))]
 pub type Backend = WebGpuBackend;
 /// The concrete GPU backend for this target (software raster: the build is
-/// headless, or no native backend is selected here).
+/// headless or CPU-drawn, or no native backend is selected here).
 #[cfg(any(
     feature = "headless",
+    feature = "cpu",
     not(any(
         target_vendor = "apple",
         target_os = "windows",
         target_os = "linux",
         target_os = "android",
         all(target_arch = "wasm32", target_os = "unknown")
-    ))
+    )),
+    all(
+        any(target_os = "linux", target_os = "android"),
+        not(any(feature = "gles", feature = "native-vulkan", feature = "vulkan"))
+    )
 ))]
-pub type Backend = HeadlessRaster;
+pub type Backend = CpuRaster;
 
 /// The one of its expressions for this target's [`Backend`], the others
 /// compiled out: how code built ahead of time for every backend embeds only
 /// what this target's reads. `none` is the software raster's.
 ///
 /// The choice is made where this crate compiles, so a crate expanding it
-/// follows this crate's `headless` feature.
-#[cfg(not(feature = "headless"))]
+/// follows this crate's `headless`, `cpu` and `gles` features.
+#[cfg(not(any(feature = "headless", feature = "cpu")))]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __per_backend {
-    (msl: $msl:expr, hlsl: $hlsl:expr, spirv: $spirv:expr, wgsl: $wgsl:expr, none: $none:expr $(,)?) => {{
+    (msl: $msl:expr, hlsl: $hlsl:expr, spirv: $spirv:expr, glsl: $glsl:expr, wgsl: $wgsl:expr, none: $none:expr $(,)?) => {{
         #[cfg(target_vendor = "apple")]
         let chosen = $msl;
         #[cfg(target_os = "windows")]
         let chosen = $hlsl;
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        let chosen = $spirv;
+        let chosen = $crate::__linux_backend!($spirv, $glsl, $none);
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let chosen = $wgsl;
         #[cfg(not(any(
@@ -119,12 +158,48 @@ macro_rules! __per_backend {
 }
 
 /// The one of its expressions for this target's [`Backend`]: in a headless
-/// build, the software raster's.
-#[cfg(feature = "headless")]
+/// or CPU-drawn build, the software raster's.
+#[cfg(any(feature = "headless", feature = "cpu"))]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __per_backend {
-    (msl: $msl:expr, hlsl: $hlsl:expr, spirv: $spirv:expr, wgsl: $wgsl:expr, none: $none:expr $(,)?) => {
+    (msl: $msl:expr, hlsl: $hlsl:expr, spirv: $spirv:expr, glsl: $glsl:expr, wgsl: $wgsl:expr, none: $none:expr $(,)?) => {
+        $none
+    };
+}
+
+/// Linux and Android's expression: GLSL with the `gles` feature, else SPIR-V
+/// with Vulkan, else the software raster's.
+#[cfg(feature = "gles")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __linux_backend {
+    ($spirv:expr, $glsl:expr, $none:expr) => {
+        $glsl
+    };
+}
+
+/// Linux and Android's expression: GLSL with the `gles` feature, else SPIR-V
+/// with Vulkan, else the software raster's.
+#[cfg(all(
+    not(feature = "gles"),
+    any(feature = "native-vulkan", feature = "vulkan")
+))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __linux_backend {
+    ($spirv:expr, $glsl:expr, $none:expr) => {
+        $spirv
+    };
+}
+
+/// Linux and Android's expression: GLSL with the `gles` feature, else SPIR-V
+/// with Vulkan, else the software raster's.
+#[cfg(not(any(feature = "gles", feature = "native-vulkan", feature = "vulkan")))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __linux_backend {
+    ($spirv:expr, $glsl:expr, $none:expr) => {
         $none
     };
 }
@@ -137,18 +212,16 @@ macro_rules! __per_backend {
 pub fn create_device() -> Backend {
     Backend::new()
 }
-pub use instance::{
-    AttrFormat, InstanceField, InstanceLayout, InstanceSchema, LayoutError, SchemaAttr,
+pub use viso_gpu_abi::{
+    AddressMode, AttrFormat, BindGroupDesc, BindGroupId, Binding, BlendMode, BufferDesc, BufferId,
+    BufferUsage, BuiltinShader, Caps, ColorDomain, ColorSpace, CpuDraw, CpuProgram, CpuTarget,
+    CpuTexels, CpuTexture, FilterMode, FormatBlock, InstanceField, InstanceLayout, InstanceSchema,
+    LayoutError, PROGRAM_SAMPLERS, PROGRAM_TEXTURES, Packed16, PipelineDesc, PipelineId,
+    ProgramAbi, ProgramCode, ProgramCompiler, ProgramDesc, SampledFormats, SamplerDesc, SamplerId,
+    SchemaAttr, ShaderCode, ShaderLang, SurfaceId, TextureDesc, TextureFormat, TextureId,
+    f16_to_f32, f32_to_f16, rgb565_to_8,
 };
-pub use program::{
-    CpuDraw, CpuProgram, CpuTarget, CpuTexture, PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi,
-    ProgramCode, ProgramCompiler, ProgramDesc,
-};
-pub use resource::{
-    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BufferUsage, BuiltinShader, Caps,
-    ColorDomain, ColorSpace, FilterMode, PipelineDesc, SamplerDesc, ShaderCode, ShaderLang,
-    TextureDesc, TextureFormat, f16_to_f32, f32_to_f16,
-};
+pub use viso_gpu_abi::{instance, program, resource};
 /// Re-exported so consumers of [`GpuBackend::create_surface`] can name the
 /// handle type without depending on `viso-handle` directly.
 pub use viso_handle::RawWindowHandle;
@@ -161,81 +234,44 @@ pub use viso_handle::RawWindowHandle;
 /// `validate_against` — see the trait docs and `viso-macros`.
 pub use viso_macros::GpuPod;
 
-/// Typed, cheap-to-copy handles for GPU resources. Backends map these to
-/// their own native objects; users and upper layers never see raw pointers.
-///
-/// Each handle is generation-safe: `index` selects a storage slot and
-/// `generation` is bumped when that slot is reclaimed, so a handle left over
-/// from a destroyed resource is detectable and never resolves to whatever new
-/// resource later took its slot. The `{index, generation}` shape matches the
-/// runtime `NodeId` (§8.2).
-macro_rules! resource_id {
-    ($(#[$m:meta])* $name:ident) => {
-        $(#[$m])*
-        #[repr(C)]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name {
-            /// Storage-slot index.
-            pub index: u32,
-            /// Slot generation; bumped on reclaim so stale handles miss.
-            pub generation: u32,
-        }
-
-        impl $name {
-            /// A handle to `index` in generation 0.
-            #[inline]
-            pub const fn new(index: u32) -> Self {
-                Self {
-                    index,
-                    generation: 0,
-                }
-            }
-
-            /// The storage-slot index this handle selects.
-            #[inline]
-            pub const fn index(self) -> u32 {
-                self.index
+/// A typed handle as a raw `SlotMap` slot id and back, for the backends'
+/// storage.
+macro_rules! raw_id {
+    ($($name:ident),+) => {$(
+    impl From<$crate::slots::RawId> for $name {
+        /// Stamp this handle's type onto a `SlotMap` slot id — the
+        /// `{index, generation}` a backend gets back from `insert`.
+        #[inline]
+        fn from(raw: $crate::slots::RawId) -> Self {
+            Self {
+                index: raw.index,
+                generation: raw.generation,
             }
         }
+    }
 
-        impl From<$crate::slots::RawId> for $name {
-            /// Stamp this handle's type onto a `SlotMap` slot id — the
-            /// `{index, generation}` a backend gets back from `insert`.
-            #[inline]
-            fn from(raw: $crate::slots::RawId) -> Self {
-                Self {
-                    index: raw.index,
-                    generation: raw.generation,
-                }
+    impl From<$name> for $crate::slots::RawId {
+        /// Strip a typed handle back to a raw `SlotMap` slot id for a
+        /// `get`/`remove` lookup.
+        #[inline]
+        fn from(id: $name) -> Self {
+            $crate::slots::RawId {
+                index: id.index,
+                generation: id.generation,
             }
         }
-
-        impl From<$name> for $crate::slots::RawId {
-            /// Strip a typed handle back to a raw `SlotMap` slot id for a
-            /// `get`/`remove` lookup.
-            #[inline]
-            fn from(id: $name) -> Self {
-                $crate::slots::RawId {
-                    index: id.index,
-                    generation: id.generation,
-                }
-            }
-        }
-    };
+    }
+    )+};
 }
 
-resource_id!(/// Handle to a GPU buffer.
-    BufferId);
-resource_id!(/// Handle to a GPU texture.
-    TextureId);
-resource_id!(/// Handle to a sampler.
-    SamplerId);
-resource_id!(/// Handle to a render/compute pipeline.
-    PipelineId);
-resource_id!(/// Handle to a bind group.
-    BindGroupId);
-resource_id!(/// Handle to a swapchain/surface.
-    SurfaceId);
+raw_id!(
+    BufferId,
+    TextureId,
+    SamplerId,
+    PipelineId,
+    BindGroupId,
+    SurfaceId
+);
 
 /// Marker for a `#[repr(C)]` type that is safe to upload as per-instance GPU
 /// data (§18).

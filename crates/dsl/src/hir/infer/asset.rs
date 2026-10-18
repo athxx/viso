@@ -11,7 +11,7 @@ use crate::diag::{Applicability, Diagnostic, Fix, TextEdit};
 use crate::hir::ty::Ty;
 use crate::resolve::prelude::{image_record, svg_record};
 use crate::syntax::SyntaxNode;
-use viso_ui::resource::{AssetFormat, AssetKind, ResourceId, normalize_path};
+use viso_schema::resource::{AssetFormat, AssetKind, ResourceId, normalize_path};
 
 pub(crate) use crate::assets::ASSET_ERROR as ASSET;
 

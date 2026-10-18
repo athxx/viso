@@ -1,18 +1,28 @@
 //! The fixed-step scheduler over a module's systems.
 
-use std::borrow::Cow;
-use std::cell::{Ref, RefCell, RefMut};
-use std::mem;
-use std::rc::Rc;
+use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cell::{Ref, RefCell, RefMut};
+use core::mem;
 
-use super::audio::{AUDIO_EVENT, AudioLink};
+pub use viso_schema::game::Rebuild;
+
+use super::audio::AUDIO_EVENT;
+#[cfg(feature = "std")]
+use super::audio::AudioLink;
 use super::history::{History, ReplayError, Replayed};
 use super::input::{Action, InputLatch};
 use super::kit::{Kit, Stage};
 use super::persist::{PERSIST_CAPABILITY, Persist, PersistReport, Persistence, Stored};
 use super::physics::{Kinematic, Physics, PhysicsTier};
 use super::quick::{QUICK_FIXED, QUICK_START, QuickFrame, QuickStart};
-use super::snapshot::{GameSnapshot, Restored, SystemState, fnv};
+use super::snapshot::{GameSnapshot, Restored, SystemState};
 use super::tape::{InputTape, Playback, Recorder, TapeError, TapePatch};
 use super::world::Bodies;
 use super::{
@@ -20,20 +30,9 @@ use super::{
     FixedFrame, GameStart, GameWorld, InputSchema, InputSnapshot, Key, MAX_PLAYERS, POST_PHYSICS,
     PRE_PHYSICS, PadButton, PadStick, RenderFrame, STARTUP, TickInput, TouchButton,
 };
+use crate::aot::build_hash;
 use crate::native::{NativeObject, NativeValue, Obj, Services};
 use crate::{Budget, Deferred, Fault, FaultKind, Instance, Module, Value, Vm};
-
-/// What a World Rebuild keeps of the running game.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Rebuild {
-    /// Nothing: the world as the start spawns it.
-    #[default]
-    Fresh,
-    /// The place and motion of each character the start spawns under the
-    /// stable key of a running one: its tags and its rank among the
-    /// characters with those tags, in allocation order.
-    KeepCharacters,
-}
 
 /// A fault a system hook raised: its state changes were discarded. A fault
 /// creating a system or starting the game leaves no scheduler.
@@ -70,8 +69,8 @@ impl GameError {
     }
 }
 
-impl std::fmt::Display for GameError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for GameError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             GameError::Fault(fault) => write!(f, "{}: {}", fault.code, fault.fault),
             GameError::Physics(tier) => write!(f, "{}: {tier}", tier.code()),
@@ -79,7 +78,7 @@ impl std::fmt::Display for GameError {
     }
 }
 
-impl std::error::Error for GameError {}
+impl core::error::Error for GameError {}
 
 impl From<SystemFault> for GameError {
     fn from(fault: SystemFault) -> GameError {
@@ -130,8 +129,8 @@ enum Phase {
 #[must_use = "a prepared swap is committed or aborted"]
 pub struct PreparedSwap(Prepared);
 
-impl std::fmt::Debug for PreparedSwap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for PreparedSwap {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self.0 {
             Prepared::Reload { .. } => "PreparedSwap::Reload",
             Prepared::Rebuild { .. } => "PreparedSwap::Rebuild",
@@ -338,7 +337,7 @@ impl Scheduler {
             .map(|p| Persistence::new(p, u64::from(module.tick_rate())));
         Ok(Scheduler {
             budget: vm.budget(),
-            build: fnv(&module.encode()),
+            build: build_hash(&module),
             vm,
             hooks: Hooks::of(&module),
             cx: Contexts::new(&world, &stage, schema.actions.len(), clock.fixed_dt()),
@@ -512,9 +511,7 @@ impl Scheduler {
                         &schema.actions,
                     ));
                 }
-                if let Some(link) = old.vm.services_mut().remove::<AudioLink>() {
-                    self.vm.services_mut().insert(link);
-                }
+                carry_audio(old.vm.services_mut(), self.vm.services_mut());
                 if let Some(recorder) = &mut self.recorder {
                     let patch = TapePatch {
                         tick: self.clock.tick(),
@@ -544,9 +541,7 @@ impl Scheduler {
                 shadow.persist = incoming.or_else(|| self.persist.take());
                 shadow.persist_reports = mem::take(&mut self.persist_reports);
                 shadow.deliver_queued(0);
-                if let Some(link) = self.vm.services_mut().remove::<AudioLink>() {
-                    shadow.vm.services_mut().insert(link);
-                }
+                carry_audio(self.vm.services_mut(), shadow.vm.services_mut());
                 *self = shadow;
                 Committed::Rebuilt { characters }
             }
@@ -681,7 +676,7 @@ impl Scheduler {
         self.input.remap(&schema);
         let old = Box::new(OldBuild {
             hooks: mem::replace(&mut self.hooks, Hooks::of(&module)),
-            build: mem::replace(&mut self.build, fnv(&module.encode())),
+            build: mem::replace(&mut self.build, build_hash(&module)),
             budget: mem::replace(&mut self.budget, vm.budget()),
             sequences: mem::replace(&mut self.sequences, vec![0; module.systems().len()].into()),
             instances: mem::replace(&mut self.instances, instances),
@@ -776,7 +771,7 @@ impl Scheduler {
             });
         }
         if let Some(start) = &tape.start
-            && fnv(start) != self.build
+            && Module::decode(start).map(|m| build_hash(&m)) != Ok(self.build)
         {
             return Err(TapeError {
                 line: None,
@@ -1311,11 +1306,13 @@ impl Scheduler {
     /// `send_audio` queues for them, and each frame hands the events they
     /// sent to every `AudioListener`, before the `FrameUpdate`s. Replaces
     /// the link attached before; a World Rebuild and a Logic Reload keep it.
+    #[cfg(feature = "std")]
     pub fn attach_audio(&mut self, link: AudioLink) {
         self.vm.services_mut().insert(link);
     }
 
     /// The link [`attach_audio`](Self::attach_audio) attached.
+    #[cfg(feature = "std")]
     pub fn audio(&mut self) -> Option<&AudioLink> {
         self.vm
             .services_mut()
@@ -1331,11 +1328,7 @@ impl Scheduler {
             return true;
         }
         loop {
-            let event = match self.vm.services_mut().get_mut::<AudioLink>() {
-                Some(link) => link.receive(),
-                None => None,
-            };
-            let Some(event) = event else {
+            let Some(event) = next_audio_event(self.vm.services_mut()) else {
                 return true;
             };
             for i in 0..self.hooks.listen.len() {
@@ -1810,6 +1803,31 @@ impl Drop for Scheduler {
     fn drop(&mut self) {
         self.suspend();
     }
+}
+
+/// Moves the [`AudioLink`] attached in `from` to `to`.
+#[cfg(feature = "std")]
+fn carry_audio(from: &mut Services, to: &mut Services) {
+    if let Some(link) = from.remove::<AudioLink>() {
+        to.insert(link);
+    }
+}
+
+/// Without `std` no audio link is attached.
+#[cfg(not(feature = "std"))]
+fn carry_audio(_from: &mut Services, _to: &mut Services) {}
+
+/// The oldest event the audio thread sent through the [`AudioLink`]
+/// attached in `services`.
+#[cfg(feature = "std")]
+fn next_audio_event(services: &mut Services) -> Option<i64> {
+    services.get_mut::<AudioLink>()?.receive()
+}
+
+/// Without `std` no audio thread sends events.
+#[cfg(not(feature = "std"))]
+fn next_audio_event(_services: &mut Services) -> Option<i64> {
+    None
 }
 
 /// Sets each `@persist` state of the instances `to` of `vm`'s build to the

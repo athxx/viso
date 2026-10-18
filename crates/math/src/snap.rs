@@ -7,10 +7,8 @@
 //! per primitive via [`PixelSnap`] rather than a global toggle, because the
 //! right answer differs by primitive kind and by transform.
 //!
-//! This complements the logical-space `dpi_snap` on `DVec2`/`DRect`, which pins
-//! an accumulated layout coordinate to the device grid *before* it crosses into
-//! `f32` render space. [`PixelSnap`] here acts on the device-space `f32`
-//! coordinates the renderer actually rasterizes.
+//! [`PixelSnap`] acts on the device-space `f32` coordinates the renderer
+//! actually rasterizes.
 //!
 //! A [`Hairline`] is the separate problem of a line that must stay ~1 device
 //! pixel wide regardless of device scale, rotation, or a non-integer transform —
@@ -18,6 +16,7 @@
 //! projected width, so the geometric width has to be derived from the device
 //! scale rather than hardcoded.
 
+use crate::float::round;
 /// How a primitive's device-space coordinates snap to the pixel grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PixelSnap {
@@ -41,23 +40,23 @@ pub enum PixelSnap {
 /// Round one device-space coordinate to the nearest device pixel.
 #[inline]
 pub fn snap_device(v: f32) -> f32 {
-    v.round()
+    round(v)
 }
 
 /// Snap the origin of a device-space box, leaving the size unchanged.
 #[inline]
 pub fn snap_position(x: f32, y: f32) -> (f32, f32) {
-    (x.round(), y.round())
+    (round(x), round(y))
 }
 
 /// Snap both edges of a device-space box: the near edge rounds down-or-nearest
 /// and the far edge is re-derived so the extent stays on the grid.
 #[inline]
 pub fn snap_bounds(x: f32, y: f32, w: f32, h: f32) -> (f32, f32, f32, f32) {
-    let x0 = x.round();
-    let y0 = y.round();
-    let x1 = (x + w).round();
-    let y1 = (y + h).round();
+    let x0 = round(x);
+    let y0 = round(y);
+    let x1 = round(x + w);
+    let y1 = round(y + h);
     (x0, y0, x1 - x0, y1 - y0)
 }
 
@@ -66,11 +65,11 @@ pub fn snap_bounds(x: f32, y: f32, w: f32, h: f32) -> (f32, f32, f32, f32) {
 /// even widths sit on a pixel boundary.
 #[inline]
 pub fn snap_stroke_center(center: f32, device_width: f32) -> f32 {
-    let odd = (device_width.round() as i32) & 1 == 1;
+    let odd = (round(device_width) as i32) & 1 == 1;
     if odd {
-        center.round() + 0.5
+        round(center) + 0.5
     } else {
-        center.round()
+        round(center)
     }
 }
 

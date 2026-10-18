@@ -1,6 +1,6 @@
 //! One typed shader IR value describing a built-in primitive's GPU interface —
 //! the single source of truth that emits *both* the MSL `InstanceIn`/`VertexIn`
-//! struct *and* the [`InstanceSchema`](viso_gpu::InstanceSchema) the pipeline validates against
+//! struct *and* the [`InstanceSchema`](viso_gpu_abi::InstanceSchema) the pipeline validates against
 //! (architecture section 36 / AGENTS 19).
 //!
 //! ## What the IR owns, and what it carries
@@ -28,7 +28,7 @@
 //! Packing rules and per-primitive math are represented as a typed IR rather
 //! than interpreted through a shared script VM.
 
-use viso_gpu::SchemaAttr;
+use viso_gpu_abi::SchemaAttr;
 
 use crate::PrimitiveKind;
 use crate::ir::types::IrType;
@@ -42,7 +42,7 @@ pub struct IrField {
     /// [`SchemaAttr`] it projects to.
     pub name: &'static str,
     /// The field type — the single input to both the MSL spelling and the
-    /// [`AttrFormat`](viso_gpu::AttrFormat) projection.
+    /// [`AttrFormat`](viso_gpu_abi::AttrFormat) projection.
     pub ty: IrType,
 }
 
@@ -112,7 +112,7 @@ pub struct ShaderIr {
     /// buffer indices).
     pub vertex_source: VertexSource,
     /// The per-instance (or per-vertex) attribute fields — the single source of
-    /// truth for the MSL attribute `struct` *and* the [`InstanceSchema`](viso_gpu::InstanceSchema).
+    /// truth for the MSL attribute `struct` *and* the [`InstanceSchema`](viso_gpu_abi::InstanceSchema).
     pub attributes: &'static [IrField],
     /// The inline `Uniforms` members (viewport, etc.).
     pub uniforms: &'static [IrField],
@@ -172,7 +172,7 @@ impl ShaderIr {
     /// source and cannot drift.
     ///
     /// `msl.rs` caches this behind a per-primitive `OnceLock` and hands out a
-    /// `&'static [SchemaAttr]` to satisfy [`InstanceSchema`](viso_gpu::InstanceSchema)'s `'static` borrow —
+    /// `&'static [SchemaAttr]` to satisfy [`InstanceSchema`](viso_gpu_abi::InstanceSchema)'s `'static` borrow —
     /// a one-time, cold-path (pipeline-registration) materialization with zero
     /// steady-state cost.
     pub fn schema_attrs(&self) -> Vec<SchemaAttr> {
@@ -208,6 +208,16 @@ impl ShaderIr {
     }
 }
 
+/// The inline uniform block every built-in reads: the target's `viewport`
+/// size, and the `shift` its draw is moved by — the displacement of the
+/// transform root the draw belongs to since its instances were written, so a
+/// scroll or slide moves retained instances without rewriting them. Zero for
+/// a draw outside any moved root.
+pub const VIEW_UNIFORMS: &[IrField] = &[
+    IrField::new("viewport", IrType::F32X2),
+    IrField::new("shift", IrType::F32X2),
+];
+
 // The four built-in field contracts. These constructors are the *only* place a
 // built-in primitive's per-instance/per-vertex field list, uniform members,
 // varyings, and body math are written. Everything downstream (the MSL struct, the
@@ -227,7 +237,7 @@ pub fn quad_ir() -> ShaderIr {
         IrField::new("border_width", IrType::F32),
         IrField::new("border_color", IrType::F32X4),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new(
@@ -270,7 +280,7 @@ pub fn image_ir() -> ShaderIr {
         IrField::new("uv_size", IrType::F32X2),
         IrField::new("color", IrType::F32X4),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", ""),
@@ -305,7 +315,7 @@ pub fn blur_ir() -> ShaderIr {
         IrField::new("sigma", IrType::F32),
         IrField::new("radius", IrType::F32),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", ""),
@@ -355,7 +365,7 @@ pub fn color_transform_ir() -> ShaderIr {
         IrField::new("offset", IrType::F32X4),
         IrField::new("gamma", IrType::F32),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", ""),
@@ -400,7 +410,7 @@ pub fn advanced_blend_ir() -> ShaderIr {
         IrField::new("mode", IrType::U32),
         IrField::new("opacity", IrType::F32),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", "source (isolated layer) uv"),
@@ -462,7 +472,7 @@ pub fn material_ir() -> ShaderIr {
         IrField::new("noise", IrType::F32),
         IrField::new("opacity", IrType::F32),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", "backdrop uv"),
@@ -504,7 +514,7 @@ pub fn glyphrun_ir() -> ShaderIr {
         IrField::new("uv_size", IrType::F32X2),
         IrField::new("color", IrType::F32X4),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", ""),
@@ -539,7 +549,7 @@ pub fn mtsdf_ir() -> ShaderIr {
         IrField::new("uv_size", IrType::F32X2),
         IrField::new("color", IrType::F32X4),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", ""),
@@ -572,7 +582,7 @@ pub fn mesh_ir() -> ShaderIr {
         IrField::new("color", IrType::F32X4),
         IrField::new("edge", IrType::F32),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("color", IrType::F32X4, "", ""),
@@ -607,7 +617,7 @@ pub fn analytic_rrect_ir() -> ShaderIr {
         IrField::new("border_width", IrType::F32),
         IrField::new("border_color", IrType::F32X4),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new(
@@ -675,7 +685,7 @@ pub fn analytic_shadow_ir() -> ShaderIr {
         IrField::new("shape", IrType::U32),
         IrField::new("inner", IrType::U32),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new(
@@ -739,7 +749,7 @@ pub fn analytic_ellipse_ir() -> ShaderIr {
         IrField::new("border_width", IrType::F32),
         IrField::new("border_color", IrType::F32X4),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new(
@@ -786,7 +796,7 @@ pub fn analytic_capsule_ir() -> ShaderIr {
         IrField::new("border_width", IrType::F32),
         IrField::new("border_color", IrType::F32X4),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new(
@@ -843,7 +853,7 @@ pub fn analytic_line_ir() -> ShaderIr {
         IrField::new("border_width", IrType::F32),
         IrField::new("border_color", IrType::F32X4),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("local", IrType::F32X2, "", "pixel-space sample position"),
@@ -892,7 +902,7 @@ pub fn gradient_ir() -> ShaderIr {
         IrField::new("color0", IrType::F32X4),
         IrField::new("color1", IrType::F32X4),
     ];
-    static UNIFORMS: &[IrField] = &[IrField::new("viewport", IrType::F32X2)];
+    static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("local", IrType::F32X2, "", "pixel-space sample position"),
@@ -987,8 +997,9 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -1064,8 +1075,9 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -1150,8 +1162,9 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -1285,8 +1298,9 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -1359,8 +1373,9 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -1451,8 +1466,9 @@ float2 pixel = endpoint + dir * along + nrm * (ts.y * (hw + pad));
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -1553,8 +1569,9 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -1588,8 +1605,9 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -1645,8 +1663,9 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -1702,8 +1721,9 @@ float2 pad = float2(1.0, 1.0);
 float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 float2 uv_lo = float2(inst.uv_pos);
 float2 uv_hi = uv_lo + float2(inst.uv_size);
@@ -1816,8 +1836,9 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -1986,8 +2007,9 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -2020,8 +2042,9 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -2054,8 +2077,9 @@ VertexIn v = verts[vid];
 
 float2 pixel = float2(v.pos);
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
@@ -2090,8 +2114,9 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 ndc = float2(pixel.x / vp.x * 2.0 - 1.0,
-                    1.0 - pixel.y / vp.y * 2.0);
+float2 at = pixel + float2(u.shift);
+float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
+                    1.0 - at.y / vp.y * 2.0);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);

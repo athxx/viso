@@ -3,7 +3,8 @@
 //! run time they only compare ticks and never accumulate floating-point time;
 //! as values they snapshot, replay and migrate like any other state.
 
-use std::rc::Rc;
+use alloc::boxed::Box;
+use alloc::rc::Rc;
 
 use crate::native::{NativeFunction, NativeValue, SchemaTy, Ticks};
 use crate::value::{Aggregate, Value};

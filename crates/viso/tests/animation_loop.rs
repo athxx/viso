@@ -258,10 +258,8 @@ fn a_look_transition_plays_through_the_facade_loop() {
     let mut pending = vec![app.root().expect("FadeApp declares a root")];
     while let Some(node) = pending.pop() {
         opacities.push(store.opacity(node));
-        let mut child = store.arena().links(node).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in store.arena().children(node) {
             pending.push(c);
-            child = store.arena().links(c).and_then(|l| l.next_sibling);
         }
     }
     assert!(

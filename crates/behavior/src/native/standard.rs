@@ -2,9 +2,19 @@
 //! `viso::math`, `viso::time`, `viso::clipboard`, `viso::i18n`, the scheduler traits of
 //! `viso::game` and `viso::game::quick`, and the widgets of `viso::widgets`.
 
-use std::time::{Duration, Instant};
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use core::future::Future;
+use core::pin::Pin;
+use core::time::Duration;
 
-use super::{NativeError, NativeFunction, NativeLibrary, NativeObject, NativeType, Obj, Timers};
+use super::{
+    NativeCx, NativeError, NativeFunction, NativeLibrary, NativeObject, NativeType, Obj, Timers,
+};
+#[cfg(not(feature = "std"))]
+use crate::float::FloatMath as _;
 
 /// Every standard library.
 pub static STANDARD: &[&NativeLibrary] = &[
@@ -118,8 +128,10 @@ static MATH: NativeLibrary = NativeLibrary {
 };
 
 /// A running clock, the object behind a `viso::time::Stopwatch` handle.
+/// Starting one needs the monotonic clock of `std`; without it `start`
+/// fails.
 #[derive(Debug)]
-pub struct Stopwatch(Instant);
+pub struct Stopwatch(#[cfg(feature = "std")] std::time::Instant);
 
 impl NativeObject for Stopwatch {
     const PATH: &'static str = "viso::time::Stopwatch";
@@ -127,22 +139,45 @@ impl NativeObject for Stopwatch {
 
 static STOPWATCH_METHODS: [NativeFunction; 2] = [
     crate::native!(action "start" |_cx| -> Obj<Stopwatch> {
-        Ok(Obj::new(Stopwatch(Instant::now())))
+        start_stopwatch().map(Obj::new)
     }),
     crate::native!(action "elapsed_ms" |_cx, this: Obj<Stopwatch>| -> f64 {
-        Ok(this.0.elapsed().as_secs_f64() * 1000.0)
+        Ok(elapsed_ms(&this))
     }),
 ];
+
+/// A stopwatch started now.
+#[cfg(feature = "std")]
+fn start_stopwatch() -> Result<Stopwatch, NativeError> {
+    Ok(Stopwatch(std::time::Instant::now()))
+}
+
+/// An error: without `std` there is no clock to start one on.
+#[cfg(not(feature = "std"))]
+fn start_stopwatch() -> Result<Stopwatch, NativeError> {
+    Err(NativeError::new(
+        "`viso::time::Stopwatch` needs a monotonic clock, which a build without `std` lacks",
+    ))
+}
+
+/// The milliseconds since `stopwatch` started.
+#[cfg(feature = "std")]
+fn elapsed_ms(stopwatch: &Stopwatch) -> f64 {
+    stopwatch.0.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Without `std` a stopwatch measures nothing.
+#[cfg(not(feature = "std"))]
+fn elapsed_ms(_stopwatch: &Stopwatch) -> f64 {
+    0.0
+}
 
 /// Clocks and waits. Reading a clock is an action: two reads differ.
 static TIME: NativeLibrary = NativeLibrary {
     path: "viso::time",
     version: 1,
     functions: &[crate::native!(task "sleep" |cx, duration: Duration| -> () {
-        let wait = match cx.service::<Box<dyn Timers>>() {
-            Ok(timers) => timers.sleep(duration),
-            Err(_) => super::timers::sleep_on_thread(duration),
-        };
+        let wait = wait_for(cx, duration)?;
         cx.suspend(async move {
             wait.await;
             Ok(())
@@ -154,6 +189,29 @@ static TIME: NativeLibrary = NativeLibrary {
     derives: &[],
     widgets: &[],
 };
+
+/// Work that finishes once `duration` has passed, on the host's [`Timers`],
+/// else on the process's timer thread.
+#[cfg(feature = "std")]
+fn wait_for(
+    cx: &mut NativeCx<'_>,
+    duration: Duration,
+) -> Result<Pin<Box<dyn Future<Output = ()>>>, NativeError> {
+    Ok(match cx.service::<Box<dyn Timers>>() {
+        Ok(timers) => timers.sleep(duration),
+        Err(_) => super::timers::sleep_on_thread(duration),
+    })
+}
+
+/// Work that finishes once `duration` has passed, on the host's [`Timers`]:
+/// without `std` there is no timer thread to fall back to.
+#[cfg(not(feature = "std"))]
+fn wait_for(
+    cx: &mut NativeCx<'_>,
+    duration: Duration,
+) -> Result<Pin<Box<dyn Future<Output = ()>>>, NativeError> {
+    Ok(cx.service::<Box<dyn Timers>>()?.sleep(duration))
+}
 
 /// The host clipboard service natives read and write, installed on a
 /// [`Vm`](crate::Vm) as a `Box<dyn Clipboard>`.

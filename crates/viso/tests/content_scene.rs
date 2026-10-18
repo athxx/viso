@@ -19,7 +19,7 @@
 
 use std::path::PathBuf;
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, TextureDesc, TextureFormat};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle, TextureDesc, TextureFormat};
 use viso::render::{GlyphInstanceData, Rect, Renderer, Rgba, test_glyphs, test_texture};
 use viso::ui::{
     Axis, BoxStyle, BuildCx, Content, FlexStyle, Inset, LeafStyle, Length, NodeId, NodeStore, Size,
@@ -56,7 +56,7 @@ fn glyph_run_natural(glyphs: &[GlyphInstanceData]) -> Vec2 {
 
 /// Render the content scene through the headless backend and return BGRA8 bytes.
 fn render_scene() -> Vec<u8> {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);

@@ -35,7 +35,7 @@ use crate::effect_plan::{LayerPlan, LayerRequest, plan_layer};
 use crate::gradient_lut::{GradientLutAtlas, LUT_WIDTH, LutAlloc, LutKey};
 use crate::graph::{PassLoad, PassWork, RenderGraph};
 use crate::mask::{MaskCache, MaskKey, MaskKind, MaskRequest};
-use crate::mask_page::MaskPage;
+use crate::mask_pages::MaskPages;
 use crate::opacity::ChildOverlap;
 use crate::pool::InstancePool;
 use crate::primitive::{
@@ -48,8 +48,15 @@ use crate::program::{BrushProgram, ProgramError, ProgramTable};
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
 use crate::scene::store::{ClipFillRule, StoreRef, glyph_instances};
 use crate::scene::{EmitContext, PaintEntry, Scene};
+use crate::transform::{NO_CHAIN, Space, TransformUpdate, Transforms};
 use crate::transient::{TargetDesc, TargetId, TargetUsage, TransientTargets};
 use viso_math::InterpolationSpace;
+
+mod present;
+
+use crate::damage::Region;
+use present::Atlas;
+pub use present::DamageStats;
 
 /// Bytes of one quad instance.
 const QUAD_STRIDE: usize = core::mem::size_of::<QuadInstance>();
@@ -82,11 +89,13 @@ const MATERIAL_STRIDE: usize = core::mem::size_of::<MaterialInstance>();
 /// is 64 KB — ample for a frame's distinct multi-stop gradients while trivial
 /// beside image/glyph atlases.
 const GRADIENT_LUT_ROWS: u32 = 64;
-/// Edge of the renderer-owned R8 clip/mask page (§14.4): one shared square
-/// coverage texture ROIs pack into via the mask cache's max-rects allocator.
-/// 2048² is 4 MiB of R8 — ample for a frame's distinct path clips, each a tight
-/// ROI, while a single texture keeps every masked draw on one bind group.
-const MASK_PAGE_SIZE: u32 = 2048;
+/// Edges of the renderer-owned R8 clip/mask pages (§14.4): square coverage
+/// textures ROIs pack into via the mask cache's max-rects allocator. The first
+/// page is 128² (16 KiB), each added one twice the last, up to 2048² (4 MiB)
+/// — so a few icons cost a few KiB, and a frame's distinct path clips, each a
+/// tight ROI, still land on few textures.
+const MASK_PAGE_MIN: u32 = 128;
+const MASK_PAGE_MAX: u32 = 2048;
 
 /// A stable revision hash of a path's command stream, for the mask cache key
 /// (§14.4). The coverage of a filled path is a pure function of its commands, so
@@ -333,6 +342,8 @@ pub(crate) struct Segment {
     pub(crate) clip: Option<Rect>,
     /// Which render pass this segment belongs to.
     pub(crate) target: PassTarget,
+    /// The transform root and moving clips this segment's draw follows.
+    pub(crate) space: Space,
 }
 
 impl Segment {
@@ -352,6 +363,7 @@ impl Segment {
                 None => key,
             },
             clip: self.clip,
+            space: self.space,
             mergeable: self.kind.family().mergeable(),
         }
     }
@@ -422,6 +434,9 @@ struct OffscreenPass {
     /// draw has no color-matrix slot, a blended layer's whole color chain is
     /// realized as [`PassWork::ColorTransform`] rungs and `color` stays `None`.
     blend: Option<(Blend, usize)>,
+    /// What decides its composite beyond its content: its region, opacity,
+    /// blur and color chain, as a damage key (§30.3).
+    key: u64,
 }
 
 /// How much empty area a backdrop group may absorb before a joining layer opens
@@ -670,6 +685,9 @@ struct LayerEntry {
     /// another one. The product here therefore has at most one non-unit term; it
     /// is written as a product anyway so the invariant is not load-bearing.
     fold_opacity: f32,
+    /// The moving clip chain content under this layer follows, or `NO_CHAIN`
+    /// when its clip moves with no transform root.
+    chain: u32,
 }
 
 /// What one backdrop capture depends on, and whether that dependency moved since
@@ -1027,6 +1045,13 @@ pub struct FrameStats {
 pub struct Renderer {
     /// The Quad built-in pipeline (registered once).
     quad_pipeline: PipelineId,
+    /// The quad pipeline writing its color without blending: the clear of a
+    /// partially redrawn frame's damaged rects.
+    clear_pipeline: PipelineId,
+    /// What the surface pass draws and what the last frame presented (§30.3).
+    present: present::Presenter,
+    /// Reused surface commands of a partial redraw.
+    partial_scratch: Vec<DrawCommand>,
     /// The AnalyticRRect built-in pipeline (registered once).
     analytic_rrect_pipeline: PipelineId,
     /// The AnalyticEllipse built-in pipeline (registered once).
@@ -1115,14 +1140,13 @@ pub struct Renderer {
     /// flushed to the device each frame after lowering.
     gradient_lut: GradientLutAtlas,
     /// The retained clip/mask coverage cache (§14.4): keys a requested mask to a
-    /// packed slot in [`mask_page`](Self::mask_page) so a stable mask is
-    /// rasterized once and reused. Cold-path policy; the physical texture lives
-    /// in `mask_page`.
+    /// packed slot in one of its pages so a stable mask is rasterized once and
+    /// reused. Cold-path policy; the physical textures live in `mask_pages`.
     mask_cache: MaskCache,
-    /// The physical R8 mask page — the GPU texture, CPU backing, and dirty rect
-    /// the resolved coverage from `mask_cache` blits into. Internal texture like
-    /// `gradient_lut`; created once in [`Renderer::new`], drained each frame.
-    mask_page: MaskPage,
+    /// The physical R8 mask pages — a texture per cache page and the coverage
+    /// blitted since the last upload. Internal textures like `gradient_lut`,
+    /// made as the cache adds pages and flushed each frame.
+    mask_pages: MaskPages,
     /// Clip masks rasterized this frame (§30/§61). Reset at frame start, bumped
     /// each time a masked clip actually rasterizes coverage; surfaced as
     /// [`FrameStats::clip_mask_builds`]. Steady state evicts/rasterizes nothing,
@@ -1181,6 +1205,9 @@ pub struct Renderer {
     /// The user programs installed, by slot, each with its own instance
     /// buffer and scratch.
     programs: ProgramTable,
+    /// The backend fills paths as scanline coverage ([`viso_gpu::Caps::coverage_paths`]),
+    /// so every solid fill takes the mask lane, convex or not.
+    coverage_paths: bool,
     /// The programs this renderer compiled.
     program_compiles: u64,
     /// Scratch analytic soft-shadow instance data, reused each frame.
@@ -1223,6 +1250,8 @@ pub struct Renderer {
     /// its geometry is translated by; empty means unclipped, main pass, no
     /// offset.
     layer_stack: Vec<LayerEntry>,
+    /// The transform roots of the uploaded stream and how far each moved since.
+    transforms: Transforms,
     /// The offscreen render-to-texture passes for this frame's translucent
     /// layers, in creation order. Reused each frame; emitted before the surface
     /// pass in [`Renderer::encode`].
@@ -1331,6 +1360,11 @@ pub struct Renderer {
     /// intermediates narrowed to 8 bits and then stretched back up. A format that
     /// differed from the surface's would need a second set of 14 pipelines and a
     /// per-target format on every draw, buying nothing at either end.
+    ///
+    /// The one exception is a surface without alpha (an `Rgb565Unorm` panel): a
+    /// layer must hold coverage, so its intermediates are `Bgra8Unorm`, the
+    /// narrowest SDR format with alpha. Only backends whose pipelines are not
+    /// bound to an attachment format offer such a surface (the CPU raster, GL).
     ///
     /// Coverage planes are not color and are excluded by construction: the glyph
     /// atlas and mask pages stay `R8Unorm` at every domain (see
@@ -1690,6 +1724,15 @@ impl Renderer {
                 &QuadInstance::LAYOUT,
             )
             .expect("QuadInstance layout matches the quad shader schema");
+        let clear_pipeline = backend
+            .create_pipeline(
+                &PipelineDesc {
+                    blend: viso_gpu::BlendMode::Replace,
+                    ..desc(entry(PipelineFamily::SolidRect), "damage-clear")
+                },
+                &QuadInstance::LAYOUT,
+            )
+            .expect("QuadInstance layout matches the quad shader schema");
 
         let analytic_rrect_pipeline = backend
             .create_pipeline(
@@ -1802,18 +1845,6 @@ impl Renderer {
             label: "gradient-lut",
         });
 
-        // The R8 mask page is renderer-internal like the gradient LUT: resolved
-        // clip/mask coverage is blitted into this texture's CPU backing and
-        // uploaded before the pass. `MASK_PAGE_SIZE` is a single shared page;
-        // real UI clips are small ROIs that pack many-to-a-page.
-        let mask_texture = backend.create_texture(&TextureDesc {
-            width: MASK_PAGE_SIZE,
-            height: MASK_PAGE_SIZE,
-            format: MaskPage::FORMAT,
-            render_target: false,
-            label: "mask-page",
-        });
-
         let default_sampler_desc = SamplerDesc::LINEAR_CLAMP;
         let sampler = backend.create_sampler(&default_sampler_desc);
         // Seed the image sampler cache with the default so a default-sampler
@@ -1824,6 +1855,9 @@ impl Renderer {
 
         Self {
             quad_pipeline,
+            clear_pipeline,
+            present: present::Presenter::default(),
+            partial_scratch: Vec::new(),
             analytic_rrect_pipeline,
             analytic_ellipse_pipeline,
             analytic_capsule_pipeline,
@@ -1875,8 +1909,8 @@ impl Renderer {
                 lut_texture,
                 GradientLutAtlas::format_for(color_space.domain()),
             ),
-            mask_cache: MaskCache::new(MASK_PAGE_SIZE),
-            mask_page: MaskPage::new(MASK_PAGE_SIZE, mask_texture),
+            mask_cache: MaskCache::new(MASK_PAGE_MIN, MASK_PAGE_MAX),
+            mask_pages: MaskPages::default(),
             mask_builds_this_frame: 0,
             mesh_pipeline,
             mesh_vertex_pool: InstancePool::new(BufferUsage::VERTEX, "mesh-vertices"),
@@ -1899,6 +1933,7 @@ impl Renderer {
             glyph_scratch: Vec::with_capacity(256),
             gradient_scratch: Vec::with_capacity(64),
             programs: ProgramTable::new(backend.caps().program_instance_align),
+            coverage_paths: backend.caps().coverage_paths,
             program_compiles: 0,
             analytic_shadow_scratch: Vec::with_capacity(256),
             blur_scratch: Vec::with_capacity(8),
@@ -1911,6 +1946,7 @@ impl Renderer {
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
             layer_stack: Vec::with_capacity(8),
+            transforms: Transforms::default(),
             offscreen_passes: Vec::with_capacity(4),
             blur_passes: Vec::with_capacity(4),
             color_passes: Vec::with_capacity(2),
@@ -1927,7 +1963,11 @@ impl Renderer {
             surface_size: [Rect::INFINITE.w, Rect::INFINITE.h],
             surface_format,
             color_space,
-            intermediate_format: surface_format,
+            intermediate_format: if surface_format.has_alpha() {
+                surface_format
+            } else {
+                TextureFormat::Bgra8Unorm
+            },
             culled_this_frame: 0,
             program_draws_dropped: 0,
         }
@@ -2217,8 +2257,9 @@ impl Renderer {
     /// fall through to the tessellated path lane — a degenerate ROI, or a mask the
     /// cache declined to allocate (empty/oversize), in which case the tessellated
     /// fill (bounded by the active scissor) is the correct fallback.
-    fn mask_solid_fill(
+    fn mask_solid_fill<B: GpuBackend>(
         &mut self,
+        backend: &mut B,
         path: &crate::primitive::Path,
         fill: crate::primitive::Rgba,
         ctx: EmitContext,
@@ -2260,10 +2301,11 @@ impl Renderer {
             // tessellated fill within the active scissor.
             return false;
         };
+        self.mask_pages.sync(backend, self.mask_cache.page_edges());
 
         // Rasterize on a cold build, a key change, or after a repack moved slot
         // origins (the whole page must be re-blitted regardless of cache-hit).
-        if res.rasterized || self.mask_page.needs_full_reblit() {
+        if res.rasterized || self.mask_pages.needs_full_reblit() {
             let cov = rasterize_path_coverage(
                 path.cmds.iter().copied(),
                 roi,
@@ -2271,12 +2313,12 @@ impl Renderer {
                 res.slot.w,
                 res.slot.h,
             );
-            self.mask_page.blit(res.slot, &cov);
+            self.mask_pages.blit(res.slot, cov);
             self.mask_builds_this_frame += 1;
         }
 
         // Sample the slot sub-rect of the shared page as normalized UVs.
-        let size = self.mask_page.size() as f32;
+        let size = self.mask_pages.edge(res.slot.page) as f32;
         let inst = GlyphInstance {
             rect_pos: [roi.x, roi.y],
             rect_size: [roi.w, roi.h],
@@ -2287,7 +2329,7 @@ impl Renderer {
         let bounds = crate::scene::bounds::Bounds::from_world(roi, clip, 0.0, 0.0);
         self.scene.ingest_glyph_run(
             std::iter::once(inst),
-            self.mask_page.texture(),
+            self.mask_pages.texture(res.slot.page),
             crate::GlyphLane::CoverageA8,
             ctx,
             bounds,
@@ -2309,8 +2351,9 @@ impl Renderer {
     /// Returns `false` (caller keeps the normal fill lane, shadow undrawn) for a
     /// degenerate path, an inner shadow (routed to the analytic lane — §20.3), or
     /// a packer-declined ROI.
-    fn mask_path_shadow(
+    fn mask_path_shadow<B: GpuBackend>(
         &mut self,
+        backend: &mut B,
         path: &crate::primitive::Path,
         shadow: &crate::primitive::PathShadow,
         ctx: EmitContext,
@@ -2360,8 +2403,9 @@ impl Renderer {
         let Some(res) = self.mask_cache.resolve(&request) else {
             return false;
         };
+        self.mask_pages.sync(backend, self.mask_cache.page_edges());
 
-        if res.rasterized || self.mask_page.needs_full_reblit() {
+        if res.rasterized || self.mask_pages.needs_full_reblit() {
             let cov = rasterize_path_coverage(
                 path.cmds.iter().copied(),
                 roi,
@@ -2369,7 +2413,7 @@ impl Renderer {
                 res.slot.w,
                 res.slot.h,
             );
-            self.mask_page.blit(res.slot, &cov);
+            self.mask_pages.blit(res.slot, cov);
             self.mask_builds_this_frame += 1;
         }
 
@@ -2377,7 +2421,7 @@ impl Renderer {
         // shadow color. The shadow footprint extends the emitted quad's bounds by
         // the blur reach (3σ) plus outward spread plus the offset, so the retained
         // paint/effect bounds cover the soft, shifted silhouette.
-        let size = self.mask_page.size() as f32;
+        let size = self.mask_pages.edge(res.slot.page) as f32;
         let shadow_rect = Rect {
             x: roi.x + shadow.offset[0],
             y: roi.y + shadow.offset[1],
@@ -2400,7 +2444,7 @@ impl Renderer {
         let bounds = crate::scene::bounds::Bounds::from_world(shadow_rect, clip, 0.0, filter);
         self.scene.ingest_glyph_run(
             std::iter::once(inst),
-            self.mask_page.texture(),
+            self.mask_pages.texture(res.slot.page),
             crate::GlyphLane::CoverageA8,
             ctx,
             bounds,
@@ -2425,6 +2469,21 @@ impl Renderer {
     ///
     /// [`lower_from_scene`]: Self::lower_from_scene
     pub fn upload<B: GpuBackend>(&mut self, backend: &mut B, primitives: &[Primitive]) {
+        self.upload_with_transforms(backend, primitives, &[]);
+    }
+
+    /// [`upload`](Self::upload) a stream whose transform roots were painted at
+    /// `painted` — each root's displacement, indexed by its
+    /// [`TransformSlot`](crate::TransformSlot). A later
+    /// [`set_transforms`](Self::set_transforms) moves each root's draws by how
+    /// far it moved since. A root past the end of `painted` never moves.
+    pub fn upload_with_transforms<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        primitives: &[Primitive],
+        painted: &[[f32; 2]],
+    ) {
+        self.transforms.begin_frame(painted);
         self.layer_stack.clear();
         self.offscreen_passes.clear();
         self.blur_passes.clear();
@@ -2467,6 +2526,7 @@ impl Renderer {
                     PassTarget::Capture(_) => None,
                 },
                 origin,
+                space: self.transforms.space(self.active_chain()),
             };
             // Paint-order slots this primitive records, so its paint bounds can
             // be folded into the innermost offscreen layer's content union after
@@ -2672,7 +2732,7 @@ impl Renderer {
                     // its tight coverage is cached once (keyed on geometry+sigma)
                     // and composited offset + tinted through the mask lane.
                     if let Some(shadow) = path.shadow.as_ref() {
-                        self.mask_path_shadow(path, shadow, ctx, clip);
+                        self.mask_path_shadow(backend, path, shadow, ctx, clip);
                     }
                     // A concave or curve-bearing solid-fill-only path is a
                     // self-masked solid fill (§14.4): its own coverage is one R8
@@ -2683,11 +2743,12 @@ impl Renderer {
                     // A convex straight-edge fill (a triangle, a quad) keeps the
                     // tessellated lane, which fans it trivially and reuses geometry
                     // across pure translations; a stroked path or a degenerate fill
-                    // keeps that lane too.
+                    // keeps that lane too. A backend that fills by scanline
+                    // rather than by triangle sends every solid fill to the mask.
                     if let Some(fill) = path.fill
                         && path.stroke.is_none()
-                        && !path_is_convex(&path.cmds)
-                        && self.mask_solid_fill(path, fill, ctx, clip)
+                        && (self.coverage_paths || !path_is_convex(&path.cmds))
+                        && self.mask_solid_fill(backend, path, fill, ctx, clip)
                     {
                         continue;
                     }
@@ -2706,6 +2767,9 @@ impl Renderer {
                         self.program_draws_dropped += 1;
                         continue;
                     }
+                    // A program writes its own uniforms, so a shift cannot move
+                    // it.
+                    self.transforms.taint();
                     let bounds =
                         crate::scene::bounds::Bounds::from_world(draw.rect, clip, 0.0, 0.0);
                     self.scene.ingest_shader(draw, ctx, bounds);
@@ -2732,6 +2796,8 @@ impl Renderer {
                     );
                 }
                 Primitive::Frosted(material) => {
+                    // It samples what is behind it.
+                    self.transforms.taint();
                     // A frosted surface is a leaf, not a container: it declares a
                     // backdrop dependency, joins (or opens) the capture group for
                     // it exactly the way a backdrop layer does — so `N` panels at
@@ -2808,6 +2874,11 @@ impl Renderer {
                         Some(parent) => parent.clip.intersect(layer.clip),
                         None => layer.clip,
                     };
+                    let chain = self.transforms.open_clip(
+                        self.active_chain(),
+                        self.layer_stack.last().map(|parent| parent.clip),
+                        layer.clip,
+                    );
                     // A backdrop is an explicit dependency on the content already
                     // recorded behind this layer (§17.1): join (or open) the
                     // capture group for it and record the composite *now*, before
@@ -2820,6 +2891,7 @@ impl Renderer {
                         && let Some(roi) = self.backdrop_roi(world_clip, layer.backdrop_sigma)
                     {
                         shared_backdrop = true;
+                        self.transforms.taint();
                         let capture = self.join_or_open_backdrop(roi, layer.backdrop_sigma);
                         let dest = world_clip.intersect(self.surface_rect());
                         let bounds = crate::scene::bounds::Bounds::from_world(dest, None, 0.0, 0.0);
@@ -2929,6 +3001,7 @@ impl Renderer {
                             color_start,
                             color_len: 0,
                             fold_opacity: child_fold,
+                            chain,
                         });
                     } else {
                         // Translucent or blurred: open an offscreen pass. Its
@@ -2942,6 +3015,9 @@ impl Renderer {
                         // does a color chain that computes anything (§17.3, E2.2)
                         // and a blend the fixed-function stage cannot express
                         // (§14.6, E2.3).
+                        // Its region of interest is cut against the surface and
+                        // the clip as painted, so a shift cannot move it.
+                        self.transforms.taint();
                         let pass_origin = [world_clip.x, world_clip.y];
                         let paint_order_start = self.scene.paint_order.len();
                         // An advanced blend needs to read the destination. The
@@ -2976,6 +3052,7 @@ impl Renderer {
                             // `child_fold` is what an ancestor folded, which is
                             // `1.0` whenever a layer is reached at all.
                             fold_opacity: child_fold,
+                            chain,
                         });
                     }
                 }
@@ -2985,6 +3062,11 @@ impl Renderer {
                 // annotation on the layer — and makes a marker anywhere else in
                 // the stream harmless rather than an error (§17.3, §14.6).
                 Primitive::ColorEffect(_) | Primitive::Blend(_) => {}
+                Primitive::Transform(slot) => {
+                    self.transforms
+                        .push(slot.0, !matches!(target, PassTarget::Main));
+                }
+                Primitive::TransformEnd => self.transforms.pop(),
                 Primitive::LayerEnd => {
                     if let Some(entry) = self.layer_stack.pop()
                         && let PassTarget::Offscreen(idx) = entry.target
@@ -3013,7 +3095,7 @@ impl Renderer {
             {
                 let mut union = top.content_union;
                 for entry in &self.scene.paint_order[record_start..] {
-                    union = union.union(entry.bounds.paint);
+                    union = union.accumulate(entry.bounds.paint);
                 }
                 if let Some(top) = self.layer_stack.last_mut() {
                     top.content_union = union;
@@ -3028,15 +3110,21 @@ impl Renderer {
         // Reclaim masks this frame no longer references. A repack moves surviving
         // slot origins, so a `true` return forces every resolving mask to re-blit
         // next frame regardless of cache-hit status (eviction is a cold event; a
-        // steady scene evicts nothing and this stays `false`).
-        self.mask_page
-            .set_needs_full_reblit(self.mask_cache.end_frame());
+        // steady scene evicts nothing and this stays `false`), and gives back the
+        // pages it emptied.
+        let repacked = self.mask_cache.end_frame();
+        self.mask_pages.set_needs_full_reblit(repacked);
+        if repacked {
+            self.mask_pages.sync(backend, self.mask_cache.page_edges());
+        }
 
         // Realize this frame's backdrop captures (§17.1, §17.2) ahead of the
         // surface pass that consumes them. They can only be recorded here: a
         // group's ROI is not final until the walk ends, since a later layer can
         // still join it and grow the union.
         self.realize_backdrop_captures();
+        self.transforms
+            .finish_frame(!self.backdrop_captures.is_empty());
 
         // Close the graph with the surface pass. It reads every layer's final
         // sampled target (what `close_offscreen` composites), and it can only be
@@ -3079,13 +3167,13 @@ impl Renderer {
         // gradient uploads nothing.
         if let Some((x, y, w, h, bytes)) = self.gradient_lut.take_dirty() {
             backend.write_texture(self.gradient_lut.texture(), x, y, w, h, &bytes);
+            self.present.atlas_written(Atlas::GradientLut);
         }
 
-        // Flush the frame's baked mask coverage into the R8 page in one batched
-        // upload of the coalesced dirty sub-rect, mirroring the gradient LUT seam;
-        // a frame that built no masks uploads nothing.
-        if let Some((x, y, w, h, bytes)) = self.mask_page.take_dirty() {
-            backend.write_texture(self.mask_page.texture(), x, y, w, h, &bytes);
+        // Write the frame's baked mask coverage into its pages, one upload per
+        // mask built; a frame that built no masks uploads nothing.
+        if self.mask_pages.flush(backend) {
+            self.present.atlas_written(Atlas::MaskPage);
         }
 
         // Reconcile each family's persistent device buffer with the freshly
@@ -3149,6 +3237,23 @@ impl Renderer {
             + self.mesh_vertex_pool.last_upload_bytes()
             + self.mesh_index_pool.last_upload_bytes()
             + program_bytes;
+        self.collect_surface_draws();
+    }
+
+    /// Take each transform root's displacement now, indexed by its
+    /// [`TransformSlot`](crate::TransformSlot), for the next encode.
+    ///
+    /// The uploaded draws of a root that moved since it was painted are shifted
+    /// by the difference and their moving clips follow: no instance changes and
+    /// nothing is uploaded, so a scroll or slide costs per draw, not per
+    /// primitive. When a moved root holds content a shift cannot move (an
+    /// offscreen layer, a backdrop or material, a user program) or the frame
+    /// captures a backdrop, nothing moves and the answer is
+    /// [`TransformUpdate::NeedsUpload`]: repaint at these displacements and
+    /// upload them with
+    /// [`upload_with_transforms`](Self::upload_with_transforms).
+    pub fn set_transforms(&mut self, current: &[[f32; 2]]) -> TransformUpdate {
+        self.transforms.set(current)
     }
 
     /// Lower the retained scene to this frame's instance scratch + submission-
@@ -3296,6 +3401,7 @@ impl Renderer {
         target: PassTarget,
         origin: [f32; 2],
     ) {
+        let space = entry.context.space;
         match entry.store {
             StoreRef::Quad(id) => {
                 let mut inst = self.scene.quads.get(id).expect("quad slot").instance;
@@ -3311,6 +3417,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::AnalyticRRect(id) => {
@@ -3330,6 +3437,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::AnalyticEllipse(id) => {
@@ -3349,6 +3457,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::AnalyticCapsule(id) => {
@@ -3368,6 +3477,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::AnalyticLine(id) => {
@@ -3390,6 +3500,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::Image(id) => {
@@ -3412,6 +3523,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::Gradient(id) => {
@@ -3431,6 +3543,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::Shader(id) => {
@@ -3445,6 +3558,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 };
                 // A draw that joins the previous one extends its run; any other
                 // opens an aligned run of its own.
@@ -3478,6 +3592,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::Composite { mut instance, pass } => {
@@ -3546,6 +3661,7 @@ impl Renderer {
                         count: 1,
                         clip,
                         target,
+                        space,
                     });
                     return;
                 }
@@ -3571,6 +3687,7 @@ impl Renderer {
                         count: 1,
                         clip,
                         target,
+                        space,
                     });
                     return;
                 }
@@ -3582,6 +3699,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::GlyphRun(run) => {
@@ -3608,6 +3726,7 @@ impl Renderer {
                     count,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::Path(id) => {
@@ -3654,7 +3773,7 @@ impl Renderer {
                     .extend(geo.indices.iter_u32().map(|i| base + i));
                 self.translate_vertices(base as usize, origin);
                 let count = self.mesh_index_scratch.len() as u32 - index_start;
-                self.push_mesh_segment(index_start, count, clip, target);
+                self.push_mesh_segment(index_start, count, clip, target, space);
             }
             StoreRef::Mesh(id) => {
                 let e = self.scene.meshes.get(id).expect("mesh slot");
@@ -3665,7 +3784,7 @@ impl Renderer {
                     .extend(e.indices.iter().map(|&i| base + i));
                 self.translate_vertices(base as usize, origin);
                 let count = self.mesh_index_scratch.len() as u32 - index_start;
-                self.push_mesh_segment(index_start, count, clip, target);
+                self.push_mesh_segment(index_start, count, clip, target, space);
             }
             StoreRef::BackdropComposite {
                 capture,
@@ -3712,6 +3831,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
             StoreRef::MaterialComposite { capture, material } => {
@@ -3753,6 +3873,7 @@ impl Renderer {
                     count: 1,
                     clip,
                     target,
+                    space,
                 });
             }
         }
@@ -3839,7 +3960,6 @@ impl Renderer {
         let programs = self.programs.buffer_bytes();
         let transient = self.transient.stats();
         let texel = |format: viso_gpu::TextureFormat| format.bytes_per_texel() as u64;
-        let mask = u64::from(self.mask_page.size());
         crate::RenderResources {
             pipelines: SHADER_PIPELINE_PREWARM_COUNT,
             programs: self.programs.installed() as u32,
@@ -3850,7 +3970,7 @@ impl Renderer {
             gradient_lut_bytes: u64::from(crate::gradient_lut::LUT_WIDTH)
                 * u64::from(self.gradient_lut.rows())
                 * texel(self.gradient_lut.format()),
-            mask_page_bytes: mask * mask,
+            mask_page_bytes: self.mask_pages.bytes(),
             masks: self.mask_cache.len() as u32,
             transient_targets: transient.targets as u32,
             transient_bytes: transient.pool_bytes as u64,
@@ -4208,6 +4328,7 @@ impl Renderer {
         count: u32,
         clip: Option<Rect>,
         target: PassTarget,
+        space: Space,
     ) {
         if count == 0 {
             return;
@@ -4218,6 +4339,7 @@ impl Renderer {
             count,
             clip,
             target,
+            space,
         });
     }
 
@@ -4242,6 +4364,13 @@ impl Renderer {
             }
             None => (None, PassTarget::Main, [0.0, 0.0]),
         }
+    }
+
+    /// The moving clip chain whatever is drawn right now follows.
+    fn active_chain(&self) -> u32 {
+        self.layer_stack
+            .last()
+            .map_or(NO_CHAIN, |entry| entry.chain)
     }
 
     /// The group opacity folded into whatever is drawn right now (§3161 rung 1):
@@ -4325,7 +4454,7 @@ impl Renderer {
             let cap = &self.backdrop_captures[last];
             let (cap_sigma, cap_roi, cap_covered, cap_under) =
                 (cap.sigma, cap.roi, cap.covered, cap.under);
-            let union = cap_roi.union(roi);
+            let union = cap_roi.accumulate(roi);
             if cap_sigma == sigma
                 && union.w * union.h <= (cap_covered + area) * BACKDROP_UNION_SLACK
                 && !self.backdrop_group_blocked(cap_under, roi)
@@ -4528,6 +4657,7 @@ impl Renderer {
             opacity,
             color: None,
             blend,
+            key: 0,
         });
         idx
     }
@@ -4606,6 +4736,24 @@ impl Renderer {
         // ladder left. A chain that fused to one op adds no pass at all — that op
         // rides the composite draw.
         self.build_color_chain(idx, entry);
+
+        let pass = &self.offscreen_passes[idx];
+        let mut key = crate::damage::Key::new(idx as u64).rect(pass.rect).f32s(&[
+            pass.opacity,
+            entry.blur_sigma,
+            entry.fold_opacity,
+        ]);
+        let ops = entry.color_start as usize..(entry.color_start + entry.color_len) as usize;
+        for op in self.color_ops.get(ops).unwrap_or(&[]) {
+            for row in &op.matrix.rows {
+                key = key.f32s(row);
+            }
+            key = key.f32s(&[op.gamma]);
+        }
+        if let Some((blend, capture)) = pass.blend {
+            key = key.word(blend as u64).word(capture as u64);
+        }
+        self.offscreen_passes[idx].key = key.finish();
 
         debug_assert!(
             self.offscreen_passes[idx].sample.is_some(),
@@ -4838,35 +4986,10 @@ impl Renderer {
                 clip: None,
                 offscreen: None,
                 origin: [0.0, 0.0],
+                space: self.transforms.space(self.active_chain()),
             },
             bounds,
         );
-    }
-
-    /// Encode the staged draws into a draw list against `surface` and present it.
-    /// `clear` is the background color (premultiplied RGBA); `viewport` is the
-    /// surface size in physical pixels `[width, height]`, which the Metal shaders
-    /// use to map pixel-space rects to NDC. (The headless raster backend ignores
-    /// uniforms and works directly in pixel space.)
-    ///
-    /// This frame's translucent layers each become an offscreen [`RenderPass`]
-    /// (cleared transparent) emitted before the surface pass, so their textures
-    /// are ready when the surface pass composites them.
-    pub fn submit<B: GpuBackend>(
-        &mut self,
-        backend: &mut B,
-        surface: SurfaceId,
-        clear: [f32; 4],
-        viewport: [f32; 2],
-    ) {
-        // The drawable can be momentarily unavailable (surface out of date after a
-        // resize/DPI change, or the drawable pool is exhausted). That is transient:
-        // skip this frame and let the next tick redraw the unchanged scene.
-        let Some(frame) = backend.begin_frame(surface) else {
-            return;
-        };
-        self.encode(backend, RenderTarget::Surface(frame), clear, viewport);
-        backend.present(frame);
     }
 
     /// Encode the staged draws with `target` in place of the surface: the same
@@ -4880,7 +5003,13 @@ impl Renderer {
         clear: [f32; 4],
         viewport: [f32; 2],
     ) {
-        self.encode(backend, RenderTarget::Texture(target), clear, viewport);
+        self.encode(
+            backend,
+            RenderTarget::Texture(target),
+            clear,
+            viewport,
+            &Region::Full,
+        );
     }
 
     /// Build the draw list and hand it to the backend (no present).
@@ -4894,12 +5023,16 @@ impl Renderer {
     /// several works and encodes them back to back into the one attachment. Each
     /// offscreen pass uses its own pooled-extent viewport uniform; the surface pass
     /// uses `viewport`.
+    ///
+    /// A `redraw` of rects keeps the surface's pixels and redraws only inside
+    /// them (see [`present`]).
     fn encode<B: GpuBackend>(
         &mut self,
         backend: &mut B,
         main: RenderTarget,
         clear: [f32; 4],
         viewport: [f32; 2],
+        redraw: &Region,
     ) {
         // Both scratch buffers are `Renderer`-owned and borrow-free
         // (`DrawCommand`/`RenderPass` carry no lifetime — uniforms are stored by
@@ -4925,7 +5058,7 @@ impl Renderer {
                 PassWork::BackdropCapture(i) => self.backdrop_captures[i as usize].viewport,
                 PassWork::Surface => viewport,
             };
-            let uniforms = InlineUniforms::new(bytemuck_viewport(&vp));
+            let uniforms = view_uniforms(vp, [0.0, 0.0]);
             let first_command = commands.len() as u32;
             for work in works {
                 match *work {
@@ -4936,7 +5069,7 @@ impl Renderer {
                             .iter()
                             .filter(|seg| seg.target == PassTarget::Offscreen(i as usize))
                         {
-                            commands.push(self.command_for(seg, uniforms, vp));
+                            commands.push(self.command_for(seg, vp));
                         }
                     }
                     // One step of a separable blur ladder (§16.2, E1.2): a single
@@ -4984,19 +5117,32 @@ impl Renderer {
                             .iter()
                             .filter(|seg| seg.target == PassTarget::Capture(i as usize))
                         {
-                            commands.push(self.command_for(seg, uniforms, vp));
+                            commands.push(self.command_for(seg, vp));
                         }
                     }
                     // The frame's visible result: everything not routed offscreen,
                     // composites included.
                     PassWork::Surface => {
-                        for seg in self
-                            .segments
-                            .iter()
-                            .filter(|seg| seg.target == PassTarget::Main)
-                        {
-                            commands.push(self.command_for(seg, uniforms, vp));
-                        }
+                        let Region::Rects(rects) = redraw else {
+                            for seg in self
+                                .segments
+                                .iter()
+                                .filter(|seg| seg.target == PassTarget::Main)
+                            {
+                                commands.push(self.command_for(seg, vp));
+                            }
+                            continue;
+                        };
+                        let mut surface = std::mem::take(&mut self.partial_scratch);
+                        surface.clear();
+                        surface.extend(
+                            self.segments
+                                .iter()
+                                .filter(|seg| seg.target == PassTarget::Main)
+                                .map(|seg| self.command_for(seg, vp)),
+                        );
+                        self.push_partial_surface(&mut commands, rects, vp, &surface);
+                        self.partial_scratch = surface;
                     }
                 }
             }
@@ -5007,6 +5153,8 @@ impl Renderer {
                 },
                 load: match pass.load() {
                     PassLoad::ClearTransparent => LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
+                    // A partial redraw keeps the surface and clears its rects.
+                    PassLoad::ClearBackground if matches!(redraw, Region::Rects(_)) => LoadOp::Load,
                     PassLoad::ClearBackground => LoadOp::Clear(clear),
                 },
                 first_command,
@@ -5024,15 +5172,15 @@ impl Renderer {
         self.passes = passes;
     }
 
-    /// Map one [`Segment`] to its [`DrawCommand`], given the pass's inline
-    /// viewport uniform bytes and the viewport its scissor is clamped to.
-    fn command_for(
-        &self,
-        seg: &Segment,
-        uniforms: InlineUniforms,
-        viewport: [f32; 2],
-    ) -> DrawCommand {
-        let scissor = seg.clip.map(|c| clip_to_scissor(c, viewport));
+    /// Map one [`Segment`] to its [`DrawCommand`] in a pass of `viewport`: the
+    /// draw is shifted by how far its transform root moved since it was
+    /// painted, and its scissor is the clip as that move leaves it.
+    fn command_for(&self, seg: &Segment, viewport: [f32; 2]) -> DrawCommand {
+        let uniforms = view_uniforms(viewport, self.transforms.shift(seg.space.slot));
+        let scissor = self
+            .transforms
+            .clip(seg.space, seg.clip)
+            .map(|c| clip_to_scissor(c, viewport));
         match seg.kind {
             SegmentKind::Quad => DrawCommand {
                 pipeline: self.quad_pipeline,
@@ -5255,15 +5403,17 @@ fn clip_to_scissor(clip: Rect, viewport: [f32; 2]) -> (u32, u32, u32, u32) {
     )
 }
 
-/// View the viewport `[width, height]` as raw bytes for the inline uniform.
-fn bytemuck_viewport(viewport: &[f32; 2]) -> &[u8] {
-    // Safe: `[f32; 2]` is `#[repr(C)]`-equivalent POD with no padding.
-    unsafe {
-        core::slice::from_raw_parts(
-            viewport.as_ptr() as *const u8,
-            core::mem::size_of::<[f32; 2]>(),
-        )
+/// The inline uniform block every built-in reads: the target `viewport`
+/// `[width, height]`, then the `shift` its draw is moved by.
+fn view_uniforms(viewport: [f32; 2], shift: [f32; 2]) -> InlineUniforms {
+    let mut bytes = [0u8; 16];
+    for (i, v) in [viewport[0], viewport[1], shift[0], shift[1]]
+        .into_iter()
+        .enumerate()
+    {
+        bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
     }
+    InlineUniforms::new(&bytes)
 }
 
 #[cfg(test)]
@@ -5271,7 +5421,7 @@ mod tests {
     use super::*;
     use crate::color_effect::{ColorEffect, ColorMatrix};
     use crate::primitive::{Border, ImageDraw, LayerClip, Quad, Rgba};
-    use viso_gpu::{HeadlessRaster, RawWindowHandle};
+    use viso_gpu::{CpuRaster, RawWindowHandle};
 
     fn quad(x: f32, y: f32) -> Primitive {
         Primitive::Quad(Quad {
@@ -5356,7 +5506,7 @@ mod tests {
     /// Build a renderer over a headless surface, run `upload`, and return the
     /// resulting segments (plus the backend so callers can inspect textures).
     fn segments_for(prims: &[Primitive]) -> Vec<Segment> {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5393,7 +5543,7 @@ mod tests {
     /// build, and it lowers through the reused glyph-coverage pipeline.
     #[test]
     fn cold_masked_solid_fill_builds_one_mask() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5411,7 +5561,7 @@ mod tests {
     /// second identical frame builds zero masks (the §14.4 stable fast path).
     #[test]
     fn stable_masked_solid_fill_rebuilds_nothing() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5460,7 +5610,7 @@ mod tests {
     /// and because both sample the same mask page they are one draw (§20.2).
     #[test]
     fn outer_path_shadow_builds_a_second_offset_mask() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5488,7 +5638,7 @@ mod tests {
     /// declines it, so only the fill mask is built.
     #[test]
     fn inner_path_shadow_skips_the_general_lane() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5499,7 +5649,7 @@ mod tests {
     /// A stable shadowed path re-resolves both slots with no re-raster.
     #[test]
     fn stable_path_shadow_rebuilds_nothing() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5513,7 +5663,7 @@ mod tests {
     /// a full re-blit and rebuilds the survivor.
     #[test]
     fn eviction_forces_reblit_next_frame() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5559,7 +5709,7 @@ mod tests {
             )),
             shadow: None,
         });
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5601,10 +5751,11 @@ mod tests {
         ]));
     }
 
-    /// A convex straight-edge solid fill (a triangle) is not diverted: it stays on
-    /// the tessellated path lane, which fans it trivially, and builds no mask.
+    /// A convex straight-edge solid fill (a triangle) stays on the tessellated
+    /// path lane where triangles are free, which fans it trivially and builds
+    /// no mask; a backend that fills by scanline takes it as coverage.
     #[test]
-    fn convex_solid_fill_stays_tessellated() {
+    fn convex_solid_fill_follows_the_backends_path_lane() {
         use crate::primitive::Point as P;
         let prim = Primitive::Path(crate::primitive::Path {
             cmds: vec![
@@ -5622,12 +5773,19 @@ mod tests {
             stroke: None,
             shadow: None,
         });
-        let mut gpu = HeadlessRaster::new();
-        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
-        let format = gpu.surface_format(surface);
-        let mut r = Renderer::new(&mut gpu, format);
-        r.upload(&mut gpu, &[prim]);
-        assert_eq!(r.frame_stats().clip_mask_builds, 0);
+        for (coverage, masks) in [(false, 0), (true, 1)] {
+            let mut gpu = CpuRaster::new();
+            gpu.set_coverage_paths(coverage);
+            let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+            let format = gpu.surface_format(surface);
+            let mut r = Renderer::new(&mut gpu, format);
+            r.upload(&mut gpu, std::slice::from_ref(&prim));
+            assert_eq!(
+                r.frame_stats().clip_mask_builds,
+                masks,
+                "coverage = {coverage}"
+            );
+        }
     }
 
     #[test]
@@ -5685,7 +5843,7 @@ mod tests {
 
     #[test]
     fn image_between_quads_breaks_the_quad_run_and_preserves_order() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let tex = gpu.create_texture(&viso_gpu::TextureDesc {
@@ -5706,7 +5864,7 @@ mod tests {
 
     #[test]
     fn same_texture_reuses_one_bind_group() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let tex = gpu.create_texture(&viso_gpu::TextureDesc {
@@ -5728,7 +5886,7 @@ mod tests {
 
     #[test]
     fn releasing_a_texture_drops_its_cached_bindings_only() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let desc = viso_gpu::TextureDesc {
@@ -5785,7 +5943,7 @@ mod tests {
     fn glyph_run_paints_ink_over_background() {
         const W: u32 = 96;
         const H: u32 = 48;
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5847,7 +6005,7 @@ mod tests {
 
     #[test]
     fn opaque_layer_stays_in_pass_with_no_offscreen() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5877,7 +6035,7 @@ mod tests {
 
     #[test]
     fn translucent_layer_opens_offscreen_and_composites() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -5936,7 +6094,7 @@ mod tests {
     /// child placed outside a tight clip is culled at lowering.
     #[test]
     fn tight_roi_sizes_target_to_content_not_clip() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6019,7 +6177,7 @@ mod tests {
     fn translucent_layer_blends_at_half_strength() {
         const W: u32 = 32;
         const H: u32 = 32;
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6105,7 +6263,7 @@ mod tests {
             backdrop_sigma: 0.0,
         });
 
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6216,7 +6374,7 @@ mod tests {
     fn headless_blur_softens_a_hard_edge() {
         const W: u32 = 48;
         const H: u32 = 16;
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6336,7 +6494,7 @@ mod tests {
             ]
         };
 
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6375,7 +6533,7 @@ mod tests {
     /// downstream samples (§16.1).
     #[test]
     fn the_pass_plan_counts_every_attachment_the_frame_writes() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6456,7 +6614,7 @@ mod tests {
     /// render-target passes — not three.
     #[test]
     fn a_mergeable_color_chain_costs_no_extra_passes() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6517,7 +6675,7 @@ mod tests {
     /// effects at once still fuse to one op and zero extra passes.
     #[test]
     fn a_long_mergeable_chain_still_costs_no_extra_passes() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6560,7 +6718,7 @@ mod tests {
     /// one extra render-target pass — not one per effect.
     #[test]
     fn only_a_non_expressible_stage_earns_a_pass() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6605,7 +6763,7 @@ mod tests {
     /// offscreen at all: the layer stays a plain in-pass scissor clip.
     #[test]
     fn a_neutral_color_chain_forces_no_offscreen() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6642,7 +6800,7 @@ mod tests {
     /// scratch: a split color chain is steady-state stable (§16.3, §17.4).
     #[test]
     fn steady_state_color_chain_reuses_pooled_targets() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6692,7 +6850,7 @@ mod tests {
     /// layer stops at the first non-marker primitive.
     #[test]
     fn color_effect_markers_only_bind_to_the_layer_they_follow() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6742,7 +6900,7 @@ mod tests {
     /// a translucent recolored layer still costs one offscreen and no extra pass.
     #[test]
     fn layer_opacity_folds_into_the_fused_op() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6783,7 +6941,7 @@ mod tests {
     /// still with no extra color pass.
     #[test]
     fn a_blur_and_a_color_chain_share_one_offscreen() {
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6843,7 +7001,7 @@ mod tests {
             ]
         };
 
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
@@ -6913,7 +7071,7 @@ mod tests {
             ]
         };
 
-        let mut gpu = HeadlessRaster::new();
+        let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);

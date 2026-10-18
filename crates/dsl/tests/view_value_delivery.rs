@@ -4,12 +4,16 @@
 //! value hook rather than adding one, and a handler's writes commit as one
 //! transaction.
 
+#[path = "support/reload.rs"]
+mod reload;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use reload::{LiveRuntime, hot_reload_view};
 use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
-use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload_view};
+use viso_dsl::hotreload::CandidatePlan;
 use viso_ui::Rect;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{

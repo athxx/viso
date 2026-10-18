@@ -11,14 +11,17 @@
 //! recurses into a subtree whose box contains the point, so it is a targeted
 //! route, not a full-tree scan.
 //!
-//! Hit testing reads a node's `world` rect (not `bounds`): a scrolling ancestor
-//! shifts the world rect, so a scrolled child hit-tests where it visibly sits.
-//! The descent also carries a `clip` rect — the intersection of every enclosing
-//! scroll viewport's world box — so a point over content scrolled past a
-//! viewport's edge misses, matching what paint clips away. Entering a scroll
-//! viewport narrows the clip to its world box before descending.
+//! Hit testing tests a node's on-screen rect (not `bounds`): the descent carries
+//! the displacement the scrolls and translates above apply — the pointer mapped
+//! through each transform root's inverse — so a scrolled child hit-tests where
+//! it visibly sits with nothing recomputed after the scroll. The descent also
+//! carries a `clip` rect — the intersection of every enclosing scroll
+//! viewport's box — so a point over content scrolled past a viewport's edge
+//! misses, matching what paint clips away. Entering a scroll viewport narrows
+//! the clip to its box before descending.
 
 use crate::component::NodeStore;
+use crate::layout::Vec2;
 use crate::node::NodeId;
 use viso_render::Rect;
 
@@ -37,46 +40,54 @@ impl HitTestTree {
     /// case the tree depth.
     pub fn hit(store: &NodeStore, root: NodeId, px: f32, py: f32) -> Option<NodeId> {
         // The initial clip is unbounded: nothing above the root clips it.
-        Self::hit_clipped(store, root, px, py, Rect::INFINITE)
+        if !store.arena().is_live(root) {
+            return None;
+        }
+        let above = store.shift_above(root);
+        Self::hit_clipped(store, root, px, py, Rect::INFINITE, above)
     }
 
     /// Descend `root` for the topmost hit, with the point required to fall inside
-    /// `clip` (the running intersection of enclosing scroll viewports).
+    /// `clip` (the running intersection of enclosing scroll viewports), the
+    /// scrolls and translates above `root` displacing it by `above`.
     fn hit_clipped(
         store: &NodeStore,
         root: NodeId,
         px: f32,
         py: f32,
         clip: Rect,
+        above: Vec2,
     ) -> Option<NodeId> {
         let arena = store.arena();
         if !arena.is_live(root) {
             return None;
         }
+        let own = above + store.self_shift(root);
+        let world = store.bounds(root).translate(store.snap_shift(own));
         // A child cannot escape its container's box, so a point outside this
         // box — clipped by any enclosing viewport — is outside the whole
         // subtree. Prune without recursing.
-        let visible = store.world(root).intersect(clip);
+        let visible = world.intersect(clip);
         if !visible.contains(px, py) {
             return None;
         }
 
         // A scroll viewport clips its children to its own box: narrow the clip
         // handed to the descent so content scrolled past the edge is unhittable.
-        let child_clip = if store.is_scroll(root) {
-            store.world(root).intersect(clip)
+        let (child_clip, inner) = if store.is_scroll(root) {
+            (visible, own + store.content_shift(root))
         } else {
-            clip
+            (clip, own)
         };
 
         // Test children topmost-first: the last-painted (last) child is tested
         // first, walking back toward the first-painted (bottom) one.
-        let mut child = arena.links(root).and_then(|l| l.last_child);
+        let mut child = arena.last_child(root);
         while let Some(c) = child {
-            if let Some(hit) = Self::hit_clipped(store, c, px, py, child_clip) {
+            if let Some(hit) = Self::hit_clipped(store, c, px, py, child_clip, inner) {
                 return Some(hit);
             }
-            child = arena.links(c).and_then(|l| l.prev_sibling);
+            child = arena.prev_sibling(c);
         }
 
         // No child claimed the point: this node is the hit only if it is itself
@@ -356,7 +367,6 @@ mod tests {
         // Scroll down 100px: content y-range [100,200) now shows at [0,100). A
         // hit at viewport y=10 lands on content world-y 110, still the content.
         store.scroll_by(root, Vec2 { x: 0.0, y: 100.0 });
-        store.resolve_transforms(root);
         assert_eq!(hit_test(&store, root, 50.0, 10.0), Some(content));
         // Above the viewport (negative side) stays a miss.
         assert_eq!(hit_test(&store, root, 50.0, 150.0), None);

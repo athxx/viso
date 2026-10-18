@@ -10,7 +10,8 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_dsl::frontend::{Origin, compile_file};
 use viso_shader::program::{
-    AddressMode, Bindings, BlendMode, CpuTexture, FilterMode, Program, Raster, SamplerDesc, Value,
+    AddressMode, Bindings, BlendMode, CpuTexels, CpuTexture, FilterMode, Program, Raster,
+    SamplerDesc, Value,
 };
 
 const SOURCE: &str = r#"
@@ -133,7 +134,7 @@ fn shaders(c: &mut Criterion) {
     let texture = CpuTexture {
         width: 64,
         height: 64,
-        texels: &texels,
+        texels: CpuTexels::Float(&texels),
     };
     let sampler = SamplerDesc {
         filter: FilterMode::Linear,

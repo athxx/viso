@@ -10,6 +10,7 @@ rust-version.workspace = true
 # PDF/browser/chart/map are NOT base widgets — they belong in optional
 # integrations, not here.
 [dependencies]
+viso-math = { workspace = true, features = ["std"] }
 viso-ui = { workspace = true }
 
 # Widget microbenches drive build/layout/paint_tree through viso-ui only, so no

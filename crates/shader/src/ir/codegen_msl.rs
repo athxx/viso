@@ -19,7 +19,7 @@
 //! asserts `emit_msl(&quad_ir())` equals the frozen pre-migration text in
 //! [`testdata`](crate::ir::testdata) (and the three others).
 
-use viso_gpu::InstanceSchema;
+use viso_gpu_abi::InstanceSchema;
 
 use crate::ir::module::{IrField, ShaderIr, Varying, VertexSource};
 
@@ -30,7 +30,7 @@ use crate::ir::module::{IrField, ShaderIr, Varying, VertexSource};
 /// Returns an owned attribute vector; the caller (`msl.rs`) caches it behind a
 /// per-primitive `OnceLock` to hand out the `&'static` slice [`InstanceSchema`]
 /// borrows — a one-time cold-path (pipeline-registration) cost.
-pub fn emit_schema_attrs(ir: &ShaderIr) -> Vec<viso_gpu::SchemaAttr> {
+pub fn emit_schema_attrs(ir: &ShaderIr) -> Vec<viso_gpu_abi::SchemaAttr> {
     ir.schema_attrs()
 }
 
@@ -38,7 +38,7 @@ pub fn emit_schema_attrs(ir: &ShaderIr) -> Vec<viso_gpu::SchemaAttr> {
 /// produced by [`emit_schema_attrs`] and cached to `'static`. Split from
 /// [`emit_schema_attrs`] because `InstanceSchema` borrows its attributes for
 /// `'static`, which only the caller's cache can provide.
-pub fn schema_from_attrs(attrs: &'static [viso_gpu::SchemaAttr]) -> InstanceSchema {
+pub fn schema_from_attrs(attrs: &'static [viso_gpu_abi::SchemaAttr]) -> InstanceSchema {
     InstanceSchema { attributes: attrs }
 }
 

@@ -1,13 +1,14 @@
 //! `f32` vectors: [`Vec2`], [`Vec3`], [`Vec4`].
 //!
-//! `f32` is the primary precision across the library — it matches the render/ui
-//! types, is cache-friendly, and is what the GPU upload boundary wants anyway.
-//! The accuracy-sensitive UI-layout path uses [`DVec2`](crate::DVec2) instead.
+//! `f32` is the only precision across the library — it matches the render/ui
+//! types, is cache-friendly, runs on single-precision FPUs, and is what the GPU
+//! upload boundary wants anyway.
 //!
 //! Every type is `#[repr(C)]` and `Copy` with plain public fields, so its layout
 //! is stable and pointer-width independent. `dot`, `cross`, `normalize`, and the
 //! rest are **methods** (`a.dot(b)`, `a.cross(b)`), not associated functions.
 
+use crate::float::sqrt;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 /// A 2-component `f32` vector.
@@ -102,7 +103,7 @@ impl Vec2 {
     /// The Euclidean length.
     #[inline]
     pub fn length(self) -> f32 {
-        self.length_squared().sqrt()
+        sqrt(self.length_squared())
     }
 
     /// The squared length (no `sqrt`).
@@ -123,6 +124,20 @@ impl Vec2 {
     pub fn normalize(self) -> Vec2 {
         let l = self.length();
         if l == 0.0 { Vec2::ZERO } else { self / l }
+    }
+
+    /// The unit vector in the same direction, or `None` for a zero-length or
+    /// non-finite input.
+    #[inline]
+    pub fn try_normalize(self) -> Option<Vec2> {
+        let l = self.length();
+        (l > 0.0 && l.is_finite()).then(|| self / l)
+    }
+
+    /// Whether both components are finite.
+    #[inline]
+    pub fn is_finite(self) -> bool {
+        self.x.is_finite() && self.y.is_finite()
     }
 
     /// Linear interpolation: `self` at `t == 0`, `other` at `t == 1`.
@@ -213,7 +228,7 @@ impl Vec3 {
     /// The Euclidean length.
     #[inline]
     pub fn length(self) -> f32 {
-        self.length_squared().sqrt()
+        sqrt(self.length_squared())
     }
 
     /// The squared length (no `sqrt`).
@@ -240,6 +255,18 @@ impl Vec3 {
     #[inline]
     pub fn lerp(self, other: Vec3, t: f32) -> Vec3 {
         self + (other - self) * t
+    }
+
+    /// The components as an array.
+    #[inline]
+    pub const fn to_array(self) -> [f32; 3] {
+        [self.x, self.y, self.z]
+    }
+
+    /// The vector of `components`.
+    #[inline]
+    pub const fn from_array([x, y, z]: [f32; 3]) -> Vec3 {
+        Vec3 { x, y, z }
     }
 
     /// Component-wise minimum.
@@ -317,7 +344,7 @@ impl Vec4 {
     /// The Euclidean length.
     #[inline]
     pub fn length(self) -> f32 {
-        self.length_squared().sqrt()
+        sqrt(self.length_squared())
     }
 
     /// The squared length (no `sqrt`).

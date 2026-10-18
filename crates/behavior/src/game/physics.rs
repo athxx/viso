@@ -11,10 +11,16 @@
 //! restore what it keeps between steps: without that, a snapshot of its
 //! world is degraded, and restoring it may diverge from an uninterrupted run.
 
-use std::fmt;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 
 use super::grid::{Bounds, Grid, bounds};
 use super::world::{Bodies, BodyKind, EntityId, GRAVITY};
+#[cfg(not(feature = "std"))]
+use crate::float::FloatMath as _;
 use crate::native::Determinism;
 
 /// A physics engine, stepping a world's bodies.
@@ -86,7 +92,7 @@ impl fmt::Display for PhysicsError {
     }
 }
 
-impl std::error::Error for PhysicsError {}
+impl core::error::Error for PhysicsError {}
 
 /// A physics engine whose tier is below the one the game's profile demands
 /// (`E9104`).
@@ -133,7 +139,7 @@ impl fmt::Display for PhysicsTier {
     }
 }
 
-impl std::error::Error for PhysicsTier {}
+impl core::error::Error for PhysicsTier {}
 
 /// The bodies of a world as an engine steps them, by slot.
 pub struct StepBodies<'a> {
@@ -207,7 +213,7 @@ impl<'a> StepBodies<'a> {
     /// leaving none for the next.
     #[inline]
     pub fn take_push(&mut self, slot: usize) -> [f32; 3] {
-        std::mem::take(&mut self.b.push[slot])
+        core::mem::take(&mut self.b.push[slot])
     }
 
     /// Whether a block held it up at the last step.
@@ -281,7 +287,7 @@ impl Physics for Kinematic {
             if b.kind[slot] != BodyKind::Character {
                 continue;
             }
-            let push = std::mem::take(&mut b.push[slot]);
+            let push = core::mem::take(&mut b.push[slot]);
             let vel = &mut b.vel[slot];
             vel[0] = push[0];
             vel[2] = push[2];
@@ -295,11 +301,11 @@ impl Physics for Kinematic {
             // own range unless a block pushes it out, after which the axes
             // left test every block.
             let (half, from) = (b.half[slot], b.pos[slot]);
-            let to: [f32; 3] = std::array::from_fn(|i| from[i] + vel[i] * dt);
+            let to: [f32; 3] = core::array::from_fn(|i| from[i] + vel[i] * dt);
             let (start, end) = (bounds(from, half), bounds(to, half));
             let region = (
-                std::array::from_fn(|i| start.0[i].min(end.0[i])),
-                std::array::from_fn(|i| start.1[i].max(end.1[i])),
+                core::array::from_fn(|i| start.0[i].min(end.0[i])),
+                core::array::from_fn(|i| start.1[i].max(end.1[i])),
             );
             bp.blocks_near(b, order, region);
             let mut swept = true;

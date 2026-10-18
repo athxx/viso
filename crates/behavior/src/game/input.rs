@@ -10,7 +10,11 @@
 //! action and axis values, never raw keys, so a recorded input tape does not
 //! depend on the bindings.
 
-use std::cell::Cell;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cell::Cell;
 
 use crate::native::{NativeError, NativeFunction, NativeObject, NativeValue, Obj, SchemaTy};
 use crate::value::Value;
@@ -556,8 +560,8 @@ impl TickInput {
 
 fn set_bit<T>(bits: &mut T, i: u32, on: bool)
 where
-    T: Copy + From<u8> + std::ops::Shl<u32, Output = T> + std::ops::BitOrAssign,
-    T: std::ops::BitAndAssign + std::ops::Not<Output = T>,
+    T: Copy + From<u8> + core::ops::Shl<u32, Output = T> + core::ops::BitOrAssign,
+    T: core::ops::BitAndAssign + core::ops::Not<Output = T>,
 {
     let mask = T::from(1) << i;
     if on {

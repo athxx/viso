@@ -7,6 +7,11 @@
 //! the width are discarded. Floats follow IEEE 754; an `F32` result is rounded to
 //! `f32` after every operation, which for `+ - * / %` equals computing in `f32`.
 
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
+
 use crate::op::{Arith, ArithOp, DisplayKind, Num};
 use crate::value::Value;
 use crate::vm::FaultKind;

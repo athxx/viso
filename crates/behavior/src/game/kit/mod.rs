@@ -27,14 +27,16 @@ pub(crate) mod steer;
 mod synth;
 mod terrain;
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use super::input::schema_enum;
 use super::world::{BodyKind, EntityId, GameWorld, SpawnDesc, Tag};
 use crate::native::{
     Determinism, NativeError, NativeFunction, NativeLibrary, NativeObject, NativeType, NativeValue,
-    Obj, SchemaTy, Ticks, Vec3F32,
+    Obj, SchemaTy, Ticks, Vec3,
 };
 use crate::value::Value;
 
@@ -126,7 +128,7 @@ impl Prefab {
             Prefab::Gem => (BodyKind::Sensor, [0.5, 0.5, 0.5], Model::Gem),
             Prefab::Goal => (BodyKind::Sensor, [2.0, 3.0, 2.0], Model::Flag),
         };
-        SpawnDesc::new(kind, Vec3F32::from_array(size)).model(model)
+        SpawnDesc::new(kind, Vec3::from_array(size)).model(model)
     }
 }
 
@@ -151,7 +153,7 @@ impl Kit {
         })
     }
 
-    fn stage(&self) -> std::cell::RefMut<'_, Stage> {
+    fn stage(&self) -> core::cell::RefMut<'_, Stage> {
         self.stage.borrow_mut()
     }
 }
@@ -208,7 +210,7 @@ static KIT_METHODS: [NativeFunction; 17] = [
         }),
     ),
     simulation(
-        crate::native!(action "patrol" |_cx, this: Obj<Kit>, id: EntityId, route: Vec<Vec3F32>, speed: f64| -> () {
+        crate::native!(action "patrol" |_cx, this: Obj<Kit>, id: EntityId, route: Vec<Vec3>, speed: f64| -> () {
             if route.len() > MAX_ROUTE {
                 return Err(NativeError::new(format!(
                     "a patrol route has at most {MAX_ROUTE} waypoints, not {}",
@@ -235,12 +237,12 @@ static KIT_METHODS: [NativeFunction; 17] = [
             this.world.drive(id, throttle as f32, steer as f32)
         }),
     ),
-    simulation(crate::native!(fn "facing" |_cx, this: Obj<Kit>, id: EntityId| -> Vec3F32 {
+    simulation(crate::native!(fn "facing" |_cx, this: Obj<Kit>, id: EntityId| -> Vec3 {
         let [x, z] = this
             .world
             .facing(id)
             .ok_or_else(|| NativeError::new(format!("entity {id} is not alive")))?;
-        Ok(Vec3F32::new(x, 0.0, z))
+        Ok(Vec3::new(x, 0.0, z))
     })),
     crate::native!(action "camera" |_cx, this: Obj<Kit>, rig: CameraRig| -> () {
         this.stage().camera(rig);
@@ -252,7 +254,7 @@ static KIT_METHODS: [NativeFunction; 17] = [
         Ok(())
     })
     .presentation(),
-    crate::native!(action "burst" |_cx, this: Obj<Kit>, kind: Particle, at: Vec3F32, count: i64| -> () {
+    crate::native!(action "burst" |_cx, this: Obj<Kit>, kind: Particle, at: Vec3, count: i64| -> () {
         this.stage().burst(kind, at, count);
         Ok(())
     })
@@ -272,7 +274,7 @@ static KIT_METHODS: [NativeFunction; 17] = [
         Ok(())
     })
     .presentation(),
-    crate::native!(action "sound_at" |_cx, this: Obj<Kit>, sfx: Sfx, at: Vec3F32| -> () {
+    crate::native!(action "sound_at" |_cx, this: Obj<Kit>, sfx: Sfx, at: Vec3| -> () {
         this.stage().sound(sfx, Some(at));
         Ok(())
     })
@@ -282,14 +284,14 @@ static KIT_METHODS: [NativeFunction; 17] = [
         Ok(())
     })
     .presentation(),
-    crate::native!(action "debug_line" |_cx, this: Obj<Kit>, from: Vec3F32, to: Vec3F32| -> () {
+    crate::native!(action "debug_line" |_cx, this: Obj<Kit>, from: Vec3, to: Vec3| -> () {
         this.stage().debug(DebugShape::Line { from, to });
         Ok(())
     })
     .debug_draw(),
-    crate::native!(action "debug_box" |_cx, this: Obj<Kit>, at: Vec3F32, size: Vec3F32| -> () {
+    crate::native!(action "debug_box" |_cx, this: Obj<Kit>, at: Vec3, size: Vec3| -> () {
         let half = |v: f32| v.abs() * 0.5;
-        let half_extents = Vec3F32::new(half(size.x), half(size.y), half(size.z));
+        let half_extents = Vec3::new(half(size.x), half(size.y), half(size.z));
         this.stage().debug(DebugShape::Box {
             center: at,
             half_extents,
@@ -312,7 +314,7 @@ static CAMERA_RIG_METHODS: [NativeFunction; 10] = [
         Ok(CameraRig::top_down(target))
     })
     .deterministic(),
-    crate::native!(fn "fixed" |_cx, eye: Vec3F32, look: Vec3F32| -> CameraRig {
+    crate::native!(fn "fixed" |_cx, eye: Vec3, look: Vec3| -> CameraRig {
         Ok(CameraRig::fixed(eye, look))
     })
     .deterministic(),

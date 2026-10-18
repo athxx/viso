@@ -490,13 +490,7 @@ mod tests {
     /// Count a node's direct children by walking the arena sibling chain.
     fn child_count(store: &NodeStore, parent: NodeId) -> usize {
         let arena = store.arena();
-        let mut n = 0;
-        let mut child = arena.links(parent).and_then(|l| l.first_child);
-        while let Some(c) = child {
-            n += 1;
-            child = arena.links(c).and_then(|l| l.next_sibling);
-        }
-        n
+        arena.children(parent).count()
     }
 
     /// The first state cell authored by the build — the toggle's `on` cell (it
@@ -536,8 +530,7 @@ mod tests {
         let track = rx
             .store
             .arena()
-            .links(root)
-            .and_then(|l| l.first_child)
+            .first_child(root)
             .expect("toggle has a track as its first child");
         assert_eq!(
             child_count(&rx.store, track),

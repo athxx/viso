@@ -22,7 +22,7 @@
 //! Thresholds are deliberately not asserted as values (§20 fixes no ABI); what is
 //! pinned is which way each condition points.
 
-use viso_gpu::{Caps, GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureFormat};
+use viso_gpu::{Caps, CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
 use viso_render::{
     Border, ChunkedCull, CullPlan, CullWorkload, LayerClip, Primitive, Quad, Rect, Renderer, Rgba,
 };
@@ -30,8 +30,8 @@ use viso_render::{
 const W: u32 = 256;
 const H: u32 = 256;
 
-fn renderer() -> (HeadlessRaster, SurfaceId, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer() -> (CpuRaster, SurfaceId, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
@@ -181,7 +181,7 @@ fn fifty_ui_nodes_are_never_gpu_driven() {
 /// this fact.
 #[test]
 fn no_backend_offers_indirect_draw_yet() {
-    let gpu = HeadlessRaster::new();
+    let gpu = CpuRaster::new();
     let caps: &Caps = gpu.caps();
     assert!(!caps.indirect_draw);
     assert!(!caps.compute_dispatch);

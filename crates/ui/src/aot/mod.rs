@@ -3,7 +3,10 @@
 //!
 //! A release build lowers the shared frontend IR into a compact, dependency-free
 //! byte blob ([`package`]) that an app instantiates at startup ([`load`]) with **no
-//! DSL compiler present** — the load-bearing exit criterion of Slice P. Everything
+//! DSL compiler present** — the load-bearing exit criterion of Slice P. The
+//! loader reads the blob in place through [`AotView`], which validates it whole
+//! before anything mounts: a release artifact's package stays in flash or an
+//! mmap, and RAM holds only the tree it builds. Everything
 //! here lives in `viso-ui`, the only release-path resident, and imports no
 //! `viso-dsl` type; the build-time emitter that *produces* a package lives in
 //! `viso-dsl`, so the format has a single source of truth (the types are defined
@@ -17,5 +20,6 @@ pub use load::{
     restyle_aot_node,
 };
 pub use package::{
-    AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotScope, AotStyle,
+    AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotNodes, AotPackage, AotRecord, AotScope,
+    AotStyle, AotView,
 };

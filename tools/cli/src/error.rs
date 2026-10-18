@@ -119,8 +119,8 @@ codes! {
         commands: [],
     }
     ENV_DEV_CHANNEL = ENVIRONMENT {
-        summary: "The dev channel could not be opened on the loopback interface.",
-        explanation: "A dev session talks to the running app over a loopback socket; binding it failed, usually because the port is taken or loopback networking is blocked.",
+        summary: "The dev channel could not be opened.",
+        explanation: "A dev session talks to the running app over a loopback socket, or, for a board over SSH, a socket on this machine's address on the route to it, which must be on a local network (private, link-local or unique-local); binding it failed, usually because the port is taken or loopback networking is blocked, or the route to the board leaves from a public address.",
         fix: "Stop the other process holding the port, or let the session pick a free one by not pinning it in the configuration.",
         commands: ["viso doctor"],
     }
@@ -129,6 +129,24 @@ codes! {
         explanation: "Starting, creating or reaching a simulator or emulator needs the platform's tools (Xcode's `simctl`, the Android emulator), which are missing or reported a failure.",
         fix: "Install the platform toolchain, then check it.",
         commands: ["viso doctor"],
+    }
+    ENV_DEVICE_TARGET = ENVIRONMENT {
+        summary: "The device target runs on its board, not on this machine.",
+        explanation: "A device target of `Viso.toml` (`[target.<name>]`) is built for its board's triple, and an embedded profile drives the display through DRM/KMS. `viso run` runs it on the board its `deploy` names, over SSH, or here where this machine is such a board: Linux, with the target's triple.",
+        fix: "Give the target `deploy = \"user@host\"` to run the session on the board, run an `embedded-cpu` target with `--emulate` on a Mac, or build it with `viso build <name>` and start the build in `dist/<name>/` on the board.",
+        commands: ["viso build <name>"],
+    }
+    ENV_DEPLOY = ENVIRONMENT {
+        summary: "The board could not be reached, or the app could not be copied to it.",
+        explanation: "`viso run <name>` of a device target with `deploy` opens a session directory on the board with `ssh` and copies the dev artifact into it with `scp`, both in batch mode, which asks for no password. The board did not answer, refused the login, or the copy failed.",
+        fix: "Check that `ssh <deploy>` logs in without a password (the board takes this machine's key, or an agent's) and that the board has room in its home directory.",
+        commands: [],
+    }
+    ENV_EMULATE = ENVIRONMENT {
+        summary: "The device target's profile cannot be emulated on this machine.",
+        explanation: "`viso run <name> --emulate` runs an `embedded-cpu` target in a macOS window, drawn by the same CPU raster as on the board. An `embedded-gpu` board draws through its card's GLES 3 or Vulkan, which a desktop does not have, and other hosts have no emulation window.",
+        fix: "Run an `embedded-gpu` target on its board with `deploy`, or emulate on a Mac.",
+        commands: [],
     }
     ENV_NO_DEV_SESSION = ENVIRONMENT {
         summary: "No `viso run` session is running for the project, or it cannot be reached.",

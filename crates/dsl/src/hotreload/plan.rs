@@ -16,7 +16,7 @@
 //! (each a name-derived, compile-stable [`SymbolId`]). Those identities are the
 //! durable keys the diff and migration stages align old and new state against.
 
-use viso_ui::StateValue;
+use viso_schema::StateValue;
 
 use crate::behavior::ir::{FuncId, FunctionKind, Program};
 use crate::diag::{Diagnostic, Related};

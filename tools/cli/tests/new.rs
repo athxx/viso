@@ -72,8 +72,15 @@ fn an_app_has_its_files_and_says_what_to_run_next() {
     assert!(cargo.contains("name = \"hello\""), "{cargo}");
     assert!(cargo.contains("edition = \"2024\""), "{cargo}");
     assert!(
-        cargo.contains(&format!("viso = \"{}\"", env!("CARGO_PKG_VERSION"))),
+        cargo.contains(&format!(
+            "viso = {{ version = \"{}\", default-features = false }}",
+            env!("CARGO_PKG_VERSION")
+        )),
         "{cargo}"
+    );
+    assert!(
+        cargo.contains("default = [\"viso/vm\", \"viso/desktop\", \"viso/native-vulkan\", \"viso/rasterizer\", \"viso/complex-line-break\"]"),
+        "the app turns the facade's defaults on through its own: {cargo}"
     );
     let manifest = fs::read_to_string(root.join("Viso.toml")).unwrap();
     assert!(manifest.contains("name = \"hello\""), "{manifest}");
@@ -299,7 +306,7 @@ fn a_framework_path_is_the_dependency_and_must_be_the_viso_crate() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let cargo = fs::read_to_string(s.0.join("apps/one/Cargo.toml")).unwrap();
     assert!(
-        cargo.contains("viso = { path = \"../../viso/crates/viso\" }"),
+        cargo.contains("viso = { path = \"../../viso/crates/viso\", default-features = false }"),
         "a checkout names its crate, from the project: {cargo}"
     );
 

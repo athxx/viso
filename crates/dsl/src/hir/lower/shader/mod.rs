@@ -213,8 +213,8 @@ fn host_ty(kind: ParamKind) -> HostTy {
         ParamKind::F32 => HostTy::F32,
         ParamKind::I32 => HostTy::I32,
         ParamKind::U32 => HostTy::U32,
-        ParamKind::Vec2F32 => vector(viso_behavior::native::Vec2F32::PATH),
-        ParamKind::Vec3F32 => vector(viso_behavior::native::Vec3F32::PATH),
+        ParamKind::Vec2F32 => vector(viso_behavior::native::VEC2_PATH),
+        ParamKind::Vec3F32 => vector(viso_behavior::native::VEC3_PATH),
         ParamKind::ColorLinear => HostTy::Color,
     }
 }

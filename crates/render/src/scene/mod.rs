@@ -42,10 +42,12 @@
 pub mod bounds;
 pub mod ids;
 pub mod ingest;
+pub(crate) mod key;
 pub mod revision;
 pub mod store;
 
 use crate::primitive::Rect;
+use crate::transform::Space;
 
 use bounds::Bounds;
 use ids::PrimitiveId;
@@ -75,6 +77,8 @@ pub struct EmitContext {
     pub offscreen: Option<usize>,
     /// The world-space origin subtracted from this emit's geometry.
     pub origin: [f32; 2],
+    /// The transform root and moving clips this emit follows.
+    pub space: Space,
 }
 
 /// One entry in the paint-order record: which store slot the Nth emitted
@@ -162,6 +166,11 @@ pub struct Scene {
     /// later slot, and the shifted slots diff dirty against their new contents, so
     /// the stamps follow the shift rather than aliasing across it.
     content_stamps: Vec<u64>,
+    /// One damage key per paint-order slot, retained across frames like
+    /// `content_stamps`: the entry it was computed from, its key, and its world
+    /// extent where the bounds lack one. Recomputed only when the slot's entry
+    /// changed (§30.3).
+    keys: Vec<(StoreRef, u64, Option<Rect>)>,
     /// Whether the primitive currently being recorded had any dirty plane. `None`
     /// means no plane report arrived for it — the case for a composite the
     /// renderer synthesizes, which is conservatively treated as dirty because its
@@ -216,6 +225,7 @@ impl Scene {
         // later frame that grows back into them sees new content rather than a
         // stale stamp from two shapes ago.
         self.content_stamps.truncate(self.paint_order.len());
+        self.keys.truncate(self.paint_order.len());
         self.pending_dirty = None;
     }
 
@@ -236,18 +246,41 @@ impl Scene {
         // `None` case is a synthesized composite — no store diffed it, so it is
         // assumed to have changed.
         let stamp = self.revisions.content();
-        match self.content_stamps.get_mut(index) {
+        let dirty = match self.content_stamps.get_mut(index) {
             Some(slot) => {
-                if self.pending_dirty.take().unwrap_or(true) {
+                let dirty = self.pending_dirty.take().unwrap_or(true);
+                if dirty {
                     *slot = stamp;
                 }
+                dirty
             }
             None => {
                 self.pending_dirty = None;
                 self.content_stamps.push(stamp);
+                true
+            }
+        };
+        match self.keys.get(index) {
+            Some(&(was, _, _)) if !dirty && was == store => {}
+            _ => {
+                let (key, extent) = self.entry_key(store);
+                let entry = (store, key, extent);
+                match self.keys.get_mut(index) {
+                    Some(slot) => *slot = entry,
+                    None => self.keys.push(entry),
+                }
             }
         }
         id
+    }
+
+    /// The damage key of paint-order slot `index`'s entry, and its world
+    /// extent where its bounds lack one.
+    #[inline]
+    pub(crate) fn key(&self, index: usize) -> (u64, Option<Rect>) {
+        self.keys
+            .get(index)
+            .map_or((0, None), |&(_, key, extent)| (key, extent))
     }
 
     /// The content stamp of paint-order slot `index` (§3202): the

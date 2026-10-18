@@ -23,6 +23,8 @@ use std::collections::HashMap;
 
 use crate::adaptive::AdaptiveEnv;
 
+pub use viso_schema::state::{StateKey, StateValue};
+
 /// A compact generational handle to a stored state value.
 ///
 /// Like [`crate::node::NodeId`], the generation makes a handle to a freed slot
@@ -46,30 +48,6 @@ impl StateId {
     }
 }
 
-/// A durable, position-independent identity for a state cell, used to match a
-/// cell across a hot-reload recompile.
-///
-/// It is `#[repr(C)]` with the same `{ hi, lo }` layout the compiler's stable
-/// symbol identity uses, so the hot-reload engine can hand its symbol identity
-/// in without the UI crate depending on the compiler. The store only ever
-/// compares and hashes it; it never interprets the bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(C)]
-pub struct StateKey {
-    /// High 64 bits of the identity.
-    pub hi: u64,
-    /// Low 64 bits of the identity.
-    pub lo: u64,
-}
-
-impl StateKey {
-    /// Construct a key from its two halves.
-    #[inline]
-    pub fn from_parts(hi: u64, lo: u64) -> Self {
-        Self { hi, lo }
-    }
-}
-
 /// The outcome of migrating one state cell across a hot reload, so the engine
 /// can account for what was preserved versus reset (architecture section 42.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,29 +61,56 @@ pub enum StateMigration {
     Reset,
 }
 
-/// A scalar state value. Type-erased for this slice's store; the variants cover
-/// the scalars the reactive link needs to carry (numbers, a flag, a color).
-///
-/// A color is kept as four straight `f32` channels — the same shape the paint
-/// tier already uses — so a bound color writes through without a pack/unpack.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StateValue {
-    /// A signed integer (counters, indices).
-    Int(i32),
-    /// A floating-point number (progress, positions).
-    Float(f32),
-    /// A boolean flag (toggles, visibility).
-    Bool(bool),
-    /// A straight-alpha RGBA color, channels in `0.0..=1.0`.
-    Color(f32, f32, f32, f32),
-}
-
 /// A slot in the state store: the current value plus the generation that
 /// validates handles to it.
 struct StateSlot {
     value: StateValue,
     generation: u32,
     occupied: bool,
+    /// The slot belongs to a reserved block: freeing it keeps it out of the
+    /// free list until the block is released.
+    kept: bool,
+    /// The cell is in the pending write-set.
+    pending: bool,
+}
+
+impl StateSlot {
+    fn free() -> StateSlot {
+        StateSlot {
+            value: StateValue::Int(0),
+            generation: 0,
+            occupied: false,
+            kept: true,
+            pending: false,
+        }
+    }
+}
+
+/// An open instance scope's state cursor: where its next local cell goes.
+#[derive(Debug, Clone, Copy)]
+struct StateScope {
+    /// The next slot of the scope's block, or `None` for a scope without a
+    /// block, whose cells are ordinary allocations.
+    next: Option<u32>,
+    /// The scope's block.
+    base: u32,
+    end: u32,
+    /// Where the scope's ordinary cells begin in `scope_log`.
+    log: u32,
+}
+
+/// What an open instance scope allocated, reported when it closes: the
+/// block it filled, and the ordinary slots it took past it (all of them for a
+/// scope without a block), listed in the scope log from `log`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScopeSlots {
+    /// The block's base and length (`0` without a block).
+    pub base: u32,
+    pub len: u32,
+    /// How many of its slots were filled, in order.
+    pub filled: u32,
+    /// Where the scope's ordinary slots begin in the scope log.
+    pub log: u32,
 }
 
 /// The centralized SoA state store: value slots, a free list for slot reuse,
@@ -114,10 +119,20 @@ struct StateSlot {
 /// It sits beside the [`crate::component::NodeStore`] in the app driver. Writes
 /// are O(1) and allocation-free on the steady path (the pending set is a reused
 /// buffer); the flush drains the pending set once per frame.
+///
+/// The local cells of a template instance (§18.1) come from a block of
+/// consecutive slots, so a binding names its source as an offset from the
+/// block's base; see [`crate::binding`].
 #[derive(Default)]
 pub struct StateStore {
     slots: Vec<StateSlot>,
     free: Vec<u32>,
+    /// Released blocks by length: each entry's bases.
+    blocks: Vec<(u32, Vec<u32>)>,
+    /// The open instance scopes, innermost last.
+    scopes: Vec<StateScope>,
+    /// The loose cells of the open scopes.
+    scope_log: Vec<StateId>,
     /// Ids written since the last drain, deduplicated so one id appears once
     /// however many times it was set this frame.
     pending: Vec<StateId>,
@@ -129,6 +144,8 @@ pub struct StateStore {
     /// The adaptive environment, published through revision cells of this
     /// store.
     pub(crate) env: AdaptiveEnv,
+    /// Rises with every change to what a [`get`](Self::get) returns.
+    epoch: u64,
 }
 
 impl StateStore {
@@ -140,6 +157,7 @@ impl StateStore {
     /// Allocate a state cell holding `initial`, reusing a free slot when
     /// possible. The returned [`StateId`] is the binding key.
     pub fn alloc(&mut self, initial: StateValue) -> StateId {
+        self.epoch += 1;
         if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index as usize];
             debug_assert!(!slot.occupied);
@@ -155,6 +173,8 @@ impl StateStore {
                 value: initial,
                 generation: 0,
                 occupied: true,
+                kept: false,
+                pending: false,
             });
             StateId {
                 index,
@@ -163,14 +183,139 @@ impl StateStore {
         }
     }
 
+    /// Allocate a cell local to the innermost open instance scope: the next
+    /// slot of its block, or an ordinary cell the scope records. Outside every
+    /// scope it is [`alloc`](Self::alloc).
+    ///
+    /// Only an instance's own cells come here — a component's states, a
+    /// region mount's kept states. A cell shared beyond the instance (an
+    /// environment or interaction cell allocated on first use) goes through
+    /// [`alloc`](Self::alloc), so it does not die with the instance.
+    pub fn alloc_local(&mut self, initial: StateValue) -> StateId {
+        let Some(scope) = self.scopes.last_mut() else {
+            return self.alloc(initial);
+        };
+        match scope.next {
+            Some(next) if next < scope.end => {
+                scope.next = Some(next + 1);
+                let slot = &mut self.slots[next as usize];
+                debug_assert!(!slot.occupied && slot.kept);
+                slot.occupied = true;
+                slot.value = initial;
+                self.epoch += 1;
+                StateId {
+                    index: next,
+                    generation: slot.generation,
+                }
+            }
+            _ => {
+                let id = self.alloc(initial);
+                self.scope_log.push(id);
+                id
+            }
+        }
+    }
+
+    /// Open an instance scope whose local cells fill a block of `len` slots,
+    /// or, with `None`, are ordinary cells the scope lists.
+    pub(crate) fn open_scope(&mut self, len: Option<u32>) {
+        let (next, base, end) = match len {
+            Some(len) => {
+                let base = self.reserve_block(len);
+                (Some(base), base, base + len)
+            }
+            None => (None, 0, 0),
+        };
+        self.scopes.push(StateScope {
+            next,
+            base,
+            end,
+            log: self.scope_log.len() as u32,
+        });
+    }
+
+    /// Close the innermost instance scope and report its cells. Its logged
+    /// cells stay listed until [`drop_scope_log`](Self::drop_scope_log).
+    pub(crate) fn close_scope(&mut self) -> ScopeSlots {
+        let scope = self.scopes.pop().expect("an open instance scope");
+        ScopeSlots {
+            base: scope.base,
+            len: scope.end - scope.base,
+            filled: scope.next.map_or(0, |next| next - scope.base),
+            log: scope.log,
+        }
+    }
+
+    /// The loose cells of a closed scope, from its `log` position.
+    pub(crate) fn scope_log(&self, log: u32) -> &[StateId] {
+        &self.scope_log[log as usize..]
+    }
+
+    /// Forget the loose cells logged from `log` on.
+    pub(crate) fn drop_scope_log(&mut self, log: u32) {
+        self.scope_log.truncate(log as usize);
+    }
+
+    /// Reserve a block of `len` consecutive free slots, reusing a released
+    /// block of that length when there is one.
+    fn reserve_block(&mut self, len: u32) -> u32 {
+        if let Some((_, bases)) = self.blocks.iter_mut().find(|(n, _)| *n == len)
+            && let Some(base) = bases.pop()
+        {
+            return base;
+        }
+        let base = self.slots.len() as u32;
+        self.slots.extend((0..len).map(|_| StateSlot::free()));
+        base
+    }
+
+    /// Turn the ordinary cells at `base..base + len` into a block, kept until
+    /// [`release_block`](Self::release_block).
+    pub(crate) fn keep_block(&mut self, base: u32, len: u32) {
+        for slot in &mut self.slots[base as usize..(base + len) as usize] {
+            slot.kept = true;
+        }
+    }
+
+    /// Turn the block at `base..base + len` back into ordinary slots: its
+    /// cells live on as ordinary cells and its empty slots join the free
+    /// list.
+    pub(crate) fn unkeep_block(&mut self, base: u32, len: u32) {
+        for index in base..base + len {
+            let slot = &mut self.slots[index as usize];
+            slot.kept = false;
+            if !slot.occupied {
+                self.free.push(index);
+            }
+        }
+    }
+
+    /// Free every cell of the block at `base..base + len` and keep the block
+    /// for the next of its length.
+    pub(crate) fn release_block(&mut self, base: u32, len: u32) {
+        for index in base..base + len {
+            if let Some(id) = self.live_id(index) {
+                self.free(id);
+            }
+        }
+        match self.blocks.iter_mut().find(|(n, _)| *n == len) {
+            Some((_, bases)) => bases.push(base),
+            None => self.blocks.push((len, vec![base])),
+        }
+    }
+
     /// Free a state cell, bumping its generation so surviving handles go stale.
     /// Returns whether the id was live.
     pub fn free(&mut self, id: StateId) -> bool {
         match self.slots.get_mut(id.index as usize) {
             Some(slot) if slot.occupied && slot.generation == id.generation => {
+                self.epoch += 1;
                 slot.occupied = false;
+                slot.pending = false;
                 slot.generation = slot.generation.wrapping_add(1);
-                self.free.push(id.index);
+                if !slot.kept {
+                    self.free.push(id.index);
+                }
                 // Drop any durable-key mapping to this exact cell, so a reused
                 // slot never resurrects a stale identity. Cold path.
                 if !self.keys.is_empty() {
@@ -234,10 +379,20 @@ impl StateStore {
             return true;
         }
         slot.value = value;
-        if !self.pending.contains(&id) {
+        self.epoch += 1;
+        if !slot.pending {
+            slot.pending = true;
             self.pending.push(id);
         }
         true
+    }
+
+    /// The store's epoch: it rises with every change to what
+    /// [`get`](Self::get) returns for any id, so a reader that saw an epoch
+    /// knows every cell is as it was then while the epoch stands.
+    #[inline]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// Whether any write is waiting to be flushed this frame.
@@ -251,7 +406,17 @@ impl StateStore {
     /// The flush phase consumes it exactly once; `out` is caller-owned so the
     /// drain allocates nothing on the steady path.
     pub fn take_pending(&mut self, out: &mut Vec<StateId>) {
+        for id in &self.pending {
+            if let Some(slot) = self.slots.get_mut(id.index as usize) {
+                slot.pending = false;
+            }
+        }
         out.append(&mut self.pending);
+    }
+
+    /// How many slots the store holds, live or free.
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
     }
 
     /// Attach a durable [`StateKey`] to a live cell, so a later hot reload can
@@ -307,6 +472,7 @@ impl StateStore {
                     if let Some(slot) = self.slots.get_mut(id.index as usize) {
                         slot.value = v;
                     }
+                    self.epoch += 1;
                     (id, StateMigration::Widened)
                 }
                 None => {
@@ -315,6 +481,7 @@ impl StateStore {
                     if let Some(slot) = self.slots.get_mut(id.index as usize) {
                         slot.value = new_initial;
                     }
+                    self.epoch += 1;
                     (id, StateMigration::Reset)
                 }
             }

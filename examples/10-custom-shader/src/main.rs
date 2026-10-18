@@ -28,7 +28,7 @@ fn main() {
 mod tests {
     use std::sync::Arc;
 
-    use viso::gpu::{GpuBackend, HeadlessRaster, TextureDesc, TextureFormat};
+    use viso::gpu::{CpuRaster, GpuBackend, TextureDesc, TextureFormat};
     use viso::render::asset::decode_raster;
     use viso::render::{Primitive, Rect, Renderer};
     use viso::ui::{
@@ -95,7 +95,7 @@ mod tests {
         }
 
         fn child(&self, at: usize) -> NodeId {
-            let links = |id| self.store.arena().links(id).copied().unwrap();
+            let links = |id| self.store.arena().links(id).unwrap();
             let mut child = links(self.root).first_child.unwrap();
             for _ in 0..at {
                 child = links(child).next_sibling.unwrap();
@@ -184,11 +184,11 @@ mod tests {
                 let texture = gpu.create_texture(&TextureDesc {
                     width: image.width,
                     height: image.height,
-                    format: TextureFormat::Rgba8Unorm,
+                    format: image.format,
                     render_target: false,
                     label: "asset",
                 });
-                gpu.write_texture(texture, 0, 0, image.width, image.height, &image.pixels);
+                gpu.write_texture(texture, 0, 0, image.width, image.height, &image.texels);
                 self.store.attach_texture(id, revision, texture);
             }
         }
@@ -223,7 +223,7 @@ mod tests {
         }
 
         fn headless(&mut self, time: f32) -> Vec<u8> {
-            let mut gpu = HeadlessRaster::new();
+            let mut gpu = CpuRaster::new();
             let target = self.draw(&mut gpu, time);
             gpu.read_texture(target)
         }

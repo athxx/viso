@@ -4,7 +4,7 @@
 //! compiled backend consumes, so a build only ever materializes its own
 //! language:
 //!
-//! - MSL and the two text dialects (WGSL, HLSL) are printed from the shader IR
+//! - MSL and the three text dialects (WGSL, HLSL, GLSL ES) are printed from the shader IR
 //!   on first request and cached to `'static` — a cold, device-init cost;
 //! - SPIR-V is frozen: the committed `spirv/<name>.spv` modules are generated
 //!   from the native WGSL by the reference compiler and embedded as bytes, so no
@@ -13,8 +13,9 @@
 
 use std::sync::OnceLock;
 
-use viso_gpu::{ShaderCode, ShaderLang};
+use viso_gpu_abi::{ShaderCode, ShaderLang};
 
+use crate::ir::codegen_glsl::emit_glsl;
 use crate::ir::codegen_hlsl::emit_hlsl;
 use crate::ir::codegen_wgsl::{WgslTarget, emit_wgsl};
 use crate::ir::module::{
@@ -91,6 +92,7 @@ fn program_index(kind: PrimitiveKind) -> Option<usize> {
 pub fn shader_code(kind: PrimitiveKind, lang: ShaderLang) -> Option<ShaderCode> {
     static WGSL: [OnceLock<String>; 15] = [const { OnceLock::new() }; 15];
     static HLSL: [OnceLock<String>; 15] = [const { OnceLock::new() }; 15];
+    static GLSL: [OnceLock<String>; 15] = [const { OnceLock::new() }; 15];
 
     let i = program_index(kind)?;
     let program = &PROGRAMS[i];
@@ -105,6 +107,9 @@ pub fn shader_code(kind: PrimitiveKind, lang: ShaderLang) -> Option<ShaderCode> 
             emit_hlsl(&(program.ir)()).expect("every built-in body passes the checker (tested)")
         })),
         ShaderLang::SpirV => ShaderCode::SpirV(program.spirv),
+        ShaderLang::Glsl => ShaderCode::Glsl(GLSL[i].get_or_init(|| {
+            emit_glsl(&(program.ir)()).expect("every built-in body passes the checker (tested)")
+        })),
     })
 }
 
@@ -202,6 +207,7 @@ mod tests {
             ShaderLang::Wgsl,
             ShaderLang::Hlsl,
             ShaderLang::SpirV,
+            ShaderLang::Glsl,
         ] {
             let code = shader_code(PrimitiveKind::Blur, lang).unwrap();
             assert_eq!(code.lang(), lang);

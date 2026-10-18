@@ -31,7 +31,7 @@
 
 use std::mem::size_of;
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureFormat};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
 use viso_render::{
     Blend, Border, ChildOverlap, ColorEffect, EffectCost, EffectLocality, EliminationSet,
     FrameStats, LayerClip, LayerElimination, LayerPlan, LayerReason, LayerRequest, Primitive, Quad,
@@ -41,8 +41,8 @@ use viso_render::{
 const W: u32 = 192;
 const H: u32 = 128;
 
-fn renderer(w: u32, h: u32) -> (HeadlessRaster, SurfaceId, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer(w: u32, h: u32) -> (CpuRaster, SurfaceId, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
@@ -101,7 +101,7 @@ fn plain(clip: Rect) -> Primitive {
     })
 }
 
-fn frame(gpu: &mut HeadlessRaster, r: &mut Renderer, primitives: &[Primitive]) -> FrameStats {
+fn frame(gpu: &mut CpuRaster, r: &mut Renderer, primitives: &[Primitive]) -> FrameStats {
     r.upload(gpu, primitives);
     r.frame_stats()
 }

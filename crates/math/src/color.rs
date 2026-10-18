@@ -30,6 +30,7 @@
 //! `into_linear_premul()`; there is no implicit conversion and no ambiguous
 //! "just a float4" that could skip the transfer function.
 
+use crate::float::powf;
 /// Linear-light, **premultiplied**-alpha RGBA — the canonical blend
 /// representation. RGB channels are already scaled by alpha, so channel values
 /// satisfy `0 <= rgb <= a` for in-gamut opaque-or-translucent colors (extended
@@ -159,7 +160,7 @@ pub fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.040_45 {
         c / 12.92
     } else {
-        ((c + 0.055) / 1.055).powf(2.4)
+        powf((c + 0.055) / 1.055, 2.4)
     }
 }
 
@@ -170,7 +171,7 @@ pub fn linear_to_srgb(c: f32) -> f32 {
     if c <= 0.003_130_8 {
         c * 12.92
     } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
+        1.055 * powf(c, 1.0 / 2.4) - 0.055
     }
 }
 
@@ -395,7 +396,7 @@ mod tests {
         assert!(close(srgb_to_linear(1.0), 1.0));
         // Continuity across the piecewise breakpoint.
         let toe = srgb_to_linear(0.040_45);
-        let curve = ((0.040_45 + 0.055) / 1.055f32).powf(2.4);
+        let curve = powf((0.040_45 + 0.055) / 1.055f32, 2.4);
         assert!((toe - curve).abs() < 1e-4);
     }
 

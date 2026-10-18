@@ -116,7 +116,7 @@ pub(super) fn rebuild(event: &RebuildEvent) -> String {
 /// The dirty classes a commit left behind, as `"1 node paint-dirty, 3 nodes
 /// layout-dirty"`; empty when the commit marked no node (a text request's
 /// reshape, not a dirty mark).
-fn dirty_summary(dirty: &viso_view::dev::wire::DirtyCounts) -> String {
+fn dirty_summary(dirty: &viso_dev_protocol::wire::DirtyCounts) -> String {
     dirty
         .nonzero()
         .map(|(class, count)| {
@@ -508,7 +508,7 @@ mod tests {
         );
     }
 
-    fn reload_event(outcome: Outcome, stage: viso_view::dev::wire::Stage) -> ReloadEvent {
+    fn reload_event(outcome: Outcome, stage: viso_dev_protocol::wire::Stage) -> ReloadEvent {
         ReloadEvent {
             base_revision: 41,
             candidate_revision: 42,
@@ -524,8 +524,11 @@ mod tests {
 
     #[test]
     fn a_patch_that_swapped_a_game_names_its_tier_and_first_tick() {
-        use viso_view::dev::wire::{FileId, GameCommit, GameTier, Rebuild};
-        let mut event = reload_event(Outcome::Applied, viso_view::dev::wire::Stage::RuntimeCommit);
+        use viso_dev_protocol::wire::{FileId, GameCommit, GameTier, Rebuild};
+        let mut event = reload_event(
+            Outcome::Applied,
+            viso_dev_protocol::wire::Stage::RuntimeCommit,
+        );
         event.game = Some(GameCommit {
             file: FileId(0),
             tier: GameTier::LogicMigration,
@@ -555,7 +558,10 @@ mod tests {
 
     #[test]
     fn an_applied_patch_names_its_revisions_time_and_dirty_nodes() {
-        let mut event = reload_event(Outcome::Applied, viso_view::dev::wire::Stage::RuntimeCommit);
+        let mut event = reload_event(
+            Outcome::Applied,
+            viso_dev_protocol::wire::Stage::RuntimeCommit,
+        );
         event.counts.dirty.paint = 1;
         assert_eq!(
             dev("view.vs", &event),
@@ -567,7 +573,7 @@ mod tests {
     fn a_scoped_reset_is_marked_after_the_dirty_nodes() {
         let mut event = reload_event(
             Outcome::ScopedReset,
-            viso_view::dev::wire::Stage::RuntimeCommit,
+            viso_dev_protocol::wire::Stage::RuntimeCommit,
         );
         event.counts.dirty.layout = 3;
         assert_eq!(
@@ -578,7 +584,10 @@ mod tests {
 
     #[test]
     fn a_reshape_with_no_dirty_node_has_no_trailing_segment() {
-        let event = reload_event(Outcome::Applied, viso_view::dev::wire::Stage::RuntimeCommit);
+        let event = reload_event(
+            Outcome::Applied,
+            viso_dev_protocol::wire::Stage::RuntimeCommit,
+        );
         assert_eq!(dev("view.vs", &event), "✓ view.vs patch r41 -> r42   37 ms");
     }
 
@@ -586,7 +595,7 @@ mod tests {
     fn a_rejected_candidate_keeps_the_last_good_revision_and_names_its_codes() {
         let mut event = reload_event(
             Outcome::Rejected,
-            viso_view::dev::wire::Stage::ShaderCompile,
+            viso_dev_protocol::wire::Stage::ShaderCompile,
         );
         event.codes = vec!["E_SHADER_TYPE".into()];
         assert_eq!(
@@ -597,7 +606,7 @@ mod tests {
 
     #[test]
     fn a_held_candidate_is_compiled_but_not_applied() {
-        let event = reload_event(Outcome::Held, viso_view::dev::wire::Stage::Transport);
+        let event = reload_event(Outcome::Held, viso_dev_protocol::wire::Stage::Transport);
         assert_eq!(
             dev("view.vs", &event),
             "… view.vs candidate       compiled, not applied (--no-hot-reload)"

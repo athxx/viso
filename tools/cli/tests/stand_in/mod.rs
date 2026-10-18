@@ -1,5 +1,7 @@
 //! A small Cargo package whose `viso` is a stand-in with the `hot-reload`
-//! and `headless` features, and `viso` run over it with its own `target/`: what the tests
+//! and `headless` features, the default `vm`, `desktop` and `native-vulkan`,
+//! the embedded profiles' `gles`, `cpu` and `kms`, and `emulate`,
+//! and `viso` run over it with its own `target/`: what the tests
 //! of `viso build` and `viso run` drive without building the framework.
 
 #![allow(dead_code, reason = "each test file uses its part")]
@@ -9,13 +11,24 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 pub fn viso(cwd: &Path, args: &[&str]) -> Output {
+    viso_with(cwd, args, &[])
+}
+
+/// As [`viso`], with the variables `env` set besides.
+pub fn viso_with(cwd: &Path, args: &[&str], env: &[(&str, String)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_viso"));
     command.args(args).current_dir(cwd);
+    command.envs(env.iter().map(|(name, value)| (name, value)));
     for name in [
         "VISO_PROFILE",
         "VISO_OPT_LEVEL",
         "VISO_SOURCE_MAPS",
         "VISO_STRIP",
+        "VISO_FOOTPRINT",
+        "VISO_BUDGET",
+        "VISO_WORKERS",
+        "VISO_FONT_TEXT",
+        "VISO_FONT_CHARSET",
     ] {
         command.env_remove(name);
     }
@@ -43,13 +56,23 @@ pub fn project(label: &str) -> PathBuf {
     fs::write(
         dir.join("viso/Cargo.toml"),
         "[package]\nname = \"viso\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-         [features]\nhot-reload = []\nheadless = []\n",
+         [features]\ndefault = [\"vm\", \"desktop\", \"native-vulkan\", \"rasterizer\", \
+         \"complex-line-break\"]\nvm = []\ndesktop = []\nnative-vulkan = []\nemulate = []\n\
+         rasterizer = []\ncomplex-line-break = []\n\
+         hot-reload = []\nheadless = []\ngles = []\ncpu = []\nkms = []\n",
     )
     .unwrap();
     fs::write(
         dir.join("viso/src/lib.rs"),
         "pub const HOT_RELOAD: bool = cfg!(feature = \"hot-reload\");\n\
-         pub const HEADLESS: bool = cfg!(feature = \"headless\");\n",
+         pub const HEADLESS: bool = cfg!(feature = \"headless\");\n\
+         pub const CPU: bool = cfg!(feature = \"cpu\");\n\
+         pub const KMS: bool = cfg!(feature = \"kms\");\n\
+         pub const VM: bool = cfg!(feature = \"vm\");\n\
+         pub const DESKTOP: bool = cfg!(feature = \"desktop\");\n\
+         pub const EMULATE: bool = cfg!(feature = \"emulate\");\n\
+         pub const RASTERIZER: bool = cfg!(feature = \"rasterizer\");\n\
+         pub const COMPLEX_LINE_BREAK: bool = cfg!(feature = \"complex-line-break\");\n",
     )
     .unwrap();
     fs::write(

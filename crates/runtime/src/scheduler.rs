@@ -1,8 +1,9 @@
 //! The frame scheduler: the runtime's implementation of the platform funnel.
 //!
-//! `Scheduler` owns the live platform app, the driver, and the aggregated
-//! redraw reasons. It implements [`AppHandler`] — so it *is* the callback the
-//! platform pump calls for every raw event. Its job each event:
+//! `Scheduler` owns the live platform app and the loop state — the driver and
+//! the aggregated redraw reasons. The loop state implements [`AppHandler`]: it
+//! is the callback the platform pump calls for every raw event, with the app
+//! passed in. Its job each event:
 //!
 //! 1. classify the event into a [`RedrawReason`] (or run a frame, or exit),
 //! 2. when a redraw beat arrives, run one frame through all phases,
@@ -30,12 +31,19 @@ use crate::input::{
 };
 use crate::schedule::{RedrawReason, RedrawReasons};
 
-/// Owns the run loop's mutable state and routes every platform event.
+/// Owns the platform app and the run loop's state, and runs the pump.
 ///
 /// Generic over the frame [`FrameClock`] so headless tests can inject a
 /// deterministic clock; production uses [`WallClock`] via [`Scheduler::new`].
 pub struct Scheduler<D: FrameDriver, C: FrameClock = WallClock> {
     app: Box<dyn PlatformApp>,
+    state: Loop<D, C>,
+}
+
+/// The run loop's state: the platform's [`AppHandler`]. The pump hands it
+/// the app with every event, so the two are never reached through one
+/// another.
+struct Loop<D: FrameDriver, C: FrameClock> {
     driver: D,
     reasons: RedrawReasons,
     /// Windows currently open. When this empties after a close, we exit.
@@ -65,32 +73,22 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
     pub fn with_clock(app: Box<dyn PlatformApp>, driver: D, clock: C) -> Self {
         Self {
             app,
-            driver,
-            reasons: RedrawReasons::new(),
-            open_windows: 0,
-            launched: false,
-            suspended: false,
-            clock,
-            last_frame: None,
+            state: Loop {
+                driver,
+                reasons: RedrawReasons::new(),
+                open_windows: 0,
+                launched: false,
+                suspended: false,
+                clock,
+                last_frame: None,
+            },
         }
     }
 
-    /// Run to completion: hands `self` to the platform pump as the handler.
-    ///
-    /// Uses a raw pointer to satisfy the borrow checker — the pump borrows the
-    /// app for the duration of `run`, and the handler *is* the same object that
-    /// owns the app. This is sound: `run` blocks until the pump returns, and
-    /// the two borrows never alias at a yield point (the pump only re-enters
-    /// the handler between its own `&mut self.app` uses).
+    /// Run to completion: the pump borrows the app and hands it to the
+    /// loop's state with every event.
     pub fn run(mut self) {
-        // SAFETY: `app` and the handler (`self`) live on the same stack frame
-        // for the whole of `run`. `PlatformApp::run` takes `&mut *app` and,
-        // between event deliveries, calls back into `handler` (also `self`).
-        // These accesses are strictly interleaved, never simultaneous, so no
-        // aliasing `&mut` is ever live at once.
-        let app: *mut dyn PlatformApp = &mut *self.app;
-        let handler: &mut dyn AppHandler = &mut self;
-        unsafe { (*app).run(handler) };
+        self.app.run(&mut self.state);
     }
 
     /// Run to completion and hand the driver back, for headless inspection.
@@ -106,39 +104,31 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
     /// with the headless backend; there is no way to observe the return under a
     /// real display link.
     pub fn run_returning(mut self) -> D {
-        // SAFETY: identical aliasing argument to `run` — `app` and the handler
-        // (`self`) share this stack frame for the whole call, and the pump's
-        // accesses to each are strictly interleaved, never simultaneous.
-        let app: *mut dyn PlatformApp = &mut *self.app;
-        let handler: &mut dyn AppHandler = &mut self;
-        unsafe { (*app).run(handler) };
-        self.driver
+        self.app.run(&mut self.state);
+        self.state.driver
     }
 
     /// Run under a pump that returns before the app ends — the browser's event
     /// loop cannot block, so its [`PlatformApp::run`] installs callbacks and
-    /// returns at once, and the handler must outlive that call. The scheduler
-    /// is moved to the heap and leaked, so it lives for the rest of the
-    /// process; when the pump does block, this behaves like [`run`](Self::run)
-    /// except that the scheduler is never dropped.
+    /// returns at once, and the app and handler must outlive that call. The
+    /// scheduler is moved to the heap and leaked, so both live for the rest of
+    /// the process; when the pump does block, this behaves like
+    /// [`run`](Self::run) except that the scheduler is never dropped.
     pub fn run_detached(self)
     where
         D: 'static,
         C: 'static,
     {
         let this: &'static mut Self = Box::leak(Box::new(self));
-        // SAFETY: `this` is leaked, so it and the `app` it owns stay valid for
-        // the rest of the process, including after `run` returns and whenever
-        // the pump later re-enters the handler. As in `run`, the pump's uses of
-        // `app` and of the handler are strictly interleaved, never simultaneous.
-        let app: *mut dyn PlatformApp = &mut *this.app;
-        unsafe { (*app).run(this) };
+        this.app.run(&mut this.state);
     }
+}
 
+impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
     /// Run one frame if the pending reasons call for it, taking them; a
     /// reason added while it runs or by the events it posts is the next
     /// frame's.
-    fn maybe_run_frame(&mut self) {
+    fn maybe_run_frame(&mut self, app: &mut dyn PlatformApp) {
         // Only spend a frame when something is actually pending — the
         // zero-CPU-when-idle contract. A backgrounded app draws nothing.
         if self.suspended || self.reasons.is_idle() {
@@ -154,7 +144,7 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
             .unwrap_or(Duration::ZERO);
         self.last_frame = Some(now);
         let (created, state_dirty, posted) = {
-            let mut cx = RuntimeCx::new(self.app.as_mut(), delta, now);
+            let mut cx = RuntimeCx::new(app, delta, now);
             run_frame(&mut self.driver, &mut cx);
             (
                 cx.windows_created(),
@@ -169,21 +159,21 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
         if state_dirty {
             self.reasons.add(RedrawReason::StateDirty);
         }
-        self.deliver(posted);
+        self.deliver(app, posted);
     }
 
     /// Handles the events the driver posted, in order.
-    fn deliver(&mut self, posted: Vec<RawEvent>) {
+    fn deliver(&mut self, app: &mut dyn PlatformApp, posted: Vec<RawEvent>) {
         for event in posted {
-            let _ = self.handle(event);
+            let _ = self.handle(app, event);
         }
     }
 
     /// Hand a lifecycle transition to the driver with a live context, so it can
     /// request redraws for its windows on resume.
-    fn lifecycle(&mut self, event: Lifecycle) {
+    fn lifecycle(&mut self, app: &mut dyn PlatformApp, event: Lifecycle) {
         let state_dirty = {
-            let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.now());
+            let mut cx = RuntimeCx::new(app, Duration::ZERO, self.clock.now());
             self.driver.on_lifecycle(&mut cx, event);
             cx.state_dirty_requested()
         };
@@ -193,23 +183,23 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
     }
 
     /// Hand a loop kick to the driver with a live context.
-    fn wakeup(&mut self) {
+    fn wakeup(&mut self, app: &mut dyn PlatformApp) {
         let (state_dirty, posted) = {
-            let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.peek());
+            let mut cx = RuntimeCx::new(app, Duration::ZERO, self.clock.peek());
             self.driver.on_wakeup(&mut cx);
             (cx.state_dirty_requested(), cx.take_posted())
         };
         if state_dirty {
             self.reasons.add(RedrawReason::StateDirty);
         }
-        self.deliver(posted);
+        self.deliver(app, posted);
     }
 
     /// Hand a window's surface loss or return to the driver with a live
     /// context.
-    fn surface(&mut self, window: WindowId, available: bool) {
+    fn surface(&mut self, app: &mut dyn PlatformApp, window: WindowId, available: bool) {
         let state_dirty = {
-            let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.now());
+            let mut cx = RuntimeCx::new(app, Duration::ZERO, self.clock.now());
             self.driver.on_surface(&mut cx, window, available);
             cx.state_dirty_requested()
         };
@@ -249,8 +239,8 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
     }
 }
 
-impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
-    fn handle(&mut self, event: RawEvent) -> ControlFlow {
+impl<D: FrameDriver, C: FrameClock> AppHandler for Loop<D, C> {
+    fn handle(&mut self, app: &mut dyn PlatformApp, event: RawEvent) -> ControlFlow {
         match event {
             RawEvent::AppLaunched => {
                 self.launched = true;
@@ -258,8 +248,7 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                     // Launch runs no frame body, so it carries no elapsed time,
                     // but it still gets the clock's reading for `frame_now` so a
                     // driver that arms a timer at launch dates it correctly.
-                    let mut cx =
-                        RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.now());
+                    let mut cx = RuntimeCx::new(app, Duration::ZERO, self.clock.now());
                     self.driver.on_launch(&mut cx);
                     (
                         cx.windows_created(),
@@ -282,7 +271,7 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 if created > 0 {
                     self.reasons.add(RedrawReason::FirstFrame);
                     if let Some(window) = first {
-                        self.app.request_redraw(window);
+                        app.request_redraw(window);
                     }
                 }
             }
@@ -290,21 +279,17 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 // A beat: run the frame the pending reasons ask for. Requesting
                 // a redraw from the driver added a reason; the beat drains it.
                 // While suspended the reasons stay pending for the resume frame.
-                self.maybe_run_frame();
+                self.maybe_run_frame(app);
             }
             RawEvent::Resized {
                 window,
                 width,
                 height,
             } => {
-                let scale = self
-                    .app
-                    .window(window)
-                    .map(|w| w.scale_factor())
-                    .unwrap_or(1.0);
+                let scale = app.window(window).map(|w| w.scale_factor()).unwrap_or(1.0);
                 self.driver.on_geometry(window, scale, width, height);
                 self.reasons.add(RedrawReason::WindowResize);
-                self.app.request_redraw(window);
+                app.request_redraw(window);
             }
             RawEvent::ScaleFactorChanged {
                 window,
@@ -314,7 +299,7 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
             } => {
                 self.driver.on_geometry(window, scale, width, height);
                 self.reasons.add(RedrawReason::WindowResize);
-                self.app.request_redraw(window);
+                app.request_redraw(window);
             }
             RawEvent::CloseRequested { window, accept } => {
                 // Phase 1 accepts every close (no unsaved-state veto yet); the
@@ -335,14 +320,13 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 // frame runs to observe whatever it delivered, and let the
                 // driver name the windows that frame must cover.
                 self.reasons.add(RedrawReason::AsyncCompletion);
-                self.wakeup();
+                self.wakeup(app);
             }
             RawEvent::Pointer(p) => {
                 // Resolve the window scale here — the scheduler owns the window,
                 // so it is the one place that can — and normalize the logical
                 // point sample into physical pixels before the driver sees it.
-                let scale = self
-                    .app
+                let scale = app
                     .window(p.window)
                     .map(|w| w.scale_factor())
                     .unwrap_or(1.0) as f32;
@@ -397,7 +381,7 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 // to the platform through the same call. This runs no frame body
                 // (it only updates the drag cache the next mouseDown reads), so it
                 // carries a zero delta but still the clock's `now`.
-                let mut cx = RuntimeCx::new(self.app.as_mut(), Duration::ZERO, self.clock.now());
+                let mut cx = RuntimeCx::new(app, Duration::ZERO, self.clock.now());
                 self.driver
                     .on_window_chrome_geom(&mut cx, window, buttons_rect);
             }
@@ -415,8 +399,7 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 // and normalize the logical-point sample into physical pixels —
                 // both the pointer position and the delta — before the driver
                 // routes it to the scrollable target under the cursor.
-                let scale = self
-                    .app
+                let scale = app
                     .window(s.window)
                     .map(|w| w.scale_factor())
                     .unwrap_or(1.0) as f32;
@@ -464,18 +447,18 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
             }
             RawEvent::Suspended => {
                 self.suspended = true;
-                self.lifecycle(Lifecycle::Suspended);
+                self.lifecycle(app, Lifecycle::Suspended);
             }
             RawEvent::Resumed => {
                 self.suspended = false;
-                self.lifecycle(Lifecycle::Resumed);
+                self.lifecycle(app, Lifecycle::Resumed);
                 // The drawable may have been rebuilt while hidden.
                 self.reasons.add(RedrawReason::ExternalSurfaceInvalidation);
             }
-            RawEvent::LowMemory => self.lifecycle(Lifecycle::LowMemory),
-            RawEvent::SurfaceDestroyed { window } => self.surface(window, false),
+            RawEvent::LowMemory => self.lifecycle(app, Lifecycle::LowMemory),
+            RawEvent::SurfaceDestroyed { window } => self.surface(app, window, false),
             RawEvent::SurfaceCreated { window } => {
-                self.surface(window, true);
+                self.surface(app, window, true);
                 self.reasons.add(RedrawReason::ExternalSurfaceInvalidation);
             }
             RawEvent::Accessibility { window, request } => {
@@ -484,7 +467,7 @@ impl<D: FrameDriver, C: FrameClock> AppHandler for Scheduler<D, C> {
                 // nothing else asks the backend for the beat.
                 self.driver.on_accessibility(window, request);
                 self.reasons.add(RedrawReason::InputDirty);
-                self.app.request_redraw(window);
+                app.request_redraw(window);
             }
         }
         self.resolve_control_flow()
@@ -547,6 +530,13 @@ mod tests {
     use viso_platform::WindowId;
     use viso_platform::backend::headless::HeadlessApp;
 
+    impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
+        /// Hand one event to the loop, as the pump would.
+        fn handle(&mut self, event: RawEvent) -> ControlFlow {
+            self.state.handle(self.app.as_mut(), event)
+        }
+    }
+
     /// A driver that reports fixed animation/timer state, so the timer seam in
     /// `resolve_control_flow` can be exercised without the full facade.
     struct SeamDriver {
@@ -574,8 +564,8 @@ mod tests {
         let mut sched = Scheduler::new(app, SeamDriver { animate, deadline });
         // Pretend a window is open and launch has run, so `resolve_control_flow`
         // does not short-circuit to `Exit`.
-        sched.launched = true;
-        sched.open_windows = 1;
+        sched.state.launched = true;
+        sched.state.open_windows = 1;
         sched
     }
 
@@ -584,7 +574,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(4);
         let mut sched = idle_scheduler(false, Some(deadline));
         assert_eq!(
-            sched.resolve_control_flow(),
+            sched.state.resolve_control_flow(),
             ControlFlow::WaitUntil(deadline),
             "an otherwise-idle loop blocks exactly until the earliest timer is due"
         );
@@ -594,7 +584,7 @@ mod tests {
     fn an_idle_loop_with_no_timer_waits_indefinitely() {
         let mut sched = idle_scheduler(false, None);
         assert_eq!(
-            sched.resolve_control_flow(),
+            sched.state.resolve_control_flow(),
             ControlFlow::Wait,
             "with nothing pending and no timer, the loop blocks with no deadline"
         );
@@ -607,7 +597,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(4);
         let mut sched = idle_scheduler(true, Some(deadline));
         assert_eq!(
-            sched.resolve_control_flow(),
+            sched.state.resolve_control_flow(),
             ControlFlow::Poll,
             "an animating loop keeps polling; the timer rides its beats"
         );
@@ -632,12 +622,10 @@ mod tests {
 
     #[test]
     fn a_fullscreen_change_reaches_the_driver_and_schedules_a_redraw() {
-        use viso_platform::AppHandler;
-
         let app = Box::new(HeadlessApp::scripted(vec![]));
         let mut sched = Scheduler::new(app, RecordingDriver::default());
-        sched.launched = true;
-        sched.open_windows = 1;
+        sched.state.launched = true;
+        sched.state.open_windows = 1;
 
         // Entering fullscreen: the driver is told, and because hiding the caption
         // is a visible reflow the loop is left non-idle (Poll), not Wait.
@@ -657,7 +645,7 @@ mod tests {
             fullscreen: false,
         });
         assert_eq!(
-            sched.driver.fullscreen,
+            sched.state.driver.fullscreen,
             vec![(WindowId(1), true), (WindowId(1), false)],
             "each transition reaches the driver in order with its window and state"
         );
@@ -784,8 +772,8 @@ mod tests {
     fn lifecycle_scheduler() -> Scheduler<LifecycleDriver> {
         let app = Box::new(HeadlessApp::scripted(vec![]));
         let mut sched = Scheduler::new(app, LifecycleDriver::default());
-        sched.launched = true;
-        sched.open_windows = 1;
+        sched.state.launched = true;
+        sched.state.open_windows = 1;
         sched
     }
 
@@ -809,7 +797,7 @@ mod tests {
         let _ = sched.handle(RawEvent::RedrawRequested {
             window: WindowId(1),
         });
-        assert_eq!(sched.driver.frames, 0, "no frame while suspended");
+        assert_eq!(sched.state.driver.frames, 0, "no frame while suspended");
 
         assert_eq!(
             sched.handle(RawEvent::Resumed),
@@ -820,11 +808,11 @@ mod tests {
             window: WindowId(1),
         });
         assert_eq!(
-            sched.driver.frames, 1,
+            sched.state.driver.frames, 1,
             "the resume frame drains every reason"
         );
         assert_eq!(
-            sched.driver.lifecycle,
+            sched.state.driver.lifecycle,
             vec![Lifecycle::Suspended, Lifecycle::Resumed]
         );
     }
@@ -844,15 +832,18 @@ mod tests {
             "the new surface needs its first frame"
         );
         let _ = sched.handle(RawEvent::RedrawRequested { window });
-        assert_eq!(sched.driver.frames, 1);
-        assert_eq!(sched.driver.surfaces, vec![(window, false), (window, true)]);
+        assert_eq!(sched.state.driver.frames, 1);
+        assert_eq!(
+            sched.state.driver.surfaces,
+            vec![(window, false), (window, true)]
+        );
     }
 
     #[test]
     fn a_memory_warning_reaches_the_driver_without_a_frame() {
         let mut sched = lifecycle_scheduler();
         assert_eq!(sched.handle(RawEvent::LowMemory), ControlFlow::Wait);
-        assert_eq!(sched.driver.lifecycle, vec![Lifecycle::LowMemory]);
+        assert_eq!(sched.state.driver.lifecycle, vec![Lifecycle::LowMemory]);
     }
 
     #[test]
@@ -875,7 +866,7 @@ mod tests {
         });
         assert_eq!(flow, ControlFlow::Poll, "a cut removes the selection");
         assert_eq!(reply.take().as_deref(), Some("sel"));
-        assert_eq!(sched.driver.copies, vec![false, true]);
+        assert_eq!(sched.state.driver.copies, vec![false, true]);
     }
 
     #[test]
@@ -886,7 +877,7 @@ mod tests {
             text: "clip".to_owned(),
         });
         assert_eq!(flow, ControlFlow::Poll);
-        assert_eq!(sched.driver.pasted, vec!["clip".to_owned()]);
+        assert_eq!(sched.state.driver.pasted, vec!["clip".to_owned()]);
     }
 
     #[test]
@@ -927,15 +918,15 @@ mod tests {
     fn an_event_a_frame_posts_is_handled_as_the_platforms_once_it_returns() {
         let app = Box::new(HeadlessApp::scripted(vec![]));
         let mut sched = Scheduler::new(app, PostDriver::default());
-        sched.launched = true;
-        sched.open_windows = 1;
-        sched.reasons.add(RedrawReason::FirstFrame);
+        sched.state.launched = true;
+        sched.state.open_windows = 1;
+        sched.state.reasons.add(RedrawReason::FirstFrame);
         let _ = sched.handle(RawEvent::RedrawRequested {
             window: WindowId(1),
         });
-        assert_eq!(sched.driver.frames, 1);
+        assert_eq!(sched.state.driver.frames, 1);
         assert_eq!(
-            sched.driver.presses,
+            sched.state.driver.presses,
             vec![(4.0, 4.0)],
             "the posted click reaches the driver as input, normalized"
         );
@@ -943,6 +934,6 @@ mod tests {
         let _ = sched.handle(RawEvent::RedrawRequested {
             window: WindowId(1),
         });
-        assert_eq!(sched.driver.frames, 2);
+        assert_eq!(sched.state.driver.frames, 2);
     }
 }

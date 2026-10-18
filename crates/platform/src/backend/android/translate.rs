@@ -7,7 +7,8 @@
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
 use crate::event::{
-    CursorIcon, Insets, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase,
+    CursorIcon, KeyCode, LogicalInsets, Modifiers, PointerButtons, PointerId, PointerKind,
+    PointerPhase,
 };
 
 /// `KeyEvent.META_*` bits.
@@ -268,10 +269,10 @@ pub(crate) fn touching(action: i32, kind: PointerKind, phase: PointerPhase) -> b
 }
 
 /// Physical-pixel insets to logical points.
-pub(crate) fn insets(px: [i32; 4], density: f64) -> Insets {
+pub(crate) fn insets(px: [i32; 4], density: f64) -> LogicalInsets {
     let d = if density > 0.0 { density } else { 1.0 };
     let [top, left, bottom, right] = px.map(|v| f64::from(v.max(0)) / d);
-    Insets {
+    LogicalInsets {
         top,
         left,
         bottom,

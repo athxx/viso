@@ -36,22 +36,50 @@
 
 pub(crate) mod native_code;
 
-use std::fmt;
-use std::mem;
-use std::panic::{self, AssertUnwindSafe};
-use std::rc::Rc;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::fmt;
+use core::mem;
 
+#[cfg(feature = "interpreter")]
 use crate::arith;
 use crate::i18n::Translator;
 use crate::memo::{self, Memo, ReadGraph, Reads};
-use crate::module::{Code, Module, Span, TaskPolicy};
+#[cfg(feature = "interpreter")]
+use crate::module::Code;
+use crate::module::{Body, Module, Span, TaskPolicy};
 use crate::native::{
     NativeCx, NativeError, NativeFunction, NativeFuture, NativeKind, Natives, SchemaConflict,
     Services, ThreadDomain,
 };
+#[cfg(feature = "interpreter")]
 use crate::op::{DisplayKind, Op};
-use crate::value::{Aggregate, Closure, Value};
-use native_code::{NativeCode, NativeCodeMismatch, NativeFn};
+use crate::value::Value;
+#[cfg(feature = "interpreter")]
+use crate::value::{Aggregate, Closure};
+use native_code::{NativeCode, NativeCodeMismatch, NativeFn, Poll, ResumableFn, TaskFrame};
+
+/// What a native that panicked left: the panic's payload.
+type Panic = alloc::boxed::Box<dyn core::any::Any + Send>;
+
+/// Runs `call`, turning a panic that unwinds out of it into its payload.
+#[cfg(feature = "std")]
+fn contain_panic<R>(call: impl FnOnce() -> R) -> Result<R, Panic> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call))
+}
+
+/// Runs `call`. Without `std` nothing catches a panic, so one does not
+/// return here.
+#[cfg(not(feature = "std"))]
+fn contain_panic<R>(call: impl FnOnce() -> R) -> Result<R, Panic> {
+    Ok(call())
+}
 
 /// The limits of one outermost invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,7 +191,7 @@ pub struct Location {
     /// The instruction.
     pub pc: u32,
     /// Its source span in the chunk's file ([`Span::default`] when the chunk has
-    /// no body).
+    /// no bytecode: no body, or a [`compiled`](Module::compiled) one).
     pub span: Span,
 }
 
@@ -188,7 +216,7 @@ impl fmt::Display for Fault {
     }
 }
 
-impl std::error::Error for Fault {}
+impl core::error::Error for Fault {}
 
 /// A component event queued by `emit`.
 #[derive(Debug, Clone, PartialEq)]
@@ -233,12 +261,31 @@ pub struct Outcome {
 
 /// A task suspended at a task native it awaits: its registers, frames and
 /// next instruction.
+#[cfg_attr(not(feature = "interpreter"), allow(dead_code))]
 pub struct Fiber {
     stack: Vec<Value>,
     frames: Vec<Frame>,
     cursor: Cursor,
     /// The register the awaited value lands in.
     dst: u16,
+    /// The frames of a compiled task, in place of the interpreter's.
+    compiled: Option<Box<TaskFrame>>,
+}
+
+impl Fiber {
+    fn compiled(frame: TaskFrame) -> Fiber {
+        Fiber {
+            stack: Vec::new(),
+            frames: Vec::new(),
+            cursor: Cursor {
+                chunk: frame.chunk,
+                pc: frame.pc as usize,
+                base: 0,
+            },
+            dst: 0,
+            compiled: Some(Box::new(frame)),
+        }
+    }
 }
 
 impl fmt::Debug for Fiber {
@@ -269,6 +316,7 @@ impl fmt::Debug for TaskStep {
 }
 
 /// How a run of the interpreter loop ended.
+#[cfg(feature = "interpreter")]
 enum Exit {
     Return(Value),
     /// Awaiting the work at a task native, its value due in `dst`.
@@ -392,6 +440,7 @@ impl Instance {
 }
 
 /// A suspended caller.
+#[cfg_attr(not(feature = "interpreter"), allow(dead_code))]
 struct Frame {
     chunk: u32,
     pc: u32,
@@ -400,6 +449,7 @@ struct Frame {
 }
 
 /// The executing chunk, its next instruction and its frame base.
+#[cfg_attr(not(feature = "interpreter"), allow(dead_code))]
 struct Cursor {
     chunk: u32,
     pc: usize,
@@ -471,6 +521,8 @@ pub struct Vm {
     /// The compiled code of each chunk [`install_native`](Self::install_native)
     /// installed, by chunk.
     native: Box<[Option<NativeFn>]>,
+    /// The installed resumable code, by chunk: what a task runs.
+    resumable: Box<[Option<ResumableFn>]>,
     /// Where the running compiled code faulted: the chunk and the
     /// interpreter's cursor there.
     native_at: Option<(u32, usize)>,
@@ -507,6 +559,7 @@ impl Vm {
             resumed: false,
             translator: None,
             native: Box::new([]),
+            resumable: Box::new([]),
             native_at: None,
         }
     }
@@ -527,23 +580,37 @@ impl Vm {
                 found: code.build,
             });
         }
+        let mismatch = NativeCodeMismatch {
+            expected: build,
+            found: code.build,
+        };
         let mut table = vec![None; self.module.chunks().len()];
         for &(chunk, function) in code.chunks {
-            let Some(slot) = table.get_mut(chunk as usize) else {
-                return Err(NativeCodeMismatch {
-                    expected: build,
-                    found: code.build,
-                });
-            };
-            *slot = Some(function);
+            *table.get_mut(chunk as usize).ok_or(mismatch)? = Some(function);
+        }
+        let mut resumable = vec![None; self.module.chunks().len()];
+        for &(chunk, function) in code.resumable {
+            *resumable.get_mut(chunk as usize).ok_or(mismatch)? = Some(function);
         }
         self.native = table.into();
-        Ok(code.chunks.len() as u32)
+        self.resumable = resumable.into();
+        Ok((code.chunks.len() + code.resumable.len()) as u32)
     }
 
     /// Whether chunk `chunk` runs as installed compiled code.
     pub fn is_native(&self, chunk: u32) -> bool {
-        self.native.get(chunk as usize).is_some_and(Option::is_some)
+        self.native.get(chunk as usize).is_some_and(Option::is_some) || self.is_resumable(chunk)
+    }
+
+    /// Whether chunk `chunk` has installed resumable code, which a task runs.
+    pub fn is_resumable(&self, chunk: u32) -> bool {
+        self.resumable
+            .get(chunk as usize)
+            .is_some_and(Option::is_some)
+    }
+
+    pub(crate) fn resumable_fn(&self, chunk: u32) -> Option<ResumableFn> {
+        self.resumable.get(chunk as usize).copied().flatten()
     }
 
     /// The module it runs.
@@ -667,9 +734,7 @@ impl Vm {
             ));
         };
         let services = &mut self.services;
-        let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            (function.call)(&mut NativeCx::new(services), &command.args)
-        }));
+        let result = contain_panic(|| (function.call)(&mut NativeCx::new(services), &command.args));
         match result {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(error)) => Err(fault(
@@ -813,17 +878,60 @@ impl Vm {
                 }
             };
         }
+        self.interpret_call(&module, instance, cursor, args, captures, issued)
+    }
+
+    /// Runs a chunk without compiled code on the interpreter.
+    #[cfg(feature = "interpreter")]
+    fn interpret_call(
+        &mut self,
+        module: &Module,
+        instance: &mut Instance,
+        mut cursor: Cursor,
+        args: &[Value],
+        captures: &[Value],
+        issued: usize,
+    ) -> Result<Outcome, Fault> {
         let result = self
-            .enter(&module, chunk, args, captures)
-            .and_then(|code| self.exec(&module, instance, &mut cursor, code));
+            .enter(module, cursor.chunk, args, captures)
+            .and_then(|code| self.exec(module, instance, &mut cursor, code));
         match result {
             Ok(Exit::Return(value)) => Ok(self.commit(instance, value)),
             Ok(Exit::Await(..)) => {
-                let fault = self.rollback(&module, instance, &cursor, FaultKind::Internal, issued);
+                let fault = self.rollback(module, instance, &cursor, FaultKind::Internal, issued);
                 Err(fault)
             }
-            Err(kind) => Err(self.rollback(&module, instance, &cursor, kind, issued)),
+            Err(kind) => Err(self.rollback(module, instance, &cursor, kind, issued)),
         }
+    }
+
+    /// A build without the interpreter runs compiled code only.
+    #[cfg(not(feature = "interpreter"))]
+    fn interpret_call(
+        &mut self,
+        module: &Module,
+        instance: &mut Instance,
+        cursor: Cursor,
+        _args: &[Value],
+        _captures: &[Value],
+        issued: usize,
+    ) -> Result<Outcome, Fault> {
+        let kind = self.uncompiled(module, cursor.chunk);
+        Err(self.rollback(module, instance, &cursor, kind, issued))
+    }
+
+    /// The fault of running `chunk`, which has no compiled code, in a build
+    /// without the interpreter.
+    #[cfg(not(feature = "interpreter"))]
+    fn uncompiled(&mut self, module: &Module, chunk: u32) -> FaultKind {
+        if let Err(kind) = self.present(module, chunk) {
+            return kind;
+        }
+        self.detail = format!(
+            "`{}` has no compiled code, and this build has no interpreter",
+            module.chunk(chunk).name
+        );
+        FaultKind::Unsupported
     }
 
     /// Runs task chunk `chunk` with `args` against `instance` until it returns
@@ -836,17 +944,82 @@ impl Vm {
     ) -> Result<TaskStep, Fault> {
         let issued = self.begin(instance);
         let module = Rc::clone(&self.module);
+        #[cfg_attr(not(feature = "interpreter"), allow(unused_mut))]
         let mut cursor = Cursor {
             chunk,
             pc: 0,
             base: 0,
         };
+        if self.is_resumable(chunk) {
+            let c = module.chunk(chunk);
+            if args.len() != usize::from(c.params) {
+                self.detail = format!("`{}` called with the wrong number of values", c.name);
+                return Err(self.rollback(&module, instance, &cursor, FaultKind::Internal, issued));
+            }
+            let frame = native_code::frame(self, chunk, args.to_vec());
+            return self.run_frame(&module, instance, frame, issued);
+        }
+        #[cfg(feature = "interpreter")]
+        {
+            self.fiber = true;
+            let result = self
+                .enter(&module, chunk, args, &[])
+                .and_then(|code| self.exec(&module, instance, &mut cursor, code));
+            self.fiber = false;
+            self.suspend_or_finish(&module, instance, cursor, result, issued)
+        }
+        #[cfg(not(feature = "interpreter"))]
+        {
+            let kind = self.uncompiled(&module, chunk);
+            Err(self.rollback(&module, instance, &cursor, kind, issued))
+        }
+    }
+
+    /// Runs a compiled task's `frame` on until it returns or awaits.
+    fn run_frame(
+        &mut self,
+        module: &Module,
+        instance: &mut Instance,
+        mut frame: TaskFrame,
+        issued: usize,
+    ) -> Result<TaskStep, Fault> {
+        self.native_at = None;
         self.fiber = true;
-        let result = self
-            .enter(&module, chunk, args, &[])
-            .and_then(|code| self.exec(&module, instance, &mut cursor, code));
+        let result = native_code::resume_frame(self, instance, 0, &mut frame);
         self.fiber = false;
-        self.suspend_or_finish(&module, instance, cursor, result, issued)
+        self.resumed = false;
+        match result {
+            Ok(Poll::Ready(value)) => {
+                let outcome = self.commit(instance, value);
+                Ok(TaskStep::Done(outcome.value))
+            }
+            Ok(Poll::Pending) => {
+                let Some(work) = self.awaiting.take() else {
+                    let cursor = Cursor {
+                        chunk: frame.chunk,
+                        pc: frame.pc as usize,
+                        base: 0,
+                    };
+                    return Err(self.rollback(
+                        module,
+                        instance,
+                        &cursor,
+                        FaultKind::Internal,
+                        issued,
+                    ));
+                };
+                self.commit(instance, Value::Nil);
+                Ok(TaskStep::Awaiting(Fiber::compiled(frame), work))
+            }
+            Err(kind) => {
+                let (chunk, pc) = self
+                    .native_at
+                    .take()
+                    .unwrap_or((frame.chunk, frame.pc as usize));
+                let cursor = Cursor { chunk, pc, base: 0 };
+                Err(self.rollback(module, instance, &cursor, kind, issued))
+            }
+        }
     }
 
     /// Continues `fiber` against `instance` with the result of the work it
@@ -860,11 +1033,45 @@ impl Vm {
     ) -> Result<TaskStep, Fault> {
         let issued = self.begin(instance);
         let module = Rc::clone(&self.module);
+        if let Some(mut frame) = fiber.compiled {
+            return match result {
+                Ok(value) => {
+                    let inner = frame.innermost();
+                    inner.regs[usize::from(inner.dst)] = value;
+                    self.resumed = true;
+                    self.run_frame(&module, instance, *frame, issued)
+                }
+                Err(error) => {
+                    let inner = frame.innermost();
+                    let cursor = Cursor {
+                        chunk: inner.chunk,
+                        pc: inner.pc as usize,
+                        base: 0,
+                    };
+                    self.detail = format!("the work the task awaited failed: {error}");
+                    Err(self.rollback(&module, instance, &cursor, FaultKind::NativeFailure, issued))
+                }
+            };
+        }
+        self.resume_interpreted(&module, instance, fiber, result, issued)
+    }
+
+    /// Continues a task the interpreter suspended.
+    #[cfg(feature = "interpreter")]
+    fn resume_interpreted(
+        &mut self,
+        module: &Module,
+        instance: &mut Instance,
+        fiber: Fiber,
+        result: Result<Value, NativeError>,
+        issued: usize,
+    ) -> Result<TaskStep, Fault> {
         let Fiber {
             stack,
             frames,
             mut cursor,
             dst,
+            ..
         } = fiber;
         self.stack = stack;
         self.frames = frames;
@@ -874,8 +1081,8 @@ impl Vm {
                 self.fiber = true;
                 self.resumed = true;
                 let run = self
-                    .body(&module, cursor.chunk)
-                    .and_then(|code| self.exec(&module, instance, &mut cursor, code));
+                    .body(module, cursor.chunk)
+                    .and_then(|code| self.exec(module, instance, &mut cursor, code));
                 self.fiber = false;
                 self.resumed = false;
                 run
@@ -885,9 +1092,24 @@ impl Vm {
                 format!("the work the task awaited failed: {error}"),
             ),
         };
-        self.suspend_or_finish(&module, instance, cursor, result, issued)
+        self.suspend_or_finish(module, instance, cursor, result, issued)
     }
 
+    /// Without the interpreter no task is suspended in it.
+    #[cfg(not(feature = "interpreter"))]
+    fn resume_interpreted(
+        &mut self,
+        module: &Module,
+        instance: &mut Instance,
+        fiber: Fiber,
+        _result: Result<Value, NativeError>,
+        issued: usize,
+    ) -> Result<TaskStep, Fault> {
+        let kind = self.uncompiled(module, fiber.cursor.chunk);
+        Err(self.rollback(module, instance, &fiber.cursor, kind, issued))
+    }
+
+    #[cfg(feature = "interpreter")]
     /// Packs a task run that awaits into its fiber, or commits one that
     /// returned.
     fn suspend_or_finish(
@@ -910,6 +1132,7 @@ impl Vm {
                     frames: mem::take(&mut self.frames),
                     cursor,
                     dst,
+                    compiled: None,
                 };
                 Ok(TaskStep::Awaiting(fiber, work))
             }
@@ -980,8 +1203,7 @@ impl Vm {
                 pc: pc as u32,
                 span: c
                     .body
-                    .as_ref()
-                    .ok()
+                    .code()
                     .and_then(|code| code.spans.get(pc).copied())
                     .unwrap_or_default(),
             }
@@ -994,6 +1216,7 @@ impl Vm {
         Fault { kind, at, message }
     }
 
+    #[cfg(feature = "interpreter")]
     /// Sets up the entry frame of `chunk`.
     fn enter<'m>(
         &mut self,
@@ -1021,15 +1244,33 @@ impl Vm {
         Ok(code)
     }
 
-    /// The body of `chunk`, or an [`FaultKind::Unsupported`] fault naming why
-    /// it has none.
-    fn body<'m>(&mut self, module: &'m Module, chunk: u32) -> Step<&'m Code> {
+    /// Nothing when `chunk` has a body, else an [`FaultKind::Unsupported`]
+    /// fault naming why it has none.
+    fn present(&mut self, module: &Module, chunk: u32) -> Step<()> {
         let c = module.chunk(chunk);
         match &c.body {
-            Ok(code) => Ok(code),
-            Err(reason) => self.trap(
+            Body::Missing(reason) => self.trap(
                 FaultKind::Unsupported,
                 format!("`{}` cannot run: {reason}", c.name),
+            ),
+            Body::Code(_) | Body::Compiled(_) => Ok(()),
+        }
+    }
+
+    /// The bytecode of `chunk`, or an [`FaultKind::Unsupported`] fault naming
+    /// why it has none.
+    #[cfg(feature = "interpreter")]
+    fn body<'m>(&mut self, module: &'m Module, chunk: u32) -> Step<&'m Code> {
+        self.present(module, chunk)?;
+        let c = module.chunk(chunk);
+        match &c.body {
+            Body::Code(code) => Ok(code),
+            _ => self.trap(
+                FaultKind::Unsupported,
+                format!(
+                    "`{}` is compiled into the app, and its compiled code is not installed",
+                    c.name
+                ),
             ),
         }
     }
@@ -1051,6 +1292,7 @@ impl Vm {
     }
 
     #[inline(always)]
+    #[cfg(feature = "interpreter")]
     fn int(&self, base: usize, r: u16) -> Step<i64> {
         self.stack[base + usize::from(r)]
             .as_int()
@@ -1058,12 +1300,14 @@ impl Vm {
     }
 
     #[inline(always)]
+    #[cfg(feature = "interpreter")]
     fn float(&self, base: usize, r: u16) -> Step<f64> {
         self.stack[base + usize::from(r)]
             .as_float()
             .ok_or(FaultKind::Internal)
     }
 
+    #[cfg(feature = "interpreter")]
     /// The values of the registers named by `words`.
     fn gather(&self, base: usize, words: &[u32]) -> Box<[Value]> {
         words
@@ -1072,6 +1316,7 @@ impl Vm {
             .collect()
     }
 
+    #[cfg(feature = "interpreter")]
     /// Runs from `cursor` until the entry chunk returns.
     fn exec<'m>(
         &mut self,
@@ -1408,6 +1653,7 @@ impl Vm {
     /// The value of an instruction off the hot dispatch path: generic
     /// arithmetic, casts, allocation, indexing and text rendering.
     #[inline(never)]
+    #[cfg(feature = "interpreter")]
     fn compute(&mut self, code: &Code, base: usize, op: Op) -> Step<Value> {
         Ok(match op {
             Op::Arith { op, a, b, .. } => {
@@ -1462,7 +1708,7 @@ impl Vm {
                 for &r in parts {
                     text.push_str(self.stack[base + r as usize].as_str().unwrap_or_default());
                 }
-                Value::Str(Rc::new(text))
+                Value::Str(Rc::new(text.into()))
             }
             Op::Translate { ext, .. } => {
                 let at = ext as usize;
@@ -1555,6 +1801,7 @@ impl Vm {
 
     /// Runs the [`Op::Native`] whose operands start at `ext[at]`.
     #[inline(never)]
+    #[cfg(feature = "interpreter")]
     fn call_native(&mut self, code: &Code, base: usize, at: usize) -> Step<Value> {
         let import = code.ext[at] as usize;
         let argc = code.ext[at + 1] as usize;
@@ -1617,7 +1864,7 @@ impl Vm {
             return Ok(Value::Int(0));
         }
         let mut cx = NativeCx::new(&mut self.services);
-        let result = panic::catch_unwind(AssertUnwindSafe(|| (function.call)(&mut cx, &args)));
+        let result = contain_panic(|| (function.call)(&mut cx, &args));
         let pending = cx.take_pending();
         args.clear();
         self.native_args = args;
@@ -1651,6 +1898,7 @@ impl Vm {
         }
     }
 
+    #[cfg(feature = "interpreter")]
     /// Suspends the current frame (resuming at `cur.pc` into register `dst`)
     /// and opens a frame of `regs` registers on top of the stack, pointing
     /// `cur.base` at it.
@@ -1670,6 +1918,7 @@ impl Vm {
         Ok(())
     }
 
+    #[cfg(feature = "interpreter")]
     /// Runs `edit` on the list in register `list`, taken out of the register
     /// so an unshared list is edited without a copy.
     fn edit_list<T>(
@@ -1685,6 +1934,7 @@ impl Vm {
         result
     }
 
+    #[cfg(feature = "interpreter")]
     /// Runs the [`Op::SetPath`] whose operands start at `ext[at]`.
     fn set_path(&mut self, code: &Code, base: usize, root: u16, at: usize) -> Step<()> {
         let src = self.stack[base + code.ext[at] as usize].clone();
@@ -1695,6 +1945,7 @@ impl Vm {
         result
     }
 
+    #[cfg(feature = "interpreter")]
     fn write_path(&mut self, root: &mut Value, steps: &[u32], base: usize, src: Value) -> Step<()> {
         let mut slot = root;
         for &[kind, arg] in steps.as_chunks::<2>().0 {

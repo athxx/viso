@@ -8,12 +8,12 @@
 
 use std::rc::Rc;
 
-use viso_behavior::Module;
+use viso_behavior::native::Natives;
+use viso_behavior::{Budget, Module, Vm};
+pub use viso_schema::view::{Control, ControlInput, LookArm, When};
+use viso_schema::view::{ControlKind, EventRoute, Route, ViewRegions};
+use viso_schema::{EnvField, StateValue};
 use viso_shader::program::BrushLayout;
-use viso_ui::StateValue;
-use viso_ui::adaptive::EnvField;
-pub use viso_view::{Control, ControlInput, LookArm, When};
-use viso_view::{ControlKind, EventRoute, Route, ViewHost, ViewRegions};
 
 use crate::behavior::Site;
 use crate::frontend::{Compiled, SourceKind};
@@ -100,6 +100,21 @@ pub struct EnvRead {
 }
 
 impl ViewBehavior {
+    /// The module compiled to Rust, every chunk, for the release build to
+    /// install in place of interpreting it (ADR 0041). `krate` is the path the
+    /// code names `viso_behavior` by where it is compiled.
+    pub fn native_code(&self, krate: &str) -> String {
+        viso_behavior::aot::lower_module(&self.module, krate)
+    }
+
+    /// The wire form of the module as the build running
+    /// [`native_code`](Self::native_code) carries it
+    /// ([`Module::compiled`]): no bytecode, only what that code and the VM
+    /// read of each body.
+    pub fn compiled_bytes(&self) -> Vec<u8> {
+        self.module.compiled().encode()
+    }
+
     /// Whether the view mounts anything on its root: an `effect`, the
     /// tasks a `start` runs, or the game its module's systems make, which the
     /// root owns.
@@ -362,15 +377,23 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         return Err(errors);
     }
     let module = Rc::new(module);
-    if let Err(error) = ViewHost::new(Rc::clone(&module), name) {
+    let Some(index) = module.component(name) else {
         return Err(vec![MountError::new(
             Some(component.source_origin),
-            format!("the behavior does not mount: {error}"),
+            format!("the behavior does not mount: the behavior module has no component `{name}`"),
+        )]);
+    };
+    // The runtime links the module against the standard natives under the
+    // grant it asks for when it mounts the view; a conflict there is the
+    // compiler's to report.
+    let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
+    let mut vm = Vm::new(Rc::clone(&module), Budget::default());
+    if let Err(conflict) = vm.link(&Natives::standard(), &grant) {
+        return Err(vec![MountError::new(
+            Some(component.source_origin),
+            format!("the behavior does not mount: the behavior module does not link: {conflict}"),
         )]);
     }
-    let index = module
-        .component(name)
-        .expect("the module keeps the program's components");
     let states = module.layout(index);
     let slots = compiled
         .sources
@@ -517,13 +540,13 @@ struct Walk<'a> {
     sites: Vec<(NodeKey, ControlKind, &'a str, bool, Site)>,
     /// Each view-driven native node: a control, or a label showing a text,
     /// with the role it takes as an item of the selection it is in.
-    nodes: Vec<(NodeKey, ControlKind, &'a UiNode, Option<viso_ui::Role>)>,
+    nodes: Vec<(NodeKey, ControlKind, &'a UiNode, Option<viso_schema::Role>)>,
     /// Each component instance's root node, the first of its view's nodes.
     roots: Vec<(u32, NodeKey)>,
     /// The role the next node takes as an item: a tab of a `Tabs`, a radio
     /// button of a `RadioGroup`, whose direct children (in or out of a
     /// control-flow region) are its items.
-    item: Option<viso_ui::Role>,
+    item: Option<viso_schema::Role>,
 }
 
 impl<'a> Walk<'a> {
@@ -590,8 +613,8 @@ impl<'a> Walk<'a> {
             ));
         }
         let items = match node.type_name.as_str() {
-            "Tabs" => Some(viso_ui::Role::Tab),
-            "RadioGroup" => Some(viso_ui::Role::Radio),
+            "Tabs" => Some(viso_schema::Role::Tab),
+            "RadioGroup" => Some(viso_schema::Role::Radio),
             _ => None,
         };
         self.item = items;
@@ -601,10 +624,10 @@ impl<'a> Walk<'a> {
 
 /// The role of `node`: the one its `semantics.role` names, else the one it
 /// takes as an item of a selection, else its widget's.
-fn node_role(node: &UiNode, item: Option<viso_ui::Role>) -> Option<viso_ui::Role> {
+fn node_role(node: &UiNode, item: Option<viso_schema::Role>) -> Option<viso_schema::Role> {
     node.role
         .or(item)
-        .or_else(|| viso_view::widget_role(&node.type_name))
+        .or_else(|| viso_schema::view::widget_role(&node.type_name))
 }
 
 /// A state initializer as the UI cell value it starts from: `None` for a value

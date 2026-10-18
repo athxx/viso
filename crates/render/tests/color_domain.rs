@@ -28,7 +28,7 @@
 //! color.
 
 use viso_gpu::{
-    ColorDomain, ColorSpace, GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureFormat,
+    ColorDomain, ColorSpace, CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat,
     f16_to_f32,
 };
 use viso_render::{Border, LayerClip, Primitive, Quad, Rect, Renderer, Rgba};
@@ -38,8 +38,8 @@ const H: u32 = 64;
 
 /// A renderer over a surface reporting `format` in `space` — the headless raster
 /// stands in for a swapchain Viso could not negotiate on a test machine.
-fn renderer(format: TextureFormat, space: ColorSpace) -> (HeadlessRaster, SurfaceId, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer(format: TextureFormat, space: ColorSpace) -> (CpuRaster, SurfaceId, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     gpu.set_surface_color_target(surface, format, space);
     let mut r = Renderer::for_surface(&mut gpu, surface);
@@ -75,7 +75,7 @@ fn scene_through_intermediates(color: Rgba) -> Vec<Primitive> {
 /// The center pixel's red channel as the surface stores it, read through an
 /// extended-range readback so a value above `1.0` is reported rather than clipped
 /// by the readback itself.
-fn center_red(gpu: &HeadlessRaster, surface: SurfaceId) -> f32 {
+fn center_red(gpu: &CpuRaster, surface: SurfaceId) -> f32 {
     let px = gpu.read_pixels_rgba16f(surface);
     let i = ((H / 2) * W + W / 2) as usize * 8;
     f16_to_f32(u16::from_le_bytes([px[i], px[i + 1]]))
@@ -196,7 +196,7 @@ fn the_intermediates_always_match_the_attachment() {
 /// one — and it keeps every existing SDR call site meaning exactly what it did.
 #[test]
 fn a_renderer_built_from_a_format_alone_is_sdr() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let r = Renderer::new(&mut gpu, format);
@@ -320,7 +320,7 @@ fn extended_range_is_not_a_question_of_bit_depth() {
 /// renderer plan an HDR chain for a target that cannot show it.
 #[test]
 fn an_unnegotiated_surface_reports_the_sdr_default() {
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
 
     assert_eq!(gpu.surface_color_space(surface), ColorSpace::Srgb);

@@ -18,56 +18,9 @@ use crate::component::NodeStore;
 use crate::content::Content;
 use crate::dirty::DirtyClass;
 use crate::node::NodeId;
-use crate::paint::paint_content;
-use crate::semantics::{SemanticsNode, SemanticsTree};
+use crate::semantics::{InspectKind, SemanticsNode, SemanticsTree};
 use viso_ende::JsonWriter;
-use viso_render::{FrameStats, InspectBatch, InspectBatches, LayerClip, Primitive, Quad, Rect};
-
-/// What a node draws, derived from its content payload rather than stored — the
-/// node model keeps no `kind` column, so a plain layout/decoration node reports
-/// [`Container`](InspectKind::Container) and a content-bearing node reports the
-/// variant of its payload. Enough for a tree readout to label each row without
-/// inventing a field the runtime does not keep.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InspectKind {
-    /// A node with no drawable content — a layout container or decoration box.
-    Container,
-    /// A node carrying a shaped glyph run.
-    Text,
-    /// A node carrying a textured image.
-    Image,
-    /// A node carrying a vector path.
-    Path,
-    /// A node whose box a brush program paints.
-    Shader,
-    /// A node showing an asset.
-    Asset,
-}
-
-impl InspectKind {
-    /// The lowercase label used in a tree dump (`container`, `text`, …).
-    pub fn label(self) -> &'static str {
-        match self {
-            InspectKind::Container => "container",
-            InspectKind::Text => "text",
-            InspectKind::Image => "image",
-            InspectKind::Path => "path",
-            InspectKind::Shader => "shader",
-            InspectKind::Asset => "asset",
-        }
-    }
-
-    fn of(content: Option<&Content>) -> Self {
-        match content {
-            None => InspectKind::Container,
-            Some(Content::Text { .. }) => InspectKind::Text,
-            Some(Content::Image { .. }) => InspectKind::Image,
-            Some(Content::Path { .. }) => InspectKind::Path,
-            Some(Content::Shader { .. }) => InspectKind::Shader,
-            Some(Content::Asset { .. }) => InspectKind::Asset,
-        }
-    }
-}
+use viso_render::{FrameStats, InspectBatch, InspectBatches, Primitive, Rect};
 
 /// The interaction/visibility flags a node carries, snapshotted from the store's
 /// flag columns. All are read straight from existing accessors; a snapshot never
@@ -206,11 +159,11 @@ impl NodeStore {
     /// flat-with-indices build the semantics derive uses.
     fn inspect_into(&self, id: NodeId, tree: &mut InspectTree) -> usize {
         let my_index = tree.nodes.len();
-        let parent = self.arena().links(id).and_then(|l| l.parent);
+        let parent = self.arena().parent(id);
         tree.nodes.push(InspectNode {
             id,
             parent,
-            kind: InspectKind::of(self.content_payload(id)),
+            kind: kind_of(self.content_payload(id)),
             bounds: self.bounds(id),
             world: self.world(id),
             dirty: self.dirty(id),
@@ -224,11 +177,9 @@ impl NodeStore {
             },
             children: Vec::new(),
         });
-        let mut child = self.arena().links(id).and_then(|l| l.first_child);
-        while let Some(c) = child {
+        for c in self.arena().children(id) {
             let ci = self.inspect_into(c, tree);
             tree.nodes[my_index].children.push(ci);
-            child = self.arena().links(c).and_then(|l| l.next_sibling);
         }
         my_index
     }
@@ -319,117 +270,35 @@ impl PaintRanges {
 /// [`paint_tree`](crate::paint::paint_tree) produces — while recording each
 /// node's span into a [`PaintRanges`].
 ///
-/// A cold-path introspection surface (architecture section 34/62): it re-walks
-/// the tree with the identical pre-order + deferred-overlay + visibility /
-/// hidden / opacity / scroll-clip rules as `paint_tree`, but wraps each node's emission in
-/// a [`PaintRange`] recording. It is kept out of the steady frame path (the
-/// frame calls `paint_tree`; a tool or test calls this), so the hot walk carries
-/// no range-recording branch. `out` is not cleared — append semantics match
-/// `paint_tree`.
+/// A cold-path introspection surface (architecture section 34/62): it runs the
+/// frame's own paint walk with a span recorder, so the two can never drift; the
+/// frame's instance of the walk records nothing and carries no branch for it.
+/// `out` is not cleared — append semantics match `paint_tree`.
 pub fn paint_ranges(store: &NodeStore, root: NodeId, out: &mut Vec<Primitive>) -> PaintRanges {
     let mut ranges = PaintRanges::default();
-    let mut overlays: Vec<NodeId> = Vec::new();
-    paint_subtree_ranges(store, root, out, &mut overlays, &mut ranges);
-    let mut i = 0;
-    while i < overlays.len() {
-        paint_subtree_ranges(store, overlays[i], out, &mut overlays, &mut ranges);
-        i += 1;
-    }
+    crate::paint::paint_walk(
+        store,
+        root,
+        out,
+        &mut crate::transform::TransformTable::default(),
+        &mut ranges,
+    );
     ranges
 }
 
-/// The range-recording twin of `paint::paint_subtree`: it appends the exact same
-/// primitives (delegating content emission to the shared `paint_content`) and
-/// records this node's descendant-inclusive `[start, start + len)` span.
-/// Duplicated rather than threaded through the hot walk so the frame path stays
-/// branch-free (architecture section 60 / 7.1).
-///
-/// The span is recorded in pre-order (parent's `PaintRange` precedes its
-/// children's) by reserving the node's slot before descending, then patching its
-/// `len` to `out.len() - start` once the subtree and any closing `LayerEnd` have
-/// been emitted — so the span reaches through every descendant. A non-live or
-/// hidden node paints nothing and records no span, exactly as `paint_subtree`
-/// early-returns.
-fn paint_subtree_ranges(
-    store: &NodeStore,
-    root: NodeId,
-    out: &mut Vec<Primitive>,
-    overlays: &mut Vec<NodeId>,
-    ranges: &mut PaintRanges,
-) {
-    let arena = store.arena();
-    if !arena.is_live(root) {
-        return;
-    }
-    let opacity = store.opacity(root);
-    if store.hidden(root) || opacity <= 0.0 {
-        return;
+/// A node's span is reserved when it starts emitting, so a parent's
+/// [`PaintRange`] precedes its children's, and patched once its subtree and
+/// closing markers are out, so it reaches through every descendant.
+impl crate::paint::PaintSpans for PaintRanges {
+    fn open(&mut self, id: NodeId, start: usize) -> usize {
+        self.ranges.push(PaintRange { id, start, len: 0 });
+        self.ranges.len() - 1
     }
 
-    let start = out.len();
-    // Reserve this node's slot up front so its span precedes its children's in
-    // pre-order; `len` is patched once the whole subtree has been emitted.
-    let my_index = ranges.ranges.len();
-    ranges.ranges.push(PaintRange {
-        id: root,
-        start,
-        len: 0,
-    });
-
-    let world = store.world(root);
-    let faded = opacity < 1.0;
-    if faded {
-        out.push(Primitive::Layer(LayerClip {
-            clip: world,
-            opacity,
-            blur_sigma: 0.0,
-            backdrop_sigma: 0.0,
-        }));
+    fn close(&mut self, token: usize, end: usize) {
+        let range = &mut self.ranges[token];
+        range.len = end - range.start;
     }
-    let style = store.style(root);
-    if style.is_visible() {
-        out.push(Primitive::Quad(Quad {
-            rect: world,
-            color: style.fill,
-            radius: style.radius,
-            border: style.border,
-        }));
-    }
-
-    if let Some(content) = store.content_payload(root) {
-        paint_content(content, world, out);
-    }
-
-    let scroll_clip = store.is_scroll(root);
-    if scroll_clip {
-        out.push(Primitive::Layer(LayerClip {
-            clip: world,
-            opacity: 1.0,
-            blur_sigma: 0.0,
-            backdrop_sigma: 0.0,
-        }));
-    }
-
-    let mut child = arena.links(root).and_then(|l| l.first_child);
-    while let Some(c) = child {
-        if store.is_overlay(c) {
-            overlays.push(c);
-        } else {
-            paint_subtree_ranges(store, c, out, overlays, ranges);
-        }
-        child = arena.links(c).and_then(|l| l.next_sibling);
-    }
-
-    if scroll_clip {
-        out.push(Primitive::LayerEnd);
-    }
-    if faded {
-        out.push(Primitive::LayerEnd);
-    }
-
-    // Now the subtree (and any closing clip) is fully emitted: the span reaches
-    // from this node's first primitive through its last descendant's.
-    ranges.ranges[my_index].len = out.len() - start;
 }
 
 // --- JSON serialization of the introspection snapshots --------------------
@@ -470,19 +339,6 @@ fn write_rect(w: &mut JsonWriter, r: Rect) {
     w.name("h");
     w.number(r.h as f64);
     w.end_object();
-}
-
-impl DirtyClass {
-    /// Writes the set bits as a JSON array of their names,
-    /// `["MEASURE","LAYOUT"]` — the same names [`iter_names`](Self::iter_names)
-    /// yields, low bit first. An empty set is `[]`.
-    pub fn write_json(&self, w: &mut JsonWriter) {
-        w.begin_array();
-        for name in self.iter_names() {
-            w.string(name);
-        }
-        w.end_array();
-    }
 }
 
 impl InspectFlags {
@@ -821,6 +677,18 @@ pub fn snapshot_ui(
         semantics,
         batches,
         stats,
+    }
+}
+
+/// What a node draws, from its content payload.
+fn kind_of(content: Option<&Content>) -> InspectKind {
+    match content {
+        None => InspectKind::Container,
+        Some(Content::Text { .. }) => InspectKind::Text,
+        Some(Content::Image { .. }) => InspectKind::Image,
+        Some(Content::Path { .. }) => InspectKind::Path,
+        Some(Content::Shader { .. }) => InspectKind::Shader,
+        Some(Content::Asset { .. }) => InspectKind::Asset,
     }
 }
 

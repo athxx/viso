@@ -20,9 +20,9 @@ use crate::ir::dirty_map::{DirtyClass, property_dirty_class};
 use crate::resolve::SymbolId;
 use crate::syntax::span::TextRange;
 use viso_behavior::native::MigratableState;
-use viso_ui::Interaction;
-pub use viso_ui::adaptive::Avoid;
-pub use viso_ui::{Align, Justify};
+pub use viso_schema::Avoid;
+use viso_schema::Interaction;
+pub use viso_schema::{Align, Justify};
 
 /// The retained-tree template a view fragment or component view lowers to.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -120,10 +120,10 @@ pub struct UiNode {
     /// apply: what an inspector selects it by as a class.
     pub styles: Vec<String>,
     /// The role its `semantics.role` names, `None` when it names none.
-    pub role: Option<viso_ui::Role>,
+    pub role: Option<viso_schema::Role>,
     /// The live setting its `semantics.live` names, `None` when it names
     /// none.
-    pub live: Option<viso_ui::LiveRegion>,
+    pub live: Option<viso_schema::LiveRegion>,
     /// The node's children, in source order.
     pub children: Vec<UiItem>,
     /// The node declaration's source span.
@@ -219,7 +219,7 @@ impl NodeKind {
     }
 }
 
-/// A dimension along one axis, mirroring `viso_ui::layout::Length`. A pure-`dp`
+/// A dimension along one axis, mirroring `viso_schema::layout::Length`. A pure-`dp`
 /// constant folds to [`LengthIr::Fixed`]; a constant with a `%` term, such as
 /// `50%` or `100% - 16dp`, folds to [`LengthIr::Relative`]. `%` is a ratio of the
 /// parent's content box, never a fill share.
@@ -235,7 +235,7 @@ pub enum LengthIr {
     Fit,
 }
 
-/// A length's five terms, mirroring `viso_ui::LengthTerms`: a length with a
+/// A length's five terms, mirroring `viso_schema::LengthTerms`: a length with a
 /// `px`, `sp` or `em` term, folded against the node's environment at layout.
 /// `pct` is a fraction of the basis (`0.5` is `50%`).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -248,7 +248,7 @@ pub struct TermsIr {
 }
 
 /// A container's four edges as lowered terms, mirroring
-/// `viso_ui::EdgeTerms`: `start` and `end` follow the layout direction.
+/// `viso_schema::EdgeTerms`: `start` and `end` follow the layout direction.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct EdgeTermsIr {
     pub top: TermsIr,
@@ -257,7 +257,7 @@ pub struct EdgeTermsIr {
     pub start: TermsIr,
 }
 
-/// A physical inset in dp, mirroring `viso_ui::layout::Inset`.
+/// A physical inset in dp, mirroring `viso_schema::layout::Inset`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct InsetIr {
     pub left: f32,
@@ -267,7 +267,7 @@ pub struct InsetIr {
 }
 
 /// A node's lengths that fold against its environment at layout, mirroring
-/// `viso_ui::NodeLengths`. The node builds with its [`StyleIr`] and binds
+/// `viso_schema::NodeLengths`. The node builds with its [`StyleIr`] and binds
 /// these on top.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LengthsIr {
@@ -292,7 +292,7 @@ impl LengthsIr {
     }
 }
 
-/// The layout axis a container arranges along, mirroring `viso_ui::layout::Axis`.
+/// The layout axis a container arranges along, mirroring `viso_schema::layout::Axis`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisIr {
     Row,

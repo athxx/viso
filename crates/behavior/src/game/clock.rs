@@ -1,5 +1,8 @@
 //! The fixed-step clock: scaled wall time accumulates into whole ticks.
 
+#[cfg(not(feature = "std"))]
+use crate::float::FloatMath as _;
+
 /// What a frame does with the ticks it owes beyond
 /// [`Clock::max_catch_up_steps`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

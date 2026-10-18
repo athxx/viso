@@ -1,0 +1,17 @@
+[package]
+name = "viso-dev-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The development link between `viso` (the CLI) and a dev runtime: the framed
+# host/runtime messages and the patch bundle they carry, the asset blobs, game
+# queries, and the inspector, profiler and headless-scenario data the runtime
+# reports. Both sides build against it, so the CLI links no runtime (ADR 0042).
+[dependencies]
+viso-ende = { workspace = true }
+# The shader language a runtime reads, named in its hello.
+viso-gpu-abi = { workspace = true }
+viso-math = { workspace = true, features = ["std"] }
+viso-schema = { workspace = true }

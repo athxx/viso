@@ -780,7 +780,8 @@ const NOTES: &[(&str, &str)] = &[
         "build",
         "The sources are checked first. The output replaces `dist/<platform>/` whole, with\n\
          its `artifact.json`; `ios` builds for the Simulator and `android` for the Emulator.\n\
-         `[profile.<name>.web]` in `Viso.toml` shapes a web bundle.",
+         `[profile.<name>.web]` in `Viso.toml` shapes a web bundle. A device target, a\n\
+         `[target.<name>]` of `Viso.toml`, builds for its board into `dist/<name>/`.",
     ),
     (
         "package",
@@ -807,7 +808,8 @@ const NOTES: &[(&str, &str)] = &[
     (
         "check",
         "A named target is checked as its build would be: its configuration, and the input\n\
-         its devices have. `--a11y strict` and `--i18n strict` make those findings errors.",
+         its devices have; a device target's profile also fixes its shader languages.\n\
+         `--a11y strict` and `--i18n strict` make those findings errors.",
     ),
     (
         "clean",
@@ -911,7 +913,9 @@ const NOTES: &[(&str, &str)] = &[
          `viso ios simulator list` and `viso android emulator list`. The web targets\n\
          build for a browser and serve it as `viso serve` does. The app's own arguments\n\
          follow `--`. `--profile-frame` draws the frame time over the app's windows and\n\
-         reports its frames as `viso profile` measures them.",
+         reports its frames as `viso profile` measures them. A device target runs on the\n\
+         board its `deploy` names, over SSH; `--emulate` runs an `embedded-cpu` one in a\n\
+         window on a Mac; without either it runs only where this machine is its board.",
     ),
     (
         "serve",
@@ -959,7 +963,7 @@ pub const VERSION: Version = Version {
     schema_object: viso_dsl::schema::SCHEMA_VERSION,
     dump_version: viso_dsl::dump::DUMP_VERSION,
     snapshot_version: crate::command::SNAPSHOT_VERSION,
-    dev_protocol: viso_view::dev::wire::DEV_PROTOCOL_VERSION,
+    dev_protocol: viso_dev_protocol::wire::DEV_PROTOCOL_VERSION,
 };
 
 impl Version {

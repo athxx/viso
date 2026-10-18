@@ -11,7 +11,9 @@
 //! ([`crate::ConfigCode::TargetUnavailable`]), never a string that flows onward
 //! and fails somewhere deeper as a path that does not exist.
 
+use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::{Mutex, PoisonError};
 
 use crate::diag::{ConfigCode, ConfigDiagnostic};
 
@@ -26,6 +28,12 @@ use crate::diag::{ConfigCode, ConfigDiagnostic};
 /// a `Viso.toml` written for them parses cleanly and `--target ios` produces
 /// "not in this build" instead of "unknown value". A user's configuration should
 /// not have to be deleted and rewritten when a phase lands.
+///
+/// [`Target::Device`] is the one variant whose name is the project's: a board a
+/// `[target.<name>]` table describes. Its configuration stays in the manifest
+/// and resolves into [`crate::ResolvedConfig::device`]; the variant carries only
+/// the name, interned, so a target stays a `Copy` value that keys directories,
+/// locks and build identities like every other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Target {
     /// The machine running the command, whichever OS that is.
@@ -42,6 +50,8 @@ pub enum Target {
     WebDom,
     /// Browser, WebGPU with a DOM overlay.
     WebHybrid,
+    /// A device target `Viso.toml` declares as `[target.<name>]`, by its name.
+    Device(&'static str),
 }
 
 impl Target {
@@ -55,10 +65,31 @@ impl Target {
             Target::WebGpu => "web-gpu",
             Target::WebDom => "web-dom",
             Target::WebHybrid => "web-hybrid",
+            Target::Device(name) => name,
         }
     }
 
-    /// Parses a target name, or produces the diagnostic for an unknown one.
+    /// The device target named `name`.
+    ///
+    /// The name is interned: each distinct name is allocated once for the
+    /// life of the process, which bounds what interning keeps to the device
+    /// targets the process has seen. Whether the manifest declares it is
+    /// [`crate::resolve`]'s question, not this one's.
+    pub fn device(name: &str) -> Target {
+        static NAMES: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
+        let mut names = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
+        let interned = match names.get(name) {
+            Some(interned) => *interned,
+            None => {
+                let interned: &'static str = Box::leak(name.into());
+                names.insert(interned);
+                interned
+            }
+        };
+        Target::Device(interned)
+    }
+
+    /// Parses a built-in target name, or produces the diagnostic for an unknown one.
     ///
     /// An unknown name is [`ConfigCode::InvalidValue`] — the key was right and the
     /// type was right, only the value is not one of the seven. The note lists all
@@ -79,15 +110,21 @@ impl Target {
 
     /// Whether this build can produce the target.
     ///
-    /// The host, headless, the iOS Simulator, the Android Emulator and the
-    /// WebGPU browser target are; the DOM targets are not yet. This is a
+    /// The host, headless, the iOS Simulator, the Android Emulator, the
+    /// WebGPU browser target and every device target are; the DOM targets are
+    /// not yet. This is a
     /// property of the *build*, not of the machine: it is what separates "you
     /// asked for something that does not exist yet" from "you asked for
     /// something your machine cannot do".
     pub const fn available(self) -> bool {
         matches!(
             self,
-            Target::Host | Target::Headless | Target::Ios | Target::Android | Target::WebGpu
+            Target::Host
+                | Target::Headless
+                | Target::Ios
+                | Target::Android
+                | Target::WebGpu
+                | Target::Device(_)
         )
     }
 
@@ -124,7 +161,7 @@ impl Target {
         }
     }
 
-    /// Every target, in declaration order.
+    /// Every built-in target, in declaration order.
     pub const ALL: &'static [Target] = &[
         Target::Host,
         Target::Headless,
@@ -135,7 +172,7 @@ impl Target {
         Target::WebHybrid,
     ];
 
-    /// Every target name, for diagnostics and shell completion.
+    /// Every built-in target name, for diagnostics and shell completion.
     pub fn names() -> Vec<&'static str> {
         Self::ALL.iter().map(|t| t.as_str()).collect()
     }
@@ -145,6 +182,130 @@ impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// The device class a build is made for: a fixed set of the facade's features,
+/// and the defaults of the budget and worker count the app runs with.
+///
+/// A device target names one (`profile` in `[target.<name>]`); the user picks
+/// the profile and never the features it stands for, so the feature
+/// combinations a build can ask for are these five.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Footprint {
+    /// macOS, Windows and Linux machines with a native GPU backend.
+    Desktop,
+    /// Phones and tablets.
+    Mobile,
+    /// Browsers.
+    Web,
+    /// Linux boards drawing through GLES 3, on a display driven through
+    /// DRM/KMS.
+    EmbeddedGpu,
+    /// Linux boards drawn by the software raster, on a display driven through
+    /// DRM/KMS.
+    EmbeddedCpu,
+}
+
+impl Footprint {
+    /// The name `Viso.toml` and `VISO_FOOTPRINT` give it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Footprint::Desktop => "desktop",
+            Footprint::Mobile => "mobile",
+            Footprint::Web => "web",
+            Footprint::EmbeddedGpu => "embedded-gpu",
+            Footprint::EmbeddedCpu => "embedded-cpu",
+        }
+    }
+
+    /// Parses a profile name, or produces the diagnostic for an unknown one.
+    pub fn parse(name: &str) -> Result<Self, ConfigDiagnostic> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|f| f.as_str() == name)
+            .ok_or_else(|| {
+                ConfigDiagnostic::error(
+                    ConfigCode::InvalidValue,
+                    format!("`{name}` is not a footprint profile"),
+                )
+                .note(format!(
+                    "expected one of: {}",
+                    Self::ALL
+                        .iter()
+                        .map(|f| f.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })
+    }
+
+    /// Whether the profile is one of the embedded Linux classes, whose display
+    /// is driven through DRM/KMS.
+    pub const fn is_embedded(self) -> bool {
+        matches!(self, Footprint::EmbeddedGpu | Footprint::EmbeddedCpu)
+    }
+
+    /// The facade features a build of the profile turns on. The desktop,
+    /// mobile and web profiles take their backend from the Rust target and
+    /// turn on none.
+    pub const fn features(self) -> &'static [&'static str] {
+        match self {
+            Footprint::Desktop | Footprint::Mobile | Footprint::Web => &[],
+            Footprint::EmbeddedGpu => &["viso/gles", "viso/kms"],
+            Footprint::EmbeddedCpu => &["viso/cpu", "viso/kms"],
+        }
+    }
+
+    /// Whether a build of the profile keeps the facade's default features
+    /// (`vm` and `desktop`, the Linux desktop stack). An embedded build turns
+    /// them off and has [`Footprint::features`] alone, with `vm` again for a
+    /// debug build.
+    pub const fn keeps_default_features(self) -> bool {
+        !self.is_embedded()
+    }
+
+    /// The languages a package of the profile carries its views' shaders in,
+    /// or `None` where the target's backend decides: the desktop and mobile
+    /// packages carry their backend's language beside the reference
+    /// interpreter's [`ShaderLanguage::None`].
+    pub const fn shader_langs(self) -> Option<&'static [ShaderLanguage]> {
+        match self {
+            Footprint::Desktop | Footprint::Mobile => None,
+            Footprint::Web => Some(&[ShaderLanguage::Wgsl, ShaderLanguage::None]),
+            Footprint::EmbeddedGpu => Some(&[ShaderLanguage::Glsl, ShaderLanguage::SpirV]),
+            Footprint::EmbeddedCpu => Some(&[ShaderLanguage::None]),
+        }
+    }
+
+    /// Every profile, in declaration order.
+    pub const ALL: &'static [Footprint] = &[
+        Footprint::Desktop,
+        Footprint::Mobile,
+        Footprint::Web,
+        Footprint::EmbeddedGpu,
+        Footprint::EmbeddedCpu,
+    ];
+}
+
+impl fmt::Display for Footprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A shading language a package carries a brush program's code in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShaderLanguage {
+    /// No program text: the register code the reference interpreter runs, which
+    /// the software raster draws with.
+    None,
+    /// WGSL (WebGPU).
+    Wgsl,
+    /// GLSL ES 3.00 (OpenGL ES 3).
+    Glsl,
+    /// SPIR-V (Vulkan).
+    SpirV,
 }
 
 /// The operating system [`Target::Host`] resolves to.
@@ -497,6 +658,49 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Target::ALL.len(), "a name is used twice");
+    }
+
+    /// A device target's name is the one it was declared with, and interning
+    /// gives one value per name however often it is asked for.
+    #[test]
+    fn a_device_target_is_its_name() {
+        let panel = Target::device("panel");
+        assert_eq!(panel, Target::device(&String::from("panel")));
+        assert_ne!(panel, Target::device("kiosk"));
+        assert_eq!(panel.as_str(), "panel");
+        assert!(panel.available());
+        assert!(!panel.is_web());
+        assert!(!Target::ALL.contains(&panel));
+    }
+
+    #[test]
+    fn every_footprint_profile_round_trips_with_its_features() {
+        for footprint in Footprint::ALL {
+            assert_eq!(Footprint::parse(footprint.as_str()).unwrap(), *footprint);
+        }
+        let d = Footprint::parse("embedded").unwrap_err();
+        assert_eq!(d.code, ConfigCode::InvalidValue);
+        assert!(d.notes.join(" ").contains("embedded-cpu"));
+
+        assert_eq!(Footprint::EmbeddedGpu.features(), ["viso/gles", "viso/kms"]);
+        assert_eq!(Footprint::EmbeddedCpu.features(), ["viso/cpu", "viso/kms"]);
+        assert!(Footprint::Desktop.features().is_empty());
+        assert!(Footprint::Desktop.keeps_default_features());
+        assert!(!Footprint::EmbeddedGpu.keeps_default_features());
+        assert!(!Footprint::EmbeddedCpu.keeps_default_features());
+        // The CPU profile carries nothing but the interpreter's code, and the
+        // GPU one none of it.
+        assert_eq!(
+            Footprint::EmbeddedCpu.shader_langs(),
+            Some(&[ShaderLanguage::None][..])
+        );
+        assert!(
+            !Footprint::EmbeddedGpu
+                .shader_langs()
+                .unwrap()
+                .contains(&ShaderLanguage::None)
+        );
+        assert_eq!(Footprint::Desktop.shader_langs(), None);
     }
 
     /// An unknown target is an invalid *value*, and the note has to list the real

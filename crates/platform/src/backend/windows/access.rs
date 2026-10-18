@@ -18,7 +18,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use accesskit::{ActionHandler, ActionRequest, ActivationHandler, TreeUpdate};
 use accesskit_windows::SubclassingAdapter;
 
-use crate::accessibility::AccessRequest;
+use crate::accessibility::{AccessRequest, SemanticsDelta, accesskit_bridge};
 
 /// The private message carrying an [`AccessRequest`]: the kind in `WPARAM`,
 /// the target id in `LPARAM` (Windows targets are 64-bit).
@@ -30,9 +30,9 @@ pub(super) fn attach(hwnd: HWND) -> SubclassingAdapter {
     SubclassingAdapter::new(hwnd, poster, poster)
 }
 
-/// Apply `update` if an assistive technology has asked for the tree.
-pub(super) fn update(adapter: &mut SubclassingAdapter, update: TreeUpdate) {
-    if let Some(events) = adapter.update_if_active(|| update) {
+/// Apply `delta` if an assistive technology has asked for the tree.
+pub(super) fn update(adapter: &mut SubclassingAdapter, delta: SemanticsDelta) {
+    if let Some(events) = adapter.update_if_active(|| accesskit_bridge::tree_update(delta)) {
         events.raise();
     }
 }
@@ -73,7 +73,7 @@ impl ActivationHandler for Poster {
 
 impl ActionHandler for Poster {
     fn do_action(&mut self, request: ActionRequest) {
-        if let Some(request) = AccessRequest::from_accesskit(&request) {
+        if let Some(request) = accesskit_bridge::request(&request) {
             self.post(request);
         }
     }

@@ -15,7 +15,7 @@
 //! is here. What is left to state explicitly is the *defaults*, and that the three
 //! capability answers really are all no.
 
-use viso_gpu::{GpuBackend, HeadlessRaster};
+use viso_gpu::{CpuRaster, GpuBackend};
 use viso_render::{
     BindingModel, Border, CullPlan, CullWorkload, Primitive, Quad, Rect, Renderer, Rgba,
     TextureWorkload, VectorLane, VectorWorkload,
@@ -54,7 +54,7 @@ fn nothing_measured_means_nothing_specialized() {
 /// below are the only frames this renderer can produce.
 #[test]
 fn this_backend_offers_none_of_the_three() {
-    let gpu = HeadlessRaster::new();
+    let gpu = CpuRaster::new();
     let caps = gpu.caps();
     assert!(!caps.compute_dispatch);
     assert_eq!(caps.bindless_texture_slots, 0);
@@ -69,7 +69,7 @@ fn an_ordinary_frame_reports_no_specialization() {
     const W: u32 = 256;
     const H: u32 = 256;
 
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(viso_gpu::RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);

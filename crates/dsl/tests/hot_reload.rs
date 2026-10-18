@@ -19,10 +19,14 @@
 //!    node's focus, scroll and edit buffer to its rebuilt node, and reports the
 //!    focus and scroll that could not survive the rebuild.
 
+#[path = "support/reload.rs"]
+mod reload;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload};
+use reload::{LiveRuntime, hot_reload};
+use viso_dsl::hotreload::CandidatePlan;
 use viso_ui::state::StateKey;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -117,10 +121,8 @@ fn preorder(store: &NodeStore, root: Option<NodeId>) -> Vec<NodeId> {
 
 fn walk(store: &NodeStore, node: NodeId, out: &mut Vec<NodeId>) {
     out.push(node);
-    let mut child = store.arena().links(node).and_then(|l| l.first_child);
-    while let Some(c) = child {
+    for c in store.arena().children(node) {
         walk(store, c, out);
-        child = store.arena().links(c).and_then(|l| l.next_sibling);
     }
 }
 
@@ -223,11 +225,7 @@ fn lay_out(live: &mut Live) {
 }
 
 /// Reload `source` into `live` over `last_good`, returning the commit.
-fn reload(
-    live: &mut Live,
-    last_good: &CandidatePlan,
-    source: &str,
-) -> viso_dsl::hotreload::HotReload {
+fn reload(live: &mut Live, last_good: &CandidatePlan, source: &str) -> reload::HotReload {
     let mut rt = live.runtime();
     let done = hot_reload(&mut rt, last_good, source).expect("the edit commits");
     live.root = rt.root;
@@ -520,10 +518,8 @@ fn composition_state_survives_a_compatible_reload() {
 /// The children of `parent`, in order.
 fn children(store: &NodeStore, parent: NodeId) -> Vec<NodeId> {
     let mut out = Vec::new();
-    let mut child = store.arena().links(parent).and_then(|l| l.first_child);
-    while let Some(c) = child {
+    for c in store.arena().children(parent) {
         out.push(c);
-        child = store.arena().links(c).and_then(|l| l.next_sibling);
     }
     out
 }
@@ -589,7 +585,6 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
     assert!(
         live.bindings
             .for_state(first_state)
-            .iter()
             .any(|edge| edge.node == first),
         "a sibling's edges survive the view's rebind"
     );

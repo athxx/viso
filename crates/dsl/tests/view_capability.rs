@@ -101,11 +101,14 @@ fn click(host: &mut ViewHost, handler: u32, states: &mut StateStore) -> bool {
 fn the_package_grant_travels_in_the_module_and_its_wire_form() {
     let view = view(&["clipboard.write"]);
     let [copy, _] = handlers(&view);
-    assert_eq!(view.module.capabilities(), [Box::from("clipboard.write")]);
+    assert_eq!(
+        view.module.capabilities(),
+        [viso_behavior::Text::from("clipboard.write")]
+    );
     let mut states = StateStore::default();
     for host in [
         ViewHost::new(Rc::clone(&view.module), &view.component).expect("mounts"),
-        ViewHost::from_bytes(&view.bytes, &view.component).expect("loads"),
+        ViewHost::from_bytes(&view.bytes, &view.component, None).expect("loads"),
     ] {
         assert_eq!(host.capabilities(), [Box::from("clipboard.write")]);
         let (mut host, board) = with_board(host);

@@ -3,11 +3,29 @@
 //! counters, so a push or a pop never allocates or blocks, and a push to a
 //! full queue drops the value and counts it.
 
-use std::cell::{Cell, UnsafeCell};
-use std::marker::PhantomData;
-use std::mem::MaybeUninit;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use core::cell::{Cell, UnsafeCell};
+use core::marker::PhantomData;
+use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// The counter of dropped values: 64 bits where the target has 64-bit
+/// atomics, else the pointer width.
+#[cfg(target_has_atomic = "64")]
+type DropCount = core::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+type DropCount = AtomicUsize;
+
+#[cfg(target_has_atomic = "64")]
+fn dropped(count: &DropCount) -> u64 {
+    count.load(Ordering::Relaxed)
+}
+
+#[cfg(not(target_has_atomic = "64"))]
+fn dropped(count: &DropCount) -> u64 {
+    count.load(Ordering::Relaxed) as u64
+}
 
 /// Keeps the two counters on separate cache lines, so the producer's writes
 /// do not evict the consumer's.
@@ -20,7 +38,7 @@ struct Ring<T> {
     head: Padded<AtomicUsize>,
     /// The next slot to push, counting every push ever.
     tail: Padded<AtomicUsize>,
-    dropped: AtomicU64,
+    dropped: DropCount,
 }
 
 // SAFETY: a slot is written only by the one producer while it is outside
@@ -59,7 +77,7 @@ pub fn realtime_queue<T: Copy + Send>(capacity: usize) -> (RealtimeSender<T>, Re
             .collect(),
         head: Padded(AtomicUsize::new(0)),
         tail: Padded(AtomicUsize::new(0)),
-        dropped: AtomicU64::new(0),
+        dropped: DropCount::new(0),
     });
     (
         RealtimeSender {
@@ -93,7 +111,7 @@ impl<T: Copy + Send> RealtimeSender<T> {
 
     /// The values dropped because the queue was full.
     pub fn dropped(&self) -> u64 {
-        self.ring.dropped.load(Ordering::Relaxed)
+        dropped(&self.ring.dropped)
     }
 }
 
@@ -117,18 +135,18 @@ impl<T: Copy + Send> RealtimeReceiver<T> {
 
     /// The values dropped because the queue was full.
     pub fn dropped(&self) -> u64 {
-        self.ring.dropped.load(Ordering::Relaxed)
+        dropped(&self.ring.dropped)
     }
 }
 
-impl<T> std::fmt::Debug for RealtimeSender<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T> core::fmt::Debug for RealtimeSender<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("RealtimeSender")
     }
 }
 
-impl<T> std::fmt::Debug for RealtimeReceiver<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T> core::fmt::Debug for RealtimeReceiver<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("RealtimeReceiver")
     }
 }
@@ -136,6 +154,7 @@ impl<T> std::fmt::Debug for RealtimeReceiver<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     #[test]
     fn values_pop_in_order_and_a_full_queue_drops() {
@@ -147,7 +166,7 @@ mod tests {
         assert_eq!(tx.dropped(), 1);
         assert_eq!(rx.pop(), Some(0));
         assert!(tx.push(5), "a popped slot is reused");
-        let rest: Vec<u32> = std::iter::from_fn(|| rx.pop()).collect();
+        let rest: Vec<u32> = core::iter::from_fn(|| rx.pop()).collect();
         assert_eq!(rest, [1, 2, 3, 5]);
         assert_eq!(rx.pop(), None);
     }

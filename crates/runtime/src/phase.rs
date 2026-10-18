@@ -9,6 +9,12 @@
 /// The ordered phases of a single frame.
 ///
 /// The discriminant order is the execution order and is part of the contract.
+/// Rules (ADR 0043):
+///
+/// - every write of phases 2–5 joins one transaction, flushed once in 6;
+/// - an empty phase costs O(1), decided by a dirty worklist, never a walk;
+/// - an effect runs in 15, after `Submit`, and its writes are the next frame's;
+/// - semantics publish in 16, off the input-to-photon path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum FramePhase {
@@ -16,42 +22,79 @@ pub enum FramePhase {
     CollectInput,
     /// 2. Route input to focus/hit-test targets (capture → target → bubble).
     DispatchInput,
-    /// 3. Flush batched state writes from this input transaction exactly once.
+    /// 3. Run continuations: finished tasks, due timers, async completions.
+    RunContinuations,
+    /// 4. Commit the staged dev patch bundle at the frame boundary. Dev builds
+    ///    only; a Release driver never sees work here.
+    ApplyDevPatches,
+    /// 5. Advance animation tracks, transitions and frame clients.
+    AdvanceAnimations,
+    /// 6. Flush the frame's one transaction: derivations, bindings, structure.
     FlushStateTransactions,
-    /// 4. Resolve style/theme deltas for dirty nodes only.
+    /// 7. Resolve style/theme deltas for dirty nodes only.
     ResolveStyle,
-    /// 5. Measure content (using cached results where constraints are stable).
+    /// 8. Measure content (using cached results where constraints are stable).
     Measure,
-    /// 6. Position nodes.
+    /// 9. Position nodes.
     Layout,
-    /// 7. Incrementally update accessibility semantics.
-    UpdateSemantics,
-    /// 8. Produce paint/primitive deltas for changed nodes.
+    /// 10. Propagate world transforms, update the transform buffer and the
+    ///     visible set.
+    UpdateTransforms,
+    /// 11. Produce paint/primitive deltas for changed nodes.
     BuildPaintChanges,
-    /// 9. Bucket primitives into batches (compact IDs, respects z-order).
+    /// 12. Bucket primitives into batches and compute the damage region.
     BuildRenderBatches,
-    /// 10. Upload changed GPU data via ring/persistent buffers.
+    /// 13. Upload changed GPU data (or rasterize damaged tiles on the CPU).
     UploadGpuChanges,
-    /// 11. Submit to the backend.
+    /// 14. Present, with damage.
     Submit,
-    /// 12. Post-frame cleanup / recycle.
+    /// 15. Run the effects the flush queued; their writes are the next frame's.
+    RunEffects,
+    /// 16. Publish accessibility semantics.
+    UpdateSemantics,
+    /// 17. Post-frame cleanup / recycle.
     PostFrameCleanup,
 }
 
 impl FramePhase {
     /// All phases in execution order.
-    pub const ORDER: [FramePhase; 12] = [
+    pub const ORDER: [FramePhase; 17] = [
         FramePhase::CollectInput,
         FramePhase::DispatchInput,
+        FramePhase::RunContinuations,
+        FramePhase::ApplyDevPatches,
+        FramePhase::AdvanceAnimations,
         FramePhase::FlushStateTransactions,
         FramePhase::ResolveStyle,
         FramePhase::Measure,
         FramePhase::Layout,
-        FramePhase::UpdateSemantics,
+        FramePhase::UpdateTransforms,
         FramePhase::BuildPaintChanges,
         FramePhase::BuildRenderBatches,
         FramePhase::UploadGpuChanges,
         FramePhase::Submit,
+        FramePhase::RunEffects,
+        FramePhase::UpdateSemantics,
         FramePhase::PostFrameCleanup,
     ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FramePhase;
+
+    #[test]
+    fn order_is_discriminant_order() {
+        for (i, phase) in FramePhase::ORDER.iter().enumerate() {
+            assert_eq!(*phase as usize, i);
+        }
+    }
+
+    #[test]
+    fn effects_and_semantics_follow_submit() {
+        let at = |p| FramePhase::ORDER.iter().position(|&q| q == p).unwrap();
+        assert!(at(FramePhase::Submit) < at(FramePhase::RunEffects));
+        assert!(at(FramePhase::RunEffects) < at(FramePhase::UpdateSemantics));
+        assert!(at(FramePhase::AdvanceAnimations) < at(FramePhase::FlushStateTransactions));
+    }
 }

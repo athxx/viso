@@ -14,6 +14,9 @@
 //! identical to the one Slice O's live commit builds from the same source, so the
 //! three targets (macro tokens, live commit, AOT package) are genuinely one frontend.
 
+#[path = "support/reload.rs"]
+mod reload;
+
 use viso_dsl::aot::build_package;
 use viso_ui::aot::load_from_bytes;
 use viso_ui::dirty::DirtyClass;
@@ -53,10 +56,8 @@ fn preorder(store: &NodeStore, root: Option<NodeId>) -> Vec<NodeId> {
 
 fn walk(store: &NodeStore, node: NodeId, out: &mut Vec<NodeId>) {
     out.push(node);
-    let mut child = store.arena().links(node).and_then(|l| l.first_child);
-    while let Some(c) = child {
+    for c in store.arena().children(node) {
         walk(store, c, out);
-        child = store.arena().links(c).and_then(|l| l.next_sibling);
     }
 }
 
@@ -94,7 +95,7 @@ fn packaged_app_boots_and_renders_with_the_compiler_absent_from_the_load_path() 
         .states
         .id_for_key(text_label_key())
         .expect("the bound state was registered by the loader");
-    let bindings = rt.bindings.for_state(state);
+    let bindings: Vec<_> = rt.bindings.for_state(state).collect();
     assert_eq!(bindings.len(), 1, "one edge for the bound Text");
     assert_eq!(bindings[0].node, text, "the edge reaches the Text node");
     assert!(
@@ -198,11 +199,11 @@ fn child_counts(store: &NodeStore, root: NodeId) -> Vec<usize> {
 
 fn child_counts_walk(store: &NodeStore, node: NodeId, out: &mut Vec<usize>) {
     let mut count = 0;
-    let mut child = store.arena().links(node).and_then(|l| l.first_child);
+    let mut child = store.arena().first_child(node);
     let first = child;
     while let Some(c) = child {
         count += 1;
-        child = store.arena().links(c).and_then(|l| l.next_sibling);
+        child = store.arena().next_sibling(c);
     }
     out.push(count);
     // Descend in the same pre-order the count was taken, so indices line up with the
@@ -210,14 +211,15 @@ fn child_counts_walk(store: &NodeStore, node: NodeId, out: &mut Vec<usize>) {
     let mut child = first;
     while let Some(c) = child {
         child_counts_walk(store, c, out);
-        child = store.arena().links(c).and_then(|l| l.next_sibling);
+        child = store.arena().next_sibling(c);
     }
 }
 
 /// Mount `source` through the Slice O live commit and return its pre-order child-count
 /// shape — the reference the AOT tree is compared against.
 fn live_commit_child_counts(source: &str) -> Vec<usize> {
-    use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload};
+    use reload::{LiveRuntime, hot_reload};
+    use viso_dsl::hotreload::CandidatePlan;
     use viso_ui::{EffectStore, SemanticProjector};
 
     let mut store = NodeStore::new();
@@ -274,7 +276,8 @@ fn boxes(store: &mut NodeStore, root: NodeId, env: viso_ui::LengthEnv) -> Vec<(f
 
 #[test]
 fn packaged_environment_lengths_resolve_as_the_live_commit_does() {
-    use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload};
+    use reload::{LiveRuntime, hot_reload};
+    use viso_dsl::hotreload::CandidatePlan;
     use viso_ui::{EffectStore, LengthEnv, SemanticProjector};
 
     let source = "Row { gap: 2px; Column { font_size: 125%; width: 50% - 4px; \
@@ -358,7 +361,8 @@ fn rects(store: &mut NodeStore, root: NodeId, env: viso_ui::LengthEnv) -> Vec<[f
 
 #[test]
 fn packaged_padding_lays_out_as_the_live_commit_does() {
-    use viso_dsl::hotreload::{CandidatePlan, LiveRuntime, hot_reload};
+    use reload::{LiveRuntime, hot_reload};
+    use viso_dsl::hotreload::CandidatePlan;
     use viso_ui::adaptive::LayoutDirection;
     use viso_ui::{EffectStore, LengthEnv, SemanticProjector};
 

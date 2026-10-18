@@ -380,7 +380,7 @@ impl OutlineBuilder for Flatten {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use core::time::Duration;
 
     use ab_glyph_rasterizer::{Rasterizer, point};
 

@@ -540,7 +540,7 @@ safety-relevant behavior §9.2 actually cares about — rather than building an 
       already satisfy §9.2's intent (no per-frame buffer realloc; fence-safe reclaim of
       the only buffers that ever churn — a pool's old buffer on grow). Nothing to wire.
 - [x] `render/tests/fence_recycle.rs` (NEW): drives `InstancePool` grow against a real
-      `HeadlessRaster` across `begin_frame`/`present` cycles and proves the F1 fence gate
+      `CpuRaster` across `begin_frame`/`present` cycles and proves the F1 fence gate
       through the backend's observable surface (`retired_count`, `buffer_count`):
       growing retires the old buffer into the `RetireQueue` (parked, `retired_count` +1)
       but does NOT free it in the frame it was retired in (in-flight — the fence has not
@@ -570,7 +570,7 @@ safety-relevant behavior §9.2 actually cares about — rather than building an 
       zero `write_buffer` calls for that family. Both scratch Vecs are reused across
       frames (no steady-state alloc). Grow path still forces one full upload.
 - [x] `render/tests/coalescer.rs` (NEW): 7 integration tests driving the pool via
-      `HeadlessRaster` — one dirty slot → one range; no dirty slots → zero ranges;
+      `CpuRaster` — one dirty slot → one range; no dirty slots → zero ranges;
       changes within the gap threshold merge into one range; changes past it split into
       two; three scattered clusters collapse to three ranges; repeated scattered
       repaints issue a stable range count (scratch reuse). The rewritten F4.2
@@ -1596,7 +1596,7 @@ instancing/coverage integration + mask/blur caching in `viso-render`; blur targe
         body over that larger area for every card.
   - [x] Verdict: fused pipeline **deferred**, not built. The §20.1 gate's deciding half —
         real-Metal shader register pressure and shaded-pixel time — is unobservable here
-        (`FrameStats` has no overdraw/GPU-timing counter; `HeadlessRaster` is a CPU
+        (`FrameStats` has no overdraw/GPU-timing counter; `CpuRaster` is a CPU
         rasterizer), so whether the fused fragment's extra ALU + larger shaded area beat the
         separate path's extra draw/switch cost is a device measurement, not a headless one
         (§7.3). Building the big shader on that unmeasured hypothesis is what §7.3/§36 forbid;
@@ -1893,7 +1893,7 @@ C0 + E0 frozen; builds on F1 fence/retire and F4 pool/batch.
   - [x] Flagged, not asserted: on-device shaded-pixel time per tier (the sigma crossover
         is reasoned from the tap budget, not measured on Metal); "does not continuously
         submit" and high-refresh cadence are present-loop properties owned by
-        `runtime/benches/frame_loop.rs::assert_idle_does_no_work`; `HeadlessRaster` has no
+        `runtime/benches/frame_loop.rs::assert_idle_does_no_work`; `CpuRaster` has no
         bandwidth or overdraw counter, so a reduced-extent ladder's bandwidth saving is
         inferred from target bytes (§7.3/§36).
 
@@ -2021,10 +2021,10 @@ capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 fa
         transient target, recompiles no graph, and creates no backend texture.
   - [x] Timing rows `frosted_row_upload_steady` (1.20 µs — planning the shared group and
         claiming its targets) and `frosted_row_frame` (2.45 ms — encode of the capture, its
-        rungs and six composites through `HeadlessRaster`'s CPU rasterizer) separate plan
+        rungs and six composites through `CpuRaster`'s CPU rasterizer) separate plan
         reuse from encode.
   - [x] Flagged, not asserted: on-device Metal time for a capture vs. N captures (no GPU
-        capture here, and `HeadlessRaster` has no bandwidth/overdraw counter, so the saving
+        capture here, and `CpuRaster` has no bandwidth/overdraw counter, so the saving
         is evidenced by pass counts and captured pixels, §7.3/§36); the union-slack and
         sharing thresholds are internal consts chosen by reasoning, not tuned against a
         device; the graph read-edge is verified through pass accounting rather than edge
@@ -2100,7 +2100,7 @@ capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 fa
         `graded_cards_split_frame` (94.4 µs) bracket the fused/split difference in CPU
         terms: the split row's eight extra scratch passes roughly double the encode.
   - [x] Flagged, not asserted: on-device Metal shaded-pixel time and bandwidth for a fused
-        vs. split chain (no GPU capture here; `HeadlessRaster` proves pixel fidelity and
+        vs. split chain (no GPU capture here; `CpuRaster` proves pixel fidelity and
         pass counts, not device savings, §7.3/§36); the ~2x figure above is the CPU
         rasterizer's cost, not a GPU ratio. `Gamma` stands in for "a non-expressible custom
         filter" because no user-shader effect surface exists yet, so the split path is
@@ -2174,7 +2174,7 @@ capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 fa
         row, and the non-separable HSL fragment is indistinguishable from the separable one
         at this size.
   - [x] Flagged, not asserted: on-device Metal shaded-pixel time and bandwidth for an
-        isolated blend (no GPU capture here — `HeadlessRaster` proves pixel fidelity and pass
+        isolated blend (no GPU capture here — `CpuRaster` proves pixel fidelity and pass
         counts, not device savings, §7.3/§36); the µs figures above are CPU rasterizer cost,
         so the separable/non-separable parity is a property of this backend, not of a GPU.
         The middle rung of the C0.5 ladder — backend destination-read via subpass /
@@ -2310,7 +2310,7 @@ capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 fa
         abutting case either way. A clean `BackdropDependency` is _reported_ but not yet
         _acted on_: skipping the capture and its ladder needs retained (non-transient)
         capture textures, so E2.4 pays the same passes a dirty ROI would and E2.5 owns the
-        saving. The µs figures are `HeadlessRaster` CPU rasterizer cost, not device time (no
+        saving. The µs figures are `CpuRaster` CPU rasterizer cost, not device time (no
         GPU capture here, §7.3/§36) — the 3.9× is a real frame-path saving on this backend,
         but on-device the avoided target also saves bandwidth and a pass boundary that are
         unmeasured. `SnapshotCache` and `NativeMaterialBoundary` are nameable and costed but
@@ -2384,7 +2384,7 @@ capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 fa
         glass screen: `glass_screen_upload_steady` = **5.07 µs** (plan + encode of a
         warm, unchanged glass screen — 0.03% of the 16.67 ms frame at 60 Hz, 0.12% of
         the 4.17 ms at 240 Hz) and `glass_screen_frame` = **4.77 ms** for upload +
-        submit. The second number is _not_ a frame budget result: `HeadlessRaster`
+        submit. The second number is _not_ a frame budget result: `CpuRaster`
         shades every blur tap in scalar CPU code, so it measures the test rasterizer,
         not a device. The frame-path claim this gate supports is the upload row and the
         counter flatness above; the device-side budget is unmeasured here.

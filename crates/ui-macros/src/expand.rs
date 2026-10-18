@@ -34,7 +34,7 @@ use viso_dsl::schema::Natives;
 use viso_dsl::syntax::{LineIndex, TextRange};
 use viso_dsl::view_behavior::{MountError, UNMOUNTED_HANDLER, ViewBehavior, view_behavior};
 
-use crate::emit::emit_view;
+use crate::emit::{aligned_bytes, aligned_file, emit_view, overlay_dependency};
 use crate::package;
 use crate::source_text::SourceText;
 
@@ -194,7 +194,9 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 /// `asset!("images/logo.png")`: the file of the package's `assets/` the path
 /// names, checked to exist and to be a PNG, JPEG or SVG, as a
-/// `viso_ui::Asset` embedding its bytes — so editing it rebuilds the crate.
+/// `viso_ui::Asset` embedding its bytes, or the file the build converted it
+/// to ([`embedded_asset`](viso_dsl::assets::embedded_asset)), as an aligned
+/// `static` — so editing it rebuilds the crate.
 pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let expansion = (|| {
         let literal: LitStr = syn::parse(input)?;
@@ -225,21 +227,25 @@ pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
         let format = AssetFormat::sniff(&head)
             .ok_or_else(|| fail(format!("`assets/{path}` is not a PNG, JPEG or SVG file")))?;
+        let (file, kind) = viso_dsl::assets::embedded_asset(&dir, &path, format);
         let file = file
             .to_str()
             .ok_or_else(|| fail(format!("the path of `assets/{path}` is not UTF-8")))?;
+        let bytes = aligned_file(file);
+        let overlay = overlay_dependency();
         let id = Literal::u64_suffixed(ResourceId::of(&path).0);
-        let kind = match format.kind() {
+        let kind = match kind {
             AssetKind::Raster => quote! { Raster },
             AssetKind::Vector => quote! { Vector },
         };
-        Ok(quote! {
+        Ok(quote! {{
+            #overlay
             ::viso::__private::viso_ui::Asset {
                 id: ::viso::__private::viso_ui::resource::ResourceId(#id),
                 kind: ::viso::__private::viso_ui::resource::AssetKind::#kind,
-                bytes: ::viso::__private::viso_ui::AssetBytes::Static(::core::include_bytes!(#file)),
+                bytes: ::viso::__private::viso_ui::AssetBytes::Static(#bytes),
             }
-        })
+        }})
     })();
     finish(expansion, true)
 }
@@ -429,16 +435,19 @@ fn mount<'a>(
 }
 
 /// The `__viso_host` a view with behavior dispatches into: the component's
-/// module, embedded as bytes and decoded once per thread, mirrored into the
-/// states the expansion allocated, and tracking the `tracked` ones through
-/// their revision cells.
+/// module, embedded as an aligned `static` and decoded once per thread,
+/// borrowing it, mirrored into the states the expansion allocated, and
+/// tracking the `tracked` ones through their revision cells. `viso::__behavior!`
+/// keeps one form of the module: its bytecode, or — where it runs the module
+/// compiled to Rust — that code and the module without bytecode.
 fn host_tokens(
     behavior: &ViewBehavior,
     idents: &HashMap<SymbolId, Ident>,
     tracked: &BTreeSet<SymbolId>,
     assets: TokenStream,
 ) -> TokenStream {
-    let bytes = Literal::byte_string(&behavior.bytes);
+    let bytecode = aligned_bytes(&behavior.bytes);
+    let compiled = aligned_bytes(&behavior.compiled_bytes());
     let component = &behavior.component;
     let mirrors = behavior.slots.iter().filter_map(|(symbol, slot)| {
         let local = idents.get(symbol)?;
@@ -449,8 +458,24 @@ fn host_tokens(
             quote! { __viso_view.mirror(#slot, #local); }
         })
     });
+    let native: TokenStream = behavior
+        .native_code("::viso::__private::viso_behavior")
+        .parse()
+        .expect("the lowered module is Rust");
     quote! {
-        let __viso_host = ::viso::__private::viso_view::__embedded(#bytes, #component);
+        let (__viso_module, __viso_native) = ::viso::__behavior! {
+            bytecode: #bytecode,
+            compiled: #compiled,
+            native: {
+                mod __viso_native { #native }
+                &__viso_native::NATIVE
+            },
+        };
+        let __viso_host = ::viso::__private::viso_view::__embedded(
+            __viso_module,
+            #component,
+            __viso_native,
+        );
         {
             let mut __viso_view = __viso_host.borrow_mut();
             #(#mirrors)*
@@ -465,9 +490,11 @@ fn asset_dir(profile: &package::Profile) -> Option<&Path> {
     profile.target.assets.as_deref().map(AssetCatalog::dir)
 }
 
-/// The statement giving the host the bytes of every asset the view names,
-/// embedded with `include_bytes!` — so editing one rebuilds the form — or
-/// nothing for a view naming none.
+/// The statement giving the host the bytes of every asset the view names —
+/// each the file the build converted it to, or its source
+/// ([`embedded_file`](viso_dsl::assets::embedded_file)) — embedded with
+/// `include_bytes!` as an aligned `static`, so editing one rebuilds the form;
+/// or nothing for a view naming none.
 fn embedded_assets(compiled: &Compiled, dir: Option<&Path>) -> Result<TokenStream, String> {
     if compiled.assets.is_empty() {
         return Ok(TokenStream::new());
@@ -477,19 +504,24 @@ fn embedded_assets(compiled: &Compiled, dir: Option<&Path>) -> Result<TokenStrea
     };
     let mut entries = Vec::with_capacity(compiled.assets.len());
     for asset in &compiled.assets {
-        let path = dir.join(&asset.path);
+        let path = viso_dsl::assets::embedded_file(dir, &asset.path);
         let path = path
             .to_str()
             .ok_or_else(|| format!("the path of `assets/{}` is not UTF-8", asset.path))?;
+        let bytes = aligned_file(path);
         let id = Literal::u64_suffixed(asset.id.0);
         entries.push(quote! {
             (
                 ::viso::__private::viso_ui::resource::ResourceId(#id),
-                ::viso::__private::viso_ui::AssetBytes::Static(::core::include_bytes!(#path)),
+                ::viso::__private::viso_ui::AssetBytes::Static(#bytes),
             )
         });
     }
-    Ok(quote! { __viso_view.set_assets([#(#entries),*]); })
+    let overlay = overlay_dependency();
+    Ok(quote! {
+        #overlay
+        __viso_view.set_assets([#(#entries),*]);
+    })
 }
 
 /// The statement giving the host its shader table, or nothing for a view
@@ -504,15 +536,16 @@ fn embedded_shaders(behavior: &ViewBehavior) -> Result<TokenStream, String> {
     for brush in &behavior.shaders {
         let pack = |lang: ShaderLang| {
             pack_brush(brush, &[lang, ShaderLang::None])
-                .map(|bytes| Literal::byte_string(&bytes))
+                .map(|bytes| aligned_bytes(&bytes))
                 .map_err(|error| {
                     format!("internal: a shader the view paints with does not build: {error}")
                 })
         };
-        let (msl, hlsl, spirv, wgsl, none) = (
+        let (msl, hlsl, spirv, glsl, wgsl, none) = (
             pack(ShaderLang::Msl)?,
             pack(ShaderLang::Hlsl)?,
             pack(ShaderLang::SpirV)?,
+            pack(ShaderLang::Glsl)?,
             pack(ShaderLang::Wgsl)?,
             pack(ShaderLang::None)?,
         );
@@ -521,6 +554,7 @@ fn embedded_shaders(behavior: &ViewBehavior) -> Result<TokenStream, String> {
                 msl: #msl,
                 hlsl: #hlsl,
                 spirv: #spirv,
+                glsl: #glsl,
                 wgsl: #wgsl,
                 none: #none,
             ))

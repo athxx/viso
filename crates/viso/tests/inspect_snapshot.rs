@@ -12,7 +12,7 @@
 //! readout (section 7.2): it only reads `&self` accessors and the renderer's own
 //! batch/stats snapshot, mutating nothing.
 
-use viso::gpu::{GpuBackend, HeadlessRaster, RawWindowHandle};
+use viso::gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso::render::{Rect, Renderer, Rgba};
 use viso::snapshot_ui;
 use viso::ui::{
@@ -76,7 +76,7 @@ fn build(store: &mut NodeStore) -> NodeId {
 /// Lay out `store`'s tree, paint it, and drive it through a headless renderer so
 /// its batch/stats snapshot reflects a real encoded frame. Returns the live
 /// renderer alongside the scene so the snapshot reads them in the same window.
-fn settled_scene() -> (NodeStore, NodeId, Renderer, HeadlessRaster) {
+fn settled_scene() -> (NodeStore, NodeId, Renderer, CpuRaster) {
     let mut store = NodeStore::new();
     let root = build(&mut store);
 
@@ -92,7 +92,7 @@ fn settled_scene() -> (NodeStore, NodeId, Renderer, HeadlessRaster) {
     let mut primitives = Vec::new();
     paint_tree(&store, root, &mut primitives);
 
-    let mut gpu = HeadlessRaster::new();
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut renderer = Renderer::new(&mut gpu, format);

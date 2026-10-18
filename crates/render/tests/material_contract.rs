@@ -28,7 +28,7 @@
 //! Everything goes through the public surface: `Primitive::Frosted` in,
 //! `FrameStats` and read-back pixels out.
 
-use viso_gpu::{GpuBackend, HeadlessRaster, RawWindowHandle, SurfaceId, TextureFormat};
+use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
 use viso_render::{
     Border, ColorEffect, ColorOp, Corners, FrameStats, FrostedMaterial, LayerClip, Primitive, Quad,
     Rect, Renderer, Rgba, fuse,
@@ -42,8 +42,8 @@ const H: u32 = 128;
 /// the surface.
 const SIGMA: f32 = 4.0;
 
-fn renderer(w: u32, h: u32) -> (HeadlessRaster, SurfaceId, Renderer) {
-    let mut gpu = HeadlessRaster::new();
+fn renderer(w: u32, h: u32) -> (CpuRaster, SurfaceId, Renderer) {
+    let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
@@ -98,7 +98,7 @@ fn backdrop_layer(clip: Rect, sigma: f32) -> Primitive {
     })
 }
 
-fn frame(r: &mut Renderer, gpu: &mut HeadlessRaster, primitives: &[Primitive]) -> FrameStats {
+fn frame(r: &mut Renderer, gpu: &mut CpuRaster, primitives: &[Primitive]) -> FrameStats {
     r.upload(gpu, primitives);
     r.frame_stats()
 }

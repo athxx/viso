@@ -20,12 +20,12 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use viso_ende::{Decode, Decoder, Encode, Encoder};
-use viso_view::dev::wire::{
+use viso_dev_protocol::inspect::{InspectAsk, InspectorCaps};
+use viso_dev_protocol::wire::{
     DEV_PROTOCOL_VERSION, GameAsk, MAX_RECORD_TICKS, Message, RecordSpan, WireError, read_frame,
     same_token, write_frame,
 };
-use viso_view::inspect::{InspectAsk, InspectorCaps};
+use viso_ende::{Decode, Decoder, Encode, Encoder};
 
 use crate::error;
 
@@ -181,7 +181,7 @@ fn serve(mut stream: TcpStream, token: &str, deliver: &dyn Fn(ControlCall) -> bo
     let mut buf = Vec::new();
     let request = match read_frame::<ControlRequest>(&mut stream, &mut buf) {
         Ok(Some(request)) if same_token(&request.token, token) => request,
-        Err(viso_view::dev::wire::FrameError::Wire(WireError::Version { peer })) => {
+        Err(viso_dev_protocol::wire::FrameError::Wire(WireError::Version { peer })) => {
             let reply = ControlReply::refused(
                 ENV_NO_DEV_SESSION,
                 format!(
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn mutated_control_frames_never_panic() {
         let bodies = [
-            viso_view::dev::wire::encode(&ControlRequest {
+            viso_dev_protocol::wire::encode(&ControlRequest {
                 token: "t".into(),
                 ask: ControlAsk::Game {
                     game: "src/a.vs".into(),
@@ -593,17 +593,17 @@ mod tests {
                     },
                 },
             }),
-            viso_view::dev::wire::encode(&ControlReply::Inspected {
+            viso_dev_protocol::wire::encode(&ControlReply::Inspected {
                 answer: vec![1, 2],
                 sources: vec![3],
                 inspector: InspectorCaps::TREE,
             }),
-            viso_view::dev::wire::encode(&ControlReply::Refused {
+            viso_dev_protocol::wire::encode(&ControlReply::Refused {
                 code: GAME_BUSY.into(),
                 message: "busy".into(),
                 notes: vec!["n".into()],
             }),
-            viso_view::dev::wire::encode(&ControlReply::Tape {
+            viso_dev_protocol::wire::encode(&ControlReply::Tape {
                 file: "a.vs".into(),
                 tape: vec![1, 2, 3],
             }),
@@ -681,7 +681,7 @@ mod tests {
                 },
             },
         ] {
-            let body = viso_view::dev::wire::encode(&request);
+            let body = viso_dev_protocol::wire::encode(&request);
             assert_eq!(ControlRequest::from_frame(&body), Ok(request));
         }
         for reply in [
@@ -707,7 +707,7 @@ mod tests {
                 notes: vec!["n".into()],
             },
         ] {
-            let body = viso_view::dev::wire::encode(&reply);
+            let body = viso_dev_protocol::wire::encode(&reply);
             assert_eq!(ControlReply::from_frame(&body), Ok(reply));
         }
         let long = ControlRequest {
@@ -715,7 +715,7 @@ mod tests {
             ask: ControlAsk::Inspect(InspectAsk::Census),
         };
         assert_eq!(
-            ControlRequest::from_frame(&viso_view::dev::wire::encode(&long)),
+            ControlRequest::from_frame(&viso_dev_protocol::wire::encode(&long)),
             Err(WireError::Bound {
                 what: "control token"
             })

@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use viso_behavior::native::Natives;
 use viso_behavior::{Aggregate, Budget, Fault, Instance, Module, Value, Vm};
-use viso_ui::adaptive::EnvField;
+use viso_schema::EnvField;
 
 use super::{Finding, Need};
 use crate::behavior::ir::{ComponentLayout, FuncId, Inst, Program};
@@ -92,7 +92,7 @@ impl<'a> Eval<'a> {
         };
         let (themes, locales) = (slots(EnvField::Theme), slots(EnvField::Locale));
         for &slot in &themes {
-            instance.set_state(slot as usize, viso_view::default_theme());
+            instance.set_state(slot as usize, viso_behavior::theme::default_theme());
         }
         for &slot in &locales {
             let locale = Aggregate {

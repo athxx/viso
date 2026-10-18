@@ -44,9 +44,9 @@ use crate::backend::ios_translate::{
 };
 use crate::control::{LogicalRect, WindowId};
 use crate::event::{
-    ClipboardReply, ClipboardShortcut, Insets, KeyCode, Modifiers, PointerButtons, PointerId,
-    PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
-    clipboard_shortcut,
+    ClipboardReply, ClipboardShortcut, KeyCode, LogicalInsets, Modifiers, PointerButtons,
+    PointerId, PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll,
+    RawText, clipboard_shortcut,
 };
 
 /// `UITextLayoutDirection` values toward the document's start.
@@ -58,7 +58,7 @@ pub(super) struct ViewIvars {
     /// The geometry last reported: scale factor and physical size.
     scale: Cell<f64>,
     size: Cell<(u32, u32)>,
-    safe_area: Cell<Insets>,
+    safe_area: Cell<LogicalInsets>,
     keyboard_height: Cell<f64>,
     touches: RefCell<TouchIds>,
     /// Indirect-pointer buttons held, as a [`PointerButtons`] mask.
@@ -116,7 +116,7 @@ define_class!(
             let _: () = unsafe { msg_send![super(self), safeAreaInsetsDidChange] };
             super::guarded(|| {
                 let e = self.safeAreaInsets();
-                let insets = Insets {
+                let insets = LogicalInsets {
                     top: e.top,
                     left: e.left,
                     bottom: e.bottom,
@@ -621,7 +621,7 @@ impl VisoView {
             window,
             scale: Cell::new(scale),
             size: Cell::new(physical_size(frame.size, scale)),
-            safe_area: Cell::new(Insets::default()),
+            safe_area: Cell::new(LogicalInsets::default()),
             keyboard_height: Cell::new(0.0),
             touches: RefCell::new(TouchIds::default()),
             mouse_buttons: Cell::new(0),

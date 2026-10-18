@@ -105,7 +105,7 @@ pub use mtsdf::{
 pub use outline_cache::{OUTLINE_POOL, OutlineCache, OutlineGlyph, OutlineRequest};
 pub use packaged::{PackagedFace, PackagedFirst, PackagedFonts, PackagedSource, ReplacedFiles};
 pub use progressive::{FontRevision, ParagraphId, Progressive, ReflowScope, RevisionEffect, RunId};
-pub use raster_a8::{CoverageBitmap, rasterize_coverage};
+pub use raster_a8::{BakedFace, CoverageBitmap, rasterize_coverage};
 pub use resolver::{FaceMetrics, FontResolver, Resolved, inspect_face};
 pub use segment::{GraphemeCheckpoint, Segmenter};
 pub use shaping::{Direction, LigatureCarets, ShapedGlyph, ShapedRun, Shaper};

@@ -1,149 +1,39 @@
 //! The release form of a view with behavior: its UI package, its behavior
 //! module, the tables that join them, the bytes of the assets it shows and
 //! the shaders it paints with, loaded with no compiler present.
+//!
+//! A package loads in place ([`ViewPackageView`]): the loader validates the
+//! whole blob, loads the behavior module and the shaders, and only then
+//! mounts, reading the node, edge, state, handler and env tables one record at
+//! a time. Loaded from `'static` bytes — an embedded package, mapped flash —
+//! nothing of the blob is copied: assets, the shaders' cache entries and the
+//! module's names and string constants borrow it ([`load_static_view`]).
 
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
-use std::sync::Arc;
 
-use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
-use viso_ui::adaptive::EnvField;
-use viso_ui::aot::{AotPackage, instantiate_indexed};
-use viso_ui::resource::ResourceId;
-use viso_ui::shader::BrushProgram;
-use viso_ui::state::StateKey;
+use viso_behavior::aot::NativeCode;
+use viso_behavior::{LoadError, Module};
+use viso_ende::DecodeError;
+use viso_ui::aot::instantiate_indexed;
 use viso_ui::{
-    AssetBytes, BindingTable, EffectStore, NodeId, NodeStore, StateStore, StateValue, StructureCx,
-    VirtualLists,
+    AssetBytes, BindingTable, EffectStore, NodeId, NodeStore, StateStore, StructureCx, VirtualLists,
 };
 
 use crate::attach::{Route, attach_node};
 use crate::control::Control;
 use crate::effects::mount_effects;
 use crate::host::{HostError, ViewHost};
-use crate::regions::{ViewRegions, mount_regions};
+use crate::regions::mount_regions;
 use crate::scope::Scope;
-use crate::shaders::load_shader;
+use crate::shaders::load_kept;
 use crate::values::mount_values;
 
-/// A compiled view with behavior, as a release build embeds it.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct ViewPackage {
-    /// The retained tree and its binding edges.
-    pub ui: AotPackage,
-    /// The encoded behavior module, empty for a view without handlers.
-    pub behavior: Vec<u8>,
-    /// The component of [`behavior`](Self::behavior) the view mounts.
-    pub component: String,
-    /// The view's state cells, allocated with their initial values before the
-    /// tree mounts.
-    pub states: Vec<ViewState>,
-    /// The node handlers, grouped by node in ascending node order.
-    pub handlers: Vec<ViewHandler>,
-    /// The native control nodes, in ascending node order.
-    pub controls: Vec<ViewControl>,
-    /// The control-flow regions, mounted under the nodes of
-    /// [`ui`](Self::ui).
-    pub regions: ViewRegions,
-    /// The `env` fields the view's static instances read.
-    pub env: Vec<ViewEnv>,
-    /// The assets the view can show, ascending by resource.
-    pub assets: Vec<ViewAsset>,
-    /// The view's shader table: each shader its shader views paint with, in
-    /// the order their controls index it.
-    pub shaders: Vec<ViewShader>,
-}
-
-/// A shader a view paints with: the packed brush its build produced, and the
-/// program that loads as.
-#[derive(Debug, Clone)]
-pub struct ViewShader {
-    bytes: Arc<[u8]>,
-    program: Arc<BrushProgram>,
-}
-
-impl ViewShader {
-    /// The shader the packed brush `bytes` encodes.
-    ///
-    /// # Errors
-    ///
-    /// Bytes that are not a packed brush.
-    pub fn new(bytes: impl Into<Arc<[u8]>>) -> Result<ViewShader, DecodeError> {
-        let bytes = bytes.into();
-        let program = load_shader(&bytes)?;
-        Ok(ViewShader { bytes, program })
-    }
-
-    /// The packed brush, as the package carries it.
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// The program it loads as.
-    pub fn program(&self) -> &Arc<BrushProgram> {
-        &self.program
-    }
-}
-
-impl PartialEq for ViewShader {
-    fn eq(&self, other: &ViewShader) -> bool {
-        self.bytes == other.bytes
-    }
-}
-
-/// An asset a view can show: its resource and encoded bytes, decoded only
-/// when a node shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ViewAsset {
-    pub id: ResourceId,
-    pub bytes: AssetBytes,
-}
-
-/// An `env` field a view reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ViewEnv {
-    /// The component's state slot holding it.
-    pub slot: u32,
-    /// The field.
-    pub field: EnvField,
-    /// The pre-order index in [`ViewPackage::ui`] of the root node of the
-    /// component instance that reads it, where its anchored fields resolve.
-    pub anchor: u32,
-}
-
-/// A native control node of [`ViewPackage::ui`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ViewControl {
-    /// The pre-order index of the node in [`ViewPackage::ui`].
-    pub node: u32,
-    /// Its built-in response and the entries it reads.
-    pub control: Control,
-}
-
-/// A component state held in a UI cell.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ViewState {
-    /// The cell's durable identity, the key the UI package's edges name.
-    pub key: StateKey,
-    /// The component's state slot the cell mirrors, `None` for a cell no
-    /// handler writes.
-    pub slot: Option<u32>,
-    /// Whether the cell holds a revision of a state no cell can hold (a
-    /// string, a list) rather than its value; see [`ViewHost::track`].
-    pub tracked: bool,
-    /// The cell's initial value.
-    pub initial: StateValue,
-}
-
-/// One node handler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ViewHandler {
-    /// The pre-order index of the node in [`ViewPackage::ui`].
-    pub node: u32,
-    /// The event it runs on, its handler and its phase.
-    pub route: Route,
-}
+pub use viso_schema::view::package::{
+    ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewPackageView, ViewShader,
+    ViewState,
+};
 
 /// A loaded view: its root and the host its handlers dispatch into.
 #[derive(Debug)]
@@ -161,6 +51,8 @@ pub enum ViewLoadError {
     Decode(DecodeError),
     /// The behavior module does not mount.
     Host(HostError),
+    /// A shader of the view is not a packed brush.
+    Shader(DecodeError),
 }
 
 impl fmt::Display for ViewLoadError {
@@ -168,13 +60,38 @@ impl fmt::Display for ViewLoadError {
         match self {
             ViewLoadError::Decode(error) => write!(f, "the view package does not decode: {error}"),
             ViewLoadError::Host(error) => error.fmt(f),
+            ViewLoadError::Shader(error) => {
+                write!(f, "a shader of the view does not load: {error}")
+            }
         }
     }
 }
 
 impl std::error::Error for ViewLoadError {}
 
-/// Decodes `blob` and instantiates the view into the runtime.
+/// How a view loads beyond what its package holds.
+#[derive(Default)]
+pub struct ViewLoad<'a> {
+    /// The package's behavior compiled to Rust (`viso_dsl::aot::package_native_code`,
+    /// built into the app), run in place of the interpreter.
+    pub native: Option<&'static NativeCode>,
+    /// Given the host before the view mounts, to install the services its
+    /// natives and `@persist` states use.
+    pub setup: Option<&'a mut dyn FnMut(&mut ViewHost)>,
+}
+
+impl fmt::Debug for ViewLoad<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ViewLoad")
+            .field("native", &self.native.map(|code| code.build))
+            .field("setup", &self.setup.is_some())
+            .finish()
+    }
+}
+
+/// Validates `blob` and instantiates the view into the runtime. What the view
+/// keeps of the blob — its assets, its module's names and string constants —
+/// is copied; [`load_static_view`] borrows it.
 pub fn load_view(
     blob: &[u8],
     store: &mut NodeStore,
@@ -182,58 +99,112 @@ pub fn load_view(
     bindings: &mut BindingTable,
     lists: &mut VirtualLists,
 ) -> Result<LoadedView, ViewLoadError> {
-    load_view_with(blob, store, states, bindings, lists, &mut |_| {})
+    load_view_with(blob, store, states, bindings, lists, ViewLoad::default())
 }
 
-/// [`load_view`], `setup` given the host before the view mounts, to install
-/// the services its natives and `@persist` states use.
+/// [`load_view`] as `load` says.
 pub fn load_view_with(
     blob: &[u8],
     store: &mut NodeStore,
     states: &mut StateStore,
     bindings: &mut BindingTable,
     lists: &mut VirtualLists,
-    setup: &mut dyn FnMut(&mut ViewHost),
+    load: ViewLoad<'_>,
 ) -> Result<LoadedView, ViewLoadError> {
-    let package = ViewPackage::decode_from_slice(blob).map_err(ViewLoadError::Decode)?;
-    instantiate_view_with(&package, store, states, bindings, lists, setup)
+    let view = ViewPackageView::new(blob).map_err(ViewLoadError::Decode)?;
+    mount(&view, Keep::copied(), store, states, bindings, lists, load)
 }
 
-/// Instantiates a decoded view into the runtime: its state cells first, with
-/// their initial values, then the tree, then the host, its `env` reads, its
-/// persisted states, its handlers, its control-flow regions and the values
+/// [`load_view_with`] for a blob that outlives the program — embedded with
+/// `include_bytes!`, in memory-mapped flash — read where it lies: the view's
+/// assets, its shaders' cache entries and its module's names and string
+/// constants borrow the blob, so RAM holds only what the view builds.
+pub fn load_static_view(
+    blob: &'static [u8],
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &mut BindingTable,
+    lists: &mut VirtualLists,
+    load: ViewLoad<'_>,
+) -> Result<LoadedView, ViewLoadError> {
+    let view = ViewPackageView::new(blob).map_err(ViewLoadError::Decode)?;
+    mount(
+        &view,
+        Keep::borrowed(),
+        store,
+        states,
+        bindings,
+        lists,
+        load,
+    )
+}
+
+/// How a load keeps what outlives it of a blob it reads for `'a`.
+#[derive(Clone, Copy)]
+struct Keep<'a> {
+    asset: fn(&'a [u8]) -> AssetBytes,
+    module: fn(&'a [u8]) -> Result<Module, LoadError>,
+}
+
+impl<'a> Keep<'a> {
+    /// Copies it.
+    fn copied() -> Keep<'a> {
+        Keep {
+            asset: |bytes| AssetBytes::Shared(bytes.into()),
+            module: Module::decode,
+        }
+    }
+}
+
+impl Keep<'static> {
+    /// Borrows it.
+    fn borrowed() -> Keep<'static> {
+        Keep {
+            asset: AssetBytes::Static,
+            module: Module::decode_static,
+        }
+    }
+}
+
+/// Instantiates a validated view into the runtime: the behavior module, the
+/// host and its shaders first — everything that can still fail — then its
+/// state cells, with their initial values, the tree, the host's `env` reads,
+/// its persisted states, its handlers, its control-flow regions and the values
 /// its nodes show.
-pub fn instantiate_view(
-    package: &ViewPackage,
+fn mount<'a>(
+    view: &ViewPackageView<'a>,
+    keep: Keep<'a>,
     store: &mut NodeStore,
     states: &mut StateStore,
     bindings: &mut BindingTable,
     lists: &mut VirtualLists,
+    load: ViewLoad<'_>,
 ) -> Result<LoadedView, ViewLoadError> {
-    instantiate_view_with(package, store, states, bindings, lists, &mut |_| {})
-}
-
-/// [`instantiate_view`], `setup` given the host before the view mounts.
-pub fn instantiate_view_with(
-    package: &ViewPackage,
-    store: &mut NodeStore,
-    states: &mut StateStore,
-    bindings: &mut BindingTable,
-    lists: &mut VirtualLists,
-    setup: &mut dyn FnMut(&mut ViewHost),
-) -> Result<LoadedView, ViewLoadError> {
-    let mut host = if package.behavior.is_empty() {
+    let mut host = if view.behavior.is_empty() {
         None
     } else {
-        let mut host = ViewHost::from_bytes(&package.behavior, &package.component)
-            .map_err(ViewLoadError::Host)?;
-        host.set_assets(package.assets.iter().map(|a| (a.id, a.bytes.clone())));
-        host.set_shaders(package.shaders.iter().map(|s| Arc::clone(&s.program)));
-        setup(&mut host);
+        let module = Rc::new(
+            (keep.module)(view.behavior)
+                .map_err(|error| ViewLoadError::Host(HostError::Load(error)))?,
+        );
+        let mut host = match load.native {
+            Some(native) => ViewHost::with_native(module, view.component, native),
+            None => ViewHost::new(module, view.component),
+        }
+        .map_err(ViewLoadError::Host)?;
+        host.set_assets(view.assets().map(|(id, bytes)| (id, (keep.asset)(bytes))));
+        let shaders = view.shaders().map(|bytes| load_kept(bytes, keep.asset));
+        let shaders: Vec<_> = shaders
+            .collect::<Result<_, _>>()
+            .map_err(ViewLoadError::Shader)?;
+        host.set_shaders(shaders);
+        if let Some(setup) = load.setup {
+            setup(&mut host);
+        }
         Some(host)
     };
-    let mut cells = Vec::with_capacity(package.states.len());
-    for state in &package.states {
+    let mut cells = Vec::with_capacity(view.states().len());
+    for state in view.states() {
         let id = match states.id_for_key(state.key) {
             Some(id) => id,
             None => {
@@ -252,9 +223,9 @@ pub fn instantiate_view_with(
         }
     }
     let mut node_ids = Vec::new();
-    let root = instantiate_indexed(&package.ui, store, states, bindings, lists, &mut node_ids);
+    let root = instantiate_indexed(&view.ui, store, states, bindings, lists, &mut node_ids);
     if let Some(host) = &mut host {
-        for read in &package.env {
+        for read in view.env() {
             let anchor = node_ids.get(read.anchor as usize).copied().flatten();
             host.link_env(read.slot as usize, read.field, anchor, states);
         }
@@ -264,28 +235,25 @@ pub fn instantiate_view_with(
     };
     crate::__mount_persisted(&host, store, states);
     let mut routes: Vec<Route> = Vec::new();
-    let mut groups = package
-        .handlers
-        .chunk_by(|a, b| a.node == b.node)
-        .peekable();
-    let mut controls = package.controls.iter().peekable();
+    let mut shown: Vec<(NodeId, Control)> = Vec::with_capacity(view.control_count());
+    let mut handlers = view.handlers().peekable();
+    let mut controls = view.controls().peekable();
     loop {
-        let group_node = groups.peek().map(|g| g[0].node);
-        let control_node = controls.peek().map(|c| c.node);
-        let node = match (group_node, control_node) {
-            (Some(g), Some(c)) => g.min(c),
-            (Some(n), None) | (None, Some(n)) => n,
+        let node = match (handlers.peek(), controls.peek()) {
+            (Some(h), Some(c)) => h.node.min(c.node),
+            (Some(h), None) => h.node,
+            (None, Some(c)) => c.node,
             (None, None) => break,
         };
         routes.clear();
-        if group_node == Some(node) {
-            let group = groups.next().unwrap_or_default();
-            routes.extend(group.iter().map(|h| h.route));
+        while let Some(handler) = handlers.next_if(|h| h.node == node) {
+            routes.push(handler.route);
         }
-        let control = controls
-            .next_if(|c| c.node == node)
-            .map(|c| c.control.clone());
+        let control = controls.next_if(|c| c.node == node).map(|c| c.control);
         if let Some(Some(id)) = node_ids.get(node as usize).copied() {
+            if let Some(control) = &control {
+                shown.push((id, control.clone()));
+            }
             attach_node(store, &host, id, &routes, control, &Scope::EMPTY);
         }
     }
@@ -297,20 +265,10 @@ pub fn instantiate_view_with(
         bindings,
         effects: &mut effects,
     };
-    if !package.regions.is_empty() {
-        let regions = Rc::new(package.regions.clone());
-        mount_regions(&mut cx, regions, &host, &node_ids, &cells);
+    let regions = view.regions();
+    if !regions.is_empty() {
+        mount_regions(&mut cx, Rc::new(regions), &host, &node_ids, &cells);
     }
-    let shown: Vec<(NodeId, Control)> = package
-        .controls
-        .iter()
-        .filter_map(|c| {
-            Some((
-                node_ids.get(c.node as usize).copied().flatten()?,
-                c.control.clone(),
-            ))
-        })
-        .collect();
     mount_values(&mut cx, &host, &shown);
     if let Some(root) = root {
         mount_effects(cx.store, &host, root);
@@ -319,263 +277,4 @@ pub fn instantiate_view_with(
         root,
         host: Some(host),
     })
-}
-
-/// A pre-allocation hint that never trusts a length prefix past a sane ceiling.
-fn bounded_capacity(count: u64) -> usize {
-    const MAX_PREALLOC: u64 = 4096;
-    count.min(MAX_PREALLOC) as usize
-}
-
-/// Reads a varint that must fit a `u32`.
-fn read_u32(dec: &mut Decoder<'_>) -> Result<u32, DecodeError> {
-    let offset = dec.position();
-    u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })
-}
-
-/// Writes a cell value: a tag byte, then its payload.
-pub(crate) fn write_state_value(enc: &mut Encoder, value: StateValue) {
-    match value {
-        StateValue::Int(n) => {
-            enc.write_u8(0);
-            enc.write_i32(n);
-        }
-        StateValue::Float(x) => {
-            enc.write_u8(1);
-            enc.write_f32(x);
-        }
-        StateValue::Bool(b) => {
-            enc.write_u8(2);
-            enc.write_bool(b);
-        }
-        StateValue::Color(r, g, b, a) => {
-            enc.write_u8(3);
-            for channel in [r, g, b, a] {
-                enc.write_f32(channel);
-            }
-        }
-    }
-}
-
-/// Reads a cell value [`write_state_value`] wrote.
-pub(crate) fn read_state_value(dec: &mut Decoder<'_>) -> Result<StateValue, DecodeError> {
-    let offset = dec.position();
-    Ok(match dec.read_u8()? {
-        0 => StateValue::Int(dec.read_i32()?),
-        1 => StateValue::Float(dec.read_f32()?),
-        2 => StateValue::Bool(dec.read_bool()?),
-        3 => StateValue::Color(
-            dec.read_f32()?,
-            dec.read_f32()?,
-            dec.read_f32()?,
-            dec.read_f32()?,
-        ),
-        _ => return Err(DecodeError::Malformed { offset }),
-    })
-}
-
-impl Encode for ViewPackage {
-    fn encode(&self, enc: &mut Encoder) {
-        ProtocolTag::current().encode(enc);
-        self.ui.encode(enc);
-        enc.write_bytes(&self.behavior);
-        enc.write_str(&self.component);
-        enc.write_varint(self.states.len() as u64);
-        for state in &self.states {
-            enc.write_u64(state.key.hi);
-            enc.write_u64(state.key.lo);
-            enc.write_varint(state.slot.map_or(0, |slot| u64::from(slot) + 1));
-            enc.write_bool(state.tracked);
-            write_state_value(enc, state.initial);
-        }
-        enc.write_varint(self.handlers.len() as u64);
-        for handler in &self.handlers {
-            enc.write_varint(u64::from(handler.node));
-            handler.route.encode(enc);
-        }
-        enc.write_varint(self.controls.len() as u64);
-        for control in &self.controls {
-            enc.write_varint(u64::from(control.node));
-            control.control.encode(enc);
-        }
-        self.regions.encode(enc);
-        enc.write_varint(self.env.len() as u64);
-        for env in &self.env {
-            enc.write_varint(u64::from(env.slot));
-            enc.write_u8(env.field.tag());
-            enc.write_varint(u64::from(env.anchor));
-        }
-        enc.write_varint(self.assets.len() as u64);
-        for asset in &self.assets {
-            enc.write_u64(asset.id.0);
-            enc.write_bytes(&asset.bytes);
-        }
-        enc.write_varint(self.shaders.len() as u64);
-        for shader in &self.shaders {
-            enc.write_bytes(&shader.bytes);
-        }
-    }
-}
-
-impl Decode for ViewPackage {
-    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        let tag_offset = dec.position();
-        if !ProtocolTag::decode(dec)?.is_compatible() {
-            return Err(DecodeError::Malformed { offset: tag_offset });
-        }
-        let ui = AotPackage::decode(dec)?;
-        let behavior = dec.read_bytes()?.to_vec();
-        let component = dec.read_str()?.to_owned();
-        let count = dec.read_varint()?;
-        let mut states = Vec::with_capacity(bounded_capacity(count));
-        for _ in 0..count {
-            let hi = dec.read_u64()?;
-            let lo = dec.read_u64()?;
-            let slot = read_u32(dec)?.checked_sub(1);
-            let tracked = dec.read_bool()?;
-            let initial = read_state_value(dec)?;
-            states.push(ViewState {
-                key: StateKey::from_parts(hi, lo),
-                slot,
-                tracked,
-                initial,
-            });
-        }
-        let count = dec.read_varint()?;
-        let mut handlers = Vec::with_capacity(bounded_capacity(count));
-        for _ in 0..count {
-            let node = read_u32(dec)?;
-            let route = Route::decode(dec)?;
-            handlers.push(ViewHandler { node, route });
-        }
-        let count = dec.read_varint()?;
-        let mut controls = Vec::with_capacity(bounded_capacity(count));
-        for _ in 0..count {
-            let node = read_u32(dec)?;
-            let control = Control::decode(dec)?;
-            controls.push(ViewControl { node, control });
-        }
-        let regions = ViewRegions::decode(dec)?;
-        let count = dec.read_varint()?;
-        let mut env = Vec::with_capacity(bounded_capacity(count));
-        for _ in 0..count {
-            let slot = read_u32(dec)?;
-            let offset = dec.position();
-            let field =
-                EnvField::from_tag(dec.read_u8()?).ok_or(DecodeError::Malformed { offset })?;
-            let anchor = read_u32(dec)?;
-            env.push(ViewEnv {
-                slot,
-                field,
-                anchor,
-            });
-        }
-        let count = dec.read_varint()?;
-        let mut assets = Vec::with_capacity(bounded_capacity(count));
-        for _ in 0..count {
-            let offset = dec.position();
-            let id = ResourceId(dec.read_u64()?);
-            if assets.last().is_some_and(|a: &ViewAsset| a.id >= id) {
-                return Err(DecodeError::Malformed { offset });
-            }
-            let bytes = AssetBytes::Shared(Arc::from(dec.read_bytes()?));
-            assets.push(ViewAsset { id, bytes });
-        }
-        let count = dec.read_varint()?;
-        let mut shaders = Vec::with_capacity(bounded_capacity(count));
-        for _ in 0..count {
-            let offset = dec.position();
-            let shader = ViewShader::new(dec.read_bytes()?)
-                .map_err(|_| DecodeError::Malformed { offset })?;
-            shaders.push(shader);
-        }
-        Ok(ViewPackage {
-            ui,
-            behavior,
-            component,
-            states,
-            handlers,
-            controls,
-            regions,
-            env,
-            assets,
-            shaders,
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_package_round_trips_and_rejects_a_bad_route() {
-        let package = ViewPackage {
-            ui: AotPackage::default(),
-            behavior: vec![1, 2, 3],
-            component: "Counter".into(),
-            states: vec![ViewState {
-                key: StateKey::from_parts(7, 9),
-                slot: Some(0),
-                tracked: false,
-                initial: StateValue::Int(3),
-            }],
-            handlers: vec![ViewHandler {
-                node: 1,
-                route: Route {
-                    event: crate::EventRoute::Click,
-                    handler: 0,
-                    capture: true,
-                },
-            }],
-            controls: Vec::new(),
-            regions: ViewRegions::default(),
-            env: vec![ViewEnv {
-                slot: 1,
-                field: EnvField::SizeClass,
-                anchor: 0,
-            }],
-            assets: Vec::new(),
-            shaders: Vec::new(),
-        };
-        let bytes = package.encode_to_vec();
-        assert_eq!(ViewPackage::decode_from_slice(&bytes), Ok(package.clone()));
-        let mut bad = bytes.clone();
-        let (env, assets, shaders) = (4, 1, 1);
-        let route =
-            bytes.len() - shaders - assets - env - 3 - ViewRegions::default().encode_to_vec().len();
-        bad[route] = 99;
-        assert!(ViewPackage::decode_from_slice(&bad).is_err());
-        let mut bad = bytes.clone();
-        bad[bytes.len() - shaders - assets - 2] = 13;
-        assert!(ViewPackage::decode_from_slice(&bad).is_err());
-        // A shader that is not a packed brush.
-        let mut bad = bytes.clone();
-        bad.pop();
-        bad.extend([1, 3, 1, 2, 3]);
-        assert!(ViewPackage::decode_from_slice(&bad).is_err());
-
-        let mut with_assets = package;
-        with_assets.assets = vec![
-            ViewAsset {
-                id: ResourceId(3),
-                bytes: AssetBytes::Static(b"\x89PNG"),
-            },
-            ViewAsset {
-                id: ResourceId(9),
-                bytes: AssetBytes::Shared(Arc::from(&b"<svg/>"[..])),
-            },
-        ];
-        let bytes = with_assets.encode_to_vec();
-        assert_eq!(
-            ViewPackage::decode_from_slice(&bytes),
-            Ok(with_assets.clone())
-        );
-        for end in 0..bytes.len() {
-            assert!(ViewPackage::decode_from_slice(&bytes[..end]).is_err());
-        }
-        // Resources out of order.
-        with_assets.assets.swap(0, 1);
-        assert!(ViewPackage::decode_from_slice(&with_assets.encode_to_vec()).is_err());
-    }
 }

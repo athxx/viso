@@ -13,6 +13,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+viso-dev-protocol = { path = "../crates/dev-protocol" }
 viso-view = { path = "../crates/view", features = ["hot-reload"] }
 viso-behavior = { path = "../crates/behavior" }
 

@@ -27,7 +27,7 @@
 //! ([`BrushLayout::set`]); a draw copies the instance and places the box in
 //! it ([`BrushLayout::place`]).
 
-use viso_gpu::{PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi, SamplerDesc};
+use viso_gpu_abi::{PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi, SamplerDesc};
 
 use super::layout::{FieldDescriptor, ShaderInterface};
 use super::{EncodeError, Program, ProgramError, Span, Texel, Ty};

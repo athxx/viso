@@ -11,8 +11,7 @@
     allow(dead_code)
 )]
 
-use crate::accessibility::AccessAction;
-use crate::accessibility::accesskit::{Live, Role, Toggled};
+use crate::accessibility::{AccessAction, AccessNode, SemanticsLive, SemanticsRole};
 use crate::event::{
     CursorIcon, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind, PointerPhase,
 };
@@ -342,53 +341,87 @@ pub(crate) fn page_claims(code: KeyCode, m: Modifiers) -> bool {
         || ((m.control || m.logo) && !alt_gr)
 }
 
-/// The ARIA role mirroring an AccessKit one, following AccessKit's own
-/// mapping on the other targets; `None` leaves a plain container.
-pub(crate) fn aria_role(role: Role) -> Option<&'static str> {
+/// The ARIA role of a node's element; `None` leaves a plain container (or
+/// text, which reads as its content).
+pub(crate) fn aria_role(role: SemanticsRole) -> Option<&'static str> {
+    use SemanticsRole as R;
     Some(match role {
-        Role::Button => "button",
-        Role::CheckBox => "checkbox",
-        Role::RadioButton => "radio",
-        Role::Slider => "slider",
-        Role::TextInput => "textbox",
-        Role::Tab => "tab",
-        Role::TabList => "tablist",
-        Role::Tree => "tree",
-        Role::TreeItem => "treeitem",
-        Role::Group => "group",
-        Role::Image => "img",
-        Role::Region => "region",
-        Role::Navigation => "navigation",
-        Role::Dialog => "dialog",
-        Role::Status => "status",
-        Role::Heading => "heading",
-        Role::List => "list",
-        Role::ListItem => "listitem",
-        _ => return None,
+        R::Button => "button",
+        R::CheckBox => "checkbox",
+        R::Radio => "radio",
+        R::Slider => "slider",
+        R::TextField => "textbox",
+        R::Tab => "tab",
+        R::TabList => "tablist",
+        R::Tree => "tree",
+        R::TreeItem => "treeitem",
+        R::Group => "group",
+        R::Image => "img",
+        R::Region => "region",
+        R::Navigation => "navigation",
+        R::Dialog => "dialog",
+        R::Status => "status",
+        R::Heading => "heading",
+        R::List => "list",
+        R::ListItem => "listitem",
+        R::Window | R::Container | R::Label => return None,
     })
 }
 
 /// Whether a role is named by its text content rather than `aria-label`,
 /// which ARIA ignores on plain text and on live regions.
-pub(crate) fn named_by_content(role: Role) -> bool {
-    matches!(role, Role::Label | Role::Status)
+pub(crate) fn named_by_content(role: SemanticsRole) -> bool {
+    matches!(role, SemanticsRole::Label | SemanticsRole::Status)
 }
 
-/// The `aria-live` value of an AccessKit live setting.
-pub(crate) fn aria_live(live: Live) -> &'static str {
+/// The `aria-live` value of a live setting; `None` for the default, off.
+pub(crate) fn aria_live(live: SemanticsLive) -> Option<&'static str> {
     match live {
-        Live::Off => "off",
-        Live::Polite => "polite",
-        Live::Assertive => "assertive",
+        SemanticsLive::Off => None,
+        SemanticsLive::Polite => Some("polite"),
+        SemanticsLive::Assertive => Some("assertive"),
     }
 }
 
-pub(crate) fn aria_checked(toggled: Toggled) -> &'static str {
-    match toggled {
-        Toggled::True => "true",
-        Toggled::False => "false",
-        Toggled::Mixed => "mixed",
-    }
+fn aria_flag(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
+/// Every ARIA attribute the mirror writes for `node`, each with its value or
+/// `None` to remove it, handed to `set` one at a time. `aria-label` is left
+/// unset on a role [`named_by_content`]; its element carries the label as
+/// text instead.
+pub(crate) fn aria_attributes(node: &AccessNode, mut set: impl FnMut(&'static str, Option<&str>)) {
+    let role = node.role;
+    set("role", aria_role(role));
+    let label = node.label.as_deref().filter(|_| !named_by_content(role));
+    set("aria-label", label);
+    let state = node.state;
+    let number = |value: Option<f32>| value.map(|v| v.to_string());
+    let (min, max) = state.numeric_range.unzip();
+    set("aria-valuenow", number(state.numeric_value).as_deref());
+    set("aria-valuemin", number(min).as_deref());
+    set("aria-valuemax", number(max).as_deref());
+    let checkable = matches!(role, SemanticsRole::CheckBox | SemanticsRole::Radio);
+    set(
+        "aria-checked",
+        state.toggled.filter(|_| checkable).map(aria_flag),
+    );
+    set("aria-expanded", state.expanded.map(aria_flag));
+    set("aria-selected", state.selected.map(aria_flag));
+    set("aria-description", node.description.as_deref());
+    set("aria-valuetext", node.value.as_deref());
+    set("aria-live", aria_live(node.live));
+    set(
+        "aria-level",
+        node.level.map(|level| level.to_string()).as_deref(),
+    );
+    // Focusable by a screen reader, not by Tab: the canvas's own focus
+    // order stays the only one.
+    set(
+        "tabindex",
+        node.actions.contains(AccessAction::Focus).then_some("-1"),
+    );
 }
 
 /// The step a `KeyboardEvent.key` asks of a focused slider.
@@ -603,15 +636,96 @@ mod tests {
 
     #[test]
     fn the_mirror_speaks_aria() {
-        assert_eq!(aria_role(Role::Slider), Some("slider"));
-        assert_eq!(aria_role(Role::GenericContainer), None);
-        assert_eq!(aria_role(Role::Label), None);
-        assert!(named_by_content(Role::Label) && !named_by_content(Role::Button));
-        assert_eq!(aria_checked(Toggled::Mixed), "mixed");
-        assert_eq!(aria_live(Live::Polite), "polite");
-        assert_eq!(aria_live(Live::Assertive), "assertive");
+        assert_eq!(aria_role(SemanticsRole::Slider), Some("slider"));
+        assert_eq!(aria_role(SemanticsRole::Container), None);
+        assert_eq!(aria_role(SemanticsRole::Label), None);
+        assert!(named_by_content(SemanticsRole::Label) && !named_by_content(SemanticsRole::Button));
+        assert_eq!(aria_live(SemanticsLive::Off), None);
+        assert_eq!(aria_live(SemanticsLive::Polite), Some("polite"));
+        assert_eq!(aria_live(SemanticsLive::Assertive), Some("assertive"));
         assert_eq!(slider_step("ArrowUp"), Some(AccessAction::Increment));
         assert_eq!(slider_step("ArrowLeft"), Some(AccessAction::Decrement));
         assert_eq!(slider_step("Enter"), None);
+    }
+
+    fn attributes(node: &AccessNode) -> Vec<(&'static str, Option<String>)> {
+        let mut out = Vec::new();
+        aria_attributes(node, |name, value| {
+            out.push((name, value.map(str::to_owned)))
+        });
+        out
+    }
+
+    fn value<'a>(set: &'a [(&'static str, Option<String>)], name: &str) -> Option<&'a str> {
+        set.iter()
+            .find(|(n, _)| *n == name)
+            .expect("every attribute is written")
+            .1
+            .as_deref()
+    }
+
+    #[test]
+    fn a_node_writes_its_state_as_aria_attributes() {
+        use crate::accessibility::{AccessActions, SemanticsState};
+        let checkbox = AccessNode {
+            role: SemanticsRole::CheckBox,
+            label: Some("Agree".into()),
+            description: Some("Required".into()),
+            state: SemanticsState {
+                toggled: Some(true),
+                ..SemanticsState::default()
+            },
+            actions: AccessActions::NONE.with(AccessAction::Focus),
+            ..AccessNode::default()
+        };
+        let set = attributes(&checkbox);
+        assert_eq!(value(&set, "role"), Some("checkbox"));
+        assert_eq!(value(&set, "aria-label"), Some("Agree"));
+        assert_eq!(value(&set, "aria-checked"), Some("true"));
+        assert_eq!(value(&set, "aria-description"), Some("Required"));
+        assert_eq!(value(&set, "tabindex"), Some("-1"));
+        assert_eq!(value(&set, "aria-valuenow"), None);
+
+        let slider = AccessNode {
+            role: SemanticsRole::Slider,
+            state: SemanticsState {
+                numeric_value: Some(0.25),
+                numeric_range: Some((0.0, 1.0)),
+                toggled: Some(false),
+                ..SemanticsState::default()
+            },
+            ..AccessNode::default()
+        };
+        let set = attributes(&slider);
+        assert_eq!(value(&set, "aria-valuenow"), Some("0.25"));
+        assert_eq!(value(&set, "aria-valuemin"), Some("0"));
+        assert_eq!(value(&set, "aria-valuemax"), Some("1"));
+        assert_eq!(value(&set, "aria-checked"), None, "only a checkable role");
+        assert_eq!(value(&set, "tabindex"), None);
+
+        let status = AccessNode {
+            role: SemanticsRole::Status,
+            label: Some("Saved".into()),
+            live: SemanticsLive::Polite,
+            ..AccessNode::default()
+        };
+        let set = attributes(&status);
+        assert_eq!(value(&set, "aria-label"), None, "named by its text");
+        assert_eq!(value(&set, "aria-live"), Some("polite"));
+
+        let heading = AccessNode {
+            role: SemanticsRole::Heading,
+            level: Some(2),
+            state: SemanticsState {
+                expanded: Some(false),
+                selected: Some(true),
+                ..SemanticsState::default()
+            },
+            ..AccessNode::default()
+        };
+        let set = attributes(&heading);
+        assert_eq!(value(&set, "aria-level"), Some("2"));
+        assert_eq!(value(&set, "aria-expanded"), Some("false"));
+        assert_eq!(value(&set, "aria-selected"), Some("true"));
     }
 }

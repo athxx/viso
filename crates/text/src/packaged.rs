@@ -24,6 +24,7 @@ use crate::coverage::face_covers;
 use crate::fallback::FontFallback;
 use crate::font_manifest::{AssetRef, FontManifest, ManifestEntry, ScriptCoverageSummary};
 use crate::font_request::{FontRole, FontSlant, FontWeight, FontWidth};
+use crate::raster_a8::BakedFace;
 use crate::system_fonts::{SystemFontProvider, SystemFontQuery, SystemFontResult};
 
 /// One face found in `assets/fonts/` at build time.
@@ -51,6 +52,9 @@ pub struct PackagedFace {
     pub mono: bool,
     /// ISO 15924 codes of the scripts the face's `cmap` substantially covers.
     pub scripts: &'static [&'static str],
+    /// The face's glyphs rasterized at build time for the sizes the build
+    /// declared ([`BakedFace`] pages, §3.6); empty when it baked none.
+    pub baked: &'static [u8],
 }
 
 /// The application's packaged faces, as emitted by `packaged_fonts!`.
@@ -138,6 +142,19 @@ impl PackagedFonts {
         .into_iter()
         .filter_map(|(role, family)| Some((role, family?.to_owned())))
         .collect()
+    }
+
+    /// The baked glyphs of the packaged face whose embedded bytes are
+    /// `bytes` and index is `index`: a face the runtime loaded, from either
+    /// resolution or fallback, recognized by its bytes. A file a development
+    /// session replaced reads other bytes, so its stale pages are never used.
+    /// Cold: once per face the runtime registers.
+    pub fn baked_face(&self, bytes: &[u8], index: u32) -> Option<BakedFace<'static>> {
+        self.faces
+            .iter()
+            .filter(|face| !face.baked.is_empty() && face.face_index == index)
+            .find(|face| face.bytes.len() == bytes.len() && face.bytes == bytes)
+            .and_then(|face| BakedFace::parse(face.baked))
     }
 
     /// The packaged file at `path`, a path under the package's asset
@@ -310,6 +327,7 @@ mod tests {
             color,
             mono: false,
             scripts,
+            baked: &[],
         }
     }
 
@@ -409,6 +427,47 @@ mod tests {
             .resolve_system_face(&query("\u{4F60}", 400))
             .unwrap();
         assert_eq!(system.bytes, [7]);
+    }
+
+    #[test]
+    fn a_loaded_face_finds_its_baked_glyphs_by_its_bytes() {
+        use viso_glyph_a8::{BakedStrike, CoverageBitmap};
+        static BAKED: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        let baked = BAKED.get_or_init(|| {
+            BakedStrike::encode(&[BakedStrike {
+                ppem: 16,
+                glyphs: vec![(
+                    34,
+                    CoverageBitmap {
+                        width: 1,
+                        height: 1,
+                        left: 0.0,
+                        top: 1.0,
+                        coverage: vec![200],
+                    },
+                )],
+            }])
+            .unwrap()
+        });
+        let faces: &'static [PackagedFace] = Box::leak(Box::new([
+            face(0, COLR, "Colr", 400, true, &["Latn"]),
+            PackagedFace {
+                baked,
+                ..face(1, DEJAVU, "Sans", 400, false, &["Latn"])
+            },
+        ]));
+        let fonts = PackagedFonts::__new(faces);
+        let copy = DEJAVU.to_vec();
+        let found = fonts.baked_face(&copy, 0).expect("the same bytes");
+        assert_eq!(found.coverage(34, 16).unwrap().coverage, [200]);
+        assert!(fonts.baked_face(&copy, 1).is_none(), "another face index");
+        assert!(
+            fonts.baked_face(COLR, 0).is_none(),
+            "a face that baked none"
+        );
+        let mut edited = copy;
+        edited[100] ^= 1;
+        assert!(fonts.baked_face(&edited, 0).is_none(), "replaced bytes");
     }
 
     #[test]

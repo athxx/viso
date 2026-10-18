@@ -13,13 +13,13 @@
 use std::collections::{HashMap, HashSet};
 
 use viso_behavior::ComponentEffect;
-use viso_ui::state::StateKey;
-use viso_view::{
+use viso_schema::StateKey;
+use viso_schema::view::{
     ArmTemplate, CellRef, Control, EffectTemplate, EnvTemplate, GroupTemplate, ItemTemplate,
     LocalTemplate, RegionKind, RegionTemplate, Route, SlotTemplate, StarterTemplate, ViewRegions,
 };
 
-use crate::aot::{aot_kind, aot_style};
+use crate::aot::aot_node;
 use crate::behavior::ir::{ComponentLayout, FuncId, Inst, Program, Site};
 use crate::frontend::{Compiled, SourceKind};
 use crate::ir::binding_ir::NodeKey;
@@ -567,7 +567,7 @@ impl Builder<'_> {
             .map(|i| Box::new(self.controls[i].1.clone()));
         let at = out.len();
         out.push(ItemTemplate::Node {
-            node: node_template(node),
+            node: aot_node(node),
             edges,
             routes,
             control,
@@ -661,15 +661,6 @@ impl Builder<'_> {
                 .push(StateKey::from_parts(symbol.hi, symbol.lo));
             self.out.states.len() as u32 - 1
         })
-    }
-}
-
-/// The packaged form of a region node, its child count still to fill in.
-fn node_template(node: &UiNode) -> viso_ui::aot::AotNode {
-    viso_ui::aot::AotNode {
-        kind: aot_kind(node.kind),
-        style: aot_style(&node.style),
-        child_count: 0,
     }
 }
 
