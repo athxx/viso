@@ -82,9 +82,11 @@ pub(crate) trait PaintSpans {
     /// The span opened as `token` ends at `end`.
     fn close(&mut self, token: usize, end: usize);
     /// `node`'s own drawables — its box and its content — are `start..end`,
-    /// painted inside transform root `slot`.
+    /// painted inside transform root `slot`, and the `Layer` it fades through
+    /// sits just before them when `faded`.
     #[inline(always)]
-    fn own(&mut self, _node: NodeId, _start: usize, _end: usize, _slot: Option<u32>) {}
+    fn own(&mut self, _node: NodeId, _start: usize, _end: usize, _slot: Option<u32>, _faded: bool) {
+    }
 }
 
 /// A walk that records nothing; the calls compile away.
@@ -121,10 +123,23 @@ pub(crate) struct PaintIndex {
 #[derive(Debug, Clone, Copy, Default)]
 struct Own {
     start: u32,
+    /// How many, with [`Own::FADED`] set when the node faded through a layer.
     len: u32,
     /// The transform root they were painted in, or `u32::MAX` for none.
     slot: u32,
     generation: u32,
+}
+
+impl Own {
+    const FADED: u32 = 1 << 31;
+
+    fn len(&self) -> usize {
+        (self.len & !Own::FADED) as usize
+    }
+
+    fn faded(&self) -> bool {
+        self.len & Own::FADED != 0
+    }
 }
 
 impl PaintIndex {
@@ -156,14 +171,14 @@ impl PaintSpans for PaintIndex {
     fn close(&mut self, _: usize, _: usize) {}
 
     #[inline]
-    fn own(&mut self, node: NodeId, start: usize, end: usize, slot: Option<u32>) {
+    fn own(&mut self, node: NodeId, start: usize, end: usize, slot: Option<u32>, faded: bool) {
         let i = node.index() as usize;
         if i >= self.own.len() {
             self.own.resize(i + 1, Own::default());
         }
         self.own[i] = Own {
             start: start as u32,
-            len: (end - start) as u32,
+            len: (end - start) as u32 | if faded { Own::FADED } else { 0 },
             slot: slot.unwrap_or(u32::MAX),
             generation: self.generation,
         };
@@ -194,9 +209,12 @@ pub(crate) fn paint_indexed(
 /// last whole paint from `root` gave them, and append the stream positions
 /// whose primitive changed to `changed`, ascending.
 ///
+/// A node that faded through a layer and still does rewrites that layer's
+/// opacity too.
+///
 /// Returns `false` when that is not a patch — a node was not painted by that
-/// paint, or its drawables changed kind or count. `out` may then hold some
-/// rewritten primitives; paint it whole.
+/// paint, starts or stops fading, or its drawables changed kind or count.
+/// `out` may then hold some rewritten primitives; paint it whole.
 pub(crate) fn patch_walk(
     store: &NodeStore,
     root: NodeId,
@@ -214,7 +232,12 @@ pub(crate) fn patch_walk(
         let Some(own) = index.own.get(node.index() as usize).copied() else {
             return false;
         };
-        if own.generation != index.generation || store.hidden(node) || store.opacity(node) <= 0.0 {
+        let opacity = store.opacity(node);
+        if own.generation != index.generation
+            || store.hidden(node)
+            || opacity <= 0.0
+            || (opacity < 1.0) != own.faded()
+        {
             return false;
         }
         let shift = match table.painted().get(own.slot as usize) {
@@ -222,15 +245,24 @@ pub(crate) fn patch_walk(
             None if own.slot == u32::MAX => index.top,
             None => return false,
         };
-        scratch.clear();
-        paint_own(
-            store,
-            node,
-            store.bounds(node).translate(shift),
-            &mut scratch,
-        );
+        let world = store.bounds(node).translate(shift);
         let start = own.start as usize;
-        let Some(span) = out.get_mut(start..start + own.len as usize) else {
+        if own.faded() {
+            let Some(Primitive::Layer(layer)) = start.checked_sub(1).and_then(|at| out.get_mut(at))
+            else {
+                return false;
+            };
+            if layer.clip != world {
+                return false;
+            }
+            if layer.opacity != opacity {
+                layer.opacity = opacity;
+                changed.push(start as u32 - 1);
+            }
+        }
+        scratch.clear();
+        paint_own(store, node, world, &mut scratch);
+        let Some(span) = out.get_mut(start..start + own.len()) else {
             return false;
         };
         if scratch.len() != span.len() {
@@ -354,7 +386,7 @@ fn paint_subtree<S: PaintSpans>(
     }
     let own_start = out.len();
     paint_own(store, root, world, out);
-    spans.own(root, own_start, out.len(), space.slot);
+    spans.own(root, own_start, out.len(), space.slot, faded);
 
     // A scroll viewport clips its content to its own box — the viewport's
     // background already painted above, so it is not clipped — and its content
@@ -1807,6 +1839,35 @@ mod tests {
                 if a.rect == b.rect && b.color == green),
             "the same box as painted, recolored"
         );
+    }
+
+    #[test]
+    fn a_fade_that_keeps_the_layer_rewrites_its_opacity_in_place() {
+        use crate::component::Painted;
+        let mut store = NodeStore::new();
+        let (root, _, cards, _) = cards(&mut store, 4);
+        let mut out = Vec::new();
+        store.set_opacity(cards[1], 0.5);
+        assert!(matches!(
+            store.repaint_dirty(root, &mut out),
+            Painted::Whole(_)
+        ));
+        store.clear_dirty();
+
+        store.set_opacity(cards[1], 0.8);
+        assert_eq!(store.repaint_dirty(root, &mut out), Painted::Patched(1));
+        assert_eq!(out, whole(&store, root), "what a whole paint emits");
+        let at = store.patched()[0] as usize;
+        assert!(matches!(out[at], Primitive::Layer(l) if l.opacity == 0.8));
+        store.clear_dirty();
+
+        // Opaque again, the node stops fading: another stream.
+        store.set_opacity(cards[1], 1.0);
+        assert!(matches!(
+            store.repaint_dirty(root, &mut out),
+            Painted::Whole(_)
+        ));
+        assert_eq!(out, whole(&store, root));
     }
 
     #[test]

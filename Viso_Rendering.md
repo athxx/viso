@@ -774,9 +774,16 @@ Chunk 记录：order range、bounds、primitive ranges、pipeline/material summa
 4. 各 family 的改写位置本就按 paint order 升序，经同一个 dirty-range coalescer 只上传这些 slot。
 5. 改写过的 entry 重算 surface draw key。offscreen pass 的内容 key 是各 entry key 按位置混合后的和，一项变化就地加减，再沿 composite 向上直到 surface draw。自上次 present 以来位移没变（`Transforms` 的 epoch 相同）时，damage 直接比较这些 draw 新旧 key，不再整表 diff。
 
-差分测试保证 patch 与整 stream 上传留下相同的 scratch、segment、pool shadow、entry key 与 surface draw；一帧 patch 之后 present 的像素与新 surface 上整帧绘制的相同，且只重绘改写的那一行。UI 一侧见 Architecture §11（`PaintIndex` / `Painted::Patched`）。`paint_scale` bench：2000 张卡片的页面 hover 一帧约 0.3 µs，与 100 张卡片相同；改之前约 0.7 ms，随卡片数线性增长。
+**Fade patch（已实现）**。opacity 在 (0, 1) 内变化而 layer 的 plan 不变（同样的 reason 被同样的 rung 消除）时，`Layer` primitive 也是一个可 patch 的位置。upload 时每个 layer 记下它的 stream 区间、请求给 planner 的 `LayerRequest`、父级 fold 和绘制方式（in-pass / fold / offscreen pass）。patch 用新 opacity 重新跑 planner，`requested` / `eliminated` / `surviving` 任一变化就拒绝；clip、blur、backdrop 也必须不变。
 
-形状改变的局部变动（虚拟列表挂载一行、文本编辑改变 glyph 个数、opacity 打开或折叠 layer）仍然整树 paint、整 stream 上传，这是 chunk 级 splice 要解决的部分。
+- offscreen layer（没有 color op、没有 advanced blend）：改 pass 的 opacity 与 pass key，把 composite instance 的 alpha 换成新值，按记录的 image scratch slot 重新 lower，只上传这一个 slot，并沿 composite 换 surface draw key。
+- fold 进子节点的 layer：新 fold = 父级 fold × 新 opacity，区间内的每个 entry 以新 fold 重新生成 instance（与普通改写同样校验），只上传这些 slot。同帧在区间内被改写的子节点也用新 fold。
+
+opacity 跨过 0 或 1（layer 出现、消失，或被跳过）仍然是形状变化，整 stream 上传。
+
+差分测试保证 patch 与整 stream 上传留下相同的 scratch、segment、pool shadow、entry key 与 surface draw；一帧 patch 之后 present 的像素与新 surface 上整帧绘制的相同，且只重绘改写的那一行。UI 一侧见 Architecture §11（`PaintIndex` / `Painted::Patched`）。`paint_scale` bench：2000 张卡片的页面 hover 一帧约 0.3 µs，与 100 张卡片相同；改之前约 0.7 ms，随卡片数线性增长。一张卡片在两个半透明 opacity 之间淡入淡出一帧约 0.5 µs，同样与卡片数无关。
+
+形状改变的局部变动（虚拟列表挂载一行、文本编辑改变 glyph 个数、opacity 跨过 0 或 1）仍然整树 paint、整 stream 上传，这是 chunk 级 splice 要解决的部分。
 
 ## 9.8 多线程模型
 

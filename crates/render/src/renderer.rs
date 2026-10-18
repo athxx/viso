@@ -690,6 +690,34 @@ struct LayerEntry {
     /// The moving clip chain content under this layer follows, or `NO_CHAIN`
     /// when its clip moves with no transform root.
     chain: u32,
+    /// Its entry in [`Renderer::layers`].
+    record: u32,
+}
+
+/// A layer the last upload opened, as a patch re-fades it in place.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LayerRecord {
+    /// The stream indices of its `Layer` primitive and of its `LayerEnd`.
+    pub(crate) source: u32,
+    pub(crate) end: u32,
+    /// The layer as it was uploaded.
+    pub(crate) layer: crate::primitive::LayerClip,
+    /// The group opacity its enclosing layers pushed into it.
+    pub(crate) parent_fold: f32,
+    /// What it asked the planner for.
+    pub(crate) request: LayerRequest,
+    pub(crate) drawn: LayerDrawn,
+}
+
+/// How a layer's content reached its parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayerDrawn {
+    /// Into its parent's pass, under its clip.
+    InPass,
+    /// Into its parent's pass with its opacity multiplied into every child.
+    Folded,
+    /// Through offscreen pass `idx` and its composite.
+    Offscreen(usize),
 }
 
 /// What one backdrop capture depends on, and whether that dependency moved since
@@ -1176,6 +1204,8 @@ pub struct Renderer {
     /// decided on — no unsafe poking, no second decision path (§62). Three bytes of
     /// bitset plus a float per layer, and a `Vec` whose capacity survives the frame.
     layer_plans: Vec<LayerPlan>,
+    /// Every layer the last upload opened, in stream order, one per plan.
+    layers: Vec<LayerRecord>,
     /// Layers considered / partly eliminated / opacity-folded this frame. Reset at
     /// frame start, surfaced as the matching [`FrameStats`] fields.
     layers_planned: u32,
@@ -1936,6 +1966,7 @@ impl Renderer {
             blend_bindings: Vec::with_capacity(4),
             blend_isolations: 0,
             layer_plans: Vec::new(),
+            layers: Vec::new(),
             layers_planned: 0,
             layers_eliminated: 0,
             opacity_folds: 0,
@@ -2526,6 +2557,7 @@ impl Renderer {
         self.program_draws_dropped = 0;
         self.blend_isolations = 0;
         self.layer_plans.clear();
+        self.layers.clear();
         self.layers_planned = 0;
         self.layers_eliminated = 0;
         self.opacity_folds = 0;
@@ -2844,7 +2876,7 @@ impl Renderer {
                             analytic_shadow: false,
                         }
                     };
-                    let plan = plan_layer(&LayerRequest {
+                    let request = LayerRequest {
                         opacity: layer.opacity,
                         overlap: facts.overlap,
                         blurs_content: layer.blur_sigma > BLUR_MIN_SIGMA,
@@ -2858,7 +2890,8 @@ impl Renderer {
                         analytic_shadow: facts.analytic_shadow,
                         shared_backdrop,
                         ..LayerRequest::default()
-                    });
+                    };
+                    let plan = plan_layer(&request);
                     self.layers_planned += 1;
                     if !plan.eliminated.is_empty() {
                         self.layers_eliminated += 1;
@@ -2870,6 +2903,19 @@ impl Renderer {
                     // whatever an ancestor already folded.
                     let child_fold = fold * plan.fold_opacity;
                     self.layer_plans.push(plan);
+                    let record = self.layers.len() as u32;
+                    self.layers.push(LayerRecord {
+                        source: prim_index as u32,
+                        end: prim_index as u32,
+                        layer: *layer,
+                        parent_fold: fold,
+                        request,
+                        drawn: if plan.folds_opacity() {
+                            LayerDrawn::Folded
+                        } else {
+                            LayerDrawn::InPass
+                        },
+                    });
                     if !plan.needs_offscreen() {
                         // Nothing survived the ladder: whatever this layer asked
                         // for is either the identity or was pushed into its
@@ -2887,6 +2933,7 @@ impl Renderer {
                             color_len: 0,
                             fold_opacity: child_fold,
                             chain,
+                            record,
                         });
                     } else {
                         // Translucent or blurred: open an offscreen pass. Its
@@ -2923,6 +2970,7 @@ impl Renderer {
                             self.blend_isolations += 1;
                         }
                         let idx = self.open_offscreen(world_clip, layer.opacity, isolate);
+                        self.layers[record as usize].drawn = LayerDrawn::Offscreen(idx);
                         self.layer_stack.push(LayerEntry {
                             clip: world_clip,
                             target: PassTarget::Offscreen(idx),
@@ -2938,6 +2986,7 @@ impl Renderer {
                             // `1.0` whenever a layer is reached at all.
                             fold_opacity: child_fold,
                             chain,
+                            record,
                         });
                     }
                 }
@@ -2953,6 +3002,9 @@ impl Renderer {
                 }
                 Primitive::TransformEnd => self.transforms.pop(),
                 Primitive::LayerEnd => {
+                    if let Some(entry) = self.layer_stack.last() {
+                        self.layers[entry.record as usize].end = prim_index as u32;
+                    }
                     if let Some(entry) = self.layer_stack.pop()
                         && let PassTarget::Offscreen(idx) = entry.target
                     {
@@ -4626,13 +4678,31 @@ impl Renderer {
         // rides the composite draw.
         self.build_color_chain(idx, entry);
 
+        let ops = entry.color_start as usize..(entry.color_start + entry.color_len) as usize;
+        self.offscreen_passes[idx].key =
+            self.pass_key(idx, entry.blur_sigma, entry.fold_opacity, ops);
+
+        debug_assert!(
+            self.offscreen_passes[idx].sample.is_some(),
+            "offscreen pass declares its base target before finalize returns"
+        );
+    }
+
+    /// The damage key of offscreen pass `idx`'s content beyond its entries:
+    /// its rect, opacity, blur, inherited fold, color ops `ops` and blend.
+    pub(crate) fn pass_key(
+        &self,
+        idx: usize,
+        blur_sigma: f32,
+        fold: f32,
+        ops: std::ops::Range<usize>,
+    ) -> u64 {
         let pass = &self.offscreen_passes[idx];
         let mut key = crate::damage::Key::new(idx as u64).rect(pass.rect).f32s(&[
             pass.opacity,
-            entry.blur_sigma,
-            entry.fold_opacity,
+            blur_sigma,
+            fold,
         ]);
-        let ops = entry.color_start as usize..(entry.color_start + entry.color_len) as usize;
         for op in self.color_ops.get(ops).unwrap_or(&[]) {
             for row in &op.matrix.rows {
                 key = key.f32s(row);
@@ -4642,12 +4712,7 @@ impl Renderer {
         if let Some((blend, capture)) = pass.blend {
             key = key.word(blend as u64).word(capture as u64);
         }
-        self.offscreen_passes[idx].key = key.finish();
-
-        debug_assert!(
-            self.offscreen_passes[idx].sample.is_some(),
-            "offscreen pass declares its base target before finalize returns"
-        );
+        key.finish()
     }
 
     /// Realize the blur ladder for the offscreen pass at `idx`: plan the separable

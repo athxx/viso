@@ -349,11 +349,10 @@ impl Key {
     }
 
     pub fn bytes(mut self, bytes: &[u8]) -> Key {
-        let mut chunks = bytes.chunks_exact(8);
-        for c in &mut chunks {
-            self = self.word(u64::from_le_bytes(c.try_into().unwrap_or([0; 8])));
+        let (chunks, rest) = bytes.as_chunks::<8>();
+        for c in chunks {
+            self = self.word(u64::from_le_bytes(*c));
         }
-        let rest = chunks.remainder();
         let mut tail = [0u8; 8];
         tail[..rest.len()].copy_from_slice(rest);
         self.word(u64::from_le_bytes(tail) ^ ((bytes.len() as u64) << 56))

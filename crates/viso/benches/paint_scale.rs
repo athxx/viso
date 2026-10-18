@@ -253,6 +253,8 @@ fn upload(h: &mut Harness, painted: Painted) {
     }
 }
 
+const FADES: [f32; 2] = [0.5, 0.75];
+
 const COLORS: [Rgba; 2] = [Rgba::new(0.3, 0.5, 0.8, 1.0), Rgba::new(0.9, 0.6, 0.2, 1.0)];
 
 fn bench_paint_scale(c: &mut Criterion) {
@@ -303,6 +305,16 @@ fn bench_paint_scale(c: &mut Criterion) {
             b.iter(|| {
                 flip ^= 1;
                 h.store.set_fill(target, COLORS[flip]);
+                black_box(frame(black_box(&mut h)));
+            });
+        });
+        // A card fading between two translucent opacities keeps its layer.
+        h.store.set_opacity(target, FADES[0]);
+        frame(&mut h);
+        c.bench_function(&format!("fade/cards_{cards}"), |b| {
+            b.iter(|| {
+                flip ^= 1;
+                h.store.set_opacity(target, FADES[flip]);
                 black_box(frame(black_box(&mut h)));
             });
         });

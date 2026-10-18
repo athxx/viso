@@ -533,7 +533,8 @@ pub struct NodeStore {
     patched: Vec<u32>,
     /// The next frame re-emits the whole tree though no node's layout moved:
     /// the device scale moved every snapped displacement, or a node's place in
-    /// the stream changed (its opacity, overlay flag or transform root).
+    /// the stream changed (its opacity crossed 0 or 1, its overlay flag, or
+    /// its transform root).
     repaint_pending: bool,
     /// Some node was marked STRUCTURE, MEASURE or LAYOUT since the last
     /// [`clear_dirty`](Self::clear_dirty): boxes may have moved, so the paint
@@ -2248,9 +2249,15 @@ impl NodeStore {
         };
         let slot = &mut self.opacity[id.index() as usize];
         if *slot != opacity {
+            // A node that keeps fading through its layer only re-tints it; one
+            // that starts or stops fading, or shows or hides, paints another
+            // stream.
+            let layered = |o: f32| o > 0.0 && o < 1.0;
+            if layered(*slot) != layered(opacity) {
+                self.repaint_pending = true;
+            }
             *slot = opacity;
             self.mark_dirty(id, DirtyClass::PAINT);
-            self.repaint_pending = true;
         }
     }
 

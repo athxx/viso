@@ -193,5 +193,5 @@ Phase 2 — a frame that changes shape:
 
 - [x] Reconcile finds each surviving row in one pass over the window, not a scan of the mounted rows per row
 - [x] A row host that re-measures re-places only itself in its absolute-rows canvas, not every mounted row
-- [ ] A fade patches in place: an opacity change that keeps the node's layer rewrites its layer primitive; the renderer re-tints the offscreen composite or re-folds the group's instances
+- [x] A fade patches in place: an opacity change that keeps the node's layer rewrites its layer primitive; the renderer re-tints the offscreen composite or re-folds the group's instances
 - [ ] Splice: a subtree whose shape changed replaces its span of the stream, and the renderer re-ingests and re-lowers only that span (a virtual list mounting a row, a text edit)

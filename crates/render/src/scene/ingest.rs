@@ -245,6 +245,15 @@ impl Scene {
         self.keys[index] = (store, key, extent);
     }
 
+    /// Stamp derived entry `index` — a composite, whose retained content no
+    /// store diffs — as rewritten now, and recompute its key.
+    pub(crate) fn restamp_derived(&mut self, index: usize) {
+        self.content_stamps[index] = self.revisions.content();
+        let store = self.paint_order[index].store;
+        let (key, extent) = self.entry_key(store);
+        self.keys[index] = (store, key, extent);
+    }
+
     /// Bump the revision planes `dirty` flags.
     fn bump_planes(&mut self, dirty: DirtyPlanes) {
         if dirty.appended {

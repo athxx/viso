@@ -139,7 +139,7 @@ fn a_changed_row_redraws_that_row_only_and_matches_a_whole_frame() {
     let changed = rows(10, Some(4));
     k.upload(&changed);
     let partial = k.present();
-    let Region::Rects(rects) = k.r.last_damage().clone() else {
+    let Region::Rects(rects) = *k.r.last_damage() else {
         panic!("one row is a partial redraw: {:?}", k.r.last_damage());
     };
     assert_eq!(rects.len(), 1);

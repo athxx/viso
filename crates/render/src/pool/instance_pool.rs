@@ -233,8 +233,8 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
             uploaded_slots += run.len;
         };
         for (start, len) in ranges {
-            for i in start..start + len {
-                if self.shadow[i] != instances[i]
+            for (i, new) in instances.iter().enumerate().skip(start).take(len) {
+                if self.shadow[i] != *new
                     && let Some(run) = runs.push(i)
                 {
                     upload(self, backend, run);

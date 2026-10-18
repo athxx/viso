@@ -7,27 +7,53 @@
 //! the instance slots it was lowered to, uploaded alone, and its surface draw
 //! re-keyed, so the frame costs the primitives it changed and not the scene.
 //!
+//! A layer that only fades — its opacity moves and its plan does not — is a
+//! patch too: an offscreen layer re-tints its composite, a folded one rewrites
+//! every child at the new factor.
+//!
 //! Anything that would move another entry — a new kind or count, a new box, a
-//! new texture, a backdrop capture re-rendering what lies under it — is not a
-//! patch: the caller uploads the stream whole.
+//! new texture, a layer that changes how it is drawn, a backdrop capture
+//! re-rendering what lies under it — is not a patch: the caller uploads the
+//! stream whole.
 
 use viso_gpu::GpuBackend;
 
-use super::Renderer;
-use crate::primitive::{GlyphRunDraw, Primitive};
+use super::{CompositeLowering, LayerDrawn, Renderer};
+use crate::effect_plan::plan_layer;
+use crate::primitive::{GlyphRunDraw, LayerClip, Primitive};
 use crate::scene::ingest::Instance;
 use crate::scene::store::{DirtyPlanes, StoreRef, glyph_instances};
 
 /// An entry a patch cannot rewrite in place, or one culled from its pass.
 pub(super) const NOT_LOWERED: u32 = u32::MAX;
 
-/// One validated rewrite: paint-order entry `entry` takes the primitive at
-/// stream index `source`, as `instance` unless it is a glyph run.
+/// One validated rewrite.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Edit {
-    entry: u32,
-    source: u32,
-    instance: Option<Instance>,
+pub(super) enum Edit {
+    /// Paint-order entry `entry` takes the primitive at stream index `source`
+    /// under group opacity `fold`, as `instance` unless it is a glyph run.
+    Draw {
+        entry: u32,
+        source: u32,
+        instance: Option<Instance>,
+        fold: f32,
+    },
+    /// Layer record `record` takes `layer`, whose opacity alone moved; an
+    /// offscreen layer re-tints composite entry `composite`.
+    Fade {
+        record: u32,
+        layer: LayerClip,
+        composite: u32,
+    },
+}
+
+/// What a layer primitive's rewrite asks of the layer it opens.
+enum Faded {
+    /// Nothing, or a fade drawn by one composite.
+    Kept,
+    /// Every entry before stream index `end` is redrawn at group opacity
+    /// `fold`.
+    Refolded { end: u32, fold: f32 },
 }
 
 /// The instance families a patch writes.
@@ -52,7 +78,7 @@ impl Family {
             StoreRef::AnalyticCapsule(_) => Family::AnalyticCapsule,
             StoreRef::AnalyticLine(_) => Family::AnalyticLine,
             StoreRef::AnalyticShadow(_) => Family::AnalyticShadow,
-            StoreRef::Image(_) => Family::Image,
+            StoreRef::Image(_) | StoreRef::Composite { .. } => Family::Image,
             StoreRef::GlyphRun(_) => Family::Glyph,
             _ => return None,
         })
@@ -88,36 +114,50 @@ impl Renderer {
         }
         let mut edits = std::mem::take(&mut self.edits);
         edits.clear();
-        for &source in changed {
-            match self.edit(primitives, source) {
-                Some(edit) => edits.push(edit),
-                None => {
-                    self.edits = edits;
-                    return false;
-                }
-            }
+        if !self.edits_for(primitives, changed, &mut edits) {
+            self.edits = edits;
+            return false;
         }
         self.scene.ingest_stats.dirty_primitives = 0;
         let mut slots = std::mem::take(&mut self.edit_slots);
         slots.clear();
-        for edit in &edits {
-            let index = edit.entry as usize;
-            let entry = self.scene.paint_order[index];
-            let dirty = match (edit.instance, entry.store) {
-                (Some(instance), store) => self.scene_set(store, instance),
-                (None, StoreRef::GlyphRun(run)) => match &primitives[edit.source as usize] {
-                    Primitive::GlyphRun(draw) => self
-                        .scene
-                        .glyph_runs
-                        .set(run, glyph_instances(&draw.glyphs, color(draw))),
-                    _ => DirtyPlanes::default(),
+        for &edit in &edits {
+            let index = match edit {
+                Edit::Draw {
+                    entry,
+                    source,
+                    instance,
+                    fold,
+                } => {
+                    let index = entry as usize;
+                    let store = self.scene.paint_order[index].store;
+                    self.scene.paint_order[index].context.fold = fold;
+                    let dirty = match (instance, store) {
+                        (Some(instance), store) => self.scene_set(store, instance),
+                        (None, StoreRef::GlyphRun(run)) => match &primitives[source as usize] {
+                            Primitive::GlyphRun(draw) => self
+                                .scene
+                                .glyph_runs
+                                .set(run, glyph_instances(&draw.glyphs, color(draw))),
+                            _ => DirtyPlanes::default(),
+                        },
+                        (None, _) => DirtyPlanes::default(),
+                    };
+                    if !dirty.any() {
+                        continue;
+                    }
+                    self.scene.restamp(index, dirty);
+                    index
+                }
+                Edit::Fade {
+                    record,
+                    layer,
+                    composite,
+                } => match self.fade(record, layer, composite) {
+                    Some(index) => index,
+                    None => continue,
                 },
-                (None, _) => DirtyPlanes::default(),
             };
-            if !dirty.any() {
-                continue;
-            }
-            self.scene.restamp(index, dirty);
             if let Some(slot) = self.relower(index) {
                 slots.push(slot);
             }
@@ -147,9 +187,39 @@ impl Renderer {
         true
     }
 
-    /// The rewrite of the entry stream index `source` recorded, if it is a
-    /// patch.
-    fn edit(&self, primitives: &[Primitive], source: u32) -> Option<Edit> {
+    /// Every rewrite `changed` asks of the stream last uploaded, into
+    /// `edits`; `false` when one of them is not a patch.
+    fn edits_for(&self, primitives: &[Primitive], changed: &[u32], edits: &mut Vec<Edit>) -> bool {
+        // A folded layer that fades rewrites its whole subtree at the new
+        // factor, so a changed child under it is rewritten at that factor too.
+        let mut refold: Option<(u32, f32)> = None;
+        for &source in changed {
+            let Some(prim) = primitives.get(source as usize) else {
+                return false;
+            };
+            if let Primitive::Layer(layer) = prim {
+                match self.fade_edit(primitives, source, layer, edits) {
+                    Some(Faded::Kept) => {}
+                    Some(Faded::Refolded { end, fold }) => refold = Some((end, fold)),
+                    None => return false,
+                }
+                continue;
+            }
+            let fold = match refold {
+                Some((end, fold)) if source < end => Some(fold),
+                _ => None,
+            };
+            match self.draw_edit(primitives, source, fold) {
+                Some(edit) => edits.push(edit),
+                None => return false,
+            }
+        }
+        true
+    }
+
+    /// The rewrite of the entry stream index `source` recorded, at group
+    /// opacity `fold` or the one it was uploaded under, if it is a patch.
+    fn draw_edit(&self, primitives: &[Primitive], source: u32, fold: Option<f32>) -> Option<Edit> {
         let prim = primitives.get(source as usize)?;
         let order = &self.scene.paint_order;
         let index = order.partition_point(|e| e.source < source);
@@ -157,23 +227,23 @@ impl Renderer {
         if entry.source != source || order.get(index + 1).is_some_and(|e| e.source == source) {
             return None;
         }
-        if self.lowered.get(index).is_none() {
-            return None;
-        }
+        self.lowered.get(index)?;
+        let fold = fold.unwrap_or(entry.context.fold);
         let instance = match (prim, entry.store) {
             (Primitive::GlyphRun(draw), StoreRef::GlyphRun(run)) => {
                 let glyphs = glyph_instances(&draw.glyphs, color(draw));
-                if !self
-                    .scene
-                    .glyph_runs
-                    .fits(run, glyphs, draw.atlas, draw.lane)
+                if fold != entry.context.fold
+                    || !self
+                        .scene
+                        .glyph_runs
+                        .fits(run, glyphs, draw.atlas, draw.lane)
                 {
                     return None;
                 }
                 None
             }
             _ => {
-                let (instance, bounds) = Instance::of(prim, entry.context.fold, None)?;
+                let (instance, bounds) = Instance::of(prim, fold, None)?;
                 let old = entry.bounds;
                 let same_box = bounds.local == old.local
                     && bounds.world == old.world
@@ -185,11 +255,121 @@ impl Renderer {
                 Some(instance)
             }
         };
-        Some(Edit {
+        Some(Edit::Draw {
             entry: index as u32,
             source,
             instance,
+            fold,
         })
+    }
+
+    /// Push the rewrites the layer opening at stream index `source` asks for
+    /// as `layer`: none when it is unchanged, else its fade, and for a folded
+    /// layer every entry under it at the new factor. `None` when the change is
+    /// not a fade its plan survives.
+    fn fade_edit(
+        &self,
+        primitives: &[Primitive],
+        source: u32,
+        layer: &LayerClip,
+        edits: &mut Vec<Edit>,
+    ) -> Option<Faded> {
+        let at = self.layers.partition_point(|r| r.source < source);
+        let record = self
+            .layers
+            .get(at)
+            .filter(|r| r.source == source && r.end > source)?;
+        let was = record.layer;
+        if *layer == was {
+            return Some(Faded::Kept);
+        }
+        let same = LayerClip {
+            opacity: was.opacity,
+            ..*layer
+        };
+        if same != was {
+            return None;
+        }
+        // The plan decided how the layer is drawn; a fade that would change it
+        // draws the frame differently.
+        let old = self.layer_plans.get(at)?;
+        let new = plan_layer(&crate::effect_plan::LayerRequest {
+            opacity: layer.opacity,
+            ..record.request
+        });
+        if new.requested != old.requested
+            || new.eliminated != old.eliminated
+            || new.surviving != old.surviving
+        {
+            return None;
+        }
+        let fade = |composite| Edit::Fade {
+            record: at as u32,
+            layer: *layer,
+            composite,
+        };
+        match record.drawn {
+            LayerDrawn::InPass => None,
+            LayerDrawn::Offscreen(pass) => {
+                let p = self.offscreen_passes.get(pass)?;
+                if p.blend.is_some() || p.color.is_some() {
+                    return None;
+                }
+                let order = &self.scene.paint_order;
+                let composite = order.partition_point(|e| e.source < record.end);
+                match order.get(composite)?.store {
+                    StoreRef::Composite { pass: of, .. } if of == pass => {}
+                    _ => return None,
+                }
+                if self.lowered.get(composite) == Some(&NOT_LOWERED) {
+                    return None;
+                }
+                edits.push(fade(composite as u32));
+                Some(Faded::Kept)
+            }
+            LayerDrawn::Folded => {
+                let fold = record.parent_fold * new.fold_opacity;
+                let order = &self.scene.paint_order;
+                let start = order.partition_point(|e| e.source <= source);
+                let end = order.partition_point(|e| e.source < record.end);
+                for entry in &order[start..end] {
+                    edits.push(self.draw_edit(primitives, entry.source, Some(fold))?);
+                }
+                edits.push(fade(NOT_LOWERED));
+                Some(Faded::Refolded {
+                    end: record.end,
+                    fold,
+                })
+            }
+        }
+    }
+
+    /// Apply a validated fade of layer record `record` to `layer`: the
+    /// composite entry it re-tinted, if any.
+    fn fade(&mut self, record: u32, layer: LayerClip, composite: u32) -> Option<usize> {
+        let r = &mut self.layers[record as usize];
+        r.layer = layer;
+        r.request.opacity = layer.opacity;
+        let (drawn, parent_fold) = (r.drawn, r.parent_fold);
+        match drawn {
+            LayerDrawn::Folded => {
+                self.layer_plans[record as usize].fold_opacity = layer.opacity;
+                None
+            }
+            LayerDrawn::InPass => None,
+            LayerDrawn::Offscreen(pass) => {
+                self.offscreen_passes[pass].opacity = layer.opacity;
+                self.offscreen_passes[pass].key =
+                    self.pass_key(pass, layer.blur_sigma, parent_fold, 0..0);
+                let index = composite as usize;
+                let entry = &mut self.scene.paint_order[index];
+                if let StoreRef::Composite { instance, .. } = &mut entry.store {
+                    instance.color[3] = layer.opacity;
+                }
+                self.scene.restamp_derived(index);
+                Some(index)
+            }
+        }
     }
 
     /// Whether `store` is a slot `instance` can be written over: the same
@@ -241,6 +421,11 @@ impl Renderer {
     /// Where entry `store`'s instances begin in its family's scratch were it
     /// lowered now, or [`NOT_LOWERED`] for one a patch cannot rewrite.
     pub(super) fn lowering_cursor(&self, store: StoreRef) -> u32 {
+        if let StoreRef::Composite { pass, .. } = store
+            && self.composite_lowering(pass) != CompositeLowering::Image
+        {
+            return NOT_LOWERED;
+        }
         let len = match Family::of(store) {
             Some(Family::Quad) => self.quad_scratch.len(),
             Some(Family::AnalyticRRect) => self.analytic_rrect_scratch.len(),
@@ -290,6 +475,12 @@ impl Renderer {
                 place!(analytic_shadows, analytic_shadow_scratch, id)
             }
             StoreRef::Image(id) => place!(images, image_scratch, id),
+            StoreRef::Composite { mut instance, .. } => {
+                instance.rect_pos[0] -= ox;
+                instance.rect_pos[1] -= oy;
+                *self.image_scratch.get_mut(at)? = instance;
+                1
+            }
             StoreRef::AnalyticLine(id) => {
                 let mut inst = self.scene.analytic_lines.get(id)?.instance;
                 inst.p0[0] -= ox;
@@ -534,6 +725,24 @@ mod tests {
             );
         }
         assert_eq!(patched.present.snapshot(), whole.present.snapshot());
+        assert_eq!(patched.layers, whole.layers);
+        assert_eq!(patched.layer_plans, whole.layer_plans);
+        let passes = |r: &Renderer| -> Vec<(f32, u64)> {
+            r.offscreen_passes
+                .iter()
+                .map(|p| (p.opacity, p.key))
+                .collect()
+        };
+        assert_eq!(passes(patched), passes(whole));
+        for (p, w) in patched
+            .scene
+            .paint_order
+            .iter()
+            .zip(&whole.scene.paint_order)
+        {
+            assert_eq!(p.context, w.context);
+            assert_eq!(p.store, w.store);
+        }
     }
 
     /// Uploads `before`, then brings one renderer to `after` by patching
@@ -609,6 +818,95 @@ mod tests {
             patched.r.offscreen_passes.is_empty(),
             "disjoint children fold"
         );
+    }
+
+    /// Two overlapping children under a layer of `opacity`, which therefore
+    /// draws through an offscreen pass, blurred by `blur`.
+    fn isolated(opacity: f32, blur: f32, t: f32) -> Vec<Primitive> {
+        vec![
+            quad(rect(0.0, 0.0, SIZE, SIZE), rgba(0.1, 1.0)),
+            Primitive::Layer(LayerClip {
+                clip: rect(10.0, 10.0, 60.0, 60.0),
+                opacity,
+                blur_sigma: blur,
+                backdrop_sigma: 0.0,
+            }),
+            quad(rect(10.0, 10.0, 40.0, 40.0), rgba(t, 1.0)),
+            quad(rect(30.0, 30.0, 40.0, 40.0), rgba(0.4, 1.0)),
+            Primitive::LayerEnd,
+        ]
+    }
+
+    /// Two disjoint children under a layer of `opacity`, which therefore
+    /// folds into them.
+    fn folded(opacity: f32, t: f32) -> Vec<Primitive> {
+        vec![
+            quad(rect(0.0, 0.0, SIZE, SIZE), rgba(0.1, 1.0)),
+            layer(rect(0.0, 0.0, 100.0, 40.0), opacity),
+            quad(rect(0.0, 0.0, 40.0, 40.0), rgba(t, 1.0)),
+            quad(rect(50.0, 0.0, 40.0, 40.0), rgba(0.4, 1.0)),
+            Primitive::LayerEnd,
+        ]
+    }
+
+    #[test]
+    fn a_fade_of_an_isolated_layer_retints_its_composite() {
+        let (patched, _) = agree(&isolated(0.5, 0.0, 0.2), &isolated(0.7, 0.0, 0.2), &[1]);
+        assert_eq!(patched.r.offscreen_passes.len(), 1, "the layer is a pass");
+        assert_eq!(patched.r.frame_stats().uploaded_ranges, 1, "its composite");
+        agree(&isolated(0.5, 0.0, 0.2), &isolated(0.7, 0.0, 0.9), &[1, 2]);
+        agree(&isolated(0.5, 3.0, 0.2), &isolated(0.3, 3.0, 0.2), &[1]);
+    }
+
+    #[test]
+    fn a_fade_of_a_folded_layer_refolds_its_children() {
+        let (patched, _) = agree(&folded(0.5, 0.2), &folded(0.3, 0.2), &[1]);
+        assert!(patched.r.offscreen_passes.is_empty(), "the layer folds");
+        assert_eq!(patched.r.frame_stats().uploaded_ranges, 1, "both children");
+        agree(&folded(0.5, 0.2), &folded(0.3, 0.9), &[1, 2]);
+    }
+
+    #[test]
+    fn a_presented_fade_matches_a_fresh_frame() {
+        for (before, after) in [
+            (isolated(0.5, 0.0, 0.2), isolated(0.8, 0.0, 0.2)),
+            (folded(0.5, 0.2), folded(0.8, 0.2)),
+        ] {
+            let mut kept = Gpu::new();
+            kept.upload(&before);
+            kept.present();
+            kept.present();
+            assert!(kept.patch(&after, &[1]));
+            let shown = kept.present();
+            assert!(
+                matches!(kept.r.last_damage(), crate::damage::Region::Rects(_)),
+                "a partial redraw, not {:?}",
+                kept.r.last_damage()
+            );
+            let mut fresh = Gpu::new();
+            fresh.upload(&after);
+            assert!(shown == fresh.present(), "pixel-identical to a fresh frame");
+        }
+    }
+
+    #[test]
+    fn a_fade_that_changes_how_the_layer_draws_is_not_a_patch() {
+        let mut gpu = Gpu::new();
+        let mut refused = |before: Vec<Primitive>, after: Vec<Primitive>| {
+            gpu.upload(&before);
+            assert!(!gpu.patch(&after, &[1]));
+        };
+        // Opaque, or invisible: the plan changes.
+        refused(isolated(0.5, 0.0, 0.2), isolated(1.0, 0.0, 0.2));
+        refused(isolated(0.5, 0.0, 0.2), isolated(0.0, 0.0, 0.2));
+        refused(folded(0.5, 0.2), folded(1.0, 0.2));
+        refused(isolated(1.0, 0.0, 0.2), isolated(0.5, 0.0, 0.2));
+        refused(isolated(1.0, 3.0, 0.2), isolated(0.5, 3.0, 0.2));
+        // Another blur, or another clip.
+        refused(isolated(0.5, 2.0, 0.2), isolated(0.5, 3.0, 0.2));
+        let mut moved = isolated(0.5, 0.0, 0.2);
+        moved[1] = layer(rect(10.0, 10.0, 62.0, 60.0), 0.5);
+        refused(isolated(0.5, 0.0, 0.2), moved);
     }
 
     #[test]
@@ -733,7 +1031,7 @@ mod tests {
         kept.present();
         assert!(kept.patch(&rows(4), &[4]));
         let shown = kept.present();
-        let crate::damage::Region::Rects(rects) = kept.r.last_damage().clone() else {
+        let crate::damage::Region::Rects(rects) = *kept.r.last_damage() else {
             panic!("a partial redraw, not {:?}", kept.r.last_damage());
         };
         assert_eq!(rects.len(), 1);
