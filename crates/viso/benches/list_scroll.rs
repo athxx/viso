@@ -131,7 +131,7 @@ fn frame(h: &mut Harness) -> (u32, bool) {
         .relayout_dirty(h.viewport, h.surface, &mut h.scratch, &mut h.redo);
     virtual_list::absorb_measurements(&h.store, &mut h.lists);
     let moved = h.store.any_dirty_class(DirtyClass::TRANSFORM) && h.store.update_transforms();
-    let painted = h.store.repaint_dirty(h.viewport, &mut h.primitives);
+    let painted = h.store.repaint_dirty(h.viewport, &mut h.primitives).count();
     if painted > 0 {
         h.renderer.upload_with_transforms(
             &mut h.gpu,

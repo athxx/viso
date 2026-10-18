@@ -766,6 +766,18 @@ subtree/widget paint output -> one or more contiguous primitive ranges -> batch 
 
 Chunk 记录：order range、bounds、primitive ranges、pipeline/material summary、clip chain、effect dependencies、revision。局部节点变动只重建相关 chunk；key 未变化时 batch structure 不动。
 
+**Paint-only patch（已实现）**。最常见的局部变动是只改颜色：hover、pressed、focus、颜色动画。此时 stream 的形状不变，只是若干 primitive 换了值。`Renderer::patch(backend, primitives, changed)` 接收上次上传的 stream（已原位改写）和改写位置的升序列表，只处理这些 primitive：
+
+1. 校验：stream 长度不变；帧内没有 backdrop capture（capture 会重新渲染其下方的 entry）；每个位置恰好对应一个 paint-order entry，且是单 instance 单 store 的种类（Quad、四种 analytic、AnalyticShadow、Image）或 glyph 个数、atlas、lane、每个 glyph 的 rect 都不变的 GlyphRun；新 instance 的 bounds（local / world / paint / effect）与 entry 记录的相同；Image 的纹理与 sampler 相同。任何一条不成立就返回 `false`，什么都不改，调用方上传整个 stream。
+2. 把新 instance（乘上 entry 记录的 group-opacity fold）写回 store slot，按 store 的字段 diff 只 bump 移动了的 revision plane，并重算该 slot 的 content stamp 与 damage key。
+3. 每个 entry 在 lower 时记下它在 family scratch 中的起始位置；patch 按同样的 origin 减法写回这些 slot（被 offscreen ROI cull 掉的 entry 没有 slot，只更新 store）。segment 不变，因为 key、clip、target 都没变。
+4. 各 family 的改写位置本就按 paint order 升序，经同一个 dirty-range coalescer 只上传这些 slot。
+5. 改写过的 entry 重算 surface draw key。offscreen pass 的内容 key 是各 entry key 按位置混合后的和，一项变化就地加减，再沿 composite 向上直到 surface draw。自上次 present 以来位移没变（`Transforms` 的 epoch 相同）时，damage 直接比较这些 draw 新旧 key，不再整表 diff。
+
+差分测试保证 patch 与整 stream 上传留下相同的 scratch、segment、pool shadow、entry key 与 surface draw；一帧 patch 之后 present 的像素与新 surface 上整帧绘制的相同，且只重绘改写的那一行。UI 一侧见 Architecture §11（`PaintIndex` / `Painted::Patched`）。`paint_scale` bench：2000 张卡片的页面 hover 一帧约 0.3 µs，与 100 张卡片相同；改之前约 0.7 ms，随卡片数线性增长。
+
+形状改变的局部变动（虚拟列表挂载一行、文本编辑改变 glyph 个数、opacity 打开或折叠 layer）仍然整树 paint、整 stream 上传，这是 chunk 级 splice 要解决的部分。
+
 ## 9.8 多线程模型
 
 ```text

@@ -174,7 +174,7 @@ fn write_flush_dirties_only_bound_nodes_with_bound_classes() {
     assert_eq!(laid_out, 0, "paint-only flush lays out nothing");
     let mut prims = Vec::new();
     assert!(
-        store.repaint_dirty(t.root, &mut prims) > 0,
+        store.repaint_dirty(t.root, &mut prims).count() > 0,
         "paint-only flush still rebuilds primitives"
     );
 }
@@ -235,7 +235,7 @@ fn idle_transaction_recomputes_nothing() {
     let mut redo = Vec::new();
     let (measured, laid_out) = store.relayout_dirty(t.root, surface(), &mut scratch, &mut redo);
     let mut prims = Vec::new();
-    let painted = store.repaint_dirty(t.root, &mut prims);
+    let painted = store.repaint_dirty(t.root, &mut prims).count();
     assert_eq!(
         (measured, laid_out, painted),
         (0, 0, 0),

@@ -74,15 +74,20 @@ pub fn paint_with_transforms(
 }
 
 /// What a paint walk records besides its primitives: the span of the stream
-/// each node emitted, its own primitives through its last descendant's.
+/// each node emitted, its own primitives through its last descendant's, and
+/// the span of its own drawables alone.
 pub(crate) trait PaintSpans {
     /// `node` starts emitting at `start`; the returned token closes its span.
     fn open(&mut self, node: NodeId, start: usize) -> usize;
     /// The span opened as `token` ends at `end`.
     fn close(&mut self, token: usize, end: usize);
+    /// `node`'s own drawables — its box and its content — are `start..end`,
+    /// painted inside transform root `slot`.
+    #[inline(always)]
+    fn own(&mut self, _node: NodeId, _start: usize, _end: usize, _slot: Option<u32>) {}
 }
 
-/// The frame's walk records no spans; the calls compile away.
+/// A walk that records nothing; the calls compile away.
 impl PaintSpans for () {
     #[inline(always)]
     fn open(&mut self, _: NodeId, _: usize) -> usize {
@@ -91,6 +96,161 @@ impl PaintSpans for () {
 
     #[inline(always)]
     fn close(&mut self, _: usize, _: usize) {}
+}
+
+/// Where each node's own drawables sit in the stream the last whole paint
+/// emitted, so a frame that only repaints can rewrite them in place
+/// ([`patch_walk`]).
+#[derive(Debug, Default)]
+pub(crate) struct PaintIndex {
+    /// By node slot.
+    own: Vec<Own>,
+    /// The whole paint the records of this one are from; a slot whose record
+    /// is older was not painted by it.
+    generation: u32,
+    /// The paint root and how many primitives its walk emitted.
+    root: Option<NodeId>,
+    len: usize,
+    /// The snapped displacement of the nodes outside every transform root.
+    top: Vec2,
+    /// One node's drawables, re-emitted.
+    scratch: Vec<Primitive>,
+}
+
+/// One node's own drawables in the last whole paint.
+#[derive(Debug, Clone, Copy, Default)]
+struct Own {
+    start: u32,
+    len: u32,
+    /// The transform root they were painted in, or `u32::MAX` for none.
+    slot: u32,
+    generation: u32,
+}
+
+impl PaintIndex {
+    /// Start recording the whole paint from `root`.
+    fn begin(&mut self, root: NodeId, top: Vec2) {
+        self.generation = self.generation.wrapping_add(1);
+        self.root = Some(root);
+        self.top = top;
+    }
+
+    /// Room for `slots` node slots, so recording allocates nothing.
+    pub(crate) fn reserve_slots(&mut self, slots: usize) {
+        self.own.reserve(slots.saturating_sub(self.own.len()));
+    }
+
+    /// Forget every record: the next paint is whole.
+    pub(crate) fn clear(&mut self) {
+        self.root = None;
+    }
+}
+
+impl PaintSpans for PaintIndex {
+    #[inline(always)]
+    fn open(&mut self, _: NodeId, _: usize) -> usize {
+        0
+    }
+
+    #[inline(always)]
+    fn close(&mut self, _: usize, _: usize) {}
+
+    #[inline]
+    fn own(&mut self, node: NodeId, start: usize, end: usize, slot: Option<u32>) {
+        let i = node.index() as usize;
+        if i >= self.own.len() {
+            self.own.resize(i + 1, Own::default());
+        }
+        self.own[i] = Own {
+            start: start as u32,
+            len: (end - start) as u32,
+            slot: slot.unwrap_or(u32::MAX),
+            generation: self.generation,
+        };
+    }
+}
+
+/// [`paint_with_transforms`], recording where each node's own drawables land
+/// in `index` for a later [`patch_walk`].
+pub(crate) fn paint_indexed(
+    store: &NodeStore,
+    root: NodeId,
+    out: &mut Vec<Primitive>,
+    table: &mut TransformTable,
+    index: &mut PaintIndex,
+) {
+    let top = if store.arena().is_live(root) {
+        store.snap_shift(store.shift_above(root))
+    } else {
+        Vec2::ZERO
+    };
+    let start = out.len();
+    index.begin(root, top);
+    paint_walk(store, root, out, table, index);
+    index.len = out.len() - start;
+}
+
+/// Re-emit the own drawables of each of `nodes` over the span of `out` the
+/// last whole paint from `root` gave them, and append the stream positions
+/// whose primitive changed to `changed`, ascending.
+///
+/// Returns `false` when that is not a patch — a node was not painted by that
+/// paint, or its drawables changed kind or count. `out` may then hold some
+/// rewritten primitives; paint it whole.
+pub(crate) fn patch_walk(
+    store: &NodeStore,
+    root: NodeId,
+    table: &TransformTable,
+    index: &mut PaintIndex,
+    nodes: impl Iterator<Item = NodeId>,
+    out: &mut [Primitive],
+    changed: &mut Vec<u32>,
+) -> bool {
+    if index.root != Some(root) || out.len() < index.len {
+        return false;
+    }
+    let mut scratch = core::mem::take(&mut index.scratch);
+    let patched = nodes.into_iter().all(|node| {
+        let Some(own) = index.own.get(node.index() as usize).copied() else {
+            return false;
+        };
+        if own.generation != index.generation || store.hidden(node) || store.opacity(node) <= 0.0 {
+            return false;
+        }
+        let shift = match table.painted().get(own.slot as usize) {
+            Some(&[x, y]) => Vec2 { x, y },
+            None if own.slot == u32::MAX => index.top,
+            None => return false,
+        };
+        scratch.clear();
+        paint_own(
+            store,
+            node,
+            store.bounds(node).translate(shift),
+            &mut scratch,
+        );
+        let start = own.start as usize;
+        let Some(span) = out.get_mut(start..start + own.len as usize) else {
+            return false;
+        };
+        if scratch.len() != span.len() {
+            return false;
+        }
+        for (k, (old, new)) in span.iter_mut().zip(scratch.iter_mut()).enumerate() {
+            if core::mem::discriminant(old) != core::mem::discriminant(new) {
+                return false;
+            }
+            if old != new {
+                core::mem::swap(old, new);
+                changed.push((start + k) as u32);
+            }
+        }
+        true
+    });
+    scratch.clear();
+    index.scratch = scratch;
+    changed.sort_unstable();
+    patched
 }
 
 /// The one paint walk, shared by the frame and the inspector.
@@ -192,22 +352,9 @@ fn paint_subtree<S: PaintSpans>(
             backdrop_sigma: 0.0,
         }));
     }
-    let style = store.style(root);
-    if style.is_visible() {
-        out.push(Primitive::Quad(Quad {
-            rect: world,
-            color: style.fill,
-            radius: style.radius,
-            border: style.border,
-        }));
-    }
-
-    // Drawable content (text/image/path) paints over the node's background. Its
-    // coordinates are node-local, so shift them by the node's world origin — a
-    // scrolled or repositioned node then draws its content in the right place.
-    if let Some(content) = store.content_payload(root) {
-        paint_content(content, world, out);
-    }
+    let own_start = out.len();
+    paint_own(store, root, world, out);
+    spans.own(root, own_start, out.len(), space.slot);
 
     // A scroll viewport clips its content to its own box — the viewport's
     // background already painted above, so it is not clipped — and its content
@@ -253,6 +400,26 @@ fn paint_subtree<S: PaintSpans>(
         out.push(Primitive::TransformEnd);
     }
     spans.close(span, out.len());
+}
+
+/// A node's own drawables at `world`: its box, then its content over it.
+#[inline(always)]
+fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primitive>) {
+    let style = store.style(node);
+    if style.is_visible() {
+        out.push(Primitive::Quad(Quad {
+            rect: world,
+            color: style.fill,
+            radius: style.radius,
+            border: style.border,
+        }));
+    }
+    // Drawable content (text/image/path) paints over the node's background. Its
+    // coordinates are node-local, so shift them by the node's world origin — a
+    // scrolled or repositioned node then draws its content in the right place.
+    if let Some(content) = store.content_payload(node) {
+        paint_content(content, world, out);
+    }
 }
 
 /// Lower one node's [`Content`] to a primitive, translating its node-local
@@ -1523,5 +1690,188 @@ mod tests {
             "scaled by 4 to cover the 40x40 box, centered: x from -20"
         );
         assert!(matches!(out[layer + 2], Primitive::LayerEnd));
+    }
+
+    /// A scroll viewport over `n` rows, each a card with a leaf inside: the
+    /// root, the viewport, and every card and leaf.
+    fn cards(store: &mut NodeStore, n: usize) -> (NodeId, NodeId, Vec<NodeId>, Vec<NodeId>) {
+        use crate::component::ScrollStyle;
+        let mut cards = Vec::new();
+        let mut leaves = Vec::new();
+        let mut viewport = None;
+        let root = {
+            let mut cx = BuildCx::new(store);
+            cx.flex(FlexStyle::default(), |cx| {
+                viewport = Some(
+                    cx.scroll(
+                        ScrollStyle {
+                            axis: Axis::Column,
+                            size: Size::fixed(100.0, 100.0),
+                            style: BoxStyle::solid(RED),
+                        },
+                        |cx| {
+                            for _ in 0..n {
+                                let card = cx.flex(
+                                    FlexStyle {
+                                        size: Size::fixed(100.0, 20.0),
+                                        style: BoxStyle::solid(RED),
+                                        ..Default::default()
+                                    },
+                                    |cx| {
+                                        leaves.push(
+                                            cx.leaf(LeafStyle {
+                                                size: Size::fixed(10.0, 10.0),
+                                                style: BoxStyle::solid(RED),
+                                            })
+                                            .id(),
+                                        );
+                                    },
+                                );
+                                cards.push(card.id());
+                            }
+                        },
+                    )
+                    .id(),
+                );
+            });
+            cx.root().unwrap()
+        };
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+        };
+        store.layout(root, surface, &mut Vec::new());
+        store.clear_dirty();
+        (root, viewport.unwrap(), cards, leaves)
+    }
+
+    /// The stream a whole paint of `store` emits now.
+    fn whole(store: &NodeStore, root: NodeId) -> Vec<Primitive> {
+        let mut out = Vec::new();
+        paint_tree(store, root, &mut out);
+        out
+    }
+
+    #[test]
+    fn a_paint_only_frame_rewrites_the_dirty_primitives_in_place() {
+        use crate::component::Painted;
+        let mut store = NodeStore::new();
+        let (root, _, cards, leaves) = cards(&mut store, 6);
+        let mut out = Vec::new();
+        assert_eq!(store.repaint_dirty(root, &mut out), Painted::Nothing);
+        store.repaint(root, &mut out);
+        store.clear_dirty();
+
+        let green = Rgba { g: 1.0, ..RED };
+        store.set_fill(cards[2], green);
+        store.set_fill(leaves[4], green);
+        assert_eq!(store.repaint_dirty(root, &mut out), Painted::Patched(2));
+        assert_eq!(out, whole(&store, root), "what a whole paint emits");
+        let quads: Vec<u32> = store.patched().to_vec();
+        assert_eq!(quads.len(), 2);
+        assert!(quads[0] < quads[1], "ascending");
+        for &at in &quads {
+            assert!(matches!(out[at as usize], Primitive::Quad(q) if q.color == green));
+        }
+        store.clear_dirty();
+
+        // A rewrite to the same value rewrites nothing.
+        store.set_fill(cards[2], green);
+        assert_eq!(store.repaint_dirty(root, &mut out), Painted::Nothing);
+    }
+
+    #[test]
+    fn a_paint_only_frame_under_a_scrolled_root_keeps_the_painted_displacement() {
+        use crate::component::Painted;
+        use crate::layout::Vec2;
+        let mut store = NodeStore::new();
+        let (root, viewport, cards, _) = cards(&mut store, 6);
+        let mut out = Vec::new();
+        store.repaint(root, &mut out);
+        let painted = out.clone();
+        store.clear_dirty();
+        // The scroll moves the root's retained draws; nothing repaints.
+        store.scroll_by(viewport, Vec2 { x: 0.0, y: 30.0 });
+        store.update_transforms();
+        assert_eq!(store.repaint_dirty(root, &mut out), Painted::Nothing);
+        store.clear_dirty();
+
+        let green = Rgba { g: 1.0, ..RED };
+        store.set_fill(cards[3], green);
+        assert_eq!(store.repaint_dirty(root, &mut out), Painted::Patched(1));
+        let at = store.patched()[0] as usize;
+        assert!(
+            matches!((&painted[at], &out[at]), (Primitive::Quad(a), Primitive::Quad(b))
+                if a.rect == b.rect && b.color == green),
+            "the same box as painted, recolored"
+        );
+    }
+
+    #[test]
+    fn a_change_of_shape_paints_whole() {
+        use crate::component::Painted;
+        let mut store = NodeStore::new();
+        let (root, _, cards, leaves) = cards(&mut store, 4);
+        let mut out = Vec::new();
+        store.repaint(root, &mut out);
+        store.clear_dirty();
+
+        // A box that stops drawing changes the count.
+        store.set_fill(leaves[1], Rgba { a: 0.0, ..RED });
+        assert!(matches!(
+            store.repaint_dirty(root, &mut out),
+            Painted::Whole(_)
+        ));
+        assert_eq!(out, whole(&store, root));
+        store.clear_dirty();
+
+        // A fade opens a layer.
+        store.set_opacity(cards[0], 0.5);
+        assert!(matches!(
+            store.repaint_dirty(root, &mut out),
+            Painted::Whole(_)
+        ));
+        assert_eq!(out, whole(&store, root));
+        store.clear_dirty();
+
+        // An overlay paints elsewhere in the stream.
+        store.set_overlay(cards[1], true);
+        assert!(matches!(
+            store.repaint_dirty(root, &mut out),
+            Painted::Whole(_)
+        ));
+        assert_eq!(out, whole(&store, root));
+        store.clear_dirty();
+
+        // A first translate makes a transform root.
+        store.set_translate(cards[2], crate::layout::Vec2 { x: 4.0, y: 0.0 });
+        assert!(matches!(
+            store.repaint_dirty(root, &mut out),
+            Painted::Whole(_)
+        ));
+        store.clear_dirty();
+
+        // A node a hidden ancestor kept from painting has no span to rewrite.
+        store.set_hidden(cards[3], true);
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 200.0,
+            },
+            &mut Vec::new(),
+        );
+        store.repaint(root, &mut out);
+        store.clear_dirty();
+        store.set_fill(leaves[3], Rgba { g: 1.0, ..RED });
+        assert!(matches!(
+            store.repaint_dirty(root, &mut out),
+            Painted::Whole(_)
+        ));
+        assert_eq!(out, whole(&store, root));
     }
 }

@@ -733,6 +733,8 @@ struct WindowState {
     /// How much each layer recomputed on the most recent frame — surfaced for
     /// diagnostics and asserted by tests to confirm only the dirty subtree moved.
     recompute: FrameRecompute,
+    /// What this frame's paint did to `primitives`, for its upload.
+    painted: viso_ui::Painted,
     /// The measure/layout counts of the frame in progress, folded into
     /// `recompute` when its paint phase runs.
     laid: (u32, u32),
@@ -932,6 +934,7 @@ impl WindowState {
             #[cfg(feature = "hot-reload")]
             dev_hud: None,
             recompute: FrameRecompute::default(),
+            painted: viso_ui::Painted::Nothing,
             laid: (0, 0),
             style_seen: 0,
             awaiting_first_frame: true,
@@ -1472,31 +1475,37 @@ impl WindowState {
         self.resolve_style();
         let _paint = profile::time(Span::Paint);
         let painted = if force {
-            self.store.repaint(root, &mut self.primitives)
+            viso_ui::Painted::Whole(self.store.repaint(root, &mut self.primitives))
         } else {
             self.store.repaint_dirty(root, &mut self.primitives)
         };
+        // The dev panels paint after the tree, so a patch leaves theirs in
+        // place.
         #[cfg(feature = "hot-reload")]
-        let painted = {
-            let (lw, lh) = self.logical_surface();
-            let surface = Rect {
-                x: 0.0,
-                y: 0.0,
-                w: lw,
-                h: lh,
-            };
-            painted + hot_reload::overlay::paint(self, surface, painted)
+        let painted = match painted {
+            viso_ui::Painted::Whole(n) => {
+                let (lw, lh) = self.logical_surface();
+                let surface = Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: lw,
+                    h: lh,
+                };
+                viso_ui::Painted::Whole(n + hot_reload::overlay::paint(self, surface, n))
+            }
+            other => other,
         };
+        self.painted = painted;
         if force {
             // A repaint the upload asked for: the frame's layout counts stand.
-            self.recompute.painted = painted;
+            self.recompute.painted = painted.count();
             return;
         }
         let (measured, laid_out) = core::mem::take(&mut self.laid);
         self.recompute = FrameRecompute {
             measured,
             laid_out,
-            painted,
+            painted: painted.count(),
         };
     }
 
@@ -1510,7 +1519,15 @@ impl WindowState {
         let Some(gpu) = &mut self.gpu else {
             return;
         };
-        if self.recompute.painted > 0 {
+        let whole = match std::mem::replace(&mut self.painted, viso_ui::Painted::Nothing) {
+            viso_ui::Painted::Nothing | viso_ui::Painted::Patched(0) => false,
+            viso_ui::Painted::Whole(_) => true,
+            viso_ui::Painted::Patched(_) => {
+                !gpu.renderer
+                    .patch(&mut gpu.backend, &self.primitives, self.store.patched())
+            }
+        };
+        if whole {
             gpu.renderer.upload_with_transforms(
                 &mut gpu.backend,
                 &self.primitives,
@@ -1522,6 +1539,7 @@ impl WindowState {
             .set_transforms(self.store.transforms().current());
         if update == viso_render::TransformUpdate::NeedsUpload {
             self.paint(true);
+            self.painted = viso_ui::Painted::Nothing;
             if let Some(gpu) = &mut self.gpu {
                 gpu.renderer.upload_with_transforms(
                     &mut gpu.backend,

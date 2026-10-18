@@ -2165,9 +2165,9 @@ Viso Runtime
  8. Measure
  9. Layout
 10. UpdateTransforms        // transform root 位移重算（每 root 一次加法）、subtree bounds
-11. BuildPaintChanges
+11. BuildPaintChanges       // 只有 PAINT 的帧原位改写 dirty 节点的 primitive，其余整树 paint
 12. BuildRenderBatches      // 同时计算 damage region（§30.3）
-13. UploadGpuChanges        // GPU：range upload；只移动 root 的帧不上传，renderer 取新位移；CpuRaster：damage tile 光栅化
+13. UploadGpuChanges        // GPU：range upload；改写过的帧 Renderer::patch 只上传改写的 slot；只移动 root 的帧不上传，renderer 取新位移；CpuRaster：damage tile 光栅化
 14. Submit                  // present_with_damage
 15. RunEffects              // effect 重启 / cleanup；产生的 state 写入进入下一帧
 16. UpdateSemantics         // present 之后执行，不在 input-to-photon 关键路径上；只在 AT 激活时发布
@@ -2688,9 +2688,19 @@ Scroll / translate
   -> damage = subtree 旧 world bounds ∪ 新 world bounds
   -> never MEASURE/LAYOUT/PAINT/HIT_TEST
 
-opacity / color-only animation
+color-only change / animation
   -> PAINT
+  -> BuildPaintChanges 在上次整树 paint 的 stream 里原位改写该节点自己的 primitive
+     （box + content；种类与个数不变才成立），记下被改写的位置
+  -> UploadGpuChanges：Renderer::patch 只重 ingest / lower / 上传这些 primitive
+  -> damage = 这些 draw 的旧 key 与新 key 不同处
+  -> 代价按改变的 primitive 计，与树多大无关
+
+opacity animation
+  -> PAINT，且 layer 形状随之改变（打开 / 折叠 offscreen layer），整树 paint
 ```
+
+为什么 paint-only 帧是 O(改变量)：每次整树 paint 都给每个节点记下它自己的 drawable 在 stream 中的区间、所在 transform root（`PaintIndex`，每节点 16 字节）。一帧只有 PAINT（没有 STRUCTURE / MEASURE / LAYOUT 标记，也没有 opacity、overlay、首次 translate 这类改变 stream 形状的写入）时，UI 只对 PAINT worklist 上的节点按记录的位移重新生成自身 primitive，种类与个数相同就原位替换并列出改变的位置（`Painted::Patched`），否则退回整树 paint。renderer 侧每个 paint-order entry 记着自己在 family scratch 中的位置：`patch` 先校验（同一 store、同一 bounds、同一纹理、帧内没有 backdrop capture），再把新 instance 写回 store slot、按记录位置重新 lower、只上传这些 slot，并给它的 surface draw（经 offscreen pass 的 composite 向上）换 key；自上次 present 以来位移没变时，damage 直接取这些 draw，不再全表 diff。任何一步不成立都返回 `false`，调用方上传整个 stream，结果总是正确。2000 张卡片（8000 个节点）的页面 hover 一帧从约 0.7 ms 降到约 0.3 µs，与卡片数无关（`paint_scale` bench）。
 
 为什么 transform 不需要 PAINT：transform table 只为 **transform root** 分配条目——scroll container 的内容，以及被 translate 过的节点（首次 translate 时成为 root，此后一直是）。paint 用 `Primitive::Transform(slot)` / `TransformEnd` 括住每个 root 的 primitive，并按先序记录 root，外层 root 总在内层之前。primitive 按绘制时的世界坐标写入，table 同时记下各 root 当时的位移（painted）；之后只有 root 移动的帧，UI 重算 table（每个 root 一次加法，与内容多少无关），renderer 在 encode 时让每个 draw 平移 `current - painted`——平移量走每个 built-in 都已读取的 16 字节 inline uniform 中的 `shift`，root 内打开的 clip 跟着移动。instance 不带 transform id，不重写，不上传：代价按 draw 计，不按 primitive 计，也不需要 storage buffer（GLES 3.0、CpuRaster 同样适用）。不同 root 的 draw 不合批。普通节点的 layout 变化会改变它的世界坐标，这本来就属于 PAINT。
 

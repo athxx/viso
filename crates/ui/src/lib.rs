@@ -52,8 +52,8 @@ pub use binding::{
     Binding, BindingFootprint, BindingTable, InstanceBase, StateRef, Template, TemplateBinding,
 };
 pub use component::{
-    BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, PointerHandler,
-    ScrollStyle, VirtualListStyle,
+    BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, Painted,
+    PointerHandler, ScrollStyle, VirtualListStyle,
 };
 pub use content::{BrushImage, Content, TextRequest};
 pub use context::EventCx;

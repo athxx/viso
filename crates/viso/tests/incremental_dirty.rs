@@ -118,7 +118,7 @@ fn clean_frame_recomputes_nothing() {
     let mut redo = Vec::new();
     let (measured, laid_out) = store.relayout_dirty(t.root, surface(), &mut scratch, &mut redo);
     let mut prims = Vec::new();
-    let painted = store.repaint_dirty(t.root, &mut prims);
+    let painted = store.repaint_dirty(t.root, &mut prims).count();
 
     assert_eq!(measured, 0, "idle frame measures nothing");
     assert_eq!(laid_out, 0, "idle frame lays out nothing");
@@ -187,7 +187,7 @@ fn paint_only_never_dirties_ancestor_layout() {
     assert_eq!(laid_out, 0, "paint-only frame lays out nothing");
 
     let mut prims = Vec::new();
-    let painted = store.repaint_dirty(t.root, &mut prims);
+    let painted = store.repaint_dirty(t.root, &mut prims).count();
     assert!(painted > 0, "paint-only frame still rebuilds primitives");
 }
 

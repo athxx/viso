@@ -19,8 +19,8 @@ use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle};
 use viso_render::{Primitive, Rect, Renderer, Rgba};
 use viso_ui::{
     Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, EffectStore, FlexStyle, LeafStyle, Length,
-    NodeId, NodeStore, SemanticProjector, Size, StateStore, TextEdits, Vec2, VirtualListStyle,
-    VirtualLists, virtual_list,
+    NodeId, NodeStore, Painted, SemanticProjector, Size, StateStore, TextEdits, Vec2,
+    VirtualListStyle, VirtualLists, virtual_list,
 };
 
 const W: f32 = 400.0;
@@ -228,16 +228,29 @@ fn frame(h: &mut Harness) -> u32 {
         h.store.update_transforms();
     }
     let painted = h.store.repaint_dirty(h.root, &mut h.primitives);
-    if painted > 0 {
+    upload(h, painted);
+    h.renderer.set_transforms(h.store.transforms().current());
+    h.store.clear_dirty();
+    painted.count()
+}
+
+/// The UploadGpuChanges phase as the facade runs it: a patch when only paint
+/// changed and the renderer takes it, the stream whole otherwise.
+fn upload(h: &mut Harness, painted: Painted) {
+    let whole = match painted {
+        Painted::Nothing | Painted::Patched(0) => false,
+        Painted::Whole(_) => true,
+        Painted::Patched(_) => !h
+            .renderer
+            .patch(&mut h.gpu, &h.primitives, h.store.patched()),
+    };
+    if whole {
         h.renderer.upload_with_transforms(
             &mut h.gpu,
             &h.primitives,
             h.store.transforms().painted(),
         );
     }
-    h.renderer.set_transforms(h.store.transforms().current());
-    h.store.clear_dirty();
-    painted
 }
 
 const COLORS: [Rgba; 2] = [Rgba::new(0.3, 0.5, 0.8, 1.0), Rgba::new(0.9, 0.6, 0.2, 1.0)];
@@ -261,13 +274,9 @@ fn bench_paint_scale(c: &mut Criterion) {
                     h.store
                         .relayout_dirty(h.root, h.surface, &mut h.scratch, &mut h.redo);
                     let start = std::time::Instant::now();
-                    black_box(h.store.repaint_dirty(h.root, &mut h.primitives));
+                    let painted = black_box(h.store.repaint_dirty(h.root, &mut h.primitives));
                     spent += start.elapsed();
-                    h.renderer.upload_with_transforms(
-                        &mut h.gpu,
-                        &h.primitives,
-                        h.store.transforms().painted(),
-                    );
+                    upload(&mut h, painted);
                     h.store.clear_dirty();
                 }
                 spent
@@ -281,13 +290,9 @@ fn bench_paint_scale(c: &mut Criterion) {
                     h.store.set_fill(target, COLORS[flip]);
                     h.store
                         .relayout_dirty(h.root, h.surface, &mut h.scratch, &mut h.redo);
-                    black_box(h.store.repaint_dirty(h.root, &mut h.primitives));
+                    let painted = h.store.repaint_dirty(h.root, &mut h.primitives);
                     let start = std::time::Instant::now();
-                    h.renderer.upload_with_transforms(
-                        &mut h.gpu,
-                        &h.primitives,
-                        h.store.transforms().painted(),
-                    );
+                    upload(&mut h, painted);
                     spent += start.elapsed();
                     h.store.clear_dirty();
                 }

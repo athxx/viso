@@ -75,7 +75,15 @@ impl Renderer {
         primitives: &[Primitive],
         changed: &[u32],
     ) -> bool {
-        if primitives.len() != self.stream_len || !self.backdrop_captures.is_empty() {
+        if primitives.len() != self.stream_len {
+            return false;
+        }
+        if changed.is_empty() {
+            self.uploaded_ranges = 0;
+            self.gpu_upload_bytes = 0;
+            return true;
+        }
+        if !self.backdrop_captures.is_empty() {
             return false;
         }
         let mut edits = std::mem::take(&mut self.edits);
