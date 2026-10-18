@@ -200,3 +200,8 @@ Phase 2 — a frame that changes shape:
 - [x] Lowering joins a draw to the open segment without building batch items when kind, bind group, clip, target and space match
 - [ ] Surface draw keys and pass sums skip the hash work an unchanged entry already did
 - [ ] Splice: a subtree whose shape changed replaces its span of the stream, and the renderer re-ingests and re-lowers only that span (a virtual list mounting a row, a text edit)
+  - [x] Store entries drop the positional transform/brush ids nothing read
+  - [x] Renderer `splice`: runs of leaves in the surface pass outside a folded group splice the paint order and every leaf store, later entries moving their stream index and slot; the frame is re-lowered, synced and keyed; differential tests against a whole upload, store by store, and on present
+  - [ ] UI records each node's subtree span; a frame whose structure, layout or paint changed in place re-emits only the changed subtrees and splices them into the stream (`Painted::Spliced`)
+  - [ ] Facade drives the splice path; `paint_scale` mount and a text-edit case measured
+  - [ ] Lowering and surface draws splice too, instead of re-deriving the frame

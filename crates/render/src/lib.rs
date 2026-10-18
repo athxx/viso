@@ -105,7 +105,7 @@ pub use primitive::{
 pub use program::{BrushProgram, IDLE_PIPELINES, ProgramError};
 // The brush profile a `ShaderDraw`'s parameters are encoded by, named in this
 // crate's program API.
-pub use renderer::{BackdropDependency, FrameStats, Renderer};
+pub use renderer::{BackdropDependency, FrameStats, Renderer, Splice};
 pub use transform::TransformUpdate;
 pub use viso_shader::program::{
     BrushLayout, BrushParam, PackedBrush, PackedCode, ParamKind, ParamValue,

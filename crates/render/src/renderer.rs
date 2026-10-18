@@ -54,7 +54,11 @@ use crate::transient::{TargetDesc, TargetId, TargetUsage, TransientTargets};
 use viso_math::InterpolationSpace;
 
 mod patch;
+mod splice;
+pub use splice::Splice;
 mod present;
+#[cfg(test)]
+mod testing;
 
 use crate::damage::Region;
 use present::Atlas;
@@ -1206,6 +1210,15 @@ pub struct Renderer {
     layer_plans: Vec<LayerPlan>,
     /// Every layer the last upload opened, in stream order, one per plan.
     layers: Vec<LayerRecord>,
+    /// Every primitive of the last upload a splice cannot cross — anything but
+    /// a leaf — by stream index, with the context the primitives after it are
+    /// drawn under.
+    marks: Vec<(u32, EmitContext)>,
+    /// The context of the primitives before the first mark.
+    root_context: EmitContext,
+    /// The leaves a splice inserts, and their glyphs.
+    spliced: Vec<crate::scene::splice::Inserted>,
+    spliced_glyphs: Vec<GlyphInstance>,
     /// Layers considered / partly eliminated / opacity-folded this frame. Reset at
     /// frame start, surfaced as the matching [`FrameStats`] fields.
     layers_planned: u32,
@@ -1967,6 +1980,16 @@ impl Renderer {
             blend_isolations: 0,
             layer_plans: Vec::new(),
             layers: Vec::new(),
+            marks: Vec::new(),
+            root_context: EmitContext {
+                clip: None,
+                offscreen: None,
+                origin: [0.0, 0.0],
+                space: Space::STATIC,
+                fold: 1.0,
+            },
+            spliced: Vec::new(),
+            spliced_glyphs: Vec::new(),
             layers_planned: 0,
             layers_eliminated: 0,
             opacity_folds: 0,
@@ -2561,6 +2584,8 @@ impl Renderer {
         self.opacity_folds = 0;
         self.backdrop_dirty_rois = 0;
 
+        self.marks.clear();
+        self.root_context = self.emit_context();
         for (prim_index, prim) in primitives.iter().enumerate() {
             self.scene.source = prim_index as u32;
             let (clip, target, origin) = self.active();
@@ -2568,19 +2593,7 @@ impl Renderer {
             // ancestors (§14.5). `1.0` — the steady state everywhere outside a
             // folded group — leaves every instance byte-identical.
             let fold = self.active_fold();
-            let ctx = EmitContext {
-                clip,
-                offscreen: match target {
-                    PassTarget::Main => None,
-                    PassTarget::Offscreen(idx) => Some(idx as u32),
-                    // A capture pass is never on the layer stack: it re-renders
-                    // entries this walk already recorded, at lowering time.
-                    PassTarget::Capture(_) => None,
-                },
-                origin,
-                space: self.transforms.space(self.active_chain()),
-                fold,
-            };
+            let ctx = self.emit_context();
             // Paint-order slots this primitive records, so its paint bounds can
             // be folded into the innermost offscreen layer's content union after
             // the match (a nested layer's composite, recorded at its LayerEnd,
@@ -3034,6 +3047,9 @@ impl Renderer {
                     top.content_union = union;
                 }
             }
+            if !splice::is_leaf(prim) {
+                self.marks.push((prim_index as u32, self.emit_context()));
+            }
         }
 
         // Trim any store tail the walk did not revisit (the scene shrank) so the
@@ -3109,10 +3125,15 @@ impl Renderer {
             self.present.atlas_written(Atlas::MaskPage);
         }
 
-        // Reconcile each family's persistent device buffer with the freshly
-        // lowered draw-order scratch, uploading only the slots that changed since
-        // last frame (§9.1) — a local paint change is a local upload, an
-        // unchanged frame uploads nothing.
+        self.sync_pools(backend);
+        self.collect_surface_draws();
+    }
+
+    /// Reconcile each family's persistent device buffer with the freshly
+    /// lowered draw-order scratch, uploading only the slots that changed since
+    /// last frame (§9.1) — a local paint change is a local upload, an
+    /// unchanged frame uploads nothing.
+    fn sync_pools<B: GpuBackend>(&mut self, backend: &mut B) {
         // Each `sync` returns the number of `write_buffer` calls it issued (the
         // coalesced dirty-range count, §9.3); summed, that is this frame's
         // `uploaded_ranges` counter (§30). A steady frame syncs zero ranges.
@@ -3170,7 +3191,6 @@ impl Renderer {
             + self.mesh_vertex_pool.last_upload_bytes()
             + self.mesh_index_pool.last_upload_bytes()
             + program_bytes;
-        self.collect_surface_draws();
     }
 
     /// Take each transform root's displacement now, indexed by its
@@ -4324,6 +4344,26 @@ impl Renderer {
         self.layer_stack
             .last()
             .map_or(NO_CHAIN, |entry| entry.chain)
+    }
+
+    /// The context whatever is drawn right now is lowered under: the active
+    /// clip, target and origin, the space it follows, and the group opacity
+    /// folded into it.
+    fn emit_context(&self) -> EmitContext {
+        let (clip, target, origin) = self.active();
+        EmitContext {
+            clip,
+            offscreen: match target {
+                PassTarget::Main => None,
+                PassTarget::Offscreen(idx) => Some(idx as u32),
+                // A capture pass is never on the layer stack: it re-renders
+                // entries the walk already recorded, at lowering time.
+                PassTarget::Capture(_) => None,
+            },
+            origin,
+            space: self.transforms.space(self.active_chain()),
+            fold: self.active_fold(),
+        }
     }
 
     /// The group opacity folded into whatever is drawn right now (§3161 rung 1):

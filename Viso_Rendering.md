@@ -767,7 +767,7 @@ Chunk 记录：order range、bounds、primitive ranges、pipeline/material summa
 
 **Paint-only patch（已实现）**。最常见的局部变动是只改颜色：hover、pressed、focus、颜色动画。此时 stream 的形状不变，只是若干 primitive 换了值。`Renderer::patch(backend, primitives, changed)` 接收上次上传的 stream（已原位改写）和改写位置的升序列表，只处理这些 primitive：
 
-1. 校验：stream 长度不变；帧内没有 backdrop capture（capture 会重新渲染其下方的 entry）；每个位置恰好对应一个 paint-order entry，且是单 instance 单 store 的种类（Quad、四种 analytic、AnalyticShadow、Image）或 glyph 个数、atlas、lane、每个 glyph 的 rect 都不变的 GlyphRun；新 instance 的 bounds（local / world / paint / effect）与 entry 记录的相同；Image 的纹理与 sampler 相同。任何一条不成立就返回 `false`，什么都不改，调用方上传整个 stream。
+1. 校验：stream 长度不变；帧内没有 backdrop capture（capture 会重新渲染其下方的 entry）；每个位置恰好对应一个 paint-order entry，且是单 instance 单 store 的种类（Quad、四种 analytic、AnalyticShadow、Image）或 glyph 个数、atlas、lane、每个 glyph 的 rect 都不变的 GlyphRun；新 instance 的 bounds（world / paint）与 entry 记录的相同；Image 的纹理与 sampler 相同。任何一条不成立就返回 `false`，什么都不改，调用方上传整个 stream。
 2. 把新 instance（乘上 entry 记录的 group-opacity fold）写回 store slot，按 store 的字段 diff 只 bump 移动了的 revision plane，并重算该 slot 的 content stamp 与 damage key。
 3. 每个 entry 在 lower 时记下它在 family scratch 中的起始位置；patch 按同样的 origin 减法写回这些 slot（被 offscreen ROI cull 掉的 entry 没有 slot，只更新 store）。segment 不变，因为 key、clip、target 都没变。
 4. 各 family 的改写位置本就按 paint order 升序，经同一个 dirty-range coalescer 只上传这些 slot。

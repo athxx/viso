@@ -44,6 +44,7 @@ pub mod ids;
 pub mod ingest;
 pub(crate) mod key;
 pub mod revision;
+pub(crate) mod splice;
 pub mod store;
 
 use crate::primitive::Rect;

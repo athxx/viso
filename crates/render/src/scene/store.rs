@@ -40,19 +40,15 @@ use super::ids::{
     BrushId, ClipChainId, ClipId, GeometryId, ImageId, MeshId, PathId, PrimitiveId, TransformId,
 };
 
-/// A retained solid/bordered quad: the resolved GPU instance plus the identity
-/// handles it separates into (§8.5). The instance is held whole; the diff
-/// splits its fields across the transform/geometry/paint planes.
+/// A retained solid/bordered quad: the resolved GPU instance. The instance is
+/// held whole; the diff splits its fields across the transform/geometry/paint
+/// planes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QuadEntry {
     /// The lowered instance, in world space (origin not yet subtracted — the
     /// per-emit origin lives in the paint-order record so one geometry can be
     /// re-lowered under different layer origins).
     pub instance: QuadInstance,
-    /// Transform identity — bumped alone by a pure move (§8.5).
-    pub transform: TransformId,
-    /// Brush identity — bumped alone by a recolor (§8.5).
-    pub brush: BrushId,
 }
 
 /// A retained image draw: its lowered instance, the texture it samples, and the
@@ -195,12 +191,7 @@ impl SolidQuadStore {
         let dirty = if index < self.entries.len() {
             self.set(GeometryId::new(index as u32), instance)
         } else {
-            let idx = index as u32;
-            self.entries.push(QuadEntry {
-                instance,
-                transform: TransformId::new(idx),
-                brush: BrushId::new(idx),
-            });
+            self.entries.push(QuadEntry { instance });
             DirtyPlanes::APPENDED
         };
         self.cursor += 1;
@@ -233,6 +224,18 @@ impl SolidQuadStore {
         self.entries.get(id.index() as usize)
     }
 
+    /// Replace the `removed` slots from `at` with `new`, in order, outside a
+    /// frame's walk: the slots after them move by the difference.
+    pub(crate) fn splice(
+        &mut self,
+        at: usize,
+        removed: usize,
+        new: impl IntoIterator<Item = QuadInstance>,
+    ) {
+        let new = new.into_iter().map(|instance| QuadEntry { instance });
+        self.entries.splice(at..at + removed, new);
+    }
+
     /// Number of live entries.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -244,17 +247,12 @@ impl SolidQuadStore {
     }
 }
 
-/// A retained analytic rounded rectangle: the resolved GPU instance plus the
-/// identity handles it separates into (§8.5), mirroring [`QuadEntry`] but for
-/// the per-corner-radius family.
+/// A retained analytic rounded rectangle: the resolved GPU instance, mirroring
+/// [`QuadEntry`] but for the per-corner-radius family.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticRRectEntry {
     /// The lowered instance, in world space (origin not yet subtracted).
     pub instance: AnalyticRRectInstance,
-    /// Transform identity — bumped alone by a pure move (§8.5).
-    pub transform: TransformId,
-    /// Brush identity — bumped alone by a recolor (§8.5).
-    pub brush: BrushId,
 }
 
 /// Dense store of analytic rounded rectangles (§8). Same AoS/cursor shape as
@@ -292,12 +290,7 @@ impl AnalyticRRectStore {
         let dirty = if index < self.entries.len() {
             self.set(GeometryId::new(index as u32), instance)
         } else {
-            let idx = index as u32;
-            self.entries.push(AnalyticRRectEntry {
-                instance,
-                transform: TransformId::new(idx),
-                brush: BrushId::new(idx),
-            });
+            self.entries.push(AnalyticRRectEntry { instance });
             DirtyPlanes::APPENDED
         };
         self.cursor += 1;
@@ -330,6 +323,20 @@ impl AnalyticRRectStore {
         self.entries.get(id.index() as usize)
     }
 
+    /// Replace the `removed` slots from `at` with `new`, in order, outside a
+    /// frame's walk: the slots after them move by the difference.
+    pub(crate) fn splice(
+        &mut self,
+        at: usize,
+        removed: usize,
+        new: impl IntoIterator<Item = AnalyticRRectInstance>,
+    ) {
+        let new = new
+            .into_iter()
+            .map(|instance| AnalyticRRectEntry { instance });
+        self.entries.splice(at..at + removed, new);
+    }
+
     /// Number of live entries.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -341,17 +348,13 @@ impl AnalyticRRectStore {
     }
 }
 
-/// A retained analytic ellipse: the resolved GPU instance plus its identity
-/// handles (§8.5). Like [`AnalyticRRectEntry`] without a per-corner radius —
+/// A retained analytic ellipse: the resolved GPU instance. Like
+/// [`AnalyticRRectEntry`] without a per-corner radius —
 /// the ellipse radii are derived from `rect_size` in the shader.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticEllipseEntry {
     /// The lowered instance, in world space (origin not yet subtracted).
     pub instance: AnalyticEllipseInstance,
-    /// Transform identity — bumped alone by a pure move (§8.5).
-    pub transform: TransformId,
-    /// Brush identity — bumped alone by a recolor (§8.5).
-    pub brush: BrushId,
 }
 
 /// Dense store of analytic ellipses (§8). Same AoS/cursor shape as
@@ -387,12 +390,7 @@ impl AnalyticEllipseStore {
         let dirty = if index < self.entries.len() {
             self.set(GeometryId::new(index as u32), instance)
         } else {
-            let idx = index as u32;
-            self.entries.push(AnalyticEllipseEntry {
-                instance,
-                transform: TransformId::new(idx),
-                brush: BrushId::new(idx),
-            });
+            self.entries.push(AnalyticEllipseEntry { instance });
             DirtyPlanes::APPENDED
         };
         self.cursor += 1;
@@ -424,6 +422,20 @@ impl AnalyticEllipseStore {
         self.entries.get(id.index() as usize)
     }
 
+    /// Replace the `removed` slots from `at` with `new`, in order, outside a
+    /// frame's walk: the slots after them move by the difference.
+    pub(crate) fn splice(
+        &mut self,
+        at: usize,
+        removed: usize,
+        new: impl IntoIterator<Item = AnalyticEllipseInstance>,
+    ) {
+        let new = new
+            .into_iter()
+            .map(|instance| AnalyticEllipseEntry { instance });
+        self.entries.splice(at..at + removed, new);
+    }
+
     /// Number of live entries.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -435,17 +447,13 @@ impl AnalyticEllipseStore {
     }
 }
 
-/// A retained analytic capsule: the resolved GPU instance plus its identity
-/// handles (§8.5). Byte-identical to [`AnalyticEllipseEntry`] — the corner
+/// A retained analytic capsule: the resolved GPU instance. Byte-identical to
+/// [`AnalyticEllipseEntry`] — the corner
 /// radius is derived from `rect_size` in the shader.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticCapsuleEntry {
     /// The lowered instance, in world space (origin not yet subtracted).
     pub instance: AnalyticCapsuleInstance,
-    /// Transform identity — bumped alone by a pure move (§8.5).
-    pub transform: TransformId,
-    /// Brush identity — bumped alone by a recolor (§8.5).
-    pub brush: BrushId,
 }
 
 /// Dense store of analytic capsules (§8). Same AoS/cursor shape as
@@ -481,12 +489,7 @@ impl AnalyticCapsuleStore {
         let dirty = if index < self.entries.len() {
             self.set(GeometryId::new(index as u32), instance)
         } else {
-            let idx = index as u32;
-            self.entries.push(AnalyticCapsuleEntry {
-                instance,
-                transform: TransformId::new(idx),
-                brush: BrushId::new(idx),
-            });
+            self.entries.push(AnalyticCapsuleEntry { instance });
             DirtyPlanes::APPENDED
         };
         self.cursor += 1;
@@ -518,6 +521,20 @@ impl AnalyticCapsuleStore {
         self.entries.get(id.index() as usize)
     }
 
+    /// Replace the `removed` slots from `at` with `new`, in order, outside a
+    /// frame's walk: the slots after them move by the difference.
+    pub(crate) fn splice(
+        &mut self,
+        at: usize,
+        removed: usize,
+        new: impl IntoIterator<Item = AnalyticCapsuleInstance>,
+    ) {
+        let new = new
+            .into_iter()
+            .map(|instance| AnalyticCapsuleEntry { instance });
+        self.entries.splice(at..at + removed, new);
+    }
+
     /// Number of live entries.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -529,16 +546,11 @@ impl AnalyticCapsuleStore {
     }
 }
 
-/// A retained analytic line: the resolved GPU instance plus its identity handles
-/// (§8.5).
+/// A retained analytic line: the resolved GPU instance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticLineEntry {
     /// The lowered instance, in world space (origin not yet subtracted).
     pub instance: AnalyticLineInstance,
-    /// Transform identity — bumped alone by a pure move (§8.5).
-    pub transform: TransformId,
-    /// Brush identity — bumped alone by a recolor (§8.5).
-    pub brush: BrushId,
 }
 
 /// Dense store of analytic lines (§8). Same AoS/cursor shape as the other
@@ -575,12 +587,7 @@ impl AnalyticLineStore {
         let dirty = if index < self.entries.len() {
             self.set(GeometryId::new(index as u32), instance)
         } else {
-            let idx = index as u32;
-            self.entries.push(AnalyticLineEntry {
-                instance,
-                transform: TransformId::new(idx),
-                brush: BrushId::new(idx),
-            });
+            self.entries.push(AnalyticLineEntry { instance });
             DirtyPlanes::APPENDED
         };
         self.cursor += 1;
@@ -615,6 +622,20 @@ impl AnalyticLineStore {
         self.entries.get(id.index() as usize)
     }
 
+    /// Replace the `removed` slots from `at` with `new`, in order, outside a
+    /// frame's walk: the slots after them move by the difference.
+    pub(crate) fn splice(
+        &mut self,
+        at: usize,
+        removed: usize,
+        new: impl IntoIterator<Item = AnalyticLineInstance>,
+    ) {
+        let new = new
+            .into_iter()
+            .map(|instance| AnalyticLineEntry { instance });
+        self.entries.splice(at..at + removed, new);
+    }
+
     /// Number of live entries.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -626,16 +647,11 @@ impl AnalyticLineStore {
     }
 }
 
-/// A retained analytic shadow: the resolved GPU instance plus its identity
-/// handles (§8.5).
+/// A retained analytic shadow: the resolved GPU instance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticShadowEntry {
     /// The lowered instance, in world space (origin not yet subtracted).
     pub instance: ShadowInstance,
-    /// Transform identity — bumped alone by a pure move (§8.5).
-    pub transform: TransformId,
-    /// Brush identity — bumped alone by a recolor (§8.5).
-    pub brush: BrushId,
 }
 
 /// Dense store of analytic shadows (§8). Same AoS/cursor shape as the other
@@ -671,12 +687,7 @@ impl AnalyticShadowStore {
         let dirty = if index < self.entries.len() {
             self.set(GeometryId::new(index as u32), instance)
         } else {
-            let idx = index as u32;
-            self.entries.push(AnalyticShadowEntry {
-                instance,
-                transform: TransformId::new(idx),
-                brush: BrushId::new(idx),
-            });
+            self.entries.push(AnalyticShadowEntry { instance });
             DirtyPlanes::APPENDED
         };
         self.cursor += 1;
@@ -709,6 +720,20 @@ impl AnalyticShadowStore {
     /// The entry at `id`, or `None` if the slot is out of range.
     pub fn get(&self, id: GeometryId) -> Option<&AnalyticShadowEntry> {
         self.entries.get(id.index() as usize)
+    }
+
+    /// Replace the `removed` slots from `at` with `new`, in order, outside a
+    /// frame's walk: the slots after them move by the difference.
+    pub(crate) fn splice(
+        &mut self,
+        at: usize,
+        removed: usize,
+        new: impl IntoIterator<Item = ShadowInstance>,
+    ) {
+        let new = new
+            .into_iter()
+            .map(|instance| AnalyticShadowEntry { instance });
+        self.entries.splice(at..at + removed, new);
     }
 
     /// Number of live entries.
@@ -993,6 +1018,24 @@ impl ImageStore {
         self.entries.get(id.index() as usize)
     }
 
+    /// Replace the `removed` slots from `at` with `new`, in order, outside a
+    /// frame's walk: the slots after them move by the difference.
+    pub(crate) fn splice(
+        &mut self,
+        at: usize,
+        removed: usize,
+        new: impl IntoIterator<Item = (ImageInstance, viso_gpu::TextureId, viso_gpu::SamplerDesc)>,
+    ) {
+        let new = new
+            .into_iter()
+            .map(|(instance, texture, sampler)| ImageEntry {
+                instance,
+                texture,
+                sampler,
+            });
+        self.entries.splice(at..at + removed, new);
+    }
+
     /// Number of live entries.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -1143,6 +1186,49 @@ impl GlyphRunStore {
             *slot = g;
         }
         dirty
+    }
+
+    /// Replace the `removed` runs from `at` with `new` — each a glyph count, an
+    /// atlas and a lane, their glyphs back to back in `glyphs` — outside a
+    /// frame's walk. The runs after them, and their glyphs, move by the
+    /// difference.
+    pub(crate) fn splice(
+        &mut self,
+        at: usize,
+        removed: usize,
+        new: impl IntoIterator<Item = (u32, viso_gpu::TextureId, crate::primitive::GlyphLane)>,
+        glyphs: &[GlyphInstance],
+    ) {
+        let from = self
+            .runs
+            .get(at)
+            .map_or(self.instances.len(), |r| r.start as usize);
+        let gone: usize = self.runs[at..at + removed]
+            .iter()
+            .map(|r| r.count as usize)
+            .sum();
+        self.instances
+            .splice(from..from + gone, glyphs.iter().copied());
+        let mut start = from as u32;
+        let new = new.into_iter().map(|(count, atlas, lane)| {
+            let run = GlyphRunEntry {
+                start,
+                count,
+                atlas,
+                lane,
+            };
+            start += count;
+            run
+        });
+        let before = self.runs.len();
+        self.runs.splice(at..at + removed, new);
+        let tail = at + self.runs.len() + removed - before;
+        let shift = glyphs.len() as i64 - gone as i64;
+        if shift != 0 {
+            for run in &mut self.runs[tail..] {
+                run.start = (i64::from(run.start) + shift) as u32;
+            }
+        }
     }
 
     /// The run entry at slot `run`, or `None` if out of range.
