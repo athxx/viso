@@ -847,11 +847,6 @@ fn layout_absolute_rows(
         return;
     }
 
-    let cross = cross_of(axis);
-    let main_origin = rect_start(bounds, axis);
-    let cross_origin = rect_start(bounds, cross);
-    let cross_size = rect_len(bounds, cross);
-
     // The child ids sit in `scratch[start..start + child_count]`. A recursive
     // `layout` leaves `scratch` at the length it entered with (every arm pushes
     // its own children and truncates them back), so that window stays intact
@@ -859,21 +854,35 @@ fn layout_absolute_rows(
     // pass allocation-free.
     for k in 0..child_count {
         let child = scratch[start + k];
-        let Some(offset) = tree.row_offset(child) else {
+        let Some(child_box) = row_box(tree, child, bounds, axis) else {
             continue;
         };
-        let main_size = tree.measured(child).on(axis);
-        let child_box = axis_rect(
-            axis,
-            main_origin + offset,
-            cross_origin,
-            main_size,
-            cross_size,
-        );
         let child_basis = basis.child(tree.input(root), tree.input(child));
         layout_on(tree, child, child_box, child_basis, scratch);
     }
     scratch.truncate(start);
+}
+
+/// The box an [`LayoutInput::AbsoluteRows`] canvas at `canvas` along `axis`
+/// gives its positioned child `child`: at its row offset, its measured main
+/// extent, the canvas's whole cross extent. `None` for a child that is not a
+/// positioned row. No sibling enters into it, so a row that re-measures is
+/// re-placed alone.
+pub(crate) fn row_box(
+    tree: &impl LayoutTree,
+    child: u32,
+    canvas: Rect,
+    axis: Axis,
+) -> Option<Rect> {
+    let offset = tree.row_offset(child)?;
+    let cross = cross_of(axis);
+    Some(axis_rect(
+        axis,
+        rect_start(canvas, axis) + offset,
+        rect_start(canvas, cross),
+        tree.measured(child).on(axis),
+        rect_len(canvas, cross),
+    ))
 }
 
 /// The working buffers of one grid layout. `layout_grid` needs about a dozen

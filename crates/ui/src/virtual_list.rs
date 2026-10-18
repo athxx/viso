@@ -414,6 +414,11 @@ pub struct VirtualListState {
     /// buffers keep their capacity — the diff path (a scroll crossing or a keyed
     /// reorder) then rebuilds the window with zero heap growth once warmed.
     scratch_old_mounted: Vec<MountedItem>,
+    /// Reused scratch: the new window's keys, sorted, and the previous mounted
+    /// set's keys with each one's index there, sorted — so the leave and build
+    /// steps find a key by binary search instead of a scan per row.
+    sorted_new: Vec<u64>,
+    sorted_old: Vec<(u64, u32)>,
 }
 
 impl VirtualListState {
@@ -456,6 +461,8 @@ impl VirtualListState {
             scratch_mounted: Vec::new(),
             new_keys: Vec::new(),
             scratch_old_mounted: Vec::new(),
+            sorted_new: Vec::new(),
+            sorted_old: Vec::new(),
         }
     }
 
@@ -686,8 +693,21 @@ fn reconcile_one(
     //    without reallocating it. `mounted` starts this pass empty-but-capacious.
     let mut old_mounted = std::mem::take(&mut state.scratch_old_mounted);
     std::mem::swap(&mut old_mounted, &mut state.mounted);
+    let mut sorted_new = std::mem::take(&mut state.sorted_new);
+    sorted_new.clear();
+    sorted_new.extend(new_keys.iter().map(|(_, k)| k.0));
+    sorted_new.sort_unstable();
+    let mut sorted_old = std::mem::take(&mut state.sorted_old);
+    sorted_old.clear();
+    sorted_old.extend(
+        old_mounted
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.key.0, i as u32)),
+    );
+    sorted_old.sort_unstable();
     for m in &old_mounted {
-        let still_present = new_keys.iter().any(|(_, k)| *k == m.key);
+        let still_present = sorted_new.binary_search(&m.key.0).is_ok();
         if !still_present {
             store.arena_detach(m.host);
             store.clear_row_offset(m.host);
@@ -696,10 +716,15 @@ fn reconcile_one(
     }
 
     // 2. Build the new mounted set in index order, reusing survivors. A survivor is
-    //    found by scanning the (small, ~40-entry) old list for a matching key.
+    //    found by a binary search over the old set's sorted keys.
     for &(logical, key) in &new_keys {
         let item_top = state.heights.prefix_sum(logical);
-        if let Some(existing) = old_mounted.iter().find(|m| m.key == key) {
+        let at = sorted_old.partition_point(|&(k, _)| k < key.0);
+        let survivor = sorted_old
+            .get(at)
+            .filter(|&&(k, _)| k == key.0)
+            .map(|&(_, i)| &old_mounted[i as usize]);
+        if let Some(existing) = survivor {
             // Survivor: reuse the host. Re-anchor it if its offset moved, and
             // rebind its logical index if a reorder placed it at a new position —
             // no rebuild, so its body / per-row state / focus are preserved.
@@ -757,6 +782,8 @@ fn reconcile_one(
     state.new_keys = new_keys;
     old_mounted.clear();
     state.scratch_old_mounted = old_mounted;
+    state.sorted_new = sorted_new;
+    state.sorted_old = sorted_old;
 
     // 3. If the total logical extent changed, rewrite the canvas's fixed extent so
     //    the scroll range stays correct, and mark the canvas LAYOUT (never
@@ -1493,6 +1520,44 @@ mod tests {
         );
         // The pool is conserved: 3 detached, 3 popped — net zero, no tree growth.
         assert_eq!(h.state().pool_len(), pool_before);
+    }
+
+    #[test]
+    fn mounting_rows_lays_out_only_the_rows_it_mounts() {
+        let mut h = ListHarness::new(1000, 30.0, 4, 300.0);
+        h.frame();
+        h.store.scroll_by(h.viewport, Vec2 { x: 0.0, y: 3000.0 });
+        h.frame();
+        h.store.scroll_by(h.viewport, Vec2 { x: 0.0, y: 90.0 });
+        let bound = reconcile(
+            &mut h.store,
+            &mut h.lists,
+            &mut h.states,
+            &mut h.bindings,
+            &mut h.effects,
+        );
+        assert_eq!(bound, 3);
+        let (_, laid_out) =
+            h.store
+                .relayout_dirty(h.viewport, h.surface, &mut h.scratch, &mut h.redo);
+        let per_row = h.store.subtree_len(h.state().mounted[0].host);
+        assert_eq!(laid_out, 3 * per_row, "the three new rows, not the window");
+        // Where a whole layout puts every mounted row.
+        let boxes = |h: &ListHarness| -> Vec<Rect> {
+            h.state()
+                .mounted
+                .iter()
+                .flat_map(|m| {
+                    let body = h.store.arena().first_child(m.host);
+                    [Some(m.host), body]
+                })
+                .flatten()
+                .map(|n| h.store.bounds(n))
+                .collect()
+        };
+        let incremental = boxes(&h);
+        h.store.layout(h.viewport, h.surface, &mut h.scratch);
+        assert_eq!(incremental, boxes(&h));
     }
 
     #[test]

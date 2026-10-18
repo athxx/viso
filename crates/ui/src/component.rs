@@ -3214,7 +3214,9 @@ impl NodeStore {
                 let Some(id) = self.arena.live_id(index) else {
                     continue;
                 };
-                let redo_from = if class == DirtyClass::MEASURE {
+                // A positioned row of an absolute-rows canvas moves no sibling,
+                // whatever its size: it is redone alone.
+                let redo_from = if class == DirtyClass::MEASURE && self.row_canvas(id).is_none() {
                     self.arena.parent(id).unwrap_or(root)
                 } else {
                     id
@@ -3241,14 +3243,17 @@ impl NodeStore {
         let mut measured = 0;
         let mut laid_out = 0;
         for redo in redo_roots.iter().copied() {
-            let bounds = if redo == root {
-                surface
-            } else {
-                self.bounds(redo)
-            };
             scratch.clear();
             layout::measure(self, redo.index(), scratch);
             measured += self.subtree_len(redo);
+            let bounds = if redo == root {
+                surface
+            } else if let Some((canvas, axis)) = self.row_canvas(redo) {
+                layout::row_box(self, redo.index(), self.bounds(canvas), axis)
+                    .unwrap_or_else(|| self.bounds(redo))
+            } else {
+                self.bounds(redo)
+            };
             scratch.clear();
             let basis = self.basis_of(redo, root);
             layout::layout_on(self, redo.index(), bounds, basis, scratch);
@@ -3257,6 +3262,18 @@ impl NodeStore {
         // A waiting scroll restore applies once layout knows the range.
         self.settle_scroll_restores();
         (measured, laid_out)
+    }
+
+    /// The absolute-rows canvas `id` is a positioned row of, and its axis.
+    fn row_canvas(&self, id: NodeId) -> Option<(NodeId, Axis)> {
+        if self.row_offset[id.index() as usize].is_nan() {
+            return None;
+        }
+        let parent = self.arena.parent(id)?;
+        match self.layout[parent.index() as usize] {
+            LayoutInput::AbsoluteRows { axis, .. } => Some((parent, axis)),
+            _ => None,
+        }
     }
 
     /// How many parent links lie between `id` and the top of its tree.
@@ -3446,7 +3463,7 @@ impl NodeStore {
 
     /// Count of live nodes in the subtree rooted at `id` (inclusive). Used to
     /// report recompute work; walks ancestry links, no allocation.
-    fn subtree_len(&self, id: NodeId) -> u32 {
+    pub(crate) fn subtree_len(&self, id: NodeId) -> u32 {
         let mut count = 1;
         for c in self.arena.children(id) {
             count += self.subtree_len(c);

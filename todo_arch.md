@@ -184,9 +184,14 @@ Phase 1 — a frame that only repaints:
 - [x] Renderer `patch`: re-ingest the rewritten primitives at their store slots, re-lower them into their recorded scratch positions and upload only those slots; a whole upload when a precondition fails (kind, count, bounds, resource, backdrop capture)
 - [x] Present: a patched entry re-keys its surface draw (through its offscreen pass's composite); when nothing moved since the last present the damage is the rewritten draws alone
 - [x] Differential tests: patch and whole upload leave the same scratch, segments, pool shadows, keys and damage
-- [ ] Facade drives the patch path; footprint and headless scenarios unchanged
+- [x] Facade drives the patch path; footprint and headless scenarios unchanged
 - [x] Rendering §9.7 and Architecture describe the patch path with the measured numbers
+
+- [x] Footprint window rows re-recorded on an unlocked screen
 
 Phase 2 — a frame that changes shape:
 
+- [x] Reconcile finds each surviving row in one pass over the window, not a scan of the mounted rows per row
+- [x] A row host that re-measures re-places only itself in its absolute-rows canvas, not every mounted row
+- [ ] A fade patches in place: an opacity change that keeps the node's layer rewrites its layer primitive; the renderer re-tints the offscreen composite or re-folds the group's instances
 - [ ] Splice: a subtree whose shape changed replaces its span of the stream, and the renderer re-ingests and re-lowers only that span (a virtual list mounting a row, a text edit)
