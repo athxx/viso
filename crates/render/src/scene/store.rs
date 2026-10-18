@@ -129,7 +129,10 @@ impl Moved for u32 {
 impl<const N: usize> Moved for [f32; N] {
     #[inline(always)]
     fn moved(&self, other: &[f32; N]) -> bool {
-        self.map(f32::to_bits) != other.map(f32::to_bits)
+        self.iter()
+            .zip(other)
+            .fold(0, |bits, (a, b)| bits | (a.to_bits() ^ b.to_bits()))
+            != 0
     }
 }
 

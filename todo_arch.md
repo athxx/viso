@@ -197,6 +197,6 @@ Phase 2 — a frame that changes shape:
 - [x] Store and pool diffs compare bits, not floats: one integer compare per field, and an unchanged NaN is not a change
 - [x] A paint-order entry carries only what is read: bounds are `world` + `paint`, a composite's instance and a backdrop's rect live in per-frame side tables, pass indices are `u32` (entry 216 → 104 bytes, `StoreRef` 64 → 12)
 - [ ] The stream's primitive shrinks: the rare large variants (frosted material, path, shader, color effect) move out of line
-- [ ] Lowering joins a draw to the open segment without building batch items when kind, bind group, clip, target and space match
+- [x] Lowering joins a draw to the open segment without building batch items when kind, bind group, clip, target and space match
 - [ ] Surface draw keys and pass sums skip the hash work an unchanged entry already did
 - [ ] Splice: a subtree whose shape changed replaces its span of the stream, and the renderer re-ingests and re-lowers only that span (a virtual list mounting a row, a text edit)

@@ -4250,10 +4250,24 @@ impl Renderer {
     /// boundaries can never drift from what introspection reports. A merge grows
     /// the previous segment's `count` by the incoming one's; the two always
     /// share a family buffer, so their geometry is already contiguous.
+    ///
+    /// A segment of the open one's kind and target packs the same key, so the
+    /// common run — quad after quad — compares the fields alone, to the same
+    /// answer.
     fn merge_or_push(&mut self, segment: Segment) {
-        let next = segment.batch_item();
+        let joined = self.segments.last().is_some_and(|prev| {
+            if prev.kind == segment.kind && prev.target == segment.target {
+                let joined = segment.kind.family().mergeable()
+                    && prev.clip == segment.clip
+                    && prev.space == segment.space;
+                debug_assert_eq!(joined, joins(&prev.batch_item(), &segment.batch_item()));
+                joined
+            } else {
+                joins(&prev.batch_item(), &segment.batch_item())
+            }
+        });
         match self.segments.last_mut() {
-            Some(prev) if joins(&prev.batch_item(), &next) => prev.count += segment.count,
+            Some(prev) if joined => prev.count += segment.count,
             _ => self.segments.push(segment),
         }
     }
