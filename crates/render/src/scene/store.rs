@@ -33,8 +33,7 @@ use std::sync::Arc;
 use crate::primitive::{
     AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance, AnalyticRRectInstance,
     GlyphInstance, GlyphInstanceData, GradientInstance, ImageInstance, MeshVertex, Path,
-    PathGeometry, ProgramSlot, ProgramTextures, QuadInstance, Rect, Rgba, ShaderDraw,
-    ShadowInstance,
+    PathGeometry, ProgramSlot, ProgramTextures, QuadInstance, Rgba, ShaderDraw, ShadowInstance,
 };
 
 use super::ids::{
@@ -104,6 +103,41 @@ pub struct DirtyPlanes {
     /// treats it as a whole-primitive add (bumps geometry + the structural
     /// generation), so the individual field flags stay `false` here.
     pub appended: bool,
+}
+
+/// A field diff by bits, not by arithmetic: a rewritten `-0.0` or NaN payload
+/// is a change, an unchanged NaN is not, and a whole array compares as one
+/// integer vector.
+trait Moved {
+    fn moved(&self, other: &Self) -> bool;
+}
+
+impl Moved for f32 {
+    #[inline(always)]
+    fn moved(&self, other: &f32) -> bool {
+        self.to_bits() != other.to_bits()
+    }
+}
+
+impl Moved for u32 {
+    #[inline(always)]
+    fn moved(&self, other: &u32) -> bool {
+        self != other
+    }
+}
+
+impl<const N: usize> Moved for [f32; N] {
+    #[inline(always)]
+    fn moved(&self, other: &[f32; N]) -> bool {
+        self.map(f32::to_bits) != other.map(f32::to_bits)
+    }
+}
+
+impl<const N: usize> Moved for [u32; N] {
+    #[inline(always)]
+    fn moved(&self, other: &[u32; N]) -> bool {
+        self != other
+    }
 }
 
 impl DirtyPlanes {
@@ -176,11 +210,12 @@ impl SolidQuadStore {
         let entry = &mut self.entries[id.index() as usize];
         let prev = &entry.instance;
         let dirty = DirtyPlanes {
-            transform: prev.rect_pos != instance.rect_pos,
-            geometry: prev.rect_size != instance.rect_size
-                || prev.radius != instance.radius
-                || prev.border_width != instance.border_width,
-            paint: prev.color != instance.color || prev.border_color != instance.border_color,
+            transform: prev.rect_pos.moved(&instance.rect_pos),
+            geometry: prev.rect_size.moved(&instance.rect_size)
+                || prev.radius.moved(&instance.radius)
+                || prev.border_width.moved(&instance.border_width),
+            paint: prev.color.moved(&instance.color)
+                || prev.border_color.moved(&instance.border_color),
             resource: false,
             appended: false,
         };
@@ -272,11 +307,12 @@ impl AnalyticRRectStore {
         let entry = &mut self.entries[id.index() as usize];
         let prev = &entry.instance;
         let dirty = DirtyPlanes {
-            transform: prev.rect_pos != instance.rect_pos,
-            geometry: prev.rect_size != instance.rect_size
-                || prev.radius != instance.radius
-                || prev.border_width != instance.border_width,
-            paint: prev.color != instance.color || prev.border_color != instance.border_color,
+            transform: prev.rect_pos.moved(&instance.rect_pos),
+            geometry: prev.rect_size.moved(&instance.rect_size)
+                || prev.radius.moved(&instance.radius)
+                || prev.border_width.moved(&instance.border_width),
+            paint: prev.color.moved(&instance.color)
+                || prev.border_color.moved(&instance.border_color),
             resource: false,
             appended: false,
         };
@@ -366,10 +402,11 @@ impl AnalyticEllipseStore {
         let entry = &mut self.entries[id.index() as usize];
         let prev = &entry.instance;
         let dirty = DirtyPlanes {
-            transform: prev.rect_pos != instance.rect_pos,
-            geometry: prev.rect_size != instance.rect_size
-                || prev.border_width != instance.border_width,
-            paint: prev.color != instance.color || prev.border_color != instance.border_color,
+            transform: prev.rect_pos.moved(&instance.rect_pos),
+            geometry: prev.rect_size.moved(&instance.rect_size)
+                || prev.border_width.moved(&instance.border_width),
+            paint: prev.color.moved(&instance.color)
+                || prev.border_color.moved(&instance.border_color),
             resource: false,
             appended: false,
         };
@@ -459,10 +496,11 @@ impl AnalyticCapsuleStore {
         let entry = &mut self.entries[id.index() as usize];
         let prev = &entry.instance;
         let dirty = DirtyPlanes {
-            transform: prev.rect_pos != instance.rect_pos,
-            geometry: prev.rect_size != instance.rect_size
-                || prev.border_width != instance.border_width,
-            paint: prev.color != instance.color || prev.border_color != instance.border_color,
+            transform: prev.rect_pos.moved(&instance.rect_pos),
+            geometry: prev.rect_size.moved(&instance.rect_size)
+                || prev.border_width.moved(&instance.border_width),
+            paint: prev.color.moved(&instance.color)
+                || prev.border_color.moved(&instance.border_color),
             resource: false,
             appended: false,
         };
@@ -552,13 +590,14 @@ impl AnalyticLineStore {
         let entry = &mut self.entries[id.index() as usize];
         let prev = &entry.instance;
         let dirty = DirtyPlanes {
-            transform: prev.p0 != instance.p0 || prev.p1 != instance.p1,
-            geometry: prev.width != instance.width
-                || prev.cap != instance.cap
-                || prev.join != instance.join
-                || prev.miter_limit != instance.miter_limit
-                || prev.border_width != instance.border_width,
-            paint: prev.color != instance.color || prev.border_color != instance.border_color,
+            transform: prev.p0.moved(&instance.p0) || prev.p1.moved(&instance.p1),
+            geometry: prev.width.moved(&instance.width)
+                || prev.cap.moved(&instance.cap)
+                || prev.join.moved(&instance.join)
+                || prev.miter_limit.moved(&instance.miter_limit)
+                || prev.border_width.moved(&instance.border_width),
+            paint: prev.color.moved(&instance.color)
+                || prev.border_color.moved(&instance.border_color),
             resource: false,
             appended: false,
         };
@@ -647,13 +686,14 @@ impl AnalyticShadowStore {
         let entry = &mut self.entries[id.index() as usize];
         let prev = &entry.instance;
         let dirty = DirtyPlanes {
-            transform: prev.rect_pos != instance.rect_pos || prev.offset != instance.offset,
-            geometry: prev.rect_size != instance.rect_size
-                || prev.radius != instance.radius
-                || prev.sigma != instance.sigma
-                || prev.spread != instance.spread
-                || prev.shape != instance.shape,
-            paint: prev.color != instance.color,
+            transform: prev.rect_pos.moved(&instance.rect_pos)
+                || prev.offset.moved(&instance.offset),
+            geometry: prev.rect_size.moved(&instance.rect_size)
+                || prev.radius.moved(&instance.radius)
+                || prev.sigma.moved(&instance.sigma)
+                || prev.spread.moved(&instance.spread)
+                || prev.shape.moved(&instance.shape),
+            paint: prev.color.moved(&instance.color),
             resource: false,
             appended: false,
         };
@@ -735,15 +775,15 @@ impl GradientStore {
             let prev = &self.entries[index];
             let pi = &prev.instance;
             let dirty = DirtyPlanes {
-                transform: pi.rect_pos != instance.rect_pos,
-                geometry: pi.rect_size != instance.rect_size
-                    || pi.kind != instance.kind
-                    || pi.extend != instance.extend
-                    || pi.p0 != instance.p0
-                    || pi.p1 != instance.p1
-                    || pi.lut_v != instance.lut_v
-                    || pi.use_lut != instance.use_lut,
-                paint: pi.color0 != instance.color0 || pi.color1 != instance.color1,
+                transform: pi.rect_pos.moved(&instance.rect_pos),
+                geometry: pi.rect_size.moved(&instance.rect_size)
+                    || pi.kind.moved(&instance.kind)
+                    || pi.extend.moved(&instance.extend)
+                    || pi.p0.moved(&instance.p0)
+                    || pi.p1.moved(&instance.p1)
+                    || pi.lut_v.moved(&instance.lut_v)
+                    || pi.use_lut.moved(&instance.use_lut),
+                paint: pi.color0.moved(&instance.color0) || pi.color1.moved(&instance.color1),
                 resource: prev.texture != texture,
                 appended: false,
             };
@@ -927,11 +967,11 @@ impl ImageStore {
         let entry = &mut self.entries[id.index() as usize];
         let pi = &entry.instance;
         let dirty = DirtyPlanes {
-            transform: pi.rect_pos != instance.rect_pos,
-            geometry: pi.rect_size != instance.rect_size
-                || pi.uv_pos != instance.uv_pos
-                || pi.uv_size != instance.uv_size,
-            paint: pi.color != instance.color,
+            transform: pi.rect_pos.moved(&instance.rect_pos),
+            geometry: pi.rect_size.moved(&instance.rect_size)
+                || pi.uv_pos.moved(&instance.uv_pos)
+                || pi.uv_size.moved(&instance.uv_size),
+            paint: pi.color.moved(&instance.color),
             resource: entry.texture != texture || entry.sampler != sampler,
             appended: false,
         };
@@ -1972,31 +2012,25 @@ pub enum StoreRef {
     /// Slot in the [`MeshStore`].
     Mesh(MeshId),
     /// A composite draw emitted when a translucent layer closes: an image draw
-    /// sampling offscreen pass `pass`, whose resolved instance is recorded inline
-    /// so lowering reproduces it. The pass index resolves the sampling bind group
-    /// from the renderer's live offscreen passes at lowering time.
-    Composite {
-        instance: ImageInstance,
-        pass: usize,
-    },
+    /// sampling offscreen pass `pass`, whose resolved instance is the scene's
+    /// composite `slot` so lowering reproduces it. The pass index resolves the
+    /// sampling bind group from the renderer's live offscreen passes at
+    /// lowering time.
+    Composite { pass: u32, slot: u32 },
     /// A backdrop composite emitted when a layer with a backdrop opens: an image
     /// draw sampling backdrop capture `capture` over the world-space `rect` the
     /// layer covers. Unlike [`StoreRef::Composite`] the instance cannot be
     /// resolved at record time — the capture's ROI may still grow as later
     /// layers join its group, and its physical target is unassigned until the
-    /// post-walk — so only the destination rect and `opacity` are recorded and
-    /// the UVs are derived at lowering time.
-    BackdropComposite {
-        capture: usize,
-        rect: Rect,
-        opacity: f32,
-    },
+    /// post-walk — so only the destination rect and opacity are recorded, as
+    /// the scene's backdrop `slot`, and the UVs are derived at lowering time.
+    BackdropComposite { capture: u32, slot: u32 },
     /// A frosted material composite: backdrop capture `capture` resolved into a
     /// finished glass surface by the material pipeline. Like
     /// [`StoreRef::BackdropComposite`] the UVs cannot be resolved at record time, so
     /// the surface's rect and its material parameters live in the renderer's
     /// per-frame material record `material` and the instance is built at lowering.
-    MaterialComposite { capture: usize, material: usize },
+    MaterialComposite { capture: u32, material: u32 },
 }
 
 impl std::fmt::Display for StoreRef {

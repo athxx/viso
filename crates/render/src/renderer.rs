@@ -2315,7 +2315,6 @@ impl Renderer {
         path: &crate::primitive::Path,
         fill: crate::primitive::Rgba,
         ctx: EmitContext,
-        clip: Option<Rect>,
     ) -> bool {
         // The path's own bounds are the mask ROI; a degenerate path has no
         // coverage to mask, so it falls through to the (also-degenerate) lane.
@@ -2378,7 +2377,7 @@ impl Renderer {
             uv_size: [res.slot.w as f32 / size, res.slot.h as f32 / size],
             color: [fill.r, fill.g, fill.b, fill.a],
         };
-        let bounds = crate::scene::bounds::Bounds::from_world(roi, clip, 0.0, 0.0);
+        let bounds = crate::scene::bounds::Bounds::from_world(roi, 0.0, 0.0);
         self.scene.ingest_glyph_run(
             std::iter::once(inst),
             self.mask_pages.texture(res.slot.page),
@@ -2409,7 +2408,6 @@ impl Renderer {
         path: &crate::primitive::Path,
         shadow: &crate::primitive::PathShadow,
         ctx: EmitContext,
-        clip: Option<Rect>,
     ) -> bool {
         // Inner shadows on a general path are an E1 filter-lane concern; the
         // analytic families carry inner shadow directly (§20.3), so the general
@@ -2493,7 +2491,7 @@ impl Renderer {
             ],
         };
         let filter = 3.0 * shadow.sigma + shadow.spread.max(0.0);
-        let bounds = crate::scene::bounds::Bounds::from_world(shadow_rect, clip, 0.0, filter);
+        let bounds = crate::scene::bounds::Bounds::from_world(shadow_rect, 0.0, filter);
         self.scene.ingest_glyph_run(
             std::iter::once(inst),
             self.mask_pages.texture(res.slot.page),
@@ -2574,7 +2572,7 @@ impl Renderer {
                 clip,
                 offscreen: match target {
                     PassTarget::Main => None,
-                    PassTarget::Offscreen(idx) => Some(idx),
+                    PassTarget::Offscreen(idx) => Some(idx as u32),
                     // A capture pass is never on the layer stack: it re-renders
                     // entries this walk already recorded, at lowering time.
                     PassTarget::Capture(_) => None,
@@ -2601,7 +2599,7 @@ impl Renderer {
                     // Diff the world-space instance (origin not yet subtracted)
                     // into its retained store, bumping only the moved planes, and
                     // record its paint-order slot.
-                    if let Some((inst, bounds)) = Instance::of(prim, fold, clip) {
+                    if let Some((inst, bounds)) = Instance::of(prim, fold) {
                         self.scene.ingest_instance(inst, ctx, bounds);
                     }
                 }
@@ -2637,7 +2635,6 @@ impl Renderer {
                             w: inst.rect_size[0],
                             h: inst.rect_size[1],
                         },
-                        clip,
                         0.0,
                         0.0,
                     );
@@ -2649,7 +2646,7 @@ impl Renderer {
                     // its tight coverage is cached once (keyed on geometry+sigma)
                     // and composited offset + tinted through the mask lane.
                     if let Some(shadow) = path.shadow.as_ref() {
-                        self.mask_path_shadow(backend, path, shadow, ctx, clip);
+                        self.mask_path_shadow(backend, path, shadow, ctx);
                     }
                     // A concave or curve-bearing solid-fill-only path is a
                     // self-masked solid fill (§14.4): its own coverage is one R8
@@ -2665,7 +2662,7 @@ impl Renderer {
                     if let Some(fill) = path.fill
                         && path.stroke.is_none()
                         && (self.coverage_paths || !path_is_convex(&path.cmds))
-                        && self.mask_solid_fill(backend, path, fill, ctx, clip)
+                        && self.mask_solid_fill(backend, path, fill, ctx)
                     {
                         continue;
                     }
@@ -2687,8 +2684,7 @@ impl Renderer {
                     // A program writes its own uniforms, so a shift cannot move
                     // it.
                     self.transforms.taint();
-                    let bounds =
-                        crate::scene::bounds::Bounds::from_world(draw.rect, clip, 0.0, 0.0);
+                    let bounds = crate::scene::bounds::Bounds::from_world(draw.rect, 0.0, 0.0);
                     self.scene.ingest_shader(draw, ctx, bounds);
                 }
                 Primitive::Mesh(mesh) => {
@@ -2767,7 +2763,7 @@ impl Renderer {
                             opacity: material.opacity * fold,
                         });
                         let bounds =
-                            crate::scene::bounds::Bounds::from_world(material.rect, clip, 0.0, 0.0);
+                            crate::scene::bounds::Bounds::from_world(material.rect, 0.0, 0.0);
                         self.scene
                             .ingest_material_composite(capture, index, ctx, bounds);
                     }
@@ -2780,7 +2776,7 @@ impl Renderer {
                             inst.border_color[3] *= fold;
                         }
                         let bounds =
-                            crate::scene::bounds::Bounds::from_world(material.rect, clip, 0.0, 0.0);
+                            crate::scene::bounds::Bounds::from_world(material.rect, 0.0, 0.0);
                         self.scene.ingest_analytic_rrect(inst, ctx, bounds);
                     }
                 }
@@ -2811,7 +2807,7 @@ impl Renderer {
                         self.transforms.taint();
                         let capture = self.join_or_open_backdrop(roi, layer.backdrop_sigma);
                         let dest = world_clip.intersect(self.surface_rect());
-                        let bounds = crate::scene::bounds::Bounds::from_world(dest, None, 0.0, 0.0);
+                        let bounds = crate::scene::bounds::Bounds::from_world(dest, 0.0, 0.0);
                         self.scene.ingest_backdrop_composite(
                             capture,
                             dest,
@@ -3230,7 +3226,7 @@ impl Renderer {
             let clip = entry.context.clip;
             let target = match entry.context.offscreen {
                 None => PassTarget::Main,
-                Some(idx) => PassTarget::Offscreen(idx),
+                Some(idx) => PassTarget::Offscreen(idx as usize),
             };
             let origin = entry.context.origin;
             // Cull an offscreen child whose world paint bounds fall fully outside
@@ -3322,7 +3318,7 @@ impl Renderer {
             w: self.surface_size[0],
             h: self.surface_size[1],
         };
-        let seen = entry.bounds.clip.intersect(surface);
+        let seen = entry.bounds.clipped(entry.context.clip).intersect(surface);
         seen.w <= 0.0 || seen.h <= 0.0
     }
 
@@ -3536,7 +3532,9 @@ impl Renderer {
                     space,
                 });
             }
-            StoreRef::Composite { mut instance, pass } => {
+            StoreRef::Composite { pass, slot } => {
+                let pass = pass as usize;
+                let mut instance = self.scene.composites[slot as usize];
                 // A composite draws into the parent target (main / unclipped /
                 // zero-origin) sampling offscreen pass `pass`; its bind group
                 // is the pooled texture the planner assigned to that pass's
@@ -3727,11 +3725,9 @@ impl Renderer {
                 let count = self.mesh_index_scratch.len() as u32 - index_start;
                 self.push_mesh_segment(index_start, count, clip, target, space);
             }
-            StoreRef::BackdropComposite {
-                capture,
-                rect,
-                opacity,
-            } => {
+            StoreRef::BackdropComposite { capture, slot } => {
+                let capture = capture as usize;
+                let (rect, opacity) = self.scene.backdrops[slot as usize];
                 // The blurred backdrop, composited under the layer that asked
                 // for it. Unlike a layer composite (whose texture *is* the
                 // layer's ROI), a backdrop samples a sub-rect of a capture that
@@ -3776,6 +3772,7 @@ impl Renderer {
                 });
             }
             StoreRef::MaterialComposite { capture, material } => {
+                let (capture, material) = (capture as usize, material as usize);
                 // A frosted surface: the same shared capture a backdrop layer
                 // samples, but composited through the material pipeline, which
                 // folds the color transform, the grain, the rounded mask, and the
@@ -4133,11 +4130,12 @@ impl Renderer {
                 (!layout.textures.is_empty() || !layout.samplers.is_empty())
                     .then_some(SampledSource::Program(e.program, e.textures))
             }
-            StoreRef::Composite { pass, .. } => self.offscreen_passes[pass]
+            StoreRef::Composite { pass, .. } => self.offscreen_passes[pass as usize]
                 .sample
                 .map(SampledSource::Transient),
             StoreRef::BackdropComposite { capture, .. }
-            | StoreRef::MaterialComposite { capture, .. } => self.backdrop_captures[capture]
+            | StoreRef::MaterialComposite { capture, .. } => self.backdrop_captures
+                [capture as usize]
                 .sample
                 .map(SampledSource::Transient),
             _ => None,
@@ -4519,12 +4517,12 @@ impl Renderer {
                 dependency = dependency.max(self.scene.content_stamp(slot));
                 members += 1;
                 let source = match entry.store {
-                    StoreRef::Composite { pass, .. } => self.offscreen_passes[pass].sample,
+                    StoreRef::Composite { pass, .. } => self.offscreen_passes[pass as usize].sample,
                     // Always an earlier capture: a group's members are recorded
                     // after it opens, so its index is below this one's.
                     StoreRef::BackdropComposite { capture, .. }
                     | StoreRef::MaterialComposite { capture, .. } => {
-                        self.backdrop_captures[capture].sample
+                        self.backdrop_captures[capture as usize].sample
                     }
                     _ => None,
                 };
@@ -4661,7 +4659,7 @@ impl Renderer {
             h: entry.clip.h,
         };
         for pe in &mut self.scene.paint_order[entry.paint_order_start..] {
-            if pe.context.offscreen == Some(idx) {
+            if pe.context.offscreen == Some(idx as u32) {
                 pe.context.origin = new_origin;
                 pe.context.clip = pe.context.clip.map(|_| local_clip);
             }
@@ -4932,7 +4930,7 @@ impl Renderer {
             ],
             color: [1.0, 1.0, 1.0, pass.opacity],
         };
-        let bounds = crate::scene::bounds::Bounds::from_world(pass.rect, None, 0.0, 0.0);
+        let bounds = crate::scene::bounds::Bounds::from_world(pass.rect, 0.0, 0.0);
         self.scene.ingest_composite(
             composite,
             idx,

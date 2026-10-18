@@ -52,8 +52,8 @@ use super::coalescer::{Range, Runs};
 /// `T` is the family's element type: a `#[derive(GpuPod)]` instance struct (the
 /// quad / image / glyph streams and the mesh vertex stream), or `u32` for the
 /// mesh index stream. The bound is `Copy + 'static` POD — see
-/// [`gpu_pod_bytes`]'s `SAFETY` — with `PartialEq` used to detect the slots that
-/// changed since last frame.
+/// [`gpu_pod_bytes`]'s `SAFETY` — whose bytes are compared to detect the slots
+/// that changed since last frame.
 pub struct InstancePool<T> {
     /// The device buffer backing this family, or `None` until the first element
     /// is uploaded (a renderer that never draws this family touches no GPU
@@ -81,7 +81,7 @@ pub struct InstancePool<T> {
     last_upload_bytes: usize,
 }
 
-impl<T: Copy + PartialEq + 'static> InstancePool<T> {
+impl<T: Copy + 'static> InstancePool<T> {
     /// Byte size of one element.
     const STRIDE: usize = size_of::<T>();
 
@@ -190,7 +190,7 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
         let mut writes = 0;
         let mut uploaded_slots = 0;
         for (i, inst) in instances.iter().enumerate() {
-            if (i >= self.shadow.len() || self.shadow[i] != *inst)
+            if (i >= self.shadow.len() || !same(&self.shadow[i], inst))
                 && let Some(Range { start, len }) = runs.push(i)
             {
                 self.upload_run(backend, start, &instances[start..start + len]);
@@ -234,7 +234,7 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
         };
         for (start, len) in ranges {
             for (i, new) in instances.iter().enumerate().skip(start).take(len) {
-                if self.shadow[i] != *new
+                if !same(&self.shadow[i], new)
                     && let Some(run) = runs.push(i)
                 {
                     upload(self, backend, run);
@@ -290,6 +290,13 @@ impl<T: Copy + PartialEq + 'static> InstancePool<T> {
         let buffer = self.buffer.expect("buffer created before upload");
         backend.write_buffer(buffer, start * Self::STRIDE, gpu_pod_bytes(run));
     }
+}
+
+/// Whether two elements hold the same bytes: one integer compare per word,
+/// where a float compare would treat an unchanged NaN as changed.
+#[inline(always)]
+fn same<T: Copy + 'static>(a: &T, b: &T) -> bool {
+    gpu_pod_bytes(core::slice::from_ref(a)) == gpu_pod_bytes(core::slice::from_ref(b))
 }
 
 /// View a slice of POD elements as the raw bytes to upload.

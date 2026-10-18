@@ -74,7 +74,7 @@ pub struct EmitContext {
     pub clip: Option<Rect>,
     /// The pass this emit routes to: `None` for the main surface pass, or
     /// `Some(idx)` for offscreen pass `idx`.
-    pub offscreen: Option<usize>,
+    pub offscreen: Option<u32>,
     /// The world-space origin subtracted from this emit's geometry.
     pub origin: [f32; 2],
     /// The transform root and moving clips this emit follows.
@@ -184,6 +184,11 @@ pub struct Scene {
     /// The stream index of the primitive being ingested, which every entry it
     /// records carries.
     pub(crate) source: u32,
+    /// This frame's layer composite instances, by [`StoreRef::Composite`] slot.
+    pub(crate) composites: Vec<crate::primitive::ImageInstance>,
+    /// This frame's backdrop composites' destination rect and opacity, by
+    /// [`StoreRef::BackdropComposite`] slot.
+    pub(crate) backdrops: Vec<(Rect, f32)>,
 }
 
 impl Scene {
@@ -214,6 +219,8 @@ impl Scene {
         self.transforms.begin_frame();
         self.brushes.begin_frame();
         self.paint_order.clear();
+        self.composites.clear();
+        self.backdrops.clear();
         self.source = 0;
         self.begin_ingest();
     }

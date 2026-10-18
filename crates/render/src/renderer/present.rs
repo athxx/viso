@@ -193,12 +193,12 @@ impl Renderer {
             let key = self.draw_key(&mut p, i);
             p.keys.push(key);
             if let StoreRef::Composite { pass, .. } = entry.store
-                && let Some(slot) = p.composite_of.get_mut(pass)
+                && let Some(slot) = p.composite_of.get_mut(pass as usize)
             {
                 *slot = i as u32;
             }
             if let Some(pass) = entry.context.offscreen {
-                if let Some(sum) = p.pass_sums.get_mut(pass) {
+                if let Some(sum) = p.pass_sums.get_mut(pass as usize) {
                     *sum = sum.wrapping_add(pass_term(key, i));
                 }
                 p.draw_of.push(NONE);
@@ -236,18 +236,19 @@ impl Renderer {
         };
         match entry.store {
             StoreRef::Composite { pass, .. } => {
-                if let (Some(sum), Some(pass)) =
-                    (p.pass_sums.get(pass), self.offscreen_passes.get(pass))
-                {
+                if let (Some(sum), Some(pass)) = (
+                    p.pass_sums.get(pass as usize),
+                    self.offscreen_passes.get(pass as usize),
+                ) {
                     key = key.word(pass.key).word(*sum);
                 }
             }
             StoreRef::BackdropComposite { capture, .. } => {
-                key = key.word(self.capture_key(p, capture));
+                key = key.word(self.capture_key(p, capture as usize));
             }
             StoreRef::MaterialComposite { capture, material } => {
-                key = key.word(self.capture_key(p, capture));
-                if let Some(m) = self.material_records.get(material) {
+                key = key.word(self.capture_key(p, capture as usize));
+                if let Some(m) = self.material_records.get(material as usize) {
                     key = key.rect(m.rect).f32s(&m.radius).f32s(&[m.noise, m.opacity]);
                     for row in &m.op.matrix.rows {
                         key = key.f32s(row);
@@ -301,6 +302,7 @@ impl Renderer {
             }
             p.keys[i] = new;
             if let Some(pass) = self.scene.paint_order[i].context.offscreen {
+                let pass = pass as usize;
                 let sum = &mut p.pass_sums[pass];
                 *sum = sum
                     .wrapping_sub(pass_term(old, i))

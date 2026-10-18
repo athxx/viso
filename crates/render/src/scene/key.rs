@@ -124,14 +124,16 @@ impl Scene {
                 let key = key.bytes(pod_bytes(&e.vertices));
                 e.indices.iter().fold(key, |k, &i| k.word(u64::from(i)))
             }),
-            StoreRef::Composite { instance, pass } => Some(pod(key, &instance).word(pass as u64)),
-            StoreRef::BackdropComposite {
-                capture,
-                rect,
-                opacity,
-            } => Some(key.word(capture as u64).rect(rect).f32s(&[opacity])),
+            StoreRef::Composite { pass, slot } => self
+                .composites
+                .get(slot as usize)
+                .map(|instance| pod(key, instance).word(u64::from(pass))),
+            StoreRef::BackdropComposite { capture, slot } => self
+                .backdrops
+                .get(slot as usize)
+                .map(|&(rect, opacity)| key.word(u64::from(capture)).rect(rect).f32s(&[opacity])),
             StoreRef::MaterialComposite { capture, material } => {
-                Some(key.word(capture as u64).word(material as u64))
+                Some(key.word(u64::from(capture)).word(u64::from(material)))
             }
         };
         (key.map_or(0, Key::finish), extent)

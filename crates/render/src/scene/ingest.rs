@@ -55,13 +55,9 @@ pub(crate) enum Instance {
 }
 
 impl Instance {
-    /// `prim`'s instance with `fold` applied and its bounds under `clip`, or
+    /// `prim`'s instance with `fold` applied and its bounds, or
     /// `None` for a kind that is not one instance in one store.
-    pub(crate) fn of(
-        prim: &Primitive,
-        fold: f32,
-        clip: Option<Rect>,
-    ) -> Option<(Instance, Bounds)> {
+    pub(crate) fn of(prim: &Primitive, fold: f32) -> Option<(Instance, Bounds)> {
         fn rect(pos: [f32; 2], size: [f32; 2]) -> Rect {
             Rect {
                 x: pos[0],
@@ -79,10 +75,7 @@ impl Instance {
                     inst.border_color[3] *= fold;
                 }
                 let world = rect(inst.rect_pos, inst.rect_size);
-                (
-                    Instance::Quad(inst),
-                    Bounds::from_world(world, clip, 0.0, 0.0),
-                )
+                (Instance::Quad(inst), Bounds::from_world(world, 0.0, 0.0))
             }
             Primitive::AnalyticRRect(rrect) => {
                 let mut inst = rrect.to_instance();
@@ -93,7 +86,7 @@ impl Instance {
                 let world = rect(inst.rect_pos, inst.rect_size);
                 (
                     Instance::AnalyticRRect(inst),
-                    Bounds::from_world(world, clip, 0.0, 0.0),
+                    Bounds::from_world(world, 0.0, 0.0),
                 )
             }
             Primitive::AnalyticEllipse(ellipse) => {
@@ -105,7 +98,7 @@ impl Instance {
                 let world = rect(inst.rect_pos, inst.rect_size);
                 (
                     Instance::AnalyticEllipse(inst),
-                    Bounds::from_world(world, clip, 0.0, 0.0),
+                    Bounds::from_world(world, 0.0, 0.0),
                 )
             }
             Primitive::AnalyticCapsule(capsule) => {
@@ -117,7 +110,7 @@ impl Instance {
                 let world = rect(inst.rect_pos, inst.rect_size);
                 (
                     Instance::AnalyticCapsule(inst),
-                    Bounds::from_world(world, clip, 0.0, 0.0),
+                    Bounds::from_world(world, 0.0, 0.0),
                 )
             }
             Primitive::AnalyticLine(line) => {
@@ -136,7 +129,7 @@ impl Instance {
                 let stroke = inst.width + 2.0 * inst.border_width;
                 (
                     Instance::AnalyticLine(inst),
-                    Bounds::from_world(world, clip, stroke, 0.0),
+                    Bounds::from_world(world, stroke, 0.0),
                 )
             }
             Primitive::AnalyticShadow(shadow) => {
@@ -152,7 +145,7 @@ impl Instance {
                 let world = rect(inst.rect_pos, inst.rect_size);
                 (
                     Instance::AnalyticShadow(inst),
-                    Bounds::from_world(world, clip, 0.0, filter),
+                    Bounds::from_world(world, 0.0, filter),
                 )
             }
             Primitive::Image(image) => {
@@ -163,7 +156,7 @@ impl Instance {
                 let world = rect(inst.rect_pos, inst.rect_size);
                 (
                     Instance::Image(inst, image.texture, image.sampler),
-                    Bounds::from_world(world, clip, 0.0, 0.0),
+                    Bounds::from_world(world, 0.0, 0.0),
                 )
             }
             _ => return None,
@@ -497,7 +490,10 @@ impl Scene {
         context: EmitContext,
         bounds: Bounds,
     ) -> PrimitiveId {
-        self.record(StoreRef::Composite { instance, pass }, context, bounds)
+        let slot = self.composites.len() as u32;
+        self.composites.push(instance);
+        let pass = pass as u32;
+        self.record(StoreRef::Composite { pass, slot }, context, bounds)
     }
 
     /// Record a backdrop layer's composite draw, emitted when the layer *opens*
@@ -516,12 +512,11 @@ impl Scene {
         context: EmitContext,
         bounds: Bounds,
     ) -> PrimitiveId {
+        let slot = self.backdrops.len() as u32;
+        self.backdrops.push((rect, opacity));
+        let capture = capture as u32;
         self.record(
-            StoreRef::BackdropComposite {
-                capture,
-                rect,
-                opacity,
-            },
+            StoreRef::BackdropComposite { capture, slot },
             context,
             bounds,
         )
@@ -540,6 +535,7 @@ impl Scene {
         context: EmitContext,
         bounds: Bounds,
     ) -> PrimitiveId {
+        let (capture, material) = (capture as u32, material as u32);
         self.record(
             StoreRef::MaterialComposite { capture, material },
             context,

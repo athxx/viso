@@ -557,7 +557,7 @@ impl Renderer {
             let clip = entry.context.clip;
             let target = match entry.context.offscreen {
                 None => PassTarget::Main,
-                Some(idx) => PassTarget::Offscreen(idx),
+                Some(idx) => PassTarget::Offscreen(idx as usize),
             };
             let (pipeline, start, count) = match entry.store {
                 StoreRef::Quad(_) => {
@@ -599,7 +599,7 @@ impl Renderer {
                 // asked for nothing else; a fused color chain or an isolated
                 // advanced blend composites through its own pipeline, and spends
                 // its own instance scratch.
-                StoreRef::Composite { pass, .. } => match self.composite_lowering(pass) {
+                StoreRef::Composite { pass, .. } => match self.composite_lowering(pass as usize) {
                     CompositeLowering::AdvancedBlend => {
                         let start = advanced_blend_cursor;
                         advanced_blend_cursor += 1;
@@ -811,7 +811,7 @@ impl Renderer {
             let clip = entry.context.clip;
             let target = match entry.context.offscreen {
                 None => BatchTarget::Main,
-                Some(idx) => BatchTarget::Offscreen(idx),
+                Some(idx) => BatchTarget::Offscreen(idx as usize),
             };
 
             // The family, and whether this entry emits geometry at all. An empty
@@ -830,7 +830,7 @@ impl Renderer {
                 }
                 // A fused color chain or an isolated advanced blend composites
                 // through its own pipeline, and those families stand alone.
-                StoreRef::Composite { pass, .. } => match self.composite_lowering(pass) {
+                StoreRef::Composite { pass, .. } => match self.composite_lowering(pass as usize) {
                     CompositeLowering::AdvancedBlend => (BatchFamily::AdvancedBlend, true),
                     CompositeLowering::ColorTransform => (BatchFamily::ColorTransform, true),
                     CompositeLowering::Image => (BatchFamily::Image, true),

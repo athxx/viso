@@ -243,13 +243,8 @@ impl Renderer {
                 None
             }
             _ => {
-                let (instance, bounds) = Instance::of(prim, fold, None)?;
-                let old = entry.bounds;
-                let same_box = bounds.local == old.local
-                    && bounds.world == old.world
-                    && bounds.paint == old.paint
-                    && bounds.effect == old.effect;
-                if !same_box || !self.holds(entry.store, &instance) {
+                let (instance, bounds) = Instance::of(prim, fold)?;
+                if bounds != entry.bounds || !self.holds(entry.store, &instance) {
                     return None;
                 }
                 Some(instance)
@@ -318,7 +313,7 @@ impl Renderer {
                 let order = &self.scene.paint_order;
                 let composite = order.partition_point(|e| e.source < record.end);
                 match order.get(composite)?.store {
-                    StoreRef::Composite { pass: of, .. } if of == pass => {}
+                    StoreRef::Composite { pass: of, .. } if of as usize == pass => {}
                     _ => return None,
                 }
                 if self.lowered.get(composite) == Some(&NOT_LOWERED) {
@@ -362,9 +357,8 @@ impl Renderer {
                 self.offscreen_passes[pass].key =
                     self.pass_key(pass, layer.blur_sigma, parent_fold, 0..0);
                 let index = composite as usize;
-                let entry = &mut self.scene.paint_order[index];
-                if let StoreRef::Composite { instance, .. } = &mut entry.store {
-                    instance.color[3] = layer.opacity;
+                if let StoreRef::Composite { slot, .. } = self.scene.paint_order[index].store {
+                    self.scene.composites[slot as usize].color[3] = layer.opacity;
                 }
                 self.scene.restamp_derived(index);
                 Some(index)
@@ -422,7 +416,7 @@ impl Renderer {
     /// lowered now, or [`NOT_LOWERED`] for one a patch cannot rewrite.
     pub(super) fn lowering_cursor(&self, store: StoreRef) -> u32 {
         if let StoreRef::Composite { pass, .. } = store
-            && self.composite_lowering(pass) != CompositeLowering::Image
+            && self.composite_lowering(pass as usize) != CompositeLowering::Image
         {
             return NOT_LOWERED;
         }
@@ -475,7 +469,8 @@ impl Renderer {
                 place!(analytic_shadows, analytic_shadow_scratch, id)
             }
             StoreRef::Image(id) => place!(images, image_scratch, id),
-            StoreRef::Composite { mut instance, .. } => {
+            StoreRef::Composite { slot, .. } => {
+                let mut instance = *self.scene.composites.get(slot as usize)?;
                 instance.rect_pos[0] -= ox;
                 instance.rect_pos[1] -= oy;
                 *self.image_scratch.get_mut(at)? = instance;

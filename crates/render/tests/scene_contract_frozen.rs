@@ -113,32 +113,28 @@ fn revision_planes_are_frozen() {
     }
 }
 
-/// A primitive carries exactly the five-stage bounds set
-/// `local`/`world`/`clip`/`paint`/`effect` (§8), and `paint` inflates by half
-/// the stroke width plus the filter footprint — computed numerically, never by
-/// re-parsing a path. F4's dirty coalescer and visibility read `paint`.
+/// A primitive carries exactly two bounds, `world` and `paint` (§8.5), and
+/// `paint` inflates by half the stroke width plus the filter footprint —
+/// computed numerically, never by re-parsing a path. Damage, culling and
+/// visibility read `paint`; the clipped extent is derived from `world`.
 #[test]
 fn bounds_set_is_frozen() {
     use viso_render::Rect;
 
-    // Default is all-zero: five zero rects.
+    assert_eq!(size_of::<Bounds>(), 2 * size_of::<Rect>(), "two rects");
     let d = Bounds::default();
-    for r in [d.local, d.world, d.clip, d.paint, d.effect] {
-        assert_eq!(r, Rect::ZERO);
-    }
+    assert_eq!((d.world, d.paint), (Rect::ZERO, Rect::ZERO));
 
-    // `paint = world.inflate(stroke * 0.5 + filter)`; the other stages resolve
-    // from the same already-resolved world extent.
+    // `paint = world.inflate(stroke * 0.5 + filter)`.
     let world = Rect {
         x: 10.0,
         y: 10.0,
         w: 20.0,
         h: 20.0,
     };
-    let b = Bounds::from_world(world, None, 4.0, 1.0);
-    assert_eq!(b.local, world);
+    let b = Bounds::from_world(world, 4.0, 1.0);
     assert_eq!(b.world, world);
-    assert_eq!(b.clip, world, "no clip narrows nothing");
+    assert_eq!(b.clipped(None), world, "no clip narrows nothing");
     // 2px (half of 4px stroke) + 1px filter = 3px on every side.
     assert_eq!(
         b.paint,
@@ -149,5 +145,4 @@ fn bounds_set_is_frozen() {
             h: 26.0,
         }
     );
-    assert_eq!(b.effect, b.paint, "no neighbourhood effect grows paint");
 }

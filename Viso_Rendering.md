@@ -663,15 +663,14 @@ Transform root 合同（ADR 0043）：
 
 ## 8.5 Bounds
 
-每个 primitive 维护：
+每个 primitive 维护两个 rect：
 
 ```text
-local_bounds
-world_bounds
-clip_bounds
+world_bounds  = 自身几何的紧 extent（primitive 不带自己的 transform，所以也是 local extent）
 paint_bounds  = geometry bounds + stroke inflation (§11.3) + shadow/effect outsets
-effect_bounds where applicable
 ```
+
+clip 后的 extent 是 `world_bounds ∩ 发出时的 clip`，在读取处由 entry 的 clip 推导，不在每个 entry 上存一份；需要读取邻域像素的 effect 按 §16.2 在 layer 的 ROI 上计算，也不另存。每个 paint-order entry 因此只带 32 字节 bounds。
 
 - `paint_bounds` 必须保守（包含全部非零 coverage 像素，含 1 device px AA 过渡带）；
 - 用于 culling、damage、ROI、hit-test helper、backdrop dependency；
