@@ -115,6 +115,14 @@ pub(super) struct Presenter {
     placed: Option<u64>,
     /// New keys of `presented` entries a patch rewrote since it was shown.
     restaged: Vec<(u32, u64)>,
+    /// What splices changed since the last presented frame: the rects their
+    /// removed draws covered and their inserted ones cover. `presented`
+    /// already lists the inserted ones in place of the removed.
+    staged: Vec<Rect>,
+    /// The inserted draws a splice places, and each one's entry in
+    /// `presented`, reused.
+    placing: Vec<Drawn>,
+    placed_of: Vec<u32>,
     history: History,
     /// The next frame is redrawn whole.
     full: bool,
@@ -146,6 +154,9 @@ impl Default for Presenter {
             drawn_of: Vec::new(),
             placed: None,
             restaged: Vec::new(),
+            staged: Vec::new(),
+            placing: Vec::new(),
+            placed_of: Vec::new(),
             history: History::default(),
             full: true,
             viewport: [0.0, 0.0],
@@ -160,6 +171,87 @@ impl Default for Presenter {
 }
 
 impl Presenter {
+    /// Stage a splice that replaced the `removed` surface draws from `first`
+    /// with the `added` ones now there against the last presented frame:
+    /// what the removed covered and the inserted cover is damage, and the
+    /// inserted take the removed's place in `presented`.
+    fn stage(&mut self, transforms: &Transforms, first: usize, removed: usize, added: usize) {
+        let surface = Rect::new(0.0, 0.0, self.viewport[0], self.viewport[1]);
+        let at = self.drawn_of[first..]
+            .iter()
+            .copied()
+            .find(|&d| d != NONE)
+            .map_or(self.presented.len(), |d| d as usize);
+        let mut gone = 0;
+        for &d in &self.drawn_of[first..first + removed] {
+            if d != NONE {
+                self.staged.push(self.presented[d as usize].rect);
+                gone += 1;
+            }
+        }
+        self.placing.clear();
+        self.placed_of.clear();
+        for d in &self.draws[first..first + added] {
+            match place(transforms, d, surface) {
+                Some(drawn) => {
+                    self.staged.push(drawn.rect);
+                    self.placed_of.push((at + self.placing.len()) as u32);
+                    self.placing.push(drawn);
+                }
+                None => self.placed_of.push(NONE),
+            }
+        }
+        let delta = self.placing.len() as i64 - gone as i64;
+        self.presented
+            .splice(at..at + gone, self.placing.iter().copied());
+        self.drawn_of
+            .splice(first..first + removed, self.placed_of.iter().copied());
+        if delta != 0 {
+            for d in &mut self.drawn_of[first + added..] {
+                if *d != NONE {
+                    *d = (i64::from(*d) + delta) as u32;
+                }
+            }
+        }
+        let (at, end) = (at as u32, (at + gone) as u32);
+        self.restaged.retain_mut(|(i, _)| {
+            if *i >= end {
+                *i = (i64::from(*i) + delta) as u32;
+                true
+            } else {
+                *i < at
+            }
+        });
+        if self.staged.len() > STAGED {
+            self.staged.clear();
+            self.full = true;
+        }
+    }
+
+    /// Requires the last presented frame, while placed, to list exactly
+    /// where each surface draw draws now, `drawn_of` leading to it.
+    #[cfg(test)]
+    #[track_caller]
+    pub(super) fn check_placed(&self, transforms: &Transforms) {
+        if self.placed.is_none() {
+            return;
+        }
+        let surface = Rect::new(0.0, 0.0, self.viewport[0], self.viewport[1]);
+        let mut placed = Vec::new();
+        assert_eq!(self.drawn_of.len(), self.draws.len());
+        for (d, &at) in self.draws.iter().zip(&self.drawn_of) {
+            match place(transforms, d, surface) {
+                Some(drawn) => {
+                    assert_eq!(at as usize, placed.len(), "where the draw was shown");
+                    placed.push(drawn);
+                }
+                None => assert_eq!(at, NONE),
+            }
+        }
+        let keyed = |v: &[Drawn]| v.iter().map(|d| d.rect).collect::<Vec<_>>();
+        assert_eq!(keyed(&self.presented), keyed(&placed), "the shown rects");
+    }
+
     pub(super) fn atlas_written(&mut self, atlas: Atlas) {
         self.atlas_writes[atlas as usize] += 1;
     }
@@ -182,6 +274,29 @@ impl Presenter {
 
 /// No entry.
 const NONE: u32 = u32::MAX;
+
+/// How many rects splices stage before the next frame is redrawn whole.
+const STAGED: usize = 256;
+
+/// Where surface draw `d` draws now, within `surface`, or `None` where it
+/// draws nothing.
+fn place(transforms: &Transforms, d: &SurfaceDraw, surface: Rect) -> Option<Drawn> {
+    let shift = transforms.shift(d.space.slot);
+    let mut rect = Rect::new(
+        d.paint.x + shift[0],
+        d.paint.y + shift[1],
+        d.paint.w,
+        d.paint.h,
+    );
+    if let Some(clip) = transforms.clip(d.space, d.clip) {
+        rect = rect.intersect(clip);
+    }
+    let rect = rect.intersect(surface);
+    rect.has_area().then(|| Drawn {
+        key: placed_key(d.key, shift),
+        rect,
+    })
+}
 
 /// What the entry keyed `key`, `place` entries into its offscreen pass, adds
 /// to the pass's content.
@@ -265,6 +380,11 @@ impl Renderer {
         );
         p.draw_of
             .splice(at..at + removed, (first..first + added).map(|d| d as u32));
+        if p.placed.is_some() {
+            p.stage(keying.transforms, first, removed, added);
+        } else {
+            p.restaged.clear();
+        }
         if shift != 0 {
             let end = (at + removed) as i64;
             let moved = |i: &mut u32| {
@@ -280,8 +400,6 @@ impl Renderer {
             p.pass_firsts.iter_mut().for_each(moved);
             p.composite_of.iter_mut().for_each(moved);
         }
-        p.placed = None;
-        p.restaged.clear();
     }
 
     /// The presenter, and what its keys read of the rest of the renderer.
@@ -474,6 +592,7 @@ impl Renderer {
         let same = p.partial && !p.full && p.viewport == viewport && p.clear == clear;
         if same && p.placed == Some(self.transforms.epoch()) {
             let mut merger = Merger::new(FRINGE, surface);
+            p.staged.iter().for_each(|&r| merger.add(r));
             for &(at, key) in &p.restaged {
                 let shown = p.presented[at as usize];
                 if shown.key != key {
@@ -487,31 +606,19 @@ impl Renderer {
         p.drawn.clear();
         p.drawn_of.clear();
         for d in &p.draws {
-            let shift = self.transforms.shift(d.space.slot);
-            let mut rect = Rect::new(
-                d.paint.x + shift[0],
-                d.paint.y + shift[1],
-                d.paint.w,
-                d.paint.h,
-            );
-            if let Some(clip) = self.transforms.clip(d.space, d.clip) {
-                rect = rect.intersect(clip);
+            match place(&self.transforms, d, surface) {
+                Some(drawn) => {
+                    p.drawn_of.push(p.drawn.len() as u32);
+                    p.drawn.push(drawn);
+                }
+                None => p.drawn_of.push(NONE),
             }
-            let rect = rect.intersect(surface);
-            if !rect.has_area() {
-                p.drawn_of.push(NONE);
-                continue;
-            }
-            p.drawn_of.push(p.drawn.len() as u32);
-            p.drawn.push(Drawn {
-                key: placed_key(d.key, shift),
-                rect,
-            });
         }
         if !same {
             return Region::Full;
         }
         let mut merger = Merger::new(FRINGE, surface);
+        p.staged.iter().for_each(|&r| merger.add(r));
         diff(&p.presented, &p.drawn, |r| merger.add(r));
         merger.finish()
     }
@@ -565,6 +672,7 @@ impl Renderer {
             // Nothing differs from what is shown, so what is shown is placed
             // as things stand.
             p.restaged.clear();
+            p.staged.clear();
             p.placed = Some(epoch);
             p.stats.skipped_frames += 1;
             p.stats.damage_px = 0;
@@ -621,6 +729,7 @@ impl Renderer {
         let epoch = self.transforms.epoch();
         let p = &mut self.present;
         p.history.push(region);
+        p.staged.clear();
         if p.placed.is_some() {
             for &(at, key) in &p.restaged {
                 p.presented[at as usize].key = key;

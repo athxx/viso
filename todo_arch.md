@@ -209,3 +209,4 @@ Phase 2 — a frame that changes shape:
   - [x] Lowering splices too: inserted leaves lower at the scratch tails and only the tails upload, the segments beside the run lower again with it or are cut, and a whole lowering compacts past 64 lost joins or half the live slots left behind
   - [x] Surface draws and their keys splice too, instead of re-keying the frame: a pass's content mixes each entry's place in the pass, so a pass moved whole keeps it
   - [x] The glyph store splices a run without moving every glyph after it: inserted runs' glyphs append, removed ones' are left behind and packed once they outnumber half
+  - [x] A splice stages its damage: the rects the removed draws were shown at and the rects of the inserted draws, the presented rects spliced alongside, so a spliced frame presents as a partial redraw of what it changed

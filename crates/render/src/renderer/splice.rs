@@ -606,11 +606,12 @@ mod tests {
         kept.present();
         assert!(kept.splice(&after, &[at(12, 1, 1)]));
         let shown = kept.present();
-        assert!(
-            matches!(kept.r.last_damage(), crate::damage::Region::Rects(_)),
-            "a partial redraw, not {:?}",
-            kept.r.last_damage()
-        );
+        let crate::damage::Region::Rects(rects) = kept.r.last_damage() else {
+            panic!("a partial redraw, not {:?}", kept.r.last_damage());
+        };
+        // Row 4's label, the old run and the new, with their fringe.
+        let area: f32 = rects.iter().map(|r| r.w * r.h).sum();
+        assert!(area < 60.0 * 10.0, "{rects:?}");
         let mut fresh = Gpu::new();
         fresh.upload(&after);
         assert!(shown == fresh.present(), "pixel-identical to a fresh frame");
@@ -746,7 +747,7 @@ mod tests {
                 .wrapping_add(1442695040888963407);
             ((lcg >> 33) % u64::from(n.max(1))) as u32
         };
-        let (mut cut, mut lost, mut compacted) = (false, false, false);
+        let (mut cut, mut lost, mut compacted, mut partial) = (false, false, false, false);
         for seed in 0..6 {
             let mut spliced = Gpu::new();
             let t = spliced.texture();
@@ -838,14 +839,23 @@ mod tests {
                     whole.upload(&tinted);
                     same_state_but_stamps(&spliced.r, &whole.r);
                 }
+                spliced.r.present.check_placed(&spliced.r.transforms);
+                // Splices stage their damage until a frame is presented.
+                if below(4) == 0 {
+                    assert!(
+                        spliced.present() == whole.present(),
+                        "seed {seed} frame {frame}: the pixels a whole upload shows"
+                    );
+                    partial |= matches!(spliced.r.last_damage(), crate::damage::Region::Rects(_));
+                }
                 cut |= spliced.r.holes > holes && spliced.r.fragments > 0;
                 lost |= spliced.r.segments.len() > whole.r.segments.len();
                 compacted |= holes > 0 && spliced.r.holes == 0;
             }
         }
         assert!(
-            cut && lost && compacted,
-            "cut {cut}, lost {lost}, compacted {compacted}"
+            cut && lost && compacted && partial,
+            "cut {cut}, lost {lost}, compacted {compacted}, partial {partial}"
         );
     }
 
