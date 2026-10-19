@@ -1342,7 +1342,8 @@ mod tests {
             },
             baseline: 5.0,
             shaped_at_width: None,
-            soft_wrap: false,
+            width_use: crate::WidthUse::Ignored,
+            max_content: n as f32 * 5.0,
         }
     }
 

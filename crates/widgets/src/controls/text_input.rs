@@ -215,6 +215,7 @@ impl Component for TextInput {
                 // A text field is single-line: it scrolls horizontally, never wraps.
                 soft_wrap: false,
                 locale: None,
+                style: viso_ui::TextStyle::default(),
             },
         );
 

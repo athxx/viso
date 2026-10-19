@@ -15,7 +15,7 @@ use viso_render::Rgba;
 use viso_text::inspect::TextInspection;
 use viso_text::paragraph::LineLayout;
 use viso_text::{GlyphImageKind, MemoryClass, TextOffset, TextPosition};
-use viso_ui::{Content, TextRequest};
+use viso_ui::{Content, TextRequest, TextStyle};
 
 use crate::text_content::{self, ParagraphSlot, TextShaper};
 
@@ -283,6 +283,7 @@ fn request(text: &str, font_size: f32, soft_wrap: bool) -> TextRequest {
         color: WHITE,
         soft_wrap,
         locale: None,
+        style: TextStyle::default(),
     }
 }
 

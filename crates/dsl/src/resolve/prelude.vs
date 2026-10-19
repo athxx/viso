@@ -164,6 +164,7 @@ export enum Alignment2D {
     bottom_start; bottom; bottom_end;
 }
 export enum FontWeight { thin; light; regular; medium; semibold; bold; heavy; }
+export enum FontFamily { system_ui; serif; monospace; named(String); }
 export enum TextOverflow { clip; ellipsis; }
 export enum TextAlign { start; center; end; }
 export enum LiveRegion { off; polite; assertive; }

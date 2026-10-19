@@ -14,8 +14,11 @@
 //! [`Length::Fit`] on both axes, so the leaf measures to the shaped run's
 //! natural size once the facade has shaped it.
 
+use std::num::NonZeroU32;
+
 use viso_ui::{
-    BoxStyle, BuildCx, Component, LeafStyle, Length, Rgba, Role, Semantics, Size, TextRequest,
+    BoxStyle, BuildCx, Component, FontFamily, FontWeight, LeafStyle, Length, Rgba, Role, Semantics,
+    Size, TextAlign, TextOverflow, TextRequest, TextStyle,
 };
 
 /// The default label font size in logical pixels.
@@ -91,6 +94,8 @@ impl Default for LabelStyle {
 pub struct Label {
     text: String,
     style: LabelStyle,
+    /// The face, line height, line limit and alignment.
+    text_style: TextStyle,
     /// The content language (BCP-47), or `None` for the process locale.
     locale: Option<String>,
 }
@@ -101,6 +106,7 @@ pub fn label(text: impl Into<String>) -> Label {
     Label {
         text: text.into(),
         style: LabelStyle::default(),
+        text_style: TextStyle::default(),
         locale: None,
     }
 }
@@ -132,6 +138,43 @@ impl Label {
         self
     }
 
+    /// Set the weight of the face.
+    pub fn weight(mut self, weight: FontWeight) -> Self {
+        self.text_style.weight = weight;
+        self
+    }
+
+    /// Set the font family.
+    pub fn family(mut self, family: FontFamily) -> Self {
+        self.text_style.family = family;
+        self
+    }
+
+    /// Set each line's box height in logical pixels, the glyphs centered in it.
+    pub fn line_height(mut self, height: f32) -> Self {
+        self.text_style.line_height = Some(height);
+        self
+    }
+
+    /// Show at most `lines` lines (at least one).
+    pub fn max_lines(mut self, lines: u32) -> Self {
+        self.text_style.max_lines = Some(NonZeroU32::new(lines).unwrap_or(NonZeroU32::MIN));
+        self
+    }
+
+    /// End a line cut off, or one an unwrapped label overflows its box with,
+    /// in an ellipsis.
+    pub fn ellipsis(mut self) -> Self {
+        self.text_style.overflow = TextOverflow::Ellipsis;
+        self
+    }
+
+    /// Set where lines sit in the label's box.
+    pub fn align(mut self, align: TextAlign) -> Self {
+        self.text_style.align = align;
+        self
+    }
+
     /// Set the content language as a BCP-47 tag (`"ja"`, `"zh-Hant"`). It
     /// selects locale line breaking and fallback faces; the text is unchanged.
     pub fn locale(mut self, locale: impl Into<String>) -> Self {
@@ -159,6 +202,7 @@ impl Component for Label {
                 color: self.style.color,
                 soft_wrap: self.style.soft_wrap,
                 locale: self.locale.clone(),
+                style: self.text_style.clone(),
             },
         );
         cx.semantics(

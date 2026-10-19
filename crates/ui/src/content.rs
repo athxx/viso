@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use crate::asset::{AssetDraw, AssetFit};
 use crate::layout::Vec2;
+use crate::text_style::{TextStyle, WidthUse};
 use viso_render::asset::ResourceId;
 use viso_render::{GlyphInstanceData, PathCmd, ProgramSlot, Rect, Rgba, Stroke, TextureId};
 
@@ -75,14 +76,16 @@ pub enum Content {
         /// constraint downflow); `viso-ui` records the mismatch as data and the
         /// facade — which owns the font stack — does the reshape.
         shaped_at_width: Option<f32>,
-        /// Whether this run opts into soft wrapping, copied from its
-        /// [`TextRequest`] at shape time. The layout pass reads it to decide
-        /// reflow eligibility: only a `soft_wrap` run whose width axis is
-        /// `Fill`/`Fixed` reflows to its assigned box; a non-wrapping run stays
-        /// single-line and clips. Carried on the payload (rather than read back
-        /// from the request, which is drained at shape time) so the recorder
-        /// needs only the content column.
-        soft_wrap: bool,
+        /// How the run depends on its box's width, from its request's style
+        /// at shape time: the layout pass reflows it to a new box width only
+        /// when it wraps, ends in an ellipsis or aligns there. Carried on the
+        /// payload (rather than read back from the request, which is drained
+        /// at shape time) so the recorder needs only the content column.
+        width_use: WidthUse,
+        /// The run's width laid out on one line per hard break, in physical
+        /// pixels: what a `Fit` width sizes to, so a run its box's bounds
+        /// wrap or cut sizes the same as it is laid out again.
+        max_content: f32,
     },
     /// A textured image drawn into the node's box. `uv` selects the source
     /// sub-rect in normalized texture coordinates, `tint` modulates it.
@@ -145,10 +148,19 @@ impl Content {
     /// The content's intrinsic `(width, height)` in physical pixels — what the
     /// measure pass resolves a `Fit`/`Fill` axis against.
     #[inline]
+    /// A text's width is its `max_content`,
+    /// its height that of the lines it lays out.
     pub fn natural(&self) -> Vec2 {
         match self {
-            Content::Text { natural, .. }
-            | Content::Image { natural, .. }
+            Content::Text {
+                natural,
+                max_content,
+                ..
+            } => Vec2 {
+                x: *max_content,
+                y: natural.y,
+            },
+            Content::Image { natural, .. }
             | Content::Path { natural, .. }
             | Content::Asset { natural, .. } => *natural,
             Content::Shader { .. } => Vec2::ZERO,
@@ -199,6 +211,8 @@ pub struct TextRequest {
     /// `None` for the process locale. It selects locale line breaking and
     /// locale-specific fallback faces; it never changes the text itself.
     pub locale: Option<String>,
+    /// Its face, line height, line limit and alignment.
+    pub style: TextStyle,
 }
 
 #[cfg(test)]
@@ -221,7 +235,8 @@ mod tests {
             natural: Vec2 { x: 42.0, y: 12.0 },
             baseline: 9.0,
             shaped_at_width: None,
-            soft_wrap: false,
+            width_use: WidthUse::Ignored,
+            max_content: 42.0,
         };
         assert_eq!(text.natural(), Vec2 { x: 42.0, y: 12.0 });
         assert_eq!(text.baseline(), Some(9.0));

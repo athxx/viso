@@ -176,7 +176,8 @@ fn attach_captions(gpu: &mut CpuRaster, store: &mut NodeStore, captions: &[NodeI
                 natural,
                 baseline: 0.0,
                 shaped_at_width: None,
-                soft_wrap: false,
+                width_use: viso::ui::WidthUse::Ignored,
+                max_content: natural.x,
             },
         );
     }

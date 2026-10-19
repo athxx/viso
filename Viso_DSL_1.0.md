@@ -4544,7 +4544,7 @@ export record Border { width: Dp = 1dp; color: Color; }
 - `Row` 主轴 `start` 是行内起点，RTL 下首个子节点位于右侧；
 - `justify` 与 `align` 不改变容器自身测量结果，只标记 `LAYOUT`。
 
-当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件的 `const`（经 `const` 链折叠）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::min_content`/`max_content`，以及尚无运行时路径的 Property（文本的 `font_weight`、`font_family`、`line_height`、`max_lines`、`overflow`、`align`，`TextInput` 的 `placeholder`/`secure`，`corner_radius`、`border`、变换、`clip`、`autofocus`，以及 Style 选择器之外的 `enabled`）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定。读取值（State、Input、`theme` 等）的布局 Property——`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为 `Sizing::min_content`/`max_content`、兼含 `dp` 与 `%` 的轨道或 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area`，以及 Style 以读取值的绑定给出的布局 Property，报 `E3711`。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
+当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件的 `const`（经 `const` 链折叠）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::min_content`/`max_content`，以及尚无运行时路径的 Property（`TextInput` 的 `placeholder`/`secure`，`corner_radius`、`border`、变换、`clip`、`autofocus`，以及 Style 选择器之外的 `enabled`）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定。读取值（State、Input、`theme` 等）的布局 Property——`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为 `Sizing::min_content`/`max_content`、兼含 `dp` 与 `%` 的轨道或 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area`，以及 Style 以读取值的绑定给出的布局 Property，报 `E3711`。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
 
 ### U3.5 Grid
 
@@ -4657,18 +4657,20 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 | `line_height` | `Option<MixedLength>` | `Option::None`（字体度量）    | `MEASURE\|LAYOUT\|PAINT`            | 当前 Resolved Font Size   |
 | `color`       | `Color`               | `theme.colors.foreground`     | `PAINT`                             | —                         |
 | `soft_wrap`   | `Bool`                | `false`                       | `MEASURE\|LAYOUT\|PAINT`            | —                         |
-| `max_lines`   | `Option<U32>`         | `Option::None`                | `MEASURE\|LAYOUT\|PAINT` **[Runtime 待实现]** | —               |
-| `overflow`    | `TextOverflow`        | `TextOverflow::clip`          | `LAYOUT\|PAINT` **[Runtime 待实现]** | —                        |
+| `max_lines`   | `Option<U32>`         | `Option::None`                | `MEASURE\|LAYOUT\|PAINT`            | —                         |
+| `overflow`    | `TextOverflow`        | `TextOverflow::clip`          | `LAYOUT\|PAINT`                     | —                         |
 | `align`       | `TextAlign`           | `TextAlign::start`            | `LAYOUT\|PAINT`                     | —                         |
 | `selectable`  | `Bool`                | `false`                       | `HIT_TEST\|SEMANTICS`               | —                         |
 | `locale`      | `Option<Locale>`      | `Option::None`（`env.locale`）| `MEASURE\|LAYOUT\|PAINT`            | —                         |
 
-- `FontWeight { thin; light; regular; medium; semibold; bold; heavy; }`；`TextOverflow { clip; ellipsis; }`；`TextAlign { start; center; end; }`（`start`/`end` 随段落方向解析，`justify` 推迟）；
+- `FontWeight { thin; light; regular; medium; semibold; bold; heavy; }`（字重 100、300、400、500、600、700、900）；`FontFamily { system_ui; serif; monospace; named(String); }`（`named` 为 App 字体中的族名，无此族时取主 UI 字体）；`TextOverflow { clip; ellipsis; }`；`TextAlign { start; center; end; }`（`start`/`end` 随段落方向解析，`justify` 推迟）；
 - Schema 默认值列中的 `theme.*` 表示未绑定时读取 Theme Context；
 - **Typography Context**（§19.4）：`Text` 声明 `font_size`，设置时成为子树 Resolved Font Size 的来源；容器不声明 `font_size`，只向下传递；根节点取 `theme.typography.base_size`（默认 `14sp`）；`font_size` 变化按 §19.6 追加标记依赖当前 Resolved Font Size 的后代 Binding；
 - 源文本始终为逻辑顺序；Bidi、断行、字形选择与回退由 Text Runtime 负责，DSL 不得反转字符串或手工插入方向控制符；
 - 仅因宽度变化引起的重排不标记 `SEMANTICS`（ADR 0027）；
 - `overflow: ellipsis` 仅在 `max_lines` 有值或 `soft_wrap: false` 时生效；
+- `max_lines` 为 `Option::Some(0)` 时按 `1` 处理；`TextInput` 是单行编辑框，取 `font_weight`、`font_family`、`line_height` 与 `align`，不取 `max_lines`/`overflow`（`E3711`）；`Button` 的文本取全部文本样式；
+- 当前实现：上述样式（常量或读取值）随节点的值条目送达其文本请求，热重载就地改写，Release 包与宏路径相同；`line_height` 的 `em`/`%` 读节点解析出的字号。行盒、行数上限、省略号与对齐的算法见 Text Runtime §12.12.1；`Fit` 宽度的文本按其 max-content 宽度测量，被 `max_width` 等上下界或父容器收窄时按盒宽换行或加省略号。`font_family` 的默认值暂取 `system_ui`，尚不读 `theme.typography`；
 - `text` 在 Schema 中标记为 Localizable（U10.3）。
 - `String` 文本槽（`text`、`label`、`placeholder` 等）只接受 `String`（或 `Option<String>` 槽的 U1.3 提升），不做隐式 `Display` 转换：`text: count;`（`count: I64`）是 `E2103`，并附 Machine-Applicable Fix `format("{}", count)`；对无 `Display` 的类型不给出该 Fix。
 
@@ -4857,7 +4859,7 @@ KeyShortcut {
 
 | Widget       | Property（类型 = 默认；失效）                                                                 | Event                  |
 | ------------ | --------------------------------------------------------------------------------------------- | ---------------------- |
-| `Button`     | `text: String = ""`（Localizable；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）                    | `click`                |
+| `Button`     | `text: String = ""`（Localizable；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；U5 的文本样式条目 | `click`                |
 | `Toggle`     | `checked: Bool = false`（two_way；`PAINT\|SEMANTICS`）；`label: String = ""`（Localizable；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`） | `changed(value: Bool)` |
 | `CheckBox`   | 同 `Toggle`                                                                                   | `changed(value: Bool)` |
 | `Slider`     | `value: F32 = 0.0`（two_way；`PAINT\|SEMANTICS`）；`min: F32 = 0.0`、`max: F32 = 1.0`、`step: Option<F32> = Option::None`（`PAINT\|SEMANTICS`） | `changed(value: F32)` |

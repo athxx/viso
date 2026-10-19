@@ -64,6 +64,7 @@ pub mod ime;
 mod ligature_caret;
 pub mod line_break;
 pub mod line_break_tailoring;
+pub mod line_limit;
 pub mod paragraph;
 pub mod segment;
 pub mod selection;
@@ -98,6 +99,7 @@ pub use glyph_representation::{
 };
 pub use line_break::{BreakOpportunity, LineBreaker};
 pub use line_break_tailoring::{LineBreakStrictness, LineBreakTailoring, WordBreak};
+pub use line_limit::LineLimit;
 pub use memory_budget::{MemoryClass, TextBudgets};
 pub use mtsdf::{
     BUCKETS, DISTANCE_RANGE, FIELD_PAD, MtsdfGenerator, MtsdfGlyph, MtsdfPlan, MtsdfRequest,

@@ -710,7 +710,8 @@ mod tests {
             natural: crate::layout::Vec2 { x: 0.0, y: 0.0 },
             baseline: 0.0,
             shaped_at_width: None,
-            soft_wrap: false,
+            width_use: crate::WidthUse::Ignored,
+            max_content: 0.0,
         }
     }
 

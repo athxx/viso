@@ -615,7 +615,11 @@ fn control_tokens(control: Control) -> TokenStream {
     );
     let (hidden, heading_level) = (entry(semantics.hidden), entry(semantics.heading_level));
     let (visible, focusable) = (entry(control.node.visible), entry(control.node.focusable));
-    let (text_color, soft_wrap) = (entry(control.text.color), entry(control.text.soft_wrap));
+    let text = control.text;
+    let (text_color, soft_wrap) = (entry(text.color), entry(text.soft_wrap));
+    let (font_weight, font_family) = (entry(text.font_weight), entry(text.font_family));
+    let (line_height, max_lines) = (entry(text.line_height), entry(text.max_lines));
+    let (overflow, text_align) = (entry(text.overflow), entry(text.align));
     let look = control.look;
     let (background, opacity) = (entry(look.background), entry(look.opacity));
     let (background_transition, opacity_transition) = (
@@ -674,6 +678,12 @@ fn control_tokens(control: Control) -> TokenStream {
             text: ::viso::__private::viso_view::TextEntries {
                 color: #text_color,
                 soft_wrap: #soft_wrap,
+                font_weight: #font_weight,
+                font_family: #font_family,
+                line_height: #line_height,
+                max_lines: #max_lines,
+                overflow: #overflow,
+                align: #text_align,
             },
             semantics: ::viso::__private::viso_view::SemanticEntries {
                 role: #role,

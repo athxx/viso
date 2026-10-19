@@ -38,6 +38,7 @@ use crate::host::ViewHost;
 use crate::layout_values::layout_value;
 use crate::scope::Scope;
 use crate::shaders::encode_shader;
+use crate::text_style::text_style;
 
 /// The font size of a text whose node resolves none, in logical pixels.
 const FONT_SIZE: f32 = 14.0;
@@ -166,10 +167,9 @@ pub(crate) fn control_cells(
         semantics.heading_level,
         control.node.visible,
         control.node.focusable,
-        control.text.color,
-        control.text.soft_wrap,
     ]
     .into_iter()
+    .chain(control.text.all())
     .flatten()
     .chain(arms)
     .chain(control.layout.iter().map(|&(_, entry)| entry))
@@ -181,9 +181,10 @@ pub(crate) fn control_cells(
 /// How many values a node shows: its value, the two entries beside it (a
 /// slider's bounds, an image's fit and tint), its look's background and
 /// opacity, its `semantics.label`, `hint`, `value`, `hidden` and
-/// `heading_level`, its `visible` and `focusable`, and its text's `color`
-/// and `soft_wrap`.
-const SHOWN: usize = 16;
+/// `heading_level`, its `visible` and `focusable`, and its text's `color`,
+/// `soft_wrap`, `font_weight`, `font_family`, `line_height`, `max_lines`,
+/// `overflow` and `align`.
+const SHOWN: usize = 22;
 
 /// Where its background and opacity sit among the values a node shows.
 const LOOK: usize = 5;
@@ -194,8 +195,7 @@ const SEMANTICS: usize = 7;
 /// Where its `visible` and `focusable` sit among the values a node shows.
 const NODE: usize = 12;
 
-/// Where its text's `color` and `soft_wrap` sit among the values a node
-/// shows.
+/// Where its text's style starts among the values a node shows.
 const TEXT: usize = 14;
 
 /// A node showing a value of the view.
@@ -300,24 +300,26 @@ impl Shown {
         };
         let semantics = control.semantics;
         let mut shows: [Value; SHOWN] = Default::default();
-        for (value, entry) in shows.iter_mut().zip([
-            control.value,
-            control.min,
-            control.max,
-            control.fit,
-            control.tint,
-            background,
-            opacity,
-            semantics.label,
-            semantics.hint,
-            semantics.value,
-            semantics.hidden,
-            semantics.heading_level,
-            control.node.visible,
-            control.node.focusable,
-            control.text.color,
-            control.text.soft_wrap,
-        ]) {
+        for (value, entry) in shows.iter_mut().zip(
+            [
+                control.value,
+                control.min,
+                control.max,
+                control.fit,
+                control.tint,
+                background,
+                opacity,
+                semantics.label,
+                semantics.hint,
+                semantics.value,
+                semantics.hidden,
+                semantics.heading_level,
+                control.node.visible,
+                control.node.focusable,
+            ]
+            .into_iter()
+            .chain(control.text.all()),
+        ) {
             let Some(entry) = entry else { continue };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
                 Ok(evaluated) => *value = evaluated,
@@ -366,6 +368,12 @@ impl Shown {
             focusable,
             text_color,
             soft_wrap,
+            font_weight,
+            font_family,
+            line_height,
+            max_lines,
+            overflow,
+            align,
         ] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
         if semantics.says_anything()
@@ -432,6 +440,7 @@ impl Shown {
                 (None, LookValue::Opacity(opacity)) => store.set_opacity(self.node, opacity),
             }
         }
+        let env = store.length_env();
         let text = || TextRequest {
             text: value.as_str().unwrap_or_default().to_owned(),
             font_size,
@@ -441,6 +450,18 @@ impl Shown {
             },
             soft_wrap: truth(soft_wrap, false),
             locale: None,
+            style: text_style(
+                [
+                    font_weight,
+                    font_family,
+                    line_height,
+                    max_lines,
+                    overflow,
+                    align,
+                ],
+                &env,
+                font_size,
+            ),
         };
         if prior.is_some()
             && (0..LOOK).chain(TEXT..SHOWN).all(|at| !changed(at))

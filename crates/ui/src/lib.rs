@@ -41,6 +41,7 @@ pub mod style;
 pub mod suspend;
 pub mod task;
 pub mod text_edit;
+pub mod text_style;
 pub mod timer;
 pub mod token;
 pub mod transform;
@@ -90,6 +91,7 @@ pub use length::{
 };
 pub use node::{ArenaFull, ChildIds, Children, NodeArena, NodeId, NodeIndex, NodeLinks, TreeLinks};
 pub use paint::{paint_tree, paint_with_transforms};
+pub use text_style::{FontFamily, FontWeight, TextAlign, TextOverflow, TextStyle, WidthUse};
 pub use transform::TransformTable;
 pub use viso_runtime::Instant;
 // Render primitive data types that already appear in this crate's public API —

@@ -47,6 +47,10 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         "align" | "justify" | "axis" | "direction" | "wrap" | "flex" | "weight" | "columns"
         | "rows" | "column_gap" | "row_gap" => D::LAYOUT,
 
+        // A text's overflow ends a line it cuts off differently, which
+        // places and paints the run again without resizing it.
+        "overflow" => D::LAYOUT | D::PAINT,
+
         // Transform-only changes move the node's transform root: no measure,
         // layout, paint or hit-test work (section 8.7, ADR 0043).
         "transform" | "translate" | "scale" | "rotate" | "offset" | "scroll" => D::TRANSFORM,

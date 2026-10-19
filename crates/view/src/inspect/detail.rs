@@ -329,7 +329,8 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             natural,
             baseline,
             shaped_at_width,
-            soft_wrap,
+            width_use,
+            max_content,
             ..
         }) => {
             add(&mut content, "kind", "text".into());
@@ -348,7 +349,12 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
                 format!("{}x{}", number(natural.x), number(natural.y)),
             );
             add(&mut content, "baseline", number(*baseline));
-            add(&mut content, "soft_wrap", soft_wrap.to_string());
+            add(&mut content, "max_content", number(*max_content));
+            add(
+                &mut content,
+                "width_use",
+                format!("{width_use:?}").to_lowercase(),
+            );
             if let Some(width) = shaped_at_width {
                 add(&mut content, "shaped_at", number(*width));
             }

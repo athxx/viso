@@ -166,7 +166,8 @@ fn attach_caption(gpu: &mut CpuRaster, store: &mut NodeStore, caption_id: NodeId
             natural,
             baseline: 0.0,
             shaped_at_width: None,
-            soft_wrap: false,
+            width_use: viso::ui::WidthUse::Ignored,
+            max_content: natural.x,
         },
     );
 }

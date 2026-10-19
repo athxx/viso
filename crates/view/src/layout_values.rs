@@ -125,7 +125,7 @@ fn fields(value: &Value) -> Option<&[Value]> {
 }
 
 /// A `MixedLength`'s terms; its `%` term a fraction of the basis.
-fn length(value: &Value) -> Option<LengthTerms> {
+pub(crate) fn length(value: &Value) -> Option<LengthTerms> {
     let [dp, px, sp, em, pct] = fields(value)? else {
         return None;
     };

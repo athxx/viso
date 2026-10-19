@@ -198,6 +198,13 @@ impl BidiInfo {
         &self.paragraphs
     }
 
+    /// Whether the paragraph holding `offset` runs right to left; past the
+    /// end, whether the last one does.
+    pub fn base_rtl_at(&self, offset: TextOffset) -> bool {
+        self.paragraph_of(offset)
+            .is_some_and(|p| p.base_level.is_rtl())
+    }
+
     /// Whether any character resolved to a right-to-left level.
     ///
     /// When this is false the whole text is left-to-right and the reorder step

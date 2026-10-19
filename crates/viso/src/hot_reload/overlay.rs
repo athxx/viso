@@ -10,7 +10,7 @@
 
 use viso_ui::{
     Align, Axis, BoxStyle, BuildCx, FlexStyle, Inset, LeafStyle, Length, NodeId, NodeStore, Rect,
-    Rgba, Size, TextRequest,
+    Rgba, Size, TextRequest, TextStyle,
 };
 
 use crate::WindowState;
@@ -72,6 +72,7 @@ fn build(store: &mut NodeStore, lines: &[&str]) -> NodeId {
                 color: FOREGROUND,
                 soft_wrap: false,
                 locale: None,
+                style: TextStyle::default(),
             },
         );
     };
@@ -167,6 +168,7 @@ fn hud(store: &mut NodeStore, line: &str) -> NodeId {
                             color: FOREGROUND,
                             soft_wrap: false,
                             locale: None,
+                            style: TextStyle::default(),
                         },
                     );
                 },

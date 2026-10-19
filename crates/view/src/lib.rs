@@ -41,6 +41,7 @@ mod route;
 mod scope;
 mod shaders;
 mod tasks;
+mod text_style;
 mod theme;
 mod values;
 

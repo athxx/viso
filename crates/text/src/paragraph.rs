@@ -159,6 +159,9 @@ pub struct LineLayout {
     pub logical_range: (TextOffset, TextOffset),
     /// The line's total inline width in em units.
     pub width: f32,
+    /// Whether the paragraph the line belongs to runs right to left: its
+    /// start is the right edge, which alignment and an ellipsis follow.
+    pub rtl: bool,
 }
 
 impl LineLayout {
@@ -254,6 +257,7 @@ impl LineLayout {
             runs,
             logical_range: range,
             width: cursor_x,
+            rtl: bidi.base_rtl_at(range.0),
         }
     }
 
@@ -506,6 +510,7 @@ fn shift_line(line: &LineLayout, from: TextOffset, delta: isize) -> LineLayout {
         runs,
         logical_range: (shift(line.logical_range.0), shift(line.logical_range.1)),
         width: line.width,
+        rtl: line.rtl,
     }
 }
 
@@ -721,9 +726,30 @@ impl Paragraph {
         &self.text
     }
 
+    /// The base direction the paragraph resolves under.
+    pub fn base(&self) -> BaseDirection {
+        self.base
+    }
+
     /// The laid-out lines from the last [`Self::layout`], top to bottom.
     pub fn lines(&self) -> &[LineLayout] {
         &self.lines
+    }
+
+    /// The width the laid-out text takes on one line per hard break, in em:
+    /// the sum of each paragraph's soft-wrapped lines, the widest of them.
+    pub fn max_content_width(&self) -> f32 {
+        let mut widest = 0.0f32;
+        let mut run = 0.0f32;
+        for line in &self.lines {
+            run += line.width;
+            let (start, end) = line.logical_range;
+            if self.text[start.0..end.0].ends_with(is_hard_break) || end.0 >= self.text.len() {
+                widest = widest.max(run);
+                run = 0.0;
+            }
+        }
+        widest.max(run)
     }
 
     /// Total shape invocations over this paragraph's life — the count of runs
@@ -920,11 +946,11 @@ impl Paragraph {
         shape: &mut ShapeFn<'_>,
     ) -> (Vec<LineLayout>, u64) {
         let text = &self.text;
+        let bidi = BidiInfo::resolve(text, self.base);
         if from.0 >= text.len() {
-            return (trailing_empty_line(text).into_iter().collect(), 0);
+            return (trailing_empty_line(text, &bidi).into_iter().collect(), 0);
         }
 
-        let bidi = BidiInfo::resolve(text, self.base);
         let breaker = LineBreaker::with_tailoring(self.tailoring);
         let breaks: Vec<(TextOffset, BreakOpportunity)> =
             breaker.break_opportunities(text).collect();
@@ -963,7 +989,7 @@ impl Paragraph {
             out.push(line);
         }
 
-        out.extend(trailing_empty_line(text));
+        out.extend(trailing_empty_line(text, &bidi));
         (out, cache.misses)
     }
 
@@ -1081,18 +1107,19 @@ fn is_hard_break(ch: char) -> bool {
 
 /// The end of `[start, end)` with any trailing hard-break characters removed:
 /// the part of a line that is shaped and measured.
-fn content_end(text: &str, start: TextOffset, end: TextOffset) -> TextOffset {
+pub(crate) fn content_end(text: &str, start: TextOffset, end: TextOffset) -> TextOffset {
     let trimmed = text[start.0..end.0].trim_end_matches(is_hard_break);
     TextOffset(start.0 + trimmed.len())
 }
 
 /// The empty last line an empty text, or a text ending in a hard break, owns:
 /// the caret after that break sits on a line of its own.
-fn trailing_empty_line(text: &str) -> Option<LineLayout> {
+fn trailing_empty_line(text: &str, bidi: &BidiInfo) -> Option<LineLayout> {
     (text.is_empty() || text.ends_with(is_hard_break)).then(|| LineLayout {
         runs: Vec::new(),
         logical_range: (TextOffset(text.len()), TextOffset(text.len())),
         width: 0.0,
+        rtl: bidi.base_rtl_at(TextOffset(text.len())),
     })
 }
 
@@ -1447,6 +1474,18 @@ mod tests {
         let mut shape2 = fixture_shaper();
         let full_lines = full.layout_full(width, &mut shape2);
         assert!(lines_eq(incremental.lines(), &full_lines));
+    }
+
+    #[test]
+    fn max_content_width_joins_soft_wrapped_lines_and_splits_at_hard_breaks() {
+        let mut shaper = fixture_shaper();
+        let mut p = Paragraph::new("aa bb\ncc", BaseDirection::Auto, 0);
+        p.layout(0.0, &mut shaper);
+        let one_line = p.max_content_width();
+        p.layout(measured_width("aa ") + 0.01, &mut shaper);
+        assert!(p.lines().len() >= 3, "wrapped");
+        assert!((p.max_content_width() - one_line).abs() < 1e-4);
+        assert!((one_line - measured_width("aa bb")).abs() < 1e-4);
     }
 
     #[test]

@@ -1265,6 +1265,16 @@ cluster map
 
 禁止在 layout 完成后只留下视觉 glyph 数组、丢掉 logical mapping；否则 selection、IME、accessibility、copy/paste 和双向 caret 都无法可靠实现。
 
+每行记录其所属 BiDi Paragraph 的方向（`LineLayout::rtl`），对齐与省略号的 start/end 由它解析。
+
+### 12.12.1 行盒、行数上限、省略号与对齐
+
+- **行盒**：未指定行高时，行距取主字体度量（ascent + descent + line gap），首行基线在顶部下方一个 ascent；指定行高 `h` 时每行行盒高 `h`，字体的 ascent + descent 在行盒内垂直居中（half-leading），`h` 不小于 0。
+- **行数上限与省略号**（`viso_text::LineLimit`，在 Worker 上与断行一起完成）：上限之后仍含文本的行被截去（硬换行留下的末尾空行不算）；要求省略号时，被截断的最后一行，以及不换行时宽于盒的行，在不超过盒宽的最后一个 Grapheme 边界处截断、去掉尾随空白，接上以同一 Shape 回调（同一字体与 Fallback）整形的 `…`，位于段落的 end 侧；盒宽容不下任何文本时只留 `…`。截断点用二分查找，只整形 O(log n) 个前缀。
+- **对齐**：主线程放置行时按对齐把每行在盒宽（无盒宽时为最宽行）内偏移：`start`/`end` 随该行段落方向，`center` 居中；宽于盒的行按段落 start 对齐。Caret、Hit Test 与 IME 几何读取同一组行偏移。
+- **Max-content**：段落报告每个硬换行段内各行宽度之和的最大值，作为 `Fit` 宽度的固有宽度；换行或截断只改变绘制的行，不改变 `Fit` 盒的测量宽度，盒被上下界或父容器收窄时才按盒宽重排，宽度不再回授。
+- **字体选择**：`font_family`（`system_ui`/`serif`/`monospace` 角色或按名称的 App 字体族）与 `font_weight` 经 Font Resolver 解析为主字体，每个 (族, 字重) 只解析一次；无字体提供时使用主 UI 字体。Fallback 计划按所请求的字重选择回退字体。
+
 ## 12.13 双向 Caret：同一 logical offset 允许两个视觉位置
 
 在 BiDi boundary 或 soft line wrap 处，一个 logical insertion offset 可能对应两个合理的 visual caret geometry。

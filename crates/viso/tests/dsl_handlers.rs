@@ -11,6 +11,7 @@ use viso::ui::{
     PointerPhase, PointerRouter, SemanticProjector, StateId, StateStore, StateValue, TextEdits,
     VirtualLists, run_structure_hooks,
 };
+use viso::ui::{FontWeight, TextAlign, TextOverflow, TextStyle};
 
 viso::component! {
     Clicker {
@@ -81,6 +82,28 @@ viso::component! {
                     width: if wide { 150dp } else { 60dp };
                     height: 10dp;
                     max_width: if wide { Option::Some(25%) } else { Option::None };
+                }
+            }
+        }
+    }
+}
+
+viso::component! {
+    Heading {
+        state bold = false;
+        view {
+            Column {
+                width: 200dp;
+                height: 100dp;
+                Text {
+                    width: 100dp;
+                    height: 50dp;
+                    text: "Title";
+                    font_weight: if bold { FontWeight::bold } else { FontWeight::regular };
+                    max_lines: Option::Some(1);
+                    overflow: TextOverflow::ellipsis;
+                    align: TextAlign::center;
+                    on click { bold = !bold; }
                 }
             }
         }
@@ -166,6 +189,13 @@ impl Mounted {
             &mut self.effects,
             &changed,
         );
+    }
+
+    /// The styles of the texts declared since the last call.
+    fn styles(&mut self) -> Vec<TextStyle> {
+        let mut requests = Vec::new();
+        self.store.take_text_requests(&mut requests);
+        requests.into_iter().map(|(_, r)| r.style).collect()
     }
 
     /// The texts declared since the last call.
@@ -263,4 +293,22 @@ fn a_bound_width_lays_out_at_build_and_after_a_write() {
     );
     form.click(20.0, 20.0);
     assert_eq!(form.width(1), 60.0);
+}
+
+#[test]
+fn a_text_style_reaches_the_request_at_build_and_after_a_write() {
+    let mut form = Mounted::mount(|cx| {
+        let (Heading { bold }, root) = Heading::build(cx);
+        (root, bold)
+    });
+    let style = |weight| TextStyle {
+        weight,
+        max_lines: std::num::NonZeroU32::new(1),
+        overflow: TextOverflow::Ellipsis,
+        align: TextAlign::Center,
+        ..TextStyle::default()
+    };
+    assert_eq!(form.styles(), [style(FontWeight::REGULAR)]);
+    form.click(20.0, 20.0);
+    assert_eq!(form.styles(), [style(FontWeight::BOLD)]);
 }

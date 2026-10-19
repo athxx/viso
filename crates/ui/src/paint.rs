@@ -894,7 +894,8 @@ mod tests {
                 natural: Vec2 { x: 30.0, y: 20.0 },
                 baseline: 16.0,
                 shaped_at_width: None,
-                soft_wrap: false,
+                width_use: crate::WidthUse::Ignored,
+                max_content: 30.0,
             },
         );
         // An image whose Fit box comes from its intrinsic size.
@@ -1058,7 +1059,8 @@ mod tests {
                 natural: Vec2 { x: 40.0, y: 20.0 },
                 baseline: 16.0,
                 shaped_at_width: None,
-                soft_wrap: false,
+                width_use: crate::WidthUse::Ignored,
+                max_content: 40.0,
             },
         );
 
@@ -1161,7 +1163,8 @@ mod tests {
                 natural: Vec2 { x: 20.0, y: 20.0 },
                 baseline: 16.0,
                 shaped_at_width: None,
-                soft_wrap: false,
+                width_use: crate::WidthUse::Ignored,
+                max_content: 20.0,
             },
         );
 

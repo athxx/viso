@@ -52,6 +52,7 @@
 
 use crate::content::TextRequest;
 use crate::node::NodeId;
+use crate::text_style::{TextOverflow, TextStyle};
 use viso_render::Rgba;
 use viso_text::caret::Caret;
 use viso_text::hit_test::HitTester;
@@ -121,6 +122,9 @@ pub struct EditLayout<'a> {
     pub font_size: f32,
     /// The distance between successive lines, in the node's space units.
     pub line_height: f32,
+    /// Each line's inline offset within the node, its alignment, in the
+    /// node's space units; a line past them is not offset.
+    pub offsets: &'a [f32],
 }
 
 /// Where the runtime answers "how is this node's text drawn right now". The
@@ -149,7 +153,7 @@ struct Placed<'a> {
 /// Keeping the style on the buffer (which already lives beside the store, keyed by
 /// node, and is touched only when that node is edited) lets [`reconcile`]
 /// re-declare a complete request from the buffer alone, with no lookup into the
-/// store and no extra allocation (both fields are `Copy`).
+/// store.
 ///
 /// Single-line: the text holds no `'\n'` (Enter submits, it does not insert).
 /// Every offset the edit ops leave behind is a grapheme boundary of `text`,
@@ -175,6 +179,9 @@ pub struct Buffer {
     /// The content locale the node was declared with. Resident for the same
     /// reason as [`font_size`](Buffer::font_size).
     pub locale: Option<String>,
+    /// The face, line height and alignment the node was declared with.
+    /// Resident for the same reason as [`font_size`](Buffer::font_size).
+    pub style: TextStyle,
     /// The active IME composition, inactive (empty range) when not composing.
     composition: ImeComposition,
     /// Advances on every change to `text`.
@@ -209,6 +216,7 @@ impl Buffer {
             font_size: 0.0,
             color: Rgba::TRANSPARENT,
             locale: None,
+            style: TextStyle::default(),
             composition: ImeComposition::default(),
             revision: Revision::default(),
             pending: Vec::new(),
@@ -224,6 +232,7 @@ impl Buffer {
             font_size: request.font_size,
             color: request.color,
             locale: request.locale.clone(),
+            style: request.style.clone(),
             ..Self::with_text(request.text.clone())
         }
     }
@@ -236,10 +245,12 @@ impl Buffer {
     pub fn seed(&mut self, request: &TextRequest) -> bool {
         let styled = self.font_size != request.font_size
             || self.color != request.color
-            || self.locale != request.locale;
+            || self.locale != request.locale
+            || self.style != request.style;
         self.font_size = request.font_size;
         self.color = request.color;
         self.locale.clone_from(&request.locale);
+        self.style.clone_from(&request.style);
         if self.text == request.text {
             return styled;
         }
@@ -273,7 +284,8 @@ impl Buffer {
     }
 
     /// The text request that declares the buffer's text in its resident
-    /// style. An edit buffer is single-line: it clips and scrolls, never wraps.
+    /// style. An edit buffer is single-line: it clips and scrolls, never wraps
+    /// or cuts its text off.
     pub fn request(&self) -> TextRequest {
         TextRequest {
             text: self.text.clone(),
@@ -281,6 +293,11 @@ impl Buffer {
             color: self.color,
             soft_wrap: false,
             locale: self.locale.clone(),
+            style: TextStyle {
+                max_lines: None,
+                overflow: TextOverflow::Clip,
+                ..self.style.clone()
+            },
         }
     }
 
@@ -435,8 +452,10 @@ impl Buffer {
         } else {
             0
         };
-        let line = &layout.lines[row.min(layout.lines.len() - 1)];
-        let position = HitTester::new(line).position_at_inline(local_x / layout.font_size);
+        let row = row.min(layout.lines.len() - 1);
+        let offset = layout.offsets.get(row).copied().unwrap_or(0.0);
+        let position = HitTester::new(&layout.lines[row])
+            .position_at_inline((local_x - offset) / layout.font_size);
         self.set_focus(position, extend);
     }
 
@@ -803,6 +822,7 @@ mod tests {
                 lines: &self.lines,
                 font_size: 10.0,
                 line_height: 12.0,
+                offsets: &[],
             })
         }
     }
@@ -814,6 +834,7 @@ mod tests {
                 lines,
                 font_size: 10.0,
                 line_height: 12.0,
+                offsets: &[],
             },
             origin: (100.0, 50.0),
         }
@@ -1283,6 +1304,7 @@ mod tests {
             color: Rgba::TRANSPARENT,
             soft_wrap: false,
             locale: None,
+            style: TextStyle::default(),
         }
     }
 

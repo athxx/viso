@@ -361,8 +361,22 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 - [x] A binding no path applies is `E3711` naming it, never dropped: the properties
       below, `Sizing::min_content`/`max_content`, and `enabled` that no style's
       selector reads.
-- [ ] Text style beyond color, size and wrapping: `font_weight`, `font_family`,
-      `line_height`, `max_lines`, `overflow`, text `align` (`E3711` today).
+- [x] Text style beyond color, size and wrapping: `font_weight`, `font_family`,
+      `line_height`, `max_lines`, `overflow`, text `align` reach a `Text`, `Button` and
+      `TextInput` (no line limit on a field) across the macros, hot reload and the
+      package, constant or bound.
+  - [x] `TextStyle` on `TextRequest` (and the edit buffer); the shaper resolves a
+        face per family and weight (fallback chosen at that weight), places lines
+        in boxes of the line height (half-leading) and offsets each by its
+        alignment and paragraph direction; caret and hit testing read the offsets.
+  - [x] `viso_text::LineLimit` on the worker: lines past `max_lines` are cut and a
+        cut or overflowing line ends in a shaped `…` at its end side (binary-searched
+        grapheme cut). `Content::Text` reports its max-content width and how it uses
+        its box (`WidthUse`), so a `Fit` text a bound narrows wraps or ellipsizes
+        without feeding its width back.
+  - [ ] `font_family` defaults to `theme.typography.family` (`TypographyScale` has no
+        `family` yet); `FontFamily::named` reaches only the app's fonts, not the
+        platform's by name.
 - [ ] `TextInput` `placeholder` and `secure`, `CheckBox` `label` (`E3711` today).
 - [x] `Grid` tracks and alignment (`columns`, `rows`, `auto_rows`, `column_gap`,
       `row_gap`, `align_items`, `areas`, `adaptive_columns`) and the `grid.*` cells

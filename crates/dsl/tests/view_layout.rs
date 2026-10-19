@@ -154,12 +154,12 @@ fn errors(view: &str) -> Vec<(&'static str, String)> {
 fn a_binding_no_path_applies_is_reported() {
     for (view, says) in [
         (
-            "Text { text: \"a\"; font_weight: FontWeight::bold; }",
-            "`font_weight` does not reach a `Text` yet",
+            "TextInput { max_lines: Option::Some(1); }",
+            "`max_lines` does not reach a `TextInput` yet",
         ),
         (
-            "Text { text: \"a\"; align: TextAlign::center; }",
-            "`align` does not reach a `Text` yet",
+            "TextInput { overflow: TextOverflow::ellipsis; }",
+            "`overflow` does not reach a `TextInput` yet",
         ),
         (
             "TextInput { placeholder: \"Name\"; }",

@@ -179,7 +179,8 @@ fn text(n: usize) -> Content {
         },
         baseline: 10.0,
         shaped_at_width: None,
-        soft_wrap: false,
+        width_use: viso::ui::WidthUse::Ignored,
+        max_content: n as f32 * 7.0,
     }
 }
 

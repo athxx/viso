@@ -86,6 +86,7 @@ fn render_scene() -> Vec<u8> {
     let mut store = NodeStore::new();
     let (root, text_id, image_id) = build(&mut store);
 
+    let natural = glyph_run_natural(&tg.glyphs);
     store.set_content_payload(
         text_id,
         Content::Text {
@@ -94,10 +95,11 @@ fn render_scene() -> Vec<u8> {
             color_glyphs: Vec::new(),
             color_atlas: None,
             color: WHITE,
-            natural: glyph_run_natural(&tg.glyphs),
+            natural,
             baseline: 0.0,
             shaped_at_width: None,
-            soft_wrap: false,
+            width_use: viso::ui::WidthUse::Ignored,
+            max_content: natural.x,
         },
     );
     store.set_content_payload(

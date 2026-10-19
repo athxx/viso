@@ -34,6 +34,7 @@ use crate::shader::ShaderSlots;
 use crate::state::{StateId, StateKey, StateStore, StateValue};
 use crate::style::{BoxStyle, InteractionStyle, StyleId};
 use crate::task::{Continuation, TaskFuture, TaskId, TaskOps};
+use crate::text_style::WidthUse;
 use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
@@ -4363,41 +4364,33 @@ impl LayoutTree for NodeStore {
 
     fn request_text_reflow(&mut self, index: u32, width: f32) {
         // Eligibility lives entirely here (the trait method is a pure data
-        // write). A reflow is enqueued only for a soft-wrapping text run whose
-        // width axis is layout-derived (`Fill`/`Fixed`, never `Fit`) and whose
-        // assigned width differs from the width it was last shaped at.
+        // write). A reflow is enqueued only for a text run that depends on its
+        // box's width and whose assigned width differs from the width it was
+        // last shaped at.
         let Some(Content::Text {
-            natural,
+            max_content,
             shaped_at_width,
-            soft_wrap,
+            width_use,
             ..
         }) = self.content_payload[index as usize].as_deref()
         else {
             return;
         };
-        if !soft_wrap {
-            return;
-        }
-        // A `Fit` width sizes to content and is never constrained, so it never
-        // wraps; only `Fill`/`Fixed` feed a box width down. (`Fit` runs never
-        // reach here in practice — a Fit leaf's assigned width equals its
-        // natural — but guard explicitly so the monotonicity argument holds.)
-        if matches!(self.layout[index as usize].size().width, Length::Fit) {
-            return;
-        }
         // Quantize the assigned width to integer physical px before comparing:
         // a continuous drag-resize assigns a slightly different sub-pixel width
         // every frame, and reshaping on every one would defeat the text cache
         // (AGENTS section 20 / ADR 0025 "unchanged width must not reshape").
         let qwidth = width.round();
-        let natural_x = natural.x;
         const EPS: f32 = 0.5;
-        let changed = match shaped_at_width {
-            // Not yet wrapped: reflow only if the box is actually narrower than
-            // the unconstrained natural run (a wider box needs no wrapping).
-            None => qwidth < natural_x - EPS,
-            // Already wrapped at some width: reflow if the assigned width moved.
-            Some(w) => (w - qwidth).abs() > EPS,
+        let changed = match (shaped_at_width, width_use) {
+            (_, WidthUse::Ignored) => false,
+            // Shaped unconstrained, it lays out as it is in a box as wide as
+            // it: one that wraps or ends in an ellipsis needs a narrower box,
+            // one that aligns any other.
+            (None, WidthUse::Narrower) => qwidth < max_content - EPS,
+            (None, WidthUse::Any) => (qwidth - max_content).abs() > EPS,
+            // Shaped at some width: it reflows when the assigned width moved.
+            (Some(w), _) => (w - qwidth).abs() > EPS,
         };
         if !changed {
             return;
@@ -5487,7 +5480,8 @@ mod tests {
             },
             baseline: 8.0,
             shaped_at_width: None,
-            soft_wrap: false,
+            width_use: WidthUse::Ignored,
+            max_content: n as f32 * 5.0,
         }
     }
 
@@ -6417,7 +6411,8 @@ mod tests {
                 natural: Vec2 { x: 8.0, y: 10.0 },
                 baseline: 8.0,
                 shaped_at_width: None,
-                soft_wrap: false,
+                width_use: WidthUse::Ignored,
+                max_content: 8.0,
             },
         );
         assert!(
@@ -7780,7 +7775,7 @@ mod tests {
     // whose assigned box width disagrees with the width its run was shaped at,
     // the store queues it, and the facade (not exercised here) drains and
     // reshapes. We stand in for the facade's shaper with a hand-built
-    // `Content::Text` whose `natural`/`shaped_at_width`/`soft_wrap` we control,
+    // `Content::Text` whose `natural`/`shaped_at_width`/`width_use` we control,
     // so the recorder's eligibility and the queue's contents are observable
     // without a font stack.
 
@@ -7805,7 +7800,12 @@ mod tests {
             natural,
             baseline: 0.0,
             shaped_at_width: at,
-            soft_wrap: wrap,
+            width_use: if wrap {
+                WidthUse::Narrower
+            } else {
+                WidthUse::Ignored
+            },
+            max_content: natural.x,
         }
     }
 
@@ -7881,18 +7881,25 @@ mod tests {
     }
 
     #[test]
-    fn fit_width_soft_wrap_text_never_enqueues_a_reflow() {
-        // A Fit width sizes to content and is never box-constrained, so even a
-        // soft-wrap run is excluded from eligibility (the one width->width
-        // hazard ADR 0027 guards against).
-        let (mut store, _col, _leaf) = wrap_scene(
+    fn fit_width_soft_wrap_text_reflows_only_to_a_box_narrower_than_it() {
+        // A Fit width sizes to the run's max-content width, so its box is
+        // narrower only where something bounds it — here the stretching
+        // column — and a box as wide as the run never reflows.
+        let (mut store, _col, leaf) = wrap_scene(
             Length::Fit,
             text_run(Vec2 { x: 300.0, y: 20.0 }, None, true),
             surface(100.0, 400.0),
         );
         let mut q = Vec::new();
         store.take_text_reflows(&mut q);
-        assert!(q.is_empty(), "a Fit-width leaf never reflows");
+        assert_eq!(q, [(leaf, 100.0)], "the stretched box bounds it");
+        let (mut store, _col, _leaf) = wrap_scene(
+            Length::Fit,
+            text_run(Vec2 { x: 300.0, y: 20.0 }, None, true),
+            surface(400.0, 400.0),
+        );
+        store.take_text_reflows(&mut q);
+        assert!(q.is_empty(), "a box as wide as the run");
     }
 
     #[test]

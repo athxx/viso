@@ -71,13 +71,11 @@ fn a_padding_the_runtime_cannot_lay_out_is_reported() {
     let view = |node: &str| {
         format!("export component A {{ state wide = false; view {{ Column {{ {node} }} }} }}")
     };
-    for (node, says) in [("Text { padding: 4dp; }", "no content box")] {
-        let errors = errors(&view(node));
-        assert!(
-            matches!(errors.as_slice(), [(code, message)] if code == "E3711" && message.contains(says)),
-            "{node}: {errors:?}"
-        );
-    }
+    let unpadded = errors(&view("Text { padding: 4dp; }"));
+    assert!(
+        matches!(unpadded.as_slice(), [(code, message)] if code == "E3711" && message.contains("no content box")),
+        "{unpadded:?}"
+    );
     for node in [
         "Column { padding: 4dp + 2sp; }",
         "Column { padding: EdgeInsets::zero(); }",

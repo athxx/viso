@@ -2632,7 +2632,8 @@ mod tests {
                 natural: Vec2 { x: 20.0, y: height },
                 baseline,
                 shaped_at_width: None,
-                soft_wrap: false,
+                width_use: crate::WidthUse::Ignored,
+                max_content: 20.0,
             },
         );
         id

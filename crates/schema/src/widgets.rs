@@ -359,7 +359,7 @@ pub const STANDARD: &[NativeWidget] = &[
     layout(
         "Button",
         WidgetNode::Leaf,
-        &[TEXT, LAYOUT, TRANSFORM, FOCUS],
+        &[TEXT, TEXT_STYLE, LAYOUT, TRANSFORM, FOCUS],
     )
     .interactive(),
     layout(

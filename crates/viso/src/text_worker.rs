@@ -31,7 +31,7 @@ use viso_text::rasterize_coverage;
 use viso_text::text_work::{JobKind, Priority, TextJob, TextWork};
 use viso_text::{
     BakedFace, BaseDirection, Coverage, CoverageBitmap, Direction, FontFaceId, GlyphImageKind,
-    GlyphKey, LineBreakTailoring, Segmenter, ShapedGlyph, ShapedRun, Shaper, TextOffset,
+    GlyphKey, LineBreakTailoring, LineLimit, Segmenter, ShapedGlyph, ShapedRun, Shaper, TextOffset,
 };
 
 /// Longest source substring the cross-paragraph span cache keeps. Labels,
@@ -48,6 +48,8 @@ pub(crate) type FaceData = (Arc<[u8]>, u32);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ClusterKey {
     pub(crate) base: FontFaceId,
+    /// The style a fallback face is chosen to match.
+    pub(crate) style: FallbackStyle,
     pub(crate) locale: String,
     pub(crate) cluster: String,
 }
@@ -65,7 +67,11 @@ pub(crate) struct LayoutJob {
     pub(crate) width_em: f32,
     pub(crate) tailoring: LineBreakTailoring,
     pub(crate) base: FontFaceId,
+    /// The weight, width and slant a fallback face is chosen to match.
+    pub(crate) style: FallbackStyle,
     pub(crate) locale: String,
+    /// How many lines the paragraph shows and how text it cuts off ends.
+    pub(crate) limit: LineLimit,
     /// Lay out from the top, reshaping every run: a cluster the last layout
     /// could not cover has a face now.
     pub(crate) full: bool,
@@ -128,8 +134,10 @@ pub(crate) type Rastered = (GlyphKey, Option<CoverageBitmap>);
 pub(crate) struct LayoutDone {
     pub(crate) slot: u64,
     pub(crate) seq: u64,
-    /// The paragraph's complete lines, top to bottom.
+    /// The paragraph's lines as its limit shows them, top to bottom.
     pub(crate) lines: Vec<LineLayout>,
+    /// The width the paragraph takes on one line per hard break, in em.
+    pub(crate) max_content_em: f32,
     /// Whether a layout ran; `false` when the retained lines already matched.
     pub(crate) relaid: bool,
     /// Graphemes that drew with the base face for want of a face covering
@@ -167,6 +175,8 @@ pub(crate) enum FromWorker {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SpanKey {
     face: FontFaceId,
+    /// Fallback faces are chosen to match it.
+    style: FallbackStyle,
     direction: Direction,
     /// Fallback faces are chosen per locale, so the same text can shape
     /// differently under two locales.
@@ -436,6 +446,8 @@ pub(crate) struct WorkerState {
     rasters: HashMap<u64, Vec<GlyphKey>>,
     /// Graphemes the current layout could not cover, deduplicated.
     needs: Vec<Need>,
+    /// The style the current layout's fallback faces are chosen to match.
+    style: FallbackStyle,
     /// Spans the current layout handed to the shaper.
     shaped: u64,
     #[cfg(test)]
@@ -462,6 +474,7 @@ impl WorkerState {
             layouts: HashMap::new(),
             rasters: HashMap::new(),
             needs: Vec::new(),
+            style: FallbackStyle::default(),
             shaped: 0,
             #[cfg(test)]
             flushes: 0,
@@ -570,11 +583,15 @@ impl WorkerState {
         paragraph.set_tailoring(job.tailoring);
         self.needs.clear();
         self.shaped = 0;
+        self.style = job.style;
         let (base, locale) = (job.base, job.locale.as_str());
-        let relaid = paragraph.layout(job.width_em, &mut |text: &str, direction: Direction| {
-            self.shape_span(base, locale, text, direction)
-        });
-        let lines = paragraph.lines().to_vec();
+        let mut shape =
+            |text: &str, direction: Direction| self.shape_span(base, locale, text, direction);
+        let relaid = paragraph.layout(job.width_em, &mut shape);
+        let lines = paragraph
+            .limited(job.limit, &mut shape)
+            .unwrap_or_else(|| paragraph.lines().to_vec());
+        let max_content_em = paragraph.max_content_width();
         let mut glyphs = Vec::new();
         // A layout that still needs a face is laid out again once it has one;
         // its placeholder glyphs never draw.
@@ -585,9 +602,10 @@ impl WorkerState {
         };
         for run in runs.iter().flat_map(|line| &line.runs) {
             for glyph in &run.glyphs {
-                // Color glyphs rasterize on the main thread as they draw.
+                // Color glyphs rasterize on the main thread as they draw; an
+                // ellipsis, a run of no text of its own, never is one.
                 let cluster = run.logical_range.0.0 + glyph.cluster as usize;
-                if starts_emoji(&job.text, cluster) {
+                if run.logical_range.0 < run.logical_range.1 && starts_emoji(&job.text, cluster) {
                     continue;
                 }
                 let key = GlyphKey {
@@ -605,6 +623,7 @@ impl WorkerState {
             slot: job.slot,
             seq: job.seq,
             lines,
+            max_content_em,
             relaid,
             needs: std::mem::take(&mut self.needs),
             shaped_runs: self.shaped,
@@ -693,6 +712,7 @@ impl WorkerState {
     ) -> ShapedSpan {
         let key = (text.len() <= SPAN_CACHE_TEXT).then(|| SpanKey {
             face: base,
+            style: self.style,
             direction,
             locale: locale.to_owned(),
             text: text.to_owned(),
@@ -770,6 +790,7 @@ impl WorkerState {
         }
         let assigned = ClusterKey {
             base,
+            style: self.style,
             locale: locale.to_owned(),
             cluster: cluster.to_owned(),
         };
@@ -780,7 +801,7 @@ impl WorkerState {
             base,
             script: FontFallback::run_script(cluster),
             locale: assigned.locale,
-            style: FallbackStyle::default(),
+            style: self.style,
             source_revision: 0,
         };
         let routed = self.routes.get(&key).cloned().unwrap_or_default();

@@ -117,6 +117,18 @@ impl ControlKind {
             (_, "focusable") => ControlInput::Focusable,
             (ControlKind::Label | ControlKind::TextInput, "color") => ControlInput::TextColor,
             (ControlKind::Label | ControlKind::TextInput, "soft_wrap") => ControlInput::SoftWrap,
+            (ControlKind::Label | ControlKind::TextInput, "font_weight") => {
+                ControlInput::FontWeight
+            }
+            (ControlKind::Label | ControlKind::TextInput, "font_family") => {
+                ControlInput::FontFamily
+            }
+            (ControlKind::Label | ControlKind::TextInput, "line_height") => {
+                ControlInput::LineHeight
+            }
+            (ControlKind::Label | ControlKind::TextInput, "align") => ControlInput::TextAlign,
+            (ControlKind::Label, "max_lines") => ControlInput::MaxLines,
+            (ControlKind::Label, "overflow") => ControlInput::Overflow,
             (ControlKind::Toggle, "checked")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
@@ -478,6 +490,18 @@ pub enum ControlInput {
     TextColor,
     /// A text's `soft_wrap`.
     SoftWrap,
+    /// A text's `font_weight`.
+    FontWeight,
+    /// A text's `font_family`.
+    FontFamily,
+    /// A text's `line_height`.
+    LineHeight,
+    /// A text's `max_lines`.
+    MaxLines,
+    /// A text's `overflow`.
+    Overflow,
+    /// A text's `align`.
+    TextAlign,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -530,13 +554,45 @@ pub struct NodeEntries {
 }
 
 /// The handler-table entries of the style of a text a node shows: an absent
-/// entry reads the default (the view's text color, no wrapping).
+/// entry reads the default (the view's text color, no wrapping, the regular
+/// interface face at its own line spacing, every line, clipped, at the
+/// start).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TextEntries {
     /// The entry of its `color`.
     pub color: Option<u32>,
     /// The entry of its `soft_wrap`.
     pub soft_wrap: Option<u32>,
+    /// The entry of its `font_weight`.
+    pub font_weight: Option<u32>,
+    /// The entry of its `font_family`.
+    pub font_family: Option<u32>,
+    /// The entry of its `line_height`.
+    pub line_height: Option<u32>,
+    /// The entry of its `max_lines`.
+    pub max_lines: Option<u32>,
+    /// The entry of its `overflow`.
+    pub overflow: Option<u32>,
+    /// The entry of its `align`.
+    pub align: Option<u32>,
+}
+
+impl TextEntries {
+    /// The entries in their encoded order: `color`, `soft_wrap`,
+    /// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow`
+    /// and `align`.
+    pub fn all(&self) -> [Option<u32>; 8] {
+        [
+            self.color,
+            self.soft_wrap,
+            self.font_weight,
+            self.font_family,
+            self.line_height,
+            self.max_lines,
+            self.overflow,
+            self.align,
+        ]
+    }
 }
 
 /// What a control tells assistive technology beside the state its kind
@@ -677,6 +733,12 @@ impl Control {
             ControlInput::Focusable => self.node.focusable,
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
+            ControlInput::FontWeight => self.text.font_weight,
+            ControlInput::FontFamily => self.text.font_family,
+            ControlInput::LineHeight => self.text.line_height,
+            ControlInput::MaxLines => self.text.max_lines,
+            ControlInput::Overflow => self.text.overflow,
+            ControlInput::TextAlign => self.text.align,
         }
     }
 
@@ -712,6 +774,12 @@ impl Control {
             ControlInput::Focusable => &mut self.node.focusable,
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
+            ControlInput::FontWeight => &mut self.text.font_weight,
+            ControlInput::FontFamily => &mut self.text.font_family,
+            ControlInput::LineHeight => &mut self.text.line_height,
+            ControlInput::MaxLines => &mut self.text.max_lines,
+            ControlInput::Overflow => &mut self.text.overflow,
+            ControlInput::TextAlign => &mut self.text.align,
         };
         *slot = Some(entry);
     }
@@ -743,9 +811,10 @@ impl Encode for Control {
             semantics.heading_level,
             self.node.visible,
             self.node.focusable,
-            self.text.color,
-            self.text.soft_wrap,
-        ] {
+        ]
+        .into_iter()
+        .chain(self.text.all())
+        {
             enc.write_varint(entry.map_or(0, |e| u64::from(e) + 1));
         }
         enc.write_varint(self.arms.len() as u64);
@@ -836,6 +905,12 @@ impl Decode for Control {
         control.text = TextEntries {
             color: entry()?,
             soft_wrap: entry()?,
+            font_weight: entry()?,
+            font_family: entry()?,
+            line_height: entry()?,
+            max_lines: entry()?,
+            overflow: entry()?,
+            align: entry()?,
         };
         let index = |dec: &mut Decoder<'_>| -> Result<u32, DecodeError> {
             let offset = dec.position();
@@ -1045,6 +1120,10 @@ mod tests {
             text: TextEntries {
                 color: None,
                 soft_wrap: Some(13),
+                font_weight: Some(16),
+                max_lines: Some(17),
+                align: Some(18),
+                ..TextEntries::default()
             },
             layout: Box::new([(LayoutSlot::Width, 14), (LayoutSlot::AbsoluteStart, 15)]),
         };
