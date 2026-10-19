@@ -386,7 +386,8 @@ impl Basis {
                 let cross = match size.cross(axis) {
                     Length::Fixed(_) => true,
                     Length::Relative { fixed, .. } => cross || fixed != 0.0,
-                    Length::Fill { .. } | Length::Fit => cross && align == Align::Stretch,
+                    Length::Fill { .. } => cross,
+                    Length::Fit => cross && align == Align::Stretch,
                 };
                 Self::pack(axis, main, cross)
             }
@@ -755,7 +756,9 @@ pub fn layout_on(
 
 /// The cross extent of flex child `child` of a container laying out along
 /// `axis` with `align`, over a content box `extent` across, and its offset
-/// into that box.
+/// into that box. A `fill` takes the whole extent under any `align`; a `fit`
+/// takes its content, or the whole extent under `stretch`; a fixed or relative
+/// request takes its own. `align` then places what does not fill.
 fn flex_cross(
     tree: &mut impl LayoutTree,
     child: u32,
@@ -764,24 +767,23 @@ fn flex_cross(
     extent: f32,
     definite: bool,
 ) -> (f32, f32) {
-    let natural = tree.measured(child).on(cross_of(axis));
-    let (size, off) = match align {
-        Align::Stretch => (extent, 0.0),
-        Align::Start => (natural, 0.0),
-        Align::Center => (natural, (extent - natural) * 0.5),
-        Align::End => (natural, extent - natural),
-    };
-    // A cross-axis Fixed or Relative request overrides alignment-derived
-    // sizing; a relative one resolves against the content box's cross extent.
     let size = match tree.input(child).size().cross(axis) {
+        Length::Fill { .. } => extent,
+        Length::Fit if align == Align::Stretch => extent,
+        Length::Fit => tree.measured(child).on(cross_of(axis)),
         Length::Fixed(v) => v,
         Length::Relative { fixed, pct } => {
             if !definite {
                 tree.report_length(child, LengthIssue::IndefiniteBasis);
             }
-            relative_extent(fixed, pct, extent, definite, size)
+            let natural = tree.measured(child).on(cross_of(axis));
+            relative_extent(fixed, pct, extent, definite, natural)
         }
-        Length::Fill { .. } | Length::Fit => size,
+    };
+    let off = match align {
+        Align::Start | Align::Stretch => 0.0,
+        Align::Center => (extent - size) * 0.5,
+        Align::End => extent - size,
     };
     (size, off)
 }
@@ -2649,6 +2651,70 @@ mod tests {
             "an oversized child remains centered on the main axis"
         );
         assert_eq!(overflow.y, 180.0);
+    }
+
+    #[test]
+    fn a_cross_axis_fill_fills_under_any_align_and_stretch_grows_only_a_fit() {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::style::BoxStyle;
+
+        // A 200-wide column, its children 40 tall: what each takes across.
+        fn across(align: Align, width: Length) -> (f32, f32) {
+            let mut store = NodeStore::new();
+            let mut leaf = None;
+            let root = {
+                let mut cx = BuildCx::new(&mut store);
+                cx.flex(
+                    FlexStyle {
+                        axis: Axis::Column,
+                        align,
+                        size: Size::fixed(200.0, 100.0),
+                        ..Default::default()
+                    },
+                    |cx| {
+                        leaf = Some(
+                            cx.leaf(LeafStyle {
+                                size: Size {
+                                    width,
+                                    height: Length::Fixed(40.0),
+                                },
+                                style: BoxStyle::NONE,
+                            })
+                            .id(),
+                        );
+                    },
+                );
+                cx.root().unwrap()
+            };
+            let mut scratch = Vec::new();
+            measure(&mut store, root.index(), &mut scratch);
+            layout(
+                &mut store,
+                root.index(),
+                surface_local(200.0, 100.0),
+                &mut scratch,
+            );
+            let b = store.bounds(leaf.unwrap());
+            (b.x, b.w)
+        }
+
+        let fill = Length::Fill { weight: 1.0 };
+        for align in [Align::Start, Align::Center, Align::End, Align::Stretch] {
+            assert_eq!(across(align, fill), (0.0, 200.0), "{align:?}");
+        }
+        // A bare fit leaf has no content: zero wide, placed by `align`.
+        assert_eq!(across(Align::Center, Length::Fit), (100.0, 0.0));
+        assert_eq!(across(Align::Stretch, Length::Fit), (0.0, 200.0));
+        // A fixed request keeps its own extent and centers by it.
+        assert_eq!(across(Align::Center, Length::Fixed(50.0)), (75.0, 50.0));
+        assert_eq!(across(Align::End, Length::Fixed(50.0)), (150.0, 50.0));
+        assert_eq!(across(Align::Stretch, Length::Fixed(50.0)), (0.0, 50.0));
+        // So does a relative one, by what it resolves to.
+        let half = Length::Relative {
+            fixed: 0.0,
+            pct: 0.5,
+        };
+        assert_eq!(across(Align::Center, half), (50.0, 100.0));
     }
 
     #[test]

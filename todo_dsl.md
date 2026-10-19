@@ -356,7 +356,7 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 - [ ] `min_width`/`max_width`/`min_height`/`max_height`, `Sizing::min_content`/
       `max_content`, `corner_radius`, `border`, `clip`, `autofocus`, and `enabled`
       disabling a node beyond its styles' selectors (`E3711` today).
-- [ ] `fill` on the cross axis fills the available extent under any `align` (U3.2);
+- [x] `fill` on the cross axis fills the available extent under any `align` (U3.2);
       the runtime fills it only under `Align::Stretch`, and stretches a `fit` child
       too.
 - [ ] A text's font size follows the environment (text scale, an ancestor's
