@@ -162,8 +162,27 @@ pub struct NodeArena {
     /// The parents whose children changed since the log was last cleared,
     /// each once, and by slot whether it is logged.
     relinked: Vec<u32>,
-    logged: Vec<bool>,
+    logged: Vec<Logged>,
+    /// The children each change was to, with their parent's slot, while
+    /// fewer than [`TOUCHES`].
+    touched: Vec<(u32, NodeId)>,
+    overflowed: bool,
 }
+
+/// How much of a parent's children change the log knows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Logged {
+    #[default]
+    No,
+    /// Every child it changed is in the touched log.
+    Children,
+    /// Not which children.
+    Whole,
+}
+
+/// The most children the touched log holds before it gives up; a fixed
+/// arena's holds at most as many as it has slots.
+const TOUCHES: usize = 1024;
 
 impl NodeArena {
     pub fn new() -> Self {
@@ -183,6 +202,8 @@ impl NodeArena {
             fixed: Some(capacity),
             relinked: Vec::with_capacity(capacity as usize),
             logged: Vec::with_capacity(capacity as usize),
+            touched: Vec::with_capacity(TOUCHES.min(capacity as usize)),
+            overflowed: false,
         }
     }
 
@@ -195,24 +216,63 @@ impl NodeArena {
         self.live = 0;
         self.relinked.clear();
         self.logged.clear();
+        self.touched.clear();
+        self.overflowed = false;
     }
 
-    /// Log that `parent`'s children changed.
-    pub(crate) fn note_relinked(&mut self, parent: NodeIndex) {
+    /// Log that `parent`'s children changed: `child` entered, left or
+    /// started or stopped painting, or `None` when which is not known.
+    pub(crate) fn note_relinked(&mut self, parent: NodeIndex, child: Option<NodeId>) {
         let i = parent.slot();
         if i >= self.logged.len() {
-            self.logged.resize(i + 1, false);
+            self.logged.resize(i + 1, Logged::No);
         }
-        if !self.logged[i] {
-            self.logged[i] = true;
+        let touches = self.fixed.map_or(TOUCHES, |n| TOUCHES.min(n as usize));
+        let logged = &mut self.logged[i];
+        if *logged == Logged::No {
+            *logged = Logged::Children;
             self.relinked.push(i as u32);
+        }
+        match child {
+            Some(child) if *logged == Logged::Children && self.touched.len() < touches => {
+                // Once, whole: the log never grows on a later frame.
+                if self.touched.capacity() == 0 {
+                    self.touched.reserve_exact(touches);
+                }
+                self.touched.push((i as u32, child));
+            }
+            Some(_) if *logged == Logged::Children => self.overflowed = true,
+            _ => *logged = Logged::Whole,
         }
     }
 
     /// Whether `parent`'s children changed since the log was last cleared.
     #[inline]
     pub(crate) fn is_relinked(&self, parent: NodeIndex) -> bool {
-        self.logged.get(parent.slot()).copied().unwrap_or(false)
+        self.logged
+            .get(parent.slot())
+            .is_some_and(|&l| l != Logged::No)
+    }
+
+    /// How much of `parent`'s children change the log knows.
+    #[inline]
+    pub(crate) fn logged(&self, parent: u32) -> Logged {
+        let logged = self
+            .logged
+            .get(parent as usize)
+            .copied()
+            .unwrap_or_default();
+        match logged {
+            Logged::Children if self.overflowed => Logged::Whole,
+            logged => logged,
+        }
+    }
+
+    /// The children the relinks were to, by their parent's slot, in the
+    /// order they changed; a child may be named more than once.
+    #[inline]
+    pub(crate) fn touched(&self) -> &[(u32, NodeId)] {
+        &self.touched
     }
 
     /// The slots of the parents whose children changed since the log was
@@ -224,9 +284,11 @@ impl NodeArena {
     /// Empty the relink log.
     pub(crate) fn clear_relinks(&mut self) {
         for &i in &self.relinked {
-            self.logged[i as usize] = false;
+            self.logged[i as usize] = Logged::No;
         }
         self.relinked.clear();
+        self.touched.clear();
+        self.overflowed = false;
     }
 
     /// Reserve room for `additional` more slots. A no-op for a fixed-capacity
@@ -523,7 +585,7 @@ impl NodeArena {
         let raw = &mut self.links[id.index as usize];
         raw.first_child = NodeIndex::NONE;
         raw.last_child = NodeIndex::NONE;
-        self.note_relinked(id.node_index());
+        self.note_relinked(id.node_index(), None);
         true
     }
 
@@ -547,7 +609,7 @@ impl NodeArena {
             parent_links.first_child = c;
         }
         parent_links.last_child = c;
-        self.note_relinked(p);
+        self.note_relinked(p, Some(child));
         true
     }
 
@@ -580,7 +642,7 @@ impl NodeArena {
         child_links.parent = p;
         child_links.prev_sibling = prev;
         child_links.next_sibling = b;
-        self.note_relinked(p);
+        self.note_relinked(p, Some(child));
         true
     }
 
@@ -620,7 +682,7 @@ impl NodeArena {
         child_links.parent = NodeIndex::NONE;
         child_links.prev_sibling = NodeIndex::NONE;
         child_links.next_sibling = NodeIndex::NONE;
-        self.note_relinked(parent);
+        self.note_relinked(parent, Some(child));
         true
     }
 }

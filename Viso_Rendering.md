@@ -784,7 +784,7 @@ opacity 跨过 0 或 1（layer 出现、消失，或被跳过）仍然是形状�
 
 **Splice（已实现）**。形状改变的局部变动——虚拟列表挂载一行、卸载一行，文本编辑改变 glyph 个数，节点出现、消失、移动、改变大小——改写 stream 的若干段，其余部分只是整体平移。
 
-- UI 侧：每次 paint 给每个节点记下它的 subtree 区间（`Record`：自身 drawable 区间、整段结束位置、所在 transform root、父节点、深度、有无 fade / scroll layer），按 epoch 失效。一帧开始时，从 PAINT worklist、移动过 bounds 的节点、重新挂接过子节点的父节点出发向根收集要访问的节点，按旧区间排序后单遍走：保留下来的子节点区间原样留在 stream 中，只是平移；自身 drawable 改变的节点重新生成并与旧值比较；子节点列表改变的父节点按旧记录 diff 子节点，新子节点在游标处重新 paint，消失的子节点连同区间一起删去。连续的改写合并成 `Edit`，自右向左 `Vec::splice` 进 stream，并给出新 stream 下标的 `Splice { at, removed, inserted }` 列表；没有改变形状时退化为原位改写（`Painted::Patched`）。overlay 移动、出现或消失，跨过 `Transform` 的删除，fade / scroll layer 开始或结束，transform root 首次出现，都退回整树 paint。
+- UI 侧：每次 paint 给每个节点记下它的 subtree 区间（`Record`：自身 drawable 区间、整段结束位置、所在 transform root、父节点、深度、有无 fade / scroll layer），按 epoch 失效。一帧开始时，从 PAINT worklist、移动过 bounds 的节点、重新挂接过子节点的父节点出发向根收集要访问的节点，按旧区间排序后单遍走：保留下来的子节点区间原样留在 stream 中，只是平移；自身 drawable 改变的节点重新生成并与旧值比较；子节点列表改变的父节点按旧记录 diff 子节点，新子节点在游标处重新 paint，消失的子节点连同区间一起删去。Arena 的 relink 日志同时记下每次改变涉及的子节点（挂上、摘下、开始或停止绘制），diff 因此只访问这些子节点：各自旧区间删去，仍在这个父节点下且绘制的，在它前面最近一个保留区间的兄弟之后重新 paint；起点没变的原样保留。日志不知道是哪些子节点（`forget_children`，或一帧超过 1024 条）时，才逐个走子节点。连续的改写合并成 `Edit`，自右向左 `Vec::splice` 进 stream，并给出新 stream 下标的 `Splice { at, removed, inserted }` 列表；没有改变形状时退化为原位改写（`Painted::Patched`）。overlay 移动、出现或消失，跨过 `Transform` 的删除，fade / scroll layer 开始或结束，transform root 首次出现，都退回整树 paint。
 - Renderer 侧：`Renderer::splice(backend, primitives, splices)` 只接受只跨 leaf（Quad、analytic、shadow、Image、GlyphRun）、处在 surface pass 中且不在 folded group 内的段；每段把 paint order 与每个 leaf store 中对应的 slot 换成新 primitive，其后的 entry 按差值移动 stream 下标与 slot，只 ingest 插入的 primitive。`patch` 遇到不再适合原 slot 的 leaf（种类、glyph 个数、bounds、纹理改变）时，把这些位置按一换一的段交给 `splice`。
 - Lowering 也 splice：draw 从 segment 指向的位置读 instance，所以插入的 leaf lower 到各 family scratch 的末尾，只上传这段尾巴（`InstancePool::append`）；其余 instance 原地不动，被替换的 leaf 留下的 slot 成为空洞，等下一次整帧 lowering 回收。每个 segment 记着它从哪个 paint-order entry 开始（`segment_entries`），据此找到段两侧的 segment：不超过 256 个 instance、只画 surface leaf 的邻居跟段一起重新 lower，结果与整帧 lowering 的 segment 一致；更长的邻居在段的边界处切开，少一次合并（fragment）。fragment 超过 64 个，或空洞超过活 instance 的一半时，下一次 splice 整帧 lower，压实 scratch。Surface draw 与它们的 key 同样 splice：只给插入的 entry 算 key 和 surface draw，其余 draw 保留原 key，之后的 entry 下标整体平移；offscreen pass 的内容和按 entry 在 pass 内的位置（相对 pass 的第一个 entry）混合，pass 整体平移时不变。Damage 也 splice：被删去的 draw 上次显示的 rect 与插入的 draw 的 rect 记入 staged damage，已显示的 rect 表按同一段 splice，下一次 present 仍是局部重绘；staged rect 超过 256 个时退为整帧。差分测试逐帧比较 splice 后实际画出的内容（把可以合并的相邻 segment 合并后的 instance 字节、每个 entry 的 instance、每个 pool 与其 scratch）、每个 entry 的 key 与 surface draw、每个 pass 的内容与整 stream 上传相同，其间穿插 offscreen pass 内的 patch。
 
@@ -792,12 +792,12 @@ opacity 跨过 0 或 1（layer 出现、消失，或被跳过）仍然是形状�
 
 | case | 整树 paint + 整 stream 上传 | splice |
 |---|---|---|
-| `mount/rows_30` | 8.3 µs | 4.6 µs |
-| `mount/rows_160` | 45.0 µs | 6.8 µs |
+| `mount/rows_30` | 8.3 µs | 4.4 µs |
+| `mount/rows_160` | 45.0 µs | 3.6 µs |
 | `type/notes_100`（一个 label 增减一个 glyph） | 75 µs | 3.0 µs |
 | `type/notes_2000` | 1.49 ms | 3.2 µs |
 
-虚拟列表在数据未变、新窗口与旧窗口重叠时只滑动窗口：两端离开的行回收，两端露出的行挂载，其余行的 key 与 offset 不变，不再逐行求 prefix sum、按 key 二分查找。label 的 re-measure 只重做它所在的那一行（Architecture §19.1）；glyph store 把插入的 run 的 glyph 追加在末尾，被移除的 run 的 glyph 留作空洞，其余 run 不动，空洞超过一半时整理一次。一次文本编辑的代价因此与页面大小基本无关；剩下随页面增长的只有 paint order 与 surface draw 下标的逐项平移（整数加法）。
+虚拟列表在数据未变、新窗口与旧窗口重叠时只滑动窗口：两端离开的行回收，两端露出的行挂载，其余行的 key 与 offset 不变，不再逐行求 prefix sum、按 key 二分查找。挂载一行的一帧因此与挂载的行数基本无关。label 的 re-measure 只重做它所在的那一行（Architecture §19.1）；glyph store 把插入的 run 的 glyph 追加在末尾，被移除的 run 的 glyph 留作空洞，其余 run 不动，空洞超过一半时整理一次。一次文本编辑的代价因此与页面大小基本无关；剩下随页面增长的只有 paint order 与 surface draw 下标的逐项平移（整数加法）。
 
 ## 9.8 多线程模型
 

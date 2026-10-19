@@ -2234,7 +2234,7 @@ impl NodeStore {
     /// Note that `id` enters or leaves its parent's paint.
     fn relinked(&mut self, id: NodeId) {
         match self.arena.parent(id) {
-            Some(parent) => self.arena.note_relinked(parent.node_index()),
+            Some(parent) => self.arena.note_relinked(parent.node_index(), Some(id)),
             None => self.repaint_pending = true,
         }
     }

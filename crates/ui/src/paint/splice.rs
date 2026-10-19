@@ -25,7 +25,7 @@ use viso_render::{LayerClip, Primitive, Splice, TransformSlot};
 use super::{PaintSpans, Space, Span, paint_own, paint_subtree};
 use crate::component::NodeStore;
 use crate::layout::Vec2;
-use crate::node::{NodeId, NodeIndex};
+use crate::node::{Logged, NodeId, NodeIndex};
 use crate::transform::TransformTable;
 
 /// Where one node's primitives sit in the stream.
@@ -124,6 +124,37 @@ struct Scratch {
     updates: Vec<(u32, Record)>,
     /// The overlays the last paint deferred, with their records then.
     overlays: Vec<(NodeId, Option<Record>)>,
+    /// The children the arena logs relinks to, by parent and child.
+    touched: Vec<Touched>,
+    /// The steps of the children diffs under way, innermost last.
+    steps: Vec<Step>,
+    passed: Vec<u32>,
+}
+
+/// A child its parent's children changed by, with its record in the last
+/// stream.
+#[derive(Debug, Clone, Copy)]
+struct Touched {
+    parent: u32,
+    child: NodeId,
+    old: Option<Record>,
+    /// Where among its parent's old children it paints, once found, and its
+    /// place among the touched siblings painting there.
+    anchor: Option<(u32, u32)>,
+    /// The anchor of the sibling after it.
+    after: (u32, u32),
+    /// It paints where it did: its run stays.
+    kept: bool,
+}
+
+/// A step of a children diff that knows which children changed: `child`
+/// paints fresh at `at`, or with none the old run `at..end` is gone.
+#[derive(Debug, Clone, Copy)]
+struct Step {
+    at: u32,
+    end: u32,
+    rank: u32,
+    child: Option<NodeId>,
 }
 
 /// Its own drawables changed.
@@ -177,6 +208,18 @@ struct Diff {
     end: u32,
     /// Where a fresh child paints.
     inner: Space,
+    /// The steps, when the arena knows which children changed.
+    steps: Option<Steps>,
+}
+
+/// A children diff's steps and touched children in the scratch.
+#[derive(Debug, Clone, Copy)]
+struct Steps {
+    parent: u32,
+    touched: (u32, u32),
+    base: u32,
+    next: u32,
+    end: u32,
 }
 
 /// `removed` primitives from `at` in the old stream give way to the
@@ -398,6 +441,8 @@ pub(crate) fn splice_walk(
     scratch.edits.clear();
     scratch.fresh.clear();
     scratch.updates.clear();
+    scratch.touched.clear();
+    scratch.steps.clear();
     spliced
 }
 
@@ -429,6 +474,19 @@ fn place(
             note(s, slot, RELINKED);
         }
     }
+    // Their records before a fresh paint can take a freed child's slot.
+    let touched = arena.touched().iter().map(|&(parent, child)| Touched {
+        parent,
+        child,
+        old: stream.of(child),
+        anchor: None,
+        after: (0, 0),
+        kept: false,
+    });
+    s.touched.extend(touched);
+    s.touched
+        .sort_unstable_by_key(|t| (t.parent, t.child.index(), t.child.generation()));
+    s.touched.dedup_by_key(|t| (t.parent, t.child));
     for slot in changed {
         if arena.live_id(slot).is_some() {
             note(s, slot, OWN);
@@ -719,6 +777,16 @@ impl Walk<'_> {
                 record.slot()
             };
             let snapped = self.painted(slot)?;
+            let logged = store.arena().logged(node.index());
+            #[cfg(test)]
+            let logged = match tests::BLIND.get() {
+                true => Logged::Whole,
+                false => logged,
+            };
+            let steps = match logged {
+                Logged::Children => Some(self.steps(node, (cursor, end))?),
+                _ => None,
+            };
             Some(Diff {
                 next: store.arena().first_child(node),
                 cursor,
@@ -729,6 +797,7 @@ impl Walk<'_> {
                     snapped,
                     depth: record.depth + 1,
                 },
+                steps,
             })
         } else {
             None
@@ -751,6 +820,9 @@ impl Walk<'_> {
         let mut open = self.s.stack.pop()?;
         if let Some(mut diff) = open.diff.take() {
             self.advance(&mut diff, None)?;
+            if let Some(steps) = diff.steps {
+                self.s.steps.truncate(steps.base as usize);
+            }
         }
         let record = open.record;
         let end = self.moved(record.end);
@@ -819,6 +891,9 @@ impl Walk<'_> {
     /// Advance a children diff: up to the child `target` when given —
     /// reporting whether it kept its run — else through the last child.
     fn advance(&mut self, diff: &mut Diff, target: Option<&Item>) -> Option<Fate> {
+        if diff.steps.is_some() {
+            return self.step(diff, target);
+        }
         let store = self.store;
         let arena = store.arena();
         loop {
@@ -869,6 +944,173 @@ impl Walk<'_> {
                 }
             }
         }
+    }
+
+    /// List the steps of `parent`'s children diff over its old run
+    /// `cursor..end`: each touched child that painted there leaves its run,
+    /// and each that paints there now paints fresh after the last sibling
+    /// before it that kept its run.
+    fn steps(&mut self, parent: NodeId, (cursor, end): (u32, u32)) -> Option<Steps> {
+        let (store, arena) = (self.store, self.store.arena());
+        let p = parent.index();
+        let lo = self.s.touched.partition_point(|t| t.parent < p);
+        let hi = lo + self.s.touched[lo..].partition_point(|t| t.parent == p);
+        let base = self.s.steps.len();
+        for k in lo..hi {
+            let child = self.s.touched[k].child;
+            let attached = arena.parent(child) == Some(parent) && paints(store, child);
+            // An overlay new here is not spliced.
+            if attached && store.is_overlay(child) {
+                return None;
+            }
+            let anchor = match attached {
+                true => Some(self.anchor(parent, (cursor, end), (lo, hi), k)?),
+                false => None,
+            };
+            let t = self.s.touched[k];
+            if t.kept {
+                continue;
+            }
+            if let Some(r) = t.old.filter(|r| r.parent == p) {
+                if r.start() < cursor || r.end > end {
+                    return None;
+                }
+                self.s.steps.push(Step {
+                    at: r.start(),
+                    end: r.end,
+                    rank: 0,
+                    child: None,
+                });
+            }
+            if let Some((at, rank)) = anchor {
+                self.s.steps.push(Step {
+                    at,
+                    end: at,
+                    rank,
+                    child: Some(child),
+                });
+            }
+        }
+        // A fresh child lands before a run that leaves where it paints.
+        self.s.steps[base..].sort_unstable_by_key(|s| (s.at, s.child.is_none(), s.rank));
+        Some(Steps {
+            parent: p,
+            touched: (lo as u32, hi as u32),
+            base: base as u32,
+            next: base as u32,
+            end: self.s.steps.len() as u32,
+        })
+    }
+
+    /// Where the touched child `k` of `parent` paints among the old children
+    /// run `cursor..end`: at the end of the last sibling before it that kept
+    /// its run, and how many touched siblings paint there before it. Each
+    /// touched sibling it passes is placed on the way, so a run of new
+    /// children is walked once.
+    fn anchor(
+        &mut self,
+        parent: NodeId,
+        (cursor, end): (u32, u32),
+        (lo, hi): (usize, usize),
+        k: usize,
+    ) -> Option<(u32, u32)> {
+        if let Some(anchor) = self.s.touched[k].anchor {
+            return Some(anchor);
+        }
+        let (store, arena) = (self.store, self.store.arena());
+        self.s.passed.clear();
+        let mut prev = arena.prev_sibling(self.s.touched[k].child);
+        let mut next = loop {
+            let Some(sibling) = prev else {
+                break (cursor, 0);
+            };
+            let key = (sibling.index(), sibling.generation());
+            let touched = self.s.touched[lo..hi]
+                .binary_search_by_key(&key, |t| (t.child.index(), t.child.generation()));
+            if let Ok(j) = touched {
+                if self.s.touched[lo + j].anchor.is_some() {
+                    break self.s.touched[lo + j].after;
+                }
+                self.s.passed.push((lo + j) as u32);
+            } else if paints(store, sibling) && !store.is_overlay(sibling) {
+                let r = self.stream.of(sibling).filter(|r| {
+                    r.parent == parent.index() && r.start() >= cursor && r.end <= end
+                })?;
+                break (r.end, 0);
+            }
+            prev = arena.prev_sibling(sibling);
+        };
+        for i in (0..self.s.passed.len()).rev() {
+            let j = self.s.passed[i] as usize;
+            next = self.settle(parent, end, j, next);
+        }
+        self.settle(parent, end, k, next);
+        self.s.touched[k].anchor
+    }
+
+    /// Place the touched child `j` of `parent` at `anchor`: it keeps its run
+    /// when that run starts there and no touched sibling paints there before
+    /// it. Returns the anchor of the sibling after it.
+    fn settle(&mut self, parent: NodeId, end: u32, j: usize, anchor: (u32, u32)) -> (u32, u32) {
+        let store = self.store;
+        let t = &mut self.s.touched[j];
+        t.anchor = Some(anchor);
+        let child = t.child;
+        let paints = store.arena().parent(child) == Some(parent)
+            && paints(store, child)
+            && !store.is_overlay(child);
+        let kept = t.old.filter(|r| {
+            paints && anchor == (r.start(), 0) && r.parent == parent.index() && r.end <= end
+        });
+        t.kept = kept.is_some();
+        t.after = match (kept, paints) {
+            (Some(r), _) => (r.end, 0),
+            (None, true) => (anchor.0, anchor.1 + 1),
+            (None, false) => anchor,
+        };
+        t.after
+    }
+
+    /// Advance a children diff by its steps: up to the child `target` when
+    /// given — reporting whether it kept its run — else through the last.
+    fn step(&mut self, diff: &mut Diff, target: Option<&Item>) -> Option<Fate> {
+        let mut steps = diff.steps?;
+        while steps.next < steps.end {
+            let step = self.s.steps[steps.next as usize];
+            if target.is_some_and(|t| step.at > t.start) {
+                break;
+            }
+            steps.next += 1;
+            diff.cursor = step.at;
+            match step.child {
+                Some(child) => self.fresh(child, diff)?,
+                None => {
+                    self.gap(diff, step.end)?;
+                    diff.cursor = step.end;
+                }
+            }
+        }
+        diff.steps = Some(steps);
+        let Some(target) = target else {
+            return Some(Fate::Kept);
+        };
+        let (lo, hi) = (steps.touched.0 as usize, steps.touched.1 as usize);
+        let key = (target.node.index(), target.node.generation());
+        let touched = self.s.touched[lo..hi]
+            .binary_search_by_key(&key, |t| (t.child.index(), t.child.generation()));
+        if touched.is_ok_and(|j| !self.s.touched[lo + j].kept) {
+            return Some(Fate::Gone);
+        }
+        let r = target.record;
+        if child_parent(self.store.arena(), target.node) != steps.parent
+            || r.parent != steps.parent
+            || r.start() < diff.cursor
+            || r.end > diff.end
+        {
+            return None;
+        }
+        diff.cursor = r.end;
+        Some(Fate::Kept)
     }
 
     /// The old children run from the diff's cursor to `to` is gone.
@@ -1192,6 +1434,9 @@ mod tests {
             let (s, p) = changes(seed, FRAMES);
             spliced += s;
             patched += p;
+            BLIND.set(true);
+            changes(seed, FRAMES);
+            BLIND.set(false);
         }
         // The rest start or stop a fade, or move a transform root or an
         // overlay in or out.
@@ -1200,6 +1445,12 @@ mod tests {
             spliced > 3000 && patched > 2000 && whole < 1000,
             "{spliced} spliced, {patched} patched, {whole} whole"
         );
+    }
+
+    thread_local! {
+        /// Diff every relinked parent's children whole, as if the arena did
+        /// not know which changed.
+        pub(super) static BLIND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
     /// Run `frames` frames of random changes from `seed` over a page,
