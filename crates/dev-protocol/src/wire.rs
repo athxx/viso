@@ -2248,6 +2248,7 @@ mod tests {
             style: AotStyle::default(),
             lengths: None,
             rules: None,
+            grid: None,
             child_count: 0,
         };
 
@@ -2256,6 +2257,7 @@ mod tests {
             style: AotStyle::default(),
             lengths: None,
             rules: None,
+            grid: None,
             child_count,
         };
         // The candidate the plan builds into: a root over a leaf, the leaf

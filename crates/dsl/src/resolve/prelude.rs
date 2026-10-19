@@ -51,6 +51,16 @@ pub(crate) fn edge_insets_record() -> SymbolId {
     })
 }
 
+/// The prelude enum of a grid track, which `tracks(count, track)` repeats.
+pub(crate) fn track_enum() -> SymbolId {
+    fingerprint(SymbolIdentity {
+        package: PRELUDE_MODULE,
+        module_path: PRELUDE_MODULE,
+        kind: SymbolKind::Enum,
+        decl_path: "Track",
+    })
+}
+
 /// The prelude enum of an axis's sizing, which a length stands for as
 /// `fixed` of it.
 pub(crate) fn sizing_enum() -> SymbolId {

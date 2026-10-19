@@ -1941,6 +1941,37 @@ Scroll {
         reserved: false,
     },
     CodeInfo {
+        code: "E3108",
+        severity: Severity::Error,
+        stage: Stage::View,
+        title: "Invalid Grid Area Or Cell",
+        explanation: "A grid's `areas` or a child's `grid.*` names no cells. Each string of `areas` \
+            is a row of whitespace-separated area names, `.` an empty cell: every row names the \
+            same number of cells, and each area fills a rectangle. A child's `grid.area` names \
+            an area of its grid's `areas` and places the child by itself, so it is not combined \
+            with `grid.column`, `grid.row` or a span; a `grid.column_span` or `grid.row_span` \
+            spans at least one track. The names resolve at compile time, so none reaches the \
+            runtime.",
+        example: Example::Source(
+            r#"component A {
+    view {
+        Grid {
+            areas: ["head head", "side main"];
+            Text { text: "a"; grid.area: "foot"; }
+        }
+    }
+}
+"#,
+        ),
+        fix: "Name an area of the grid's `areas`, or add the area to the template.",
+        fixed: Some(
+            r#"Text { text: "a"; grid.area: "main"; }
+"#,
+        ),
+        commands: &[],
+        reserved: false,
+    },
+    CodeInfo {
         code: "E3201",
         severity: Severity::Error,
         stage: Stage::View,

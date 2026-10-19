@@ -31,8 +31,9 @@ use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
 use viso_dsl::ir::ui_ir::Span as LayoutSpan;
 use viso_dsl::ir::ui_ir::{
-    Align, Avoid, AxisIr, BoxRules, EdgeTermsIr, Inset, InsetIr, Justify, LengthIr, LengthsIr,
-    NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
+    AdaptiveColumns, Align, AlignItems, AutoRepeat, Avoid, AxisIr, BoxRules, EdgeTermsIr,
+    GridPlacement, Inset, InsetIr, Justify, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr,
+    TrackMax, TrackSizing, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::{Control, ControlInput, ViewBehavior, When};
@@ -338,8 +339,13 @@ impl Emit<'_> {
         // A leaf's builder takes no closure, so its children (there are none for a
         // real leaf) are dropped by `emit_builder_call`. Containers thread the child
         // block through their `FnOnce`.
+        let place = node.style.place.map(|place| {
+            let place = place_tokens(place);
+            quote! { cx.place(#place); }
+        });
         quote! {
             {
+                #place
                 let #handle_ident = #build_call;
                 #rules
                 #lengths
@@ -388,9 +394,6 @@ impl Emit<'_> {
                 }
             }
             NodeKind::Grid => {
-                // The folded StyleIr carries no grid tracks yet: a default
-                // GridStyle with the node's padding and size mounts the
-                // container and its children.
                 let padding = node.style.padding.map(inset_tokens).map(|padding| {
                     quote! { padding: #padding, }
                 });
@@ -398,9 +401,39 @@ impl Emit<'_> {
                     let size = size_tokens(&node.style);
                     quote! { size: #size, }
                 });
+                let template = node.style.grid.as_deref().map(|grid| {
+                    let tracks = |tracks: &[TrackSizing]| {
+                        let tracks = tracks.iter().copied().map(track_tokens);
+                        quote! { ::std::vec![#(#tracks),*] }
+                    };
+                    let columns = (!grid.columns.is_empty()).then(|| {
+                        let columns = tracks(&grid.columns);
+                        quote! { columns: #columns, }
+                    });
+                    let rows = (!grid.rows.is_empty()).then(|| {
+                        let rows = tracks(&grid.rows);
+                        quote! { rows: #rows, }
+                    });
+                    let auto_rows = grid.auto_rows.map(|track| {
+                        let track = track_tokens(track);
+                        quote! { auto_rows: #track, }
+                    });
+                    let column_gap = grid.column_gap.map(|gap| quote! { column_gap: #gap, });
+                    let row_gap = grid.row_gap.map(|gap| quote! { row_gap: #gap, });
+                    let align_items = grid.align_items.map(|align| {
+                        let align = align_items_tokens(align);
+                        quote! { align_items: #align, }
+                    });
+                    let adaptive = grid.adaptive_columns.map(|adaptive| {
+                        let adaptive = adaptive_tokens(adaptive);
+                        quote! { adaptive_columns: ::core::option::Option::Some(#adaptive), }
+                    });
+                    quote! { #columns #rows #auto_rows #column_gap #row_gap #align_items #adaptive }
+                });
                 quote! {
                     cx.grid(
                         ::viso::__private::viso_ui::grid::GridStyle {
+                            #template
                             #padding
                             #size
                             ..::core::default::Default::default()
@@ -702,6 +735,7 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
     let min_height = terms_tokens(lengths.min_height);
     let max_height = terms_tokens(lengths.max_height);
     let margin = edges_tokens(lengths.margin);
+    let row_gap = terms_tokens(lengths.row_gap);
     quote! {
         cx.bind_lengths(#handle, ::viso::__private::viso_ui::NodeLengths {
             width: #width,
@@ -714,7 +748,67 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
             min_height: #min_height,
             max_height: #max_height,
             margin: #margin,
+            row_gap: #row_gap,
         });
+    }
+}
+
+/// `::viso::__private::viso_ui::grid::TrackSizing::…` of `track`.
+fn track_tokens(track: TrackSizing) -> TokenStream {
+    let sizing = quote! { ::viso::__private::viso_ui::grid::TrackSizing };
+    match track {
+        TrackSizing::Fixed(v) => quote! { #sizing::Fixed(#v) },
+        TrackSizing::Fr(v) => quote! { #sizing::Fr(#v) },
+        TrackSizing::Auto => quote! { #sizing::Auto },
+        TrackSizing::Percent(v) => quote! { #sizing::Percent(#v) },
+        TrackSizing::Minmax(min, max) => quote! { #sizing::Minmax(#min, #max) },
+        TrackSizing::FitContent(v) => quote! { #sizing::FitContent(#v) },
+        TrackSizing::FlexMin(min, fr) => quote! { #sizing::FlexMin(#min, #fr) },
+    }
+}
+
+/// `::viso::__private::viso_ui::AlignItems::…` of `align`.
+fn align_items_tokens(align: AlignItems) -> TokenStream {
+    let variant = match align {
+        AlignItems::Stretch => quote! { Stretch },
+        AlignItems::Start => quote! { Start },
+        AlignItems::Center => quote! { Center },
+        AlignItems::End => quote! { End },
+        AlignItems::Baseline => quote! { Baseline },
+    };
+    quote! { ::viso::__private::viso_ui::AlignItems::#variant }
+}
+
+/// `::viso::__private::viso_ui::grid::AdaptiveColumns { .. }` of `adaptive`.
+fn adaptive_tokens(adaptive: AdaptiveColumns) -> TokenStream {
+    let grid = quote! { ::viso::__private::viso_ui::grid };
+    let mode = match adaptive.mode {
+        AutoRepeat::Fill => quote! { #grid::AutoRepeat::Fill },
+        AutoRepeat::Fit => quote! { #grid::AutoRepeat::Fit },
+    };
+    let min = adaptive.min;
+    let max = match adaptive.max {
+        TrackMax::Px(px) => quote! { #grid::TrackMax::Px(#px) },
+        TrackMax::Fr(fr) => quote! { #grid::TrackMax::Fr(#fr) },
+    };
+    quote! { #grid::AdaptiveColumns { mode: #mode, min: #min, max: #max } }
+}
+
+/// `::viso::__private::viso_ui::grid::GridPlacement { .. }` of `place`.
+fn place_tokens(place: GridPlacement) -> TokenStream {
+    let index = |at: Option<u16>| match at {
+        Some(at) => quote! { ::core::option::Option::Some(#at) },
+        None => quote! { ::core::option::Option::None },
+    };
+    let (column, row) = (index(place.column), index(place.row));
+    let (column_span, row_span) = (place.column_span, place.row_span);
+    quote! {
+        ::viso::__private::viso_ui::grid::GridPlacement {
+            column: #column,
+            row: #row,
+            column_span: #column_span,
+            row_span: #row_span,
+        }
     }
 }
 

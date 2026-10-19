@@ -26,7 +26,7 @@ use crate::binding::BindingTable;
 use crate::component::{BuildCx, FlexStyle, Handle, LeafStyle, NodeStore, ScrollStyle};
 use crate::dirty::DirtyClass;
 use crate::grid::GridStyle;
-use crate::layout::{Axis, Length, Size};
+use crate::layout::{Axis, LayoutInput, Length, Size};
 use crate::layout::{BoxRules, Inset};
 use crate::node::NodeId;
 use crate::state::{StateKey, StateStore, StateValue};
@@ -163,11 +163,12 @@ pub fn build_nodes<'a>(
 }
 
 /// Re-applies packaged node `node`'s style to `live`, a node built from an
-/// earlier version of it that keeps its runtime state: the built size and
-/// gap, and the bound environment lengths. Only a request that moved is
-/// rewritten and dirtied. An axis bound to environment lengths keeps its
-/// folded value until its terms change, and the node is an adaptive scope or
-/// an avoiding region exactly when `node` is one.
+/// earlier version of it that keeps its runtime state: the built size, gap
+/// and grid template, its cell in a grid, and the bound environment lengths.
+/// Only a request that moved is rewritten and dirtied. An axis or a gap bound
+/// to environment lengths keeps its folded value until its terms change, and
+/// the node is an adaptive scope or an avoiding region exactly when `node` is
+/// one.
 pub fn restyle_aot_node(
     store: &mut NodeStore,
     states: &mut StateStore,
@@ -175,6 +176,8 @@ pub fn restyle_aot_node(
     live: NodeId,
 ) {
     let style = &node.style;
+    let lengths = node.lengths();
+    let lengths = lengths.as_ref();
     let (mut size, gap, padding) = match node.kind {
         AotNodeKind::Flex => {
             let built = flex_style(node);
@@ -182,14 +185,28 @@ pub fn restyle_aot_node(
             (built.size, Some(built.gap), Some(built.padding))
         }
         AotNodeKind::Grid => {
-            let built = grid_style(node);
-            (built.size, Some(built.column_gap), Some(built.padding))
+            let mut built = grid_style(node);
+            if let LayoutInput::Grid {
+                column_gap,
+                row_gap,
+                ..
+            } = store.layout_input(live)
+            {
+                if lengths.is_some_and(|lengths| lengths.gap.is_some()) {
+                    built.column_gap = column_gap;
+                }
+                if lengths.is_some_and(|lengths| lengths.row_gap.is_some()) {
+                    built.row_gap = row_gap;
+                }
+            }
+            let (size, padding) = (built.size, built.padding);
+            store.set_grid_template(live, built);
+            (size, None, Some(padding))
         }
         AotNodeKind::Scroll => (scroll_style(node).size, None, None),
         AotNodeKind::Leaf => (leaf_style(node).size, None, None),
     };
-    let lengths = node.lengths();
-    let lengths = lengths.as_ref();
+    store.set_grid_placement(live, style.place.unwrap_or_default());
     if let Some(current) = store.size_request(live) {
         if lengths.is_some_and(|lengths| lengths.width.is_some()) {
             size.width = current.width;
@@ -269,6 +286,9 @@ pub fn build_aot_node(
     children: impl FnOnce(&mut BuildCx<'_>),
 ) -> Handle {
     let style = &node.style;
+    if let Some(place) = style.place {
+        cx.place(place);
+    }
     let handle = match node.kind {
         AotNodeKind::Flex => match (style.scope, style.avoid) {
             (Some(scope), _) => cx.adaptive_scope(scope.basis, flex_style(node), children),
@@ -318,15 +338,24 @@ fn flex_style(node: &AotRecord) -> FlexStyle {
     out
 }
 
-/// The grid builder style for a packaged grid: its padding and, when the
-/// node authored one, its size; the rest of a grid's style is the builder
-/// default.
+/// The grid builder style for a packaged grid: its tracks, gaps, cell
+/// alignment and adaptive columns, its padding and, when the node authored
+/// one, its size; what it left out is the builder default.
 fn grid_style(node: &AotRecord) -> GridStyle {
     let style = &node.style;
     let mut out = GridStyle {
         padding: style.padding.unwrap_or_default(),
         ..GridStyle::default()
     };
+    if let Some(grid) = node.grid() {
+        out.columns = grid.columns;
+        out.rows = grid.rows;
+        out.auto_rows = grid.auto_rows;
+        out.column_gap = grid.column_gap;
+        out.row_gap = grid.row_gap;
+        out.align_items = grid.align_items;
+        out.adaptive_columns = grid.adaptive_columns;
+    }
     if has_size(node) {
         out.size = size_of(style);
     }
@@ -450,6 +479,7 @@ mod tests {
                     },
                     lengths: None,
                     rules: None,
+                    grid: None,
                     child_count: 2,
                 },
                 AotNode {
@@ -457,6 +487,7 @@ mod tests {
                     style: AotStyle::default(),
                     lengths: None,
                     rules: None,
+                    grid: None,
                     child_count: 0,
                 },
                 AotNode {
@@ -464,6 +495,7 @@ mod tests {
                     style: AotStyle::default(),
                     lengths: None,
                     rules: None,
+                    grid: None,
                     child_count: 0,
                 },
             ],

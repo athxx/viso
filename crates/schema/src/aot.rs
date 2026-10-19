@@ -62,7 +62,10 @@ use viso_ende::{
 };
 
 use crate::env::Avoid;
-use crate::layout::{Align, BoxRules, Inset, Justify, Span, SpanInset};
+use crate::layout::{
+    AdaptiveColumns, Align, AlignItems, AutoRepeat, BoxRules, GridPlacement, Inset, Justify, Span,
+    SpanInset, TrackMax, TrackSizing,
+};
 use crate::length::{EdgeTerms, LengthTerms, NodeLengths};
 use crate::state::StateKey;
 
@@ -109,6 +112,9 @@ pub struct AotNode {
     /// padding percentage, when constant properties set any; boxed, as few
     /// nodes have any.
     pub rules: Option<Box<BoxRules>>,
+    /// A grid container's tracks, gaps and cell alignment, when it authored
+    /// any; boxed, as few nodes are grids.
+    pub grid: Option<Box<AotGrid>>,
     /// The number of immediate children, whose subtrees follow this node in
     /// pre-order. A leaf has `0`. The loader reconstructs ancestry from this count
     /// in one forward pass, so no parent/sibling links are stored.
@@ -116,9 +122,9 @@ pub struct AotNode {
 }
 
 /// One node as a builder reads it: its kind, style and child count by
-/// value, its lengths and rules — which few nodes have — read on demand
-/// from where they lie, so reading a node copies little and allocates
-/// nothing.
+/// value, its lengths, rules and grid — which few nodes have — read on
+/// demand from where they lie, so reading a node copies little and
+/// allocates nothing.
 #[derive(Debug, Clone, Copy)]
 pub struct AotRecord<'a> {
     /// The builder call this node instantiates through.
@@ -130,18 +136,54 @@ pub struct AotRecord<'a> {
     extras: Extras<'a>,
 }
 
-/// Where a record's lengths and rules lie: still encoded in a validated
-/// blob, or held by an [`AotNode`].
+/// Where a record's lengths, rules and grid lie: still encoded in a
+/// validated blob, or held by an [`AotNode`].
 #[derive(Debug, Clone, Copy)]
 enum Extras<'a> {
     Encoded {
         lengths: Option<&'a [u8]>,
         rules: Option<&'a [u8]>,
+        grid: Option<&'a [u8]>,
     },
     Held {
         lengths: Option<&'a NodeLengths>,
         rules: Option<&'a BoxRules>,
+        grid: Option<&'a AotGrid>,
     },
+}
+
+/// A packaged grid container's tracks, gaps and cell alignment: what its
+/// builder style takes beyond the size and padding every container has.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AotGrid {
+    /// The explicit column template.
+    pub columns: Vec<TrackSizing>,
+    /// The explicit row template.
+    pub rows: Vec<TrackSizing>,
+    /// How a row past the explicit ones is sized.
+    pub auto_rows: TrackSizing,
+    /// The gap between adjacent columns.
+    pub column_gap: f32,
+    /// The gap between adjacent rows.
+    pub row_gap: f32,
+    /// How a cell's content sits in its cell on the block axis.
+    pub align_items: AlignItems,
+    /// A column template whose count follows the grid's width.
+    pub adaptive_columns: Option<AdaptiveColumns>,
+}
+
+impl Default for AotGrid {
+    fn default() -> Self {
+        AotGrid {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            auto_rows: TrackSizing::Auto,
+            column_gap: 0.0,
+            row_gap: 0.0,
+            align_items: AlignItems::Stretch,
+            adaptive_columns: None,
+        }
+    }
 }
 
 impl AotRecord<'_> {
@@ -175,6 +217,17 @@ impl AotRecord<'_> {
             Extras::Held { rules, .. } => rules.copied(),
         }
     }
+
+    /// The grid container's tracks, gaps and cell alignment.
+    #[inline]
+    pub fn grid(&self) -> Option<AotGrid> {
+        match self.extras {
+            Extras::Encoded { grid, .. } => grid.map(|bytes| {
+                decode_grid(&mut Decoder::new(bytes)).expect("validated with the record")
+            }),
+            Extras::Held { grid, .. } => grid.cloned(),
+        }
+    }
 }
 
 impl PartialEq for AotRecord<'_> {
@@ -184,6 +237,7 @@ impl PartialEq for AotRecord<'_> {
             && self.child_count == other.child_count
             && self.lengths() == other.lengths()
             && self.rules() == other.rules()
+            && self.grid() == other.grid()
     }
 }
 
@@ -198,6 +252,7 @@ impl AotNode {
             extras: Extras::Held {
                 lengths: self.lengths.as_deref(),
                 rules: self.rules.as_deref(),
+                grid: self.grid.as_deref(),
             },
         }
     }
@@ -210,6 +265,7 @@ impl From<AotRecord<'_>> for AotNode {
             style: record.style,
             lengths: record.lengths().map(Box::new),
             rules: record.rules().map(Box::new),
+            grid: record.grid().map(Box::new),
             child_count: record.child_count,
         }
     }
@@ -282,6 +338,8 @@ pub struct AotStyle {
     /// What the node keeps its content clear of, when it is an avoiding
     /// region.
     pub avoid: Option<Avoid>,
+    /// The cell a grid's child takes, when it placed itself.
+    pub place: Option<GridPlacement>,
 }
 
 /// An adaptive scope: the node its subtree's size class classifies.
@@ -352,7 +410,35 @@ const STYLE_HAS_PADDING: u16 = 1 << 8;
 const STYLE_HAS_JUSTIFY: u16 = 1 << 9;
 const STYLE_HAS_ALIGN: u16 = 1 << 10;
 const STYLE_HAS_RULES: u16 = 1 << 11;
-const STYLE_BITS: u16 = (1 << 12) - 1;
+const STYLE_HAS_PLACE: u16 = 1 << 12;
+const STYLE_HAS_GRID: u16 = 1 << 13;
+const STYLE_BITS: u16 = (1 << 14) - 1;
+
+// A grid is a byte naming the parts it sets, then each: a template is a
+// varint count of tracks; a track is a byte naming its sizing, then its
+// values; an adaptive template is its mode byte, its floor and its ceiling
+// as a track maximum.
+const GRID_COLUMNS: u8 = 1 << 0;
+const GRID_ROWS: u8 = 1 << 1;
+const GRID_AUTO_ROWS: u8 = 1 << 2;
+const GRID_COLUMN_GAP: u8 = 1 << 3;
+const GRID_ROW_GAP: u8 = 1 << 4;
+const GRID_ALIGN: u8 = 1 << 5;
+const GRID_ADAPTIVE: u8 = 1 << 6;
+const TRACK_FIXED: u8 = 0;
+const TRACK_FR: u8 = 1;
+const TRACK_AUTO: u8 = 2;
+const TRACK_PERCENT: u8 = 3;
+const TRACK_MINMAX: u8 = 4;
+const TRACK_FIT_CONTENT: u8 = 5;
+const TRACK_FLEX_MIN: u8 = 6;
+
+// A placement is a byte naming its set parts, then each as a varint; a span
+// left out is `1`.
+const PLACE_COLUMN: u8 = 1 << 0;
+const PLACE_ROW: u8 = 1 << 1;
+const PLACE_COLUMN_SPAN: u8 = 1 << 2;
+const PLACE_ROW_SPAN: u8 = 1 << 3;
 
 // Box rules are a byte naming the rules present, then each: a span is a byte
 // naming its non-zero parts, then them; a margin is four spans; a padding
@@ -377,7 +463,8 @@ const EDGE_BOTTOM: u8 = 1 << 3;
 // edge set is four of them, top, end, bottom, start.
 const LENGTHS_PADDING: u16 = 1 << 8;
 const LENGTHS_MARGIN: u16 = 1 << 9;
-const LENGTHS_BITS: u16 = (1 << 10) - 1;
+const LENGTHS_ROW_GAP: u16 = 1 << 10;
+const LENGTHS_BITS: u16 = (1 << 11) - 1;
 const TERMS_DP: u8 = 1 << 0;
 const TERMS_PX: u8 = 1 << 1;
 const TERMS_SP: u8 = 1 << 2;
@@ -554,6 +641,9 @@ impl Encode for NodeLengths {
         if self.margin.is_some() {
             mask |= LENGTHS_MARGIN;
         }
+        if self.row_gap.is_some() {
+            mask |= LENGTHS_ROW_GAP;
+        }
         enc.write_varint(u64::from(mask));
         for terms in present.iter().flatten() {
             encode_terms(terms, enc);
@@ -563,6 +653,9 @@ impl Encode for NodeLengths {
         }
         if let Some(edges) = &self.margin {
             encode_edges(edges, enc);
+        }
+        if let Some(terms) = &self.row_gap {
+            encode_terms(terms, enc);
         }
     }
 }
@@ -600,6 +693,11 @@ impl Decode for NodeLengths {
         } else {
             None
         };
+        let row_gap = if mask & LENGTHS_ROW_GAP != 0 {
+            Some(decode_terms(dec)?)
+        } else {
+            None
+        };
         Ok(NodeLengths {
             width,
             height,
@@ -611,6 +709,7 @@ impl Decode for NodeLengths {
             min_height,
             max_height,
             margin,
+            row_gap,
         })
     }
 }
@@ -725,9 +824,246 @@ fn decode_rules(dec: &mut Decoder) -> Result<BoxRules, DecodeError> {
     Ok(rules)
 }
 
+fn encode_track(track: TrackSizing, enc: &mut Encoder) {
+    let (tag, values): (u8, &[f32]) = match &track {
+        TrackSizing::Fixed(v) => (TRACK_FIXED, core::slice::from_ref(v)),
+        TrackSizing::Fr(v) => (TRACK_FR, core::slice::from_ref(v)),
+        TrackSizing::Auto => (TRACK_AUTO, &[]),
+        TrackSizing::Percent(v) => (TRACK_PERCENT, core::slice::from_ref(v)),
+        TrackSizing::Minmax(min, max) => return encode_pair(TRACK_MINMAX, *min, *max, enc),
+        TrackSizing::FitContent(v) => (TRACK_FIT_CONTENT, core::slice::from_ref(v)),
+        TrackSizing::FlexMin(min, fr) => return encode_pair(TRACK_FLEX_MIN, *min, *fr, enc),
+    };
+    enc.write_u8(tag);
+    for value in values {
+        enc.write_f32(*value);
+    }
+}
+
+fn encode_pair(tag: u8, a: f32, b: f32, enc: &mut Encoder) {
+    enc.write_u8(tag);
+    enc.write_f32(a);
+    enc.write_f32(b);
+}
+
+fn decode_track(dec: &mut Decoder) -> Result<TrackSizing, DecodeError> {
+    let offset = dec.position();
+    Ok(match dec.read_u8()? {
+        TRACK_FIXED => TrackSizing::Fixed(dec.read_f32()?),
+        TRACK_FR => TrackSizing::Fr(dec.read_f32()?),
+        TRACK_AUTO => TrackSizing::Auto,
+        TRACK_PERCENT => TrackSizing::Percent(dec.read_f32()?),
+        TRACK_MINMAX => TrackSizing::Minmax(dec.read_f32()?, dec.read_f32()?),
+        TRACK_FIT_CONTENT => TrackSizing::FitContent(dec.read_f32()?),
+        TRACK_FLEX_MIN => TrackSizing::FlexMin(dec.read_f32()?, dec.read_f32()?),
+        _ => return Err(DecodeError::Malformed { offset }),
+    })
+}
+
+fn encode_tracks(tracks: &[TrackSizing], enc: &mut Encoder) {
+    enc.write_varint(tracks.len() as u64);
+    for track in tracks {
+        encode_track(*track, enc);
+    }
+}
+
+/// Reads a template, handing each track to `push`. A count is at most a
+/// `u16` and never more than the bytes left, each track taking one.
+fn decode_tracks(dec: &mut Decoder, mut push: impl FnMut(TrackSizing)) -> Result<(), DecodeError> {
+    let offset = dec.position();
+    let count = dec.read_varint()?;
+    if count > u64::from(u16::MAX) || count > dec.remaining() as u64 {
+        return Err(DecodeError::Malformed { offset });
+    }
+    for _ in 0..count {
+        push(decode_track(dec)?);
+    }
+    Ok(())
+}
+
+const ALIGN_ITEMS: [AlignItems; 5] = [
+    AlignItems::Stretch,
+    AlignItems::Start,
+    AlignItems::Center,
+    AlignItems::End,
+    AlignItems::Baseline,
+];
+
+fn encode_grid(grid: &AotGrid, enc: &mut Encoder) {
+    let defaults = AotGrid::default();
+    let mut mask = 0u8;
+    if !grid.columns.is_empty() {
+        mask |= GRID_COLUMNS;
+    }
+    if !grid.rows.is_empty() {
+        mask |= GRID_ROWS;
+    }
+    if grid.auto_rows != defaults.auto_rows {
+        mask |= GRID_AUTO_ROWS;
+    }
+    if grid.column_gap != 0.0 {
+        mask |= GRID_COLUMN_GAP;
+    }
+    if grid.row_gap != 0.0 {
+        mask |= GRID_ROW_GAP;
+    }
+    if grid.align_items != defaults.align_items {
+        mask |= GRID_ALIGN;
+    }
+    if grid.adaptive_columns.is_some() {
+        mask |= GRID_ADAPTIVE;
+    }
+    enc.write_u8(mask);
+    if mask & GRID_COLUMNS != 0 {
+        encode_tracks(&grid.columns, enc);
+    }
+    if mask & GRID_ROWS != 0 {
+        encode_tracks(&grid.rows, enc);
+    }
+    if mask & GRID_AUTO_ROWS != 0 {
+        encode_track(grid.auto_rows, enc);
+    }
+    if mask & GRID_COLUMN_GAP != 0 {
+        enc.write_f32(grid.column_gap);
+    }
+    if mask & GRID_ROW_GAP != 0 {
+        enc.write_f32(grid.row_gap);
+    }
+    if mask & GRID_ALIGN != 0 {
+        let at = ALIGN_ITEMS.iter().position(|a| *a == grid.align_items);
+        enc.write_u8(at.unwrap_or(0) as u8);
+    }
+    if let Some(adaptive) = grid.adaptive_columns {
+        enc.write_u8(match adaptive.mode {
+            AutoRepeat::Fill => 0,
+            AutoRepeat::Fit => 1,
+        });
+        enc.write_f32(adaptive.min);
+        let (tag, value) = match adaptive.max {
+            TrackMax::Px(px) => (0, px),
+            TrackMax::Fr(fr) => (1, fr),
+        };
+        enc.write_u8(tag);
+        enc.write_f32(value);
+    }
+}
+
+/// Reads a grid, its templates handed to `columns` and `rows` instead of
+/// kept.
+fn read_grid(
+    dec: &mut Decoder,
+    columns: impl FnMut(TrackSizing),
+    rows: impl FnMut(TrackSizing),
+) -> Result<AotGrid, DecodeError> {
+    let offset = dec.position();
+    let mask = dec.read_u8()?;
+    let known = GRID_COLUMNS
+        | GRID_ROWS
+        | GRID_AUTO_ROWS
+        | GRID_COLUMN_GAP
+        | GRID_ROW_GAP
+        | GRID_ALIGN
+        | GRID_ADAPTIVE;
+    if mask & !known != 0 {
+        return Err(DecodeError::Malformed { offset });
+    }
+    let mut grid = AotGrid::default();
+    if mask & GRID_COLUMNS != 0 {
+        decode_tracks(dec, columns)?;
+    }
+    if mask & GRID_ROWS != 0 {
+        decode_tracks(dec, rows)?;
+    }
+    if mask & GRID_AUTO_ROWS != 0 {
+        grid.auto_rows = decode_track(dec)?;
+    }
+    if mask & GRID_COLUMN_GAP != 0 {
+        grid.column_gap = dec.read_f32()?;
+    }
+    if mask & GRID_ROW_GAP != 0 {
+        grid.row_gap = dec.read_f32()?;
+    }
+    if mask & GRID_ALIGN != 0 {
+        grid.align_items = read_variant(dec, &ALIGN_ITEMS)?;
+    }
+    if mask & GRID_ADAPTIVE != 0 {
+        let mode = read_variant(dec, &[AutoRepeat::Fill, AutoRepeat::Fit])?;
+        let min = dec.read_f32()?;
+        let offset = dec.position();
+        let max = match dec.read_u8()? {
+            0 => TrackMax::Px(dec.read_f32()?),
+            1 => TrackMax::Fr(dec.read_f32()?),
+            _ => return Err(DecodeError::Malformed { offset }),
+        };
+        grid.adaptive_columns = Some(AdaptiveColumns { mode, min, max });
+    }
+    Ok(grid)
+}
+
+fn decode_grid(dec: &mut Decoder) -> Result<AotGrid, DecodeError> {
+    let (mut columns, mut rows) = (Vec::new(), Vec::new());
+    let mut grid = read_grid(dec, |t| columns.push(t), |t| rows.push(t))?;
+    grid.columns = columns;
+    grid.rows = rows;
+    Ok(grid)
+}
+
+fn encode_place(place: GridPlacement, enc: &mut Encoder) {
+    let mut mask = 0u8;
+    if place.column.is_some() {
+        mask |= PLACE_COLUMN;
+    }
+    if place.row.is_some() {
+        mask |= PLACE_ROW;
+    }
+    if place.column_span != 1 {
+        mask |= PLACE_COLUMN_SPAN;
+    }
+    if place.row_span != 1 {
+        mask |= PLACE_ROW_SPAN;
+    }
+    enc.write_u8(mask);
+    for value in [place.column, place.row].into_iter().flatten() {
+        enc.write_varint(u64::from(value));
+    }
+    for (bit, span) in [
+        (PLACE_COLUMN_SPAN, place.column_span),
+        (PLACE_ROW_SPAN, place.row_span),
+    ] {
+        if mask & bit != 0 {
+            enc.write_varint(u64::from(span));
+        }
+    }
+}
+
+fn decode_place(dec: &mut Decoder) -> Result<GridPlacement, DecodeError> {
+    let offset = dec.position();
+    let mask = dec.read_u8()?;
+    if mask & !(PLACE_COLUMN | PLACE_ROW | PLACE_COLUMN_SPAN | PLACE_ROW_SPAN) != 0 {
+        return Err(DecodeError::Malformed { offset });
+    }
+    let mut read = |bit: u8, least: u16| -> Result<Option<u16>, DecodeError> {
+        if mask & bit == 0 {
+            return Ok(None);
+        }
+        let offset = dec.position();
+        u16::try_from(dec.read_varint()?)
+            .ok()
+            .filter(|v| *v >= least)
+            .map(Some)
+            .ok_or(DecodeError::Malformed { offset })
+    };
+    Ok(GridPlacement {
+        column: read(PLACE_COLUMN, 0)?,
+        row: read(PLACE_ROW, 0)?,
+        column_span: read(PLACE_COLUMN_SPAN, 1)?.unwrap_or(1),
+        row_span: read(PLACE_ROW_SPAN, 1)?.unwrap_or(1),
+    })
+}
+
 /// Writes one node record: the kind, the style and lengths, the child count.
 fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
-    let (lengths, rules) = (record.lengths(), record.rules());
+    let (lengths, rules, grid) = (record.lengths(), record.rules(), record.grid());
     let style = &record.style;
     enc.write_u8(record.kind.as_u8());
     let mut mask = 0u16;
@@ -766,6 +1102,12 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
     }
     if rules.is_some() {
         mask |= STYLE_HAS_RULES;
+    }
+    if style.place.is_some() {
+        mask |= STYLE_HAS_PLACE;
+    }
+    if grid.is_some() {
+        mask |= STYLE_HAS_GRID;
     }
     enc.write_varint(u64::from(mask));
     if let Some(axis) = style.axis {
@@ -815,6 +1157,12 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
     }
     if let Some(rules) = &rules {
         encode_rules(rules, enc);
+    }
+    if let Some(place) = style.place {
+        encode_place(place, enc);
+    }
+    if let Some(grid) = &grid {
+        encode_grid(grid, enc);
     }
     enc.write_varint(u64::from(record.child_count));
 }
@@ -917,6 +1265,18 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
     } else {
         None
     };
+    let place = if has(STYLE_HAS_PLACE) {
+        Some(decode_place(dec)?)
+    } else {
+        None
+    };
+    let grid = if has(STYLE_HAS_GRID) {
+        Some(read_validated(dec, |dec| {
+            read_grid(dec, drop, drop).map(drop)
+        })?)
+    } else {
+        None
+    };
     let offset = dec.position();
     let child_count =
         u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
@@ -932,9 +1292,14 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
             padding,
             scope,
             avoid,
+            place,
         },
         child_count,
-        extras: Extras::Encoded { lengths, rules },
+        extras: Extras::Encoded {
+            lengths,
+            rules,
+            grid,
+        },
     })
 }
 
@@ -1218,7 +1583,7 @@ mod tests {
         AotPackage {
             nodes: vec![
                 AotNode {
-                    kind: AotNodeKind::Flex,
+                    kind: AotNodeKind::Grid,
                     style: AotStyle {
                         axis: Some(AotAxis::Column),
                         justify: Some(Justify::End),
@@ -1236,6 +1601,7 @@ mod tests {
                         }),
                         scope: Some(AotScope { basis: Some(600.0) }),
                         avoid: None,
+                        place: None,
                     },
                     lengths: None,
                     rules: Some(Box::new(BoxRules {
@@ -1254,6 +1620,27 @@ mod tests {
                             ..Inset::default()
                         },
                         ..BoxRules::NONE
+                    })),
+                    grid: Some(Box::new(AotGrid {
+                        columns: vec![
+                            TrackSizing::Fixed(80.0),
+                            TrackSizing::Fr(2.0),
+                            TrackSizing::Auto,
+                            TrackSizing::Percent(0.25),
+                            TrackSizing::Minmax(10.0, 90.0),
+                            TrackSizing::FitContent(120.0),
+                            TrackSizing::FlexMin(40.0, 1.5),
+                        ],
+                        rows: vec![TrackSizing::Fixed(24.0)],
+                        auto_rows: TrackSizing::Fr(1.0),
+                        column_gap: 6.0,
+                        row_gap: 3.0,
+                        align_items: AlignItems::Baseline,
+                        adaptive_columns: Some(AdaptiveColumns {
+                            mode: AutoRepeat::Fit,
+                            min: 100.0,
+                            max: TrackMax::Px(160.0),
+                        }),
                     })),
                     child_count: 2,
                 },
@@ -1274,6 +1661,7 @@ mod tests {
                             ..EdgeTerms::all(LengthTerms::dp(1.0))
                         }),
                         max_height: Some(LengthTerms::em(20.0)),
+                        row_gap: Some(LengthTerms::sp(4.0)),
                         margin: Some(EdgeTerms {
                             end: LengthTerms::px(2.0),
                             ..EdgeTerms::default()
@@ -1281,13 +1669,23 @@ mod tests {
                         ..NodeLengths::default()
                     })),
                     rules: None,
+                    grid: None,
                     child_count: 0,
                 },
                 AotNode {
                     kind: AotNodeKind::Leaf,
-                    style: AotStyle::default(),
+                    style: AotStyle {
+                        place: Some(GridPlacement {
+                            column: Some(3),
+                            row: None,
+                            column_span: 2,
+                            row_span: 300,
+                        }),
+                        ..AotStyle::default()
+                    },
                     lengths: None,
                     rules: None,
+                    grid: None,
                     child_count: 0,
                 },
             ],
@@ -1314,6 +1712,7 @@ mod tests {
             style: AotStyle::default(),
             lengths: None,
             rules: None,
+            grid: None,
             child_count: 0,
         }
     }
@@ -1469,6 +1868,50 @@ mod tests {
             ]),
             "a leaf with a child"
         );
+    }
+
+    #[test]
+    fn a_zero_span_an_unknown_track_or_an_overlong_template_is_rejected() {
+        let encoded = |node: AotNode| {
+            AotPackage {
+                nodes: vec![node],
+                edges: Vec::new(),
+            }
+            .encode_to_vec()
+        };
+        // The kind byte and the two-byte style mask come first.
+        let at = NODE_SECTION + 3;
+        let placed = encoded(AotNode {
+            style: AotStyle {
+                place: Some(GridPlacement {
+                    column_span: 2,
+                    ..GridPlacement::default()
+                }),
+                ..AotStyle::default()
+            },
+            ..leaf()
+        });
+        assert!(AotView::new(&placed).is_ok());
+        assert_eq!(placed[at..at + 2], [PLACE_COLUMN_SPAN, 2]);
+        let mut bad = placed.clone();
+        bad[at + 1] = 0;
+        assert!(AotView::new(&bad).is_err(), "a zero span");
+        let grid = encoded(AotNode {
+            kind: AotNodeKind::Grid,
+            grid: Some(Box::new(AotGrid {
+                columns: vec![TrackSizing::Auto],
+                ..AotGrid::default()
+            })),
+            ..leaf()
+        });
+        assert!(AotView::new(&grid).is_ok());
+        assert_eq!(grid[at..at + 3], [GRID_COLUMNS, 1, TRACK_AUTO]);
+        let mut bad = grid.clone();
+        bad[at + 2] = 0x7e;
+        assert!(AotView::new(&bad).is_err(), "an unknown track");
+        let mut bad = grid.clone();
+        bad[at + 1] = 0x7f;
+        assert!(AotView::new(&bad).is_err(), "more tracks than bytes");
     }
 
     #[test]

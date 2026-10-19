@@ -662,6 +662,24 @@ impl<'a> InferCx<'a> {
                 ));
                 return Ty::Unknown;
             }
+            // `tracks(count, track)` is `count` copies of `track` (§U3.5).
+            if segments.len() == 1 && segments[0].text() == "tracks" {
+                let track = Ty::named(crate::resolve::prelude::track_enum());
+                if let [count, each] = args.as_slice() {
+                    let _ = self.infer_expr(count, Some(&Ty::U16));
+                    let _ = self.infer_expr(each, Some(&track));
+                } else {
+                    for arg in &args {
+                        let _ = self.infer_expr(arg, None);
+                    }
+                    self.diagnostics.push(Diagnostic::error(
+                        "E2103",
+                        node.text_range(),
+                        "`tracks` takes a count and a track: `tracks(3, Track::fr(1.0))`",
+                    ));
+                }
+                return self.check_against(Ty::List(Box::new(track)), expected, node);
+            }
             if let Some(ctor) = builtin_variant(&segments)
                 && ctor != "None"
             {

@@ -1613,7 +1613,7 @@ View 中类型为同一文件内 Component 的 Node 是该 Component 的一个�
 - 与 Event 同名以外的 Property 和 Handler 作用于实例 View 的根 Node；
 - 实例可以位于 `if`、`match` 与 Keyed `for` 中，区域绑定对实例的 Input 实参、State 初值与 Handler 可见（§56.1）；
 - 控制流区域中的实例，其 State 属于区域的每次挂载：Keyed `for` 的每个 Item、`if`/`match` 的每次进入各有一份，以区域绑定求值初值；State 随 Key 移动，Item 移除或离开无 `preserve` 的分支即丢弃，`preserve` 分支缓存期间保留；这类 State 不按名称跨 Hot Reload 保留，含控制流区域的 View 整树重建时从初值重新开始；
-- 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；`AdaptiveScope` 的 `basis` 不是常量 `dp` 长度（§96.3）；`SafeArea` 或 `KeyboardAvoiding` 带 `padding`（§96.6）；`padding` 不是常量或写在非容器节点上、`min_*`/`max_*`/`margin` 不是常量（U3.3）；
+- 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；`AdaptiveScope` 的 `basis` 不是常量 `dp` 长度（§96.3）；`SafeArea` 或 `KeyboardAvoiding` 带 `padding`（§96.6）；`padding` 不是常量或写在非容器节点上、`min_*`/`max_*`/`margin` 不是常量（U3.3）；`Grid` 的模板、间距、对齐或子节点的 `grid.*` 不是常量，轨道读取环境或兼含 `dp` 与 `%`，Grid 间距含 `%`（U3.5）；
 - `ui!` Fragment 中不是内置 Widget 的类型是外围 Rust 作用域以 `component!` 声明的 Component（可写作 Rust 路径，如 `widgets::Tally`），由其 `build` 挂载，每个实例自带 State 与 Handler；这类 Node 不接受 Property、Handler 与子项（`E3711`），名称无法解析时由 Rust 在该位置报错；Hot Reload 与 Release Package 的 Fragment 没有 Rust 作用域，这类类型报 `E2001`。
 
 ---
@@ -4544,7 +4544,7 @@ export record Border { width: Dp = 1dp; color: Color; }
 - `Row` 主轴 `start` 是行内起点，RTL 下首个子节点位于右侧；
 - `justify` 与 `align` 不改变容器自身测量结果，只标记 `LAYOUT`。
 
-当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件的 `const`（经 `const` 链折叠）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::min_content`/`max_content`、读取值（State、Input、`theme` 等）的 `width`/`height`/`gap`/`justify`/`align`/`axis`，以及尚无运行时路径的 Property（文本的 `font_weight`、`font_family`、`line_height`、`max_lines`、`overflow`、`align`，`TextInput` 的 `placeholder`/`secure`，`Grid` 轨道与对齐，`grid.*`/`stack.*`/`absolute.*` 子节点放置，`Stack` 的 `content_align`，`min_*`/`max_*`，`corner_radius`、`border`、变换、`clip`、`autofocus`，以及 Style 选择器之外的 `enabled`）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
+当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件的 `const`（经 `const` 链折叠）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::min_content`/`max_content`、读取值（State、Input、`theme` 等）的 `width`/`height`/`gap`/`justify`/`align`/`axis`，以及尚无运行时路径的 Property（文本的 `font_weight`、`font_family`、`line_height`、`max_lines`、`overflow`、`align`，`TextInput` 的 `placeholder`/`secure`，`stack.*`/`absolute.*` 子节点放置，`Stack` 的 `content_align`，`corner_radius`、`border`、变换、`clip`、`autofocus`，以及 Style 选择器之外的 `enabled`）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
 
 ### U3.5 Grid
 
@@ -4577,7 +4577,11 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - `GridAlign { stretch; start; center; end; }`；
 - 行列号从 0 开始；先放置显式定位的子节点，其余按行优先自动流入空位；隐式行使用 `auto_rows`；
 - `adaptive_columns` 存在时覆盖 `columns`，列数由可用宽度决定（ADR 0009）；
-- `areas` 每个字符串是一行，名字以空白分隔；`grid.area` 引用未知名字或名字构成非矩形区域时，Debug Runtime 报告 `E3105`。
+- `areas` 每个字符串是一行，名字以空白分隔，`.` 为空单元；各行单元数不同或某个名字不构成矩形是 `E3108`；
+- `grid.area` 把子节点放进其 Grid 的 `areas` 中该名字覆盖的单元，名字在编译期解析为行列号与跨度，不进入 Runtime；引用未知名字、所在 Grid 没有 `areas`、或同时写 `grid.column`/`grid.row`/跨度是 `E3108`；`grid.column_span`/`grid.row_span` 为 `0` 也是 `E3108`；
+- 只固定列或只固定行的子节点按 CSS 稀疏自动放置：只固定行的在该行内依次取第一个空位，其余（只固定列的与未固定的）共用一个行优先游标，只固定列的取该列在游标行及其后的第一个空位。
+
+当前实现：`columns`、`rows`、`auto_rows`、`column_gap`、`row_gap`、`align_items`、`areas`、`adaptive_columns` 与子节点的 `grid.*` 是常量时在编译期折叠（值可以是本文件的 `const`）：轨道列表可为列表字面量或 `tracks(n, t)`，`Track::fixed` 取纯 `dp`（固定轨道）或纯 `%`（自身内容盒的比例）长度，`minmax` 的下界、`fit_content` 的上限、`TrackMax::length` 与 `AdaptiveColumns` 的 `min` 取 `dp` 长度；纯 `dp` 间距折叠为节点值，含 `px`/`sp`/`em` 的间距随 §19.6 环境在布局时折叠。读取环境或兼含 `dp` 与 `%` 的轨道、含 `%` 的间距，以及读取值的上述 Property 报 `E3711`。热重载就地改写保留 Grid 的模板与子节点的单元（只标脏变化的节点），Release 包与宏路径相同。
 
 ### U3.6 Stack 与 Absolute
 
@@ -8769,6 +8773,7 @@ RecordPatternField
 | E3105  | Percent Basis 不确定（Debug Runtime 警告）              |
 | E3106  | 长度解析为非有限值（Debug Runtime 警告，§19.8）         |
 | E3107  | `bind` 右侧不是 State Lens（§51）                       |
+| E3108  | Grid 的 `areas` 或子节点的 `grid.*` 不指向任何单元：各行单元数不同、区域不是矩形、`grid.area` 名字未知或与行列号同写、跨度为 `0`（§U3.5） |
 | E3201  | 已删除的事件箭头语法                                    |
 | E3202  | 未知 Event 或错误 Payload                               |
 | E3301  | Conditional Preserve 必须是静态字符串，且在 Component 中唯一 |
@@ -8787,7 +8792,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 或 `@styleable` 误用（§U2.3）               |
-| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 不是常量或写在非容器节点上，或 `min_*`/`max_*`/`margin` 不是常量，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 不是常量或写在非容器节点上，或 `min_*`/`max_*`/`margin` 不是常量，或 `Grid` 的模板、间距、对齐或 `grid.*` 不是常量、轨道读取环境或兼含 `dp` 与 `%`、Grid 间距含 `%`，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
 | E3713  | 资源误用：`asset` 的参数不是恰好一个字符串字面量、路径越出 `assets/`、文件不存在或不是 PNG/JPEG/SVG、编译没有资源目录，或写出 `ImageAsset`/`SvgAsset` 的 Record 表达式（§U5.1） |
 | E4101  | 非 Task 主体（Action、Event、Effect 等）中使用 Await    |

@@ -980,9 +980,91 @@ impl NodeStore {
         self.grid_tracks[id.index() as usize] = Some(Box::new(tracks));
     }
 
-    /// Set a grid child's placement/span. Absent = auto-flow with span 1.
+    /// Rewrite a grid child's placement and span in place, marking its
+    /// parent `MEASURE | LAYOUT | PAINT`: the cells and the tracks they size
+    /// move. Absent = auto-flow with span 1. A no-op for a stale handle or an
+    /// unchanged placement.
     pub fn set_grid_placement(&mut self, id: NodeId, placement: GridPlacement) {
-        self.grid_placement[id.index() as usize] = placement;
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let slot = &mut self.grid_placement[id.index() as usize];
+        if *slot == placement {
+            return;
+        }
+        *slot = placement;
+        if let Some(parent) = self.arena.parent(id) {
+            self.mark_dirty(
+                parent,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+        }
+    }
+
+    /// Rewrite a Grid container's tracks, gaps, cell alignment, subgrid axes
+    /// and adaptive columns from `style` in place, marking it `MEASURE |
+    /// LAYOUT | PAINT`, or `LAYOUT | PAINT` when only the cell alignment
+    /// moved. Its size, padding and box style stay. A no-op for a stale
+    /// handle, an unchanged grid or a node that is not a Grid.
+    pub fn set_grid_template(&mut self, id: NodeId, style: GridStyle) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let i = id.index() as usize;
+        let LayoutInput::Grid {
+            column_count,
+            row_count,
+            column_gap,
+            row_gap,
+            auto_rows,
+            align_items,
+            subgrid_columns,
+            subgrid_rows,
+            adaptive_columns,
+            ..
+        } = &mut self.layout[i]
+        else {
+            return;
+        };
+        let tracks = self.grid_tracks[i].as_deref_mut();
+        let same_tracks = tracks
+            .as_ref()
+            .is_some_and(|t| t.columns == style.columns && t.rows == style.rows);
+        let measures = !same_tracks
+            || (*column_gap, *row_gap, *auto_rows)
+                != (style.column_gap, style.row_gap, style.auto_rows)
+            || (*subgrid_columns, *subgrid_rows) != (style.subgrid_columns, style.subgrid_rows)
+            || *adaptive_columns != style.adaptive_columns;
+        let aligns = *align_items != style.align_items;
+        if !measures && !aligns {
+            return;
+        }
+        *column_count = style.columns.len().max(1) as u16;
+        *row_count = style.rows.len() as u16;
+        (*column_gap, *row_gap, *auto_rows) = (style.column_gap, style.row_gap, style.auto_rows);
+        (*subgrid_columns, *subgrid_rows) = (style.subgrid_columns, style.subgrid_rows);
+        *adaptive_columns = style.adaptive_columns;
+        *align_items = style.align_items;
+        if !same_tracks {
+            match tracks {
+                Some(tracks) => {
+                    tracks.columns = style.columns;
+                    tracks.rows = style.rows;
+                }
+                None => {
+                    self.grid_tracks[i] = Some(Box::new(GridTracks {
+                        columns: style.columns,
+                        rows: style.rows,
+                    }));
+                }
+            }
+        }
+        let class = if measures {
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT
+        } else {
+            DirtyClass::LAYOUT | DirtyClass::PAINT
+        };
+        self.mark_dirty(id, class);
     }
 
     /// Test/facade support: allocate a standalone grid node from a [`GridStyle`],
@@ -4986,7 +5068,7 @@ impl<'a> BuildCx<'a> {
             self.root = Some(id);
         }
         if let Some(p) = self.pending_placement.take() {
-            self.store.set_grid_placement(id, p);
+            self.store.grid_placement[id.index() as usize] = p;
         }
         id
     }

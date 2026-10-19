@@ -70,16 +70,20 @@ registry-free.
 
 ### 3. Placement: explicit-first, then auto-flow row-major, with implicit rows
 
-`grid::place_children(column_count, placements, occupied, out) -> row_count` runs a
-two-phase placement over a row-major `occupied` bitset (`Vec<u64>`, `column_count`
-bits per row; bits past the current length read free, so implicit rows are free
-until marked):
+`grid::place_children(column_count, placements, occupied, out) -> row_count` runs
+CSS's sparse auto-placement over a row-major `occupied` bitset (`Vec<u64>`,
+`column_count` bits per row; bits past the current length read free, so implicit
+rows are free until marked):
 
 1. **Explicit first** — every child with *both* `column` and `row` pinned claims its
    (clamped) block, marking `occupied`, so auto-flow routes around it.
-2. **Auto-flow** — a row-major cursor scans for the first free block that fits the
-   child's span, creating implicit rows as needed. A partially-pinned child (only
-   one axis given) is treated as auto-flow this slice.
+2. **Row-pinned** — a child with only `row` given takes the first free block of
+   its row past the row-pinned children placed in that row before it; a row with
+   no room left takes it at its start (the grid adds no implicit columns).
+3. **Auto-flow** — the rest share one row-major cursor: a column-pinned child takes
+   the first free block of its column at or past the cursor's row (the next row
+   when its column is behind the cursor), any other the first free block that fits
+   its span, creating implicit rows as needed.
 
 The returned `row_count` is one past the highest occupied row (≥ 1). Rows beyond the
 explicit `rows` template are **implicit**, sized by `auto_rows` — the layout arm

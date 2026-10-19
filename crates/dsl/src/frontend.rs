@@ -235,6 +235,7 @@ pub fn compile_fragment(source: &str) -> Compiled {
     for unmounted in &lowered.unmounted {
         diagnostics.push(unmounted_diagnostic(unmounted));
     }
+    diagnostics.extend(lowered.misplaced.iter().map(misplaced_diagnostic));
     let tree = lowered.tree;
     let env = SourceSet::new(resolved.sources.iter().copied());
     let (bindings, by_source) = lower_view_reactivity(
@@ -631,8 +632,9 @@ pub(crate) fn unit_library<'a>(
         .with_consts(Consts::new(&module.refs, &values))
 }
 
-/// What lowering a view raises: what it cannot mount (`E3711`) and each
-/// component with `@persist` state it inlines (`E9106`).
+/// What lowering a view raises: what it cannot mount (`E3711`), each grid
+/// template or cell that names no cells (`E3108`) and each component with
+/// `@persist` state it inlines (`E9106`).
 pub(crate) fn view_diagnostics(view: &LoweredView) -> impl Iterator<Item = Diagnostic> + '_ {
     let persisting = view.persisting.iter().map(|(at, name)| {
         Diagnostic::error(
@@ -644,7 +646,21 @@ pub(crate) fn view_diagnostics(view: &LoweredView) -> impl Iterator<Item = Diagn
             ),
         )
     });
-    persisting.chain(view.unmounted.iter().map(unmounted_diagnostic))
+    persisting
+        .chain(view.unmounted.iter().map(unmounted_diagnostic))
+        .chain(view.misplaced.iter().map(misplaced_diagnostic))
+}
+
+/// The `E3108` of a grid template or child cell that names no cells,
+/// related to the node or `use` placing the view it is in.
+fn misplaced_diagnostic(misplaced: &crate::ir::Unmounted) -> Diagnostic {
+    let mut diagnostic = Diagnostic::error("E3108", misplaced.at, misplaced.reason.clone());
+    if let Some(placed) = misplaced.placed_at {
+        diagnostic
+            .related
+            .push(crate::diag::Related::new(placed, "placed here"));
+    }
+    diagnostic
 }
 
 /// The `E3711` of what a view cannot mount, related to the node or `use`

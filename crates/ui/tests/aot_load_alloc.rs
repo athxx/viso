@@ -59,6 +59,7 @@ fn blob(rows: u32) -> &'static [u8] {
         style: AotStyle::default(),
         lengths: None,
         rules: None,
+        grid: None,
         child_count: rows,
     }];
     for row in 0..rows {
@@ -70,6 +71,7 @@ fn blob(rows: u32) -> &'static [u8] {
             },
             lengths: None,
             rules: None,
+            grid: None,
             child_count: 4,
         });
         for leaf in 0..4 {
@@ -89,6 +91,7 @@ fn blob(rows: u32) -> &'static [u8] {
                         ..BoxRules::NONE
                     })
                 }),
+                grid: None,
                 child_count: 0,
             });
         }

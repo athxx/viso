@@ -13,7 +13,9 @@ use crate::length::LengthIssue;
 use viso_render::Rect;
 
 pub use viso_math::Vec2;
-pub use viso_schema::layout::{Align, Axis, BoxRules, Inset, Justify, Length, Span, SpanInset};
+pub use viso_schema::layout::{
+    Align, AlignItems, Axis, BoxRules, Inset, Justify, Length, Span, SpanInset,
+};
 
 /// A [`Vec2`]'s component along a layout [`Axis`] (x for Row, y for Column).
 pub trait OnAxis {
@@ -74,27 +76,6 @@ impl Size {
             Axis::Column => self.width,
         }
     }
-}
-
-/// How a grid cell's content is aligned within the cell along the block (row /
-/// vertical) axis. `Stretch` (the default) grows a fillable child to the cell
-/// height; the others place the child at its natural height and shift it.
-/// `Baseline` aligns each cell's first-line text baseline to the tallest
-/// baseline in its row, so mixed-size labels sit on a common baseline; a cell
-/// with no text baseline falls back to `Start`.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum AlignItems {
-    /// Grow a fillable child to the full cell height (CSS default).
-    #[default]
-    Stretch,
-    /// Pin the child to the top of the cell at its natural height.
-    Start,
-    /// Center the child vertically at its natural height.
-    Center,
-    /// Pin the child to the bottom of the cell at its natural height.
-    End,
-    /// Align the child's first-line baseline to its row's tallest baseline.
-    Baseline,
 }
 
 /// The warm-tier layout parameters for one node: either a Flex container or a

@@ -1,4 +1,4 @@
-//! The layout vocabulary: axes, lengths, alignment and insets.
+//! The layout vocabulary: axes, lengths, alignment, insets and grid tracks.
 
 /// The main axis a Flex container lays its children along.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,9 +82,6 @@ pub enum Align {
     Stretch,
 }
 
-/// How a grid cell's content is aligned within the cell along the block (row /
-/// vertical) axis. `Stretch` (the default) grows a fillable child to the cell
-/// height; the others place the child at its natural height and shift it.
 /// Main-axis placement of the children as a group within a container.
 ///
 /// [`Align`] handles the cross axis (each child within the line); `Justify`
@@ -337,5 +334,151 @@ impl BoxRules {
 impl Default for BoxRules {
     fn default() -> Self {
         Self::NONE
+    }
+}
+
+/// How a grid cell's content is aligned within the cell along the block (row /
+/// vertical) axis. `Stretch` (the default) grows a fillable child to the cell
+/// height; the others place the child at its natural height and shift it.
+/// `Baseline` aligns each cell's first-line text baseline to the tallest
+/// baseline in its row, so mixed-size labels sit on a common baseline; a cell
+/// with no text baseline falls back to `Start`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AlignItems {
+    /// Grow a fillable child to the full cell height (CSS default).
+    #[default]
+    Stretch,
+    /// Pin the child to the top of the cell at its natural height.
+    Start,
+    /// Center the child vertically at its natural height.
+    Center,
+    /// Pin the child to the bottom of the cell at its natural height.
+    End,
+    /// Align the child's first-line baseline to its row's tallest baseline.
+    Baseline,
+}
+
+/// How one grid track (a column or a row) is sized.
+///
+/// `Fixed` is an exact pixel extent. `Percent` is a fraction (0.0..=1.0) of the
+/// grid's content extent along that track's axis. `Auto` sizes to the largest
+/// natural main size among the single-track items on the track. `Fr` claims a
+/// share of the free space left after the fixed/percent/auto tracks, resolved by
+/// a re-normalizing sweep so a clamp on one flexible track cascades to the rest.
+/// `Minmax` clamps the track's content size into a `[min, max]` pixel band;
+/// `FitContent` caps the content size at a pixel limit. Both resolve like a
+/// content-sized track (they read the same natural-max channel as `Auto`) and
+/// are fixed-size tracks — they consume space before the `Fr` sweep, they never
+/// take a share of the free space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackSizing {
+    /// Exact pixel extent.
+    Fixed(f32),
+    /// Share of free space, proportional to this value across all `Fr` tracks.
+    Fr(f32),
+    /// Content-sized: the max natural extent of the single-track items on it.
+    Auto,
+    /// Fraction (0.0..=1.0) of the grid content extent along the track axis.
+    Percent(f32),
+    /// Content size clamped to a `[min, max]` pixel band. A fixed-size track: it
+    /// resolves to `content.clamp(min, max)` and does not enter the `Fr` sweep.
+    Minmax(f32, f32),
+    /// Content size capped at a pixel limit: `content.min(limit)`. A fixed-size
+    /// track, resolved like `Auto` but bounded above.
+    FitContent(f32),
+    /// A flexible track with a pixel floor: `minmax(min, <fr>fr)`. Unlike the
+    /// fixed-size `Minmax`, its upper bound is a free-space share, so it takes
+    /// `min` first (counted as consumed) and then grows by an `Fr(fr)` share of
+    /// the leftover — the CSS `minmax(min, 1fr)` semantics behind the responsive
+    /// `repeat(auto-fill/auto-fit, minmax(min, 1fr))` grid. It participates in the
+    /// `Fr` sweep; a track that gets no leftover share still holds at `min`.
+    FlexMin(f32, f32),
+}
+
+/// The trailing-empty-track rule for a responsive `repeat(auto-*, …)` column
+/// template: `Fill` keeps every computed track (empty ones hold their place and
+/// their gap); `Fit` collapses trailing tracks that hold no single-track item to
+/// zero width and folds away the gap they would have introduced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoRepeat {
+    /// `auto-fill`: keep the computed empty trailing tracks.
+    Fill,
+    /// `auto-fit`: collapse the computed empty trailing tracks.
+    Fit,
+}
+
+/// The upper bound of a responsive `minmax(min, max)` track: a pixel cap
+/// (fixed-size, resolved like [`TrackSizing::Minmax`]) or an `Fr` share
+/// (flexible, resolved like [`TrackSizing::FlexMin`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackMax {
+    /// A pixel upper bound: the track is content-clamped into `[min, px]`.
+    Px(f32),
+    /// A free-space share: the track takes `min` then an `fr` share of leftover.
+    Fr(f32),
+}
+
+/// A responsive column template `repeat(auto-fill | auto-fit, minmax(min, max))`:
+/// the *number* of columns is not fixed at build time but computed from the
+/// container's inner width during layout, and every column is a `minmax(min, max)`
+/// track. Kept as a `Copy` scalar so it rides on the grid's `LayoutInput` with no
+/// heap; the common (non-adaptive) grid carries `None`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdaptiveColumns {
+    /// Trailing-empty-track rule (`auto-fill` vs `auto-fit`).
+    pub mode: AutoRepeat,
+    /// Per-column pixel floor (`min` of `minmax(min, max)`); also the divisor of
+    /// the column-count formula.
+    pub min: f32,
+    /// Per-column upper bound (`max` of `minmax(min, max)`).
+    pub max: TrackMax,
+}
+
+impl AdaptiveColumns {
+    /// `repeat(auto-fill, minmax(min, max))`: fit as many `minmax(min, max)`
+    /// columns as the container's inner width allows, keeping computed empty
+    /// trailing columns (they hold their place and their gap).
+    pub fn auto_fill(min: f32, max: TrackMax) -> Self {
+        AdaptiveColumns {
+            mode: AutoRepeat::Fill,
+            min,
+            max,
+        }
+    }
+
+    /// `repeat(auto-fit, minmax(min, max))`: like [`AdaptiveColumns::auto_fill`]
+    /// but trailing columns that hold no single-track item collapse to zero width,
+    /// folding away the gap they would have introduced (CSS collapsed tracks).
+    pub fn auto_fit(min: f32, max: TrackMax) -> Self {
+        AdaptiveColumns {
+            mode: AutoRepeat::Fit,
+            min,
+            max,
+        }
+    }
+}
+
+/// Explicit placement and span for the next child authored inside a grid. A
+/// child with no `place` call auto-flows into the first free cell with span 1.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridPlacement {
+    /// 0-based start column; `None` auto-flows along the column axis.
+    pub column: Option<u16>,
+    /// 0-based start row; `None` auto-flows along the row axis.
+    pub row: Option<u16>,
+    /// Number of columns the child spans (>= 1).
+    pub column_span: u16,
+    /// Number of rows the child spans (>= 1).
+    pub row_span: u16,
+}
+
+impl Default for GridPlacement {
+    fn default() -> Self {
+        GridPlacement {
+            column: None,
+            row: None,
+            column_span: 1,
+            row_span: 1,
+        }
     }
 }

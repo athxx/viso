@@ -604,6 +604,7 @@ mod tests {
             style: AotStyle::default(),
             lengths: None,
             rules: None,
+            grid: None,
             child_count: 0,
         }
     }

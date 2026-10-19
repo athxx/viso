@@ -331,8 +331,9 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         locale), dirtying only a node whose inset moved. Package style mask is a varint.
   - [x] `E3711` for a non-constant padding, padding on a node with no content box,
         and padding on an avoiding region (folded or not).
-- [ ] Bound layout values: a `width`/`height`/`gap`/`padding` that reads state, an input
-      or `theme` writes its value to the node (the behavior VM carries `MixedLength` as
+- [ ] Bound layout values: a `width`/`height`/`gap`/`padding`, a grid's template or a
+      child's `grid.*` cell that reads state, an input or `theme` writes its value to
+      the node (the behavior VM carries `MixedLength` as
       terms, delivered as `NodeLengths`).
   - [x] Until then a bound `width`/`height`/`gap`/`justify`/`align`/`axis`, like a
         bound `padding`, is `E3711`.
@@ -349,9 +350,18 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 - [ ] Text style beyond color, size and wrapping: `font_weight`, `font_family`,
       `line_height`, `max_lines`, `overflow`, text `align` (`E3711` today).
 - [ ] `TextInput` `placeholder` and `secure`, `CheckBox` `label` (`E3711` today).
-- [ ] `Grid` tracks and alignment (`columns`, `rows`, `auto_rows`, `column_gap`,
-      `row_gap`, `align_items`, `areas`, `adaptive_columns`) and the `grid.*`,
-      `stack.*`, `absolute.*` child placement; `Stack`'s `content_align` (`E3711`
+- [x] `Grid` tracks and alignment (`columns`, `rows`, `auto_rows`, `column_gap`,
+      `row_gap`, `align_items`, `areas`, `adaptive_columns`) and the `grid.*` cells
+      lay out across the macros, hot reload (in place, `set_grid_template` /
+      `set_grid_placement`) and the release package; `tracks(n, t)` expands at
+      compile time; `areas` names resolve to cells at compile time (`E3108` for a
+      ragged or non-rectangular template, an unknown area, an area with a column or
+      row, a zero span); a gap in `px`/`sp`/`em` folds at layout (`row_gap` rides
+      `NodeLengths`); a child pinned on one axis auto-places as CSS's sparse
+      algorithm does.
+  - [ ] A track that reads the environment or adds `dp` to `%`, and a `%` gap
+        (`E3711` today).
+- [ ] `stack.*`, `absolute.*` child placement; `Stack`'s `content_align` (`E3711`
       today).
 - [x] `min_width`/`max_width`/`min_height`/`max_height` (`max_*` also
       `Option::None`/`Option::Some`) bound a fixed, a fit, a fill and a cross extent

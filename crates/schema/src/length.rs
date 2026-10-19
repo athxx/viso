@@ -399,7 +399,8 @@ pub struct NodeLengths {
     pub width: Option<LengthTerms>,
     /// The node's height.
     pub height: Option<LengthTerms>,
-    /// A container's gap between children. Its percent term counts as `0`.
+    /// A container's gap between children: a Flex's main-axis gap, a Grid's
+    /// column gap. Its percent term counts as `0`.
     pub gap: Option<LengthTerms>,
     /// The node's font size, the typography source of its subtree: `em` and
     /// `%` read the parent's resolved font size.
@@ -416,6 +417,8 @@ pub struct NodeLengths {
     pub max_height: Option<LengthTerms>,
     /// The node's margin.
     pub margin: Option<EdgeTerms>,
+    /// A Grid's row gap. Its percent term counts as `0`.
+    pub row_gap: Option<LengthTerms>,
 }
 
 impl NodeLengths {
@@ -427,6 +430,7 @@ impl NodeLengths {
             self.width,
             self.height,
             self.gap,
+            self.row_gap,
             self.min_width,
             self.max_width,
             self.min_height,

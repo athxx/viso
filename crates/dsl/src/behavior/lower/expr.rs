@@ -700,6 +700,30 @@ impl Lowerer<'_, '_> {
                 _ => self.bail("`untracked` takes one value"),
             };
         }
+        if head.is_none() && segments.len() == 1 && segments[0].text() == "tracks" {
+            let [(None, count), (None, track)] = args.as_slice() else {
+                return self.bail("`tracks` takes a count and a track");
+            };
+            let count = count
+                .syntax()
+                .children_with_tokens()
+                .into_iter()
+                .filter_map(|t| t.as_token().cloned())
+                .find(|t| t.kind() == SyntaxKind::IntLiteral)
+                .filter(|_| count.syntax().kind() == SyntaxKind::LiteralExpr)
+                .and_then(|t| parse_int_literal(&t.text()))
+                .and_then(|n| u16::try_from(n).ok());
+            let Some(count) = count else {
+                return self.bail("a `tracks` count that is not an integer literal");
+            };
+            let track = self.expr(track)?;
+            let dst = self.reg();
+            self.emit(Inst::List {
+                dst,
+                items: vec![track; usize::from(count)],
+            });
+            return Ok(dst);
+        }
         if args.iter().any(|(label, _)| label.is_some()) {
             return self.bail("named call arguments are not supported yet");
         }

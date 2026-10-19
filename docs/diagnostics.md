@@ -69,6 +69,7 @@ Generated from the compiler's diagnostics registry (`crates/dsl/src/diag/codes.r
 | [E3105](#e3105) | Indefinite Percent Basis | warning | view |
 | [E3106](#e3106) | Non-Finite Length | warning | view |
 | [E3107](#e3107) | Bind Source Is Not A State Lens | error | view |
+| [E3108](#e3108) | Invalid Grid Area Or Cell | error | view |
 | [E3201](#e3201) | Arrow Event Handler | error | view |
 | [E3202](#e3202) | Unknown Event Or Wrong Payload | error | view |
 | [E3301](#e3301) | Invalid Preserve Identity | error | view |
@@ -1534,6 +1535,29 @@ Fix: Bind to the `state` itself (or a path into it), or bind one way with `:` an
 
 ```vs
 Toggle { checked: off; on changed(e) { on = !e.value; } }
+```
+
+## E3108
+
+**Invalid Grid Area Or Cell** — error, view
+
+A grid's `areas` or a child's `grid.*` names no cells. Each string of `areas` is a row of whitespace-separated area names, `.` an empty cell: every row names the same number of cells, and each area fills a rectangle. A child's `grid.area` names an area of its grid's `areas` and places the child by itself, so it is not combined with `grid.column`, `grid.row` or a span; a `grid.column_span` or `grid.row_span` spans at least one track. The names resolve at compile time, so none reaches the runtime.
+
+```vs
+component A {
+    view {
+        Grid {
+            areas: ["head head", "side main"];
+            Text { text: "a"; grid.area: "foot"; }
+        }
+    }
+}
+```
+
+Fix: Name an area of the grid's `areas`, or add the area to the template.
+
+```vs
+Text { text: "a"; grid.area: "main"; }
 ```
 
 ## E3201

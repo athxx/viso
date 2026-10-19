@@ -250,7 +250,7 @@ pub(super) fn fold_sizing(value: &Expr, consts: &Consts) -> Option<Result<Lowere
 }
 
 /// The names a record literal's head spells (`EdgeInsets`, `Sizing::fill`).
-fn record_head(node: &SyntaxNode) -> Vec<String> {
+pub(super) fn record_head(node: &SyntaxNode) -> Vec<String> {
     let mut head = Vec::new();
     for element in node.descendants_with_tokens() {
         let Some(token) = element.as_token() else {
@@ -284,6 +284,19 @@ pub(super) fn fold_gap(value: &Expr, consts: &Consts) -> Option<Lowered> {
 /// the parent's font size, resolves in the typography context at layout.
 pub(super) fn fold_font_size(value: &Expr, consts: &Consts) -> Option<TermsIr> {
     fold_length(value, consts).map(Terms::lower)
+}
+
+/// A finite length-family constant's terms as the runtime folds them.
+pub(super) fn fold_terms(value: &Expr, consts: &Consts) -> Option<TermsIr> {
+    fold_length(value, consts).map(Terms::lower)
+}
+
+/// A finite scalar constant.
+pub(super) fn fold_number(value: &Expr, consts: &Consts) -> Option<f32> {
+    match fold(value, consts)? {
+        Folded::Scalar(v) if v.is_finite() => Some(v),
+        _ => None,
+    }
 }
 
 /// A constant padding as it lowers.
@@ -489,7 +502,7 @@ fn padding_edges(value: &Expr, consts: &Consts) -> Option<Edges> {
 }
 
 /// A call's arguments, each with its name when it is named.
-fn arguments(call: &SyntaxNode) -> Option<Vec<(Option<String>, Expr)>> {
+pub(super) fn arguments(call: &SyntaxNode) -> Option<Vec<(Option<String>, Expr)>> {
     let list = call
         .children()
         .into_iter()

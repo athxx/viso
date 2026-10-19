@@ -22,7 +22,10 @@ use crate::syntax::span::TextRange;
 use viso_behavior::native::MigratableState;
 pub use viso_schema::Avoid;
 use viso_schema::Interaction;
-pub use viso_schema::layout::{BoxRules, Inset, Span, SpanInset};
+pub use viso_schema::layout::{
+    AdaptiveColumns, AlignItems, AutoRepeat, BoxRules, GridPlacement, Inset, Span, SpanInset,
+    TrackMax, TrackSizing,
+};
 pub use viso_schema::{Align, Justify};
 
 /// The retained-tree template a view fragment or component view lowers to.
@@ -287,6 +290,8 @@ pub struct LengthsIr {
     pub max_height: Option<TermsIr>,
     /// The node's margin.
     pub margin: Option<EdgeTermsIr>,
+    /// A grid's row gap; its column gap is [`gap`](Self::gap).
+    pub row_gap: Option<TermsIr>,
 }
 
 impl LengthsIr {
@@ -302,6 +307,7 @@ impl LengthsIr {
         min_height: None,
         max_height: None,
         margin: None,
+        row_gap: None,
     };
 
     /// Whether the node binds no environment length.
@@ -408,6 +414,47 @@ pub struct StyleIr {
     /// [`lengths`](Self::lengths) carries them all; boxed, as few nodes have
     /// any.
     pub rules: Option<Box<BoxRules>>,
+    /// A grid's constant template, gaps and cell alignment, and the areas
+    /// its children name; boxed, as few nodes are grids.
+    pub grid: Option<Box<GridIr>>,
+    /// The cell a grid's child takes by `grid.column`, `grid.row` and their
+    /// spans.
+    pub place: Option<GridPlacement>,
+    /// The area a grid's child names by `grid.area`, until its grid resolves
+    /// it to [`place`](Self::place).
+    pub area: Option<Box<AreaRef>>,
+}
+
+/// A grid container's constant template, gaps and cell alignment. A field
+/// left `None` or empty takes the runtime grid default.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GridIr {
+    /// The explicit column template.
+    pub columns: Vec<TrackSizing>,
+    /// The explicit row template.
+    pub rows: Vec<TrackSizing>,
+    /// How a row past the explicit ones is sized.
+    pub auto_rows: Option<TrackSizing>,
+    /// The gap between adjacent columns, in dp.
+    pub column_gap: Option<f32>,
+    /// The gap between adjacent rows, in dp.
+    pub row_gap: Option<f32>,
+    /// How a cell's content sits in its cell on the block axis.
+    pub align_items: Option<AlignItems>,
+    /// A column template whose count follows the grid's width.
+    pub adaptive_columns: Option<AdaptiveColumns>,
+    /// Each area `areas` names and the cells it covers. Only lowering reads
+    /// it, to place the children that name one.
+    pub areas: Vec<(String, GridPlacement)>,
+}
+
+/// An area a grid's child names, and where it names it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AreaRef {
+    /// The area's name.
+    pub name: String,
+    /// The span of the `grid.area` value.
+    pub at: TextRange,
 }
 
 /// An adaptive scope: the node its subtree's `env.size_class` classifies.
@@ -432,6 +479,9 @@ impl StyleIr {
             && self.scope.is_none()
             && self.avoid.is_none()
             && self.rules.is_none()
+            && self.grid.is_none()
+            && self.place.is_none()
+            && self.area.is_none()
     }
 
     /// The lengths that fold against the environment, empty when there are none.
@@ -539,6 +589,11 @@ impl StyleIr {
     /// The lengths, allocated on first write.
     pub fn lengths_mut(&mut self) -> &mut LengthsIr {
         self.lengths.get_or_insert_with(Box::default)
+    }
+
+    /// The grid template, allocated on first write.
+    pub fn grid_mut(&mut self) -> &mut GridIr {
+        self.grid.get_or_insert_with(Box::default)
     }
 }
 

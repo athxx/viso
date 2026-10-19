@@ -25,6 +25,7 @@
 
 pub mod binding_ir;
 pub mod dirty_map;
+mod grid;
 pub mod keys;
 mod length;
 pub mod ui_ir;
@@ -56,6 +57,7 @@ use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::span::TextRange;
 pub use length::Consts;
 use length::{Lowered, Padding};
+use ui_ir::GridPlacement;
 
 /// A lowered view: its template, every node type name it wrote that neither a
 /// registered widget nor a component of the library declares (each with the
@@ -72,6 +74,8 @@ pub struct LoweredView {
     /// Each node of a component with `@persist` state the view inlines: such
     /// a component persists only as a view's own.
     pub persisting: Vec<(TextRange, String)>,
+    /// Each grid template and child cell that names no cells, and why.
+    pub misplaced: Vec<Unmounted>,
 }
 
 /// A node or region a view cannot mount.
@@ -220,6 +224,7 @@ struct Lowering<'a, 'l> {
     unknown: Vec<(String, TextRange)>,
     unmounted: Vec<Unmounted>,
     persisting: Vec<(TextRange, String)>,
+    misplaced: Vec<Unmounted>,
     instances: Vec<UiInstance>,
     /// Each component view being lowered, the mounted one first.
     frames: Vec<Frame>,
@@ -267,6 +272,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             unknown: Vec::new(),
             unmounted: Vec::new(),
             persisting: Vec::new(),
+            misplaced: Vec::new(),
             instances: Vec::new(),
             frames: vec![Frame {
                 instance: 0,
@@ -294,6 +300,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             unknown: self.unknown,
             unmounted: self.unmounted,
             persisting: self.persisting,
+            misplaced: self.misplaced,
         }
     }
 
@@ -314,6 +321,69 @@ impl<'a, 'l> Lowering<'a, 'l> {
             reason,
             placed_at,
         });
+    }
+
+    /// Reports `(at, reason)`: a grid template or child cell that names no
+    /// cells and why, with the call site of the instance whose view it is in.
+    fn misplace(&mut self, (at, reason): (TextRange, String)) {
+        let placed_at = self
+            .instances
+            .get(self.instance().wrapping_sub(1) as usize)
+            .map(|i| i.origin);
+        self.misplaced.push(Unmounted {
+            at,
+            reason,
+            placed_at,
+        });
+    }
+
+    /// Places each child of a grid whose `grid` template is `grid` and that
+    /// names an area into the area's cells, through `if`, `for` and `match`.
+    fn place_areas(&mut self, grid: Option<&ui_ir::GridIr>, children: &mut [UiItem]) {
+        for child in children {
+            match child {
+                UiItem::Node(node) => {
+                    let Some(area) = node.style.area.take() else {
+                        continue;
+                    };
+                    if node.style.place.is_some() {
+                        self.misplace((
+                            area.at,
+                            "a `grid.area` places the node by itself; drop its `grid.column`, \
+                             `grid.row` and spans"
+                                .to_string(),
+                        ));
+                        continue;
+                    }
+                    let areas = grid.map_or(&[][..], |grid| &grid.areas);
+                    match areas.iter().find(|(name, _)| *name == area.name) {
+                        Some((_, place)) => node.style.place = Some(*place),
+                        None if areas.is_empty() => self.misplace((
+                            area.at,
+                            format!(
+                                "`{}` names an area, but this grid declares no `areas`",
+                                area.name
+                            ),
+                        )),
+                        None => self.misplace((
+                            area.at,
+                            format!("`{}` names no area of this grid's `areas`", area.name),
+                        )),
+                    }
+                }
+                UiItem::If(region) => {
+                    for arm in &mut region.arms {
+                        self.place_areas(grid, &mut arm.items);
+                    }
+                }
+                UiItem::For(region) => self.place_areas(grid, &mut region.body),
+                UiItem::Match(region) => {
+                    for arm in &mut region.arms {
+                        self.place_areas(grid, &mut arm.items);
+                    }
+                }
+            }
+        }
     }
 
     /// Lowers `items` in order.
@@ -542,6 +612,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                         Fold::Folded => {}
                         Fold::Pending => bound.push((name, at)),
                         Fold::Unsupported(reason) => self.unmount((at, reason)),
+                        Fold::Invalid(reason) => self.misplace((at, reason)),
                     }
                 }
                 ViewItem::Handler(h) => handlers.push(UiHandler {
@@ -623,6 +694,9 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 self.unmount((at, reason));
             }
         }
+        if kind == NodeKind::Grid {
+            self.place_areas(style.grid.as_deref(), &mut children);
+        }
         style.settle_rules();
         out.push(UiItem::Node(Box::new(UiNode {
             type_name,
@@ -681,6 +755,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 Fold::Folded => {}
                 Fold::Pending => bound.push((name, at)),
                 Fold::Unsupported(reason) => self.unmount((at, reason)),
+                Fold::Invalid(reason) => self.misplace((at, reason)),
             }
         }
         for unmounted in plan.unmounted {
@@ -1085,6 +1160,10 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             Fold::Folded => None,
                             Fold::Pending => unapplied(&name, &root.type_name, root.kind, control, root.styled.as_ref()),
                             Fold::Unsupported(reason) => Some(reason),
+                            Fold::Invalid(reason) => {
+                                self.misplace((at, reason));
+                                None
+                            }
                         };
                         if let Some(reason) = reason {
                             self.unmount((at, reason));
@@ -1147,6 +1226,17 @@ fn unapplied(
         "justify" | "align" | "axis" | "direction" if kind == NodeKind::Flex => Some(format!(
             "a `{name}` that reads a value does not lay out yet; a constant one does"
         )),
+        "columns" | "rows" | "auto_rows" | "column_gap" | "row_gap" | "align_items" | "areas"
+        | "adaptive_columns"
+            if kind == NodeKind::Grid =>
+        {
+            Some(format!(
+                "a `{name}` that reads a value does not lay out yet; a constant one does"
+            ))
+        }
+        "grid.column" | "grid.row" | "grid.column_span" | "grid.row_span" | "grid.area" => Some(
+            format!("a `{name}` that reads a value does not lay out yet; a constant one does"),
+        ),
         _ => Some(format!("`{name}` does not reach a `{type_name}` yet")),
     }
 }
@@ -1204,10 +1294,11 @@ fn fold_property(
     let Some(value) = prop.value() else {
         return Fold::Folded;
     };
-    let fold = if path.segments().nth(1).is_some() {
-        Fold::Pending
-    } else {
-        fold_static(&name, kind, &value, consts, style)
+    let mut segments = path.segments().skip(1);
+    let fold = match (segments.next(), segments.next()) {
+        (None, _) => fold_static(&name, kind, &value, consts, style),
+        (Some(member), None) if name == "grid" => fold_cell(&member.text(), &value, consts, style),
+        _ => Fold::Pending,
     };
     if let Fold::Pending = fold {
         pending.push(PendingProperty::new(
@@ -1230,6 +1321,36 @@ enum Fold {
     /// A constant of a property the style models that layout does not take
     /// yet, and why.
     Unsupported(String),
+    /// A grid template or child cell that names no cells, and why.
+    Invalid(String),
+}
+
+/// Folds the `grid.member` binding of a grid's child into its cell.
+fn fold_cell(member: &str, value: &Expr, consts: &Consts, style: &mut StyleIr) -> Fold {
+    let cell = match grid::fold_cell(member, value, consts) {
+        Some(Ok(cell)) => cell,
+        Some(Err(reason)) => return Fold::Invalid(reason),
+        None => return Fold::Pending,
+    };
+    let place = || GridPlacement::default();
+    match cell {
+        grid::Cell::Column(column) => style.place.get_or_insert_with(place).column = column,
+        grid::Cell::Row(row) => style.place.get_or_insert_with(place).row = row,
+        grid::Cell::ColumnSpan(span) => style.place.get_or_insert_with(place).column_span = span,
+        grid::Cell::RowSpan(span) => style.place.get_or_insert_with(place).row_span = span,
+        grid::Cell::Area(area) => {
+            style.area = area.map(|name| {
+                Box::new(ui_ir::AreaRef {
+                    name,
+                    at: value.syntax().text_range(),
+                })
+            });
+        }
+    }
+    if style.place == Some(GridPlacement::default()) {
+        style.place = None;
+    }
+    Fold::Folded
 }
 
 /// The value of the `styles` property among a node's `members`.
@@ -1372,6 +1493,72 @@ fn fold_static(
             });
             Fold::Folded
         }
+        _ if kind == NodeKind::Grid => fold_grid(name, value, consts, style),
+        _ => Fold::Pending,
+    }
+}
+
+/// Folds a constant grid template property into a grid's style.
+fn fold_grid(name: &str, value: &Expr, consts: &Consts, style: &mut StyleIr) -> Fold {
+    let issue = |fold: Option<Result<(), String>>| match fold {
+        Some(Ok(())) => Fold::Folded,
+        Some(Err(reason)) => Fold::Unsupported(reason),
+        None => Fold::Pending,
+    };
+    match name {
+        "columns" | "rows" => issue(grid::fold_tracks(value, consts).map(|tracks| {
+            let tracks = tracks?;
+            let grid = style.grid_mut();
+            if name == "columns" {
+                grid.columns = tracks;
+            } else {
+                grid.rows = tracks;
+            }
+            Ok(())
+        })),
+        "auto_rows" => issue(grid::fold_track(value, consts).map(|track| {
+            style.grid_mut().auto_rows = Some(track?);
+            Ok(())
+        })),
+        "column_gap" | "row_gap" => issue(grid::fold_gap(value, consts).map(|gap| {
+            let (fixed, env) = match gap? {
+                Lowered::Layout(LengthIr::Fixed(n)) => (Some(n), None),
+                Lowered::Env(terms) => (None, Some(terms)),
+                Lowered::Layout(_) => return Ok(()),
+            };
+            let columns = name == "column_gap";
+            let grid = style.grid_mut();
+            *if columns {
+                &mut grid.column_gap
+            } else {
+                &mut grid.row_gap
+            } = fixed;
+            if env.is_some() || style.lengths.is_some() {
+                let lengths = style.lengths_mut();
+                *if columns {
+                    &mut lengths.gap
+                } else {
+                    &mut lengths.row_gap
+                } = env;
+            }
+            Ok(())
+        })),
+        "align_items" => issue(grid::fold_align_items(value, consts).map(|align| {
+            style.grid_mut().align_items = Some(align);
+            Ok(())
+        })),
+        "adaptive_columns" => issue(grid::fold_adaptive(value, consts).map(|adaptive| {
+            style.grid_mut().adaptive_columns = adaptive?;
+            Ok(())
+        })),
+        "areas" => match grid::fold_areas(value, consts) {
+            Some(Ok(areas)) => {
+                style.grid_mut().areas = areas;
+                Fold::Folded
+            }
+            Some(Err(reason)) => Fold::Invalid(reason),
+            None => Fold::Pending,
+        },
         _ => Fold::Pending,
     }
 }

@@ -76,18 +76,20 @@ struct SizeTerms {
     padding: Option<EdgeTerms>,
 }
 
-/// A binding's box-rule terms, which few bindings have.
+/// A binding's terms that few bindings have: its box rules and a grid's row
+/// gap.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct RuleTerms {
+struct RareTerms {
     min_width: Option<LengthTerms>,
     max_width: Option<LengthTerms>,
     min_height: Option<LengthTerms>,
     max_height: Option<LengthTerms>,
     margin: Option<EdgeTerms>,
+    row_gap: Option<LengthTerms>,
 }
 
-/// No slot of [`LengthBindings::rule_terms`].
-const NO_RULE_TERMS: u32 = u32::MAX;
+/// No slot of [`LengthBindings::rare_terms`].
+const NO_RARE_TERMS: u32 = u32::MAX;
 
 /// The store's environment-dependent lengths: the environment, each bound
 /// node by ascending index, and what layout reported.
@@ -95,12 +97,12 @@ const NO_RULE_TERMS: u32 = u32::MAX;
 pub(crate) struct LengthBindings {
     env: LengthEnv,
     bindings: Vec<LengthBinding>,
-    /// Each binding's terms, with its slot of `rule_terms` or
-    /// [`NO_RULE_TERMS`]; `free_terms` lists the slots a dropped binding left.
+    /// Each binding's terms, with its slot of `rare_terms` or
+    /// [`NO_RARE_TERMS`]; `free_terms` lists the slots a dropped binding left.
     terms: Vec<(SizeTerms, u32)>,
     free_terms: Vec<u32>,
-    rule_terms: Vec<RuleTerms>,
-    free_rule_terms: Vec<u32>,
+    rare_terms: Vec<RareTerms>,
+    free_rare_terms: Vec<u32>,
     /// Some binding re-folds at the next layout.
     pending: bool,
     /// A font source was bound or dropped: the next layout re-folds every
@@ -121,8 +123,8 @@ impl LengthBindings {
         self.bindings.clear();
         self.terms.clear();
         self.free_terms.clear();
-        self.rule_terms.clear();
-        self.free_rule_terms.clear();
+        self.rare_terms.clear();
+        self.free_rare_terms.clear();
         self.pending = false;
         self.font_moved = false;
         #[cfg(debug_assertions)]
@@ -143,13 +145,14 @@ impl LengthBindings {
             padding: size.padding,
             ..NodeLengths::default()
         };
-        if rules != NO_RULE_TERMS {
-            let rules = self.rule_terms[rules as usize];
+        if rules != NO_RARE_TERMS {
+            let rules = self.rare_terms[rules as usize];
             lengths.min_width = rules.min_width;
             lengths.max_width = rules.max_width;
             lengths.min_height = rules.min_height;
             lengths.max_height = rules.max_height;
             lengths.margin = rules.margin;
+            lengths.row_gap = rules.row_gap;
         }
         lengths
     }
@@ -168,57 +171,59 @@ impl LengthBindings {
             font_size: lengths.font_size,
             padding: lengths.padding,
         };
-        let rules = RuleTerms {
+        let rare = RareTerms {
             min_width: lengths.min_width,
             max_width: lengths.max_width,
             min_height: lengths.min_height,
             max_height: lengths.max_height,
             margin: lengths.margin,
+            row_gap: lengths.row_gap,
         };
-        let has_rules = rules.min_width.is_some()
-            || rules.max_width.is_some()
-            || rules.min_height.is_some()
-            || rules.max_height.is_some()
-            || rules.margin.is_some();
-        let old_rules = slot.map_or(NO_RULE_TERMS, |slot| self.terms[slot as usize].1);
-        let rule_slot = match (has_rules, old_rules) {
-            (false, NO_RULE_TERMS) => NO_RULE_TERMS,
+        let has_rare = rare.min_width.is_some()
+            || rare.max_width.is_some()
+            || rare.min_height.is_some()
+            || rare.max_height.is_some()
+            || rare.margin.is_some()
+            || rare.row_gap.is_some();
+        let old_rare = slot.map_or(NO_RARE_TERMS, |slot| self.terms[slot as usize].1);
+        let rare_slot = match (has_rare, old_rare) {
+            (false, NO_RARE_TERMS) => NO_RARE_TERMS,
             (false, old) => {
-                self.free_rule_terms.push(old);
-                NO_RULE_TERMS
+                self.free_rare_terms.push(old);
+                NO_RARE_TERMS
             }
-            (true, NO_RULE_TERMS) => match self.free_rule_terms.pop() {
+            (true, NO_RARE_TERMS) => match self.free_rare_terms.pop() {
                 Some(free) => {
-                    self.rule_terms[free as usize] = rules;
+                    self.rare_terms[free as usize] = rare;
                     free
                 }
                 None => {
-                    self.rule_terms.push(rules);
-                    (self.rule_terms.len() - 1) as u32
+                    self.rare_terms.push(rare);
+                    (self.rare_terms.len() - 1) as u32
                 }
             },
             (true, old) => {
-                self.rule_terms[old as usize] = rules;
+                self.rare_terms[old as usize] = rare;
                 old
             }
         };
         match slot.or_else(|| self.free_terms.pop()) {
             Some(slot) => {
-                self.terms[slot as usize] = (size, rule_slot);
+                self.terms[slot as usize] = (size, rare_slot);
                 slot
             }
             None => {
-                self.terms.push((size, rule_slot));
+                self.terms.push((size, rare_slot));
                 (self.terms.len() - 1) as u32
             }
         }
     }
 
-    /// Frees `slot` and the rule terms it holds.
+    /// Frees `slot` and the rare terms it holds.
     fn release(&mut self, slot: u32) {
         let rules = self.terms[slot as usize].1;
-        if rules != NO_RULE_TERMS {
-            self.free_rule_terms.push(rules);
+        if rules != NO_RARE_TERMS {
+            self.free_rare_terms.push(rules);
         }
         self.free_terms.push(slot);
     }
@@ -472,7 +477,10 @@ impl NodeStore {
         if requested {
             self.request_moved(id);
         }
-        if let Some(terms) = lengths.gap {
+        for (terms, rows) in [(lengths.gap, false), (lengths.row_gap, true)] {
+            let Some(terms) = terms else {
+                continue;
+            };
             if terms.pct != 0.0 {
                 self.lengths_mut().report(id, LengthIssue::IndefiniteBasis);
             }
@@ -483,25 +491,14 @@ impl NodeStore {
                     0.0
                 }
             };
-            let moved = match self.layout_input_mut(id) {
-                LayoutInput::Flex { gap, .. } => {
-                    let moved = *gap != folded;
-                    *gap = folded;
-                    moved
-                }
-                LayoutInput::Grid {
-                    column_gap,
-                    row_gap,
-                    ..
-                } => {
-                    let moved = *column_gap != folded || *row_gap != folded;
-                    *column_gap = folded;
-                    *row_gap = folded;
-                    moved
-                }
-                _ => false,
+            let slot = match self.layout_input_mut(id) {
+                LayoutInput::Flex { gap, .. } if !rows => gap,
+                LayoutInput::Grid { column_gap, .. } if !rows => column_gap,
+                LayoutInput::Grid { row_gap, .. } => row_gap,
+                _ => continue,
             };
-            if moved {
+            if *slot != folded {
+                *slot = folded;
                 class = class | DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT;
             }
         }

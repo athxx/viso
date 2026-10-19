@@ -301,3 +301,64 @@ fn box_rules_read_the_parent_content_box_and_follow_the_environment() {
     store.layout(root, surface, &mut Vec::new());
     assert_eq!(b(&store, children[3]).0, 4.0, "2sp at text scale 2");
 }
+
+/// A grid's tracks, gaps, cell alignment and areas, and its children's
+/// cells, lay out from the macro as from the package; a row gap in `sp`
+/// follows the text scale.
+#[test]
+fn a_grid_places_its_children_by_tracks_areas_and_cells() {
+    use viso::render::Rect;
+    use viso::ui::LengthEnv;
+
+    let build = viso::ui! {
+        Grid {
+            width: 300dp;
+            height: 200dp;
+            columns: [Track::fixed(100dp), Track::fr(1.0), Track::fr(2.0)];
+            rows: tracks(2, Track::fixed(40dp));
+            column_gap: 10dp;
+            row_gap: 14sp;
+            align_items: GridAlign::center;
+            areas: ["head head head", "side main main", "side main main"];
+            Text { width: 10dp; height: 10dp; grid.area: "main"; }
+            Text { width: 10dp; height: 10dp; grid.column: 0; grid.row: 2; }
+            Text { width: 10dp; height: 10dp; grid.column: 2; }
+        }
+    };
+    let mut store = NodeStore::new();
+    let root = {
+        let mut cx = BuildCx::new(&mut store);
+        build(&mut cx).id()
+    };
+    let mut children = Vec::new();
+    let mut at = store.arena().links(root).unwrap().first_child;
+    while let Some(child) = at {
+        children.push(child);
+        at = store.arena().links(child).unwrap().next_sibling;
+    }
+    let surface = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 300.0,
+        h: 200.0,
+    };
+    store.layout(root, surface, &mut Vec::new());
+    let at = |store: &NodeStore, node| {
+        let b = store.bounds(node);
+        (b.x, b.y)
+    };
+    assert_eq!(at(&store, children[0]), (110.0, 81.0));
+    assert_eq!(at(&store, children[1]), (0.0, 108.0));
+    assert_eq!(at(&store, children[2]), (180.0, 15.0));
+
+    store.set_length_env(LengthEnv {
+        text_scale: 2.0,
+        ..LengthEnv::default()
+    });
+    store.layout(root, surface, &mut Vec::new());
+    assert_eq!(
+        at(&store, children[1]),
+        (0.0, 136.0),
+        "14sp at text scale 2"
+    );
+}

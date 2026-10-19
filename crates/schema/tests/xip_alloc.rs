@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use viso_ende::{Aligned, Encode, SECTION_ALIGN};
 use viso_schema::aot::{AotEdge, AotNode, AotNodeKind, AotPackage, AotStyle, AotView};
-use viso_schema::layout::{BoxRules, Span, SpanInset};
+use viso_schema::layout::{BoxRules, GridPlacement, Span, SpanInset};
 use viso_schema::view::{
     EventRoute, Route, ViewAsset, ViewHandler, ViewPackage, ViewPackageView, ViewShader, ViewState,
 };
@@ -67,7 +67,7 @@ fn allocations<T>(f: impl FnOnce() -> T) -> (T, usize) {
 }
 
 /// A row of `leaves` leaves, each with lengths and an edge, every other one
-/// with box rules.
+/// with box rules and every third one placed.
 fn tree(leaves: u32) -> AotPackage {
     let mut nodes = vec![AotNode {
         kind: AotNodeKind::Flex,
@@ -77,13 +77,21 @@ fn tree(leaves: u32) -> AotPackage {
         },
         lengths: None,
         rules: None,
+        grid: None,
         child_count: leaves,
     }];
     let mut edges = Vec::new();
     for i in 0..leaves {
         nodes.push(AotNode {
             kind: AotNodeKind::Leaf,
-            style: AotStyle::default(),
+            style: AotStyle {
+                place: (i % 3 == 0).then_some(GridPlacement {
+                    column: Some(i as u16),
+                    column_span: 2,
+                    ..GridPlacement::default()
+                }),
+                ..AotStyle::default()
+            },
             lengths: Some(Box::new(NodeLengths {
                 width: Some(LengthTerms {
                     dp: i as f32,
@@ -101,6 +109,7 @@ fn tree(leaves: u32) -> AotPackage {
                     ..BoxRules::NONE
                 })
             }),
+            grid: None,
             child_count: 0,
         });
         edges.push(AotEdge {

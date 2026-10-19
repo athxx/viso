@@ -6,82 +6,7 @@
 
 use crate::layout::{AlignItems, Inset, Size};
 use crate::style::BoxStyle;
-
-/// How one grid track (a column or a row) is sized.
-///
-/// `Fixed` is an exact pixel extent. `Percent` is a fraction (0.0..=1.0) of the
-/// grid's content extent along that track's axis. `Auto` sizes to the largest
-/// natural main size among the single-track items on the track. `Fr` claims a
-/// share of the free space left after the fixed/percent/auto tracks, resolved by
-/// a re-normalizing sweep so a clamp on one flexible track cascades to the rest.
-/// `Minmax` clamps the track's content size into a `[min, max]` pixel band;
-/// `FitContent` caps the content size at a pixel limit. Both resolve like a
-/// content-sized track (they read the same natural-max channel as `Auto`) and
-/// are fixed-size tracks — they consume space before the `Fr` sweep, they never
-/// take a share of the free space.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TrackSizing {
-    /// Exact pixel extent.
-    Fixed(f32),
-    /// Share of free space, proportional to this value across all `Fr` tracks.
-    Fr(f32),
-    /// Content-sized: the max natural extent of the single-track items on it.
-    Auto,
-    /// Fraction (0.0..=1.0) of the grid content extent along the track axis.
-    Percent(f32),
-    /// Content size clamped to a `[min, max]` pixel band. A fixed-size track: it
-    /// resolves to `content.clamp(min, max)` and does not enter the `Fr` sweep.
-    Minmax(f32, f32),
-    /// Content size capped at a pixel limit: `content.min(limit)`. A fixed-size
-    /// track, resolved like `Auto` but bounded above.
-    FitContent(f32),
-    /// A flexible track with a pixel floor: `minmax(min, <fr>fr)`. Unlike the
-    /// fixed-size `Minmax`, its upper bound is a free-space share, so it takes
-    /// `min` first (counted as consumed) and then grows by an `Fr(fr)` share of
-    /// the leftover — the CSS `minmax(min, 1fr)` semantics behind the responsive
-    /// `repeat(auto-fill/auto-fit, minmax(min, 1fr))` grid. It participates in the
-    /// `Fr` sweep; a track that gets no leftover share still holds at `min`.
-    FlexMin(f32, f32),
-}
-
-/// The trailing-empty-track rule for a responsive `repeat(auto-*, …)` column
-/// template: `Fill` keeps every computed track (empty ones hold their place and
-/// their gap); `Fit` collapses trailing tracks that hold no single-track item to
-/// zero width and folds away the gap they would have introduced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AutoRepeat {
-    /// `auto-fill`: keep the computed empty trailing tracks.
-    Fill,
-    /// `auto-fit`: collapse the computed empty trailing tracks.
-    Fit,
-}
-
-/// The upper bound of a responsive `minmax(min, max)` track: a pixel cap
-/// (fixed-size, resolved like [`TrackSizing::Minmax`]) or an `Fr` share
-/// (flexible, resolved like [`TrackSizing::FlexMin`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TrackMax {
-    /// A pixel upper bound: the track is content-clamped into `[min, px]`.
-    Px(f32),
-    /// A free-space share: the track takes `min` then an `fr` share of leftover.
-    Fr(f32),
-}
-
-/// A responsive column template `repeat(auto-fill | auto-fit, minmax(min, max))`:
-/// the *number* of columns is not fixed at build time but computed from the
-/// container's inner width during layout, and every column is a `minmax(min, max)`
-/// track. Kept as a `Copy` scalar so it rides on the grid's `LayoutInput` with no
-/// heap; the common (non-adaptive) grid carries `None`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AdaptiveColumns {
-    /// Trailing-empty-track rule (`auto-fill` vs `auto-fit`).
-    pub mode: AutoRepeat,
-    /// Per-column pixel floor (`min` of `minmax(min, max)`); also the divisor of
-    /// the column-count formula.
-    pub min: f32,
-    /// Per-column upper bound (`max` of `minmax(min, max)`).
-    pub max: TrackMax,
-}
+pub use viso_schema::layout::{AdaptiveColumns, AutoRepeat, GridPlacement, TrackMax, TrackSizing};
 
 /// Expand a `repeat(count, inner)` track function into `count` copies of `inner`,
 /// appended to `out`. `repeat` is a creation-time template macro, not a runtime
@@ -101,30 +26,6 @@ pub fn repeated(count: u16, inner: TrackSizing) -> Vec<TrackSizing> {
     let mut out = Vec::with_capacity(count as usize);
     repeat(count, inner, &mut out);
     out
-}
-
-impl AdaptiveColumns {
-    /// `repeat(auto-fill, minmax(min, max))`: fit as many `minmax(min, max)`
-    /// columns as the container's inner width allows, keeping computed empty
-    /// trailing columns (they hold their place and their gap).
-    pub fn auto_fill(min: f32, max: TrackMax) -> Self {
-        AdaptiveColumns {
-            mode: AutoRepeat::Fill,
-            min,
-            max,
-        }
-    }
-
-    /// `repeat(auto-fit, minmax(min, max))`: like [`AdaptiveColumns::auto_fill`]
-    /// but trailing columns that hold no single-track item collapse to zero width,
-    /// folding away the gap they would have introduced (CSS collapsed tracks).
-    pub fn auto_fit(min: f32, max: TrackMax) -> Self {
-        AdaptiveColumns {
-            mode: AutoRepeat::Fit,
-            min,
-            max,
-        }
-    }
 }
 
 /// The style of a grid container declared via [`crate::component::BuildCx::grid`].
@@ -197,31 +98,6 @@ impl Default for GridStyle {
             subgrid_columns: false,
             subgrid_rows: false,
             adaptive_columns: None,
-        }
-    }
-}
-
-/// Explicit placement and span for the next child authored inside a grid. A
-/// child with no `place` call auto-flows into the first free cell with span 1.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GridPlacement {
-    /// 0-based start column; `None` auto-flows along the column axis.
-    pub column: Option<u16>,
-    /// 0-based start row; `None` auto-flows along the row axis.
-    pub row: Option<u16>,
-    /// Number of columns the child spans (>= 1).
-    pub column_span: u16,
-    /// Number of rows the child spans (>= 1).
-    pub row_span: u16,
-}
-
-impl Default for GridPlacement {
-    fn default() -> Self {
-        GridPlacement {
-            column: None,
-            row: None,
-            column_span: 1,
-            row_span: 1,
         }
     }
 }
@@ -408,9 +284,10 @@ fn mark_block(
     }
 }
 
-/// Place every child into the grid: explicit placements first (so auto-flow
-/// routes around them), then auto-flow children row-major into the first free
-/// block that fits their span. Returns the number of rows used (>= 1). `occupied`
+/// Place every child into the grid as CSS's sparse auto-placement does:
+/// children pinned on both axes first (so the rest route around them), then
+/// the row-pinned ones within their rows, then the column-pinned and the
+/// unpinned ones row-major behind one cursor. Returns the number of rows used (>= 1). `occupied`
 /// and `out` are reusable scratch buffers, cleared at entry; the pass allocates
 /// only when growing them.
 pub(crate) fn place_children(
@@ -457,17 +334,68 @@ pub(crate) fn place_children(
         }
     }
 
-    // Auto-flow children: a row-major cursor scans for the first free block that
-    // fits the span, creating implicit rows as needed. A partially-explicit
-    // placement (only one axis pinned) is treated as auto-flow this slice.
+    // Row-pinned children next: each takes the first free block of its row past
+    // the row-pinned children placed in that row before it. A row with no room
+    // left takes it at its start, over what is there: the grid adds no columns.
+    for (i, p) in placements.iter().enumerate() {
+        let (None, Some(row)) = (p.column, p.row) else {
+            continue;
+        };
+        let col_span = p.column_span.max(1).min(cols);
+        let row_span = p.row_span.max(1);
+        let mut col = placements[..i]
+            .iter()
+            .zip(&out[..i])
+            .filter(|(q, _)| q.column.is_none() && q.row == Some(row))
+            .map(|(_, region)| region.col + region.col_span)
+            .max()
+            .unwrap_or(0);
+        while col + col_span <= cols && !block_free(occupied, cols, col, row, col_span, row_span) {
+            col += 1;
+        }
+        if col + col_span > cols {
+            col = 0;
+        }
+        mark_block(occupied, cols, col, row, col_span, row_span);
+        out[i] = CellRegion {
+            col,
+            row,
+            col_span,
+            row_span,
+        };
+    }
+
+    // The rest flow behind a row-major cursor: a column-pinned child takes the
+    // first free block of its column at or past the cursor's row (the next row
+    // when its column is behind the cursor), any other the first free block
+    // that fits its span, creating implicit rows as needed.
     let mut cursor_col: u16 = 0;
     let mut cursor_row: u16 = 0;
     for (i, p) in placements.iter().enumerate() {
-        if p.column.is_some() && p.row.is_some() {
+        if p.row.is_some() {
             continue;
         }
         let col_span = p.column_span.max(1).min(cols);
         let row_span = p.row_span.max(1);
+        if let Some(c) = p.column {
+            let col = c.min(cols - 1);
+            let col_span = col_span.min(cols - col);
+            if col < cursor_col {
+                cursor_row += 1;
+            }
+            while !block_free(occupied, cols, col, cursor_row, col_span, row_span) {
+                cursor_row += 1;
+            }
+            mark_block(occupied, cols, col, cursor_row, col_span, row_span);
+            out[i] = CellRegion {
+                col,
+                row: cursor_row,
+                col_span,
+                row_span,
+            };
+            cursor_col = col + col_span;
+            continue;
+        }
         loop {
             if cursor_col + col_span > cols {
                 cursor_col = 0;
@@ -779,6 +707,31 @@ mod tests {
                 row_span: 1
             }
         );
+    }
+
+    #[test]
+    fn a_child_pinned_on_one_axis_flows_along_the_other() {
+        let pinned = |column, row| GridPlacement {
+            column,
+            row,
+            ..auto(1, 1)
+        };
+        // 3 columns. Row-pinned children fill row 1 left to right; a
+        // column-pinned one takes the first free row of column 2; an
+        // unpinned one flows behind it, never back before the cursor; a
+        // column behind the cursor moves to the next row.
+        let placements = [
+            pinned(None, Some(1)),
+            pinned(Some(2), None),
+            pinned(None, Some(1)),
+            auto(1, 1),
+            pinned(Some(0), None),
+        ];
+        let (mut occ, mut out) = (Vec::new(), Vec::new());
+        let rows = place_children(3, &placements, &mut occ, &mut out);
+        let at: Vec<(u16, u16)> = out.iter().map(|r| (r.col, r.row)).collect();
+        assert_eq!(at, [(0, 1), (2, 0), (1, 1), (2, 1), (0, 2)]);
+        assert_eq!(rows, 3);
     }
 
     #[test]

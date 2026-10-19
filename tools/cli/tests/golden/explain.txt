@@ -160,6 +160,7 @@ E3104                         Percent Without Percent Basis
 E3105                         Indefinite Percent Basis
 E3106                         Non-Finite Length
 E3107                         Bind Source Is Not A State Lens
+E3108                         Invalid Grid Area Or Cell
 E3201                         Arrow Event Handler
 E3202                         Unknown Event Or Wrong Payload
 E3301                         Invalid Preserve Identity

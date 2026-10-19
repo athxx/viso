@@ -32,7 +32,7 @@ use viso_ende::Encode;
 use viso_schema::AssetBytes;
 use viso_schema::StateKey;
 use viso_schema::aot::{
-    AotAxis, AotEdge, AotLength, AotNode, AotNodeKind, AotPackage, AotScope, AotStyle,
+    AotAxis, AotEdge, AotGrid, AotLength, AotNode, AotNodeKind, AotPackage, AotScope, AotStyle,
 };
 use viso_schema::layout::Inset;
 use viso_schema::{EdgeTerms, LengthTerms, NodeLengths, StateValue};
@@ -48,8 +48,8 @@ use crate::frontend::Origin;
 use crate::hir::TargetProfile;
 use crate::hotreload::plan::{CandidatePlan, plan, plan_mount_for, plan_view_for};
 use crate::ir::ui_ir::{
-    AxisIr, EdgeTermsIr, InsetIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode,
-    UiTree,
+    AxisIr, EdgeTermsIr, GridIr, InsetIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem,
+    UiNode, UiTree,
 };
 use crate::view_behavior::ViewBrush;
 use crate::view_regions::StaticNodes;
@@ -420,6 +420,11 @@ pub(crate) fn aot_node(node: &UiNode) -> AotNode {
         style: aot_style(&node.style),
         lengths: node_lengths(node.style.lengths()).map(Box::new),
         rules: node.style.rules.clone(),
+        grid: node
+            .style
+            .grid
+            .as_deref()
+            .map(|grid| Box::new(aot_grid(grid))),
         child_count: 0,
     }
 }
@@ -451,6 +456,22 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
         padding: style.padding.map(inset_of),
         scope: style.scope.map(|scope| AotScope { basis: scope.basis }),
         avoid: style.avoid,
+        place: style.place,
+    }
+}
+
+/// A lowered grid template to the package's, its unset parts the runtime
+/// defaults; the areas stay behind, resolved into the children's cells.
+fn aot_grid(grid: &GridIr) -> AotGrid {
+    let defaults = AotGrid::default();
+    AotGrid {
+        columns: grid.columns.clone(),
+        rows: grid.rows.clone(),
+        auto_rows: grid.auto_rows.unwrap_or(defaults.auto_rows),
+        column_gap: grid.column_gap.unwrap_or(defaults.column_gap),
+        row_gap: grid.row_gap.unwrap_or(defaults.row_gap),
+        align_items: grid.align_items.unwrap_or(defaults.align_items),
+        adaptive_columns: grid.adaptive_columns,
     }
 }
 
@@ -468,6 +489,7 @@ pub(crate) fn node_lengths(lengths: &LengthsIr) -> Option<NodeLengths> {
         min_height: lengths.min_height.map(terms_of),
         max_height: lengths.max_height.map(terms_of),
         margin: lengths.margin.map(edges_of),
+        row_gap: lengths.row_gap.map(terms_of),
     })
 }
 
