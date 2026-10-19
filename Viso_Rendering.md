@@ -792,12 +792,12 @@ opacity 跨过 0 或 1（layer 出现、消失，或被跳过）仍然是形状�
 
 | case | 整树 paint + 整 stream 上传 | splice |
 |---|---|---|
-| `mount/rows_30` | 8.3 µs | 5.4 µs |
-| `mount/rows_160` | 45.0 µs | 11.1 µs |
+| `mount/rows_30` | 8.3 µs | 4.6 µs |
+| `mount/rows_160` | 45.0 µs | 6.8 µs |
 | `type/notes_100`（一个 label 增减一个 glyph） | 75 µs | 3.0 µs |
 | `type/notes_2000` | 1.49 ms | 3.2 µs |
 
-label 的 re-measure 只重做它所在的那一行（Architecture §19.1）；glyph store 把插入的 run 的 glyph 追加在末尾，被移除的 run 的 glyph 留作空洞，其余 run 不动，空洞超过一半时整理一次。一次文本编辑的代价因此与页面大小基本无关；剩下随页面增长的只有 paint order 与 surface draw 下标的逐项平移（整数加法）。
+虚拟列表在数据未变、新窗口与旧窗口重叠时只滑动窗口：两端离开的行回收，两端露出的行挂载，其余行的 key 与 offset 不变，不再逐行求 prefix sum、按 key 二分查找。label 的 re-measure 只重做它所在的那一行（Architecture §19.1）；glyph store 把插入的 run 的 glyph 追加在末尾，被移除的 run 的 glyph 留作空洞，其余 run 不动，空洞超过一半时整理一次。一次文本编辑的代价因此与页面大小基本无关；剩下随页面增长的只有 paint order 与 surface draw 下标的逐项平移（整数加法）。
 
 ## 9.8 多线程模型
 

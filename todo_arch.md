@@ -210,3 +210,4 @@ Phase 2 — a frame that changes shape:
   - [x] Surface draws and their keys splice too, instead of re-keying the frame: a pass's content mixes each entry's place in the pass, so a pass moved whole keeps it
   - [x] The glyph store splices a run without moving every glyph after it: inserted runs' glyphs append, removed ones' are left behind and packed once they outnumber half
   - [x] A splice stages its damage: the rects the removed draws were shown at and the rects of the inserted draws, the presented rects spliced alongside, so a spliced frame presents as a partial redraw of what it changed
+  - [x] A scroll slides the virtual list's window: with clean data the overlap keeps its keys and offsets, so only the rows past either end park and the rows uncovered at either end mount; a jump or a data change rebinds by key

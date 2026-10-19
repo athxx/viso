@@ -283,6 +283,8 @@ impl Default for HeightCache {
     }
 }
 
+use std::collections::VecDeque;
+
 use crate::binding::{BindingTable, Template};
 use crate::component::{BuildCx, NodeStore};
 use crate::dirty::DirtyClass;
@@ -354,9 +356,9 @@ pub struct VirtualListState {
     range_start: usize,
     range_end: usize,
     /// The mounted hosts, one per row in `[range_start, range_end)`, in index
-    /// order. Reused in place across reconciles; never reallocated on the steady
-    /// path.
-    mounted: Vec<MountedItem>,
+    /// order. A scroll that slides the window pops and pushes its ends; never
+    /// reallocated on the steady path.
+    mounted: VecDeque<MountedItem>,
     /// Detached hosts parked for reuse — a recycle pops from here before it ever
     /// allocates a fresh arena node, so churn is bounded and the tree does not
     /// grow row by row.
@@ -413,7 +415,7 @@ pub struct VirtualListState {
     /// rebuilt into `mounted`. Swapped (not `take`n) out of `mounted` so both
     /// buffers keep their capacity — the diff path (a scroll crossing or a keyed
     /// reorder) then rebuilds the window with zero heap growth once warmed.
-    scratch_old_mounted: Vec<MountedItem>,
+    scratch_old_mounted: VecDeque<MountedItem>,
     /// Reused scratch: the new window's keys, sorted, and the previous mounted
     /// set's keys with each one's index there, sorted — so the leave and build
     /// steps find a key by binary search instead of a scan per row.
@@ -441,7 +443,7 @@ impl VirtualListState {
             height_cache: HeightCache::with_fallback(estimated_row),
             range_start: 0,
             range_end: 0,
-            mounted: Vec::new(),
+            mounted: VecDeque::new(),
             pool: Vec::new(),
             item_count,
             overscan,
@@ -460,7 +462,7 @@ impl VirtualListState {
             scratch_free: Vec::new(),
             scratch_mounted: Vec::new(),
             new_keys: Vec::new(),
-            scratch_old_mounted: Vec::new(),
+            scratch_old_mounted: VecDeque::new(),
             sorted_new: Vec::new(),
             sorted_old: Vec::new(),
         }
@@ -501,6 +503,201 @@ impl VirtualListState {
     #[inline]
     pub fn pool_len(&self) -> usize {
         self.pool.len()
+    }
+
+    /// Rebuild the mounted set for `[new_start, new_end)` by key: survivors keep
+    /// their host and move if their offset did, the rest enter. Returns the rows
+    /// bound.
+    fn rebind(
+        &mut self,
+        new_start: usize,
+        new_end: usize,
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &mut BindingTable,
+        effects: &mut EffectStore,
+    ) -> u32 {
+        let mut bound = 0;
+
+        // Diff the window. Any currently-mounted row whose identity is no longer in
+        // `[new_start,new_end)` leaves: detach its host to the pool. Then walk the new
+        // range: a row whose identity is still mounted keeps its host (rewrite its
+        // offset / rebind its index if it moved); a row entering pops a host from the
+        // pool (or allocates one), clears its old body, and rebuilds.
+        //
+        // Identity is by [`ItemKey`]: `ItemKey(logical)` for a keyless list (so the
+        // predicates below degrade to the original index match, byte for byte), or the
+        // data key for a keyed list (so a reorder re-anchors the surviving host rather
+        // than rebuilding the row that now sits at that index).
+        self.scratch_mounted.clear();
+
+        // Compute the identity of every row in the new window once. The leave step
+        // uses it to decide which hosts have truly left (their key is absent here —
+        // not merely shifted to another index), and the build step uses it to find the
+        // survivor for each new-window key. Reused in place: grows to the window size
+        // on the first crossing, then never reallocates on the steady path.
+        // Taken out of `self` so the build loop below can borrow it while it mutates
+        // the other list fields; restored (reused, capacity kept) at the end.
+        let mut new_keys = std::mem::take(&mut self.new_keys);
+        new_keys.clear();
+        for logical in new_start..new_end {
+            let key = self.key_at(logical);
+            new_keys.push((logical, key));
+        }
+
+        // 1. Any currently-mounted row whose key is absent from the new window leaves:
+        //    detach its host from the tree (kept live) and park it in the pool for
+        //    reuse. Keying the leave decision (not the raw index range) is what keeps a
+        //    reordered-but-still-visible row from being wrongly pooled — and, crucially,
+        //    guarantees a pooled host is never key-matched as a survivor in step 2.
+        //    Swap the old mounted list into a persistent scratch (keeping both
+        //    buffers' capacity) so the new set is rebuilt fresh into `mounted` below
+        //    without reallocating it. `mounted` starts this pass empty-but-capacious.
+        let mut old_mounted = std::mem::take(&mut self.scratch_old_mounted);
+        std::mem::swap(&mut old_mounted, &mut self.mounted);
+        let mut sorted_new = std::mem::take(&mut self.sorted_new);
+        sorted_new.clear();
+        sorted_new.extend(new_keys.iter().map(|(_, k)| k.0));
+        sorted_new.sort_unstable();
+        let mut sorted_old = std::mem::take(&mut self.sorted_old);
+        sorted_old.clear();
+        sorted_old.extend(
+            old_mounted
+                .iter()
+                .enumerate()
+                .map(|(i, m)| (m.key.0, i as u32)),
+        );
+        sorted_old.sort_unstable();
+        for m in &old_mounted {
+            let still_present = sorted_new.binary_search(&m.key.0).is_ok();
+            if !still_present {
+                park(store, &mut self.pool, m.host);
+            }
+        }
+
+        // 2. Build the new mounted set in index order, reusing survivors. A survivor is
+        //    found by a binary search over the old set's sorted keys.
+        for &(logical, key) in &new_keys {
+            let item_top = self.heights.prefix_sum(logical);
+            let at = sorted_old.partition_point(|&(k, _)| k < key.0);
+            let survivor = sorted_old
+                .get(at)
+                .filter(|&&(k, _)| k == key.0)
+                .map(|&(_, i)| &old_mounted[i as usize]);
+            if let Some(existing) = survivor {
+                // Survivor: reuse the host. Re-anchor it if its offset moved, and
+                // rebind its logical index if a reorder placed it at a new position —
+                // no rebuild, so its body / per-row state / focus are preserved.
+                let host = existing.host;
+                if existing.item_top != item_top {
+                    store.set_row_offset(host, item_top);
+                    store.mark_dirty(host, DirtyClass::LAYOUT | DirtyClass::PAINT);
+                }
+                self.mounted.push_back(MountedItem {
+                    logical_index: logical,
+                    key,
+                    host,
+                    item_top,
+                });
+            } else {
+                let row = self.mount(logical, key, store, states, bindings, effects);
+                self.mounted.push_back(row);
+                bound += 1;
+            }
+        }
+
+        // Give the scratches back to the state so their capacity is reused next
+        // reconcile: `new_keys` as-is (it is cleared at the top of each pass), and the
+        // drained old-mounted buffer (cleared here) as the swap target for next time.
+        self.new_keys = new_keys;
+        old_mounted.clear();
+        self.scratch_old_mounted = old_mounted;
+        self.sorted_new = sorted_new;
+        self.sorted_old = sorted_old;
+        bound
+    }
+
+    /// Slide the mounted window to `[new_start, new_end)`, which overlaps the
+    /// current one and whose rows kept their keys and offsets: the rows past
+    /// either end leave, the rows uncovered at either end enter. Returns the
+    /// rows bound.
+    fn slide(
+        &mut self,
+        new_start: usize,
+        new_end: usize,
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &mut BindingTable,
+        effects: &mut EffectStore,
+    ) -> u32 {
+        self.scratch_mounted.clear();
+        let (start, end) = (self.range_start, self.range_end);
+        let front = new_start.saturating_sub(start);
+        let back = end.saturating_sub(new_end);
+        for m in self.mounted.drain(..front) {
+            park(store, &mut self.pool, m.host);
+        }
+        let kept = self.mounted.len() - back;
+        for m in self.mounted.drain(kept..) {
+            park(store, &mut self.pool, m.host);
+        }
+        let mut entering = std::mem::take(&mut self.scratch_old_mounted);
+        for logical in new_start..start {
+            let key = self.key_at(logical);
+            entering.push_back(self.mount(logical, key, store, states, bindings, effects));
+        }
+        while let Some(row) = entering.pop_back() {
+            self.mounted.push_front(row);
+        }
+        self.scratch_old_mounted = entering;
+        for logical in end..new_end {
+            let key = self.key_at(logical);
+            let row = self.mount(logical, key, store, states, bindings, effects);
+            self.mounted.push_back(row);
+        }
+        self.scratch_mounted.len() as u32
+    }
+
+    /// Mount logical row `logical` at its offset: pop a parked host (or
+    /// allocate one under the canvas), empty its old body and build the row's.
+    fn mount(
+        &mut self,
+        logical: usize,
+        key: ItemKey,
+        store: &mut NodeStore,
+        states: &mut StateStore,
+        bindings: &mut BindingTable,
+        effects: &mut EffectStore,
+    ) -> MountedItem {
+        let item_top = self.heights.prefix_sum(logical);
+        let host = match self.pool.pop() {
+            Some(parked) => {
+                store.arena_append_child(self.canvas, parked);
+                // Drop the row instance the parked host held, so the new row
+                // takes over its blocks.
+                store.free_subtree(parked, effects, &mut self.scratch_free);
+                bindings.collect(store, states);
+                parked
+            }
+            None => store.alloc_row_host(self.canvas, self.axis),
+        };
+        store.set_row_offset(host, item_top);
+        {
+            let mut cx = BuildCx::with_parent(store, states, bindings, host);
+            let builder = &mut self.builder;
+            cx.instance(&mut self.template, |cx| builder(logical, cx));
+        }
+        store.mark_dirty(
+            host,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+        );
+        self.scratch_mounted.push((logical, host));
+        MountedItem {
+            logical_index: logical,
+            key,
+            host,
+            item_top,
+        }
     }
 
     /// Mark the height model / item count dirty so the next reconcile re-anchors
@@ -655,135 +852,17 @@ fn reconcile_one(
         return 0;
     }
 
-    let mut bound = 0;
-
-    // Diff the window. Any currently-mounted row whose identity is no longer in
-    // `[new_start,new_end)` leaves: detach its host to the pool. Then walk the new
-    // range: a row whose identity is still mounted keeps its host (rewrite its
-    // offset / rebind its index if it moved); a row entering pops a host from the
-    // pool (or allocates one), clears its old body, and rebuilds.
-    //
-    // Identity is by [`ItemKey`]: `ItemKey(logical)` for a keyless list (so the
-    // predicates below degrade to the original index match, byte for byte), or the
-    // data key for a keyed list (so a reorder re-anchors the surviving host rather
-    // than rebuilding the row that now sits at that index).
-    state.scratch_mounted.clear();
-
-    // Compute the identity of every row in the new window once. The leave step
-    // uses it to decide which hosts have truly left (their key is absent here —
-    // not merely shifted to another index), and the build step uses it to find the
-    // survivor for each new-window key. Reused in place: grows to the window size
-    // on the first crossing, then never reallocates on the steady path.
-    // Taken out of `state` so the build loop below can borrow it while it mutates
-    // the other list fields; restored (reused, capacity kept) at the end.
-    let mut new_keys = std::mem::take(&mut state.new_keys);
-    new_keys.clear();
-    for logical in new_start..new_end {
-        let key = state.key_at(logical);
-        new_keys.push((logical, key));
-    }
-
-    // 1. Any currently-mounted row whose key is absent from the new window leaves:
-    //    detach its host from the tree (kept live) and park it in the pool for
-    //    reuse. Keying the leave decision (not the raw index range) is what keeps a
-    //    reordered-but-still-visible row from being wrongly pooled — and, crucially,
-    //    guarantees a pooled host is never key-matched as a survivor in step 2.
-    //    Swap the old mounted list into a persistent scratch (keeping both
-    //    buffers' capacity) so the new set is rebuilt fresh into `mounted` below
-    //    without reallocating it. `mounted` starts this pass empty-but-capacious.
-    let mut old_mounted = std::mem::take(&mut state.scratch_old_mounted);
-    std::mem::swap(&mut old_mounted, &mut state.mounted);
-    let mut sorted_new = std::mem::take(&mut state.sorted_new);
-    sorted_new.clear();
-    sorted_new.extend(new_keys.iter().map(|(_, k)| k.0));
-    sorted_new.sort_unstable();
-    let mut sorted_old = std::mem::take(&mut state.sorted_old);
-    sorted_old.clear();
-    sorted_old.extend(
-        old_mounted
-            .iter()
-            .enumerate()
-            .map(|(i, m)| (m.key.0, i as u32)),
-    );
-    sorted_old.sort_unstable();
-    for m in &old_mounted {
-        let still_present = sorted_new.binary_search(&m.key.0).is_ok();
-        if !still_present {
-            store.arena_detach(m.host);
-            store.clear_row_offset(m.host);
-            state.pool.push(m.host);
-        }
-    }
-
-    // 2. Build the new mounted set in index order, reusing survivors. A survivor is
-    //    found by a binary search over the old set's sorted keys.
-    for &(logical, key) in &new_keys {
-        let item_top = state.heights.prefix_sum(logical);
-        let at = sorted_old.partition_point(|&(k, _)| k < key.0);
-        let survivor = sorted_old
-            .get(at)
-            .filter(|&&(k, _)| k == key.0)
-            .map(|&(_, i)| &old_mounted[i as usize]);
-        if let Some(existing) = survivor {
-            // Survivor: reuse the host. Re-anchor it if its offset moved, and
-            // rebind its logical index if a reorder placed it at a new position —
-            // no rebuild, so its body / per-row state / focus are preserved.
-            let host = existing.host;
-            if existing.item_top != item_top {
-                store.set_row_offset(host, item_top);
-                store.mark_dirty(host, DirtyClass::LAYOUT | DirtyClass::PAINT);
-            }
-            state.mounted.push(MountedItem {
-                logical_index: logical,
-                key,
-                host,
-                item_top,
-            });
-        } else {
-            // Entering: pop a parked host (or allocate a fresh one under the
-            // canvas), clear its old body, rebuild it for this row.
-            let host = match state.pool.pop() {
-                Some(parked) => {
-                    store.arena_append_child(state.canvas, parked);
-                    // Empty the parked host's body so it can hold a new item,
-                    // and drop the row instance it held, so the new row takes
-                    // over its blocks.
-                    store.free_subtree(parked, effects, &mut state.scratch_free);
-                    bindings.collect(store, states);
-                    parked
-                }
-                None => store.alloc_row_host(state.canvas, axis),
-            };
-            store.set_row_offset(host, item_top);
-            // Author the item body under the host.
-            {
-                let mut cx = BuildCx::with_parent(store, states, bindings, host);
-                let builder = &mut state.builder;
-                cx.instance(&mut state.template, |cx| builder(logical, cx));
-            }
-            store.mark_dirty(
-                host,
-                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
-            );
-            state.mounted.push(MountedItem {
-                logical_index: logical,
-                key,
-                host,
-                item_top,
-            });
-            state.scratch_mounted.push((logical, host));
-            bound += 1;
-        }
-    }
-
-    // Give the scratches back to the state so their capacity is reused next
-    // reconcile: `new_keys` as-is (it is cleared at the top of each pass), and the
-    // drained old-mounted buffer (cleared here) as the swap target for next time.
-    state.new_keys = new_keys;
-    old_mounted.clear();
-    state.scratch_old_mounted = old_mounted;
-    state.sorted_new = sorted_new;
-    state.sorted_old = sorted_old;
+    // With clean data every row keeps its key and its offset, so a window that
+    // overlaps the last one keeps exactly the overlap: only its ends change.
+    let bound = if state.mounted_once
+        && !state.dirty_data
+        && new_start < state.range_end
+        && state.range_start < new_end
+    {
+        state.slide(new_start, new_end, store, states, bindings, effects)
+    } else {
+        state.rebind(new_start, new_end, store, states, bindings, effects)
+    };
 
     // 3. If the total logical extent changed, rewrite the canvas's fixed extent so
     //    the scroll range stays correct, and mark the canvas LAYOUT (never
@@ -804,6 +883,13 @@ fn reconcile_one(
     state.dirty_data = false;
     state.mounted_once = true;
     bound
+}
+
+/// Detach a row's host from the canvas and park it for reuse.
+fn park(store: &mut NodeStore, pool: &mut Vec<NodeId>, host: NodeId) {
+    store.arena_detach(host);
+    store.clear_row_offset(host);
+    pool.push(host);
 }
 
 /// Fold the measured heights of this frame's newly-mounted rows back into the
@@ -1048,6 +1134,17 @@ mod tests {
             overscan: u32,
             viewport_h: f32,
         ) -> Self {
+            Self::with_bodies(item_count, est_row, move |_| body_h, overscan, viewport_h)
+        }
+
+        /// Like [`Self::new_with_body`], with row `i`'s body `body_h(i)` tall.
+        fn with_bodies(
+            item_count: usize,
+            est_row: f32,
+            body_h: impl Fn(usize) -> f32 + 'static,
+            overscan: u32,
+            viewport_h: f32,
+        ) -> Self {
             let mut store = NodeStore::new();
             let mut states = StateStore::new();
             let mut bindings = BindingTable::new();
@@ -1075,11 +1172,11 @@ mod tests {
                         style: BoxStyle::NONE,
                     },
                     item_count,
-                    move |_i, cx| {
+                    move |i, cx| {
                         cx.leaf(LeafStyle {
                             size: Size {
                                 width: Length::fill(),
-                                height: Length::Fixed(body_h),
+                                height: Length::Fixed(body_h(i)),
                             },
                             ..Default::default()
                         });
@@ -1520,6 +1617,70 @@ mod tests {
         );
         // The pool is conserved: 3 detached, 3 popped — net zero, no tree growth.
         assert_eq!(h.state().pool_len(), pool_before);
+    }
+
+    #[test]
+    fn every_scroll_mounts_the_window_a_rebind_would() {
+        // Mostly uniform rows, so most crossings slide the window; every seventh
+        // row is taller, so measuring it dirties the model and rebinds.
+        let mut h = ListHarness::with_bodies(
+            5000,
+            30.0,
+            |i| if i % 7 == 3 { 52.0 } else { 30.0 },
+            3,
+            300.0,
+        );
+        h.frame();
+        let mut seed = 0x9e37_79b9_u32;
+        let mut rand = move |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % n
+        };
+        for frame in 0..400 {
+            let dy = match rand(10) {
+                0 => rand(20_000) as f32 - 8_000.0,
+                1..=4 => rand(120) as f32 - 60.0,
+                _ => rand(40) as f32,
+            };
+            h.store.scroll_by(h.viewport, Vec2 { x: 0.0, y: dy });
+            h.frame();
+            let s = h.state();
+            let scroll = h.store.scroll(h.viewport).y;
+            let first = s.heights.find_position(scroll).0;
+            let last = s.heights.find_position(scroll + 300.0).0;
+            let range = first.saturating_sub(3)..(last + 4).min(5000);
+            if !s.dirty_data {
+                assert_eq!(s.range_start..s.range_end, range, "frame {frame}");
+            }
+            let rows: Vec<_> = s.mounted.iter().map(|m| m.logical_index).collect();
+            assert_eq!(rows, (s.range_start..s.range_end).collect::<Vec<_>>());
+            let mut hosts: Vec<_> = s.mounted.iter().map(|m| m.host).collect();
+            let mut children: Vec<_> = h.store.arena().children(s.canvas).collect();
+            hosts.sort_unstable_by_key(|n| n.index());
+            children.sort_unstable_by_key(|n| n.index());
+            assert_eq!(hosts, children, "frame {frame}");
+            for m in &s.mounted {
+                assert_eq!(m.key, ItemKey(m.logical_index as u64));
+                // A row measured this frame moves the rest on the next.
+                if !s.dirty_data {
+                    assert_eq!(m.item_top, s.heights.prefix_sum(m.logical_index));
+                }
+            }
+            let boxes = |h: &ListHarness| -> Vec<Rect> {
+                h.state()
+                    .mounted
+                    .iter()
+                    .flat_map(|m| [Some(m.host), h.store.arena().first_child(m.host)])
+                    .flatten()
+                    .map(|n| h.store.bounds(n))
+                    .collect()
+            };
+            let incremental = boxes(&h);
+            h.store.layout(h.viewport, h.surface, &mut h.scratch);
+            assert_eq!(incremental, boxes(&h), "frame {frame}");
+        }
     }
 
     #[test]
