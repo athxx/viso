@@ -191,7 +191,9 @@ pub(super) fn same_scene(spliced: &Renderer, whole: &Renderer) {
     assert_eq!(a.glyph_runs.len(), b.glyph_runs.len());
     for run in 0..a.glyph_runs.len() as u32 {
         let (x, y) = (a.glyph_runs.run(run), b.glyph_runs.run(run));
-        assert_eq!(x, y, "glyph run {run}");
+        let drawn =
+            |r: Option<&crate::scene::store::GlyphRunEntry>| r.map(|r| (r.count, r.atlas, r.lane));
+        assert_eq!(drawn(x), drawn(y), "glyph run {run}");
         assert_eq!(
             x.map(|r| a.glyph_runs.glyphs(r)),
             y.map(|r| b.glyph_runs.glyphs(r)),

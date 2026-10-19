@@ -1053,11 +1053,20 @@ impl ImageStore {
 /// swapped at `begin_frame`) so a run's glyphs can be diffed position/uv/color
 /// against last frame without a per-run stable slot; the run entries themselves
 /// persist and are diffed for the atlas (resource plane).
+///
+/// A splice appends the glyphs of the runs it inserts and leaves those of the
+/// runs it removes where they were, so no other run's glyphs move; the next
+/// frame packs them again, or the store does once the glyphs left behind
+/// outnumber half of them.
 #[derive(Debug, Default)]
 pub struct GlyphRunStore {
     runs: Vec<GlyphRunEntry>,
-    /// This frame's glyph instances, back to back in paint order.
+    /// This frame's glyph instances, back to back in paint order but for
+    /// splices since.
     instances: Vec<GlyphInstance>,
+    /// How many of `instances` no run reads: the glyphs of runs splices
+    /// removed.
+    holes: usize,
     /// Last frame's packed instances, addressed by the retained run entries'
     /// `[start, start+count)` ranges. Swapped with `instances` each frame.
     prev: Vec<GlyphInstance>,
@@ -1071,6 +1080,7 @@ impl GlyphRunStore {
     pub fn begin_frame(&mut self) {
         std::mem::swap(&mut self.instances, &mut self.prev);
         self.instances.clear();
+        self.holes = 0;
         self.cursor = 0;
     }
 
@@ -1190,8 +1200,7 @@ impl GlyphRunStore {
 
     /// Replace the `removed` runs from `at` with `new` — each a glyph count, an
     /// atlas and a lane, their glyphs back to back in `glyphs` — outside a
-    /// frame's walk. The runs after them, and their glyphs, move by the
-    /// difference.
+    /// frame's walk. The new glyphs are appended; no other run's move.
     pub(crate) fn splice(
         &mut self,
         at: usize,
@@ -1199,17 +1208,12 @@ impl GlyphRunStore {
         new: impl IntoIterator<Item = (u32, viso_gpu::TextureId, crate::primitive::GlyphLane)>,
         glyphs: &[GlyphInstance],
     ) {
-        let from = self
-            .runs
-            .get(at)
-            .map_or(self.instances.len(), |r| r.start as usize);
-        let gone: usize = self.runs[at..at + removed]
+        self.holes += self.runs[at..at + removed]
             .iter()
             .map(|r| r.count as usize)
-            .sum();
-        self.instances
-            .splice(from..from + gone, glyphs.iter().copied());
-        let mut start = from as u32;
+            .sum::<usize>();
+        let mut start = self.instances.len() as u32;
+        self.instances.extend_from_slice(glyphs);
         let new = new.into_iter().map(|(count, atlas, lane)| {
             let run = GlyphRunEntry {
                 start,
@@ -1220,15 +1224,25 @@ impl GlyphRunStore {
             start += count;
             run
         });
-        let before = self.runs.len();
         self.runs.splice(at..at + removed, new);
-        let tail = at + self.runs.len() + removed - before;
-        let shift = glyphs.len() as i64 - gone as i64;
-        if shift != 0 {
-            for run in &mut self.runs[tail..] {
-                run.start = (i64::from(run.start) + shift) as u32;
-            }
+        if self.holes > (self.instances.len() - self.holes) / 2 {
+            self.pack();
         }
+    }
+
+    /// Pack the runs' glyphs back to back in run order, dropping those no run
+    /// reads.
+    fn pack(&mut self) {
+        self.prev.clear();
+        for run in &mut self.runs {
+            let start = run.start as usize;
+            run.start = self.prev.len() as u32;
+            self.prev
+                .extend_from_slice(&self.instances[start..start + run.count as usize]);
+        }
+        std::mem::swap(&mut self.instances, &mut self.prev);
+        self.prev.clear();
+        self.holes = 0;
     }
 
     /// The run entry at slot `run`, or `None` if out of range.
