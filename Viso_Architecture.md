@@ -2655,7 +2655,7 @@ pub struct DirtyClass(u8);
 例如：
 
 - `PAINT` 通常不需要让祖先 layout dirty；
-- `MEASURE` 需要传播到受 child intrinsic size 影响的祖先，停在两个轴都是 Fixed 的祖先（ADR 0008）；
+- `MEASURE` 需要传播到受 child intrinsic size 影响的祖先，停在两个轴都是 Fixed 的祖先（ADR 0008）；relayout 一般从最高的 MEASURE 节点的父节点重做；但当父节点是两个轴都 Fixed 的 flex 容器、本帧没有重排子节点也没有 MEASURE / LAYOUT、而该节点没有隐藏、主轴请求是 Fixed 或 fill 份额时，它的新 measure 移动不了父节点和任何兄弟，只从它自己重做：主轴保持原来的区间，交叉轴按新 measure 重新放置。节点自身的尺寸请求改变（`set_fixed_size`、fill weight、长度折算、隐藏）都会让父节点重排子节点，所以这条捷径只覆盖内容引起的 re-measure（文本、图片、子树）。差分测试逐帧比较增量 relayout 与整树 layout 的每个 bounds；
 - `TRANSFORM` 可以只影响 transform subtree；
 - `STRUCTURE` / `MEASURE` / `SEMANTICS` 属于 `BUBBLING`，沿父链上传；`SEMANTICS` 上传后仍只重建 semantics tree 的对应分支。
 

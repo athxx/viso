@@ -724,25 +724,8 @@ pub fn layout_on(
             }
         };
 
-        let natural_cross = tree.measured(child).on(cross);
-        let (cross_size, cross_off) = match align {
-            Align::Stretch => (cross_extent, 0.0),
-            Align::Start => (natural_cross, 0.0),
-            Align::Center => (natural_cross, (cross_extent - natural_cross) * 0.5),
-            Align::End => (natural_cross, cross_extent - natural_cross),
-        };
-        // A cross-axis Fixed or Relative request overrides alignment-derived
-        // sizing; a relative one resolves against the content box's cross extent.
-        let cross_size = match size.cross(axis) {
-            Length::Fixed(v) => v,
-            Length::Relative { fixed, pct } => {
-                if !cross_definite {
-                    tree.report_length(child, LengthIssue::IndefiniteBasis);
-                }
-                relative_extent(fixed, pct, cross_extent, cross_definite, cross_size)
-            }
-            Length::Fill { .. } | Length::Fit => cross_size,
-        };
+        let (cross_size, cross_off) =
+            flex_cross(tree, child, axis, align, cross_extent, cross_definite);
 
         let child_box = axis_rect(
             axis,
@@ -768,6 +751,82 @@ pub fn layout_on(
 
     // Release the child-id slice back to the caller's scratch high-water mark.
     scratch.truncate(start);
+}
+
+/// The cross extent of flex child `child` of a container laying out along
+/// `axis` with `align`, over a content box `extent` across, and its offset
+/// into that box.
+fn flex_cross(
+    tree: &mut impl LayoutTree,
+    child: u32,
+    axis: Axis,
+    align: Align,
+    extent: f32,
+    definite: bool,
+) -> (f32, f32) {
+    let natural = tree.measured(child).on(cross_of(axis));
+    let (size, off) = match align {
+        Align::Stretch => (extent, 0.0),
+        Align::Start => (natural, 0.0),
+        Align::Center => (natural, (extent - natural) * 0.5),
+        Align::End => (natural, extent - natural),
+    };
+    // A cross-axis Fixed or Relative request overrides alignment-derived
+    // sizing; a relative one resolves against the content box's cross extent.
+    let size = match tree.input(child).size().cross(axis) {
+        Length::Fixed(v) => v,
+        Length::Relative { fixed, pct } => {
+            if !definite {
+                tree.report_length(child, LengthIssue::IndefiniteBasis);
+            }
+            relative_extent(fixed, pct, extent, definite, size)
+        }
+        Length::Fill { .. } | Length::Fit => size,
+    };
+    (size, off)
+}
+
+/// The box flex container `parent`, laid out in `bounds` on `basis`, gives
+/// its child `child` when only the child's measure changed and its main-axis
+/// request does not follow it: the main-axis run it was placed in, `kept`,
+/// across the cross extent its new measure takes. Queues the text reflow the
+/// container's pass would. `None` when `parent` is not a flex container.
+pub(crate) fn flex_child_box(
+    tree: &mut impl LayoutTree,
+    parent: u32,
+    child: u32,
+    bounds: Rect,
+    basis: Basis,
+    kept: Rect,
+) -> Option<Rect> {
+    let LayoutInput::Flex {
+        axis,
+        padding,
+        align,
+        ..
+    } = tree.input(parent)
+    else {
+        return None;
+    };
+    let cross = cross_of(axis);
+    let extent = rect_len(bounds, cross) - padding.cross(axis);
+    let (cross_size, cross_off) = flex_cross(tree, child, axis, align, extent, basis.on(cross));
+    let main_size = rect_len(kept, axis);
+    tree.request_text_reflow(
+        child,
+        if axis == Axis::Row {
+            main_size
+        } else {
+            cross_size
+        },
+    );
+    Some(axis_rect(
+        axis,
+        rect_start(kept, axis),
+        rect_start(bounds, cross) + padding.cross_start(axis) + cross_off,
+        main_size,
+        cross_size,
+    ))
 }
 
 /// Lay out a scroll viewport's single content child. The viewport already has

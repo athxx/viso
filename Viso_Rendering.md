@@ -793,9 +793,9 @@ opacity 跨过 0 或 1（layer 出现、消失，或被跳过）仍然是形状�
 |---|---|---|
 | `mount/rows_30` | 8.3 µs | 7.2 µs |
 | `mount/rows_160` | 45.0 µs | 37.8 µs |
-| `type/notes_2000`（一个 label 增减一个 glyph） | 1.49 ms | 0.95 ms |
+| `type/notes_2000`（一个 label 增减一个 glyph） | 1.49 ms | 0.49 ms |
 
-`type/notes_2000` 仍随页面线性增长：label 的 re-measure 一直传到根列，整列 2000 行重新 layout；renderer 侧 splice 之后仍整帧 lower、sync、重算 surface draw key。这两部分是下一步。
+label 的 re-measure 只重做它所在的那一行（Architecture §19.1）。`type/notes_2000` 仍随页面线性增长：renderer 侧 splice 之后仍整帧 lower、sync、重算 surface draw key，这是下一步。
 
 ## 9.8 多线程模型
 

@@ -310,6 +310,7 @@ impl NodeStore {
             self.lengths_mut().report(id, LengthIssue::NonFinite);
         }
         let mut class = DirtyClass::EMPTY;
+        let mut requested = false;
         let lengths = binding.lengths;
         for (terms, width) in [(lengths.width, true), (lengths.height, false)] {
             let Some(terms) = terms else {
@@ -328,7 +329,11 @@ impl NodeStore {
             if *slot != folded {
                 *slot = folded;
                 class = class | DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT;
+                requested = true;
             }
+        }
+        if requested {
+            self.request_moved(id);
         }
         if let Some(terms) = lengths.gap {
             if terms.pct != 0.0 {

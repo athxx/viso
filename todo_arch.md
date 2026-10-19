@@ -205,5 +205,5 @@ Phase 2 — a frame that changes shape:
   - [x] UI records each node's subtree span; a frame whose structure, layout or paint changed in place re-emits only the changed subtrees and splices them into the stream (`Painted::Spliced`)
   - [x] Facade drives the splice path; `paint_scale` mount and a text-edit case measured
   - [x] A patch whose leaf no longer fits its slot (kind, glyph count, bounds, texture) splices it one for one instead of uploading whole
-  - [ ] A re-measure stops at an ancestor whose size does not follow its content: only that ancestor's subtree is laid out again (`type/notes_2000` lays out the whole column)
+  - [x] A re-measure stops at an ancestor whose size does not follow its content: a flex child of a fixed box, its main request fixed or a fill share, is laid out again alone; a node's own request change (fixed size, fill weight, folded length, hiding) re-places its parent's children; differential test against a whole layout
   - [ ] Lowering and surface draws splice too, instead of re-deriving the frame

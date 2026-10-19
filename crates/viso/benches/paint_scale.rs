@@ -222,7 +222,16 @@ fn notes(notes: usize) -> (Harness, NodeId) {
                                 },
                                 style: BoxStyle::solid(Rgba::new(0.3, 0.5, 0.8, 1.0)),
                             });
-                            labels.push(cx.leaf(LeafStyle::default()).id());
+                            labels.push(
+                                cx.leaf(LeafStyle {
+                                    size: Size {
+                                        width: Length::Fit,
+                                        height: Length::Fit,
+                                    },
+                                    style: BoxStyle::NONE,
+                                })
+                                .id(),
+                            );
                         },
                     );
                 }

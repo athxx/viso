@@ -209,6 +209,12 @@ impl NodeArena {
         }
     }
 
+    /// Whether `parent`'s children changed since the log was last cleared.
+    #[inline]
+    pub(crate) fn is_relinked(&self, parent: NodeIndex) -> bool {
+        self.logged.get(parent.slot()).copied().unwrap_or(false)
+    }
+
     /// The slots of the parents whose children changed since the log was
     /// last cleared, each once.
     pub(crate) fn relinks(&self) -> &[u32] {

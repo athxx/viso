@@ -1100,20 +1100,21 @@ impl NodeStore {
                 Axis::Row => size.width = Length::Fixed(extent),
                 Axis::Column => size.height = Length::Fixed(extent),
             }
+            self.request_moved(canvas);
         }
     }
 
     /// Rewrite a flex child's own main-axis [`Length`] to `Fill { weight }` in
-    /// place, marking it `LAYOUT | PAINT` so the parent re-runs its leftover-space
-    /// distribution and the pane repaints at its new size. The general form of
+    /// place, marking it `LAYOUT | PAINT` and its parent `LAYOUT`, so the parent
+    /// re-runs its leftover-space distribution and the pane repaints at its new
+    /// size. The general form of
     /// [`set_absolute_rows_extent`](Self::set_absolute_rows_extent): a reconcile
     /// step holding `&mut NodeStore` calls this to turn a committed drag fraction
     /// into live geometry, the same handler-writes-intent / reconcile-mutates-store
     /// split the virtual list uses.
     ///
-    /// A fill child contributes zero natural size, so changing only its weight
-    /// never changes its measured extent — marking the child `LAYOUT` re-runs the
-    /// parent's fill sweep without a re-measure of the subtree. A no-op for a stale
+    /// Only the weight changes, never the child's measured extent, so nothing
+    /// re-measures above the parent. A no-op for a stale
     /// handle, or for a node whose main-axis length is not already `Fill` (a fixed
     /// or fit pane has no weight to rewrite).
     pub fn set_flex_child_weight(&mut self, child: NodeId, axis: Axis, weight: f32) {
@@ -1129,6 +1130,7 @@ impl NodeStore {
         if let Length::Fill { weight: w } = slot {
             *w = weight;
             self.mark_dirty(child, DirtyClass::LAYOUT | DirtyClass::PAINT);
+            self.request_moved(child);
         }
     }
 
@@ -1154,6 +1156,17 @@ impl NodeStore {
             id,
             DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
         );
+        self.request_moved(id);
+    }
+
+    /// Note that the size node `id` requests of its parent changed: the parent
+    /// re-places its children, so the box it gives `id` follows the request.
+    /// A re-measure alone moves no box whose request does not follow its
+    /// content (see [`relayout_dirty`](Self::relayout_dirty)).
+    pub(crate) fn request_moved(&mut self, id: NodeId) {
+        if let Some(parent) = self.arena.parent(id) {
+            self.mark_dirty(parent, DirtyClass::LAYOUT);
+        }
     }
 
     /// The size node `id` requests of its parent, or `None` for a stale handle.
@@ -2198,11 +2211,10 @@ impl NodeStore {
     /// Set whether a node (and its subtree) is folded out of layout, paint and
     /// the semantics tree. A live-guarded write, so a stale handle is a no-op.
     ///
-    /// Hiding a node changes its parent's main-axis measure sum (a hidden
-    /// subtree contributes zero), what paints and what assistive technology
-    /// reads, so a change marks the node LAYOUT | PAINT | SEMANTICS dirty; the
-    /// incremental passes re-measure/re-lay-out the affected subtree and
-    /// repaint. Flipping the flag needs no structural
+    /// Hiding a node changes its measured size (a hidden subtree measures to
+    /// zero), what paints and what assistive technology reads, so a change
+    /// marks the node MEASURE | LAYOUT | PAINT | SEMANTICS dirty and its parent's
+    /// children changed; the parent re-places its children and repaints. Flipping the flag needs no structural
     /// rebuild — every panel is built once and shown or hidden on demand.
     pub fn set_hidden(&mut self, id: NodeId, hidden: bool) {
         if !self.arena.is_live(id) {
@@ -2215,7 +2227,7 @@ impl NodeStore {
         self.relinked(id);
         self.mark_dirty(
             id,
-            DirtyClass::LAYOUT | DirtyClass::PAINT | DirtyClass::SEMANTICS,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT | DirtyClass::SEMANTICS,
         );
     }
 
@@ -3188,9 +3200,13 @@ impl NodeStore {
     /// else, and report how many nodes each pass touched.
     ///
     /// A node whose MEASURE rose to it can change its own box, so its redo
-    /// starts one level up at its (size-stable) parent; a LAYOUT-only container
-    /// keeps its box and re-places its own children. The shallowest such node
-    /// subsumes its descendants, so each subtree is recomputed once. `scratch`
+    /// starts one level up at its (size-stable) parent — unless it is placed
+    /// alone: a flex child of a box fixed on both axes whose children and
+    /// requests did not change, its own main-axis request fixed or a fill
+    /// share, keeps its main-axis run and moves no sibling, so it is redone by
+    /// itself over its new cross extent. A LAYOUT-only container keeps its box
+    /// and re-places its own children. The shallowest such node subsumes its
+    /// descendants, so each subtree is recomputed once. `scratch`
     /// (child ids) and `redo_roots` are caller-owned so a redo allocates
     /// nothing. With no MEASURE/LAYOUT dirt the counts are zero and the tree is
     /// untouched.
@@ -3229,7 +3245,10 @@ impl NodeStore {
                 };
                 // A positioned row of an absolute-rows canvas moves no sibling,
                 // whatever its size: it is redone alone.
-                let redo_from = if class == DirtyClass::MEASURE && self.row_canvas(id).is_none() {
+                let redo_from = if class == DirtyClass::MEASURE
+                    && self.row_canvas(id).is_none()
+                    && !self.placed_alone(id, root)
+                {
                     self.arena.parent(id).unwrap_or(root)
                 } else {
                     id
@@ -3264,6 +3283,13 @@ impl NodeStore {
             } else if let Some((canvas, axis)) = self.row_canvas(redo) {
                 layout::row_box(self, redo.index(), self.bounds(canvas), axis)
                     .unwrap_or_else(|| self.bounds(redo))
+            } else if self.dirty[redo.index() as usize].intersects(DirtyClass::MEASURE)
+                && let Some(parent) = self.arena.parent(redo)
+            {
+                let basis = self.basis_of(parent, root);
+                let (within, kept) = (self.bounds(parent), self.bounds(redo));
+                layout::flex_child_box(self, parent.index(), redo.index(), within, basis, kept)
+                    .unwrap_or(kept)
             } else {
                 self.bounds(redo)
             };
@@ -3275,6 +3301,30 @@ impl NodeStore {
         // A waiting scroll restore applies once layout knows the range.
         self.settle_scroll_restores();
         (measured, laid_out)
+    }
+
+    /// Whether re-measured node `id` is placed alone: its parent is a flex
+    /// container fixed on both axes, not re-placing its children this frame,
+    /// and `id` is shown and requests a fixed main extent or a fill share, so
+    /// its new measure moves neither its parent nor a sibling.
+    fn placed_alone(&self, id: NodeId, root: NodeId) -> bool {
+        let Some(parent) = self.arena.parent(id) else {
+            return false;
+        };
+        if id == root || self.hidden[id.index() as usize] {
+            return false;
+        }
+        let p = parent.index() as usize;
+        let LayoutInput::Flex { axis, .. } = self.layout[p] else {
+            return false;
+        };
+        fixed_on_both_axes(self.layout[p])
+            && !self.dirty[p].intersects(DirtyClass::MEASURE | DirtyClass::LAYOUT)
+            && !self.arena.is_relinked(parent.node_index())
+            && matches!(
+                self.layout[id.index() as usize].size().on(axis),
+                Length::Fixed(_) | Length::Fill { .. }
+            )
     }
 
     /// The absolute-rows canvas `id` is a positioned row of, and its axis.
@@ -4723,6 +4773,184 @@ mod tests {
         assert_eq!(roots, want);
     }
 
+    /// A label's shaped text: `n` glyphs, on one to three lines.
+    fn label_text(n: u32) -> Content {
+        Content::Text {
+            glyphs: Vec::new(),
+            atlas: TextureId::new(1),
+            color_glyphs: Vec::new(),
+            color_atlas: None,
+            color: RED,
+            natural: Vec2 {
+                x: n as f32 * 5.0,
+                y: 10.0 * (1 + n % 3) as f32,
+            },
+            baseline: 8.0,
+            shaped_at_width: None,
+            soft_wrap: false,
+        }
+    }
+
+    /// The sizes a row of the differential layout test requests.
+    const ROW_SIZES: [Size; 6] = [
+        Size {
+            width: Length::Fixed(200.0),
+            height: Length::Fixed(20.0),
+        },
+        Size {
+            width: Length::Fill { weight: 1.0 },
+            height: Length::Fixed(20.0),
+        },
+        Size {
+            width: Length::Fit,
+            height: Length::Fixed(20.0),
+        },
+        Size {
+            width: Length::Fill { weight: 1.0 },
+            height: Length::Fit,
+        },
+        Size {
+            width: Length::Fixed(150.0),
+            height: Length::Fill { weight: 1.0 },
+        },
+        Size {
+            width: Length::Fit,
+            height: Length::Fill { weight: 2.0 },
+        },
+    ];
+
+    const ALIGNS: [Align; 4] = [Align::Start, Align::Center, Align::End, Align::Stretch];
+
+    /// A label hugging its text.
+    const LABEL: LeafStyle = LeafStyle {
+        size: Size {
+            width: Length::Fit,
+            height: Length::Fit,
+        },
+        style: BoxStyle::NONE,
+    };
+
+    #[test]
+    fn an_incremental_relayout_places_every_node_where_a_whole_layout_does() {
+        let mut lcg = 0x9e37_79b9_7f4a_7c15u64;
+        let mut below = |n: u32| {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((lcg >> 33) % u64::from(n)) as u32
+        };
+        let screen = surface(300.0, 600.0);
+        let mut alone = 0;
+        for seed in 0..24u32 {
+            let mut store = NodeStore::new();
+            let mut nodes = Vec::new();
+            let mut rows = Vec::new();
+            let mut labels = Vec::new();
+            let root = {
+                let mut cx = BuildCx::new(&mut store);
+                cx.flex(
+                    FlexStyle {
+                        axis: Axis::Column,
+                        gap: 2.0,
+                        align: ALIGNS[seed as usize % 4],
+                        size: Size::fixed(300.0, 600.0),
+                        ..FlexStyle::default()
+                    },
+                    |cx| {
+                        for r in 0..12u32 {
+                            let row = cx.flex(
+                                FlexStyle {
+                                    axis: Axis::Row,
+                                    gap: 3.0,
+                                    padding: Inset::all(1.0),
+                                    align: ALIGNS[(r + seed) as usize % 4],
+                                    size: ROW_SIZES[((r + seed) % 6) as usize],
+                                    ..FlexStyle::default()
+                                },
+                                |cx| {
+                                    nodes.push(
+                                        cx.leaf(LeafStyle {
+                                            size: Size::fixed(8.0, 8.0),
+                                            ..LeafStyle::default()
+                                        })
+                                        .id(),
+                                    );
+                                    labels.push(cx.leaf(LABEL).id());
+                                    if r % 4 == 0 {
+                                        let boxed = cx.flex(
+                                            FlexStyle {
+                                                axis: Axis::Column,
+                                                align: ALIGNS[r as usize % 3],
+                                                size: Size::fixed(60.0, 18.0),
+                                                ..FlexStyle::default()
+                                            },
+                                            |cx| labels.push(cx.leaf(LABEL).id()),
+                                        );
+                                        nodes.push(boxed.id());
+                                    }
+                                },
+                            );
+                            rows.push(row.id());
+                        }
+                    },
+                )
+                .id()
+            };
+            for &label in &labels {
+                store.set_content_payload(label, label_text(1 + below(9)));
+            }
+            nodes.extend(&rows);
+            nodes.extend(&labels);
+            nodes.push(root);
+            let mut scratch = Vec::new();
+            let mut roots = Vec::new();
+            store.layout(root, screen, &mut scratch);
+            store.clear_dirty();
+            for frame in 0..200 {
+                for _ in 0..1 + below(3) {
+                    match below(10) {
+                        0..=4 => {
+                            let label = labels[below(labels.len() as u32) as usize];
+                            store.set_content_payload(label, label_text(below(12)));
+                        }
+                        5 | 6 => {
+                            let node = if below(2) == 0 {
+                                rows[below(rows.len() as u32) as usize]
+                            } else {
+                                labels[below(labels.len() as u32) as usize]
+                            };
+                            store.set_hidden(node, !store.hidden(node));
+                        }
+                        7 | 8 => {
+                            let row = rows[below(rows.len() as u32) as usize];
+                            store.set_fixed_size(row, ROW_SIZES[below(6) as usize]);
+                        }
+                        _ => {
+                            let row = rows[below(rows.len() as u32) as usize];
+                            store.set_flex_child_weight(row, Axis::Column, 1.0 + below(3) as f32);
+                        }
+                    }
+                }
+                store.relayout_dirty(root, screen, &mut scratch, &mut roots);
+                alone += roots
+                    .iter()
+                    .filter(|&&r| store.dirty(r).intersects(DirtyClass::MEASURE))
+                    .count();
+                let incremental: Vec<Rect> = nodes.iter().map(|&n| store.bounds(n)).collect();
+                store.layout(root, screen, &mut scratch);
+                for (&node, kept) in nodes.iter().zip(&incremental) {
+                    assert_eq!(
+                        *kept,
+                        store.bounds(node),
+                        "seed {seed} frame {frame}: {node:?} redone from {roots:?}"
+                    );
+                }
+                store.clear_dirty();
+            }
+        }
+        assert!(alone > 100, "{alone} re-measures placed alone");
+    }
+
     #[cfg(feature = "inspect")]
     #[test]
     fn a_watched_store_journals_each_direct_mark_and_its_cause() {
@@ -5320,14 +5548,10 @@ mod tests {
         assert!(store.hidden(id));
         let d = store.dirty(id);
         assert!(
-            d.contains(DirtyClass::LAYOUT),
-            "hiding re-lays-out the parent"
+            d.contains(DirtyClass::MEASURE | DirtyClass::LAYOUT),
+            "a hidden node measures to zero, so its parent re-places it"
         );
         assert!(d.contains(DirtyClass::PAINT), "hiding repaints");
-        assert!(
-            !d.contains(DirtyClass::MEASURE),
-            "a hidden node's own box request is unchanged; only the sum shifts"
-        );
         store.set_hidden(id, false);
         assert!(!store.hidden(id));
     }
