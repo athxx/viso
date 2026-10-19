@@ -824,7 +824,14 @@ impl<'a> AotView<'a> {
                 offset: view.edges.offset,
             });
         }
-        for (index, record) in view.edges.bytes.chunks_exact(EDGE_RECORD).enumerate() {
+        for (index, record) in view
+            .edges
+            .bytes
+            .as_chunks::<EDGE_RECORD>()
+            .0
+            .iter()
+            .enumerate()
+        {
             let at = view.edges.offset + index * EDGE_RECORD;
             if record[21..] != [0; 3] || edge_of(record).node as usize >= nodes {
                 return Err(DecodeError::Malformed { offset: at });
@@ -867,7 +874,12 @@ impl<'a> AotView<'a> {
     /// The edges, in table order.
     #[inline]
     pub fn edges(&self) -> impl ExactSizeIterator<Item = AotEdge> + 'a {
-        self.edges.bytes.chunks_exact(EDGE_RECORD).map(edge_of)
+        self.edges
+            .bytes
+            .as_chunks::<EDGE_RECORD>()
+            .0
+            .iter()
+            .map(|r| edge_of(r))
     }
 
     /// The package as owned tables.

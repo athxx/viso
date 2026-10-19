@@ -159,7 +159,7 @@ fn expand_dir(
                         .find(|(index, _)| *index == face_index)
                         .map_or_else(String::new, |(_, reason)| reason.clone())
                 }),
-                None => match font_subset::kept_whole(&data, face_index).map_err(&fail)? {
+                None => match font_subset::kept_whole(&data, face_index).map_err(fail)? {
                     Some(reason) => Err(reason),
                     None => Ok((0..original.number_of_glyphs()).collect()),
                 },
@@ -217,22 +217,19 @@ fn expand_dir(
                 static #bytes: &[u8] = include_bytes!(#absolute);
             }),
         }
-        match &subset {
-            Some(subset) => {
-                for (face_index, reason) in &subset.whole {
-                    let note = format!(
-                        "packaged_fonts!: `{shown}` face {face_index} is embedded whole: {reason}"
-                    );
-                    statics.push(quote! {
-                        const _: () = {
-                            #[deprecated(note = #note)]
-                            struct EmbeddedWhole;
-                            let _ = EmbeddedWhole;
-                        };
-                    });
-                }
+        if let Some(subset) = &subset {
+            for (face_index, reason) in &subset.whole {
+                let note = format!(
+                    "packaged_fonts!: `{shown}` face {face_index} is embedded whole: {reason}"
+                );
+                statics.push(quote! {
+                    const _: () = {
+                        #[deprecated(note = #note)]
+                        struct EmbeddedWhole;
+                        let _ = EmbeddedWhole;
+                    };
+                });
             }
-            None => {}
         }
         let file_index = file_index as u32;
         for ((face_index, face), baked) in (0..count).zip(&originals).zip(&baked) {

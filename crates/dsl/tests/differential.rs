@@ -397,7 +397,7 @@ fn functions_match_over_a_table_of_edge_values() {
             p.call("count_to", &[int(n)]).unwrap();
         }
         let list = ints(&[1, 20, 300, -4, 50]);
-        p.call("sum", &[list.clone()]).unwrap();
+        p.call("sum", std::slice::from_ref(&list)).unwrap();
         p.call("sum", &[ints(&[])]).unwrap();
         for i in [-1, 0, 4, 5] {
             let _ = p.call("at", &[list.clone(), int(i)]);

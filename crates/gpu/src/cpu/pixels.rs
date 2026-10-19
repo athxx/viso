@@ -170,14 +170,14 @@ impl Pixels {
             let at = (y as usize + row) * width as usize + x as usize;
             match self {
                 Pixels::Unorm8(p) => {
-                    for (d, s) in p[at..at + w as usize].iter_mut().zip(src.chunks_exact(4)) {
-                        *d = [s[0], s[1], s[2], s[3]];
-                    }
+                    let (texels, _) = src.as_chunks::<4>();
+                    p[at..at + w as usize].copy_from_slice(texels);
                 }
                 Pixels::R8(p) => p[at..at + w as usize].copy_from_slice(src),
                 Pixels::Rgb565(p) => {
-                    for (d, s) in p[at..at + w as usize].iter_mut().zip(src.chunks_exact(2)) {
-                        *d = u16::from_le_bytes([s[0], s[1]]);
+                    let (texels, _) = src.as_chunks::<2>();
+                    for (d, s) in p[at..at + w as usize].iter_mut().zip(texels) {
+                        *d = u16::from_le_bytes(*s);
                     }
                 }
                 Pixels::Packed16(p) => p[at..at + w as usize].copy_from_slice(src.as_chunks().0),

@@ -22,7 +22,7 @@ pub(super) fn div255(x: u32) -> u32 {
 /// One channel packed into a byte.
 #[inline(always)]
 pub(super) fn pack1(v: f32) -> u8 {
-    (v.max(0.0).min(1.0) * 255.0 + 0.5) as u8
+    (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
 }
 
 /// One premultiplied color packed into bytes, red and blue swapped for a
@@ -344,7 +344,7 @@ mod tests {
                         let a = rng.byte();
                         // Mostly premultiplied, sometimes not: saturation is
                         // part of the contract.
-                        let cap = if rng.next() % 8 == 0 { 255 } else { a };
+                        let cap = if rng.next().is_multiple_of(8) { 255 } else { a };
                         [0; 3]
                             .map(|_: u8| (rng.byte() as u32 * cap as u32 / 255) as u8)
                             .into_iter()

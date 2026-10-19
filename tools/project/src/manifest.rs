@@ -1911,10 +1911,9 @@ impl<'a> Reader<'a> {
         );
         let profile = self.footprint(t, &path);
         let triple = self.triple(t, &path, profile.map(|p| p.value));
-        let display = match self.table(t, "display") {
-            Some(d) => Some(self.display(d, &format!("{path}.display"))),
-            None => None,
-        };
+        let display = self
+            .table(t, "display")
+            .map(|d| self.display(d, &format!("{path}.display")));
         let budget = match self.table(t, "budget") {
             Some(b) => self.budget(b, &format!("{path}.budget")),
             None => Vec::new(),

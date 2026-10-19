@@ -135,7 +135,7 @@ impl<'a> Sections<'a> {
         let entries = dec.read_raw(count as usize * ENTRY)?;
         let blob = dec.input();
         let mut end = dec.position();
-        for (index, entry) in entries.chunks_exact(ENTRY).enumerate() {
+        for (index, entry) in entries.as_chunks::<ENTRY>().0.iter().enumerate() {
             let field = |at: usize| u32::from_le_bytes(entry[at..at + 4].try_into().unwrap());
             let (start, len) = (field(0) as usize, field(4) as usize);
             let at = offset + 4 + index * ENTRY;

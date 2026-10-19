@@ -1221,8 +1221,7 @@ mod tests {
     fn only_pixels_whose_centers_are_inside_the_quad_are_covered() {
         let span = |lo: f32, extent: f32| {
             let r = centers([lo, 0.0], [extent, 1.0], [0.0, 0.0]);
-            let px = to_pixels(r, 100, 100).map_or((0, 0), |p| (p[0], p[2]));
-            px
+            to_pixels(r, 100, 100).map_or((0, 0), |p| (p[0], p[2]))
         };
         assert_eq!(span(4.6, 6.0), (5, 11));
         assert_eq!(span(4.5, 6.0), (4, 10));

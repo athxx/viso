@@ -351,8 +351,13 @@ impl Panel {
 /// RGB565 widened to B, G, R, X, each channel's high bits repeated into its
 /// low ones so white stays white.
 fn widen_565(src: &[u8], dst: &mut [u8]) {
-    for (p, out) in src.chunks_exact(2).zip(dst.chunks_exact_mut(4)) {
-        let v = u16::from_le_bytes([p[0], p[1]]);
+    for (p, out) in src
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<4>().0)
+    {
+        let v = u16::from_le_bytes(*p);
         let (r, g, b) = ((v >> 11) & 31, (v >> 5) & 63, v & 31);
         out[0] = ((b << 3) | (b >> 2)) as u8;
         out[1] = ((g << 2) | (g >> 4)) as u8;

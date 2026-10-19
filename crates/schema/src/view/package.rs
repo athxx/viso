@@ -419,19 +419,19 @@ impl<'a> ViewPackageView<'a> {
     /// The state cells, allocated with their initial values before the tree
     /// mounts.
     pub fn states(&self) -> impl ExactSizeIterator<Item = ViewState> + 'a {
-        let records = self.states.bytes.chunks_exact(STATE_RECORD);
+        let records = self.states.bytes.as_chunks::<STATE_RECORD>().0.iter();
         records.map(|r| state_of(r).expect("the view validated every state record"))
     }
 
     /// The node handlers, in ascending node order.
     pub fn handlers(&self) -> impl ExactSizeIterator<Item = ViewHandler> + 'a {
-        let records = self.handlers.bytes.chunks_exact(HANDLER_RECORD);
+        let records = self.handlers.bytes.as_chunks::<HANDLER_RECORD>().0.iter();
         records.map(|r| handler_of(r).expect("the view validated every handler record"))
     }
 
     /// The `env` fields the view's static instances read.
     pub fn env(&self) -> impl ExactSizeIterator<Item = ViewEnv> + 'a {
-        let records = self.env.bytes.chunks_exact(ENV_RECORD);
+        let records = self.env.bytes.as_chunks::<ENV_RECORD>().0.iter();
         records.map(|r| env_of(r).expect("the view validated every env record"))
     }
 

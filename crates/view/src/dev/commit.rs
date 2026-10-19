@@ -715,16 +715,14 @@ pub(super) enum CarriedText {
 /// `hidden` flag clear, or `None` when zero or more than one is (no single
 /// active child to carry).
 pub(super) fn active_child(store: &NodeStore, parent: NodeId) -> Option<u32> {
-    let mut index = 0u32;
     let mut found = None;
-    for id in store.arena().children(parent) {
+    for (index, id) in (0u32..).zip(store.arena().children(parent)) {
         if !store.hidden(id) {
             if found.is_some() {
                 return None;
             }
             found = Some(index);
         }
-        index += 1;
     }
     found
 }

@@ -763,13 +763,15 @@ mod tests {
 
     #[test]
     fn binning_groups_items_by_tile_in_submission_order() {
-        let mut s = Scratch::default();
-        s.items = vec![
-            item([0, 0, 10, 10]),
-            item([60, 0, 70, 10]),
-            item([0, 60, 130, 70]),
-            item([5, 5, 6, 6]),
-        ];
+        let mut s = Scratch {
+            items: vec![
+                item([0, 0, 10, 10]),
+                item([60, 0, 70, 10]),
+                item([0, 60, 130, 70]),
+                item([5, 5, 6, 6]),
+            ],
+            ..Scratch::default()
+        };
         bin(&mut s, 3, 2);
         let tile = |t: usize| &s.entries[s.starts[t] as usize..s.starts[t + 1] as usize];
         assert_eq!(tile(0), [0, 1, 2, 3]);
