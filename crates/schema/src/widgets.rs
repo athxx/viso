@@ -319,12 +319,20 @@ pub const STANDARD: &[NativeWidget] = &[
     layout("Grid", WidgetNode::Grid, &[GRID, LAYOUT, TRANSFORM, FOCUS])
         .provides(&GRID_CHILD)
         .slots(CHILDREN),
-    layout("Stack", FLEX_NODE, &[STACK, LAYOUT, TRANSFORM, FOCUS])
-        .provides(&STACK_CHILD)
-        .slots(CHILDREN),
-    layout("Absolute", FLEX_NODE, &[LAYOUT, TRANSFORM, FOCUS])
-        .provides(&ABSOLUTE_CHILD)
-        .slots(CHILDREN),
+    layout(
+        "Stack",
+        WidgetNode::Stack,
+        &[STACK, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .provides(&STACK_CHILD)
+    .slots(CHILDREN),
+    layout(
+        "Absolute",
+        WidgetNode::Absolute,
+        &[LAYOUT, TRANSFORM, FOCUS],
+    )
+    .provides(&ABSOLUTE_CHILD)
+    .slots(CHILDREN),
     layout(
         "Scroll",
         WidgetNode::Scroll,

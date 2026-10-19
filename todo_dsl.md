@@ -361,8 +361,15 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       algorithm does.
   - [ ] A track that reads the environment or adds `dp` to `%`, and a `%` gap
         (`E3711` today).
-- [ ] `stack.*`, `absolute.*` child placement; `Stack`'s `content_align` (`E3711`
-      today).
+- [x] `stack.*`, `absolute.*` child placement; `Stack`'s `content_align`: a stack
+      fits its largest child and places each at its `stack.align` (else the
+      stack's `content_align`), paints and hits by `stack.layer` (source order
+      within a layer, unsorted when every child shares one) while semantics and
+      focus keep source order; an absolute fits only its padding and pins each
+      child by its insets (`%` of the content box, `px`/`sp`/`em` folding at
+      layout through `NodeLengths`), a child of an absolute or a fixed stack
+      re-measuring alone; across the macros, hot reload (in place) and the
+      release package.
 - [x] `min_width`/`max_width`/`min_height`/`max_height` (`max_*` also
       `Option::None`/`Option::Some`) bound a fixed, a fit, a fill and a cross extent
       over the parent's content box, the minimum winning; bounded fills share what
@@ -385,8 +392,10 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 - [x] `margin` (§U3.3) in layout: room on both axes outside the box, negative
       allowed, counted in the parent's natural size, the root's against the surface.
 - [ ] Right-to-left layout: a `Row`'s children, `Justify`/`Align` start and end, and
-      `Grid` columns mirror under `env.layout_direction`, from the same
-      `LengthEnv::direction` the padding reads.
+      `Grid` columns, a `Stack`'s start/end alignments and an `Absolute`'s
+      `start`/`end` insets (left/right today) mirror under
+      `env.layout_direction`, from the same `LengthEnv::direction` the padding
+      reads.
 
 ### D2.6 — Animation (§U6)
 

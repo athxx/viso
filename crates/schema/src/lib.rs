@@ -38,7 +38,7 @@ pub use game::Rebuild;
 pub use id::StableId;
 pub use interaction::Interaction;
 pub use layout::{Align, Axis, Inset, Justify, Length};
-pub use length::{EdgeTerms, LengthDeps, LengthEnv, LengthTerms, NodeLengths};
+pub use length::{EdgeTerms, InsetTerms, LengthDeps, LengthEnv, LengthTerms, NodeLengths};
 pub use resource::{AssetBytes, AssetFormat, AssetKind, ResourceId, ResourceRevision};
 pub use semantics::{InspectKind, LiveRegion, Role, SemanticState};
 pub use state::{StateKey, StateValue};

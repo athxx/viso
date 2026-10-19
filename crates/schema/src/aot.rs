@@ -63,10 +63,11 @@ use viso_ende::{
 
 use crate::env::Avoid;
 use crate::layout::{
-    AdaptiveColumns, Align, AlignItems, AutoRepeat, BoxRules, GridPlacement, Inset, Justify, Span,
-    SpanInset, TrackMax, TrackSizing,
+    AbsoluteInsets, AdaptiveColumns, Align, AlignItems, Alignment2D, AutoRepeat, BoxRules,
+    GridPlacement, Inset, Justify, Placement, Span, SpanInset, StackPlacement, TrackMax,
+    TrackSizing,
 };
-use crate::length::{EdgeTerms, LengthTerms, NodeLengths};
+use crate::length::{EdgeTerms, InsetTerms, LengthTerms, NodeLengths};
 use crate::state::StateKey;
 
 /// The format magic after the [`ProtocolTag`].
@@ -289,6 +290,10 @@ pub enum AotNodeKind {
     Scroll = 2,
     /// A leaf primitive → `cx.leaf`.
     Leaf = 3,
+    /// A stack → `cx.stack`.
+    Stack = 4,
+    /// An absolute container → `cx.absolute`.
+    Absolute = 5,
 }
 
 impl AotNodeKind {
@@ -303,7 +308,11 @@ impl AotNodeKind {
     pub fn is_container(self) -> bool {
         matches!(
             self,
-            AotNodeKind::Flex | AotNodeKind::Grid | AotNodeKind::Scroll
+            AotNodeKind::Flex
+                | AotNodeKind::Grid
+                | AotNodeKind::Scroll
+                | AotNodeKind::Stack
+                | AotNodeKind::Absolute
         )
     }
 }
@@ -338,8 +347,12 @@ pub struct AotStyle {
     /// What the node keeps its content clear of, when it is an avoiding
     /// region.
     pub avoid: Option<Avoid>,
-    /// The cell a grid's child takes, when it placed itself.
-    pub place: Option<GridPlacement>,
+    /// Where a stack places a child that does not align itself, when the
+    /// node set it.
+    pub content_align: Option<Alignment2D>,
+    /// Where a grid, stack or absolute child sits in its parent, when it
+    /// placed itself.
+    pub place: Option<Placement>,
 }
 
 /// An adaptive scope: the node its subtree's size class classifies.
@@ -412,7 +425,8 @@ const STYLE_HAS_ALIGN: u16 = 1 << 10;
 const STYLE_HAS_RULES: u16 = 1 << 11;
 const STYLE_HAS_PLACE: u16 = 1 << 12;
 const STYLE_HAS_GRID: u16 = 1 << 13;
-const STYLE_BITS: u16 = (1 << 14) - 1;
+const STYLE_HAS_CONTENT_ALIGN: u16 = 1 << 14;
+const STYLE_BITS: u16 = (1 << 15) - 1;
 
 // A grid is a byte naming the parts it sets, then each: a template is a
 // varint count of tracks; a track is a byte naming its sizing, then its
@@ -433,12 +447,20 @@ const TRACK_MINMAX: u8 = 4;
 const TRACK_FIT_CONTENT: u8 = 5;
 const TRACK_FLEX_MIN: u8 = 6;
 
-// A placement is a byte naming its set parts, then each as a varint; a span
-// left out is `1`.
+// A placement is a byte naming the parent it is for, then a byte naming its
+// set parts, then each. A grid cell's are varints, a span left out being
+// `1`; a stack's are its alignment byte and its layer as a signed varint; an
+// absolute child's are the spans of its pinned edges, top, end, bottom,
+// start.
+const PLACE_GRID: u8 = 0;
+const PLACE_STACK: u8 = 1;
+const PLACE_ABSOLUTE: u8 = 2;
 const PLACE_COLUMN: u8 = 1 << 0;
 const PLACE_ROW: u8 = 1 << 1;
 const PLACE_COLUMN_SPAN: u8 = 1 << 2;
 const PLACE_ROW_SPAN: u8 = 1 << 3;
+const PLACE_ALIGN: u8 = 1 << 0;
+const PLACE_LAYER: u8 = 1 << 1;
 
 // Box rules are a byte naming the rules present, then each: a span is a byte
 // naming its non-zero parts, then them; a margin is four spans; a padding
@@ -464,7 +486,8 @@ const EDGE_BOTTOM: u8 = 1 << 3;
 const LENGTHS_PADDING: u16 = 1 << 8;
 const LENGTHS_MARGIN: u16 = 1 << 9;
 const LENGTHS_ROW_GAP: u16 = 1 << 10;
-const LENGTHS_BITS: u16 = (1 << 11) - 1;
+const LENGTHS_INSETS: u16 = 1 << 11;
+const LENGTHS_BITS: u16 = (1 << 12) - 1;
 const TERMS_DP: u8 = 1 << 0;
 const TERMS_PX: u8 = 1 << 1;
 const TERMS_SP: u8 = 1 << 2;
@@ -644,6 +667,9 @@ impl Encode for NodeLengths {
         if self.row_gap.is_some() {
             mask |= LENGTHS_ROW_GAP;
         }
+        if self.insets.is_some() {
+            mask |= LENGTHS_INSETS;
+        }
         enc.write_varint(u64::from(mask));
         for terms in present.iter().flatten() {
             encode_terms(terms, enc);
@@ -656,6 +682,19 @@ impl Encode for NodeLengths {
         }
         if let Some(terms) = &self.row_gap {
             encode_terms(terms, enc);
+        }
+        if let Some(insets) = &self.insets {
+            let edges = [insets.top, insets.end, insets.bottom, insets.start];
+            let mut mask = 0u8;
+            for (bit, edge) in edges.iter().enumerate() {
+                if edge.is_some() {
+                    mask |= 1 << bit;
+                }
+            }
+            enc.write_u8(mask);
+            for terms in edges.iter().flatten() {
+                encode_terms(terms, enc);
+            }
         }
     }
 }
@@ -698,6 +737,28 @@ impl Decode for NodeLengths {
         } else {
             None
         };
+        let insets = if mask & LENGTHS_INSETS != 0 {
+            let offset = dec.position();
+            let edges = dec.read_u8()?;
+            if edges & !0b1111 != 0 {
+                return Err(DecodeError::Malformed { offset });
+            }
+            let mut read = |bit: u8| -> Result<Option<LengthTerms>, DecodeError> {
+                if edges & (1 << bit) != 0 {
+                    decode_terms(dec).map(Some)
+                } else {
+                    Ok(None)
+                }
+            };
+            Some(InsetTerms {
+                top: read(0)?,
+                end: read(1)?,
+                bottom: read(2)?,
+                start: read(3)?,
+            })
+        } else {
+            None
+        };
         Ok(NodeLengths {
             width,
             height,
@@ -710,6 +771,7 @@ impl Decode for NodeLengths {
             max_height,
             margin,
             row_gap,
+            insets,
         })
     }
 }
@@ -1008,7 +1070,95 @@ fn decode_grid(dec: &mut Decoder) -> Result<AotGrid, DecodeError> {
     Ok(grid)
 }
 
-fn encode_place(place: GridPlacement, enc: &mut Encoder) {
+fn encode_place(place: Placement, enc: &mut Encoder) {
+    match place {
+        Placement::Grid(grid) => {
+            enc.write_u8(PLACE_GRID);
+            encode_cell(grid, enc);
+        }
+        Placement::Stack(stack) => {
+            enc.write_u8(PLACE_STACK);
+            let mut mask = 0u8;
+            if stack.align.is_some() {
+                mask |= PLACE_ALIGN;
+            }
+            if stack.layer != 0 {
+                mask |= PLACE_LAYER;
+            }
+            enc.write_u8(mask);
+            if let Some(align) = stack.align {
+                enc.write_u8(align as u8);
+            }
+            if stack.layer != 0 {
+                enc.write_varint_signed(i64::from(stack.layer));
+            }
+        }
+        Placement::Absolute(insets) => {
+            enc.write_u8(PLACE_ABSOLUTE);
+            let edges = [insets.top, insets.end, insets.bottom, insets.start];
+            let mut mask = 0u8;
+            for (bit, edge) in edges.iter().enumerate() {
+                if edge.is_some() {
+                    mask |= 1 << bit;
+                }
+            }
+            enc.write_u8(mask);
+            for span in edges.into_iter().flatten() {
+                encode_span(span, enc);
+            }
+        }
+    }
+}
+
+fn decode_place(dec: &mut Decoder) -> Result<Placement, DecodeError> {
+    let offset = dec.position();
+    match dec.read_u8()? {
+        PLACE_GRID => decode_cell(dec).map(Placement::Grid),
+        PLACE_STACK => {
+            let offset = dec.position();
+            let mask = dec.read_u8()?;
+            if mask & !(PLACE_ALIGN | PLACE_LAYER) != 0 {
+                return Err(DecodeError::Malformed { offset });
+            }
+            let align = if mask & PLACE_ALIGN != 0 {
+                Some(read_variant(dec, &Alignment2D::ALL)?)
+            } else {
+                None
+            };
+            let layer = if mask & PLACE_LAYER != 0 {
+                let offset = dec.position();
+                i32::try_from(dec.read_varint_signed()?)
+                    .map_err(|_| DecodeError::Malformed { offset })?
+            } else {
+                0
+            };
+            Ok(Placement::Stack(StackPlacement { align, layer }))
+        }
+        PLACE_ABSOLUTE => {
+            let offset = dec.position();
+            let mask = dec.read_u8()?;
+            if mask & !0b1111 != 0 {
+                return Err(DecodeError::Malformed { offset });
+            }
+            let mut read = |bit: u8| -> Result<Option<Span>, DecodeError> {
+                if mask & (1 << bit) != 0 {
+                    decode_span(dec).map(Some)
+                } else {
+                    Ok(None)
+                }
+            };
+            Ok(Placement::Absolute(AbsoluteInsets {
+                top: read(0)?,
+                end: read(1)?,
+                bottom: read(2)?,
+                start: read(3)?,
+            }))
+        }
+        _ => Err(DecodeError::Malformed { offset }),
+    }
+}
+
+fn encode_cell(place: GridPlacement, enc: &mut Encoder) {
     let mut mask = 0u8;
     if place.column.is_some() {
         mask |= PLACE_COLUMN;
@@ -1036,7 +1186,7 @@ fn encode_place(place: GridPlacement, enc: &mut Encoder) {
     }
 }
 
-fn decode_place(dec: &mut Decoder) -> Result<GridPlacement, DecodeError> {
+fn decode_cell(dec: &mut Decoder) -> Result<GridPlacement, DecodeError> {
     let offset = dec.position();
     let mask = dec.read_u8()?;
     if mask & !(PLACE_COLUMN | PLACE_ROW | PLACE_COLUMN_SPAN | PLACE_ROW_SPAN) != 0 {
@@ -1109,6 +1259,9 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
     if grid.is_some() {
         mask |= STYLE_HAS_GRID;
     }
+    if style.content_align.is_some() {
+        mask |= STYLE_HAS_CONTENT_ALIGN;
+    }
     enc.write_varint(u64::from(mask));
     if let Some(axis) = style.axis {
         enc.write_u8(match axis {
@@ -1164,6 +1317,9 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
     if let Some(grid) = &grid {
         encode_grid(grid, enc);
     }
+    if let Some(align) = style.content_align {
+        enc.write_u8(align as u8);
+    }
     enc.write_varint(u64::from(record.child_count));
 }
 
@@ -1186,6 +1342,8 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
             AotNodeKind::Grid,
             AotNodeKind::Scroll,
             AotNodeKind::Leaf,
+            AotNodeKind::Stack,
+            AotNodeKind::Absolute,
         ],
     )?;
     let offset = dec.position();
@@ -1277,6 +1435,11 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
     } else {
         None
     };
+    let content_align = if has(STYLE_HAS_CONTENT_ALIGN) {
+        Some(read_variant(dec, &Alignment2D::ALL)?)
+    } else {
+        None
+    };
     let offset = dec.position();
     let child_count =
         u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
@@ -1292,6 +1455,7 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
             padding,
             scope,
             avoid,
+            content_align,
             place,
         },
         child_count,
@@ -1601,6 +1765,7 @@ mod tests {
                         }),
                         scope: Some(AotScope { basis: Some(600.0) }),
                         avoid: None,
+                        content_align: Some(Alignment2D::BottomEnd),
                         place: None,
                     },
                     lengths: None,
@@ -1642,7 +1807,7 @@ mod tests {
                             max: TrackMax::Px(160.0),
                         }),
                     })),
-                    child_count: 2,
+                    child_count: 3,
                 },
                 AotNode {
                     kind: AotNodeKind::Scroll,
@@ -1651,6 +1816,10 @@ mod tests {
                         width: Some(AotLength::Fill { weight: 2.0 }),
                         height: Some(AotLength::Fit),
                         avoid: Some(Avoid::Keyboard),
+                        place: Some(Placement::Stack(StackPlacement {
+                            align: Some(Alignment2D::Center),
+                            layer: -3,
+                        })),
                         ..AotStyle::default()
                     },
                     lengths: Some(Box::new(NodeLengths {
@@ -1666,6 +1835,11 @@ mod tests {
                             end: LengthTerms::px(2.0),
                             ..EdgeTerms::default()
                         }),
+                        insets: Some(InsetTerms {
+                            start: Some(LengthTerms::em(1.0)),
+                            bottom: Some(LengthTerms::pct(10.0)),
+                            ..InsetTerms::default()
+                        }),
                         ..NodeLengths::default()
                     })),
                     rules: None,
@@ -1675,12 +1849,30 @@ mod tests {
                 AotNode {
                     kind: AotNodeKind::Leaf,
                     style: AotStyle {
-                        place: Some(GridPlacement {
+                        place: Some(Placement::Grid(GridPlacement {
                             column: Some(3),
                             row: None,
                             column_span: 2,
                             row_span: 300,
-                        }),
+                        })),
+                        ..AotStyle::default()
+                    },
+                    lengths: None,
+                    rules: None,
+                    grid: None,
+                    child_count: 0,
+                },
+                AotNode {
+                    kind: AotNodeKind::Absolute,
+                    style: AotStyle {
+                        place: Some(Placement::Absolute(AbsoluteInsets {
+                            top: Some(Span::dp(4.0)),
+                            end: Some(Span {
+                                fixed: -2.0,
+                                pct: 0.5,
+                            }),
+                            ..AbsoluteInsets::NONE
+                        })),
                         ..AotStyle::default()
                     },
                     lengths: None,
@@ -1730,11 +1922,11 @@ mod tests {
         let pkg = sample_package();
         let bytes = pkg.encode_to_vec();
         let view = AotView::new(&bytes).expect("valid");
-        assert_eq!(view.node_count(), 3);
+        assert_eq!(view.node_count(), 4);
         let records: Vec<AotRecord> = view.nodes().collect();
         let owned: Vec<AotRecord> = pkg.nodes.iter().map(AotNode::record).collect();
         assert_eq!(records, owned);
-        assert_eq!(view.nodes().len(), 3);
+        assert_eq!(view.nodes().len(), 4);
         assert_eq!(view.edge_count(), 2);
         assert_eq!(view.edge(1), pkg.edges[1]);
         assert!(view.edges().eq(pkg.edges.iter().copied()));
@@ -1883,19 +2075,36 @@ mod tests {
         let at = NODE_SECTION + 3;
         let placed = encoded(AotNode {
             style: AotStyle {
-                place: Some(GridPlacement {
+                place: Some(Placement::Grid(GridPlacement {
                     column_span: 2,
                     ..GridPlacement::default()
-                }),
+                })),
                 ..AotStyle::default()
             },
             ..leaf()
         });
         assert!(AotView::new(&placed).is_ok());
-        assert_eq!(placed[at..at + 2], [PLACE_COLUMN_SPAN, 2]);
+        assert_eq!(placed[at..at + 3], [PLACE_GRID, PLACE_COLUMN_SPAN, 2]);
         let mut bad = placed.clone();
-        bad[at + 1] = 0;
+        bad[at + 2] = 0;
         assert!(AotView::new(&bad).is_err(), "a zero span");
+        let mut bad = placed.clone();
+        bad[at] = 3;
+        assert!(AotView::new(&bad).is_err(), "an unknown parent");
+        let aligned = encoded(AotNode {
+            style: AotStyle {
+                place: Some(Placement::Stack(StackPlacement {
+                    align: Some(Alignment2D::Top),
+                    layer: 0,
+                })),
+                ..AotStyle::default()
+            },
+            ..leaf()
+        });
+        assert_eq!(aligned[at..at + 3], [PLACE_STACK, PLACE_ALIGN, 1]);
+        let mut bad = aligned.clone();
+        bad[at + 2] = 9;
+        assert!(AotView::new(&bad).is_err(), "an unknown alignment");
         let grid = encoded(AotNode {
             kind: AotNodeKind::Grid,
             grid: Some(Box::new(AotGrid {
@@ -1917,7 +2126,7 @@ mod tests {
     #[test]
     fn an_edge_to_a_missing_node_is_rejected() {
         let mut pkg = sample_package();
-        pkg.edges[0].node = 3;
+        pkg.edges[0].node = 4;
         assert!(AotView::new(&pkg.encode_to_vec()).is_err());
     }
 }

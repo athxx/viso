@@ -5,8 +5,8 @@ use viso_dev_protocol::inspect::{
     ChainLink, NodeBinding, NodeDetail, PaintSpan, PropertyGroup, RouteStop, spell_value,
 };
 use viso_ui::{
-    Align, AlignItems, Axis, BindingTable, Content, Interaction, Justify, LayoutInput, Length,
-    NodeId, NodeStore, PaintRanges, Primitive, Rgba, StateStore,
+    Align, AlignItems, Alignment2D, Axis, BindingTable, Content, Interaction, Justify, LayoutInput,
+    Length, NodeId, NodeStore, PaintRanges, Placement, Primitive, Rgba, Span, StateStore,
 };
 
 /// The detail of node `id` of a window whose paint stream is `primitives`,
@@ -184,6 +184,23 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             add(&mut layout, "align", align_name(align).into());
             add(&mut layout, "justify", justify_name(justify).into());
         }
+        LayoutInput::Stack { padding, align, .. } => {
+            add(&mut layout, "kind", "stack".into());
+            add(
+                &mut layout,
+                "padding",
+                inset([padding.top, padding.right, padding.bottom, padding.left]),
+            );
+            add(&mut layout, "content_align", alignment_name(align).into());
+        }
+        LayoutInput::Absolute { padding, .. } => {
+            add(&mut layout, "kind", "absolute".into());
+            add(
+                &mut layout,
+                "padding",
+                inset([padding.top, padding.right, padding.bottom, padding.left]),
+            );
+        }
         LayoutInput::Leaf { .. } => add(&mut layout, "kind", "leaf".into()),
         LayoutInput::Scroll { axis, .. } => {
             add(&mut layout, "kind", "scroll".into());
@@ -225,6 +242,42 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
     }
     add(&mut layout, "width", length(size.width));
     add(&mut layout, "height", length(size.height));
+    match store.placement(id) {
+        Some(Placement::Grid(cell)) => {
+            let at = |line: Option<u16>| line.map_or("auto".to_string(), |l| l.to_string());
+            add(
+                &mut layout,
+                "grid",
+                format!(
+                    "{} {} span {} {}",
+                    at(cell.column),
+                    at(cell.row),
+                    cell.column_span,
+                    cell.row_span
+                ),
+            );
+        }
+        Some(Placement::Stack(stacked)) => {
+            if let Some(align) = stacked.align {
+                add(&mut layout, "stack.align", alignment_name(align).into());
+            }
+            add(&mut layout, "stack.layer", stacked.layer.to_string());
+        }
+        Some(Placement::Absolute(insets)) => {
+            let edges = [
+                ("absolute.top", insets.top),
+                ("absolute.end", insets.end),
+                ("absolute.bottom", insets.bottom),
+                ("absolute.start", insets.start),
+            ];
+            for (name, span) in edges {
+                if let Some(span) = span {
+                    add(&mut layout, name, span_text(span));
+                }
+            }
+        }
+        None => {}
+    }
     let translate = store.translate(id);
     if translate.x != 0.0 || translate.y != 0.0 {
         add(
@@ -340,6 +393,29 @@ fn align_name(align: Align) -> &'static str {
         Align::Center => "center",
         Align::End => "end",
         Align::Stretch => "stretch",
+    }
+}
+
+fn alignment_name(align: Alignment2D) -> &'static str {
+    match align {
+        Alignment2D::TopStart => "top_start",
+        Alignment2D::Top => "top",
+        Alignment2D::TopEnd => "top_end",
+        Alignment2D::Start => "start",
+        Alignment2D::Center => "center",
+        Alignment2D::End => "end",
+        Alignment2D::BottomStart => "bottom_start",
+        Alignment2D::Bottom => "bottom",
+        Alignment2D::BottomEnd => "bottom_end",
+    }
+}
+
+/// A span as `dp`, `%` or their sum.
+fn span_text(span: Span) -> String {
+    match (span.fixed, span.pct) {
+        (fixed, 0.0) => format!("{}dp", number(fixed)),
+        (0.0, pct) => format!("{}%", number(pct * 100.0)),
+        (fixed, pct) => format!("{}dp + {}%", number(fixed), number(pct * 100.0)),
     }
 }
 

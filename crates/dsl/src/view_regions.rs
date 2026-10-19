@@ -567,7 +567,7 @@ impl Builder<'_> {
             .map(|i| Box::new(self.controls[i].1.clone()));
         let at = out.len();
         out.push(ItemTemplate::Node {
-            node: aot_node(node),
+            node: Box::new(aot_node(node)),
             edges,
             routes,
             control,

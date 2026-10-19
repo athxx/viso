@@ -64,7 +64,8 @@ fn row_and_containers_resolve_their_kind_and_axis() {
     assert_eq!(only_node("Grid { }").kind, NodeKind::Grid);
     assert_eq!(only_node("Scroll { }").kind, NodeKind::Scroll);
     assert_eq!(only_node("VirtualList { }").kind, NodeKind::VirtualList);
-    assert_eq!(only_node("Stack { }").kind, NodeKind::Flex);
+    assert_eq!(only_node("Stack { }").kind, NodeKind::Stack);
+    assert_eq!(only_node("Absolute { }").kind, NodeKind::Absolute);
     assert_eq!(only_node("Button { }").kind, NodeKind::Leaf);
 }
 

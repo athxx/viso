@@ -24,8 +24,8 @@ use crate::dirty::{DirtyCause, DirtyClass, DirtyMark};
 use crate::grid::{GridPlacement, GridStyle, GridTracks, TrackSizing};
 use crate::input::{PointerContacts, PointerId};
 use crate::layout::{
-    self, Align, Axis, BoxRules, Inset, Justify, LayoutInput, LayoutTree, Length, Measured, Size,
-    Vec2,
+    self, AbsoluteInsets, Align, Alignment2D, Axis, BoxRules, Inset, Justify, LayoutInput,
+    LayoutTree, Length, Measured, Placement, Size, StackPlacement, Vec2,
 };
 use crate::node::{NodeArena, NodeId, NodeIndex};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
@@ -93,6 +93,54 @@ impl Default for FlexStyle {
             padding: Inset::default(),
             align: Align::Start,
             justify: Justify::Start,
+            size: Size::fill(),
+            style: BoxStyle::NONE,
+        }
+    }
+}
+
+/// Parameters for a stack declared via [`BuildCx::stack`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StackStyle {
+    /// Where a child sits in the content box unless it aligns itself.
+    pub align: Alignment2D,
+    /// Inner padding on all four edges.
+    pub padding: Inset,
+    /// The container's own size request within its parent.
+    pub size: Size,
+    /// The container's own background/border.
+    pub style: BoxStyle,
+}
+
+impl Default for StackStyle {
+    fn default() -> Self {
+        StackStyle {
+            align: Alignment2D::TopStart,
+            padding: Inset::default(),
+            size: Size {
+                width: Length::Fit,
+                height: Length::Fit,
+            },
+            style: BoxStyle::NONE,
+        }
+    }
+}
+
+/// Parameters for an absolute container declared via [`BuildCx::absolute`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AbsoluteStyle {
+    /// Inner padding on all four edges.
+    pub padding: Inset,
+    /// The container's own size request within its parent.
+    pub size: Size,
+    /// The container's own background/border.
+    pub style: BoxStyle,
+}
+
+impl Default for AbsoluteStyle {
+    fn default() -> Self {
+        AbsoluteStyle {
+            padding: Inset::default(),
             size: Size::fill(),
             style: BoxStyle::NONE,
         }
@@ -197,7 +245,7 @@ macro_rules! node_columns {
         $store.content.$op($($arg),*);
         $store.row_offset.$op($($arg),*);
         $store.grid_tracks.$op($($arg),*);
-        $store.grid_placement.$op($($arg),*);
+        $store.placed_at.$op($($arg),*);
         $store.dirty.$op($($arg),*);
         $store.layout.$op($($arg),*);
         $store.style.$op($($arg),*);
@@ -221,6 +269,18 @@ macro_rules! node_columns {
 
 /// A node with no [`BoxRules`].
 const NO_RULES: u32 = u32::MAX;
+
+/// A node with no [`Placement`].
+const NO_PLACEMENT: u32 = u32::MAX;
+
+/// The placement of `placement`'s kind that says nothing.
+fn unplaced(placement: Placement) -> Placement {
+    match placement {
+        Placement::Grid(_) => Placement::Grid(GridPlacement::default()),
+        Placement::Stack(_) => Placement::Stack(StackPlacement::default()),
+        Placement::Absolute(_) => Placement::Absolute(AbsoluteInsets::NONE),
+    }
+}
 
 /// Whether `part` adds nothing to a reach `own` already covers.
 fn within(part: Rect, own: Rect) -> bool {
@@ -314,9 +374,13 @@ pub struct NodeStore {
     /// layout arm through [`LayoutTree::grid_column_tracks`] /
     /// [`grid_row_tracks`](LayoutTree::grid_row_tracks).
     grid_tracks: Vec<Option<Box<GridTracks>>>,
-    /// Warm: a grid child's placement/span. `GridPlacement::default()` (auto-flow,
-    /// span 1) for every non-explicitly-placed node — the common case.
-    grid_placement: Vec<GridPlacement>,
+    /// Warm: each node's slot in `placements`, [`NO_PLACEMENT`] for a node
+    /// that says nothing of where it sits in its parent — almost every one.
+    placed_at: Vec<u32>,
+    /// Cold: the placements of the grid, stack and absolute children that
+    /// have one; `free_placements` lists the slots a dropped one left.
+    placements: Vec<Placement>,
+    free_placements: Vec<u32>,
     /// Hot: pending invalidation per node, set by `mark_dirty` and consumed by
     /// the incremental measure/layout/paint passes, cleared at frame end.
     dirty: Vec<DirtyClass>,
@@ -636,6 +700,8 @@ impl NodeStore {
         self.box_rules.clear();
         self.free_rules.clear();
         self.ruled = 0;
+        self.placements.clear();
+        self.free_placements.clear();
         self.dirty_lists.reset();
         self.shaders.clear();
         self.assets.clear();
@@ -985,20 +1051,111 @@ impl NodeStore {
     /// move. Absent = auto-flow with span 1. A no-op for a stale handle or an
     /// unchanged placement.
     pub fn set_grid_placement(&mut self, id: NodeId, placement: GridPlacement) {
+        self.set_placement(id, Placement::Grid(placement));
+    }
+
+    /// Rewrite where a child sits in its parent, marking what that moves: a
+    /// grid cell its grid `MEASURE | LAYOUT | PAINT`; a stack alignment or
+    /// absolute insets the parent `LAYOUT | PAINT`, its size following no
+    /// child's place; a stack layer its stack `PAINT | HIT_TEST` and the
+    /// next paint whole, the children painting in a new order. A default
+    /// placement drops it. A no-op for a stale handle or an unchanged one.
+    pub fn set_placement(&mut self, id: NodeId, placement: Placement) {
         if !self.arena.is_live(id) {
             return;
         }
-        let slot = &mut self.grid_placement[id.index() as usize];
-        if *slot == placement {
+        let i = id.index() as usize;
+        let was = match self.placed_at[i] {
+            NO_PLACEMENT => None,
+            slot => Some(self.placements[slot as usize]),
+        };
+        let before = was.unwrap_or_else(|| unplaced(placement));
+        if before == placement {
             return;
         }
-        *slot = placement;
-        if let Some(parent) = self.arena.parent(id) {
-            self.mark_dirty(
-                parent,
-                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
-            );
+        if placement.is_default() {
+            self.drop_placement(i);
+        } else {
+            self.keep_placement(i, placement);
         }
+        let Some(parent) = self.arena.parent(id) else {
+            return;
+        };
+        let class = match (before, placement) {
+            (Placement::Stack(a), Placement::Stack(b)) => {
+                let mut class = DirtyClass::EMPTY;
+                if a.align != b.align {
+                    class |= DirtyClass::LAYOUT | DirtyClass::PAINT;
+                }
+                if a.layer != b.layer {
+                    class |= DirtyClass::PAINT | DirtyClass::HIT_TEST;
+                    self.request_repaint();
+                }
+                class
+            }
+            (Placement::Absolute(_), Placement::Absolute(_)) => {
+                DirtyClass::LAYOUT | DirtyClass::PAINT
+            }
+            _ => {
+                self.request_repaint();
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT | DirtyClass::HIT_TEST
+            }
+        };
+        self.mark_dirty(parent, class);
+    }
+
+    /// Where `id` sits in its parent, or `None` when it says nothing of it.
+    pub fn placement(&self, id: NodeId) -> Option<Placement> {
+        if !self.arena.is_live(id) {
+            return None;
+        }
+        LayoutTree::placement(self, id.index()).copied()
+    }
+
+    /// Keep `placement` in slot `i`'s placement, taking a free one if it has
+    /// none.
+    fn keep_placement(&mut self, i: usize, placement: Placement) {
+        match self.placed_at[i] {
+            NO_PLACEMENT => {
+                let slot = match self.free_placements.pop() {
+                    Some(slot) => {
+                        self.placements[slot as usize] = placement;
+                        slot
+                    }
+                    None => {
+                        self.placements.push(placement);
+                        (self.placements.len() - 1) as u32
+                    }
+                };
+                self.placed_at[i] = slot;
+            }
+            slot => self.placements[slot as usize] = placement,
+        }
+    }
+
+    /// Free slot `i`'s placement, if it has one.
+    fn drop_placement(&mut self, i: usize) {
+        let slot = core::mem::replace(&mut self.placed_at[i], NO_PLACEMENT);
+        if slot != NO_PLACEMENT {
+            self.free_placements.push(slot);
+        }
+    }
+
+    /// The layer stack child `id` paints in; `0` for any other node.
+    #[inline]
+    pub(crate) fn stack_layer(&self, id: NodeId) -> i32 {
+        match LayoutTree::placement(self, id.index()) {
+            Some(Placement::Stack(placed)) => placed.layer,
+            _ => 0,
+        }
+    }
+
+    /// Whether `id` is a stack whose children paint by layer: one of them
+    /// is off layer 0.
+    #[inline]
+    pub(crate) fn is_layered(&self, id: NodeId) -> bool {
+        matches!(self.layout[id.index() as usize], LayoutInput::Stack { .. })
+            && self.arena.children(id).any(|c| self.stack_layer(c) != 0)
     }
 
     /// Rewrite a Grid container's tracks, gaps, cell alignment, subgrid axes
@@ -1430,9 +1587,15 @@ impl NodeStore {
     /// Note that the size node `id` requests of its parent changed: the parent
     /// re-places its children, so the box it gives `id` follows the request.
     /// A re-measure alone moves no box whose request does not follow its
-    /// content (see [`relayout_dirty`](Self::relayout_dirty)).
+    /// content (see [`relayout_dirty`](Self::relayout_dirty)). A stack or an
+    /// absolute container places each child alone, so its re-measure does.
     pub(crate) fn request_moved(&mut self, id: NodeId) {
-        if let Some(parent) = self.arena.parent(id) {
+        if let Some(parent) = self.arena.parent(id)
+            && !matches!(
+                self.layout[parent.index() as usize],
+                LayoutInput::Stack { .. } | LayoutInput::Absolute { .. }
+            )
+        {
             self.mark_dirty(parent, DirtyClass::LAYOUT);
         }
     }
@@ -1507,7 +1670,33 @@ impl NodeStore {
         );
     }
 
-    /// Rewrite a Flex or Grid container's padding in place, marking it
+    /// Rewrite where a stack puts the children that do not align themselves,
+    /// marking it `LAYOUT | PAINT`. A no-op for a stale handle, an unchanged
+    /// alignment or a node that is not a stack.
+    pub fn set_stack_align(&mut self, id: NodeId, to: Alignment2D) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let LayoutInput::Stack { align, .. } = &mut self.layout[id.index() as usize] else {
+            return;
+        };
+        if *align == to {
+            return;
+        }
+        *align = to;
+        self.mark_dirty(id, DirtyClass::LAYOUT | DirtyClass::PAINT);
+    }
+
+    /// Drop `id`'s placement, marking what that moves as
+    /// [`set_placement`](Self::set_placement) does.
+    pub fn clear_placement(&mut self, id: NodeId) {
+        let Some(placement) = self.placement(id) else {
+            return;
+        };
+        self.set_placement(id, unplaced(placement));
+    }
+
+    /// Rewrite a container's padding in place, marking it
     /// `MEASURE | LAYOUT | PAINT` (padding is part of its natural size). The
     /// facade keeps a full-screen window's content clear of system UI this way,
     /// following each safe-area or keyboard change without a rebuild. A no-op
@@ -1517,7 +1706,10 @@ impl NodeStore {
             return;
         }
         match &mut self.layout[id.index() as usize] {
-            LayoutInput::Flex { padding, .. } | LayoutInput::Grid { padding, .. } => {
+            LayoutInput::Flex { padding, .. }
+            | LayoutInput::Grid { padding, .. }
+            | LayoutInput::Stack { padding, .. }
+            | LayoutInput::Absolute { padding, .. } => {
                 if *padding == inset {
                     return;
                 }
@@ -2956,7 +3148,7 @@ impl NodeStore {
         while let Some(parent) = self.arena.parent(current) {
             let mut add = unconditional;
             if measure_alive {
-                if fixed_on_both_axes(self.layout[parent.index() as usize]) {
+                if measures_alone(self.layout[parent.index() as usize]) {
                     // Boundary: this ancestor's size is content-independent, so
                     // MEASURE stops rising here (it is not folded into `parent`).
                     measure_alive = false;
@@ -3284,7 +3476,7 @@ impl NodeStore {
         self.content[i] = Vec2::ZERO;
         self.row_offset[i] = f32::NAN;
         self.grid_tracks[i] = None;
-        self.grid_placement[i] = GridPlacement::default();
+        self.drop_placement(i);
         self.dirty[i] = DirtyClass::EMPTY;
         self.layout[i] = input;
         self.style[i] = style;
@@ -3326,7 +3518,7 @@ impl NodeStore {
             self.content.push(Vec2::ZERO);
             self.row_offset.push(f32::NAN);
             self.grid_tracks.push(None);
-            self.grid_placement.push(GridPlacement::default());
+            self.placed_at.push(NO_PLACEMENT);
             self.dirty.push(DirtyClass::EMPTY);
             self.layout.push(LayoutInput::Leaf {
                 size: Size {
@@ -3621,7 +3813,7 @@ impl NodeStore {
                 let basis = self.basis_of(parent, root);
                 let (laid, kept) = (self.bounds(parent), self.bounds(redo));
                 let within = self.kept_within(parent.index());
-                layout::flex_child_box(
+                layout::placed_child_box(
                     self,
                     parent.index(),
                     redo.index(),
@@ -3655,10 +3847,12 @@ impl NodeStore {
         (measured, laid_out)
     }
 
-    /// Whether re-measured node `id` is placed alone: its parent is a flex
-    /// container fixed on both axes, not re-placing its children this frame,
-    /// and `id` is shown and requests a fixed main extent or a fill share, so
-    /// its new measure moves neither its parent nor a sibling.
+    /// Whether re-measured node `id` is placed alone: its parent, not
+    /// re-placing its children this frame, keeps its box whatever `id`
+    /// measures to and moves no sibling with it, and `id` is shown. So is
+    /// every child of an absolute container, and of a stack fixed on both
+    /// axes; a child of a flex container fixed on both axes requesting a
+    /// fixed main extent or a fill share.
     fn placed_alone(&self, id: NodeId, root: NodeId) -> bool {
         let Some(parent) = self.arena.parent(id) else {
             return false;
@@ -3667,16 +3861,21 @@ impl NodeStore {
             return false;
         }
         let p = parent.index() as usize;
-        let LayoutInput::Flex { axis, .. } = self.layout[p] else {
-            return false;
+        let alone = match self.layout[p] {
+            LayoutInput::Flex { axis, .. } => {
+                fixed_on_both_axes(self.layout[p])
+                    && matches!(
+                        self.layout[id.index() as usize].size().on(axis),
+                        Length::Fixed(_) | Length::Fill { .. }
+                    )
+            }
+            LayoutInput::Stack { .. } => fixed_on_both_axes(self.layout[p]),
+            LayoutInput::Absolute { .. } => true,
+            _ => false,
         };
-        fixed_on_both_axes(self.layout[p])
+        alone
             && !self.dirty[p].intersects(DirtyClass::MEASURE | DirtyClass::LAYOUT)
             && !self.arena.is_relinked(parent.node_index())
-            && matches!(
-                self.layout[id.index() as usize].size().on(axis),
-                Length::Fixed(_) | Length::Fill { .. }
-            )
     }
 
     /// The absolute-rows canvas `id` is a positioned row of, and its axis.
@@ -3721,10 +3920,19 @@ impl NodeStore {
     /// `root` down reaches it.
     fn basis_of(&self, id: NodeId, root: NodeId) -> layout::Basis {
         match self.parent(id) {
-            Some(parent) if id != root => self.basis_of(parent, root).child(
-                self.layout[parent.index() as usize],
-                self.layout[id.index() as usize],
-            ),
+            Some(parent) if id != root => {
+                let (above, child) = (
+                    self.layout[parent.index() as usize],
+                    self.layout[id.index() as usize],
+                );
+                let basis = self.basis_of(parent, root);
+                match above {
+                    LayoutInput::Absolute { .. } => {
+                        basis.placed(child.size(), layout::pinned(self, id.index()))
+                    }
+                    _ => basis.child(above, child),
+                }
+            }
             _ => layout::Basis::DEFINITE,
         }
     }
@@ -4067,8 +4275,11 @@ impl LayoutTree for NodeStore {
     }
 
     #[inline]
-    fn grid_placement(&self, index: u32) -> GridPlacement {
-        self.grid_placement[index as usize]
+    fn placement(&self, index: u32) -> Option<&Placement> {
+        match self.placed_at[index as usize] {
+            NO_PLACEMENT => None,
+            slot => Some(&self.placements[slot as usize]),
+        }
     }
 
     #[inline]
@@ -4161,9 +4372,16 @@ impl LayoutTree for NodeStore {
     }
 }
 
+/// Whether a node's natural size does not follow its children's: it is fixed
+/// on both axes, or an absolute container, which no child enters into. It is
+/// the boundary where a rising MEASURE invalidation stops.
+#[inline]
+fn measures_alone(input: LayoutInput) -> bool {
+    matches!(input, LayoutInput::Absolute { .. }) || fixed_on_both_axes(input)
+}
+
 /// Whether a node's own size request is a hard pixel size on both axes. Such a
-/// node's box cannot change when a descendant's natural size does, so it is the
-/// boundary where a rising MEASURE invalidation stops.
+/// node's box cannot change when a descendant's natural size does.
 #[inline]
 fn fixed_on_both_axes(input: LayoutInput) -> bool {
     let size = input.size();
@@ -4209,7 +4427,7 @@ pub struct BuildCx<'a> {
     stack: Vec<NodeId>,
     /// The placement to apply to the next child authored inside the current
     /// grid closure, then cleared. `None` outside a grid or once consumed.
-    pending_placement: Option<GridPlacement>,
+    pending_placement: Option<Placement>,
     /// The active grid's creation-time name tables (line names + template areas),
     /// so `place_named`/`place_area` inside the grid closure resolve names to
     /// indices. Cold and boxed — set on entering a `grid()` closure, restored to
@@ -4362,6 +4580,51 @@ impl<'a> BuildCx<'a> {
         Handle { id }
     }
 
+    /// Declare a stack and its children: each child sits in the stack's
+    /// content box at its own alignment (a preceding [`BuildCx::place`] of a
+    /// [`StackPlacement`]) or the stack's, and the stack fits the largest.
+    /// Children paint by ascending layer, those of one layer in order.
+    pub fn stack(&mut self, style: StackStyle, children: impl FnOnce(&mut BuildCx<'_>)) -> Handle {
+        let input = LayoutInput::Stack {
+            padding: style.padding,
+            align: style.align,
+            size: style.size,
+        };
+        self.container(input, style.style, children)
+    }
+
+    /// Declare an absolute container and its children: each child is pinned
+    /// by the [`AbsoluteInsets`] a preceding [`BuildCx::place`] gives it to
+    /// the edges of the content box, at its top start when it names none.
+    /// No child enters into the container's size.
+    pub fn absolute(
+        &mut self,
+        style: AbsoluteStyle,
+        children: impl FnOnce(&mut BuildCx<'_>),
+    ) -> Handle {
+        let input = LayoutInput::Absolute {
+            padding: style.padding,
+            size: style.size,
+        };
+        self.container(input, style.style, children)
+    }
+
+    /// Declare a container of `input` and its children, a placement no child
+    /// took not leaking to a sibling.
+    fn container(
+        &mut self,
+        input: LayoutInput,
+        style: BoxStyle,
+        children: impl FnOnce(&mut BuildCx<'_>),
+    ) -> Handle {
+        let id = self.push_node(input, style);
+        self.stack.push(id);
+        children(self);
+        self.stack.pop();
+        self.pending_placement = None;
+        Handle { id }
+    }
+
     /// Declare a flex container that is an adaptive scope: the readers under
     /// it get the size class of `basis` dp when given, else of the width its
     /// parent gives it. A node-only cx builds the container alone.
@@ -4475,11 +4738,15 @@ impl<'a> BuildCx<'a> {
         Handle { id }
     }
 
-    /// Declare the placement and span of the next child authored inside a grid.
-    /// With no `place` call the next child auto-flows with span 1. Ignored for a
-    /// child whose parent is not a grid.
-    pub fn place(&mut self, placement: GridPlacement) {
-        self.pending_placement = Some(placement);
+    /// Declare where the next child sits in its parent: a [`GridPlacement`]
+    /// in a grid, a [`StackPlacement`] in a stack, [`AbsoluteInsets`] in an
+    /// absolute container. With no `place` call a grid child auto-flows with
+    /// span 1, a stack child takes the stack's alignment on layer 0 and an
+    /// absolute child sits at the content box's top start. Ignored for a
+    /// child of another kind of parent.
+    pub fn place(&mut self, placement: impl Into<Placement>) {
+        let placement = placement.into();
+        self.pending_placement = (!placement.is_default()).then_some(placement);
     }
 
     /// Place the next grid child by **line name**, spanning `column_span` columns
@@ -4504,7 +4771,7 @@ impl<'a> BuildCx<'a> {
         let row = row.and_then(|name| {
             names.and_then(|n| crate::grid::resolve_line(&n.row_line_names, name))
         });
-        self.pending_placement = Some(GridPlacement {
+        self.place(GridPlacement {
             column,
             row,
             column_span: column_span.max(1),
@@ -4524,7 +4791,7 @@ impl<'a> BuildCx<'a> {
             .and_then(|n| n.areas.as_ref())
             .and_then(|areas| areas.placement(name))
         {
-            self.pending_placement = Some(placement);
+            self.place(placement);
         }
     }
 
@@ -5067,8 +5334,8 @@ impl<'a> BuildCx<'a> {
         } else {
             self.root = Some(id);
         }
-        if let Some(p) = self.pending_placement.take() {
-            self.store.grid_placement[id.index() as usize] = p;
+        if let Some(placement) = self.pending_placement.take() {
+            self.store.keep_placement(id.index() as usize, placement);
         }
         id
     }
@@ -5077,6 +5344,7 @@ impl<'a> BuildCx<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::Span;
     use viso_render::Rgba;
 
     const RED: Rgba = Rgba {
@@ -5345,6 +5613,404 @@ mod tests {
             }
         }
         assert!(alone > 100, "{alone} re-measures placed alone");
+    }
+
+    fn leaf(w: f32, h: f32) -> LeafStyle {
+        LeafStyle {
+            size: Size::fixed(w, h),
+            ..LeafStyle::default()
+        }
+    }
+
+    fn at(r: Rect) -> (f32, f32, f32, f32) {
+        (r.x, r.y, r.w, r.h)
+    }
+
+    #[test]
+    fn a_stack_layers_its_children_at_their_alignments_and_fits_the_largest() {
+        let mut store = NodeStore::new();
+        let mut ids = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                let stack = cx.stack(
+                    StackStyle {
+                        align: Alignment2D::Center,
+                        padding: Inset::all(10.0),
+                        ..StackStyle::default()
+                    },
+                    |cx| {
+                        ids.push(cx.leaf(leaf(100.0, 60.0)).id());
+                        cx.place(StackPlacement {
+                            align: Some(Alignment2D::BottomEnd),
+                            layer: 0,
+                        });
+                        ids.push(cx.leaf(leaf(40.0, 20.0)).id());
+                        ids.push(cx.leaf(leaf(20.0, 20.0)).id());
+                        ids.push(
+                            cx.leaf(LeafStyle {
+                                size: Size::fill(),
+                                ..LeafStyle::default()
+                            })
+                            .id(),
+                        );
+                    },
+                );
+                ids.insert(0, stack.id());
+            })
+            .id()
+        };
+        let mut scratch = Vec::new();
+        store.layout(root, surface(400.0, 300.0), &mut scratch);
+        let bounds: Vec<_> = ids.iter().map(|&id| at(store.bounds(id))).collect();
+        assert_eq!(bounds[0], (0.0, 0.0, 120.0, 80.0), "the largest, padded");
+        assert_eq!(bounds[1], (10.0, 10.0, 100.0, 60.0));
+        assert_eq!(bounds[2], (70.0, 50.0, 40.0, 20.0), "its own alignment");
+        assert_eq!(bounds[3], (50.0, 30.0, 20.0, 20.0), "the stack's");
+        assert_eq!(bounds[4], (10.0, 10.0, 100.0, 60.0), "a fill fills");
+    }
+
+    #[test]
+    fn an_absolute_pins_its_children_by_their_insets_and_fits_none() {
+        let mut store = NodeStore::new();
+        let mut ids = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                let pinned = cx.absolute(
+                    AbsoluteStyle {
+                        size: Size::fixed(200.0, 100.0),
+                        ..AbsoluteStyle::default()
+                    },
+                    |cx| {
+                        cx.place(AbsoluteInsets {
+                            start: Some(Span::dp(5.0)),
+                            top: Some(Span::dp(6.0)),
+                            ..AbsoluteInsets::NONE
+                        });
+                        ids.push(cx.leaf(leaf(20.0, 10.0)).id());
+                        cx.place(AbsoluteInsets {
+                            end: Some(Span::pct(10.0)),
+                            bottom: Some(Span::dp(4.0)),
+                            ..AbsoluteInsets::NONE
+                        });
+                        ids.push(cx.leaf(leaf(20.0, 10.0)).id());
+                        cx.place(AbsoluteInsets {
+                            start: Some(Span::dp(10.0)),
+                            end: Some(Span::dp(30.0)),
+                            ..AbsoluteInsets::NONE
+                        });
+                        ids.push(
+                            cx.leaf(LeafStyle {
+                                size: Size {
+                                    width: Length::Fit,
+                                    height: Length::Fixed(8.0),
+                                },
+                                ..LeafStyle::default()
+                            })
+                            .id(),
+                        );
+                        ids.push(cx.leaf(leaf(10.0, 10.0)).id());
+                    },
+                );
+                ids.insert(0, pinned.id());
+                let fit = cx.absolute(
+                    AbsoluteStyle {
+                        padding: Inset::all(3.0),
+                        size: Size {
+                            width: Length::Fit,
+                            height: Length::Fit,
+                        },
+                        ..AbsoluteStyle::default()
+                    },
+                    |cx| {
+                        cx.leaf(leaf(50.0, 50.0));
+                    },
+                );
+                ids.push(fit.id());
+            })
+            .id()
+        };
+        let mut scratch = Vec::new();
+        store.layout(root, surface(400.0, 300.0), &mut scratch);
+        let bounds: Vec<_> = ids.iter().map(|&id| at(store.bounds(id))).collect();
+        assert_eq!(bounds[1], (5.0, 6.0, 20.0, 10.0));
+        assert_eq!(bounds[2], (160.0, 86.0, 20.0, 10.0), "from the end, by 10%");
+        assert_eq!(
+            bounds[3],
+            (10.0, 0.0, 160.0, 8.0),
+            "a fit stretched between"
+        );
+        assert_eq!(bounds[4], (0.0, 0.0, 10.0, 10.0), "at the top start");
+        assert_eq!(bounds[5], (200.0, 0.0, 6.0, 6.0), "only its padding");
+    }
+
+    #[test]
+    fn a_stack_paints_and_hits_by_layer_and_reads_in_source_order() {
+        let mut store = NodeStore::new();
+        let mut ids = Vec::new();
+        let full = LeafStyle {
+            size: Size::fill(),
+            ..LeafStyle::default()
+        };
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.stack(
+                StackStyle {
+                    size: Size::fixed(100.0, 100.0),
+                    ..StackStyle::default()
+                },
+                |cx| {
+                    for (color, layer) in [(RED, 1), (GREEN, 0), (BLUE, -1)] {
+                        cx.place(StackPlacement { align: None, layer });
+                        ids.push(
+                            cx.leaf(LeafStyle {
+                                style: BoxStyle::solid(color),
+                                ..full
+                            })
+                            .id(),
+                        );
+                    }
+                },
+            )
+            .id()
+        };
+        let mut scratch = Vec::new();
+        store.layout(root, surface(100.0, 100.0), &mut scratch);
+        let mut out = Vec::new();
+        store.repaint(root, &mut out);
+        store.clear_dirty();
+        let colors = |out: &[viso_render::Primitive]| -> Vec<Rgba> {
+            out.iter()
+                .filter_map(|p| match p {
+                    viso_render::Primitive::Quad(q) => Some(q.color),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(colors(&out), [BLUE, GREEN, RED]);
+        assert_eq!(crate::hit_test(&store, root, 50.0, 50.0), Some(ids[0]));
+        let read: Vec<NodeId> = store.arena().children(root).collect();
+        assert_eq!(read, ids, "the reading order is the source's");
+
+        // A layer change paints the whole stack again in its new order.
+        store.set_placement(
+            ids[0],
+            Placement::Stack(StackPlacement {
+                align: None,
+                layer: -2,
+            }),
+        );
+        assert!(matches!(
+            store.repaint_dirty(root, &mut out),
+            Painted::Whole(_)
+        ));
+        assert_eq!(colors(&out), [RED, BLUE, GREEN]);
+        assert_eq!(crate::hit_test(&store, root, 50.0, 50.0), Some(ids[1]));
+        store.clear_dirty();
+
+        // A look change splices into the layered order.
+        store.set_fill(ids[2], RED);
+        assert!(!matches!(
+            store.repaint_dirty(root, &mut out),
+            Painted::Whole(_)
+        ));
+        let mut whole = Vec::new();
+        crate::paint_tree(&store, root, &mut whole);
+        assert_eq!(out, whole);
+    }
+
+    #[test]
+    fn a_child_of_an_absolute_or_a_fixed_stack_re_measures_alone() {
+        let mut store = NodeStore::new();
+        let mut ids = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    ..FlexStyle::default()
+                },
+                |cx| {
+                    cx.absolute(AbsoluteStyle::default(), |cx| {
+                        cx.place(AbsoluteInsets {
+                            end: Some(Span::dp(4.0)),
+                            ..AbsoluteInsets::NONE
+                        });
+                        ids.push(cx.leaf(leaf(10.0, 10.0)).id());
+                    });
+                    cx.stack(
+                        StackStyle {
+                            align: Alignment2D::Center,
+                            size: Size::fixed(100.0, 100.0),
+                            ..StackStyle::default()
+                        },
+                        |cx| ids.push(cx.leaf(leaf(10.0, 10.0)).id()),
+                    );
+                },
+            )
+            .id()
+        };
+        let screen = surface(400.0, 300.0);
+        let mut scratch = Vec::new();
+        let mut roots = Vec::new();
+        store.layout(root, screen, &mut scratch);
+        store.clear_dirty();
+        store.set_fixed_size(ids[0], Size::fixed(30.0, 20.0));
+        store.set_fixed_size(ids[1], Size::fixed(40.0, 20.0));
+        store.relayout_dirty(root, screen, &mut scratch, &mut roots);
+        assert_eq!(roots, ids, "each redone alone");
+        assert_eq!(at(store.bounds(ids[0])), (366.0, 0.0, 30.0, 20.0));
+        let stack = store.bounds(store.arena().parent(ids[1]).unwrap());
+        assert_eq!(at(store.bounds(ids[1])), (30.0, stack.y + 40.0, 40.0, 20.0));
+    }
+
+    #[test]
+    fn an_incremental_relayout_and_repaint_of_stacks_and_absolutes_match_whole_ones() {
+        let mut lcg = 0x2545_f491_4f6c_dd1du64;
+        let mut below = |n: u32| {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((lcg >> 33) % u64::from(n)) as u32
+        };
+        const ALIGNED: [Alignment2D; 4] = [
+            Alignment2D::TopStart,
+            Alignment2D::Center,
+            Alignment2D::BottomEnd,
+            Alignment2D::Top,
+        ];
+        let screen = surface(300.0, 600.0);
+        for seed in 0..12u32 {
+            let mut store = NodeStore::new();
+            let mut labels = Vec::new();
+            let mut nodes = Vec::new();
+            let root = {
+                let mut cx = BuildCx::new(&mut store);
+                cx.flex(
+                    FlexStyle {
+                        axis: Axis::Column,
+                        size: Size::fixed(300.0, 600.0),
+                        ..FlexStyle::default()
+                    },
+                    |cx| {
+                        for r in 0..6u32 {
+                            let size = if (r + seed) % 2 == 0 {
+                                Size::fixed(120.0, 60.0)
+                            } else {
+                                Size {
+                                    width: Length::Fit,
+                                    height: Length::Fit,
+                                }
+                            };
+                            let fill = |k: u32| BoxStyle::solid([RED, GREEN, BLUE][k as usize % 3]);
+                            let body = |cx: &mut BuildCx<'_>, labels: &mut Vec<NodeId>| {
+                                for k in 0..3 {
+                                    labels.push(
+                                        cx.leaf(LeafStyle {
+                                            style: fill(k + r),
+                                            ..LABEL
+                                        })
+                                        .id(),
+                                    );
+                                }
+                            };
+                            let node = if r % 3 == 2 {
+                                cx.absolute(
+                                    AbsoluteStyle {
+                                        size,
+                                        ..AbsoluteStyle::default()
+                                    },
+                                    |cx| body(cx, &mut labels),
+                                )
+                            } else {
+                                cx.stack(
+                                    StackStyle {
+                                        align: ALIGNED[(r + seed) as usize % 4],
+                                        size,
+                                        ..StackStyle::default()
+                                    },
+                                    |cx| body(cx, &mut labels),
+                                )
+                            };
+                            nodes.push(node.id());
+                        }
+                    },
+                )
+                .id()
+            };
+            for &label in &labels {
+                store.set_content_payload(label, label_text(1 + below(9)));
+            }
+            nodes.extend(&labels);
+            let mut scratch = Vec::new();
+            let mut roots = Vec::new();
+            let mut out = Vec::new();
+            store.layout(root, screen, &mut scratch);
+            store.repaint(root, &mut out);
+            store.clear_dirty();
+            for frame in 0..120 {
+                for _ in 0..1 + below(3) {
+                    let label = labels[below(labels.len() as u32) as usize];
+                    match below(6) {
+                        0 | 1 => store.set_content_payload(label, label_text(below(12))),
+                        2 => store.set_hidden(label, !store.hidden(label)),
+                        3 => {
+                            let span = |n: u32| (n > 0).then(|| Span::dp(n as f32 * 3.0));
+                            let placement = match store.layout_input(store.parent(label).unwrap()) {
+                                LayoutInput::Absolute { .. } => {
+                                    Placement::Absolute(AbsoluteInsets {
+                                        top: span(below(3)),
+                                        end: span(below(3)),
+                                        bottom: span(below(3)),
+                                        start: span(below(3)),
+                                    })
+                                }
+                                _ => Placement::Stack(StackPlacement {
+                                    align: (below(2) == 0).then(|| ALIGNED[below(4) as usize]),
+                                    layer: below(3) as i32 - 1,
+                                }),
+                            };
+                            store.set_placement(label, placement);
+                        }
+                        4 => {
+                            let lengths = [
+                                Length::Fit,
+                                Length::Fixed(12.0),
+                                Length::Fill { weight: 1.0 },
+                                Length::Relative {
+                                    fixed: 4.0,
+                                    pct: 0.25,
+                                },
+                            ];
+                            store.set_fixed_size(
+                                label,
+                                Size {
+                                    width: lengths[below(4) as usize],
+                                    height: lengths[below(4) as usize],
+                                },
+                            );
+                        }
+                        _ => store.set_fill(label, [RED, GREEN, BLUE][below(3) as usize]),
+                    }
+                }
+                store.relayout_dirty(root, screen, &mut scratch, &mut roots);
+                let incremental: Vec<Rect> = nodes.iter().map(|&n| store.bounds(n)).collect();
+                store.repaint_dirty(root, &mut out);
+                let mut whole = Vec::new();
+                crate::paint_tree(&store, root, &mut whole);
+                assert_eq!(out, whole, "seed {seed} frame {frame}: the paint");
+                store.layout(root, screen, &mut scratch);
+                for (&node, kept) in nodes.iter().zip(&incremental) {
+                    assert_eq!(
+                        *kept,
+                        store.bounds(node),
+                        "seed {seed} frame {frame}: {node:?} redone from {roots:?}"
+                    );
+                }
+                store.clear_dirty();
+            }
+        }
     }
 
     #[cfg(feature = "inspect")]

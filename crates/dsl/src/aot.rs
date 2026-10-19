@@ -35,7 +35,7 @@ use viso_schema::aot::{
     AotAxis, AotEdge, AotGrid, AotLength, AotNode, AotNodeKind, AotPackage, AotScope, AotStyle,
 };
 use viso_schema::layout::Inset;
-use viso_schema::{EdgeTerms, LengthTerms, NodeLengths, StateValue};
+use viso_schema::{EdgeTerms, InsetTerms, LengthTerms, NodeLengths, StateValue};
 use viso_shader::program::PackedBrush;
 // The languages a package's shaders are built for.
 use viso_schema::view::{
@@ -437,6 +437,8 @@ pub(crate) fn aot_kind(kind: NodeKind) -> AotNodeKind {
     match kind {
         NodeKind::Flex => AotNodeKind::Flex,
         NodeKind::Grid => AotNodeKind::Grid,
+        NodeKind::Stack => AotNodeKind::Stack,
+        NodeKind::Absolute => AotNodeKind::Absolute,
         NodeKind::Scroll => AotNodeKind::Scroll,
         NodeKind::VirtualList | NodeKind::Leaf | NodeKind::Component => AotNodeKind::Leaf,
     }
@@ -456,6 +458,7 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
         padding: style.padding.map(inset_of),
         scope: style.scope.map(|scope| AotScope { basis: scope.basis }),
         avoid: style.avoid,
+        content_align: style.content_align,
         place: style.place,
     }
 }
@@ -490,6 +493,12 @@ pub(crate) fn node_lengths(lengths: &LengthsIr) -> Option<NodeLengths> {
         max_height: lengths.max_height.map(terms_of),
         margin: lengths.margin.map(edges_of),
         row_gap: lengths.row_gap.map(terms_of),
+        insets: lengths.insets.map(|insets| InsetTerms {
+            top: insets.top.map(terms_of),
+            end: insets.end.map(terms_of),
+            bottom: insets.bottom.map(terms_of),
+            start: insets.start.map(terms_of),
+        }),
     })
 }
 

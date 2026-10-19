@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use viso_ende::{Aligned, Encode, SECTION_ALIGN};
 use viso_schema::aot::{AotEdge, AotNode, AotNodeKind, AotPackage, AotStyle, AotView};
-use viso_schema::layout::{BoxRules, GridPlacement, Span, SpanInset};
+use viso_schema::layout::{BoxRules, GridPlacement, Placement, Span, SpanInset};
 use viso_schema::view::{
     EventRoute, Route, ViewAsset, ViewHandler, ViewPackage, ViewPackageView, ViewShader, ViewState,
 };
@@ -85,11 +85,11 @@ fn tree(leaves: u32) -> AotPackage {
         nodes.push(AotNode {
             kind: AotNodeKind::Leaf,
             style: AotStyle {
-                place: (i % 3 == 0).then_some(GridPlacement {
+                place: (i % 3 == 0).then_some(Placement::Grid(GridPlacement {
                     column: Some(i as u16),
                     column_span: 2,
                     ..GridPlacement::default()
-                }),
+                })),
                 ..AotStyle::default()
             },
             lengths: Some(Box::new(NodeLengths {

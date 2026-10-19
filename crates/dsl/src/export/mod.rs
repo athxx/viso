@@ -319,6 +319,8 @@ html, body { margin: 0; width: 100%; height: 100%; }
 body { font-family: system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif; line-height: normal; }
 .vx-flex { display: flex; align-items: flex-start; }
 .vx-grid { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+.vx-stack { display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+.vx-absolute { position: relative; }
 .vx-scroll { display: flex; flex-direction: column; align-items: stretch; overflow: auto; }
 .vx-text { white-space: pre; }
 .vx-button { font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 0; margin: 0; text-align: start; white-space: pre; cursor: pointer; }

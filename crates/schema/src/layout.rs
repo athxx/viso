@@ -482,3 +482,142 @@ impl Default for GridPlacement {
         }
     }
 }
+
+/// Where a box sits in the room it is given, on both axes: at the start, the
+/// middle or the end of each. `start` and `end` are the inline edges a line
+/// begins and ends at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum Alignment2D {
+    /// The top start corner.
+    #[default]
+    TopStart,
+    /// The top edge, centered across.
+    Top,
+    /// The top end corner.
+    TopEnd,
+    /// The start edge, centered down.
+    Start,
+    /// The middle.
+    Center,
+    /// The end edge, centered down.
+    End,
+    /// The bottom start corner.
+    BottomStart,
+    /// The bottom edge, centered across.
+    Bottom,
+    /// The bottom end corner.
+    BottomEnd,
+}
+
+impl Alignment2D {
+    /// Every alignment, by its wire tag.
+    pub const ALL: [Self; 9] = [
+        Self::TopStart,
+        Self::Top,
+        Self::TopEnd,
+        Self::Start,
+        Self::Center,
+        Self::End,
+        Self::BottomStart,
+        Self::Bottom,
+        Self::BottomEnd,
+    ];
+
+    /// How far into the slack of its room the box sits across and down: `0`
+    /// at the start or top, `0.5` in the middle, `1` at the end or bottom.
+    #[inline]
+    pub const fn fractions(self) -> (f32, f32) {
+        const FRACTION: [f32; 3] = [0.0, 0.5, 1.0];
+        let tag = self as usize;
+        (FRACTION[tag % 3], FRACTION[tag / 3])
+    }
+}
+
+/// How a `Stack` child sits in the stack: its own alignment, `None` to take
+/// the stack's, and the layer it paints in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StackPlacement {
+    /// Where it sits in the stack's content box, over the stack's own.
+    pub align: Option<Alignment2D>,
+    /// Children paint by ascending layer, those of one layer in source order.
+    pub layer: i32,
+}
+
+/// Where an `Absolute` child sits: its distance from each edge of the
+/// container's content box it is pinned to, `None` for an edge it is not. A
+/// percentage reads the content box's height for `top` and `bottom`, its width
+/// for `start` and `end`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct AbsoluteInsets {
+    /// From the top edge.
+    pub top: Option<Span>,
+    /// From the end edge.
+    pub end: Option<Span>,
+    /// From the bottom edge.
+    pub bottom: Option<Span>,
+    /// From the start edge.
+    pub start: Option<Span>,
+}
+
+impl AbsoluteInsets {
+    /// Pinned to no edge.
+    pub const NONE: Self = Self {
+        top: None,
+        end: None,
+        bottom: None,
+        start: None,
+    };
+
+    /// The near and far edges along `axis`: start and end on a row, top and
+    /// bottom on a column.
+    #[inline]
+    pub fn on(&self, axis: Axis) -> (Option<Span>, Option<Span>) {
+        match axis {
+            Axis::Row => (self.start, self.end),
+            Axis::Column => (self.top, self.bottom),
+        }
+    }
+}
+
+/// Where a child sits in its parent beyond its own size: a grid cell, a stack
+/// alignment and layer, or absolute insets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Placement {
+    /// In a `Grid`.
+    Grid(GridPlacement),
+    /// In a `Stack`.
+    Stack(StackPlacement),
+    /// In an `Absolute`.
+    Absolute(AbsoluteInsets),
+}
+
+impl Placement {
+    /// Whether it says nothing a child without one does not: auto-flow with
+    /// span 1, the stack's alignment on layer 0, or pinned to no edge.
+    pub fn is_default(&self) -> bool {
+        match self {
+            Placement::Grid(grid) => *grid == GridPlacement::default(),
+            Placement::Stack(stack) => *stack == StackPlacement::default(),
+            Placement::Absolute(insets) => *insets == AbsoluteInsets::NONE,
+        }
+    }
+}
+
+impl From<GridPlacement> for Placement {
+    fn from(grid: GridPlacement) -> Self {
+        Placement::Grid(grid)
+    }
+}
+
+impl From<StackPlacement> for Placement {
+    fn from(stack: StackPlacement) -> Self {
+        Placement::Stack(stack)
+    }
+}
+
+impl From<AbsoluteInsets> for Placement {
+    fn from(insets: AbsoluteInsets) -> Self {
+        Placement::Absolute(insets)
+    }
+}

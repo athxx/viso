@@ -23,8 +23,8 @@ use viso_behavior::native::MigratableState;
 pub use viso_schema::Avoid;
 use viso_schema::Interaction;
 pub use viso_schema::layout::{
-    AdaptiveColumns, AlignItems, AutoRepeat, BoxRules, GridPlacement, Inset, Span, SpanInset,
-    TrackMax, TrackSizing,
+    AbsoluteInsets, AdaptiveColumns, AlignItems, Alignment2D, AutoRepeat, BoxRules, GridPlacement,
+    Inset, Placement, Span, SpanInset, StackPlacement, TrackMax, TrackSizing,
 };
 pub use viso_schema::{Align, Justify};
 
@@ -192,10 +192,14 @@ pub enum UiWhen {
 /// native widget declaration names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
-    /// A flex container (`Row`/`Column`/`Flex`/`Stack`) → `cx.flex`.
+    /// A flex container (`Row`/`Column`/`Flex`) → `cx.flex`.
     Flex,
     /// A grid container → `cx.grid`.
     Grid,
+    /// A stack → `cx.stack`.
+    Stack,
+    /// An absolute container → `cx.absolute`.
+    Absolute,
     /// A scroll container → `cx.scroll`.
     Scroll,
     /// A virtualized list → `cx.virtual_list`.
@@ -211,14 +215,22 @@ pub enum NodeKind {
 impl NodeKind {
     /// Whether this kind has a content box its `padding` insets.
     pub fn pads(self) -> bool {
-        matches!(self, NodeKind::Flex | NodeKind::Grid)
+        matches!(
+            self,
+            NodeKind::Flex | NodeKind::Grid | NodeKind::Stack | NodeKind::Absolute
+        )
     }
 
     /// Whether this kind hosts a child region the emitter descends into.
     pub fn is_container(self) -> bool {
         matches!(
             self,
-            NodeKind::Flex | NodeKind::Grid | NodeKind::Scroll | NodeKind::VirtualList
+            NodeKind::Flex
+                | NodeKind::Grid
+                | NodeKind::Stack
+                | NodeKind::Absolute
+                | NodeKind::Scroll
+                | NodeKind::VirtualList
         )
     }
 }
@@ -261,6 +273,26 @@ pub struct EdgeTermsIr {
     pub start: TermsIr,
 }
 
+/// An absolute child's insets as lowered terms, mirroring
+/// `viso_schema::InsetTerms`: `None` for an edge it is not pinned to.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct InsetTermsIr {
+    pub top: Option<TermsIr>,
+    pub end: Option<TermsIr>,
+    pub bottom: Option<TermsIr>,
+    pub start: Option<TermsIr>,
+}
+
+impl InsetTermsIr {
+    /// Whether an edge reads the environment.
+    pub fn needs_env(self) -> bool {
+        [self.top, self.end, self.bottom, self.start]
+            .iter()
+            .flatten()
+            .any(|t| t.needs_env())
+    }
+}
+
 /// A physical inset in dp, mirroring `viso_schema::layout::Inset`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct InsetIr {
@@ -292,6 +324,8 @@ pub struct LengthsIr {
     pub margin: Option<EdgeTermsIr>,
     /// A grid's row gap; its column gap is [`gap`](Self::gap).
     pub row_gap: Option<TermsIr>,
+    /// An absolute child's insets, when one reads the environment.
+    pub insets: Option<InsetTermsIr>,
 }
 
 impl LengthsIr {
@@ -308,6 +342,7 @@ impl LengthsIr {
         max_height: None,
         margin: None,
         row_gap: None,
+        insets: None,
     };
 
     /// Whether the node binds no environment length.
@@ -417,9 +452,14 @@ pub struct StyleIr {
     /// A grid's constant template, gaps and cell alignment, and the areas
     /// its children name; boxed, as few nodes are grids.
     pub grid: Option<Box<GridIr>>,
-    /// The cell a grid's child takes by `grid.column`, `grid.row` and their
-    /// spans.
-    pub place: Option<GridPlacement>,
+    /// Where a stack places a child that does not align itself, when a
+    /// constant `content_align` sets it.
+    pub content_align: Option<Alignment2D>,
+    /// Where the node sits in its parent: the cell a grid's child takes by
+    /// `grid.*`, a stack child's `stack.*` alignment and layer, an absolute
+    /// child's `absolute.*` insets when none reads the environment (else
+    /// [`lengths`](Self::lengths) carries them).
+    pub place: Option<Placement>,
     /// The area a grid's child names by `grid.area`, until its grid resolves
     /// it to [`place`](Self::place).
     pub area: Option<Box<AreaRef>>,
@@ -491,8 +531,11 @@ impl StyleIr {
 
     /// Settle where the box rules live: as constant [`rules`](Self::rules)
     /// when none reads the environment or the layout direction, else all of
-    /// them in the lengths, a constant padding's percentage with them.
+    /// them in the lengths, a constant padding's percentage with them. So do
+    /// an absolute child's insets: a constant placement when none reads the
+    /// environment, else all of them in the lengths.
     pub fn settle_rules(&mut self) {
+        self.settle_insets();
         let Some(lengths) = self.lengths.as_deref_mut() else {
             return;
         };
@@ -583,6 +626,72 @@ impl StyleIr {
                 start: edge(dp.left, pct.left),
             });
             self.padding = None;
+        }
+    }
+
+    /// Move insets that read no environment from the lengths to the
+    /// placement.
+    fn settle_insets(&mut self) {
+        let Some(insets) = self.lengths().insets.filter(|i| !i.needs_env()) else {
+            return;
+        };
+        let span = |terms: Option<TermsIr>| terms.map(TermsIr::span);
+        let placed = AbsoluteInsets {
+            top: span(insets.top),
+            end: span(insets.end),
+            bottom: span(insets.bottom),
+            start: span(insets.start),
+        };
+        self.lengths_mut().insets = None;
+        if self.lengths().is_empty() {
+            self.lengths = None;
+        }
+        self.place = (placed != AbsoluteInsets::NONE).then_some(Placement::Absolute(placed));
+    }
+
+    /// The insets an absolute child is pinned by, moved into the lengths
+    /// for one more edge to fold.
+    pub fn insets_mut(&mut self) -> &mut InsetTermsIr {
+        if let Some(Placement::Absolute(placed)) = self.place.take() {
+            let terms = |span: Option<Span>| span.map(TermsIr::of);
+            self.lengths_mut().insets = Some(InsetTermsIr {
+                top: terms(placed.top),
+                end: terms(placed.end),
+                bottom: terms(placed.bottom),
+                start: terms(placed.start),
+            });
+        }
+        self.lengths_mut()
+            .insets
+            .get_or_insert_with(Default::default)
+    }
+
+    /// The cell a grid's child takes, taking one on first write.
+    pub fn cell_mut(&mut self) -> &mut GridPlacement {
+        if !matches!(self.place, Some(Placement::Grid(_))) {
+            self.place = Some(Placement::Grid(GridPlacement::default()));
+        }
+        match &mut self.place {
+            Some(Placement::Grid(cell)) => cell,
+            _ => unreachable!("a grid placement was just put"),
+        }
+    }
+
+    /// A stack child's alignment and layer, taking them on first write.
+    pub fn stacked_mut(&mut self) -> &mut StackPlacement {
+        if !matches!(self.place, Some(Placement::Stack(_))) {
+            self.place = Some(Placement::Stack(StackPlacement::default()));
+        }
+        match &mut self.place {
+            Some(Placement::Stack(stacked)) => stacked,
+            _ => unreachable!("a stack placement was just put"),
+        }
+    }
+
+    /// Drop a placement that says nothing.
+    pub fn settle_place(&mut self) {
+        if self.place.is_some_and(|p| p.is_default()) {
+            self.place = None;
         }
     }
 

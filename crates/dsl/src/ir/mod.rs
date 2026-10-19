@@ -28,6 +28,7 @@ pub mod dirty_map;
 mod grid;
 pub mod keys;
 mod length;
+mod place;
 pub mod ui_ir;
 
 pub use binding_ir::{
@@ -57,7 +58,7 @@ use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::span::TextRange;
 pub use length::Consts;
 use length::{Lowered, Padding};
-use ui_ir::GridPlacement;
+use ui_ir::{Placement, StackPlacement};
 
 /// A lowered view: its template, every node type name it wrote that neither a
 /// registered widget nor a component of the library declares (each with the
@@ -346,7 +347,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     let Some(area) = node.style.area.take() else {
                         continue;
                     };
-                    if node.style.place.is_some() {
+                    if matches!(node.style.place, Some(Placement::Grid(_))) {
                         self.misplace((
                             area.at,
                             "a `grid.area` places the node by itself; drop its `grid.column`, \
@@ -357,7 +358,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     }
                     let areas = grid.map_or(&[][..], |grid| &grid.areas);
                     match areas.iter().find(|(name, _)| *name == area.name) {
-                        Some((_, place)) => node.style.place = Some(*place),
+                        Some((_, place)) => node.style.place = Some(Placement::Grid(*place)),
                         None if areas.is_empty() => self.misplace((
                             area.at,
                             format!(
@@ -515,6 +516,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 NodeKind::Flex
             }
             WidgetNode::Grid => NodeKind::Grid,
+            WidgetNode::Stack => NodeKind::Stack,
+            WidgetNode::Absolute => NodeKind::Absolute,
             WidgetNode::Scroll => NodeKind::Scroll,
             WidgetNode::VirtualList => NodeKind::VirtualList,
             WidgetNode::Leaf => NodeKind::Leaf,
@@ -1234,9 +1237,14 @@ fn unapplied(
                 "a `{name}` that reads a value does not lay out yet; a constant one does"
             ))
         }
-        "grid.column" | "grid.row" | "grid.column_span" | "grid.row_span" | "grid.area" => Some(
-            format!("a `{name}` that reads a value does not lay out yet; a constant one does"),
-        ),
+        "grid.column" | "grid.row" | "grid.column_span" | "grid.row_span" | "grid.area"
+        | "stack.align" | "stack.layer" | "absolute.top" | "absolute.end" | "absolute.bottom"
+        | "absolute.start" => Some(format!(
+            "a `{name}` that reads a value does not lay out yet; a constant one does"
+        )),
+        "content_align" if kind == NodeKind::Stack => Some(format!(
+            "a `{name}` that reads a value does not lay out yet; a constant one does"
+        )),
         _ => Some(format!("`{name}` does not reach a `{type_name}` yet")),
     }
 }
@@ -1298,6 +1306,12 @@ fn fold_property(
     let fold = match (segments.next(), segments.next()) {
         (None, _) => fold_static(&name, kind, &value, consts, style),
         (Some(member), None) if name == "grid" => fold_cell(&member.text(), &value, consts, style),
+        (Some(member), None) if name == "stack" => {
+            fold_stacked(&member.text(), &value, consts, style)
+        }
+        (Some(member), None) if name == "absolute" => {
+            fold_inset(&member.text(), &value, consts, style)
+        }
         _ => Fold::Pending,
     };
     if let Fold::Pending = fold {
@@ -1332,12 +1346,11 @@ fn fold_cell(member: &str, value: &Expr, consts: &Consts, style: &mut StyleIr) -
         Some(Err(reason)) => return Fold::Invalid(reason),
         None => return Fold::Pending,
     };
-    let place = || GridPlacement::default();
     match cell {
-        grid::Cell::Column(column) => style.place.get_or_insert_with(place).column = column,
-        grid::Cell::Row(row) => style.place.get_or_insert_with(place).row = row,
-        grid::Cell::ColumnSpan(span) => style.place.get_or_insert_with(place).column_span = span,
-        grid::Cell::RowSpan(span) => style.place.get_or_insert_with(place).row_span = span,
+        grid::Cell::Column(column) => style.cell_mut().column = column,
+        grid::Cell::Row(row) => style.cell_mut().row = row,
+        grid::Cell::ColumnSpan(span) => style.cell_mut().column_span = span,
+        grid::Cell::RowSpan(span) => style.cell_mut().row_span = span,
         grid::Cell::Area(area) => {
             style.area = area.map(|name| {
                 Box::new(ui_ir::AreaRef {
@@ -1347,9 +1360,40 @@ fn fold_cell(member: &str, value: &Expr, consts: &Consts, style: &mut StyleIr) -
             });
         }
     }
-    if style.place == Some(GridPlacement::default()) {
-        style.place = None;
+    style.settle_place();
+    Fold::Folded
+}
+
+/// Folds the `stack.member` binding of a stack's child into its place.
+fn fold_stacked(member: &str, value: &Expr, consts: &Consts, style: &mut StyleIr) -> Fold {
+    let Some(stacked) = place::fold_stacked(member, value, consts) else {
+        return Fold::Pending;
+    };
+    let placed: &mut StackPlacement = style.stacked_mut();
+    match stacked {
+        place::Stacked::Align(align) => placed.align = align,
+        place::Stacked::Layer(layer) => placed.layer = layer,
     }
+    style.settle_place();
+    Fold::Folded
+}
+
+/// Folds the `absolute.member` binding of an absolute child into its
+/// insets.
+fn fold_inset(member: &str, value: &Expr, consts: &Consts, style: &mut StyleIr) -> Fold {
+    if !matches!(member, "top" | "end" | "bottom" | "start") {
+        return Fold::Pending;
+    }
+    let Some(terms) = place::fold_inset(value, consts) else {
+        return Fold::Pending;
+    };
+    let insets = style.insets_mut();
+    *match member {
+        "top" => &mut insets.top,
+        "end" => &mut insets.end,
+        "bottom" => &mut insets.bottom,
+        _ => &mut insets.start,
+    } = terms;
     Fold::Folded
 }
 
@@ -1492,6 +1536,15 @@ fn fold_static(
                 _ => return Fold::Pending,
             });
             Fold::Folded
+        }
+        "content_align" if kind == NodeKind::Stack => {
+            folded(match place::fold_alignment(value, consts) {
+                Some(align) => {
+                    style.content_align = Some(align);
+                    true
+                }
+                None => false,
+            })
         }
         _ if kind == NodeKind::Grid => fold_grid(name, value, consts, style),
         _ => Fold::Pending,

@@ -48,6 +48,10 @@ pub struct TransformTable {
     /// scratch for the paint walk, kept so a frame that paints an overlay
     /// allocates nothing.
     pub(crate) overlays: Vec<(NodeId, crate::paint::Space)>,
+    /// The children of the layered stacks a paint is inside, each keyed by
+    /// its layer and source order: scratch for the paint walk, kept so a
+    /// frame allocates nothing.
+    pub(crate) layered: Vec<(i64, NodeId)>,
 }
 
 impl TransformTable {

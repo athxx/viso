@@ -22,7 +22,7 @@ use crate::ir::ui_ir::{
 use crate::syntax::{SyntaxKind, SyntaxNode};
 
 /// `value` past its parentheses and the constants it names.
-fn resolved(value: &Expr, consts: &Consts) -> Expr {
+pub(super) fn resolved(value: &Expr, consts: &Consts) -> Expr {
     let value = consts.value_of(value).unwrap_or_else(|| value.clone());
     match ParenExpr::cast(value.syntax().clone()).and_then(|p| p.inner()) {
         Some(inner) => resolved(&inner, consts),
@@ -31,14 +31,14 @@ fn resolved(value: &Expr, consts: &Consts) -> Expr {
 }
 
 /// The segments of a path.
-fn path(node: &SyntaxNode) -> Option<Vec<String>> {
+pub(super) fn path(node: &SyntaxNode) -> Option<Vec<String>> {
     let path = PathExpr::cast(node.clone())?;
     Some(path.segments().map(|t| t.text().to_string()).collect())
 }
 
 /// A call's callee path and its positional arguments; `None` for a call with
 /// a named argument.
-fn call(node: &SyntaxNode) -> Option<(Vec<String>, Vec<Expr>)> {
+pub(super) fn call(node: &SyntaxNode) -> Option<(Vec<String>, Vec<Expr>)> {
     let callee = CallExpr::cast(node.clone())?.callee()?;
     let callee = path(callee.syntax())?;
     let args = length::arguments(node)?
@@ -49,7 +49,7 @@ fn call(node: &SyntaxNode) -> Option<(Vec<String>, Vec<Expr>)> {
 }
 
 /// The variant a constant `Owner::variant` path names.
-fn variant(value: &Expr, owner: &str) -> Option<String> {
+pub(super) fn variant(value: &Expr, owner: &str) -> Option<String> {
     match path(value.syntax())?.as_slice() {
         [head, variant] if head == owner => Some(variant.clone()),
         _ => None,

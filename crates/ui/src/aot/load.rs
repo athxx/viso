@@ -23,7 +23,9 @@
 use viso_ende::DecodeError;
 
 use crate::binding::BindingTable;
-use crate::component::{BuildCx, FlexStyle, Handle, LeafStyle, NodeStore, ScrollStyle};
+use crate::component::{
+    AbsoluteStyle, BuildCx, FlexStyle, Handle, LeafStyle, NodeStore, ScrollStyle, StackStyle,
+};
 use crate::dirty::DirtyClass;
 use crate::grid::GridStyle;
 use crate::layout::{Axis, LayoutInput, Length, Size};
@@ -203,10 +205,25 @@ pub fn restyle_aot_node(
             store.set_grid_template(live, built);
             (size, None, Some(padding))
         }
+        AotNodeKind::Stack => {
+            let built = stack_style(node);
+            store.set_stack_align(live, built.align);
+            (built.size, None, Some(built.padding))
+        }
+        AotNodeKind::Absolute => {
+            let built = absolute_style(node);
+            (built.size, None, Some(built.padding))
+        }
         AotNodeKind::Scroll => (scroll_style(node).size, None, None),
         AotNodeKind::Leaf => (leaf_style(node).size, None, None),
     };
-    store.set_grid_placement(live, style.place.unwrap_or_default());
+    // Insets bound to environment lengths are theirs to fold.
+    if lengths.is_none_or(|lengths| lengths.insets.is_none()) {
+        match style.place {
+            Some(place) => store.set_placement(live, place),
+            None => store.clear_placement(live),
+        }
+    }
     if let Some(current) = store.size_request(live) {
         if lengths.is_some_and(|lengths| lengths.width.is_some()) {
             size.width = current.width;
@@ -296,6 +313,8 @@ pub fn build_aot_node(
             (None, None) => cx.flex(flex_style(node), children),
         },
         AotNodeKind::Grid => cx.grid(grid_style(node), children),
+        AotNodeKind::Stack => cx.stack(stack_style(node), children),
+        AotNodeKind::Absolute => cx.absolute(absolute_style(node), children),
         AotNodeKind::Scroll => cx.scroll(scroll_style(node), children),
         // A leaf hosts no child region; the view guarantees `child_count == 0`
         // for a leaf (a `VirtualList` collapses to a leaf on the package side,
@@ -356,6 +375,35 @@ fn grid_style(node: &AotRecord) -> GridStyle {
         out.align_items = grid.align_items;
         out.adaptive_columns = grid.adaptive_columns;
     }
+    if has_size(node) {
+        out.size = size_of(style);
+    }
+    out
+}
+
+/// The stack builder style for a packaged stack: its alignment, its padding
+/// and, when the node authored one, its size.
+fn stack_style(node: &AotRecord) -> StackStyle {
+    let style = &node.style;
+    let mut out = StackStyle {
+        padding: style.padding.unwrap_or_default(),
+        align: style.content_align.unwrap_or_default(),
+        ..StackStyle::default()
+    };
+    if has_size(node) {
+        out.size = size_of(style);
+    }
+    out
+}
+
+/// The absolute builder style for a packaged absolute container: its
+/// padding and, when the node authored one, its size.
+fn absolute_style(node: &AotRecord) -> AbsoluteStyle {
+    let style = &node.style;
+    let mut out = AbsoluteStyle {
+        padding: style.padding.unwrap_or_default(),
+        ..AbsoluteStyle::default()
+    };
     if has_size(node) {
         out.size = size_of(style);
     }

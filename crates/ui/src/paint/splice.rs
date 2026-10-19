@@ -573,6 +573,7 @@ fn order_siblings(store: &NodeStore, marks: &[u8], items: &mut [Item]) -> Option
     let arena = store.arena();
     let parent = arena.parent(items[0].node)?;
     if marks[parent.index() as usize] & RELINKED != 0
+        || store.is_layered(parent)
         || items
             .iter()
             .any(|item| arena.parent(item.node) != Some(parent))
@@ -590,6 +591,23 @@ fn order_siblings(store: &NodeStore, marks: &[u8], items: &mut [Item]) -> Option
         }
     }
     None
+}
+
+/// Whether `parent` paints its child `a` before its child `b`: in source
+/// order, a stack by layer first.
+fn paints_before(store: &NodeStore, parent: NodeId, a: NodeId, b: NodeId) -> bool {
+    let arena = store.arena();
+    if !store.is_layered(parent) {
+        return arena
+            .children(parent)
+            .skip_while(|&c| c != a)
+            .any(|c| c == b);
+    }
+    let key = |node: NodeId| {
+        let at = arena.children(parent).position(|c| c == node);
+        (store.stack_layer(node), at)
+    };
+    key(a) < key(b)
 }
 
 struct Walk<'a> {
@@ -696,12 +714,12 @@ impl Walk<'_> {
                     .of(parent_id)
                     .is_some_and(|r| !self.removed(r.start())),
             };
-            // Overlays of one parent defer in its children's order.
+            // Overlays of one parent defer in the order it paints its
+            // children.
             let ordered = match last {
-                Some((before, at)) if at == parent => arena
-                    .children(parent_id)
-                    .skip_while(|&c| c != before)
-                    .any(|c| c == overlay),
+                Some((before, at)) if at == parent => {
+                    paints_before(store, parent_id, before, overlay)
+                }
                 _ => true,
             };
             last = Some((overlay, parent));
@@ -767,6 +785,11 @@ impl Walk<'_> {
             (self.moved(record.own), record.len())
         };
         let diff = if item.bits & RELINKED != 0 {
+            // A stack's children paint by layer, not in the order the diff
+            // walks.
+            if store.is_layered(node) {
+                return None;
+            }
             let (cursor, end) = record.children();
             let slot = if record.has(Span::SCROLL) {
                 match self.out.get(cursor.checked_sub(1)? as usize)? {

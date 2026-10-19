@@ -14,7 +14,8 @@ use viso_render::Rect;
 
 pub use viso_math::Vec2;
 pub use viso_schema::layout::{
-    Align, AlignItems, Axis, BoxRules, Inset, Justify, Length, Span, SpanInset,
+    AbsoluteInsets, Align, AlignItems, Alignment2D, Axis, BoxRules, Inset, Justify, Length,
+    Placement, Span, SpanInset, StackPlacement,
 };
 
 /// A [`Vec2`]'s component along a layout [`Axis`] (x for Row, y for Column).
@@ -98,6 +99,25 @@ pub enum LayoutInput {
         /// The container's own size request within its parent.
         size: Size,
     },
+    /// A container that layers its children in its content box: each sits
+    /// where its own [`StackPlacement::align`] or the stack's `align` puts it,
+    /// and the stack fits the largest.
+    Stack {
+        /// Inner padding on all four edges.
+        padding: Inset,
+        /// Where a child without its own alignment sits.
+        align: Alignment2D,
+        /// The container's own size request within its parent.
+        size: Size,
+    },
+    /// A container that pins each child by its [`AbsoluteInsets`] to the
+    /// edges of its content box. No child enters into its size.
+    Absolute {
+        /// Inner padding on all four edges.
+        padding: Inset,
+        /// The container's own size request within its parent.
+        size: Size,
+    },
     /// A leaf that occupies its requested [`Size`].
     Leaf {
         /// Size request within the parent.
@@ -171,6 +191,8 @@ impl LayoutInput {
     pub fn size(self) -> Size {
         match self {
             LayoutInput::Flex { size, .. }
+            | LayoutInput::Stack { size, .. }
+            | LayoutInput::Absolute { size, .. }
             | LayoutInput::Leaf { size }
             | LayoutInput::Scroll { size, .. }
             | LayoutInput::AbsoluteRows { size, .. }
@@ -185,6 +207,8 @@ impl LayoutInput {
     pub fn size_mut(&mut self) -> &mut Size {
         match self {
             LayoutInput::Flex { size, .. }
+            | LayoutInput::Stack { size, .. }
+            | LayoutInput::Absolute { size, .. }
             | LayoutInput::Leaf { size }
             | LayoutInput::Scroll { size, .. }
             | LayoutInput::AbsoluteRows { size, .. }
@@ -259,8 +283,17 @@ pub trait LayoutTree {
     fn grid_column_tracks(&self, index: u32) -> Option<&[TrackSizing]>;
     /// The resolved row track template for a grid node, or `None` when not a grid.
     fn grid_row_tracks(&self, index: u32) -> Option<&[TrackSizing]>;
+    /// Where a child sits in its parent beyond its size, or `None` for a
+    /// child that says nothing of it.
+    fn placement(&self, index: u32) -> Option<&Placement>;
     /// A child's placement inside its grid parent (default = auto-flow, span 1).
-    fn grid_placement(&self, index: u32) -> GridPlacement;
+    #[inline]
+    fn grid_placement(&self, index: u32) -> GridPlacement {
+        match self.placement(index) {
+            Some(Placement::Grid(grid)) => *grid,
+            _ => GridPlacement::default(),
+        }
+    }
     /// A node's content intrinsic size, or `None` when it carries no drawable
     /// content. A `Fit`/`Fill` leaf axis resolves against this; a `None` leaf
     /// measures to `0` on both axes (a bare layout leaf, the prior behavior).
@@ -393,6 +426,11 @@ impl Basis {
                 };
                 Self::pack(axis, main, cross)
             }
+            // An absolute child pinned to both edges of an axis lays out on
+            // what `placed` gives it; its parent's pass passes that.
+            LayoutInput::Stack { .. } | LayoutInput::Absolute { .. } => {
+                self.placed(size, [false, false])
+            }
             LayoutInput::Scroll { axis, .. } | LayoutInput::AbsoluteRows { axis, .. } => {
                 Self::pack(axis, false, self.on(cross_of(axis)))
             }
@@ -405,6 +443,24 @@ impl Basis {
                 },
             },
             LayoutInput::Leaf { .. } => self,
+        }
+    }
+}
+
+impl Basis {
+    /// The basis a child of a stack or of an absolute container on this basis
+    /// lays out its own children on, `pinned` saying on each axis whether the
+    /// child is pinned to both edges, which stretches a fit one.
+    pub fn placed(self, size: Size, pinned: [bool; 2]) -> Self {
+        let axis = |length: Length, definite: bool, pinned: bool| match length {
+            Length::Fixed(_) => true,
+            Length::Relative { fixed, .. } => definite || fixed != 0.0,
+            Length::Fill { .. } => definite,
+            Length::Fit => definite && pinned,
+        };
+        Self {
+            width: axis(size.width, self.width, pinned[0]),
+            height: axis(size.height, self.height, pinned[1]),
         }
     }
 }
@@ -504,6 +560,24 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
             };
             axis_pack(axis, main_natural, cross_natural)
         }
+        LayoutInput::Stack { padding, size, .. } => {
+            let (mut w, mut h) = (0.0f32, 0.0f32);
+            for i in 0..child_count {
+                let child = scratch[start + i];
+                let m = tree.measured(child);
+                let margin = margin_of(tree, child, INDEFINITE);
+                w = w.max(m.w + margin.main(Axis::Row));
+                h = h.max(m.h + margin.main(Axis::Column));
+            }
+            Measured {
+                w: own_natural(size.width, w + padding.main(Axis::Row)),
+                h: own_natural(size.height, h + padding.main(Axis::Column)),
+            }
+        }
+        LayoutInput::Absolute { padding, size } => Measured {
+            w: own_natural(size.width, padding.main(Axis::Row)),
+            h: own_natural(size.height, padding.main(Axis::Column)),
+        },
         LayoutInput::Scroll { size, .. } => {
             // A viewport's natural size is its own request: a Fixed axis is its
             // pixel value; a Fit/Fill axis hugs the single content child's
@@ -592,6 +666,16 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
     };
     tree.set_measured(root, measured);
     scratch.truncate(start);
+}
+
+/// A container's natural extent on an axis it requests `length` on, its
+/// content `content`: a fixed request is its own.
+#[inline]
+fn own_natural(length: Length, content: f32) -> f32 {
+    match length {
+        Length::Fixed(v) => v,
+        _ => content,
+    }
 }
 
 /// A content box no percentage can read: both extents indefinite.
@@ -834,6 +918,16 @@ pub fn layout_on(
         }
         LayoutInput::AbsoluteRows { axis, .. } => {
             layout_absolute_rows(tree, root, bounds, axis, basis, scratch);
+            return;
+        }
+        LayoutInput::Stack { padding, align, .. } => {
+            let padding = padded(padding, tree.keep_within(root, within), within);
+            layout_placed(tree, root, bounds, basis, padding, Some(align), scratch);
+            return;
+        }
+        LayoutInput::Absolute { padding, .. } => {
+            let padding = padded(padding, tree.keep_within(root, within), within);
+            layout_placed(tree, root, bounds, basis, padding, None, scratch);
             return;
         }
         LayoutInput::Leaf { .. } => return, // Leaf: bounds are final.
@@ -1096,7 +1190,7 @@ fn align_offset(align: Align, room: f32, size: f32) -> f32 {
 /// main-axis run it was placed in, `kept`, across the cross extent its new
 /// measure takes. Queues the text reflow the container's pass would. `None`
 /// when `parent` is not a flex container.
-pub(crate) fn flex_child_box(
+fn flex_child_box(
     tree: &mut impl LayoutTree,
     parent: u32,
     child: u32,
@@ -1149,6 +1243,235 @@ pub(crate) fn flex_child_box(
         main_size,
         cross_size,
     ))
+}
+
+/// Lay out the children of a stack, whose children sit at `align` unless
+/// they align themselves, or of an absolute container (`align` `None`),
+/// whose children sit at their insets: each in the content box of `bounds`
+/// less `padding`, alone, no sibling entering into its box.
+fn layout_placed(
+    tree: &mut impl LayoutTree,
+    root: u32,
+    bounds: Rect,
+    basis: Basis,
+    padding: Inset,
+    align: Option<Alignment2D>,
+    scratch: &mut Vec<u32>,
+) {
+    let start = scratch.len();
+    tree.children(root, scratch);
+    let content = inner_rect(bounds, padding);
+    let inner = content_within(bounds, padding, basis);
+    // Recursion appends past this run and truncates back to it.
+    for i in start..scratch.len() {
+        let child = scratch[i];
+        let (child_box, pinned) = match align {
+            Some(align) => (
+                stack_box(tree, child, content, basis, inner, align),
+                [false; 2],
+            ),
+            None => absolute_box(tree, child, content, basis, inner),
+        };
+        let child_basis = basis.placed(tree.input(child).size(), pinned);
+        layout_on(tree, child, child_box, child_basis, inner, scratch);
+    }
+    scratch.truncate(start);
+}
+
+/// `bounds` less `padding`, never negative.
+#[inline]
+fn inner_rect(bounds: Rect, padding: Inset) -> Rect {
+    Rect {
+        x: bounds.x + padding.left,
+        y: bounds.y + padding.top,
+        w: (bounds.w - padding.left - padding.right).max(0.0),
+        h: (bounds.h - padding.top - padding.bottom).max(0.0),
+    }
+}
+
+/// The box a stack gives its child `child` in its content box `content`,
+/// on `basis`, its extents `inner` (NaN where indefinite): its size, at
+/// its own alignment or the stack's `align`, inside its margin. Queues the
+/// text reflow its width allows.
+fn stack_box(
+    tree: &mut impl LayoutTree,
+    child: u32,
+    content: Rect,
+    basis: Basis,
+    inner: Vec2,
+    align: Alignment2D,
+) -> Rect {
+    let align = match tree.placement(child) {
+        Some(Placement::Stack(placed)) => placed.align.unwrap_or(align),
+        _ => align,
+    };
+    let (fx, fy) = align.fractions();
+    let rules = tree.rules(child).copied();
+    let margin = rules
+        .as_ref()
+        .map_or(Inset::default(), |r| margin_in(r, inner));
+    let size = tree.input(child).size();
+    let room = |extent: f32, axis: Axis| extent - margin.main(axis);
+    let w = placed_extent(
+        tree,
+        child,
+        Axis::Row,
+        (room(content.w, Axis::Row), content.w, basis.width),
+        false,
+        size.width,
+        rules.as_ref(),
+    );
+    let h = placed_extent(
+        tree,
+        child,
+        Axis::Column,
+        (room(content.h, Axis::Column), content.h, basis.height),
+        false,
+        size.height,
+        rules.as_ref(),
+    );
+    tree.request_text_reflow(child, w);
+    Rect {
+        x: content.x + margin.left + (room(content.w, Axis::Row) - w) * fx,
+        y: content.y + margin.top + (room(content.h, Axis::Column) - h) * fy,
+        w,
+        h,
+    }
+}
+
+/// The box an absolute container gives its child `child` in its content box
+/// `content`, on `basis`, its extents `inner` (NaN where indefinite): pinned
+/// by its insets to the edges they name — at the start and top where it
+/// names neither — inside its margin; and on each axis whether it is
+/// pinned to both edges, which stretches a fit child between them. Queues
+/// the text reflow its width allows.
+fn absolute_box(
+    tree: &mut impl LayoutTree,
+    child: u32,
+    content: Rect,
+    basis: Basis,
+    inner: Vec2,
+) -> (Rect, [bool; 2]) {
+    let insets = match tree.placement(child) {
+        Some(Placement::Absolute(insets)) => *insets,
+        _ => AbsoluteInsets::NONE,
+    };
+    let rules = tree.rules(child).copied();
+    let margin = rules
+        .as_ref()
+        .map_or(Inset::default(), |r| margin_in(r, inner));
+    let size = tree.input(child).size();
+    let mut place = |axis: Axis, origin: f32, extent: f32, definite: bool| {
+        let (near, far) = insets.on(axis);
+        let mut edge = |span: Option<Span>| {
+            let span = span?;
+            if span.pct != 0.0 && !definite {
+                tree.report_length(child, LengthIssue::IndefiniteBasis);
+            }
+            Some(span.resolve(extent, definite, 0.0))
+        };
+        let (near, far) = (edge(near), edge(far));
+        let pinned = near.is_some() && far.is_some();
+        let room = extent - near.unwrap_or(0.0) - far.unwrap_or(0.0) - margin.main(axis);
+        let length = size.on(axis);
+        let len = placed_extent(
+            tree,
+            child,
+            axis,
+            (room, extent, definite),
+            pinned,
+            length,
+            rules.as_ref(),
+        );
+        let lead = margin.main_start(axis);
+        let at = match (near, far) {
+            (Some(near), _) => near + lead,
+            (None, Some(far)) => extent - far - len - (margin.main(axis) - lead),
+            (None, None) => lead,
+        };
+        (origin + at, len, pinned)
+    };
+    let (x, w, across) = place(Axis::Row, content.x, content.w, basis.width);
+    let (y, h, down) = place(Axis::Column, content.y, content.h, basis.height);
+    tree.request_text_reflow(child, w);
+    (Rect { x, y, w, h }, [across, down])
+}
+
+/// The extent a stack or absolute child requests along `axis` by `length`,
+/// given its `room` (its parent's content extent less its margin and
+/// insets), that `extent` and whether it is definite: the room for a fill
+/// or a `stretch`ed fit, its content for a fit, its own for a fixed or
+/// relative request, held within its bounds.
+#[inline]
+fn placed_extent(
+    tree: &mut impl LayoutTree,
+    child: u32,
+    axis: Axis,
+    (room, extent, definite): (f32, f32, bool),
+    stretch: bool,
+    length: Length,
+    rules: Option<&BoxRules>,
+) -> f32 {
+    let request = match length {
+        Length::Fill { .. } => room.max(0.0),
+        Length::Fit if stretch => room.max(0.0),
+        Length::Fit => tree.measured(child).on(axis),
+        Length::Fixed(v) => v,
+        Length::Relative { fixed, pct } => {
+            if !definite {
+                tree.report_length(child, LengthIssue::IndefiniteBasis);
+            }
+            let natural = tree.measured(child).on(axis);
+            relative_extent(fixed, pct, extent, definite, natural)
+        }
+    };
+    rules.map_or(request, |rules| {
+        rules.clamp(axis, request, extent, definite)
+    })
+}
+
+/// The box container `parent`, laid out in `bounds` on `basis` in a content
+/// box `within`, gives its child `child` when only the child's measure
+/// changed and no sibling moves with it: a flex container's (see
+/// [`flex_child_box`]), a stack's or an absolute container's. `None` for
+/// any other container.
+#[inline(never)]
+pub(crate) fn placed_child_box(
+    tree: &mut impl LayoutTree,
+    parent: u32,
+    child: u32,
+    bounds: Rect,
+    basis: Basis,
+    within: Vec2,
+    kept: Rect,
+) -> Option<Rect> {
+    let (padding, align) = match tree.input(parent) {
+        LayoutInput::Flex { .. } => {
+            return flex_child_box(tree, parent, child, bounds, basis, within, kept);
+        }
+        LayoutInput::Stack { padding, align, .. } => (padding, Some(align)),
+        LayoutInput::Absolute { padding, .. } => (padding, None),
+        _ => return None,
+    };
+    let padding = padded(padding, tree.rules(parent), within);
+    let content = inner_rect(bounds, padding);
+    let inner = content_within(bounds, padding, basis);
+    Some(match align {
+        Some(align) => stack_box(tree, child, content, basis, inner, align),
+        None => absolute_box(tree, child, content, basis, inner).0,
+    })
+}
+
+/// Whether an absolute container's child `child` is pinned to both edges of
+/// each axis.
+pub(crate) fn pinned(tree: &impl LayoutTree, child: u32) -> [bool; 2] {
+    match tree.placement(child) {
+        Some(Placement::Absolute(insets)) => [
+            insets.start.is_some() && insets.end.is_some(),
+            insets.top.is_some() && insets.bottom.is_some(),
+        ],
+        _ => [false; 2],
+    }
 }
 
 /// Lay out a scroll viewport's single content child. The viewport already has

@@ -28,6 +28,10 @@ pub enum WidgetNode {
     KeyboardAvoiding,
     /// A track grid.
     Grid,
+    /// A container that layers its children in one box.
+    Stack,
+    /// A container that pins its children by insets.
+    Absolute,
     /// A single-child scroll viewport.
     Scroll,
     /// A virtualized list, which mounts its items itself.

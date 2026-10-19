@@ -52,8 +52,8 @@ pub use binding::{
     Binding, BindingFootprint, BindingTable, InstanceBase, StateRef, Template, TemplateBinding,
 };
 pub use component::{
-    BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore, Painted,
-    PointerHandler, ScrollStyle, VirtualListStyle,
+    AbsoluteStyle, BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore,
+    Painted, PointerHandler, ScrollStyle, StackStyle, VirtualListStyle,
 };
 pub use content::{BrushImage, Content, TextRequest};
 pub use context::EventCx;
@@ -79,12 +79,12 @@ pub use inspect::{
 };
 pub use interaction::Interaction;
 pub use layout::{
-    Align, AlignItems, Axis, Basis, BoxRules, Inset, Justify, LayoutInput, Length, Size, Span,
-    SpanInset, Vec2,
+    AbsoluteInsets, Align, AlignItems, Alignment2D, Axis, Basis, BoxRules, Inset, Justify,
+    LayoutInput, Length, Placement, Size, Span, SpanInset, StackPlacement, Vec2,
 };
 pub use length::{
-    EdgeTerms, LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms, LengthWarning,
-    NodeLengths,
+    EdgeTerms, InsetTerms, LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms,
+    LengthWarning, NodeLengths,
 };
 pub use node::{ArenaFull, ChildIds, Children, NodeArena, NodeId, NodeIndex, NodeLinks, TreeLinks};
 pub use paint::{paint_tree, paint_with_transforms};

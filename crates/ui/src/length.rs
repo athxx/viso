@@ -12,10 +12,12 @@
 
 use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
-use crate::layout::{BoxRules, Inset, LayoutInput, Length};
+use crate::layout::{AbsoluteInsets, BoxRules, Inset, LayoutInput, Length, Placement};
 
 use crate::node::NodeId;
-pub use viso_schema::length::{EdgeTerms, LengthDeps, LengthEnv, LengthTerms, NodeLengths};
+pub use viso_schema::length::{
+    EdgeTerms, InsetTerms, LengthDeps, LengthEnv, LengthTerms, NodeLengths,
+};
 
 /// A length a layout pass could not resolve as authored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -76,8 +78,8 @@ struct SizeTerms {
     padding: Option<EdgeTerms>,
 }
 
-/// A binding's terms that few bindings have: its box rules and a grid's row
-/// gap.
+/// A binding's terms that few bindings have: its box rules, a grid's row
+/// gap and an absolute child's insets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct RareTerms {
     min_width: Option<LengthTerms>,
@@ -86,6 +88,7 @@ struct RareTerms {
     max_height: Option<LengthTerms>,
     margin: Option<EdgeTerms>,
     row_gap: Option<LengthTerms>,
+    insets: Option<InsetTerms>,
 }
 
 /// No slot of [`LengthBindings::rare_terms`].
@@ -153,6 +156,7 @@ impl LengthBindings {
             lengths.max_height = rules.max_height;
             lengths.margin = rules.margin;
             lengths.row_gap = rules.row_gap;
+            lengths.insets = rules.insets;
         }
         lengths
     }
@@ -178,13 +182,15 @@ impl LengthBindings {
             max_height: lengths.max_height,
             margin: lengths.margin,
             row_gap: lengths.row_gap,
+            insets: lengths.insets,
         };
         let has_rare = rare.min_width.is_some()
             || rare.max_width.is_some()
             || rare.min_height.is_some()
             || rare.max_height.is_some()
             || rare.margin.is_some()
-            || rare.row_gap.is_some();
+            || rare.row_gap.is_some()
+            || rare.insets.is_some();
         let old_rare = slot.map_or(NO_RARE_TERMS, |slot| self.terms[slot as usize].1);
         let rare_slot = match (has_rare, old_rare) {
             (false, NO_RARE_TERMS) => NO_RARE_TERMS,
@@ -515,7 +521,10 @@ impl NodeStore {
                 Inset::default()
             });
             let moved = match self.layout_input_mut(id) {
-                LayoutInput::Flex { padding, .. } | LayoutInput::Grid { padding, .. } => {
+                LayoutInput::Flex { padding, .. }
+                | LayoutInput::Grid { padding, .. }
+                | LayoutInput::Stack { padding, .. }
+                | LayoutInput::Absolute { padding, .. } => {
                     let moved = *padding != folded;
                     *padding = folded;
                     moved
@@ -525,6 +534,13 @@ impl NodeStore {
             if moved {
                 class = class | DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT;
             }
+        }
+        if let Some(insets) = lengths.insets {
+            let folded = insets.fold(&env, font).unwrap_or_else(|| {
+                self.lengths_mut().report(id, LengthIssue::NonFinite);
+                AbsoluteInsets::NONE
+            });
+            self.set_placement(id, Placement::Absolute(folded));
         }
         if class != DirtyClass::EMPTY {
             self.mark_dirty(id, class);

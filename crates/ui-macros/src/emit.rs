@@ -31,9 +31,9 @@ use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
 use viso_dsl::ir::ui_ir::Span as LayoutSpan;
 use viso_dsl::ir::ui_ir::{
-    AdaptiveColumns, Align, AlignItems, AutoRepeat, Avoid, AxisIr, BoxRules, EdgeTermsIr,
-    GridPlacement, Inset, InsetIr, Justify, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr,
-    TrackMax, TrackSizing, UiItem, UiNode, UiTree,
+    AdaptiveColumns, Align, AlignItems, Alignment2D, AutoRepeat, Avoid, AxisIr, BoxRules,
+    EdgeTermsIr, Inset, InsetIr, InsetTermsIr, Justify, LengthIr, LengthsIr, NodeKind, Placement,
+    StyleIr, TermsIr, TrackMax, TrackSizing, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::{Control, ControlInput, ViewBehavior, When};
@@ -442,6 +442,43 @@ impl Emit<'_> {
                     )
                 }
             }
+            NodeKind::Stack | NodeKind::Absolute => {
+                let padding = node.style.padding.map(inset_tokens).map(|padding| {
+                    quote! { padding: #padding, }
+                });
+                let size = has_size(&node.style).then(|| {
+                    let size = size_tokens(&node.style);
+                    quote! { size: #size, }
+                });
+                if node.kind == NodeKind::Stack {
+                    let align = node.style.content_align.map(|align| {
+                        let align = alignment_tokens(align);
+                        quote! { align: #align, }
+                    });
+                    quote! {
+                        cx.stack(
+                            ::viso::__private::viso_ui::StackStyle {
+                                #align
+                                #padding
+                                #size
+                                ..::core::default::Default::default()
+                            },
+                            |cx| { #child_block },
+                        )
+                    }
+                } else {
+                    quote! {
+                        cx.absolute(
+                            ::viso::__private::viso_ui::AbsoluteStyle {
+                                #padding
+                                #size
+                                ..::core::default::Default::default()
+                            },
+                            |cx| { #child_block },
+                        )
+                    }
+                }
+            }
             NodeKind::Scroll => {
                 let axis = axis_tokens(node.style.axis.unwrap_or(AxisIr::Column));
                 let size = size_tokens(&node.style);
@@ -736,6 +773,7 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
     let max_height = terms_tokens(lengths.max_height);
     let margin = edges_tokens(lengths.margin);
     let row_gap = terms_tokens(lengths.row_gap);
+    let insets = insets_tokens(lengths.insets);
     quote! {
         cx.bind_lengths(#handle, ::viso::__private::viso_ui::NodeLengths {
             width: #width,
@@ -749,6 +787,7 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
             max_height: #max_height,
             margin: #margin,
             row_gap: #row_gap,
+            insets: #insets,
         });
     }
 }
@@ -794,21 +833,91 @@ fn adaptive_tokens(adaptive: AdaptiveColumns) -> TokenStream {
     quote! { #grid::AdaptiveColumns { mode: #mode, min: #min, max: #max } }
 }
 
-/// `::viso::__private::viso_ui::grid::GridPlacement { .. }` of `place`.
-fn place_tokens(place: GridPlacement) -> TokenStream {
-    let index = |at: Option<u16>| match at {
-        Some(at) => quote! { ::core::option::Option::Some(#at) },
-        None => quote! { ::core::option::Option::None },
-    };
-    let (column, row) = (index(place.column), index(place.row));
-    let (column_span, row_span) = (place.column_span, place.row_span);
-    quote! {
-        ::viso::__private::viso_ui::grid::GridPlacement {
-            column: #column,
-            row: #row,
-            column_span: #column_span,
-            row_span: #row_span,
+/// The `::viso::__private::viso_ui::Placement` of `place`.
+fn place_tokens(place: Placement) -> TokenStream {
+    let ui = quote! { ::viso::__private::viso_ui };
+    match place {
+        Placement::Grid(cell) => {
+            let index = |at: Option<u16>| match at {
+                Some(at) => quote! { ::core::option::Option::Some(#at) },
+                None => quote! { ::core::option::Option::None },
+            };
+            let (column, row) = (index(cell.column), index(cell.row));
+            let (column_span, row_span) = (cell.column_span, cell.row_span);
+            quote! {
+                #ui::Placement::Grid(#ui::grid::GridPlacement {
+                    column: #column,
+                    row: #row,
+                    column_span: #column_span,
+                    row_span: #row_span,
+                })
+            }
         }
+        Placement::Stack(stacked) => {
+            let align = match stacked.align {
+                Some(align) => {
+                    let align = alignment_tokens(align);
+                    quote! { ::core::option::Option::Some(#align) }
+                }
+                None => quote! { ::core::option::Option::None },
+            };
+            let layer = stacked.layer;
+            quote! {
+                #ui::Placement::Stack(#ui::StackPlacement { align: #align, layer: #layer })
+            }
+        }
+        Placement::Absolute(insets) => {
+            let edge = |span: Option<LayoutSpan>| match span {
+                Some(LayoutSpan { fixed, pct }) => {
+                    quote! { ::core::option::Option::Some(#ui::Span { fixed: #fixed, pct: #pct }) }
+                }
+                None => quote! { ::core::option::Option::None },
+            };
+            let [top, end, bottom, start] =
+                [insets.top, insets.end, insets.bottom, insets.start].map(edge);
+            quote! {
+                #ui::Placement::Absolute(#ui::AbsoluteInsets {
+                    top: #top, end: #end, bottom: #bottom, start: #start,
+                })
+            }
+        }
+    }
+}
+
+/// `::viso::__private::viso_ui::Alignment2D::…` of `align`.
+fn alignment_tokens(align: Alignment2D) -> TokenStream {
+    let variant = match align {
+        Alignment2D::TopStart => quote! { TopStart },
+        Alignment2D::Top => quote! { Top },
+        Alignment2D::TopEnd => quote! { TopEnd },
+        Alignment2D::Start => quote! { Start },
+        Alignment2D::Center => quote! { Center },
+        Alignment2D::End => quote! { End },
+        Alignment2D::BottomStart => quote! { BottomStart },
+        Alignment2D::Bottom => quote! { Bottom },
+        Alignment2D::BottomEnd => quote! { BottomEnd },
+    };
+    quote! { ::viso::__private::viso_ui::Alignment2D::#variant }
+}
+
+/// `Option<::viso::__private::viso_ui::InsetTerms>` from optional
+/// [`InsetTermsIr`].
+fn insets_tokens(insets: Option<InsetTermsIr>) -> TokenStream {
+    match insets {
+        Some(InsetTermsIr {
+            top,
+            end,
+            bottom,
+            start,
+        }) => {
+            let [top, end, bottom, start] = [top, end, bottom, start].map(terms_tokens);
+            quote! {
+                ::core::option::Option::Some(::viso::__private::viso_ui::InsetTerms {
+                    top: #top, end: #end, bottom: #bottom, start: #start,
+                })
+            }
+        }
+        None => quote! { ::core::option::Option::None },
     }
 }
 

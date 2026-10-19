@@ -362,3 +362,69 @@ fn a_grid_places_its_children_by_tracks_areas_and_cells() {
         "14sp at text scale 2"
     );
 }
+
+/// A `ui!` stack aligns and layers its children and an absolute container
+/// pins its children by their insets, an inset of `sp` following the text
+/// scale.
+#[test]
+fn a_stack_and_an_absolute_place_their_children() {
+    use viso::render::Rect;
+    use viso::ui::LengthEnv;
+
+    let build = viso::ui! {
+        Column {
+            Stack {
+                content_align: Alignment2D::center;
+                padding: 10dp;
+                Text { width: 100dp; height: 60dp; stack.layer: 1; }
+                Text { width: 40dp; height: 20dp; stack.align: Alignment2D::bottom_end; }
+            }
+            Absolute {
+                width: 200dp;
+                height: 100dp;
+                Text { width: 20dp; height: 10dp; absolute.end: 10%; absolute.bottom: 4sp; }
+            }
+        }
+    };
+    let mut store = NodeStore::new();
+    let root = {
+        let mut cx = BuildCx::new(&mut store);
+        build(&mut cx).id()
+    };
+    let children = |store: &NodeStore, node| {
+        let mut out = Vec::new();
+        let mut at = store.arena().links(node).unwrap().first_child;
+        while let Some(child) = at {
+            out.push(child);
+            at = store.arena().links(child).unwrap().next_sibling;
+        }
+        out
+    };
+    let [stack, pinned] = children(&store, root)[..] else {
+        panic!("two containers");
+    };
+    let surface = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 300.0,
+        h: 200.0,
+    };
+    store.layout(root, surface, &mut Vec::new());
+    let at = |store: &NodeStore, node| {
+        let b = store.bounds(node);
+        (b.x, b.y, b.w, b.h)
+    };
+    assert_eq!(at(&store, stack), (0.0, 0.0, 120.0, 80.0));
+    let stacked = children(&store, stack);
+    assert_eq!(at(&store, stacked[0]), (10.0, 10.0, 100.0, 60.0));
+    assert_eq!(at(&store, stacked[1]), (70.0, 50.0, 40.0, 20.0));
+    let text = children(&store, pinned)[0];
+    assert_eq!(at(&store, text), (160.0, 166.0, 20.0, 10.0));
+
+    store.set_length_env(LengthEnv {
+        text_scale: 2.0,
+        ..LengthEnv::default()
+    });
+    store.layout(root, surface, &mut Vec::new());
+    assert_eq!(at(&store, text).1, 162.0, "4sp at text scale 2");
+}

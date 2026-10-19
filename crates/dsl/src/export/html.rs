@@ -17,7 +17,9 @@ use super::{Finding, Need};
 use crate::assets::{AssetUse, ResourceId};
 use crate::behavior::ir::Site;
 use crate::ir::binding_ir::NodeKey;
-use crate::ir::ui_ir::{AxisIr, InsetIr, LengthIr, NodeKind, UiItem, UiNode};
+use crate::ir::ui_ir::{
+    Alignment2D, AxisIr, InsetIr, LengthIr, NodeKind, Placement, TermsIr, UiItem, UiNode,
+};
 use crate::syntax::TextRange;
 use crate::view_behavior::{ViewBehavior, When};
 
@@ -173,6 +175,9 @@ enum Parent {
     Root,
     Flex(AxisIr),
     Grid,
+    /// A stack, and where it puts a child that does not align itself.
+    Stack(Alignment2D),
+    Absolute,
     Scroll(AxisIr),
 }
 
@@ -392,6 +397,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         el.base = match (node.kind, node.type_name.as_str()) {
             (NodeKind::Flex, _) => "vx-flex",
             (NodeKind::Grid, _) => "vx-grid",
+            (NodeKind::Stack, _) => "vx-stack",
+            (NodeKind::Absolute, _) => "vx-absolute",
             (NodeKind::Scroll, _) => "vx-scroll",
             (_, "Text") => "vx-text",
             (_, "Button") => "vx-button",
@@ -527,6 +534,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         let child_parent = match node.kind {
             NodeKind::Flex => Some(Parent::Flex(node.style.axis.unwrap_or(AxisIr::Row))),
             NodeKind::Grid => Some(Parent::Grid),
+            NodeKind::Stack => Some(Parent::Stack(node.style.content_align.unwrap_or_default())),
+            NodeKind::Absolute => Some(Parent::Absolute),
             NodeKind::Scroll => Some(Parent::Scroll(node.style.axis.unwrap_or(AxisIr::Column))),
             _ => None,
         };
@@ -623,7 +632,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
                 padding(node, decls, device);
             }
-            NodeKind::Grid => padding(node, decls, device),
+            NodeKind::Grid | NodeKind::Stack | NodeKind::Absolute => padding(node, decls, device),
             NodeKind::Scroll => {
                 if style.axis == Some(AxisIr::Row) {
                     decls.push(("flex-direction", "row".into()));
@@ -680,6 +689,84 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                         }
                         Extent::Fit => decls.push((place, "start".into())),
                         Extent::Fill(_) => decls.push((place, "stretch".into())),
+                    }
+                }
+            }
+            Parent::Stack(align) => {
+                let placed = match node.style.place {
+                    Some(Placement::Stack(placed)) => placed,
+                    _ => Default::default(),
+                };
+                let (x, y) = placed.align.unwrap_or(align).fractions();
+                let edge = |f: f32| match f {
+                    0.0 => "start",
+                    0.5 => "center",
+                    _ => "end",
+                };
+                decls.push(("grid-area", "1 / 1".into()));
+                for (extent, name, place, f) in [
+                    (width, "width", "justify-self", x),
+                    (height, "height", "align-self", y),
+                ] {
+                    match extent {
+                        Extent::Set(value) => {
+                            decls.push((name, value));
+                            decls.push((place, edge(f).into()));
+                        }
+                        Extent::Fit => decls.push((place, edge(f).into())),
+                        Extent::Fill(_) => decls.push((place, "stretch".into())),
+                    }
+                }
+                if placed.layer != 0 {
+                    decls.push(("z-index", placed.layer.to_string()));
+                }
+            }
+            Parent::Absolute => {
+                decls.push(("position", "absolute".into()));
+                let span = |span: Option<crate::ir::ui_ir::Span>| {
+                    span.map(|s| TermsIr {
+                        dp: s.fixed,
+                        pct: s.pct,
+                        ..TermsIr::default()
+                    })
+                };
+                let insets = match (node.style.place, lengths.insets) {
+                    (_, Some(terms)) => [terms.top, terms.end, terms.bottom, terms.start],
+                    (Some(Placement::Absolute(placed)), None) => [
+                        span(placed.top),
+                        span(placed.end),
+                        span(placed.bottom),
+                        span(placed.start),
+                    ],
+                    _ => [None; 4],
+                };
+                let [top, end, bottom, start] = insets;
+                for (extent, name, near, far) in [
+                    (
+                        width,
+                        "width",
+                        ("inset-inline-start", start),
+                        ("inset-inline-end", end),
+                    ),
+                    (
+                        height,
+                        "height",
+                        ("inset-block-start", top),
+                        ("inset-block-end", bottom),
+                    ),
+                ] {
+                    // A fill takes the box between its edges, the content
+                    // box's where it names none; so does a fit pinned to both.
+                    let fill = matches!(extent, Extent::Fill(_));
+                    let near_at = near.1.or((fill || far.1.is_none()).then(TermsIr::default));
+                    let far_at = far.1.or(fill.then(TermsIr::default));
+                    for (property, at) in [(near.0, near_at), (far.0, far_at)] {
+                        if let Some(at) = at {
+                            decls.push((property, css::terms(at, device)));
+                        }
+                    }
+                    if let Extent::Set(value) = extent {
+                        decls.push((name, value));
                     }
                 }
             }
@@ -1267,7 +1354,9 @@ fn extents(node: &UiNode) -> (LengthIr, LengthIr) {
             style.width.unwrap_or(LengthIr::Fit),
             style.height.unwrap_or(LengthIr::Fit),
         )
-    } else if node.kind.is_container() && node.kind != NodeKind::VirtualList {
+    } else if node.kind.is_container()
+        && !matches!(node.kind, NodeKind::VirtualList | NodeKind::Stack)
+    {
         (
             LengthIr::Fill { weight: 1.0 },
             LengthIr::Fill { weight: 1.0 },

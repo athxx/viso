@@ -3,7 +3,7 @@
 use core::ops::{Add, BitOr, BitOrAssign, Div, Mul, Neg, Sub};
 
 use crate::env::LayoutDirection;
-use crate::layout::{BoxRules, Inset, Length, Span, SpanInset};
+use crate::layout::{AbsoluteInsets, BoxRules, Inset, Length, Span, SpanInset};
 
 /// A length as five terms, each in its own unit: `dp + px + sp + em + pct`.
 ///
@@ -237,6 +237,45 @@ impl EdgeTerms {
     }
 }
 
+/// An `Absolute` child's insets as terms, `None` for an edge it is not
+/// pinned to.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct InsetTerms {
+    pub top: Option<LengthTerms>,
+    pub end: Option<LengthTerms>,
+    pub bottom: Option<LengthTerms>,
+    pub start: Option<LengthTerms>,
+}
+
+impl InsetTerms {
+    /// What the edges read.
+    pub fn deps(self) -> LengthDeps {
+        let mut deps = LengthDeps::EMPTY;
+        for terms in [self.top, self.end, self.bottom, self.start]
+            .into_iter()
+            .flatten()
+        {
+            deps |= terms.deps();
+        }
+        deps
+    }
+
+    /// The insets the edges fold to at `font` dp per em. `None` when an edge
+    /// is not finite.
+    pub fn fold(self, env: &LengthEnv, font: f32) -> Option<AbsoluteInsets> {
+        let edge = |terms: Option<LengthTerms>| match terms {
+            Some(terms) => terms.fold_span(env, font).map(Some),
+            None => Some(None),
+        };
+        Some(AbsoluteInsets {
+            top: edge(self.top)?,
+            end: edge(self.end)?,
+            bottom: edge(self.bottom)?,
+            start: edge(self.start)?,
+        })
+    }
+}
+
 impl Add for LengthTerms {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
@@ -419,6 +458,9 @@ pub struct NodeLengths {
     pub margin: Option<EdgeTerms>,
     /// A Grid's row gap. Its percent term counts as `0`.
     pub row_gap: Option<LengthTerms>,
+    /// An `Absolute` child's insets; a percent term reads the container's
+    /// content box.
+    pub insets: Option<InsetTerms>,
 }
 
 impl NodeLengths {
@@ -441,6 +483,9 @@ impl NodeLengths {
         }
         for edges in [self.padding, self.margin].into_iter().flatten() {
             deps |= edges.deps();
+        }
+        if let Some(insets) = self.insets {
+            deps |= insets.deps();
         }
         if let Some(font) = self.font_size {
             deps |= font.deps() | LengthDeps::FONT_SIZE;

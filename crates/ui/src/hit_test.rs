@@ -123,14 +123,20 @@ impl HitTestTree {
 
         // Test children topmost-first: the last-painted (last) child is tested
         // first, walking back toward the first-painted (bottom) one.
-        let mut child = arena.last_child(root);
-        while let Some(c) = child {
-            if !store.is_overlay(c)
-                && let Some(hit) = Self::hit_clipped(store, c, px, py, child_clip, inner)
-            {
+        if store.is_layered(root) {
+            if let Some(hit) = Self::hit_layered(store, root, px, py, child_clip, inner) {
                 return Some(hit);
             }
-            child = arena.prev_sibling(c);
+        } else {
+            let mut child = arena.last_child(root);
+            while let Some(c) = child {
+                if !store.is_overlay(c)
+                    && let Some(hit) = Self::hit_clipped(store, c, px, py, child_clip, inner)
+                {
+                    return Some(hit);
+                }
+                child = arena.prev_sibling(c);
+            }
         }
 
         // No child claimed the point: this node is the hit only if it is itself
@@ -138,6 +144,41 @@ impl HitTestTree {
         // with no hittable child under the point returns `None`, letting a
         // lower sibling be tried by the caller.
         (store.hittable(root) && visible.contains(px, py)).then_some(root)
+    }
+
+    /// The children of the layered stack `root` tested topmost-first: by
+    /// descending layer, those of one layer from the last.
+    #[cold]
+    #[inline(never)]
+    fn hit_layered(
+        store: &NodeStore,
+        root: NodeId,
+        px: f32,
+        py: f32,
+        clip: Rect,
+        above: Vec2,
+    ) -> Option<NodeId> {
+        let arena = store.arena();
+        let mut below = i64::MAX;
+        while let Some(layer) = arena
+            .children(root)
+            .map(|c| i64::from(store.stack_layer(c)))
+            .filter(|&layer| layer < below)
+            .max()
+        {
+            let mut child = arena.last_child(root);
+            while let Some(c) = child {
+                if i64::from(store.stack_layer(c)) == layer
+                    && !store.is_overlay(c)
+                    && let Some(hit) = Self::hit_clipped(store, c, px, py, clip, above)
+                {
+                    return Some(hit);
+                }
+                child = arena.prev_sibling(c);
+            }
+            below = layer;
+        }
+        None
     }
 }
 

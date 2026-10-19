@@ -160,7 +160,7 @@ pub enum ItemTemplate {
     /// A node, followed by the items of its `child_count` children.
     Node {
         /// The packaged node.
-        node: AotNode,
+        node: Box<AotNode>,
         /// Its state edges: a cell and the [`DirtyClass`](crate::DirtyClass) bits a change of the
         /// cell marks.
         edges: Vec<(CellRef, u8)>,
@@ -409,7 +409,7 @@ impl Decode for ViewRegions {
                     let offset = dec.position();
                     items.push(match dec.read_u8()? {
                         0 => {
-                            let node = AotNode::decode(dec)?;
+                            let node = Box::new(AotNode::decode(dec)?);
                             let count = dec.read_varint()?;
                             let mut edges = Vec::with_capacity(bounded(count));
                             for _ in 0..count {
@@ -616,7 +616,7 @@ mod tests {
                         }],
                         items: vec![
                             ItemTemplate::Node {
-                                node: node(AotNodeKind::Flex, 1),
+                                node: Box::new(node(AotNodeKind::Flex, 1)),
                                 edges: vec![(CellRef::Shared(0), 4), (CellRef::Local(6), 1)],
                                 routes: vec![Route {
                                     event: EventRoute::Click,
@@ -642,7 +642,7 @@ mod tests {
                         effects: vec![],
                         starters: vec![],
                         items: vec![ItemTemplate::Node {
-                            node: node(AotNodeKind::Leaf, 0),
+                            node: Box::new(node(AotNodeKind::Leaf, 0)),
                             edges: vec![],
                             routes: vec![],
                             control: Some(Box::new(Control::new(crate::view::ControlKind::Toggle))),

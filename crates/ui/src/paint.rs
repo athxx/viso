@@ -249,8 +249,42 @@ fn top_space(store: &NodeStore, root: NodeId) -> Space {
     }
 }
 
+/// Paint the children of the layered stack `root` by ascending layer, those
+/// of one layer in source order.
+#[cold]
+#[inline(never)]
+fn paint_layered<S: PaintSpans>(
+    store: &NodeStore,
+    root: NodeId,
+    space: Space,
+    out: &mut Vec<Primitive>,
+    table: &mut TransformTable,
+    overlays: &mut Vec<(NodeId, Space)>,
+    spans: &mut S,
+) {
+    let start = table.layered.len();
+    for (k, c) in store.arena().children(root).enumerate() {
+        let key = (i64::from(store.stack_layer(c)) << 32) + k as i64;
+        table.layered.push((key, c));
+    }
+    table.layered[start..].sort_unstable_by_key(|&(key, _)| key);
+    let end = table.layered.len();
+    // Painting a child pushes past this run and truncates back to it.
+    for k in start..end {
+        let c = table.layered[k].1;
+        if store.is_overlay(c) {
+            overlays.push((c, space));
+        } else {
+            paint_subtree(store, c, space, out, table, overlays, spans);
+        }
+    }
+    table.layered.truncate(start);
+}
+
 /// Paint one subtree in pre-order, diverting any overlay child into `overlays`
 /// instead of descending into it (the caller drains that list into a top layer).
+/// A stack paints its children by ascending layer, those of one layer in
+/// source order.
 fn paint_subtree<S: PaintSpans>(
     store: &NodeStore,
     root: NodeId,
@@ -321,11 +355,15 @@ fn paint_subtree<S: PaintSpans>(
     // An overlay child is diverted to the deferred top layer rather than painted
     // in place — it draws after the whole scene, so it must not descend here.
     inner.depth += 1;
-    for c in arena.children(root) {
-        if store.is_overlay(c) {
-            overlays.push((c, inner));
-        } else {
-            paint_subtree(store, c, inner, out, table, overlays, spans);
+    if store.is_layered(root) {
+        paint_layered(store, root, inner, out, table, overlays, spans);
+    } else {
+        for c in arena.children(root) {
+            if store.is_overlay(c) {
+                overlays.push((c, inner));
+            } else {
+                paint_subtree(store, c, inner, out, table, overlays, spans);
+            }
         }
     }
 

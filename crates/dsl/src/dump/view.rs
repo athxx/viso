@@ -292,6 +292,8 @@ fn kind_name(kind: NodeKind) -> &'static str {
     match kind {
         NodeKind::Flex => "flex",
         NodeKind::Grid => "grid",
+        NodeKind::Stack => "stack",
+        NodeKind::Absolute => "absolute",
         NodeKind::Scroll => "scroll",
         NodeKind::VirtualList => "virtual_list",
         NodeKind::Leaf => "leaf",

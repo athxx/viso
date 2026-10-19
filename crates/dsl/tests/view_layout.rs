@@ -182,8 +182,8 @@ fn a_binding_no_path_applies_is_reported() {
             "`enabled` does not reach a `Text` yet",
         ),
         (
-            "Stack { Text { text: \"a\"; stack.layer: 1; } }",
-            "`stack.layer` does not reach a `Text` yet",
+            "Text { text: \"a\"; clip: true; }",
+            "`clip` does not reach a `Text` yet",
         ),
     ] {
         let found = errors(view);
