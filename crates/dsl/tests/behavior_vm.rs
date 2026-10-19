@@ -833,3 +833,65 @@ fn float_arithmetic_rounds_every_operation() {
         Value::Float(0.0)
     );
 }
+
+/// A `MixedLength` of its five terms: `dp`, `px`, `sp`, `em` and `%`.
+fn mixed(terms: [f64; 5]) -> Value {
+    Value::Agg(Rc::new(Aggregate {
+        tag: 0,
+        fields: terms.into_iter().map(Value::Float).collect(),
+    }))
+}
+
+#[test]
+fn mixed_lengths_combine_term_by_term() {
+    let source = r#"
+record Pad { inset: MixedLength = 2sp; }
+
+fn widen(v: Dp) -> MixedLength { v }
+
+component Lengths {
+    state x: MixedLength = 0dp;
+    state pad = Pad {};
+    state frame: EdgeInsets = EdgeInsets::zero();
+    action go() {
+        let p = 25%;
+        x = p + 1dp;
+        x += 2em;
+        x = x * 2.0 - 4px;
+    }
+    action shrink() { x = -(x / 2.0); }
+    action wide() { x = widen(3dp); }
+    action frame_all() { frame = EdgeInsets::all(1dp + 50%); }
+    view { Text { text: "a"; } }
+}
+"#;
+    let (mut vm, mut lengths) = instance(source, "Lengths");
+    assert_eq!(
+        lengths.states()[0],
+        mixed([0.0; 5]),
+        "a `dp` initializer widens"
+    );
+    assert_eq!(
+        lengths.states()[1],
+        Value::Agg(Rc::new(Aggregate {
+            tag: 0,
+            fields: Box::new([mixed([0.0, 0.0, 2.0, 0.0, 0.0])]),
+        })),
+        "a field default widens"
+    );
+    call(&mut vm, &mut lengths, "go", &[]).expect("go");
+    assert_eq!(lengths.states()[0], mixed([2.0, -4.0, 0.0, 4.0, 50.0]));
+    call(&mut vm, &mut lengths, "shrink", &[]).expect("shrink");
+    assert_eq!(lengths.states()[0], mixed([-1.0, 2.0, 0.0, -2.0, -25.0]));
+    call(&mut vm, &mut lengths, "wide", &[]).expect("wide");
+    assert_eq!(lengths.states()[0], mixed([3.0, 0.0, 0.0, 0.0, 0.0]));
+    call(&mut vm, &mut lengths, "frame_all", &[]).expect("frame_all");
+    let edge = mixed([1.0, 0.0, 0.0, 0.0, 50.0]);
+    assert_eq!(
+        lengths.states()[2],
+        Value::Agg(Rc::new(Aggregate {
+            tag: 0,
+            fields: Box::new([edge.clone(), edge.clone(), edge.clone(), edge]),
+        }))
+    );
+}

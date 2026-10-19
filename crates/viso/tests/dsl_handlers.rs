@@ -2,7 +2,8 @@
 //! `view!` node runs its handler body in the behavior VM, whose state write lands
 //! in the UI cell and flushes through the view's static edges; a native control
 //! writes its change back through a `bind`, and a label reading a state shows
-//! its text again after the write.
+//! its text again after the write, and a node whose size reads one lays out
+//! by it.
 
 use viso::render::Rect;
 use viso::ui::{
@@ -64,6 +65,36 @@ viso::component! {
     }
 }
 
+viso::component! {
+    Widen {
+        state wide = false;
+        view {
+            Column {
+                width: 200dp;
+                height: 100dp;
+                Text {
+                    width: 100dp;
+                    height: 50dp;
+                    on click { wide = !wide; }
+                }
+                Text {
+                    width: if wide { 150dp } else { 60dp };
+                    height: 10dp;
+                    max_width: if wide { Option::Some(25%) } else { Option::None };
+                }
+            }
+        }
+    }
+}
+
+/// The surface every form lays out into.
+const SURFACE: Rect = Rect {
+    x: 0.0,
+    y: 0.0,
+    w: 400.0,
+    h: 300.0,
+};
+
 /// A mounted clicker, laid out at the origin.
 struct Mounted {
     store: NodeStore,
@@ -93,13 +124,7 @@ impl Mounted {
             );
             build(&mut cx)
         };
-        let surface = Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 400.0,
-            h: 300.0,
-        };
-        store.layout(root.id(), surface, &mut Vec::new());
+        store.layout(root.id(), SURFACE, &mut Vec::new());
         Self {
             store,
             states,
@@ -148,6 +173,14 @@ impl Mounted {
         let mut requests = Vec::new();
         self.store.take_text_requests(&mut requests);
         requests.into_iter().map(|(_, r)| r.text).collect()
+    }
+
+    /// The width of the root's `n`th child, laid out again.
+    fn width(&mut self, n: usize) -> f32 {
+        self.store.layout(self.root, SURFACE, &mut Vec::new());
+        let arena = self.store.arena();
+        let child = arena.children(self.root).nth(n).expect("a child");
+        self.store.bounds(child).w
     }
 
     fn count(&self) -> Option<StateValue> {
@@ -212,4 +245,22 @@ fn a_label_shows_its_text_at_build_and_after_a_write() {
     assert_eq!(form.texts(), ["2 taps"]);
     form.click(150.0, 80.0);
     assert!(form.texts().is_empty(), "no write, no text");
+}
+
+#[test]
+fn a_bound_width_lays_out_at_build_and_after_a_write() {
+    let mut form = Mounted::mount(|cx| {
+        let (Widen { wide }, root) = Widen::build(cx);
+        (root, wide)
+    });
+    assert_eq!(form.width(1), 60.0);
+    form.click(20.0, 20.0);
+    assert_eq!(form.count(), Some(StateValue::Bool(true)));
+    assert_eq!(
+        form.width(1),
+        100.0,
+        "150dp, at most a quarter of the surface"
+    );
+    form.click(20.0, 20.0);
+    assert_eq!(form.width(1), 60.0);
 }

@@ -124,25 +124,13 @@ fn errors(view: &str) -> Vec<(&'static str, String)> {
 }
 
 #[test]
-fn a_placement_that_reads_a_value_is_reported() {
-    for (view, says) in [
-        (
-            "Stack { content_align: if n > 0 { Alignment2D::top } else { Alignment2D::center }; }",
-            "a `content_align` that reads a value does not lay out yet",
-        ),
-        (
-            "Stack { Text { text: \"a\"; stack.layer: if n > 0 { 1i32 } else { 2i32 }; } }",
-            "a `stack.layer` that reads a value does not lay out yet",
-        ),
-        (
-            "Absolute { Text { text: \"a\"; absolute.top: if n > 0 { 1dp } else { 2dp }; } }",
-            "a `absolute.top` that reads a value does not lay out yet",
-        ),
+fn a_placement_that_reads_a_value_lays_out() {
+    for view in [
+        "Stack { content_align: if n > 0 { Alignment2D::top } else { Alignment2D::center }; }",
+        "Stack { Text { text: \"a\"; stack.layer: if n > 0 { 1i32 } else { 2i32 }; } }",
+        "Absolute { Text { text: \"a\"; absolute.top: if n > 0 { 1dp } else { 2dp }; } }",
     ] {
-        let found = errors(view);
-        assert_eq!(found.len(), 1, "{view}: {found:#?}");
-        assert_eq!(found[0].0, "E3711", "{view}");
-        assert!(found[0].1.contains(says), "{view}: {}", found[0].1);
+        assert_eq!(errors(view), [], "{view}");
     }
     assert_eq!(
         errors(

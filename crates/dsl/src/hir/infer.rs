@@ -34,6 +34,7 @@ mod lens;
 pub(crate) mod list;
 mod native;
 pub(crate) mod pattern;
+pub(crate) mod promote;
 mod record;
 mod schema;
 pub(crate) mod translate;
@@ -301,6 +302,8 @@ pub struct InferCx<'a> {
     targets: HashMap<TextRange, crate::hir::generic::CallTarget>,
     /// Each value converted to a trait object, keyed like `types`.
     coercions: HashMap<(TextRange, SyntaxKind), crate::hir::generic::Coercion>,
+    /// Each value that converts where it is typed, keyed like `types`.
+    promotions: HashMap<(TextRange, SyntaxKind), promote::Promotion>,
     /// The argument of each generic parameter of the instantiation being
     /// typed; empty for a body typed once.
     subst: crate::hir::generic::Subst,
@@ -329,6 +332,7 @@ impl<'a> InferCx<'a> {
             tr_calls: HashMap::new(),
             targets: HashMap::new(),
             coercions: HashMap::new(),
+            promotions: HashMap::new(),
             subst: Vec::new(),
         }
     }
@@ -1353,6 +1357,9 @@ impl<'a> InferCx<'a> {
             return target.clone();
         }
         if produced.widens_to(target) {
+            if *target == Ty::MixedLength {
+                self.note_widening(node, &produced);
+            }
             return target.clone();
         }
         if is_numeric_ty(&produced) && is_numeric_ty(target) {

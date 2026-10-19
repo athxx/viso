@@ -170,14 +170,6 @@ fn a_binding_no_path_applies_is_reported() {
             "`Sizing::min_content` does not lay out yet",
         ),
         (
-            "Column { width: if n > 0 { 10dp } else { 20dp }; }",
-            "a `width` that reads a value does not lay out yet",
-        ),
-        (
-            "Column { justify: if n > 0 { Justify::start } else { Justify::end }; }",
-            "a `justify` that reads a value does not lay out yet",
-        ),
-        (
             "Text { text: \"a\"; enabled: n > 0; }",
             "`enabled` does not reach a `Text` yet",
         ),
@@ -196,4 +188,14 @@ fn a_binding_no_path_applies_is_reported() {
         [],
         "a style's selector reads `enabled`"
     );
+    for view in [
+        "Column { width: if n > 0 { 10dp } else { 20dp }; }",
+        "Column { justify: if n > 0 { Justify::start } else { Justify::end }; }",
+    ] {
+        assert_eq!(
+            errors(view),
+            [],
+            "a layout value lays out as it changes: {view}"
+        );
+    }
 }

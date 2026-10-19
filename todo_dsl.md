@@ -331,12 +331,26 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         locale), dirtying only a node whose inset moved. Package style mask is a varint.
   - [x] `E3711` for a non-constant padding, padding on a node with no content box,
         and padding on an avoiding region (folded or not).
-- [ ] Bound layout values: a `width`/`height`/`gap`/`padding`, a grid's template or a
-      child's `grid.*` cell that reads state, an input or `theme` writes its value to
-      the node (the behavior VM carries `MixedLength` as
-      terms, delivered as `NodeLengths`).
-  - [x] Until then a bound `width`/`height`/`gap`/`justify`/`align`/`axis`, like a
-        bound `padding`, is `E3711`.
+- [x] Bound layout values: a `width`/`height`, a box rule, `margin`, `padding`, a
+      gap, a flex arrangement, a grid's template, a child's `grid.*`/`stack.*` cell
+      and an `absolute.*` inset that reads state, an input or `theme` lays the node
+      out by its value as it changes, across the macros, hot reload and the release
+      package.
+  - [x] The behavior VM carries a `MixedLength` as a record of its five terms
+        (`dp px sp em %`), arithmetic term by term; inference records where a
+        single-unit length widens and where a length stands for `Sizing::fixed`
+        or `EdgeInsets::all`, and lowering converts there. The prelude's impl
+        functions (`EdgeInsets::all/axes/zero`) lower on demand.
+  - [x] A control's `layout` entries (`LayoutSlot`, sorted) evaluate with its
+        other values; the view decodes each to a `LayoutValue` and
+        `NodeStore::set_layout_value` writes it: lengths through the node's
+        `NodeLengths` (so `px`/`sp`/`em` follow the environment and fold with the
+        constant rules and insets, which the compiler then keeps there), sizing
+        modes, arrangement, grid templates and placements through their setters,
+        marking only what they move. A reload delivers every value again.
+  - [x] A `Sizing::min_content`/`max_content`, a track adding `dp` to `%` or one
+        reading `%` inside `minmax`/`fit_content` faults at delivery; a bound
+        `areas`/`grid.area`, and a bound layout value from a Style, stay `E3711`.
 - [x] Constant arrangement and sizing: a flex container's `justify` and `align`, a
       qualified `Axis::row`/`Axis::column`, `Sizing::fixed(..)`/`fill`/`fill { weight }`/
       `fit`, and a `Grid`'s `width`/`height` lay out across the macros, hot reload (in

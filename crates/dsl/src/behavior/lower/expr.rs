@@ -30,6 +30,7 @@ impl Lowerer<'_, '_> {
                 l.check_repr(ty)?;
             }
             let value = l.expr_here(e)?;
+            let value = l.promote(value, e.syntax());
             match l.cx.coercion(e.syntax()).cloned() {
                 Some(coercion) => l.make_object(value, &coercion),
                 None => Ok(value),
@@ -233,7 +234,7 @@ impl Lowerer<'_, '_> {
         else {
             return self.bail("an empty literal");
         };
-        let ty = self.cx.type_of(e).cloned().unwrap_or(Ty::Unknown);
+        let ty = self.produced_ty(e).unwrap_or(Ty::Unknown);
         let float = matches!(ty, Ty::F32 | Ty::F64 | Ty::InferFloat) || ty.is_dimensional();
         let text = token.text().to_string();
         let value = match token.kind() {
@@ -579,7 +580,7 @@ impl Lowerer<'_, '_> {
             let Some(index) = fields.iter().position(|f| f.name == name) else {
                 return self.bail(format!("no field `{name}` in this record"));
             };
-            let mut reg = match first_child_expr(entry) {
+            let reg = match first_child_expr(entry) {
                 Some(value) => self.expr(&value)?,
                 None => match self.cx.resolution_at(label.text_range()) {
                     Some(Resolution::Local(slot)) => self.local(slot)?,
@@ -592,6 +593,7 @@ impl Lowerer<'_, '_> {
                     None => return self.bail(format!("the shorthand `{name}` names nothing")),
                 },
             };
+            let mut reg = self.promote(reg, entry);
             let later_assigns = entries[i + 1..].iter().any(super::assigns)
                 || record_spread(node).is_some_and(|b| super::assigns(b.syntax()));
             if self.is_local(reg) && later_assigns {
@@ -1133,6 +1135,9 @@ impl Lowerer<'_, '_> {
         rhs: Reg,
         rt: &Ty,
     ) -> Lower<Reg> {
+        if let Some(value) = self.length_operate(op, lhs, lt, rhs, rt)? {
+            return Ok(value);
+        }
         let dst = self.reg();
         let op = match op {
             SyntaxKind::EqEq | SyntaxKind::Neq => {
@@ -1213,7 +1218,7 @@ impl Lowerer<'_, '_> {
 
     /// `src: ty` as an operand of a `num` operation: an integer converts to a
     /// float operation's type; every other value already has its representation.
-    fn coerce(&mut self, src: Reg, ty: &Ty, num: Num) -> Reg {
+    pub(super) fn coerce(&mut self, src: Reg, ty: &Ty, num: Num) -> Reg {
         match num_of(ty) {
             Some(from) if num.is_float() && !from.is_float() => {
                 let dst = self.reg();
@@ -1239,6 +1244,9 @@ impl Lowerer<'_, '_> {
         }
         let ty = self.ty(&operand)?;
         let src = self.expr(&operand)?;
+        if ty == Ty::MixedLength && unary_op_kind(node) == Some(SyntaxKind::Minus) {
+            return Ok(self.negate_length(src));
+        }
         let num = num_of(&ty);
         let op = match (unary_op_kind(node), num) {
             (Some(SyntaxKind::Minus), Some(num)) => UnaryOp::Neg(num),
@@ -1258,7 +1266,7 @@ impl Lowerer<'_, '_> {
             return self.bail("a cast without an operand");
         };
         let from_ty = self.ty(&operand)?;
-        let to_ty = self.ty(e)?;
+        let to_ty = self.produced_ty(e)?;
         let src = self.expr(&operand)?;
         let repr = |ty: &Ty| match ty {
             Ty::Bool => Some(Num::U64),

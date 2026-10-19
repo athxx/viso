@@ -346,10 +346,11 @@ fn collect_migrators(
 }
 
 /// Lowers the prelude record field defaults the package's record literals
-/// run, with no source span: the prelude is no module of the package. A
-/// default whose own literal runs other defaults (`Theme.typography` runs
-/// those of `TypographyScale`) wants those too, so this runs until no
-/// default is wanted.
+/// run and the prelude functions its calls run (`EdgeInsets::all`), with no
+/// source span: the prelude is no module of the package. A default or a
+/// function whose own body runs others (`Theme.typography` runs the
+/// defaults of `TypographyScale`) wants those too, so this runs until
+/// nothing new is wanted.
 fn lower_prelude_defaults(
     prelude: &Prelude,
     scope: &ModuleScope,
@@ -357,15 +358,64 @@ fn lower_prelude_defaults(
     behavior: &RefCell<ProgramBuilder>,
     natives: &Natives,
 ) {
-    let mut previous = Vec::new();
+    let mut previous = (Vec::new(), Vec::new());
     loop {
-        let wanted = behavior.borrow().unlowered_defaults();
-        if wanted.is_empty() || wanted == previous {
+        let wanted = {
+            let builder = behavior.borrow();
+            (builder.unlowered_defaults(), builder.unlowered_functions())
+        };
+        if wanted.0.is_empty() && wanted.1.is_empty() || wanted == previous {
             return;
         }
-        lower_wanted_defaults(prelude, scope, decls, behavior, natives, &wanted);
+        lower_wanted_defaults(prelude, scope, decls, behavior, natives, &wanted.0);
+        lower_wanted_functions(prelude, scope, decls, behavior, natives, &wanted.1);
         previous = wanted;
     }
+}
+
+/// Lowers the members of the prelude impls that declare a function
+/// `wanted` names.
+fn lower_wanted_functions(
+    prelude: &Prelude,
+    scope: &ModuleScope,
+    decls: &Declarations,
+    behavior: &RefCell<ProgramBuilder>,
+    natives: &Natives,
+    wanted: &[SymbolId],
+) {
+    if wanted.is_empty() {
+        return;
+    }
+    let env = ModuleEnv::new(decls, scope, 0, behavior, natives);
+    let mut diagnostics = Vec::new();
+    let mut percent = PercentSources::default();
+    let mut cap = CapabilityGraphBuilder::default();
+    for item in prelude.unit.items() {
+        let Item::Impl(imp) = item else { continue };
+        let declares = imp.members().filter_map(|m| m.name()).any(|name| {
+            decls
+                .traits
+                .impls
+                .iter()
+                .filter(|i| i.home == scope.home)
+                .flat_map(|i| &i.items)
+                .any(|it| it.at == name.text_range() && wanted.binary_search(&it.symbol).is_ok())
+        });
+        if declares {
+            traits::check_impl(
+                &imp,
+                &prelude.module.refs,
+                &env,
+                &mut diagnostics,
+                &mut cap,
+                &mut percent,
+            );
+        }
+    }
+    debug_assert!(
+        diagnostics.is_empty(),
+        "the prelude's functions do not type"
+    );
 }
 
 /// Lowers the prelude record field defaults `wanted` names.

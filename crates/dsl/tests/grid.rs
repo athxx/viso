@@ -156,14 +156,9 @@ fn a_template_or_cell_layout_does_not_take_is_reported() {
             "a grid gap with a `%` term",
         ),
         (
-            "Grid { columns: if n > 0 { [Track::auto] } else { [] }; }",
+            "Grid { areas: if n > 0 { [\"a\"] } else { [\"b\"] }; }",
             "E3711",
-            "a `columns` that reads a value does not lay out yet",
-        ),
-        (
-            "Grid { Text { text: \"a\"; grid.column: if n > 0 { 1u16 } else { 2u16 }; } }",
-            "E3711",
-            "a `grid.column` that reads a value does not lay out yet",
+            "a `areas` that reads a value does not lay out yet",
         ),
         (
             "Grid { areas: [\"a b\", \"b a\"]; }",

@@ -25,7 +25,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use viso_behavior::Value;
+use viso_behavior::{Fault, FaultKind, Value};
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
 use viso_ui::{
@@ -35,6 +35,7 @@ use viso_ui::{
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, When};
 use crate::host::ViewHost;
+use crate::layout_values::layout_value;
 use crate::scope::Scope;
 use crate::shaders::encode_shader;
 
@@ -171,6 +172,7 @@ pub(crate) fn control_cells(
     .into_iter()
     .flatten()
     .chain(arms)
+    .chain(control.layout.iter().map(|&(_, entry)| entry))
     {
         host.entry_cells(entry, scope, out);
     }
@@ -221,6 +223,10 @@ pub(crate) struct Shown {
     /// The font size its text was last requested at: a reload that resizes
     /// it requests the text again.
     font_size: f32,
+    /// The values of its layout entries it lays out by, `None` before the
+    /// first delivery and after a hot reload, which restyles the node from
+    /// its constants and so wants each of them again.
+    laid: Option<Box<[Value]>>,
 }
 
 impl Shown {
@@ -245,6 +251,7 @@ impl Shown {
             seeded: false,
             program: None,
             font_size: 0.0,
+            laid: None,
         };
         shown.rescope(scope, host);
         shown
@@ -277,6 +284,12 @@ impl Shown {
     /// them unless the node already shows them. A fault is kept as the host's
     /// [`last_fault`](ViewHost::last_fault) and leaves the node as it is.
     pub(crate) fn deliver(&mut self, cx: &mut StructureCx<'_>, host: &mut ViewHost) {
+        if self.seeded {
+            self.laid = None;
+        }
+        if !self.lay_out(cx, host) {
+            return;
+        }
         let control = &self.control;
         let look = control.look;
         let (Ok(background), Ok(opacity)) = (
@@ -486,6 +499,46 @@ impl Shown {
 }
 
 impl Shown {
+    /// Evaluates its layout entries and lays the node out by each value that
+    /// changed. `false` after a fault, which the host keeps and which leaves
+    /// the node as it is.
+    fn lay_out(&mut self, cx: &mut StructureCx<'_>, host: &mut ViewHost) -> bool {
+        if self.control.layout.is_empty() {
+            return true;
+        }
+        let mut laid = Vec::with_capacity(self.control.layout.len());
+        for &(_, entry) in self.control.layout.iter() {
+            match host.evaluate(entry, &self.scope, None, &*cx.states) {
+                Ok(value) => laid.push(value),
+                Err(fault) => {
+                    host.record_fault(fault);
+                    return false;
+                }
+            }
+        }
+        let env = cx.store.length_env();
+        let font = cx.store.resolved_font_size(self.node).unwrap_or(FONT_SIZE);
+        for (at, &(slot, _)) in self.control.layout.iter().enumerate() {
+            if self
+                .laid
+                .as_ref()
+                .is_some_and(|prior| prior[at] == laid[at])
+            {
+                continue;
+            }
+            match layout_value(slot, &laid[at], &env, font) {
+                Ok(value) => cx.store.set_layout_value(self.node, value),
+                Err(message) => host.record_fault(Fault {
+                    kind: FaultKind::Unsupported,
+                    at: None,
+                    message,
+                }),
+            }
+        }
+        self.laid = Some(laid.into());
+        true
+    }
+
     /// The entry `input` shows now: that of the first of its arms whose
     /// condition holds, else `base`. `Err` after a fault, which the host
     /// keeps.

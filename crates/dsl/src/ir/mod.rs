@@ -46,7 +46,7 @@ pub use ui_ir::{
 use std::collections::HashMap;
 
 use viso_behavior::native::{FlexAxis, MigratableState, Natives, WidgetNode};
-use viso_schema::view::ControlKind;
+use viso_schema::view::{ControlKind, LayoutSlot};
 
 use crate::ast::{
     AstNode, ComponentDecl, Expr, NodeBody, PathExpr, PropertyBinding, PropertyPath, TypePath,
@@ -58,7 +58,7 @@ use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::span::TextRange;
 pub use length::Consts;
 use length::{Lowered, Padding};
-use ui_ir::{Placement, StackPlacement};
+use ui_ir::{Laid, Placement, StackPlacement};
 
 /// A lowered view: its template, every node type name it wrote that neither a
 /// registered widget nor a component of the library declares (each with the
@@ -548,6 +548,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let mut live = None;
         // Each binding left to a runtime value, by property and value span.
         let mut bound = Vec::new();
+        // The layout properties the node sets from values as they change.
+        let mut laid: Vec<String> = Vec::new();
         let own: Vec<ViewItem> = body.iter().flat_map(|b| b.members()).collect();
         let styles = self.style_names(&type_name, &own);
         let styled = self.styled(
@@ -613,6 +615,10 @@ impl<'a, 'l> Lowering<'a, 'l> {
                         &mut pending,
                     ) {
                         Fold::Folded => {}
+                        Fold::Pending if layout_slot(kind, &name).is_some() => {
+                            laid.push(name.clone());
+                            control_reads.push((name, at, instance));
+                        }
                         Fold::Pending => bound.push((name, at)),
                         Fold::Unsupported(reason) => self.unmount((at, reason)),
                         Fold::Invalid(reason) => self.misplace((at, reason)),
@@ -668,11 +674,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 Some(format!(
                     "a `{type_name}` has no content box to pad; pad a container around it"
                 ))
-            } else if pending_padding.is_some() {
-                Some(
-                    "a `padding` that reads a value does not lay out yet; a constant one does"
-                        .to_string(),
-                )
             } else {
                 None
             };
@@ -693,14 +694,14 @@ impl<'a, 'l> Lowering<'a, 'l> {
             if !pending.iter().any(|p| p.value == at) {
                 continue;
             }
-            if let Some(reason) = unapplied(&name, &type_name, kind, control, styled.as_ref()) {
+            if let Some(reason) = unapplied(&name, &type_name, control, styled.as_ref()) {
                 self.unmount((at, reason));
             }
         }
         if kind == NodeKind::Grid {
             self.place_areas(style.grid.as_deref(), &mut children);
         }
-        style.settle_rules();
+        style.settle_rules(&laid_slots(&laid));
         out.push(UiItem::Node(Box::new(UiNode {
             type_name,
             local_name,
@@ -1155,13 +1156,17 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             &mut root.style,
                             &mut root.pending,
                         );
+                        if matches!(fold, Fold::Pending) && layout_slot(root.kind, &name).is_some() {
+                            root.control_reads.push((name.clone(), at, parent));
+                            continue;
+                        }
                         let reason = match fold {
                             Fold::Folded if name == "padding" && !root.kind.pads() => Some(format!(
                                 "a `{}` has no content box to pad; pad a container around it",
                                 root.type_name
                             )),
                             Fold::Folded => None,
-                            Fold::Pending => unapplied(&name, &root.type_name, root.kind, control, root.styled.as_ref()),
+                            Fold::Pending => unapplied(&name, &root.type_name, control, root.styled.as_ref()),
                             Fold::Unsupported(reason) => Some(reason),
                             Fold::Invalid(reason) => {
                                 self.misplace((at, reason));
@@ -1172,7 +1177,15 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             self.unmount((at, reason));
                         }
                     }
-                    root.style.settle_rules();
+                    let laid: Vec<String> = root
+                        .control_reads
+                        .iter()
+                        .filter(|(name, ..)| layout_slot(root.kind, name).is_some())
+                        .map(|(name, ..)| name.clone())
+                        .collect();
+                    root.style.unsettle_rules();
+                    root.style.unsettle_insets();
+                    root.style.settle_rules(&laid_slots(&laid));
                     for h in &forwarded_handlers {
                         root.handlers.push(UiHandler {
                             event: h.event().map(|t| t.text()).unwrap_or_default(),
@@ -1195,7 +1208,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
 }
 
 /// Why the binding of property `name` on a native node of type `type_name`
-/// and kind `kind` reaches no path that applies it, or `None` when one does:
+/// reaches no path that applies it, or `None` when one does:
 /// the control values `control` delivers, the role and live setting the
 /// node is built with, the transitions that play (the others are reported
 /// where they are read), and the node's own `enabled`, `checked` and
@@ -1203,7 +1216,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
 fn unapplied(
     name: &str,
     type_name: &str,
-    kind: NodeKind,
     control: ControlKind,
     styled: Option<&UiStyled>,
 ) -> Option<String> {
@@ -1222,30 +1234,59 @@ fn unapplied(
     match name {
         "semantics.role" | "semantics.live" => None,
         "enabled" | "checked" | "invalid" if selected() => None,
-        "width" | "height" | "gap" | "spacing" | "min_width" | "max_width" | "min_height"
-        | "max_height" | "margin" | "padding" => Some(format!(
-            "a `{name}` that reads a value does not lay out yet; a constant one does"
-        )),
-        "justify" | "align" | "axis" | "direction" if kind == NodeKind::Flex => Some(format!(
-            "a `{name}` that reads a value does not lay out yet; a constant one does"
-        )),
-        "columns" | "rows" | "auto_rows" | "column_gap" | "row_gap" | "align_items" | "areas"
-        | "adaptive_columns"
-            if kind == NodeKind::Grid =>
-        {
-            Some(format!(
-                "a `{name}` that reads a value does not lay out yet; a constant one does"
-            ))
-        }
-        "grid.column" | "grid.row" | "grid.column_span" | "grid.row_span" | "grid.area"
-        | "stack.align" | "stack.layer" | "absolute.top" | "absolute.end" | "absolute.bottom"
-        | "absolute.start" => Some(format!(
-            "a `{name}` that reads a value does not lay out yet; a constant one does"
-        )),
-        "content_align" if kind == NodeKind::Stack => Some(format!(
+        "areas" | "grid.area" => Some(format!(
             "a `{name}` that reads a value does not lay out yet; a constant one does"
         )),
         _ => Some(format!("`{name}` does not reach a `{type_name}` yet")),
+    }
+}
+
+/// The layout slot the binding of property `name` on a node of `kind` sets
+/// from its value as it changes; `None` for one no such node lays out by.
+fn layout_slot(kind: NodeKind, name: &str) -> Option<LayoutSlot> {
+    let slot = LayoutSlot::of(name)?;
+    let applies = match slot {
+        LayoutSlot::Width
+        | LayoutSlot::Height
+        | LayoutSlot::MinWidth
+        | LayoutSlot::MaxWidth
+        | LayoutSlot::MinHeight
+        | LayoutSlot::MaxHeight
+        | LayoutSlot::Margin => kind != NodeKind::Component,
+        LayoutSlot::Padding => kind.pads(),
+        LayoutSlot::Gap => matches!(kind, NodeKind::Flex | NodeKind::Grid),
+        LayoutSlot::Axis | LayoutSlot::Justify | LayoutSlot::Align => kind == NodeKind::Flex,
+        LayoutSlot::ColumnGap
+        | LayoutSlot::RowGap
+        | LayoutSlot::Columns
+        | LayoutSlot::Rows
+        | LayoutSlot::AutoRows
+        | LayoutSlot::AlignItems
+        | LayoutSlot::AdaptiveColumns => kind == NodeKind::Grid,
+        LayoutSlot::ContentAlign => kind == NodeKind::Stack,
+        // The parent's kind was checked where the property was typed.
+        LayoutSlot::GridColumn
+        | LayoutSlot::GridRow
+        | LayoutSlot::GridColumnSpan
+        | LayoutSlot::GridRowSpan
+        | LayoutSlot::StackAlign
+        | LayoutSlot::StackLayer
+        | LayoutSlot::AbsoluteTop
+        | LayoutSlot::AbsoluteEnd
+        | LayoutSlot::AbsoluteBottom
+        | LayoutSlot::AbsoluteStart => kind != NodeKind::Component,
+    };
+    applies.then_some(slot)
+}
+
+/// What the layout properties `laid` a node sets from values keep in its
+/// lengths: its box rules when one of them is, its insets when one of them
+/// is, so a value that changes folds with the constant others.
+fn laid_slots(laid: &[String]) -> Laid {
+    let slots = || laid.iter().filter_map(|name| LayoutSlot::of(name));
+    Laid {
+        rules: slots().any(LayoutSlot::is_rule),
+        insets: slots().any(LayoutSlot::is_inset),
     }
 }
 

@@ -22,7 +22,8 @@ use crate::native::NativeHandle;
 /// | integers (64-bit pattern, signed ones sign-extended) | `Int`           |
 /// | `Bool` (`0`/`1`), `Char` (scalar value), `Color` (RGBA8) | `Int`       |
 /// | `()` (`0`), a unit enum variant (its tag)     | `Int`                  |
-/// | floats, lengths, `Duration`, `Angle`, `Frequency` | `Float`            |
+/// | floats, single-unit lengths, `Duration`, `Angle`, `Frequency` | `Float` |
+/// | `MixedLength`: its `dp`, `px`, `sp`, `em` and `%` terms | `Agg` of five `Float`s |
 /// | `String`                                      | `Str`                  |
 /// | `List<T>`                                     | `List`                 |
 /// | record, tuple, range, payload enum variant    | `Agg`                  |

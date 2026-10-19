@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use super::generic::mentions;
+use super::promote::StandsFor;
 use super::{
     FieldInfo, InferCx, TypeEnv, VariantPayload, compatible, first_child_expr, record_spread,
 };
@@ -489,7 +490,8 @@ impl InferCx<'_> {
     /// type, with the implicit promotions such a slot allows (§U1.3): a `T`
     /// initializes an `Option<T>`, and a length an `EdgeInsets` as `all` of it.
     pub(crate) fn infer_promoted(&mut self, value: &Expr, target: &Ty) -> Ty {
-        if takes_length(target) {
+        let range = value.syntax().text_range();
+        if let Some(stands_for) = takes_length(target) {
             let mark = self.diagnostics.len();
             let ty = self.infer_expr(value, Some(target));
             if self.diagnostics.len() == mark {
@@ -498,12 +500,15 @@ impl InferCx<'_> {
             // Not an `EdgeInsets`: a length stands for one, else the mismatch
             // names the type the slot wants.
             let wanted = self.diagnostics.split_off(mark);
+            self.forget_promotions(range);
             let _ = self.infer_expr(value, Some(&Ty::MixedLength));
             if self.diagnostics.len() == mark {
+                self.note_stands_for(value.syntax(), stands_for);
                 return target.clone();
             }
             self.diagnostics.truncate(mark);
             self.diagnostics.extend(wanted);
+            self.forget_promotions(range);
             return ty;
         }
         let Ty::Option(inner) = target else {
@@ -515,6 +520,7 @@ impl InferCx<'_> {
             return ty;
         }
         self.diagnostics.truncate(mark);
+        self.forget_promotions(range);
         let _ = self.infer_expr(value, Some(inner));
         target.clone()
     }
@@ -527,21 +533,31 @@ impl InferCx<'_> {
         {
             return;
         }
-        if takes_length(target) && compatible(&ty, &Ty::MixedLength) {
+        if let Some(stands_for) = takes_length(target)
+            && compatible(&ty, &Ty::MixedLength)
+        {
+            self.note_stands_for(node, stands_for);
             return;
         }
         let _ = self.check_against(ty, Some(target), node);
     }
 }
 
-/// Whether `ty` is the prelude's `EdgeInsets`.
-/// Whether a length stands for a value of `ty`: `all` of an `EdgeInsets`,
+/// What a length stands for as a value of `ty`: `all` of an `EdgeInsets`,
 /// `fixed` of a `Sizing`.
-fn takes_length(ty: &Ty) -> bool {
-    matches!(ty, Ty::Named(id, args)
-        if (*id == crate::resolve::prelude::edge_insets_record()
-            || *id == crate::resolve::prelude::sizing_enum())
-            && args.is_empty())
+fn takes_length(ty: &Ty) -> Option<StandsFor> {
+    match ty {
+        Ty::Named(id, args) if args.is_empty() => {
+            if *id == crate::resolve::prelude::edge_insets_record() {
+                Some(StandsFor::All)
+            } else if *id == crate::resolve::prelude::sizing_enum() {
+                Some(StandsFor::Fixed)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// The suggestion candidates for a record's fields.

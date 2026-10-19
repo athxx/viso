@@ -530,12 +530,21 @@ impl StyleIr {
     }
 
     /// Settle where the box rules live: as constant [`rules`](Self::rules)
-    /// when none reads the environment or the layout direction, else all of
-    /// them in the lengths, a constant padding's percentage with them. So do
-    /// an absolute child's insets: a constant placement when none reads the
-    /// environment, else all of them in the lengths.
-    pub fn settle_rules(&mut self) {
-        self.settle_insets();
+    /// when none reads the environment or the layout direction and none is
+    /// set from a value (`laid`), else all of them in the lengths, a constant
+    /// padding's percentage with them. So do an absolute child's insets: a
+    /// constant placement when none reads the environment and none is set
+    /// from a value, else all of them in the lengths.
+    pub fn settle_rules(&mut self, laid: &Laid) {
+        if laid.insets {
+            self.unsettle_insets();
+        } else {
+            self.settle_insets();
+        }
+        if laid.rules {
+            self.unsettle_rules();
+            return;
+        }
         let Some(lengths) = self.lengths.as_deref_mut() else {
             return;
         };
@@ -649,6 +658,13 @@ impl StyleIr {
         self.place = (placed != AbsoluteInsets::NONE).then_some(Placement::Absolute(placed));
     }
 
+    /// Move a settled placement's insets back into the lengths.
+    pub fn unsettle_insets(&mut self) {
+        if matches!(self.place, Some(Placement::Absolute(_))) {
+            self.insets_mut();
+        }
+    }
+
     /// The insets an absolute child is pinned by, moved into the lengths
     /// for one more edge to fold.
     pub fn insets_mut(&mut self) -> &mut InsetTermsIr {
@@ -704,6 +720,16 @@ impl StyleIr {
     pub fn grid_mut(&mut self) -> &mut GridIr {
         self.grid.get_or_insert_with(Box::default)
     }
+}
+
+/// What of a node's layout is set from values as they change, which keeps
+/// the constant rest of it in the node's lengths to fold with them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Laid {
+    /// A box rule or the padding.
+    pub rules: bool,
+    /// An absolute child's inset.
+    pub insets: bool,
 }
 
 /// A property whose value was not a compile-time constant, kept for the Binding

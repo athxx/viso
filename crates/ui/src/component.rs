@@ -1224,6 +1224,42 @@ impl NodeStore {
         self.mark_dirty(id, class);
     }
 
+    /// A Grid container's template as [`set_grid_template`](Self::set_grid_template)
+    /// takes it: its tracks, gaps, cell alignment, subgrid axes and adaptive
+    /// columns; `None` for a stale handle or a node that is not a Grid.
+    pub fn grid_template(&self, id: NodeId) -> Option<GridStyle> {
+        if !self.arena.is_live(id) {
+            return None;
+        }
+        let i = id.index() as usize;
+        let LayoutInput::Grid {
+            column_gap,
+            row_gap,
+            auto_rows,
+            align_items,
+            subgrid_columns,
+            subgrid_rows,
+            adaptive_columns,
+            ..
+        } = self.layout[i]
+        else {
+            return None;
+        };
+        let tracks = self.grid_tracks[i].as_deref();
+        Some(GridStyle {
+            columns: tracks.map(|t| t.columns.clone()).unwrap_or_default(),
+            rows: tracks.map(|t| t.rows.clone()).unwrap_or_default(),
+            auto_rows,
+            column_gap,
+            row_gap,
+            align_items,
+            subgrid_columns,
+            subgrid_rows,
+            adaptive_columns,
+            ..GridStyle::default()
+        })
+    }
+
     /// Test/facade support: allocate a standalone grid node from a [`GridStyle`],
     /// storing its track templates. Does not attach it to a parent.
     pub fn alloc_grid(&mut self, style: GridStyle) -> NodeId {

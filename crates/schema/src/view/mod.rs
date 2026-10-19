@@ -7,8 +7,8 @@ pub mod regions;
 pub mod route;
 
 pub use control::{
-    Control, ControlInput, ControlKind, Look, LookArm, NodeEntries, SOURCE_ROLES, SemanticEntries,
-    TextEntries, When, source_live, source_name, source_role, widget_role,
+    Control, ControlInput, ControlKind, LayoutSlot, Look, LookArm, NodeEntries, SOURCE_ROLES,
+    SemanticEntries, TextEntries, When, source_live, source_name, source_role, widget_role,
 };
 pub use package::{
     ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewPackageView, ViewShader,

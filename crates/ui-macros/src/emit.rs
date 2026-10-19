@@ -622,6 +622,10 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(look.background_transition),
         entry(look.opacity_transition),
     );
+    let layout = control.layout.iter().map(|&(slot, entry)| {
+        let slot = Ident::new(slot.variant(), Span::call_site());
+        quote! { (::viso::__private::viso_view::LayoutSlot::#slot, #entry) }
+    });
     let arms = control.arms.iter().map(|arm| {
         let input = match arm.input {
             ControlInput::Opacity => quote! { Opacity },
@@ -680,6 +684,7 @@ fn control_tokens(control: Control) -> TokenStream {
                 hidden: #hidden,
                 heading_level: #heading_level,
             },
+            layout: ::std::boxed::Box::new([#(#layout),*]),
         }
     }
 }

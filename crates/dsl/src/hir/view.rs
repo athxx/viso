@@ -36,7 +36,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use viso_behavior::native::{Natives, SlotCardinality, WidgetNode};
-use viso_schema::view::ControlKind;
+use viso_schema::view::{ControlKind, LayoutSlot};
 
 use super::access;
 use super::generic::Converter;
@@ -60,7 +60,7 @@ use crate::behavior::{FunctionKind, Site};
 use crate::diag::{Diagnostic, Related, Severity};
 use crate::resolve::suggest::{Candidate, attach, nearest};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId, SymbolKind};
-use crate::syntax::{SyntaxNode, SyntaxToken, TextRange};
+use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
 
 /// One `input` of a user component, as a property of its nodes.
 #[derive(Debug, Clone, PartialEq)]
@@ -366,6 +366,14 @@ impl Owner<'_> {
             && ControlKind::of(&self.name)
                 .input(&path_text(path))
                 .is_some()
+    }
+
+    /// Whether `path` is a layout property a native node sets from its value
+    /// when the value is no constant: its own, or that of a component's view
+    /// root it is forwarded to.
+    fn reads_layout(&self, path: &PropertyPath) -> bool {
+        let name = path_text(path);
+        LayoutSlot::of(&name).is_some() && !self.inputs.iter().any(|i| i.name == name)
     }
 
     /// Whether this is a `SlotOutlet`.
@@ -1530,6 +1538,53 @@ impl<'a> ViewWalk<'a> {
         Ty::Unknown
     }
 
+    /// Whether `node` is a value layout folds at compile time: literals and
+    /// the constants, enum variants and constructors they name, combined by
+    /// operators, records, lists and constructor calls. Anything else reads
+    /// a value as the view runs.
+    fn folds(&self, node: &SyntaxNode) -> bool {
+        match node.kind() {
+            SyntaxKind::LiteralExpr => true,
+            SyntaxKind::PathExpr => {
+                let Some(head) = PathExpr::cast(node.clone()).and_then(|p| p.segments().next())
+                else {
+                    return false;
+                };
+                match self.cx.resolution_at(head.text_range()) {
+                    None => true,
+                    Some(Resolution::Symbol(id)) => matches!(
+                        self.cx.env().symbol_kind(id),
+                        Some(
+                            SymbolKind::Const
+                                | SymbolKind::Enum
+                                | SymbolKind::EnumVariant
+                                | SymbolKind::Record
+                                | SymbolKind::TypeAlias
+                        )
+                    ),
+                    Some(_) => false,
+                }
+            }
+            SyntaxKind::CallExpr => {
+                let callee = node.children().into_iter().next();
+                callee.is_some_and(|c| c.kind() == SyntaxKind::PathExpr && self.folds(&c))
+                    && node.children().into_iter().skip(1).all(|c| self.folds(&c))
+            }
+            SyntaxKind::ParenExpr
+            | SyntaxKind::UnaryExpr
+            | SyntaxKind::BinaryExpr
+            | SyntaxKind::TupleExpr
+            | SyntaxKind::ListExpr
+            | SyntaxKind::RecordExpr
+            | SyntaxKind::RecordExprField
+            | SyntaxKind::ArgumentList
+            | SyntaxKind::Argument => node.children().into_iter().all(|c| self.folds(&c)),
+            // A record's or a path's type names fold.
+            SyntaxKind::TypePath | SyntaxKind::TypePathSegment | SyntaxKind::GenericArgs => true,
+            _ => false,
+        }
+    }
+
     /// `path: value;`
     fn property(
         &mut self,
@@ -1604,6 +1659,11 @@ impl<'a> ViewWalk<'a> {
         }
         if scope.owner.is_some_and(|owner| owner.reads_control(&path)) {
             // The native node reads its current value or range here.
+            self.region_entry(errors, "value", at, &RegionEntry::Value(&value));
+        } else if scope.owner.is_some_and(|owner| owner.reads_layout(&path))
+            && !self.folds(value.syntax())
+        {
+            // The node lays out by the value as it changes.
             self.region_entry(errors, "value", at, &RegionEntry::Value(&value));
         }
         let to = match declared.basis {

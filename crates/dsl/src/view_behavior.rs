@@ -11,7 +11,7 @@ use std::rc::Rc;
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Vm};
 pub use viso_schema::view::{Control, ControlInput, LookArm, When};
-use viso_schema::view::{ControlKind, EventRoute, Route, ViewRegions};
+use viso_schema::view::{ControlKind, EventRoute, LayoutSlot, Route, ViewRegions};
 use viso_schema::{EnvField, StateValue};
 use viso_shader::program::BrushLayout;
 
@@ -298,10 +298,12 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         control.semantics.role = node_role(node, item);
         control.semantics.live = node.live.unwrap_or_default();
         for (property, at, instance) in &node.control_reads {
-            let Some(input) = kind.input(property) else {
+            let input = kind.input(property);
+            let slot = LayoutSlot::of(property).filter(|_| input.is_none());
+            if input.is_none() && slot.is_none() {
                 continue;
-            };
-            if kind == ControlKind::Shader && input == ControlInput::Value {
+            }
+            if kind == ControlKind::Shader && input == Some(ControlInput::Value) {
                 match painted(compiled, *instance, *at) {
                     Some((symbol, brush)) => {
                         let at = match shaders.iter().position(|(s, _)| *s == symbol) {
@@ -327,7 +329,12 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             let Some(index) = layout.handler(site) else {
                 errors.push(MountError::new(
                     Some(*at),
-                    "internal: the control's value was not lowered",
+                    match slot {
+                        Some(_) => format!(
+                            "a `{property}` the compiler cannot fold does not lay out yet; a constant or one reading a value does"
+                        ),
+                        None => "internal: the control's value was not lowered".to_string(),
+                    },
                 ));
                 continue;
             };
@@ -341,7 +348,11 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
                 ));
                 continue;
             }
-            control.set_entry(input, index);
+            match (input, slot) {
+                (Some(input), _) => control.set_entry(input, index),
+                (None, Some(slot)) => control.set_layout(slot, index),
+                (None, None) => {}
+            }
         }
         if let Some(styled) = &node.styled {
             styled_look(

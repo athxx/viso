@@ -8,6 +8,7 @@
 //! span of the innermost expression or statement it lowers.
 
 mod expr;
+mod length;
 mod pattern;
 mod stmt;
 
@@ -711,6 +712,24 @@ impl ProgramBuilder {
         });
         self.field_defaults.insert((record, index), id);
         id
+    }
+
+    /// The declarations a call reserved the function of that nothing has
+    /// lowered.
+    pub(crate) fn unlowered_functions(&self) -> Vec<SymbolId> {
+        let mut symbols: Vec<_> = self
+            .by_symbol
+            .iter()
+            .filter(|(_, id)| {
+                matches!(
+                    &self.program.functions[id.0 as usize].body,
+                    Err(unsupported) if unsupported.reason == NO_BODY
+                )
+            })
+            .map(|(&symbol, _)| symbol)
+            .collect();
+        symbols.sort_unstable();
+        symbols
     }
 
     /// The field defaults a record literal reserved that nothing has lowered.
@@ -1587,7 +1606,6 @@ impl<'l, 'a> Lowerer<'l, 'a> {
 
     fn check_parts(&self, ty: &Ty) -> Lower<()> {
         match ty {
-            Ty::MixedLength => self.bail("a mixed-unit length resolves only at layout"),
             Ty::Bytes => self.bail("`Bytes` values are not supported yet"),
             Ty::Option(inner) if matches!(**inner, Ty::Option(_)) => {
                 self.bail("a nested `Option` has no runtime representation")

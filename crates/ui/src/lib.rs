@@ -26,6 +26,7 @@ pub mod input;
 pub mod inspect;
 pub mod interaction;
 pub mod layout;
+pub mod layout_value;
 pub mod length;
 pub mod node;
 pub mod paint;
@@ -82,6 +83,7 @@ pub use layout::{
     AbsoluteInsets, Align, AlignItems, Alignment2D, Axis, Basis, BoxRules, Inset, Justify,
     LayoutInput, Length, Placement, Size, Span, SpanInset, StackPlacement, Vec2,
 };
+pub use layout_value::{BoundSize, LayoutValue};
 pub use length::{
     EdgeTerms, InsetTerms, LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms,
     LengthWarning, NodeLengths,

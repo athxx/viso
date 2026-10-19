@@ -225,6 +225,216 @@ pub const SOURCE_ROLES: [&str; 19] = [
     "list_item",
 ];
 
+/// A layout property a node's value sets as the view's values change: one
+/// that reads a value, which the compiler cannot fold into the node's style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum LayoutSlot {
+    /// `width`: a `Sizing`, or a length for `fixed` of one.
+    Width = 0,
+    /// `height`: as `width`.
+    Height = 1,
+    /// `min_width`: a `MixedLength`.
+    MinWidth = 2,
+    /// `max_width`: an `Option<MixedLength>`.
+    MaxWidth = 3,
+    /// `min_height`: a `MixedLength`.
+    MinHeight = 4,
+    /// `max_height`: an `Option<MixedLength>`.
+    MaxHeight = 5,
+    /// `margin`: an `EdgeInsets`, or a length for `all` of one.
+    Margin = 6,
+    /// A container's `padding`: as `margin`.
+    Padding = 7,
+    /// A flex container's `gap` (`spacing`), a grid's both gaps: a
+    /// `MixedLength`.
+    Gap = 8,
+    /// A grid's `column_gap`: a `MixedLength`.
+    ColumnGap = 9,
+    /// A grid's `row_gap`: a `MixedLength`.
+    RowGap = 10,
+    /// A flex container's `axis` (`direction`): an `Axis`.
+    Axis = 11,
+    /// A flex container's `justify`: a `Justify`.
+    Justify = 12,
+    /// A flex container's `align`: an `Align`.
+    Align = 13,
+    /// A grid's `columns`: a `List<Track>`.
+    Columns = 14,
+    /// A grid's `rows`: a `List<Track>`.
+    Rows = 15,
+    /// A grid's `auto_rows`: a `Track`.
+    AutoRows = 16,
+    /// A grid's `align_items`: a `GridAlign`.
+    AlignItems = 17,
+    /// A grid's `adaptive_columns`: an `Option<AdaptiveColumns>`.
+    AdaptiveColumns = 18,
+    /// A stack's `content_align`: an `Alignment2D`.
+    ContentAlign = 19,
+    /// A grid child's `grid.column`: an `Option<U16>`.
+    GridColumn = 20,
+    /// A grid child's `grid.row`: an `Option<U16>`.
+    GridRow = 21,
+    /// A grid child's `grid.column_span`: a `U16`.
+    GridColumnSpan = 22,
+    /// A grid child's `grid.row_span`: a `U16`.
+    GridRowSpan = 23,
+    /// A stack child's `stack.align`: an `Option<Alignment2D>`.
+    StackAlign = 24,
+    /// A stack child's `stack.layer`: an `I32`.
+    StackLayer = 25,
+    /// An absolute child's `absolute.top`: an `Option<MixedLength>`.
+    AbsoluteTop = 26,
+    /// An absolute child's `absolute.end`: as `absolute.top`.
+    AbsoluteEnd = 27,
+    /// An absolute child's `absolute.bottom`: as `absolute.top`.
+    AbsoluteBottom = 28,
+    /// An absolute child's `absolute.start`: as `absolute.top`.
+    AbsoluteStart = 29,
+}
+
+impl LayoutSlot {
+    /// Every slot, by discriminant.
+    pub const ALL: [LayoutSlot; 30] = [
+        LayoutSlot::Width,
+        LayoutSlot::Height,
+        LayoutSlot::MinWidth,
+        LayoutSlot::MaxWidth,
+        LayoutSlot::MinHeight,
+        LayoutSlot::MaxHeight,
+        LayoutSlot::Margin,
+        LayoutSlot::Padding,
+        LayoutSlot::Gap,
+        LayoutSlot::ColumnGap,
+        LayoutSlot::RowGap,
+        LayoutSlot::Axis,
+        LayoutSlot::Justify,
+        LayoutSlot::Align,
+        LayoutSlot::Columns,
+        LayoutSlot::Rows,
+        LayoutSlot::AutoRows,
+        LayoutSlot::AlignItems,
+        LayoutSlot::AdaptiveColumns,
+        LayoutSlot::ContentAlign,
+        LayoutSlot::GridColumn,
+        LayoutSlot::GridRow,
+        LayoutSlot::GridColumnSpan,
+        LayoutSlot::GridRowSpan,
+        LayoutSlot::StackAlign,
+        LayoutSlot::StackLayer,
+        LayoutSlot::AbsoluteTop,
+        LayoutSlot::AbsoluteEnd,
+        LayoutSlot::AbsoluteBottom,
+        LayoutSlot::AbsoluteStart,
+    ];
+
+    /// The slot the layout property `property` fills; `None` for one that
+    /// is no layout property. A parent-provided property is named by its
+    /// dotted path (`grid.column`). Which node takes which slot is the
+    /// compiler's to check.
+    pub fn of(property: &str) -> Option<LayoutSlot> {
+        Some(match property {
+            "width" => LayoutSlot::Width,
+            "height" => LayoutSlot::Height,
+            "min_width" => LayoutSlot::MinWidth,
+            "max_width" => LayoutSlot::MaxWidth,
+            "min_height" => LayoutSlot::MinHeight,
+            "max_height" => LayoutSlot::MaxHeight,
+            "margin" => LayoutSlot::Margin,
+            "padding" => LayoutSlot::Padding,
+            "gap" | "spacing" => LayoutSlot::Gap,
+            "column_gap" => LayoutSlot::ColumnGap,
+            "row_gap" => LayoutSlot::RowGap,
+            "axis" | "direction" => LayoutSlot::Axis,
+            "justify" => LayoutSlot::Justify,
+            "align" => LayoutSlot::Align,
+            "columns" => LayoutSlot::Columns,
+            "rows" => LayoutSlot::Rows,
+            "auto_rows" => LayoutSlot::AutoRows,
+            "align_items" => LayoutSlot::AlignItems,
+            "adaptive_columns" => LayoutSlot::AdaptiveColumns,
+            "content_align" => LayoutSlot::ContentAlign,
+            "grid.column" => LayoutSlot::GridColumn,
+            "grid.row" => LayoutSlot::GridRow,
+            "grid.column_span" => LayoutSlot::GridColumnSpan,
+            "grid.row_span" => LayoutSlot::GridRowSpan,
+            "stack.align" => LayoutSlot::StackAlign,
+            "stack.layer" => LayoutSlot::StackLayer,
+            "absolute.top" => LayoutSlot::AbsoluteTop,
+            "absolute.end" => LayoutSlot::AbsoluteEnd,
+            "absolute.bottom" => LayoutSlot::AbsoluteBottom,
+            "absolute.start" => LayoutSlot::AbsoluteStart,
+            _ => return None,
+        })
+    }
+
+    /// The slot with discriminant `raw`.
+    pub fn from_u8(raw: u8) -> Option<LayoutSlot> {
+        LayoutSlot::ALL.get(usize::from(raw)).copied()
+    }
+
+    /// The Rust variant name, for code that names a slot in tokens.
+    pub fn variant(self) -> &'static str {
+        match self {
+            LayoutSlot::Width => "Width",
+            LayoutSlot::Height => "Height",
+            LayoutSlot::MinWidth => "MinWidth",
+            LayoutSlot::MaxWidth => "MaxWidth",
+            LayoutSlot::MinHeight => "MinHeight",
+            LayoutSlot::MaxHeight => "MaxHeight",
+            LayoutSlot::Margin => "Margin",
+            LayoutSlot::Padding => "Padding",
+            LayoutSlot::Gap => "Gap",
+            LayoutSlot::ColumnGap => "ColumnGap",
+            LayoutSlot::RowGap => "RowGap",
+            LayoutSlot::Axis => "Axis",
+            LayoutSlot::Justify => "Justify",
+            LayoutSlot::Align => "Align",
+            LayoutSlot::Columns => "Columns",
+            LayoutSlot::Rows => "Rows",
+            LayoutSlot::AutoRows => "AutoRows",
+            LayoutSlot::AlignItems => "AlignItems",
+            LayoutSlot::AdaptiveColumns => "AdaptiveColumns",
+            LayoutSlot::ContentAlign => "ContentAlign",
+            LayoutSlot::GridColumn => "GridColumn",
+            LayoutSlot::GridRow => "GridRow",
+            LayoutSlot::GridColumnSpan => "GridColumnSpan",
+            LayoutSlot::GridRowSpan => "GridRowSpan",
+            LayoutSlot::StackAlign => "StackAlign",
+            LayoutSlot::StackLayer => "StackLayer",
+            LayoutSlot::AbsoluteTop => "AbsoluteTop",
+            LayoutSlot::AbsoluteEnd => "AbsoluteEnd",
+            LayoutSlot::AbsoluteBottom => "AbsoluteBottom",
+            LayoutSlot::AbsoluteStart => "AbsoluteStart",
+        }
+    }
+
+    /// Whether it is one of the node's box rules or its padding, which the
+    /// node's lengths carry together.
+    pub fn is_rule(self) -> bool {
+        matches!(
+            self,
+            LayoutSlot::MinWidth
+                | LayoutSlot::MaxWidth
+                | LayoutSlot::MinHeight
+                | LayoutSlot::MaxHeight
+                | LayoutSlot::Margin
+                | LayoutSlot::Padding
+        )
+    }
+
+    /// Whether it is one of an absolute child's insets.
+    pub fn is_inset(self) -> bool {
+        matches!(
+            self,
+            LayoutSlot::AbsoluteTop
+                | LayoutSlot::AbsoluteEnd
+                | LayoutSlot::AbsoluteBottom
+                | LayoutSlot::AbsoluteStart
+        )
+    }
+}
+
 /// A value a control reads from the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlInput {
@@ -304,6 +514,8 @@ pub struct Control {
     /// What it tells assistive technology beside the state its kind
     /// projects.
     pub semantics: SemanticEntries,
+    /// The entries of the layout properties it reads, by ascending slot.
+    pub layout: Box<[(LayoutSlot, u32)]>,
 }
 
 /// The handler-table entries of whether a node shows and takes focus: an
@@ -434,6 +646,7 @@ impl Control {
             node: NodeEntries::default(),
             text: TextEntries::default(),
             semantics: SemanticEntries::default(),
+            layout: Box::new([]),
         }
     }
 
@@ -465,6 +678,16 @@ impl Control {
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
         }
+    }
+
+    /// Points the layout slot `slot` at entry `entry`.
+    pub fn set_layout(&mut self, slot: LayoutSlot, entry: u32) {
+        let mut layout = core::mem::take(&mut self.layout).into_vec();
+        match layout.binary_search_by_key(&slot, |&(s, _)| s) {
+            Ok(at) => layout[at].1 = entry,
+            Err(at) => layout.insert(at, (slot, entry)),
+        }
+        self.layout = layout.into();
     }
 
     /// Points `input` at entry `entry`.
@@ -546,6 +769,11 @@ impl Encode for Control {
             }
             enc.write_varint(u64::from(arm.entry));
         }
+        enc.write_varint(self.layout.len() as u64);
+        for &(slot, entry) in self.layout.iter() {
+            enc.write_u8(slot as u8);
+            enc.write_varint(u64::from(entry));
+        }
     }
 }
 
@@ -599,6 +827,7 @@ impl Decode for Control {
             },
             node: NodeEntries::default(),
             text: TextEntries::default(),
+            layout: Box::new([]),
         };
         control.node = NodeEntries {
             visible: entry()?,
@@ -647,6 +876,18 @@ impl Decode for Control {
             });
         }
         control.arms = decoded.into();
+        let slots = index(dec)?;
+        let mut layout: Vec<(LayoutSlot, u32)> = Vec::new();
+        for _ in 0..slots {
+            let offset = dec.position();
+            let slot =
+                LayoutSlot::from_u8(dec.read_u8()?).ok_or(DecodeError::Malformed { offset })?;
+            if layout.last().is_some_and(|&(last, _)| last >= slot) {
+                return Err(DecodeError::Malformed { offset });
+            }
+            layout.push((slot, index(dec)?));
+        }
+        control.layout = layout.into();
         Ok(control)
     }
 }
@@ -748,6 +989,20 @@ mod tests {
     }
 
     #[test]
+    fn every_layout_slot_round_trips_through_its_discriminant() {
+        for slot in LayoutSlot::ALL {
+            assert_eq!(LayoutSlot::from_u8(slot as u8), Some(slot));
+        }
+        assert_eq!(LayoutSlot::from_u8(30), None);
+        assert_eq!(LayoutSlot::of("spacing"), Some(LayoutSlot::Gap));
+        assert_eq!(
+            LayoutSlot::of("grid.row_span"),
+            Some(LayoutSlot::GridRowSpan)
+        );
+        assert_eq!(LayoutSlot::of("color"), None);
+    }
+
+    #[test]
     fn a_control_round_trips_and_rejects_a_bad_kind() {
         let control = Control {
             kind: ControlKind::Slider,
@@ -791,9 +1046,18 @@ mod tests {
                 color: None,
                 soft_wrap: Some(13),
             },
+            layout: Box::new([(LayoutSlot::Width, 14), (LayoutSlot::AbsoluteStart, 15)]),
         };
         let bytes = control.encode_to_vec();
         assert_eq!(Control::decode_from_slice(&bytes), Ok(control));
+        let mut unordered = bytes.clone();
+        let at = unordered.len() - 4;
+        assert_eq!(unordered[at], LayoutSlot::Width as u8);
+        unordered[at] = LayoutSlot::AbsoluteStart as u8;
+        assert!(
+            Control::decode_from_slice(&unordered).is_err(),
+            "layout slots ascend"
+        );
         let mut bad = bytes.clone();
         bad[0] = 9;
         assert!(Control::decode_from_slice(&bad).is_err());
@@ -807,7 +1071,7 @@ mod tests {
             "no such live setting"
         );
         let mut bad = bytes;
-        let state = bad.len() - 6;
+        let state = bad.len() - 11;
         bad[state] = 9;
         assert!(
             Control::decode_from_slice(&bad).is_err(),
