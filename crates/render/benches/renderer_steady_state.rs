@@ -3626,6 +3626,9 @@ fn assert_clock_frames_upload_nothing() {
     let mut h = setup_clock_scene();
     frame(&mut h);
     frame(&mut h);
+    // The first partial redraw makes the damage-clear buffer, once.
+    h.renderer.set_time(1.0);
+    frame(&mut h);
     let buffers = h.gpu.buffer_count();
     for i in 0..8 {
         h.renderer.set_time(i as f32 / 60.0);
