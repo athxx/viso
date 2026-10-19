@@ -9,8 +9,8 @@
 //! that repaints; it takes no input and is not in the semantics tree.
 
 use viso_ui::{
-    Align, Axis, BoxStyle, BuildCx, DirtyClass, FlexStyle, Inset, LeafStyle, Length, NodeId,
-    NodeStore, Rect, Rgba, Size, TextRequest,
+    Align, Axis, BoxStyle, BuildCx, FlexStyle, Inset, LeafStyle, Length, NodeId, NodeStore, Rect,
+    Rgba, Size, TextRequest,
 };
 
 use crate::WindowState;
@@ -44,16 +44,13 @@ const HUD_FONT_SIZE: f32 = 11.0;
 pub(super) fn show(ws: &mut WindowState, lines: &[&str], scratch: &mut Vec<NodeId>) {
     if let Some(panel) = ws.dev_overlay.take() {
         ws.store.free_tree(panel, &mut ws.effects, scratch);
-        if let Some(root) = ws.root {
-            ws.store.mark_dirty(root, DirtyClass::PAINT);
-        }
+        ws.store.request_repaint();
     }
     if lines.is_empty() {
         return;
     }
-    let panel = build(&mut ws.store, lines);
-    ws.store.mark_dirty(panel, DirtyClass::PAINT);
-    ws.dev_overlay = Some(panel);
+    ws.dev_overlay = Some(build(&mut ws.store, lines));
+    ws.store.request_repaint();
 }
 
 /// Builds the panel listing `lines` as a detached subtree of `store`.
@@ -118,19 +115,17 @@ fn build(store: &mut NodeStore, lines: &[&str]) -> NodeId {
 /// Shows the frame-time `line` at the top right of `ws`, replacing the one
 /// shown, or removes it with `None`; the window repaints either way.
 pub(crate) fn show_hud(ws: &mut WindowState, line: Option<&str>, scratch: &mut Vec<NodeId>) {
-    let Some(root) = ws.root else {
+    if ws.root.is_none() {
         return;
-    };
+    }
     if let Some(panel) = ws.dev_hud.take() {
         ws.store.free_tree(panel, &mut ws.effects, scratch);
     } else if line.is_none() {
         return;
     }
-    ws.store.mark_dirty(root, DirtyClass::PAINT);
+    ws.store.request_repaint();
     if let Some(line) = line {
-        let panel = hud(&mut ws.store, line);
-        ws.store.mark_dirty(panel, DirtyClass::PAINT);
-        ws.dev_hud = Some(panel);
+        ws.dev_hud = Some(hud(&mut ws.store, line));
     }
 }
 

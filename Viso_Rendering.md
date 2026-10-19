@@ -782,7 +782,20 @@ opacity 跨过 0 或 1（layer 出现、消失，或被跳过）仍然是形状�
 
 差分测试保证 patch 与整 stream 上传留下相同的 scratch、segment、pool shadow、entry key 与 surface draw；一帧 patch 之后 present 的像素与新 surface 上整帧绘制的相同，且只重绘改写的那一行。UI 一侧见 Architecture §11（`PaintIndex` / `Painted::Patched`）。`paint_scale` bench：2000 张卡片的页面 hover 一帧约 0.3 µs，与 100 张卡片相同；改之前约 0.7 ms，随卡片数线性增长。一张卡片在两个半透明 opacity 之间淡入淡出一帧约 0.5 µs，同样与卡片数无关。
 
-形状改变的局部变动（虚拟列表挂载一行、文本编辑改变 glyph 个数、opacity 跨过 0 或 1）仍然整树 paint、整 stream 上传，这是 chunk 级 splice 要解决的部分。
+**Splice（已实现）**。形状改变的局部变动——虚拟列表挂载一行、卸载一行，文本编辑改变 glyph 个数，节点出现、消失、移动、改变大小——改写 stream 的若干段，其余部分只是整体平移。
+
+- UI 侧：每次 paint 给每个节点记下它的 subtree 区间（`Record`：自身 drawable 区间、整段结束位置、所在 transform root、父节点、深度、有无 fade / scroll layer），按 epoch 失效。一帧开始时，从 PAINT worklist、移动过 bounds 的节点、重新挂接过子节点的父节点出发向根收集要访问的节点，按旧区间排序后单遍走：保留下来的子节点区间原样留在 stream 中，只是平移；自身 drawable 改变的节点重新生成并与旧值比较；子节点列表改变的父节点按旧记录 diff 子节点，新子节点在游标处重新 paint，消失的子节点连同区间一起删去。连续的改写合并成 `Edit`，自右向左 `Vec::splice` 进 stream，并给出新 stream 下标的 `Splice { at, removed, inserted }` 列表；没有改变形状时退化为原位改写（`Painted::Patched`）。overlay 移动、出现或消失，跨过 `Transform` 的删除，fade / scroll layer 开始或结束，transform root 首次出现，都退回整树 paint。
+- Renderer 侧：`Renderer::splice(backend, primitives, splices)` 只接受只跨 leaf（Quad、analytic、shadow、Image、GlyphRun）、处在 surface pass 中且不在 folded group 内的段；每段把 paint order 与每个 leaf store 中对应的 slot 换成新 primitive，其后的 entry 按差值移动 stream 下标与 slot，只 ingest 插入的 primitive，再 lower、sync、重算 surface draw key。`patch` 遇到不再适合原 slot 的 leaf（种类、glyph 个数、bounds、纹理改变）时，把这些位置按一换一的段交给 `splice`。
+
+差分测试：UI 侧 16 个随机种子 × 400 帧（填色、隐藏、opacity、插入、释放、移动、改变大小、改文字，页面含 overlay 与平移过的卡片），每帧 splice 后的 stream 与同一帧整树 paint 的逐个相等；renderer 侧 splice 后的 scene 与整 stream 上传逐 store 相等，present 像素与新 surface 整帧绘制相同。`paint_scale` bench：
+
+| case | 整树 paint + 整 stream 上传 | splice |
+|---|---|---|
+| `mount/rows_30` | 8.3 µs | 7.2 µs |
+| `mount/rows_160` | 45.0 µs | 37.8 µs |
+| `type/notes_2000`（一个 label 增减一个 glyph） | 1.49 ms | 0.95 ms |
+
+`type/notes_2000` 仍随页面线性增长：label 的 re-measure 一直传到根列，整列 2000 行重新 layout；renderer 侧 splice 之后仍整帧 lower、sync、重算 surface draw key。这两部分是下一步。
 
 ## 9.8 多线程模型
 

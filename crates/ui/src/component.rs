@@ -524,22 +524,15 @@ pub struct NodeStore {
     /// Cold: the clients the frame loop advances, each owned by a node.
     /// Empty in a window that runs no game.
     frame_clients: crate::frame_client::FrameClients,
-    /// The transform roots of the last paint (§21).
-    transforms: crate::transform::TransformTable,
-    /// Where each node's own drawables sit in the stream the last whole paint
-    /// emitted.
-    paint_index: crate::paint::PaintIndex,
-    /// The stream positions the last patch rewrote, ascending.
-    patched: Vec<u32>,
-    /// The next frame re-emits the whole tree though no node's layout moved:
-    /// the device scale moved every snapped displacement, or a node's place in
-    /// the stream changed (its opacity crossed 0 or 1, its overlay flag, or
-    /// its transform root).
+    /// What the last paint left: its transform roots (§21), where each
+    /// node's primitives sit, what the last incremental paint rewrote.
+    painting: crate::paint::PaintSlot,
+    /// The slots of the nodes whose box moved since the last paint.
+    moved: Vec<u32>,
+    /// The next frame re-emits the whole tree: the device scale moved every
+    /// snapped displacement, a transform root, a fade or an overlay started or
+    /// stopped, or so many boxes moved that a splice would not pay.
     repaint_pending: bool,
-    /// Some node was marked STRUCTURE, MEASURE or LAYOUT since the last
-    /// [`clear_dirty`](Self::clear_dirty): boxes may have moved, so the paint
-    /// cannot be a patch.
-    reshaped: bool,
     /// Warm: the template instance each node belongs to (§18.1), tagged
     /// [`OWNER_KEPT`] when its slot is part of the instance's block;
     /// [`NO_OWNER`] for a node no instance built.
@@ -579,7 +572,7 @@ impl NodeStore {
         node_columns!(store.reserve_exact(n));
         store.dirty_lists.reserve_slots(n);
         store.redo_flag.reserve_exact(n);
-        store.paint_index.reserve_slots(n);
+        store.painting.get_mut().index.reserve_slots(n);
         store
     }
 
@@ -619,8 +612,9 @@ impl NodeStore {
         self.edit_requests.clear();
         self.text_seeds.clear();
         self.scroll_restores.clear();
-        self.transforms.clear();
-        self.paint_index.clear();
+        let painting = self.painting.get_mut();
+        painting.transforms.clear();
+        painting.index.clear();
         self.focused = None;
         self.contacts.clear();
         self.hovered = None;
@@ -729,8 +723,8 @@ impl NodeStore {
         if scale > 0.0 { scale } else { 1.0 }
     }
 
-    /// Repaint the next frame though no node is paint-dirty.
-    pub(crate) fn request_repaint(&mut self) {
+    /// Re-emit the whole tree the next frame, whatever is dirty.
+    pub fn request_repaint(&mut self) {
         self.repaint_pending = true;
     }
 
@@ -745,16 +739,16 @@ impl NodeStore {
     /// The transform roots of the last paint and their displacements.
     #[inline]
     pub fn transforms(&self) -> &crate::transform::TransformTable {
-        &self.transforms
+        &self.painting.get().transforms
     }
 
     /// Recompute the transform roots' displacements after scrolls and
     /// translates, and report whether any moved. One add per root: no node is
     /// visited.
     pub fn update_transforms(&mut self) -> bool {
-        let mut table = core::mem::take(&mut self.transforms);
-        let moved = table.update(self);
-        self.transforms = table;
+        let mut painting = self.painting.lend();
+        let moved = painting.transforms.update(self);
+        self.painting.give_back(painting);
         moved
     }
 
@@ -2218,10 +2212,19 @@ impl NodeStore {
             return;
         }
         self.hidden[id.index() as usize] = hidden;
+        self.relinked(id);
         self.mark_dirty(
             id,
             DirtyClass::LAYOUT | DirtyClass::PAINT | DirtyClass::SEMANTICS,
         );
+    }
+
+    /// Note that `id` enters or leaves its parent's paint.
+    fn relinked(&mut self, id: NodeId) {
+        match self.arena.parent(id) {
+            Some(parent) => self.arena.note_relinked(parent.node_index()),
+            None => self.repaint_pending = true,
+        }
     }
 
     /// A node's opacity (default `1.0`).
@@ -2250,13 +2253,17 @@ impl NodeStore {
         let slot = &mut self.opacity[id.index() as usize];
         if *slot != opacity {
             // A node that keeps fading through its layer only re-tints it; one
-            // that starts or stops fading, or shows or hides, paints another
-            // stream.
+            // that starts or stops fading paints another stream, and one that
+            // shows or hides enters or leaves its parent's.
             let layered = |o: f32| o > 0.0 && o < 1.0;
+            let shown = (*slot > 0.0) != (opacity > 0.0);
             if layered(*slot) != layered(opacity) {
                 self.repaint_pending = true;
             }
             *slot = opacity;
+            if shown {
+                self.relinked(id);
+            }
             self.mark_dirty(id, DirtyClass::PAINT);
         }
     }
@@ -2595,8 +2602,6 @@ impl NodeStore {
             journal.record(id, class);
         }
         // Everything lands on the node itself.
-        self.reshaped |=
-            class.intersects(DirtyClass::STRUCTURE | DirtyClass::MEASURE | DirtyClass::LAYOUT);
         self.dirty[id.index() as usize] |= class;
         self.dirty_lists.note(id.index(), class);
 
@@ -2638,13 +2643,14 @@ impl NodeStore {
         }
     }
 
-    /// Clear every node's pending invalidation. Run at frame end once the
-    /// incremental passes have consumed the dirty set; costs the nodes marked
-    /// this frame, not the store.
+    /// Clear every node's pending invalidation, and the boxes moved and the
+    /// children changed with it. Run at frame end once the incremental passes
+    /// have consumed the dirty set; costs the nodes marked this frame, not the
+    /// store.
     #[inline]
     pub fn clear_dirty(&mut self) {
-        self.reshaped = false;
         self.dirty_lists.clear(&mut self.dirty);
+        self.clear_paint_logs();
     }
 
     /// Whether any node currently carries any dirty class. Lets a frame skip
@@ -3324,12 +3330,15 @@ impl NodeStore {
     /// Bring the primitive list up to date when any paint-affecting
     /// invalidation is pending.
     ///
-    /// A frame where only paint changed — no node measured, laid out, moved in
-    /// the tree, faded or changed its overlay — rewrites the dirty nodes' own
-    /// primitives in place and lists their positions in
-    /// [`patched`](Self::patched), when each still emits as many primitives of
-    /// the same kinds. Anything else re-emits the whole tree into `out`. A
-    /// `TRANSFORM` mark alone does neither: its roots move through
+    /// The nodes whose look or box changed re-emit their own primitives, the
+    /// nodes whose children changed diff them against the stream, and the
+    /// result is spliced into `out`. When every rewritten primitive keeps its
+    /// place and kind the frame is [`Painted::Patched`], the positions at
+    /// [`patched`](Self::patched); otherwise [`Painted::Spliced`], the runs
+    /// at [`splices`](Self::splices). A frame where a transform root, a fade
+    /// or an overlay starts or stops, or a transform root or an overlay enters
+    /// or leaves, re-emits the whole tree. A `TRANSFORM` mark alone does
+    /// nothing here: its roots move through
     /// [`update_transforms`](Self::update_transforms) and the renderer shifts
     /// their retained draws.
     pub fn repaint_dirty(
@@ -3341,60 +3350,87 @@ impl NodeStore {
             return Painted::Nothing;
         }
         let paint_classes = DirtyClass::PAINT | DirtyClass::MEASURE | DirtyClass::LAYOUT;
-        if !self.repaint_pending && !self.any_dirty_class(paint_classes) {
+        if !self.repaint_pending
+            && !self.any_dirty_class(paint_classes)
+            && self.moved.is_empty()
+            && self.arena.relinks().is_empty()
+        {
             return Painted::Nothing;
         }
-        if !self.repaint_pending && !self.reshaped && self.patch(root, out) {
-            return Painted::Patched(self.patched.len() as u32);
+        if !self.repaint_pending
+            && let Some(spliced) = self.splice(root, out)
+        {
+            self.clear_paint_logs();
+            return match spliced {
+                crate::paint::Spliced::Patched(n) => Painted::Patched(n),
+                crate::paint::Spliced::Spliced(n) => Painted::Spliced(n),
+            };
         }
         Painted::Whole(self.repaint(root, out))
     }
 
-    /// Rewrite the PAINT-dirty nodes' own primitives of `out` in place.
-    fn patch(&mut self, root: NodeId, out: &mut [viso_render::Primitive]) -> bool {
-        let mut index = core::mem::take(&mut self.paint_index);
-        let mut patched = core::mem::take(&mut self.patched);
-        patched.clear();
-        let nodes = self
+    /// Splice the changes since the last paint into `out`.
+    fn splice(
+        &mut self,
+        root: NodeId,
+        out: &mut Vec<viso_render::Primitive>,
+    ) -> Option<crate::paint::Spliced> {
+        let mut painting = self.painting.lend();
+        let p = &mut *painting;
+        let painted = self
             .dirty_lists
             .of(DirtyClass::PAINT)
             .iter()
-            .filter(|&&i| self.dirty[i as usize].contains(DirtyClass::PAINT))
-            .filter_map(|&i| self.arena.live_id(i));
-        let ok = crate::paint::patch_walk(
+            .copied()
+            .filter(|&i| self.dirty[i as usize].contains(DirtyClass::PAINT));
+        let spliced = crate::paint::splice_walk(
             self,
             root,
-            &self.transforms,
-            &mut index,
-            nodes,
+            &mut p.transforms,
+            &mut p.index,
+            painted.chain(self.moved.iter().copied()),
+            self.arena.relinks(),
             out,
-            &mut patched,
+            &mut p.patched,
+            &mut p.splices,
         );
-        self.paint_index = index;
-        self.patched = patched;
-        ok
+        self.painting.give_back(painting);
+        spliced
+    }
+
+    /// Forget what changed since the last paint: the next one starts from it.
+    fn clear_paint_logs(&mut self) {
+        self.moved.clear();
+        self.arena.clear_relinks();
     }
 
     /// The stream positions the last [`Painted::Patched`] rewrote, ascending.
     pub fn patched(&self) -> &[u32] {
-        &self.patched
+        &self.painting.get().patched
+    }
+
+    /// The runs of the stream the last [`Painted::Spliced`] replaced,
+    /// ascending, in the new stream's indices.
+    pub fn splices(&self) -> &[viso_render::Splice] {
+        &self.painting.get().splices
     }
 
     /// Re-emit the whole tree at `root` into `out` and record its transform
     /// roots, whatever is dirty. Reports how many primitives were emitted.
     pub fn repaint(&mut self, root: NodeId, out: &mut Vec<viso_render::Primitive>) -> u32 {
         self.repaint_pending = false;
+        self.clear_paint_logs();
         out.clear();
         if !self.arena.is_live(root) {
-            self.transforms.clear();
-            self.paint_index.clear();
+            let painting = self.painting.get_mut();
+            painting.transforms.clear();
+            painting.index.clear();
             return 0;
         }
-        let mut table = core::mem::take(&mut self.transforms);
-        let mut index = core::mem::take(&mut self.paint_index);
-        crate::paint::paint_indexed(self, root, out, &mut table, &mut index);
-        self.transforms = table;
-        self.paint_index = index;
+        let mut painting = self.painting.lend();
+        let p = &mut *painting;
+        crate::paint::paint_indexed(self, root, out, &mut p.transforms, &mut p.index);
+        self.painting.give_back(painting);
         out.len() as u32
     }
 
@@ -3486,9 +3522,12 @@ pub enum Painted {
     Nothing,
     /// The whole tree was re-emitted: this many primitives.
     Whole(u32),
-    /// Only paint changed: this many primitives were rewritten in place, at
+    /// This many primitives were rewritten in place, at
     /// [`NodeStore::patched`].
     Patched(u32),
+    /// Runs of the list were replaced, at [`NodeStore::splices`]: this many
+    /// primitives went in.
+    Spliced(u32),
 }
 
 impl Painted {
@@ -3496,7 +3535,7 @@ impl Painted {
     pub fn count(self) -> u32 {
         match self {
             Painted::Nothing => 0,
-            Painted::Whole(n) | Painted::Patched(n) => n,
+            Painted::Whole(n) | Painted::Patched(n) | Painted::Spliced(n) => n,
         }
     }
 }
@@ -3553,7 +3592,16 @@ impl LayoutTree for NodeStore {
 
     #[inline]
     fn set_bounds(&mut self, index: u32, r: Rect) {
-        self.bounds[index as usize] = r;
+        let slot = &mut self.bounds[index as usize];
+        if *slot == r {
+            return;
+        }
+        *slot = r;
+        if self.moved.len() < self.bounds.len() / 2 + 16 {
+            self.moved.push(index);
+        } else {
+            self.repaint_pending = true;
+        }
     }
 
     #[inline]

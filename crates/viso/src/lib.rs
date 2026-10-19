@@ -1526,6 +1526,10 @@ impl WindowState {
                 !gpu.renderer
                     .patch(&mut gpu.backend, &self.primitives, self.store.patched())
             }
+            viso_ui::Painted::Spliced(_) => {
+                !gpu.renderer
+                    .splice(&mut gpu.backend, &self.primitives, self.store.splices())
+            }
         };
         if whole {
             gpu.renderer.upload_with_transforms(

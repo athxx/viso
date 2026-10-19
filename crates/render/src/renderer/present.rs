@@ -24,12 +24,18 @@
 use viso_gpu::backend::{DrawCommand, Geometry};
 use viso_gpu::{BufferDesc, BufferId, BufferUsage, GpuBackend};
 
-use super::{QUAD_STRIDE, Renderer, clip_to_scissor, view_uniforms};
+use super::{
+    BackdropCapture, MaterialRecord, OffscreenPass, QUAD_STRIDE, Renderer, clip_to_scissor,
+    view_uniforms,
+};
 use crate::damage::{Drawn, History, Key, MAX_RECTS, Merger, Region, diff};
+use crate::mask_pages::MaskPages;
 use crate::primitive::{QuadInstance, Rect};
+use crate::program::ProgramTable;
+use crate::scene::Scene;
 use crate::scene::key::pod_bytes;
 use crate::scene::store::StoreRef;
-use crate::transform::Space;
+use crate::transform::{Space, Transforms};
 
 /// How far damage reaches past the bounds that caused it: the antialiased
 /// fringe every built-in shades just outside a shape's edge.
@@ -177,20 +183,20 @@ impl Renderer {
     /// Lists what the uploaded frame's surface pass draws (see the module
     /// docs). Runs at the end of every upload.
     pub(super) fn collect_surface_draws(&mut self) {
-        let mut p = std::mem::take(&mut self.present);
+        let (keying, p) = self.keying();
         p.draws.clear();
         p.keys.clear();
         p.draw_of.clear();
         p.pass_sums.clear();
-        p.pass_sums.resize(self.offscreen_passes.len(), 0);
+        p.pass_sums.resize(keying.offscreen_passes.len(), 0);
         p.composite_of.clear();
-        p.composite_of.resize(self.offscreen_passes.len(), NONE);
+        p.composite_of.resize(keying.offscreen_passes.len(), NONE);
         p.capture_keys.clear();
-        p.capture_keys.resize(self.backdrop_captures.len(), None);
+        p.capture_keys.resize(keying.backdrop_captures.len(), None);
         p.placed = None;
         p.restaged.clear();
-        for (i, entry) in self.scene.paint_order.iter().enumerate() {
-            let key = self.draw_key(&mut p, i);
+        for (i, entry) in keying.scene.paint_order.iter().enumerate() {
+            let key = keying.draw_key(p, i);
             p.keys.push(key);
             if let StoreRef::Composite { pass, .. } = entry.store
                 && let Some(slot) = p.composite_of.get_mut(pass as usize)
@@ -204,7 +210,7 @@ impl Renderer {
                 p.draw_of.push(NONE);
                 continue;
             }
-            let (_, extent) = self.scene.key(i);
+            let (_, extent) = keying.scene.key(i);
             let bounds = entry.bounds.paint;
             let paint = match extent {
                 Some(extent) if !bounds.has_area() => extent,
@@ -218,9 +224,77 @@ impl Renderer {
                 space: entry.context.space,
             });
         }
-        self.present = p;
     }
 
+    /// The presenter, and what its keys read of the rest of the renderer.
+    fn keying(&mut self) -> (Keying<'_>, &mut Presenter) {
+        let keying = Keying {
+            scene: &self.scene,
+            offscreen_passes: &self.offscreen_passes,
+            backdrop_captures: &self.backdrop_captures,
+            material_records: &self.material_records,
+            mask_pages: &self.mask_pages,
+            programs: &self.programs,
+            transforms: &self.transforms,
+        };
+        (keying, &mut self.present)
+    }
+
+    /// Re-key paint-order entry `index` after a patch rewrote it, and every
+    /// composite its change reaches up to the surface draw. When the last
+    /// presented frame was placed as things stand, the surface draw's new key
+    /// is staged against it, so the next frame's damage is the rewritten draws
+    /// alone.
+    pub(super) fn rekey(&mut self, index: usize) {
+        let (keying, p) = self.keying();
+        let mut i = index;
+        loop {
+            let old = p.keys[i];
+            let new = keying.draw_key(p, i);
+            if new == old {
+                break;
+            }
+            p.keys[i] = new;
+            if let Some(pass) = keying.scene.paint_order[i].context.offscreen {
+                let pass = pass as usize;
+                let sum = &mut p.pass_sums[pass];
+                *sum = sum
+                    .wrapping_sub(pass_term(old, i))
+                    .wrapping_add(pass_term(new, i));
+                match p.composite_of[pass] {
+                    NONE => break,
+                    composite => i = composite as usize,
+                }
+                continue;
+            }
+            let d = p.draw_of[i] as usize;
+            p.draws[d].key = new;
+            if p.placed.is_some() {
+                match p.drawn_of[d] {
+                    NONE => {}
+                    at => {
+                        let shift = keying.transforms.shift(p.draws[d].space.slot);
+                        p.restaged.push((at, placed_key(new, shift)));
+                    }
+                }
+            }
+            break;
+        }
+    }
+}
+
+/// What draw keys read of the renderer.
+struct Keying<'a> {
+    scene: &'a Scene,
+    offscreen_passes: &'a [OffscreenPass],
+    backdrop_captures: &'a [BackdropCapture],
+    material_records: &'a [MaterialRecord],
+    mask_pages: &'a MaskPages,
+    programs: &'a ProgramTable,
+    transforms: &'a Transforms,
+}
+
+impl Keying<'_> {
     /// The key of paint-order entry `i`: its retained content, the context it
     /// was lowered under, and whatever it samples.
     fn draw_key(&self, p: &mut Presenter, i: usize) -> u64 {
@@ -286,49 +360,6 @@ impl Renderer {
         key.finish()
     }
 
-    /// Re-key paint-order entry `index` after a patch rewrote it, and every
-    /// composite its change reaches up to the surface draw. When the last
-    /// presented frame was placed as things stand, the surface draw's new key
-    /// is staged against it, so the next frame's damage is the rewritten draws
-    /// alone.
-    pub(super) fn rekey(&mut self, index: usize) {
-        let mut p = std::mem::take(&mut self.present);
-        let mut i = index;
-        loop {
-            let old = p.keys[i];
-            let new = self.draw_key(&mut p, i);
-            if new == old {
-                break;
-            }
-            p.keys[i] = new;
-            if let Some(pass) = self.scene.paint_order[i].context.offscreen {
-                let pass = pass as usize;
-                let sum = &mut p.pass_sums[pass];
-                *sum = sum
-                    .wrapping_sub(pass_term(old, i))
-                    .wrapping_add(pass_term(new, i));
-                match p.composite_of[pass] {
-                    NONE => break,
-                    composite => i = composite as usize,
-                }
-                continue;
-            }
-            let d = p.draw_of[i] as usize;
-            p.draws[d].key = new;
-            if p.placed.is_some() {
-                match p.drawn_of[d] {
-                    NONE => {}
-                    at => {
-                        let shift = self.transforms.shift(p.draws[d].space.slot);
-                        p.restaged.push((at, placed_key(new, shift)));
-                    }
-                }
-            }
-            break;
-        }
-        self.present = p;
-    }
-
     /// The content key of backdrop capture `capture`: every surface entry
     /// under it whose pixels reach its region.
     fn capture_key(&self, p: &mut Presenter, capture: usize) -> u64 {
@@ -355,7 +386,9 @@ impl Renderer {
         }
         key
     }
+}
 
+impl Renderer {
     /// What this frame must redraw, given what was last presented: the
     /// surface pass placed where it draws now, diffed against the last
     /// presented frame's. Leaves the placed list in `present.drawn`.

@@ -4,6 +4,10 @@
 //! - `hover/cards_N`: one leaf of a page of `N` cards (a row with a
 //!   background and three leaves each) changes color; the frame repaints and
 //!   uploads. A frame's cost should follow what changed, not the page.
+//! - `fade/cards_N`: the same leaf fades between two translucent opacities.
+//! - `type/notes_N`: one label of a page of `N` notes (a row with a swatch and
+//!   a label each) gains a glyph, then loses it: the label re-measures, and
+//!   its glyph run changes length.
 //! - `mount/rows_N`: a virtual list showing about `N` rows scrolls by exactly
 //!   one row, so one row mounts and one unmounts.
 //!
@@ -16,10 +20,10 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle};
-use viso_render::{Primitive, Rect, Renderer, Rgba};
+use viso_render::{GlyphInstanceData, Primitive, Rect, Renderer, Rgba, TextureId};
 use viso_ui::{
-    Axis, BindingTable, BoxStyle, BuildCx, DirtyClass, EffectStore, FlexStyle, LeafStyle, Length,
-    NodeId, NodeStore, Painted, SemanticProjector, Size, StateStore, TextEdits, Vec2,
+    Axis, BindingTable, BoxStyle, BuildCx, Content, DirtyClass, EffectStore, FlexStyle, LeafStyle,
+    Length, NodeId, NodeStore, Painted, SemanticProjector, Size, StateStore, TextEdits, Vec2,
     VirtualListStyle, VirtualLists, virtual_list,
 };
 
@@ -150,6 +154,98 @@ fn page(cards: usize) -> (Harness, NodeId) {
     )
 }
 
+/// A label's text, shaped: a run of `n` glyphs.
+fn text(n: usize) -> Content {
+    let rect = |x: f32, w: f32| Rect {
+        x,
+        y: 0.0,
+        w,
+        h: 12.0,
+    };
+    Content::Text {
+        glyphs: (0..n)
+            .map(|i| GlyphInstanceData {
+                rect: rect(i as f32 * 7.0, 6.0),
+                uv: rect(0.0, 0.5),
+            })
+            .collect(),
+        atlas: TextureId::new(1),
+        color_glyphs: Vec::new(),
+        color_atlas: None,
+        color: Rgba::new(0.9, 0.9, 0.9, 1.0),
+        natural: Vec2 {
+            x: n as f32 * 7.0,
+            y: 12.0,
+        },
+        baseline: 10.0,
+        shaped_at_width: None,
+        soft_wrap: false,
+    }
+}
+
+/// A page of `notes` notes in a column, each a swatch and a label of 12 to
+/// 20 glyphs; with the label the typing edits (one in the first screenful).
+fn notes(notes: usize) -> (Harness, NodeId) {
+    let mut store = NodeStore::new();
+    let mut labels = Vec::new();
+    let root = {
+        let mut cx = BuildCx::new(&mut store);
+        cx.flex(
+            FlexStyle {
+                axis: Axis::Column,
+                gap: 2.0,
+                size: Size {
+                    width: Length::Fixed(W),
+                    height: Length::Fixed(H),
+                },
+                ..FlexStyle::default()
+            },
+            |cx| {
+                for i in 0..notes {
+                    let shade = (i % 7) as f32 / 10.0;
+                    cx.flex(
+                        FlexStyle {
+                            axis: Axis::Row,
+                            gap: 4.0,
+                            size: Size {
+                                width: Length::fill(),
+                                height: Length::Fixed(CARD_H),
+                            },
+                            style: BoxStyle::solid(Rgba::new(0.1, 0.1, 0.12 + shade, 1.0)),
+                            ..FlexStyle::default()
+                        },
+                        |cx| {
+                            cx.leaf(LeafStyle {
+                                size: Size {
+                                    width: Length::Fixed(CARD_H - 6.0),
+                                    height: Length::Fixed(CARD_H - 6.0),
+                                },
+                                style: BoxStyle::solid(Rgba::new(0.3, 0.5, 0.8, 1.0)),
+                            });
+                            labels.push(cx.leaf(LeafStyle::default()).id());
+                        },
+                    );
+                }
+            },
+        )
+        .id()
+    };
+    for (i, &label) in labels.iter().enumerate() {
+        store.set_content_payload(label, text(12 + i % 9));
+    }
+    let target = labels[5];
+    (
+        harness(
+            store,
+            StateStore::new(),
+            BindingTable::new(),
+            VirtualLists::new(),
+            root,
+        ),
+        target,
+    )
+}
+
 /// A 100k-row virtual list of `row_h`-tall cards, mounted and settled.
 fn list(row_h: f32) -> Harness {
     let mut store = NodeStore::new();
@@ -234,8 +330,8 @@ fn frame(h: &mut Harness) -> u32 {
     painted.count()
 }
 
-/// The UploadGpuChanges phase as the facade runs it: a patch when only paint
-/// changed and the renderer takes it, the stream whole otherwise.
+/// The UploadGpuChanges phase as the facade runs it: a patch or a splice
+/// when the renderer takes it, the stream whole otherwise.
 fn upload(h: &mut Harness, painted: Painted) {
     let whole = match painted {
         Painted::Nothing | Painted::Patched(0) => false,
@@ -243,6 +339,9 @@ fn upload(h: &mut Harness, painted: Painted) {
         Painted::Patched(_) => !h
             .renderer
             .patch(&mut h.gpu, &h.primitives, h.store.patched()),
+        Painted::Spliced(_) => !h
+            .renderer
+            .splice(&mut h.gpu, &h.primitives, h.store.splices()),
     };
     if whole {
         h.renderer.upload_with_transforms(
@@ -317,6 +416,30 @@ fn bench_paint_scale(c: &mut Criterion) {
                 h.store.set_opacity(target, FADES[flip]);
                 black_box(frame(black_box(&mut h)));
             });
+        });
+    }
+    for count in [100, 2000] {
+        let (mut h, label) = notes(count);
+        let glyphs = [17, 18];
+        let mut flip = 0;
+        h.store.set_content_payload(label, text(glyphs[1]));
+        eprintln!(
+            "type/notes_{count}: {} nodes, the frame paints {} primitives",
+            h.store.arena().live_count(),
+            frame(&mut h)
+        );
+        c.bench_function(&format!("type/notes_{count}"), |b| {
+            b.iter_batched(
+                || {
+                    flip ^= 1;
+                    text(glyphs[flip])
+                },
+                |content| {
+                    h.store.set_content_payload(label, content);
+                    black_box(frame(black_box(&mut h)));
+                },
+                criterion::BatchSize::SmallInput,
+            );
         });
     }
     for (rows, row_h) in [(30, 20.0), (160, 4.0)] {

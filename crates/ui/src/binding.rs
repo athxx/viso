@@ -1017,14 +1017,10 @@ fn block_of(
     let Some(first) = loose.next() else {
         return Some((0, 0));
     };
-    let mut expect = first + 1;
-    for index in loose {
-        if index != expect {
-            return None;
-        }
-        expect += 1;
-    }
-    Some((first, len))
+    (first + 1..)
+        .zip(loose)
+        .all(|(expect, index)| index == expect)
+        .then_some((first, len))
 }
 
 /// Put an instance's binds in the canonical form of a template edge set,

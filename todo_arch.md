@@ -202,6 +202,8 @@ Phase 2 — a frame that changes shape:
 - [ ] Splice: a subtree whose shape changed replaces its span of the stream, and the renderer re-ingests and re-lowers only that span (a virtual list mounting a row, a text edit)
   - [x] Store entries drop the positional transform/brush ids nothing read
   - [x] Renderer `splice`: runs of leaves in the surface pass outside a folded group splice the paint order and every leaf store, later entries moving their stream index and slot; the frame is re-lowered, synced and keyed; differential tests against a whole upload, store by store, and on present
-  - [ ] UI records each node's subtree span; a frame whose structure, layout or paint changed in place re-emits only the changed subtrees and splices them into the stream (`Painted::Spliced`)
-  - [ ] Facade drives the splice path; `paint_scale` mount and a text-edit case measured
+  - [x] UI records each node's subtree span; a frame whose structure, layout or paint changed in place re-emits only the changed subtrees and splices them into the stream (`Painted::Spliced`)
+  - [x] Facade drives the splice path; `paint_scale` mount and a text-edit case measured
+  - [x] A patch whose leaf no longer fits its slot (kind, glyph count, bounds, texture) splices it one for one instead of uploading whole
+  - [ ] A re-measure stops at an ancestor whose size does not follow its content: only that ancestor's subtree is laid out again (`type/notes_2000` lays out the whole column)
   - [ ] Lowering and surface draws splice too, instead of re-deriving the frame

@@ -1297,6 +1297,8 @@ pub struct Renderer {
     /// A patch's validated rewrites and the scratch slots they wrote, reused.
     edits: Vec<patch::Edit>,
     edit_slots: Vec<(patch::Family, u32, u32)>,
+    /// The runs a patch that does not fit in place splices instead, reused.
+    rewrites: Vec<Splice>,
     /// Layer stack used while lowering the flat primitive stream, reused each
     /// frame. The top carries the current effective clip (already intersected
     /// with its ancestors), the pass its segments are routed to, and the origin
@@ -2020,6 +2022,7 @@ impl Renderer {
             stream_len: 0,
             edits: Vec::new(),
             edit_slots: Vec::new(),
+            rewrites: Vec::new(),
             layer_stack: Vec::with_capacity(8),
             transforms: Transforms::default(),
             offscreen_passes: Vec::with_capacity(4),

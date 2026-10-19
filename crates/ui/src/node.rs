@@ -159,6 +159,10 @@ pub struct NodeArena {
     /// `Some(n)` when built with a fixed capacity: the arena never grows past
     /// `n` slots and never reallocates after construction.
     fixed: Option<u32>,
+    /// The parents whose children changed since the log was last cleared,
+    /// each once, and by slot whether it is logged.
+    relinked: Vec<u32>,
+    logged: Vec<bool>,
 }
 
 impl NodeArena {
@@ -177,6 +181,8 @@ impl NodeArena {
             blocks: Vec::new(),
             live: 0,
             fixed: Some(capacity),
+            relinked: Vec::with_capacity(capacity as usize),
+            logged: Vec::with_capacity(capacity as usize),
         }
     }
 
@@ -187,6 +193,34 @@ impl NodeArena {
         self.free.clear();
         self.blocks.clear();
         self.live = 0;
+        self.relinked.clear();
+        self.logged.clear();
+    }
+
+    /// Log that `parent`'s children changed.
+    pub(crate) fn note_relinked(&mut self, parent: NodeIndex) {
+        let i = parent.slot();
+        if i >= self.logged.len() {
+            self.logged.resize(i + 1, false);
+        }
+        if !self.logged[i] {
+            self.logged[i] = true;
+            self.relinked.push(i as u32);
+        }
+    }
+
+    /// The slots of the parents whose children changed since the log was
+    /// last cleared, each once.
+    pub(crate) fn relinks(&self) -> &[u32] {
+        &self.relinked
+    }
+
+    /// Empty the relink log.
+    pub(crate) fn clear_relinks(&mut self) {
+        for &i in &self.relinked {
+            self.logged[i as usize] = false;
+        }
+        self.relinked.clear();
     }
 
     /// Reserve room for `additional` more slots. A no-op for a fixed-capacity
@@ -483,6 +517,7 @@ impl NodeArena {
         let raw = &mut self.links[id.index as usize];
         raw.first_child = NodeIndex::NONE;
         raw.last_child = NodeIndex::NONE;
+        self.note_relinked(id.node_index());
         true
     }
 
@@ -506,6 +541,7 @@ impl NodeArena {
             parent_links.first_child = c;
         }
         parent_links.last_child = c;
+        self.note_relinked(p);
         true
     }
 
@@ -538,6 +574,7 @@ impl NodeArena {
         child_links.parent = p;
         child_links.prev_sibling = prev;
         child_links.next_sibling = b;
+        self.note_relinked(p);
         true
     }
 
@@ -577,6 +614,7 @@ impl NodeArena {
         child_links.parent = NodeIndex::NONE;
         child_links.prev_sibling = NodeIndex::NONE;
         child_links.next_sibling = NodeIndex::NONE;
+        self.note_relinked(parent);
         true
     }
 }

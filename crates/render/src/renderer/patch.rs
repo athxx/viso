@@ -18,7 +18,7 @@
 
 use viso_gpu::GpuBackend;
 
-use super::{CompositeLowering, LayerDrawn, Renderer};
+use super::{CompositeLowering, LayerDrawn, Renderer, Splice};
 use crate::effect_plan::plan_layer;
 use crate::primitive::{GlyphRunDraw, LayerClip, Primitive};
 use crate::scene::ingest::Instance;
@@ -91,10 +91,15 @@ impl Renderer {
     /// in place. Only those are re-ingested, re-lowered, uploaded and
     /// re-keyed for damage.
     ///
-    /// Returns `false`, having changed nothing, when the rewrite is not a
-    /// patch — a primitive changed kind, glyph count, bounds or texture, is
-    /// not one instance in one store, or the frame captures a backdrop. Upload
-    /// the stream whole then.
+    /// A rewritten leaf that no longer fits its slot — another kind, glyph
+    /// count, box or texture — is spliced in its place instead
+    /// ([`Renderer::splice`]).
+    ///
+    /// Returns `false`, having changed nothing, when the rewrite is neither a
+    /// patch nor a splice — the stream changed length, a layer changed how it
+    /// draws, a leaf that does not fit lies inside a folded group or an
+    /// offscreen pass, or the frame captures a backdrop. Upload the stream
+    /// whole then.
     pub fn patch<B: GpuBackend>(
         &mut self,
         backend: &mut B,
@@ -116,7 +121,7 @@ impl Renderer {
         edits.clear();
         if !self.edits_for(primitives, changed, &mut edits) {
             self.edits = edits;
-            return false;
+            return self.splice_rewrites(backend, primitives, changed);
         }
         self.scene.ingest_stats.dirty_primitives = 0;
         let mut slots = std::mem::take(&mut self.edit_slots);
@@ -185,6 +190,34 @@ impl Renderer {
         self.edits = edits;
         self.edit_slots = slots;
         true
+    }
+
+    /// Splice each run of rewritten primitives `changed` over the run it
+    /// rewrote, one for one.
+    fn splice_rewrites<B: GpuBackend>(
+        &mut self,
+        backend: &mut B,
+        primitives: &[Primitive],
+        changed: &[u32],
+    ) -> bool {
+        let mut runs = std::mem::take(&mut self.rewrites);
+        runs.clear();
+        for &at in changed {
+            match runs.last_mut() {
+                Some(run) if run.at + run.inserted == at => {
+                    run.removed += 1;
+                    run.inserted += 1;
+                }
+                _ => runs.push(Splice {
+                    at,
+                    removed: 1,
+                    inserted: 1,
+                }),
+            }
+        }
+        let spliced = self.splice(backend, primitives, &runs);
+        self.rewrites = runs;
+        spliced
     }
 
     /// Every rewrite `changed` asks of the stream last uploaded, into
@@ -737,14 +770,19 @@ mod tests {
     }
 
     #[test]
-    fn a_rewrite_that_moves_anything_else_is_not_a_patch() {
+    fn a_rewrite_that_does_not_fit_its_slot_splices() {
         let mut gpu = Gpu::new();
         let texture = gpu.texture();
         let other = gpu.texture();
         let before = kinds(texture, 0.2);
-        let refused = |gpu: &mut Gpu, after: Vec<Primitive>, at: u32| {
-            gpu.upload(&before);
-            assert!(!gpu.patch(&after, &[at]), "entry {at} refused");
+        let spliced = |after: Vec<Primitive>, at: u32| {
+            let mut patched = Gpu::new();
+            let mut whole = Gpu::new();
+            patched.upload(&before);
+            whole.upload(&before);
+            assert!(patched.patch(&after, &[at]), "entry {at} spliced");
+            whole.upload(&after);
+            same_scene(&patched.r, &whole.r);
         };
         // A new box.
         let mut after = before.clone();
@@ -754,27 +792,49 @@ mod tests {
             radius: Corners::SHARP,
             border: Border::NONE,
         });
-        refused(&mut gpu, after, 1);
+        spliced(after, 1);
         // A new kind.
         let mut after = before.clone();
         after[1] = quad(rect(4.0, 4.0, 20.0, 12.0), rgba(0.2, 0.8));
-        refused(&mut gpu, after, 1);
+        spliced(after, 1);
         // A new texture.
         let mut after = before.clone();
         if let Primitive::Image(image) = &mut after[6] {
             image.texture = other;
         }
-        refused(&mut gpu, after, 6);
-        // Another glyph count.
+        spliced(after, 6);
+        // Another glyph count, beside a recolored box.
         let mut after = before.clone();
         if let Primitive::GlyphRun(run) = &mut after[7] {
             run.glyphs.pop();
         }
-        refused(&mut gpu, after, 7);
+        after[6] = before[6].clone();
+        after[1] = kinds(texture, 0.9)[1].clone();
+        let mut patched = Gpu::new();
+        let mut whole = Gpu::new();
+        patched.upload(&before);
+        whole.upload(&before);
+        assert!(patched.patch(&after, &[1, 6, 7]));
+        whole.upload(&after);
+        same_scene(&patched.r, &whole.r);
+    }
+
+    #[test]
+    fn a_rewrite_neither_in_place_nor_of_surface_leaves_is_refused() {
+        let mut gpu = Gpu::new();
+        let texture = gpu.texture();
+        let before = kinds(texture, 0.2);
         // A stream of another length.
         let mut after = before.clone();
         after.push(quad(rect(0.0, 0.0, 4.0, 4.0), rgba(0.2, 1.0)));
-        refused(&mut gpu, after, 1);
+        gpu.upload(&before);
+        assert!(!gpu.patch(&after, &[1]), "another length");
+        // A leaf that no longer fits, inside a folded group.
+        let group = folded(0.5, 0.2);
+        let mut after = group.clone();
+        after[2] = quad(rect(0.0, 0.0, 44.0, 40.0), rgba(0.2, 1.0));
+        gpu.upload(&group);
+        assert!(!gpu.patch(&after, &[2]), "inside a folded group");
         // A frame capturing a backdrop.
         let frosted = vec![
             quad(rect(0.0, 0.0, SIZE, SIZE), rgba(0.1, 1.0)),
@@ -797,16 +857,13 @@ mod tests {
     fn a_refused_patch_changes_nothing() {
         let mut patched = Gpu::new();
         let mut whole = Gpu::new();
-        let before = vec![
-            quad(rect(4.0, 4.0, 20.0, 20.0), rgba(0.3, 1.0)),
-            quad(rect(30.0, 4.0, 20.0, 20.0), rgba(0.3, 1.0)),
-        ];
-        let mut after = before.clone();
-        after[0] = quad(rect(4.0, 4.0, 20.0, 20.0), rgba(0.9, 1.0));
-        after[1] = quad(rect(30.0, 4.0, 24.0, 20.0), rgba(0.3, 1.0));
+        // One child of a folded group recolored, the other grown.
+        let before = folded(0.5, 0.2);
+        let mut after = folded(0.5, 0.9);
+        after[3] = quad(rect(50.0, 0.0, 44.0, 40.0), rgba(0.4, 1.0));
         patched.upload(&before);
         whole.upload(&before);
-        assert!(!patched.patch(&after, &[0, 1]));
+        assert!(!patched.patch(&after, &[2, 3]));
         same_state(&patched.r, &whole.r);
     }
 

@@ -73,20 +73,88 @@ pub fn paint_with_transforms(
     paint_walk(store, root, out, table, &mut ());
 }
 
+mod splice;
+
+pub(crate) use splice::PaintIndex;
+
+/// What the last paint left: its transform roots, where each node's
+/// primitives sit, and what the last incremental paint rewrote. One box, so a
+/// walk that reads the store beside it moves one pointer.
+#[derive(Debug, Default)]
+pub(crate) struct Painting {
+    pub(crate) transforms: TransformTable,
+    pub(crate) index: PaintIndex,
+    /// The stream positions the last patch rewrote, ascending.
+    pub(crate) patched: Vec<u32>,
+    /// The runs of the stream the last splice replaced.
+    pub(crate) splices: Vec<viso_render::Splice>,
+}
+
+/// A store's [`Painting`], lent out while a walk reads the store beside it.
+#[derive(Debug)]
+pub(crate) struct PaintSlot(Option<Box<Painting>>);
+
+impl Default for PaintSlot {
+    fn default() -> Self {
+        PaintSlot(Some(Box::default()))
+    }
+}
+
+impl PaintSlot {
+    const LENT: &str = "the paint state is lent only for the length of a walk";
+
+    pub(crate) fn get(&self) -> &Painting {
+        self.0.as_deref().expect(Self::LENT)
+    }
+
+    pub(crate) fn get_mut(&mut self) -> &mut Painting {
+        self.0.as_deref_mut().expect(Self::LENT)
+    }
+
+    pub(crate) fn lend(&mut self) -> Box<Painting> {
+        self.0.take().expect(Self::LENT)
+    }
+
+    pub(crate) fn give_back(&mut self, painting: Box<Painting>) {
+        self.0 = Some(painting);
+    }
+}
+
 /// What a paint walk records besides its primitives: the span of the stream
-/// each node emitted, its own primitives through its last descendant's, and
-/// the span of its own drawables alone.
+/// each node emitted, its own primitives through its last descendant's.
 pub(crate) trait PaintSpans {
     /// `node` starts emitting at `start`; the returned token closes its span.
     fn open(&mut self, node: NodeId, start: usize) -> usize;
-    /// The span opened as `token` ends at `end`.
-    fn close(&mut self, token: usize, end: usize);
-    /// `node`'s own drawables — its box and its content — are `start..end`,
-    /// painted inside transform root `slot`, and the `Layer` it fades through
-    /// sits just before them when `faded`.
-    #[inline(always)]
-    fn own(&mut self, _node: NodeId, _start: usize, _end: usize, _slot: Option<u32>, _faded: bool) {
-    }
+    /// The span `node` opened as `token` is out.
+    fn close(&mut self, token: usize, node: NodeId, span: Span);
+}
+
+/// Where one node's primitives landed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Span {
+    /// Its own drawables — its box and its content.
+    pub(crate) own: usize,
+    pub(crate) own_end: usize,
+    /// One past its last primitive, its closing markers included; its
+    /// overlays paint later.
+    pub(crate) end: usize,
+    /// The transform root its own drawables are painted in.
+    pub(crate) slot: Option<u32>,
+    /// Its parent's slot, [`NodeIndex::NONE`](crate::node::NodeIndex::NONE)'s
+    /// at the top, and how deep in the paint it is.
+    pub(crate) parent: u32,
+    pub(crate) depth: u32,
+    pub(crate) flags: u8,
+}
+
+impl Span {
+    /// It fades through a `Layer` just before its own drawables.
+    pub(crate) const FADED: u8 = 1;
+    /// It is a scroll viewport: a clip `Layer` and its content's `Transform`
+    /// follow its own drawables.
+    pub(crate) const SCROLL: u8 = 2;
+    /// It is a transform root: a `Transform` opens its span.
+    pub(crate) const ROOT: u8 = 4;
 }
 
 /// A walk that records nothing; the calls compile away.
@@ -97,193 +165,10 @@ impl PaintSpans for () {
     }
 
     #[inline(always)]
-    fn close(&mut self, _: usize, _: usize) {}
+    fn close(&mut self, _: usize, _: NodeId, _: Span) {}
 }
 
-/// Where each node's own drawables sit in the stream the last whole paint
-/// emitted, so a frame that only repaints can rewrite them in place
-/// ([`patch_walk`]).
-#[derive(Debug, Default)]
-pub(crate) struct PaintIndex {
-    /// By node slot.
-    own: Vec<Own>,
-    /// The whole paint the records of this one are from; a slot whose record
-    /// is older was not painted by it.
-    generation: u32,
-    /// The paint root and how many primitives its walk emitted.
-    root: Option<NodeId>,
-    len: usize,
-    /// The snapped displacement of the nodes outside every transform root.
-    top: Vec2,
-    /// One node's drawables, re-emitted.
-    scratch: Vec<Primitive>,
-}
-
-/// One node's own drawables in the last whole paint.
-#[derive(Debug, Clone, Copy, Default)]
-struct Own {
-    start: u32,
-    /// How many, with [`Own::FADED`] set when the node faded through a layer.
-    len: u32,
-    /// The transform root they were painted in, or `u32::MAX` for none.
-    slot: u32,
-    generation: u32,
-}
-
-impl Own {
-    const FADED: u32 = 1 << 31;
-
-    fn len(&self) -> usize {
-        (self.len & !Own::FADED) as usize
-    }
-
-    fn faded(&self) -> bool {
-        self.len & Own::FADED != 0
-    }
-}
-
-impl PaintIndex {
-    /// Start recording the whole paint from `root`.
-    fn begin(&mut self, root: NodeId, top: Vec2) {
-        self.generation = self.generation.wrapping_add(1);
-        self.root = Some(root);
-        self.top = top;
-    }
-
-    /// Room for `slots` node slots, so recording allocates nothing.
-    pub(crate) fn reserve_slots(&mut self, slots: usize) {
-        self.own.reserve(slots.saturating_sub(self.own.len()));
-    }
-
-    /// Forget every record: the next paint is whole.
-    pub(crate) fn clear(&mut self) {
-        self.root = None;
-    }
-}
-
-impl PaintSpans for PaintIndex {
-    #[inline(always)]
-    fn open(&mut self, _: NodeId, _: usize) -> usize {
-        0
-    }
-
-    #[inline(always)]
-    fn close(&mut self, _: usize, _: usize) {}
-
-    #[inline]
-    fn own(&mut self, node: NodeId, start: usize, end: usize, slot: Option<u32>, faded: bool) {
-        let i = node.index() as usize;
-        if i >= self.own.len() {
-            self.own.resize(i + 1, Own::default());
-        }
-        self.own[i] = Own {
-            start: start as u32,
-            len: (end - start) as u32 | if faded { Own::FADED } else { 0 },
-            slot: slot.unwrap_or(u32::MAX),
-            generation: self.generation,
-        };
-    }
-}
-
-/// [`paint_with_transforms`], recording where each node's own drawables land
-/// in `index` for a later [`patch_walk`].
-pub(crate) fn paint_indexed(
-    store: &NodeStore,
-    root: NodeId,
-    out: &mut Vec<Primitive>,
-    table: &mut TransformTable,
-    index: &mut PaintIndex,
-) {
-    let top = if store.arena().is_live(root) {
-        store.snap_shift(store.shift_above(root))
-    } else {
-        Vec2::ZERO
-    };
-    let start = out.len();
-    index.begin(root, top);
-    paint_walk(store, root, out, table, index);
-    index.len = out.len() - start;
-}
-
-/// Re-emit the own drawables of each of `nodes` over the span of `out` the
-/// last whole paint from `root` gave them, and append the stream positions
-/// whose primitive changed to `changed`, ascending.
-///
-/// A node that faded through a layer and still does rewrites that layer's
-/// opacity too.
-///
-/// Returns `false` when that is not a patch — a node was not painted by that
-/// paint, starts or stops fading, or its drawables changed kind or count.
-/// `out` may then hold some rewritten primitives; paint it whole.
-pub(crate) fn patch_walk(
-    store: &NodeStore,
-    root: NodeId,
-    table: &TransformTable,
-    index: &mut PaintIndex,
-    nodes: impl Iterator<Item = NodeId>,
-    out: &mut [Primitive],
-    changed: &mut Vec<u32>,
-) -> bool {
-    if index.root != Some(root) || out.len() < index.len {
-        return false;
-    }
-    let mut scratch = core::mem::take(&mut index.scratch);
-    let patched = nodes.into_iter().all(|node| {
-        let Some(own) = index.own.get(node.index() as usize).copied() else {
-            return false;
-        };
-        let opacity = store.opacity(node);
-        if own.generation != index.generation
-            || store.hidden(node)
-            || opacity <= 0.0
-            || (opacity < 1.0) != own.faded()
-        {
-            return false;
-        }
-        let shift = match table.painted().get(own.slot as usize) {
-            Some(&[x, y]) => Vec2 { x, y },
-            None if own.slot == u32::MAX => index.top,
-            None => return false,
-        };
-        let world = store.bounds(node).translate(shift);
-        let start = own.start as usize;
-        if own.faded() {
-            let Some(Primitive::Layer(layer)) = start.checked_sub(1).and_then(|at| out.get_mut(at))
-            else {
-                return false;
-            };
-            if layer.clip != world {
-                return false;
-            }
-            if layer.opacity != opacity {
-                layer.opacity = opacity;
-                changed.push(start as u32 - 1);
-            }
-        }
-        scratch.clear();
-        paint_own(store, node, world, &mut scratch);
-        let Some(span) = out.get_mut(start..start + own.len()) else {
-            return false;
-        };
-        if scratch.len() != span.len() {
-            return false;
-        }
-        for (k, (old, new)) in span.iter_mut().zip(scratch.iter_mut()).enumerate() {
-            if core::mem::discriminant(old) != core::mem::discriminant(new) {
-                return false;
-            }
-            if old != new {
-                core::mem::swap(old, new);
-                changed.push((start + k) as u32);
-            }
-        }
-        true
-    });
-    scratch.clear();
-    index.scratch = scratch;
-    changed.sort_unstable();
-    patched
-}
+pub(crate) use splice::{Spliced, paint_indexed, splice_walk};
 
 /// The one paint walk, shared by the frame and the inspector.
 pub(crate) fn paint_walk<S: PaintSpans>(
@@ -298,14 +183,7 @@ pub(crate) fn paint_walk<S: PaintSpans>(
     // met in; the table's scratch, so a retained table allocates nothing.
     let mut overlays = core::mem::take(&mut table.overlays);
     overlays.clear();
-    let top = Space {
-        slot: None,
-        raw: if store.arena().is_live(root) {
-            store.shift_above(root)
-        } else {
-            Vec2::ZERO
-        },
-    };
+    let top = top_space(store, root);
     // The `root` itself paints even if flagged overlay — it is the entry, not a
     // child boundary — so the main walk starts unconditionally.
     paint_subtree(store, root, top, out, table, &mut overlays, spans);
@@ -316,6 +194,11 @@ pub(crate) fn paint_walk<S: PaintSpans>(
     let mut i = 0;
     while i < overlays.len() {
         let (node, space) = overlays[i];
+        i += 1;
+        // One that paints nothing opens no transform either.
+        if store.hidden(node) || store.opacity(node) <= 0.0 {
+            continue;
+        }
         if let Some(slot) = space.slot {
             out.push(Primitive::Transform(TransformSlot(slot)));
         }
@@ -323,17 +206,47 @@ pub(crate) fn paint_walk<S: PaintSpans>(
         if space.slot.is_some() {
             out.push(Primitive::TransformEnd);
         }
-        i += 1;
     }
     table.overlays = overlays;
 }
 
-/// Where a node sits: the innermost transform root around it, and that root's
-/// unsnapped displacement.
-#[derive(Debug, Clone, Copy)]
+/// Where a node sits: the innermost transform root around it, that root's
+/// displacement, unsnapped and as painted, and how deep in the paint the
+/// node is.
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Space {
     slot: Option<u32>,
     raw: Vec2,
+    snapped: Vec2,
+    depth: u32,
+}
+
+impl Space {
+    /// This space moved to `raw`, as transform root `slot`.
+    fn moved(self, store: &NodeStore, slot: u32, raw: Vec2) -> Space {
+        Space {
+            slot: Some(slot),
+            raw,
+            snapped: store.snap_shift(raw),
+            ..self
+        }
+    }
+}
+
+/// The space of the nodes outside every transform root of a paint from
+/// `root`.
+fn top_space(store: &NodeStore, root: NodeId) -> Space {
+    let raw = if store.arena().is_live(root) {
+        store.shift_above(root)
+    } else {
+        Vec2::ZERO
+    };
+    Space {
+        slot: None,
+        raw,
+        snapped: store.snap_shift(raw),
+        depth: 0,
+    }
 }
 
 /// Paint one subtree in pre-order, diverting any overlay child into `overlays`
@@ -365,14 +278,11 @@ fn paint_subtree<S: PaintSpans>(
     if own {
         let raw = space.raw + store.self_shift(root);
         let slot = table.push(root, space.slot, false, raw, store.snap_shift(raw));
+        space = space.moved(store, slot, raw);
         out.push(Primitive::Transform(TransformSlot(slot)));
-        space = Space {
-            slot: Some(slot),
-            raw,
-        };
     }
 
-    let world = store.bounds(root).translate(store.snap_shift(space.raw));
+    let world = store.bounds(root).translate(space.snapped);
     // A translucent node composites itself and its subtree as one layer over
     // its own box.
     let faded = opacity < 1.0;
@@ -386,7 +296,7 @@ fn paint_subtree<S: PaintSpans>(
     }
     let own_start = out.len();
     paint_own(store, root, world, out);
-    spans.own(root, own_start, out.len(), space.slot, faded);
+    let own_end = out.len();
 
     // A scroll viewport clips its content to its own box — the viewport's
     // background already painted above, so it is not clipped — and its content
@@ -403,16 +313,14 @@ fn paint_subtree<S: PaintSpans>(
         }));
         let raw = space.raw + store.content_shift(root);
         let slot = table.push(root, space.slot, true, raw, store.snap_shift(raw));
+        inner = space.moved(store, slot, raw);
         out.push(Primitive::Transform(TransformSlot(slot)));
-        inner = Space {
-            slot: Some(slot),
-            raw,
-        };
     }
 
     // Recurse into children in sibling order (pre-order: parent already painted).
     // An overlay child is diverted to the deferred top layer rather than painted
     // in place — it draws after the whole scene, so it must not descend here.
+    inner.depth += 1;
     for c in arena.children(root) {
         if store.is_overlay(c) {
             overlays.push((c, inner));
@@ -431,7 +339,20 @@ fn paint_subtree<S: PaintSpans>(
     if own {
         out.push(Primitive::TransformEnd);
     }
-    spans.close(span, out.len());
+    let flag = |on: bool, flag: u8| if on { flag } else { 0 };
+    spans.close(
+        span,
+        root,
+        Span {
+            own: own_start,
+            own_end,
+            end: out.len(),
+            slot: space.slot,
+            parent: arena.parent_of(root.node_index()).get(),
+            depth: space.depth,
+            flags: flag(faded, Span::FADED) | flag(scroll, Span::SCROLL) | flag(own, Span::ROOT),
+        },
+    );
 }
 
 /// A node's own drawables at `world`: its box, then its content over it.
@@ -1871,7 +1792,7 @@ mod tests {
     }
 
     #[test]
-    fn a_change_of_shape_paints_whole() {
+    fn a_change_of_shape_splices() {
         use crate::component::Painted;
         let mut store = NodeStore::new();
         let (root, _, cards, leaves) = cards(&mut store, 4);
@@ -1879,13 +1800,41 @@ mod tests {
         store.repaint(root, &mut out);
         store.clear_dirty();
 
-        // A box that stops drawing changes the count.
+        // A box that stops drawing takes its quad out.
         store.set_fill(leaves[1], Rgba { a: 0.0, ..RED });
+        let before = out.len();
+        assert_eq!(store.repaint_dirty(root, &mut out), Painted::Spliced(0));
+        assert_eq!(out, whole(&store, root));
+        assert_eq!(out.len(), before - 1);
+        store.clear_dirty();
+
+        // A hidden card takes its subtree out; shown again, it paints fresh.
+        store.set_hidden(cards[2], true);
         assert!(matches!(
             store.repaint_dirty(root, &mut out),
-            Painted::Whole(_)
+            Painted::Spliced(_)
         ));
         assert_eq!(out, whole(&store, root));
+        store.clear_dirty();
+        store.set_fill(leaves[2], Rgba { g: 1.0, ..RED });
+        assert_eq!(
+            store.repaint_dirty(root, &mut out),
+            Painted::Patched(0),
+            "a node a hidden ancestor keeps from painting changes nothing"
+        );
+        store.clear_dirty();
+        store.set_hidden(cards[2], false);
+        assert_eq!(store.repaint_dirty(root, &mut out), Painted::Spliced(2));
+        assert_eq!(out, whole(&store, root));
+    }
+
+    #[test]
+    fn a_fade_an_overlay_or_a_transform_root_starting_paints_whole() {
+        use crate::component::Painted;
+        let mut store = NodeStore::new();
+        let (root, _, cards, _) = cards(&mut store, 4);
+        let mut out = Vec::new();
+        store.repaint(root, &mut out);
         store.clear_dirty();
 
         // A fade opens a layer.
@@ -1912,27 +1861,5 @@ mod tests {
             store.repaint_dirty(root, &mut out),
             Painted::Whole(_)
         ));
-        store.clear_dirty();
-
-        // A node a hidden ancestor kept from painting has no span to rewrite.
-        store.set_hidden(cards[3], true);
-        store.layout(
-            root,
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 200.0,
-                h: 200.0,
-            },
-            &mut Vec::new(),
-        );
-        store.repaint(root, &mut out);
-        store.clear_dirty();
-        store.set_fill(leaves[3], Rgba { g: 1.0, ..RED });
-        assert!(matches!(
-            store.repaint_dirty(root, &mut out),
-            Painted::Whole(_)
-        ));
-        assert_eq!(out, whole(&store, root));
     }
 }

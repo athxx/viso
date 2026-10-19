@@ -295,9 +295,9 @@ impl crate::paint::PaintSpans for PaintRanges {
         self.ranges.len() - 1
     }
 
-    fn close(&mut self, token: usize, end: usize) {
+    fn close(&mut self, token: usize, _: NodeId, span: crate::paint::Span) {
         let range = &mut self.ranges[token];
-        range.len = end - range.start;
+        range.len = span.end - range.start;
     }
 }
 
