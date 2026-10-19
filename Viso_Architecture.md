@@ -2710,6 +2710,8 @@ opacity animation
 
 为什么 transform 不需要 HIT_TEST：屏幕上的 rect 不存储，由 `bounds` 加上方 root 的位移推导；hit test 自顶向下携带位移（即把指针按各 root 的逆变换换算），滚动后无需任何重算。
 
+看到什么就命中什么：paint、hit test 与 semantics 用同一条规则。只有 scroll viewport 裁剪内容；不裁剪的容器照常画出越过自身 box 的子节点（比自身矮的 Column、平移出去的子节点），这些子节点也在画出的位置被命中。每个节点存一个 `reach`——自身 box 并上每个显示中、非 overlay 子节点的 reach（按子节点的 translate 平移），scroll viewport 与 hidden 节点的 reach 就是自身 box。layout 在重排的 subtree 上自底向上重算 reach，再沿祖先上传，遇到 box 前后都包住改变量的祖先即停；translate 只做同样的上传（通常第一层就停），不触发 layout。hit test 按 reach 剪枝、按自身 box 判定命中；半透明节点的 `Layer` 覆盖它的 reach，所以淡出中的容器不会裁掉越界的子节点。overlay 画在顶层：hit test 先按上次 paint 的顶层顺序倒序试 overlay（不受上方 scroll 裁剪），再走场景树并跳过 overlay 子节点。hidden 节点不命中；opacity 为 0 的节点仍占位、仍命中。`NodeStore::seen` 给出节点未被任何 scroll viewport 裁掉的部分：辅助技术的点击与 UI scenario 都点它的中心，完全滚出视口的节点报告为未显示。
+
 例外（必须显式处理）：
 - **平移无法表达的内容**：offscreen layer（ROI 按绘制时裁剪）、backdrop / material（采样背后内容）、用户 program（自写 uniform）会污染所在 root；移动被污染的 root，或帧内存在 backdrop capture 时移动任何 root，`set_transforms` 返回 `NeedsUpload`，该帧按新位移重新 paint 并上传，结果总是正确；
 - **可见集变化**：paint 发出 root 内的全部节点，滚入视口的节点总有 retained paint；VirtualList 的新行走 STRUCTURE/LAYOUT 路径（ADR 0008）；

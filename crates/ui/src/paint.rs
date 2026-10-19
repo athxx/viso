@@ -284,11 +284,11 @@ fn paint_subtree<S: PaintSpans>(
 
     let world = store.bounds(root).translate(space.snapped);
     // A translucent node composites itself and its subtree as one layer over
-    // its own box.
+    // all its subtree draws: its reach.
     let faded = opacity < 1.0;
     if faded {
         out.push(Primitive::Layer(LayerClip {
-            clip: world,
+            clip: store.reach(root).translate(space.snapped),
             opacity,
             blur_sigma: 0.0,
             backdrop_sigma: 0.0,

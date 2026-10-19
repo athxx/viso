@@ -5,11 +5,18 @@
 //! Given a point, it returns the topmost hittable [`NodeId`] whose rect contains
 //! that point, or `None` when the point misses the whole subtree.
 //!
-//! It descends children in **reverse** sibling order — the mirror of
-//! `paint_tree`'s forward walk, where a later sibling paints on top — so the
-//! visually-topmost child is tested first and wins. The descent prunes: it only
-//! recurses into a subtree whose box contains the point, so it is a targeted
-//! route, not a full-tree scan.
+//! What is hit is what is seen. The top layer paints over the scene, so the
+//! overlays the last paint drew are tried first, the last drawn first, each
+//! free of the scroll clips above it as its paint is. The scene is then
+//! descended in **reverse** sibling order — the mirror of `paint_tree`'s
+//! forward walk, where a later sibling paints on top — so the visually-topmost
+//! child is tested first and wins; a hidden node is folded out and neither it
+//! nor anything under it is hit, while a fully transparent one still holds its
+//! place and is. The descent prunes on
+//! each node's [`reach`](NodeStore::reach) — its box joined with everything
+//! its subtree places outside it — so a child that overflows a container that
+//! does not clip is hit where it is drawn, and a subtree whose reach misses the
+//! point is skipped: a targeted route, not a full-tree scan.
 //!
 //! Hit testing tests a node's on-screen rect (not `bounds`): the descent carries
 //! the displacement the scrolls and translates above apply — the pointer mapped
@@ -35,21 +42,50 @@ impl HitTestTree {
     /// The topmost hittable node whose world rect contains `(px, py)`, or `None`
     /// if the point misses the whole subtree at `root`.
     ///
-    /// Descends topmost-first (reverse sibling order) and prunes any subtree
-    /// whose (clipped) box does not contain the point — no allocation, worst
-    /// case the tree depth.
+    /// Tries the top layer under `root`, then descends the scene topmost-first
+    /// (reverse sibling order), pruning any subtree whose (clipped) reach does
+    /// not contain the point — no allocation, worst case the tree depth.
     pub fn hit(store: &NodeStore, root: NodeId, px: f32, py: f32) -> Option<NodeId> {
-        // The initial clip is unbounded: nothing above the root clips it.
         if !store.arena().is_live(root) {
             return None;
         }
+        for overlay in store.top_layer().rev() {
+            if overlay != root
+                && Self::holds(store, root, overlay)
+                && let Some(hit) = Self::hit_clipped(
+                    store,
+                    overlay,
+                    px,
+                    py,
+                    Rect::INFINITE,
+                    store.shift_above(overlay),
+                )
+            {
+                return Some(hit);
+            }
+        }
+        // The initial clip is unbounded: nothing above the root clips it.
         let above = store.shift_above(root);
         Self::hit_clipped(store, root, px, py, Rect::INFINITE, above)
     }
 
+    /// Whether live `node` sits in `root`'s subtree.
+    fn holds(store: &NodeStore, root: NodeId, node: NodeId) -> bool {
+        let arena = store.arena();
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if n == root {
+                return true;
+            }
+            at = arena.parent(n);
+        }
+        false
+    }
+
     /// Descend `root` for the topmost hit, with the point required to fall inside
     /// `clip` (the running intersection of enclosing scroll viewports), the
-    /// scrolls and translates above `root` displacing it by `above`.
+    /// scrolls and translates above `root` displacing it by `above`. An overlay
+    /// below `root` is the top layer's, tried before the scene, and is skipped.
     fn hit_clipped(
         store: &NodeStore,
         root: NodeId,
@@ -59,18 +95,23 @@ impl HitTestTree {
         above: Vec2,
     ) -> Option<NodeId> {
         let arena = store.arena();
-        if !arena.is_live(root) {
+        if !arena.is_live(root) || store.hidden(root) {
             return None;
         }
         let own = above + store.self_shift(root);
-        let world = store.bounds(root).translate(store.snap_shift(own));
-        // A child cannot escape its container's box, so a point outside this
-        // box — clipped by any enclosing viewport — is outside the whole
-        // subtree. Prune without recursing.
-        let visible = world.intersect(clip);
-        if !visible.contains(px, py) {
+        let shift = store.snap_shift(own);
+        // Nothing of the subtree is seen outside its reach, so a point there —
+        // or outside an enclosing viewport — misses the whole subtree. Prune
+        // without recursing.
+        if !store
+            .reach(root)
+            .translate(shift)
+            .intersect(clip)
+            .contains(px, py)
+        {
             return None;
         }
+        let visible = store.bounds(root).translate(shift).intersect(clip);
 
         // A scroll viewport clips its children to its own box: narrow the clip
         // handed to the descent so content scrolled past the edge is unhittable.
@@ -84,20 +125,19 @@ impl HitTestTree {
         // first, walking back toward the first-painted (bottom) one.
         let mut child = arena.last_child(root);
         while let Some(c) = child {
-            if let Some(hit) = Self::hit_clipped(store, c, px, py, child_clip, inner) {
+            if !store.is_overlay(c)
+                && let Some(hit) = Self::hit_clipped(store, c, px, py, child_clip, inner)
+            {
                 return Some(hit);
             }
             child = arena.prev_sibling(c);
         }
 
         // No child claimed the point: this node is the hit only if it is itself
-        // hittable. A pass-through container with no hittable child under the
-        // point returns `None`, letting a lower sibling be tried by the caller.
-        if store.hittable(root) {
-            Some(root)
-        } else {
-            None
-        }
+        // hittable and its own box holds the point. A pass-through container
+        // with no hittable child under the point returns `None`, letting a
+        // lower sibling be tried by the caller.
+        (store.hittable(root) && visible.contains(px, py)).then_some(root)
     }
 }
 
@@ -370,5 +410,194 @@ mod tests {
         assert_eq!(hit_test(&store, root, 50.0, 10.0), Some(content));
         // Above the viewport (negative side) stays a miss.
         assert_eq!(hit_test(&store, root, 50.0, 150.0), None);
+    }
+
+    /// A row over the surface holding a 100×40 card whose column of two
+    /// 100×40 leaves runs 40 past its box, and a leaf beside it. Returns the
+    /// row, the card and its two leaves.
+    fn overflowing(store: &mut NodeStore) -> (NodeId, NodeId, NodeId, NodeId) {
+        let mut ids = (None, None, None);
+        let root = {
+            let mut cx = BuildCx::new(store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Row,
+                    size: Size::fill(),
+                    ..Default::default()
+                },
+                |cx| {
+                    ids.0 = Some(
+                        cx.flex(
+                            FlexStyle {
+                                axis: Axis::Column,
+                                size: Size::fixed(100.0, 40.0),
+                                ..Default::default()
+                            },
+                            |cx| {
+                                ids.1 = Some(cx.leaf(LeafStyle {
+                                    size: Size::fixed(100.0, 40.0),
+                                    style: BoxStyle::solid(SOLID),
+                                }));
+                                ids.2 = Some(cx.leaf(LeafStyle {
+                                    size: Size::fixed(100.0, 40.0),
+                                    style: BoxStyle::solid(SOLID),
+                                }));
+                            },
+                        )
+                        .id(),
+                    );
+                    cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        style: BoxStyle::solid(SOLID),
+                    });
+                },
+            );
+            cx.root().unwrap()
+        };
+        store.layout(root, SURFACE, &mut Vec::new());
+        (
+            root,
+            ids.0.unwrap(),
+            ids.1.unwrap().id(),
+            ids.2.unwrap().id(),
+        )
+    }
+
+    #[test]
+    fn a_child_past_its_containers_box_is_hit_where_it_is_drawn() {
+        let mut store = NodeStore::new();
+        let (root, card, _, below) = overflowing(&mut store);
+        assert_eq!(store.reach(card), Rect::new(0.0, 0.0, 100.0, 80.0));
+        assert_eq!(hit_test(&store, root, 50.0, 60.0), Some(below));
+        // Past everything the card reaches: the row itself.
+        assert_eq!(hit_test(&store, root, 50.0, 90.0), Some(root));
+    }
+
+    #[test]
+    fn a_child_relaid_past_its_container_is_hit_there() {
+        let mut store = NodeStore::new();
+        let (root, card, top, _) = overflowing(&mut store);
+        store.set_fixed_size(top, Size::fixed(100.0, 120.0));
+        store.relayout_dirty(root, SURFACE, &mut Vec::new(), &mut Vec::new());
+        assert_eq!(store.reach(card), Rect::new(0.0, 0.0, 100.0, 160.0));
+        assert_eq!(hit_test(&store, root, 50.0, 100.0), Some(top));
+        assert!(store.reach(root).h >= 160.0);
+    }
+
+    #[test]
+    fn a_child_translated_out_of_its_container_is_hit_where_it_slid_to() {
+        use crate::layout::Vec2;
+
+        let mut store = NodeStore::new();
+        let (root, card, top, below) = overflowing(&mut store);
+        store.set_translate(top, Vec2 { x: 0.0, y: -100.0 });
+        let world = store.world(top);
+        assert!(world.y >= 80.0, "slid past the card: {world:?}");
+        let (x, y) = (world.x + world.w / 2.0, world.y + world.h / 2.0);
+        assert_eq!(hit_test(&store, root, x, y), Some(top));
+        assert!(store.reach(card).contains(x, y));
+        // Where it was, nothing of it is left.
+        assert_eq!(hit_test(&store, root, 50.0, 20.0), Some(card));
+        assert_eq!(hit_test(&store, root, 50.0, 60.0), Some(below));
+    }
+
+    #[test]
+    fn a_hidden_subtree_is_not_hit_and_a_transparent_one_is() {
+        let mut store = NodeStore::new();
+        let (root, card, top, below) = overflowing(&mut store);
+        store.set_opacity(card, 0.0);
+        assert_eq!(hit_test(&store, root, 50.0, 20.0), Some(top));
+        assert_eq!(hit_test(&store, root, 50.0, 60.0), Some(below));
+        store.set_hidden(card, true);
+        store.relayout_dirty(root, SURFACE, &mut Vec::new(), &mut Vec::new());
+        assert_eq!(hit_test(&store, root, 50.0, 20.0), Some(root));
+        assert_eq!(hit_test(&store, root, 50.0, 60.0), Some(root));
+    }
+
+    #[test]
+    fn an_overlay_is_hit_over_the_later_sibling_it_paints_over() {
+        let mut store = NodeStore::new();
+        let mut ids = (None, None);
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size::fill(),
+                    ..Default::default()
+                },
+                |cx| {
+                    cx.flex(
+                        FlexStyle {
+                            axis: Axis::Column,
+                            size: Size::fixed(100.0, 40.0),
+                            ..Default::default()
+                        },
+                        |cx| {
+                            let menu = cx.leaf(LeafStyle {
+                                size: Size::fixed(100.0, 80.0),
+                                style: BoxStyle::solid(SOLID),
+                            });
+                            ids.0 = Some(cx.set_overlay(menu, true).id());
+                        },
+                    );
+                    ids.1 = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fixed(100.0, 40.0),
+                            style: BoxStyle::solid(SOLID),
+                        })
+                        .id(),
+                    );
+                },
+            );
+            cx.root().unwrap()
+        };
+        let (menu, field) = (ids.0.unwrap(), ids.1.unwrap());
+        store.layout(root, SURFACE, &mut Vec::new());
+        store.repaint(root, &mut Vec::new());
+        assert_eq!(hit_test(&store, root, 50.0, 60.0), Some(menu));
+
+        store.set_overlay(menu, false);
+        store.repaint(root, &mut Vec::new());
+        assert_eq!(hit_test(&store, root, 50.0, 60.0), Some(field));
+    }
+
+    #[test]
+    fn a_fade_composites_over_all_its_subtree_draws() {
+        use viso_render::Primitive;
+
+        let mut store = NodeStore::new();
+        let (root, card, _, _) = overflowing(&mut store);
+        store.set_opacity(card, 0.5);
+        let mut out = Vec::new();
+        store.repaint(root, &mut out);
+        let clip = out.iter().find_map(|p| match p {
+            Primitive::Layer(layer) if layer.opacity < 1.0 => Some(layer.clip),
+            _ => None,
+        });
+        assert_eq!(clip, Some(Rect::new(0.0, 0.0, 100.0, 80.0)));
+    }
+
+    #[test]
+    fn a_fade_follows_a_child_that_grows_past_it() {
+        use viso_render::Primitive;
+
+        let mut store = NodeStore::new();
+        let (root, card, top, _) = overflowing(&mut store);
+        store.set_opacity(card, 0.5);
+        let mut out = Vec::new();
+        store.repaint(root, &mut out);
+        store.clear_dirty();
+        store.set_fixed_size(top, Size::fixed(100.0, 120.0));
+        store.relayout_dirty(root, SURFACE, &mut Vec::new(), &mut Vec::new());
+        store.repaint_dirty(root, &mut out);
+        let clip = out.iter().find_map(|p| match p {
+            Primitive::Layer(layer) if layer.opacity < 1.0 => Some(layer.clip),
+            _ => None,
+        });
+        assert_eq!(clip, Some(Rect::new(0.0, 0.0, 100.0, 160.0)));
+        let mut whole = Vec::new();
+        store.repaint(root, &mut whole);
+        assert_eq!(out, whole);
     }
 }

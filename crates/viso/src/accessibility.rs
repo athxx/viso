@@ -132,7 +132,7 @@ pub(crate) fn perform(
             return None;
         }
         AccessAction::Click => {
-            let rect = store.world(node);
+            let rect = store.seen(node);
             let x = (rect.x + rect.w * 0.5) * scale;
             let y = (rect.y + rect.h * 0.5) * scale;
             let pointer = |phase, buttons: PointerButtons, pressure| {

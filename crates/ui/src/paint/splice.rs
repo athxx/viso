@@ -840,11 +840,12 @@ impl Walk<'_> {
     }
 
     /// Re-emit `node`'s own drawables over the run `record` gives them, and
-    /// rewrite the layers its box clips: its fade and its scroll clip.
-    /// Returns where its drawables land, and how many.
+    /// rewrite the layers it clips: its fade over its reach and its scroll
+    /// clip over its box. Returns where its drawables land, and how many.
     fn own(&mut self, node: NodeId, record: &Record) -> Option<(u32, u32)> {
         let store = self.store;
-        let world = store.bounds(node).translate(self.painted(record.slot())?);
+        let shift = self.painted(record.slot())?;
+        let world = store.bounds(node).translate(shift);
         let (own, len) = (record.own as usize, record.len() as usize);
         if record.has(Span::FADED) {
             let at = own.checked_sub(1)?;
@@ -852,7 +853,7 @@ impl Walk<'_> {
                 return None;
             };
             let layer = LayerClip {
-                clip: world,
+                clip: store.reach(node).translate(shift),
                 opacity: store.opacity(node),
                 ..*old
             };

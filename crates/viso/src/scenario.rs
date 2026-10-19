@@ -30,8 +30,8 @@ use viso_platform::{
     KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawKey, RawPointer, RawScroll,
     RawText,
 };
+use viso_render::Rect;
 use viso_runtime::RuntimeCx;
-use viso_ui::NodeId;
 use viso_ui::semantics::SemanticsNode;
 use viso_view::headless::{
     Action, Chord, Expectation, Key, Reported, SOURCES_ENV, Script, Selector, State,
@@ -424,39 +424,25 @@ struct Shown<'a> {
     center: (f64, f64),
 }
 
-/// The nodes of `ws` shown now, in tree order, with their centers.
+/// The nodes of `ws` shown now, in tree order, with the centers of what of
+/// them is seen: a node folded away, fully transparent or scrolled out of view
+/// is not shown.
 fn shown(ws: &WindowState, semantics: &[SemanticsNode]) -> Vec<(usize, (f64, f64))> {
-    let Some(root) = ws.root else {
-        return Vec::new();
-    };
-    let tree = ws.store.inspect_tree(root);
-    let hidden = |id: NodeId| {
-        let mut at = tree.get(id);
-        while let Some(node) = at {
-            if node.flags.hidden {
-                return true;
-            }
-            at = node.parent.and_then(|parent| tree.get(parent));
-        }
-        false
-    };
     semantics
         .iter()
         .enumerate()
-        .filter(|(_, node)| !hidden(node.id))
-        .filter_map(|(index, node)| {
-            let world = tree.get(node.id)?.world;
-            (world.w > 0.0 && world.h > 0.0).then(|| {
-                (
-                    index,
-                    (
-                        f64::from(world.x + world.w / 2.0),
-                        f64::from(world.y + world.h / 2.0),
-                    ),
-                )
-            })
-        })
+        .filter_map(|(index, node)| center(ws.store.seen(node.id)).map(|c| (index, c)))
         .collect()
+}
+
+/// The center of `seen`, `None` when nothing of it is seen.
+fn center(seen: Rect) -> Option<(f64, f64)> {
+    (seen.w > 0.0 && seen.h > 0.0).then(|| {
+        (
+            f64::from(seen.x + seen.w / 2.0),
+            f64::from(seen.y + seen.h / 2.0),
+        )
+    })
 }
 
 /// The first node `selector` finds in `window`, or why there is none.
@@ -506,16 +492,21 @@ fn find(
                 .select(&inspection)
                 .into_iter()
                 .map(|at| inspection.nodes[at].node)
-                .find(|node| node.shown && node.bounds.w > 0.0 && node.bounds.h > 0.0);
-            let Some(node) = found else {
+                .filter(|node| node.shown)
+                .find_map(|node| {
+                    let id = ws
+                        .store
+                        .arena()
+                        .live_id(node.index)
+                        .filter(|id| id.generation() == node.generation)?;
+                    Some((id, center(ws.store.seen(id))?))
+                });
+            let Some((id, center)) = found else {
                 return missing();
             };
-            let b = node.bounds;
             f(Shown {
-                node: semantics
-                    .iter()
-                    .find(|s| s.id.index() == node.index && s.id.generation() == node.generation),
-                center: (f64::from(b.x + b.w / 2.0), f64::from(b.y + b.h / 2.0)),
+                node: semantics.iter().find(|s| s.id == id),
+                center,
             })
         }
     }
@@ -741,5 +732,133 @@ fn key_code(key: Key) -> KeyCode {
         Key::Letter(c) => LETTERS[(c as u8 - b'A') as usize],
         Key::Digit(n) => DIGITS[n as usize],
         Key::Function(n) => FUNCTIONS[n as usize - 1],
+    }
+}
+
+#[cfg(all(test, feature = "hot-reload"))]
+mod tests {
+    use viso_ui::{
+        BuildCx, NodeId, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rect,
+    };
+    use viso_view::headless::{Action, Expectation, Selector};
+
+    use super::{Window, events, expect, find};
+    use crate::{WindowId, WindowState};
+
+    /// A window showing the overflow view: a column shorter than its buttons,
+    /// and a viewport whose second button is scrolled out of it.
+    fn overflow() -> WindowState {
+        let mut ws = WindowState::new(WindowId(1));
+        let root = {
+            let mut cx = BuildCx::with_reactive(
+                &mut ws.store,
+                &mut ws.states,
+                &mut ws.bindings,
+                &mut ws.virtual_lists,
+                &mut ws.text_edits,
+                &mut ws.projectors,
+            );
+            let root: NodeId = viso_ui_macros::view!("../tests/fixtures/overflow.vs")(&mut cx).id();
+            root
+        };
+        ws.root = Some(root);
+        lay_out(&mut ws);
+        ws
+    }
+
+    fn lay_out(ws: &mut WindowState) {
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
+        ws.store.layout(ws.root.unwrap(), surface, &mut Vec::new());
+    }
+
+    fn label(label: &str) -> Selector {
+        Selector::Label {
+            role: None,
+            label: label.to_owned(),
+        }
+    }
+
+    /// Plays `action`'s pointer at what of its node is seen, as a run does.
+    fn play(ws: &mut WindowState, action: &Action) -> Result<(), String> {
+        let census = WindowCensus::default;
+        let window = Window {
+            ws,
+            census: &census,
+            detail: None,
+            sources: None,
+        };
+        let mut at = None;
+        if let Action::Click(selector) = action {
+            find(&window, selector, |shown| {
+                at = Some(shown.center);
+                Ok(())
+            })?;
+        }
+        events(&window, action)?;
+        let (x, y) = at.expect("a click");
+        let root = ws.root.unwrap();
+        let mut chain = Vec::new();
+        for phase in [PointerPhase::Down, PointerPhase::Up] {
+            let event = PointerEvent {
+                x: x as f32,
+                y: y as f32,
+                phase,
+                buttons: PointerButtons::PRIMARY,
+                modifiers: Default::default(),
+            };
+            PointerRouter::route(
+                &mut ws.store,
+                &mut ws.states,
+                &ws.bindings,
+                root,
+                event,
+                &mut chain,
+            );
+        }
+        viso_ui::settle_states(
+            &mut ws.store,
+            &mut ws.states,
+            &mut ws.bindings,
+            &mut ws.computeds,
+            &mut ws.projectors,
+            &mut ws.effects,
+            &mut ws.changed,
+        )
+        .expect("the writes settle");
+        lay_out(ws);
+        Ok(())
+    }
+
+    fn holds(ws: &WindowState, expectation: Expectation) -> Result<(), String> {
+        let census = WindowCensus::default;
+        let window = Window {
+            ws,
+            census: &census,
+            detail: None,
+            sources: None,
+        };
+        expect(&window, &expectation)
+    }
+
+    use super::WindowCensus;
+
+    #[test]
+    fn a_button_past_its_columns_height_is_clicked_where_it_is_drawn() {
+        let mut ws = overflow();
+        play(&mut ws, &Action::Click(label("Down"))).expect("the overflowing button is shown");
+        holds(&ws, Expectation::Shown(label("pressed 1"))).expect("its click counts");
+    }
+
+    #[test]
+    fn a_button_scrolled_out_of_its_viewport_is_not_shown() {
+        let mut ws = overflow();
+        let why = play(&mut ws, &Action::Click(label("Under"))).unwrap_err();
+        assert!(why.starts_with("no \"Under\" is shown"), "{why}");
+        holds(&ws, Expectation::Shown(label("Top"))).expect("the one in view is");
     }
 }

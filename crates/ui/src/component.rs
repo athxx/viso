@@ -188,6 +188,7 @@ pub type KeyHandler = Box<dyn FnMut(&mut EventCx<'_>)>;
 macro_rules! node_columns {
     ($store:ident . $op:ident ( $($arg:expr),* )) => {
         $store.bounds.$op($($arg),*);
+        $store.reach.$op($($arg),*);
         $store.transform_root.$op($($arg),*);
         $store.scroll.$op($($arg),*);
         $store.translate.$op($($arg),*);
@@ -214,6 +215,15 @@ macro_rules! node_columns {
         $store.text_request.$op($($arg),*);
         $store.owner.$op($($arg),*);
     };
+}
+
+/// Whether `part` adds nothing to a reach `own` already covers.
+fn within(part: Rect, own: Rect) -> bool {
+    part.is_empty()
+        || (part.x >= own.x
+            && part.y >= own.y
+            && part.max_x() <= own.max_x()
+            && part.max_y() <= own.max_y())
 }
 
 /// A node no template instance built.
@@ -249,6 +259,14 @@ pub struct NodeStore {
     /// Hot: resolved layout box, written by layout, read by measure caching.
     /// This is the *unscrolled* layout truth; a scroll offset never rewrites it.
     bounds: Vec<Rect>,
+    /// Hot: where a node's subtree is seen and hit — its box joined with each
+    /// shown, in-place child's reach as that child's translate places it — in
+    /// layout space before the node's own translate. A scroll viewport, which
+    /// clips its content, and a hidden node reach only their box; an overlay
+    /// child paints in the top layer and is left out. Kept by layout, by
+    /// translates and by overlay flips; hit testing prunes on it and a fade
+    /// composites over it.
+    reach: Vec<Rect>,
     /// Warm: whether a node moves its own box without a relayout — set by its
     /// first translate and kept, so it stays a transform root (§21) while it
     /// lives. Scroll viewports move their content and need no flag.
@@ -677,6 +695,156 @@ impl NodeStore {
     pub fn world(&self, id: NodeId) -> Rect {
         let shift = self.snap_shift(self.shift_above(id) + self.self_shift(id));
         self.bounds[id.index() as usize].translate(shift)
+    }
+
+    /// Where `id`'s subtree is seen and hit, before `id`'s own translate: its
+    /// box joined with what its shown children reach where they sit. Equals
+    /// `bounds` for a node whose children stay inside it, and for a scroll
+    /// viewport, which clips them.
+    #[inline]
+    pub fn reach(&self, id: NodeId) -> Rect {
+        self.reach[id.index() as usize]
+    }
+
+    /// The part of `id`'s on-screen rect no enclosing scroll viewport clips
+    /// away: where it is seen and can be hit. Empty when it is scrolled out of
+    /// view or folded away; a fully transparent node still holds its place. Walks the ancestors — a cold query for assistive
+    /// technology and scenario runs.
+    pub fn seen(&self, id: NodeId) -> Rect {
+        if !self.arena.is_live(id) {
+            return Rect::ZERO;
+        }
+        let mut seen = self.world(id);
+        // The top layer paints past every scroll clip above it.
+        let mut clipped = true;
+        let mut at = id;
+        loop {
+            let i = at.index() as usize;
+            if self.hidden[i] {
+                return Rect::ZERO;
+            }
+            clipped &= !self.overlay[i];
+            let Some(parent) = self.arena.parent(at) else {
+                break;
+            };
+            if clipped && self.is_scroll(parent) {
+                seen = seen.intersect(self.world(parent));
+            }
+            at = parent;
+        }
+        seen
+    }
+
+    /// What slot `i` adds to its parent's reach: its reach where its translate
+    /// places it, a device pixel wider for the snapping of a moved subtree.
+    fn reach_in_parent(&self, i: usize) -> Rect {
+        let reach = self.reach[i];
+        let translate = self.translate[i];
+        if translate == Vec2::ZERO || reach.is_empty() {
+            return reach;
+        }
+        reach
+            .translate(-translate)
+            .inflate(1.0 / self.device_scale())
+    }
+
+    /// `id`'s reach from its box and its children's current reaches.
+    fn joined_reach(&self, id: NodeId) -> Rect {
+        let i = id.index() as usize;
+        let own = self.bounds[i];
+        if self.hidden[i] || matches!(self.layout[i], LayoutInput::Scroll { .. }) {
+            return own;
+        }
+        let mut reach = own;
+        let mut child = self.arena.first_child(id);
+        while let Some(c) = child {
+            let ci = c.index() as usize;
+            if !self.hidden[ci] && !self.overlay[ci] {
+                reach = reach.accumulate(self.reach_in_parent(ci));
+            }
+            child = self.arena.next_sibling(c);
+        }
+        reach
+    }
+
+    /// Record `id`'s reach, reporting whether it changed. A fade composites
+    /// over its reach, so a fading node whose reach moved repaints its layer.
+    fn set_reach(&mut self, id: NodeId, reach: Rect) -> bool {
+        let i = id.index() as usize;
+        if self.reach[i] == reach {
+            return false;
+        }
+        self.reach[i] = reach;
+        if self.opacity[i] < 1.0 {
+            self.note_moved(i as u32);
+        }
+        true
+    }
+
+    /// Note that slot `index` paints over a new box: the next paint re-emits
+    /// it, or the whole tree once so many moved that a splice would not pay.
+    fn note_moved(&mut self, index: u32) {
+        if self.moved.len() < self.bounds.len() / 2 + 16 {
+            self.moved.push(index);
+        } else {
+            self.repaint_pending = true;
+        }
+    }
+
+    /// Re-join the reach of every node in `id`'s subtree, children first.
+    fn rejoin_subtree(&mut self, id: NodeId) {
+        if !self.hidden[id.index() as usize] {
+            let mut child = self.arena.first_child(id);
+            while let Some(c) = child {
+                self.rejoin_subtree(c);
+                child = self.arena.next_sibling(c);
+            }
+        }
+        let reach = self.joined_reach(id);
+        self.set_reach(id, reach);
+    }
+
+    /// Carry a change of `id`'s part in its parent's reach — `was` before —
+    /// up the ancestry, stopping at the first ancestor it leaves as it was: one
+    /// whose box held the part before and after, or whose re-joined reach did
+    /// not move.
+    fn lift_reach(&mut self, mut id: NodeId, mut was: Rect) {
+        while let Some(parent) = self.arena.parent(id) {
+            let now = self.reach_in_parent(id.index() as usize);
+            let own = self.bounds[parent.index() as usize];
+            if within(was, own) && within(now, own) {
+                return;
+            }
+            let before = self.reach_in_parent(parent.index() as usize);
+            let reach = self.joined_reach(parent);
+            if !self.set_reach(parent, reach) {
+                return;
+            }
+            (id, was) = (parent, before);
+        }
+    }
+
+    /// Re-join the reach of `id`'s parent, whose children's parts changed in a
+    /// way no before/after pair describes, and carry it up.
+    fn rejoin_above(&mut self, id: NodeId) {
+        let Some(parent) = self.arena.parent(id) else {
+            return;
+        };
+        let before = self.reach_in_parent(parent.index() as usize);
+        let reach = self.joined_reach(parent);
+        if self.set_reach(parent, reach) {
+            self.lift_reach(parent, before);
+        }
+    }
+
+    /// The top-layer roots the last paint drew, in the order it drew them.
+    pub(crate) fn top_layer(&self) -> impl DoubleEndedIterator<Item = NodeId> + '_ {
+        self.painting
+            .get()
+            .transforms
+            .overlays
+            .iter()
+            .map(|&(node, _)| node)
     }
 
     /// The unsnapped displacement `id`'s ancestors apply to it: the sum of their
@@ -1439,7 +1607,9 @@ impl NodeStore {
         if offset == self.translate[i] {
             return;
         }
+        let was = self.reach_in_parent(i);
         self.translate[i] = offset;
+        self.lift_reach(id, was);
         self.mark_moved(id);
     }
 
@@ -1459,7 +1629,9 @@ impl NodeStore {
         if next == self.translate[i] {
             return;
         }
+        let was = self.reach_in_parent(i);
         self.translate[i] = next;
+        self.lift_reach(id, was);
         self.mark_moved(id);
     }
 
@@ -2443,6 +2615,7 @@ impl NodeStore {
             return;
         }
         self.overlay[id.index() as usize] = overlay;
+        self.rejoin_above(id);
         self.mark_dirty(id, DirtyClass::PAINT);
         self.repaint_pending = true;
     }
@@ -2951,6 +3124,7 @@ impl NodeStore {
             self.grow_columns(i + 1);
         }
         self.bounds[i] = Rect::ZERO;
+        self.reach[i] = Rect::ZERO;
         self.transform_root[i] = false;
         self.scroll[i] = Vec2::ZERO;
         self.translate[i] = Vec2::ZERO;
@@ -2991,6 +3165,7 @@ impl NodeStore {
         }
         for _ in 0..more {
             self.bounds.push(Rect::ZERO);
+            self.reach.push(Rect::ZERO);
             self.transform_root.push(false);
             self.scroll.push(Vec2::ZERO);
             self.translate.push(Vec2::ZERO);
@@ -3116,6 +3291,9 @@ impl NodeStore {
         layout::measure(self, root.index(), scratch);
         scratch.clear();
         layout::layout(self, root.index(), surface, scratch);
+        let was = self.reach_in_parent(root.index() as usize);
+        self.rejoin_subtree(root);
+        self.lift_reach(root, was);
         self.settle_scroll_restores();
     }
 
@@ -3296,6 +3474,9 @@ impl NodeStore {
             scratch.clear();
             let basis = self.basis_of(redo, root);
             layout::layout_on(self, redo.index(), bounds, basis, scratch);
+            let was = self.reach_in_parent(redo.index() as usize);
+            self.rejoin_subtree(redo);
+            self.lift_reach(redo, was);
             laid_out += self.subtree_len(redo);
         }
         // A waiting scroll restore applies once layout knows the range.
@@ -3647,11 +3828,7 @@ impl LayoutTree for NodeStore {
             return;
         }
         *slot = r;
-        if self.moved.len() < self.bounds.len() / 2 + 16 {
-            self.moved.push(index);
-        } else {
-            self.repaint_pending = true;
-        }
+        self.note_moved(index);
     }
 
     #[inline]

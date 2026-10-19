@@ -3137,8 +3137,8 @@ shorter than its children, a negative margin), but hit testing prunes every subt
 whose box misses the point (`ui/src/hit_test.rs`): the child is visible and cannot be
 clicked, and a UI scenario that finds it by its semantics clicks nothing.
 
-- [ ] One rule for both: either a non-clipping container's hit region is its subtree's
+- [x] One rule for both: either a non-clipping container's hit region is its subtree's
       paint bounds (kept beside `world`, updated with layout), or overflow is clipped
       by default and paints nothing past the box; paint, hit test and semantics agree.
-- [ ] Headless scenario: a button laid out past its column's height is clicked and
+- [x] Headless scenario: a button laid out past its column's height is clicked and
       counts, or is reported as not shown.
