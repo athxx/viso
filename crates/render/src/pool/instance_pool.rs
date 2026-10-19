@@ -248,6 +248,25 @@ impl<T: Copy + 'static> InstancePool<T> {
         writes
     }
 
+    /// Upload the slots `instances` holds past the array the last upload left,
+    /// after a frame only appended to it; a buffer too small grows and takes
+    /// the whole array. Returns the number of `write_buffer` calls.
+    pub fn append<B: GpuBackend>(&mut self, backend: &mut B, instances: &[T]) -> usize {
+        let from = self.shadow.len();
+        debug_assert!(instances.len() >= from, "an appended array");
+        if instances.len() == from {
+            self.last_upload_bytes = 0;
+            return 0;
+        }
+        if instances.len() > self.capacity {
+            return self.sync(backend, instances);
+        }
+        self.upload_run(backend, from, &instances[from..]);
+        self.shadow.extend_from_slice(&instances[from..]);
+        self.last_upload_bytes = (instances.len() - from) * Self::STRIDE;
+        1
+    }
+
     /// Destroy the device buffer through the backend's deferred-destruction
     /// path and forget every slot, leaving the pool as [`new`](Self::new) made
     /// it.

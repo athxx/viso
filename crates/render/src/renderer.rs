@@ -1219,6 +1219,8 @@ pub struct Renderer {
     /// The leaves a splice inserts, and their glyphs.
     spliced: Vec<crate::scene::splice::Inserted>,
     spliced_glyphs: Vec<GlyphInstance>,
+    /// What lowering a spliced run reuses.
+    lowering: splice::Lowering,
     /// Layers considered / partly eliminated / opacity-folded this frame. Reset at
     /// frame start, surfaced as the matching [`FrameStats`] fields.
     layers_planned: u32,
@@ -1289,6 +1291,17 @@ pub struct Renderer {
     mesh_index_scratch: Vec<u32>,
     /// Draw segments in submission order, reused each frame.
     segments: Vec<Segment>,
+    /// The paint-order entry each segment opens at, in step with `segments`:
+    /// a segment draws the entries from its own up to the next one's. Empty
+    /// when segments were added or dropped outside the paint-order walk — a
+    /// backdrop capture's, a released program's — and a splice lowers whole.
+    segment_entries: Vec<u32>,
+    /// Leaf-family scratch slots no segment draws since the last whole
+    /// lowering: what splices replaced.
+    holes: usize,
+    /// Adjacent segments a whole lowering would draw as one, split by
+    /// splices since the last whole lowering.
+    fragments: u32,
     /// Each paint-order entry's first instance in its family's scratch, or
     /// [`patch::NOT_LOWERED`]: where a patch re-lowers it.
     lowered: Vec<u32>,
@@ -1992,6 +2005,7 @@ impl Renderer {
             },
             spliced: Vec::new(),
             spliced_glyphs: Vec::new(),
+            lowering: splice::Lowering::default(),
             layers_planned: 0,
             layers_eliminated: 0,
             opacity_folds: 0,
@@ -2018,6 +2032,9 @@ impl Renderer {
             mesh_vertex_scratch: Vec::with_capacity(1024),
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
+            segment_entries: Vec::new(),
+            holes: 0,
+            fragments: 0,
             lowered: Vec::new(),
             stream_len: 0,
             edits: Vec::new(),
@@ -2201,6 +2218,7 @@ impl Renderer {
         let released = self.programs.release(backend, slot);
         if released {
             self.segments.retain(|seg| seg.kind.program() != Some(slot));
+            self.segment_entries.clear();
         }
         released
     }
@@ -3239,13 +3257,16 @@ impl Renderer {
         self.mesh_index_scratch.clear();
         self.programs.begin_lowering();
         self.segments.clear();
+        self.segment_entries.clear();
+        self.holes = 0;
+        self.fragments = 0;
         self.lowered.clear();
 
         // Take the paint-order record so the store/backend borrows below do not
         // overlap the record borrow. It is swapped back before returning, so the
         // record's `Vec` allocation is reused across frames (kept flat, §28).
         let record = std::mem::take(&mut self.scene.paint_order);
-        for entry in &record {
+        for (i, entry) in record.iter().enumerate() {
             let clip = entry.context.clip;
             let target = match entry.context.offscreen {
                 None => PassTarget::Main,
@@ -3277,7 +3298,14 @@ impl Renderer {
                 continue;
             }
             self.lowered.push(self.lowering_cursor(entry.store));
+            let opened = self.segments.len();
             self.lower_entry(backend, entry, clip, target, origin);
+            for _ in opened..self.segments.len() {
+                self.segment_entries.push(i as u32);
+            }
+        }
+        if !self.backdrop_captures.is_empty() {
+            self.segment_entries.clear();
         }
 
         // Re-render each backdrop capture's under-content into its own pass
