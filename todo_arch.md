@@ -207,5 +207,5 @@ Phase 2 — a frame that changes shape:
   - [x] A patch whose leaf no longer fits its slot (kind, glyph count, bounds, texture) splices it one for one instead of uploading whole
   - [x] A re-measure stops at an ancestor whose size does not follow its content: a flex child of a fixed box, its main request fixed or a fill share, is laid out again alone; a node's own request change (fixed size, fill weight, folded length, hiding) re-places its parent's children; differential test against a whole layout
   - [x] Lowering splices too: inserted leaves lower at the scratch tails and only the tails upload, the segments beside the run lower again with it or are cut, and a whole lowering compacts past 64 lost joins or half the live slots left behind
-  - [ ] Surface draws and their keys splice too, instead of re-keying the frame
+  - [x] Surface draws and their keys splice too, instead of re-keying the frame: a pass's content mixes each entry's place in the pass, so a pass moved whole keeps it
   - [ ] The glyph store splices a run without moving every glyph after it

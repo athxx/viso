@@ -786,17 +786,17 @@ opacity 跨过 0 或 1（layer 出现、消失，或被跳过）仍然是形状�
 
 - UI 侧：每次 paint 给每个节点记下它的 subtree 区间（`Record`：自身 drawable 区间、整段结束位置、所在 transform root、父节点、深度、有无 fade / scroll layer），按 epoch 失效。一帧开始时，从 PAINT worklist、移动过 bounds 的节点、重新挂接过子节点的父节点出发向根收集要访问的节点，按旧区间排序后单遍走：保留下来的子节点区间原样留在 stream 中，只是平移；自身 drawable 改变的节点重新生成并与旧值比较；子节点列表改变的父节点按旧记录 diff 子节点，新子节点在游标处重新 paint，消失的子节点连同区间一起删去。连续的改写合并成 `Edit`，自右向左 `Vec::splice` 进 stream，并给出新 stream 下标的 `Splice { at, removed, inserted }` 列表；没有改变形状时退化为原位改写（`Painted::Patched`）。overlay 移动、出现或消失，跨过 `Transform` 的删除，fade / scroll layer 开始或结束，transform root 首次出现，都退回整树 paint。
 - Renderer 侧：`Renderer::splice(backend, primitives, splices)` 只接受只跨 leaf（Quad、analytic、shadow、Image、GlyphRun）、处在 surface pass 中且不在 folded group 内的段；每段把 paint order 与每个 leaf store 中对应的 slot 换成新 primitive，其后的 entry 按差值移动 stream 下标与 slot，只 ingest 插入的 primitive。`patch` 遇到不再适合原 slot 的 leaf（种类、glyph 个数、bounds、纹理改变）时，把这些位置按一换一的段交给 `splice`。
-- Lowering 也 splice：draw 从 segment 指向的位置读 instance，所以插入的 leaf lower 到各 family scratch 的末尾，只上传这段尾巴（`InstancePool::append`）；其余 instance 原地不动，被替换的 leaf 留下的 slot 成为空洞，等下一次整帧 lowering 回收。每个 segment 记着它从哪个 paint-order entry 开始（`segment_entries`），据此找到段两侧的 segment：不超过 256 个 instance、只画 surface leaf 的邻居跟段一起重新 lower，结果与整帧 lowering 的 segment 一致；更长的邻居在段的边界处切开，少一次合并（fragment）。fragment 超过 64 个，或空洞超过活 instance 的一半时，下一次 splice 整帧 lower，压实 scratch。差分测试逐帧比较 splice 后实际画出的内容（把可以合并的相邻 segment 合并后的 instance 字节、每个 entry 的 instance、每个 pool 与其 scratch）与整 stream 上传相同。
+- Lowering 也 splice：draw 从 segment 指向的位置读 instance，所以插入的 leaf lower 到各 family scratch 的末尾，只上传这段尾巴（`InstancePool::append`）；其余 instance 原地不动，被替换的 leaf 留下的 slot 成为空洞，等下一次整帧 lowering 回收。每个 segment 记着它从哪个 paint-order entry 开始（`segment_entries`），据此找到段两侧的 segment：不超过 256 个 instance、只画 surface leaf 的邻居跟段一起重新 lower，结果与整帧 lowering 的 segment 一致；更长的邻居在段的边界处切开，少一次合并（fragment）。fragment 超过 64 个，或空洞超过活 instance 的一半时，下一次 splice 整帧 lower，压实 scratch。Surface draw 与它们的 key 同样 splice：只给插入的 entry 算 key 和 surface draw，其余 draw 保留原 key，之后的 entry 下标整体平移；offscreen pass 的内容和按 entry 在 pass 内的位置（相对 pass 的第一个 entry）混合，pass 整体平移时不变。差分测试逐帧比较 splice 后实际画出的内容（把可以合并的相邻 segment 合并后的 instance 字节、每个 entry 的 instance、每个 pool 与其 scratch）、每个 entry 的 key 与 surface draw、每个 pass 的内容与整 stream 上传相同，其间穿插 offscreen pass 内的 patch。
 
 差分测试：UI 侧 16 个随机种子 × 400 帧（填色、隐藏、opacity、插入、释放、移动、改变大小、改文字，页面含 overlay 与平移过的卡片），每帧 splice 后的 stream 与同一帧整树 paint 的逐个相等；renderer 侧 splice 后的 scene 与整 stream 上传逐 store 相等，present 像素与新 surface 整帧绘制相同。`paint_scale` bench：
 
 | case | 整树 paint + 整 stream 上传 | splice |
 |---|---|---|
-| `mount/rows_30` | 8.3 µs | 6.8 µs |
-| `mount/rows_160` | 45.0 µs | 20.6 µs |
-| `type/notes_2000`（一个 label 增减一个 glyph） | 1.49 ms | 83 µs |
+| `mount/rows_30` | 8.3 µs | 5.6 µs |
+| `mount/rows_160` | 45.0 µs | 12.0 µs |
+| `type/notes_2000`（一个 label 增减一个 glyph） | 1.49 ms | 26.8 µs |
 
-label 的 re-measure 只重做它所在的那一行（Architecture §19.1）。`type/notes_2000` 仍随页面增长：splice 之后整帧重算 surface draw key（约七成），glyph store 把插入点之后的 glyph 整体搬移，这是下一步。
+label 的 re-measure 只重做它所在的那一行（Architecture §19.1）。`type/notes_2000` 仍随页面增长：glyph store 把插入点之后的 glyph 整体搬移，paint order 与 surface draw 的下标逐项平移，这是下一步。
 
 ## 9.8 多线程模型
 

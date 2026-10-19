@@ -298,6 +298,12 @@ fn synced(r: &Renderer) {
     assert_eq!(r.glyph_pool.shadow(), &r.glyph_scratch[..]);
 }
 
+/// [`same_state`], but for the content stamps.
+#[track_caller]
+pub(super) fn same_state_but_stamps(patched: &Renderer, whole: &Renderer) {
+    same_frame(patched, whole, false);
+}
+
 /// [`same_state`], comparing content stamps only when `stamps`.
 #[track_caller]
 fn same_frame(patched: &Renderer, whole: &Renderer, stamps: bool) {

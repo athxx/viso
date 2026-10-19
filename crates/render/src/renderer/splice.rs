@@ -186,6 +186,7 @@ impl Renderer {
                 && self
                     .lower_run(backend, from, to - from, new.len())
                     .is_some();
+            self.splice_surface_draws(from, to - from, new.len());
             self.shift_marks(old + s.removed, s.shift());
         }
         self.spliced = new;
@@ -199,7 +200,6 @@ impl Renderer {
             self.lower_from_scene(backend);
             self.sync_pools(backend);
         }
-        self.collect_surface_draws();
         true
     }
 
@@ -704,12 +704,13 @@ mod tests {
     }
 
     /// The randomized list's stream, and where each row starts in it.
-    fn rows_stream(t: viso_gpu::TextureId, rows: &[Row]) -> (Vec<Primitive>, Vec<u32>) {
-        let mut out = vec![
-            quad(rect(0.0, 0.0, SIZE, SIZE), rgba(0.05, 1.0)),
+    fn rows_stream(t: viso_gpu::TextureId, rows: &[Row], tint: f32) -> (Vec<Primitive>, Vec<u32>) {
+        let mut out = vec![quad(rect(0.0, 0.0, SIZE, SIZE), rgba(0.05, 1.0))];
+        out.extend(group(0.0));
+        out.extend([
             layer(rect(0.0, 0.0, SIZE, 100.0), 1.0),
             Primitive::Transform(TransformSlot(0)),
-        ];
+        ]);
         let mut starts = Vec::new();
         for r in rows {
             starts.push(out.len() as u32);
@@ -721,7 +722,19 @@ mod tests {
             Primitive::LayerEnd,
             quad(rect(0.0, 110.0, SIZE, 10.0), rgba(0.3, 1.0)),
         ]);
+        out.extend(group(tint));
         (out, starts)
+    }
+
+    /// A translucent group of two overlapping quads, drawn through an
+    /// offscreen pass, the first tinted `t`.
+    fn group(t: f32) -> [Primitive; 4] {
+        [
+            layer(rect(10.0, 100.0, 60.0, 20.0), 0.5),
+            quad(rect(10.0, 100.0, 40.0, 20.0), rgba(t, 1.0)),
+            quad(rect(30.0, 100.0, 40.0, 20.0), rgba(0.6, 1.0)),
+            Primitive::LayerEnd,
+        ]
     }
 
     #[test]
@@ -753,7 +766,8 @@ mod tests {
                 }
             };
             let mut rows: Vec<Row> = (0..12 + seed).map(|_| row(&mut below)).collect();
-            let (stream, _) = rows_stream(t, &rows);
+            let mut tint = 0.4;
+            let (stream, _) = rows_stream(t, &rows, tint);
             spliced.upload(&stream);
             whole.upload(&stream);
             for frame in 0..150 {
@@ -761,8 +775,8 @@ mod tests {
                 // before some.
                 let mut next = Vec::new();
                 let mut splices: Vec<Splice> = Vec::new();
-                let (_, starts) = rows_stream(t, &rows);
-                let mut at = 3u32;
+                let (_, starts) = rows_stream(t, &rows, tint);
+                let mut at = 7u32;
                 let edit =
                     |splices: &mut Vec<Splice>, at: u32, removed: u32, inserted: u32| match splices
                         .last_mut()
@@ -807,7 +821,7 @@ mod tests {
                     }
                 }
                 rows = next;
-                let (stream, _) = rows_stream(t, &rows);
+                let (stream, _) = rows_stream(t, &rows, tint);
                 let holes = spliced.r.holes;
                 assert!(
                     spliced.splice(&stream, &splices),
@@ -815,6 +829,15 @@ mod tests {
                 );
                 whole.upload(&stream);
                 same_scene(&spliced.r, &whole.r);
+                if below(3) == 0 {
+                    // The later group's first quad, recolored in its pass.
+                    tint = below(10) as f32 / 10.0;
+                    let (tinted, _) = rows_stream(t, &rows, tint);
+                    let at = tinted.len() as u32 - 3;
+                    assert!(spliced.patch(&tinted, &[at]));
+                    whole.upload(&tinted);
+                    same_state_but_stamps(&spliced.r, &whole.r);
+                }
                 cut |= spliced.r.holes > holes && spliced.r.fragments > 0;
                 lost |= spliced.r.segments.len() > whole.r.segments.len();
                 compacted |= holes > 0 && spliced.r.holes == 0;

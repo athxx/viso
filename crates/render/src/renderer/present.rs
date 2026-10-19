@@ -78,6 +78,12 @@ pub struct DamageStats {
     pub damage_rects: u32,
 }
 
+/// What a presenter keys a frame by, for comparing two: entry keys and
+/// surface draws, draws' keys and paint rects, passes' content, first entries
+/// and composites.
+#[cfg(test)]
+pub(super) type Snapshot = (Vec<u64>, Vec<u32>, Vec<(u64, Rect)>, [Vec<u64>; 3]);
+
 /// The damage state between uploads and presents.
 #[derive(Debug)]
 pub(super) struct Presenter {
@@ -86,8 +92,11 @@ pub(super) struct Presenter {
     /// an offscreen pass.
     draw_of: Vec<u32>,
     /// Each offscreen pass's content: the sum of its entries' keys, each mixed
-    /// with its position, so one entry's change updates it in place.
+    /// with its place in the pass, so one entry's change updates it in place
+    /// and entries moving together leave it be.
     pass_sums: Vec<u64>,
+    /// Each offscreen pass's first entry, which places in it count from.
+    pass_firsts: Vec<u32>,
     /// Each offscreen pass's composite entry.
     composite_of: Vec<u32>,
     /// Each backdrop capture's content key, once a composite reads it.
@@ -128,6 +137,7 @@ impl Default for Presenter {
             draws: Vec::new(),
             draw_of: Vec::new(),
             pass_sums: Vec::new(),
+            pass_firsts: Vec::new(),
             composite_of: Vec::new(),
             capture_keys: Vec::new(),
             keys: Vec::new(),
@@ -154,20 +164,29 @@ impl Presenter {
         self.atlas_writes[atlas as usize] += 1;
     }
 
-    /// Every entry's key and every surface draw's key and paint rect.
+    /// Every entry's key and surface draw, every surface draw's key and
+    /// paint rect, and each offscreen pass's content, first entry and
+    /// composite.
     #[cfg(test)]
-    pub(super) fn snapshot(&self) -> (Vec<u64>, Vec<(u64, Rect)>) {
+    pub(super) fn snapshot(&self) -> Snapshot {
         let draws = self.draws.iter().map(|d| (d.key, d.paint)).collect();
-        (self.keys.clone(), draws)
+        let wide = |v: &[u32]| v.iter().map(|&x| u64::from(x)).collect();
+        let passes = [
+            self.pass_sums.clone(),
+            wide(&self.pass_firsts),
+            wide(&self.composite_of),
+        ];
+        (self.keys.clone(), self.draw_of.clone(), draws, passes)
     }
 }
 
 /// No entry.
 const NONE: u32 = u32::MAX;
 
-/// What entry `i` keyed `key` adds to its offscreen pass's content.
-fn pass_term(key: u64, i: usize) -> u64 {
-    Key::new(key).word(i as u64).finish()
+/// What the entry keyed `key`, `place` entries into its offscreen pass, adds
+/// to the pass's content.
+fn pass_term(key: u64, place: u32) -> u64 {
+    Key::new(key).word(u64::from(place)).finish()
 }
 
 /// The key of a surface draw keyed `key` whose root moved by `shift`.
@@ -189,6 +208,8 @@ impl Renderer {
         p.draw_of.clear();
         p.pass_sums.clear();
         p.pass_sums.resize(keying.offscreen_passes.len(), 0);
+        p.pass_firsts.clear();
+        p.pass_firsts.resize(keying.offscreen_passes.len(), NONE);
         p.composite_of.clear();
         p.composite_of.resize(keying.offscreen_passes.len(), NONE);
         p.capture_keys.clear();
@@ -204,26 +225,63 @@ impl Renderer {
                 *slot = i as u32;
             }
             if let Some(pass) = entry.context.offscreen {
-                if let Some(sum) = p.pass_sums.get_mut(pass as usize) {
-                    *sum = sum.wrapping_add(pass_term(key, i));
+                let pass = pass as usize;
+                if let Some(sum) = p.pass_sums.get_mut(pass) {
+                    let first = &mut p.pass_firsts[pass];
+                    if *first == NONE {
+                        *first = i as u32;
+                    }
+                    *sum = sum.wrapping_add(pass_term(key, i as u32 - *first));
                 }
                 p.draw_of.push(NONE);
                 continue;
             }
-            let (_, extent) = keying.scene.key(i);
-            let bounds = entry.bounds.paint;
-            let paint = match extent {
-                Some(extent) if !bounds.has_area() => extent,
-                _ => bounds,
-            };
             p.draw_of.push(p.draws.len() as u32);
-            p.draws.push(SurfaceDraw {
-                key,
-                paint,
-                clip: entry.context.clip,
-                space: entry.context.space,
-            });
+            p.draws.push(keying.surface_draw(i, key));
         }
+    }
+
+    /// Bring the surface draws to a splice that replaced the `removed`
+    /// paint-order entries from `at`, leaves drawn into the surface pass,
+    /// with the `added` ones now there: those are keyed and drawn, every
+    /// other draw keeps its key, and the entries after them move.
+    pub(super) fn splice_surface_draws(&mut self, at: usize, removed: usize, added: usize) {
+        let (keying, p) = self.keying();
+        let shift = added as i64 - removed as i64;
+        let first = p.draw_of[at..]
+            .iter()
+            .copied()
+            .find(|&d| d != NONE)
+            .map_or(p.draws.len(), |d| d as usize);
+        p.keys
+            .splice(at..at + removed, std::iter::repeat_n(0, added));
+        for i in at..at + added {
+            p.keys[i] = keying.draw_key(p, i);
+        }
+        let keys = &p.keys;
+        p.draws.splice(
+            first..first + removed,
+            (at..at + added).map(|i| keying.surface_draw(i, keys[i])),
+        );
+        p.draw_of
+            .splice(at..at + removed, (first..first + added).map(|d| d as u32));
+        if shift != 0 {
+            let end = (at + removed) as i64;
+            let moved = |i: &mut u32| {
+                if *i != NONE && i64::from(*i) >= end {
+                    *i = (i64::from(*i) + shift) as u32;
+                }
+            };
+            for d in &mut p.draw_of[at + added..] {
+                if *d != NONE {
+                    *d = (i64::from(*d) + shift) as u32;
+                }
+            }
+            p.pass_firsts.iter_mut().for_each(moved);
+            p.composite_of.iter_mut().for_each(moved);
+        }
+        p.placed = None;
+        p.restaged.clear();
     }
 
     /// The presenter, and what its keys read of the rest of the renderer.
@@ -257,10 +315,11 @@ impl Renderer {
             p.keys[i] = new;
             if let Some(pass) = keying.scene.paint_order[i].context.offscreen {
                 let pass = pass as usize;
+                let place = i as u32 - p.pass_firsts[pass];
                 let sum = &mut p.pass_sums[pass];
                 *sum = sum
-                    .wrapping_sub(pass_term(old, i))
-                    .wrapping_add(pass_term(new, i));
+                    .wrapping_sub(pass_term(old, place))
+                    .wrapping_add(pass_term(new, place));
                 match p.composite_of[pass] {
                     NONE => break,
                     composite => i = composite as usize,
@@ -295,6 +354,23 @@ struct Keying<'a> {
 }
 
 impl Keying<'_> {
+    /// The surface draw of paint-order entry `i`, keyed `key`.
+    fn surface_draw(&self, i: usize, key: u64) -> SurfaceDraw {
+        let entry = &self.scene.paint_order[i];
+        let (_, extent) = self.scene.key(i);
+        let bounds = entry.bounds.paint;
+        let paint = match extent {
+            Some(extent) if !bounds.has_area() => extent,
+            _ => bounds,
+        };
+        SurfaceDraw {
+            key,
+            paint,
+            clip: entry.context.clip,
+            space: entry.context.space,
+        }
+    }
+
     /// The key of paint-order entry `i`: its retained content, the context it
     /// was lowered under, and whatever it samples.
     fn draw_key(&self, p: &mut Presenter, i: usize) -> u64 {
