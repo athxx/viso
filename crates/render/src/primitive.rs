@@ -1797,7 +1797,8 @@ pub struct ShaderDraw {
 /// clip rects. This keeps `Vec<Primitive>` batchable rather than a recursive
 /// tree.
 ///
-/// Every variant carries its draw data.
+/// Every variant carries its draw data; the few large, rare ones out of line,
+/// so every other primitive in a stream takes what a leaf needs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Primitive {
     /// A rounded/bordered rectangle.
@@ -1820,13 +1821,13 @@ pub enum Primitive {
     AnalyticShadow(AnalyticShadow),
     /// A frosted material surface: a blurred backdrop, tinted, grained and masked
     /// to the surface's own rounded rect, plus its border ring.
-    Frosted(FrostedMaterial),
+    Frosted(Box<FrostedMaterial>),
     /// A filled/stroked vector path.
-    Path(Path),
+    Path(Box<Path>),
     /// A colored triangle mesh.
     Mesh(Mesh),
     /// A box painted by a user program.
-    Shader(ShaderDraw),
+    Shader(Box<ShaderDraw>),
     /// Push a clip/compositing layer. Following primitives are constrained to
     /// its clip (intersected with any enclosing layer's clip) until the matching
     /// [`Primitive::LayerEnd`]. A `LayerClip::opacity < 1` layer additionally
@@ -1840,7 +1841,7 @@ pub enum Primitive {
     /// a chain costs render-target passes only where the math genuinely cannot
     /// merge (see [`fuse`](crate::color_effect::fuse)). Anywhere else in the
     /// stream the marker is ignored.
-    ColorEffect(ColorEffect),
+    ColorEffect(Box<ColorEffect>),
     /// Set the blend mode the layer just opened composites with (§14.6).
     ///
     /// Same placement rule as [`Primitive::ColorEffect`]: valid only in the marker
@@ -1873,6 +1874,30 @@ pub enum Primitive {
 /// [`Renderer::set_transforms`](crate::Renderer::set_transforms).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TransformSlot(pub u32);
+
+impl From<FrostedMaterial> for Primitive {
+    fn from(material: FrostedMaterial) -> Self {
+        Primitive::Frosted(Box::new(material))
+    }
+}
+
+impl From<Path> for Primitive {
+    fn from(path: Path) -> Self {
+        Primitive::Path(Box::new(path))
+    }
+}
+
+impl From<ShaderDraw> for Primitive {
+    fn from(draw: ShaderDraw) -> Self {
+        Primitive::Shader(Box::new(draw))
+    }
+}
+
+impl From<ColorEffect> for Primitive {
+    fn from(effect: ColorEffect) -> Self {
+        Primitive::ColorEffect(Box::new(effect))
+    }
+}
 
 impl Primitive {
     /// What it draws, lowercase, for an inspector's readout.

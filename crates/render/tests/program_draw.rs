@@ -255,12 +255,12 @@ fn shaded(layout: &BrushLayout, slot: u32, r: Rect, color: [f32; 4]) -> Primitiv
     layout
         .encode(&[ParamValue::ColorLinear(color)], &mut params)
         .expect("encodes");
-    Primitive::Shader(ShaderDraw {
+    Primitive::Shader(Box::new(ShaderDraw {
         rect: r,
         program: ProgramSlot(slot),
         params: params.into(),
         textures: Default::default(),
-    })
+    }))
 }
 
 fn quad(r: Rect) -> Primitive {
@@ -441,12 +441,12 @@ fn a_replaced_program_draws_at_once_and_a_released_one_draws_nothing() {
 
     // Parameters of another program's stride paint nothing either.
     f.install(0, &fill("Fill", None));
-    let foreign = Primitive::Shader(ShaderDraw {
+    let foreign = Primitive::Shader(Box::new(ShaderDraw {
         rect: rect(8.0, 8.0, 16.0, 16.0),
         program: ProgramSlot(0),
         params: Arc::from(vec![0u8; 8]),
         textures: Default::default(),
-    });
+    }));
     assert_eq!(f.draw(&[foreign]).program_draws_dropped, 1);
 }
 

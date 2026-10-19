@@ -587,9 +587,9 @@ fn markers_interleave_and_the_last_blend_wins() {
         &[
             quad(rect(0.0, 0.0, W as f32, H as f32), white()),
             layer(content),
-            Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.2))),
             Primitive::Blend(Blend::Screen),
-            Primitive::ColorEffect(ColorEffect::Contrast(1.1)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Contrast(1.1))),
             Primitive::Blend(Blend::Multiply),
             quad(content, white()),
             Primitive::LayerEnd,

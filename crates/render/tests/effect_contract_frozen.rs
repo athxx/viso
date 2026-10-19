@@ -289,7 +289,7 @@ fn a_backdrop_tier_change_adds_rungs_not_captures() {
 fn graded(clip: Rect, effects: &[ColorEffect]) -> Vec<Primitive> {
     let mut scene = vec![plain(clip)];
     for &e in effects {
-        scene.push(Primitive::ColorEffect(e));
+        scene.push(Primitive::ColorEffect(Box::new(e)));
     }
     scene.push(quad(rect(
         clip.x + 1.0,

@@ -333,7 +333,10 @@ fn path() -> Vec<Primitive> {
         stroke: Some(stroke),
     };
 
-    vec![Primitive::Path(pentagon), Primitive::Path(star)]
+    vec![
+        Primitive::Path(Box::new(pentagon)),
+        Primitive::Path(Box::new(star)),
+    ]
 }
 
 /// Render open-subpath stroke features exercised by D3.3: square and round
@@ -393,8 +396,8 @@ fn stroke() -> Vec<Primitive> {
     };
 
     vec![
-        Primitive::Path(squared),
-        Primitive::Path(rounded),
-        Primitive::Path(dashed),
+        Primitive::Path(Box::new(squared)),
+        Primitive::Path(Box::new(rounded)),
+        Primitive::Path(Box::new(dashed)),
     ]
 }

@@ -487,9 +487,9 @@ fn a_color_effect_chain_collapses_without_a_pass() {
         &mut r,
         &[
             blurred(clip, 4.0),
-            Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
-            Primitive::ColorEffect(ColorEffect::Contrast(0.8)),
-            Primitive::ColorEffect(ColorEffect::Saturation(0.5)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.2))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Contrast(0.8))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Saturation(0.5))),
             quad(rect(30.0, 30.0, 60.0, 60.0)),
             Primitive::LayerEnd,
         ],

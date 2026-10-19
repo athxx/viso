@@ -59,7 +59,7 @@ fn background() -> Primitive {
 fn panel(rect: Rect, lane: MaterialLane) -> Primitive {
     let mut m = FrostedMaterial::new(rect, Corners::uniform(12.0), SIGMA);
     m.lane = lane;
-    Primitive::Frosted(m)
+    Primitive::Frosted(Box::new(m))
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ fn the_border_ring_is_viso_s_on_both_lanes() {
             width: 2.0,
             color: Rgba::new(1.0, 1.0, 1.0, 0.8),
         };
-        Primitive::Frosted(m)
+        Primitive::Frosted(Box::new(m))
     };
 
     let (mut gpu, _s, mut rend) = renderer();
@@ -160,7 +160,7 @@ fn a_reserved_region_carries_geometry_and_generic_parameters() {
     m.opacity = 0.75;
 
     let (mut gpu, _s, mut rend) = renderer();
-    rend.upload(&mut gpu, &[background(), Primitive::Frosted(m)]);
+    rend.upload(&mut gpu, &[background(), Primitive::Frosted(Box::new(m))]);
 
     let regions = rend.native_material_regions();
     assert_eq!(regions.len(), 1);
@@ -268,7 +268,7 @@ fn the_reported_parameters_are_the_authored_ones() {
     m.opacity = 0.8;
 
     let (mut gpu, _s, mut rend) = renderer();
-    rend.upload(&mut gpu, &[background(), Primitive::Frosted(m)]);
+    rend.upload(&mut gpu, &[background(), Primitive::Frosted(Box::new(m))]);
     let regions = rend.native_material_regions();
     assert_eq!(regions.len(), 1);
     assert!(

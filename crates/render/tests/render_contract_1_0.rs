@@ -168,14 +168,14 @@ fn every_shape_has_its_own_primitive() {
             border: Border::NONE,
         }),
         // Arc: lowered to cubics, stroked.
-        Primitive::Path(Path {
+        Primitive::Path(Box::new(Path {
             cmds: arc.to_cmds(),
             fill: None,
             stroke: Some(Stroke::new(2.0, Rgba::new(0.5, 0.2, 0.7, 1.0))),
             shadow: None,
-        }),
+        })),
         // A general path: curved and filled.
-        Primitive::Path(Path {
+        Primitive::Path(Box::new(Path {
             cmds: vec![
                 PathCmd::MoveTo(pt(24.0, 120.0)),
                 PathCmd::CubicTo(pt(48.0, 88.0), pt(80.0, 152.0), pt(104.0, 120.0)),
@@ -186,7 +186,7 @@ fn every_shape_has_its_own_primitive() {
             fill: Some(Rgba::new(0.2, 0.4, 0.8, 1.0)),
             stroke: None,
             shadow: None,
-        }),
+        })),
         // Image.
         Primitive::Image(ImageDraw {
             rect: rect(128.0, 96.0, 48.0, 48.0),
@@ -284,12 +284,12 @@ fn stroke_style_is_honored_in_every_dimension() {
         if closed {
             cmds.push(PathCmd::Close);
         }
-        let path = Primitive::Path(Path {
+        let path = Primitive::Path(Box::new(Path {
             cmds,
             fill: None,
             stroke: Some(stroke),
             shadow: None,
-        });
+        }));
         present(&mut r, &mut gpu, surface, [1.0, 1.0, 1.0, 1.0], &[path]);
         gpu.read_pixels_bgra8(surface)
     }
@@ -408,7 +408,7 @@ fn a_screen_of_simple_shapes_never_tessellates() {
 #[test]
 fn a_stable_path_is_tessellated_once_not_once_per_frame() {
     let (mut gpu, _surface, mut r) = renderer(W, H);
-    let scene = vec![Primitive::Path(Path {
+    let scene = vec![Primitive::Path(Box::new(Path {
         cmds: vec![
             PathCmd::MoveTo(pt(32.0, 32.0)),
             PathCmd::CubicTo(pt(96.0, 8.0), pt(160.0, 120.0), pt(224.0, 64.0)),
@@ -419,7 +419,7 @@ fn a_stable_path_is_tessellated_once_not_once_per_frame() {
         fill: Some(Rgba::new(0.4, 0.2, 0.6, 1.0)),
         stroke: Some(Stroke::new(2.0, Rgba::new(0.1, 0.1, 0.1, 1.0))),
         shadow: None,
-    })];
+    }))];
 
     let cold = upload(&mut r, &mut gpu, &scene);
     assert!(
@@ -659,9 +659,9 @@ fn local_color_effects_fuse_into_one_op() {
                 blur_sigma: 0.0,
                 backdrop_sigma: 0.0,
             }),
-            Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
-            Primitive::ColorEffect(ColorEffect::Contrast(0.85)),
-            Primitive::ColorEffect(ColorEffect::Saturation(1.4)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.2))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Contrast(0.85))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Saturation(1.4))),
             quad(clip),
             Primitive::LayerEnd,
         ],

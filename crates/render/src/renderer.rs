@@ -2887,7 +2887,7 @@ impl Renderer {
                     let color_start = self.color_ops.len() as u32;
                     fuse(
                         markers.filter_map(|p| match p {
-                            Primitive::ColorEffect(effect) => Some(*effect),
+                            Primitive::ColorEffect(effect) => Some(**effect),
                             _ => None,
                         }),
                         &mut self.color_ops,
@@ -5558,7 +5558,7 @@ mod tests {
     /// non-convex to divert.
     fn solid_path(ox: f32, oy: f32) -> Primitive {
         use crate::primitive::Point as P;
-        Primitive::Path(crate::primitive::Path {
+        Primitive::Path(Box::new(crate::primitive::Path {
             cmds: vec![
                 PathCmd::MoveTo(P::new(ox, oy)),
                 PathCmd::LineTo(P::new(ox + 16.0, oy + 8.0)),
@@ -5574,7 +5574,7 @@ mod tests {
             }),
             stroke: None,
             shadow: None,
-        })
+        }))
     }
 
     /// A cold masked solid fill rasterizes its coverage once: exactly one mask
@@ -5612,7 +5612,7 @@ mod tests {
     /// The same concave outline as `solid_path`, now carrying a drop shadow.
     fn shadowed_path(inner: bool) -> Primitive {
         use crate::primitive::{PathShadow, Point as P};
-        Primitive::Path(crate::primitive::Path {
+        Primitive::Path(Box::new(crate::primitive::Path {
             cmds: vec![
                 PathCmd::MoveTo(P::new(4.0, 4.0)),
                 PathCmd::LineTo(P::new(20.0, 12.0)),
@@ -5639,7 +5639,7 @@ mod tests {
                 spread: 0.0,
                 inner,
             }),
-        })
+        }))
     }
 
     /// An outer path shadow builds a second mask (distinct from the fill mask, so
@@ -5723,7 +5723,7 @@ mod tests {
     #[test]
     fn stroked_path_skips_mask_lane() {
         use crate::primitive::{Point as P, Stroke};
-        let prim = Primitive::Path(crate::primitive::Path {
+        let prim = Primitive::Path(Box::new(crate::primitive::Path {
             cmds: vec![
                 PathCmd::MoveTo(P::new(4.0, 4.0)),
                 PathCmd::LineTo(P::new(20.0, 4.0)),
@@ -5746,7 +5746,7 @@ mod tests {
                 },
             )),
             shadow: None,
-        });
+        }));
         let mut gpu = CpuRaster::new();
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
@@ -5795,7 +5795,7 @@ mod tests {
     #[test]
     fn convex_solid_fill_follows_the_backends_path_lane() {
         use crate::primitive::Point as P;
-        let prim = Primitive::Path(crate::primitive::Path {
+        let prim = Primitive::Path(Box::new(crate::primitive::Path {
             cmds: vec![
                 PathCmd::MoveTo(P::new(4.0, 4.0)),
                 PathCmd::LineTo(P::new(20.0, 4.0)),
@@ -5810,7 +5810,7 @@ mod tests {
             }),
             stroke: None,
             shadow: None,
-        });
+        }));
         for (coverage, masks) in [(false, 0), (true, 1)] {
             let mut gpu = CpuRaster::new();
             gpu.set_coverage_paths(coverage);
@@ -6628,9 +6628,9 @@ mod tests {
                     },
                     1.0,
                 ),
-                Primitive::ColorEffect(ColorEffect::Brightness(1.4)),
-                Primitive::ColorEffect(ColorEffect::Gamma(2.2)),
-                Primitive::ColorEffect(ColorEffect::Saturation(0.3)),
+                Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.4))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Gamma(2.2))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Saturation(0.3))),
                 quad(8.0, 8.0),
                 Primitive::LayerEnd,
             ],
@@ -6668,9 +6668,9 @@ mod tests {
             &mut gpu,
             &[
                 layer_color(clip, 1.0),
-                Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
-                Primitive::ColorEffect(ColorEffect::Contrast(0.8)),
-                Primitive::ColorEffect(ColorEffect::Saturation(0.5)),
+                Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.2))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Contrast(0.8))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Saturation(0.5))),
                 quad(8.0, 8.0),
                 Primitive::LayerEnd,
             ],
@@ -6729,18 +6729,20 @@ mod tests {
             &mut gpu,
             &[
                 layer_color(clip, 1.0),
-                Primitive::ColorEffect(ColorEffect::Brightness(1.1)),
-                Primitive::ColorEffect(ColorEffect::Contrast(1.2)),
-                Primitive::ColorEffect(ColorEffect::Saturation(0.9)),
-                Primitive::ColorEffect(ColorEffect::HueRotate(0.4)),
-                Primitive::ColorEffect(ColorEffect::Grayscale(0.25)),
-                Primitive::ColorEffect(ColorEffect::Sepia(0.3)),
-                Primitive::ColorEffect(ColorEffect::Invert(0.1)),
-                Primitive::ColorEffect(ColorEffect::ColorMatrix(ColorMatrix::brightness(0.95))),
-                Primitive::ColorEffect(ColorEffect::Tint {
+                Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.1))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Contrast(1.2))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Saturation(0.9))),
+                Primitive::ColorEffect(Box::new(ColorEffect::HueRotate(0.4))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Grayscale(0.25))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Sepia(0.3))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Invert(0.1))),
+                Primitive::ColorEffect(Box::new(ColorEffect::ColorMatrix(
+                    ColorMatrix::brightness(0.95),
+                ))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Tint {
                     color: [0.2, 0.4, 0.9],
                     amount: 0.35,
-                }),
+                })),
                 quad(8.0, 8.0),
                 Primitive::LayerEnd,
             ],
@@ -6772,11 +6774,11 @@ mod tests {
             &mut gpu,
             &[
                 layer_color(clip, 1.0),
-                Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
-                Primitive::ColorEffect(ColorEffect::Contrast(0.8)),
-                Primitive::ColorEffect(ColorEffect::Gamma(2.2)),
-                Primitive::ColorEffect(ColorEffect::Saturation(0.5)),
-                Primitive::ColorEffect(ColorEffect::Invert(0.2)),
+                Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.2))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Contrast(0.8))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Gamma(2.2))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Saturation(0.5))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Invert(0.2))),
                 quad(8.0, 8.0),
                 Primitive::LayerEnd,
             ],
@@ -6817,9 +6819,9 @@ mod tests {
             &mut gpu,
             &[
                 layer_color(clip, 1.0),
-                Primitive::ColorEffect(ColorEffect::Brightness(1.0)),
-                Primitive::ColorEffect(ColorEffect::Gamma(1.0)),
-                Primitive::ColorEffect(ColorEffect::Grayscale(0.0)),
+                Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.0))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Gamma(1.0))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Grayscale(0.0))),
                 quad(8.0, 8.0),
                 Primitive::LayerEnd,
             ],
@@ -6852,9 +6854,9 @@ mod tests {
         };
         let scene = [
             layer_color(clip, 0.75),
-            Primitive::ColorEffect(ColorEffect::Saturation(0.4)),
-            Primitive::ColorEffect(ColorEffect::Gamma(1.8)),
-            Primitive::ColorEffect(ColorEffect::Brightness(1.3)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Saturation(0.4))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Gamma(1.8))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.3))),
             quad(8.0, 8.0),
             Primitive::LayerEnd,
         ];
@@ -6899,9 +6901,9 @@ mod tests {
         r.upload(
             &mut gpu,
             &[
-                Primitive::ColorEffect(ColorEffect::Invert(1.0)),
+                Primitive::ColorEffect(Box::new(ColorEffect::Invert(1.0))),
                 quad(4.0, 4.0),
-                Primitive::ColorEffect(ColorEffect::Invert(1.0)),
+                Primitive::ColorEffect(Box::new(ColorEffect::Invert(1.0))),
             ],
         );
         let loose = r.frame_stats();
@@ -6920,9 +6922,9 @@ mod tests {
             &mut gpu,
             &[
                 layer_color(clip, 1.0),
-                Primitive::ColorEffect(ColorEffect::Invert(1.0)),
+                Primitive::ColorEffect(Box::new(ColorEffect::Invert(1.0))),
                 quad(8.0, 8.0),
-                Primitive::ColorEffect(ColorEffect::Gamma(2.2)),
+                Primitive::ColorEffect(Box::new(ColorEffect::Gamma(2.2))),
                 Primitive::LayerEnd,
             ],
         );
@@ -6954,7 +6956,7 @@ mod tests {
             &mut gpu,
             &[
                 layer_color(clip, 0.5),
-                Primitive::ColorEffect(ColorEffect::Grayscale(1.0)),
+                Primitive::ColorEffect(Box::new(ColorEffect::Grayscale(1.0))),
                 quad(8.0, 8.0),
                 Primitive::LayerEnd,
             ],
@@ -6999,8 +7001,8 @@ mod tests {
                     blur_sigma: 3.0,
                     backdrop_sigma: 0.0,
                 }),
-                Primitive::ColorEffect(ColorEffect::Grayscale(1.0)),
-                Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
+                Primitive::ColorEffect(Box::new(ColorEffect::Grayscale(1.0))),
+                Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.2))),
                 quad(8.0, 8.0),
                 Primitive::LayerEnd,
             ],

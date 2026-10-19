@@ -2060,9 +2060,9 @@ capture / shared-pyramid targets in `viso-gpu`. Depends on E1 frozen (+ C0/E0 fa
         `Layer` and its content — no new primitive kind for each effect and no builder. The
         marker binds only to the layer it immediately follows: loose markers are inert and a
         marker after the layer's content has started is ignored, so a chain can never leak
-        across a sibling. `size_of::<ColorEffect>()` is pinned below
-        `size_of::<Primitive>() - 8` so every quad in the frame does not widen for the
-        color feature.
+        across a sibling. The marker rides out of line, and `size_of::<Primitive>()` is
+        pinned to its widest leaf beside its tag, so every quad in the frame does not widen
+        for the color feature.
   - [x] Realization is where the "no extra pass" property is bought: a non-empty op list
         forces the layer offscreen (the effect needs a texture to read), and the **last** op
         rides the composite draw the layer was already going to make, through the new

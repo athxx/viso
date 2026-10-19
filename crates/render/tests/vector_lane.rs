@@ -58,7 +58,7 @@ fn button(i: usize) -> Vec<Primitive> {
             radius: 6.0,
             border: Border::NONE,
         }),
-        Primitive::Path(viso_render::Path {
+        Primitive::Path(Box::new(viso_render::Path {
             cmds: vec![
                 PathCmd::MoveTo(Point {
                     x: x + 10.0,
@@ -76,7 +76,7 @@ fn button(i: usize) -> Vec<Primitive> {
             fill: None,
             stroke: Some(Stroke::new(2.0, Rgba::new(1.0, 1.0, 1.0, 1.0))),
             shadow: None,
-        }),
+        })),
     ]
 }
 
@@ -86,7 +86,7 @@ fn button(i: usize) -> Vec<Primitive> {
 /// the same outline down the tessellated lane instead, so `outlined` selects which
 /// of the two CPU lanes the caller wants to exercise.
 fn blob(cx: f32, cy: f32, r: f32, outlined: bool) -> Primitive {
-    Primitive::Path(viso_render::Path {
+    Primitive::Path(Box::new(viso_render::Path {
         cmds: vec![
             PathCmd::MoveTo(Point { x: cx - r, y: cy }),
             PathCmd::CubicTo(
@@ -116,7 +116,7 @@ fn blob(cx: f32, cy: f32, r: f32, outlined: bool) -> Primitive {
         fill: Some(Rgba::new(0.9, 0.3, 0.2, 1.0)),
         stroke: outlined.then(|| Stroke::new(1.5, Rgba::new(0.1, 0.1, 0.1, 1.0))),
         shadow: None,
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------

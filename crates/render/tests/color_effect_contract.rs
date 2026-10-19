@@ -75,7 +75,7 @@ fn recolored(color: Rgba, effects: &[ColorEffect]) -> [f32; 4] {
     let (mut gpu, surface, mut r) = renderer();
     let content = rect(16.0, 16.0, 32.0, 32.0);
     let mut prims = vec![layer(content)];
-    prims.extend(effects.iter().copied().map(Primitive::ColorEffect));
+    prims.extend(effects.iter().copied().map(Primitive::from));
     prims.push(quad(content, color));
     prims.push(Primitive::LayerEnd);
 
@@ -126,9 +126,9 @@ fn brightness_contrast_saturation_is_one_op_and_no_extra_pass() {
         &mut gpu,
         &[
             layer(clip),
-            Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
-            Primitive::ColorEffect(ColorEffect::Contrast(0.8)),
-            Primitive::ColorEffect(ColorEffect::Saturation(0.5)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.2))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Contrast(0.8))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Saturation(0.5))),
             quad(clip, Rgba::new(0.4, 0.5, 0.6, 1.0)),
             Primitive::LayerEnd,
         ],
@@ -164,7 +164,7 @@ fn every_color_effect_is_mergeable_with_every_other() {
         },
     ];
     let mut prims = vec![layer(clip)];
-    prims.extend(chain.iter().copied().map(Primitive::ColorEffect));
+    prims.extend(chain.iter().copied().map(Primitive::from));
     prims.push(quad(clip, Rgba::new(0.4, 0.5, 0.6, 1.0)));
     prims.push(Primitive::LayerEnd);
 
@@ -195,11 +195,11 @@ fn a_non_expressible_stage_costs_exactly_one_extra_pass() {
         &mut gpu,
         &[
             layer(clip),
-            Primitive::ColorEffect(ColorEffect::Brightness(1.2)),
-            Primitive::ColorEffect(ColorEffect::Contrast(0.8)),
-            Primitive::ColorEffect(ColorEffect::Gamma(2.2)),
-            Primitive::ColorEffect(ColorEffect::Saturation(0.5)),
-            Primitive::ColorEffect(ColorEffect::Invert(0.2)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.2))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Contrast(0.8))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Gamma(2.2))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Saturation(0.5))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Invert(0.2))),
             quad(clip, Rgba::new(0.4, 0.5, 0.6, 1.0)),
             Primitive::LayerEnd,
         ],
@@ -228,8 +228,8 @@ fn consecutive_non_expressible_stages_still_share_one_op() {
         &mut gpu,
         &[
             layer(clip),
-            Primitive::ColorEffect(ColorEffect::Gamma(1.5)),
-            Primitive::ColorEffect(ColorEffect::Gamma(2.0)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Gamma(1.5))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Gamma(2.0))),
             quad(clip, Rgba::new(0.4, 0.5, 0.6, 1.0)),
             Primitive::LayerEnd,
         ],
@@ -249,10 +249,10 @@ fn a_neutral_chain_costs_nothing_at_all() {
         &mut gpu,
         &[
             layer(clip),
-            Primitive::ColorEffect(ColorEffect::Brightness(1.0)),
-            Primitive::ColorEffect(ColorEffect::Gamma(1.0)),
-            Primitive::ColorEffect(ColorEffect::Saturation(1.0)),
-            Primitive::ColorEffect(ColorEffect::Grayscale(0.0)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.0))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Gamma(1.0))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Saturation(1.0))),
+            Primitive::ColorEffect(Box::new(ColorEffect::Grayscale(0.0))),
             quad(clip, Rgba::new(0.4, 0.5, 0.6, 1.0)),
             Primitive::LayerEnd,
         ],
@@ -359,7 +359,7 @@ fn layer_opacity_rides_the_fused_op() {
                 blur_sigma: 0.0,
                 backdrop_sigma: 0.0,
             }),
-            Primitive::ColorEffect(ColorEffect::Grayscale(1.0)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Grayscale(1.0))),
             quad(clip, Rgba::new(1.0, 1.0, 1.0, 1.0)),
             Primitive::LayerEnd,
         ],
@@ -406,9 +406,9 @@ fn a_repeated_frame_allocates_and_recompiles_nothing() {
             blur_sigma: 0.0,
             backdrop_sigma: 0.0,
         }),
-        Primitive::ColorEffect(ColorEffect::Saturation(0.4)),
-        Primitive::ColorEffect(ColorEffect::Gamma(1.8)),
-        Primitive::ColorEffect(ColorEffect::Brightness(1.3)),
+        Primitive::ColorEffect(Box::new(ColorEffect::Saturation(0.4))),
+        Primitive::ColorEffect(Box::new(ColorEffect::Gamma(1.8))),
+        Primitive::ColorEffect(Box::new(ColorEffect::Brightness(1.3))),
         quad(clip, Rgba::new(0.4, 0.5, 0.6, 1.0)),
         Primitive::LayerEnd,
     ];
@@ -441,9 +441,9 @@ fn markers_bind_only_to_the_layer_they_follow() {
         &mut r,
         &mut gpu,
         &[
-            Primitive::ColorEffect(ColorEffect::Invert(1.0)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Invert(1.0))),
             quad(clip, Rgba::new(0.4, 0.5, 0.6, 1.0)),
-            Primitive::ColorEffect(ColorEffect::Invert(1.0)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Invert(1.0))),
         ],
     );
     assert_eq!(loose.color_effect_ops, 0, "a marker with no layer is inert");
@@ -455,9 +455,9 @@ fn markers_bind_only_to_the_layer_they_follow() {
         &mut gpu,
         &[
             layer(clip),
-            Primitive::ColorEffect(ColorEffect::Invert(1.0)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Invert(1.0))),
             quad(clip, Rgba::new(0.4, 0.5, 0.6, 1.0)),
-            Primitive::ColorEffect(ColorEffect::Gamma(2.2)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Gamma(2.2))),
             Primitive::LayerEnd,
         ],
     );
@@ -481,11 +481,11 @@ fn sibling_layers_do_not_share_a_chain() {
         &mut gpu,
         &[
             layer(a),
-            Primitive::ColorEffect(ColorEffect::Grayscale(1.0)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Grayscale(1.0))),
             quad(a, Rgba::new(0.8, 0.2, 0.2, 1.0)),
             Primitive::LayerEnd,
             layer(b),
-            Primitive::ColorEffect(ColorEffect::Invert(1.0)),
+            Primitive::ColorEffect(Box::new(ColorEffect::Invert(1.0))),
             quad(b, Rgba::new(0.2, 0.8, 0.2, 1.0)),
             Primitive::LayerEnd,
         ],
@@ -496,15 +496,35 @@ fn sibling_layers_do_not_share_a_chain() {
     assert_eq!(stats.render_passes, 3, "two layers and the surface");
 }
 
-/// The marker is a small tag on the stream, not a new payload: `ColorEffect` must
-/// not be what decides `size_of::<Primitive>()`, or every quad in the frame pays
-/// for the color feature.
+/// The marker is a small tag on the stream, not a new payload: the stream is
+/// as wide as its widest leaf, the color effect riding out of line with the
+/// other large, rare kinds, so every quad in a frame pays only for a leaf.
 #[test]
 fn the_color_marker_does_not_widen_the_primitive_stream() {
+    use viso_render::{
+        AnalyticCapsule, AnalyticEllipse, AnalyticLine, AnalyticRRect, AnalyticShadow,
+        GlyphRunDraw, Gradient, ImageDraw, LayerClip, Mesh, Quad,
+    };
+    let leaf = [
+        size_of::<Quad>(),
+        size_of::<AnalyticRRect>(),
+        size_of::<AnalyticEllipse>(),
+        size_of::<AnalyticCapsule>(),
+        size_of::<AnalyticLine>(),
+        size_of::<GlyphRunDraw>(),
+        size_of::<ImageDraw>(),
+        size_of::<Gradient>(),
+        size_of::<AnalyticShadow>(),
+        size_of::<Mesh>(),
+        size_of::<LayerClip>(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0);
+    let tagged = (leaf + 4).next_multiple_of(align_of::<Primitive>());
     assert!(
-        size_of::<ColorEffect>() <= size_of::<Primitive>() - 8,
-        "ColorEffect ({}) must fit in Primitive ({}) beside its tag",
-        size_of::<ColorEffect>(),
+        size_of::<Primitive>() <= tagged,
+        "Primitive ({}) is wider than its widest leaf ({leaf}) beside its tag",
         size_of::<Primitive>()
     );
 }

@@ -156,7 +156,10 @@ fn a_frosted_surface_adds_no_pass_target_or_capture() {
     let material = frame(
         &mut r,
         &mut gpu,
-        &[background(), Primitive::Frosted(frosted(panel, SIGMA))],
+        &[
+            background(),
+            Primitive::Frosted(Box::new(frosted(panel, SIGMA))),
+        ],
     );
 
     assert_eq!(material.material_composites, 1);
@@ -203,7 +206,11 @@ fn a_subpixel_sigma_captures_nothing_and_keeps_the_border() {
     };
 
     let (mut gpu, _s, mut r) = renderer(W, H);
-    let stats = frame(&mut r, &mut gpu, &[background(), Primitive::Frosted(m)]);
+    let stats = frame(
+        &mut r,
+        &mut gpu,
+        &[background(), Primitive::Frosted(Box::new(m))],
+    );
 
     assert_eq!(stats.backdrop_captures, 0);
     assert_eq!(stats.material_composites, 0);
@@ -235,7 +242,7 @@ fn n_panels_share_one_capture_and_one_blur_ladder() {
         rect(0.0, 0.0, 256.0, 256.0),
         Rgba::new(0.3, 0.6, 0.2, 1.0),
     )];
-    prims.extend(panels.map(|p| Primitive::Frosted(frosted(p, SIGMA))));
+    prims.extend(panels.map(|p| Primitive::Frosted(Box::new(frosted(p, SIGMA)))));
     let stats = frame(&mut r, &mut gpu, &prims);
 
     assert_eq!(stats.material_composites, 4);
@@ -251,7 +258,7 @@ fn n_panels_share_one_capture_and_one_blur_ladder() {
             &mut gpu,
             &[
                 quad(rect(0.0, 0.0, 256.0, 256.0), Rgba::new(0.3, 0.6, 0.2, 1.0)),
-                Primitive::Frosted(frosted(panels[0], SIGMA)),
+                Primitive::Frosted(Box::new(frosted(panels[0], SIGMA))),
             ],
         )
     };
@@ -272,8 +279,8 @@ fn panels_at_different_sigmas_do_not_share() {
         &mut gpu,
         &[
             background(),
-            Primitive::Frosted(frosted(rect(8.0, 8.0, 32.0, 24.0), 3.0)),
-            Primitive::Frosted(frosted(rect(8.0, 72.0, 32.0, 24.0), 9.0)),
+            Primitive::Frosted(Box::new(frosted(rect(8.0, 8.0, 32.0, 24.0), 3.0))),
+            Primitive::Frosted(Box::new(frosted(rect(8.0, 72.0, 32.0, 24.0), 9.0))),
         ],
     );
     assert_eq!(stats.material_composites, 2);
@@ -293,7 +300,7 @@ fn a_material_and_a_backdrop_layer_share_one_capture() {
         &mut gpu,
         &[
             background(),
-            Primitive::Frosted(frosted(rect(8.0, 8.0, 40.0, 32.0), SIGMA)),
+            Primitive::Frosted(Box::new(frosted(rect(8.0, 8.0, 40.0, 32.0), SIGMA))),
             backdrop_layer(rect(8.0, 56.0, 40.0, 32.0), SIGMA),
             Primitive::LayerEnd,
         ],
@@ -354,12 +361,19 @@ fn a_chain_of_local_color_effects_fuses_into_the_one_composite() {
     m.color = ops[0];
 
     let (mut gpu, _s, mut r) = renderer(W, H);
-    let tinted = frame(&mut r, &mut gpu, &[background(), Primitive::Frosted(m)]);
+    let tinted = frame(
+        &mut r,
+        &mut gpu,
+        &[background(), Primitive::Frosted(Box::new(m))],
+    );
     let (mut gpu, _s, mut r) = renderer(W, H);
     let plain = frame(
         &mut r,
         &mut gpu,
-        &[background(), Primitive::Frosted(frosted(panel, SIGMA))],
+        &[
+            background(),
+            Primitive::Frosted(Box::new(frosted(panel, SIGMA))),
+        ],
     );
 
     assert_eq!(
@@ -376,9 +390,16 @@ fn a_chain_of_local_color_effects_fuses_into_the_one_composite() {
     // And the chain is actually applied, not silently dropped.
     let cx = (panel.x + panel.w * 0.5) as u32;
     let cy = (panel.y + panel.h * 0.5) as u32;
-    let with = pixel(&present(&[background(), Primitive::Frosted(m)]), cx, cy);
+    let with = pixel(
+        &present(&[background(), Primitive::Frosted(Box::new(m))]),
+        cx,
+        cy,
+    );
     let without = pixel(
-        &present(&[background(), Primitive::Frosted(frosted(panel, SIGMA))]),
+        &present(&[
+            background(),
+            Primitive::Frosted(Box::new(frosted(panel, SIGMA))),
+        ]),
         cx,
         cy,
     );
@@ -398,7 +419,7 @@ fn noise_is_deterministic_across_identical_frames() {
     let panel = rect(24.0, 24.0, 64.0, 64.0);
     let mut m = frosted(panel, SIGMA);
     m.noise = 0.5;
-    let prims = [background(), Primitive::Frosted(m)];
+    let prims = [background(), Primitive::Frosted(Box::new(m))];
 
     let (mut gpu, surface, mut r) = renderer(W, H);
     let mut shots = Vec::new();
@@ -424,10 +445,13 @@ fn noise_is_deterministic_across_identical_frames() {
 fn noise_varies_per_pixel_but_only_when_asked_for() {
     let panel = rect(24.0, 24.0, 64.0, 64.0);
 
-    let plain = present(&[background(), Primitive::Frosted(frosted(panel, SIGMA))]);
+    let plain = present(&[
+        background(),
+        Primitive::Frosted(Box::new(frosted(panel, SIGMA))),
+    ]);
     let mut noisy_material = frosted(panel, SIGMA);
     noisy_material.noise = 0.5;
-    let noisy = present(&[background(), Primitive::Frosted(noisy_material)]);
+    let noisy = present(&[background(), Primitive::Frosted(Box::new(noisy_material))]);
 
     // Sample a row well inside the panel, away from its antialiased edge.
     let y = 56;
@@ -461,7 +485,7 @@ fn the_material_mask_rounds_its_corners() {
     m.radius = Corners::uniform(20.0);
     // A visible change the mask can gate: the glass darkens what it covers.
     m.color = fused(ColorEffect::Brightness(0.25));
-    let px = present(&[background(), Primitive::Frosted(m)]);
+    let px = present(&[background(), Primitive::Frosted(Box::new(m))]);
 
     let outside = pixel(&px, 4, 4);
     // Inside the panel's rect but well outside the corner arc: the mask must have
@@ -491,7 +515,7 @@ fn the_fused_color_op_tints_the_backdrop() {
     let panel = rect(32.0, 32.0, 64.0, 64.0);
     let mut m = frosted(panel, SIGMA);
     m.color = fused(ColorEffect::Grayscale(1.0));
-    let px = present(&[background(), Primitive::Frosted(m)]);
+    let px = present(&[background(), Primitive::Frosted(Box::new(m))]);
 
     let inside = pixel(
         &px,
@@ -525,11 +549,19 @@ fn opacity_scales_the_finished_composite() {
 
     let mut dark = frosted(panel, SIGMA);
     dark.color = fused(ColorEffect::Brightness(0.2));
-    let opaque = pixel(&present(&[background(), Primitive::Frosted(dark)]), cx, cy);
+    let opaque = pixel(
+        &present(&[background(), Primitive::Frosted(Box::new(dark))]),
+        cx,
+        cy,
+    );
 
     let mut half = dark;
     half.opacity = 0.5;
-    let blended = pixel(&present(&[background(), Primitive::Frosted(half)]), cx, cy);
+    let blended = pixel(
+        &present(&[background(), Primitive::Frosted(Box::new(half))]),
+        cx,
+        cy,
+    );
 
     let plain = pixel(&present(&[background()]), cx, cy);
     for c in 0..3 {

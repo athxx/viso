@@ -412,7 +412,7 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
         // tessellator flattens curves) with two straight segments meeting at a
         // sharp corner (exercising a miter join). The purple fill carries the 1px
         // coverage-AA fringe; the darker stroke is drawn over it.
-        Primitive::Path(Path {
+        Primitive::Path(Box::new(Path {
             cmds: vec![
                 PathCmd::MoveTo(Point::new(64.0, 84.0)),
                 PathCmd::CubicTo(
@@ -440,7 +440,7 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                 },
             )),
             shadow: None,
-        }),
+        })),
         // A caller-supplied triangle mesh (the escape hatch for geometry the
         // higher-level primitives don't cover): a single opaque teal triangle in
         // the top-right, interior `edge = 1` so it fills solid. It shares the

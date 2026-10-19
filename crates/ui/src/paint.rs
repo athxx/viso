@@ -446,12 +446,12 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
             cmds, fill, stroke, ..
         } => {
             let cmds = cmds.iter().map(|c| translate_cmd(*c, ox, oy)).collect();
-            out.push(Primitive::Path(Path {
+            out.push(Primitive::Path(Box::new(Path {
                 cmds,
                 fill: *fill,
                 stroke: *stroke,
                 shadow: None,
-            }));
+            })));
         }
         Content::Shader {
             program,
@@ -464,12 +464,12 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
             }
             // An image not yet resident: the node draws nothing until it is.
             if images.len() <= textures.len() && images.iter().all(|i| i.texture.is_some()) {
-                out.push(Primitive::Shader(ShaderDraw {
+                out.push(Primitive::Shader(Box::new(ShaderDraw {
                     rect: world,
                     program: *program,
                     params: Arc::clone(params),
                     textures,
-                }));
+                })));
             }
         }
         Content::Asset {
@@ -551,7 +551,7 @@ fn paint_asset(
                     backdrop_sigma: 0.0,
                 }));
             }
-            out.extend(scene.place(placed, tint).map(Primitive::Path));
+            out.extend(scene.place(placed, tint).map(Primitive::from));
             if crop {
                 out.push(Primitive::LayerEnd);
             }
@@ -1395,7 +1395,7 @@ mod tests {
         let draws: Vec<&ShaderDraw> = out
             .iter()
             .filter_map(|p| match p {
-                Primitive::Shader(d) => Some(d),
+                Primitive::Shader(d) => Some(&**d),
                 _ => None,
             })
             .collect();

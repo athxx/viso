@@ -1215,7 +1215,7 @@ fn path_grid_scene(count: usize) -> Vec<Primitive> {
     for i in 0..count {
         let cx = (i % cols) as f32 * step + 4.0;
         let cy = (i / cols) as f32 * step + 4.0;
-        scene.push(Primitive::Path(Path {
+        scene.push(Primitive::Path(Box::new(Path {
             cmds: vec![
                 PathCmd::MoveTo(Point::new(cx + 4.0, cy)),
                 PathCmd::LineTo(Point::new(cx + 8.0, cy + 3.0)),
@@ -1227,7 +1227,7 @@ fn path_grid_scene(count: usize) -> Vec<Primitive> {
             fill: Some(fill),
             shadow: None,
             stroke: Some(Stroke::new(1.0, stroke)),
-        }));
+        })));
     }
     scene
 }
@@ -1330,7 +1330,7 @@ fn svg_like_path_scene(count: usize) -> Vec<Primitive> {
         let x = (i % cols) as f32 * step + 4.0;
         let y = (i / cols) as f32 * step + 4.0;
         // A closed blob: cubic top, quadratic right, cubic bottom, line close.
-        scene.push(Primitive::Path(Path {
+        scene.push(Primitive::Path(Box::new(Path {
             cmds: vec![
                 PathCmd::MoveTo(Point::new(x, y + 5.0)),
                 PathCmd::CubicTo(
@@ -1349,7 +1349,7 @@ fn svg_like_path_scene(count: usize) -> Vec<Primitive> {
             fill: Some(fill),
             shadow: None,
             stroke: Some(Stroke::new(1.0, stroke)),
-        }));
+        })));
     }
     scene
 }
@@ -1370,7 +1370,7 @@ fn dashed_stroke_scene(count: usize) -> Vec<Primitive> {
         stroke.cap = LineCap::Round;
         stroke.join = LineJoin::Round;
         stroke.dash = Some(DashPattern::new(&[6.0, 3.0, 2.0, 3.0], 1.5));
-        scene.push(Primitive::Path(Path {
+        scene.push(Primitive::Path(Box::new(Path {
             cmds: vec![
                 PathCmd::MoveTo(Point::new(x, y)),
                 PathCmd::LineTo(Point::new(x + 12.0, y + 2.0)),
@@ -1380,7 +1380,7 @@ fn dashed_stroke_scene(count: usize) -> Vec<Primitive> {
             fill: None,
             shadow: None,
             stroke: Some(stroke),
-        }));
+        })));
     }
     scene
 }
@@ -1759,7 +1759,7 @@ fn assert_analytic_shadow_lane_scales() {
 /// coverage masks; a changed tint or offset alone reuses the cached mask.
 fn shadowed_path_at(ox: f32, oy: f32, alpha: f32, off: [f32; 2]) -> Primitive {
     use viso_render::PathShadow;
-    Primitive::Path(Path {
+    Primitive::Path(Box::new(Path {
         cmds: vec![
             PathCmd::MoveTo(Point::new(ox, oy)),
             PathCmd::LineTo(Point::new(ox + 16.0, oy + 8.0)),
@@ -1786,7 +1786,7 @@ fn shadowed_path_at(ox: f32, oy: f32, alpha: f32, off: [f32; 2]) -> Primitive {
             spread: 0.0,
             inner: false,
         }),
-    })
+    }))
 }
 
 /// E0.4 gate, part 2 (§15.4): the path-shadow coverage cache is keyed on
@@ -2378,7 +2378,7 @@ fn graded_card_scene(count: usize, effects: &[ColorEffect]) -> Vec<Primitive> {
             blur_sigma: 0.0,
             backdrop_sigma: 0.0,
         }));
-        scene.extend(effects.iter().copied().map(Primitive::ColorEffect));
+        scene.extend(effects.iter().copied().map(Primitive::from));
         scene.push(Primitive::Quad(Quad {
             rect: card,
             color: Rgba {
@@ -3604,7 +3604,7 @@ fn setup_clock_scene() -> Harness {
     let params: Arc<[u8]> = vec![0; layout.stride as usize].into();
     for i in 0..CLOCK_BOXES {
         let (col, row) = ((i % 8) as f32, (i / 8) as f32);
-        h.scene.push(Primitive::Shader(ShaderDraw {
+        h.scene.push(Primitive::Shader(Box::new(ShaderDraw {
             rect: Rect {
                 x: col * 8.0,
                 y: row * 8.0,
@@ -3614,7 +3614,7 @@ fn setup_clock_scene() -> Harness {
             program: ProgramSlot(0),
             params: Arc::clone(&params),
             textures: Default::default(),
-        }));
+        })));
     }
     h
 }

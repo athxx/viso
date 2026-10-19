@@ -91,7 +91,7 @@ impl SvgScene {
             .prims
             .into_iter()
             .filter_map(|prim| match prim {
-                Primitive::Path(path) => Some(path),
+                Primitive::Path(path) => Some(*path),
                 _ => None,
             })
             .collect();
@@ -189,12 +189,12 @@ fn lower_path(path: &svg::Path, ts: &svg::Affine2, opacity: f32) -> Option<Primi
     if cmds.is_empty() {
         return None;
     }
-    Some(Primitive::Path(Path {
+    Some(Primitive::Path(Box::new(Path {
         cmds,
         fill,
         stroke,
         shadow: None,
-    }))
+    })))
 }
 
 /// Convert tree path data to Viso [`PathCmd`]s, transforming every

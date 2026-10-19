@@ -56,7 +56,7 @@ fn pt(x: f32, y: f32) -> Point {
 /// changing only `fill`/`stroke` is a pure recolor.
 fn tri_scene(origin: (f32, f32), fill: Option<Rgba>, stroke: Option<Rgba>) -> Vec<Primitive> {
     let (x, y) = origin;
-    vec![Primitive::Path(Path {
+    vec![Primitive::Path(Box::new(Path {
         cmds: vec![
             PathCmd::MoveTo(pt(x, y)),
             PathCmd::LineTo(pt(x + 30.0, y)),
@@ -66,7 +66,7 @@ fn tri_scene(origin: (f32, f32), fill: Option<Rgba>, stroke: Option<Rgba>) -> Ve
         fill,
         shadow: None,
         stroke: stroke.map(|color| Stroke::new(2.0, color)),
-    })]
+    }))]
 }
 
 /// Settle a path scene into the store (two identical frames), returning the
@@ -89,7 +89,7 @@ fn path_geometry_change_retessellates_and_bumps_geometry_alone() {
 
     // A different outline shape (extra vertex) — the structural fingerprint
     // changes, so the tessellator must run and only the geometry plane moves.
-    let bigger = vec![Primitive::Path(Path {
+    let bigger = vec![Primitive::Path(Box::new(Path {
         cmds: vec![
             PathCmd::MoveTo(pt(10.0, 10.0)),
             PathCmd::LineTo(pt(60.0, 10.0)),
@@ -100,7 +100,7 @@ fn path_geometry_change_retessellates_and_bumps_geometry_alone() {
         fill,
         shadow: None,
         stroke: None,
-    })];
+    }))];
     renderer.upload(&mut gpu, &bigger);
     let after = renderer.scene_revisions();
     let stats = renderer.frame_stats();
@@ -324,7 +324,7 @@ fn identical_reupload_dirties_nothing() {
 /// A stroked triangle whose stroke carries a full style (not just color).
 fn tri_stroked(origin: (f32, f32), stroke: Stroke) -> Vec<Primitive> {
     let (x, y) = origin;
-    vec![Primitive::Path(Path {
+    vec![Primitive::Path(Box::new(Path {
         cmds: vec![
             PathCmd::MoveTo(pt(x, y)),
             PathCmd::LineTo(pt(x + 30.0, y)),
@@ -334,7 +334,7 @@ fn tri_stroked(origin: (f32, f32), stroke: Stroke) -> Vec<Primitive> {
         fill: None,
         shadow: None,
         stroke: Some(stroke),
-    })]
+    }))]
 }
 
 #[test]

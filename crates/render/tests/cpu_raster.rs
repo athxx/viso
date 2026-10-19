@@ -62,7 +62,7 @@ fn scene() -> Vec<Primitive> {
         }),
         Primitive::LayerEnd,
         layer(rect(100.0, 70.0, 90.0, 70.0), 0.8, 0.0),
-        Primitive::ColorEffect(ColorEffect::Saturation(0.3)),
+        Primitive::ColorEffect(Box::new(ColorEffect::Saturation(0.3))),
         quad(
             rect(110.0, 80.0, 70.0, 50.0),
             Rgba::new(0.1, 0.9, 0.4, 1.0),
