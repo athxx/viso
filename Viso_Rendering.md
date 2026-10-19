@@ -258,6 +258,16 @@ Local --Affine2--> World/Window Logical (dp) --DeviceScale--> Physical Device Pi
       --backend viewport transform--> GPU Clip Space
 ```
 
+Renderer 的输入全部是 logical point：primitive 的几何与长度（半径、线宽、offset、blur sigma）、clip、damage rect 与 `submit`/`render_to_texture` 的 viewport。device scale 由 `Renderer::set_surface_size(physical_size, scale)` 给出，只在以下位置换成 physical：
+
+- scissor = clip × scale（`clip_to_scissor`），按 physical surface 夹取；
+- offscreen / backdrop capture target 的 ROI 先对齐到 physical 像素网格，texel 数 = ROI × scale，pass viewport 为 target 的 physical extent ÷ scale，内容仍按 logical 几何绘制；composite 的 uv 用 used extent ÷ scale；
+- blur 链的 sigma × scale（blur / color rung 在 texel 空间工作）；
+- coverage mask 以 scale 栅格化，scale 进入 mask key（`device_scale_q`）；
+- `transient_target_bytes` 等计数器报告 physical 字节。
+
+scale 或 logical 尺寸变化时下一次 upload 走整帧路径（patch / splice 拒绝）。CPU raster 对每个 draw 以 target 宽度 ÷ viewport uniform 推出 scale，GPU shader 的 AA 由 `dfdx/dfdy` 自适应。scale 2 的场景与"所有长度 ×2、scale 1"的场景逐 texel 一致（`render/tests/device_scale.rs`，headless 与 Metal）。
+
 ## 5.2 Surface origin
 
 Viso Render IR 使用统一二维坐标语义：`origin = top-left, +x = right, +y = down`。像素 `(i, j)` 覆盖 device 区间 `[i, i+1) × [j, j+1)`，像素中心为 `(i + 0.5, j + 0.5)`。

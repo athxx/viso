@@ -174,7 +174,7 @@ impl Frame {
         let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
         let format = gpu.surface_format(surface);
         let mut renderer = Renderer::new(&mut gpu, format);
-        renderer.set_surface_size([W as f32, H as f32]);
+        renderer.set_surface_size([W as f32, H as f32], 1.0);
         Frame {
             gpu,
             surface,
@@ -480,7 +480,7 @@ fn a_slot_past_the_key_or_a_wide_uniform_block_is_refused() {
 /// from `lang` code.
 fn program_scene<B: GpuBackend>(gpu: &mut B, lang: ShaderLang) -> viso_gpu::TextureId {
     let mut renderer = Renderer::new(gpu, viso_gpu::TextureFormat::Bgra8Unorm);
-    renderer.set_surface_size([W as f32, H as f32]);
+    renderer.set_surface_size([W as f32, H as f32], 1.0);
     let mut layouts = Vec::new();
     for (slot, program) in [(0, fill("Fill", None)), (1, fill("Blue", Some(BLUE)))] {
         let interface = program.interface();

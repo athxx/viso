@@ -3121,13 +3121,13 @@ those logical units and the backends apply it in physical pixels (Metal clamps t
 the physical surface), and offscreen / blur / capture targets are sized from the
 same logical extents.
 
-- [ ] Reproduce on a scale-2 headless surface: a clipped quad and a translucent layer
+- [x] Reproduce on a scale-2 headless surface: a clipped quad and a translucent layer
       drawn at `dpi = 2` against the same scene at `dpi = 1` scaled up.
-- [ ] Scissors in physical pixels: the renderer knows the surface's device scale
+- [x] Scissors in physical pixels: the renderer knows the surface's device scale
       (`set_surface_size` gains it, or `submit` takes it) and scales clip rects into
       the scissor; offscreen, blur and capture targets allocate physical texels, their
       composites sample them at the same scale.
-- [ ] Goldens at scale 2 on headless and Metal; counters (`transient_target_bytes`)
+- [x] Goldens at scale 2 on headless and Metal; counters (`transient_target_bytes`)
       report physical bytes.
 
 ## Overflow — what paints outside its container is hit where it is seen

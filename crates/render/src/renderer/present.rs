@@ -719,7 +719,7 @@ impl Renderer {
         let shown = match &region {
             Region::Rects(rects) => {
                 for (out, r) in damage.iter_mut().zip(rects.iter()) {
-                    *out = clip_to_scissor(*r, viewport);
+                    *out = clip_to_scissor(*r, viewport, self.scale);
                 }
                 rects.len()
             }
@@ -791,7 +791,7 @@ impl Renderer {
             return;
         };
         for (i, r) in rects.iter().enumerate() {
-            let cut = clip_to_scissor(*r, viewport);
+            let cut = clip_to_scissor(*r, viewport, self.scale);
             if cut.2 == 0 || cut.3 == 0 {
                 continue;
             }

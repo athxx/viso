@@ -207,7 +207,7 @@ impl CullPlan {
 /// own benchmark.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChunkGrid {
-    /// Top-left corner of chunk `(0, 0)`, in the scene's physical-pixel space.
+    /// Top-left corner of chunk `(0, 0)`, in the scene's point space.
     origin: [f32; 2],
     /// Edge length of one square chunk, always `> 0`.
     cell: f32,

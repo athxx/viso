@@ -73,7 +73,7 @@ fn an_ordinary_frame_reports_no_specialization() {
     let surface = gpu.create_surface(viso_gpu::RawWindowHandle::Headless, W, H);
     let format = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
-    r.set_surface_size([W as f32, H as f32]);
+    r.set_surface_size([W as f32, H as f32], 1.0);
 
     let scene: Vec<Primitive> = (0..64)
         .map(|i| {

@@ -43,7 +43,7 @@ fn renderer(format: TextureFormat, space: ColorSpace) -> (CpuRaster, SurfaceId, 
     let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
     gpu.set_surface_color_target(surface, format, space);
     let mut r = Renderer::for_surface(&mut gpu, surface);
-    r.set_surface_size([W as f32, H as f32]);
+    r.set_surface_size([W as f32, H as f32], 1.0);
     (gpu, surface, r)
 }
 

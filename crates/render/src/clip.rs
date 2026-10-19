@@ -35,7 +35,7 @@ pub enum ClipShape {
     /// radii are non-trivial, or as a plain rect scissor when they normalize to
     /// sharp corners.
     RoundRect {
-        /// The clip box in physical pixels.
+        /// The clip box in points.
         rect: Rect,
         /// Per-corner radii, normalized against `rect` by the planner (§11.2).
         radii: Corners,
@@ -43,7 +43,7 @@ pub enum ClipShape {
     /// An arbitrary path clip, described here only by its axis-aligned bounds
     /// (the geometry itself lives in the path arena). Needs a coverage mask.
     Path {
-        /// The path's axis-aligned bounding box in physical pixels — the tight
+        /// The path's axis-aligned bounding box in points — the tight
         /// ROI a coverage mask would be built over.
         bounds: Rect,
     },
@@ -102,7 +102,7 @@ pub struct ClipPlan {
     /// The tier's [`EffectCost`] contribution (`tier.cost()`), stored so callers
     /// fold it without re-deriving.
     pub cost: EffectCost,
-    /// The clip's axis-aligned bounds in physical pixels: a scissor rect, or the
+    /// The clip's axis-aligned bounds in points: a scissor rect, or the
     /// ROI a mask is built over. An analytic rounded-rect clip still scissors to
     /// this box first, so nothing outside the corners is even shaded.
     pub bounds: Rect,

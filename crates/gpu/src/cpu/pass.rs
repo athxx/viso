@@ -257,6 +257,22 @@ fn intersect(a: PxRect, b: PxRect) -> Option<PxRect> {
     (r[2] > r[0] && r[3] > r[1]).then_some(r)
 }
 
+/// Target pixels per unit of a built-in's coordinates on a `width`-wide
+/// target: the target over the viewport its inline uniforms map onto it, one
+/// when the draw carries none.
+fn uniform_scale(cmd: &DrawCommand, width: u32) -> f32 {
+    let bytes = cmd.uniforms.as_bytes();
+    if bytes.len() < 8 {
+        return 1.0;
+    }
+    let viewport = f32::from_ne_bytes(bytes[0..4].try_into().expect("four bytes"));
+    if viewport > 0.0 && viewport.is_finite() {
+        width as f32 / viewport
+    } else {
+        1.0
+    }
+}
+
 /// The `shift` a built-in's inline uniforms move its draw by: the pair after
 /// the viewport, zero when the draw carries none.
 fn uniform_shift(cmd: &DrawCommand) -> [f32; 2] {
@@ -303,6 +319,7 @@ fn collect(res: &Resources, commands: &[DrawCommand], w: u32, h: u32, scratch: &
             continue;
         }
         let shift = uniform_shift(cmd);
+        let scale = uniform_scale(cmd, w);
         match cmd.geometry {
             Geometry::Generated { count } => {
                 let bytes = &res.buffer(cmd.instance_buffer)[..];
@@ -310,7 +327,7 @@ fn collect(res: &Resources, commands: &[DrawCommand], w: u32, h: u32, scratch: &
                     let Some(inst) = pipe.instance(bytes, cmd.instance_offset, n) else {
                         break;
                     };
-                    let rect = fill::bounds(pipe.builtin, &inst, shift)
+                    let rect = fill::bounds(pipe.builtin, &inst, shift, scale)
                         .and_then(|r| to_pixels(r, w, h))
                         .and_then(|r| intersect(r, clip));
                     if let Some(rect) = rect {
@@ -336,7 +353,11 @@ fn collect(res: &Resources, commands: &[DrawCommand], w: u32, h: u32, scratch: &
                         .instance(vertices, 0, i)
                         .expect("a mesh index past its vertices");
                     let p = v.f2(0);
-                    ([p[0] + shift[0], p[1] + shift[1]], v.f4(1), v.f1(2))
+                    (
+                        [(p[0] + shift[0]) * scale, (p[1] + shift[1]) * scale],
+                        v.f4(1),
+                        v.f1(2),
+                    )
                 };
                 for t in 0..index_count / 3 {
                     let at = index_offset + t * 3;
@@ -511,6 +532,7 @@ fn draw<P: Px>(
                 .instance(bytes, cmd.instance_offset, n)
                 .expect("an instance collected in range");
             let shift = uniform_shift(cmd);
+            let scale = uniform_scale(cmd, pass.size[0]);
             // A replacing pipeline writes its fragments as they are.
             let mut replacing = Replacing(&mut *rows);
             let rows: &mut dyn Rows = if pipe.blend == BlendMode::Replace {
@@ -525,6 +547,7 @@ fn draw<P: Px>(
                         res,
                         cmd,
                         shift,
+                        scale,
                         layer: None,
                     };
                     return fill::draw(pipe.builtin, &cx, &inst, rows, clip);
@@ -532,7 +555,8 @@ fn draw<P: Px>(
             };
             let layer = &shared.layers[l];
             let size = [layer.width, layer.height];
-            let Some(region) = fill::source_region(pipe.builtin, &inst, shift, clip, size) else {
+            let Some(region) = fill::source_region(pipe.builtin, &inst, shift, scale, clip, size)
+            else {
                 return;
             };
             let view = evaluate(shared, layer, &shared.layer_scratch[l], region, window);
@@ -540,6 +564,7 @@ fn draw<P: Px>(
                 res,
                 cmd,
                 shift,
+                scale,
                 layer: Some((layer.texture, view)),
             };
             fill::draw(pipe.builtin, &cx, &inst, rows, clip);

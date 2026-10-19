@@ -1519,6 +1519,9 @@ impl WindowState {
         let Some(gpu) = &mut self.gpu else {
             return;
         };
+        let (w, h) = gpu.size;
+        gpu.renderer
+            .set_surface_size([w as f32, h as f32], self.dpi.max(1.0));
         let whole = match std::mem::replace(&mut self.painted, viso_ui::Painted::Nothing) {
             viso_ui::Painted::Nothing | viso_ui::Painted::Patched(0) => false,
             viso_ui::Painted::Whole(_) => true,

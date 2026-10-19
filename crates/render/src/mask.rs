@@ -96,7 +96,7 @@ impl MaskFormat {
 /// A requested mask, before the cache decides how to store and whether to reuse
 /// it. `kind` is the composition/source; `needs_color` says whether an image
 /// source must keep its channels (ignored for coverage-only kinds); `roi` is the
-/// tight region the mask covers, in physical pixels; `key` is the exact set of
+/// tight region the mask covers, in texels (points × the device scale); `key` is the exact set of
 /// inputs the mask's pixels are a function of (§14.4 cache key).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MaskRequest {
@@ -105,7 +105,7 @@ pub struct MaskRequest {
     /// Whether an image source must preserve color. For a coverage-only `kind`
     /// this is ignored — such a mask is always R8.
     pub needs_color: bool,
-    /// The tight region of interest, physical pixels — the mask's extent.
+    /// The tight region of interest, in texels — the mask's extent.
     pub roi: Rect,
     /// The cache key: the inputs the mask's pixels depend on and nothing else.
     pub key: MaskKey,

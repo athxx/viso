@@ -60,7 +60,7 @@ fn renderer(w: u32, h: u32) -> (CpuRaster, SurfaceId, Renderer) {
     let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
-    r.set_surface_size([w as f32, h as f32]);
+    r.set_surface_size([w as f32, h as f32], 1.0);
     (gpu, surface, r)
 }
 
@@ -231,7 +231,7 @@ fn every_shape_has_its_own_primitive() {
     ];
 
     let mut r = Renderer::new(&mut gpu, format);
-    r.set_surface_size([W as f32, H as f32]);
+    r.set_surface_size([W as f32, H as f32], 1.0);
     let s = upload(&mut r, &mut gpu, &scene);
 
     assert_eq!(
@@ -852,7 +852,7 @@ fn an_hdr_highlight_is_not_narrowed_mid_pipeline() {
         let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
         gpu.set_surface_color_target(surface, format, space);
         let mut r = Renderer::for_surface(&mut gpu, surface);
-        r.set_surface_size([W as f32, H as f32]);
+        r.set_surface_size([W as f32, H as f32], 1.0);
         // Through a translucent blurred layer, so the value crosses every kind
         // of intermediate the frame has.
         let scene = vec![

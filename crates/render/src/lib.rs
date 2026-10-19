@@ -296,7 +296,7 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
 /// [`Primitive::Layer`] (`opacity < 1`) wrapping a solid quad, exercising the
 /// offscreen render-to-texture path and opacity compositing (the subtree is
 /// rendered into a texture and blended back at the layer rect). Coordinates
-/// are in physical pixels with a top-left origin; a caller renders it against a
+/// are in points with a top-left origin; a caller renders it against a
 /// surface sized to hold it, having first created `texture` and uploaded
 /// [`test_texture`] into it, and created/uploaded the glyph atlas whose
 /// [`TextureId`] is carried by `glyphs`.

@@ -35,7 +35,7 @@ fn renderer(w: u32, h: u32) -> (CpuRaster, Renderer) {
     let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
-    r.set_surface_size([w as f32, h as f32]);
+    r.set_surface_size([w as f32, h as f32], 1.0);
     (gpu, r)
 }
 

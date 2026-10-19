@@ -41,7 +41,7 @@ fn renderer(w: u32, h: u32) -> (CpuRaster, Renderer) {
     let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
     let format = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
-    r.set_surface_size([w as f32, h as f32]);
+    r.set_surface_size([w as f32, h as f32], 1.0);
     (gpu, r)
 }
 
@@ -790,7 +790,7 @@ fn only_topology_forces_a_recompile() {
     }
 
     // A resize changes every extent and no pass.
-    r.set_surface_size([512.0, 512.0]);
+    r.set_surface_size([512.0, 512.0], 1.0);
     r.upload(&mut gpu, &scene(32.0, blue, 6.0, 2));
     assert_eq!(
         r.frame_stats().render_graph_compiles,

@@ -47,7 +47,7 @@ fn renderer(w: u32, h: u32) -> (CpuRaster, SurfaceId, Renderer) {
     let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
     let format: TextureFormat = gpu.surface_format(surface);
     let mut r = Renderer::new(&mut gpu, format);
-    r.set_surface_size([w as f32, h as f32]);
+    r.set_surface_size([w as f32, h as f32], 1.0);
     (gpu, surface, r)
 }
 
@@ -231,7 +231,7 @@ fn a_subpixel_sigma_captures_nothing_and_keeps_the_border() {
 #[test]
 fn n_panels_share_one_capture_and_one_blur_ladder() {
     let (mut gpu, _s, mut r) = renderer(256, 256);
-    r.set_surface_size([256.0, 256.0]);
+    r.set_surface_size([256.0, 256.0], 1.0);
     let panels = [
         rect(16.0, 16.0, 40.0, 24.0),
         rect(16.0, 64.0, 40.0, 24.0),
@@ -252,7 +252,7 @@ fn n_panels_share_one_capture_and_one_blur_ladder() {
     );
     let one = {
         let (mut gpu, _s, mut r) = renderer(256, 256);
-        r.set_surface_size([256.0, 256.0]);
+        r.set_surface_size([256.0, 256.0], 1.0);
         frame(
             &mut r,
             &mut gpu,

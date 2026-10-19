@@ -190,33 +190,54 @@ pub(super) struct Cx<'a> {
     pub res: &'a super::Resources,
     pub cmd: &'a DrawCommand,
     pub shift: [f32; 2],
+    /// Target pixels per unit of the draw's coordinates.
+    pub scale: f32,
     pub layer: Option<(TextureId, View<'a>)>,
+}
+
+impl Cx<'_> {
+    /// The draw's coordinates at the center of pixel `(x, y)`.
+    #[inline]
+    fn at(&self, x: u32, y: u32) -> [f32; 2] {
+        [
+            (x as f32 + 0.5) / self.scale - self.shift[0],
+            (y as f32 + 0.5) / self.scale - self.shift[1],
+        ]
+    }
+
+    /// The analytic AA factor: units of the sample position per pixel step,
+    /// inverted, as a fragment's `aa_factor` evaluates it.
+    #[inline]
+    fn aa(&self) -> f32 {
+        AA * self.scale
+    }
 }
 
 /// The target pixels `[x0, y0, x1, y1)` a draw may touch inside a
 /// `width × height` target.
 pub(super) type PxRect = [u32; 4];
 
-/// The pixels a shape covers, padded by `pad` on every side.
-fn padded(min: [f32; 2], max: [f32; 2], pad: [f32; 2], shift: [f32; 2]) -> [f32; 4] {
+/// The pixels a shape covers, padded by `pad` units and one pixel on every
+/// side, `scale` pixels to a unit.
+fn padded(min: [f32; 2], max: [f32; 2], pad: [f32; 2], shift: [f32; 2], scale: f32) -> [f32; 4] {
     [
-        (min[0] - pad[0] + shift[0]).floor(),
-        (min[1] - pad[1] + shift[1]).floor(),
-        (max[0] + pad[0] + shift[0]).ceil(),
-        (max[1] + pad[1] + shift[1]).ceil(),
+        ((min[0] - pad[0] + shift[0]) * scale).floor() - 1.0,
+        ((min[1] - pad[1] + shift[1]) * scale).floor() - 1.0,
+        ((max[0] + pad[0] + shift[0]) * scale).ceil() + 1.0,
+        ((max[1] + pad[1] + shift[1]) * scale).ceil() + 1.0,
     ]
 }
 
 /// The pixels whose centers fall inside `[pos, pos + size)` (the top-left
-/// rule a device applies to an axis-aligned quad).
-fn centers(pos: [f32; 2], size: [f32; 2], shift: [f32; 2]) -> [f32; 4] {
-    let x = pos[0] + shift[0];
-    let y = pos[1] + shift[1];
+/// rule a device applies to an axis-aligned quad), `scale` pixels to a unit.
+fn centers(pos: [f32; 2], size: [f32; 2], shift: [f32; 2], scale: f32) -> [f32; 4] {
+    let x = (pos[0] + shift[0]) * scale;
+    let y = (pos[1] + shift[1]) * scale;
     [
         (x - 0.5).ceil(),
         (y - 0.5).ceil(),
-        (x + size[0] - 0.5).ceil(),
-        (y + size[1] - 0.5).ceil(),
+        (x + size[0] * scale - 0.5).ceil(),
+        (y + size[1] * scale - 0.5).ceil(),
     ]
 }
 
@@ -229,8 +250,14 @@ pub(super) fn to_pixels(r: [f32; 4], w: u32, h: u32) -> Option<PxRect> {
     (x1 > x0 && y1 > y0).then_some([x0, y0, x1, y1])
 }
 
-/// The pixels instance `i` of `builtin` can touch, before clipping.
-pub(super) fn bounds(builtin: BuiltinShader, i: &Inst<'_>, shift: [f32; 2]) -> Option<[f32; 4]> {
+/// The pixels instance `i` of `builtin` can touch, before clipping, `scale`
+/// pixels to a unit of its coordinates.
+pub(super) fn bounds(
+    builtin: BuiltinShader,
+    i: &Inst<'_>,
+    shift: [f32; 2],
+    scale: f32,
+) -> Option<[f32; 4]> {
     let rect = |i: &Inst<'_>| {
         let (pos, size) = (i.f2(0), i.f2(1));
         (pos, [pos[0] + size[0], pos[1] + size[1]], size)
@@ -243,27 +270,29 @@ pub(super) fn bounds(builtin: BuiltinShader, i: &Inst<'_>, shift: [f32; 2]) -> O
         | BuiltinShader::Gradient
         | BuiltinShader::Material => {
             let (min, max, _) = rect(i);
-            padded(min, max, [1.0, 1.0], shift)
+            padded(min, max, [0.0, 0.0], shift, scale)
         }
         BuiltinShader::AnalyticLine => {
             let (p0, p1, hw, cap) = (i.f2(0), i.f2(1), i.f1(2) * 0.5, i.u1(4));
-            let margin = hw + if cap == 0 { 0.0 } else { hw } + 1.0;
+            let margin = hw + if cap == 0 { 0.0 } else { hw };
             padded(
                 [p0[0].min(p1[0]), p0[1].min(p1[1])],
                 [p0[0].max(p1[0]), p0[1].max(p1[1])],
                 [margin, margin],
                 shift,
+                scale,
             )
         }
         BuiltinShader::AnalyticShadow => {
             let (min, max, _) = rect(i);
             let (offset, sigma, spread) = (i.f2(4), i.f1(5), i.f1(6));
-            let reach = 3.0 * sigma + spread.max(0.0) + 1.0;
+            let reach = 3.0 * sigma + spread.max(0.0);
             padded(
                 min,
                 max,
                 [reach + offset[0].abs(), reach + offset[1].abs()],
                 shift,
+                scale,
             )
         }
         BuiltinShader::Image
@@ -276,7 +305,7 @@ pub(super) fn bounds(builtin: BuiltinShader, i: &Inst<'_>, shift: [f32; 2]) -> O
             if size[0] <= 0.0 || size[1] <= 0.0 {
                 return None;
             }
-            centers(pos, size, shift)
+            centers(pos, size, shift, scale)
         }
         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => return None,
     })
@@ -299,6 +328,7 @@ pub(super) fn source_region(
     builtin: BuiltinShader,
     i: &Inst<'_>,
     shift: [f32; 2],
+    scale: f32,
     clip: PxRect,
     [width, height]: [u32; 2],
 ) -> Option<PxRect> {
@@ -307,12 +337,12 @@ pub(super) fn source_region(
     }
     let map = UvMap::of(i, 2, 3);
     let lo = map.at([
-        clip[0] as f32 + 0.5 - shift[0],
-        clip[1] as f32 + 0.5 - shift[1],
+        (clip[0] as f32 + 0.5) / scale - shift[0],
+        (clip[1] as f32 + 0.5) / scale - shift[1],
     ]);
     let hi = map.at([
-        clip[2] as f32 - 0.5 - shift[0],
-        clip[3] as f32 - 0.5 - shift[1],
+        (clip[2] as f32 - 0.5) / scale - shift[0],
+        (clip[3] as f32 - 0.5) / scale - shift[1],
     ]);
     // A bilinear fetch reads `floor(t)` and the texel after it, a nearest one
     // `round(t)`, at `t = u·n − ½`; one more texel each way absorbs rounding.
@@ -346,14 +376,14 @@ pub(super) fn draw(
             let center = [pos[0] + half[0], pos[1] + half[1]];
             // IQ box SDF radius: doubled then clamped to the smaller half-extent.
             let k = (2.0 * i.f1(3)).min(half[0].min(half[1]));
-            let paint = Paint::of(i.f4(2), i.f1(4), i.f4(5));
+            let paint = Paint::of(i.f4(2), i.f1(4), i.f4(5), cx.aa());
             shade(cx, out, clip, |p| paint.at(box_sdf(p, center, half, k)));
         }
         BuiltinShader::AnalyticRRect => {
             let (pos, size, radii) = (i.f2(0), i.f2(1), i.f4(3));
             let half = [size[0] * 0.5, size[1] * 0.5];
             let center = [pos[0] + half[0], pos[1] + half[1]];
-            let paint = Paint::of(i.f4(2), i.f1(4), i.f4(5));
+            let paint = Paint::of(i.f4(2), i.f1(4), i.f4(5), cx.aa());
             shade(cx, out, clip, |p| {
                 paint.at(rrect_sdf(p, center, half, radii))
             });
@@ -362,19 +392,19 @@ pub(super) fn draw(
             let (pos, size) = (i.f2(0), i.f2(1));
             let radii = [size[0] * 0.5, size[1] * 0.5];
             let center = [pos[0] + radii[0], pos[1] + radii[1]];
-            let paint = Paint::of(i.f4(2), i.f1(3), i.f4(4));
+            let paint = Paint::of(i.f4(2), i.f1(3), i.f4(4), cx.aa());
             shade(cx, out, clip, |p| paint.at(ellipse_sdf(p, center, radii)));
         }
         BuiltinShader::AnalyticCapsule => {
             let (pos, size) = (i.f2(0), i.f2(1));
             let half = [size[0] * 0.5, size[1] * 0.5];
             let center = [pos[0] + half[0], pos[1] + half[1]];
-            let paint = Paint::of(i.f4(2), i.f1(3), i.f4(4));
+            let paint = Paint::of(i.f4(2), i.f1(3), i.f4(4), cx.aa());
             shade(cx, out, clip, |p| paint.at(capsule_sdf(p, center, half)));
         }
         BuiltinShader::AnalyticLine => {
             let (p0, p1, hw, cap) = (i.f2(0), i.f2(1), i.f1(2) * 0.5, i.u1(4));
-            let paint = Paint::of(i.f4(3), i.f1(5), i.f4(6));
+            let paint = Paint::of(i.f4(3), i.f1(5), i.f4(6), cx.aa());
             let ext = if cap == 1 { hw } else { 0.0 };
             shade(cx, out, clip, |p| {
                 paint.at(if cap == 2 {
@@ -424,7 +454,7 @@ pub(super) fn draw(
             let color = i.f4(4);
             // Screen-space width of the stored distance range: the quad's device
             // pixels per uv unit, over the atlas texels per uv unit.
-            let span = i.f2(1)[0] / i.f2(3)[0].max(1e-6);
+            let span = i.f2(1)[0] * cx.scale / i.f2(3)[0].max(1e-6);
             let px_range = MTSDF_DISTANCE_RANGE * span / (tex.width as f32).max(1.0);
             shade(cx, out, clip, |p| {
                 let [u, v] = map.at(p);
@@ -475,9 +505,8 @@ fn shade(cx: &Cx<'_>, out: &mut dyn Rows, clip: PxRect, mut f: impl FnMut([f32; 
     let mut row = [[0.0f32; 4]; TILE as usize];
     let n = (clip[2] - clip[0]) as usize;
     for y in clip[1]..clip[3] {
-        let py = y as f32 + 0.5 - cx.shift[1];
         for (k, px) in row[..n].iter_mut().enumerate() {
-            *px = f([(clip[0] + k as u32) as f32 + 0.5 - cx.shift[0], py]);
+            *px = f(cx.at(clip[0] + k as u32, y));
         }
         out.blend(y, clip[0], &row[..n]);
     }
@@ -488,14 +517,16 @@ struct Paint {
     fill: [f32; 4],
     border_width: f32,
     border: [f32; 4],
+    aa: f32,
 }
 
 impl Paint {
-    fn of(fill: [f32; 4], border_width: f32, border: [f32; 4]) -> Paint {
+    fn of(fill: [f32; 4], border_width: f32, border: [f32; 4], aa: f32) -> Paint {
         Paint {
             fill,
             border_width,
             border,
+            aa,
         }
     }
 
@@ -504,11 +535,11 @@ impl Paint {
     #[inline]
     fn at(&self, d: f32) -> [f32; 4] {
         let f = self.fill;
-        let cov = (-d * AA).clamp(0.0, 1.0);
+        let cov = (-d * self.aa).clamp(0.0, 1.0);
         let fa = f[3] * cov;
         let mut src = [f[0] * fa, f[1] * fa, f[2] * fa, fa];
         if self.border_width > 0.0 {
-            let bcov = (-(d.abs() - self.border_width * 0.5) * AA).clamp(0.0, 1.0);
+            let bcov = (-(d.abs() - self.border_width * 0.5) * self.aa).clamp(0.0, 1.0);
             if bcov > 0.0 {
                 let b = self.border;
                 let ba = b[3] * bcov;
@@ -607,13 +638,14 @@ fn analytic_shadow(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) 
     let half = [size[0] * 0.5, size[1] * 0.5];
     let center = [pos[0] + half[0], pos[1] + half[1]];
     let half_ext = [(half[0] + spread).max(0.0), (half[1] + spread).max(0.0)];
+    let aa = cx.aa();
     shade(cx, out, clip, |p| {
         let p = [p[0] - center[0] - offset[0], p[1] - center[1] - offset[1]];
         let d = shadow_sdf(shape, p, half_ext, radii);
         // `1.4142135` (not `SQRT_2`) is byte-exact with the emitted literal.
         #[allow(clippy::approx_constant)]
         let cov = if sigma <= 0.01 {
-            (-d * AA).clamp(0.0, 1.0)
+            (-d * aa).clamp(0.0, 1.0)
         } else if inner != 0 {
             let soft = 0.5 * (1.0 + erf_approx(d / (1.4142135 * sigma)));
             let inside = 0.5 * (1.0 - erf_approx(d / (1.4142135 * sigma)));
@@ -697,10 +729,11 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     ];
     let half = [map.size[0] * 0.5, map.size[1] * 0.5];
     let (lo, hi) = inset_window(map.uv_pos, map.uv_size, &tex);
+    let ramp = cx.scale;
     shade(cx, out, clip, |p| {
-        // The AA ramp is one unit per pixel: what the fragment's `aa_factor`
-        // evaluates to on this pixel-space quad.
-        let cov = (-rrect_sdf(p, center, half, radius)).clamp(0.0, 1.0);
+        // The AA ramp is one pixel wide: `scale` units of the sample position
+        // to one of coverage.
+        let cov = (-rrect_sdf(p, center, half, radius) * ramp).clamp(0.0, 1.0);
         if cov <= 0.0 {
             return [0.0; 4];
         }
@@ -739,9 +772,8 @@ fn advanced_blend(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     let mut row = [[0.0f32; 4]; TILE as usize];
     let n = (clip[2] - clip[0]) as usize;
     for y in clip[1]..clip[3] {
-        let py = y as f32 + 0.5 - cx.shift[1];
         for (k, px) in row[..n].iter_mut().enumerate() {
-            let p = [(clip[0] + k as u32) as f32 + 0.5 - cx.shift[0], py];
+            let p = cx.at(clip[0] + k as u32, y);
             let [u, v] = layer.at(p);
             let s = sample(&src, &samp, u, v).map(|c| c * opacity);
             let [u, v] = snapshot.at(p);
@@ -772,19 +804,19 @@ fn gradient(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     };
     let center = [pos[0] + size[0] * 0.5, pos[1] + size[1] * 0.5];
     let half = [size[0] * 0.5, size[1] * 0.5];
+    let aa = cx.aa();
     let mut row = [[0.0f32; 4]; TILE as usize];
     let n = (clip[2] - clip[0]) as usize;
     for y in clip[1]..clip[3] {
-        let py = y as f32 + 0.5 - cx.shift[1];
         for (k, px) in row[..n].iter_mut().enumerate() {
-            let p = [(clip[0] + k as u32) as f32 + 0.5 - cx.shift[0], py];
+            let p = cx.at(clip[0] + k as u32, y);
             let q = [
                 (p[0] - center[0]).abs() - half[0],
                 (p[1] - center[1]).abs() - half[1],
             ];
             let m = [q[0].max(0.0), q[1].max(0.0)];
             let d = (m[0] * m[0] + m[1] * m[1]).sqrt() + q[0].max(q[1]).min(0.0);
-            let cov = (-d * AA).clamp(0.0, 1.0);
+            let cov = (-d * aa).clamp(0.0, 1.0);
             if cov <= 0.0 {
                 *px = [0.0; 4];
                 continue;
@@ -1220,7 +1252,7 @@ mod tests {
     #[test]
     fn only_pixels_whose_centers_are_inside_the_quad_are_covered() {
         let span = |lo: f32, extent: f32| {
-            let r = centers([lo, 0.0], [extent, 1.0], [0.0, 0.0]);
+            let r = centers([lo, 0.0], [extent, 1.0], [0.0, 0.0], 1.0);
             to_pixels(r, 100, 100).map_or((0, 0), |p| (p[0], p[2]))
         };
         assert_eq!(span(4.6, 6.0), (5, 11));

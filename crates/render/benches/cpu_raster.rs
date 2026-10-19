@@ -148,7 +148,7 @@ impl Panel {
         gpu.set_surface_color_target(surface, format, ColorSpace::Srgb);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([W as f32, H as f32]);
+        r.set_surface_size([W as f32, H as f32], 1.0);
         Panel {
             gpu,
             surface,

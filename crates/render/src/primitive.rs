@@ -31,8 +31,11 @@ pub use viso_shader::{
 };
 
 /// Geometry is owned by `viso-math`: a [`Rect`] is an axis-aligned rectangle
-/// and a [`Point`] a position, both in physical pixels, top-left origin, in the
-/// space of the primitive's transform root.
+/// and a [`Point`] a position, both in points, top-left origin, in the
+/// space of the primitive's transform root. Every length a primitive carries
+/// (radii, widths, offsets, blur sigmas) is in points too; the renderer maps a
+/// point to `scale` texels, the device scale given to
+/// [`Renderer::set_surface_size`](crate::Renderer::set_surface_size).
 pub use viso_math::{Point, Rect};
 
 /// A straight-alpha (non-premultiplied) linear RGBA color — the wire shape a
@@ -62,7 +65,7 @@ impl Border {
 /// A rounded, optionally bordered, axis-aligned rectangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Quad {
-    /// The rectangle, in physical pixels.
+    /// The rectangle, in points.
     pub rect: Rect,
     /// Fill color.
     pub color: Rgba,
@@ -91,7 +94,7 @@ impl Quad {
     }
 }
 
-/// Per-corner radii for an [`AnalyticRRect`], in physical pixels. Order follows
+/// Per-corner radii for an [`AnalyticRRect`], in points. Order follows
 /// the fill's quadrant test: `left_top`, `right_top`, `right_bottom`,
 /// `left_bottom`. A corner radius of `0` is a sharp corner. Oversized radii are
 /// scaled to fit by [`Corners::normalized`] during lowering (§11.2); the SDF
@@ -163,7 +166,7 @@ impl Corners {
 /// plain filled rectangle when all radii and the border are `0`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticRRect {
-    /// The rectangle, in physical pixels.
+    /// The rectangle, in points.
     pub rect: Rect,
     /// Fill color.
     pub color: Rgba,
@@ -206,7 +209,7 @@ impl AnalyticRRect {
 /// the fill is a scaled-circle SDF (no tessellation). Supports an inner border.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticEllipse {
-    /// The bounding rectangle, in physical pixels. The ellipse touches its edges.
+    /// The bounding rectangle, in points. The ellipse touches its edges.
     pub rect: Rect,
     /// Fill color.
     pub color: Rgba,
@@ -242,7 +245,7 @@ impl AnalyticEllipse {
 /// fill is a capsule SDF (no tessellation). Supports an inner border.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticCapsule {
-    /// The bounding rectangle, in physical pixels. The capsule touches its edges.
+    /// The bounding rectangle, in points. The capsule touches its edges.
     pub rect: Rect,
     /// Fill color.
     pub color: Rgba,
@@ -307,13 +310,13 @@ impl ShadowShape {
 /// per-corner rounding used only when `shape` is [`ShadowShape::RoundedBox`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticShadow {
-    /// The source shape's rectangle, in physical pixels (before spread/offset).
+    /// The source shape's rectangle, in points (before spread/offset).
     pub rect: Rect,
     /// Shadow color (straight linear RGBA; `a` scales the whole ramp).
     pub color: Rgba,
     /// Per-corner radii in pixels, used only for [`ShadowShape::RoundedBox`].
     pub radius: Corners,
-    /// Shadow displacement in physical pixels.
+    /// Shadow displacement in points.
     pub offset: [f32; 2],
     /// Blur standard deviation in pixels (§15.2 blur-radius semantic).
     pub sigma: f32,
@@ -364,11 +367,11 @@ impl AnalyticShadow {
 /// axis-aligned rect.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnalyticLine {
-    /// Segment start, in physical pixels.
+    /// Segment start, in points.
     pub p0: Point,
-    /// Segment end, in physical pixels.
+    /// Segment end, in points.
     pub p1: Point,
-    /// Stroke width in physical pixels (centered on the segment).
+    /// Stroke width in points (centered on the segment).
     pub width: f32,
     /// Fill color.
     pub color: Rgba,
@@ -450,7 +453,7 @@ pub struct GradientStop {
 /// The fill covers `rect`; the color at each pixel comes from evaluating the
 /// gradient parameter `t` (per [`GradientKind`]), applying `extend` for `t`
 /// outside `[0, 1]`, then looking up the ramp defined by `stops` interpolated
-/// in `interp` space. `p0`/`p1` are in the same physical-pixel space as `rect`
+/// in `interp` space. `p0`/`p1` are in the same point space as `rect`
 /// and are reused by kind:
 ///
 /// - **linear**: `p0`→`p1` is the gradient axis.
@@ -466,7 +469,7 @@ pub struct GradientStop {
 /// [`to_instance`]: Gradient::to_instance
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gradient {
-    /// The filled rectangle, in physical pixels.
+    /// The filled rectangle, in points.
     pub rect: Rect,
     /// Which parameterization (linear/radial/sweep).
     pub kind: GradientKind,
@@ -589,17 +592,17 @@ const fn extend_as_u32(mode: ExtendMode) -> u32 {
 /// draw-list ordering) and cleared to transparent.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayerClip {
-    /// The clip rectangle, in physical pixels. For a translucent layer this is
+    /// The clip rectangle, in points. For a translucent layer this is
     /// also the offscreen texture's extent and world-space origin.
     pub clip: Rect,
     /// Layer opacity in `[0, 1]`. `1.0` clips in-pass; `< 1.0` triggers
     /// offscreen compositing at this opacity.
     pub opacity: f32,
-    /// Gaussian blur sigma in physical pixels applied to the layer's own
+    /// Gaussian blur sigma in points applied to the layer's own
     /// content. `0.0` (default) means no blur; `> 0.0` forces an offscreen pass
     /// even at `opacity == 1.0` and blurs the content before compositing.
     pub blur_sigma: f32,
-    /// Gaussian blur sigma in physical pixels applied to the content *behind*
+    /// Gaussian blur sigma in points applied to the content *behind*
     /// this layer. `0.0` (default) means no backdrop; `> 0.0` captures the
     /// already-submitted content under `clip` into a dedicated pass, blurs it,
     /// and composites it beneath this layer's own content. Dropped for a
@@ -698,12 +701,12 @@ impl MaterialLane {
 /// `Viso_Visual_Materials.md`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeMaterialRegion {
-    /// The surface's rect in physical pixels, clipped to what was actually visible.
+    /// The surface's rect in points, clipped to what was actually visible.
     pub rect: Rect,
-    /// Per-corner mask radii in physical pixels, normalized against `rect` exactly
+    /// Per-corner mask radii in points, normalized against `rect` exactly
     /// as the GPU lane's mask is, so both lanes round identically.
     pub radius: [f32; 4],
-    /// The blur sigma the surface authored, in physical pixels — a hint for how
+    /// The blur sigma the surface authored, in points — a hint for how
     /// strong a native material to choose, not a kernel to run.
     pub sigma: f32,
     /// The fused color op the surface authored, for a platform that can tint its
@@ -740,11 +743,11 @@ pub struct NativeMaterialRegion {
 /// the honest rendering of glass with nothing behind it to blur.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrostedMaterial {
-    /// The surface's rect in physical pixels.
+    /// The surface's rect in points.
     pub rect: Rect,
-    /// Per-corner mask radii in physical pixels (normalized against `rect`).
+    /// Per-corner mask radii in points (normalized against `rect`).
     pub radius: Corners,
-    /// Gaussian blur sigma in physical pixels applied to the captured backdrop.
+    /// Gaussian blur sigma in points applied to the captured backdrop.
     /// At or below the ladder's minimum no capture is made.
     pub backdrop_sigma: f32,
     /// The fused color op applied to the blurred backdrop — saturation, tint,
@@ -821,7 +824,7 @@ impl FrostedMaterial {
 /// path serve glyph/atlas sub-regions in the text step.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageDraw {
-    /// Destination rectangle, in physical pixels.
+    /// Destination rectangle, in points.
     pub rect: Rect,
     /// Source sub-rect in normalized texture coordinates (`0..1`).
     pub uv: Rect,
@@ -947,7 +950,7 @@ impl Align2 {
 pub struct ImageRect {
     /// Source sub-region in texture pixels; `None` = the whole texture.
     pub src: Option<Rect>,
-    /// Destination rectangle on screen, in physical pixels.
+    /// Destination rectangle on screen, in points.
     pub dest: Rect,
     /// How the source scales into `dest`.
     pub fit: Fit,
@@ -1094,7 +1097,7 @@ pub struct SpriteRegion {
     pub tex_size: [u32; 2],
     /// The sprite's cell within the atlas, in texels.
     pub region: Rect,
-    /// Destination rectangle on screen, in physical pixels.
+    /// Destination rectangle on screen, in points.
     pub dest: Rect,
     /// How the sprite scales into `dest`.
     pub fit: Fit,
@@ -1158,7 +1161,7 @@ pub struct NineSlice {
     pub region: Rect,
     /// Border insets `[left, top, right, bottom]` in source texels.
     pub insets: [f32; 4],
-    /// Destination rectangle on screen, in physical pixels.
+    /// Destination rectangle on screen, in points.
     pub dest: Rect,
     /// How the texture is sampled.
     pub sampler: SamplerDesc,
@@ -1254,7 +1257,7 @@ pub struct TiledImage {
     pub tex_size: [u32; 2],
     /// The tile cell within the texture, in texels.
     pub tile: Rect,
-    /// Destination rectangle on screen, in physical pixels.
+    /// Destination rectangle on screen, in points.
     pub dest: Rect,
     /// How the texture is sampled — `address` should be `Repeat` or `Mirror`
     /// for the single-instance fast path to wrap correctly.
@@ -1448,7 +1451,7 @@ impl Default for ResourcePolicy {
 /// retained in their own pools and lower through their matching primitives.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlyphInstanceData {
-    /// Destination rectangle on screen, in physical pixels.
+    /// Destination rectangle on screen, in points.
     pub rect: Rect,
     /// Source sub-rect in the atlas, in normalized texture coordinates (`0..1`).
     pub uv: Rect,
@@ -1508,8 +1511,8 @@ impl GlyphRunDraw {
 }
 
 /// One command of a [`Path`] outline. Curves are flattened to line segments by
-/// the tessellator (De Casteljau, `tolerance`-bounded). Coordinates are physical
-/// pixels, top-left origin.
+/// the tessellator (De Casteljau, `tolerance`-bounded). Coordinates are points,
+/// top-left origin.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PathCmd {
     /// Begin a new subpath at this point.
@@ -1618,7 +1621,7 @@ impl StrokeAlign {
 /// The maximum number of dash on/off lengths carried inline.
 pub const DASH_SEGMENTS_MAX: usize = 4;
 
-/// A dash pattern: alternating on/off run lengths (in physical pixels) that the
+/// A dash pattern: alternating on/off run lengths (in points) that the
 /// stroke is chopped into, plus a phase offset.
 ///
 /// Lengths are kept inline (up to [`DASH_SEGMENTS_MAX`]) so [`Stroke`] stays
@@ -1657,7 +1660,7 @@ impl DashPattern {
 /// A stroke (outline) applied to a [`Path`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stroke {
-    /// Stroke width in physical pixels.
+    /// Stroke width in points.
     pub width: f32,
     /// Straight linear RGBA stroke color.
     pub color: Rgba,
@@ -1731,7 +1734,7 @@ pub struct Path {
 pub struct PathShadow {
     /// Shadow color (straight linear RGBA; `a` scales the whole ramp).
     pub color: Rgba,
-    /// Shadow displacement in physical pixels.
+    /// Shadow displacement in points.
     pub offset: [f32; 2],
     /// Blur standard deviation in pixels (§15.2 blur-radius semantic). Recorded in
     /// the mask cache key; E0 composites the sharp mask, E1 applies the blur.
@@ -1935,9 +1938,9 @@ impl Primitive {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct QuadInstance {
-    /// Top-left corner in physical pixels.
+    /// Top-left corner in points.
     pub rect_pos: [f32; 2],
-    /// Width/height in physical pixels.
+    /// Width/height in points.
     pub rect_size: [f32; 2],
     /// Straight linear RGBA fill.
     pub color: [f32; 4],
@@ -1961,9 +1964,9 @@ pub struct QuadInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct AnalyticRRectInstance {
-    /// Top-left corner in physical pixels.
+    /// Top-left corner in points.
     pub rect_pos: [f32; 2],
-    /// Width/height in physical pixels.
+    /// Width/height in points.
     pub rect_size: [f32; 2],
     /// Straight linear RGBA fill.
     pub color: [f32; 4],
@@ -1987,9 +1990,9 @@ pub struct AnalyticRRectInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct AnalyticEllipseInstance {
-    /// Top-left corner in physical pixels.
+    /// Top-left corner in points.
     pub rect_pos: [f32; 2],
-    /// Width/height in physical pixels.
+    /// Width/height in points.
     pub rect_size: [f32; 2],
     /// Straight linear RGBA fill.
     pub color: [f32; 4],
@@ -2011,9 +2014,9 @@ pub struct AnalyticEllipseInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct AnalyticCapsuleInstance {
-    /// Top-left corner in physical pixels.
+    /// Top-left corner in points.
     pub rect_pos: [f32; 2],
-    /// Width/height in physical pixels.
+    /// Width/height in points.
     pub rect_size: [f32; 2],
     /// Straight linear RGBA fill.
     pub color: [f32; 4],
@@ -2036,9 +2039,9 @@ pub struct AnalyticCapsuleInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct AnalyticLineInstance {
-    /// Segment start in physical pixels.
+    /// Segment start in points.
     pub p0: [f32; 2],
-    /// Segment end in physical pixels.
+    /// Segment end in points.
     pub p1: [f32; 2],
     /// Stroke width in pixels.
     pub width: f32,
@@ -2071,16 +2074,16 @@ pub struct AnalyticLineInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct ShadowInstance {
-    /// Source shape top-left corner in physical pixels.
+    /// Source shape top-left corner in points.
     pub rect_pos: [f32; 2],
-    /// Source shape width/height in physical pixels.
+    /// Source shape width/height in points.
     pub rect_size: [f32; 2],
     /// Straight linear RGBA shadow color.
     pub color: [f32; 4],
     /// Per-corner radii in pixels (`left_top`, `right_top`, `right_bottom`,
     /// `left_bottom`); used only when `shape == 0`.
     pub radius: [f32; 4],
-    /// Shadow displacement in physical pixels.
+    /// Shadow displacement in points.
     pub offset: [f32; 2],
     /// Blur standard deviation in pixels.
     pub sigma: f32,
@@ -2111,16 +2114,16 @@ pub struct ShadowInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct GradientInstance {
-    /// Top-left corner of the filled rect in physical pixels.
+    /// Top-left corner of the filled rect in points.
     pub rect_pos: [f32; 2],
-    /// Width/height of the filled rect in physical pixels.
+    /// Width/height of the filled rect in points.
     pub rect_size: [f32; 2],
     /// Kind code: 0=linear, 1=radial, 2=sweep.
     pub kind: u32,
     /// Extend code: 0=clamp, 1=repeat, 2=mirror.
     pub extend: u32,
-    /// Gradient origin (linear start / radial center / sweep center), physical
-    /// pixels.
+    /// Gradient origin (linear start / radial center / sweep center), in
+    /// points.
     pub p0: [f32; 2],
     /// Kind-dependent second parameter: linear end / `(radius, _)` /
     /// `(start_angle, _)`.
@@ -2148,9 +2151,9 @@ pub struct GradientInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct ImageInstance {
-    /// Destination top-left in physical pixels.
+    /// Destination top-left in points.
     pub rect_pos: [f32; 2],
-    /// Destination width/height in physical pixels.
+    /// Destination width/height in points.
     pub rect_size: [f32; 2],
     /// Source sub-rect origin in normalized texture coords.
     pub uv_pos: [f32; 2],
@@ -2174,9 +2177,9 @@ pub struct ImageInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct BlurInstance {
-    /// Destination top-left in physical pixels.
+    /// Destination top-left in points.
     pub rect_pos: [f32; 2],
-    /// Destination width/height in physical pixels.
+    /// Destination width/height in points.
     pub rect_size: [f32; 2],
     /// Source sub-rect origin in normalized texture coords.
     pub uv_pos: [f32; 2],
@@ -2204,9 +2207,9 @@ pub struct BlurInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct ColorTransformInstance {
-    /// Destination top-left in physical pixels.
+    /// Destination top-left in points.
     pub rect_pos: [f32; 2],
-    /// Destination width/height in physical pixels.
+    /// Destination width/height in points.
     pub rect_size: [f32; 2],
     /// Source sub-rect origin in normalized texture coords.
     pub uv_pos: [f32; 2],
@@ -2242,9 +2245,9 @@ pub struct ColorTransformInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct MaterialInstance {
-    /// Destination top-left in physical pixels.
+    /// Destination top-left in points.
     pub rect_pos: [f32; 2],
-    /// Destination width/height in physical pixels.
+    /// Destination width/height in points.
     pub rect_size: [f32; 2],
     /// Backdrop sub-rect origin in normalized texture coords.
     pub uv_pos: [f32; 2],
@@ -2260,7 +2263,7 @@ pub struct MaterialInstance {
     pub row3: [f32; 4],
     /// Constant term per output channel (the matrix's fifth column).
     pub offset: [f32; 4],
-    /// Mask radii in physical pixels, ordered left-top, right-top, right-bottom,
+    /// Mask radii in points, ordered left-top, right-top, right-bottom,
     /// left-bottom — already normalized against the rect.
     pub radius: [f32; 4],
     /// Per-channel RGB exponent applied after the matrix; `1.0` = none.
@@ -2294,9 +2297,9 @@ pub struct MaterialInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct AdvancedBlendInstance {
-    /// Destination top-left in physical pixels.
+    /// Destination top-left in points.
     pub rect_pos: [f32; 2],
-    /// Destination width/height in physical pixels.
+    /// Destination width/height in points.
     pub rect_size: [f32; 2],
     /// Source (isolated layer) sub-rect origin in normalized texture coords.
     pub uv_pos: [f32; 2],
@@ -2324,9 +2327,9 @@ pub struct AdvancedBlendInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct GlyphInstance {
-    /// Destination top-left in physical pixels.
+    /// Destination top-left in points.
     pub rect_pos: [f32; 2],
-    /// Destination width/height in physical pixels.
+    /// Destination width/height in points.
     pub rect_size: [f32; 2],
     /// Atlas sub-rect origin in normalized texture coords.
     pub uv_pos: [f32; 2],
@@ -2349,7 +2352,7 @@ pub struct GlyphInstance {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct MeshVertex {
-    /// Position in physical pixels, top-left origin.
+    /// Position in points, top-left origin.
     pub pos: [f32; 2],
     /// Straight linear RGBA.
     pub color: [f32; 4],
@@ -2365,7 +2368,7 @@ pub struct MeshVertex {
 /// the path store; not a GPU ABI type.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GeoVertex {
-    /// Position in the path's local space (physical pixels before transform).
+    /// Position in the path's local space (points before transform).
     pub pos: [f32; 2],
     /// Coverage-AA weight (`1` interior, `0` fringe).
     pub edge: f32,
@@ -2465,11 +2468,11 @@ impl PathGeometry {
     }
 }
 
-/// The tolerance (max chord deviation, physical pixels) used when flattening
+/// The tolerance (max chord deviation, points) used when flattening
 /// Bézier curves to line segments.
 const FLATTEN_TOLERANCE: f32 = 0.25;
 
-/// Width of the antialiasing fringe, in physical pixels, added around fills and
+/// Width of the antialiasing fringe, in points, added around fills and
 /// strokes. The fringe vertices carry `edge = 0`; interior vertices `edge = 1`.
 const AA_FRINGE: f32 = 1.0;
 
@@ -2478,7 +2481,7 @@ const AA_FRINGE: f32 = 1.0;
 /// than this switch from miter to bevel.
 const DEFAULT_MITER_LIMIT: f32 = 4.0;
 
-/// The minimum arc-length step (physical pixels) used when flattening round
+/// The minimum arc-length step (points) used when flattening round
 /// caps and joins into a triangle fan.
 const ROUND_STEP: f32 = 0.5;
 

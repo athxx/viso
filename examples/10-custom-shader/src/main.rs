@@ -199,7 +199,7 @@ mod tests {
         fn draw<B: GpuBackend>(&mut self, gpu: &mut B, time: f32) -> viso::gpu::TextureId {
             self.resident(gpu);
             let mut renderer = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
-            renderer.set_surface_size([W as f32, H as f32]);
+            renderer.set_surface_size([W as f32, H as f32], 1.0);
             renderer.set_time(time);
             for (slot, program) in self.store.shaders().iter() {
                 renderer

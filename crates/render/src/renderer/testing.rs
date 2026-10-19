@@ -30,7 +30,7 @@ impl Gpu {
         let surface = gpu.create_surface(RawWindowHandle::Headless, SIZE as u32, SIZE as u32);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([SIZE, SIZE]);
+        r.set_surface_size([SIZE, SIZE], 1.0);
         Gpu { gpu, surface, r }
     }
 

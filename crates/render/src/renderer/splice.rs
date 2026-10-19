@@ -129,7 +129,7 @@ impl Renderer {
         primitives: &[Primitive],
         splices: &[Splice],
     ) -> bool {
-        if !self.splices(primitives, splices) {
+        if self.surface_moved || !self.splices(primitives, splices) {
             return false;
         }
         let mut in_place = self.lowers_in_place();

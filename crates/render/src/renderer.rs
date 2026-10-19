@@ -1393,12 +1393,18 @@ pub struct Renderer {
     /// produced (§9.3). Zero on a steady frame; a single local change is one
     /// range. Read into `FrameStats::uploaded_ranges` (§30); a plain counter.
     uploaded_ranges: usize,
-    /// The surface size in physical pixels `[width, height]`, the outer clamp
+    /// The surface size in logical points `[width, height]`, the outer clamp
     /// for every offscreen ROI (`content ∩ clip ∩ surface`, §16.2). Defaults to
     /// [`Rect::INFINITE`]'s extent (no surface clamp) until
-    /// [`set_surface_size`](Self::set_surface_size) reports the real size; the
-    /// caller passes the same value it later hands `submit`.
+    /// [`set_surface_size`](Self::set_surface_size) reports the real size.
     surface_size: [f32; 2],
+    /// Physical pixels per logical point: what a scissor, a target's texels
+    /// and a blur's reach in texels are scaled by.
+    scale: f32,
+    /// The surface's size or scale changed since the last whole upload, so
+    /// what that upload clamped and sized is stale: the next frame uploads
+    /// whole.
+    surface_moved: bool,
     /// Offscreen-pass children lowered this frame whose paint bounds fell fully
     /// outside their pass's tight ROI (the clip excluded them), so their draw
     /// was skipped (§16.2). Read into `FrameStats::culled_primitives` (§61).
@@ -2056,6 +2062,8 @@ impl Renderer {
             gpu_upload_bytes: 0,
             uploaded_ranges: 0,
             surface_size: [Rect::INFINITE.w, Rect::INFINITE.h],
+            scale: 1.0,
+            surface_moved: false,
             surface_format,
             color_space,
             intermediate_format: if surface_format.has_alpha() {
@@ -2068,12 +2076,25 @@ impl Renderer {
         }
     }
 
-    /// Report the surface size in physical pixels `[width, height]` — the outer
-    /// clamp for every offscreen ROI (§16.2). Call before [`upload`](Self::upload)
-    /// with the same value later handed to [`submit`](Self::submit); until then
-    /// ROIs clamp only to content and clip (no surface bound).
-    pub fn set_surface_size(&mut self, surface_size: [f32; 2]) {
-        self.surface_size = surface_size;
+    /// Report the surface size in physical pixels `[width, height]` and the
+    /// device `scale`, physical pixels per logical point. Primitives, clips
+    /// and the viewport handed to [`submit`](Self::submit) are in logical
+    /// points; scissors and every offscreen target are physical. The logical
+    /// surface is the outer clamp for every offscreen ROI (§16.2). Call before
+    /// [`upload`](Self::upload); until then ROIs clamp only to content and
+    /// clip, at scale 1.
+    pub fn set_surface_size(&mut self, size: [f32; 2], scale: f32) {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        let logical = [size[0] / scale, size[1] / scale];
+        if scale != self.scale || logical != self.surface_size {
+            self.surface_moved = true;
+        }
+        self.scale = scale;
+        self.surface_size = logical;
     }
 
     /// Installs `pipeline`, a brush-profile program laid out by `layout` and
@@ -2362,7 +2383,7 @@ impl Renderer {
     ) -> bool {
         // The path's own bounds are the mask ROI; a degenerate path has no
         // coverage to mask, so it falls through to the (also-degenerate) lane.
-        let roi = path_bounds(path.cmds.iter().copied());
+        let roi = self.snap(path_bounds(path.cmds.iter().copied()));
         if roi.w <= 0.0 || roi.h <= 0.0 {
             return false;
         }
@@ -2382,13 +2403,13 @@ impl Renderer {
             kind: MaskKind::Path,
             source_revision: hash_path_cmds(&path.cmds),
             transform_bucket: 0,
-            device_scale_q: 1,
+            device_scale_q: self.scale_q(),
             fill_rule: ClipFillRule::NonZero,
         };
         let request = MaskRequest {
             kind: MaskKind::Path,
             needs_color: false,
-            roi,
+            roi: self.physical(roi),
             key,
         };
         let Some(res) = self.mask_cache.resolve(&request) else {
@@ -2404,7 +2425,7 @@ impl Renderer {
             let cov = rasterize_path_coverage(
                 path.cmds.iter().copied(),
                 roi,
-                1.0,
+                self.scale,
                 res.slot.w,
                 res.slot.h,
             );
@@ -2460,7 +2481,7 @@ impl Renderer {
             return false;
         }
 
-        let roi = path_bounds(path.cmds.iter().copied());
+        let roi = self.snap(path_bounds(path.cmds.iter().copied()));
         if roi.w <= 0.0 || roi.h <= 0.0 {
             return false;
         }
@@ -2485,13 +2506,13 @@ impl Renderer {
             kind: MaskKind::Path,
             source_revision,
             transform_bucket: 0,
-            device_scale_q: 1,
+            device_scale_q: self.scale_q(),
             fill_rule: ClipFillRule::NonZero,
         };
         let request = MaskRequest {
             kind: MaskKind::Path,
             needs_color: false,
-            roi,
+            roi: self.physical(roi),
             key,
         };
         let Some(res) = self.mask_cache.resolve(&request) else {
@@ -2503,7 +2524,7 @@ impl Renderer {
             let cov = rasterize_path_coverage(
                 path.cmds.iter().copied(),
                 roi,
-                1.0,
+                self.scale,
                 res.slot.w,
                 res.slot.h,
             );
@@ -2579,6 +2600,7 @@ impl Renderer {
     ) {
         self.transforms.begin_frame(painted);
         self.stream_len = primitives.len();
+        self.surface_moved = false;
         self.layer_stack.clear();
         self.offscreen_passes.clear();
         self.blur_passes.clear();
@@ -3620,7 +3642,10 @@ impl Renderer {
                         sampled[0] as f32 / phys[0] as f32,
                         sampled[1] as f32 / phys[1] as f32,
                     ];
-                    let (bw, bh) = (cap_used[0] as f32, cap_used[1] as f32);
+                    let (bw, bh) = (
+                        cap_used[0] as f32 / self.scale,
+                        cap_used[1] as f32 / self.scale,
+                    );
                     let rect = self.offscreen_passes[pass].rect;
                     // The layer opacity rides the blend instance rather than a
                     // composite tint: the fragment folds it into the source before
@@ -3800,7 +3825,7 @@ impl Renderer {
                     sampled[0] as f32 / phys[0] as f32,
                     sampled[1] as f32 / phys[1] as f32,
                 ];
-                let (bw, bh) = (used[0] as f32, used[1] as f32);
+                let (bw, bh) = (used[0] as f32 / self.scale, used[1] as f32 / self.scale);
                 let instance = ImageInstance {
                     rect_pos: [rect.x - origin[0], rect.y - origin[1]],
                     rect_size: [rect.w, rect.h],
@@ -3842,7 +3867,7 @@ impl Renderer {
                     sampled[0] as f32 / phys[0] as f32,
                     sampled[1] as f32 / phys[1] as f32,
                 ];
-                let (bw, bh) = (used[0] as f32, used[1] as f32);
+                let (bw, bh) = (used[0] as f32 / self.scale, used[1] as f32 / self.scale);
                 let rect = record.rect;
                 let instance = material_instance(
                     record,
@@ -4008,7 +4033,11 @@ impl Renderer {
         let transient_target_bytes = self
             .offscreen_passes
             .iter()
-            .map(|p| (p.viewport[0] as usize) * (p.viewport[1] as usize) * 4)
+            .filter_map(|p| p.base)
+            .map(|base| {
+                let [w, h] = self.transient.phys_extent(base);
+                w as usize * h as usize * 4
+            })
             .sum();
         let blur_target_bytes = self
             .blur_passes
@@ -4434,6 +4463,41 @@ impl Renderer {
         }
     }
 
+    /// `rect`, in logical points, grown to the physical pixel grid, so a
+    /// target of it holds whole texels that land on whole surface pixels.
+    fn snap(&self, rect: Rect) -> Rect {
+        snap(rect, self.scale)
+    }
+
+    /// Logical `rect` in physical pixels.
+    fn physical(&self, rect: Rect) -> Rect {
+        Rect {
+            x: rect.x * self.scale,
+            y: rect.y * self.scale,
+            w: rect.w * self.scale,
+            h: rect.h * self.scale,
+        }
+    }
+
+    /// The device scale as a mask key holds it, in 64ths: a coverage mask
+    /// rasterized at one scale is not the mask of another.
+    fn scale_q(&self) -> u32 {
+        (self.scale * 64.0).round() as u32
+    }
+
+    /// The texels a target of the snapped logical `rect` holds.
+    fn texels(&self, rect: Rect) -> [u32; 2] {
+        let texels = |len: f32| ((len * self.scale).round() as u32).max(1);
+        [texels(rect.w), texels(rect.h)]
+    }
+
+    /// The extent of `target`'s texture in logical points: the viewport that
+    /// maps geometry drawn into it, in logical points, onto its texels.
+    fn logical_extent(&self, target: TargetId) -> [f32; 2] {
+        let phys = self.transient.phys_extent(target);
+        [phys[0] as f32 / self.scale, phys[1] as f32 / self.scale]
+    }
+
     /// The capture ROI a backdrop layer over `world_clip` requires: its clip
     /// inflated by the blur's reach (`BLUR_RADIUS_SIGMAS * sigma` — the widest tap
     /// offset the ladder can read, so the visible sub-rect is never contaminated
@@ -4557,11 +4621,11 @@ impl Renderer {
         let mut reads = std::mem::take(&mut self.backdrop_reads);
         for i in 0..self.backdrop_captures.len() {
             let (roi, under) = {
-                let cap = &self.backdrop_captures[i];
+                let cap = &mut self.backdrop_captures[i];
+                cap.roi = snap(cap.roi, self.scale);
                 (cap.roi, cap.under)
             };
-            let width = (roi.w.ceil() as u32).max(1);
-            let height = (roi.h.ceil() as u32).max(1);
+            let [width, height] = self.texels(roi);
 
             let slot = self.graph.next_slot();
             let base = self.transient.declare(
@@ -4619,11 +4683,11 @@ impl Renderer {
                 }
             }
 
-            let phys = self.transient.phys_extent(base);
+            let viewport = self.logical_extent(base);
             let sigma = {
                 let cap = &mut self.backdrop_captures[i];
                 cap.base = Some(base);
-                cap.viewport = [phys[0] as f32, phys[1] as f32];
+                cap.viewport = viewport;
                 cap.used = [width, height];
                 cap.sigma
             };
@@ -4708,9 +4772,8 @@ impl Renderer {
     /// ROI top-left means rewriting that one origin — and the clip, recomputed
     /// from the world clip against the new origin — on every recorded child.
     fn finalize_offscreen(&mut self, idx: usize, entry: &LayerEntry, surface: Rect) {
-        let roi = entry.content_union.intersect(entry.clip).intersect(surface);
-        let width = (roi.w.ceil() as u32).max(1);
-        let height = (roi.h.ceil() as u32).max(1);
+        let roi = self.snap(entry.content_union.intersect(entry.clip).intersect(surface));
+        let [width, height] = self.texels(roi);
 
         let slot = self.graph.next_slot();
         let base = self.transient.declare(
@@ -4725,11 +4788,11 @@ impl Renderer {
             slot,
         );
         self.graph.open(PassWork::Offscreen(idx as u32), Some(base));
-        let phys = self.transient.phys_extent(base);
+        let viewport = self.logical_extent(base);
         let pass = &mut self.offscreen_passes[idx];
         pass.base = Some(base);
         pass.sample = Some(base);
-        pass.viewport = [phys[0] as f32, phys[1] as f32];
+        pass.viewport = viewport;
         pass.used = [width, height];
         pass.rect = roi;
 
@@ -4834,7 +4897,7 @@ impl Renderer {
     /// backdrop blur ([`realize_backdrop_captures`](Self::realize_backdrop_captures)):
     /// both blur one tight-ROI texture, so both share one ladder (§16.2, §17.2).
     fn build_blur_chain(&mut self, base: TargetId, used: [u32; 2], sigma: f32) -> TargetId {
-        let plan = blur_plan(sigma, used[0], used[1]);
+        let plan = blur_plan(sigma * self.scale, used[0], used[1]);
         if plan.is_empty() {
             return base;
         }
@@ -5218,7 +5281,7 @@ impl Renderer {
         let scissor = self
             .transforms
             .clip(seg.space, seg.clip)
-            .map(|c| clip_to_scissor(c, viewport));
+            .map(|c| clip_to_scissor(c, viewport, self.scale));
         match seg.kind {
             SegmentKind::Quad => DrawCommand {
                 pipeline: self.quad_pipeline,
@@ -5418,27 +5481,44 @@ impl Renderer {
     }
 }
 
-/// Convert a pixel-space clip rect into a `(x, y, w, h)` scissor rectangle in
-/// integer physical pixels, clamped to the viewport.
+/// Convert a clip rect in logical points into a `(x, y, w, h)` scissor
+/// rectangle in integer physical pixels, `scale` of them to a point, clamped
+/// to the `viewport` (logical points too).
 ///
 /// Scissor rects must stay within the surface — Metal errors on an
 /// out-of-bounds `setScissorRect`. We floor the origin and ceil the far edge so
 /// the integer rect never clips *inside* the requested float rect, then clamp
 /// both to `[0, viewport]`. A fully off-screen or empty clip yields a zero-area
 /// rect (draws nothing), which is the correct clip result.
-fn clip_to_scissor(clip: Rect, viewport: [f32; 2]) -> (u32, u32, u32, u32) {
-    let vw = viewport[0].max(0.0);
-    let vh = viewport[1].max(0.0);
-    let x0 = clip.x.floor().clamp(0.0, vw);
-    let y0 = clip.y.floor().clamp(0.0, vh);
-    let x1 = (clip.x + clip.w).ceil().clamp(0.0, vw);
-    let y1 = (clip.y + clip.h).ceil().clamp(0.0, vh);
+pub(crate) fn clip_to_scissor(clip: Rect, viewport: [f32; 2], scale: f32) -> (u32, u32, u32, u32) {
+    let vw = (viewport[0] * scale).round().max(0.0);
+    let vh = (viewport[1] * scale).round().max(0.0);
+    let x0 = (clip.x * scale).floor().clamp(0.0, vw);
+    let y0 = (clip.y * scale).floor().clamp(0.0, vh);
+    let x1 = ((clip.x + clip.w) * scale).ceil().clamp(0.0, vw);
+    let y1 = ((clip.y + clip.h) * scale).ceil().clamp(0.0, vh);
     (
         x0 as u32,
         y0 as u32,
         (x1 - x0).max(0.0) as u32,
         (y1 - y0).max(0.0) as u32,
     )
+}
+
+/// `rect` grown to the grid of physical pixels, `scale` to a logical point.
+fn snap(rect: Rect, scale: f32) -> Rect {
+    if !rect.has_area() {
+        return rect;
+    }
+    let (x0, y0) = ((rect.x * scale).floor(), (rect.y * scale).floor());
+    let x1 = ((rect.x + rect.w) * scale).ceil();
+    let y1 = ((rect.y + rect.h) * scale).ceil();
+    Rect {
+        x: x0 / scale,
+        y: y0 / scale,
+        w: (x1 - x0) / scale,
+        h: (y1 - y0) / scale,
+    }
 }
 
 /// The inline uniform block every built-in reads: the target `viewport`
@@ -5955,6 +6035,7 @@ mod tests {
                 h: 100.0,
             },
             [64.0, 64.0],
+            1.0,
         );
         assert_eq!(s, (50, 50, 14, 14));
 
@@ -5966,9 +6047,22 @@ mod tests {
                 h: 10.0,
             },
             [64.0, 64.0],
+            1.0,
         );
         assert_eq!(empty.2, 0);
         assert_eq!(empty.3, 0);
+        // In physical pixels at scale 2: the clip and the viewport both double.
+        let doubled = clip_to_scissor(
+            Rect {
+                x: 10.25,
+                y: 5.0,
+                w: 20.0,
+                h: 100.0,
+            },
+            [32.0, 32.0],
+            2.0,
+        );
+        assert_eq!(doubled, (20, 10, 41, 54));
     }
 
     /// End-to-end headless glyph raster: a run painted onto a cleared surface
@@ -6136,7 +6230,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
         // A translucent layer with a 4000×4000 clip, but only a 10×10 quad at
         // (10, 10). ROI = content(10,10,10,10) ∩ clip ∩ surface(64×64) = the quad.
         r.upload(
@@ -6186,7 +6280,7 @@ mod tests {
         // it. The offscreen child that misses the ROI is dropped at lowering and
         // counted, so the pass sizes to the surviving quad alone.
         let mut r2 = Renderer::new(&mut gpu, format);
-        r2.set_surface_size([64.0, 64.0]);
+        r2.set_surface_size([64.0, 64.0], 1.0);
         r2.upload(
             &mut gpu,
             &[
@@ -6575,7 +6669,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         r.upload(&mut gpu, &[quad(4.0, 4.0)]);
         let flat = r.frame_stats();
@@ -6656,7 +6750,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         let clip = Rect {
             x: 4.0,
@@ -6717,7 +6811,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         let clip = Rect {
             x: 4.0,
@@ -6762,7 +6856,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         let clip = Rect {
             x: 4.0,
@@ -6807,7 +6901,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         let clip = Rect {
             x: 4.0,
@@ -6844,7 +6938,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         let clip = Rect {
             x: 4.0,
@@ -6894,7 +6988,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         // Markers with no layer to annotate: no ops, no passes, no draws beyond
         // the quad itself.
@@ -6944,7 +7038,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         let clip = Rect {
             x: 4.0,
@@ -6985,7 +7079,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         r.upload(
             &mut gpu,
@@ -7045,7 +7139,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         r.upload(&mut gpu, &scene(4.0, 4.0));
         let first = r.frame_stats();
@@ -7069,7 +7163,7 @@ mod tests {
         );
         assert_eq!(moved.render_passes, first.render_passes);
 
-        r.set_surface_size([48.0, 96.0]);
+        r.set_surface_size([48.0, 96.0], 1.0);
         r.upload(&mut gpu, &scene(4.0, 4.0));
         assert_eq!(
             r.frame_stats().render_graph_compiles,
@@ -7115,7 +7209,7 @@ mod tests {
         let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
         let format = gpu.surface_format(surface);
         let mut r = Renderer::new(&mut gpu, format);
-        r.set_surface_size([64.0, 64.0]);
+        r.set_surface_size([64.0, 64.0], 1.0);
 
         r.upload(&mut gpu, &scene(2.0));
         let small = r.frame_stats();

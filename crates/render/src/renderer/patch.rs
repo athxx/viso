@@ -106,7 +106,7 @@ impl Renderer {
         primitives: &[Primitive],
         changed: &[u32],
     ) -> bool {
-        if primitives.len() != self.stream_len {
+        if self.surface_moved || primitives.len() != self.stream_len {
             return false;
         }
         if changed.is_empty() {

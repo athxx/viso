@@ -3051,7 +3051,7 @@ mod tests {
         let mut prims = Vec::new();
         viso_ui::paint_tree(&ws.store, root, &mut prims);
         let gpu = ws.gpu.as_mut().unwrap();
-        gpu.renderer.set_surface_size([200.0, 100.0]);
+        gpu.renderer.set_surface_size([200.0, 100.0], 1.0);
         gpu.renderer.upload(&mut gpu.backend, &prims);
         let target = gpu.backend.create_texture(&viso_gpu::TextureDesc {
             width: 200,
