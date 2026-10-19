@@ -2555,8 +2555,8 @@ input selected: Bool = false;
             a control-flow region (`if`, `match`, `for`) at the root of a view, where the root \
             must be one node; a component that mounts itself directly or indirectly; a \
             property or handler the runtime has no path for on that widget; `padding` with a \
-            `%` component, a non-constant value, or on a node without a content box, and any \
-            use of `margin`; a `bind` to a component input with `using`; properties forwarded \
+            non-constant value or on a node without a content box; a size bound or `margin` \
+            with a non-constant value; a `bind` to a component input with `using`; properties forwarded \
             to a component whose view does not mount exactly one node; and styles applied to a \
             user component node, declared in another file, or switching properties other than \
             `background` or `opacity` under `when`. The message names the specific reason.",
@@ -2564,14 +2564,14 @@ input selected: Bool = false;
             r#"component A {
     view {
         Column {
-            Text { text: "a"; margin: 8dp; }
+            Text { text: "a"; padding: 8dp; }
         }
     }
 }
 "#,
         ),
-        fix: "Address the reason the message names. For `margin`, space nodes with the \
-            container's `gap` or `padding` instead; for a region at the view root, wrap it in \
+        fix: "Address the reason the message names. For `padding` on a node without a \
+            content box, pad a container around it; for a region at the view root, wrap it in \
             a container so the root is one node.",
         fixed: Some(
             r#"Column {

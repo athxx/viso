@@ -29,9 +29,10 @@ use syn::Ident;
 
 use viso_dsl::ir::binding_ir::{BindingEdge, BindingIr, NodeKey};
 use viso_dsl::ir::dirty_map::DirtyClass;
+use viso_dsl::ir::ui_ir::Span as LayoutSpan;
 use viso_dsl::ir::ui_ir::{
-    Align, Avoid, AxisIr, EdgeTermsIr, InsetIr, Justify, LengthIr, LengthsIr, NodeKind, StyleIr,
-    TermsIr, UiItem, UiNode, UiTree,
+    Align, Avoid, AxisIr, BoxRules, EdgeTermsIr, Inset, InsetIr, Justify, LengthIr, LengthsIr,
+    NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::{Control, ControlInput, ViewBehavior, When};
@@ -317,6 +318,7 @@ impl Emit<'_> {
         };
 
         let lengths = lengths_tokens(node.style.lengths(), &handle_ident);
+        let rules = rules_tokens(node.style.rules.as_deref().copied(), &handle_ident);
         let binds = self.emit_binds(key);
         let attach = self.emit_attach(key);
         let show = match self.behavior.and_then(|behavior| behavior.control(key)) {
@@ -339,6 +341,7 @@ impl Emit<'_> {
         quote! {
             {
                 let #handle_ident = #build_call;
+                #rules
                 #lengths
                 #binds
                 #attach
@@ -693,7 +696,31 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
     let height = terms_tokens(lengths.height);
     let gap = terms_tokens(lengths.gap);
     let font_size = terms_tokens(lengths.font_size);
-    let padding = match lengths.padding {
+    let padding = edges_tokens(lengths.padding);
+    let min_width = terms_tokens(lengths.min_width);
+    let max_width = terms_tokens(lengths.max_width);
+    let min_height = terms_tokens(lengths.min_height);
+    let max_height = terms_tokens(lengths.max_height);
+    let margin = edges_tokens(lengths.margin);
+    quote! {
+        cx.bind_lengths(#handle, ::viso::__private::viso_ui::NodeLengths {
+            width: #width,
+            height: #height,
+            gap: #gap,
+            font_size: #font_size,
+            padding: #padding,
+            min_width: #min_width,
+            max_width: #max_width,
+            min_height: #min_height,
+            max_height: #max_height,
+            margin: #margin,
+        });
+    }
+}
+
+/// `Option<::viso::__private::viso_ui::EdgeTerms>` from optional [`EdgeTermsIr`].
+fn edges_tokens(edges: Option<EdgeTermsIr>) -> TokenStream {
+    match edges {
         Some(EdgeTermsIr {
             top,
             end,
@@ -708,16 +735,54 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
             }
         }
         None => quote! { ::core::option::Option::None },
+    }
+}
+
+/// `cx.set_box_rules(..)` for a node's constant box rules, nothing for none.
+fn rules_tokens(rules: Option<BoxRules>, handle: &Ident) -> TokenStream {
+    let Some(BoxRules {
+        min_width,
+        max_width,
+        min_height,
+        max_height,
+        margin,
+        padding_pct,
+    }) = rules
+    else {
+        return quote! {};
     };
+    let [min_width, max_width, min_height, max_height] =
+        [min_width, max_width, min_height, max_height].map(span_tokens);
+    let [ml, mt, mr, mb] = [margin.left, margin.top, margin.right, margin.bottom].map(span_tokens);
+    let Inset {
+        left,
+        top,
+        right,
+        bottom,
+    } = padding_pct;
     quote! {
-        cx.bind_lengths(#handle, ::viso::__private::viso_ui::NodeLengths {
-            width: #width,
-            height: #height,
-            gap: #gap,
-            font_size: #font_size,
-            padding: #padding,
+        cx.set_box_rules(#handle, ::viso::__private::viso_ui::BoxRules {
+            min_width: #min_width,
+            max_width: #max_width,
+            min_height: #min_height,
+            max_height: #max_height,
+            margin: ::viso::__private::viso_ui::SpanInset {
+                left: #ml, top: #mt, right: #mr, bottom: #mb,
+            },
+            padding_pct: ::viso::__private::viso_ui::Inset {
+                left: #left, top: #top, right: #right, bottom: #bottom,
+            },
         });
     }
+}
+
+/// `::viso::__private::viso_ui::Span { .. }`, an unbounded one as such.
+fn span_tokens(span: LayoutSpan) -> TokenStream {
+    if span == LayoutSpan::UNBOUNDED {
+        return quote! { ::viso::__private::viso_ui::Span::UNBOUNDED };
+    }
+    let LayoutSpan { fixed, pct } = span;
+    quote! { ::viso::__private::viso_ui::Span { fixed: #fixed, pct: #pct } }
 }
 
 /// `::viso::__private::viso_ui::Inset { .. }` from a folded [`InsetIr`].

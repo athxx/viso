@@ -22,6 +22,7 @@ use crate::syntax::span::TextRange;
 use viso_behavior::native::MigratableState;
 pub use viso_schema::Avoid;
 use viso_schema::Interaction;
+pub use viso_schema::layout::{BoxRules, Inset, Span, SpanInset};
 pub use viso_schema::{Align, Justify};
 
 /// The retained-tree template a view fragment or component view lowers to.
@@ -80,7 +81,7 @@ pub struct UiInstance {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiItem {
     /// A mounted retained node (`Column { ... }`, `node label: Text { ... }`).
-    Node(UiNode),
+    Node(Box<UiNode>),
     /// A conditional region (`if cond { ... } else { ... }`).
     If(UiIf),
     /// A keyed repetition (`for item in items key item.id { ... }`).
@@ -277,18 +278,88 @@ pub struct LengthsIr {
     /// The node's font size, the typography source of its subtree.
     pub font_size: Option<TermsIr>,
     /// A container's padding that reads the environment or the layout
-    /// direction.
+    /// direction, or has a percentage.
     pub padding: Option<EdgeTermsIr>,
+    /// The node's size bounds; a greatest one `None` is unbounded.
+    pub min_width: Option<TermsIr>,
+    pub max_width: Option<TermsIr>,
+    pub min_height: Option<TermsIr>,
+    pub max_height: Option<TermsIr>,
+    /// The node's margin.
+    pub margin: Option<EdgeTermsIr>,
 }
 
 impl LengthsIr {
+    /// No length.
+    pub const NONE: Self = Self {
+        width: None,
+        height: None,
+        gap: None,
+        font_size: None,
+        padding: None,
+        min_width: None,
+        max_width: None,
+        min_height: None,
+        max_height: None,
+        margin: None,
+    };
+
     /// Whether the node binds no environment length.
     pub fn is_empty(&self) -> bool {
-        self.width.is_none()
-            && self.height.is_none()
-            && self.gap.is_none()
-            && self.font_size.is_none()
-            && self.padding.is_none()
+        *self == Self::NONE
+    }
+
+    /// Whether the lengths carry box rules: a size bound, a margin or a
+    /// padding percentage.
+    pub fn has_rules(&self) -> bool {
+        self.min_width.is_some()
+            || self.max_width.is_some()
+            || self.min_height.is_some()
+            || self.max_height.is_some()
+            || self.margin.is_some()
+            || self.padding.is_some_and(|p| p.has_pct())
+    }
+}
+
+impl TermsIr {
+    /// Whether a term reads the environment.
+    pub fn needs_env(self) -> bool {
+        self.px != 0.0 || self.sp != 0.0 || self.em != 0.0
+    }
+
+    /// The span a term without an environment part is.
+    fn span(self) -> Span {
+        Span {
+            fixed: self.dp,
+            pct: self.pct,
+        }
+    }
+
+    /// The terms of a span.
+    fn of(span: Span) -> Self {
+        Self {
+            dp: span.fixed,
+            pct: span.pct,
+            ..Self::default()
+        }
+    }
+}
+
+impl EdgeTermsIr {
+    /// Whether an edge has a percentage.
+    pub fn has_pct(self) -> bool {
+        [self.top, self.end, self.bottom, self.start]
+            .iter()
+            .any(|t| t.pct != 0.0)
+    }
+
+    /// Whether an edge reads the environment, or the layout direction to
+    /// place `start` and `end`.
+    fn needs_env(self) -> bool {
+        self.start != self.end
+            || [self.top, self.end, self.bottom, self.start]
+                .iter()
+                .any(|t| t.needs_env())
     }
 }
 
@@ -332,6 +403,11 @@ pub struct StyleIr {
     /// What the node keeps its content clear of, when it is an avoiding
     /// region.
     pub avoid: Option<Avoid>,
+    /// The constant box rules — size bounds, margin, padding percentage —
+    /// when none reads the environment or the layout direction; otherwise
+    /// [`lengths`](Self::lengths) carries them all; boxed, as few nodes have
+    /// any.
+    pub rules: Option<Box<BoxRules>>,
 }
 
 /// An adaptive scope: the node its subtree's `env.size_class` classifies.
@@ -355,18 +431,109 @@ impl StyleIr {
             && self.lengths().is_empty()
             && self.scope.is_none()
             && self.avoid.is_none()
+            && self.rules.is_none()
     }
 
     /// The lengths that fold against the environment, empty when there are none.
     pub fn lengths(&self) -> &LengthsIr {
-        const NONE: LengthsIr = LengthsIr {
-            width: None,
-            height: None,
-            gap: None,
-            font_size: None,
-            padding: None,
+        self.lengths.as_deref().unwrap_or(&LengthsIr::NONE)
+    }
+
+    /// Settle where the box rules live: as constant [`rules`](Self::rules)
+    /// when none reads the environment or the layout direction, else all of
+    /// them in the lengths, a constant padding's percentage with them.
+    pub fn settle_rules(&mut self) {
+        let Some(lengths) = self.lengths.as_deref_mut() else {
+            return;
         };
-        self.lengths.as_deref().unwrap_or(&NONE)
+        if !lengths.has_rules() {
+            return;
+        }
+        let bounds = [
+            lengths.min_width,
+            lengths.max_width,
+            lengths.min_height,
+            lengths.max_height,
+        ];
+        let edges = [lengths.margin, lengths.padding.filter(|p| p.has_pct())];
+        if bounds.iter().flatten().any(|t| t.needs_env())
+            || edges.iter().flatten().any(|e| e.needs_env())
+        {
+            return;
+        }
+        let span = |terms: Option<TermsIr>, none: Span| terms.map_or(none, TermsIr::span);
+        let mut rules = BoxRules {
+            min_width: span(lengths.min_width.take(), Span::ZERO),
+            max_width: span(lengths.max_width.take(), Span::UNBOUNDED),
+            min_height: span(lengths.min_height.take(), Span::ZERO),
+            max_height: span(lengths.max_height.take(), Span::UNBOUNDED),
+            ..BoxRules::NONE
+        };
+        if let Some(m) = lengths.margin.take() {
+            rules.margin = SpanInset {
+                left: m.start.span(),
+                top: m.top.span(),
+                right: m.end.span(),
+                bottom: m.bottom.span(),
+            };
+        }
+        if let Some(p) = lengths.padding.take_if(|p| p.has_pct()) {
+            rules.padding_pct = Inset {
+                left: p.start.pct,
+                top: p.top.pct,
+                right: p.end.pct,
+                bottom: p.bottom.pct,
+            };
+            self.padding = Some(InsetIr {
+                left: p.start.dp,
+                top: p.top.dp,
+                right: p.end.dp,
+                bottom: p.bottom.dp,
+            });
+        }
+        if self.lengths().is_empty() {
+            self.lengths = None;
+        }
+        self.rules = Some(Box::new(rules));
+    }
+
+    /// Move settled [`rules`](Self::rules) back into the lengths, so a
+    /// property folding after the settle (a forwarded one) rebinds its rule
+    /// alone before the rules settle again.
+    pub fn unsettle_rules(&mut self) {
+        let Some(&rules) = self.rules.take().as_deref() else {
+            return;
+        };
+        let padding = self.padding;
+        let lengths = self.lengths_mut();
+        let bound = |span: Span, none: Span| (span != none).then(|| TermsIr::of(span));
+        lengths.min_width = bound(rules.min_width, Span::ZERO);
+        lengths.max_width = bound(rules.max_width, Span::UNBOUNDED);
+        lengths.min_height = bound(rules.min_height, Span::ZERO);
+        lengths.max_height = bound(rules.max_height, Span::UNBOUNDED);
+        let m = rules.margin;
+        lengths.margin = (m != SpanInset::ZERO).then(|| EdgeTermsIr {
+            top: TermsIr::of(m.top),
+            end: TermsIr::of(m.right),
+            bottom: TermsIr::of(m.bottom),
+            start: TermsIr::of(m.left),
+        });
+        let pct = rules.padding_pct;
+        if pct != Inset::default() {
+            let dp = padding.unwrap_or_default();
+            let edge = |dp: f32, pct: f32| TermsIr {
+                dp,
+                pct,
+                ..TermsIr::default()
+            };
+            lengths.padding = Some(EdgeTermsIr {
+                top: edge(dp.top, pct.top),
+                end: edge(dp.right, pct.right),
+                bottom: edge(dp.bottom, pct.bottom),
+                start: edge(dp.left, pct.left),
+            });
+            self.padding = None;
+        }
     }
 
     /// The lengths, allocated on first write.

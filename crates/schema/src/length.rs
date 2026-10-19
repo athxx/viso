@@ -3,7 +3,7 @@
 use core::ops::{Add, BitOr, BitOrAssign, Div, Mul, Neg, Sub};
 
 use crate::env::LayoutDirection;
-use crate::layout::{Inset, Length};
+use crate::layout::{BoxRules, Inset, Length, Span, SpanInset};
 
 /// A length as five terms, each in its own unit: `dp + px + sp + em + pct`.
 ///
@@ -113,6 +113,16 @@ impl LengthTerms {
         })
     }
 
+    /// The box-rule span these terms fold to at `font` dp per em: the dp the
+    /// non-percent terms make, and the percentage. `None` when not finite.
+    pub fn fold_span(self, env: &LengthEnv, font: f32) -> Option<Span> {
+        let fixed = self.fixed(env, font)?;
+        self.pct.is_finite().then_some(Span {
+            fixed,
+            pct: self.pct,
+        })
+    }
+
     /// The font size these terms fold to as a `font_size` value under a parent
     /// of `parent_font` dp: `em` and `%` both read the parent. Never negative;
     /// `None` when not finite.
@@ -174,20 +184,49 @@ impl EdgeTerms {
     }
 
     /// The physical inset the edges fold to at `font` dp per em, each edge
-    /// never negative; a percent term counts as `0`. `None` when an edge is
-    /// not finite.
+    /// never negative; a percent term is left to [`pct`](Self::pct). `None`
+    /// when an edge is not finite.
     pub fn fold(self, env: &LengthEnv, font: f32) -> Option<Inset> {
         let edge = |terms: LengthTerms| Some(terms.fixed(env, font)?.max(0.0));
-        let (left, right) = match env.direction {
+        let [left, top, right, bottom] = self.physical(env.direction);
+        Some(Inset {
+            left: edge(left)?,
+            top: edge(top)?,
+            right: edge(right)?,
+            bottom: edge(bottom)?,
+        })
+    }
+
+    /// The physical edges' percentages under `direction`.
+    pub fn pct(self, direction: LayoutDirection) -> Inset {
+        let [left, top, right, bottom] = self.physical(direction);
+        Inset {
+            left: left.pct,
+            top: top.pct,
+            right: right.pct,
+            bottom: bottom.pct,
+        }
+    }
+
+    /// The physical spans the edges fold to at `font` dp per em — a margin,
+    /// whose edges may be negative. `None` when an edge is not finite.
+    pub fn fold_spans(self, env: &LengthEnv, font: f32) -> Option<SpanInset> {
+        let [left, top, right, bottom] = self.physical(env.direction);
+        Some(SpanInset {
+            left: left.fold_span(env, font)?,
+            top: top.fold_span(env, font)?,
+            right: right.fold_span(env, font)?,
+            bottom: bottom.fold_span(env, font)?,
+        })
+    }
+
+    /// The edges as left, top, right, bottom under `direction`.
+    fn physical(self, direction: LayoutDirection) -> [LengthTerms; 4] {
+        let (left, right) = match direction {
             LayoutDirection::Ltr => (self.start, self.end),
             LayoutDirection::Rtl => (self.end, self.start),
         };
-        Some(Inset {
-            left: edge(left)?,
-            top: edge(self.top)?,
-            right: edge(right)?,
-            bottom: edge(self.bottom)?,
-        })
+        [left, self.top, right, self.bottom]
     }
 
     /// Whether an edge has a percent term.
@@ -365,8 +404,18 @@ pub struct NodeLengths {
     /// The node's font size, the typography source of its subtree: `em` and
     /// `%` read the parent's resolved font size.
     pub font_size: Option<LengthTerms>,
-    /// A container's padding. Its percent terms count as `0`.
+    /// A container's padding; a percent term reads the parent's content box.
     pub padding: Option<EdgeTerms>,
+    /// The node's least width.
+    pub min_width: Option<LengthTerms>,
+    /// The node's greatest width.
+    pub max_width: Option<LengthTerms>,
+    /// The node's least height.
+    pub min_height: Option<LengthTerms>,
+    /// The node's greatest height.
+    pub max_height: Option<LengthTerms>,
+    /// The node's margin.
+    pub margin: Option<EdgeTerms>,
 }
 
 impl NodeLengths {
@@ -374,16 +423,71 @@ impl NodeLengths {
     /// since changing it re-resolves the `em` lengths beneath.
     pub fn deps(&self) -> LengthDeps {
         let mut deps = LengthDeps::EMPTY;
-        for terms in [self.width, self.height, self.gap].into_iter().flatten() {
+        let terms = [
+            self.width,
+            self.height,
+            self.gap,
+            self.min_width,
+            self.max_width,
+            self.min_height,
+            self.max_height,
+        ];
+        for terms in terms.into_iter().flatten() {
             deps |= terms.deps();
         }
-        if let Some(padding) = self.padding {
-            deps |= padding.deps();
+        for edges in [self.padding, self.margin].into_iter().flatten() {
+            deps |= edges.deps();
         }
         if let Some(font) = self.font_size {
             deps |= font.deps() | LengthDeps::FONT_SIZE;
         }
         deps
+    }
+}
+
+impl NodeLengths {
+    /// Whether the lengths carry the node's box rules: a bound size bound or
+    /// margin, or a padding with a percent term. Such lengths carry all of
+    /// them, so the node's rules are what they fold to.
+    pub fn has_rules(&self) -> bool {
+        self.min_width.is_some()
+            || self.max_width.is_some()
+            || self.min_height.is_some()
+            || self.max_height.is_some()
+            || self.margin.is_some()
+            || self.padding.is_some_and(EdgeTerms::has_pct)
+    }
+
+    /// The box rules the lengths fold to at `font` dp per em, `None` when
+    /// they carry none ([`has_rules`](Self::has_rules)); `Some(None)` when a
+    /// term is not finite. A bound is never negative.
+    pub fn rules(&self, env: &LengthEnv, font: f32) -> Option<Option<BoxRules>> {
+        if !self.has_rules() {
+            return None;
+        }
+        let span = |terms: Option<LengthTerms>, none: Span| match terms {
+            Some(terms) => terms.fold_span(env, font).map(|span| Span {
+                fixed: span.fixed.max(0.0),
+                ..span
+            }),
+            None => Some(none),
+        };
+        let fold = || {
+            Some(BoxRules {
+                min_width: span(self.min_width, Span::ZERO)?,
+                max_width: span(self.max_width, Span::UNBOUNDED)?,
+                min_height: span(self.min_height, Span::ZERO)?,
+                max_height: span(self.max_height, Span::UNBOUNDED)?,
+                margin: match self.margin {
+                    Some(edges) => edges.fold_spans(env, font)?,
+                    None => SpanInset::ZERO,
+                },
+                padding_pct: self
+                    .padding
+                    .map_or(Inset::default(), |edges| edges.pct(env.direction)),
+            })
+        };
+        Some(fold())
     }
 }
 

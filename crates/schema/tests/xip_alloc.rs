@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use viso_ende::{Aligned, Encode, SECTION_ALIGN};
 use viso_schema::aot::{AotEdge, AotNode, AotNodeKind, AotPackage, AotStyle, AotView};
+use viso_schema::layout::{BoxRules, Span, SpanInset};
 use viso_schema::view::{
     EventRoute, Route, ViewAsset, ViewHandler, ViewPackage, ViewPackageView, ViewShader, ViewState,
 };
@@ -65,7 +66,8 @@ fn allocations<T>(f: impl FnOnce() -> T) -> (T, usize) {
     (out, ALLOCS.with(Cell::get))
 }
 
-/// A row of `leaves` leaves, each with lengths and an edge.
+/// A row of `leaves` leaves, each with lengths and an edge, every other one
+/// with box rules.
 fn tree(leaves: u32) -> AotPackage {
     let mut nodes = vec![AotNode {
         kind: AotNodeKind::Flex,
@@ -74,6 +76,7 @@ fn tree(leaves: u32) -> AotPackage {
             ..AotStyle::default()
         },
         lengths: None,
+        rules: None,
         child_count: leaves,
     }];
     let mut edges = Vec::new();
@@ -88,6 +91,16 @@ fn tree(leaves: u32) -> AotPackage {
                 }),
                 ..NodeLengths::default()
             })),
+            rules: (i % 2 == 0).then(|| {
+                Box::new(BoxRules {
+                    min_width: Span::dp(i as f32),
+                    margin: SpanInset {
+                        top: Span::pct(5.0),
+                        ..SpanInset::ZERO
+                    },
+                    ..BoxRules::NONE
+                })
+            }),
             child_count: 0,
         });
         edges.push(AotEdge {
@@ -161,7 +174,9 @@ fn an_aot_package_reads_in_place_without_allocating() {
         let ((nodes, lengths, edges), allocs) = allocations(|| {
             let view = AotView::new(blob).expect("valid");
             let nodes = view.nodes().count();
-            let lengths = view.nodes().filter(|n| n.lengths.is_some()).count();
+            let lengths = view.nodes().filter(|n| n.lengths().is_some()).count();
+            let rules = view.nodes().filter_map(|n| n.rules()).count();
+            assert_eq!(rules, leaves.div_ceil(2) as usize);
             let edges = view.edges().map(|e| e.node as usize).sum::<usize>();
             (nodes, lengths, edges)
         });

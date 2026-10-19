@@ -603,6 +603,7 @@ mod tests {
             kind: AotNodeKind::Leaf,
             style: AotStyle::default(),
             lengths: None,
+            rules: None,
             child_count: 0,
         }
     }

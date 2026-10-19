@@ -101,7 +101,7 @@ fn a_view_that_does_not_mount_is_an_error_its_file_points_at() {
     s.write("Viso.toml", MANIFEST)
         .write(
             "src/app.vs",
-            "export component App {\n    view {\n        Column { margin: 4dp; }\n    }\n}\n",
+            "export component App {\n    view {\n        Column { width: Sizing::min_content; }\n    }\n}\n",
         )
         .write(
             "src/parts.vs",
@@ -111,8 +111,11 @@ fn a_view_that_does_not_mount_is_an_error_its_file_points_at() {
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     let err = stderr(&out);
     assert!(err.starts_with("error[E3711]: "), "{err}");
-    assert!(err.contains("`margin` does not lay out yet"), "{err}");
-    assert!(err.contains(" --> src/app.vs:3:26\n"), "{err}");
+    assert!(
+        err.contains("`Sizing::min_content` does not lay out yet"),
+        "{err}"
+    );
+    assert!(err.contains(" --> src/app.vs:3:25\n"), "{err}");
     assert_eq!(stdout(&out), "checked `demo`: 2 files, 1 error\n");
 }
 

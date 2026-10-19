@@ -91,7 +91,7 @@ fn nodes(items: &[UiItem]) -> Vec<&UiNode> {
     items
         .iter()
         .filter_map(|i| match i {
-            UiItem::Node(n) => Some(n),
+            UiItem::Node(n) => Some(&**n),
             _ => None,
         })
         .collect()

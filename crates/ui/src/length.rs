@@ -12,7 +12,7 @@
 
 use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
-use crate::layout::{Inset, LayoutInput, Length};
+use crate::layout::{BoxRules, Inset, LayoutInput, Length};
 
 use crate::node::NodeId;
 pub use viso_schema::length::{EdgeTerms, LengthDeps, LengthEnv, LengthTerms, NodeLengths};
@@ -55,15 +55,39 @@ pub struct LengthStats {
     pub indefinite_basis: u64,
 }
 
-/// One node's bound lengths.
+/// One node's bound lengths: what they read, and the slot of `terms` that
+/// keeps them.
 #[derive(Debug, Clone, Copy)]
 struct LengthBinding {
     node: NodeId,
-    lengths: NodeLengths,
     deps: LengthDeps,
     /// The binding re-folds at the next layout.
     pending: bool,
+    slot: u32,
 }
+
+/// A binding's terms but its box rules.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SizeTerms {
+    width: Option<LengthTerms>,
+    height: Option<LengthTerms>,
+    gap: Option<LengthTerms>,
+    font_size: Option<LengthTerms>,
+    padding: Option<EdgeTerms>,
+}
+
+/// A binding's box-rule terms, which few bindings have.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RuleTerms {
+    min_width: Option<LengthTerms>,
+    max_width: Option<LengthTerms>,
+    min_height: Option<LengthTerms>,
+    max_height: Option<LengthTerms>,
+    margin: Option<EdgeTerms>,
+}
+
+/// No slot of [`LengthBindings::rule_terms`].
+const NO_RULE_TERMS: u32 = u32::MAX;
 
 /// The store's environment-dependent lengths: the environment, each bound
 /// node by ascending index, and what layout reported.
@@ -71,6 +95,12 @@ struct LengthBinding {
 pub(crate) struct LengthBindings {
     env: LengthEnv,
     bindings: Vec<LengthBinding>,
+    /// Each binding's terms, with its slot of `rule_terms` or
+    /// [`NO_RULE_TERMS`]; `free_terms` lists the slots a dropped binding left.
+    terms: Vec<(SizeTerms, u32)>,
+    free_terms: Vec<u32>,
+    rule_terms: Vec<RuleTerms>,
+    free_rule_terms: Vec<u32>,
     /// Some binding re-folds at the next layout.
     pending: bool,
     /// A font source was bound or dropped: the next layout re-folds every
@@ -89,6 +119,10 @@ impl LengthBindings {
     /// Drops every binding and report; the environment and counters stay.
     pub(crate) fn clear(&mut self) {
         self.bindings.clear();
+        self.terms.clear();
+        self.free_terms.clear();
+        self.rule_terms.clear();
+        self.free_rule_terms.clear();
         self.pending = false;
         self.font_moved = false;
         #[cfg(debug_assertions)]
@@ -96,6 +130,97 @@ impl LengthBindings {
             self.reported.clear();
             self.warnings.clear();
         }
+    }
+
+    /// The lengths kept in `slot`.
+    fn lengths(&self, slot: u32) -> NodeLengths {
+        let (size, rules) = self.terms[slot as usize];
+        let mut lengths = NodeLengths {
+            width: size.width,
+            height: size.height,
+            gap: size.gap,
+            font_size: size.font_size,
+            padding: size.padding,
+            ..NodeLengths::default()
+        };
+        if rules != NO_RULE_TERMS {
+            let rules = self.rule_terms[rules as usize];
+            lengths.min_width = rules.min_width;
+            lengths.max_width = rules.max_width;
+            lengths.min_height = rules.min_height;
+            lengths.max_height = rules.max_height;
+            lengths.margin = rules.margin;
+        }
+        lengths
+    }
+
+    /// The font size kept in `slot`.
+    fn font_size(&self, slot: u32) -> Option<LengthTerms> {
+        self.terms[slot as usize].0.font_size
+    }
+
+    /// Keeps `lengths` in a free slot, or `slot` when one is given.
+    fn keep(&mut self, lengths: &NodeLengths, slot: Option<u32>) -> u32 {
+        let size = SizeTerms {
+            width: lengths.width,
+            height: lengths.height,
+            gap: lengths.gap,
+            font_size: lengths.font_size,
+            padding: lengths.padding,
+        };
+        let rules = RuleTerms {
+            min_width: lengths.min_width,
+            max_width: lengths.max_width,
+            min_height: lengths.min_height,
+            max_height: lengths.max_height,
+            margin: lengths.margin,
+        };
+        let has_rules = rules.min_width.is_some()
+            || rules.max_width.is_some()
+            || rules.min_height.is_some()
+            || rules.max_height.is_some()
+            || rules.margin.is_some();
+        let old_rules = slot.map_or(NO_RULE_TERMS, |slot| self.terms[slot as usize].1);
+        let rule_slot = match (has_rules, old_rules) {
+            (false, NO_RULE_TERMS) => NO_RULE_TERMS,
+            (false, old) => {
+                self.free_rule_terms.push(old);
+                NO_RULE_TERMS
+            }
+            (true, NO_RULE_TERMS) => match self.free_rule_terms.pop() {
+                Some(free) => {
+                    self.rule_terms[free as usize] = rules;
+                    free
+                }
+                None => {
+                    self.rule_terms.push(rules);
+                    (self.rule_terms.len() - 1) as u32
+                }
+            },
+            (true, old) => {
+                self.rule_terms[old as usize] = rules;
+                old
+            }
+        };
+        match slot.or_else(|| self.free_terms.pop()) {
+            Some(slot) => {
+                self.terms[slot as usize] = (size, rule_slot);
+                slot
+            }
+            None => {
+                self.terms.push((size, rule_slot));
+                (self.terms.len() - 1) as u32
+            }
+        }
+    }
+
+    /// Frees `slot` and the rule terms it holds.
+    fn release(&mut self, slot: u32) {
+        let rules = self.terms[slot as usize].1;
+        if rules != NO_RULE_TERMS {
+            self.free_rule_terms.push(rules);
+        }
+        self.free_terms.push(slot);
     }
 
     fn find(&self, id: NodeId) -> Option<&LengthBinding> {
@@ -137,12 +262,6 @@ impl NodeStore {
             return;
         }
         let deps = lengths.deps();
-        let binding = LengthBinding {
-            node: id,
-            lengths,
-            deps,
-            pending: true,
-        };
         let table = self.lengths_mut();
         let font_moved: bool;
         match table
@@ -151,17 +270,32 @@ impl NodeStore {
         {
             Ok(at) => {
                 let old = table.bindings[at];
-                if old.node == id && old.lengths == lengths {
+                if old.node == id && table.lengths(old.slot) == lengths {
                     return;
                 }
                 font_moved = old.node != id
-                    || old.lengths.font_size.is_some()
+                    || table.font_size(old.slot).is_some()
                     || lengths.font_size.is_some();
-                table.bindings[at] = binding;
+                let slot = table.keep(&lengths, Some(old.slot));
+                table.bindings[at] = LengthBinding {
+                    node: id,
+                    deps,
+                    pending: true,
+                    slot,
+                };
             }
             Err(at) => {
                 font_moved = lengths.font_size.is_some();
-                table.bindings.insert(at, binding);
+                let slot = table.keep(&lengths, None);
+                table.bindings.insert(
+                    at,
+                    LengthBinding {
+                        node: id,
+                        deps,
+                        pending: true,
+                        slot,
+                    },
+                );
             }
         }
         table.pending = true;
@@ -177,8 +311,9 @@ impl NodeStore {
             .binary_search_by_key(&id.index(), |b| b.node.index())
             && table.bindings[at].node == id
         {
-            let font = table.bindings[at].lengths.font_size.is_some();
-            table.bindings.remove(at);
+            let slot = table.bindings.remove(at).slot;
+            let font = table.font_size(slot).is_some();
+            table.release(slot);
             if font {
                 table.pending = true;
                 table.font_moved = true;
@@ -188,7 +323,8 @@ impl NodeStore {
 
     /// The node's bound lengths, or `None` when it has none.
     pub fn bound_lengths(&self, id: NodeId) -> Option<NodeLengths> {
-        self.lengths().find(id).map(|b| b.lengths)
+        let table = self.lengths();
+        table.find(id).map(|b| table.lengths(b.slot))
     }
 
     /// The environment lengths resolve against.
@@ -253,7 +389,7 @@ impl NodeStore {
         let table = self.lengths();
         let mut node = Some(id);
         while let Some(at) = node {
-            if let Some(font) = table.find(at).and_then(|b| b.lengths.font_size) {
+            if let Some(font) = table.find(at).and_then(|b| table.font_size(b.slot)) {
                 return font
                     .fold_font(&table.env, self.parent_font(at, font))
                     .unwrap_or_else(|| self.parent_font(at, LengthTerms::em(1.0)));
@@ -287,7 +423,9 @@ impl NodeStore {
         while at < self.lengths().bindings.len() {
             let binding = self.lengths().bindings[at];
             if !self.arena().is_live(binding.node) {
-                self.lengths_mut().bindings.remove(at);
+                let table = self.lengths_mut();
+                table.bindings.remove(at);
+                table.release(binding.slot);
                 continue;
             }
             at += 1;
@@ -295,23 +433,22 @@ impl NodeStore {
                 continue;
             }
             self.lengths_mut().bindings[at - 1].pending = false;
-            self.fold_binding(binding);
+            let lengths = self.lengths().lengths(binding.slot);
+            self.fold_binding(binding.node, &lengths);
         }
         self.lengths_mut().pending = false;
     }
 
-    fn fold_binding(&mut self, binding: LengthBinding) {
-        let id = binding.node;
+    fn fold_binding(&mut self, id: NodeId, lengths: &NodeLengths) {
         let env = self.lengths().env;
         let font = self.font_of(id);
-        if let Some(own) = binding.lengths.font_size
+        if let Some(own) = lengths.font_size
             && own.fold_font(&env, self.parent_font(id, own)).is_none()
         {
             self.lengths_mut().report(id, LengthIssue::NonFinite);
         }
         let mut class = DirtyClass::EMPTY;
         let mut requested = false;
-        let lengths = binding.lengths;
         for (terms, width) in [(lengths.width, true), (lengths.height, false)] {
             let Some(terms) = terms else {
                 continue;
@@ -368,10 +505,14 @@ impl NodeStore {
                 class = class | DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT;
             }
         }
+        if let Some(rules) = lengths.rules(&env, font) {
+            let rules = rules.unwrap_or_else(|| {
+                self.lengths_mut().report(id, LengthIssue::NonFinite);
+                BoxRules::NONE
+            });
+            self.set_box_rules(id, rules);
+        }
         if let Some(edges) = lengths.padding {
-            if edges.has_pct() {
-                self.lengths_mut().report(id, LengthIssue::IndefiniteBasis);
-            }
             let folded = edges.fold(&env, font).unwrap_or_else(|| {
                 self.lengths_mut().report(id, LengthIssue::NonFinite);
                 Inset::default()

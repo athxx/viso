@@ -13,7 +13,7 @@ use std::cell::Cell;
 use viso_ende::Encode;
 use viso_ui::aot::{AotNode, AotNodeKind, AotPackage, AotStyle, AotView, instantiate};
 use viso_ui::length::{LengthTerms, NodeLengths};
-use viso_ui::{BindingTable, NodeStore, StateStore, VirtualLists};
+use viso_ui::{BindingTable, BoxRules, NodeStore, Span, StateStore, VirtualLists};
 
 thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
@@ -58,6 +58,7 @@ fn blob(rows: u32) -> &'static [u8] {
         kind: AotNodeKind::Flex,
         style: AotStyle::default(),
         lengths: None,
+        rules: None,
         child_count: rows,
     }];
     for row in 0..rows {
@@ -68,6 +69,7 @@ fn blob(rows: u32) -> &'static [u8] {
                 ..AotStyle::default()
             },
             lengths: None,
+            rules: None,
             child_count: 4,
         });
         for leaf in 0..4 {
@@ -81,6 +83,12 @@ fn blob(rows: u32) -> &'static [u8] {
                     }),
                     ..NodeLengths::default()
                 })),
+                rules: (leaf % 2 == 0).then(|| {
+                    Box::new(BoxRules {
+                        max_width: Span::pct(50.0),
+                        ..BoxRules::NONE
+                    })
+                }),
                 child_count: 0,
             });
         }

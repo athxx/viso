@@ -48,7 +48,8 @@ use crate::frontend::Origin;
 use crate::hir::TargetProfile;
 use crate::hotreload::plan::{CandidatePlan, plan, plan_mount_for, plan_view_for};
 use crate::ir::ui_ir::{
-    AxisIr, InsetIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode, UiTree,
+    AxisIr, EdgeTermsIr, InsetIr, LengthIr, LengthsIr, NodeKind, StyleIr, TermsIr, UiItem, UiNode,
+    UiTree,
 };
 use crate::view_behavior::ViewBrush;
 use crate::view_regions::StaticNodes;
@@ -418,6 +419,7 @@ pub(crate) fn aot_node(node: &UiNode) -> AotNode {
         kind: aot_kind(node.kind),
         style: aot_style(&node.style),
         lengths: node_lengths(node.style.lengths()).map(Box::new),
+        rules: node.style.rules.clone(),
         child_count: 0,
     }
 }
@@ -460,13 +462,23 @@ pub(crate) fn node_lengths(lengths: &LengthsIr) -> Option<NodeLengths> {
         height: lengths.height.map(terms_of),
         gap: lengths.gap.map(terms_of),
         font_size: lengths.font_size.map(terms_of),
-        padding: lengths.padding.map(|edges| EdgeTerms {
-            top: terms_of(edges.top),
-            end: terms_of(edges.end),
-            bottom: terms_of(edges.bottom),
-            start: terms_of(edges.start),
-        }),
+        padding: lengths.padding.map(edges_of),
+        min_width: lengths.min_width.map(terms_of),
+        max_width: lengths.max_width.map(terms_of),
+        min_height: lengths.min_height.map(terms_of),
+        max_height: lengths.max_height.map(terms_of),
+        margin: lengths.margin.map(edges_of),
     })
+}
+
+/// Lowered edges to the runtime [`EdgeTerms`].
+fn edges_of(edges: EdgeTermsIr) -> EdgeTerms {
+    EdgeTerms {
+        top: terms_of(edges.top),
+        end: terms_of(edges.end),
+        bottom: terms_of(edges.bottom),
+        start: terms_of(edges.start),
+    }
 }
 
 /// A lowered physical inset to the runtime [`Inset`].

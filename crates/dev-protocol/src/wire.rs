@@ -2247,6 +2247,7 @@ mod tests {
             kind: AotNodeKind::Leaf,
             style: AotStyle::default(),
             lengths: None,
+            rules: None,
             child_count: 0,
         };
 
@@ -2254,6 +2255,7 @@ mod tests {
             kind: AotNodeKind::Flex,
             style: AotStyle::default(),
             lengths: None,
+            rules: None,
             child_count,
         };
         // The candidate the plan builds into: a root over a leaf, the leaf

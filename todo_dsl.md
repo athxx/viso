@@ -329,8 +329,8 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         `start` that differs from `end` binds `EdgeTerms` that fold at layout against
         the environment and the layout direction (`LengthEnv::direction`, fed from the
         locale), dirtying only a node whose inset moved. Package style mask is a varint.
-  - [x] `E3711` for a `%` or non-constant padding, padding on a node with no content
-        box, padding on an avoiding region (folded or not), and `margin`.
+  - [x] `E3711` for a non-constant padding, padding on a node with no content box,
+        and padding on an avoiding region (folded or not).
 - [ ] Bound layout values: a `width`/`height`/`gap`/`padding` that reads state, an input
       or `theme` writes its value to the node (the behavior VM carries `MixedLength` as
       terms, delivered as `NodeLengths`).
@@ -353,9 +353,15 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       `row_gap`, `align_items`, `areas`, `adaptive_columns`) and the `grid.*`,
       `stack.*`, `absolute.*` child placement; `Stack`'s `content_align` (`E3711`
       today).
-- [ ] `min_width`/`max_width`/`min_height`/`max_height`, `Sizing::min_content`/
-      `max_content`, `corner_radius`, `border`, `clip`, `autofocus`, and `enabled`
-      disabling a node beyond its styles' selectors (`E3711` today).
+- [x] `min_width`/`max_width`/`min_height`/`max_height` (`max_*` also
+      `Option::None`/`Option::Some`) bound a fixed, a fit, a fill and a cross extent
+      over the parent's content box, the minimum winning; bounded fills share what
+      their bounds leave. Constant ones fold to the node's `BoxRules`, ones reading
+      the environment ride `NodeLengths`; across the macros, hot reload (in place)
+      and the release package.
+- [ ] `Sizing::min_content`/`max_content`, `corner_radius`, `border`, `clip`,
+      `autofocus`, and `enabled` disabling a node beyond its styles' selectors
+      (`E3711` today).
 - [x] `fill` on the cross axis fills the available extent under any `align` (U3.2);
       the runtime fills it only under `Align::Stretch`, and stretches a `fit` child
       too.
@@ -363,9 +369,11 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       `font_size` that reads `sp`) after it mounts: today its request is resized only
       when its own values or a reload deliver again.
 - [ ] A `const` imported from another file folds into style as one of the file does.
-- [ ] `%` padding against the parent's content box (`start`/`end` its width,
-      `top`/`bottom` its height), resolved when the parent places the node.
-- [ ] `margin` (§U3.3) in layout.
+- [x] `%` padding against the parent's content box (`start`/`end` its width,
+      `top`/`bottom` its height), resolved when the parent places the node and kept
+      for a relayout.
+- [x] `margin` (§U3.3) in layout: room on both axes outside the box, negative
+      allowed, counted in the parent's natural size, the root's against the surface.
 - [ ] Right-to-left layout: a `Row`'s children, `Justify`/`Align` start and end, and
       `Grid` columns mirror under `env.layout_direction`, from the same
       `LengthEnv::direction` the padding reads.

@@ -227,3 +227,77 @@ fn padding_pads_the_content_and_follows_the_environment() {
         "`start` is the right edge right to left; `top` follows the text scale"
     );
 }
+
+/// Size bounds, a margin and a `%` padding read the parent's content box: the
+/// constant ones as the node's box rules, a margin in `sp` as bound terms that
+/// follow the text scale.
+#[test]
+fn box_rules_read_the_parent_content_box_and_follow_the_environment() {
+    use viso::render::Rect;
+    use viso::ui::LengthEnv;
+
+    let build = viso::ui! {
+        Column {
+            Column {
+                width: 200dp;
+                height: 100dp;
+                padding: 10%;
+                Text { width: 10dp; height: 10dp; }
+            }
+            Text { width: 500dp; max_width: 50%; height: 10dp; }
+            Text { width: 10dp; min_width: 30dp; height: 10dp; margin: EdgeInsets { start: 6dp, top: 4dp }; }
+            Text { width: 10dp; height: 10dp; margin: EdgeInsets { start: 2sp }; }
+        }
+    };
+    let mut store = NodeStore::new();
+    let root = {
+        let mut cx = BuildCx::new(&mut store);
+        build(&mut cx).id()
+    };
+    let mut children = Vec::new();
+    let mut at = store.arena().links(root).unwrap().first_child;
+    while let Some(child) = at {
+        children.push(child);
+        at = store.arena().links(child).unwrap().next_sibling;
+    }
+    let padded = store
+        .arena()
+        .links(children[0])
+        .unwrap()
+        .first_child
+        .unwrap();
+    let surface = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 400.0,
+        h: 300.0,
+    };
+    store.layout(root, surface, &mut Vec::new());
+    let b = |store: &NodeStore, node| {
+        let b = store.bounds(node);
+        (b.x, b.y, b.w)
+    };
+    assert_eq!(
+        b(&store, padded),
+        (40.0, 30.0, 10.0),
+        "10% of the 400×300 content box"
+    );
+    assert_eq!(
+        b(&store, children[1]),
+        (0.0, 100.0, 200.0),
+        "at most half of 400dp"
+    );
+    assert_eq!(
+        b(&store, children[2]),
+        (6.0, 114.0, 30.0),
+        "at least 30dp, past its margin"
+    );
+    assert_eq!(b(&store, children[3]).0, 2.0);
+
+    store.set_length_env(LengthEnv {
+        text_scale: 2.0,
+        ..LengthEnv::default()
+    });
+    store.layout(root, surface, &mut Vec::new());
+    assert_eq!(b(&store, children[3]).0, 4.0, "2sp at text scale 2");
+}

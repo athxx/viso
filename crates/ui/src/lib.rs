@@ -78,7 +78,10 @@ pub use inspect::{
     snapshot_ui,
 };
 pub use interaction::Interaction;
-pub use layout::{Align, AlignItems, Axis, Basis, Inset, Justify, LayoutInput, Length, Size, Vec2};
+pub use layout::{
+    Align, AlignItems, Axis, Basis, BoxRules, Inset, Justify, LayoutInput, Length, Size, Span,
+    SpanInset, Vec2,
+};
 pub use length::{
     EdgeTerms, LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms, LengthWarning,
     NodeLengths,

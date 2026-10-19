@@ -427,17 +427,15 @@ fn incoming(nodes: &NodeStore, node: NodeId, axis: Axis) -> Option<f32> {
 }
 
 /// Whether `node`'s content decides its extent along `axis`: it fits its
-/// content, or it fills the cross axis of a flex container that does not
-/// stretch its children.
+/// content, unless it sits on the cross axis of a flex container that
+/// stretches its children to the cross extent.
 fn content_sized(nodes: &NodeStore, node: NodeId, axis: Axis) -> bool {
     match nodes.input(node.index()).size().on(axis) {
-        Length::Fit => true,
-        Length::Fill { .. } => matches!(
+        Length::Fit => !matches!(
             nodes.parent(node).map(|parent| nodes.input(parent.index())),
-            Some(LayoutInput::Flex { axis: main, align, .. })
-                if main != axis && align != Align::Stretch
+            Some(LayoutInput::Flex { axis: main, align: Align::Stretch, .. }) if main != axis
         ),
-        Length::Fixed(_) | Length::Relative { .. } => false,
+        Length::Fill { .. } | Length::Fixed(_) | Length::Relative { .. } => false,
     }
 }
 

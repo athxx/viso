@@ -166,3 +166,176 @@ impl Inset {
         }
     }
 }
+
+impl core::ops::Add for Inset {
+    type Output = Self;
+    #[inline]
+    fn add(self, rhs: Self) -> Self {
+        Inset {
+            left: self.left + rhs.left,
+            top: self.top + rhs.top,
+            right: self.right + rhs.right,
+            bottom: self.bottom + rhs.bottom,
+        }
+    }
+}
+
+/// A box rule's length: `fixed` dp plus `pct` of its percent basis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Span {
+    /// The dp part.
+    pub fixed: f32,
+    /// The fraction of the basis (`0.5` is `50%`).
+    pub pct: f32,
+}
+
+impl Span {
+    /// No length.
+    pub const ZERO: Self = Self::dp(0.0);
+    /// No bound: a maximum that never clamps.
+    pub const UNBOUNDED: Self = Self::dp(f32::INFINITY);
+
+    /// `v` dp.
+    pub const fn dp(v: f32) -> Self {
+        Self { fixed: v, pct: 0.0 }
+    }
+
+    /// A percentage of the basis: `Span::pct(50.0)` is `50%`.
+    pub const fn pct(percent: f32) -> Self {
+        Self {
+            fixed: 0.0,
+            pct: percent / 100.0,
+        }
+    }
+
+    /// The extent on `basis`: the sum on a definite one; on an indefinite one
+    /// the dp part, or `fallback` for a span that is all percentage.
+    #[inline]
+    pub fn resolve(self, basis: f32, definite: bool, fallback: f32) -> f32 {
+        if self.pct == 0.0 {
+            self.fixed
+        } else if definite {
+            self.fixed + self.pct * basis
+        } else if self.fixed == 0.0 {
+            fallback
+        } else {
+            self.fixed
+        }
+    }
+}
+
+/// Four physical edges of [`Span`]s.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpanInset {
+    /// Left edge.
+    pub left: Span,
+    /// Top edge.
+    pub top: Span,
+    /// Right edge.
+    pub right: Span,
+    /// Bottom edge.
+    pub bottom: Span,
+}
+
+impl SpanInset {
+    /// No inset.
+    pub const ZERO: Self = Self {
+        left: Span::ZERO,
+        top: Span::ZERO,
+        right: Span::ZERO,
+        bottom: Span::ZERO,
+    };
+
+    /// The inset on a box of `width` × `height`, each definite or not: the
+    /// left and right edges read the width, the top and bottom the height.
+    #[inline]
+    pub fn resolve(self, width: f32, height: f32, definite: [bool; 2]) -> Inset {
+        Inset {
+            left: self.left.resolve(width, definite[0], 0.0),
+            top: self.top.resolve(height, definite[1], 0.0),
+            right: self.right.resolve(width, definite[0], 0.0),
+            bottom: self.bottom.resolve(height, definite[1], 0.0),
+        }
+    }
+
+    /// Whether an edge reads its basis.
+    pub fn has_pct(self) -> bool {
+        [self.left, self.top, self.right, self.bottom]
+            .iter()
+            .any(|span| span.pct != 0.0)
+    }
+}
+
+/// What bounds a node's box beyond its size request, and the room it keeps
+/// around itself: the extents it may not shrink below or grow past (a minimum
+/// wins over a smaller maximum), its margin, and the percentage part of a
+/// container's padding. A size bound and a margin read the parent's content
+/// box, the width for the horizontal ones and the height for the vertical
+/// ones, as does the padding percentage.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoxRules {
+    /// The least width.
+    pub min_width: Span,
+    /// The greatest width.
+    pub max_width: Span,
+    /// The least height.
+    pub min_height: Span,
+    /// The greatest height.
+    pub max_height: Span,
+    /// Room outside the box, on each edge; may be negative.
+    pub margin: SpanInset,
+    /// The padding each edge adds as a fraction of the parent's content box.
+    pub padding_pct: Inset,
+}
+
+impl BoxRules {
+    /// No rule.
+    pub const NONE: Self = Self {
+        min_width: Span::ZERO,
+        max_width: Span::UNBOUNDED,
+        min_height: Span::ZERO,
+        max_height: Span::UNBOUNDED,
+        margin: SpanInset::ZERO,
+        padding_pct: Inset {
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+        },
+    };
+
+    /// The least and greatest extent on `axis` over a basis of `basis`.
+    #[inline]
+    pub fn bounds(&self, axis: Axis, basis: f32, definite: bool) -> (f32, f32) {
+        let (min, max) = match axis {
+            Axis::Row => (self.min_width, self.max_width),
+            Axis::Column => (self.min_height, self.max_height),
+        };
+        (
+            min.resolve(basis, definite, 0.0).max(0.0),
+            max.resolve(basis, definite, f32::INFINITY).max(0.0),
+        )
+    }
+
+    /// `extent` on `axis` held within the bounds; the minimum wins.
+    #[inline]
+    pub fn clamp(&self, axis: Axis, extent: f32, basis: f32, definite: bool) -> f32 {
+        let (min, max) = self.bounds(axis, basis, definite);
+        extent.min(max).max(min)
+    }
+
+    /// Whether the bounds on `axis` can move an extent.
+    #[inline]
+    pub fn bounds_on(&self, axis: Axis) -> bool {
+        match axis {
+            Axis::Row => self.min_width != Span::ZERO || self.max_width != Span::UNBOUNDED,
+            Axis::Column => self.min_height != Span::ZERO || self.max_height != Span::UNBOUNDED,
+        }
+    }
+}
+
+impl Default for BoxRules {
+    fn default() -> Self {
+        Self::NONE
+    }
+}

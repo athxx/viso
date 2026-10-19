@@ -13,7 +13,7 @@ use crate::length::LengthIssue;
 use viso_render::Rect;
 
 pub use viso_math::Vec2;
-pub use viso_schema::layout::{Align, Axis, Inset, Justify, Length};
+pub use viso_schema::layout::{Align, Axis, BoxRules, Inset, Justify, Length, Span, SpanInset};
 
 /// A [`Vec2`]'s component along a layout [`Axis`] (x for Row, y for Column).
 pub trait OnAxis {
@@ -294,6 +294,27 @@ pub trait LayoutTree {
     /// non-subgrid grid or a non-grid node; read only by the grid layout arm
     /// when it lays out a grid child of a grid.
     fn subgrid_axes(&self, index: u32) -> (bool, bool);
+    /// The rules bounding a node's box beyond its size request — its least and
+    /// greatest extents, its margin, its padding percentage — or `None` for a
+    /// node with none, the common case.
+    fn rules(&self, index: u32) -> Option<&BoxRules> {
+        let _ = index;
+        None
+    }
+    /// Record the parent content box `within` (NaN where indefinite) a
+    /// container with rules was laid in, so a re-layout of it alone reads the
+    /// same percentages, and give its rules; [`kept_within`](Self::kept_within)
+    /// gives the content box back. Keeps nothing by default.
+    fn keep_within(&mut self, index: u32, within: Vec2) -> Option<&BoxRules> {
+        let _ = (index, within);
+        None
+    }
+    /// The content box [`keep_within`](Self::keep_within) recorded for a
+    /// container with rules; indefinite for any other.
+    fn kept_within(&self, index: u32) -> Vec2 {
+        let _ = index;
+        INDEFINITE
+    }
     /// Whether a node (and its subtree) is folded out of layout. A hidden node
     /// measures to zero on both axes and lays out to a zero rect, contributing
     /// nothing to a parent's main-axis sum, without a structural rebuild.
@@ -473,8 +494,16 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
             for i in 0..child_count {
                 let child = scratch[start + i];
                 let cm = tree.measured(child);
-                main_sum += cm.on(axis);
-                cross_max = cross_max.max(cm.on(cross_of(axis)));
+                let (main, cross) = (cm.on(axis), cm.on(cross_of(axis)));
+                let (main, cross) = match tree.rules(child) {
+                    None => (main, cross),
+                    Some(rules) => {
+                        let margin = margin_in(rules, INDEFINITE);
+                        (main + margin.main(axis), cross + margin.cross(axis))
+                    }
+                };
+                main_sum += main;
+                cross_max = cross_max.max(cross);
             }
             if child_count > 1 {
                 main_sum += gap * (child_count as f32 - 1.0);
@@ -501,7 +530,9 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
             // that overflow is what scrolls, decided at layout time).
             let child_natural = |axis: Axis| -> f32 {
                 if child_count > 0 {
-                    tree.measured(scratch[start]).on(axis)
+                    let content = scratch[start];
+                    let margin = margin_of(tree, content, INDEFINITE);
+                    tree.measured(content).on(axis) + margin.main(axis)
                 } else {
                     0.0
                 }
@@ -569,8 +600,195 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
         }
     };
 
+    // A node's bounds hold its natural size too, their percentages read as
+    // nothing: no basis is known yet.
+    let measured = match tree.rules(root) {
+        Some(rules) => Measured {
+            w: rules.clamp(Axis::Row, measured.w, 0.0, false),
+            h: rules.clamp(Axis::Column, measured.h, 0.0, false),
+        },
+        None => measured,
+    };
     tree.set_measured(root, measured);
     scratch.truncate(start);
+}
+
+/// A content box no percentage can read: both extents indefinite.
+pub(crate) const INDEFINITE: Vec2 = Vec2 {
+    x: f32::NAN,
+    y: f32::NAN,
+};
+
+/// The margin `child` keeps in a parent content box `within` (an extent is
+/// NaN where it is indefinite).
+#[inline]
+fn margin_of(tree: &impl LayoutTree, child: u32, within: Vec2) -> Inset {
+    tree.rules(child)
+        .map_or(Inset::default(), |rules| margin_in(rules, within))
+}
+
+/// The padding a container of `rules` keeps: its own `padding`, and its
+/// percentage of the content box `within` it sits in, a percentage counting
+/// as nothing on an indefinite extent.
+#[inline(always)]
+pub(crate) fn padded(padding: Inset, rules: Option<&BoxRules>, within: Vec2) -> Inset {
+    let Some(rules) = rules else {
+        return padding;
+    };
+    let pct = rules.padding_pct;
+    if pct == Inset::default() {
+        return padding;
+    }
+    let edge = |fixed: f32, f: f32, basis: f32| {
+        if basis.is_nan() {
+            fixed
+        } else {
+            (fixed + f * basis).max(0.0)
+        }
+    };
+    Inset {
+        left: edge(padding.left, pct.left, within.x),
+        top: edge(padding.top, pct.top, within.y),
+        right: edge(padding.right, pct.right, within.x),
+        bottom: edge(padding.bottom, pct.bottom, within.y),
+    }
+}
+
+/// The content box a container of `bounds` and `padding` on `basis` gives
+/// its children's percentages: its extents, NaN where it is indefinite.
+#[inline]
+fn content_within(bounds: Rect, padding: Inset, basis: Basis) -> Vec2 {
+    Vec2 {
+        x: if basis.width {
+            (bounds.w - padding.left - padding.right).max(0.0)
+        } else {
+            f32::NAN
+        },
+        y: if basis.height {
+            (bounds.h - padding.top - padding.bottom).max(0.0)
+        } else {
+            f32::NAN
+        },
+    }
+}
+
+/// The box the root `root` takes on a surface of `surface`: the surface,
+/// less its margin, held within its bounds.
+pub(crate) fn root_box(tree: &impl LayoutTree, root: u32, surface: Rect) -> Rect {
+    let Some(rules) = tree.rules(root) else {
+        return surface;
+    };
+    let margin = rules.margin.resolve(surface.w, surface.h, [true, true]);
+    Rect {
+        x: surface.x + margin.left,
+        y: surface.y + margin.top,
+        w: rules.clamp(
+            Axis::Row,
+            surface.w - margin.main(Axis::Row),
+            surface.w,
+            true,
+        ),
+        h: rules.clamp(
+            Axis::Column,
+            surface.h - margin.main(Axis::Column),
+            surface.h,
+            true,
+        ),
+    }
+}
+
+/// The extent per unit of weight the fill children among `children` take
+/// along `axis` so that, each held within its bounds over `basis`, they sum
+/// to `free`; and that sum, which falls short of or past `free` only when
+/// their bounds cannot reach it. Safeguarded Newton on the sum, which is
+/// piecewise linear and non-decreasing in the share: exact once a step lands
+/// in the right piece, a bisection otherwise.
+fn fill_share(
+    tree: &impl LayoutTree,
+    children: &[u32],
+    axis: Axis,
+    free: f32,
+    basis: f32,
+    definite: bool,
+) -> (f32, f32) {
+    let eval = |share: f32| -> (f32, f32) {
+        let (mut sum, mut slope) = (0.0f32, 0.0f32);
+        for &child in children {
+            let Length::Fill { weight } = tree.input(child).size().on(axis) else {
+                continue;
+            };
+            let weight = weight.max(0.0);
+            let (min, max) = tree
+                .rules(child)
+                .map_or((0.0, f32::INFINITY), |r| r.bounds(axis, basis, definite));
+            let max = max.max(min);
+            let raw = if weight > 0.0 { weight * share } else { 0.0 };
+            if raw <= min {
+                sum += min;
+            } else if raw >= max {
+                sum += max;
+            } else {
+                sum += raw;
+                slope += weight;
+            }
+        }
+        (sum, slope)
+    };
+    let (floor, _) = eval(0.0);
+    if free <= floor {
+        return (0.0, floor);
+    }
+    let (ceiling, _) = eval(f32::INFINITY);
+    if free >= ceiling {
+        return (f32::INFINITY, ceiling);
+    }
+    let (mut lo, mut hi) = (0.0f32, f32::INFINITY);
+    let mut share = 1.0f32;
+    for _ in 0..64 {
+        let (sum, slope) = eval(share);
+        let err = free - sum;
+        if err.abs() <= 1e-4 * free.max(1.0) {
+            return (share, sum);
+        }
+        if err > 0.0 {
+            lo = share;
+        } else {
+            hi = share;
+        }
+        let next = if slope > 0.0 {
+            share + err / slope
+        } else {
+            f32::NAN
+        };
+        share = if next > lo && next < hi {
+            next
+        } else if hi.is_finite() {
+            (lo + hi) * 0.5
+        } else {
+            (share * 2.0).max(lo + 1.0)
+        };
+    }
+    (share, eval(share).0)
+}
+
+/// The main-axis extent flex child `child` requests by `length` over a
+/// content box `extent` along `axis`, a fill its natural one.
+#[inline(always)]
+fn main_request(
+    tree: &impl LayoutTree,
+    child: u32,
+    length: Length,
+    axis: Axis,
+    extent: f32,
+    definite: bool,
+) -> f32 {
+    match length {
+        Length::Fixed(v) => v,
+        Length::Fit | Length::Fill { .. } => tree.measured(child).on(axis),
+        Length::Relative { fixed, pct } => {
+            relative_extent(fixed, pct, extent, definite, tree.measured(child).on(axis))
+        }
+    }
 }
 
 /// Top-down layout pass: place `root` into `bounds`, then place its children.
@@ -582,16 +800,24 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
 /// laid recursively into the boxes computed here. `scratch` is a reusable
 /// child-id buffer.
 pub fn layout(tree: &mut impl LayoutTree, root: u32, bounds: Rect, scratch: &mut Vec<u32>) {
-    layout_on(tree, root, bounds, Basis::DEFINITE, scratch);
+    let within = Vec2 {
+        x: bounds.w,
+        y: bounds.h,
+    };
+    let bounds = root_box(tree, root, bounds);
+    layout_on(tree, root, bounds, Basis::DEFINITE, within, scratch);
 }
 
-/// [`layout`] a node whose box is a percent basis only where `basis` says: a
-/// subtree re-laid in place passes the basis its ancestry gives it.
+/// [`layout`] a node whose box is a percent basis only where `basis` says,
+/// in a parent content box `within` (NaN where indefinite) its percentage
+/// padding reads: a subtree re-laid in place passes what its ancestry gives
+/// it.
 pub fn layout_on(
     tree: &mut impl LayoutTree,
     root: u32,
     bounds: Rect,
     basis: Basis,
+    within: Vec2,
     scratch: &mut Vec<u32>,
 ) {
     // A hidden subtree lays out to a zero rect at the parent-assigned origin and
@@ -633,10 +859,11 @@ pub fn layout_on(
         LayoutInput::Grid { .. } => {
             // Top-level grid (or a grid child of a non-grid parent): it solves
             // both of its own axes — no inherited tracks.
-            layout_grid(tree, root, bounds, None, None, scratch);
+            layout_grid(tree, root, bounds, within, None, None, scratch);
             return;
         }
     };
+    let padding = padded(padding, tree.keep_within(root, within), within);
 
     let start = scratch.len();
     tree.children(root, scratch);
@@ -651,50 +878,71 @@ pub fn layout_on(
     let cross_extent = rect_len(bounds, cross) - padding.cross(axis);
     let main_definite = basis.on(axis);
     let cross_definite = basis.on(cross);
+    let inner = content_within(bounds, padding, basis);
     let gaps_total = if child_count > 1 {
         gap * (child_count as f32 - 1.0)
     } else {
         0.0
     };
 
-    // Sum the fixed/relative/fit main sizes and the total fill weight in one
-    // sweep. A relative size resolves against the content box's main extent.
+    // Sum the fixed/relative/fit main sizes, each within its bounds, the
+    // margins, and the total fill weight in one sweep. A relative size and a
+    // bound resolve against the content box's main extent. A child without
+    // rules, almost every one, takes its request as is.
     let mut fixed_main = 0.0f32;
     let mut weight_total = 0.0f32;
+    let mut bounded_fill = false;
+    let mut ruled = false;
     for i in 0..child_count {
         let child = scratch[start + i];
-        match tree.input(child).size().on(axis) {
+        let length = tree.input(child).size().on(axis);
+        if let Some(rules) = tree.rules(child) {
+            ruled = true;
+            fixed_main += margin_in(rules, inner).main(axis);
+            match length {
+                Length::Fill { weight } => {
+                    weight_total += weight.max(0.0);
+                    bounded_fill |= rules.bounds_on(axis);
+                }
+                length => {
+                    let request =
+                        main_request(tree, child, length, axis, main_extent, main_definite);
+                    fixed_main += rules.clamp(axis, request, main_extent, main_definite);
+                }
+            }
+            continue;
+        }
+        match length {
             Length::Fill { weight } => weight_total += weight.max(0.0),
-            Length::Fit => fixed_main += tree.measured(child).on(axis),
-            Length::Fixed(v) => fixed_main += v,
-            Length::Relative { fixed, pct } => {
-                let natural = tree.measured(child).on(axis);
-                fixed_main += relative_extent(fixed, pct, main_extent, main_definite, natural);
+            length => {
+                fixed_main += main_request(tree, child, length, axis, main_extent, main_definite);
             }
         }
     }
 
-    let remaining = main_extent - fixed_main - gaps_total;
-    // Fill allocation cannot be negative, but alignment must retain signed
-    // overflow. Otherwise an oversized centered group silently snaps to Start
-    // instead of overflowing equally on both sides.
-    let fill_free = remaining.max(0.0);
+    // What the fills share: the leftover, never negative, split by weight —
+    // or, when a fill is bounded, the share per weight that lets the bounded
+    // fills together take it. Alignment keeps whatever is left, signed: an
+    // oversized centered group overflows equally on both sides.
+    let free = main_extent - fixed_main - gaps_total;
+    let (share, filled) = if weight_total <= 0.0 {
+        (0.0, 0.0)
+    } else if bounded_fill {
+        let children = &scratch[start..start + child_count];
+        fill_share(tree, children, axis, free, main_extent, main_definite)
+    } else {
+        (free.max(0.0) / weight_total, free.max(0.0))
+    };
+    let remaining = free - filled;
 
-    // Place children along the main axis, advancing a cursor from the near edge.
-    // `Justify` shifts the whole packed group by the leftover main slack, but
-    // only when no Fill child claimed it: a Fill child expands to absorb `free`,
-    // so `weight_total > 0` means there is no slack left to distribute and the
-    // group stays pinned to the near edge regardless of `justify`.
+    // Place children along the main axis, advancing a cursor from the near
+    // edge. `Justify` shifts the whole packed group by what the fills left.
     let main_origin = rect_start(bounds, axis) + padding.main_start(axis);
     let cross_origin = rect_start(bounds, cross) + padding.cross_start(axis);
-    let justify_off = if weight_total > 0.0 {
-        0.0
-    } else {
-        match justify {
-            Justify::Start => 0.0,
-            Justify::Center => remaining * 0.5,
-            Justify::End => remaining,
-        }
+    let justify_off = match justify {
+        Justify::Start => 0.0,
+        Justify::Center => remaining * 0.5,
+        Justify::End => remaining,
     };
     let mut cursor = main_origin + justify_off;
 
@@ -705,36 +953,55 @@ pub fn layout_on(
     for i in 0..child_count {
         let child = scratch[start + i];
         let input = tree.input(child);
-        let size = input.size();
-        let main_size = match size.on(axis) {
-            Length::Fixed(v) => v,
-            Length::Relative { fixed, pct } => {
-                if !main_definite {
-                    tree.report_length(child, LengthIssue::IndefiniteBasis);
-                }
-                let natural = tree.measured(child).on(axis);
-                relative_extent(fixed, pct, main_extent, main_definite, natural)
-            }
-            Length::Fit => tree.measured(child).on(axis),
+        let length = input.size().on(axis);
+        if matches!(length, Length::Relative { .. }) && !main_definite {
+            tree.report_length(child, LengthIssue::IndefiniteBasis);
+        }
+        let request = match length {
             Length::Fill { weight } => {
-                if weight_total > 0.0 {
-                    fill_free * (weight.max(0.0) / weight_total)
+                if weight > 0.0 {
+                    weight * share
                 } else {
                     0.0
                 }
             }
+            length => main_request(tree, child, length, axis, main_extent, main_definite),
+        };
+        let rules = if ruled {
+            tree.rules(child).copied()
+        } else {
+            None
+        };
+        let (at, main_size, (cross_size, cross_off), next) = match &rules {
+            None => (
+                cursor,
+                request,
+                flex_cross(tree, child, axis, align, cross_extent, cross_definite),
+                cursor + request + gap,
+            ),
+            Some(rules) => {
+                let margin = margin_in(rules, inner);
+                let main_size = rules.clamp(axis, request, main_extent, main_definite);
+                let cross = ruled_cross(
+                    tree,
+                    child,
+                    axis,
+                    align,
+                    cross_extent,
+                    cross_definite,
+                    rules,
+                    margin,
+                );
+                (
+                    cursor + margin.main_start(axis),
+                    main_size,
+                    cross,
+                    cursor + main_size + margin.main(axis) + gap,
+                )
+            }
         };
 
-        let (cross_size, cross_off) =
-            flex_cross(tree, child, axis, align, cross_extent, cross_definite);
-
-        let child_box = axis_rect(
-            axis,
-            cursor,
-            cross_origin + cross_off,
-            main_size,
-            cross_size,
-        );
+        let child_box = axis_rect(axis, at, cross_origin + cross_off, main_size, cross_size);
         // The child's assigned box width is main on a Row, cross on a Column.
         // Record it so a wrap-eligible text child can reflow to it later; the
         // recorder is a no-op for every non-text / non-wrapping child.
@@ -745,13 +1012,20 @@ pub fn layout_on(
         };
         tree.request_text_reflow(child, assigned_width);
         let child_basis = basis.child(tree.input(root), input);
-        layout_on(tree, child, child_box, child_basis, scratch);
-
-        cursor += main_size + gap;
+        layout_on(tree, child, child_box, child_basis, inner, scratch);
+        cursor = next;
     }
 
     // Release the child-id slice back to the caller's scratch high-water mark.
     scratch.truncate(start);
+}
+
+/// The margin `rules` keep in a content box `within`.
+#[inline]
+fn margin_in(rules: &BoxRules, within: Vec2) -> Inset {
+    rules
+        .margin
+        .resolve(within.x, within.y, [!within.x.is_nan(), !within.y.is_nan()])
 }
 
 /// The cross extent of flex child `child` of a container laying out along
@@ -759,6 +1033,7 @@ pub fn layout_on(
 /// into that box. A `fill` takes the whole extent under any `align`; a `fit`
 /// takes its content, or the whole extent under `stretch`; a fixed or relative
 /// request takes its own. `align` then places what does not fill.
+#[inline(always)]
 fn flex_cross(
     tree: &mut impl LayoutTree,
     child: u32,
@@ -767,9 +1042,51 @@ fn flex_cross(
     extent: f32,
     definite: bool,
 ) -> (f32, f32) {
-    let size = match tree.input(child).size().cross(axis) {
-        Length::Fill { .. } => extent,
-        Length::Fit if align == Align::Stretch => extent,
+    let size = cross_request(tree, child, axis, align, extent, extent, definite);
+    (size, align_offset(align, extent, size))
+}
+
+/// [`flex_cross`] for a child with `rules` and a `margin`: what fills takes
+/// the extent less the margin, a relative request still reads the whole
+/// extent, the bounds hold the result, and `align` places it inside the
+/// margin.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn ruled_cross(
+    tree: &mut impl LayoutTree,
+    child: u32,
+    axis: Axis,
+    align: Align,
+    extent: f32,
+    definite: bool,
+    rules: &BoxRules,
+    margin: Inset,
+) -> (f32, f32) {
+    let room = extent - margin.cross(axis);
+    let request = cross_request(tree, child, axis, align, room, extent, definite);
+    let size = rules.clamp(cross_of(axis), request, extent, definite);
+    (
+        size,
+        margin.cross_start(axis) + align_offset(align, room, size),
+    )
+}
+
+/// The cross extent flex child `child` requests: `room` for a fill, or a fit
+/// under `stretch`; its content for a fit; its own for a fixed or relative
+/// request, a relative one over the content box `extent`.
+#[inline(always)]
+fn cross_request(
+    tree: &mut impl LayoutTree,
+    child: u32,
+    axis: Axis,
+    align: Align,
+    room: f32,
+    extent: f32,
+    definite: bool,
+) -> f32 {
+    match tree.input(child).size().cross(axis) {
+        Length::Fill { .. } => room,
+        Length::Fit if align == Align::Stretch => room,
         Length::Fit => tree.measured(child).on(cross_of(axis)),
         Length::Fixed(v) => v,
         Length::Relative { fixed, pct } => {
@@ -779,26 +1096,32 @@ fn flex_cross(
             let natural = tree.measured(child).on(cross_of(axis));
             relative_extent(fixed, pct, extent, definite, natural)
         }
-    };
-    let off = match align {
-        Align::Start | Align::Stretch => 0.0,
-        Align::Center => (extent - size) * 0.5,
-        Align::End => extent - size,
-    };
-    (size, off)
+    }
 }
 
-/// The box flex container `parent`, laid out in `bounds` on `basis`, gives
-/// its child `child` when only the child's measure changed and its main-axis
-/// request does not follow it: the main-axis run it was placed in, `kept`,
-/// across the cross extent its new measure takes. Queues the text reflow the
-/// container's pass would. `None` when `parent` is not a flex container.
+/// Where `align` places an extent `size` in `room`.
+#[inline(always)]
+fn align_offset(align: Align, room: f32, size: f32) -> f32 {
+    match align {
+        Align::Start | Align::Stretch => 0.0,
+        Align::Center => (room - size) * 0.5,
+        Align::End => room - size,
+    }
+}
+
+/// The box flex container `parent`, laid out in `bounds` on `basis` in a
+/// content box `within`, gives its child `child` when only the child's
+/// measure changed and its main-axis request does not follow it: the
+/// main-axis run it was placed in, `kept`, across the cross extent its new
+/// measure takes. Queues the text reflow the container's pass would. `None`
+/// when `parent` is not a flex container.
 pub(crate) fn flex_child_box(
     tree: &mut impl LayoutTree,
     parent: u32,
     child: u32,
     bounds: Rect,
     basis: Basis,
+    within: Vec2,
     kept: Rect,
 ) -> Option<Rect> {
     let LayoutInput::Flex {
@@ -810,9 +1133,25 @@ pub(crate) fn flex_child_box(
     else {
         return None;
     };
+    let padding = padded(padding, tree.rules(parent), within);
     let cross = cross_of(axis);
     let extent = rect_len(bounds, cross) - padding.cross(axis);
-    let (cross_size, cross_off) = flex_cross(tree, child, axis, align, extent, basis.on(cross));
+    let (cross_size, cross_off) = match tree.rules(child).copied() {
+        None => flex_cross(tree, child, axis, align, extent, basis.on(cross)),
+        Some(rules) => {
+            let margin = margin_in(&rules, content_within(bounds, padding, basis));
+            ruled_cross(
+                tree,
+                child,
+                axis,
+                align,
+                extent,
+                basis.on(cross),
+                &rules,
+                margin,
+            )
+        }
+    };
     let main_size = rect_len(kept, axis);
     tree.request_text_reflow(
         child,
@@ -864,17 +1203,37 @@ fn layout_scroll(
     // more than one child was declared, only the first is the scrolled content.
     let content = scratch[start];
     let main_size = tree.measured(content).on(axis);
-    let cross_size = rect_len(bounds, cross);
+    let inner = content_within(
+        bounds,
+        Inset::default(),
+        Basis::pack(axis, false, basis.on(cross)),
+    );
+    let (margin, cross_size) = match tree.rules(content) {
+        Some(rules) => {
+            let margin = margin_in(rules, inner);
+            let room = rect_len(bounds, cross) - margin.cross(axis);
+            let extent = rect_len(bounds, cross);
+            (margin, rules.clamp(cross, room, extent, basis.on(cross)))
+        }
+        None => (Inset::default(), rect_len(bounds, cross)),
+    };
     scratch.truncate(start);
 
     let content_box = axis_rect(
         axis,
-        rect_start(bounds, axis),
-        rect_start(bounds, cross),
+        rect_start(bounds, axis) + margin.main_start(axis),
+        rect_start(bounds, cross) + margin.cross_start(axis),
         main_size,
         cross_size,
     );
-    tree.set_content(root, axis_pack_vec(axis, main_size, cross_size));
+    tree.set_content(
+        root,
+        axis_pack_vec(
+            axis,
+            main_size + margin.main(axis),
+            cross_size + margin.cross(axis),
+        ),
+    );
     // The scrolling axis is unbounded: a fill there takes the content's
     // natural extent, as a fit does.
     let input = tree.input(content);
@@ -882,7 +1241,7 @@ fn layout_scroll(
         tree.report_length(content, LengthIssue::IndefiniteBasis);
     }
     let content_basis = basis.child(tree.input(root), input);
-    layout_on(tree, content, content_box, content_basis, scratch);
+    layout_on(tree, content, content_box, content_basis, inner, scratch);
 }
 
 /// Lay out an [`LayoutInput::AbsoluteRows`] canvas: place each mounted child at
@@ -919,7 +1278,12 @@ fn layout_absolute_rows(
             continue;
         };
         let child_basis = basis.child(tree.input(root), tree.input(child));
-        layout_on(tree, child, child_box, child_basis, scratch);
+        let inner = content_within(
+            bounds,
+            Inset::default(),
+            Basis::pack(axis, false, basis.on(cross_of(axis))),
+        );
+        layout_on(tree, child, child_box, child_basis, inner, scratch);
     }
     scratch.truncate(start);
 }
@@ -937,12 +1301,17 @@ pub(crate) fn row_box(
 ) -> Option<Rect> {
     let offset = tree.row_offset(child)?;
     let cross = cross_of(axis);
+    let across = rect_len(canvas, cross);
+    let cross_size = match tree.rules(child) {
+        Some(rules) => rules.clamp(cross, across, across, true),
+        None => across,
+    };
     Some(axis_rect(
         axis,
         rect_start(canvas, axis) + offset,
         rect_start(canvas, cross),
         tree.measured(child).on(axis),
-        rect_len(canvas, cross),
+        cross_size,
     ))
 }
 
@@ -1032,6 +1401,7 @@ fn layout_grid(
     tree: &mut impl LayoutTree,
     root: u32,
     bounds: Rect,
+    within: Vec2,
     inherited_cols: Option<(&[f32], f32)>,
     inherited_rows: Option<(&[f32], f32)>,
     scratch: &mut Vec<u32>,
@@ -1049,6 +1419,7 @@ fn layout_grid(
     else {
         return;
     };
+    let padding = padded(padding, tree.keep_within(root, within), within);
     // A subgrid inherits its parent's columns, so adaptive column-count solving is
     // ignored on an inherited column axis (the parent's resolved tracks win).
     let adaptive_columns = if inherited_cols.is_some() {
@@ -1287,11 +1658,26 @@ fn layout_grid(
             let cx1 = span_end(&s.col_offsets, &s.col_sizes, r.col, r.col_span, column_gap);
             let ry0 = s.row_offsets[r.row as usize];
             let ry1 = span_end(&s.row_offsets, &s.row_sizes, r.row, r.row_span, row_gap);
-            let cell = Rect {
+            let area = Rect {
                 x: origin_x + cx0,
                 y: origin_y + ry0,
                 w: (cx1 - cx0).max(0.0),
                 h: (ry1 - ry0).max(0.0),
+            };
+            // The child's area is its containing box: its margin and bounds read
+            // it, and the margin insets the cell it is sized and aligned in.
+            let rules = tree.rules(child);
+            let cell = match rules {
+                None => area,
+                Some(rules) => {
+                    let margin = rules.margin.resolve(area.w, area.h, [true, true]);
+                    Rect {
+                        x: area.x + margin.left,
+                        y: area.y + margin.top,
+                        w: area.w - margin.main(Axis::Row),
+                        h: area.h - margin.main(Axis::Column),
+                    }
+                }
             };
             // Horizontal (inline axis): the child fills its cell when it requests
             // Fill; a Fixed/Fit child hugs its own size at the cell's left edge, and
@@ -1300,7 +1686,7 @@ fn layout_grid(
             let cw = match size.width {
                 Length::Fit => tree.measured(child).on(Axis::Row),
                 Length::Fill { .. } => cell.w,
-                len => len.resolve(cell.w).unwrap_or(0.0),
+                len => len.resolve(area.w).unwrap_or(0.0),
             };
             // Vertical (block axis): a `Fill` child stretches to the cell unless the
             // grid overrides with a non-Stretch `align_items`; a Fixed/Fit child
@@ -1312,8 +1698,15 @@ fn layout_grid(
                 cell.h
             } else {
                 size.height
-                    .resolve(cell.h)
+                    .resolve(area.h)
                     .unwrap_or_else(|| tree.measured(child).on(Axis::Column))
+            };
+            let (cw, ch) = match rules {
+                Some(rules) => (
+                    rules.clamp(Axis::Row, cw, area.w, true),
+                    rules.clamp(Axis::Column, ch, area.h, true),
+                ),
+                None => (cw, ch),
             };
             // Block-axis offset of the child within its cell per `align_items`.
             // Baseline aligns the child's own baseline to the row's shared baseline,
@@ -1332,6 +1725,10 @@ fn layout_grid(
                 y: cell.y + dy,
                 w: cw,
                 h: ch,
+            };
+            let area_within = Vec2 {
+                x: area.w,
+                y: area.h,
             };
             // A grid child that declares itself a subgrid adopts this grid's
             // resolved tracks over its own cell span, so its inner cell lines
@@ -1360,10 +1757,18 @@ fn layout_grid(
                 });
                 let row_slice =
                     sub_rows.then(|| (&s.row_sizes[ci(r.row, r.row_span, &s.row_sizes)], row_gap));
-                layout_grid(tree, child, child_box, col_slice, row_slice, scratch);
+                layout_grid(
+                    tree,
+                    child,
+                    child_box,
+                    area_within,
+                    col_slice,
+                    row_slice,
+                    scratch,
+                );
             } else {
                 let child_basis = Basis::DEFINITE.child(tree.input(root), tree.input(child));
-                layout_on(tree, child, child_box, child_basis, scratch);
+                layout_on(tree, child, child_box, child_basis, area_within, scratch);
             }
         }
     });
@@ -2715,6 +3120,298 @@ mod tests {
             pct: 0.5,
         };
         assert_eq!(across(Align::Center, half), (50.0, 100.0));
+    }
+
+    /// A `width`×`height` row (or column) of leaves, each with its size and
+    /// rules, laid out on a surface of the same size: the leaves' boxes.
+    fn ruled(axis: Axis, width: f32, height: f32, leaves: &[(Size, BoxRules)]) -> Vec<Rect> {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::style::BoxStyle;
+
+        let mut store = NodeStore::new();
+        let mut ids = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis,
+                    size: Size::fixed(width, height),
+                    ..Default::default()
+                },
+                |cx| {
+                    for &(size, _) in leaves {
+                        ids.push(
+                            cx.leaf(LeafStyle {
+                                size,
+                                style: BoxStyle::NONE,
+                            })
+                            .id(),
+                        );
+                    }
+                },
+            );
+            cx.root().unwrap()
+        };
+        for (&id, &(_, rules)) in ids.iter().zip(leaves) {
+            store.set_box_rules(id, rules);
+        }
+        store.layout(root, surface_local(width, height), &mut Vec::new());
+        ids.iter().map(|&id| store.bounds(id)).collect()
+    }
+
+    fn rules() -> BoxRules {
+        BoxRules::NONE
+    }
+
+    #[test]
+    fn bounds_hold_a_fixed_a_fit_and_a_cross_extent_and_the_minimum_wins() {
+        let fill = Length::Fill { weight: 1.0 };
+        let boxes = ruled(
+            Axis::Row,
+            300.0,
+            100.0,
+            &[
+                (
+                    Size::fixed(80.0, 40.0),
+                    BoxRules {
+                        max_width: Span::dp(50.0),
+                        min_height: Span::dp(60.0),
+                        ..rules()
+                    },
+                ),
+                (
+                    Size {
+                        width: Length::Fit,
+                        height: fill,
+                    },
+                    BoxRules {
+                        min_width: Span::dp(30.0),
+                        max_height: Span::pct(50.0),
+                        ..rules()
+                    },
+                ),
+                (
+                    Size::fixed(10.0, 10.0),
+                    BoxRules {
+                        min_width: Span::dp(40.0),
+                        max_width: Span::dp(20.0),
+                        ..rules()
+                    },
+                ),
+            ],
+        );
+        assert_eq!(boxes[0], Rect::new(0.0, 0.0, 50.0, 60.0));
+        assert_eq!(boxes[1], Rect::new(50.0, 0.0, 30.0, 50.0));
+        assert_eq!(boxes[2], Rect::new(80.0, 0.0, 40.0, 10.0));
+    }
+
+    #[test]
+    fn bounded_fills_share_what_their_bounds_leave() {
+        let fill = Size {
+            width: Length::Fill { weight: 1.0 },
+            height: Length::Fixed(10.0),
+        };
+        let widths = |bounded: BoxRules| -> Vec<f32> {
+            ruled(
+                Axis::Row,
+                300.0,
+                10.0,
+                &[(fill, bounded), (fill, rules()), (fill, rules())],
+            )
+            .iter()
+            .map(|b| b.w)
+            .collect()
+        };
+        let capped = BoxRules {
+            max_width: Span::dp(50.0),
+            ..rules()
+        };
+        assert_eq!(widths(capped), vec![50.0, 125.0, 125.0]);
+        let floored = BoxRules {
+            min_width: Span::dp(200.0),
+            ..rules()
+        };
+        assert_eq!(widths(floored), vec![200.0, 50.0, 50.0]);
+        // Every fill capped: what they leave is the container's to justify.
+        let all = ruled(Axis::Row, 300.0, 10.0, &[(fill, capped), (fill, capped)]);
+        assert_eq!((all[0].x, all[1].x, all[1].w), (0.0, 50.0, 50.0));
+    }
+
+    #[test]
+    fn a_margin_keeps_room_on_both_axes_and_reads_the_parent_content_box() {
+        let boxes = ruled(
+            Axis::Row,
+            200.0,
+            100.0,
+            &[
+                (
+                    Size {
+                        width: Length::Fixed(40.0),
+                        height: Length::Fill { weight: 1.0 },
+                    },
+                    BoxRules {
+                        margin: SpanInset {
+                            left: Span::dp(10.0),
+                            top: Span::pct(10.0),
+                            right: Span::pct(5.0),
+                            bottom: Span::dp(20.0),
+                        },
+                        ..rules()
+                    },
+                ),
+                (Size::fixed(30.0, 30.0), rules()),
+                (
+                    Size::fixed(30.0, 30.0),
+                    BoxRules {
+                        margin: SpanInset {
+                            left: Span::dp(-5.0),
+                            ..SpanInset::ZERO
+                        },
+                        ..rules()
+                    },
+                ),
+            ],
+        );
+        // 10 left, 10% of 100 high on top, 5% of 200 wide on the right, 20 below.
+        assert_eq!(boxes[0], Rect::new(10.0, 10.0, 40.0, 70.0));
+        assert_eq!(boxes[1].x, 60.0);
+        assert_eq!(boxes[2].x, 85.0);
+    }
+
+    #[test]
+    fn a_margin_counts_in_its_parents_natural_size() {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::style::BoxStyle;
+
+        let mut store = NodeStore::new();
+        let mut leaf = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size {
+                        width: Length::Fit,
+                        height: Length::Fit,
+                    },
+                    ..Default::default()
+                },
+                |cx| {
+                    leaf = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fixed(40.0, 20.0),
+                            style: BoxStyle::NONE,
+                        })
+                        .id(),
+                    );
+                },
+            );
+            cx.root().unwrap()
+        };
+        store.set_box_rules(
+            leaf.unwrap(),
+            BoxRules {
+                margin: SpanInset {
+                    left: Span::dp(10.0),
+                    top: Span::dp(5.0),
+                    right: Span::dp(10.0),
+                    bottom: Span::pct(50.0),
+                },
+                ..rules()
+            },
+        );
+        measure(&mut store, root.index(), &mut Vec::new());
+        // A percentage has no basis while measuring: it counts as nothing.
+        assert_eq!(store.measured(root.index()), Measured { w: 60.0, h: 25.0 });
+    }
+
+    #[test]
+    fn a_padding_percentage_reads_the_parent_content_box_and_survives_a_relayout() {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::style::BoxStyle;
+
+        let mut store = NodeStore::new();
+        let (mut panel, mut leaf) = (None, None);
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size::fill(),
+                    ..Default::default()
+                },
+                |cx| {
+                    panel = Some(
+                        cx.flex(
+                            FlexStyle {
+                                axis: Axis::Column,
+                                size: Size::fixed(100.0, 100.0),
+                                ..Default::default()
+                            },
+                            |cx| {
+                                leaf = Some(
+                                    cx.leaf(LeafStyle {
+                                        size: Size::fixed(10.0, 10.0),
+                                        style: BoxStyle::NONE,
+                                    })
+                                    .id(),
+                                );
+                            },
+                        )
+                        .id(),
+                    );
+                },
+            );
+            cx.root().unwrap()
+        };
+        let (panel, leaf) = (panel.unwrap(), leaf.unwrap());
+        store.set_box_rules(
+            panel,
+            BoxRules {
+                padding_pct: Inset {
+                    left: 0.1,
+                    top: 0.1,
+                    right: 0.0,
+                    bottom: 0.0,
+                },
+                ..rules()
+            },
+        );
+        let surface = surface_local(400.0, 300.0);
+        store.layout(root, surface, &mut Vec::new());
+        // 10% of the root's 400 wide content box, 10% of its 300 high one.
+        assert_eq!(store.bounds(leaf), Rect::new(40.0, 30.0, 10.0, 10.0));
+
+        store.clear_dirty();
+        store.set_fixed_size(leaf, Size::fixed(20.0, 20.0));
+        store.relayout_dirty(root, surface, &mut Vec::new(), &mut Vec::new());
+        assert_eq!(store.bounds(leaf), Rect::new(40.0, 30.0, 20.0, 20.0));
+    }
+
+    #[test]
+    fn the_root_keeps_its_margin_and_bounds_on_the_surface() {
+        use crate::component::{BuildCx, FlexStyle, NodeStore};
+
+        let mut store = NodeStore::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |_| {});
+            cx.root().unwrap()
+        };
+        store.set_box_rules(
+            root,
+            BoxRules {
+                max_width: Span::dp(300.0),
+                margin: SpanInset {
+                    left: Span::dp(8.0),
+                    top: Span::dp(8.0),
+                    ..SpanInset::ZERO
+                },
+                ..rules()
+            },
+        );
+        store.layout(root, surface_local(400.0, 200.0), &mut Vec::new());
+        assert_eq!(store.bounds(root), Rect::new(8.0, 8.0, 300.0, 192.0));
     }
 
     #[test]

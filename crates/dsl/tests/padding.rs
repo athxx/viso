@@ -72,13 +72,19 @@ fn a_padding_the_runtime_cannot_lay_out_is_reported() {
         format!("export component A {{ state wide = false; view {{ Column {{ {node} }} }} }}")
     };
     for (node, says) in [
-        ("Column { padding: 10%; }", "`%`"),
         (
             "Column { padding: if wide { 8dp } else { 4dp }; }",
             "reads a value",
         ),
         ("Text { padding: 4dp; }", "no content box"),
-        ("Column { margin: 4dp; }", "`margin`"),
+        (
+            "Column { margin: if wide { 8dp } else { 4dp }; }",
+            "a `margin` that reads a value",
+        ),
+        (
+            "Column { max_width: if wide { 8dp } else { 4dp }; }",
+            "a `max_width` that reads a value",
+        ),
     ] {
         let errors = errors(&view(node));
         assert!(
@@ -90,6 +96,11 @@ fn a_padding_the_runtime_cannot_lay_out_is_reported() {
         "Column { padding: 4dp + 2sp; }",
         "Column { padding: EdgeInsets::zero(); }",
         "Column { padding: EdgeInsets { top: 1dp }; }",
+        "Column { padding: 10%; }",
+        "Column { padding: EdgeInsets::axes(inline: 5% + 2dp, block: 1sp); }",
+        "Column { margin: -4dp; }",
+        "Text { text: \"a\"; margin: EdgeInsets { start: 1sp }; min_width: 10%; }",
+        "Column { min_height: 20dp; max_height: Option::None; max_width: 640dp; }",
     ] {
         assert_eq!(errors(&view(node)), [], "{node}");
     }

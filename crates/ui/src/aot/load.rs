@@ -26,8 +26,8 @@ use crate::binding::BindingTable;
 use crate::component::{BuildCx, FlexStyle, Handle, LeafStyle, NodeStore, ScrollStyle};
 use crate::dirty::DirtyClass;
 use crate::grid::GridStyle;
-use crate::layout::Inset;
 use crate::layout::{Axis, Length, Size};
+use crate::layout::{BoxRules, Inset};
 use crate::node::NodeId;
 use crate::state::{StateKey, StateStore, StateValue};
 use crate::virtual_list::VirtualLists;
@@ -150,13 +150,14 @@ fn resolve_state(states: &mut StateStore, key: StateKey) -> crate::state::StateI
 /// node's live [`NodeId`] in `node_ids` at its pre-order index. The table
 /// is a forest that closes, as [`AotView`] checks: a container's subtrees
 /// are all in it.
-pub fn build_nodes(
+pub fn build_nodes<'a>(
     cx: &mut BuildCx<'_>,
-    nodes: impl ExactSizeIterator<Item = AotRecord>,
+    nodes: impl ExactSizeIterator<Item = AotRecord<'a>>,
     node_ids: &mut Vec<Option<NodeId>>,
 ) {
     node_ids.clear();
     node_ids.resize(nodes.len(), None);
+    cx.reserve_nodes(nodes.len());
     let mut nodes = nodes.enumerate();
     while build_node(cx, &mut nodes, node_ids) {}
 }
@@ -187,7 +188,8 @@ pub fn restyle_aot_node(
         AotNodeKind::Scroll => (scroll_style(node).size, None, None),
         AotNodeKind::Leaf => (leaf_style(node).size, None, None),
     };
-    let lengths = node.lengths.as_ref();
+    let lengths = node.lengths();
+    let lengths = lengths.as_ref();
     if let Some(current) = store.size_request(live) {
         if lengths.is_some_and(|lengths| lengths.width.is_some()) {
             size.width = current.width;
@@ -201,6 +203,11 @@ pub fn restyle_aot_node(
         && lengths.is_none_or(|lengths| lengths.gap.is_none())
     {
         store.set_gap(live, gap);
+    }
+    // Lengths that carry the box rules own them; otherwise they are the
+    // node's constant ones, or none.
+    if lengths.is_none_or(|lengths| !lengths.has_rules()) {
+        store.set_box_rules(live, node.rules().unwrap_or(BoxRules::NONE));
     }
     match lengths {
         Some(lengths) => store.bind_lengths(live, *lengths),
@@ -234,9 +241,9 @@ pub fn restyle_aot_node(
 /// immediate children (each of which recurses over its own subtree), so the flat
 /// table reconstructs the tree in one forward pass with `node_ids` staying
 /// index-aligned.
-fn build_node(
+fn build_node<'a>(
     cx: &mut BuildCx<'_>,
-    nodes: &mut impl Iterator<Item = (usize, AotRecord)>,
+    nodes: &mut impl Iterator<Item = (usize, AotRecord<'a>)>,
     node_ids: &mut [Option<NodeId>],
 ) -> bool {
     let Some((index, node)) = nodes.next() else {
@@ -275,7 +282,10 @@ pub fn build_aot_node(
         // exactly as the commit twin treats it).
         AotNodeKind::Leaf => cx.leaf(leaf_style(node)),
     };
-    if let Some(lengths) = node.lengths {
+    if let Some(rules) = node.rules() {
+        cx.set_box_rules(handle, rules);
+    }
+    if let Some(lengths) = node.lengths() {
         cx.bind_lengths(handle, lengths);
     }
     handle
@@ -355,7 +365,7 @@ fn has_size(node: &AotRecord) -> bool {
     style.width.is_some()
         || style.height.is_some()
         || node
-            .lengths
+            .lengths()
             .is_some_and(|lengths| lengths.width.is_some() || lengths.height.is_some())
 }
 
@@ -439,18 +449,21 @@ mod tests {
                         ..AotStyle::default()
                     },
                     lengths: None,
+                    rules: None,
                     child_count: 2,
                 },
                 AotNode {
                     kind: AotNodeKind::Leaf,
                     style: AotStyle::default(),
                     lengths: None,
+                    rules: None,
                     child_count: 0,
                 },
                 AotNode {
                     kind: AotNodeKind::Leaf,
                     style: AotStyle::default(),
                     lengths: None,
+                    rules: None,
                     child_count: 0,
                 },
             ],

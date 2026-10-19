@@ -32,7 +32,7 @@ fn only_node(src: &str) -> UiNode {
     let items = lower(src);
     assert_eq!(items.len(), 1, "one top-level item");
     match items.into_iter().next().unwrap() {
-        UiItem::Node(n) => n,
+        UiItem::Node(n) => *n,
         other => panic!("expected a node, got {other:?}"),
     }
 }

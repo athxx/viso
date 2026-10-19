@@ -62,7 +62,7 @@ use viso_ende::{
 };
 
 use crate::env::Avoid;
-use crate::layout::{Align, Inset, Justify};
+use crate::layout::{Align, BoxRules, Inset, Justify, Span, SpanInset};
 use crate::length::{EdgeTerms, LengthTerms, NodeLengths};
 use crate::state::StateKey;
 
@@ -105,45 +105,111 @@ pub struct AotNode {
     /// The lengths that read the environment (`px`, `sp`, `em`), which the
     /// loader binds to fold at layout; boxed, as few nodes have any.
     pub lengths: Option<Box<NodeLengths>>,
+    /// What bounds the node's box beyond its size request, its margin and its
+    /// padding percentage, when constant properties set any; boxed, as few
+    /// nodes have any.
+    pub rules: Option<Box<BoxRules>>,
     /// The number of immediate children, whose subtrees follow this node in
     /// pre-order. A leaf has `0`. The loader reconstructs ancestry from this count
     /// in one forward pass, so no parent/sibling links are stored.
     pub child_count: u32,
 }
 
-/// One node as the decoder yields it: an [`AotNode`] by value, its lengths
-/// inline, so reading a node allocates nothing.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AotRecord {
+/// One node as a builder reads it: its kind, style and child count by
+/// value, its lengths and rules — which few nodes have — read on demand
+/// from where they lie, so reading a node copies little and allocates
+/// nothing.
+#[derive(Debug, Clone, Copy)]
+pub struct AotRecord<'a> {
     /// The builder call this node instantiates through.
     pub kind: AotNodeKind,
     /// The folded compile-time-constant layout scalars.
     pub style: AotStyle,
-    /// The lengths that read the environment.
-    pub lengths: Option<NodeLengths>,
     /// The number of immediate children.
     pub child_count: u32,
+    extras: Extras<'a>,
+}
+
+/// Where a record's lengths and rules lie: still encoded in a validated
+/// blob, or held by an [`AotNode`].
+#[derive(Debug, Clone, Copy)]
+enum Extras<'a> {
+    Encoded {
+        lengths: Option<&'a [u8]>,
+        rules: Option<&'a [u8]>,
+    },
+    Held {
+        lengths: Option<&'a NodeLengths>,
+        rules: Option<&'a BoxRules>,
+    },
+}
+
+impl AotRecord<'_> {
+    /// The lengths that read the environment.
+    #[inline]
+    pub fn lengths(&self) -> Option<NodeLengths> {
+        match self.extras {
+            Extras::Encoded { lengths, .. } => lengths.map(|bytes| {
+                NodeLengths::decode(&mut Decoder::new(bytes)).expect("validated with the record")
+            }),
+            Extras::Held { lengths, .. } => lengths.copied(),
+        }
+    }
+
+    /// Whether the node has lengths that read the environment.
+    #[inline]
+    pub fn has_lengths(&self) -> bool {
+        match self.extras {
+            Extras::Encoded { lengths, .. } => lengths.is_some(),
+            Extras::Held { lengths, .. } => lengths.is_some(),
+        }
+    }
+
+    /// The constant box rules.
+    #[inline]
+    pub fn rules(&self) -> Option<BoxRules> {
+        match self.extras {
+            Extras::Encoded { rules, .. } => rules.map(|bytes| {
+                decode_rules(&mut Decoder::new(bytes)).expect("validated with the record")
+            }),
+            Extras::Held { rules, .. } => rules.copied(),
+        }
+    }
+}
+
+impl PartialEq for AotRecord<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.style == other.style
+            && self.child_count == other.child_count
+            && self.lengths() == other.lengths()
+            && self.rules() == other.rules()
+    }
 }
 
 impl AotNode {
     /// The node as a builder reads it.
     #[inline]
-    pub fn record(&self) -> AotRecord {
+    pub fn record(&self) -> AotRecord<'_> {
         AotRecord {
             kind: self.kind,
             style: self.style,
-            lengths: self.lengths.as_deref().copied(),
             child_count: self.child_count,
+            extras: Extras::Held {
+                lengths: self.lengths.as_deref(),
+                rules: self.rules.as_deref(),
+            },
         }
     }
 }
 
-impl From<AotRecord> for AotNode {
-    fn from(record: AotRecord) -> AotNode {
+impl From<AotRecord<'_>> for AotNode {
+    fn from(record: AotRecord<'_>) -> AotNode {
         AotNode {
             kind: record.kind,
             style: record.style,
-            lengths: record.lengths.map(Box::new),
+            lengths: record.lengths().map(Box::new),
+            rules: record.rules().map(Box::new),
             child_count: record.child_count,
         }
     }
@@ -285,7 +351,20 @@ const STYLE_AVOIDS: u16 = 1 << 7;
 const STYLE_HAS_PADDING: u16 = 1 << 8;
 const STYLE_HAS_JUSTIFY: u16 = 1 << 9;
 const STYLE_HAS_ALIGN: u16 = 1 << 10;
-const STYLE_BITS: u16 = (1 << 11) - 1;
+const STYLE_HAS_RULES: u16 = 1 << 11;
+const STYLE_BITS: u16 = (1 << 12) - 1;
+
+// Box rules are a byte naming the rules present, then each: a span is a byte
+// naming its non-zero parts, then them; a margin is four spans; a padding
+// percentage is an inset.
+const RULE_MIN_WIDTH: u8 = 1 << 0;
+const RULE_MAX_WIDTH: u8 = 1 << 1;
+const RULE_MIN_HEIGHT: u8 = 1 << 2;
+const RULE_MAX_HEIGHT: u8 = 1 << 3;
+const RULE_MARGIN: u8 = 1 << 4;
+const RULE_PADDING_PCT: u8 = 1 << 5;
+const SPAN_FIXED: u8 = 1 << 0;
+const SPAN_PCT: u8 = 1 << 1;
 
 // An inset is a byte naming its non-zero edges, then their values.
 const EDGE_LEFT: u8 = 1 << 0;
@@ -293,13 +372,12 @@ const EDGE_TOP: u8 = 1 << 1;
 const EDGE_RIGHT: u8 = 1 << 2;
 const EDGE_BOTTOM: u8 = 1 << 3;
 
-// Environment lengths are a byte naming the bound properties, then each one's
-// terms as a byte naming the non-zero terms followed by their values.
-const LENGTHS_WIDTH: u8 = 1 << 0;
-const LENGTHS_HEIGHT: u8 = 1 << 1;
-const LENGTHS_GAP: u8 = 1 << 2;
-const LENGTHS_FONT_SIZE: u8 = 1 << 3;
-const LENGTHS_PADDING: u8 = 1 << 4;
+// Environment lengths are a varint naming the bound properties, then each
+// one's terms as a byte naming the non-zero terms followed by their values; an
+// edge set is four of them, top, end, bottom, start.
+const LENGTHS_PADDING: u16 = 1 << 8;
+const LENGTHS_MARGIN: u16 = 1 << 9;
+const LENGTHS_BITS: u16 = (1 << 10) - 1;
 const TERMS_DP: u8 = 1 << 0;
 const TERMS_PX: u8 = 1 << 1;
 const TERMS_SP: u8 = 1 << 2;
@@ -431,20 +509,40 @@ fn decode_inset(dec: &mut Decoder) -> Result<Inset, DecodeError> {
     })
 }
 
-/// The bound properties of `lengths` in the order the property byte names them.
-fn properties(lengths: &NodeLengths) -> [Option<LengthTerms>; 4] {
+/// The bound single lengths of `lengths` in the order the property mask names
+/// them.
+fn properties(lengths: &NodeLengths) -> [Option<LengthTerms>; 8] {
     [
         lengths.width,
         lengths.height,
         lengths.gap,
         lengths.font_size,
+        lengths.min_width,
+        lengths.max_width,
+        lengths.min_height,
+        lengths.max_height,
     ]
+}
+
+fn encode_edges(edges: &EdgeTerms, enc: &mut Encoder) {
+    for terms in [edges.top, edges.end, edges.bottom, edges.start] {
+        encode_terms(&terms, enc);
+    }
+}
+
+fn decode_edges(dec: &mut Decoder) -> Result<EdgeTerms, DecodeError> {
+    Ok(EdgeTerms {
+        top: decode_terms(dec)?,
+        end: decode_terms(dec)?,
+        bottom: decode_terms(dec)?,
+        start: decode_terms(dec)?,
+    })
 }
 
 impl Encode for NodeLengths {
     fn encode(&self, enc: &mut Encoder) {
         let present = properties(self);
-        let mut mask = 0u8;
+        let mut mask = 0u16;
         for (bit, terms) in present.iter().enumerate() {
             if terms.is_some() {
                 mask |= 1 << bit;
@@ -453,14 +551,18 @@ impl Encode for NodeLengths {
         if self.padding.is_some() {
             mask |= LENGTHS_PADDING;
         }
-        enc.write_u8(mask);
+        if self.margin.is_some() {
+            mask |= LENGTHS_MARGIN;
+        }
+        enc.write_varint(u64::from(mask));
         for terms in present.iter().flatten() {
             encode_terms(terms, enc);
         }
         if let Some(edges) = &self.padding {
-            for terms in [edges.top, edges.end, edges.bottom, edges.start] {
-                encode_terms(&terms, enc);
-            }
+            encode_edges(edges, enc);
+        }
+        if let Some(edges) = &self.margin {
+            encode_edges(edges, enc);
         }
     }
 }
@@ -468,25 +570,33 @@ impl Encode for NodeLengths {
 impl Decode for NodeLengths {
     fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
         let offset = dec.position();
-        let mask = dec.read_u8()?;
-        let known = LENGTHS_WIDTH | LENGTHS_HEIGHT | LENGTHS_GAP | LENGTHS_FONT_SIZE;
-        if mask & !(known | LENGTHS_PADDING) != 0 {
-            return Err(DecodeError::Malformed { offset });
-        }
-        let mut present = [None; 4];
+        let mask = u16::try_from(dec.read_varint()?)
+            .ok()
+            .filter(|mask| mask & !LENGTHS_BITS == 0)
+            .ok_or(DecodeError::Malformed { offset })?;
+        let mut present = [None; 8];
         for (bit, terms) in present.iter_mut().enumerate() {
             if mask & (1 << bit) != 0 {
                 *terms = Some(decode_terms(dec)?);
             }
         }
-        let [width, height, gap, font_size] = present;
+        let [
+            width,
+            height,
+            gap,
+            font_size,
+            min_width,
+            max_width,
+            min_height,
+            max_height,
+        ] = present;
         let padding = if mask & LENGTHS_PADDING != 0 {
-            Some(EdgeTerms {
-                top: decode_terms(dec)?,
-                end: decode_terms(dec)?,
-                bottom: decode_terms(dec)?,
-                start: decode_terms(dec)?,
-            })
+            Some(decode_edges(dec)?)
+        } else {
+            None
+        };
+        let margin = if mask & LENGTHS_MARGIN != 0 {
+            Some(decode_edges(dec)?)
         } else {
             None
         };
@@ -496,12 +606,128 @@ impl Decode for NodeLengths {
             gap,
             font_size,
             padding,
+            min_width,
+            max_width,
+            min_height,
+            max_height,
+            margin,
         })
     }
 }
 
+fn encode_span(span: Span, enc: &mut Encoder) {
+    let mut mask = 0u8;
+    if span.fixed != 0.0 {
+        mask |= SPAN_FIXED;
+    }
+    if span.pct != 0.0 {
+        mask |= SPAN_PCT;
+    }
+    enc.write_u8(mask);
+    if span.fixed != 0.0 {
+        enc.write_f32(span.fixed);
+    }
+    if span.pct != 0.0 {
+        enc.write_f32(span.pct);
+    }
+}
+
+fn decode_span(dec: &mut Decoder) -> Result<Span, DecodeError> {
+    let offset = dec.position();
+    let mask = dec.read_u8()?;
+    if mask & !(SPAN_FIXED | SPAN_PCT) != 0 {
+        return Err(DecodeError::Malformed { offset });
+    }
+    let fixed = if mask & SPAN_FIXED != 0 {
+        dec.read_f32()?
+    } else {
+        0.0
+    };
+    let pct = if mask & SPAN_PCT != 0 {
+        dec.read_f32()?
+    } else {
+        0.0
+    };
+    Ok(Span { fixed, pct })
+}
+
+fn encode_rules(rules: &BoxRules, enc: &mut Encoder) {
+    let spans = [
+        (RULE_MIN_WIDTH, rules.min_width, Span::ZERO),
+        (RULE_MAX_WIDTH, rules.max_width, Span::UNBOUNDED),
+        (RULE_MIN_HEIGHT, rules.min_height, Span::ZERO),
+        (RULE_MAX_HEIGHT, rules.max_height, Span::UNBOUNDED),
+    ];
+    let mut mask = 0u8;
+    for (bit, span, none) in spans {
+        if span != none {
+            mask |= bit;
+        }
+    }
+    if rules.margin != SpanInset::ZERO {
+        mask |= RULE_MARGIN;
+    }
+    if rules.padding_pct != Inset::default() {
+        mask |= RULE_PADDING_PCT;
+    }
+    enc.write_u8(mask);
+    for (bit, span, _) in spans {
+        if mask & bit != 0 {
+            encode_span(span, enc);
+        }
+    }
+    if mask & RULE_MARGIN != 0 {
+        let m = rules.margin;
+        for span in [m.left, m.top, m.right, m.bottom] {
+            encode_span(span, enc);
+        }
+    }
+    if mask & RULE_PADDING_PCT != 0 {
+        encode_inset(&rules.padding_pct, enc);
+    }
+}
+
+fn decode_rules(dec: &mut Decoder) -> Result<BoxRules, DecodeError> {
+    let offset = dec.position();
+    let mask = dec.read_u8()?;
+    let known = RULE_MIN_WIDTH
+        | RULE_MAX_WIDTH
+        | RULE_MIN_HEIGHT
+        | RULE_MAX_HEIGHT
+        | RULE_MARGIN
+        | RULE_PADDING_PCT;
+    if mask & !known != 0 {
+        return Err(DecodeError::Malformed { offset });
+    }
+    let mut rules = BoxRules::NONE;
+    let span = |dec: &mut Decoder, bit: u8, none: Span| -> Result<Span, DecodeError> {
+        if mask & bit != 0 {
+            decode_span(dec)
+        } else {
+            Ok(none)
+        }
+    };
+    rules.min_width = span(dec, RULE_MIN_WIDTH, Span::ZERO)?;
+    rules.max_width = span(dec, RULE_MAX_WIDTH, Span::UNBOUNDED)?;
+    rules.min_height = span(dec, RULE_MIN_HEIGHT, Span::ZERO)?;
+    rules.max_height = span(dec, RULE_MAX_HEIGHT, Span::UNBOUNDED)?;
+    if mask & RULE_MARGIN != 0 {
+        rules.margin = SpanInset {
+            left: decode_span(dec)?,
+            top: decode_span(dec)?,
+            right: decode_span(dec)?,
+            bottom: decode_span(dec)?,
+        };
+    }
+    if mask & RULE_PADDING_PCT != 0 {
+        rules.padding_pct = decode_inset(dec)?;
+    }
+    Ok(rules)
+}
+
 /// Writes one node record: the kind, the style and lengths, the child count.
-fn encode_record(record: &AotRecord, enc: &mut Encoder) {
+fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
+    let (lengths, rules) = (record.lengths(), record.rules());
     let style = &record.style;
     enc.write_u8(record.kind.as_u8());
     let mut mask = 0u16;
@@ -517,7 +743,7 @@ fn encode_record(record: &AotRecord, enc: &mut Encoder) {
     if style.gap.is_some() {
         mask |= STYLE_HAS_GAP;
     }
-    if record.lengths.is_some() {
+    if lengths.is_some() {
         mask |= STYLE_HAS_LENGTHS;
     }
     if let Some(scope) = style.scope {
@@ -538,6 +764,9 @@ fn encode_record(record: &AotRecord, enc: &mut Encoder) {
     if style.align.is_some() {
         mask |= STYLE_HAS_ALIGN;
     }
+    if rules.is_some() {
+        mask |= STYLE_HAS_RULES;
+    }
     enc.write_varint(u64::from(mask));
     if let Some(axis) = style.axis {
         enc.write_u8(match axis {
@@ -557,7 +786,7 @@ fn encode_record(record: &AotRecord, enc: &mut Encoder) {
     if let Some(padding) = &style.padding {
         encode_inset(padding, enc);
     }
-    if let Some(lengths) = &record.lengths {
+    if let Some(lengths) = &lengths {
         lengths.encode(enc);
     }
     if let Some(basis) = style.scope.and_then(|scope| scope.basis) {
@@ -584,6 +813,9 @@ fn encode_record(record: &AotRecord, enc: &mut Encoder) {
             Align::Stretch => 3,
         });
     }
+    if let Some(rules) = &rules {
+        encode_rules(rules, enc);
+    }
     enc.write_varint(u64::from(record.child_count));
 }
 
@@ -598,7 +830,7 @@ fn read_variant<T: Copy>(dec: &mut Decoder<'_>, variants: &[T]) -> Result<T, Dec
 }
 
 /// Reads one node record [`encode_record`] wrote.
-fn decode_record(dec: &mut Decoder<'_>) -> Result<AotRecord, DecodeError> {
+fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError> {
     let kind = read_variant(
         dec,
         &[
@@ -643,7 +875,9 @@ fn decode_record(dec: &mut Decoder<'_>) -> Result<AotRecord, DecodeError> {
         None
     };
     let lengths = if has(STYLE_HAS_LENGTHS) {
-        Some(NodeLengths::decode(dec)?)
+        Some(read_validated(dec, |dec| {
+            NodeLengths::decode(dec).map(drop)
+        })?)
     } else {
         None
     };
@@ -678,6 +912,11 @@ fn decode_record(dec: &mut Decoder<'_>) -> Result<AotRecord, DecodeError> {
     } else {
         None
     };
+    let rules = if has(STYLE_HAS_RULES) {
+        Some(read_validated(dec, |dec| decode_rules(dec).map(drop))?)
+    } else {
+        None
+    };
     let offset = dec.position();
     let child_count =
         u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
@@ -694,22 +933,25 @@ fn decode_record(dec: &mut Decoder<'_>) -> Result<AotRecord, DecodeError> {
             scope,
             avoid,
         },
-        lengths,
         child_count,
+        extras: Extras::Encoded { lengths, rules },
     })
 }
 
-impl Encode for AotRecord {
+/// The bytes `read` validates at `dec`'s position, past which it moves.
+fn read_validated<'a>(
+    dec: &mut Decoder<'a>,
+    read: impl FnOnce(&mut Decoder<'a>) -> Result<(), DecodeError>,
+) -> Result<&'a [u8], DecodeError> {
+    let start = dec.position();
+    read(dec)?;
+    Ok(&dec.input()[start..dec.position()])
+}
+
+impl Encode for AotRecord<'_> {
     #[inline]
     fn encode(&self, enc: &mut Encoder) {
         encode_record(self, enc);
-    }
-}
-
-impl Decode for AotRecord {
-    #[inline]
-    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        decode_record(dec)
     }
 }
 
@@ -898,11 +1140,11 @@ pub struct AotNodes<'a> {
     left: u32,
 }
 
-impl Iterator for AotNodes<'_> {
-    type Item = AotRecord;
+impl<'a> Iterator for AotNodes<'a> {
+    type Item = AotRecord<'a>;
 
     #[inline]
-    fn next(&mut self) -> Option<AotRecord> {
+    fn next(&mut self) -> Option<AotRecord<'a>> {
         self.left = self.left.checked_sub(1)?;
         Some(decode_record(&mut self.dec).expect("the view validated every node record"))
     }
@@ -996,6 +1238,23 @@ mod tests {
                         avoid: None,
                     },
                     lengths: None,
+                    rules: Some(Box::new(BoxRules {
+                        min_width: Span::dp(40.0),
+                        max_height: Span::pct(80.0),
+                        margin: SpanInset {
+                            left: Span::dp(-4.0),
+                            bottom: Span {
+                                fixed: 2.0,
+                                pct: 0.1,
+                            },
+                            ..SpanInset::ZERO
+                        },
+                        padding_pct: Inset {
+                            top: 0.05,
+                            ..Inset::default()
+                        },
+                        ..BoxRules::NONE
+                    })),
                     child_count: 2,
                 },
                 AotNode {
@@ -1014,14 +1273,21 @@ mod tests {
                             start: LengthTerms::sp(3.0),
                             ..EdgeTerms::all(LengthTerms::dp(1.0))
                         }),
+                        max_height: Some(LengthTerms::em(20.0)),
+                        margin: Some(EdgeTerms {
+                            end: LengthTerms::px(2.0),
+                            ..EdgeTerms::default()
+                        }),
                         ..NodeLengths::default()
                     })),
+                    rules: None,
                     child_count: 0,
                 },
                 AotNode {
                     kind: AotNodeKind::Leaf,
                     style: AotStyle::default(),
                     lengths: None,
+                    rules: None,
                     child_count: 0,
                 },
             ],
@@ -1047,6 +1313,7 @@ mod tests {
             kind: AotNodeKind::Leaf,
             style: AotStyle::default(),
             lengths: None,
+            rules: None,
             child_count: 0,
         }
     }

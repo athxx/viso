@@ -563,6 +563,7 @@ mod tests {
             kind,
             style: AotStyle::default(),
             lengths: None,
+            rules: None,
             child_count,
         }
     }

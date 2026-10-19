@@ -300,17 +300,14 @@ pub(super) enum Padding {
 /// Folds a `padding` property: a length (every edge), `EdgeInsets::zero()`,
 /// `EdgeInsets::all(v)`, `EdgeInsets::axes(inline: a, block: b)` or an
 /// `EdgeInsets { .. }` literal whose fields are constants, a missing field
-/// being `0dp`. Each edge is clamped non-negative (§19.8). A `%` term — its
-/// basis is the parent's box, which layout does not pad against yet — or a
-/// value that is not a constant yields `None`.
+/// being `0dp`. Each edge is clamped non-negative (§19.8), a `%` term's at
+/// layout once the parent's content box is known. A value that is not a
+/// constant yields `None`.
 pub(super) fn fold_padding(value: &Expr, consts: &Consts) -> Option<Padding> {
     let edges = padding_edges(value, consts)?;
     let all = [edges.top, edges.end, edges.bottom, edges.start];
-    if all.iter().any(|t| t.pct != 0.0) {
-        return None;
-    }
     let clamp = |t: Terms| {
-        if t.needs_env() {
+        if t.needs_env() || t.pct != 0.0 {
             t.lower()
         } else {
             Terms {
@@ -320,7 +317,7 @@ pub(super) fn fold_padding(value: &Expr, consts: &Consts) -> Option<Padding> {
             .lower()
         }
     };
-    if all.iter().any(|t| t.needs_env()) || edges.start != edges.end {
+    if all.iter().any(|t| t.needs_env() || t.pct != 0.0) || edges.start != edges.end {
         return Some(Padding::Env(EdgeTermsIr {
             top: clamp(edges.top),
             end: clamp(edges.end),
@@ -334,6 +331,64 @@ pub(super) fn fold_padding(value: &Expr, consts: &Consts) -> Option<Padding> {
         right: edges.end.dp.max(0.0),
         bottom: edges.bottom.dp.max(0.0),
     }))
+}
+
+/// Folds a `margin` property, spelled as a padding is, to its edges' terms;
+/// a margin may be negative.
+pub(super) fn fold_margin(value: &Expr, consts: &Consts) -> Option<EdgeTermsIr> {
+    let edges = padding_edges(value, consts)?;
+    Some(EdgeTermsIr {
+        top: edges.top.lower(),
+        end: edges.end.lower(),
+        bottom: edges.bottom.lower(),
+        start: edges.start.lower(),
+    })
+}
+
+/// Folds a size bound (`min_width`, `max_height`, ..) to its terms, a `dp`
+/// one clamped non-negative (§19.8). A greatest bound also takes
+/// `Option::None` (unbounded, `Some(None)`) and `Option::Some(length)`.
+pub(super) fn fold_bound(value: &Expr, consts: &Consts, greatest: bool) -> Option<Option<TermsIr>> {
+    let length = |value: &Expr| {
+        let t = fold_length(value, consts)?;
+        Some(if t.needs_env() || t.pct != 0.0 {
+            t.lower()
+        } else {
+            Terms {
+                dp: t.dp.max(0.0),
+                ..Terms::default()
+            }
+            .lower()
+        })
+    };
+    if let Some(terms) = length(value) {
+        return Some(Some(terms));
+    }
+    if !greatest {
+        return None;
+    }
+    let node = value.syntax();
+    match node.kind() {
+        SyntaxKind::ParenExpr => fold_bound(&ParenExpr::cast(node.clone())?.inner()?, consts, true),
+        SyntaxKind::PathExpr => {
+            let path = PathExpr::cast(node.clone())?;
+            let segments: Vec<String> = path.segments().map(|t| t.text()).collect();
+            matches!(segments.as_slice(), [o, n] if o == "Option" && n == "None").then_some(None)
+        }
+        SyntaxKind::CallExpr => {
+            let call = CallExpr::cast(node.clone())?;
+            let callee = PathExpr::cast(call.callee()?.syntax().clone())?;
+            let path: Vec<String> = callee.segments().map(|t| t.text().to_string()).collect();
+            if path != ["Option", "Some"] {
+                return None;
+            }
+            match arguments(node)?.as_slice() {
+                [(None, v)] => length(v).map(Some),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// The four edges of a padding value, in their own terms.

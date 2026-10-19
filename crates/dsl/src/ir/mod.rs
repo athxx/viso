@@ -596,8 +596,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 ))
             } else if pending_padding.is_some() {
                 Some(
-                    "`padding` lays out from a constant without a `%` term; a padding that reads \
-                     a value or a percentage does not lay out yet"
+                    "a `padding` that reads a value does not lay out yet; a constant one does"
                         .to_string(),
                 )
             } else {
@@ -615,12 +614,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 self.unmount((at, reason));
             }
         }
-        if let Some(at) = pending.iter().position(|p| p.name == "margin") {
-            self.unmount((
-                pending.remove(at).value,
-                "`margin` does not lay out yet; pad the parent instead".to_string(),
-            ));
-        }
         for (name, at) in bound {
             // A binding a check above took out was reported there.
             if !pending.iter().any(|p| p.value == at) {
@@ -630,7 +623,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 self.unmount((at, reason));
             }
         }
-        out.push(UiItem::Node(UiNode {
+        style.settle_rules();
+        out.push(UiItem::Node(Box::new(UiNode {
             type_name,
             local_name,
             kind,
@@ -646,7 +640,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             origin,
             instance: self.instance(),
             migratable: widget.migratable,
-        }));
+        })));
     }
 
     /// What the styles of a native node of type `type_name`, whose body holds
@@ -730,7 +724,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             ));
         }
         let path: Vec<String> = ty.segments().map(|t| t.text()).collect();
-        out.push(UiItem::Node(UiNode {
+        out.push(UiItem::Node(Box::new(UiNode {
             type_name: path.join("::"),
             local_name,
             kind: NodeKind::Component,
@@ -746,7 +740,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             origin,
             instance: self.instance(),
             migratable: MigratableState::NONE,
-        }));
+        })));
     }
 
     /// A `SlotOutlet`: the items the caller fills the slot with, lowered in
@@ -1096,6 +1090,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             self.unmount((at, reason));
                         }
                     }
+                    root.style.settle_rules();
                     for h in &forwarded_handlers {
                         root.handlers.push(UiHandler {
                             event: h.event().map(|t| t.text()).unwrap_or_default(),
@@ -1145,7 +1140,8 @@ fn unapplied(
     match name {
         "semantics.role" | "semantics.live" => None,
         "enabled" | "checked" | "invalid" if selected() => None,
-        "width" | "height" | "gap" | "spacing" => Some(format!(
+        "width" | "height" | "gap" | "spacing" | "min_width" | "max_width" | "min_height"
+        | "max_height" | "margin" | "padding" => Some(format!(
             "a `{name}` that reads a value does not lay out yet; a constant one does"
         )),
         "justify" | "align" | "axis" | "direction" if kind == NodeKind::Flex => Some(format!(
@@ -1295,17 +1291,43 @@ fn fold_static(
             }
             _ => false,
         }),
-        "padding" => folded(match length::fold_padding(value, consts) {
-            Some(Padding::Fixed(inset)) => {
-                style.padding = Some(inset);
-                if let Some(lengths) = &mut style.lengths {
-                    lengths.padding = None;
-                }
+        "min_width" | "max_width" | "min_height" | "max_height" => {
+            let Some(bound) = length::fold_bound(value, consts, name.starts_with("max")) else {
+                return Fold::Pending;
+            };
+            style.unsettle_rules();
+            let lengths = style.lengths_mut();
+            *match name {
+                "min_width" => &mut lengths.min_width,
+                "max_width" => &mut lengths.max_width,
+                "min_height" => &mut lengths.min_height,
+                _ => &mut lengths.max_height,
+            } = bound;
+            Fold::Folded
+        }
+        "margin" => folded(match length::fold_margin(value, consts) {
+            Some(edges) => {
+                style.unsettle_rules();
+                style.lengths_mut().margin = Some(edges);
                 true
             }
-            Some(Padding::Env(edges)) => {
-                style.padding = None;
-                style.lengths_mut().padding = Some(edges);
+            None => false,
+        }),
+        "padding" => folded(match length::fold_padding(value, consts) {
+            Some(padding) => {
+                style.unsettle_rules();
+                match padding {
+                    Padding::Fixed(inset) => {
+                        style.padding = Some(inset);
+                        if let Some(lengths) = &mut style.lengths {
+                            lengths.padding = None;
+                        }
+                    }
+                    Padding::Env(edges) => {
+                        style.padding = None;
+                        style.lengths_mut().padding = Some(edges);
+                    }
+                }
                 true
             }
             None => false,

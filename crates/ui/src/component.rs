@@ -24,7 +24,8 @@ use crate::dirty::{DirtyCause, DirtyClass, DirtyMark};
 use crate::grid::{GridPlacement, GridStyle, GridTracks, TrackSizing};
 use crate::input::{PointerContacts, PointerId};
 use crate::layout::{
-    self, Align, Axis, Inset, Justify, LayoutInput, LayoutTree, Length, Measured, Size, Vec2,
+    self, Align, Axis, BoxRules, Inset, Justify, LayoutInput, LayoutTree, Length, Measured, Size,
+    Vec2,
 };
 use crate::node::{NodeArena, NodeId, NodeIndex};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
@@ -189,6 +190,7 @@ macro_rules! node_columns {
     ($store:ident . $op:ident ( $($arg:expr),* )) => {
         $store.bounds.$op($($arg),*);
         $store.reach.$op($($arg),*);
+        $store.rules_at.$op($($arg),*);
         $store.transform_root.$op($($arg),*);
         $store.scroll.$op($($arg),*);
         $store.translate.$op($($arg),*);
@@ -216,6 +218,9 @@ macro_rules! node_columns {
         $store.owner.$op($($arg),*);
     };
 }
+
+/// A node with no [`BoxRules`].
+const NO_RULES: u32 = u32::MAX;
 
 /// Whether `part` adds nothing to a reach `own` already covers.
 fn within(part: Rect, own: Rect) -> bool {
@@ -267,6 +272,16 @@ pub struct NodeStore {
     /// translates and by overlay flips; hit testing prunes on it and a fade
     /// composites over it.
     reach: Vec<Rect>,
+    /// Hot: each node's slot in `box_rules`, [`NO_RULES`] for a node with
+    /// none — almost every node, so layout reads one word to know.
+    rules_at: Vec<u32>,
+    /// Cold: the [`BoxRules`] of the nodes that have them, each with the
+    /// parent content box it was last laid in; `free_rules` lists the slots a
+    /// dropped one left.
+    box_rules: Vec<(BoxRules, Vec2)>,
+    free_rules: Vec<u32>,
+    /// How many nodes have rules: while none does, layout reads no slot.
+    ruled: u32,
     /// Warm: whether a node moves its own box without a relayout — set by its
     /// first translate and kept, so it stays a transform root (§21) while it
     /// lives. Scroll viewports move their content and need no flag.
@@ -618,6 +633,9 @@ impl NodeStore {
     pub fn clear(&mut self) {
         self.arena.clear();
         node_columns!(self.clear());
+        self.box_rules.clear();
+        self.free_rules.clear();
+        self.ruled = 0;
         self.dirty_lists.reset();
         self.shaders.clear();
         self.assets.clear();
@@ -1429,6 +1447,58 @@ impl NodeStore {
             id,
             DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
         );
+    }
+
+    /// Bound `id`'s box beyond its size request, and give it a margin and a
+    /// padding percentage, all resolved against its parent's content box at
+    /// layout; [`BoxRules::NONE`] drops them. A change marks MEASURE, LAYOUT
+    /// and PAINT. A live-guarded write; a stale handle is a no-op.
+    pub fn set_box_rules(&mut self, id: NodeId, rules: BoxRules) {
+        if !self.arena.is_live(id) || self.box_rules(id) == rules {
+            return;
+        }
+        let i = id.index() as usize;
+        if rules == BoxRules::NONE {
+            self.drop_rules(i);
+        } else if self.rules_at[i] != NO_RULES {
+            self.box_rules[self.rules_at[i] as usize].0 = rules;
+        } else {
+            let slot = match self.free_rules.pop() {
+                Some(slot) => {
+                    self.box_rules[slot as usize] = (rules, layout::INDEFINITE);
+                    slot
+                }
+                None => {
+                    self.box_rules.push((rules, layout::INDEFINITE));
+                    (self.box_rules.len() - 1) as u32
+                }
+            };
+            self.rules_at[i] = slot;
+            self.ruled += 1;
+        }
+        self.mark_dirty(
+            id,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+        );
+    }
+
+    /// `id`'s box rules; [`BoxRules::NONE`] for a node with none.
+    pub fn box_rules(&self, id: NodeId) -> BoxRules {
+        match self.rules_at.get(id.index() as usize) {
+            Some(&slot) if slot != NO_RULES && self.arena.is_live(id) => {
+                self.box_rules[slot as usize].0
+            }
+            _ => BoxRules::NONE,
+        }
+    }
+
+    /// Free slot `i`'s box rules, if it has any.
+    fn drop_rules(&mut self, i: usize) {
+        let slot = core::mem::replace(&mut self.rules_at[i], NO_RULES);
+        if slot != NO_RULES {
+            self.free_rules.push(slot);
+            self.ruled -= 1;
+        }
     }
 
     /// A node holding pointer capture, if any pointer is captured.
@@ -3125,6 +3195,7 @@ impl NodeStore {
         }
         self.bounds[i] = Rect::ZERO;
         self.reach[i] = Rect::ZERO;
+        self.drop_rules(i);
         self.transform_root[i] = false;
         self.scroll[i] = Vec2::ZERO;
         self.translate[i] = Vec2::ZERO;
@@ -3166,6 +3237,7 @@ impl NodeStore {
         for _ in 0..more {
             self.bounds.push(Rect::ZERO);
             self.reach.push(Rect::ZERO);
+            self.rules_at.push(NO_RULES);
             self.transform_root.push(false);
             self.scroll.push(Vec2::ZERO);
             self.translate.push(Vec2::ZERO);
@@ -3457,7 +3529,7 @@ impl NodeStore {
             layout::measure(self, redo.index(), scratch);
             measured += self.subtree_len(redo);
             let bounds = if redo == root {
-                surface
+                layout::root_box(self, redo.index(), surface)
             } else if let Some((canvas, axis)) = self.row_canvas(redo) {
                 layout::row_box(self, redo.index(), self.bounds(canvas), axis)
                     .unwrap_or_else(|| self.bounds(redo))
@@ -3465,15 +3537,32 @@ impl NodeStore {
                 && let Some(parent) = self.arena.parent(redo)
             {
                 let basis = self.basis_of(parent, root);
-                let (within, kept) = (self.bounds(parent), self.bounds(redo));
-                layout::flex_child_box(self, parent.index(), redo.index(), within, basis, kept)
-                    .unwrap_or(kept)
+                let (laid, kept) = (self.bounds(parent), self.bounds(redo));
+                let within = self.kept_within(parent.index());
+                layout::flex_child_box(
+                    self,
+                    parent.index(),
+                    redo.index(),
+                    laid,
+                    basis,
+                    within,
+                    kept,
+                )
+                .unwrap_or(kept)
             } else {
                 self.bounds(redo)
             };
             scratch.clear();
             let basis = self.basis_of(redo, root);
-            layout::layout_on(self, redo.index(), bounds, basis, scratch);
+            let within = if redo == root {
+                Vec2 {
+                    x: surface.w,
+                    y: surface.h,
+                }
+            } else {
+                self.kept_within(redo.index())
+            };
+            layout::layout_on(self, redo.index(), bounds, basis, within, scratch);
             let was = self.reach_in_parent(redo.index() as usize);
             self.rejoin_subtree(redo);
             self.lift_reach(redo, was);
@@ -3834,6 +3923,42 @@ impl LayoutTree for NodeStore {
     #[inline]
     fn set_content(&mut self, index: u32, content: Vec2) {
         self.content[index as usize] = content;
+    }
+
+    #[inline(always)]
+    fn rules(&self, index: u32) -> Option<&BoxRules> {
+        if self.ruled == 0 {
+            return None;
+        }
+        match self.rules_at[index as usize] {
+            NO_RULES => None,
+            slot => Some(&self.box_rules[slot as usize].0),
+        }
+    }
+
+    #[inline(always)]
+    fn keep_within(&mut self, index: u32, within: Vec2) -> Option<&BoxRules> {
+        if self.ruled == 0 {
+            return None;
+        }
+        match self.rules_at[index as usize] {
+            NO_RULES => None,
+            slot => {
+                let kept = &mut self.box_rules[slot as usize];
+                kept.1 = within;
+                Some(&kept.0)
+            }
+        }
+    }
+
+    #[inline]
+    fn kept_within(&self, index: u32) -> Vec2 {
+        let slot = self.rules_at[index as usize];
+        if self.ruled == 0 || slot == NO_RULES {
+            layout::INDEFINITE
+        } else {
+            self.box_rules[slot as usize].1
+        }
     }
 
     #[inline]
@@ -4462,6 +4587,18 @@ impl<'a> BuildCx<'a> {
     /// they fold at the first layout (see [`NodeStore::bind_lengths`]).
     pub fn bind_lengths(&mut self, handle: Handle, lengths: crate::length::NodeLengths) {
         self.store.bind_lengths(handle.id, lengths);
+    }
+
+    /// Reserve room for `additional` more nodes before building them (see
+    /// [`NodeStore::reserve_nodes`]).
+    pub fn reserve_nodes(&mut self, additional: usize) {
+        self.store.reserve_nodes(additional);
+    }
+
+    /// Bound `handle`'s box beyond its size request and give it a margin and
+    /// a padding percentage (see [`NodeStore::set_box_rules`]).
+    pub fn set_box_rules(&mut self, handle: Handle, rules: BoxRules) {
+        self.store.set_box_rules(handle.id, rules);
     }
 
     /// Declare a leaf node.

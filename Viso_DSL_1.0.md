@@ -1613,7 +1613,7 @@ View 中类型为同一文件内 Component 的 Node 是该 Component 的一个�
 - 与 Event 同名以外的 Property 和 Handler 作用于实例 View 的根 Node；
 - 实例可以位于 `if`、`match` 与 Keyed `for` 中，区域绑定对实例的 Input 实参、State 初值与 Handler 可见（§56.1）；
 - 控制流区域中的实例，其 State 属于区域的每次挂载：Keyed `for` 的每个 Item、`if`/`match` 的每次进入各有一份，以区域绑定求值初值；State 随 Key 移动，Item 移除或离开无 `preserve` 的分支即丢弃，`preserve` 分支缓存期间保留；这类 State 不按名称跨 Hot Reload 保留，含控制流区域的 View 整树重建时从初值重新开始；
-- 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；`AdaptiveScope` 的 `basis` 不是常量 `dp` 长度（§96.3）；`SafeArea` 或 `KeyboardAvoiding` 带 `padding`（§96.6）；`padding` 含 `%` 分量或不是常量、`padding` 写在非容器节点上、`margin`（U3.3）；
+- 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；类型为其他文件的 Component；`AdaptiveScope` 的 `basis` 不是常量 `dp` 长度（§96.3）；`SafeArea` 或 `KeyboardAvoiding` 带 `padding`（§96.6）；`padding` 不是常量或写在非容器节点上、`min_*`/`max_*`/`margin` 不是常量（U3.3）；
 - `ui!` Fragment 中不是内置 Widget 的类型是外围 Rust 作用域以 `component!` 声明的 Component（可写作 Rust 路径，如 `widgets::Tally`），由其 `build` 挂载，每个实例自带 State 与 Handler；这类 Node 不接受 Property、Handler 与子项（`E3711`），名称无法解析时由 Rust 在该位置报错；Hot Reload 与 Release Package 的 Fragment 没有 Rust 作用域，这类类型报 `E2001`。
 
 ---
@@ -4511,8 +4511,8 @@ export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0; }; fit; min_c
 | `max_width`     | `Option<MixedLength>` | `Option::None`       | `MEASURE\|LAYOUT` | 父内容盒可用宽度              |
 | `min_height`    | `MixedLength`         | `0dp`                | `MEASURE\|LAYOUT` | 父内容盒可用高度              |
 | `max_height`    | `Option<MixedLength>` | `Option::None`       | `MEASURE\|LAYOUT` | 父内容盒可用高度              |
-| `padding`       | `EdgeInsets`          | `EdgeInsets::zero()` | `MEASURE\|LAYOUT` | `start`/`end` 父宽，`top`/`bottom` 父高 **[Runtime 待实现]** |
-| `margin`        | `EdgeInsets`          | `EdgeInsets::zero()` | `MEASURE\|LAYOUT` | 同 `padding` **[Runtime 待实现]** |
+| `padding`       | `EdgeInsets`          | `EdgeInsets::zero()` | `MEASURE\|LAYOUT` | `start`/`end` 父宽，`top`/`bottom` 父高 |
+| `margin`        | `EdgeInsets`          | `EdgeInsets::zero()` | `MEASURE\|LAYOUT` | 同 `padding` |
 | `background`    | `Option<Color>`       | `Option::None`       | `PAINT`           | —                             |
 | `corner_radius` | `MixedLength`         | `0dp`                | `PAINT`           | 自身 Border Box 较短边        |
 | `border`        | `Option<Border>`      | `Option::None`       | `PAINT`           | —                             |
@@ -4528,7 +4528,8 @@ export record Border { width: Dp = 1dp; color: Color; }
 - `margin` 不折叠；`border` 在 Border Box 内侧描边，不参与布局；
 - `min` 大于 `max` 时以 `min` 为准，Debug Runtime 报告 `E3105`；
 - `start`/`end` 在布局时按 `env.layout_direction` 解析为物理边；
-- `padding` 只作用于容器（`Row`、`Column`、`Flex`、`Stack`、`Grid`）的内容盒；当前 Runtime 只布局常量 `padding`（长度、`EdgeInsets::zero/all/axes` 或各字段为常量的 `EdgeInsets { .. }`），每条边按 §19.8 取非负；含 `%` 分量、读取值（State、Input、`theme` 等）的 `padding`，非容器节点上的 `padding`，以及 `margin`，均报 `E3711`，不会被静默丢弃。纯 `dp` 且 `start` 与 `end` 相等的 `padding` 在编译期折叠为物理内边距；含 `px`/`sp`/`em` 分量或 `start` 与 `end` 不等的，随 §19.6 环境与 `env.layout_direction` 在布局时折叠，只有折叠结果变化的节点被标脏。
+- `padding` 只作用于容器（`Row`、`Column`、`Flex`、`Stack`、`Grid`）的内容盒；当前 Runtime 只布局常量 `padding`（长度、`EdgeInsets::zero/all/axes` 或各字段为常量的 `EdgeInsets { .. }`），每条边按 §19.8 取非负，含 `%` 分量的边在布局时读到父内容盒后取非负；读取值（State、Input、`theme` 等）的 `padding` 与非容器节点上的 `padding` 报 `E3711`，不会被静默丢弃。纯 `dp` 且 `start` 与 `end` 相等的 `padding` 在编译期折叠为物理内边距；含 `px`/`sp`/`em` 分量或 `start` 与 `end` 不等的，随 §19.6 环境与 `env.layout_direction` 在布局时折叠，只有折叠结果变化的节点被标脏；
+- 常量 `min_*`/`max_*`（`max_*` 另接受 `Option::None` 与 `Option::Some(v)`）与常量 `margin` 适用于任意布局节点，写法同 `padding`：`%` 读父内容盒（父轴不定时 `%` 分量取 `0`），`max_*` 为 `Option::None` 时无上界，`margin` 可为负、计入父容器的自然尺寸；Fill 子项在各自上下界内分配剩余空间。这些规则与 `%` 内边距均不读环境且 `start` 与 `end` 相等时在编译期折叠为节点的盒规则；否则随 §19.6 环境与 `env.layout_direction` 在布局时折叠。读取值的 `min_*`/`max_*`/`margin` 报 `E3711`。
 
 ### U3.4 Flex 容器（`Row` / `Column` / `Flex`）
 
@@ -8786,7 +8787,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 或 `@styleable` 误用（§U2.3）               |
-| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 含 `%` 分量、不是常量或写在非容器节点上，或使用 `margin`，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 不是常量或写在非容器节点上，或 `min_*`/`max_*`/`margin` 不是常量，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
 | E3713  | 资源误用：`asset` 的参数不是恰好一个字符串字面量、路径越出 `assets/`、文件不存在或不是 PNG/JPEG/SVG、编译没有资源目录，或写出 `ImageAsset`/`SvgAsset` 的 Record 表达式（§U5.1） |
 | E4101  | 非 Task 主体（Action、Event、Effect 等）中使用 Await    |
