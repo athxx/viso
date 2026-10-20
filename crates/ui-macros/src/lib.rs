@@ -24,11 +24,13 @@ mod source_text;
 
 use proc_macro::TokenStream;
 
-/// A view fragment, mounted by a `|cx: &mut BuildCx| -> Handle` closure. Each
-/// reactive name the fragment reads is a `StateId` in the surrounding Rust scope.
+/// A view fragment, mounted by a `|cx: &mut BuildCx| -> Handle` closure. It is
+/// the view of a stateless component: its values are its own, and a node type
+/// no widget declares is a Rust component it mounts. A view that reads state is
+/// a `component!`.
 ///
 /// ```ignore
-/// let build = ui! { Text { text: label; } };
+/// let build = ui! { Column { Text { text: "Save"; align: TextAlign::center; } Counter {} } };
 /// ```
 #[proc_macro]
 pub fn ui(input: TokenStream) -> TokenStream {

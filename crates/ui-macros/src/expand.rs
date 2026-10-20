@@ -3,8 +3,8 @@
 //! Each form hands its source to one `viso_dsl::frontend` function, reports every
 //! error diagnostic at the place the author wrote it, and mounts the result:
 //!
-//! - `ui!` expands to a builder closure over `StateId`s the surrounding Rust scope
-//!   supplies by name;
+//! - `ui!` expands to a builder closure that mounts a stateless view, the Rust
+//!   components it names mounting their own;
 //! - `component!` expands to a struct of the component's `StateId`s and a `build`
 //!   that allocates them and mounts the view;
 //! - `view!` expands to a builder closure that allocates the file's component's
@@ -31,7 +31,7 @@ use viso_dsl::frontend::{self, Compiled, Origin, Source, SourceKind};
 use viso_dsl::hir::{ConstValue, HirComponent};
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::schema::Natives;
-use viso_dsl::syntax::{LineIndex, TextRange};
+use viso_dsl::syntax::{LineIndex, TextRange, TextSize};
 use viso_dsl::view_behavior::{MountError, UNMOUNTED_HANDLER, ViewBehavior, view_behavior};
 
 use crate::emit::{aligned_bytes, aligned_file, emit_view, overlay_dependency};
@@ -40,20 +40,18 @@ use crate::source_text::SourceText;
 
 pub fn ui(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let source = SourceText::new(input);
-    let report = Report::Inline(&source);
     let expansion = (|| {
         let compiled = frontend::compile_fragment(&source.text);
-        report.check(&compiled)?;
-        let idents = compiled
-            .sources
-            .iter()
-            .filter_map(|source| Some((source.symbol, rust_ident(&source.name).ok()?)))
-            .collect();
-        view_behavior(&compiled).map_err(|errors| report.mount_errors(errors))?;
-        let root = emit_view(&compiled.tree, &compiled.bindings, &idents, None, None)
-            .map_err(|message| report.at(None, message))?;
+        Report::Inline(&source, TextSize::ZERO).check(&compiled)?;
+        let report = Report::Inline(&source, compiled.base);
+        let Mounted {
+            allocations, root, ..
+        } = mount(&compiled, &report, None, None)?;
         Ok(quote! {
-            |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle { #root }
+            |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle {
+                #allocations
+                #root
+            }
         })
     })();
     finish(expansion, true)
@@ -61,7 +59,7 @@ pub fn ui(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let source = SourceText::new(input);
-    let report = Report::Inline(&source);
+    let report = Report::Inline(&source, TextSize::ZERO);
     let expansion = (|| {
         let root_dir = package::root()?;
         let origin = package::origin(&root_dir, package::invoking_file().as_deref())?;
@@ -259,8 +257,10 @@ fn catalog_dependencies(catalogs: Option<&package::Catalogs>) -> TokenStream {
 
 /// Where a form's diagnostics are reported.
 enum Report<'a> {
-    /// At the macro body token a diagnostic points at.
-    Inline(&'a SourceText),
+    /// At the macro body token a diagnostic points at; a span of the text
+    /// the body compiled as, which starts so far into it, is shifted back to
+    /// the body's own offsets.
+    Inline(&'a SourceText, TextSize),
     /// At the `view!` path literal, prefixed with the `.vs` file's line and column.
     File {
         path: &'a Path,
@@ -272,9 +272,10 @@ enum Report<'a> {
 impl Report<'_> {
     fn at(&self, range: Option<TextRange>, message: impl Display) -> syn::Error {
         match self {
-            Report::Inline(source) => {
-                let span =
-                    range.map_or_else(Span::call_site, |range| source.span_at(range.start()));
+            Report::Inline(source, base) => {
+                let span = range.map_or_else(Span::call_site, |range| {
+                    source.span_at(range.start().saturating_sub(*base))
+                });
                 syn::Error::new(span, message)
             }
             Report::File { path, index, span } => {
@@ -298,7 +299,8 @@ impl Report<'_> {
         combine(errors).expect_err("a failed mount reports at least one error")
     }
 
-    /// Every error diagnostic of `compiled`, as one combined error.
+    /// Every error diagnostic of `compiled`, whose spans are the source's
+    /// own, as one combined error.
     fn check(&self, compiled: &Compiled) -> syn::Result<()> {
         let errors = compiled.errors().map(|diagnostic| {
             let message = format!("{}: {}", diagnostic.code, diagnostic.message);

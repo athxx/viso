@@ -12,11 +12,12 @@
 //!     is on geometry, not pixels — asserting fills here would require styling the
 //!     emitter does not yet produce.
 //!
-//!   * the *reactive* contract — a `text: count;` property compiled to a static binding
-//!     edge, driven the way the facade's flush phase drives it (`set` -> `take_pending`
-//!     -> `flush_state_transactions`), dirties exactly the bound node and class and
-//!     walks exactly one *static* edge with zero dynamic fallback — the strict typed
-//!     path a compiler-known binding must take.
+//!   * the *reactive* contract — a `component!` state its text shows, compiled to a
+//!     static binding edge, driven the way the facade's flush phase drives it (`set`
+//!     -> `take_pending` -> `flush_state_transactions`), dirties exactly the bound node
+//!     and class and walks exactly one *static* edge with zero dynamic fallback — the
+//!     strict typed path a compiler-known binding must take. A `ui!` fragment has no
+//!     state, so the state lives in the component the fragment would mount.
 //!
 //! Everything is reached through the facade because the macro emits `::viso_ui::…`
 //! paths and cannot itself depend on `viso-ui`; a normal app sees all of it via
@@ -142,12 +143,23 @@ fn ui_fragment_percent_lengths_resolve_against_the_parent() {
     assert_eq!((world.w, world.h), (W as f32 * 0.5, H as f32 - 8.0));
 }
 
-/// The reactive contract driven end to end: a `text: count;` property that the macro
-/// compiled to a static binding edge dirties exactly the bound leaf and class when
+viso::component! {
+    Counter {
+        state count = 0;
+        view {
+            Column {
+                Text { text: format("{}", count); }
+            }
+        }
+    }
+}
+
+/// The reactive contract driven end to end: a text showing `count`, which the macro
+/// compiled to a static binding edge, dirties exactly the bound leaf and class when
 /// `count` is written and flushed, and the flush walks exactly one *static* edge with
 /// zero dynamic fallback — the path a compiler-known typed binding must take.
 #[test]
-fn ui_fragment_reactive_flush_hits_only_the_static_edge() {
+fn a_reactive_flush_hits_only_the_static_edge() {
     let mut store = NodeStore::new();
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
@@ -155,15 +167,7 @@ fn ui_fragment_reactive_flush_hits_only_the_static_edge() {
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
 
-    let count = states.alloc(StateValue::Int(0));
-
-    let build = viso::ui! {
-        Column {
-            Text { text: count; }
-        }
-    };
-
-    let root = {
+    let (count, root) = {
         let mut cx = BuildCx::with_reactive(
             &mut store,
             &mut states,
@@ -172,7 +176,8 @@ fn ui_fragment_reactive_flush_hits_only_the_static_edge() {
             &mut text_edits,
             &mut projectors,
         );
-        build(&mut cx).id()
+        let (Counter { count }, root) = Counter::build(&mut cx);
+        (count, root.id())
     };
     let text_leaf = store
         .arena()

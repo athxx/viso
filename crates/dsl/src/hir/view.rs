@@ -802,6 +802,10 @@ impl<'a> ViewWalk<'a> {
             }),
             None => {
                 let Some(schema) = widget::widget(self.env.widgets(), &name) else {
+                    // A component of the Rust scope mounts through its own `build`.
+                    if self.env.profile().rust_scope {
+                        return None;
+                    }
                     let range = head.text_range();
                     let candidates = self.env.widgets().widgets().iter().map(|entry| Candidate {
                         name: entry.widget.name,

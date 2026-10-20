@@ -2,9 +2,8 @@
 //! 35, 66).
 //!
 //! These drive the full `plan → diff → migrate → commit` pipeline against a live
-//! headless runtime — no window, no GPU, deterministic — exactly as `todo.md`'s
-//! Slice O exit criteria require. Each test mounts a first live tree, then reloads
-//! new source into it and asserts the transaction's effect on the retained node
+//! headless runtime — no window, no GPU, deterministic. Each test mounts a
+//! component's view as a first live tree, then reloads an edited view into it and asserts the transaction's effect on the retained node
 //! tree, the reactive state cells, and the focus, scroll and edit state of
 //! kept nodes.
 //!
@@ -25,7 +24,9 @@ mod reload;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use reload::{LiveRuntime, hot_reload};
+use reload::{HotReload, LiveRuntime, hot_reload_view};
+use viso_dsl::diag::Diagnostic;
+use viso_dsl::frontend::Origin;
 use viso_dsl::hotreload::CandidatePlan;
 use viso_ui::state::StateKey;
 use viso_ui::virtual_list::VirtualLists;
@@ -86,6 +87,33 @@ impl Live {
     }
 }
 
+/// The states a test view may show, each an `i32` its text formats.
+const STATES: [&str; 7] = ["label", "count", "a", "b", "extra", "first", "last"];
+
+/// `view` as the view of a component declaring each of [`STATES`] it shows.
+fn component(view: &str) -> String {
+    let states: String = STATES
+        .iter()
+        .filter(|name| view.contains(&format!("\"{{}}\", {name})")))
+        .map(|name| format!("state {name} = 0; "))
+        .collect();
+    format!("component T {{ {states}view {{ {view} }} }}")
+}
+
+/// Reloads `view`, as [`component`] declares it, into `rt` over `last_good`.
+fn hot_reload(
+    rt: &mut LiveRuntime<'_>,
+    last_good: &CandidatePlan,
+    view: &str,
+) -> Result<HotReload, Vec<Diagnostic>> {
+    let origin = Origin {
+        package: "app".to_owned(),
+        module: vec!["t".to_owned()],
+        language: None,
+    };
+    hot_reload_view(rt, last_good, &component(view), &origin)
+}
+
 /// An empty last-good baseline: the state before any fragment is mounted. Reloading
 /// a real fragment against it diffs empty→candidate as all-inserts (non-preserving),
 /// so the commit takes the full build path and mounts the first live tree.
@@ -140,7 +168,7 @@ fn valid_edit_atomically_patches_and_reuses_instances() {
     // Mount a two-node tree, then reload a property-only edit. The structure is
     // unchanged, so every node must be reused in place (same NodeId) and every
     // reactive cell must keep its live value.
-    let (mut live, last_good) = mount("Row { Text { text: label; } }");
+    let (mut live, last_good) = mount("Row { Text { text: format(\"{}\", label); } }");
 
     let before = preorder(&live.store, live.root);
     assert_eq!(before.len(), 2, "Row + Text mounted");
@@ -158,7 +186,7 @@ fn valid_edit_atomically_patches_and_reuses_instances() {
         let done = hot_reload(
             &mut rt,
             &last_good,
-            "Row { Text { text: label; color: label; } }",
+            "Row { Text { text: format(\"{}\", label); color: #ff0000; } }",
         )
         .expect("valid edit commits");
         live.root = rt.root;
@@ -181,7 +209,7 @@ fn valid_edit_atomically_patches_and_reuses_instances() {
 
 #[test]
 fn invalid_edit_keeps_last_good_field_for_field() {
-    let (mut live, last_good) = mount("Row { Text { text: label; } }");
+    let (mut live, last_good) = mount("Row { Text { text: format(\"{}\", label); } }");
 
     // Snapshot the live tree and the reactive cell before the failed reload.
     let before_tree = preorder(&live.store, live.root);
@@ -241,7 +269,7 @@ fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
     // Re-typing the inner node rebuilds the tree: the kept scroll container
     // carries its offset, and the focus on the replaced node is lost.
     let (mut live, last_good) = mount(&format!(
-        "Scroll {{ {SCROLLED} Text {{ {TALL} text: count; }} }}"
+        "Scroll {{ {SCROLLED} Text {{ {TALL} text: format(\"{{}}\", count); }} }}"
     ));
     lay_out(&mut live);
 
@@ -267,7 +295,7 @@ fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
     let done = reload(
         &mut live,
         &last_good,
-        &format!("Scroll {{ {SCROLLED} Button {{ {TALL} text: count; }} }}"),
+        &format!("Scroll {{ {SCROLLED} Button {{ {TALL} text: format(\"{{}}\", count); }} }}"),
     );
 
     assert_eq!(
@@ -291,7 +319,7 @@ fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
 #[test]
 fn focus_and_scroll_follow_their_nodes_past_an_inserted_sibling() {
     let (mut live, last_good) = mount(&format!(
-        "Column {{ Scroll {{ {SCROLLED} Text {{ {TALL} text: count; }} }} }}"
+        "Column {{ Scroll {{ {SCROLLED} Text {{ {TALL} text: format(\"{{}}\", count); }} }} }}"
     ));
     lay_out(&mut live);
     let [_, scroll_node, text_node] = preorder(&live.store, live.root)[..] else {
@@ -306,7 +334,7 @@ fn focus_and_scroll_follow_their_nodes_past_an_inserted_sibling() {
         &mut live,
         &last_good,
         &format!(
-            "Column {{ Text {{ text: count; }} Scroll {{ {SCROLLED} Text {{ {TALL} text: count; }} }} }}"
+            "Column {{ Text {{ text: format(\"{{}}\", count); }} Scroll {{ {SCROLLED} Text {{ {TALL} text: format(\"{{}}\", count); }} }} }}"
         ),
     );
     let [_, _, scroll_node, text_node] = preorder(&live.store, live.root)[..] else {
@@ -329,7 +357,7 @@ fn focus_and_scroll_follow_their_nodes_past_an_inserted_sibling() {
     let done = reload(
         &mut live,
         &done.candidate,
-        "Column { Text { text: count; } }",
+        "Column { Text { text: format(\"{}\", count); } }",
     );
     assert!(done.report.focus_lost);
     assert_eq!(done.report.scroll_lost, 1);
@@ -344,7 +372,8 @@ fn an_inserted_sibling_keeps_every_other_node_s_live_identity() {
     // structural alignment is unambiguous (AGENTS 21.8: an unnamed run of the
     // *same* type aligns by position, not by which one a human would call
     // "the same node" — a different test, not this one).
-    let (mut live, last_good) = mount("Column { Text { text: a; } Button { text: b; } }");
+    let (mut live, last_good) =
+        mount("Column { Text { text: format(\"{}\", a); } Button { text: format(\"{}\", b); } }");
     let [column, text, button] = preorder(&live.store, live.root)[..] else {
         panic!("Column + Text + Button mounted");
     };
@@ -352,7 +381,7 @@ fn an_inserted_sibling_keeps_every_other_node_s_live_identity() {
     let done = reload(
         &mut live,
         &last_good,
-        "Column { TextInput { } Text { text: a; } Button { text: b; } }",
+        "Column { TextInput { } Text { text: format(\"{}\", a); } Button { text: format(\"{}\", b); } }",
     );
 
     let [column_after, _, text_after, button_after] = preorder(&live.store, live.root)[..] else {
@@ -373,8 +402,9 @@ fn an_inserted_sibling_keeps_every_other_node_s_live_identity() {
 
 #[test]
 fn a_removed_sibling_keeps_the_rest_s_live_identity() {
-    let (mut live, last_good) =
-        mount("Column { Text { text: a; } Button { text: b; } TextInput { } }");
+    let (mut live, last_good) = mount(
+        "Column { Text { text: format(\"{}\", a); } Button { text: format(\"{}\", b); } TextInput { } }",
+    );
     let [column, text, button, input] = preorder(&live.store, live.root)[..] else {
         panic!("Column + Text + Button + TextInput mounted");
     };
@@ -382,7 +412,7 @@ fn a_removed_sibling_keeps_the_rest_s_live_identity() {
     let done = reload(
         &mut live,
         &last_good,
-        "Column { Text { text: a; } TextInput { } }",
+        "Column { Text { text: format(\"{}\", a); } TextInput { } }",
     );
 
     let [column_after, text_after, input_after] = preorder(&live.store, live.root)[..] else {
@@ -407,12 +437,12 @@ fn a_removed_sibling_keeps_the_rest_s_live_identity() {
 
 #[test]
 fn a_new_states_scoped_reset_names_its_own_key_not_a_kept_sibling() {
-    let (mut live, last_good) = mount("Row { Text { text: label; } }");
+    let (mut live, last_good) = mount("Row { Text { text: format(\"{}\", label); } }");
 
     let done = reload(
         &mut live,
         &last_good,
-        "Row { Text { text: label; } Text { text: extra; } }",
+        "Row { Text { text: format(\"{}\", label); } Text { text: format(\"{}\", extra); } }",
     );
 
     let extra = done
@@ -450,7 +480,7 @@ fn a_kept_text_input_keeps_its_identity_and_buffer_past_an_inserted_sibling() {
     let done = reload(
         &mut live,
         &last_good,
-        "Column { Text { text: label; } TextInput { width: 100dp; height: 20dp; } }",
+        "Column { Text { text: format(\"{}\", label); } TextInput { width: 100dp; height: 20dp; } }",
     );
     assert_eq!(done.report.scroll_lost, 0);
     let [_, _, same] = preorder(&live.store, live.root)[..] else {
@@ -533,7 +563,7 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
         let done = hot_reload(
             &mut rt,
             &empty_baseline(),
-            "Column { Text { text: first; } Text { text: last; } }",
+            "Column { Text { text: format(\"{}\", first); } Text { text: format(\"{}\", last); } }",
         )
         .expect("the outer content mounts");
         (done, rt.root.expect("the outer content has a root"))
@@ -552,8 +582,12 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
     // Mount the view between the outer column's children.
     let last_good = {
         let mut rt = live.runtime();
-        let done = hot_reload(&mut rt, &empty_baseline(), "Row { Text { text: label; } }")
-            .expect("the view mounts");
+        let done = hot_reload(
+            &mut rt,
+            &empty_baseline(),
+            "Row { Text { text: format(\"{}\", label); } }",
+        )
+        .expect("the view mounts");
         live.root = rt.root;
         done.candidate
     };
@@ -564,8 +598,12 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
     // A structural edit rebuilds the view.
     {
         let mut rt = live.runtime();
-        hot_reload(&mut rt, &last_good, "Row { Button { text: label; } }")
-            .expect("the structural edit commits");
+        hot_reload(
+            &mut rt,
+            &last_good,
+            "Row { Button { text: format(\"{}\", label); } }",
+        )
+        .expect("the structural edit commits");
         live.root = rt.root;
     }
     let rebuilt = live.root.unwrap();
@@ -619,24 +657,24 @@ fn boxes(live: &mut Live) -> Vec<(f32, f32)> {
 #[test]
 fn a_size_edit_patches_kept_nodes_in_place() {
     // A static size edit, a static-to-environment edit and an `em` reading the
-    // column's font size each reach the reused instances.
+    // text's font size each reach the reused instances.
     let (mut live, last_good) = mount(
-        "Row { Column { font_size: 20dp; width: 100dp; Text { width: 10dp; height: 10dp; } } }",
+        "Row { Column { width: 100dp; Text { font_size: 20dp; width: 10dp; height: 10dp; } } }",
     );
     let before = preorder(&live.store, live.root);
     assert_eq!(boxes(&mut live)[2], (10.0, 10.0));
 
     let edits = [
         (
-            "Row { Column { font_size: 20dp; width: 100dp; Text { width: 30dp; height: 10dp; } } }",
+            "Row { Column { width: 100dp; Text { font_size: 20dp; width: 30dp; height: 10dp; } } }",
             (30.0, 10.0),
         ),
         (
-            "Row { Column { font_size: 20dp; width: 100dp; Text { width: 1.5em; height: 2sp; } } }",
+            "Row { Column { width: 100dp; Text { font_size: 20dp; width: 1.5em; height: 2sp; } } }",
             (30.0, 2.0),
         ),
         (
-            "Row { Column { font_size: 10dp; width: 100dp; Text { width: 1.5em; height: 2sp; } } }",
+            "Row { Column { width: 100dp; Text { font_size: 10dp; width: 1.5em; height: 2sp; } } }",
             (15.0, 2.0),
         ),
         (

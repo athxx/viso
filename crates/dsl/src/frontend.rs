@@ -3,10 +3,10 @@
 //! `ui! { … }` enters at the ViewFragment production, `component! { … }` at the
 //! ComponentDecl entry, and `view!("x.vs")` at a whole compilation unit. That entry
 //! choice is the only thing the forms differ in: from the parse on, all three run
-//! the same resolver, the same view lowering to UI IR, the same Binding IR and key
-//! passes, and — for the two forms that declare a component — the same typed HIR
-//! lowering. A `component!` body is a one-component compilation unit, so its parse
-//! is handed to the module frontend exactly as a `.vs` file's is.
+//! the same resolver, typed HIR, view lowering to UI IR, Binding IR and key passes.
+//! A `component!` body is a one-component compilation unit, so its parse is handed
+//! to the module frontend exactly as a `.vs` file's is; a fragment compiles as the
+//! view of a component that declares nothing else.
 //!
 //! Every result is a [`Compiled`]: the view template and its compiled bindings,
 //! the reactive sources the bindings read, the component's typed HIR when there is
@@ -14,7 +14,7 @@
 //! caller passed in). The proc-macros and the hot-reload planner are thin callers
 //! over these three functions; none re-implements a stage.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::{Component, Path};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -22,8 +22,7 @@ use std::sync::Arc;
 use viso_behavior::native::Natives;
 
 use crate::ast::{
-    AstNode, CompilationUnit, ComponentDecl, Expr, Item, LiteralExpr, Member, PathExpr, UnaryExpr,
-    ViewFragment,
+    AstNode, CompilationUnit, ComponentDecl, Expr, Item, LiteralExpr, Member, UnaryExpr,
 };
 use crate::behavior::{Program, hidden_state, inline_instances};
 use crate::diag::{Diagnostic, Severity};
@@ -34,12 +33,12 @@ use crate::hir::{
 };
 use crate::ir::{
     BindingIr, ComponentLibrary, Consts, DirtyClass, InstanceSources, KeyIr, LibraryComponent,
-    LoweredView, UiTree, analyze_keys, lower_component_view, lower_fragment_items,
-    lower_view_reactivity, source_invalidations,
+    LoweredView, UiTree, analyze_keys, lower_component_view, lower_view_reactivity,
+    source_invalidations,
 };
 use crate::resolve::{
     ModuleGraph, ModulePath, NameInterner, ResolvedModule, SourceUnit, SymbolId, SymbolIdentity,
-    SymbolKind, fingerprint, resolve, resolve_fragment,
+    SymbolKind, fingerprint, resolve,
 };
 use crate::syntax::grammar::{Entry, Parse, parse_entry};
 use crate::syntax::{GreenNode, SyntaxKind, SyntaxNode, TextRange, TextSize, tokenize};
@@ -68,10 +67,8 @@ pub fn check_language_version(version: &str, at: TextRange) -> Option<Diagnostic
     })
 }
 
-/// The package a bare fragment's reactive sources are minted under. The fragment
-/// has no module of its own, so every `ui!` and every fragment hot reload shares
-/// this anchor, and a source name keeps one identity across both.
-pub const FRAGMENT_PACKAGE: &str = "<ui!>";
+/// The package a fragment compiles under: it has no module of its own.
+const FRAGMENT_PACKAGE: &str = "<ui!>";
 
 /// Where a component-declaring source lives: its package and the module path its
 /// source path derives (there is no in-file `module` header, section 21.5.3), plus
@@ -126,8 +123,6 @@ pub fn module_path(root: &Path, file: &Path) -> Vec<String> {
 /// What a reactive source is, as far as mounting it is concerned.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceKind {
-    /// A fragment read of a name the surrounding Rust scope supplies.
-    External,
     /// A component `state`, with its initializer when it folds to a constant.
     State {
         initial: Option<ConstValue>,
@@ -155,8 +150,9 @@ pub struct Source {
 /// A compiled source form.
 #[derive(Debug, Clone)]
 pub struct Compiled {
-    /// The typed HIR of the component the source declares; `None` for a fragment,
-    /// which declares none.
+    /// The typed HIR of the component the source declares, for a fragment the
+    /// stateless one it compiles as; `None` when the source does not compile
+    /// that far.
     pub component: Option<HirComponent>,
     /// The view's static template.
     pub tree: UiTree,
@@ -168,8 +164,7 @@ pub struct Compiled {
     pub invalidations: Vec<(SymbolId, DirtyClass)>,
     /// The view's keyed-list analysis.
     pub keys: KeyIr,
-    /// Every reactive source in scope of the view, in declaration (or, for a
-    /// fragment, first-read) order.
+    /// Every reactive source in scope of the view, in declaration order.
     pub sources: Vec<Source>,
     /// The hidden states of the instances a control-flow region mounts, which
     /// each mount of the region content keeps for itself instead of a state
@@ -192,9 +187,18 @@ pub struct Compiled {
     pub paints: Vec<ShaderPaint>,
     /// The assets the unit names, by identity, once each.
     pub assets: Vec<crate::assets::AssetUse>,
+    /// Where the caller's source starts in the text it compiled as: `0` but
+    /// for a fragment, which compiles inside the component it is the view of.
+    pub base: TextSize,
 }
 
 impl Compiled {
+    /// `range`, a span of the text the source compiled as, in the offsets of
+    /// the source the caller passed in.
+    pub fn authored(&self, range: TextRange) -> TextRange {
+        shift_back(range, self.base)
+    }
+
     /// The diagnostics that make the source uncompilable.
     pub fn errors(&self) -> impl Iterator<Item = &Diagnostic> {
         self.diagnostics
@@ -213,69 +217,63 @@ impl Compiled {
     }
 }
 
-/// Compiles a `ui!` view fragment. Its reactive sources are the value-position
-/// path heads, supplied by the surrounding Rust scope; a head that turns out to be
-/// a node or loop-local simply yields no edge. A node type no widget declares is
-/// a [`NodeKind::Component`](crate::ir::ui_ir::NodeKind::Component) of that
-/// scope; a target that has no Rust scope rejects it.
+/// The component a `ui!` fragment compiles as, the fragment its view: the
+/// text before the fragment's own.
+const FRAGMENT_HEAD: &str = "component UiFragment__ {\nview {\n";
+/// The text after the fragment's own.
+const FRAGMENT_TAIL: &str = "\n}\n}\n";
+
+/// Compiles a `ui!` view fragment as the view of a component that declares
+/// nothing else, through the module frontend a `component!` body runs: it
+/// resolves, types and lowers exactly as that view would. It has no state, so a
+/// value name it does not declare itself is unresolved. A node type no widget
+/// declares is a
+/// [`NodeKind::Component`](crate::ir::ui_ir::NodeKind::Component) of the
+/// surrounding Rust scope; a target that has no Rust scope rejects it.
+///
+/// Its diagnostics and [`Compiled::rust_components`] span the fragment's own
+/// text; every other span is one [`Compiled::authored`] maps there.
 pub fn compile_fragment(source: &str) -> Compiled {
     let parse = parse_entry(&tokenize(source), source, Entry::ViewFragment);
-    let root = SyntaxNode::new_root(parse.root.clone());
-    let mut diagnostics = parse.diagnostics();
-    let fragment =
-        ViewFragment::cast(root.clone()).expect("the view-fragment entry roots a ViewFragment");
-
-    let names = path_heads(&root);
-    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let mut interner = NameInterner::new();
-    let resolved = resolve_fragment(&fragment, &name_refs, &mut interner, FRAGMENT_PACKAGE);
-    diagnostics.extend(resolved.errors.iter().cloned());
-
-    let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
-    for unmounted in &lowered.unmounted {
-        diagnostics.push(unmounted_diagnostic(unmounted));
+    let diagnostics = parse.diagnostics();
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        return Compiled::empty(diagnostics, Program::default(), Vec::new());
     }
-    diagnostics.extend(lowered.misplaced.iter().map(misplaced_diagnostic));
-    let tree = lowered.tree;
-    let env = SourceSet::new(resolved.sources.iter().copied());
-    let (bindings, by_source) = lower_view_reactivity(
-        &tree,
-        &root,
-        &resolved.refs,
-        &env,
-        &DerivedReads::default(),
-        &[],
-    );
-    let keys = analyze_keys(&tree, &root, &resolved.refs, &env);
-    diagnostics.extend(keys.diagnostics.iter().cloned());
-
-    let sources = names
-        .into_iter()
-        .zip(resolved.sources)
-        .map(|(name, symbol)| Source {
-            name,
-            symbol,
-            kind: SourceKind::External,
-        })
-        .collect::<Vec<_>>();
-    let invalidations = ordered_invalidations(&sources, &[], by_source);
-    Compiled {
-        component: None,
-        tree,
-        bindings,
-        invalidations,
-        keys,
-        sources,
-        regional: Vec::new(),
-        rust_components: lowered.unknown,
-        diagnostics,
-        behavior: Program::default(),
-        types: TypeSchemas::default(),
-        migrators: Vec::new(),
-        shaders: Vec::new(),
-        paints: Vec::new(),
-        assets: Vec::new(),
+    let text = format!("{FRAGMENT_HEAD}{source}{FRAGMENT_TAIL}");
+    let parse = parse_entry(&tokenize(&text), &text, Entry::CompilationUnit);
+    let origin = Origin {
+        package: FRAGMENT_PACKAGE.to_owned(),
+        module: Vec::new(),
+        language: None,
+    };
+    let profile = TargetProfile {
+        rust_scope: true,
+        ..TargetProfile::default()
+    };
+    let mut compiled = compile_unit(&text, parse, &origin, Natives::standard(), profile, None);
+    let base = TextSize::new(FRAGMENT_HEAD.len() as u32);
+    compiled.base = base;
+    let authored = |range: TextRange| shift_back(range, base);
+    for diagnostic in &mut compiled.diagnostics {
+        diagnostic.primary = authored(diagnostic.primary);
+        for related in &mut diagnostic.related {
+            related.range = authored(related.range);
+        }
+        for edit in diagnostic.fixes.iter_mut().flat_map(|fix| &mut fix.edits) {
+            edit.range = authored(edit.range);
+        }
     }
+    for (_, at) in &mut compiled.rust_components {
+        *at = authored(*at);
+    }
+    compiled
+}
+
+/// `range`, which spans text from `base` on, in that text's own offsets; a
+/// span before `base` is the empty one at its start.
+fn shift_back(range: TextRange, base: TextSize) -> TextRange {
+    let back = |at: TextSize| at.saturating_sub(base);
+    TextRange::new(back(range.start()), back(range.end()))
 }
 
 /// Compiles a `component!` body: optional imports, then exactly one component,
@@ -425,6 +423,7 @@ fn compile_unit(
     let graph = ModuleGraph::build_with(&units, &interner, natives, &origin.package);
     diagnostics.extend(graph.errors().iter().cloned());
     let mut resolved = resolve(&graph, &units, &mut interner, &origin.package);
+    let rust_scope = profile.rust_scope;
     let lowered = crate::hir::lower(
         &graph,
         &units,
@@ -462,18 +461,19 @@ fn compile_unit(
     };
     let library = unit_library(&cu, &module, &decls, components.iter());
     let root_symbol = components[mounted].schema.symbol;
-    let lowered_view = decl
-        .view()
-        .and_then(|view| view.block())
-        .map(|block| lower_component_view(&block, graph.natives(), &library, root_symbol));
+    let lowered_view = decl.view().and_then(|view| view.block()).map(|block| {
+        lower_component_view(&block, graph.natives(), &library, root_symbol, rust_scope)
+    });
     drop(library);
-    // The view checker has already reported every unregistered node type.
-    let tree = match lowered_view {
+    // The view checker has already reported every unregistered node type, but
+    // for one of the Rust scope.
+    let (tree, rust_components) = match lowered_view {
         Some(view) => {
             diagnostics.extend(view_diagnostics(&view));
-            view.tree
+            let rust = if rust_scope { view.unknown } else { Vec::new() };
+            (view.tree, rust)
         }
-        None => UiTree::default(),
+        None => (UiTree::default(), Vec::new()),
     };
     inline_instances(&mut behavior, root_symbol, &tree);
 
@@ -555,7 +555,7 @@ fn compile_unit(
         keys,
         sources,
         regional,
-        rust_components: Vec::new(),
+        rust_components,
         diagnostics,
         behavior,
         types: lowered.types,
@@ -563,6 +563,7 @@ fn compile_unit(
         shaders,
         paints,
         assets,
+        base: TextSize::ZERO,
     }
 }
 
@@ -699,7 +700,7 @@ pub(crate) fn input_invalidations(
         return vec![DirtyClass::EMPTY; inputs.len()];
     };
     let library = unit_library(cu, module, &decls, components.iter().copied());
-    let tree = lower_component_view(&block, natives, &library, component.schema.symbol).tree;
+    let tree = lower_component_view(&block, natives, &library, component.schema.symbol, false).tree;
     drop(library);
     let child = |symbol: SymbolId| components.iter().find(|c| c.schema.symbol == symbol);
     let instances: Vec<InstanceSources> = tree
@@ -787,6 +788,7 @@ impl Compiled {
             shaders,
             paints: Vec::new(),
             assets: Vec::new(),
+            base: TextSize::ZERO,
         }
     }
 }
@@ -967,30 +969,6 @@ fn parse_int(text: &str) -> Option<i128> {
         _ => (text, 10),
     };
     i128::from_str_radix(digits, radix).ok()
-}
-
-/// Every value-position path head in the tree, first-appearance order,
-/// deduplicated: the names a fragment's surrounding scope must supply. A callee
-/// (`format(..)`) is not one: a captured state is a value, never a function.
-fn path_heads(root: &SyntaxNode) -> Vec<String> {
-    let mut seen = BTreeSet::new();
-    let mut names = Vec::new();
-    for node in root.descendants() {
-        let callee = node.parent().is_some_and(|parent| {
-            parent.kind() == SyntaxKind::CallExpr
-                && parent.first_child().is_some_and(|first| first == node)
-        });
-        let Some(path) = PathExpr::cast(node).filter(|_| !callee) else {
-            continue;
-        };
-        if let Some(head) = path.segments().next() {
-            let text = head.text();
-            if seen.insert(text.clone()) {
-                names.push(text);
-            }
-        }
-    }
-    names
 }
 
 fn whole(source: &str) -> TextRange {

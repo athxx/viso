@@ -553,19 +553,15 @@ struct App {
 
 ## 7. Component 模型
 
-用户侧组件应该非常普通。以下是**目标 authoring 形态**（`#[component]` 尚未实现；当前 Component 通过 `Component::build(&mut BuildCx)` 命令式构建，reactive 接线经 `BuildCx::with_reactive`，见 ADR 0003 / 0006）：
+用户侧组件应该非常普通。State 属于 Component：读取或写入 State 的 View 是一个 Component 的 `view`（`component!` 或 `.vs`），`ui!` Fragment 是无状态 View，只挂载常量值与它命名的 Rust Component：
 
 ```rust
-#[component]
-struct Counter {
-    count: State<i32>,
-}
-
-impl Counter {
-    fn view(&self) -> impl View {
-        ui! {
+component! {
+    Counter {
+        state count = 0;
+        view {
             Column {
-                Label { text: format("{}", count); }
+                Text { text: format("{}", count); }
                 Button {
                     text: "Add";
                     on click { count += 1; }
@@ -574,6 +570,8 @@ impl Counter {
         }
     }
 }
+
+let page = ui! { Column { Text { text: "Counter"; } Counter {} } };
 ```
 
 DSL 语法（property binding 用 `property: expr;`，命名节点用 `node name: Type { ... }`，行为赋值用 `=`）以 `Viso_DSL_1.0.md` 为准。

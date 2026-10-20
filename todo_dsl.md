@@ -419,8 +419,10 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       run reads. A `font_size` reading a value sets the node's font source as it
       changes (`LayoutSlot::FontSize`); across the macros, hot reload and the
       release package.
-  - [ ] A `ui!` fragment resolves the prelude's types: a constant enum value of a
-        control (`align: TextAlign::center`) reads as a Rust-scope source today.
+  - [x] A `ui!` fragment compiles as the view of a stateless component through the
+        component frontend: the prelude's types and enum values resolve
+        (`align: TextAlign::center`), its constant control values reach the node,
+        and a value name it does not declare is `E2001`.
 - [ ] A `const` imported from another file folds into style as one of the file does.
 - [x] `%` padding against the parent's content box (`start`/`end` its width,
       `top`/`bottom` its height), resolved when the parent places the node and kept

@@ -185,9 +185,8 @@ impl ViewBehavior {
 /// # Errors
 ///
 /// Every handler and region that does not mount: a region at the root or
-/// content under a `VirtualList`, a handler or a region in a fragment (which
-/// has no component to run against), a handler for an event the runtime does
-/// not deliver, and a handler or region entry whose body the behavior lowering
+/// content under a `VirtualList`, a handler for an event the runtime does not
+/// deliver, and a handler or region entry whose body the behavior lowering
 /// does not represent.
 pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<MountError>> {
     let mut errors = structure_errors(&compiled.tree);
@@ -221,30 +220,9 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     {
         return Ok(None);
     }
+    // Only a source that failed to compile declares no component.
     let Some(component) = &compiled.component else {
-        let mut errors: Vec<MountError> = sites
-            .iter()
-            .map(|(_, _, _, _, site)| {
-                MountError::new(
-                    Some(site.at),
-                    "a `ui!` fragment has no component state for a handler to run \
-                     against; declare it with `component!`",
-                )
-            })
-            .collect();
-        if regions {
-            errors.push(MountError::new(
-                compiled.tree.items.first().map(|item| match item {
-                    UiItem::Node(node) => node.origin,
-                    UiItem::If(region) => region.origin,
-                    UiItem::For(region) => region.origin,
-                    UiItem::Match(region) => region.origin,
-                }),
-                "a `ui!` fragment has no component state for a control-flow region \
-                 to run against; declare it with `component!`",
-            ));
-        }
-        return Err(errors);
+        return Ok(None);
     };
     let name = &component.schema.name;
     let Some(layout) = compiled.behavior.component(name) else {

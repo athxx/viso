@@ -71,6 +71,10 @@ pub struct TargetProfile {
     /// The languages a package packs the shaders its views paint with in:
     /// the target backend's, and `None` for the reference interpreter.
     pub shader_langs: Vec<viso_shader::program::ShaderLang>,
+    /// Whether the source is a `ui!` fragment, compiled inside a Rust scope:
+    /// a node type that no widget and no component of the unit declares names
+    /// a component of that scope.
+    pub rust_scope: bool,
 }
 
 impl Default for TargetProfile {
@@ -87,6 +91,7 @@ impl Default for TargetProfile {
             messages: None,
             assets: None,
             shader_langs: vec![viso_shader::program::ShaderLang::None],
+            rust_scope: false,
         }
     }
 }

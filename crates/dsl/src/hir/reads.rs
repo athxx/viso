@@ -36,13 +36,6 @@ pub trait ReadEnv {
 
 /// A [`ReadEnv`] backed by an explicit set of reactive-source symbols: a resolution
 /// is a reactive read exactly when it names a symbol in the set.
-///
-/// A component's read environment answers `reactive_source` from its schema, but a
-/// bare `ui!` fragment has no schema — its reactive sources are the Rust `state`
-/// names the macro captures, minted into symbols by
-/// [`crate::resolve::resolve_fragment`]. Feeding those ids here gives the Binding IR
-/// and keys passes the same [`ReadEnv`] shape the component path uses, with no
-/// hand-rolled environment on the macro side.
 #[derive(Debug, Clone, Default)]
 pub struct SourceSet {
     sources: BTreeSet<SymbolId>,

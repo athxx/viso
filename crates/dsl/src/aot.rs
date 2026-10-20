@@ -554,6 +554,7 @@ fn aot_length(len: LengthIr) -> AotLength {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hotreload::plan::plan_view;
     use viso_ende::Decode;
 
     #[test]
@@ -568,10 +569,24 @@ mod tests {
         assert_eq!(pkg.nodes[2].kind, AotNodeKind::Leaf);
     }
 
+    /// The plan of a component holding the state `label`, its view `view`.
+    fn view_plan(view: &str) -> CandidatePlan {
+        let origin = Origin {
+            package: "app".into(),
+            module: vec!["c".into()],
+            language: None,
+        };
+        plan_view(
+            &format!("component C {{ state label = 0; view {{ {view} }} }}"),
+            &origin,
+        )
+        .expect("compiles")
+    }
+
     #[test]
     fn a_bound_property_becomes_an_edge_by_identity_not_name() {
-        // The single node is index 0; its `text` binds to the `label` source.
-        let candidate = plan("Text { text: label; }").expect("compiles");
+        // The single node is index 0; its `text` binds to the `label` state.
+        let candidate = view_plan("Text { text: format(\"{}\", label); }");
         let pkg = emit_package(&candidate);
         assert_eq!(pkg.edges.len(), 1, "one static binding edge");
         let edge = pkg.edges[0];
@@ -592,7 +607,7 @@ mod tests {
     fn node_indices_are_the_binding_keys() {
         // A nested tree: the deep leaf's edge must reference its own pre-order index,
         // proving the emitter's numbering matches the binding IR's `NodeKey` walk.
-        let candidate = plan("Column { Row { Text { text: label; } } }").expect("compiles");
+        let candidate = view_plan("Column { Row { Text { text: format(\"{}\", label); } } }");
         let pkg = emit_package(&candidate);
         // pre-order: Column(0) Row(1) Text(2).
         assert_eq!(pkg.nodes.len(), 3);
@@ -611,10 +626,10 @@ mod tests {
         // The end of the emitter is bytes the loader decodes; the DSL side only has to
         // produce a well-formed blob (the full load closure is exercised in the
         // headless integration test, which imports only viso-ui).
-        let blob = build_package("Row { Text { text: label; } }").expect("compiles");
+        let blob = build_package("Row { Text { text: \"a\"; } }").expect("compiles");
         let pkg = viso_schema::aot::AotPackage::decode_from_slice(&blob).expect("decodes");
         assert_eq!(pkg.nodes.len(), 2, "Row + Text");
-        assert_eq!(pkg.edges.len(), 1);
+        assert!(pkg.edges.is_empty(), "a fragment binds no state");
     }
 
     #[test]

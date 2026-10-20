@@ -216,7 +216,11 @@ fn candidate(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic>> {
     let view = view_behavior(&compiled).map_err(|errors| {
         errors
             .iter()
-            .map(|error| error.diagnostic(fallback))
+            .map(|error| {
+                let mut diagnostic = error.diagnostic(fallback);
+                diagnostic.primary = compiled.authored(diagnostic.primary);
+                diagnostic
+            })
             .collect::<Vec<_>>()
     })?;
     let migrators = migrators(&compiled);
@@ -339,29 +343,45 @@ mod tests {
 
     #[test]
     fn valid_fragment_compiles_to_a_plan() {
-        let plan = plan("Text { text: label; }").expect("valid fragment compiles");
+        let plan = plan("Text { text: \"label\"; }").expect("valid fragment compiles");
         assert_eq!(plan.tree.items.len(), 1, "one root node");
-        assert!(
-            plan.source_names.iter().any(|n| n == "label"),
-            "the bound source name is a candidate"
-        );
+        assert!(plan.sources.is_empty(), "a fragment declares no state");
+    }
+
+    #[test]
+    fn a_fragment_names_no_value_it_does_not_declare() {
+        let source = "Text { text: label; }";
+        let err = plan(source).expect_err("an unknown name is fatal");
+        assert_eq!(err.iter().map(|d| d.code).collect::<Vec<_>>(), ["E2001"]);
+        let at: std::ops::Range<usize> = err[0].primary.into();
         assert_eq!(
-            plan.sources.len(),
-            plan.source_names.len(),
-            "identities are 1:1 with names"
+            &source[at], "label",
+            "at the name, in the fragment's own text"
         );
     }
 
     #[test]
     fn same_name_mints_the_same_identity_across_compiles() {
-        // The migration key depends on this: recompiling a fragment that still
+        // The migration key depends on this: recompiling a view that still
         // reads `count` must resolve `count` to the identical SymbolId.
-        let a = plan("Text { text: count; }").expect("compiles");
-        let b = plan("Text { text: count; color: count; }").expect("compiles");
+        let origin = Origin {
+            package: "app".into(),
+            module: vec!["c".into()],
+            language: None,
+        };
+        let view = |body: &str| {
+            plan_view(
+                &format!("component C {{ state count = 0; view {{ {body} }} }}"),
+                &origin,
+            )
+            .expect("compiles")
+        };
+        let a = view("Text { text: format(\"{}\", count); }");
+        let b = view("Column { Text { visible: count > 0; } }");
         assert_eq!(
             a.symbol_for_name("count"),
             b.symbol_for_name("count"),
-            "a source name is compile-stable identity"
+            "a state name is compile-stable identity"
         );
     }
 

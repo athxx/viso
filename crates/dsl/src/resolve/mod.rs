@@ -25,10 +25,7 @@ pub use module::{
     GraphModule, ModuleGraph, ModuleIndex, ModulePath, NativeBinding, ResolveErrorKind, SourceUnit,
 };
 pub use name::{NameId, NameInterner};
-pub use resolver::{
-    Resolution, ResolvedFragment, ResolvedModule, ResolvedRef, SymbolDecl, resolve,
-    resolve_fragment,
-};
+pub use resolver::{Resolution, ResolvedModule, ResolvedRef, SymbolDecl, resolve};
 pub(crate) use resolver::{generic_param_names, ident_tokens};
 pub use scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
 pub(crate) use symbol::digest;

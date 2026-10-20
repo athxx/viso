@@ -40,6 +40,12 @@ impl TextSize {
     pub const fn to_usize(self) -> usize {
         self.0 as usize
     }
+
+    /// `self - rhs`, or zero when `rhs` is the larger.
+    #[inline]
+    pub const fn saturating_sub(self, rhs: TextSize) -> TextSize {
+        TextSize(self.0.saturating_sub(rhs.0))
+    }
 }
 
 impl From<u32> for TextSize {

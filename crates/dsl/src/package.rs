@@ -261,7 +261,7 @@ fn mounted_view_diagnostics(
     };
     let decls = component_decls(&cu);
     let library = unit_library(&cu, module, &decls, hir.components.iter().filter(own));
-    let view = lower_component_view(&block, natives, &library, mounted.schema.symbol);
+    let view = lower_component_view(&block, natives, &library, mounted.schema.symbol, false);
     view_diagnostics(&view).collect()
 }
 

@@ -441,8 +441,8 @@ mod tests {
 
     #[test]
     fn identical_trees_keep_every_node() {
-        let a = tree_of("Row { Text { text: label; } }");
-        let b = tree_of("Row { Text { text: label; } }");
+        let a = tree_of("Row { Text { text: \"label\"; } }");
+        let b = tree_of("Row { Text { text: \"label\"; } }");
         let patch = diff(&a, &b);
         assert!(patch.is_structure_preserving());
         assert_eq!(kept(&patch), [(0, 0), (1, 1)]);
@@ -450,8 +450,8 @@ mod tests {
 
     #[test]
     fn property_only_edit_keeps_structure() {
-        let a = tree_of("Text { text: label; }");
-        let b = tree_of("Text { text: other; color: label; }");
+        let a = tree_of("Text { text: \"label\"; }");
+        let b = tree_of("Text { text: \"other\"; color: #ff0000; }");
         let patch = diff(&a, &b);
         assert!(patch.is_structure_preserving());
         assert_eq!(patch.keep.len(), 1);
@@ -469,8 +469,8 @@ mod tests {
 
     #[test]
     fn type_change_in_place_is_a_replace() {
-        let a = tree_of("Text { text: label; }");
-        let b = tree_of("Button { text: label; }");
+        let a = tree_of("Text { text: \"label\"; }");
+        let b = tree_of("Button { text: \"label\"; }");
         let patch = diff(&a, &b);
         assert!(patch.keep.is_empty());
         assert_eq!(
@@ -495,8 +495,8 @@ mod tests {
 
     #[test]
     fn appended_child_is_an_insert() {
-        let a = tree_of("Row { Text { text: a; } }");
-        let b = tree_of("Row { Text { text: a; } Text { text: b; } }");
+        let a = tree_of("Row { Text { text: \"a\"; } }");
+        let b = tree_of("Row { Text { text: \"a\"; } Text { text: \"b\"; } }");
         let patch = diff(&a, &b);
         assert_eq!(kept(&patch), [(0, 0), (1, 1)]);
         assert_eq!(patch.insert.len(), 1);
@@ -506,8 +506,8 @@ mod tests {
 
     #[test]
     fn removed_child_is_a_remove() {
-        let a = tree_of("Row { Text { text: a; } Text { text: b; } }");
-        let b = tree_of("Row { Text { text: a; } }");
+        let a = tree_of("Row { Text { text: \"a\"; } Text { text: \"b\"; } }");
+        let b = tree_of("Row { Text { text: \"a\"; } }");
         let patch = diff(&a, &b);
         assert_eq!(kept(&patch), [(0, 0), (1, 1)]);
         assert!(patch.insert.is_empty());
@@ -532,8 +532,8 @@ mod tests {
 
     #[test]
     fn an_appended_sibling_inserts_before_nothing() {
-        let a = tree_of("Row { Text { text: a; } }");
-        let b = tree_of("Row { Text { text: a; } Text { text: b; } }");
+        let a = tree_of("Row { Text { text: \"a\"; } }");
+        let b = tree_of("Row { Text { text: \"a\"; } Text { text: \"b\"; } }");
         let patch = diff(&a, &b);
         assert_eq!(patch.insert[0].parent, NodeKey(0));
         assert_eq!(patch.insert[0].before, None, "appended after every sibling");
@@ -544,7 +544,7 @@ mod tests {
         // The Row becomes a Column (a replace); its first child is dropped and
         // a new one appended — but since the whole subtree rebuilds anyway,
         // neither names its own patch entry.
-        let a = tree_of("Row { Text { text: a; } TextInput { } }");
+        let a = tree_of("Row { Text { text: \"a\"; } TextInput { } }");
         let b = tree_of("Column { TextInput { } Button { } }");
         let patch = diff(&a, &b);
         assert_eq!(patch.replace.len(), 1, "the Row/Column boundary");
@@ -584,8 +584,8 @@ mod tests {
 
     #[test]
     fn swapped_siblings_keep_one_and_rebuild_the_other() {
-        let a = tree_of("Row { Text { text: a; } Button { text: b; } }");
-        let b = tree_of("Row { Button { text: a; } Text { text: b; } }");
+        let a = tree_of("Row { Text { text: \"a\"; } Button { text: \"b\"; } }");
+        let b = tree_of("Row { Button { text: \"a\"; } Text { text: \"b\"; } }");
         let patch = diff(&a, &b);
         assert_eq!(patch.keep.len(), 2, "Row and one child");
         assert_eq!((patch.insert.len(), patch.remove.len()), (1, 1));

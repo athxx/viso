@@ -765,7 +765,6 @@ pub(super) fn reactive(cx: &FileCx<'_>, compiled: &Compiled) -> ReactiveView {
         .map(|source| ReactiveSource {
             name: source.name.clone(),
             kind: match source.kind {
-                SourceKind::External => "external",
                 SourceKind::State { .. } => "state",
                 SourceKind::Input => "input",
                 SourceKind::Computed => "computed",

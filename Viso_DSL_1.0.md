@@ -794,6 +794,7 @@ module_path      = identifier, { "::", label } ;
 
 - 三种入口共享 Component/Native Schema、名称解析、类型/Effect/Capability 检查、Typed HIR、Reactive/UI/Shader IR 与诊断语义；入口只决定起始 Production，不引入宏专用语法或运行时语义；
 - `ui!` 不接受 Top-level Declaration、Import 或 Component 成员；`component!` 不接受其他 Top-level Declaration；
+- `ui!` Fragment 按一个只声明该 View 的无状态 Component 检查与降级：Prelude 的类型、枚举值与函数照常解析（如 `align: TextAlign::center`），值名不读取外围 Rust 作用域的变量，Fragment 自身未声明的名称报 `E2001`；读取 State 的 View 使用 `component!`；
 - `.vs` 是规范外部文件格式；页面、Theme 与大型 Component 的热重载 SHOULD 使用 `view!`；内联宏的修改通常需要 Rust 增量编译，Runtime 不要求解析 Rust 源码来热重载内联宏；
 - 宏内源码的诊断 Span 映射回 Rust 源文件中的宏调用位置（§134）。
 
@@ -2135,7 +2136,7 @@ Canvas {
 - 一次输入样本对每个节点只运行一次 Handler：未写 `capture` 的 Handler 在 Target 与 Bubble 段运行，祖先节点上的 Handler 不因 Capture 段再运行一次；写 `capture` 的 Handler 在 Capture 段（自根向 Target，先于 Target 上的 Handler）与 Target 段运行，不在 Bubble 段运行；控件的内建响应仍只在其自身节点投递；
 - 内置控件（`Toggle`/`CheckBox`、`Slider`、`Tabs`/`RadioGroup`、`TextInput`）的内建响应随同一张 Handler 表挂载：控件从 Handler 表中的纯表达式条目读取当前值与范围（`checked`、`value`、`min`、`max`、`step`、`selected`），据样本算出新值后投递 Schema 声明的 `changed`、`selected_changed` 或 `submitted`；
 - 节点显示的反应式属性值同样是 Handler 表中的纯表达式条目：`Text`/`Button` 的 `text`、`TextInput` 的 `value`、控件的 `checked`、`value`、`selected`、`min`、`max`，以及任一原生节点外观的 `background`（填充色，`None` 为无填充）与 `opacity`（节点及其子树作为一层合成，按节点自身盒合成，`0` 不绘制；只标记 `PAINT`），及二者的 `transition.background`、`transition.opacity`（只在所移动的值变化时求值，不是依赖，见 §U6.1）。节点挂载时求值一次；之后只有其条目（沿调用传递）所读 State 在该帧变化时才重新求值，与节点当前显示值相等的结果不投递；`Text`/`Button` 的值成为节点文本，`TextInput` 的值播种其编辑缓冲（缓冲已持有相同文本时不重置光标，播种不算编辑、不投递 `changed`）；控件的值与范围成为节点的语义状态：`Toggle`/`CheckBox` 的 `checked`，`Slider` 的 `value` 与 `min`..`max` 范围，`Tabs`/`RadioGroup` 第 `selected` 个子节点为选中、其余未选中；未声明 `value` 的 `TextInput` 不被播种，重新挂载不覆盖用户已输入的文本；`for` 与条件区域内的节点在其片段挂载时求值，之后按同一规则随其所读 State 与所绑定条目重新求值；`component!`、`view!`、Hot Reload 提交与 Release Package 以同一规则投递，保持树结构的 Hot Reload 替换视图原有的求值挂钩而不累加；条目求值 Fault 保留节点原值并记录在宿主上；
-- `ui!` Fragment 没有 Component State，不能声明 Handler；Runtime 尚未投递的标准事件（如 `long_press`、`scroll`、`focus`）或 Behavior 无法 Lower 的 Handler 体报 `E3711`；Hot Reload 中出现 `E3711` 时保留 Last-good Handler；
+- Runtime 尚未投递的标准事件（如 `long_press`、`scroll`、`focus`）或 Behavior 无法 Lower 的 Handler 体报 `E3711`；Hot Reload 中出现 `E3711` 时保留 Last-good Handler；
 - Handler 运行期 Fault 只中止该次调用、不回写任何 State，Fault 记录在宿主上。
 
 `=>` 仅保留给 `match` Arm，因此 Parser 和 Formatter 不会把事件写法分叉成两套。
@@ -2279,7 +2280,7 @@ match user.state {
 - 区域读取的 State 变化时，Runtime 在该帧 State Flush 之后重新求值并只修改变化的区域；读取 String/List 等 UI State Cell 无法容纳的 State 时，由修订计数 Cell 触发；
 - 区域内 Node 的 Handler 以 Payload 加外层 `for`/`match` 绑定运行（§52）；
 - Region Entry 运行期 Fault 保留当前结构并记录在宿主上；
-- View 的根必须是 Node，根上的控制流区域报 `E3711`；`VirtualList` 尚不从 View 挂载内容，其子项报 `E3711`；`ui!` Fragment 没有 Component State，不能包含控制流区域（`E3711`）；
+- View 的根必须是 Node，根上的控制流区域报 `E3711`；`VirtualList` 尚不从 View 挂载内容，其子项报 `E3711`；
 - Hot Reload 中出现 `E3711` 时保留 Last-good 区域；含控制流区域的 View 在 Hot Reload 中整树重建，按名称保留 State。
 
 ---
@@ -8796,7 +8797,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 或 `@styleable` 误用（§U2.3）               |
-| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根、`VirtualList` 内或 `ui!` Fragment 中，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 写在非容器节点上，或 `Grid` 的 `areas`/`grid.area` 不是常量、常量轨道读取环境或兼含 `dp` 与 `%`、常量 Grid 间距含 `%`，或 Style 以读取值的绑定给出布局 Property，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根或 `VirtualList` 内，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 写在非容器节点上，或 `Grid` 的 `areas`/`grid.area` 不是常量、常量轨道读取环境或兼含 `dp` 与 `%`、常量 Grid 间距含 `%`，或 Style 以读取值的绑定给出布局 Property，或 Style 应用于用户 Component 节点、来自其他文件、或以 `when` 切换 `background`/`opacity` 以外的 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
 | E3713  | 资源误用：`asset` 的参数不是恰好一个字符串字面量、路径越出 `assets/`、文件不存在或不是 PNG/JPEG/SVG、编译没有资源目录，或写出 `ImageAsset`/`SvgAsset` 的 Record 表达式（§U5.1） |
 | E4101  | 非 Task 主体（Action、Event、Effect 等）中使用 Await    |

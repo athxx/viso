@@ -616,6 +616,7 @@ pub(super) fn profile(project: &Project, options: &Options) -> TargetProfile {
         messages: None,
         assets: None,
         shader_langs: shader_langs(project, options.target),
+        rust_scope: false,
     }
 }
 

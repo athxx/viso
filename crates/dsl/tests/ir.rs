@@ -1,6 +1,6 @@
 //! Section-2 tests: the UI IR lowering pass and the property → dirty-class table.
 //!
-//! These drive a real `ui!` fragment through parse → typed AST → `lower_fragment_items`
+//! These drive a real view block through parse → typed AST → `lower_component_view`
 //! and assert the retained-tree template it produces: node kinds resolved from
 //! type names, static style folded from compile-time-constant properties
 //! (`Dp`/`Px`/`%` dimensions, `row`/`column` axes), reactive properties
@@ -10,19 +10,43 @@
 //! load-bearing for the emitter that decomposes them back into runtime constants.
 
 use viso_behavior::native::Natives;
-use viso_dsl::ast::{AstNode, ViewFragment};
+use viso_dsl::ast::{AstNode, ViewBlock};
 use viso_dsl::ir::{
-    AxisIr, DirtyClass, LengthIr, NodeKind, TermsIr, UiItem, UiNode, lower_fragment_items,
-    property_dirty_class,
+    AxisIr, ComponentLibrary, DirtyClass, LengthIr, LoweredView, NodeKind, TermsIr, UiItem, UiNode,
+    lower_component_view, property_dirty_class,
 };
+use viso_dsl::resolve::SymbolId;
 use viso_dsl::syntax::grammar::{Entry, parse_entry};
 use viso_dsl::syntax::{SyntaxNode, tokenize};
 
-/// Parses `src` as a `ui!` view fragment and lowers its items to a UI tree's items.
+/// The text before a view's own in the component [`lower_view`] wraps it in.
+const HEAD: &str = "component T { view { ";
+
+/// Lowers `src` as the view of a component, a type no widget declares a
+/// component of the surrounding Rust scope. Spans are offsets into the
+/// wrapping text, `src` at [`HEAD`]'s length.
+fn lower_view(src: &str) -> LoweredView {
+    let text = format!("{HEAD}{src} }} }}");
+    let root =
+        SyntaxNode::new_root(parse_entry(&tokenize(&text), &text, Entry::CompilationUnit).root);
+    let block = root
+        .descendants()
+        .into_iter()
+        .find_map(ViewBlock::cast)
+        .expect("a view block");
+    let library = ComponentLibrary::default();
+    lower_component_view(
+        &block,
+        &Natives::standard(),
+        &library,
+        SymbolId { hi: 0, lo: 0 },
+        true,
+    )
+}
+
+/// Lowers `src` as a component's view to the UI tree's items.
 fn lower(src: &str) -> Vec<UiItem> {
-    let root = SyntaxNode::new_root(parse_entry(&tokenize(src), src, Entry::ViewFragment).root);
-    let fragment = ViewFragment::cast(root).expect("a ViewFragment root");
-    let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
+    let lowered = lower_view(src);
     assert!(lowered.unknown.is_empty(), "{:?}", lowered.unknown);
     lowered.tree.items
 }
@@ -82,10 +106,7 @@ fn a_fragment_splices_its_children_and_an_unknown_type_is_a_rust_component() {
         .collect();
     assert_eq!(types, ["Text", "Button", "Text"]);
 
-    let src = "Column { Sparkline { } }";
-    let root = SyntaxNode::new_root(parse_entry(&tokenize(src), src, Entry::ViewFragment).root);
-    let fragment = ViewFragment::cast(root).expect("a ViewFragment root");
-    let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
+    let lowered = lower_view("Column { Sparkline { } }");
     assert_eq!(lowered.unknown.len(), 1);
     assert_eq!(lowered.unknown[0].0, "Sparkline");
     assert!(lowered.unmounted.is_empty());
@@ -100,10 +121,7 @@ fn a_fragment_splices_its_children_and_an_unknown_type_is_a_rust_component() {
         other => panic!("expected one component node, got {other:?}"),
     }
 
-    let src = "Column { widgets::Sparkline { width: 4dp; } }";
-    let root = SyntaxNode::new_root(parse_entry(&tokenize(src), src, Entry::ViewFragment).root);
-    let fragment = ViewFragment::cast(root).expect("a ViewFragment root");
-    let lowered = lower_fragment_items(fragment.items(), &Natives::standard());
+    let lowered = lower_view("Column { widgets::Sparkline { width: 4dp; } }");
     assert_eq!(lowered.unmounted.len(), 1);
     let UiItem::Node(column) = &lowered.tree.items[0] else {
         panic!("expected a node");
@@ -274,9 +292,10 @@ fn reactive_property_becomes_pending_not_dropped() {
     assert_eq!(span, "label");
 }
 
-/// The source substring a pending property's value span covers.
+/// The substring of view `src` a span of its lowering covers.
 fn src_slice(src: &str, range: viso_dsl::syntax::TextRange) -> String {
-    src[std::ops::Range::<usize>::from(range)].to_string()
+    let range = std::ops::Range::<usize>::from(range);
+    src[range.start - HEAD.len()..range.end - HEAD.len()].to_string()
 }
 
 #[test]
@@ -395,79 +414,48 @@ fn dirty_class_bit_positions_are_stable() {
 //
 // The Binding IR pass turns each pending property into `source -> (node, class)`
 // edges, and the keys pass flags stateful repeated content without a stable key.
-// Both need a `ReadEnv` classifying which resolved symbols are reactive sources
-// and a `refs` table mapping name spans to resolutions. There is no component
-// context around a bare `ui!` fragment yet, so — mirroring the collect_reads unit
-// tests — the tests build both by hand: a set of names that are reactive sources,
-// mapped to synthetic `SymbolId`s, applied to every matching `Ident` token.
+// Each test compiles a view through the component frontend, its reactive sources
+// the component's states.
 
 mod binding {
     use std::collections::BTreeSet;
 
-    use viso_behavior::native::Natives;
-    use viso_dsl::ast::{AstNode, ViewFragment};
-    use viso_dsl::hir::SourceSet;
-    use viso_dsl::ir::binding_ir::BindingKind;
+    use viso_dsl::frontend::{Compiled, Origin, compile_component};
     use viso_dsl::ir::keys::KEYLESS_STATEFUL_FOR;
-    use viso_dsl::ir::{
-        BindingIr, DirtyClass, NodeKey, UiItem, UiTree, analyze_keys, lower_bindings,
-        lower_fragment_items,
-    };
-    use viso_dsl::resolve::{NameInterner, ResolvedRef, SymbolId, resolve_fragment};
-    use viso_dsl::syntax::grammar::{Entry, parse_entry};
-    use viso_dsl::syntax::{SyntaxNode, TextRange, tokenize};
+    use viso_dsl::ir::{BindingKind, DirtyClass, NodeKey, UiItem};
+    use viso_dsl::resolve::SymbolId;
 
-    /// A named reactive source, mirroring what a `ui!` macro captures from the Rust
-    /// scope: the caller supplies names, the frontend mints the symbols.
-    struct Source {
-        name: &'static str,
+    /// `view` compiled as the view of a component declaring `states`.
+    fn compiled(states: &str, view: &str) -> Compiled {
+        let origin = Origin {
+            package: "app".to_owned(),
+            module: vec!["t".to_owned()],
+            language: None,
+        };
+        compile_component(&format!("T {{ {states} view {{ {view} }} }}"), &origin)
     }
 
-    /// Parses a `ui!` fragment, lowers its UI tree, and runs the real fragment
-    /// frontend entry over the given reactive-source names: `resolve_fragment` mints
-    /// a symbol per name and produces the `refs` table, and `SourceSet` is the
-    /// `ReadEnv` the Binding IR / keys passes classify reads against — the exact
-    /// path the `ui!` macro drives, with no hand-rolled resolution.
-    fn setup(src: &str, sources: &[Source]) -> (UiTree, SyntaxNode, Vec<ResolvedRef>, SourceSet) {
-        let root = SyntaxNode::new_root(parse_entry(&tokenize(src), src, Entry::ViewFragment).root);
-        let fragment = ViewFragment::cast(root.clone()).expect("a ViewFragment root");
-        let tree = lower_fragment_items(fragment.items(), &Natives::standard()).tree;
-
-        let names: Vec<&str> = sources.iter().map(|s| s.name).collect();
-        let mut interner = NameInterner::new();
-        let resolved = resolve_fragment(&fragment, &names, &mut interner, "<ui!>");
-        let env = SourceSet::new(resolved.sources.iter().copied());
-        (tree, root, resolved.refs, env)
-    }
-
-    /// The reactive source `name` resolves to after `resolve_fragment` mints it: a
-    /// `State`-kind fingerprint over the synthetic package, empty module path, and
-    /// the source name — the same identity `setup`'s `resolve_fragment` produces.
-    fn source_id(name: &str) -> SymbolId {
-        use viso_dsl::resolve::{SymbolIdentity, SymbolKind, fingerprint};
-        fingerprint(SymbolIdentity {
-            package: "<ui!>",
-            module_path: "",
-            kind: SymbolKind::State,
-            decl_path: name,
-        })
-    }
-
-    /// A reactive source named `name`. `hi` is retained for call-site clarity but the
-    /// real symbol id now comes from the frontend fingerprint, not a synthetic seed.
-    fn source(name: &'static str, _hi: u64) -> Source {
-        Source { name }
+    /// The symbol of the state named `name`.
+    fn source_id(compiled: &Compiled, name: &str) -> SymbolId {
+        compiled
+            .sources
+            .iter()
+            .find(|s| s.name == name)
+            .expect("a state")
+            .symbol
     }
 
     #[test]
     fn text_bound_to_state_becomes_one_static_edge() {
-        let label = source("label", 1);
-        let (tree, root, refs, env) = setup("Text { text: label; }", std::slice::from_ref(&label));
-        let ir = lower_bindings(&tree, &root, &refs, &env);
-
+        let c = compiled("state label = \"\";", "Text { text: label; }");
+        let ir = &c.bindings;
         assert_eq!(ir.edges.len(), 1, "one binding edge");
         let edge = &ir.edges[0];
-        assert_eq!(edge.source, source_id("label"), "the edge fires on `label`");
+        assert_eq!(
+            edge.source,
+            source_id(&c, "label"),
+            "the edge fires on `label`"
+        );
         assert_eq!(edge.node, NodeKey(0), "the sole node is pre-order 0");
         assert_eq!(edge.property, "text");
         assert_eq!(
@@ -486,13 +474,17 @@ mod binding {
     fn a_property_reading_several_sources_emits_an_edge_per_source() {
         // `width: base + delta` reads two states; each independently invalidates
         // the node, so it becomes two static edges carrying the width dirty class.
-        let sources = [source("base", 1), source("delta", 2)];
-        let (tree, root, refs, env) = setup("Text { width: base + delta; }", &sources);
-        let ir = lower_bindings(&tree, &root, &refs, &env);
-
+        let c = compiled(
+            "state base = 10dp; state delta = 2dp;",
+            "Text { width: base + delta; }",
+        );
+        let ir = &c.bindings;
         assert_eq!(ir.edges.len(), 2, "one edge per reactive source read");
         let got: BTreeSet<_> = ir.edges.iter().map(|e| e.source).collect();
-        assert_eq!(got, BTreeSet::from([source_id("base"), source_id("delta")]));
+        assert_eq!(
+            got,
+            BTreeSet::from([source_id(&c, "base"), source_id(&c, "delta")])
+        );
         for edge in &ir.edges {
             assert_eq!(edge.node, NodeKey(0));
             assert_eq!(edge.class, DirtyClass::MEASURE | DirtyClass::LAYOUT);
@@ -501,16 +493,14 @@ mod binding {
     }
 
     #[test]
-    fn a_strict_typed_fragment_has_zero_dynamic_fallback() {
-        // A nested fragment whose every reactive property resolves to a known
+    fn a_strict_typed_view_has_zero_dynamic_fallback() {
+        // A nested view whose every reactive property resolves to a known
         // source produces only static edges — the strict-typed invariant.
-        let sources = [source("label", 1), source("count", 2)];
-        let (tree, root, refs, env) = setup(
+        let c = compiled(
+            "state label = \"\"; state count = \"\";",
             "Column { Text { text: label; } Text { text: count; } }",
-            &sources,
         );
-        let ir = lower_bindings(&tree, &root, &refs, &env);
-
+        let ir = &c.bindings;
         assert_eq!(ir.static_edges().count(), 2, "both texts bound statically");
         assert_eq!(ir.dynamic_edges().count(), 0);
         assert_eq!(ir.dynamic_fallback_nodes, 0, "zero dynamic fallback");
@@ -521,23 +511,23 @@ mod binding {
 
     #[test]
     fn a_property_reading_no_reactive_source_is_left_unbound() {
-        // `text: helper` where `helper` is not a reactive source: no edge, and no
-        // silent dynamic subscription.
-        let (tree, root, refs, env) = setup("Text { text: helper; }", &[]);
-        let ir = lower_bindings(&tree, &root, &refs, &env);
-        assert!(ir.edges.is_empty(), "no reactive read, no edge");
-        assert_eq!(ir.dynamic_fallback_nodes, 0, "and never a dynamic fallback");
+        let c = compiled("", "Text { text: \"a\"; }");
+        assert!(c.bindings.edges.is_empty(), "no reactive read, no edge");
+        assert_eq!(
+            c.bindings.dynamic_fallback_nodes, 0,
+            "and never a dynamic fallback"
+        );
     }
 
     #[test]
     fn a_keyed_for_records_its_key_reads() {
-        // `for item in items key item.id`: the key reads `item` (a loop-local, not
-        // reactive here) — a keyed for with a stateful body draws no warning.
-        let items = source("items", 1);
-        let src = "for item in items key item.id { Button { on click { } } }";
-        let (tree, root, refs, env) = setup(src, std::slice::from_ref(&items));
-        let key = analyze_keys(&tree, &root, &refs, &env);
-
+        // `for item in items key item`: a keyed for with a stateful body draws
+        // no warning.
+        let c = compiled(
+            "state items = [1, 2];",
+            "Column { for item in items key item { Button { on click { } } } }",
+        );
+        let key = &c.keys;
         assert_eq!(key.fors.len(), 1, "one for region");
         let f = &key.fors[0];
         assert!(f.keyed, "the for carries a key clause");
@@ -546,8 +536,11 @@ mod binding {
             key.diagnostics.is_empty(),
             "a keyed stateful for draws no warning"
         );
-        let UiItem::For(region) = &tree.items[0] else {
-            panic!("the root item is the for region");
+        let UiItem::Node(column) = &c.tree.items[0] else {
+            panic!("the root item is the column");
+        };
+        let UiItem::For(region) = &column.children[0] else {
+            panic!("its child is the for region");
         };
         assert_eq!(f.origin, region.origin, "the entry names its region");
     }
@@ -556,11 +549,11 @@ mod binding {
     fn a_keyless_stateful_for_warns() {
         // The parser recovers a keyless `for` (it also hard-errors E3401); the IR
         // pass adds the strict E3402 semantic warning because the body is stateful.
-        let items = source("items", 1);
-        let src = "for row in items { Button { on click { } } }";
-        let (tree, root, refs, env) = setup(src, std::slice::from_ref(&items));
-        let key = analyze_keys(&tree, &root, &refs, &env);
-
+        let c = compiled(
+            "state items = [1, 2];",
+            "Column { for row in items { Button { on click { } } } }",
+        );
+        let key = &c.keys;
         let f = &key.fors[0];
         assert!(!f.keyed, "no key clause");
         assert!(f.stateful, "the body has a handler");
@@ -572,20 +565,15 @@ mod binding {
     fn a_keyless_static_for_does_not_warn() {
         // A keyless for whose body is purely static carries no per-item identity,
         // so there is nothing to preserve across reorders — no strict finding.
-        let items = source("items", 1);
-        let src = "for row in items { Text { } }";
-        let (tree, root, refs, env) = setup(src, std::slice::from_ref(&items));
-        let key = analyze_keys(&tree, &root, &refs, &env);
-
+        let c = compiled(
+            "state items = [1, 2];",
+            "Column { for row in items { Text { } } }",
+        );
+        let key = &c.keys;
         assert!(!key.fors[0].stateful, "a plain Text body is not stateful");
         assert!(
             key.diagnostics.is_empty(),
             "a static keyless for is not a finding"
         );
     }
-
-    // Keep `BindingIr`/`TextRange` referenced so the imports document the pass's
-    // public surface even as assertions evolve.
-    #[allow(dead_code)]
-    fn _surface(_: &BindingIr, _: TextRange) {}
 }

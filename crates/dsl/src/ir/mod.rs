@@ -1,10 +1,8 @@
 //! UI IR / Binding IR — the view-lowering passes (AGENTS sections 21.2, 59).
 //!
-//! Slice K/L/M build the `.vs` frontend up to Typed HIR: [`crate::hir::lower`]
-//! produces a [`crate::hir::ComponentSchema`] per component, but the view tree
-//! never entered HIR — `ComponentSchema::view` holds only a `TextRange`. These
-//! passes close that gap. They re-walk the view AST (a `ui!` `ViewFragment` or a
-//! component's `view` block) and lower it into:
+//! [`crate::hir::lower`] types each component; these passes walk a component's
+//! `view` block (a `ui!` fragment is the view of a stateless one) and lower it
+//! into:
 //!
 //! - **UI IR** ([`ui_ir`]): a static retained-tree template — a [`ui_ir::UiTree`]
 //!   of [`ui_ir::UiNode`]s with folded compile-time style, control-flow regions,
@@ -12,16 +10,13 @@
 //!   rebuilt per frame (section 59).
 //! - the **property → dirty-class** table ([`dirty_map`]) that tags every binding
 //!   with exactly what a write invalidates (section 11).
+//! - the **Binding IR** ([`binding_ir`]) and keyed-list analysis ([`keys`]) over
+//!   that template.
 //!
-//! The Binding IR pass (`binding_ir`), keyed-list pass (`keys`), and the emitter
-//! land alongside these in later sections; the emitter itself lives on the
-//! `viso-ui-macros` side so `viso-dsl` keeps zero UI-runtime and zero
-//! proc-macro dependencies — this module exports only the IR data structures and
-//! the `lower_view` entry point over them.
-//!
-//! Nothing here reconstructs a heap tree per frame and nothing depends on
-//! `viso-ui`; the length/axis/dirty mirrors carry just enough for the emitter to
-//! rebuild the runtime style structs.
+//! The emitter lives on the `viso-ui-macros` side, so `viso-dsl` keeps zero
+//! UI-runtime and zero proc-macro dependencies. Nothing here reconstructs a heap
+//! tree per frame; the length/axis/dirty mirrors carry just enough for the
+//! emitter to rebuild the runtime style structs.
 
 pub mod binding_ir;
 pub mod dirty_map;
@@ -63,7 +58,8 @@ use ui_ir::{Laid, Placement, StackPlacement};
 /// A lowered view: its template, every node type name it wrote that neither a
 /// registered widget nor a component of the library declares (each with the
 /// span of its type path), and every component node that does not mount. A
-/// `ui!` fragment keeps each unknown type as a [`NodeKind::Component`] node.
+/// view lowered with the Rust scope keeps each unknown type as a
+/// [`NodeKind::Component`] node.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LoweredView {
     /// The retained-tree template.
@@ -159,42 +155,6 @@ impl<'a> ComponentLibrary<'a> {
     }
 }
 
-/// Lowers a `ui!` view fragment's items into a [`UiTree`].
-///
-/// This is the shared-frontend entry the emitter drives after
-/// tokenize/parse/resolve: it walks the fragment's top-level [`ViewItem`]s and
-/// produces the static template. Each node lowers to the retained node its
-/// widget declaration in `natives` names; a `Fragment` splices its children into
-/// the enclosing item list, and a type no widget declares is reported in
-/// [`LoweredView::unknown`] and kept as a [`NodeKind::Component`] node, a
-/// component of the surrounding Rust scope. Such a node takes no properties,
-/// handlers or children; any it has is reported in [`LoweredView::unmounted`].
-/// Property values that fold to compile-time constants become style; everything
-/// else is recorded as a [`PendingProperty`] for the Binding IR pass to resolve
-/// against the resolver's refs and the component schema.
-pub fn lower_fragment_items(
-    items: impl Iterator<Item = ViewItem>,
-    natives: &Natives,
-) -> LoweredView {
-    let library = ComponentLibrary::default();
-    let mut lowering = Lowering::new(natives, &library, None);
-    lowering.rust_scope = true;
-    let mut out = Vec::new();
-    for item in items {
-        lowering.item(item, &mut out);
-    }
-    lowering.finish(out)
-}
-
-/// Lowers a component's `view` block into a [`UiTree`] like a fragment, but
-/// an unknown type mounts nothing. No other component is inlined.
-pub fn lower_view_block(block: &ViewBlock, natives: &Natives) -> LoweredView {
-    let library = ComponentLibrary::default();
-    let mut lowering = Lowering::new(natives, &library, None);
-    let out = lowering.items(block.items());
-    lowering.finish(out)
-}
-
 /// Lowers the view `block` of the component `root` into a [`UiTree`], inlining
 /// every node of a component of `library`: its own view mounts in the node's
 /// place as instance `i` of [`UiTree::instances`], with the caller's
@@ -207,13 +167,19 @@ pub fn lower_view_block(block: &ViewBlock, natives: &Natives) -> LoweredView {
 /// standard handlers on a component whose view is not exactly one node, a slot
 /// placed deeper in `for`/`match` regions than its caller's node, a `bind`
 /// through `using`, and a component another unit declares.
+///
+/// With `rust_scope`, as for a `ui!` fragment, a type that no widget and no
+/// component of `library` declares is a component of the surrounding Rust
+/// scope.
 pub fn lower_component_view(
     block: &ViewBlock,
     natives: &Natives,
     library: &ComponentLibrary<'_>,
     root: SymbolId,
+    rust_scope: bool,
 ) -> LoweredView {
     let mut lowering = Lowering::new(natives, library, Some(root));
+    lowering.rust_scope = rust_scope;
     let out = lowering.items(block.items());
     lowering.finish(out)
 }

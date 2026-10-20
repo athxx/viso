@@ -1,7 +1,8 @@
-//! The three DSL source forms mount the same retained tree with the same compiled
-//! bindings: an equivalent `ui!` fragment, `component!` body and `view!` file build
-//! one node shape and layout, bind each state to the same node with the same dirty
-//! class, and flush a state write through the same single static edge.
+//! The three DSL source forms mount the same retained tree: an equivalent `ui!`
+//! fragment, `component!` body and `view!` file build one node shape and layout.
+//! The two forms that declare state bind each state to the same node with the same
+//! dirty class and flush a state write through the same single static edge; a
+//! fragment is stateless.
 
 use viso::render::Rect;
 use viso::ui::{
@@ -23,28 +24,26 @@ viso::component! {
     }
 }
 
-/// A mounted form and the ids of its `count` and `enabled` states.
+/// A mounted form and the ids of its `count` and `enabled` states, none for a
+/// fragment.
 struct Mounted {
     store: NodeStore,
     states: StateStore,
     bindings: BindingTable,
     root: NodeId,
-    count: StateId,
-    enabled: StateId,
+    ids: Option<[StateId; 2]>,
 }
 
 impl Mounted {
     /// Mounts `build`, which returns the root and the `count` and `enabled` ids.
-    fn mount(
-        mut states: StateStore,
-        build: impl FnOnce(&mut BuildCx<'_>) -> (Handle, [StateId; 2]),
-    ) -> Self {
+    fn mount(build: impl FnOnce(&mut BuildCx<'_>) -> (Handle, Option<[StateId; 2]>)) -> Self {
+        let mut states = StateStore::new();
         let mut store = NodeStore::new();
         let mut bindings = BindingTable::new();
         let mut lists = VirtualLists::new();
         let mut text_edits = TextEdits::new();
         let mut projectors = SemanticProjector::new();
-        let (root, [count, enabled]) = {
+        let (root, ids) = {
             let mut cx = BuildCx::with_reactive(
                 &mut store,
                 &mut states,
@@ -60,8 +59,7 @@ impl Mounted {
             states,
             bindings,
             root: root.id(),
-            count,
-            enabled,
+            ids,
         }
     }
 
@@ -107,7 +105,8 @@ impl Mounted {
     /// Each state's bindings as `(pre-order node index, class)`.
     fn edges(&self) -> Vec<Vec<(usize, DirtyClass)>> {
         let nodes = self.nodes();
-        [self.count, self.enabled]
+        self.ids
+            .expect("a stateful form")
             .into_iter()
             .map(|state| {
                 self.bindings
@@ -124,8 +123,9 @@ impl Mounted {
     /// Writes `count`, flushes, and returns the edges applied, each node's dirty
     /// classes in pre-order, and the static edges walked.
     fn flush_count(&mut self) -> (u32, Vec<DirtyClass>, u64) {
+        let [count, _] = self.ids.expect("a stateful form");
         self.store.clear_dirty();
-        assert!(self.states.set(self.count, StateValue::Int(7)));
+        assert!(self.states.set(count, StateValue::Int(7)));
         let mut changed = Vec::new();
         self.states.take_pending(&mut changed);
         let applied = self
@@ -144,23 +144,20 @@ impl Mounted {
 }
 
 fn fragment() -> Mounted {
-    let mut states = StateStore::new();
-    let count = states.alloc(StateValue::Int(0));
-    let enabled = states.alloc(StateValue::Bool(true));
     let build = viso::ui! {
         Column {
             width: 120dp;
-            Text { text: format("{}", count); }
-            Text { visible: enabled; }
+            Text { text: "0"; }
+            Text { visible: true; }
         }
     };
-    Mounted::mount(states, |cx| (build(cx), [count, enabled]))
+    Mounted::mount(|cx| (build(cx), None))
 }
 
 fn component() -> Mounted {
-    Mounted::mount(StateStore::new(), |cx| {
+    Mounted::mount(|cx| {
         let (Counter { count, enabled }, root) = Counter::build(cx);
-        (root, [count, enabled])
+        (root, Some([count, enabled]))
     })
 }
 
@@ -171,20 +168,21 @@ fn file() -> Mounted {
     let mut fresh = StateStore::new();
     let count = fresh.alloc(StateValue::Int(0));
     let enabled = fresh.alloc(StateValue::Bool(true));
-    Mounted::mount(StateStore::new(), |cx| (build(cx), [count, enabled]))
+    Mounted::mount(|cx| (build(cx), Some([count, enabled])))
 }
 
 #[test]
 fn component_states_start_from_their_initializers() {
     for form in [component(), file()] {
-        assert_eq!(form.states.get(form.count), Some(StateValue::Int(0)));
-        assert_eq!(form.states.get(form.enabled), Some(StateValue::Bool(true)));
+        let [count, enabled] = form.ids.unwrap();
+        assert_eq!(form.states.get(count), Some(StateValue::Int(0)));
+        assert_eq!(form.states.get(enabled), Some(StateValue::Bool(true)));
     }
 }
 
 #[test]
 fn the_three_forms_mount_the_same_tree_and_bindings() {
-    let mut reference = fragment();
+    let mut reference = component();
     let shape = reference.shape();
     let edges = reference.edges();
     assert_eq!(shape.len(), 3, "a Column holding a Text and a Leaf");
@@ -205,18 +203,16 @@ fn the_three_forms_mount_the_same_tree_and_bindings() {
             )],
         ]
     );
-    for mut form in [component(), file()] {
-        assert_eq!(form.shape(), shape);
-        assert_eq!(form.edges(), edges);
-    }
+    assert_eq!(fragment().shape(), shape);
+    let mut file = file();
+    assert_eq!(file.shape(), shape);
+    assert_eq!(file.edges(), edges);
 }
 
 #[test]
-fn the_three_forms_flush_a_write_through_the_same_static_edge() {
-    let expected = fragment().flush_count();
+fn the_two_stateful_forms_flush_a_write_through_the_same_static_edge() {
+    let expected = component().flush_count();
     assert_eq!(expected.0, 1);
     assert_eq!(expected.2, 1);
-    for mut form in [component(), file()] {
-        assert_eq!(form.flush_count(), expected);
-    }
+    assert_eq!(file().flush_count(), expected);
 }

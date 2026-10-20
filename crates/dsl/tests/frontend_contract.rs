@@ -1,6 +1,6 @@
 //! The three source forms share one pipeline: an equivalent `component!` body and
-//! `.vs` file lower to the same Typed HIR, and the view each declares lowers to the
-//! same UI IR and Binding IR as the equivalent `ui!` fragment.
+//! `.vs` file lower to the same Typed HIR, UI IR and Binding IR, and a `ui!`
+//! fragment lowers to the UI IR of a stateless component declaring it as its view.
 //!
 //! Spans are offsets into the source each form was given, so the equivalent sources
 //! are laid out at the same offsets: the inline forms blank out, with spaces, the
@@ -53,11 +53,14 @@ fn component_body() -> String {
     blank_outside(FILE, start..FILE.len())
 }
 
-/// The `ui!` fragment: the file's view block contents.
-fn fragment() -> String {
-    let open = FILE.find("view {").unwrap() + "view {".len();
-    let close = FILE[..FILE.rfind('}').unwrap()].rfind('}').unwrap();
-    blank_outside(FILE, open..close)
+/// A stateless view, as a `ui!` fragment.
+const FRAGMENT: &str = "Column { width: 120dp; Text { text: \"0\"; } Text { visible: true; } }";
+
+/// A file declaring `FRAGMENT` as a stateless component's view, the fragment at
+/// offset `at`.
+fn stateless_file(at: usize) -> String {
+    let head = "component Counter { view {";
+    format!("{head}{}{FRAGMENT} }} }}\n", " ".repeat(at - head.len()))
 }
 
 type Edge = (String, NodeKey, String, DirtyClass, BindingKind);
@@ -105,21 +108,28 @@ fn component_and_file_lower_to_the_same_typed_hir() {
 }
 
 #[test]
-fn all_three_forms_lower_to_the_same_ui_and_binding_ir() {
-    let fragment = clean(compile_fragment(&fragment()));
+fn component_and_file_lower_to_the_same_ui_and_binding_ir() {
     let inline = clean(compile_component(&component_body(), &origin()));
     let file = clean(compile_file(FILE, &origin()));
 
     assert!(!file.tree.items.is_empty());
-    assert_eq!(fragment.tree, file.tree);
     assert_eq!(inline.tree, file.tree);
-
     assert_eq!(file.bindings.static_edges().count(), 2);
-    assert_eq!(edges(&fragment), edges(&file));
     assert_eq!(edges(&inline), edges(&file));
-    assert_eq!(
-        fragment.bindings.dynamic_fallback_nodes,
-        file.bindings.dynamic_fallback_nodes
-    );
+    assert_eq!(inline.keys, file.keys);
+}
+
+#[test]
+fn a_fragment_lowers_to_the_ui_ir_of_a_stateless_component() {
+    let fragment = clean(compile_fragment(FRAGMENT));
+    let file = clean(compile_file(
+        &stateless_file(fragment.base.to_u32() as usize),
+        &origin(),
+    ));
+
+    assert!(!file.tree.items.is_empty());
+    assert_eq!(fragment.tree, file.tree);
+    assert_eq!(fragment.bindings.edges, []);
+    assert_eq!(fragment.bindings.dynamic_fallback_nodes, 0);
     assert_eq!(fragment.keys, file.keys);
 }

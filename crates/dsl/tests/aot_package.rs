@@ -17,7 +17,8 @@
 #[path = "support/reload.rs"]
 mod reload;
 
-use viso_dsl::aot::build_package;
+use viso_dsl::aot::{build_package, emit_package};
+use viso_ende::Encode;
 use viso_ui::aot::load_from_bytes;
 use viso_ui::dirty::DirtyClass;
 use viso_ui::state::StateKey;
@@ -65,7 +66,7 @@ fn walk(store: &NodeStore, node: NodeId, out: &mut Vec<NodeId>) {
 fn packaged_app_boots_and_renders_with_the_compiler_absent_from_the_load_path() {
     // Build side: the compiler lowers source to a compact asset blob. This is the only
     // place `viso-dsl` appears; a release binary runs this at build time, not startup.
-    let blob = build_package("Row { Text { text: label; } }").expect("compiles to a package");
+    let blob = emit_package(&labelled()).encode_to_vec();
 
     // Load side: a release runtime instantiates the blob using only `viso-ui`. The
     // exit criterion holds at the type-system level — nothing below this line names a
@@ -115,9 +116,24 @@ fn packaged_app_boots_and_renders_with_the_compiler_absent_from_the_load_path() 
 /// of the load path (so the load path itself never touches the compiler). The blob
 /// carries this key by identity; here we derive the same key to look the cell up.
 fn text_label_key() -> StateKey {
-    let plan = viso_dsl::hotreload::plan("Row { Text { text: label; } }").expect("compiles");
-    let symbol = plan.symbol_for_name("label").expect("label is a source");
+    let symbol = labelled()
+        .symbol_for_name("label")
+        .expect("label is a source");
     StateKey::from_parts(symbol.hi, symbol.lo)
+}
+
+/// The plan of a view whose text shows its state `label`.
+fn labelled() -> viso_dsl::hotreload::CandidatePlan {
+    let origin = viso_dsl::frontend::Origin {
+        package: "app".into(),
+        module: vec!["labelled".into()],
+        language: None,
+    };
+    viso_dsl::hotreload::plan_view(
+        "component Labelled { state label = 0; view { Row { Text { text: format(\"{}\", label); } } } }",
+        &origin,
+    )
+    .expect("compiles")
 }
 
 #[test]
@@ -280,8 +296,8 @@ fn packaged_environment_lengths_resolve_as_the_live_commit_does() {
     use viso_dsl::hotreload::CandidatePlan;
     use viso_ui::{EffectStore, LengthEnv, SemanticProjector};
 
-    let source = "Row { gap: 2px; Column { font_size: 125%; width: 50% - 4px; \
-                  Text { width: 2em; height: 3sp + 1px; } } Text { width: 10dp; } }";
+    let source = "Row { gap: 2px; Column { width: 50% - 4px; \
+                  Text { font_size: 125%; width: 2em; height: 3sp + 1px; } } Text { width: 10dp; } }";
     let envs = [
         LengthEnv::default(),
         LengthEnv {

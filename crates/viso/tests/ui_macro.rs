@@ -5,8 +5,8 @@
 //! static `BuildCx` builder closure — no runtime parse, no per-frame rebuild. These
 //! tests exercise the expansion the only way that proves it: by taking the emitted
 //! `|cx: &mut BuildCx| -> Handle` closure and mounting it into a real `NodeStore`,
-//! then asserting on the retained tree and (for the reactive case) on the exact
-//! `BindingTable` edge the macro compiled from a `text: count;` property.
+//! then asserting on the retained tree and on the values its nodes declare. A
+//! fragment is a stateless view: one that reads state is a `component!`.
 //!
 //! The macro lives in the compile-time-only `viso-ui-macros` crate and emits
 //! `::viso_ui::…` paths; it resolves here because the facade re-exports both `ui!`
@@ -14,8 +14,7 @@
 //! `use viso::prelude::*;`.
 
 use viso::ui::{
-    BindingTable, BuildCx, DirtyClass, NodeStore, SemanticProjector, StateStore, StateValue,
-    TextEdits, VirtualLists,
+    BindingTable, BuildCx, NodeStore, SemanticProjector, StateStore, TextEdits, VirtualLists,
 };
 
 /// A static-only fragment expands to a builder closure that mounts a real retained
@@ -46,30 +45,32 @@ fn static_fragment_mounts_a_retained_tree() {
     );
 }
 
-/// A `text: count;` property whose value reads an in-scope reactive `StateId`
-/// compiles to a static `cx.bind(count, <text-leaf>, MEASURE|LAYOUT|PAINT|SEMANTICS)`
-/// edge — the dirty invalidation class for text content — recorded against the leaf.
-/// A later write to `count` then dirties exactly that node and class.
+/// A fragment's constant control values — a string, a color, an enum variant
+/// of the prelude, an option — reach the node's text request: the fragment is
+/// checked as a component's view, so `TextAlign::center` names the prelude's
+/// variant, not a Rust variable.
 #[test]
-fn reactive_fragment_compiles_a_static_binding_edge() {
+fn constant_control_values_reach_the_text_request() {
+    use std::num::NonZeroU32;
+    use viso::ui::{FontSize, NodeId, TextAlign, TextOverflow, TextRequest};
+
+    let build = viso::ui! {
+        Column {
+            Text {
+                text: "Title";
+                color: #ff0000;
+                align: TextAlign::center;
+                max_lines: Option::Some(2);
+                overflow: TextOverflow::ellipsis;
+            }
+        }
+    };
     let mut store = NodeStore::new();
     let mut states = StateStore::new();
     let mut bindings = BindingTable::new();
     let mut lists = VirtualLists::new();
     let mut text_edits = TextEdits::new();
     let mut projectors = SemanticProjector::new();
-
-    // The reactive source the fragment names. `count` is an ordinary in-scope Rust
-    // `StateId`; the macro emits `cx.bind(count, …)` and Rust hygiene resolves it to
-    // this binding at the call site.
-    let count = states.alloc(StateValue::Int(0));
-
-    let build = viso::ui! {
-        Column {
-            Text { text: count; }
-        }
-    };
-
     let root = {
         let mut cx = BuildCx::with_reactive(
             &mut store,
@@ -81,31 +82,28 @@ fn reactive_fragment_compiles_a_static_binding_edge() {
         );
         build(&mut cx).id()
     };
-    // Pre-order: Column = root, its Text child carries the binding.
-    let text_leaf = store
-        .arena()
-        .links(root)
-        .unwrap()
-        .first_child
-        .expect("the Column mounted its Text leaf");
-
-    // The compiled edge is a static one under `count`, targeting the Text leaf with
-    // the text-content dirty class — never a dynamic fallback.
-    let text_class =
-        DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT | DirtyClass::SEMANTICS;
-    store.clear_dirty();
-    let applied = {
-        let changed = [count];
-        store.flush_state_transactions(&changed, &bindings)
-    };
+    let text = store.arena().links(root).unwrap().first_child.unwrap();
+    let mut requests: Vec<(NodeId, Box<TextRequest>)> = Vec::new();
+    store.take_text_requests(&mut requests);
+    let mut seeds: Vec<(NodeId, TextRequest)> = Vec::new();
+    store.take_text_seeds(&mut seeds);
+    let (id, request) = requests
+        .into_iter()
+        .map(|(id, r)| (id, *r))
+        .chain(seeds)
+        .find(|(_, r)| r.text == "Title")
+        .expect("the text is declared");
+    assert_eq!(id, text);
+    let c = request.color;
+    assert_eq!((c.r, c.g, c.b, c.a), (1.0, 0.0, 0.0, 1.0));
+    assert_eq!(request.font_size, FontSize::Inherited);
+    assert_eq!(request.style.align, TextAlign::Center);
+    assert_eq!(request.style.max_lines, NonZeroU32::new(2));
+    assert_eq!(request.style.overflow, TextOverflow::Ellipsis);
     assert_eq!(
-        applied, 1,
-        "the write reached exactly the one compiled edge"
-    );
-    assert_eq!(
-        store.dirty(text_leaf),
-        text_class,
-        "the text binding dirties precisely its dirty-class set"
+        bindings.footprint().absolute_edges,
+        0,
+        "a constant value binds nothing"
     );
 }
 
@@ -121,9 +119,8 @@ fn environment_lengths_fold_at_layout_and_follow_the_environment() {
     let build = viso::ui! {
         Row {
             Column {
-                font_size: 20dp;
                 width: 100dp;
-                Text { width: 50% - 20dp; height: 2sp + 4px; }
+                Text { font_size: 20dp; width: 50% - 20dp; height: 2sp + 4px; }
             }
         }
     };
