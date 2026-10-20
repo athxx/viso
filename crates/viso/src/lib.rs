@@ -1121,16 +1121,18 @@ impl WindowState {
     }
 
     /// Shape every node that carries a pending [`TextRequest`] into a
-    /// `Content::Text` payload, uploading newly-packed glyphs to the atlas.
-    /// Runs after a build/rebuild and before layout, so a `Fit` text node
-    /// measures against the shaped run's natural size. A no-op with no GPU
-    /// (headless-without-surface) or no shaper (pre-launch).
+    /// `Content::Text` payload, uploading newly-packed glyphs to the atlas,
+    /// and place again each run whose size moved with its font sources or the
+    /// environment. Runs after a build/rebuild and before layout, so a `Fit`
+    /// text node measures against the shaped run's natural size. A no-op with
+    /// no GPU (headless-without-surface) or no shaper (pre-launch).
     fn shape_pending_text(&mut self) {
         let (Some(gpu), Some(text)) = (self.gpu.as_mut(), self.text.as_mut()) else {
             return;
         };
         self.store.take_text_requests(&mut self.text_scratch);
-        if self.text_scratch.is_empty() {
+        let resized = self.store.take_text_resized();
+        if self.text_scratch.is_empty() && !resized {
             return;
         }
         // Declaring text is the frame that may have freed older runs, so drop
@@ -1152,14 +1154,29 @@ impl WindowState {
             // assigns a wrap-eligible leaf a different box, it enqueues a
             // reflow that the Layout phase drains and reshapes at that width.
             let slot = ParagraphSlot::from(id);
-            let width = text.wrap_width(slot);
-            let content = text.shape(&mut gpu.backend, slot, &request, dpi, width);
+            let sizing = self.store.text_sizing(id, &request);
+            let width = text.box_width(slot);
+            let content = text.shape(&mut gpu.backend, slot, &request, sizing, dpi, width);
             // Every run keeps its source so a reflow or a memory trim can
             // reshape it (the store drops the request on drain). Re-declaring a
             // run (edit/rebuild) overwrites its entry; the reflow drain and the
             // trim prune freed nodes.
             self.text_sources.insert(id, request);
             self.store.set_content_payload(id, content);
+        }
+        if !resized {
+            return;
+        }
+        // Shaping is in em, so a run whose size moved is only placed again.
+        for (&id, request) in &self.text_sources {
+            let slot = ParagraphSlot::from(id);
+            let sizing = self.store.text_sizing(id, request);
+            if text.sizing(slot) == Some(sizing) {
+                continue;
+            }
+            let width = text.box_width(slot);
+            let content = text.shape(&mut gpu.backend, slot, request, sizing, dpi, width);
+            self.store.set_reflowed_content(id, content);
         }
     }
 
@@ -1195,8 +1212,9 @@ impl WindowState {
             let Some(request) = self.text_sources.get(&id) else {
                 continue;
             };
-            let width = text.wrap_width(slot);
-            let content = text.shape(&mut gpu.backend, slot, request, dpi, width);
+            let sizing = self.store.text_sizing(id, request);
+            let width = text.box_width(slot);
+            let content = text.shape(&mut gpu.backend, slot, request, sizing, dpi, width);
             // The request is unchanged, so its accessible name is too.
             self.store.set_reflowed_content(id, content);
         }
@@ -1229,8 +1247,9 @@ impl WindowState {
             let Some(request) = self.text_sources.get(&id) else {
                 continue;
             };
-            let width = text.wrap_width(slot);
-            let content = text.shape(&mut gpu.backend, slot, request, dpi, width);
+            let sizing = self.store.text_sizing(id, request);
+            let width = text.box_width(slot);
+            let content = text.shape(&mut gpu.backend, slot, request, sizing, dpi, width);
             self.store.set_reflowed_content(id, content);
             reshaped.push(id);
         }
@@ -1724,6 +1743,7 @@ impl WindowState {
                     &mut gpu.backend,
                     ParagraphSlot::from(id),
                     request,
+                    self.store.text_sizing(id, request),
                     dpi,
                     Some(width),
                 );

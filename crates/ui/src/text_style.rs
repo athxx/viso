@@ -1,11 +1,35 @@
-//! How a text node sets its text beyond its content, size and color: the
-//! face it draws with, its line height, how many lines it shows and how text
-//! it cuts off ends, and how its lines align in its box.
+//! How a text node sets its text beyond its content and color: the size it
+//! draws at, the face it draws with, its line height, how many lines it shows
+//! and how text it cuts off ends, and how its lines align in its box.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 pub use viso_text::FontWeight;
+
+use crate::component::NodeStore;
+use crate::content::TextRequest;
+use crate::length::LengthTerms;
+use crate::node::NodeId;
+
+/// The size a text draws at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FontSize {
+    /// This size, in dp.
+    Fixed(f32),
+    /// Its node's font size: its own `font_size`, else its nearest
+    /// ancestor's, else the environment's root font size. It follows each of
+    /// them, and the environment, as they change.
+    Inherited,
+}
+
+/// A text's size as its node and the environment resolve it, in dp.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextSizing {
+    pub font_size: f32,
+    /// The height of each line's box; `None` for the face's own spacing.
+    pub line_height: Option<f32>,
+}
 
 /// The family a text draws with: a role the platform or the app's fonts
 /// fill, or a family by name.
@@ -50,9 +74,10 @@ pub enum TextAlign {
 pub struct TextStyle {
     pub weight: FontWeight,
     pub family: FontFamily,
-    /// The height of each line's box in logical pixels, the glyphs centered
-    /// in it; `None` for the face's own line spacing.
-    pub line_height: Option<f32>,
+    /// The height of each line's box, the glyphs centered in it, its `em`
+    /// and `%` of the text's font size; `None` for the face's own line
+    /// spacing.
+    pub line_height: Option<LengthTerms>,
     /// The most lines shown; `None` for every line.
     pub max_lines: Option<NonZeroU32>,
     pub overflow: TextOverflow,
@@ -70,6 +95,27 @@ impl TextStyle {
             WidthUse::Narrower
         } else {
             WidthUse::Ignored
+        }
+    }
+}
+
+impl NodeStore {
+    /// The size `request`, declared on node `id`, draws at now. A line height
+    /// that does not fold to a finite size is the face's own.
+    pub fn text_sizing(&self, id: NodeId, request: &TextRequest) -> TextSizing {
+        let env = self.length_env();
+        let font_size = match request.font_size {
+            FontSize::Fixed(size) => size,
+            FontSize::Inherited => self
+                .resolved_font_size(id)
+                .unwrap_or_else(|| env.root_font_size()),
+        };
+        TextSizing {
+            font_size,
+            line_height: request
+                .style
+                .line_height
+                .and_then(|terms| terms.fold_font(&env, font_size)),
         }
     }
 }

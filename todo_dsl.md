@@ -410,9 +410,17 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 - [x] `fill` on the cross axis fills the available extent under any `align` (U3.2);
       the runtime fills it only under `Align::Stretch`, and stretches a `fit` child
       too.
-- [ ] A text's font size follows the environment (text scale, an ancestor's
-      `font_size` that reads `sp`) after it mounts: today its request is resized only
-      when its own values or a reload deliver again.
+- [x] A text's font size follows the environment after it mounts: a view's text
+      requests its node's font size (`FontSize::Inherited`) and a `line_height` as
+      terms, resolved when shaped (`NodeStore::text_sizing`); a text scale, scale
+      factor or base size change, or a font source bound, moved or dropped, raises
+      `take_text_resized`, and the facade places each run whose size moved again
+      (shaping is in em, so no layout), keeping the box an aligned or ellipsized
+      run reads. A `font_size` reading a value sets the node's font source as it
+      changes (`LayoutSlot::FontSize`); across the macros, hot reload and the
+      release package.
+  - [ ] A `ui!` fragment resolves the prelude's types: a constant enum value of a
+        control (`align: TextAlign::center`) reads as a Rust-scope source today.
 - [ ] A `const` imported from another file folds into style as one of the file does.
 - [x] `%` padding against the parent's content box (`start`/`end` its width,
       `top`/`bottom` its height), resolved when the parent places the node and kept

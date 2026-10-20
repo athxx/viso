@@ -15,7 +15,7 @@ use viso_render::Rgba;
 use viso_text::inspect::TextInspection;
 use viso_text::paragraph::LineLayout;
 use viso_text::{GlyphImageKind, MemoryClass, TextOffset, TextPosition};
-use viso_ui::{Content, TextRequest, TextStyle};
+use viso_ui::{Content, FontSize, TextRequest, TextSizing, TextStyle};
 
 use crate::text_content::{self, ParagraphSlot, TextShaper};
 
@@ -139,9 +139,14 @@ impl TextHarness {
         wrap: Option<f32>,
     ) -> TextDraw {
         let request = request(text, font_size, wrap.is_some());
-        let content = self
-            .shaper
-            .shape(&mut self.gpu, slot(paragraph), &request, 1.0, wrap);
+        let content = self.shaper.shape(
+            &mut self.gpu,
+            slot(paragraph),
+            &request,
+            sizing(font_size),
+            1.0,
+            wrap,
+        );
         let Content::Text {
             glyphs,
             color_glyphs,
@@ -279,11 +284,18 @@ fn slot(paragraph: u32) -> ParagraphSlot {
 fn request(text: &str, font_size: f32, soft_wrap: bool) -> TextRequest {
     TextRequest {
         text: text.into(),
-        font_size,
+        font_size: FontSize::Fixed(font_size),
         color: WHITE,
         soft_wrap,
         locale: None,
         style: TextStyle::default(),
+    }
+}
+
+fn sizing(font_size: f32) -> TextSizing {
+    TextSizing {
+        font_size,
+        line_height: None,
     }
 }
 

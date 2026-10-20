@@ -111,6 +111,9 @@ pub(crate) struct LengthBindings {
     /// A font source was bound or dropped: the next layout re-folds every
     /// binding that reads the font size.
     font_moved: bool,
+    /// A font source or the environment moved since the text shaper last
+    /// asked: a text's size may resolve anew.
+    text_resized: bool,
     stats: LengthStats,
     /// The issues reported so far, by node index; a debug build warns of each
     /// once.
@@ -130,6 +133,7 @@ impl LengthBindings {
         self.free_rare_terms.clear();
         self.pending = false;
         self.font_moved = false;
+        self.text_resized = false;
         #[cfg(debug_assertions)]
         {
             self.reported.clear();
@@ -312,6 +316,7 @@ impl NodeStore {
         table.pending = true;
         // A font source moved: every `em` beneath it may resolve anew.
         table.font_moved |= font_moved;
+        table.text_resized |= font_moved;
     }
 
     /// Drops node `id`'s bound lengths; its folded lengths stay as they are.
@@ -328,6 +333,7 @@ impl NodeStore {
             if font {
                 table.pending = true;
                 table.font_moved = true;
+                table.text_resized = true;
             }
         }
     }
@@ -354,6 +360,7 @@ impl NodeStore {
         if !changed.is_empty() {
             table.mark(changed);
         }
+        table.text_resized |= changed.intersects(LengthDeps::FONT_SIZE);
         // Displacements snap to the device grid, so a new scale moves them.
         if rescaled {
             self.request_repaint();
@@ -368,6 +375,12 @@ impl NodeStore {
             return None;
         }
         Some(self.font_of(id))
+    }
+
+    /// Whether a font source or the environment moved since the last call,
+    /// so that a text's [`text_sizing`](Self::text_sizing) may have changed.
+    pub fn take_text_resized(&mut self) -> bool {
+        std::mem::take(&mut self.lengths_mut().text_resized)
     }
 
     /// How often layout met each length issue.

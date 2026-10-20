@@ -91,7 +91,9 @@ pub use length::{
 };
 pub use node::{ArenaFull, ChildIds, Children, NodeArena, NodeId, NodeIndex, NodeLinks, TreeLinks};
 pub use paint::{paint_tree, paint_with_transforms};
-pub use text_style::{FontFamily, FontWeight, TextAlign, TextOverflow, TextStyle, WidthUse};
+pub use text_style::{
+    FontFamily, FontSize, FontWeight, TextAlign, TextOverflow, TextSizing, TextStyle, WidthUse,
+};
 pub use transform::TransformTable;
 pub use viso_runtime::Instant;
 // Render primitive data types that already appear in this crate's public API —

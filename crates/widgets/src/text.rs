@@ -17,8 +17,8 @@
 use std::num::NonZeroU32;
 
 use viso_ui::{
-    BoxStyle, BuildCx, Component, FontFamily, FontWeight, LeafStyle, Length, Rgba, Role, Semantics,
-    Size, TextAlign, TextOverflow, TextRequest, TextStyle,
+    BoxStyle, BuildCx, Component, FontFamily, FontSize, FontWeight, LeafStyle, Length, LengthTerms,
+    Rgba, Role, Semantics, Size, TextAlign, TextOverflow, TextRequest, TextStyle,
 };
 
 /// The default label font size in logical pixels.
@@ -152,7 +152,7 @@ impl Label {
 
     /// Set each line's box height in logical pixels, the glyphs centered in it.
     pub fn line_height(mut self, height: f32) -> Self {
-        self.text_style.line_height = Some(height);
+        self.text_style.line_height = Some(LengthTerms::dp(height));
         self
     }
 
@@ -198,7 +198,7 @@ impl Component for Label {
             handle,
             TextRequest {
                 text: self.text.clone(),
-                font_size: self.style.font_size,
+                font_size: FontSize::Fixed(self.style.font_size),
                 color: self.style.color,
                 soft_wrap: self.style.soft_wrap,
                 locale: self.locale.clone(),
@@ -241,7 +241,7 @@ mod tests {
             .text_request(root)
             .expect("label declares a text request on its leaf");
         assert_eq!(request.text, "Hello");
-        assert_eq!(request.font_size, DEFAULT_FONT_SIZE);
+        assert_eq!(request.font_size, FontSize::Fixed(DEFAULT_FONT_SIZE));
         assert_eq!(request.color, DEFAULT_COLOR);
 
         let sem = store
@@ -278,7 +278,7 @@ mod tests {
         let root = cx.root().expect("label declares a root node");
 
         let request = store.text_request(root).expect("text request present");
-        assert_eq!(request.font_size, 24.0);
+        assert_eq!(request.font_size, FontSize::Fixed(24.0));
         assert_eq!(request.color, color);
     }
 

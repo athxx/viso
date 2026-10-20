@@ -52,7 +52,7 @@
 
 use crate::content::TextRequest;
 use crate::node::NodeId;
-use crate::text_style::{TextOverflow, TextStyle};
+use crate::text_style::{FontSize, TextOverflow, TextStyle};
 use viso_render::Rgba;
 use viso_text::caret::Caret;
 use viso_text::hit_test::HitTester;
@@ -169,10 +169,10 @@ pub struct Buffer {
     pub text: String,
     /// The caret / range selection over `text`.
     pub sel: Selection,
-    /// The font size the node was declared with, in logical pixels. Resident so
-    /// [`reconcile`] can re-declare the node's [`TextRequest`] after the original
-    /// request was drained by shaping. See the type-level note.
-    pub font_size: f32,
+    /// The font size the node was declared with. Resident so [`reconcile`]
+    /// can re-declare the node's [`TextRequest`] after the original request
+    /// was drained by shaping. See the type-level note.
+    pub font_size: FontSize,
     /// The run color the node was declared with. Resident for the same reason as
     /// [`font_size`](Buffer::font_size).
     pub color: Rgba,
@@ -213,7 +213,7 @@ impl Buffer {
         Self {
             text,
             sel: Selection::caret(TextPosition::upstream(at)),
-            font_size: 0.0,
+            font_size: FontSize::Fixed(0.0),
             color: Rgba::TRANSPARENT,
             locale: None,
             style: TextStyle::default(),
@@ -1300,7 +1300,7 @@ mod tests {
     fn seed(text: &str) -> TextRequest {
         TextRequest {
             text: text.to_owned(),
-            font_size: 14.0,
+            font_size: FontSize::Fixed(14.0),
             color: Rgba::TRANSPARENT,
             soft_wrap: false,
             locale: None,
@@ -1317,7 +1317,10 @@ mod tests {
         store.seed_text(id, seed("Ada"));
         assert_eq!(reconcile(&mut store, &mut edits, None), 1);
         let buffer = edits.get(id).expect("the seed registers a buffer");
-        assert_eq!((buffer.text.as_str(), buffer.font_size), ("Ada", 14.0));
+        assert_eq!(
+            (buffer.text.as_str(), buffer.font_size),
+            ("Ada", FontSize::Fixed(14.0))
+        );
         store.take_text_requests(&mut requests);
         assert_eq!(requests.len(), 1, "the seeded text is declared");
 

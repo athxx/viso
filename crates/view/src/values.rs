@@ -29,8 +29,8 @@ use viso_behavior::{Fault, FaultKind, Value};
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
 use viso_ui::{
-    AssetFit, BuildCx, Easing, LiveRegion, LookValue, NodeId, NodeStore, Rgba, Role, SemanticState,
-    Semantics, Srgb, StateId, StructureCx, TextRequest, Timing,
+    AssetFit, BuildCx, Easing, FontSize, LiveRegion, LookValue, NodeId, NodeStore, Rgba, Role,
+    SemanticState, Semantics, Srgb, StateId, StructureCx, TextRequest, Timing,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, When};
@@ -79,7 +79,6 @@ pub fn mount_values(
             {
                 shown.shows = before.shows.clone();
                 shown.program = before.program.clone();
-                shown.font_size = before.font_size;
                 shown.seeded = true;
             }
             shown
@@ -220,9 +219,6 @@ pub(crate) struct Shown {
     /// The program a shader view paints with, as last delivered: a reload
     /// that changes it repaints the node even when its parameters hold.
     program: Option<Arc<BrushProgram>>,
-    /// The font size its text was last requested at: a reload that resizes
-    /// it requests the text again.
-    font_size: f32,
     /// The values of its layout entries it lays out by, `None` before the
     /// first delivery and after a hot reload, which restyles the node from
     /// its constants and so wants each of them again.
@@ -250,7 +246,6 @@ impl Shown {
             shows: None,
             seeded: false,
             program: None,
-            font_size: 0.0,
             laid: None,
         };
         shown.rescope(scope, host);
@@ -337,12 +332,9 @@ impl Shown {
             (Some(next), Some(prior)) => !Arc::ptr_eq(next, prior),
             (next, prior) => next.is_some() != prior.is_some(),
         };
-        let font_size = cx.store.resolved_font_size(self.node).unwrap_or(FONT_SIZE);
-        let resized = font_size != self.font_size
-            && matches!(control.kind, ControlKind::Label | ControlKind::TextInput);
         let prior = self.shows.as_ref();
         let first = prior.is_none() || std::mem::take(&mut self.seeded);
-        if prior == Some(&shows) && !repaint && !resized {
+        if prior == Some(&shows) && !repaint {
             return;
         }
         // A look value shows when an entry or an arm gives it; with arms and no
@@ -440,34 +432,25 @@ impl Shown {
                 (None, LookValue::Opacity(opacity)) => store.set_opacity(self.node, opacity),
             }
         }
-        let env = store.length_env();
         let text = || TextRequest {
             text: value.as_str().unwrap_or_default().to_owned(),
-            font_size,
+            font_size: FontSize::Inherited,
             color: match control.text.color {
                 Some(_) => color(text_color),
                 None => COLOR,
             },
             soft_wrap: truth(soft_wrap, false),
             locale: None,
-            style: text_style(
-                [
-                    font_weight,
-                    font_family,
-                    line_height,
-                    max_lines,
-                    overflow,
-                    align,
-                ],
-                &env,
-                font_size,
-            ),
+            style: text_style([
+                font_weight,
+                font_family,
+                line_height,
+                max_lines,
+                overflow,
+                align,
+            ]),
         };
-        if prior.is_some()
-            && (0..LOOK).chain(TEXT..SHOWN).all(|at| !changed(at))
-            && !repaint
-            && !resized
-        {
+        if prior.is_some() && (0..LOOK).chain(TEXT..SHOWN).all(|at| !changed(at)) && !repaint {
             self.shows = Some(shows);
             return;
         }
@@ -515,7 +498,6 @@ impl Shown {
         }
         self.shows = Some(shows);
         self.program = program;
-        self.font_size = font_size;
     }
 }
 

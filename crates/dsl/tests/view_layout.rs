@@ -121,7 +121,8 @@ fn visibility_focus_and_text_style_reach_the_node() {
         let request = rt.store.text_request(text).expect("requested");
         let red: Rgba = Srgb::from_rgba32(0xff00_00ff).into_linear_straight();
         assert_eq!(request.color, red);
-        assert_eq!(request.font_size, 20.0);
+        assert_eq!(request.font_size, viso_ui::FontSize::Inherited);
+        assert_eq!(rt.store.text_sizing(text, request).font_size, 20.0);
         assert!(request.soft_wrap);
         let read = |rt: &Rt| {
             rt.store

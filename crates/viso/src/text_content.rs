@@ -38,7 +38,7 @@ use viso_text::{
 };
 use viso_ui::{
     Content, EditGeometry, EditLayout, FontFamily, FontWeight, NodeId, TextAlign, TextOverflow,
-    TextRequest, TextStyle, Vec2, WidthUse,
+    TextRequest, TextSizing, TextStyle, Vec2, WidthUse,
 };
 
 use crate::system_fonts::{LiveFontRegistry, PlatformColorRaster, PlatformFontProvider};
@@ -343,9 +343,6 @@ struct Committed {
 struct TextSlot {
     /// What the node asks for now.
     target: LayoutTarget,
-    /// The wrap width of `target`, in logical pixels; `None` for unwrapped
-    /// text.
-    wrap: Option<f32>,
     /// The box width the text was shaped for, when it depends on it.
     bound: Option<f32>,
     /// How its lines are placed now.
@@ -370,7 +367,6 @@ impl TextSlot {
     fn new(target: LayoutTarget) -> Self {
         Self {
             target,
-            wrap: None,
             bound: None,
             placing: Placing::default(),
             ppem: 1,
@@ -916,13 +912,22 @@ impl TextShaper {
         });
     }
 
-    /// The wrap width `slot`'s text is laid out to, if it wraps.
+    /// The box width `slot`'s text is laid out to, if it wraps, cuts or
+    /// aligns within it.
     ///
     /// Reshaping edited text at this width keeps the last good line structure
     /// on screen until layout decides whether the box itself changed, instead
     /// of flashing the text unwrapped for a frame.
-    pub(crate) fn wrap_width(&self, slot: ParagraphSlot) -> Option<f32> {
-        self.slots.get(&slot).and_then(|entry| entry.wrap)
+    pub(crate) fn box_width(&self, slot: ParagraphSlot) -> Option<f32> {
+        self.slots.get(&slot).and_then(|entry| entry.bound)
+    }
+
+    /// The size `slot`'s text is placed at, `None` before it is shaped.
+    pub(crate) fn sizing(&self, slot: ParagraphSlot) -> Option<TextSizing> {
+        self.slots.get(&slot).map(|entry| TextSizing {
+            font_size: entry.placing.font_size,
+            line_height: entry.placing.line_height,
+        })
     }
 
     /// The caret box at `position` in `slot`'s text, relative to the run's
@@ -1033,7 +1038,8 @@ impl TextShaper {
         }
     }
 
-    /// `slot`'s content for `request`: its last good layout, drawn now.
+    /// `slot`'s content for `request` at `sizing`: its last good layout,
+    /// drawn now.
     ///
     /// A request its layout does not match yet is queued for the worker, and
     /// `slot` is reported by [`Self::pump`] once the new layout is committed;
@@ -1044,6 +1050,7 @@ impl TextShaper {
         backend: &mut B,
         slot: ParagraphSlot,
         request: &TextRequest,
+        sizing: TextSizing,
         dpi_factor: f32,
         max_width: Option<f32>,
     ) -> Content {
@@ -1066,7 +1073,7 @@ impl TextShaper {
             WidthUse::Narrower | WidthUse::Any => max_width,
         };
         let wrap = request.soft_wrap.then_some(bound).flatten();
-        let size = request.font_size;
+        let size = sizing.font_size;
         let em = |width: f32| if size > 0.0 { width / size } else { 0.0 };
         // Shaping is in em, so only the widths depend on the font size.
         let key = TargetKey {
@@ -1105,11 +1112,10 @@ impl TextShaper {
                 entry
             }
         };
-        entry.wrap = wrap;
         entry.bound = bound;
         entry.placing = Placing {
             font_size: size,
-            line_height: request.style.line_height,
+            line_height: sizing.line_height,
             align: request.style.align,
             width: bound,
         };
@@ -2154,6 +2160,7 @@ mod tests {
     use viso_render::Rgba;
     use viso_text::fallback::{FallbackPlanKey, FallbackStyle};
     use viso_text::{BakedFace, MemoryClass, TextOffset, rasterize_coverage};
+    use viso_ui::{FontSize, LengthTerms};
 
     const TEST_FONT: &[u8] = include_bytes!("../fixtures/DejaVuSans-subset.ttf");
     const WHITE: Rgba = Rgba {
@@ -2162,6 +2169,28 @@ mod tests {
         b: 1.0,
         a: 1.0,
     };
+
+    impl TextShaper {
+        /// [`TextShaper::shape`] at the size `request` fixes, its line height
+        /// in dp.
+        fn shape_at<B: GpuBackend>(
+            &mut self,
+            backend: &mut B,
+            slot: ParagraphSlot,
+            request: &TextRequest,
+            dpi_factor: f32,
+            max_width: Option<f32>,
+        ) -> Content {
+            let FontSize::Fixed(font_size) = request.font_size else {
+                panic!("a test request fixes its size");
+            };
+            let sizing = TextSizing {
+                font_size,
+                line_height: request.style.line_height.map(|terms| terms.dp),
+            };
+            self.shape(backend, slot, request, sizing, dpi_factor, max_width)
+        }
+    }
 
     fn shaper() -> TextShaper {
         let mut shaper = TextShaper::new();
@@ -2237,7 +2266,7 @@ mod tests {
         let mut shaper = tiny_shaper();
         let request = TextRequest {
             text: PAIR.to_owned(),
-            font_size: 30.0,
+            font_size: FontSize::Fixed(30.0),
             color: Rgba::TRANSPARENT,
             soft_wrap: false,
             locale: None,
@@ -2275,7 +2304,7 @@ mod tests {
         let mut shaper = tiny_shaper();
         let request = TextRequest {
             text: PAIR.to_owned(),
-            font_size: 30.0,
+            font_size: FontSize::Fixed(30.0),
             color: Rgba::TRANSPARENT,
             soft_wrap: false,
             locale: None,
@@ -2284,7 +2313,7 @@ mod tests {
         let node = viso_ui::NodeArena::new().alloc();
         let at = ParagraphSlot::from(node);
         let mut gpu = headless();
-        shaper.shape(&mut gpu, at, &request, 1.0, None);
+        shaper.shape_at(&mut gpu, at, &request, 1.0, None);
         assert!(shaper.layout(node).is_none(), "nothing drawn yet");
         settle(&mut shaper, &mut gpu, at, &request, None);
         let middle = shaper
@@ -2483,7 +2512,7 @@ mod tests {
         let before = shaper.face_cache().recency_updates();
         let hits = shaper.face_cache().hits();
         for _ in 0..1000 {
-            shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+            shaper.shape_at(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
         }
         shaper.end_frame();
         assert!(shaper.face_cache().hits() >= hits + 1000);
@@ -2689,11 +2718,11 @@ mod tests {
         for n in 0..20 {
             text.push(if n % 2 == 0 { 'a' } else { ' ' });
             // The edited text draws the last good layout at once.
-            let drawn = shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(120.0));
+            let drawn = shaper.shape_at(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(120.0));
             assert_eq!(natural(&drawn), last);
             assert!(shaper.has_pending_work());
             drain(&mut shaper, &mut gpu);
-            let committed = shaper.shape(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(120.0));
+            let committed = shaper.shape_at(&mut gpu, slot(0), &wrapped(&text), 1.0, Some(120.0));
             assert_eq!(drawn_text(&shaper, slot(0)), text);
             last = natural(&committed);
         }
@@ -2710,7 +2739,7 @@ mod tests {
         let mut gpu = headless();
         let texts = ["ab", "ba", "aab", "bba"];
         for (n, text) in (0..).zip(texts) {
-            shaper.shape(&mut gpu, slot(n), &request(text, 30.0), 1.0, None);
+            shaper.shape_at(&mut gpu, slot(n), &request(text, 30.0), 1.0, None);
         }
         shaper.wait_idle();
         let mut updated = Vec::new();
@@ -2723,7 +2752,7 @@ mod tests {
         }
         assert!(!shaper.has_pending_work());
         for (n, text) in (0..).zip(texts) {
-            let content = shaper.shape(&mut gpu, slot(n), &request(text, 30.0), 1.0, None);
+            let content = shaper.shape_at(&mut gpu, slot(n), &request(text, 30.0), 1.0, None);
             assert_eq!(glyph_count(&content), text.len());
         }
     }
@@ -2739,7 +2768,7 @@ mod tests {
             let mut shaper = tiny_shaper();
             let mut gpu = headless();
             for (n, text) in (0..).zip(texts) {
-                shaper.shape(&mut gpu, slot(n), &wrapped(text), 1.0, Some(90.0));
+                shaper.shape_at(&mut gpu, slot(n), &wrapped(text), 1.0, Some(90.0));
             }
             let mut updated = Vec::new();
             let mut frames = 0;
@@ -2751,7 +2780,8 @@ mod tests {
             let drawn: Vec<_> = (0..)
                 .zip(texts)
                 .map(|(n, text)| {
-                    let content = shaper.shape(&mut gpu, slot(n), &wrapped(text), 1.0, Some(90.0));
+                    let content =
+                        shaper.shape_at(&mut gpu, slot(n), &wrapped(text), 1.0, Some(90.0));
                     (
                         natural(&content),
                         glyph_count(&content),
@@ -2787,9 +2817,9 @@ mod tests {
         request: &TextRequest,
         width: Option<f32>,
     ) -> Content {
-        shaper.shape(gpu, at, request, 1.0, width);
+        shaper.shape_at(gpu, at, request, 1.0, width);
         drain(shaper, gpu);
-        shaper.shape(gpu, at, request, 1.0, width)
+        shaper.shape_at(gpu, at, request, 1.0, width)
     }
 
     /// `TEST_FONT` baked at `ppem`, every glyph its rasterized self but
@@ -2965,7 +2995,7 @@ mod tests {
     fn request(text: &str, font_size: f32) -> TextRequest {
         TextRequest {
             text: text.into(),
-            font_size,
+            font_size: FontSize::Fixed(font_size),
             color: WHITE,
             soft_wrap: false,
             locale: None,
@@ -2980,11 +3010,11 @@ mod tests {
     fn flood(shaper: &mut TextShaper, gpu: &mut CpuRaster) -> u64 {
         let mut evictions = 0;
         for size in [27.0, 28.0, 29.0, 31.0, 32.0, 33.0, 34.0] {
-            shaper.shape(gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
-            shaper.shape(gpu, slot(1), &request(PAIR, size), 1.0, None);
+            shaper.shape_at(gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+            shaper.shape_at(gpu, slot(1), &request(PAIR, size), 1.0, None);
             drain(shaper, gpu);
-            shaper.shape(gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
-            shaper.shape(gpu, slot(1), &request(PAIR, size), 1.0, None);
+            shaper.shape_at(gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+            shaper.shape_at(gpu, slot(1), &request(PAIR, size), 1.0, None);
             evictions += shaper.counters().evictions();
             shaper.end_frame();
         }
@@ -3032,7 +3062,7 @@ mod tests {
         // The reshape the trim forces draws every glyph at once, from the same
         // plane, without a raster: nothing on screen waits for the worker.
         let Content::Text { atlas, glyphs, .. } =
-            shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None)
+            shaper.shape_at(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None)
         else {
             panic!("text content");
         };
@@ -3105,7 +3135,7 @@ mod tests {
         // The hot pair was drawn in every single frame, so CLOCK found its pages
         // referenced every time it passed them: they are still resident, and this
         // frame therefore rasterizes nothing and uploads nothing.
-        let content = shaper.shape(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
+        let content = shaper.shape_at(&mut gpu, slot(0), &request(PAIR, 30.0), 1.0, None);
         let Content::Text { glyphs, .. } = &content else {
             panic!("text content");
         };
@@ -3213,7 +3243,7 @@ mod tests {
         );
 
         // And the untouched coverage glyphs are still usable: no raster, no upload.
-        shaper.shape(&mut gpu, slot(0), &latin, 1.0, None);
+        shaper.shape_at(&mut gpu, slot(0), &latin, 1.0, None);
         assert_eq!(shaper.counters().rasters(), 0);
         assert_eq!(shaper.counters().atlas_upload_bytes(), 0);
     }
@@ -3225,11 +3255,11 @@ mod tests {
         let mut shaper = tiny_shaper();
         let frame = ["Viso", "steady", "state"];
         for (n, text) in (0..).zip(frame) {
-            shaper.shape(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
+            shaper.shape_at(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
         }
         drain(&mut shaper, &mut gpu);
         for (n, text) in (0..).zip(frame) {
-            shaper.shape(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
+            shaper.shape_at(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
         }
         shaper.end_frame();
         let residency = shaper.residency();
@@ -3242,7 +3272,7 @@ mod tests {
         );
 
         for (n, text) in (0..).zip(frame) {
-            shaper.shape(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
+            shaper.shape_at(&mut gpu, slot(n), &request(text, 18.0), 1.0, None);
         }
         assert!(
             !shaper.has_pending_work(),
@@ -3276,7 +3306,7 @@ mod tests {
         let mut shaper = shaper();
         let request = TextRequest {
             text: "Viso".into(),
-            font_size: 22.0,
+            font_size: FontSize::Fixed(22.0),
             color: WHITE,
             soft_wrap: false,
             locale: None,
@@ -3284,7 +3314,7 @@ mod tests {
         };
         let first = settle(&mut shaper, &mut gpu, slot(0), &request, None);
         shaper.end_frame();
-        let second = shaper.shape(&mut gpu, slot(0), &request, 1.0, None);
+        let second = shaper.shape_at(&mut gpu, slot(0), &request, 1.0, None);
         let Content::Text {
             glyphs,
             natural,
@@ -3340,7 +3370,7 @@ mod tests {
         let mut shaper = TextShaper::new();
         let request = TextRequest {
             text: "世界 नमस्ते 🥟".into(),
-            font_size: 48.0,
+            font_size: FontSize::Fixed(48.0),
             color: WHITE,
             soft_wrap: false,
             locale: None,
@@ -3408,7 +3438,7 @@ mod tests {
             let mut solo = TextShaper::new();
             let req = TextRequest {
                 text: text.into(),
-                font_size: 48.0,
+                font_size: FontSize::Fixed(48.0),
                 color: WHITE,
                 soft_wrap: false,
                 locale: None,
@@ -3467,7 +3497,7 @@ mod tests {
         // handle registered with the color raster.
         let request = TextRequest {
             text: "नमस्ते".into(),
-            font_size: 48.0,
+            font_size: FontSize::Fixed(48.0),
             color: WHITE,
             soft_wrap: false,
             locale: None,
@@ -3526,7 +3556,7 @@ mod tests {
         let mut shaper = shaper();
         let request = TextRequest {
             text: "wrap this paragraph onto several lines".into(),
-            font_size: 20.0,
+            font_size: FontSize::Fixed(20.0),
             color: WHITE,
             soft_wrap: true,
             locale: None,
@@ -3609,6 +3639,58 @@ mod tests {
     }
 
     #[test]
+    fn a_new_size_places_the_laid_out_lines_again_in_the_box_they_keep() {
+        let mut gpu = headless();
+        let mut shaper = shaper();
+        let at = slot(0);
+        let centered = styled(
+            "align",
+            TextStyle {
+                align: TextAlign::Center,
+                ..TextStyle::default()
+            },
+        );
+        let ink = |content: &Content| {
+            let Content::Text {
+                glyphs, natural, ..
+            } = content
+            else {
+                panic!("a text");
+            };
+            let left = glyphs.iter().map(|g| g.rect.x).fold(f32::MAX, f32::min);
+            let right = glyphs
+                .iter()
+                .map(|g| g.rect.x + g.rect.w)
+                .fold(f32::MIN, f32::max);
+            (*natural, (left + right) / 2.0)
+        };
+        let (natural, center) = ink(&settle(&mut shaper, &mut gpu, at, &centered, Some(200.0)));
+        let width = shaper.box_width(at);
+        assert_eq!(width, Some(200.0), "an aligned run keeps its box");
+        let big = TextSizing {
+            font_size: 40.0,
+            line_height: Some(60.0),
+        };
+        shaper.shape(&mut gpu, at, &centered, big, 1.0, width);
+        assert!(
+            shaper.pending.is_empty(),
+            "shaping is in em: nothing is laid out again"
+        );
+        assert_eq!(shaper.sizing(at), Some(big));
+        drain(&mut shaper, &mut gpu);
+        let (scaled, scaled_center) = ink(&shaper.shape(&mut gpu, at, &centered, big, 1.0, width));
+        assert!(
+            (scaled.x - 2.0 * natural.x).abs() < 0.5,
+            "{natural:?} {scaled:?}"
+        );
+        assert_eq!(scaled.y, 60.0);
+        assert!(
+            (scaled_center - 100.0 - 2.0 * (center - 100.0)).abs() < 1.0,
+            "still centered in the box: {center} -> {scaled_center}"
+        );
+    }
+
+    #[test]
     fn a_line_height_centers_each_line_in_its_box() {
         let mut gpu = headless();
         let (natural, _, baseline, _, _) = laid(
@@ -3618,7 +3700,7 @@ mod tests {
             None,
         );
         let tall = TextStyle {
-            line_height: Some(natural.y + 20.0),
+            line_height: Some(LengthTerms::dp(natural.y + 20.0)),
             ..TextStyle::default()
         };
         let (spaced, _, spaced_baseline, _, _) =
@@ -3891,19 +3973,19 @@ mod tests {
         else {
             panic!("text content");
         };
-        assert_eq!(shaper.wrap_width(slot(0)), Some(width));
+        assert_eq!(shaper.box_width(slot(0)), Some(width));
 
         // The runtime reshapes an edited run at its retained width, so it
         // keeps its line structure rather than drawing unwrapped until layout
         // reflows it.
         let edited = format!("{text}!");
-        let retained = shaper.wrap_width(slot(0));
+        let retained = shaper.box_width(slot(0));
         // Until the worker lays the edit out, the last good lines draw.
         let Content::Text {
             natural: pending,
             shaped_at_width,
             ..
-        } = shaper.shape(&mut gpu, slot(0), &wrapped(&edited), 1.0, retained)
+        } = shaper.shape_at(&mut gpu, slot(0), &wrapped(&edited), 1.0, retained)
         else {
             panic!("text content");
         };
@@ -3914,7 +3996,7 @@ mod tests {
             natural: after,
             shaped_at_width,
             ..
-        } = shaper.shape(&mut gpu, slot(0), &wrapped(&edited), 1.0, retained)
+        } = shaper.shape_at(&mut gpu, slot(0), &wrapped(&edited), 1.0, retained)
         else {
             panic!("text content");
         };

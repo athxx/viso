@@ -68,7 +68,7 @@ fn build(store: &mut NodeStore, lines: &[&str]) -> NodeId {
             leaf,
             TextRequest {
                 text,
-                font_size: FONT_SIZE,
+                font_size: viso_ui::FontSize::Fixed(FONT_SIZE),
                 color: FOREGROUND,
                 soft_wrap: false,
                 locale: None,
@@ -164,7 +164,7 @@ fn hud(store: &mut NodeStore, line: &str) -> NodeId {
                         leaf,
                         TextRequest {
                             text: line.to_owned(),
-                            font_size: HUD_FONT_SIZE,
+                            font_size: viso_ui::FontSize::Fixed(HUD_FONT_SIZE),
                             color: FOREGROUND,
                             soft_wrap: false,
                             locale: None,

@@ -1274,7 +1274,8 @@ fn layout_slot(kind: NodeKind, name: &str) -> Option<LayoutSlot> {
         | LayoutSlot::AbsoluteTop
         | LayoutSlot::AbsoluteEnd
         | LayoutSlot::AbsoluteBottom
-        | LayoutSlot::AbsoluteStart => kind != NodeKind::Component,
+        | LayoutSlot::AbsoluteStart
+        | LayoutSlot::FontSize => kind != NodeKind::Component,
     };
     applies.then_some(slot)
 }

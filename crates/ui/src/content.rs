@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use crate::asset::{AssetDraw, AssetFit};
 use crate::layout::Vec2;
-use crate::text_style::{TextStyle, WidthUse};
+use crate::text_style::{FontSize, TextStyle, WidthUse};
 use viso_render::asset::ResourceId;
 use viso_render::{GlyphInstanceData, PathCmd, ProgramSlot, Rect, Rgba, Stroke, TextureId};
 
@@ -197,8 +197,8 @@ impl Content {
 pub struct TextRequest {
     /// The text to shape and draw.
     pub text: String,
-    /// The font size in logical pixels (scaled by DPI at shape time).
-    pub font_size: f32,
+    /// The size it draws at (scaled by DPI at shape time).
+    pub font_size: FontSize,
     /// Straight linear RGBA run color (a = opacity).
     pub color: Rgba,
     /// Whether the run may soft-wrap to a width-constrained box. When `false`

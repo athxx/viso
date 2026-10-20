@@ -55,6 +55,8 @@ pub enum LayoutValue {
     ColumnGap(LengthTerms),
     /// A grid's `row_gap`.
     RowGap(LengthTerms),
+    /// A text node's `font_size`.
+    FontSize(LengthTerms),
     /// A flex container's `axis`.
     Axis(Axis),
     /// A flex container's `justify`.
@@ -123,6 +125,7 @@ impl NodeStore {
             }
             LayoutValue::ColumnGap(terms) => self.edit_lengths(id, |l| l.gap = Some(terms)),
             LayoutValue::RowGap(terms) => self.edit_lengths(id, |l| l.row_gap = Some(terms)),
+            LayoutValue::FontSize(terms) => self.edit_lengths(id, |l| l.font_size = Some(terms)),
             LayoutValue::Axis(to) => self.edit_arrangement(id, |a| a.0 = to),
             LayoutValue::Justify(to) => self.edit_arrangement(id, |a| a.1 = to),
             LayoutValue::Align(to) => self.edit_arrangement(id, |a| a.2 = to),

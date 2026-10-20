@@ -7,7 +7,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use viso_behavior::Value;
-use viso_ui::{FontFamily, FontWeight, LengthEnv, TextAlign, TextOverflow, TextStyle};
+use viso_ui::{FontFamily, FontWeight, TextAlign, TextOverflow, TextStyle};
 
 use crate::layout_values::length;
 
@@ -15,13 +15,10 @@ use crate::layout_values::length;
 const WEIGHTS: [u16; 7] = [100, 300, 400, 500, 600, 700, 900];
 
 /// The style `font_weight`, `font_family`, `line_height`, `max_lines`,
-/// `overflow` and `align` give, a line height folding against `env` and the
-/// text's own `font` size. A value of the wrong shape, which only a compiler
-/// bug makes, reads the property's default.
+/// `overflow` and `align` give. A value of the wrong shape, which only a
+/// compiler bug makes, reads the property's default.
 pub(crate) fn text_style(
     [weight, family, line_height, max_lines, overflow, align]: [&Value; 6],
-    env: &LengthEnv,
-    font: f32,
 ) -> TextStyle {
     let tag = |value: &Value| value.as_int().and_then(|v| usize::try_from(v).ok());
     TextStyle {
@@ -29,7 +26,7 @@ pub(crate) fn text_style(
             .and_then(|at| WEIGHTS.get(at))
             .map_or(FontWeight::REGULAR, |&w| FontWeight(w)),
         family: font_family(family),
-        line_height: length(line_height).and_then(|terms| terms.fold_font(env, font)),
+        line_height: length(line_height),
         max_lines: max_lines
             .as_int()
             .and_then(|v| u32::try_from(v).ok())

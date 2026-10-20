@@ -67,7 +67,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    BuildCx, Component, EditIntent, EventCx, ImeEvent, Key, LeafStyle, Length, Motion,
+    BuildCx, Component, EditIntent, EventCx, FontSize, ImeEvent, Key, LeafStyle, Length, Motion,
     PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, TextOffset, TextRequest,
 };
 
@@ -210,7 +210,7 @@ impl Component for TextInput {
             },
             TextRequest {
                 text: self.value.clone(),
-                font_size: self.style.font_size,
+                font_size: FontSize::Fixed(self.style.font_size),
                 color: self.style.color,
                 // A text field is single-line: it scrolls horizontally, never wraps.
                 soft_wrap: false,

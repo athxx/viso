@@ -303,11 +303,14 @@ pub enum LayoutSlot {
     AbsoluteBottom = 28,
     /// An absolute child's `absolute.start`: as `absolute.top`.
     AbsoluteStart = 29,
+    /// A text node's `font_size`: a `MixedLength`, its `em` and `%` of its
+    /// parent's font size.
+    FontSize = 30,
 }
 
 impl LayoutSlot {
     /// Every slot, by discriminant.
-    pub const ALL: [LayoutSlot; 30] = [
+    pub const ALL: [LayoutSlot; 31] = [
         LayoutSlot::Width,
         LayoutSlot::Height,
         LayoutSlot::MinWidth,
@@ -338,6 +341,7 @@ impl LayoutSlot {
         LayoutSlot::AbsoluteEnd,
         LayoutSlot::AbsoluteBottom,
         LayoutSlot::AbsoluteStart,
+        LayoutSlot::FontSize,
     ];
 
     /// The slot the layout property `property` fills; `None` for one that
@@ -376,6 +380,7 @@ impl LayoutSlot {
             "absolute.end" => LayoutSlot::AbsoluteEnd,
             "absolute.bottom" => LayoutSlot::AbsoluteBottom,
             "absolute.start" => LayoutSlot::AbsoluteStart,
+            "font_size" => LayoutSlot::FontSize,
             _ => return None,
         })
     }
@@ -418,6 +423,7 @@ impl LayoutSlot {
             LayoutSlot::AbsoluteEnd => "AbsoluteEnd",
             LayoutSlot::AbsoluteBottom => "AbsoluteBottom",
             LayoutSlot::AbsoluteStart => "AbsoluteStart",
+            LayoutSlot::FontSize => "FontSize",
         }
     }
 
@@ -1068,7 +1074,7 @@ mod tests {
         for slot in LayoutSlot::ALL {
             assert_eq!(LayoutSlot::from_u8(slot as u8), Some(slot));
         }
-        assert_eq!(LayoutSlot::from_u8(30), None);
+        assert_eq!(LayoutSlot::from_u8(31), None);
         assert_eq!(LayoutSlot::of("spacing"), Some(LayoutSlot::Gap));
         assert_eq!(
             LayoutSlot::of("grid.row_span"),

@@ -46,6 +46,7 @@ pub(crate) fn layout_value(
         LayoutSlot::Gap => LayoutValue::Gap(terms(value)?),
         LayoutSlot::ColumnGap => LayoutValue::ColumnGap(terms(value)?),
         LayoutSlot::RowGap => LayoutValue::RowGap(terms(value)?),
+        LayoutSlot::FontSize => LayoutValue::FontSize(terms(value)?),
         LayoutSlot::Axis => LayoutValue::Axis(match tag(value)? {
             0 => Axis::Row,
             _ => Axis::Column,
