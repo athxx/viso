@@ -593,7 +593,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
         let (width, height) = extents(node);
         let sized = |length: LengthIr, axis: AxisIr| match length {
-            LengthIr::Fit => true,
+            LengthIr::Fit | LengthIr::MinContent | LengthIr::MaxContent => true,
             LengthIr::Fill { .. } => {
                 matches!(parent, Parent::Flex(main) if main != axis) && !self.stretch
             }
@@ -671,7 +671,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                         decls.push(("flex", "none".into()));
                         decls.push((main_name, value));
                     }
-                    Extent::Fit => decls.push(("flex", "none".into())),
+                    // A fit shrinks to its min-content when its row overflows.
+                    Extent::Fit => decls.push(("flex", "0 1 auto".into())),
                     Extent::Fill(weight) => {
                         decls.push(("flex", format!("{} 0 0", css::number(f64::from(weight)))));
                         decls.push((min_of(main_name), "0".into()));

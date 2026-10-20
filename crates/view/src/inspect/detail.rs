@@ -454,6 +454,8 @@ fn length(length: Length) -> String {
         Length::Fill { weight: 1.0 } => "fill".into(),
         Length::Fill { weight } => format!("fill({})", number(weight)),
         Length::Fit => "fit".into(),
+        Length::MinContent => "min_content".into(),
+        Length::MaxContent => "max_content".into(),
     }
 }
 

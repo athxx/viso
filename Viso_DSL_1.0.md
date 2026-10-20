@@ -4495,10 +4495,12 @@ export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0; }; fit; min_c
 | `fixed(v)`        | 按 §19.4 解析，再按 min/max 截断       | 同左                    |
 | `fill { weight }` | 按 `weight` 比例分配剩余空间           | 占满可用尺寸            |
 | `fit`             | 内容尺寸，受可用尺寸约束               | 同左                    |
-| `min_content`     | 最小内容尺寸（文本：最长不可断片段）   | 同左 **[Runtime 待实现]** |
-| `max_content`     | 不换行时的内容尺寸                     | 同左 **[Runtime 待实现]** |
+| `min_content`     | 最小内容尺寸（文本：最长不可断片段）   | 同左                    |
+| `max_content`     | 不换行时的内容尺寸                     | 同左                    |
 
 `fill` 在无界轴（如 Scroll 滚动轴）退化为 `fit` 并报告 `E3105`；`100%` 不等于 `fill`（§19.4）。
+
+宽度上，`fit` 取 `max_content`，但不超过可用宽度，也不窄于 `min_content`：交叉轴与 `Stack`/`Absolute`/`Grid` 单元格中可用宽度是父节点给出的空间；`Row` 的子节点总宽超出内容盒时，各 `fit` 子节点按各自宽度的同一比例收缩，至 `min_content` 为止，仍放不下时溢出。高度不随可用空间收缩：`fit`、`min_content` 与 `max_content` 的高度都是内容在所得宽度下的高度（文本在所得宽度下换行）。容器的 `min_content` 宽度：`Row` 为子节点的 `min_content` 贡献（`fixed` 为自身，`max_content` 为其 `max_content`）、外边距与间距之和，`Column`/`Stack` 取其中最大者，水平 `Scroll` 为 `0`，`Absolute` 与 `Grid` 为其自然宽度；图片与矢量图的 `min_content` 是其固有宽度。
 
 ### U3.3 公共布局 Property
 
@@ -4545,7 +4547,7 @@ export record Border { width: Dp = 1dp; color: Color; }
 - `Row` 主轴 `start` 是行内起点，RTL 下首个子节点位于右侧；
 - `justify` 与 `align` 不改变容器自身测量结果，只标记 `LAYOUT`。
 
-当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件的 `const`（经 `const` 链折叠）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::min_content`/`max_content`，以及尚无运行时路径的 Property（`corner_radius`、`border`、变换、`clip`、`autofocus`，以及 Style 选择器之外的 `enabled`）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为 `Sizing::min_content`/`max_content`、兼含 `dp` 与 `%` 的轨道或 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area`，以及 Style 以读取值的绑定给出的布局 Property，报 `E3711`。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
+当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件的 `const`（经 `const` 链折叠）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::fit`/`min_content`/`max_content` 按 U3.2 布局。尚无运行时路径的 Property（`corner_radius`、`border`、变换、`clip`、`autofocus`，以及 Style 选择器之外的 `enabled`）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为兼含 `dp` 与 `%` 的轨道或 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area`，以及 Style 以读取值的绑定给出的布局 Property，报 `E3711`。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
 
 ### U3.5 Grid
 

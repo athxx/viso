@@ -402,6 +402,8 @@ fn length(length: LengthIr) -> String {
         LengthIr::Relative { fixed, pct } => format!("{}% + {fixed}dp", pct * 100.0),
         LengthIr::Fill { weight } => format!("fill({weight})"),
         LengthIr::Fit => "fit".to_owned(),
+        LengthIr::MinContent => "min_content".to_owned(),
+        LengthIr::MaxContent => "max_content".to_owned(),
     }
 }
 

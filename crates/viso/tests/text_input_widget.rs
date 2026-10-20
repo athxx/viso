@@ -153,6 +153,7 @@ fn attach_glyphs(gpu: &mut CpuRaster, store: &mut NodeStore, field_id: NodeId) {
             baseline: 0.0,
             shaped_at_width: None,
             width_use: viso::ui::WidthUse::Ignored,
+            min_content: natural.x,
             max_content: natural.x,
         },
     );

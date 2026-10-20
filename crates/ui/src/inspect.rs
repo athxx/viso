@@ -711,6 +711,7 @@ mod tests {
             baseline: 0.0,
             shaped_at_width: None,
             width_use: crate::WidthUse::Ignored,
+            min_content: 0.0,
             max_content: 0.0,
         }
     }

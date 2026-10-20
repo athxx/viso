@@ -137,7 +137,8 @@ impl LengthTerms {
 }
 
 impl From<Length> for LengthTerms {
-    /// The terms of a folded length; `Fill` and `Fit` have none.
+    /// The terms of a folded length; one the container or the content decides
+    /// has none.
     fn from(length: Length) -> Self {
         match length {
             Length::Fixed(v) => Self::dp(v),
@@ -146,7 +147,9 @@ impl From<Length> for LengthTerms {
                 pct,
                 ..Self::ZERO
             },
-            Length::Fill { .. } | Length::Fit => Self::ZERO,
+            Length::Fill { .. } | Length::Fit | Length::MinContent | Length::MaxContent => {
+                Self::ZERO
+            }
         }
     }
 }

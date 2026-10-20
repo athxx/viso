@@ -43,8 +43,8 @@ use viso_ui::{
 
 use crate::system_fonts::{LiveFontRegistry, PlatformColorRaster, PlatformFontProvider};
 use crate::text_worker::{
-    ClusterKey, FromWorker, LayoutDone, LayoutJob, Rastered, SpanStats, TextWorker, ToWorker,
-    starts_emoji,
+    ClusterKey, ContentWidths, FromWorker, LayoutDone, LayoutJob, Rastered, SpanStats, TextWorker,
+    ToWorker, starts_emoji,
 };
 
 const ATLAS_SIZE: u32 = 1024;
@@ -220,6 +220,8 @@ struct PositionedGlyph {
 struct PreparedLayout {
     glyphs: Vec<PositionedGlyph>,
     natural: Vec2,
+    /// The narrowest width the text lays out in without overflowing.
+    min_content: f32,
     /// The width the text takes on one line per hard break.
     max_content: f32,
     baseline: f32,
@@ -325,8 +327,8 @@ impl LayoutTarget {
 struct Committed {
     target: LayoutTarget,
     lines: Vec<LineLayout>,
-    /// The width the paragraph takes on one line per hard break, in em.
-    max_content_em: f32,
+    /// The narrowest and widest the paragraph lays out, in em.
+    content_em: ContentWidths,
     /// What `placed` was placed for.
     placing: Placing,
     placed: PreparedLayout,
@@ -970,7 +972,7 @@ impl TextShaper {
         &self,
         target: &LayoutTarget,
         lines: &[LineLayout],
-        max_content_em: f32,
+        content_em: ContentWidths,
         placing: Placing,
     ) -> PreparedLayout {
         let metrics = self
@@ -1031,7 +1033,8 @@ impl TextShaper {
                 x: widest,
                 y: lines.len() as f32 * line_height,
             },
-            max_content: max_content_em * size,
+            min_content: content_em.min * size,
+            max_content: content_em.max * size,
             baseline,
             line_height,
             offsets,
@@ -1125,7 +1128,7 @@ impl TextShaper {
                 committed.placed = self.place(
                     &committed.target,
                     &committed.lines,
-                    committed.max_content_em,
+                    committed.content_em,
                     entry.placing,
                 );
                 committed.placing = entry.placing;
@@ -1249,6 +1252,7 @@ impl TextShaper {
             width_use: request
                 .style
                 .width_use(request.soft_wrap, drawn.lines.iter().any(|line| line.rtl)),
+            min_content: layout.min_content,
             max_content: layout.max_content,
         }
     }
@@ -1664,7 +1668,7 @@ impl TextShaper {
                 if done.relaid {
                     self.counters.record_shape(target.width_em != 0);
                 }
-                let staged = self.stage(target, done.lines, done.max_content_em, entry.placing);
+                let staged = self.stage(target, done.lines, done.content_em, entry.placing);
                 if let Some(old) = entry.staged.replace(staged) {
                     self.unpin(&old.faces);
                 }
@@ -1683,7 +1687,7 @@ impl TextShaper {
         &mut self,
         target: LayoutTarget,
         lines: Vec<LineLayout>,
-        max_content_em: f32,
+        content_em: ContentWidths,
         placing: Placing,
     ) -> Committed {
         let mut faces = Vec::new();
@@ -1695,11 +1699,11 @@ impl TextShaper {
         for &face in &faces {
             self.faces.pin(face);
         }
-        let placed = self.place(&target, &lines, max_content_em, placing);
+        let placed = self.place(&target, &lines, content_em, placing);
         Committed {
             target,
             lines,
-            max_content_em,
+            content_em,
             placing,
             placed,
             faces,
@@ -2113,6 +2117,7 @@ fn empty_content(request: &TextRequest, shaped_at_width: Option<f32>) -> Content
         baseline: 0.0,
         shaped_at_width,
         width_use: request.style.width_use(request.soft_wrap, false),
+        min_content: 0.0,
         max_content: 0.0,
     }
 }
@@ -3575,6 +3580,45 @@ mod tests {
         };
         assert!(narrow.x < wide.x);
         assert!(narrow.y > wide.y);
+    }
+
+    #[test]
+    fn a_runs_min_content_is_its_widest_word_at_any_width_and_it_lays_out_there() {
+        let mut gpu = CpuRaster::new();
+        let _ = gpu.create_surface(RawWindowHandle::Headless, 256, 256);
+        let mut shaper = shaper();
+        let min_of = |shaper: &mut TextShaper, gpu: &mut CpuRaster, text: &str, width| {
+            let request = TextRequest {
+                soft_wrap: true,
+                ..request(text, 20.0)
+            };
+            match settle(shaper, gpu, slot(0), &request, width) {
+                Content::Text {
+                    natural,
+                    min_content,
+                    max_content,
+                    glyphs,
+                    ..
+                } => {
+                    let ink = glyphs
+                        .iter()
+                        .map(|g| g.rect.x + g.rect.w)
+                        .fold(0.0, f32::max);
+                    (natural, min_content, max_content, ink)
+                }
+                _ => panic!("text content"),
+            }
+        };
+        let (word, ..) = min_of(&mut shaper, &mut gpu, "paragraph", None);
+        let text = "wrap this paragraph onto lines";
+        let (natural, min, max, _) = min_of(&mut shaper, &mut gpu, text, None);
+        assert!((min - word.x).abs() < 0.5, "{min} vs {}", word.x);
+        assert!(min < max && (max - natural.x).abs() < 0.5);
+        let (narrow, narrow_min, _, ink) = min_of(&mut shaper, &mut gpu, text, Some(min));
+        assert!((narrow_min - min).abs() < 0.5, "the same at any width");
+        // Only a line's trailing space hangs past it.
+        assert!(ink <= min + 0.5, "nothing inks past it: {ink} {min}");
+        assert!(narrow.y > natural.y);
     }
 
     /// `request` settled at `width`: its natural size, max-content width,

@@ -4332,6 +4332,13 @@ impl LayoutTree for NodeStore {
     }
 
     #[inline]
+    fn content_min_width(&self, index: u32) -> f32 {
+        self.content_payload[index as usize]
+            .as_ref()
+            .map_or(0.0, |c| c.min_width())
+    }
+
+    #[inline]
     fn content_baseline(&self, index: u32) -> Option<f32> {
         self.content_payload[index as usize]
             .as_ref()
@@ -5495,6 +5502,7 @@ mod tests {
             baseline: 8.0,
             shaped_at_width: None,
             width_use: WidthUse::Ignored,
+            min_content: n as f32 * 5.0,
             max_content: n as f32 * 5.0,
         }
     }
@@ -6426,6 +6434,7 @@ mod tests {
                 baseline: 8.0,
                 shaped_at_width: None,
                 width_use: WidthUse::Ignored,
+                min_content: 8.0,
                 max_content: 8.0,
             },
         );
@@ -7819,6 +7828,7 @@ mod tests {
             } else {
                 WidthUse::Ignored
             },
+            min_content: natural.x,
             max_content: natural.x,
         }
     }

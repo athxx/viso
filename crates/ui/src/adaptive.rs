@@ -435,6 +435,7 @@ fn content_sized(nodes: &NodeStore, node: NodeId, axis: Axis) -> bool {
             nodes.parent(node).map(|parent| nodes.input(parent.index())),
             Some(LayoutInput::Flex { axis: main, align: Align::Stretch, .. }) if main != axis
         ),
+        Length::MinContent | Length::MaxContent => true,
         Length::Fill { .. } | Length::Fixed(_) | Length::Relative { .. } => false,
     }
 }

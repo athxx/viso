@@ -192,8 +192,8 @@ pub(super) fn easing(tag: i64) -> &'static str {
     }
 }
 
-/// A folded length that sets an extent: a fixed one, or a percentage of the
-/// parent's content box with a fixed part.
+/// A folded length that sets an extent: a fixed one, a percentage of the
+/// parent's content box with a fixed part, or a content size.
 pub(super) fn extent(length: LengthIr) -> Option<String> {
     match length {
         LengthIr::Fixed(dp) => Some(px(f64::from(dp))),
@@ -207,6 +207,8 @@ pub(super) fn extent(length: LengthIr) -> Option<String> {
                 format!("calc({pct}% + {})", px(f64::from(fixed)))
             })
         }
+        LengthIr::MinContent => Some("min-content".into()),
+        LengthIr::MaxContent => Some("max-content".into()),
         LengthIr::Fill { .. } | LengthIr::Fit => None,
     }
 }

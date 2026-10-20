@@ -16,7 +16,10 @@ pub enum Axis {
 /// parent's content box on the same axis — `50%` is a ratio of that box, not a
 /// share of what siblings leave over. A `Fill` length claims a share of the
 /// leftover space along the main axis, split between siblings by `weight`. A
-/// `Fit` length shrinks to the node's measured natural size.
+/// `Fit` length takes the node's content extent within the room its parent
+/// gives it, never narrower than its `MinContent` width; `MinContent` and
+/// `MaxContent` take the narrowest and the widest the content lays out in,
+/// whatever the room.
 ///
 /// The measure pass runs before any basis is known, so a `Relative` length
 /// measures like `Fit` (a percentage of an indefinite size is its content) and
@@ -30,8 +33,16 @@ pub enum Length {
     Relative { fixed: f32, pct: f32 },
     /// A share of leftover main-axis space, proportional to `weight`.
     Fill { weight: f32 },
-    /// Shrink to the measured natural size.
+    /// The content's extent, as wide as the room allows down to its
+    /// `MinContent` width.
     Fit,
+    /// The narrowest width the content lays out in without overflowing — a
+    /// text's widest stretch no line breaks inside — and the height it takes
+    /// at it.
+    MinContent,
+    /// The content's extent laid out unconstrained: a text on one line per
+    /// hard break.
+    MaxContent,
 }
 
 impl Length {
@@ -53,14 +64,14 @@ impl Length {
         }
     }
 
-    /// The extent this length takes against `basis`, or `None` for `Fill`/`Fit`,
-    /// whose extent the container decides.
+    /// The extent this length takes against `basis`, or `None` for one the
+    /// container or the content decides.
     #[inline]
     pub fn resolve(self, basis: f32) -> Option<f32> {
         match self {
             Length::Fixed(v) => Some(v),
             Length::Relative { fixed, pct } => Some((fixed + pct * basis).max(0.0)),
-            Length::Fill { .. } | Length::Fit => None,
+            Length::Fill { .. } | Length::Fit | Length::MinContent | Length::MaxContent => None,
         }
     }
 }

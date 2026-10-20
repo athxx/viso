@@ -163,8 +163,8 @@ fn size(value: &Value) -> Result<BoundSize, String> {
             weight: weight.as_float().ok_or_else(malformed)? as f32,
         },
         (2, []) => BoundSize::Fit,
-        (3, []) => return Err("`Sizing::min_content` does not lay out yet".to_string()),
-        (4, []) => return Err("`Sizing::max_content` does not lay out yet".to_string()),
+        (3, []) => BoundSize::MinContent,
+        (4, []) => BoundSize::MaxContent,
         _ => return Err(malformed()),
     })
 }

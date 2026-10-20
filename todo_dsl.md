@@ -348,8 +348,8 @@ Goal: every Core view construct reaches a live tree through all three lowering t
         constant rules and insets, which the compiler then keeps there), sizing
         modes, arrangement, grid templates and placements through their setters,
         marking only what they move. A reload delivers every value again.
-  - [x] A `Sizing::min_content`/`max_content`, a track adding `dp` to `%` or one
-        reading `%` inside `minmax`/`fit_content` faults at delivery; a bound
+  - [x] A track adding `dp` to `%` or one reading `%` inside
+        `minmax`/`fit_content` faults at delivery; a bound
         `areas`/`grid.area`, and a bound layout value from a Style, stay `E3711`.
 - [x] Constant arrangement and sizing: a flex container's `justify` and `align`, a
       qualified `Axis::row`/`Axis::column`, `Sizing::fixed(..)`/`fill`/`fill { weight }`/
@@ -359,8 +359,7 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 - [x] `visible` (out of layout, paint and the semantics tree), `focusable`, and a
       text's `color`, `soft_wrap` and resolved `font_size` reach the node as values.
 - [x] A binding no path applies is `E3711` naming it, never dropped: the properties
-      below, `Sizing::min_content`/`max_content`, and `enabled` that no style's
-      selector reads.
+      below and `enabled` that no style's selector reads.
 - [x] Text style beyond color, size and wrapping: `font_weight`, `font_family`,
       `line_height`, `max_lines`, `overflow`, text `align` reach a `Text`, `Button` and
       `TextInput` (no line limit on a field) across the macros, hot reload and the
@@ -417,9 +416,15 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       their bounds leave. Constant ones fold to the node's `BoxRules`, ones reading
       the environment ride `NodeLengths`; across the macros, hot reload (in place)
       and the release package.
-- [ ] `Sizing::min_content`/`max_content`, `corner_radius`, `border`, `clip`,
-      `autofocus`, and `enabled` disabling a node beyond its styles' selectors
-      (`E3711` today).
+- [x] `Sizing::min_content`/`max_content` (U3.2), constant and bound, across the
+      macros, hot reload and the release package: a text's min-content width is
+      its widest stretch no line breaks inside, a node measures its min-content
+      width with its natural size, and `fit` takes its content within the room
+      down to it, an overflowing row's fit children shrinking alike.
+  - [ ] Grid `auto` tracks shrinking toward their cells' min-content widths when
+        the grid is narrower than their max-content sum.
+- [ ] `corner_radius`, `border`, `clip`, `autofocus`, and `enabled` disabling a
+      node beyond its styles' selectors (`E3711` today).
 - [x] `fill` on the cross axis fills the available extent under any `align` (U3.2);
       the runtime fills it only under `Align::Stretch`, and stretches a `fit` child
       too.

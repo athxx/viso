@@ -463,6 +463,8 @@ fn length_of(len: Option<AotLength>) -> Length {
         Some(AotLength::Relative { fixed, pct }) => Length::Relative { fixed, pct },
         Some(AotLength::Fill { weight }) => Length::Fill { weight },
         Some(AotLength::Fit) | None => Length::Fit,
+        Some(AotLength::MinContent) => Length::MinContent,
+        Some(AotLength::MaxContent) => Length::MaxContent,
     }
 }
 

@@ -174,23 +174,35 @@ export component Sized {
 }
 
 #[test]
-fn a_sizing_mode_without_layout_faults() {
+fn a_bound_content_size_lays_out_by_the_content() {
     let source = r#"
 export component Content {
     state wide = false;
     view {
         Column {
             Text { width: 20dp; height: 20dp; on click { wide = !wide; } }
-            Text { width: if wide { Sizing::min_content } else { Sizing::fixed(10dp) }; height: 4dp; }
+            Row {
+                width: if wide { Sizing::min_content } else { Sizing::fixed(10dp) };
+                height: 4dp;
+                Text { width: 30dp; height: 4dp; }
+                Text { width: 40dp; height: 4dp; }
+            }
         }
     }
 }
 "#;
+    let row = |rt: &Rt| rt.children(rt.root.expect("mounted"))[1];
+    for mut rt in [Rt::mount(source), Rt::packaged(source)] {
+        assert_eq!(rt.store.bounds(row(&rt)).w, 10.0);
+        rt.click(0);
+        assert_eq!(rt.fault(), None);
+        assert_eq!(rt.store.bounds(row(&rt)).w, 70.0, "the children's widths");
+    }
     let mut rt = Rt::mount(source);
-    assert_eq!(rt.fault(), None);
     rt.click(0);
-    let fault = rt.fault().expect("min_content does not lay out yet");
-    assert!(fault.to_string().contains("min_content"), "{fault}");
+    rt.reload(&source.replace("Sizing::min_content", "Sizing::max_content"));
+    assert_eq!(rt.fault(), None);
+    assert_eq!(rt.store.bounds(row(&rt)).w, 70.0);
 }
 
 #[test]

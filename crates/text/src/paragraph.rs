@@ -752,6 +752,40 @@ impl Paragraph {
         widest.max(run)
     }
 
+    /// The width of the widest stretch of the laid-out text no line can break
+    /// inside, in em, its trailing spaces hanging: the narrowest width the
+    /// text lays out in without overflowing.
+    pub fn min_content_width(&self) -> f32 {
+        let text = &self.text;
+        let breaker = LineBreaker::with_tailoring(self.tailoring);
+        // Each stretch ends at a break opportunity, the last at the text's end.
+        let ends: Vec<usize> = breaker
+            .break_opportunities(text)
+            .map(|(o, _)| o.0)
+            .collect();
+        let mut kept = Vec::with_capacity(ends.len());
+        let mut start = 0;
+        for &end in &ends {
+            kept.push(start + text[start..end].trim_end().len());
+            start = end;
+        }
+        let mut widths = vec![0.0f32; ends.len()];
+        for run in self.lines.iter().flat_map(|line| &line.runs) {
+            let (from, to) = run.logical_range;
+            if from >= to {
+                continue;
+            }
+            for glyph in &run.glyphs {
+                let at = from.0 + glyph.cluster as usize;
+                let stretch = ends.partition_point(|&end| end <= at);
+                if stretch < widths.len() && at < kept[stretch] {
+                    widths[stretch] += glyph.x_advance;
+                }
+            }
+        }
+        widths.into_iter().fold(0.0, f32::max)
+    }
+
     /// Total shape invocations over this paragraph's life — the count of runs
     /// actually handed to the shaper, cache misses only.
     ///
@@ -1486,6 +1520,21 @@ mod tests {
         assert!(p.lines().len() >= 3, "wrapped");
         assert!((p.max_content_width() - one_line).abs() < 1e-4);
         assert!((one_line - measured_width("aa bb")).abs() < 1e-4);
+    }
+
+    #[test]
+    fn min_content_width_is_the_widest_unbreakable_stretch_at_any_width() {
+        let mut shaper = fixture_shaper();
+        let mut p = Paragraph::new("aa bbbb c\nddd", BaseDirection::Auto, 0);
+        p.layout(0.0, &mut shaper);
+        let widest = measured_width("bbbb");
+        assert!((p.min_content_width() - widest).abs() < 1e-4, "spaces hang");
+        p.layout(measured_width("aa ") + 0.01, &mut shaper);
+        assert!((p.min_content_width() - widest).abs() < 1e-4);
+        assert!(p.min_content_width() <= p.max_content_width());
+        let mut empty = Paragraph::new("", BaseDirection::Auto, 0);
+        empty.layout(0.0, &mut shaper);
+        assert_eq!(empty.min_content_width(), 0.0);
     }
 
     #[test]

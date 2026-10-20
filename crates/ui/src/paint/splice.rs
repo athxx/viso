@@ -1343,6 +1343,7 @@ mod tests {
             baseline: 5.0,
             shaped_at_width: None,
             width_use: crate::WidthUse::Ignored,
+            min_content: n as f32 * 5.0,
             max_content: n as f32 * 5.0,
         }
     }

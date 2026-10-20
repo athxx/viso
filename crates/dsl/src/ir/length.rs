@@ -185,7 +185,8 @@ pub(super) fn fold_size(value: &Expr, consts: &Consts) -> Option<Lowered> {
 
 /// Folds a `Sizing` property (`width`, `height`): a length, which stands for
 /// `Sizing::fixed` of it, `Sizing::fixed(len)`, `Sizing::fill` (weight `1`),
-/// `Sizing::fill { weight: w }` or `Sizing::fit`. `Some(Err)` is a constant
+/// `Sizing::fill { weight: w }`, `Sizing::fit`, `Sizing::min_content` or
+/// `Sizing::max_content`. `Some(Err)` is a constant
 /// layout does not size by, and why; `None` is not a constant.
 pub(super) fn fold_sizing(value: &Expr, consts: &Consts) -> Option<Result<Lowered, String>> {
     if let Some(length) = fold_size(value, consts) {
@@ -206,9 +207,8 @@ pub(super) fn fold_sizing(value: &Expr, consts: &Consts) -> Option<Result<Lowere
             Some(match variant.as_str() {
                 "fill" => Ok(Lowered::Layout(LengthIr::Fill { weight: 1.0 })),
                 "fit" => Ok(Lowered::Layout(LengthIr::Fit)),
-                "min_content" | "max_content" => Err(format!(
-                    "`Sizing::{variant}` does not lay out yet; `fixed`, `fill` and `fit` do"
-                )),
+                "min_content" => Ok(Lowered::Layout(LengthIr::MinContent)),
+                "max_content" => Ok(Lowered::Layout(LengthIr::MaxContent)),
                 _ => return None,
             })
         }

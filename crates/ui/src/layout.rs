@@ -224,9 +224,43 @@ pub struct Measured {
     pub w: f32,
     /// Natural height.
     pub h: f32,
+    /// The narrowest width it lays out in without overflowing — its widest
+    /// text stretch no line breaks inside — which a `fit` width shrinks no
+    /// further than. Never wider than `w`.
+    pub min_w: f32,
 }
 
 impl Measured {
+    /// What a node requesting `size` measures to over content of natural
+    /// extent `content` and min-content width `min`: a fixed request its
+    /// own, `MinContent` the narrowest width and `MaxContent` the widest on
+    /// both counts, any other the content's.
+    #[inline]
+    fn sized(size: Size, content: Vec2, min: f32) -> Self {
+        let (w, min_w) = match size.width {
+            Length::Fixed(v) => (v, v),
+            Length::MinContent => (min, min),
+            Length::MaxContent => (content.x, content.x),
+            _ => (content.x, min.min(content.x)),
+        };
+        let h = match size.height {
+            Length::Fixed(v) => v,
+            _ => content.y,
+        };
+        Self { w, h, min_w }
+    }
+
+    /// The extent a `fit` request takes along `axis` in `room`: as wide as
+    /// the room allows down to the min-content width; a height is the
+    /// content's, which only the width moves.
+    #[inline]
+    fn fit(self, axis: Axis, room: f32) -> f32 {
+        match axis {
+            Axis::Row => self.w.min(room.max(self.min_w)),
+            Axis::Column => self.h,
+        }
+    }
+
     /// The natural extent along a given axis.
     #[inline]
     fn on(self, axis: Axis) -> f32 {
@@ -234,19 +268,6 @@ impl Measured {
             Axis::Row => self.w,
             Axis::Column => self.h,
         }
-    }
-}
-
-/// Resolve a single [`Length`] to its natural (measure-time) contribution: a
-/// `Fixed` is its value, a `Fit` or `Relative` is the already-measured natural
-/// extent (no basis exists yet), and a `Fill` contributes only its measured base
-/// (0 for a bare fill leaf) since its real size is decided by the parent's
-/// leftover-space distribution.
-#[inline]
-fn natural_length(length: Length, measured_natural: f32) -> f32 {
-    match length {
-        Length::Fixed(v) => v,
-        Length::Relative { .. } | Length::Fit | Length::Fill { .. } => measured_natural,
     }
 }
 
@@ -298,6 +319,12 @@ pub trait LayoutTree {
     /// content. A `Fit`/`Fill` leaf axis resolves against this; a `None` leaf
     /// measures to `0` on both axes (a bare layout leaf, the prior behavior).
     fn content_natural(&self, index: u32) -> Option<Vec2>;
+    /// The narrowest width a node's content lays out in without overflowing,
+    /// read only when it has content: a text's widest stretch no line breaks
+    /// inside. Its natural width by default, content that does not wrap.
+    fn content_min_width(&self, index: u32) -> f32 {
+        self.content_natural(index).map_or(0.0, |natural| natural.x)
+    }
     /// A node's first-line text baseline in physical pixels, or `None` when it
     /// carries no text content. Read only by a grid cell aligned on the baseline
     /// (`AlignItems::Baseline`); the common node never touches it.
@@ -423,13 +450,14 @@ impl Basis {
                     Length::Fixed(_) => true,
                     Length::Relative { fixed, .. } => main || fixed != 0.0,
                     Length::Fill { .. } => main,
-                    Length::Fit => false,
+                    Length::Fit | Length::MinContent | Length::MaxContent => false,
                 };
                 let cross = match size.cross(axis) {
                     Length::Fixed(_) => true,
                     Length::Relative { fixed, .. } => cross || fixed != 0.0,
                     Length::Fill { .. } => cross,
                     Length::Fit => cross && align == Align::Stretch,
+                    Length::MinContent | Length::MaxContent => false,
                 };
                 Self::pack(axis, main, cross)
             }
@@ -442,9 +470,12 @@ impl Basis {
                 Self::pack(axis, false, self.on(cross_of(axis)))
             }
             LayoutInput::Grid { align_items, .. } => Self {
-                width: !matches!(size.width, Length::Fit),
+                width: !matches!(
+                    size.width,
+                    Length::Fit | Length::MinContent | Length::MaxContent
+                ),
                 height: match size.height {
-                    Length::Fit => false,
+                    Length::Fit | Length::MinContent | Length::MaxContent => false,
                     Length::Fill { .. } => align_items == AlignItems::Stretch,
                     Length::Fixed(_) | Length::Relative { .. } => true,
                 },
@@ -464,6 +495,7 @@ impl Basis {
             Length::Relative { fixed, .. } => definite || fixed != 0.0,
             Length::Fill { .. } => definite,
             Length::Fit => definite && pinned,
+            Length::MinContent | Length::MaxContent => false,
         };
         Self {
             width: axis(size.width, self.width, pinned[0]),
@@ -501,7 +533,7 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
     // nothing to a parent's main-axis sum) and its children are never walked, so
     // it reserves no scratch and does not recurse.
     if tree.hidden(root) {
-        tree.set_measured(root, Measured { w: 0.0, h: 0.0 });
+        tree.set_measured(root, Measured::default());
         return;
     }
     let start = scratch.len();
@@ -517,13 +549,12 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
 
     let measured = match tree.input(root) {
         LayoutInput::Leaf { size } => {
-            // A content leaf (text/image/path) resolves a Fit/Fill axis against
-            // its measured intrinsic size; a bare layout leaf has none and reads
+            // A content leaf (text/image/path) resolves a content-sized axis
+            // against its intrinsic size; a bare layout leaf has none and reads
             // back 0 on both axes.
-            let content = tree.content_natural(root).unwrap_or(Vec2::ZERO);
-            Measured {
-                w: natural_length(size.width, content.x),
-                h: natural_length(size.height, content.y),
+            match tree.content_natural(root) {
+                Some(content) => Measured::sized(size, content, tree.content_min_width(root)),
+                None => Measured::sized(size, Vec2::ZERO, 0.0),
             }
         }
         LayoutInput::Flex {
@@ -533,94 +564,89 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
             size,
             ..
         } => {
+            // The main extents add up and the cross ones take the widest; a
+            // row's narrowest width is its children's added, a column's its
+            // narrowest child's.
             let mut main_sum = 0.0f32;
             let mut cross_max = 0.0f32;
+            let mut min_w = 0.0f32;
             for i in 0..child_count {
                 let child = scratch[start + i];
                 let cm = tree.measured(child);
-                let (main, cross) = (cm.on(axis), cm.on(cross_of(axis)));
-                let (main, cross) = match tree.rules(child) {
-                    None => (main, cross),
-                    Some(rules) => {
-                        let margin = margin_in(rules, INDEFINITE);
-                        (main + margin.main(axis), cross + margin.cross(axis))
-                    }
+                let margin = margin_of(tree, child, INDEFINITE);
+                main_sum += cm.on(axis) + margin.main(axis);
+                cross_max = cross_max.max(cm.on(cross_of(axis)) + margin.cross(axis));
+                let narrowest = cm.min_w + margin.main(Axis::Row);
+                min_w = match axis {
+                    Axis::Row => min_w + narrowest,
+                    Axis::Column => min_w.max(narrowest),
                 };
-                main_sum += main;
-                cross_max = cross_max.max(cross);
             }
             if child_count > 1 {
                 main_sum += gap * (child_count as f32 - 1.0);
+                if axis == Axis::Row {
+                    min_w += gap * (child_count as f32 - 1.0);
+                }
             }
             main_sum += padding.main(axis);
             cross_max += padding.cross(axis);
-
-            // A container may itself be Fixed on an axis; honor that over the
-            // content sum so a fixed-size box measures to its declared size.
-            let main_natural = match size.on(axis) {
-                Length::Fixed(v) => v,
-                _ => main_sum,
-            };
-            let cross_natural = match size.cross(axis) {
-                Length::Fixed(v) => v,
-                _ => cross_max,
-            };
-            axis_pack(axis, main_natural, cross_natural)
+            let content = axis_pack_vec(axis, main_sum, cross_max);
+            Measured::sized(size, content, min_w + padding.main(Axis::Row))
         }
         LayoutInput::Stack { padding, size, .. } => {
-            let (mut w, mut h) = (0.0f32, 0.0f32);
+            let (mut w, mut h, mut min_w) = (0.0f32, 0.0f32, 0.0f32);
             for i in 0..child_count {
                 let child = scratch[start + i];
                 let m = tree.measured(child);
                 let margin = margin_of(tree, child, INDEFINITE);
                 w = w.max(m.w + margin.main(Axis::Row));
                 h = h.max(m.h + margin.main(Axis::Column));
+                min_w = min_w.max(m.min_w + margin.main(Axis::Row));
             }
-            Measured {
-                w: own_natural(size.width, w + padding.main(Axis::Row)),
-                h: own_natural(size.height, h + padding.main(Axis::Column)),
-            }
+            let content = Vec2 {
+                x: w + padding.main(Axis::Row),
+                y: h + padding.main(Axis::Column),
+            };
+            Measured::sized(size, content, min_w + padding.main(Axis::Row))
         }
-        LayoutInput::Absolute { padding, size } => Measured {
-            w: own_natural(size.width, padding.main(Axis::Row)),
-            h: own_natural(size.height, padding.main(Axis::Column)),
-        },
-        LayoutInput::Scroll { size, .. } => {
+        LayoutInput::Absolute { padding, size } => {
+            let content = Vec2 {
+                x: padding.main(Axis::Row),
+                y: padding.main(Axis::Column),
+            };
+            Measured::sized(size, content, content.x)
+        }
+        LayoutInput::Scroll { axis, size, .. } => {
             // A viewport's natural size is its own request: a Fixed axis is its
-            // pixel value; a Fit/Fill axis hugs the single content child's
+            // pixel value; a content-sized axis hugs the single content child's
             // natural extent (the content can still exceed the resolved box —
-            // that overflow is what scrolls, decided at layout time).
-            let child_natural = |axis: Axis| -> f32 {
-                if child_count > 0 {
-                    let content = scratch[start];
+            // that overflow is what scrolls, decided at layout time). Content
+            // that scrolls across asks no width of it.
+            match scratch[start..start + child_count].first() {
+                Some(&content) => {
                     let margin = margin_of(tree, content, INDEFINITE);
-                    tree.measured(content).on(axis) + margin.main(axis)
-                } else {
-                    0.0
+                    let m = tree.measured(content);
+                    let natural = Vec2 {
+                        x: m.w + margin.main(Axis::Row),
+                        y: m.h + margin.main(Axis::Column),
+                    };
+                    let min_w = match axis {
+                        Axis::Row => 0.0,
+                        Axis::Column => m.min_w + margin.main(Axis::Row),
+                    };
+                    Measured::sized(size, natural, min_w)
                 }
-            };
-            let w = match size.width {
-                Length::Fixed(v) => v,
-                _ => child_natural(Axis::Row),
-            };
-            let h = match size.height {
-                Length::Fixed(v) => v,
-                _ => child_natural(Axis::Column),
-            };
-            Measured { w, h }
+                None => Measured::sized(size, Vec2::ZERO, 0.0),
+            }
         }
         LayoutInput::AbsoluteRows { size, .. } => {
             // The canvas measures to its own declared size — the full logical
             // extent — never the sum of its sparse mounted children. Both axes
             // are Fixed in normal use; a non-Fixed axis falls back to 0 (there is
             // no content sum to hug, by design).
-            Measured {
-                w: natural_length(size.width, 0.0),
-                h: natural_length(size.height, 0.0),
-            }
+            Measured::sized(size, Vec2::ZERO, 0.0)
         }
         LayoutInput::Grid {
-            column_count,
             column_gap,
             row_gap,
             padding,
@@ -628,7 +654,7 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
             ..
         } => {
             // A grid measures to its own request. A Fixed axis is its pixel value.
-            // A non-Fixed axis hugs the summed explicit tracks (Fixed/Percent-of-0
+            // A content-sized axis hugs the summed explicit tracks (Fixed/Percent-of-0
             // contribute their base; gaps included). Auto/Fr tracks contribute
             // their children's naturals via the full solver at layout time; the
             // measure-time natural of a flexible grid is a lower bound here.
@@ -645,20 +671,11 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
                 }
                 s
             };
-            let _ = column_count;
-            let main_cols =
-                sum_axis(tree.grid_column_tracks(root), column_gap) + padding.main(Axis::Row);
-            let main_rows =
-                sum_axis(tree.grid_row_tracks(root), row_gap) + padding.main(Axis::Column);
-            let w = match size.width {
-                Length::Fixed(v) => v,
-                _ => main_cols,
+            let content = Vec2 {
+                x: sum_axis(tree.grid_column_tracks(root), column_gap) + padding.main(Axis::Row),
+                y: sum_axis(tree.grid_row_tracks(root), row_gap) + padding.main(Axis::Column),
             };
-            let h = match size.height {
-                Length::Fixed(v) => v,
-                _ => main_rows,
-            };
-            Measured { w, h }
+            Measured::sized(size, content, content.x)
         }
     };
 
@@ -668,21 +685,12 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
         Some(rules) => Measured {
             w: rules.clamp(Axis::Row, measured.w, 0.0, false),
             h: rules.clamp(Axis::Column, measured.h, 0.0, false),
+            min_w: rules.clamp(Axis::Row, measured.min_w, 0.0, false),
         },
         None => measured,
     };
     tree.set_measured(root, measured);
     scratch.truncate(start);
-}
-
-/// A container's natural extent on an axis it requests `length` on, its
-/// content `content`: a fixed request is its own.
-#[inline]
-fn own_natural(length: Length, content: f32) -> f32 {
-    match length {
-        Length::Fixed(v) => v,
-        _ => content,
-    }
 }
 
 /// A content box no percentage can read: both extents indefinite.
@@ -843,6 +851,79 @@ fn fill_share(
     (share, eval(share).0)
 }
 
+/// The share of its width each `fit` child among `children` of a row gives
+/// up so that, each no narrower than its min-content width and held within
+/// its bounds over `basis`, they take `overflow` less; and how much less they
+/// take, short of `overflow` only when they cannot shrink that far. The sum
+/// is piecewise linear and non-decreasing in the share, solved as
+/// [`fill_share`] solves its own.
+fn fit_shrink(
+    tree: &impl LayoutTree,
+    children: &[u32],
+    basis: f32,
+    definite: bool,
+    overflow: f32,
+) -> (f32, f32) {
+    let eval = |share: f32| -> (f32, f32) {
+        let (mut given, mut slope) = (0.0f32, 0.0f32);
+        for &child in children {
+            if tree.input(child).size().width != Length::Fit {
+                continue;
+            }
+            let m = tree.measured(child);
+            let width = shrunk(m, share);
+            let (held, full) = match tree.rules(child) {
+                Some(rules) => (
+                    rules.clamp(Axis::Row, width, basis, definite),
+                    rules.clamp(Axis::Row, m.w, basis, definite),
+                ),
+                None => (width, m.w),
+            };
+            given += full - held;
+            if held == width && m.w * (1.0 - share) > m.min_w {
+                slope += m.w;
+            }
+        }
+        (given, slope)
+    };
+    let (most, _) = eval(1.0);
+    if most <= overflow {
+        return (1.0, most);
+    }
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    let mut share = 0.0f32;
+    for _ in 0..64 {
+        let (given, slope) = eval(share);
+        let err = overflow - given;
+        if err.abs() <= 1e-4 * overflow.max(1.0) {
+            return (share, given);
+        }
+        if err > 0.0 {
+            lo = share;
+        } else {
+            hi = share;
+        }
+        let next = if slope > 0.0 {
+            share + err / slope
+        } else {
+            f32::NAN
+        };
+        share = if next > lo && next < hi {
+            next
+        } else {
+            (lo + hi) * 0.5
+        };
+    }
+    (share, eval(share).0)
+}
+
+/// The width a fit child measured `m` takes giving up `share` of it: never
+/// narrower than its min-content width.
+#[inline]
+fn shrunk(m: Measured, share: f32) -> f32 {
+    (m.w * (1.0 - share)).max(m.min_w)
+}
+
 /// The main-axis extent flex child `child` requests by `length` over a
 /// content box `extent` along `axis`, a fill its natural one.
 #[inline(always)]
@@ -856,7 +937,9 @@ fn main_request(
 ) -> f32 {
     match length {
         Length::Fixed(v) => v,
-        Length::Fit | Length::Fill { .. } => tree.measured(child).on(axis),
+        Length::Fit | Length::Fill { .. } | Length::MinContent | Length::MaxContent => {
+            tree.measured(child).on(axis)
+        }
         Length::Relative { fixed, pct } => {
             relative_extent(fixed, pct, extent, definite, tree.measured(child).on(axis))
         }
@@ -1009,6 +1092,18 @@ pub fn layout_on(
         }
     }
 
+    // A row its children overflow takes what it lacks from its fit children,
+    // each giving up the same share of its width down to its min-content one.
+    let overflow = fixed_main + gaps_total - main_extent;
+    let shrink = if axis == Axis::Row && overflow > 0.0 {
+        let children = &scratch[start..start + child_count];
+        let (shrink, given) = fit_shrink(tree, children, main_extent, main_definite, overflow);
+        fixed_main -= given;
+        shrink
+    } else {
+        0.0
+    };
+
     // What the fills share: the leftover, never negative, split by weight —
     // or, when a fill is bounded, the share per weight that lets the bounded
     // fills together take it. Alignment keeps whatever is left, signed: an
@@ -1056,6 +1151,7 @@ pub fn layout_on(
                     0.0
                 }
             }
+            Length::Fit if shrink > 0.0 => shrunk(tree.measured(child), shrink),
             length => main_request(tree, child, length, axis, main_extent, main_definite),
         };
         let rules = if ruled {
@@ -1183,8 +1279,9 @@ fn ruled_cross(
 }
 
 /// The cross extent flex child `child` requests: `room` for a fill, or a fit
-/// under `stretch`; its content for a fit; its own for a fixed or relative
-/// request, a relative one over the content box `extent`.
+/// under `stretch`; its content within `room` for a fit, whatever the room
+/// for a content size; its own for a fixed or relative request, a relative
+/// one over the content box `extent`.
 #[inline(always)]
 fn cross_request(
     tree: &mut impl LayoutTree,
@@ -1198,7 +1295,8 @@ fn cross_request(
     match tree.input(child).size().cross(axis) {
         Length::Fill { .. } => room,
         Length::Fit if align == Align::Stretch => room,
-        Length::Fit => tree.measured(child).on(cross_of(axis)),
+        Length::Fit => tree.measured(child).fit(cross_of(axis), room),
+        Length::MinContent | Length::MaxContent => tree.measured(child).on(cross_of(axis)),
         Length::Fixed(v) => v,
         Length::Relative { fixed, pct } => {
             if !definite {
@@ -1459,8 +1557,9 @@ fn absolute_box(
 /// The extent a stack or absolute child requests along `axis` by `length`,
 /// given its `room` (its parent's content extent less its margin and
 /// insets), that `extent` and whether it is definite: the room for a fill
-/// or a `stretch`ed fit, its content for a fit, its own for a fixed or
-/// relative request, held within its bounds.
+/// or a `stretch`ed fit, its content within the room for a fit, whatever the
+/// room for a content size, its own for a fixed or relative request, held
+/// within its bounds.
 #[inline]
 fn placed_extent(
     tree: &mut impl LayoutTree,
@@ -1474,7 +1573,8 @@ fn placed_extent(
     let request = match length {
         Length::Fill { .. } => room.max(0.0),
         Length::Fit if stretch => room.max(0.0),
-        Length::Fit => tree.measured(child).on(axis),
+        Length::Fit => tree.measured(child).fit(axis, room),
+        Length::MinContent | Length::MaxContent => tree.measured(child).on(axis),
         Length::Fixed(v) => v,
         Length::Relative { fixed, pct } => {
             if !definite {
@@ -2050,11 +2150,13 @@ fn layout_grid(
                 }
             };
             // Horizontal (inline axis): the child fills its cell when it requests
-            // Fill; a Fixed/Fit child hugs its own size at the cell's start edge,
-            // and a Relative child resolves against the cell width.
+            // Fill; a fit child takes its content within the cell, a content
+            // size or a Fixed child its own, at the cell's start edge, and a
+            // Relative child resolves against the cell width.
             let size = tree.input(child).size();
             let cw = match size.width {
-                Length::Fit => tree.measured(child).on(Axis::Row),
+                Length::Fit => tree.measured(child).fit(Axis::Row, cell.w),
+                Length::MinContent | Length::MaxContent => tree.measured(child).w,
                 Length::Fill { .. } => cell.w,
                 len => len.resolve(area.w).unwrap_or(0.0),
             };
@@ -2237,15 +2339,6 @@ fn cross_of(axis: Axis) -> Axis {
     match axis {
         Axis::Row => Axis::Column,
         Axis::Column => Axis::Row,
-    }
-}
-
-/// A [`Measured`] from a main/cross pair for a given axis.
-#[inline]
-fn axis_pack(axis: Axis, main: f32, cross: f32) -> Measured {
-    match axis {
-        Axis::Row => Measured { w: main, h: cross },
-        Axis::Column => Measured { w: cross, h: main },
     }
 }
 
@@ -2699,6 +2792,7 @@ mod tests {
                 baseline,
                 shaped_at_width: None,
                 width_use: crate::WidthUse::Ignored,
+                min_content: 20.0,
                 max_content: 20.0,
             },
         );
@@ -3313,7 +3407,7 @@ mod tests {
         measure(&mut store, root.index(), &mut scratch);
         assert_eq!(
             LayoutTree::measured(&store, hidden_leaf.index()),
-            Measured { w: 0.0, h: 0.0 },
+            Measured::default(),
             "a hidden subtree measures to zero"
         );
         assert_eq!(
@@ -3779,6 +3873,121 @@ mod tests {
         assert_eq!(xs(&store), ltr);
     }
 
+    /// The boxes of leaves requesting `width`, each a text `min` to `max`
+    /// wide and 10 high, in a 100 × 100 container along `axis`; and the
+    /// container's natural extent once it fits them.
+    fn texts(axis: Axis, leaves: &[(Length, f32, f32)]) -> (Vec<Rect>, Measured) {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::content::Content;
+        use crate::style::BoxStyle;
+        use viso_render::{Rgba, TextureId};
+
+        let mut store = NodeStore::new();
+        let mut ids = Vec::new();
+        let (root, inner) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut inner = None;
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let fit = FlexStyle {
+                        axis,
+                        size: Size::fill(),
+                        ..Default::default()
+                    };
+                    inner = Some(cx.flex(fit, |cx| {
+                        for &(width, ..) in leaves {
+                            let size = Size {
+                                width,
+                                height: Length::Fit,
+                            };
+                            let style = BoxStyle::NONE;
+                            ids.push(cx.leaf(LeafStyle { size, style }).id());
+                        }
+                    }));
+                },
+            );
+            (cx.root().unwrap(), inner.unwrap().id())
+        };
+        for (&id, &(_, min, max)) in ids.iter().zip(leaves) {
+            let content = Content::Text {
+                glyphs: Vec::new(),
+                atlas: TextureId::new(0),
+                color_glyphs: Vec::new(),
+                color_atlas: None,
+                color: Rgba {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+                natural: Vec2 { x: max, y: 10.0 },
+                baseline: 8.0,
+                shaped_at_width: None,
+                width_use: crate::WidthUse::Ignored,
+                min_content: min,
+                max_content: max,
+            };
+            store.set_content_payload(id, content);
+        }
+        store.layout(root, surface_local(100.0, 100.0), &mut Vec::new());
+        let boxes = ids.iter().map(|&id| store.bounds(id)).collect();
+        (boxes, store.measured(inner.index()))
+    }
+
+    #[test]
+    fn a_fit_width_takes_its_content_within_the_room_and_the_content_sizes_ignore_it() {
+        let (boxes, column) = texts(
+            Axis::Column,
+            &[
+                (Length::Fit, 40.0, 150.0),
+                (Length::Fit, 120.0, 150.0),
+                (Length::Fit, 20.0, 60.0),
+                (Length::MinContent, 40.0, 150.0),
+                (Length::MaxContent, 40.0, 150.0),
+            ],
+        );
+        let widths: Vec<f32> = boxes.iter().map(|b| b.w).collect();
+        assert_eq!(widths, [100.0, 120.0, 60.0, 40.0, 150.0]);
+        // A column is as narrow as its widest child's narrowest, here the
+        // max-content one's whole width.
+        assert_eq!((column.w, column.min_w), (150.0, 150.0));
+    }
+
+    #[test]
+    fn an_overflowing_row_shrinks_its_fit_children_alike_down_to_their_min_content() {
+        // 80 + 40 + 20 overflow 100 by 40: the fits give up a third each, the
+        // second stops at its 30 and the first gives up the rest.
+        let (boxes, row) = texts(
+            Axis::Row,
+            &[
+                (Length::Fit, 30.0, 80.0),
+                (Length::Fit, 30.0, 40.0),
+                (Length::Fixed(20.0), 0.0, 0.0),
+            ],
+        );
+        let milli = |v: f32| (v * 1000.0).round() / 1000.0;
+        let xs: Vec<(f32, f32)> = boxes.iter().map(|b| (milli(b.x), milli(b.w))).collect();
+        assert_eq!(xs, [(0.0, 50.0), (50.0, 30.0), (80.0, 20.0)]);
+        assert_eq!((row.w, row.min_w), (140.0, 80.0));
+
+        // Past their min-content widths, they overflow.
+        let (boxes, _) = texts(
+            Axis::Row,
+            &[(Length::Fit, 70.0, 80.0), (Length::MaxContent, 0.0, 50.0)],
+        );
+        let xs: Vec<(f32, f32)> = boxes.iter().map(|b| (b.x, b.w)).collect();
+        assert_eq!(xs, [(0.0, 70.0), (70.0, 50.0)]);
+
+        // A row with room for them leaves them be.
+        let (boxes, _) = texts(Axis::Row, &[(Length::Fit, 10.0, 30.0)]);
+        assert_eq!(boxes[0].w, 30.0);
+    }
+
     #[test]
     fn a_margin_counts_in_its_parents_natural_size() {
         use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
@@ -3823,7 +4032,12 @@ mod tests {
         );
         measure(&mut store, root.index(), &mut Vec::new());
         // A percentage has no basis while measuring: it counts as nothing.
-        assert_eq!(store.measured(root.index()), Measured { w: 60.0, h: 25.0 });
+        let natural = Measured {
+            w: 60.0,
+            h: 25.0,
+            min_w: 60.0,
+        };
+        assert_eq!(store.measured(root.index()), natural);
     }
 
     #[test]

@@ -180,6 +180,7 @@ fn attach_captions(gpu: &mut CpuRaster, store: &mut NodeStore, root: NodeId) {
                 baseline: 0.0,
                 shaped_at_width: None,
                 width_use: viso::ui::WidthUse::Ignored,
+                min_content: natural.x,
                 max_content: natural.x,
             },
         );

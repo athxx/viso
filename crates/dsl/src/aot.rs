@@ -548,6 +548,8 @@ fn aot_length(len: LengthIr) -> AotLength {
         LengthIr::Relative { fixed, pct } => AotLength::Relative { fixed, pct },
         LengthIr::Fill { weight } => AotLength::Fill { weight },
         LengthIr::Fit => AotLength::Fit,
+        LengthIr::MinContent => AotLength::MinContent,
+        LengthIr::MaxContent => AotLength::MaxContent,
     }
 }
 

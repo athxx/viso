@@ -82,8 +82,12 @@ pub enum Content {
         /// payload (rather than read back from the request, which is drained
         /// at shape time) so the recorder needs only the content column.
         width_use: WidthUse,
+        /// The narrowest width the run lays out in without overflowing, in
+        /// physical pixels: its widest stretch no line breaks inside, what a
+        /// `min_content` width sizes to and a `fit` one shrinks no further than.
+        min_content: f32,
         /// The run's width laid out on one line per hard break, in physical
-        /// pixels: what a `Fit` width sizes to, so a run its box's bounds
+        /// pixels: what a `fit` width sizes to, so a run its box's bounds
         /// wrap or cut sizes the same as it is laid out again.
         max_content: f32,
     },
@@ -167,6 +171,19 @@ impl Content {
         }
     }
 
+    /// The narrowest width the content lays out in without overflowing: a
+    /// text's `min_content`, an image's, path's or asset's natural width.
+    #[inline]
+    pub fn min_width(&self) -> f32 {
+        match self {
+            Content::Text { min_content, .. } => *min_content,
+            Content::Image { natural, .. }
+            | Content::Path { natural, .. }
+            | Content::Asset { natural, .. } => natural.x,
+            Content::Shader { .. } => 0.0,
+        }
+    }
+
     /// The content's first-line baseline in physical pixels, or `None` when it
     /// has no text baseline (image/path). A grid cell aligned on the baseline
     /// falls back to the child's full extent when this is `None`.
@@ -236,6 +253,7 @@ mod tests {
             baseline: 9.0,
             shaped_at_width: None,
             width_use: WidthUse::Ignored,
+            min_content: 42.0,
             max_content: 42.0,
         };
         assert_eq!(text.natural(), Vec2 { x: 42.0, y: 12.0 });

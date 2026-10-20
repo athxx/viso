@@ -895,6 +895,7 @@ mod tests {
                 baseline: 16.0,
                 shaped_at_width: None,
                 width_use: crate::WidthUse::Ignored,
+                min_content: 30.0,
                 max_content: 30.0,
             },
         );
@@ -1060,6 +1061,7 @@ mod tests {
                 baseline: 16.0,
                 shaped_at_width: None,
                 width_use: crate::WidthUse::Ignored,
+                min_content: 40.0,
                 max_content: 40.0,
             },
         );
@@ -1164,6 +1166,7 @@ mod tests {
                 baseline: 16.0,
                 shaped_at_width: None,
                 width_use: crate::WidthUse::Ignored,
+                min_content: 20.0,
                 max_content: 20.0,
             },
         );

@@ -1064,6 +1064,8 @@ fn length_tokens(length: Option<LengthIr>) -> TokenStream {
             quote! { ::viso::__private::viso_ui::Length::Fill { weight: #weight } }
         }
         Some(LengthIr::Fit) | None => quote! { ::viso::__private::viso_ui::Length::Fit },
+        Some(LengthIr::MinContent) => quote! { ::viso::__private::viso_ui::Length::MinContent },
+        Some(LengthIr::MaxContent) => quote! { ::viso::__private::viso_ui::Length::MaxContent },
     }
 }
 

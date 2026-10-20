@@ -247,8 +247,12 @@ pub enum LengthIr {
     Relative { fixed: f32, pct: f32 },
     /// A weighted share of remaining space.
     Fill { weight: f32 },
-    /// Sized to content.
+    /// The content's extent within the room.
     Fit,
+    /// The narrowest the content lays out in.
+    MinContent,
+    /// The content's unconstrained extent.
+    MaxContent,
 }
 
 /// A length's five terms, mirroring `viso_schema::LengthTerms`: a length with a

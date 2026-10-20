@@ -216,6 +216,7 @@ fn setup() -> Harness {
             baseline: 0.0,
             shaped_at_width: None,
             width_use: viso::ui::WidthUse::Ignored,
+            min_content: glyph_run_natural(&tg.glyphs).x,
             max_content: glyph_run_natural(&tg.glyphs).x,
         },
     );

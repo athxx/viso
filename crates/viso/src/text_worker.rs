@@ -130,14 +130,23 @@ pub(crate) struct Need {
 /// A rasterized glyph; `None` when the face has no outline the parser reads.
 pub(crate) type Rastered = (GlyphKey, Option<CoverageBitmap>);
 
+/// The narrowest width a paragraph lays out in without overflowing, its
+/// widest stretch no line breaks inside, and the width it takes on one line
+/// per hard break.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct ContentWidths {
+    pub(crate) min: f32,
+    pub(crate) max: f32,
+}
+
 #[derive(Debug)]
 pub(crate) struct LayoutDone {
     pub(crate) slot: u64,
     pub(crate) seq: u64,
     /// The paragraph's lines as its limit shows them, top to bottom.
     pub(crate) lines: Vec<LineLayout>,
-    /// The width the paragraph takes on one line per hard break, in em.
-    pub(crate) max_content_em: f32,
+    /// The narrowest and widest the paragraph lays out, in em.
+    pub(crate) content_em: ContentWidths,
     /// Whether a layout ran; `false` when the retained lines already matched.
     pub(crate) relaid: bool,
     /// Graphemes that drew with the base face for want of a face covering
@@ -591,7 +600,10 @@ impl WorkerState {
         let lines = paragraph
             .limited(job.limit, &mut shape)
             .unwrap_or_else(|| paragraph.lines().to_vec());
-        let max_content_em = paragraph.max_content_width();
+        let content_em = ContentWidths {
+            min: paragraph.min_content_width(),
+            max: paragraph.max_content_width(),
+        };
         let mut glyphs = Vec::new();
         // A layout that still needs a face is laid out again once it has one;
         // its placeholder glyphs never draw.
@@ -623,7 +635,7 @@ impl WorkerState {
             slot: job.slot,
             seq: job.seq,
             lines,
-            max_content_em,
+            content_em,
             relaid,
             needs: std::mem::take(&mut self.needs),
             shaped_runs: self.shaped,

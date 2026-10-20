@@ -373,8 +373,9 @@ pub enum AotAxis {
     Column = 1,
 }
 
-/// A folded length, the compact twin of `viso_ui::layout::Length`. `Fit` needs no
-/// payload; `Fixed`/`Fill` each carry one `f32`; `Relative` carries two.
+/// A folded length, the compact twin of `viso_ui::layout::Length`. `Fit` and
+/// the content sizes need no payload; `Fixed`/`Fill` each carry one `f32`;
+/// `Relative` carries two.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AotLength {
     /// An exact extent in dp.
@@ -383,8 +384,12 @@ pub enum AotLength {
     Relative { fixed: f32, pct: f32 },
     /// A weighted share of leftover main-axis space.
     Fill { weight: f32 },
-    /// Sized to the measured natural size.
+    /// The content's extent within the room.
     Fit,
+    /// The narrowest the content lays out in.
+    MinContent,
+    /// The content's unconstrained extent.
+    MaxContent,
 }
 
 /// One reactive binding edge: a durable state cell, the node it drives, and the
@@ -499,6 +504,8 @@ const LEN_FIXED: u8 = 0;
 const LEN_FILL: u8 = 1;
 const LEN_FIT: u8 = 2;
 const LEN_RELATIVE: u8 = 3;
+const LEN_MIN_CONTENT: u8 = 4;
+const LEN_MAX_CONTENT: u8 = 5;
 
 impl Encode for AotLength {
     fn encode(&self, enc: &mut Encoder) {
@@ -512,6 +519,8 @@ impl Encode for AotLength {
                 enc.write_f32(*weight);
             }
             AotLength::Fit => enc.write_u8(LEN_FIT),
+            AotLength::MinContent => enc.write_u8(LEN_MIN_CONTENT),
+            AotLength::MaxContent => enc.write_u8(LEN_MAX_CONTENT),
             AotLength::Relative { fixed, pct } => {
                 enc.write_u8(LEN_RELATIVE);
                 enc.write_f32(*fixed);
@@ -530,6 +539,8 @@ impl Decode for AotLength {
                 weight: dec.read_f32()?,
             }),
             LEN_FIT => Ok(AotLength::Fit),
+            LEN_MIN_CONTENT => Ok(AotLength::MinContent),
+            LEN_MAX_CONTENT => Ok(AotLength::MaxContent),
             LEN_RELATIVE => Ok(AotLength::Relative {
                 fixed: dec.read_f32()?,
                 pct: dec.read_f32()?,

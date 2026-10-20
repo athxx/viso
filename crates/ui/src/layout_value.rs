@@ -26,8 +26,12 @@ pub enum BoundSize {
         /// Its weight.
         weight: f32,
     },
-    /// The measured natural size.
+    /// The content's extent within the room.
     Fit,
+    /// The narrowest the content lays out in.
+    MinContent,
+    /// The content's unconstrained extent.
+    MaxContent,
 }
 
 /// A layout property's value, as a view's binding delivers it.
@@ -150,8 +154,8 @@ impl NodeStore {
         }
     }
 
-    /// An axis's size: a fixed extent folds from the lengths, a fill or a fit
-    /// is the request itself.
+    /// An axis's size: a fixed extent folds from the lengths, any other is the
+    /// request itself.
     fn set_bound_size(&mut self, id: NodeId, width: bool, size: BoundSize) {
         let length = match size {
             BoundSize::Fixed(terms) => {
@@ -163,6 +167,8 @@ impl NodeStore {
                 weight: weight.max(0.0),
             },
             BoundSize::Fit => Length::Fit,
+            BoundSize::MinContent => Length::MinContent,
+            BoundSize::MaxContent => Length::MaxContent,
         };
         self.edit_lengths(id, |l| {
             *if width { &mut l.width } else { &mut l.height } = None;

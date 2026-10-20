@@ -99,6 +99,7 @@ fn render_scene() -> Vec<u8> {
             baseline: 0.0,
             shaped_at_width: None,
             width_use: viso::ui::WidthUse::Ignored,
+            min_content: natural.x,
             max_content: natural.x,
         },
     );

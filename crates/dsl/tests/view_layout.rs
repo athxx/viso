@@ -167,10 +167,6 @@ fn a_binding_no_path_applies_is_reported() {
             "`invalid` does not reach a `TextInput` yet",
         ),
         (
-            "Column { width: Sizing::min_content; }",
-            "`Sizing::min_content` does not lay out yet",
-        ),
-        (
             "Text { text: \"a\"; enabled: n > 0; }",
             "`enabled` does not reach a `Text` yet",
         ),
