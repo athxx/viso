@@ -123,7 +123,7 @@ fn the_counter_is_a_component_with_a_signal_and_a_handler() {
         "{component}"
     );
     assert!(
-        component.contains("onClick={(e) => st.run(() => f.handler"),
+        component.contains("onClick={(e) => show.reaches(e) && st.run(() => f.handler"),
         "{component}"
     );
     golden("solid_counter.tsx", component);

@@ -118,6 +118,12 @@ export declare const show: {
   maskSize(v: Value): string;
   mask(href: string): string;
   opacity(v: Value): string;
+  radius(v: Value): string;
+  stroke(v: Value): string;
+  focusable(el: HTMLElement, v: Value): void;
+  enabled(el: HTMLElement, v: Value): void;
+  autofocus(el: HTMLElement, v: Value): void;
+  reaches(e: Event): boolean;
   move(v: Value, property: string): string;
   select(el: Element, v: Value, radio: boolean): void;
 };

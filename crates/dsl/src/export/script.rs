@@ -303,6 +303,8 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::SoftWrap => format!("P.wrap({el}, {value})"),
                         Prop::Visible => format!("P.visible({el}, {value})"),
                         Prop::Focusable => format!("P.focusable({el}, {value})"),
+                        Prop::Enabled => format!("P.enabled({el}, {value})"),
+                        Prop::Autofocus => format!("P.autofocus({el}, {value})"),
                         Prop::Label { alt } => format!("P.label({el}, {value}, {alt})"),
                         Prop::Hint => format!("P.hint({el}, {value})"),
                         Prop::Spoken => format!("P.spoken({el}, {value})"),
@@ -1270,6 +1272,11 @@ fn native(path: &str, a: &[String]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_runtime_declares_each_name_once() {
+        assert_eq!(super::super::redeclared(RUNTIME), Vec::<&str>::new());
+    }
 
     #[test]
     fn values_keep_their_representation() {

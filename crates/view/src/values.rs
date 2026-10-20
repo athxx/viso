@@ -33,7 +33,7 @@ use viso_ui::shader::BrushProgram;
 use viso_ui::{
     AssetFit, Border, BuildCx, Easing, FieldLook, FieldSeed, FontSize, LiveRegion, LookValue,
     NodeId, NodeStore, Rgba, Role, SemanticState, Semantics, Srgb, StateId, StructureCx,
-    TextRequest, Timing,
+    TextRequest, Timing, focus_node,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, When};
@@ -171,6 +171,8 @@ pub(crate) fn control_cells(
         semantics.heading_level,
         control.node.visible,
         control.node.focusable,
+        control.node.enabled,
+        control.node.autofocus,
     ]
     .into_iter()
     .chain(control.text.all())
@@ -185,12 +187,12 @@ pub(crate) fn control_cells(
 
 /// How many values a node shows: its value, the two entries beside it (a
 /// slider's bounds, an image's fit and tint), its look's background,
-/// opacity, corner radius and border, its `semantics.label`, `hint`, `value`, `hidden` and
-/// `heading_level`, its `visible` and `focusable`, and its text's `color`,
-/// `soft_wrap`, `font_weight`, `font_family`, `line_height`, `max_lines`,
-/// `overflow` and `align`, and a field's `placeholder` and `secure` and a
-/// check's caption.
-const SHOWN: usize = 27;
+/// opacity, corner radius and border, its `semantics.label`, `hint`,
+/// `value`, `hidden` and `heading_level`, its `visible`, `focusable`,
+/// `enabled` and `autofocus`, and its text's `color`, `soft_wrap`,
+/// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow` and
+/// `align`, and a field's `placeholder` and `secure` and a check's caption.
+const SHOWN: usize = 29;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -199,15 +201,16 @@ const LOOK: usize = 5;
 /// Where its `semantics.*` values start among the values a node shows.
 const SEMANTICS: usize = 9;
 
-/// Where its `visible` and `focusable` sit among the values a node shows.
+/// Where its `visible`, `focusable`, `enabled` and `autofocus` sit among the
+/// values a node shows.
 const NODE: usize = 14;
 
 /// Where its text's style starts among the values a node shows.
-const TEXT: usize = 16;
+const TEXT: usize = 18;
 
 /// Where a field's placeholder and masking and a check's caption sit among
 /// the values a node shows.
-const FIELD: usize = 24;
+const FIELD: usize = 26;
 
 /// A node showing a value of the view.
 pub(crate) struct Shown {
@@ -327,6 +330,8 @@ impl Shown {
                 semantics.heading_level,
                 control.node.visible,
                 control.node.focusable,
+                control.node.enabled,
+                control.node.autofocus,
             ]
             .into_iter()
             .chain(control.text.all())
@@ -379,6 +384,8 @@ impl Shown {
             level,
             visible,
             focusable,
+            enabled,
+            autofocus,
             text_color,
             soft_wrap,
             font_weight,
@@ -446,6 +453,14 @@ impl Shown {
         }
         if control.node.focusable.is_some() && changed(NODE + 1) {
             store.set_focusable(self.node, truth(focusable, false));
+        }
+        if control.node.enabled.is_some() && changed(NODE + 2) {
+            store.set_enabled(self.node, truth(enabled, true));
+        }
+        // An autofocus node takes the focus as it mounts, unless something
+        // already holds it.
+        if prior.is_none() && truth(autofocus, false) && store.focused().is_none() {
+            focus_node(store, self.node);
         }
         if shown_radius && changed(LOOK + 2) {
             store.set_corner_radius(self.node, length(corner_radius).unwrap_or_default());

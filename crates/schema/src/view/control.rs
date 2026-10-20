@@ -117,6 +117,8 @@ impl ControlKind {
             (_, "semantics.heading_level") => ControlInput::HeadingLevel,
             (_, "visible") => ControlInput::Visible,
             (_, "focusable") => ControlInput::Focusable,
+            (_, "enabled") => ControlInput::Enabled,
+            (_, "autofocus") => ControlInput::Autofocus,
             (ControlKind::Label | ControlKind::TextInput, "color") => ControlInput::TextColor,
             (ControlKind::Label | ControlKind::TextInput, "soft_wrap") => ControlInput::SoftWrap,
             (ControlKind::Label | ControlKind::TextInput, "font_weight") => {
@@ -503,6 +505,11 @@ pub enum ControlInput {
     Visible,
     /// The node's `focusable`.
     Focusable,
+    /// The node's `enabled`: whether it and its subtree take input and
+    /// focus.
+    Enabled,
+    /// The node's `autofocus`: whether it takes the focus as it mounts.
+    Autofocus,
     /// A text's `color`.
     TextColor,
     /// A text's `soft_wrap`.
@@ -571,15 +578,19 @@ pub struct Control {
     pub layout: Box<[(LayoutSlot, u32)]>,
 }
 
-/// The handler-table entries of whether a node shows and takes focus: an
-/// absent entry leaves it as it was built (shown, and focusable when its kind
-/// is).
+/// The handler-table entries of whether a node shows, takes input and takes
+/// focus: an absent entry leaves it as it was built (shown, enabled, and
+/// focusable when its kind is).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NodeEntries {
     /// The entry of its `visible`.
     pub visible: Option<u32>,
     /// The entry of its `focusable`.
     pub focusable: Option<u32>,
+    /// The entry of its `enabled`.
+    pub enabled: Option<u32>,
+    /// The entry of its `autofocus`.
+    pub autofocus: Option<u32>,
 }
 
 /// The handler-table entries of the style of a text a node shows: an absent
@@ -778,6 +789,8 @@ impl Control {
             ControlInput::HeadingLevel => self.semantics.heading_level,
             ControlInput::Visible => self.node.visible,
             ControlInput::Focusable => self.node.focusable,
+            ControlInput::Enabled => self.node.enabled,
+            ControlInput::Autofocus => self.node.autofocus,
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
             ControlInput::FontWeight => self.text.font_weight,
@@ -824,6 +837,8 @@ impl Control {
             ControlInput::HeadingLevel => &mut self.semantics.heading_level,
             ControlInput::Visible => &mut self.node.visible,
             ControlInput::Focusable => &mut self.node.focusable,
+            ControlInput::Enabled => &mut self.node.enabled,
+            ControlInput::Autofocus => &mut self.node.autofocus,
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
             ControlInput::FontWeight => &mut self.text.font_weight,
@@ -871,6 +886,8 @@ impl Encode for Control {
             semantics.heading_level,
             self.node.visible,
             self.node.focusable,
+            self.node.enabled,
+            self.node.autofocus,
         ]
         .into_iter()
         .chain(self.text.all())
@@ -967,6 +984,8 @@ impl Decode for Control {
         control.node = NodeEntries {
             visible: entry()?,
             focusable: entry()?,
+            enabled: entry()?,
+            autofocus: entry()?,
         };
         control.text = TextEntries {
             color: entry()?,
@@ -1202,6 +1221,8 @@ mod tests {
             node: NodeEntries {
                 visible: Some(12),
                 focusable: None,
+                enabled: Some(19),
+                autofocus: Some(20),
             },
             text: TextEntries {
                 color: None,

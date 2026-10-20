@@ -463,12 +463,19 @@ fn route_sample(
             hit
         }
     };
+    // An inert target takes the sample whole: neither it nor an ancestor
+    // sees it, so a press on a disabled control never reaches what holds it.
+    let inert = store.inert(target);
     match ev.phase {
-        PointerPhase::Down if ev.buttons.contains(PointerButtons::PRIMARY) => {
+        PointerPhase::Down if ev.buttons.contains(PointerButtons::PRIMARY) && !inert => {
             store.set_pressed(Some(target));
         }
         PointerPhase::Up => store.set_pressed(None),
         _ => {}
+    }
+    if inert {
+        chain.clear();
+        return false;
     }
     dispatch_chain(store, root, target, chain, |s, n, hop| {
         pointer_dispatch(s, states, bindings, n, hop, pointer, ev)
@@ -937,7 +944,9 @@ fn sync_hover(
             sample,
         );
     }
-    if let Some(new_node) = new {
+    // An inert node is never entered; it is still left, so a node disabled
+    // under the pointer settles its hover feedback.
+    if let Some(new_node) = new.filter(|&n| !store.inert(n)) {
         hover_dispatch(
             store,
             states,
@@ -1047,11 +1056,17 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
         .focus_scope()
         .filter(|s| store.arena().is_live(*s))
         .unwrap_or(root);
+    if store.inert(scope_root) {
+        return None;
+    }
     // Pre-order walk (first_child, then next_sibling), collecting focusables in
-    // the tree's natural order.
+    // the tree's natural order and skipping disabled subtrees.
     let mut order: Vec<NodeId> = Vec::new();
     let mut stack: Vec<NodeId> = vec![scope_root];
     while let Some(node) = stack.pop() {
+        if !store.enabled(node) {
+            continue;
+        }
         if store.focusable(node) {
             order.push(node);
         }
@@ -1092,9 +1107,9 @@ pub fn focus_next(store: &mut NodeStore, root: NodeId, forward: bool) -> Option<
 
 /// Focus `node` directly, as an assistive technology's focus action does:
 /// the same slot move and dirty marks as a Tab step. Returns `false`, changing
-/// nothing, when `node` is freed or not focusable.
+/// nothing, when `node` is freed, not focusable or inert.
 pub fn focus_node(store: &mut NodeStore, node: NodeId) -> bool {
-    if !store.arena().is_live(node) || !store.focusable(node) {
+    if !store.arena().is_live(node) || !store.focusable(node) || store.inert(node) {
         return false;
     }
     let old = store.focused();
@@ -1163,7 +1178,11 @@ fn topmost(store: &NodeStore, mut node: NodeId) -> NodeId {
 /// deferred focus request. SEMANTICS bubbles to the root; PAINT stays local.
 /// `visible` is whether the keyboard or an assistive technology moved it
 /// rather than a pointer, which the `focus_visible` interaction state follows.
+/// A move to an inert node changes nothing.
 fn apply_focus(store: &mut NodeStore, old: Option<NodeId>, new: Option<NodeId>, visible: bool) {
+    if new.is_some_and(|n| store.inert(n)) {
+        return;
+    }
     store.set_focus_visible(visible);
     if old == new {
         return;
@@ -1464,6 +1483,7 @@ mod tests {
     // ---- routing ----
 
     use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+    use crate::interaction::Interaction;
     use crate::layout::{Axis, Size};
     use crate::state::{StateId, StateStore, StateValue};
     use std::cell::RefCell;
@@ -1637,6 +1657,133 @@ mod tests {
         assert!(ran);
         // capture: root(0). target: child(1). bubble: root(0).
         assert_eq!(*log.borrow(), vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn a_disabled_subtree_takes_no_input_and_holds_none() {
+        // root (label 0) > row (label 1) > [a (label 2), b]; the row is
+        // disabled, so a press on a reaches nobody, the root included.
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let bindings = BindingTable::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let ids = Rc::new(RefCell::new(Vec::new()));
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let ids2 = ids.clone();
+            let log2 = log.clone();
+            let flex = cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let row = cx.flex(
+                        FlexStyle {
+                            axis: Axis::Row,
+                            size: Size::fixed(100.0, 40.0),
+                            ..Default::default()
+                        },
+                        |cx| {
+                            for label in [2, 3] {
+                                let leaf = cx.leaf(LeafStyle {
+                                    size: Size::fixed(40.0, 40.0),
+                                    ..Default::default()
+                                });
+                                cx.on_pointer(leaf, log_handler(log2.clone(), label));
+                                cx.focusable(leaf, true);
+                                ids2.borrow_mut().push(leaf.id());
+                            }
+                        },
+                    );
+                    cx.on_pointer(row, log_handler(log2.clone(), 1));
+                    ids2.borrow_mut().push(row.id());
+                    let after = cx.leaf(LeafStyle {
+                        size: Size::fixed(40.0, 40.0),
+                        ..Default::default()
+                    });
+                    cx.focusable(after, true);
+                    ids2.borrow_mut().push(after.id());
+                },
+            );
+            cx.on_pointer(flex, log_handler(log.clone(), 0));
+            cx.root().unwrap()
+        };
+        let [a, b, row, after] = ids.borrow()[..].try_into().unwrap();
+        let mut scratch = Vec::new();
+        store.layout(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            &mut scratch,
+        );
+        assert!(focus_node(&mut store, b));
+        store.set_pressed(Some(a));
+        assert!(!store.inert(a), "nothing is disabled yet");
+
+        store.set_enabled(row, false);
+        assert!(!store.enabled(row) && store.enabled(a));
+        assert!(store.inert(a) && store.inert(row) && !store.inert(root));
+        assert_eq!(store.focused(), None, "the focus left the subtree");
+        assert_eq!(
+            store.interaction_states.pressed(),
+            None,
+            "and so did the press"
+        );
+
+        let mut chain = Vec::new();
+        let ran = route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(10.0, 10.0),
+            &mut chain,
+        );
+        assert!(!ran && log.borrow().is_empty(), "{:?}", log.borrow());
+        assert!(!store.in_state(a, Interaction::Pressed));
+        let ran = route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(10.0, 60.0),
+            &mut chain,
+        );
+        assert!(
+            ran && *log.borrow() == [0, 0],
+            "outside it the root still hears"
+        );
+
+        assert_eq!(focus_next(&mut store, root, true), Some(after));
+        assert_eq!(
+            focus_next(&mut store, root, true),
+            Some(after),
+            "a and b are skipped"
+        );
+        assert!(!focus_node(&mut store, a));
+        let tree = store.derive_semantics(root);
+        let disabled = |id| tree.get(id).unwrap().disabled;
+        assert!(disabled(row) && disabled(a) && !disabled(after) && !disabled(root));
+
+        store.set_enabled(row, true);
+        assert!(!store.inert(a));
+        assert!(focus_node(&mut store, a));
+        log.borrow_mut().clear();
+        route_pointer(
+            &mut store,
+            &mut states,
+            &bindings,
+            root,
+            down(10.0, 10.0),
+            &mut chain,
+        );
+        assert_eq!(*log.borrow(), [0, 1, 2, 1, 0]);
     }
 
     #[test]

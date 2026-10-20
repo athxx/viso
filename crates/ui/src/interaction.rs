@@ -48,6 +48,10 @@ impl InteractionStates {
         }
     }
 
+    pub(crate) fn pressed(&self) -> Option<NodeId> {
+        self.pressed
+    }
+
     pub(crate) fn set_focus_visible(&mut self, visible: bool) {
         if self.focus_visible != visible {
             self.focus_visible = visible;
@@ -68,15 +72,20 @@ impl NodeStore {
         cell
     }
 
-    /// Whether `node` is in interaction state `state` now.
+    /// Whether `node` is in interaction state `state` now. An inert node is
+    /// neither hovered nor pressed.
     pub fn in_state(&self, node: NodeId, state: Interaction) -> bool {
         let focused = self.focused() == Some(node);
         match state {
-            Interaction::Hovered => self.hovered().is_some_and(|h| self.within(h, node)),
-            Interaction::Pressed => self
-                .interaction_states
-                .pressed
-                .is_some_and(|p| self.within(p, node)),
+            Interaction::Hovered => {
+                self.hovered().is_some_and(|h| self.within(h, node)) && !self.inert(node)
+            }
+            Interaction::Pressed => {
+                self.interaction_states
+                    .pressed
+                    .is_some_and(|p| self.within(p, node))
+                    && !self.inert(node)
+            }
             Interaction::Focused => focused,
             Interaction::FocusVisible => focused && self.interaction_states.focus_visible,
         }

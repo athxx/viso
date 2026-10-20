@@ -103,6 +103,8 @@ pub struct SemanticsNode {
     pub heading_level: Option<u8>,
     /// Whether this node currently holds focus (derived from the focus slot).
     pub focused: bool,
+    /// Whether input does not reach it: it or an ancestor is disabled.
+    pub disabled: bool,
     /// The node's live accessibility state (checked / value / range / expanded),
     /// derived from the node's [`SemanticState`] side column. `None` for a node
     /// that carries no live state (a plain container or label).
@@ -310,6 +312,7 @@ mod tests {
                     live: LiveRegion::Off,
                     heading_level: None,
                     focused: false,
+                    disabled: false,
                     state: None,
                     bounds: ZERO_RECT,
                     children: vec![1],
@@ -323,6 +326,7 @@ mod tests {
                     live: LiveRegion::Off,
                     heading_level: None,
                     focused: true,
+                    disabled: false,
                     state: None,
                     bounds: ZERO_RECT,
                     children: Vec::new(),

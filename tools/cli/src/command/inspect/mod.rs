@@ -634,6 +634,9 @@ fn describe_detail(sources: &SourceTable, node: &Inspected<'_>, detail: &NodeDet
                 if stop.focusable {
                     what.push("focusable");
                 }
+                if stop.disabled {
+                    what.push("disabled");
+                }
                 format!("{}:{} {}", stop.index, stop.generation, what.join("+"))
             })
             .collect();
@@ -782,6 +785,8 @@ fn write_detail(
         w.bool(stop.key);
         w.name("focusable");
         w.bool(stop.focusable);
+        w.name("disabled");
+        w.bool(stop.disabled);
         w.end_object();
     }
     w.end_array();

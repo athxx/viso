@@ -118,7 +118,7 @@ impl AccessBridge {
 /// where the action needs it. `Focus` needs no input; `Click` is a primary
 /// press and release at the node's center; `Increment`/`Decrement` are the
 /// arrow keys a focused slider steps on. Positions are physical pixels, as the
-/// scheduler delivers them.
+/// scheduler delivers them. An inert node takes none.
 pub(crate) fn perform(
     store: &mut NodeStore,
     window: WindowId,
@@ -126,6 +126,9 @@ pub(crate) fn perform(
     action: AccessAction,
     scale: f32,
 ) -> Option<[InputSample; 2]> {
+    if store.inert(node) {
+        return None;
+    }
     let key = match action {
         AccessAction::Focus => {
             viso_ui::focus_node(store, node);
@@ -211,9 +214,12 @@ fn semantics_live(live: LiveRegion) -> SemanticsLive {
     }
 }
 
-fn semantics_state(state: Option<SemanticState>) -> SemanticsState {
+fn semantics_state(state: Option<SemanticState>, disabled: bool) -> SemanticsState {
     let Some(state) = state else {
-        return SemanticsState::default();
+        return SemanticsState {
+            disabled,
+            ..SemanticsState::default()
+        };
     };
     SemanticsState {
         toggled: state.checked,
@@ -221,6 +227,7 @@ fn semantics_state(state: Option<SemanticState>) -> SemanticsState {
         numeric_range: state.range,
         expanded: state.expanded,
         selected: state.selected,
+        disabled,
     }
 }
 
@@ -266,14 +273,16 @@ impl Walk<'_> {
             semantics_role(row.role, label.is_some())
         };
         let rect = store.world(row.id);
+        // A disabled node offers no action.
         let mut actions = AccessActions::NONE;
-        if store.focusable(row.id) {
+        let live = !row.disabled;
+        if live && store.focusable(row.id) {
             actions = actions.with(AccessAction::Focus);
         }
-        if store.has_handler(row.id) {
+        if live && store.has_handler(row.id) {
             actions = actions.with(AccessAction::Click);
         }
-        if row.role == Role::Slider {
+        if live && row.role == Role::Slider {
             actions = actions
                 .with(AccessAction::Increment)
                 .with(AccessAction::Decrement);
@@ -292,7 +301,7 @@ impl Walk<'_> {
                 width: rect.w * self.scale,
                 height: rect.h * self.scale,
             },
-            state: semantics_state(row.state),
+            state: semantics_state(row.state, row.disabled),
             actions,
             children,
         }

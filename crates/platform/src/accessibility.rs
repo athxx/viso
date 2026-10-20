@@ -102,6 +102,8 @@ pub struct SemanticsState {
     pub expanded: Option<bool>,
     /// Whether a selectable item is part of the selection.
     pub selected: Option<bool>,
+    /// Whether it is disabled: shown, but taking no input.
+    pub disabled: bool,
 }
 
 /// The set of [`AccessAction`]s a node supports, one bit each.

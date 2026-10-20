@@ -28,7 +28,7 @@ export default function Counter(_props: CounterProps) {
       <button
         class="vx-button s1"
         type="button"
-        onClick={(e) => st.run(() => f.handler3(st.click(e)))}
+        onClick={(e) => show.reaches(e) && st.run(() => f.handler3(st.click(e)))}
       >
         {"Add"}
       </button>

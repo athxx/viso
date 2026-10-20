@@ -22,8 +22,8 @@ use objc2_ui_kit::{
     UIAccessibilityElement, UIAccessibilityIsSwitchControlRunning,
     UIAccessibilityIsVoiceOverRunning, UIAccessibilityLayoutChangedNotification,
     UIAccessibilityPostNotification, UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton,
-    UIAccessibilityTraitImage, UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText,
-    UIAccessibilityTraits, UIResponder,
+    UIAccessibilityTraitImage, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected,
+    UIAccessibilityTraitStaticText, UIAccessibilityTraits, UIResponder,
 };
 
 use super::view::VisoView;
@@ -155,13 +155,14 @@ fn send(request: AccessRequest) {
 /// The UIKit traits a node's element announces.
 fn traits(node: &AccessNode) -> UIAccessibilityTraits {
     // SAFETY: the trait constants are immutable UIKit values.
-    let (button, adjustable, text, image, selected) = unsafe {
+    let (button, adjustable, text, image, selected, not_enabled) = unsafe {
         (
             UIAccessibilityTraitButton,
             UIAccessibilityTraitAdjustable,
             UIAccessibilityTraitStaticText,
             UIAccessibilityTraitImage,
             UIAccessibilityTraitSelected,
+            UIAccessibilityTraitNotEnabled,
         )
     };
     let mut traits = match element_kind(node) {
@@ -173,6 +174,9 @@ fn traits(node: &AccessNode) -> UIAccessibilityTraits {
     };
     if shows_selected(node) {
         traits |= selected;
+    }
+    if node.state.disabled {
+        traits |= not_enabled;
     }
     traits
 }

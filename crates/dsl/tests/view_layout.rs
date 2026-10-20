@@ -143,6 +143,7 @@ fn visibility_focus_and_text_style_reach_the_node() {
 fn errors(view: &str) -> Vec<(&'static str, String)> {
     let source = format!(
         "style Dim for Text {{ when disabled {{ opacity: 0.5f32; }} }}\n\
+         style Bad for TextInput {{ when invalid {{ opacity: 0.5f32; }} }}\n\
          export component C {{\n    state n = 0;\n    view {{ {view} }}\n}}\n"
     );
     compile_file(&source, &origin())
@@ -167,10 +168,6 @@ fn a_binding_no_path_applies_is_reported() {
             "`invalid` does not reach a `TextInput` yet",
         ),
         (
-            "Text { text: \"a\"; enabled: n > 0; }",
-            "`enabled` does not reach a `Text` yet",
-        ),
-        (
             "Text { text: \"a\"; clip: true; }",
             "`clip` does not reach a `Text` yet",
         ),
@@ -181,18 +178,19 @@ fn a_binding_no_path_applies_is_reported() {
         assert!(found[0].1.contains(says), "{view}: {}", found[0].1);
     }
     assert_eq!(
-        errors("Text { text: \"a\"; styles: [Dim]; enabled: n > 0; }"),
+        errors("TextInput { styles: [Bad]; invalid: n > 0; }"),
         [],
-        "a style's selector reads `enabled`"
+        "a style's selector reads `invalid`"
     );
     for view in [
+        "Text { text: \"a\"; enabled: n > 0; autofocus: n == 0; }",
         "Column { width: if n > 0 { 10dp } else { 20dp }; }",
         "Column { justify: if n > 0 { Justify::start } else { Justify::end }; }",
     ] {
         assert_eq!(
             errors(view),
             [],
-            "a layout value lays out as it changes: {view}"
+            "a value that reaches the node binds: {view}"
         );
     }
 }

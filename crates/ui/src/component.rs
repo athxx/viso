@@ -257,6 +257,7 @@ macro_rules! node_columns {
         $store.opacity.$op($($arg),*);
         $store.handlers.$op($($arg),*);
         $store.focusable.$op($($arg),*);
+        $store.disabled.$op($($arg),*);
         $store.key_handlers.$op($($arg),*);
         $store.styled.$op($($arg),*);
         $store.interaction.$op($($arg),*);
@@ -463,6 +464,12 @@ pub struct NodeStore {
     /// `hittable`, a node opts *in* to focus (only interactive nodes participate
     /// in the focus ring). Maintained index-aligned with the arena.
     focusable: Vec<bool>,
+    /// Cold flag column: whether a node turned its own input off (its
+    /// `enabled` is `false`), which makes it and its subtree inert.
+    disabled: Vec<bool>,
+    /// How many nodes are disabled, so a tree with none answers
+    /// [`inert`](Self::inert) without walking an ancestry.
+    disabled_count: u32,
     /// Cold: per-node keyboard/IME handler, index-aligned but mostly `None`.
     /// Parallel to `handlers` but a distinct column: read only when a key/IME
     /// event routes through the focused node's dispatch chain.
@@ -698,6 +705,7 @@ impl NodeStore {
     pub fn clear(&mut self) {
         self.arena.clear();
         node_columns!(self.clear());
+        self.disabled_count = 0;
         self.box_rules.clear();
         self.free_rules.clear();
         self.ruled = 0;
@@ -3126,6 +3134,68 @@ impl NodeStore {
         self.focusable[id.index() as usize] = focusable;
     }
 
+    /// Whether a node takes input as far as its own `enabled` goes (default
+    /// `true`); [`inert`](Self::inert) says whether an ancestor turned it off.
+    #[inline]
+    pub fn enabled(&self, id: NodeId) -> bool {
+        !self.disabled[id.index() as usize]
+    }
+
+    /// Whether input does not reach `id`: it or an ancestor is disabled. An
+    /// inert node takes no pointer or key event, no focus and no hover or
+    /// press state, and reads as disabled. Free while no node is disabled,
+    /// otherwise a walk up the ancestry.
+    pub fn inert(&self, id: NodeId) -> bool {
+        if self.disabled_count == 0 {
+            return false;
+        }
+        let mut at = Some(id);
+        while let Some(node) = at {
+            if self.disabled[node.index() as usize] {
+                return true;
+            }
+            at = self.arena.parent(node);
+        }
+        false
+    }
+
+    /// Turn input to a node and its subtree on or off. Disabling takes the
+    /// focus and the press from a node it makes inert. Marks SEMANTICS, and
+    /// moves the interaction states a style reads. A live-guarded write.
+    pub fn set_enabled(&mut self, id: NodeId, enabled: bool) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let at = id.index() as usize;
+        if self.disabled[at] != enabled {
+            return;
+        }
+        self.disabled[at] = !enabled;
+        if enabled {
+            self.disabled_count -= 1;
+        } else {
+            self.disabled_count += 1;
+        }
+        self.interaction_states.moved();
+        self.mark_dirty(id, DirtyClass::SEMANTICS);
+        if enabled {
+            return;
+        }
+        if let Some(focused) = self.focused
+            && self.inert(focused)
+        {
+            self.mark_dirty(focused, DirtyClass::PAINT | DirtyClass::SEMANTICS);
+            self.set_focused(None);
+        }
+        if self
+            .interaction_states
+            .pressed()
+            .is_some_and(|p| self.inert(p))
+        {
+            self.set_pressed(None);
+        }
+    }
+
     /// Attach a keyboard/IME handler to a node, replacing any prior one. A
     /// live-guarded write, so a stale handle is a no-op.
     pub fn set_key_handler(&mut self, id: NodeId, handler: KeyHandler) {
@@ -3554,6 +3624,9 @@ impl NodeStore {
         self.opacity[i] = 1.0;
         self.handlers[i] = None;
         self.focusable[i] = false;
+        if std::mem::take(&mut self.disabled[i]) {
+            self.disabled_count -= 1;
+        }
         self.key_handlers[i] = None;
         self.styled[i] = None;
         self.interaction[i] = None;
@@ -3601,6 +3674,7 @@ impl NodeStore {
             self.opacity.push(1.0);
             self.handlers.push(None);
             self.focusable.push(false);
+            self.disabled.push(false);
             self.key_handlers.push(None);
             self.styled.push(None);
             self.interaction.push(None);
@@ -4120,7 +4194,7 @@ impl NodeStore {
     pub fn derive_semantics(&self, root: NodeId) -> SemanticsTree {
         let mut tree = SemanticsTree::default();
         if self.arena.is_live(root) {
-            self.derive_into(root, &mut tree);
+            self.derive_into(root, self.inert(root), &mut tree);
         }
         tree
     }
@@ -4128,7 +4202,9 @@ impl NodeStore {
     /// Push `id`'s derived row, recurse its children in sibling order, and
     /// record their indices on the row. Returns `id`'s own index in `tree.nodes`
     /// so the parent can link it. Pre-order, mirroring the paint walk.
-    fn derive_into(&self, id: NodeId, tree: &mut SemanticsTree) -> usize {
+    /// `inert` is whether an ancestor is disabled.
+    fn derive_into(&self, id: NodeId, inert: bool, tree: &mut SemanticsTree) -> usize {
+        let disabled = inert || self.disabled[id.index() as usize];
         let my_index = tree.nodes.len();
         // Resolve role/label: authored wins; else an interactive node (a pointer
         // or key handler present) defaults to Button so an assistive-technology
@@ -4151,6 +4227,7 @@ impl NodeStore {
             live: authored.map(|s| s.live).unwrap_or_default(),
             heading_level: authored.and_then(|s| s.heading_level),
             focused,
+            disabled,
             // Live state comes from the node's own side column (`&self`), never
             // a cross-layer state-store read: a control's projection binding
             // wrote it in the flush phase (AGENTS section 3.5).
@@ -4162,7 +4239,7 @@ impl NodeStore {
             // A subtree authored hidden is shown but not read; one folded out
             // of layout is neither.
             if !self.hidden[c.index() as usize] && !self.semantics(c).is_some_and(|s| s.hidden) {
-                let ci = self.derive_into(c, tree);
+                let ci = self.derive_into(c, disabled, tree);
                 tree.nodes[my_index].children.push(ci);
             }
         }

@@ -151,6 +151,33 @@ fn a_box_s_corner_radius_and_border_export_as_rounded_corners_and_an_inner_strok
     assert!(script.contains("P.vradius("), "{script}");
 }
 
+const GUARDED: &str = r#"
+export component Guarded {
+    state on = true;
+    view {
+        Column {
+            Button { width: 40dp; height: 20dp; text: "Off"; enabled: false; }
+            Text { width: 40dp; height: 20dp; enabled: on; on click { on = !on; } }
+            TextInput { width: 100dp; height: 20dp; autofocus: true; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn enabled_and_autofocus_export_as_a_guarded_subtree_and_the_autofocus_attribute() {
+    let page = export(GUARDED, false).unwrap();
+    let index = &page.index;
+    assert!(
+        index.contains("data-viso-off aria-disabled=\"true\" disabled"),
+        "{index}"
+    );
+    assert!(index.contains(" autofocus"), "{index}");
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.enabled("), "{script}");
+    assert!(script.contains("closest(\"[data-viso-off]\")"), "{script}");
+}
+
 const LOGIN: &str = r#"
 export component Login {
     state hidden = true;

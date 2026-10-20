@@ -4547,7 +4547,7 @@ export record Border { width: Dp = 1dp; color: Color; }
 - `Row` 主轴 `start` 是行内起点，RTL 下首个子节点位于右侧；
 - `justify` 与 `align` 不改变容器自身测量结果，只标记 `LAYOUT`。
 
-当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件的 `const`（经 `const` 链折叠）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::fit`/`min_content`/`max_content` 按 U3.2 布局。`corner_radius` 与 `border` 可为常量或读取值，可由 Style 的 `when` 切换：`corner_radius` 的 `%` 读节点绘制时自身盒的较短边，`px`/`sp`/`em` 随 §19.6 环境，圆角不超过较短边的一半；`border` 在盒内侧描边，不移动内容。尚无运行时路径的 Property（变换、`clip`、`autofocus`，以及 Style 选择器之外的 `enabled`）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为兼含 `dp` 与 `%` 的轨道或 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area`，以及 Style 以读取值的绑定给出的布局 Property，报 `E3711`。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
+当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件的 `const`（经 `const` 链折叠）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::fit`/`min_content`/`max_content` 按 U3.2 布局。`corner_radius` 与 `border` 可为常量或读取值，可由 Style 的 `when` 切换：`corner_radius` 的 `%` 读节点绘制时自身盒的较短边，`px`/`sp`/`em` 随 §19.6 环境，圆角不超过较短边的一半；`border` 在盒内侧描边，不移动内容。尚无运行时路径的 Property（变换、`clip`）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为兼含 `dp` 与 `%` 的轨道或 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area`，以及 Style 以读取值的绑定给出的布局 Property，报 `E3711`。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
 
 ### U3.5 Grid
 
@@ -4829,13 +4829,15 @@ Payload 基线字段：
 | ----------- | ------ | ------------------------------ | ---------------------------- |
 | `focusable` | `Bool` | `false`；标准交互 Widget 为 `true` | `SEMANTICS`              |
 | `autofocus` | `Bool` | `false`                        | —（仅挂载时读取）            |
-| `enabled`   | `Bool` | `true`（交互 Widget）          | `STYLE\|HIT_TEST\|SEMANTICS` |
+| `enabled`   | `Bool` | `true`（交互 Widget）          | `STYLE\|SEMANTICS`           |
 
 - 焦点顺序是 Focus Scope 内可聚焦节点的**源码先序顺序**，不随 RTL 翻转，也不受 `stack.layer`、`translate` 影响；
 - 不提供正数 `tab_index`，需要调整顺序时调整源码结构；
 - Tab / Shift+Tab 在当前 Scope 内前后移动；组合 Widget（`Tabs`、`RadioGroup`、`VirtualList`）内部用方向键漫游，对外只占一个 Tab 停靠点；
 - `enabled: false` 的节点不可聚焦、不接收指针与键盘事件，语义上暴露为 disabled，并激活 `disabled` 选择器；
 - 焦点移动时旧节点与新节点都标记 `PAINT|SEMANTICS`（ADR 0030）。
+
+当前实现：`enabled` 与 `autofocus` 可为常量或读取值，宏路径、热重载与 Release 包相同。`enabled: false` 使节点及其子树 inert：命中落在其中的指针事件不分派给任何节点（包括祖先，按下不会穿透到外层可点击节点），也不进入 `hover`/`pressed` 状态；指针离开时仍收到 `hover_leave`；滚动照常传给外层滚动容器。inert 节点不可聚焦，Tab 跳过整个子树，辅助技术的动作不作用于它；禁用时焦点或按下位于子树内则被清除。语义树中该节点与其子树标为 disabled（AccessKit `disabled`、Web `aria-disabled`、iOS `NotEnabled`），不暴露动作。节点自身的 `enabled` 仍决定 `disabled` 选择器。`autofocus` 只在节点首次挂载时读取：此时没有节点持有焦点则聚焦它（源码先序中第一个生效），热重载重新挂载不再触发。HTML 导出：禁用的元素带 `data-viso-off` 与 `aria-disabled`（原生控件另加 `disabled`），运行时丢弃目标位于其中的事件并收回子树的 Tab 停靠点；`autofocus` 导出为同名属性，读取值时在挂载后、无焦点时聚焦。
 
 ### U7.3 Focus Scope
 

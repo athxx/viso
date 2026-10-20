@@ -630,8 +630,12 @@ impl Jsx<'_> {
                             format!("show.truth({v}) ? undefined : \"none\""),
                         )),
                         Prop::Focusable => {
-                            attrs.push(format!("tabindex={{show.truth({v}) ? 0 : -1}}"));
+                            refs.push(format!("st.effect(() => show.focusable(el, {v}));"));
                         }
+                        Prop::Enabled => {
+                            refs.push(format!("st.effect(() => show.enabled(el, {v}));"));
+                        }
+                        Prop::Autofocus => refs.push(format!("show.autofocus(el, {v});")),
                         Prop::Label { alt } => {
                             let name = if *alt { "alt" } else { "aria-label" };
                             attrs.push(format!("{name}={{show.opt({v})}}"));
@@ -699,7 +703,7 @@ impl Jsx<'_> {
                     let m = self.mount_arg();
                     if *route == EventRoute::Click && !capture && !synced {
                         events.push(format!(
-                            "onClick={{(e) => st.run(() => {h}(st.click(e){rest}){m})}}"
+                            "onClick={{(e) => show.reaches(e) && st.run(() => {h}(st.click(e){rest}){m})}}"
                         ));
                     } else {
                         refs.push(format!(
@@ -1099,4 +1103,14 @@ fn vite() -> String {
     format!(
         "// {GENERATED}\nimport {{ defineConfig }} from \"vite\";\nimport solid from \"vite-plugin-solid\";\n\nexport default defineConfig({{\n  base: \"./\",\n  plugins: [solid()],\n}});\n"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_runtime_declares_each_name_once() {
+        assert_eq!(super::super::redeclared(RUNTIME), Vec::<&str>::new());
+    }
 }

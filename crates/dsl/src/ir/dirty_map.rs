@@ -66,6 +66,15 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // exposed to accessibility.
         "visible" | "hidden" | "visibility" => D::LAYOUT | D::PAINT | D::SEMANTICS,
 
+        // Whether a node takes focus is what it is announced as; a mounting
+        // node's autofocus moves the focus, which re-reads semantics.
+        "focusable" | "autofocus" => D::SEMANTICS,
+
+        // Turning input off restyles the node through its `disabled`
+        // selector and announces it disabled; what hit testing finds is
+        // unchanged, since a disabled subtree still takes its pointer.
+        "enabled" => D::STYLE | D::SEMANTICS,
+
         // Accessibility-only properties touch the semantics tree alone.
         "role" | "aria_label" | "aria_role" | "accessibility_label" | "description" | "hint" => {
             D::SEMANTICS

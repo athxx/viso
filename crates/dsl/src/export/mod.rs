@@ -349,3 +349,24 @@ fn styles(page: &html::Lowered) -> String {
     page.sheet.write(&mut out);
     out
 }
+
+/// The names `runtime`'s top level declares more than once, which a module
+/// refuses to load.
+#[cfg(test)]
+fn redeclared(runtime: &str) -> Vec<&str> {
+    let mut seen = std::collections::HashSet::new();
+    runtime
+        .lines()
+        .filter_map(|line| {
+            let line = line.strip_prefix("export ").unwrap_or(line);
+            ["const ", "let ", "function ", "class "]
+                .iter()
+                .find_map(|keyword| line.strip_prefix(keyword))
+        })
+        .filter_map(|rest| {
+            rest.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                .next()
+        })
+        .filter(|name| !seen.insert(*name))
+        .collect()
+}

@@ -257,21 +257,6 @@ export function Choose(props) {
   });
 }
 
-const radius = (v) => {
-  const f = v === null ? [] : v.f;
-  const t = (i) => Number(f[i] ?? 0);
-  const parts = [[t(0), "1px"], [t(1), "var(--viso-px)"], [t(2), "0.0625rem"], [t(3), "1em"]]
-    .filter(([n]) => n !== 0).map(([n, u]) => n + " * " + u);
-  if (t(4) >= 50) parts.push("9999px");
-  else if (t(4) > 0) parts.push(t(4) + "%");
-  return parts.length ? "calc(" + parts.join(" + ") + ")" : "0";
-};
-const stroke = (v) => {
-  if (v === null) return "none";
-  const w = typeof v.f[0] === "object" ? Number(v.f[0].f[0]) : Number(v.f[0]);
-  return "inset 0 0 0 " + Math.max(w, 0) + "px " + color(v.f[1]);
-};
-
 // What an element shows of a value.
 export const show = {
   text,
@@ -289,6 +274,10 @@ export const show = {
   opacity: (v) => String(Math.min(Math.max(v ?? 1, 0), 1)),
   radius,
   stroke,
+  focusable: P.focusable,
+  enabled: P.enabled,
+  autofocus: P.autofocus,
+  reaches: (e) => !off(e.target),
   move(v, property) {
     const f = v === null ? [] : v.f;
     const instant = reduced.matches && f[3] === 0n;

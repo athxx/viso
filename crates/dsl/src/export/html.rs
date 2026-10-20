@@ -97,6 +97,10 @@ pub(super) enum Prop {
     SoftWrap,
     Visible,
     Focusable,
+    /// Whether it and its subtree take input and focus.
+    Enabled,
+    /// Whether it takes the focus as it mounts.
+    Autofocus,
     /// The accessible name: `alt` of an image, else `aria-label`.
     Label {
         alt: bool,
@@ -1001,6 +1005,33 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         ) {
             el.attr("tabindex", if fixed.truth() { "0" } else { "-1" });
         }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.node.enabled,
+            Prop::Enabled,
+            "whether it takes input",
+            at,
+        ) && !fixed.truth()
+        {
+            el.attr("data-viso-off", "");
+            el.attr("aria-disabled", "true");
+            if matches!(el.tag, "button" | "input") {
+                el.attr("disabled", "");
+            }
+            if el.attrs.iter().any(|(name, _)| *name == "tabindex") {
+                el.attr("tabindex", "-1");
+            }
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.node.autofocus,
+            Prop::Autofocus,
+            "whether it takes the focus",
+            at,
+        ) && fixed.truth()
+        {
+            el.attr("autofocus", "");
+        }
         let alt = el.tag == "img";
         if let Some(fixed) = self.bind(
             wires,
@@ -1684,7 +1715,12 @@ impl Element {
         for (name, value) in &self.attrs {
             out.push(' ');
             out.push_str(name);
-            if !(value.is_empty() && matches!(*name, "checked")) {
+            if !(value.is_empty()
+                && matches!(
+                    *name,
+                    "checked" | "disabled" | "autofocus" | "data-viso-off"
+                ))
+            {
                 out.push_str("=\"");
                 escape_attr(value, out);
                 out.push('"');

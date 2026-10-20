@@ -88,6 +88,9 @@ fn node_of(node: AccessNode) -> Node {
     if let Some(selected) = state.selected {
         out.set_selected(selected);
     }
+    if state.disabled {
+        out.set_disabled();
+    }
     for action in node.actions.iter() {
         out.add_action(accesskit_action(action));
     }
@@ -263,11 +266,13 @@ mod tests {
                 toggled: Some(true),
                 expanded: Some(false),
                 selected: Some(true),
+                disabled: true,
                 ..SemanticsState::default()
             },
             actions: AccessActions::NONE.with(AccessAction::Click),
             ..AccessNode::default()
         });
+        assert!(node.is_disabled());
         assert_eq!(node.toggled(), Some(Toggled::True));
         assert_eq!(node.is_expanded(), Some(false));
         assert_eq!(node.is_selected(), Some(true));
@@ -277,6 +282,7 @@ mod tests {
         let quiet = node_of(AccessNode::default());
         assert_eq!(quiet.live(), None, "an off live setting is left unset");
         assert_eq!(quiet.toggled(), None);
+        assert!(!quiet.is_disabled());
     }
 
     #[test]

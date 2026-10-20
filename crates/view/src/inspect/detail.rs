@@ -53,8 +53,9 @@ pub fn node_detail(
                 pointer: store.has_handler(node),
                 key: store.has_key_handler(node),
                 focusable: store.focusable(node),
+                disabled: !store.enabled(node),
             };
-            (stop.pointer || stop.key || stop.focusable).then_some(stop)
+            (stop.pointer || stop.key || stop.focusable || stop.disabled).then_some(stop)
         })
         .collect();
     let mut edges = Vec::new();

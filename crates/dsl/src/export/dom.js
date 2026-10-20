@@ -19,6 +19,16 @@ const stroke = (v) => {
 };
 const text = (v) => (v === null ? "" : typeof v === "string" ? v : String(v));
 const attr = (el, name, v) => (v === null ? el.removeAttribute(name) : el.setAttribute(name, text(v)));
+// Whether input does not reach `el`: it or an ancestor is disabled.
+const off = (el) => el instanceof Element && el.closest("[data-viso-off]") !== null;
+// Gives a focusable `el` its own tab stop, or none while it is off.
+const tab = (el) => {
+  if (el.$tab === undefined) {
+    if (el.tabIndex < 0) return;
+    el.$tab = el.tabIndex;
+  }
+  el.tabIndex = off(el) ? -1 : el.$tab;
+};
 const fits = ["contain", "cover", "fill"];
 const easings = ["linear", "ease-in", "ease-out", "ease-in-out"];
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
@@ -40,7 +50,24 @@ const P = {
   color: (el, v) => { el.style.color = color(v); },
   wrap: (el, v) => { el.style.whiteSpace = truth(v) ? "pre-wrap" : ""; },
   visible: (el, v) => { el.style.display = truth(v) ? "" : "none"; },
-  focusable: (el, v) => { el.tabIndex = truth(v) ? 0 : -1; },
+  focusable: (el, v) => { el.$tab = truth(v) ? 0 : -1; tab(el); },
+  enabled(el, v) {
+    const on = truth(v);
+    el.toggleAttribute("data-viso-off", !on);
+    attr(el, "aria-disabled", on ? null : "true");
+    if ("disabled" in el) el.disabled = !on;
+    tab(el);
+    el.querySelectorAll("*").forEach(tab);
+  },
+  autofocus(el, v) {
+    if (el.$autofocus) return;
+    el.$autofocus = true;
+    if (!truth(v)) return;
+    queueMicrotask(() => {
+      const at = document.activeElement;
+      if ((!at || at === document.body) && !off(el)) el.focus();
+    });
+  },
   label: (el, v, alt) => attr(el, alt ? "alt" : "aria-label", v),
   hint: (el, v) => attr(el, "aria-description", v),
   spoken: (el, v) => attr(el, "aria-valuetext", v),
@@ -105,20 +132,22 @@ const pointer = (route, e, el) => {
 const DOM = ["click", "click", "pointerdown", "pointermove", "pointerup", "pointerenter", "pointerleave", "keydown", "keyup"];
 
 // Calls `fire` with the payload of each `route` event of `el`, a control
-// of kind `control`.
+// of kind `control`. An event aimed into a disabled subtree reaches no
+// listener, but a pointer still leaves what it left.
 const listen = (el, route, capture, control, fire) => {
+  const live = (f) => (e) => { if (route === 6 || !off(e.target)) f(e); };
   if (route <= 6) {
-    el.addEventListener(DOM[route], (e) => fire(pointer(route, e, el)), capture);
+    el.addEventListener(DOM[route], live((e) => fire(pointer(route, e, el))), capture);
   } else if (route <= 8) {
-    el.addEventListener(DOM[route], (e) => fire(rec([key(e), bool(e.repeat), mods(e)])), capture);
+    el.addEventListener(DOM[route], live((e) => fire(rec([key(e), bool(e.repeat), mods(e)]))), capture);
   } else if (route === 9) {
     if (control === 0) el.addEventListener("change", () => fire(rec([bool(el.checked)])), capture);
     else if (control === 1) el.addEventListener("input", () => fire(rec([Number(el.value)])), capture);
     else el.addEventListener("input", () => fire(rec([el.value])), capture);
   } else if (route === 10) {
-    el.addEventListener("keydown", (e) => {
+    el.addEventListener("keydown", live((e) => {
       if (e.key === "Enter" && !e.repeat && !e.isComposing) fire(null);
-    }, capture);
+    }), capture);
   } else {
     const current = () => items(el).findIndex((c) => c.getAttribute(el.$radio ? "aria-checked" : "aria-selected") === "true");
     const choose = (i) => {
@@ -127,19 +156,19 @@ const listen = (el, route, capture, control, fire) => {
       const next = items(el)[current()];
       if (next) next.focus();
     };
-    el.addEventListener("click", (e) => {
+    el.addEventListener("click", live((e) => {
       let c = e.target;
       while (c && c.parentElement !== el) c = c.parentElement;
       if (c) choose(items(el).indexOf(c));
-    }, capture);
-    el.addEventListener("keydown", (e) => {
+    }), capture);
+    el.addEventListener("keydown", live((e) => {
       const n = items(el).length;
       const i = current();
       const to = { ArrowLeft: i - 1, ArrowUp: i - 1, ArrowRight: i + 1, ArrowDown: i + 1, Home: 0, End: n - 1 }[e.key];
       if (to === undefined || n === 0) return;
       e.preventDefault();
       choose(Math.min(Math.max(to, 0), n - 1));
-    }, capture);
+    }), capture);
   }
 };
 

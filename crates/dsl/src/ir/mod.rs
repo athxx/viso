@@ -1177,8 +1177,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
 /// reaches no path that applies it, or `None` when one does:
 /// the control values `control` delivers, the role and live setting the
 /// node is built with, the transitions that play (the others are reported
-/// where they are read), and the node's own `enabled`, `checked` and
-/// `invalid` its styles' selectors read.
+/// where they are read), and the node's own `checked` and `invalid` its
+/// styles' selectors read.
 fn unapplied(
     name: &str,
     type_name: &str,
@@ -1199,7 +1199,7 @@ fn unapplied(
     }
     match name {
         "semantics.role" | "semantics.live" => None,
-        "enabled" | "checked" | "invalid" if selected() => None,
+        "checked" | "invalid" if selected() => None,
         "areas" | "grid.area" => Some(format!(
             "a `{name}` that reads a value does not lay out yet; a constant one does"
         )),

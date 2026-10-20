@@ -428,8 +428,15 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       as it paints, a `px`/`sp`/`em` one follows the environment, none rounds past
       a pill, and a border strokes inside the box; across the macros, hot reload,
       the release package and the HTML/script/Solid exports.
-- [ ] `clip`, `autofocus`, and `enabled` disabling a node beyond its styles'
-      selectors (`E3711` today).
+- [x] `enabled` and `autofocus` reach the node: a disabled node and its subtree are
+      inert (no pointer or key event, the press not passing to an ancestor, no
+      hover/press state, no focus, no assistive action) and read as disabled on
+      every platform bridge, disabling takes the focus and press it holds, and
+      the first `autofocus` node takes the focus as it mounts when none is held;
+      across the macros, hot reload, the release package and the HTML/Solid
+      exports.
+- [ ] `clip` clipping a node's children's paint and hit test to its box, rounded
+      by its `corner_radius` (`E3711` today).
 - [x] `fill` on the cross axis fills the available extent under any `align` (U3.2);
       the runtime fills it only under `Align::Stretch`, and stretches a `fit` child
       too.

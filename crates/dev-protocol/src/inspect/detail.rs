@@ -201,6 +201,8 @@ pub struct RouteStop {
     pub key: bool,
     /// Whether it takes focus.
     pub focusable: bool,
+    /// Whether it turned input off for itself and its subtree.
+    pub disabled: bool,
 }
 
 /// A cell that invalidates the node when it changes.
@@ -478,7 +480,10 @@ impl Encode for NodeDetail {
             enc.write_varint(u64::from(stop.index));
             enc.write_varint(u64::from(stop.generation));
             enc.write_u8(
-                u8::from(stop.pointer) | u8::from(stop.key) << 1 | u8::from(stop.focusable) << 2,
+                u8::from(stop.pointer)
+                    | u8::from(stop.key) << 1
+                    | u8::from(stop.focusable) << 2
+                    | u8::from(stop.disabled) << 3,
             );
         }
         enc.write_varint(self.bindings.len() as u64);
@@ -546,7 +551,7 @@ impl Decode for NodeDetail {
                 let index = read_u32(dec)?;
                 let generation = read_u32(dec)?;
                 let flags = dec.read_u8()?;
-                if flags > 0b111 {
+                if flags > 0b1111 {
                     return Err(malformed(dec));
                 }
                 Ok(RouteStop {
@@ -555,6 +560,7 @@ impl Decode for NodeDetail {
                     pointer: flags & 1 != 0,
                     key: flags & 2 != 0,
                     focusable: flags & 4 != 0,
+                    disabled: flags & 8 != 0,
                 })
             })
             .collect::<Result<_, DecodeError>>()?;

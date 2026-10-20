@@ -409,6 +409,7 @@ pub(crate) fn aria_attributes(node: &AccessNode, mut set: impl FnMut(&'static st
     );
     set("aria-expanded", state.expanded.map(aria_flag));
     set("aria-selected", state.selected.map(aria_flag));
+    set("aria-disabled", state.disabled.then_some("true"));
     set("aria-description", node.description.as_deref());
     let secure = role == SemanticsRole::SecureField;
     set("aria-valuetext", node.value.as_deref().filter(|_| !secure));
@@ -720,11 +721,13 @@ mod tests {
             state: SemanticsState {
                 expanded: Some(false),
                 selected: Some(true),
+                disabled: true,
                 ..SemanticsState::default()
             },
             ..AccessNode::default()
         };
         let set = attributes(&heading);
+        assert_eq!(value(&set, "aria-disabled"), Some("true"));
         assert_eq!(value(&set, "aria-level"), Some("2"));
         assert_eq!(value(&set, "aria-expanded"), Some("false"));
         assert_eq!(value(&set, "aria-selected"), Some("true"));
