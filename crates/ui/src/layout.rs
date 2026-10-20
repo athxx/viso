@@ -329,6 +329,13 @@ pub trait LayoutTree {
         let _ = index;
         INDEFINITE
     }
+    /// Whether lines run right to left: a row places its children from the
+    /// right, `start` and `end` alignments and insets name the right and
+    /// left edges, and grid columns run from the right. Left to right by
+    /// default.
+    fn rtl(&self) -> bool {
+        false
+    }
     /// Whether a node (and its subtree) is folded out of layout. A hidden node
     /// measures to zero on both axes and lays out to a zero rect, contributing
     /// nothing to a parent's main-axis sum, without a structural rebuild.
@@ -951,6 +958,13 @@ pub fn layout_on(
     let cross = cross_of(axis);
     let main_extent = rect_len(bounds, axis) - padding.main(axis);
     let cross_extent = rect_len(bounds, cross) - padding.cross(axis);
+    // Right to left, a row runs from its right edge and a column aligns its
+    // children's `start` to its right.
+    let (reverse, mirrored) = match (tree.rtl(), axis) {
+        (false, _) => (false, false),
+        (true, Axis::Row) => (true, false),
+        (true, Axis::Column) => (false, true),
+    };
     let main_definite = basis.on(axis);
     let cross_definite = basis.on(cross);
     let inner = content_within(bounds, padding, basis);
@@ -1012,6 +1026,8 @@ pub fn layout_on(
 
     // Place children along the main axis, advancing a cursor from the near
     // edge. `Justify` shifts the whole packed group by what the fills left.
+    // A reversed row places each child as a left-to-right one would, its
+    // right margin leading, and reflects it across the content box.
     let main_origin = rect_start(bounds, axis) + padding.main_start(axis);
     let cross_origin = rect_start(bounds, cross) + padding.cross_start(axis);
     let justify_off = match justify {
@@ -1051,7 +1067,15 @@ pub fn layout_on(
             None => (
                 cursor,
                 request,
-                flex_cross(tree, child, axis, align, cross_extent, cross_definite),
+                flex_cross(
+                    tree,
+                    child,
+                    axis,
+                    align,
+                    cross_extent,
+                    cross_definite,
+                    mirrored,
+                ),
                 cursor + request + gap,
             ),
             Some(rules) => {
@@ -1061,14 +1085,19 @@ pub fn layout_on(
                     tree,
                     child,
                     axis,
-                    align,
+                    (align, mirrored),
                     cross_extent,
                     cross_definite,
                     rules,
                     margin,
                 );
+                let lead = if reverse {
+                    margin.right
+                } else {
+                    margin.main_start(axis)
+                };
                 (
-                    cursor + margin.main_start(axis),
+                    cursor + lead,
                     main_size,
                     cross,
                     cursor + main_size + margin.main(axis) + gap,
@@ -1076,6 +1105,11 @@ pub fn layout_on(
             }
         };
 
+        let at = if reverse {
+            2.0 * main_origin + main_extent - at - main_size
+        } else {
+            at
+        };
         let child_box = axis_rect(axis, at, cross_origin + cross_off, main_size, cross_size);
         // The child's assigned box width is main on a Row, cross on a Column.
         // Record it so a wrap-eligible text child can reflow to it later; the
@@ -1107,7 +1141,8 @@ fn margin_in(rules: &BoxRules, within: Vec2) -> Inset {
 /// `axis` with `align`, over a content box `extent` across, and its offset
 /// into that box. A `fill` takes the whole extent under any `align`; a `fit`
 /// takes its content, or the whole extent under `stretch`; a fixed or relative
-/// request takes its own. `align` then places what does not fill.
+/// request takes its own. `align` then places what does not fill, from the
+/// far edge when `mirrored`.
 #[inline(always)]
 fn flex_cross(
     tree: &mut impl LayoutTree,
@@ -1116,22 +1151,23 @@ fn flex_cross(
     align: Align,
     extent: f32,
     definite: bool,
+    mirrored: bool,
 ) -> (f32, f32) {
     let size = cross_request(tree, child, axis, align, extent, extent, definite);
-    (size, align_offset(align, extent, size))
+    (size, aligned(align, mirrored, extent, size))
 }
 
 /// [`flex_cross`] for a child with `rules` and a `margin`: what fills takes
 /// the extent less the margin, a relative request still reads the whole
 /// extent, the bounds hold the result, and `align` places it inside the
-/// margin.
+/// margin, from the far edge when mirrored.
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn ruled_cross(
     tree: &mut impl LayoutTree,
     child: u32,
     axis: Axis,
-    align: Align,
+    (align, mirrored): (Align, bool),
     extent: f32,
     definite: bool,
     rules: &BoxRules,
@@ -1142,7 +1178,7 @@ fn ruled_cross(
     let size = rules.clamp(cross_of(axis), request, extent, definite);
     (
         size,
-        margin.cross_start(axis) + align_offset(align, room, size),
+        margin.cross_start(axis) + aligned(align, mirrored, room, size),
     )
 }
 
@@ -1171,6 +1207,18 @@ fn cross_request(
             let natural = tree.measured(child).on(cross_of(axis));
             relative_extent(fixed, pct, extent, definite, natural)
         }
+    }
+}
+
+/// Where `align` places an extent `size` in `room`, read from the far edge
+/// when `mirrored`.
+#[inline(always)]
+fn aligned(align: Align, mirrored: bool, room: f32, size: f32) -> f32 {
+    let offset = align_offset(align, room, size);
+    if mirrored {
+        room - size - offset
+    } else {
+        offset
     }
 }
 
@@ -1211,15 +1259,16 @@ fn flex_child_box(
     let padding = padded(padding, tree.rules(parent), within);
     let cross = cross_of(axis);
     let extent = rect_len(bounds, cross) - padding.cross(axis);
+    let mirrored = axis == Axis::Column && tree.rtl();
     let (cross_size, cross_off) = match tree.rules(child).copied() {
-        None => flex_cross(tree, child, axis, align, extent, basis.on(cross)),
+        None => flex_cross(tree, child, axis, align, extent, basis.on(cross), mirrored),
         Some(rules) => {
             let margin = margin_in(&rules, content_within(bounds, padding, basis));
             ruled_cross(
                 tree,
                 child,
                 axis,
-                align,
+                (align, mirrored),
                 extent,
                 basis.on(cross),
                 &rules,
@@ -1306,6 +1355,8 @@ fn stack_box(
         _ => align,
     };
     let (fx, fy) = align.fractions();
+    // Right to left, `start` is the right edge.
+    let fx = if tree.rtl() { 1.0 - fx } else { fx };
     let rules = tree.rules(child).copied();
     let margin = rules
         .as_ref()
@@ -1361,8 +1412,15 @@ fn absolute_box(
         .as_ref()
         .map_or(Inset::default(), |r| margin_in(r, inner));
     let size = tree.input(child).size();
+    // Right to left, `start` is the right edge: the near (left) one is `end`,
+    // and a child pinned to neither sits at the right.
+    let rtl = tree.rtl();
     let mut place = |axis: Axis, origin: f32, extent: f32, definite: bool| {
-        let (near, far) = insets.on(axis);
+        let flip = rtl && axis == Axis::Row;
+        let (near, far) = match insets.on(axis) {
+            (start, end) if flip => (end, start),
+            edges => edges,
+        };
         let mut edge = |span: Option<Span>| {
             let span = span?;
             if span.pct != 0.0 && !definite {
@@ -1387,6 +1445,7 @@ fn absolute_box(
         let at = match (near, far) {
             (Some(near), _) => near + lead,
             (None, Some(far)) => extent - far - len - (margin.main(axis) - lead),
+            (None, None) if flip => extent - len - (margin.main(axis) - lead),
             (None, None) => lead,
         };
         (origin + at, len, pinned)
@@ -1954,7 +2013,10 @@ fn layout_grid(
         }
 
         // Lay each child into its cell rect. A cell spanning k tracks measures
-        // offset(start) .. offset(start+span) minus the trailing gap.
+        // offset(start) .. offset(start+span) minus the trailing gap. Right to
+        // left, columns run from the content box's right edge and a child hugs
+        // its cell's right edge.
+        let rtl = tree.rtl();
         for i in 0..child_count {
             let child = scratch[start + i];
             let r = s.regions[i];
@@ -1963,7 +2025,11 @@ fn layout_grid(
             let ry0 = s.row_offsets[r.row as usize];
             let ry1 = span_end(&s.row_offsets, &s.row_sizes, r.row, r.row_span, row_gap);
             let area = Rect {
-                x: origin_x + cx0,
+                x: if rtl {
+                    origin_x + content_w - cx1
+                } else {
+                    origin_x + cx0
+                },
                 y: origin_y + ry0,
                 w: (cx1 - cx0).max(0.0),
                 h: (ry1 - ry0).max(0.0),
@@ -1984,8 +2050,8 @@ fn layout_grid(
                 }
             };
             // Horizontal (inline axis): the child fills its cell when it requests
-            // Fill; a Fixed/Fit child hugs its own size at the cell's left edge, and
-            // a Relative child resolves against the cell width.
+            // Fill; a Fixed/Fit child hugs its own size at the cell's start edge,
+            // and a Relative child resolves against the cell width.
             let size = tree.input(child).size();
             let cw = match size.width {
                 Length::Fit => tree.measured(child).on(Axis::Row),
@@ -2025,7 +2091,7 @@ fn layout_grid(
                 },
             };
             let child_box = Rect {
-                x: cell.x,
+                x: if rtl { cell.x + cell.w - cw } else { cell.x },
                 y: cell.y + dy,
                 w: cw,
                 h: ch,
@@ -3581,6 +3647,136 @@ mod tests {
         assert_eq!(boxes[0], Rect::new(10.0, 10.0, 40.0, 70.0));
         assert_eq!(boxes[1].x, 60.0);
         assert_eq!(boxes[2].x, 85.0);
+    }
+
+    #[test]
+    fn right_to_left_mirrors_rows_start_alignments_insets_and_grid_columns() {
+        use crate::adaptive::LayoutDirection;
+        use crate::component::{
+            AbsoluteStyle, BuildCx, FlexStyle, LeafStyle, NodeStore, StackStyle,
+        };
+        use crate::grid::GridStyle;
+        use crate::style::BoxStyle;
+
+        let mut store = NodeStore::new();
+        let mut leaves = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut leaf = |cx: &mut BuildCx<'_>, w: f32| {
+                let size = Size::fixed(w, 10.0);
+                leaves.push(
+                    cx.leaf(LeafStyle {
+                        size,
+                        style: BoxStyle::NONE,
+                    })
+                    .id(),
+                );
+            };
+            let size = Size::fixed(200.0, 30.0);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(200.0, 300.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let row = FlexStyle {
+                        axis: Axis::Row,
+                        gap: 10.0,
+                        size,
+                        ..Default::default()
+                    };
+                    cx.flex(row, |cx| {
+                        leaf(cx, 30.0);
+                        leaf(cx, 40.0);
+                    });
+                    let column = FlexStyle {
+                        axis: Axis::Column,
+                        size,
+                        ..Default::default()
+                    };
+                    cx.flex(column, |cx| leaf(cx, 50.0));
+                    cx.stack(
+                        StackStyle {
+                            size,
+                            ..Default::default()
+                        },
+                        |cx| {
+                            leaf(cx, 20.0);
+                            cx.place(StackPlacement {
+                                align: Some(Alignment2D::End),
+                                layer: 0,
+                            });
+                            leaf(cx, 20.0);
+                        },
+                    );
+                    cx.absolute(
+                        AbsoluteStyle {
+                            size,
+                            ..Default::default()
+                        },
+                        |cx| {
+                            cx.place(AbsoluteInsets {
+                                start: Some(Span::dp(5.0)),
+                                ..AbsoluteInsets::NONE
+                            });
+                            leaf(cx, 20.0);
+                            leaf(cx, 20.0);
+                        },
+                    );
+                    let grid = GridStyle {
+                        columns: vec![TrackSizing::Fixed(50.0), TrackSizing::Fixed(50.0)],
+                        rows: vec![TrackSizing::Fixed(20.0)],
+                        size,
+                        ..Default::default()
+                    };
+                    cx.grid(grid, |cx| {
+                        leaf(cx, 20.0);
+                        leaf(cx, 20.0);
+                    });
+                },
+            );
+            cx.root().unwrap()
+        };
+        store.set_box_rules(
+            leaves[0],
+            BoxRules {
+                margin: SpanInset {
+                    left: Span::dp(3.0),
+                    ..SpanInset::ZERO
+                },
+                ..rules()
+            },
+        );
+        let surface = surface_local(200.0, 300.0);
+        let (mut scratch, mut redo) = (Vec::new(), Vec::new());
+        store.layout(root, surface, &mut scratch);
+        let xs = |store: &NodeStore| {
+            leaves
+                .iter()
+                .map(|&leaf| store.bounds(leaf).x)
+                .collect::<Vec<_>>()
+        };
+        let ltr = [3.0, 43.0, 0.0, 0.0, 180.0, 5.0, 0.0, 0.0, 50.0];
+        assert_eq!(xs(&store), ltr);
+
+        let mut env = store.length_env();
+        env.direction = LayoutDirection::Rtl;
+        store.clear_dirty();
+        store.set_length_env(env);
+        store.relayout_dirty(root, surface, &mut scratch, &mut redo);
+        // The row runs from the right, its first child's left margin now
+        // between it and the next; `start` is the right edge everywhere.
+        assert_eq!(
+            xs(&store),
+            [170.0, 117.0, 150.0, 180.0, 0.0, 175.0, 180.0, 180.0, 130.0]
+        );
+
+        env.direction = LayoutDirection::Ltr;
+        store.clear_dirty();
+        store.set_length_env(env);
+        store.relayout_dirty(root, surface, &mut scratch, &mut redo);
+        assert_eq!(xs(&store), ltr);
     }
 
     #[test]

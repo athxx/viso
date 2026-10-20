@@ -4966,6 +4966,8 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 - 变换（U4）、Canvas 坐标与指针坐标都是物理坐标，不翻转；
 - Adaptive Scope（§96）可以局部覆盖 `layout_direction` 与 `locale`，例如内嵌的外语段落。
 
+当前实现：RTL 下 `Row` 从右向左排列子节点（子节点的物理 `margin` 不随之互换，`margin.start`/`end` 已按方向解析），`Justify` 与 `Column` 的 `Align` 的 `start`/`end` 互换，`Stack` 的 `start`/`end` 对齐与 `Absolute` 的 `absolute.start`/`absolute.end` 以右边为起点（两者都未给出时贴右），`Grid` 列从内容盒右边起排、单元格内的子节点贴右；方向变化时整窗重新布局。Adaptive Scope 的局部方向与水平 `Scroll` 的右侧起点尚未实现。
+
 ### U10.2 Bidi
 
 字符串以逻辑顺序存储与传递。段落基础方向默认由首个强方向字符决定，无强方向字符时回退到 `env.layout_direction`。双向重排、镜像字符与光标移动全部由 Text Runtime 负责。

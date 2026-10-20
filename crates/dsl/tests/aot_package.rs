@@ -438,16 +438,24 @@ fn packaged_padding_lays_out_as_the_live_commit_does() {
         let expected = rects(&mut store, committed, env);
         assert_eq!(rects(&mut rt.store, packaged, env), expected, "{env:?}");
         let rtl = env.direction == LayoutDirection::Rtl;
-        // The outer column pads 8dp all round.
-        assert_eq!(expected[1][..2], [8.0, 8.0], "{env:?}");
-        // `start` is the left edge left to right and the right edge right to
-        // left; `top` follows the text scale.
+        // The outer column pads 8dp all round, its children at its start:
+        // the left edge left to right and the right edge right to left.
+        let column = if rtl { 400.0 - 8.0 - 100.0 } else { 8.0 };
+        assert_eq!(expected[1][..2], [column, 8.0], "{env:?}");
+        // So is the inner padding's `start`; `top` follows the text scale.
         let inner = expected[2];
-        assert_eq!(inner[0], if rtl { 8.0 } else { 14.0 }, "{env:?}");
+        let text = if rtl { 400.0 - 8.0 - 6.0 - 10.0 } else { 14.0 };
+        assert_eq!(inner[0], text, "{env:?}");
         assert_eq!(inner[1], 8.0 + env.text_scale, "{env:?}");
-        // `inline` in physical pixels on both sides, `block` above and below.
-        let row = expected[3];
-        assert_eq!(expected[4][0] - row[0], 2.0 / env.scale_factor, "{env:?}");
-        assert_eq!(expected[4][1] - row[1], 3.0, "{env:?}");
+        // `inline` in physical pixels on both sides, `block` above and below;
+        // the row's child at its start.
+        let (row, cell) = (expected[3], expected[4]);
+        let lead = if rtl {
+            row[0] + row[2] - cell[0] - cell[2]
+        } else {
+            cell[0] - row[0]
+        };
+        assert_eq!(lead, 2.0 / env.scale_factor, "{env:?}");
+        assert_eq!(cell[1] - row[1], 3.0, "{env:?}");
     }
 }

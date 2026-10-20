@@ -219,8 +219,13 @@ fn padding_pads_the_content_and_follows_the_environment() {
     });
     store.layout(root, surface, &mut Vec::new());
     assert_eq!(
+        store.bounds(inner).x,
+        400.0 - 8.0 - 100.0,
+        "a column aligns its children's start to its right"
+    );
+    assert_eq!(
         (store.bounds(text).x, store.bounds(text).y),
-        (8.0, 10.0),
+        (400.0 - 8.0 - 6.0 - 10.0, 10.0),
         "`start` is the right edge right to left; `top` follows the text scale"
     );
 }

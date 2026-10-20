@@ -442,11 +442,13 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       for a relayout.
 - [x] `margin` (§U3.3) in layout: room on both axes outside the box, negative
       allowed, counted in the parent's natural size, the root's against the surface.
-- [ ] Right-to-left layout: a `Row`'s children, `Justify`/`Align` start and end, and
+- [x] Right-to-left layout: a `Row`'s children, `Justify`/`Align` start and end, and
       `Grid` columns, a `Stack`'s start/end alignments and an `Absolute`'s
-      `start`/`end` insets (left/right today) mirror under
-      `env.layout_direction`, from the same `LengthEnv::direction` the padding
-      reads.
+      `start`/`end` insets mirror under `env.layout_direction`, from the same
+      `LengthEnv::direction` the padding reads; a new direction relays every
+      tree out.
+  - [ ] An Adaptive Scope's local `layout_direction` (§U10.1) and a horizontal
+        `Scroll`'s origin at its right edge.
 
 ### D2.6 — Animation (§U6)
 

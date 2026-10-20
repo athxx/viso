@@ -351,16 +351,27 @@ impl NodeStore {
 
     /// Moves lengths to environment `env`. Only the bindings whose terms read
     /// what changed re-fold, at the next layout, and only a node whose folded
-    /// length moves is dirtied.
+    /// length moves is dirtied. A new layout direction mirrors every
+    /// container, so it relays every tree out.
     pub fn set_length_env(&mut self, env: LengthEnv) {
         let table = self.lengths_mut();
         let changed = table.env.changed(&env);
         let rescaled = table.env.scale_factor != env.scale_factor;
+        let turned = table.env.direction != env.direction;
         table.env = env;
         if !changed.is_empty() {
             table.mark(changed);
         }
         table.text_resized |= changed.intersects(LengthDeps::FONT_SIZE);
+        if turned {
+            for index in 0..self.arena().slot_count() as u32 {
+                if let Some(id) = self.arena().live_id(index)
+                    && self.arena().parent(id).is_none()
+                {
+                    self.mark_dirty(id, DirtyClass::LAYOUT);
+                }
+            }
+        }
         // Displacements snap to the device grid, so a new scale moves them.
         if rescaled {
             self.request_repaint();

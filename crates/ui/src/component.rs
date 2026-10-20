@@ -4212,6 +4212,11 @@ impl FrameRecompute {
 /// algorithm decoupled from the concrete array layout.
 impl LayoutTree for NodeStore {
     #[inline]
+    fn rtl(&self) -> bool {
+        self.length_env().direction == crate::adaptive::LayoutDirection::Rtl
+    }
+
+    #[inline]
     fn input(&self, index: u32) -> LayoutInput {
         self.layout[index as usize]
     }
