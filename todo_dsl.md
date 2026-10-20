@@ -377,7 +377,20 @@ Goal: every Core view construct reaches a live tree through all three lowering t
   - [ ] `font_family` defaults to `theme.typography.family` (`TypographyScale` has no
         `family` yet); `FontFamily::named` reaches only the app's fonts, not the
         platform's by name.
-- [ ] `TextInput` `placeholder` and `secure`, `CheckBox` `label` (`E3711` today).
+- [x] `TextInput` `placeholder` and `secure`, `CheckBox`/`Toggle` `label`: a field
+      holding no text draws its placeholder at half its text color's opacity (its
+      hint where it has none); a secure one draws a bullet per grapheme, maps the
+      caret, clicks and the IME caret between the drawn bullets and its text, gives
+      nothing to copy or cut, and is a `Role::SecureField` (AccessKit
+      `PasswordInput`) whose value no bridge reads out; a check draws its caption
+      and is named by it. A field no `value` drives is seeded with its style and
+      look too. Through the macros, hot reload (the carried buffer takes the new
+      look), the release package and the HTML/script/Solid exports; the Rust
+      `text_input` takes `.placeholder()` and `.secure()`.
+  - [ ] A secure field turns the platform's secure input on (no IME candidates,
+        no key loggers: `EnableSecureEventInput`, `secureTextEntry`).
+  - [ ] A check draws its own box and mark beside the caption rather than only
+        what its styles paint.
 - [x] `Grid` tracks and alignment (`columns`, `rows`, `auto_rows`, `column_gap`,
       `row_gap`, `align_items`, `areas`, `adaptive_columns`) and the `grid.*` cells
       lay out across the macros, hot reload (in place, `set_grid_template` /

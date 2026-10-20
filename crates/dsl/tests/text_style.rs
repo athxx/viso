@@ -11,8 +11,8 @@ use std::sync::Arc;
 use support::{Rt, origin};
 use viso_dsl::frontend::compile_file;
 use viso_ui::{
-    FontFamily, FontSize, FontWeight, LengthTerms, NodeId, TextAlign, TextOverflow, TextRequest,
-    TextSizing, TextStyle,
+    FieldSeed, FontFamily, FontSize, FontWeight, LengthTerms, NodeId, TextAlign, TextOverflow,
+    TextRequest, TextSizing, TextStyle,
 };
 
 const STYLED: &str = r#"
@@ -46,8 +46,9 @@ export component Styled {
 fn declared(rt: &mut Rt) -> Vec<(String, TextStyle, Option<f32>)> {
     let mut requests: Vec<(NodeId, Box<TextRequest>)> = Vec::new();
     rt.store.take_text_requests(&mut requests);
-    let mut seeds: Vec<(NodeId, TextRequest)> = Vec::new();
+    let mut seeds: Vec<(NodeId, FieldSeed)> = Vec::new();
     rt.store.take_text_seeds(&mut seeds);
+    let seeds = seeds.into_iter().map(|(id, seed)| (id, seed.request));
     let store = &rt.store;
     let mut out: Vec<_> = requests
         .into_iter()

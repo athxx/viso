@@ -50,7 +50,10 @@ fn node_of(node: AccessNode) -> Node {
     if let Some(description) = node.description {
         out.set_description(description);
     }
-    if let Some(value) = node.value {
+    // A secure field's text is never read out, whatever its producer says.
+    if let Some(value) = node.value
+        && node.role != SemanticsRole::SecureField
+    {
         out.set_value(value);
     }
     match node.live {
@@ -104,6 +107,7 @@ fn role(role: SemanticsRole) -> Role {
         SemanticsRole::Label => Role::Label,
         SemanticsRole::Image => Role::Image,
         SemanticsRole::TextField => Role::TextInput,
+        SemanticsRole::SecureField => Role::PasswordInput,
         SemanticsRole::Tab => Role::Tab,
         SemanticsRole::TabList => Role::TabList,
         SemanticsRole::Navigation => Role::Navigation,
@@ -245,6 +249,7 @@ mod tests {
             (SemanticsRole::Group, Role::Group),
             (SemanticsRole::Radio, Role::RadioButton),
             (SemanticsRole::TextField, Role::TextInput),
+            (SemanticsRole::SecureField, Role::PasswordInput),
             (SemanticsRole::Heading, Role::Heading),
         ];
         for (ours, theirs) in cases {

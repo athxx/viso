@@ -188,6 +188,7 @@ fn semantics_role(role: Role, named: bool) -> SemanticsRole {
         Role::Label => SemanticsRole::Label,
         Role::Image => SemanticsRole::Image,
         Role::TextField => SemanticsRole::TextField,
+        Role::SecureField => SemanticsRole::SecureField,
         Role::Tab => SemanticsRole::Tab,
         Role::TabList => SemanticsRole::TabList,
         Role::Navigation => SemanticsRole::Navigation,

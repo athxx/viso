@@ -329,8 +329,12 @@ pub(crate) fn shows_selected(node: &AccessNode) -> bool {
 }
 
 /// The spoken value: a slider's position as a percentage of its range, or
-/// its bare value without one; else the node's value text.
+/// its bare value without one; else the node's value text, which a secure
+/// field never speaks.
 pub(crate) fn spoken_value(node: &AccessNode) -> Option<String> {
+    if node.role == SemanticsRole::SecureField {
+        return None;
+    }
     let Some(value) = node.state.numeric_value else {
         return node.value.clone();
     };

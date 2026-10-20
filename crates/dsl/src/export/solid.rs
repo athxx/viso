@@ -647,6 +647,10 @@ impl Jsx<'_> {
                         Prop::Checked => attrs.push(format!("checked={{show.truth({v})}}")),
                         Prop::Range(name) => attrs.push(format!("{name}={{show.num({v})}}")),
                         Prop::InputValue => attrs.push(format!("value={{show.text({v})}}")),
+                        Prop::Placeholder => attrs.push(format!("placeholder={{show.opt({v})}}")),
+                        Prop::Secure => attrs.push(format!(
+                            "type={{show.truth({v}) ? \"password\" : \"text\"}}"
+                        )),
                         Prop::Selected { radio } => {
                             refs.push(format!("st.effect(() => show.select(el, {v}, {radio}));"));
                         }

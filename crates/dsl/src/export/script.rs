@@ -311,6 +311,8 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                         Prop::Checked => format!("P.checked({el}, {value})"),
                         Prop::Range(name) => format!("P.range({el}, {value}, \"{name}\")"),
                         Prop::InputValue => format!("P.input({el}, {value})"),
+                        Prop::Placeholder => format!("P.placeholder({el}, {value})"),
+                        Prop::Secure => format!("P.secure({el}, {value})"),
                         Prop::Selected { radio } => format!("P.selected({el}, {value}, {radio})"),
                         Prop::Source { mask } => format!("P.source({el}, {value}, {mask})"),
                         Prop::Fit { mask } => format!("P.fit({el}, {value}, {mask})"),

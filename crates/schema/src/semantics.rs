@@ -113,11 +113,14 @@ pub enum Role {
     List,
     /// One item in a [`List`](Role::List) (WAI-ARIA `role=listitem`).
     ListItem,
+    /// A [`TextField`](Role::TextField) whose text is masked: an assistive
+    /// technology announces it as secure and never reads its text.
+    SecureField,
 }
 
 impl Role {
     /// Every role, in declaration order.
-    pub const ALL: [Role; 19] = [
+    pub const ALL: [Role; 20] = [
         Role::Group,
         Role::Button,
         Role::CheckBox,
@@ -137,6 +140,7 @@ impl Role {
         Role::Heading,
         Role::List,
         Role::ListItem,
+        Role::SecureField,
     ];
 
     /// The role whose [`label`](Self::label) is `label`.
@@ -168,6 +172,7 @@ impl Role {
             Role::Heading => "heading",
             Role::List => "list",
             Role::ListItem => "listitem",
+            Role::SecureField => "securefield",
         }
     }
 }

@@ -54,6 +54,8 @@ pub enum SemanticsRole {
     Image,
     /// An editable text field.
     TextField,
+    /// An editable text field whose text is masked and never read out.
+    SecureField,
     Tab,
     TabList,
     Navigation,

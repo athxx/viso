@@ -350,7 +350,7 @@ pub(crate) fn aria_role(role: SemanticsRole) -> Option<&'static str> {
         R::CheckBox => "checkbox",
         R::Radio => "radio",
         R::Slider => "slider",
-        R::TextField => "textbox",
+        R::TextField | R::SecureField => "textbox",
         R::Tab => "tab",
         R::TabList => "tablist",
         R::Tree => "tree",
@@ -410,7 +410,8 @@ pub(crate) fn aria_attributes(node: &AccessNode, mut set: impl FnMut(&'static st
     set("aria-expanded", state.expanded.map(aria_flag));
     set("aria-selected", state.selected.map(aria_flag));
     set("aria-description", node.description.as_deref());
-    set("aria-valuetext", node.value.as_deref());
+    let secure = role == SemanticsRole::SecureField;
+    set("aria-valuetext", node.value.as_deref().filter(|_| !secure));
     set("aria-live", aria_live(node.live));
     set(
         "aria-level",

@@ -599,6 +599,11 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(control.tint),
         entry(control.shader),
     );
+    let (placeholder, secure, caption) = (
+        entry(control.placeholder),
+        entry(control.secure),
+        entry(control.caption),
+    );
     let semantics = control.semantics;
     let role = match semantics.role {
         Some(role) => {
@@ -663,6 +668,9 @@ fn control_tokens(control: Control) -> TokenStream {
             step: #step,
             fit: #fit,
             tint: #tint,
+            placeholder: #placeholder,
+            secure: #secure,
+            caption: #caption,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {
                 background: #background,

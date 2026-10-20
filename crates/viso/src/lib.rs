@@ -1621,7 +1621,7 @@ impl WindowState {
                 self.text_sources.get(&id),
                 self.text_edits.get(id),
             ) {
-                (Some(text), Some(request), Some(buffer)) if request.text == buffer.text => {
+                (Some(text), Some(request), Some(buffer)) if buffer.draws(&request.text) => {
                     // A composing control anchors the candidate window at the
                     // composition, not wherever the caret sits inside it.
                     let at = if buffer.has_composition() {
@@ -1629,7 +1629,7 @@ impl WindowState {
                     } else {
                         buffer.sel.focus
                     };
-                    text.caret(ParagraphSlot::from(id), request, at)
+                    text.caret(ParagraphSlot::from(id), request, buffer.drawn_position(at))
                 }
                 _ => None,
             };
@@ -2187,8 +2187,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 // The platform asks for the selection while its copy/cut handler
                 // is still on the stack. Apply any edits queued this event batch
                 // first so the reply reflects what the user sees, then answer
-                // from the focused text control's buffer. An empty selection
-                // leaves the reply unset and the clipboard untouched.
+                // from the focused text control's buffer. An empty selection,
+                // or a secure field's, leaves the reply unset and the
+                // clipboard untouched.
                 let geometry = ws.text.as_ref().map(|t| t as &dyn text_edit::EditGeometry);
                 text_edit::reconcile(&mut ws.store, &mut ws.text_edits, geometry);
                 let Some(node) = ws.focused_text_node() else {
@@ -2198,7 +2199,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     return;
                 };
                 let (start, end) = buffer.sel.logical_range();
-                if start == end {
+                if start == end || buffer.look.secure {
                     return;
                 }
                 c.reply.set(buffer.text[start.0..end.0].to_owned());

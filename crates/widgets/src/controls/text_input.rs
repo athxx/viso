@@ -38,8 +38,12 @@
 //! [`Role::TextField`] with the given label as its accessible name (AGENTS
 //! section 15).
 //!
+//! A [`placeholder`](TextInput::placeholder) draws while the field is empty,
+//! and a [`secure`](TextInput::secure) field draws a bullet per grapheme,
+//! gives nothing to copy or cut, and is a [`Role::SecureField`].
+//!
 //! Deferred to later slices: multi-line/wrap, undo/redo, word motion,
-//! placeholder/password rendering, horizontal scroll/clip, caret blink,
+//! horizontal scroll/clip, caret blink,
 //! double/triple-click selection, and authoritative full-state IME sync
 //! (Android/iOS).
 //!
@@ -67,8 +71,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use viso_ui::{
-    BuildCx, Component, EditIntent, EventCx, FontSize, ImeEvent, Key, LeafStyle, Length, Motion,
-    PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, TextOffset, TextRequest,
+    BuildCx, Component, EditIntent, EventCx, FieldLook, FontSize, ImeEvent, Key, LeafStyle, Length,
+    Motion, PointerButtons, PointerPhase, Rgba, Role, Semantics, Size, TextOffset, TextRequest,
 };
 
 /// A shared, mutable change callback carrying the field's new text, fired from
@@ -137,6 +141,8 @@ pub struct TextInput {
     label: String,
     /// The initial text content.
     value: String,
+    /// What it draws while empty, and whether it masks its text.
+    look: FieldLook,
     style: TextInputStyle,
     /// The shared change callback (see [`SharedChange`]). `None` until
     /// [`TextInput::on_change`] is called.
@@ -150,6 +156,7 @@ pub fn text_input(label: impl Into<String>) -> TextInput {
     TextInput {
         label: label.into(),
         value: String::new(),
+        look: FieldLook::default(),
         style: TextInputStyle::default(),
         on_change: Rc::new(RefCell::new(None)),
     }
@@ -167,6 +174,19 @@ impl TextInput {
     /// end of the seeded text.
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.value = value.into();
+        self
+    }
+
+    /// Set what the field draws while it holds no text (defaults to nothing).
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.look.placeholder = placeholder.into();
+        self
+    }
+
+    /// Mask the text: a bullet per grapheme, nothing to copy or cut, and an
+    /// accessible [`Role::SecureField`] that never reads its text out.
+    pub fn secure(mut self, secure: bool) -> Self {
+        self.look.secure = secure;
         self
     }
 
@@ -217,6 +237,7 @@ impl Component for TextInput {
                 locale: None,
                 style: viso_ui::TextStyle::default(),
             },
+            self.look.clone(),
         );
 
         // Focusable so keystrokes and IME events route to it while focused.
@@ -308,10 +329,12 @@ impl Component for TextInput {
         // name (AGENTS section 15). The live text/selection is proven through the
         // buffer and the input tapes; surfacing them in the derived tree is a later
         // slice (the derive pass has no edit registry).
-        cx.semantics(
-            root,
-            Semantics::role(Role::TextField).with_label(self.label.clone()),
-        );
+        let role = if self.look.secure {
+            Role::SecureField
+        } else {
+            Role::TextField
+        };
+        cx.semantics(root, Semantics::role(role).with_label(self.label.clone()));
     }
 }
 

@@ -583,7 +583,7 @@ pub struct NodeStore {
     /// [`TextEdits`](crate::text_edit::TextEdits) registry, and
     /// [`reconcile`](crate::text_edit::reconcile), which seeds each node's
     /// buffer. Empty in a frame whose shown states did not change.
-    text_seeds: Vec<(NodeId, TextRequest)>,
+    text_seeds: Vec<(NodeId, crate::text_edit::FieldSeed)>,
     /// Cold, transient (not index-aligned): the scroll offsets a hot reload
     /// carries onto freshly built viewports, applied by the next layout once
     /// their scroll range is known. Empty outside the frame after a reload.
@@ -2521,24 +2521,24 @@ impl NodeStore {
         out.append(&mut self.edit_requests);
     }
 
-    /// Seed text field `node` with `request`: its declared style, and its text
-    /// unless the field already holds it. It waits here until
+    /// Seed text field `node` with `seed`: its declared style and look, and
+    /// its text when a value drives it and the field does not already hold it. It waits here until
     /// [`reconcile`](crate::text_edit::reconcile) seeds the node's edit buffer,
     /// before that frame's edits apply. A seed reports no change: it is the
     /// state the field shows, not an edit. A stale handle is a no-op.
-    pub fn seed_text(&mut self, node: NodeId, request: TextRequest) {
+    pub fn seed_text(&mut self, node: NodeId, seed: crate::text_edit::FieldSeed) {
         if self.arena.is_live(node) {
-            self.text_seeds.push((node, request));
+            self.text_seeds.push((node, seed));
         }
     }
 
     /// Take the seeds queued for `node`, the latest of them: what a carried
     /// edit buffer takes its style from instead of reconcile seeding it.
-    pub fn take_text_seed(&mut self, node: NodeId) -> Option<TextRequest> {
+    pub fn take_text_seed(&mut self, node: NodeId) -> Option<crate::text_edit::FieldSeed> {
         let mut latest = None;
-        self.text_seeds.retain(|(seeded, request)| {
+        self.text_seeds.retain(|(seeded, seed)| {
             if *seeded == node {
-                latest = Some(request.clone());
+                latest = Some(seed.clone());
             }
             *seeded != node
         });
@@ -2552,7 +2552,7 @@ impl NodeStore {
     }
 
     /// Move every queued text field seed out into `out` (cleared first).
-    pub fn take_text_seeds(&mut self, out: &mut Vec<(NodeId, TextRequest)>) {
+    pub fn take_text_seeds(&mut self, out: &mut Vec<(NodeId, crate::text_edit::FieldSeed)>) {
         out.clear();
         out.append(&mut self.text_seeds);
     }
@@ -4986,23 +4986,32 @@ impl<'a> BuildCx<'a> {
     }
 
     /// Declare an editable text leaf: a leaf node plus a retained edit
-    /// [`Buffer`](crate::text_edit::Buffer) seeded from `request` and registered
+    /// [`Buffer`](crate::text_edit::Buffer) seeded from `request` and `look`, and registered
     /// in the driver-owned [`TextEdits`](crate::text_edit::TextEdits) registry,
     /// keyed by this node. Mirrors `virtual_list`: the heap-heavy buffer lives in
     /// the driver registry beside the store, not in a hot node column, and
     /// [`reconcile`](crate::text_edit::reconcile) folds queued intents into it and
-    /// re-declares its text each frame. The initial `request` is also declared on
-    /// the node so the first frame shapes the seed text. Requires a
+    /// re-declares its text each frame. What the buffer draws is also declared
+    /// on the node so the first frame shapes it. Requires a
     /// [`BuildCx::with_reactive`] cx (the driver owns the registry); returns the
     /// handle so the widget body chains focus/handler/semantics onto it.
-    pub fn text_input(&mut self, style: LeafStyle, request: TextRequest) -> Handle {
+    pub fn text_input(
+        &mut self,
+        style: LeafStyle,
+        request: TextRequest,
+        look: crate::text_edit::FieldLook,
+    ) -> Handle {
         let id = self.push_node(LayoutInput::Leaf { size: style.size }, style.style);
-        let buffer = crate::text_edit::Buffer::with_request(&request);
+        let buffer = crate::text_edit::Buffer::with_seed(&crate::text_edit::FieldSeed {
+            request,
+            valued: true,
+            look,
+        });
+        self.store.set_text_request(id, buffer.request());
         self.text_edits
             .as_mut()
             .expect("text_input() requires a with_reactive BuildCx")
             .register(id, Box::new(buffer));
-        self.store.set_text_request(id, request);
         Handle { id }
     }
 

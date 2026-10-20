@@ -136,6 +136,9 @@ impl ControlKind {
             | (ControlKind::Label, "text")
             | (ControlKind::Asset, "source")
             | (ControlKind::Shader, "shader") => ControlInput::Value,
+            (ControlKind::TextInput, "placeholder") => ControlInput::Placeholder,
+            (ControlKind::TextInput, "secure") => ControlInput::Secure,
+            (ControlKind::Toggle, "label") => ControlInput::Caption,
             (ControlKind::Slider, "min") => ControlInput::Min,
             (ControlKind::Slider, "max") => ControlInput::Max,
             (ControlKind::Slider, "step") => ControlInput::Step,
@@ -205,6 +208,7 @@ pub fn source_role(variant: &str) -> Option<Role> {
         "heading" => Role::Heading,
         "list" => Role::List,
         "list_item" => Role::ListItem,
+        "secure_field" => Role::SecureField,
         _ => return None,
     })
 }
@@ -215,7 +219,7 @@ pub fn source_name(role: Role) -> &'static str {
 }
 
 /// Every variant [`source_role`] takes, in the order of [`Role::ALL`].
-pub const SOURCE_ROLES: [&str; 19] = [
+pub const SOURCE_ROLES: [&str; 20] = [
     "group",
     "button",
     "check_box",
@@ -235,6 +239,7 @@ pub const SOURCE_ROLES: [&str; 19] = [
     "heading",
     "list",
     "list_item",
+    "secure_field",
 ];
 
 /// A layout property a node's value sets as the view's values change: one
@@ -508,6 +513,12 @@ pub enum ControlInput {
     Overflow,
     /// A text's `align`.
     TextAlign,
+    /// A text field's `placeholder`: what it shows while empty.
+    Placeholder,
+    /// A text field's `secure`: whether it masks its text.
+    Secure,
+    /// A check's `label`: the caption it shows and is named by.
+    Caption,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -529,6 +540,12 @@ pub struct Control {
     pub fit: Option<u32>,
     /// The entry of an image's tint.
     pub tint: Option<u32>,
+    /// The entry of a text field's placeholder.
+    pub placeholder: Option<u32>,
+    /// The entry of whether a text field masks its text.
+    pub secure: Option<u32>,
+    /// The entry of a check's caption.
+    pub caption: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -702,6 +719,9 @@ impl Control {
             step: None,
             fit: None,
             tint: None,
+            placeholder: None,
+            secure: None,
+            caption: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -745,6 +765,9 @@ impl Control {
             ControlInput::MaxLines => self.text.max_lines,
             ControlInput::Overflow => self.text.overflow,
             ControlInput::TextAlign => self.text.align,
+            ControlInput::Placeholder => self.placeholder,
+            ControlInput::Secure => self.secure,
+            ControlInput::Caption => self.caption,
         }
     }
 
@@ -786,6 +809,9 @@ impl Control {
             ControlInput::MaxLines => &mut self.text.max_lines,
             ControlInput::Overflow => &mut self.text.overflow,
             ControlInput::TextAlign => &mut self.text.align,
+            ControlInput::Placeholder => &mut self.placeholder,
+            ControlInput::Secure => &mut self.secure,
+            ControlInput::Caption => &mut self.caption,
         };
         *slot = Some(entry);
     }
@@ -805,6 +831,9 @@ impl Encode for Control {
             self.step,
             self.fit,
             self.tint,
+            self.placeholder,
+            self.secure,
+            self.caption,
             self.shader,
             look.background,
             look.opacity,
@@ -883,6 +912,9 @@ impl Decode for Control {
             step: entry()?,
             fit: entry()?,
             tint: entry()?,
+            placeholder: entry()?,
+            secure: entry()?,
+            caption: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -1052,6 +1084,15 @@ mod tests {
             Some(ControlInput::TextColor)
         );
         assert_eq!(ControlKind::Plain.input("color"), None);
+        assert_eq!(
+            ControlKind::TextInput.input("secure"),
+            Some(ControlInput::Secure)
+        );
+        assert_eq!(
+            ControlKind::Toggle.input("label"),
+            Some(ControlInput::Caption)
+        );
+        assert_eq!(ControlKind::Label.input("placeholder"), None);
     }
 
     #[test]
@@ -1093,6 +1134,9 @@ mod tests {
             step: None,
             fit: None,
             tint: Some(8),
+            placeholder: Some(14),
+            secure: None,
+            caption: Some(15),
             shader: Some(2),
             look: Look {
                 background: Some(3),

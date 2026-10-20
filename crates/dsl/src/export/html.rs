@@ -109,6 +109,10 @@ pub(super) enum Prop {
     /// A slider's `value`, `min`, `max` or `step`.
     Range(&'static str),
     InputValue,
+    /// A text field's `placeholder` attribute.
+    Placeholder,
+    /// Whether a text field is a password one.
+    Secure,
     Selected {
         radio: bool,
     },
@@ -833,6 +837,21 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 {
                     el.attr("value", &fixed.text());
                 }
+                if let Some(fixed) = self.bind(
+                    wires,
+                    control.placeholder,
+                    Prop::Placeholder,
+                    "the placeholder",
+                    at,
+                ) {
+                    el.attr("placeholder", &fixed.text());
+                }
+                if let Some(fixed) =
+                    self.bind(wires, control.secure, Prop::Secure, "the masking", at)
+                    && fixed.truth()
+                {
+                    el.attr("type", "password");
+                }
             }
             ControlKind::Toggle => {
                 if let Some(fixed) = self.bind(
@@ -844,6 +863,18 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 ) && fixed.truth()
                 {
                     el.attr("checked", "");
+                }
+                // A check input holds no text: its caption names it.
+                if control.semantics.label.is_none()
+                    && let Some(fixed) = self.bind(
+                        wires,
+                        control.caption,
+                        Prop::Label { alt: false },
+                        "the caption",
+                        at,
+                    )
+                {
+                    el.attr("aria-label", &fixed.text());
                 }
             }
             ControlKind::Slider => {
@@ -1551,7 +1582,7 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         | (Role::CheckBox, "input", "CheckBox")
         | (Role::CheckBox, "input", "Toggle")
         | (Role::Slider, "input", _)
-        | (Role::TextField, "input", _)
+        | (Role::TextField | Role::SecureField, "input", _)
         | (Role::Image, "img", _)
         | (Role::Navigation, "nav", _)
         | (Role::Label, _, _) => return None,
@@ -1561,7 +1592,7 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
         (Role::Slider, ..) => "slider",
         (Role::Radio, ..) => "radio",
         (Role::Image, ..) => "img",
-        (Role::TextField, ..) => "textbox",
+        (Role::TextField | Role::SecureField, ..) => "textbox",
         (Role::Tab, ..) => "tab",
         (Role::TabList, ..) => "tablist",
         (Role::Navigation, ..) => "navigation",

@@ -11,8 +11,8 @@ use viso_dsl::hotreload::plan_view;
 use viso_dsl::ir::binding_ir::NodeKey;
 
 use viso_ui::{
-    BindingTable, BuildCx, EffectStore, LeafStyle, LiveRegion, NodeId, NodeStore, Role,
-    SemanticState, StateStore, StateValue, StructureCx, TextRequest, run_structure_hooks,
+    BindingTable, BuildCx, EffectStore, FieldSeed, LeafStyle, LiveRegion, NodeId, NodeStore, Role,
+    SemanticState, StateStore, StateValue, StructureCx, run_structure_hooks,
 };
 use viso_view::{ControlKind, Scope, Value, ViewHost, mount_values};
 
@@ -106,10 +106,13 @@ fn values_reach_their_nodes_at_mount_and_again_only_when_changed() {
     let expected: Vec<(NodeId, String)> =
         expected.iter().map(|&(id, t)| (id, t.to_owned())).collect();
     assert_eq!(texts, expected);
-    let mut seeds: Vec<(NodeId, TextRequest)> = Vec::new();
+    let mut seeds: Vec<(NodeId, FieldSeed)> = Vec::new();
     store.take_text_seeds(&mut seeds);
     assert_eq!(seeds.len(), 1);
-    assert_eq!((seeds[0].0, seeds[0].1.text.as_str()), (ids[3], "Ada"));
+    assert_eq!(
+        (seeds[0].0, seeds[0].1.request.text.as_str()),
+        (ids[3], "Ada")
+    );
     assert_eq!(store.structure_hook_count(), 1, "one hook for the view");
 
     // `count` 2 -> 3 re-evaluates both texts reading it; `count / 10` is still

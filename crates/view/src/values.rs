@@ -1,10 +1,12 @@
 //! Delivering the values a view's nodes show: a label's text, a text field's
-//! seeded buffer, a control's value and range as its semantic state, an
-//! image's asset (its bytes offered to the store the first time it shows), any
-//! node's look (its `background` and `opacity`), whether it shows and takes
-//! focus, a text's color, size and wrapping, and its role and accessible
-//! name. A text field with no `value` is never seeded: its text is what its
-//! user types.
+//! seeded buffer, a control's value and range as its semantic state, a check's
+//! caption, an image's asset (its bytes offered to the store the first time it
+//! shows), any node's look (its `background` and `opacity`), whether it shows
+//! and takes focus, a text's color, size and wrapping, and its role and
+//! accessible name. A text field is seeded with its style, placeholder and
+//! masking; with no `value` its text is what its user types. A field's
+//! placeholder is its hint where it has none, and a secure field is a
+//! [`Role::SecureField`] that tells no value.
 //!
 //! A look value with a `transition.*` entry moves to each new value over the
 //! transition that entry evaluates to when the value changes; the first value
@@ -29,8 +31,9 @@ use viso_behavior::{Fault, FaultKind, Value};
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
 use viso_ui::{
-    AssetFit, BuildCx, Easing, FontSize, LiveRegion, LookValue, NodeId, NodeStore, Rgba, Role,
-    SemanticState, Semantics, Srgb, StateId, StructureCx, TextRequest, Timing,
+    AssetFit, BuildCx, Easing, FieldLook, FieldSeed, FontSize, LiveRegion, LookValue, NodeId,
+    NodeStore, Rgba, Role, SemanticState, Semantics, Srgb, StateId, StructureCx, TextRequest,
+    Timing,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, When};
@@ -169,6 +172,7 @@ pub(crate) fn control_cells(
     ]
     .into_iter()
     .chain(control.text.all())
+    .chain([control.placeholder, control.secure, control.caption])
     .flatten()
     .chain(arms)
     .chain(control.layout.iter().map(|&(_, entry)| entry))
@@ -182,8 +186,9 @@ pub(crate) fn control_cells(
 /// opacity, its `semantics.label`, `hint`, `value`, `hidden` and
 /// `heading_level`, its `visible` and `focusable`, and its text's `color`,
 /// `soft_wrap`, `font_weight`, `font_family`, `line_height`, `max_lines`,
-/// `overflow` and `align`.
-const SHOWN: usize = 22;
+/// `overflow` and `align`, and a field's `placeholder` and `secure` and a
+/// check's caption.
+const SHOWN: usize = 25;
 
 /// Where its background and opacity sit among the values a node shows.
 const LOOK: usize = 5;
@@ -197,6 +202,10 @@ const NODE: usize = 12;
 /// Where its text's style starts among the values a node shows.
 const TEXT: usize = 14;
 
+/// Where a field's placeholder and masking and a check's caption sit among
+/// the values a node shows.
+const FIELD: usize = 22;
+
 /// A node showing a value of the view.
 pub(crate) struct Shown {
     node: NodeId,
@@ -209,8 +218,8 @@ pub(crate) struct Shown {
     /// The cells its entries read, ascending.
     deps: Box<[StateId]>,
     /// The value, lower bound, upper bound, fit, tint, background, opacity,
-    /// `semantics.*`, presence and text style values it shows, `None` before
-    /// the first delivery.
+    /// `semantics.*`, presence, text style, field and caption values it
+    /// shows, `None` before the first delivery.
     shows: Option<[Value; SHOWN]>,
     /// Whether [`shows`](Self::shows) is what the node showed before a hot
     /// reload mounted it again: the next delivery skips the values equal to
@@ -313,7 +322,8 @@ impl Shown {
                 control.node.focusable,
             ]
             .into_iter()
-            .chain(control.text.all()),
+            .chain(control.text.all())
+            .chain([control.placeholder, control.secure, control.caption]),
         ) {
             let Some(entry) = entry else { continue };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
@@ -366,23 +376,35 @@ impl Shown {
             max_lines,
             overflow,
             align,
+            placeholder,
+            secure,
+            caption,
         ] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
+        let secure = truth(secure, false);
         if semantics.says_anything()
             && ((SEMANTICS..NODE).any(changed)
+                || (FIELD..SHOWN).any(changed)
                 || (control.kind == ControlKind::Label && changed(0)))
         {
             let name = match (label.as_str(), control.kind) {
                 (Some(label), _) => Some(label),
                 (None, ControlKind::Label) => value.as_str(),
+                (None, ControlKind::Toggle) => caption.as_str(),
                 (None, _) => None,
             };
+            let role = match semantics.role.unwrap_or_default() {
+                Role::TextField if secure => Role::SecureField,
+                role => role,
+            };
             let said = Said {
-                role: semantics.role.unwrap_or_default(),
+                role,
                 live: semantics.live,
                 name,
-                hint: hint.as_str(),
-                value: spoken.as_str(),
+                hint: hint
+                    .as_str()
+                    .or_else(|| placeholder.as_str().filter(|p| !p.is_empty())),
+                value: spoken.as_str().filter(|_| role != Role::SecureField),
                 hidden: hidden.as_int().is_some_and(|v| v != 0),
                 heading_level: level.as_int().and_then(|v| u8::try_from(v).ok()),
             };
@@ -432,8 +454,8 @@ impl Shown {
                 (None, LookValue::Opacity(opacity)) => store.set_opacity(self.node, opacity),
             }
         }
-        let text = || TextRequest {
-            text: value.as_str().unwrap_or_default().to_owned(),
+        let text = |shown: &Value| TextRequest {
+            text: shown.as_str().unwrap_or_default().to_owned(),
             font_size: FontSize::Inherited,
             color: match control.text.color {
                 Some(_) => color(text_color),
@@ -476,14 +498,24 @@ impl Shown {
                     store.set_asset(self.node, resource, asset_fit(fit), tint);
                 }
             }
-            ControlKind::Label => store.set_text_request(self.node, text()),
-            ControlKind::TextInput if control.value.is_some() => {
-                store.seed_text(self.node, text());
+            ControlKind::Label => store.set_text_request(self.node, text(value)),
+            ControlKind::TextInput => {
+                let seed = FieldSeed {
+                    request: text(value),
+                    valued: control.value.is_some(),
+                    look: FieldLook {
+                        placeholder: placeholder.as_str().unwrap_or_default().to_owned(),
+                        secure,
+                    },
+                };
+                store.seed_text(self.node, seed);
             }
-            ControlKind::TextInput => {}
             ControlKind::Toggle => {
                 let checked = value.as_int().is_some_and(|v| v != 0);
                 store.set_semantic_state(self.node, SemanticState::checked(checked));
+                if control.caption.is_some() && (first || changed(FIELD + 2)) {
+                    store.set_text_request(self.node, text(caption));
+                }
             }
             ControlKind::Slider => {
                 let (min, max) = (float(min, 0.0), float(max, 1.0));

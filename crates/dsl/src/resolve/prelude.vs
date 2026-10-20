@@ -171,6 +171,7 @@ export enum LiveRegion { off; polite; assertive; }
 export enum Role {
     group; button; check_box; slider; radio; label; image; text_field; tab; tab_list;
     navigation; dialog; status; region; tree; tree_item; heading; list; list_item;
+    secure_field;
 }
 
 export record Environment {

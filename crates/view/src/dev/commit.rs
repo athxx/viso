@@ -880,7 +880,7 @@ fn carry_in(
 /// carries, which the seed would otherwise replace at the next reconcile.
 fn settle_buffer(rt: &mut LiveRuntime<'_>, node: NodeId, mut buffer: Box<Buffer>) {
     if let Some(mut seed) = rt.store.take_text_seed(node) {
-        seed.text.clone_from(&buffer.text);
+        seed.valued = false;
         buffer.seed(&seed);
     }
     rt.store.set_text_request(node, buffer.request());

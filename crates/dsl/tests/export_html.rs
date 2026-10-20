@@ -118,6 +118,36 @@ fn a_constant_view_is_html_and_css_alone() {
     assert_eq!(export(CARD, true).unwrap(), page);
 }
 
+const LOGIN: &str = r#"
+export component Login {
+    state hidden = true;
+    view {
+        Column {
+            TextInput { width: 100dp; height: 20dp; placeholder: "Password"; secure: true; }
+            TextInput { width: 100dp; height: 20dp; placeholder: "Name"; secure: hidden; }
+            CheckBox { width: 20dp; height: 20dp; label: "Remember"; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_field_s_placeholder_and_masking_and_a_check_s_caption_export() {
+    let page = export(LOGIN, false).unwrap();
+    let index = &page.index;
+    assert!(
+        index.contains("type=\"password\" placeholder=\"Password\""),
+        "{index}"
+    );
+    assert!(index.contains("placeholder=\"Name\""), "{index}");
+    assert!(
+        index.contains("type=\"checkbox\" aria-label=\"Remember\""),
+        "{index}"
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.secure(e[0], f"), "{script}");
+}
+
 const COUNTER: &str = r#"
 export component Counter {
     state count = 0;

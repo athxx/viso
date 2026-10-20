@@ -163,8 +163,8 @@ fn a_binding_no_path_applies_is_reported() {
             "`overflow` does not reach a `TextInput` yet",
         ),
         (
-            "TextInput { placeholder: \"Name\"; }",
-            "`placeholder` does not reach a `TextInput` yet",
+            "TextInput { invalid: n > 0; }",
+            "`invalid` does not reach a `TextInput` yet",
         ),
         (
             "Column { width: Sizing::min_content; }",

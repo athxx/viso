@@ -49,6 +49,14 @@
 //! Every change to the text advances the buffer's [`Revision`], which the IME
 //! composition is stamped with, so a platform or worker result computed against
 //! older text can be recognized as stale.
+//!
+//! ## What a field draws is not always its text
+//!
+//! A field holding no text draws its [`FieldLook::placeholder`], and a secure
+//! one a bullet for each grapheme of its text. The buffer declares what it
+//! draws ([`Buffer::request`]) and maps between offsets of that and of its
+//! text ([`Buffer::drawn_position`]), so caret motion, clicks and the IME
+//! caret resolve against the drawn lines while every edit applies to the text.
 
 use crate::content::TextRequest;
 use crate::node::NodeId;
@@ -60,6 +68,48 @@ use viso_text::ime::{ImeComposition, Revision};
 use viso_text::paragraph::{LineLayout, line_index_at};
 use viso_text::selection::Selection;
 use viso_text::{Segmenter, TextOffset, TextPosition};
+
+/// The mark a secure field draws for each grapheme of its text.
+const MASK: char = '\u{2022}';
+
+/// The share of its text color's opacity a field's placeholder draws with.
+const PLACEHOLDER_OPACITY: f32 = 0.5;
+
+/// How a text field shows what it holds beyond the style its text draws in.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FieldLook {
+    /// What it draws while it holds no text, in its text color at half the
+    /// opacity; empty for nothing.
+    pub placeholder: String,
+    /// Whether it masks its text: it draws a bullet for each grapheme, gives
+    /// no text to copy or cut, and an assistive technology never reads it.
+    pub secure: bool,
+}
+
+/// What a text field's node declares, queued on the store until
+/// [`reconcile`] seeds the node's buffer with it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldSeed {
+    /// The style its text draws in, and, when [`valued`](Self::valued), its
+    /// text.
+    pub request: TextRequest,
+    /// Whether the request's text is the field's: a field no value drives
+    /// keeps the text it holds.
+    pub valued: bool,
+    /// How it shows what it holds.
+    pub look: FieldLook,
+}
+
+/// What a field draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drawn {
+    /// Its text.
+    Text,
+    /// Its placeholder, as it holds no text.
+    Placeholder,
+    /// A bullet for each grapheme of its text.
+    Mask,
+}
 
 /// Which way a caret motion goes, for arrow / Home / End.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +232,8 @@ pub struct Buffer {
     /// The face, line height and alignment the node was declared with.
     /// Resident for the same reason as [`font_size`](Buffer::font_size).
     pub style: TextStyle,
+    /// How the field shows its text: its placeholder and masking.
+    pub look: FieldLook,
     /// The active IME composition, inactive (empty range) when not composing.
     composition: ImeComposition,
     /// Advances on every change to `text`.
@@ -217,6 +269,7 @@ impl Buffer {
             color: Rgba::TRANSPARENT,
             locale: None,
             style: TextStyle::default(),
+            look: FieldLook::default(),
             composition: ImeComposition::default(),
             revision: Revision::default(),
             pending: Vec::new(),
@@ -237,21 +290,39 @@ impl Buffer {
         }
     }
 
-    /// Seed the buffer from its node's declared `request`: take its style, and
-    /// its text unless the buffer already holds it, then put the caret at the
-    /// end and end any composition. A buffer that already holds the text keeps
-    /// its caret, selection and composition, so the state a field writes back
-    /// seeds nothing. Returns whether the text or the style changed.
-    pub fn seed(&mut self, request: &TextRequest) -> bool {
+    /// A buffer seeded from a [`FieldSeed`]: its style and look, and its text
+    /// with the caret at the end when a value drives it, else none.
+    pub fn with_seed(seed: &FieldSeed) -> Self {
+        let mut buffer = Self {
+            look: seed.look.clone(),
+            ..Self::with_request(&seed.request)
+        };
+        if !seed.valued {
+            buffer.text.clear();
+            buffer.sel = Selection::caret(TextPosition::upstream(TextOffset(0)));
+        }
+        buffer
+    }
+
+    /// Seed the buffer from its node's declared `seed`: take its style and
+    /// look, and its text when a value drives it and the buffer does not
+    /// already hold it, then put the caret at the end and end any
+    /// composition. A buffer that already holds the text keeps its caret,
+    /// selection and composition, so the state a field writes back seeds
+    /// nothing. Returns whether what the field draws changed.
+    pub fn seed(&mut self, seed: &FieldSeed) -> bool {
+        let request = &seed.request;
         let styled = self.font_size != request.font_size
             || self.color != request.color
             || self.locale != request.locale
-            || self.style != request.style;
+            || self.style != request.style
+            || self.look != seed.look;
         self.font_size = request.font_size;
         self.color = request.color;
         self.locale.clone_from(&request.locale);
         self.style.clone_from(&request.style);
-        if self.text == request.text {
+        self.look.clone_from(&seed.look);
+        if !seed.valued || self.text == request.text {
             return styled;
         }
         self.text.clone_from(&request.text);
@@ -283,14 +354,29 @@ impl Buffer {
         self.revision = self.revision.next();
     }
 
-    /// The text request that declares the buffer's text in its resident
-    /// style. An edit buffer is single-line: it clips and scrolls, never wraps
-    /// or cuts its text off.
+    /// The text request that declares what the field draws in its resident
+    /// style: its text, its placeholder while it holds none, or a bullet for
+    /// each grapheme of a secure one's. An edit buffer is single-line: it
+    /// clips and scrolls, never wraps or cuts its text off.
     pub fn request(&self) -> TextRequest {
+        let (text, color) = match self.drawn() {
+            Drawn::Text => (self.text.clone(), self.color),
+            Drawn::Placeholder => (
+                self.look.placeholder.clone(),
+                Rgba {
+                    a: self.color.a * PLACEHOLDER_OPACITY,
+                    ..self.color
+                },
+            ),
+            Drawn::Mask => (
+                std::iter::repeat_n(MASK, graphemes(&self.text)).collect(),
+                self.color,
+            ),
+        };
         TextRequest {
-            text: self.text.clone(),
+            text,
             font_size: self.font_size,
-            color: self.color,
+            color,
             soft_wrap: false,
             locale: self.locale.clone(),
             style: TextStyle {
@@ -299,6 +385,57 @@ impl Buffer {
                 ..self.style.clone()
             },
         }
+    }
+
+    /// What the field draws now.
+    fn drawn(&self) -> Drawn {
+        if self.text.is_empty() && !self.look.placeholder.is_empty() {
+            Drawn::Placeholder
+        } else if self.look.secure {
+            Drawn::Mask
+        } else {
+            Drawn::Text
+        }
+    }
+
+    /// Whether `text` is what the field draws now (the text of
+    /// [`request`](Self::request)), so geometry laid out for it describes the
+    /// field. Allocates nothing.
+    pub fn draws(&self, text: &str) -> bool {
+        match self.drawn() {
+            Drawn::Text => text == self.text,
+            Drawn::Placeholder => text == self.look.placeholder,
+            Drawn::Mask => {
+                text.len() == graphemes(&self.text) * MASK.len_utf8()
+                    && text.chars().all(|c| c == MASK)
+            }
+        }
+    }
+
+    /// Position `at` of the text as a position of what the field draws.
+    pub fn drawn_position(&self, at: TextPosition) -> TextPosition {
+        let offset = match self.drawn() {
+            Drawn::Text => return at,
+            Drawn::Placeholder => 0,
+            Drawn::Mask => graphemes(&self.text[..at.offset.0]) * MASK.len_utf8(),
+        };
+        TextPosition {
+            offset: TextOffset(offset),
+            ..at
+        }
+    }
+
+    /// Position `at` of what the field draws as a position of its text.
+    fn text_position(&self, at: TextPosition) -> TextPosition {
+        let offset = match self.drawn() {
+            Drawn::Text => return at,
+            Drawn::Placeholder => TextOffset(0),
+            Drawn::Mask => Segmenter::new(&self.text)
+                .grapheme_boundaries()
+                .nth(at.offset.0 / MASK.len_utf8())
+                .unwrap_or(TextOffset(self.text.len())),
+        };
+        TextPosition { offset, ..at }
     }
 
     /// Whether an IME composition is currently active.
@@ -350,7 +487,7 @@ impl Buffer {
     /// Apply a single intent to the buffer. `placed` is the node's drawn
     /// geometry, used only while it still describes the buffer's text.
     fn apply_one(&mut self, intent: &EditIntent, placed: Option<Placed<'_>>) {
-        let placed = placed.filter(|p| p.layout.text == self.text);
+        let placed = placed.filter(|p| self.draws(p.layout.text));
         match intent {
             EditIntent::Insert(s) => self.replace_selection(s),
             EditIntent::Backspace => self.delete(true),
@@ -422,7 +559,11 @@ impl Buffer {
             Motion::Left | Motion::Right => {
                 let right = motion == Motion::Right;
                 match layout {
-                    Some(layout) => visual_step(layout.lines, self.sel.focus, right),
+                    Some(layout) => self.text_position(visual_step(
+                        layout.lines,
+                        self.drawn_position(self.sel.focus),
+                        right,
+                    )),
                     None => {
                         let graphemes = Segmenter::new(&self.text);
                         let at = self.sel.focus.offset;
@@ -456,7 +597,7 @@ impl Buffer {
         let offset = layout.offsets.get(row).copied().unwrap_or(0.0);
         let position = HitTester::new(&layout.lines[row])
             .position_at_inline((local_x - offset) / layout.font_size);
-        self.set_focus(position, extend);
+        self.set_focus(self.text_position(position), extend);
     }
 
     /// Move the selection's focus to `position`, keeping the anchor when
@@ -507,6 +648,11 @@ impl Buffer {
         self.composition.clear();
         self.sel = Selection::caret(TextPosition::upstream(TextOffset(start.0 + text.len())));
     }
+}
+
+/// How many grapheme clusters `text` holds.
+fn graphemes(text: &str) -> usize {
+    Segmenter::new(text).grapheme_boundaries().count() - 1
 }
 
 /// One caret stop from `from` in the visual direction, on the line that draws
@@ -674,21 +820,24 @@ pub fn reconcile(
     if store.has_text_seeds() {
         let mut seeds = Vec::new();
         store.take_text_seeds(&mut seeds);
-        for (node, request) in seeds {
+        for (node, seed) in seeds {
             if !store.arena().is_live(node) {
                 continue;
             }
-            let changed = match edits.get_mut(node) {
-                Some(buffer) => buffer.seed(&request),
+            let buffer = match edits.get_mut(node) {
+                Some(buffer) => {
+                    if !buffer.seed(&seed) {
+                        continue;
+                    }
+                    &*buffer
+                }
                 None => {
-                    edits.register(node, Box::new(Buffer::with_request(&request)));
-                    true
+                    edits.register(node, Box::new(Buffer::with_seed(&seed)));
+                    edits.get(node).expect("registered above")
                 }
             };
-            if changed {
-                store.set_text_request(node, request);
-                redeclared += 1;
-            }
+            store.set_text_request(node, buffer.request());
+            redeclared += 1;
         }
     }
     if store.has_edit_requests() {
@@ -1297,15 +1446,127 @@ mod tests {
         h.id()
     }
 
-    fn seed(text: &str) -> TextRequest {
+    fn request(text: &str) -> TextRequest {
         TextRequest {
             text: text.to_owned(),
             font_size: FontSize::Fixed(14.0),
-            color: Rgba::TRANSPARENT,
+            color: Rgba {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.8,
+            },
             soft_wrap: false,
             locale: None,
             style: TextStyle::default(),
         }
+    }
+
+    fn seed(text: &str) -> FieldSeed {
+        FieldSeed {
+            request: request(text),
+            valued: true,
+            look: FieldLook::default(),
+        }
+    }
+
+    fn field(text: &str, placeholder: &str, secure: bool) -> Buffer {
+        Buffer::with_seed(&FieldSeed {
+            look: FieldLook {
+                placeholder: placeholder.to_owned(),
+                secure,
+            },
+            ..seed(text)
+        })
+    }
+
+    #[test]
+    fn an_empty_field_draws_its_placeholder_dimmed_until_it_holds_text() {
+        let mut b = field("", "Name", false);
+        let drawn = b.request();
+        assert_eq!(drawn.text, "Name");
+        assert_eq!(drawn.color.a, 0.4, "half its text color's opacity");
+        assert!(b.draws("Name") && !b.draws(""));
+        let lines = line_for("Name");
+        let click = EditIntent::PlaceAt {
+            x: 130.0,
+            y: 51.0,
+            extend: false,
+        };
+        b.apply_one(&click, Some(placed("Name", &lines)));
+        assert_eq!(
+            b.sel.focus.offset,
+            TextOffset(0),
+            "a click on it starts the text"
+        );
+        apply(&mut b, EditIntent::Insert("A".into()));
+        let drawn = b.request();
+        assert_eq!((drawn.text.as_str(), drawn.color.a), ("A", 0.8));
+    }
+
+    #[test]
+    fn a_secure_field_draws_a_bullet_per_grapheme_and_edits_its_text_through_them() {
+        // `a`, `e` with a combining acute, `b`: three graphemes in five bytes.
+        let text = "ae\u{301}b";
+        let mut b = field(text, "Password", true);
+        let drawn = b.request().text;
+        assert_eq!(drawn, "\u{2022}\u{2022}\u{2022}");
+        assert!(b.draws(&drawn) && !b.draws(text));
+        assert_eq!(b.drawn_position(b.sel.focus).offset, TextOffset(9));
+        let lines = line_for(&drawn);
+        let click = EditIntent::PlaceAt {
+            x: 120.0,
+            y: 51.0,
+            extend: false,
+        };
+        b.apply_one(&click, Some(placed(&drawn, &lines)));
+        assert_eq!(
+            b.sel.focus.offset,
+            TextOffset(4),
+            "after the second grapheme"
+        );
+        let left = EditIntent::Move {
+            motion: Motion::Left,
+            extend: false,
+        };
+        b.apply_one(&left, Some(placed(&drawn, &lines)));
+        assert_eq!(b.sel.focus.offset, TextOffset(1), "a whole grapheme back");
+        let clear = line_for(text);
+        b.apply_one(&click, Some(placed(text, &clear)));
+        assert_eq!(
+            b.sel.focus.offset,
+            TextOffset(1),
+            "the clear text's lines describe nothing"
+        );
+        apply(&mut b, EditIntent::Delete);
+        assert_eq!(b.text, "ab");
+        assert_eq!(b.request().text, "\u{2022}\u{2022}");
+        b.text.clear();
+        assert_eq!(
+            b.request().text,
+            "Password",
+            "empty, it draws its placeholder"
+        );
+    }
+
+    #[test]
+    fn a_field_no_value_drives_keeps_its_text_through_a_seed() {
+        let mut b = Buffer::with_text("typed");
+        let restyle = FieldSeed {
+            valued: false,
+            look: FieldLook {
+                placeholder: "Hint".into(),
+                secure: false,
+            },
+            ..seed("")
+        };
+        assert!(b.seed(&restyle), "its style and look changed");
+        assert_eq!(
+            (b.text.as_str(), b.look.placeholder.as_str()),
+            ("typed", "Hint")
+        );
+        assert!(!b.seed(&restyle));
+        assert_eq!(Buffer::with_seed(&restyle).request().text, "Hint");
     }
 
     #[test]

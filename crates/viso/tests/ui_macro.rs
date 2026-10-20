@@ -52,7 +52,7 @@ fn static_fragment_mounts_a_retained_tree() {
 #[test]
 fn constant_control_values_reach_the_text_request() {
     use std::num::NonZeroU32;
-    use viso::ui::{FontSize, NodeId, TextAlign, TextOverflow, TextRequest};
+    use viso::ui::{FieldSeed, FontSize, NodeId, TextAlign, TextOverflow, TextRequest};
 
     let build = viso::ui! {
         Column {
@@ -85,12 +85,12 @@ fn constant_control_values_reach_the_text_request() {
     let text = store.arena().links(root).unwrap().first_child.unwrap();
     let mut requests: Vec<(NodeId, Box<TextRequest>)> = Vec::new();
     store.take_text_requests(&mut requests);
-    let mut seeds: Vec<(NodeId, TextRequest)> = Vec::new();
+    let mut seeds: Vec<(NodeId, FieldSeed)> = Vec::new();
     store.take_text_seeds(&mut seeds);
     let (id, request) = requests
         .into_iter()
         .map(|(id, r)| (id, *r))
-        .chain(seeds)
+        .chain(seeds.into_iter().map(|(id, seed)| (id, seed.request)))
         .find(|(_, r)| r.text == "Title")
         .expect("the text is declared");
     assert_eq!(id, text);

@@ -35,6 +35,8 @@ const P = {
   checked: (el, v) => { el.checked = truth(v); },
   range: (el, v, name) => { el[name] = v === null ? "" : String(v); },
   input: (el, v) => { const s = text(v); if (el.value !== s) el.value = s; },
+  placeholder: (el, v) => attr(el, "placeholder", v),
+  secure: (el, v) => { el.type = truth(v) ? "password" : "text"; },
   selected: (el, v, radio) => select(el, v === null ? 0n : v, radio),
   source(el, v, mask) {
     const u = url(v);

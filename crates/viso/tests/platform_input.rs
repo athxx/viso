@@ -27,9 +27,12 @@ thread_local! {
     static CAPTURE: Cell<bool> = const { Cell::new(false) };
     /// Every value the field reported through `on_change`, in order.
     static CHANGES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// Whether the field masks its text.
+    static SECURE: Cell<bool> = const { Cell::new(false) };
 }
 
-/// A field seeded with "hello" filling the top of a counting root.
+/// A field seeded with "hello" filling the top of a counting root, secure
+/// when [`SECURE`] is set.
 struct FieldApp;
 
 impl Application for FieldApp {
@@ -53,6 +56,7 @@ impl Application for FieldApp {
             |cx| {
                 text_input("Name")
                     .value("hello")
+                    .secure(SECURE.with(Cell::get))
                     .size(Size::fixed(160.0, 30.0))
                     .on_change(|_ev, text| CHANGES.with(|c| c.borrow_mut().push(text.to_owned())))
                     .build(cx);
@@ -189,6 +193,26 @@ fn cut_answers_with_the_selection_and_removes_it() {
     assert_eq!(reply.take().as_deref(), Some("hello"));
     assert_eq!(app.focused_text(), Some(""));
     assert_eq!(CHANGES.with(|c| c.borrow().clone()), [String::new()]);
+}
+
+#[test]
+fn a_secure_field_gives_nothing_to_copy_or_cut() {
+    SECURE.with(|s| s.set(true));
+    let reply = ClipboardReply::new();
+    let mut script = focused();
+    script.extend([
+        select_all(),
+        RawEvent::CopyRequested {
+            window: WIN,
+            cut: true,
+            reply: reply.clone(),
+        },
+        redraw(),
+    ]);
+    let app = drive_scripted::<FieldApp>(script, STEP);
+    SECURE.with(|s| s.set(false));
+    assert_eq!(reply.take(), None, "the clipboard never sees its text");
+    assert_eq!(app.focused_text(), Some("hello"), "and it cuts nothing");
 }
 
 #[test]
