@@ -3,6 +3,20 @@ const color = (v) => {
   const n = Number(BigInt.asUintN(32, v));
   return "rgba(" + (n >>> 24) + "," + ((n >>> 16) & 255) + "," + ((n >>> 8) & 255) + "," + ((n & 255) / 255) + ")";
 };
+const radius = (v) => {
+  const f = v === null ? [] : v.f;
+  const t = (i) => Number(f[i] ?? 0);
+  const parts = [[t(0), "1px"], [t(1), "var(--viso-px)"], [t(2), "0.0625rem"], [t(3), "1em"]]
+    .filter(([n]) => n !== 0).map(([n, u]) => n + " * " + u);
+  if (t(4) >= 50) parts.push("9999px");
+  else if (t(4) > 0) parts.push(t(4) + "%");
+  return parts.length ? "calc(" + parts.join(" + ") + ")" : "0";
+};
+const stroke = (v) => {
+  if (v === null) return "none";
+  const w = typeof v.f[0] === "object" ? Number(v.f[0].f[0]) : Number(v.f[0]);
+  return "inset 0 0 0 " + Math.max(w, 0) + "px " + color(v.f[1]);
+};
 const text = (v) => (v === null ? "" : typeof v === "string" ? v : String(v));
 const attr = (el, name, v) => (v === null ? el.removeAttribute(name) : el.setAttribute(name, text(v)));
 const fits = ["contain", "cover", "fill"];
@@ -50,6 +64,8 @@ const P = {
   },
   vcolor: (el, v, name) => el.style.setProperty(name, color(v)),
   vopacity: (el, v, name) => el.style.setProperty(name, String(Math.min(Math.max(v ?? 1, 0), 1))),
+  vradius: (el, v, name) => el.style.setProperty(name, radius(v)),
+  vborder: (el, v, name) => el.style.setProperty(name, stroke(v)),
   vmove(el, v, name, property) {
     const f = v === null ? [] : v.f;
     const instant = reduced.matches && f[3] === 0n;

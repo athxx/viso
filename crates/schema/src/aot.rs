@@ -492,7 +492,8 @@ const LENGTHS_PADDING: u16 = 1 << 8;
 const LENGTHS_MARGIN: u16 = 1 << 9;
 const LENGTHS_ROW_GAP: u16 = 1 << 10;
 const LENGTHS_INSETS: u16 = 1 << 11;
-const LENGTHS_BITS: u16 = (1 << 12) - 1;
+const LENGTHS_CORNER_RADIUS: u16 = 1 << 12;
+const LENGTHS_BITS: u16 = (1 << 13) - 1;
 const TERMS_DP: u8 = 1 << 0;
 const TERMS_PX: u8 = 1 << 1;
 const TERMS_SP: u8 = 1 << 2;
@@ -681,6 +682,9 @@ impl Encode for NodeLengths {
         if self.insets.is_some() {
             mask |= LENGTHS_INSETS;
         }
+        if self.corner_radius.is_some() {
+            mask |= LENGTHS_CORNER_RADIUS;
+        }
         enc.write_varint(u64::from(mask));
         for terms in present.iter().flatten() {
             encode_terms(terms, enc);
@@ -706,6 +710,9 @@ impl Encode for NodeLengths {
             for terms in edges.iter().flatten() {
                 encode_terms(terms, enc);
             }
+        }
+        if let Some(terms) = &self.corner_radius {
+            encode_terms(terms, enc);
         }
     }
 }
@@ -770,6 +777,11 @@ impl Decode for NodeLengths {
         } else {
             None
         };
+        let corner_radius = if mask & LENGTHS_CORNER_RADIUS != 0 {
+            Some(decode_terms(dec)?)
+        } else {
+            None
+        };
         Ok(NodeLengths {
             width,
             height,
@@ -783,6 +795,7 @@ impl Decode for NodeLengths {
             margin,
             row_gap,
             insets,
+            corner_radius,
         })
     }
 }
@@ -1851,6 +1864,7 @@ mod tests {
                             bottom: Some(LengthTerms::pct(10.0)),
                             ..InsetTerms::default()
                         }),
+                        corner_radius: Some(LengthTerms::sp(2.0) + LengthTerms::pct(10.0)),
                         ..NodeLengths::default()
                     })),
                     rules: None,

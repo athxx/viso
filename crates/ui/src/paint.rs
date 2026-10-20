@@ -398,10 +398,12 @@ fn paint_subtree<S: PaintSpans>(
 fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primitive>) {
     let style = store.style(node);
     if style.is_visible() {
+        // A radius rounds no further than half the shorter side: a pill.
+        let side = world.w.min(world.h);
         out.push(Primitive::Quad(Quad {
             rect: world,
             color: style.fill,
-            radius: style.radius,
+            radius: (style.radius + style.radius_pct * side).min(side * 0.5),
             border: style.border,
         }));
     }
@@ -1287,6 +1289,38 @@ mod tests {
         let colors = quad_colors(&out);
         assert_eq!(*colors.last().unwrap(), BLUE, "overlay draws on top");
         assert_eq!(colors, vec![RED, GREEN, BLUE]);
+    }
+
+    #[test]
+    fn a_percent_radius_reads_the_shorter_side_and_none_rounds_past_a_pill() {
+        use crate::length::LengthTerms;
+        let (mut store, root, [red, green, blue]) = three_leaf_row();
+        let terms = |dp: f32, pct: f32| LengthTerms {
+            dp,
+            pct,
+            ..LengthTerms::ZERO
+        };
+        store.set_corner_radius(red, terms(4.0, 0.1));
+        store.set_corner_radius(green, terms(0.0, 0.5));
+        store.set_corner_radius(blue, terms(1000.0, 0.0));
+        layout_full(&mut store, root);
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        let radii: Vec<f32> = out
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::Quad(q) => Some(q.radius),
+                _ => None,
+            })
+            .collect();
+        let side = |id| {
+            let world = store.world(id);
+            world.w.min(world.h)
+        };
+        assert_eq!(
+            radii,
+            [4.0 + 0.1 * side(red), side(green) / 2.0, side(blue) / 2.0]
+        );
     }
 
     #[test]

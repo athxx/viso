@@ -39,7 +39,7 @@ use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
 use viso_render::asset::{ResourceId, ResourceRevision};
-use viso_render::{BrushProgram, PathCmd, Rect, Rgba, Stroke, TextureId};
+use viso_render::{Border, BrushProgram, PathCmd, Rect, Rgba, Stroke, TextureId};
 use viso_runtime::{LoopWaker, TaskSet};
 
 /// The application entry into the tree: a component declares its children into
@@ -2847,6 +2847,36 @@ impl NodeStore {
         let style = &mut self.style[id.index() as usize];
         if style.fill != fill {
             style.fill = fill;
+            self.mark_dirty(id, DirtyClass::PAINT);
+        }
+    }
+
+    /// Round a node's box corners by `radius` dp and `pct` of the shorter
+    /// side of the box it paints, each never negative. A live-guarded write
+    /// that marks PAINT only when the radius changes.
+    pub(crate) fn write_corner_radius(&mut self, id: NodeId, radius: f32, pct: f32) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let style = &mut self.style[id.index() as usize];
+        let (radius, pct) = (radius.max(0.0), pct.max(0.0));
+        if style.radius != radius || style.radius_pct != pct {
+            style.radius = radius;
+            style.radius_pct = pct;
+            self.mark_dirty(id, DirtyClass::PAINT);
+        }
+    }
+
+    /// Stroke a node's box with `border` inside its edge, or with none for
+    /// [`Border::NONE`]. A live-guarded write that marks PAINT only when the
+    /// border changes.
+    pub fn set_border(&mut self, id: NodeId, border: Border) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let style = &mut self.style[id.index() as usize];
+        if style.border != border {
+            style.border = border;
             self.mark_dirty(id, DirtyClass::PAINT);
         }
     }

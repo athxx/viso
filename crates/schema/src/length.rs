@@ -464,6 +464,9 @@ pub struct NodeLengths {
     /// An `Absolute` child's insets; a percent term reads the container's
     /// content box.
     pub insets: Option<InsetTerms>,
+    /// The node's corner radius; a percent term reads the shorter side of its
+    /// own box as it paints.
+    pub corner_radius: Option<LengthTerms>,
 }
 
 impl NodeLengths {
@@ -480,6 +483,7 @@ impl NodeLengths {
             self.max_width,
             self.min_height,
             self.max_height,
+            self.corner_radius,
         ];
         for terms in terms.into_iter().flatten() {
             deps |= terms.deps();

@@ -186,6 +186,18 @@ impl NodeStore {
 
     /// Rewrites the node's bound lengths with `edit`, unbinding them when
     /// nothing is left.
+    /// Round a node's box corners by `radius`: its `%` term a share of the
+    /// shorter side of the box it paints, a `px`, `sp` or `em` term following
+    /// the environment as other lengths do. Marks PAINT only when the radius
+    /// it paints moves.
+    pub fn set_corner_radius(&mut self, id: NodeId, radius: LengthTerms) {
+        let env_free = radius.px == 0.0 && radius.sp == 0.0 && radius.em == 0.0;
+        self.edit_lengths(id, |l| l.corner_radius = (!env_free).then_some(radius));
+        if env_free {
+            self.write_corner_radius(id, radius.dp, radius.pct);
+        }
+    }
+
     fn edit_lengths(&mut self, id: NodeId, edit: impl FnOnce(&mut NodeLengths)) {
         let mut lengths = self.bound_lengths(id).unwrap_or_default();
         edit(&mut lengths);

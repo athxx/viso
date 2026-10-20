@@ -106,6 +106,8 @@ impl ControlKind {
         Some(match (self, property) {
             (_, "background") => ControlInput::Background,
             (_, "opacity") => ControlInput::Opacity,
+            (_, "corner_radius") => ControlInput::CornerRadius,
+            (_, "border") => ControlInput::Border,
             (_, "transition.background") => ControlInput::BackgroundTransition,
             (_, "transition.opacity") => ControlInput::OpacityTransition,
             (_, "semantics.label") => ControlInput::Label,
@@ -478,6 +480,10 @@ pub enum ControlInput {
     Background,
     /// The node's `opacity`.
     Opacity,
+    /// The node's `corner_radius`.
+    CornerRadius,
+    /// The node's `border`.
+    Border,
     /// The node's `transition.background`.
     BackgroundTransition,
     /// The node's `transition.opacity`.
@@ -663,7 +669,7 @@ impl SemanticEntries {
 /// the value of entry `entry`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LookArm {
-    /// [`ControlInput::Background`] or [`ControlInput::Opacity`].
+    /// One of [`LookArm::SWITCHED`].
     pub input: ControlInput,
     /// The condition, in postfix order.
     pub when: Box<[When]>,
@@ -687,6 +693,14 @@ pub enum When {
 }
 
 impl LookArm {
+    /// The look values a style's `when` switches, by wire tag.
+    pub const SWITCHED: [ControlInput; 4] = [
+        ControlInput::Background,
+        ControlInput::Opacity,
+        ControlInput::CornerRadius,
+        ControlInput::Border,
+    ];
+
     /// Whether its condition reads an interaction state.
     pub fn reads_state(&self) -> bool {
         self.when.iter().any(|w| matches!(w, When::State(_)))
@@ -694,14 +708,19 @@ impl LookArm {
 }
 
 /// The handler-table entries of the look a node shows: an absent entry leaves
-/// the node as it was built (no fill, opaque), and a value with no transition
-/// shows at once.
+/// the node as it was built (no fill, opaque, sharp corners, no border), and
+/// a value with no transition shows at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Look {
     /// Its `background`: a color, or `None` for no fill.
     pub background: Option<u32>,
     /// Its `opacity`.
     pub opacity: Option<u32>,
+    /// Its `corner_radius`: a `MixedLength`, its `%` of the shorter side of
+    /// its box.
+    pub corner_radius: Option<u32>,
+    /// Its `border`: a `Border`, or `None` for no stroke.
+    pub border: Option<u32>,
     /// Its `transition.background`: how a new background moves in.
     pub background_transition: Option<u32>,
     /// Its `transition.opacity`: how a new opacity moves in.
@@ -748,6 +767,8 @@ impl Control {
             ControlInput::Tint => self.tint,
             ControlInput::Background => self.look.background,
             ControlInput::Opacity => self.look.opacity,
+            ControlInput::CornerRadius => self.look.corner_radius,
+            ControlInput::Border => self.look.border,
             ControlInput::BackgroundTransition => self.look.background_transition,
             ControlInput::OpacityTransition => self.look.opacity_transition,
             ControlInput::Label => self.semantics.label,
@@ -792,6 +813,8 @@ impl Control {
             ControlInput::Tint => &mut self.tint,
             ControlInput::Background => &mut self.look.background,
             ControlInput::Opacity => &mut self.look.opacity,
+            ControlInput::CornerRadius => &mut self.look.corner_radius,
+            ControlInput::Border => &mut self.look.border,
             ControlInput::BackgroundTransition => &mut self.look.background_transition,
             ControlInput::OpacityTransition => &mut self.look.opacity_transition,
             ControlInput::Label => &mut self.semantics.label,
@@ -837,6 +860,8 @@ impl Encode for Control {
             self.shader,
             look.background,
             look.opacity,
+            look.corner_radius,
+            look.border,
             look.background_transition,
             look.opacity_transition,
             semantics.label,
@@ -854,7 +879,8 @@ impl Encode for Control {
         }
         enc.write_varint(self.arms.len() as u64);
         for arm in self.arms.iter() {
-            enc.write_u8(u8::from(arm.input == ControlInput::Opacity));
+            let tag = LookArm::SWITCHED.iter().position(|&i| i == arm.input);
+            enc.write_u8(tag.unwrap_or(0) as u8);
             enc.write_varint(arm.when.len() as u64);
             for step in arm.when.iter() {
                 match *step {
@@ -919,6 +945,8 @@ impl Decode for Control {
             look: Look {
                 background: entry()?,
                 opacity: entry()?,
+                corner_radius: entry()?,
+                border: entry()?,
                 background_transition: entry()?,
                 opacity_transition: entry()?,
             },
@@ -958,11 +986,9 @@ impl Decode for Control {
         let mut decoded = Vec::new();
         for _ in 0..arms {
             let offset = dec.position();
-            let input = match dec.read_u8()? {
-                0 => ControlInput::Background,
-                1 => ControlInput::Opacity,
-                _ => return Err(DecodeError::Malformed { offset }),
-            };
+            let input = *LookArm::SWITCHED
+                .get(usize::from(dec.read_u8()?))
+                .ok_or(DecodeError::Malformed { offset })?;
             let steps = index(dec)?;
             let mut when = Vec::new();
             for _ in 0..steps {
@@ -1093,6 +1119,14 @@ mod tests {
             Some(ControlInput::Caption)
         );
         assert_eq!(ControlKind::Label.input("placeholder"), None);
+        assert_eq!(
+            ControlKind::Plain.input("corner_radius"),
+            Some(ControlInput::CornerRadius)
+        );
+        assert_eq!(
+            ControlKind::Asset.input("border"),
+            Some(ControlInput::Border)
+        );
     }
 
     #[test]
@@ -1141,11 +1175,13 @@ mod tests {
             look: Look {
                 background: Some(3),
                 opacity: None,
+                corner_radius: Some(19),
+                border: None,
                 background_transition: None,
                 opacity_transition: Some(4),
             },
             arms: Box::new([LookArm {
-                input: ControlInput::Opacity,
+                input: ControlInput::Border,
                 when: Box::new([
                     When::State(Interaction::Hovered),
                     When::Entry(5),

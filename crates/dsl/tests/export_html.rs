@@ -118,6 +118,39 @@ fn a_constant_view_is_html_and_css_alone() {
     assert_eq!(export(CARD, true).unwrap(), page);
 }
 
+const SHAPES: &str = r##"
+export component Shapes {
+    state round = false;
+    view {
+        Column {
+            Column { width: 40dp; height: 20dp; corner_radius: 4dp + 1sp; border: Option::Some(Border { width: 2dp, color: #ff0000 }); }
+            Column { width: 40dp; height: 20dp; corner_radius: 50%; }
+            Column { width: 40dp; height: 20dp; corner_radius: if round { 10% } else { 0dp }; }
+        }
+    }
+}
+"##;
+
+#[test]
+fn a_box_s_corner_radius_and_border_export_as_rounded_corners_and_an_inner_stroke() {
+    let page = export(SHAPES, false).unwrap();
+    let css = &page.styles;
+    assert!(
+        css.contains("border-radius: calc(4 * 1px + 1 * 0.0625rem);"),
+        "{css}"
+    );
+    assert!(
+        css.contains("box-shadow: inset 0 0 0 2px #ff0000;"),
+        "{css}"
+    );
+    assert!(
+        css.contains("border-radius: calc(9999px);"),
+        "a pill: {css}"
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.vradius("), "{script}");
+}
+
 const LOGIN: &str = r#"
 export component Login {
     state hidden = true;

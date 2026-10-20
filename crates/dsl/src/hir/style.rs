@@ -60,7 +60,7 @@ pub(crate) const RESERVED_SELECTORS: [&str; 6] = [
 
 /// The look properties the runtime delivers per node, which a selector may
 /// switch.
-const SWITCHED: [&str; 2] = ["background", "opacity"];
+const SWITCHED: [&str; 4] = ["background", "opacity", "corner_radius", "border"];
 
 /// The look properties the runtime delivers per node that a selector does
 /// not switch.
@@ -480,7 +480,7 @@ pub(crate) fn plan(
                 plan.unmounted.push((
                     when.syntax().text_range(),
                     format!(
-                        "a style's `when` switches `background` and `opacity`, not `{name}` yet"
+                        "a style's `when` switches `background`, `opacity`, `corner_radius` and `border`, not `{name}` yet"
                     ),
                 ));
             }

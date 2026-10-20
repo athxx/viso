@@ -627,6 +627,7 @@ fn control_tokens(control: Control) -> TokenStream {
     let (overflow, text_align) = (entry(text.overflow), entry(text.align));
     let look = control.look;
     let (background, opacity) = (entry(look.background), entry(look.opacity));
+    let (corner_radius, border) = (entry(look.corner_radius), entry(look.border));
     let (background_transition, opacity_transition) = (
         entry(look.background_transition),
         entry(look.opacity_transition),
@@ -638,6 +639,8 @@ fn control_tokens(control: Control) -> TokenStream {
     let arms = control.arms.iter().map(|arm| {
         let input = match arm.input {
             ControlInput::Opacity => quote! { Opacity },
+            ControlInput::CornerRadius => quote! { CornerRadius },
+            ControlInput::Border => quote! { Border },
             _ => quote! { Background },
         };
         let when = arm.when.iter().map(|step| match *step {
@@ -675,6 +678,8 @@ fn control_tokens(control: Control) -> TokenStream {
             look: ::viso::__private::viso_view::Look {
                 background: #background,
                 opacity: #opacity,
+                corner_radius: #corner_radius,
+                border: #border,
                 background_transition: #background_transition,
                 opacity_transition: #opacity_transition,
             },
@@ -811,6 +816,7 @@ fn lengths_tokens(lengths: &LengthsIr, handle: &Ident) -> TokenStream {
             margin: #margin,
             row_gap: #row_gap,
             insets: #insets,
+            corner_radius: ::core::option::Option::None,
         });
     }
 }

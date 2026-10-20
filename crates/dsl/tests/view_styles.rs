@@ -1,13 +1,13 @@
 //! Styles: a node's `styles` apply each style after its bases, a later binding
 //! over an earlier one and the node's own properties over them all; a `when`
-//! switches `background` and `opacity` while its selector holds — hover,
-//! pressed, focus, or the node's own `enabled` — on the hot-reloaded and the
-//! packaged view and inside a region. And the checks: a target the file names
-//! (`E2001`), bases of the file for the same target (`E2001`, `E2103`) on no
-//! cycle (`E2003`), styleable properties (`E3101`) bound once per block
-//! (`E3102`) to pure values (`E2502`) of their type (`E2103`), selectors the
-//! target supports (`E2001`, `E2103`), a `styles` list of styles for the node
-//! (`E2103`), and `@styleable`/`@selector` on the members they fit (`E3710`).
+//! switches `background`, `opacity`, `corner_radius` and `border` while its
+//! selector holds — hover, pressed, focus, or the node's own `enabled` — on
+//! the hot-reloaded and the packaged view and inside a region. And the
+//! checks: a target the file names (`E2001`), bases of the file for the same
+//! target (`E2001`, `E2103`) on no cycle (`E2003`), styleable properties
+//! (`E3101`) bound once per block (`E3102`) to pure values (`E2502`) of their
+//! type (`E2103`), selectors the target supports (`E2001`, `E2103`), a
+//! `styles` list of styles for the node (`E2103`), and `@styleable`/`@selector` on the members they fit (`E3710`).
 
 mod support;
 

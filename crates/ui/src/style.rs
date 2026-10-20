@@ -20,6 +20,9 @@ pub struct BoxStyle {
     pub fill: Rgba,
     /// Corner radius in pixels (0 = sharp).
     pub radius: f32,
+    /// More corner radius, as a share of the shorter side of the box the node
+    /// paints: `0.5` rounds a pill. Usually `0`.
+    pub radius_pct: f32,
     /// Border stroke.
     pub border: Border,
 }
@@ -30,6 +33,7 @@ impl BoxStyle {
     pub const NONE: BoxStyle = BoxStyle {
         fill: Rgba::TRANSPARENT,
         radius: 0.0,
+        radius_pct: 0.0,
         border: Border::NONE,
     };
 
@@ -38,6 +42,7 @@ impl BoxStyle {
         BoxStyle {
             fill,
             radius: 0.0,
+            radius_pct: 0.0,
             border: Border::NONE,
         }
     }

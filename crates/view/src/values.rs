@@ -31,14 +31,14 @@ use viso_behavior::{Fault, FaultKind, Value};
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
 use viso_ui::{
-    AssetFit, BuildCx, Easing, FieldLook, FieldSeed, FontSize, LiveRegion, LookValue, NodeId,
-    NodeStore, Rgba, Role, SemanticState, Semantics, Srgb, StateId, StructureCx, TextRequest,
-    Timing,
+    AssetFit, Border, BuildCx, Easing, FieldLook, FieldSeed, FontSize, LiveRegion, LookValue,
+    NodeId, NodeStore, Rgba, Role, SemanticState, Semantics, Srgb, StateId, StructureCx,
+    TextRequest, Timing,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, When};
 use crate::host::ViewHost;
-use crate::layout_values::layout_value;
+use crate::layout_values::{layout_value, length};
 use crate::scope::Scope;
 use crate::shaders::encode_shader;
 use crate::text_style::text_style;
@@ -162,6 +162,8 @@ pub(crate) fn control_cells(
         control.tint,
         look.background,
         look.opacity,
+        look.corner_radius,
+        look.border,
         semantics.label,
         semantics.hint,
         semantics.value,
@@ -182,29 +184,30 @@ pub(crate) fn control_cells(
 }
 
 /// How many values a node shows: its value, the two entries beside it (a
-/// slider's bounds, an image's fit and tint), its look's background and
-/// opacity, its `semantics.label`, `hint`, `value`, `hidden` and
+/// slider's bounds, an image's fit and tint), its look's background,
+/// opacity, corner radius and border, its `semantics.label`, `hint`, `value`, `hidden` and
 /// `heading_level`, its `visible` and `focusable`, and its text's `color`,
 /// `soft_wrap`, `font_weight`, `font_family`, `line_height`, `max_lines`,
 /// `overflow` and `align`, and a field's `placeholder` and `secure` and a
 /// check's caption.
-const SHOWN: usize = 25;
+const SHOWN: usize = 27;
 
-/// Where its background and opacity sit among the values a node shows.
+/// Where its background, opacity, corner radius and border sit among the
+/// values a node shows.
 const LOOK: usize = 5;
 
 /// Where its `semantics.*` values start among the values a node shows.
-const SEMANTICS: usize = 7;
+const SEMANTICS: usize = 9;
 
 /// Where its `visible` and `focusable` sit among the values a node shows.
-const NODE: usize = 12;
+const NODE: usize = 14;
 
 /// Where its text's style starts among the values a node shows.
-const TEXT: usize = 14;
+const TEXT: usize = 16;
 
 /// Where a field's placeholder and masking and a check's caption sit among
 /// the values a node shows.
-const FIELD: usize = 22;
+const FIELD: usize = 24;
 
 /// A node showing a value of the view.
 pub(crate) struct Shown {
@@ -217,8 +220,8 @@ pub(crate) struct Shown {
     scope: Scope,
     /// The cells its entries read, ascending.
     deps: Box<[StateId]>,
-    /// The value, lower bound, upper bound, fit, tint, background, opacity,
-    /// `semantics.*`, presence, text style, field and caption values it
+    /// The value, lower bound, upper bound, fit, tint, look, `semantics.*`,
+    /// presence, text style, field and caption values it
     /// shows, `None` before the first delivery.
     shows: Option<[Value; SHOWN]>,
     /// Whether [`shows`](Self::shows) is what the node showed before a hot
@@ -296,9 +299,11 @@ impl Shown {
         }
         let control = &self.control;
         let look = control.look;
-        let (Ok(background), Ok(opacity)) = (
+        let (Ok(background), Ok(opacity), Ok(corner_radius), Ok(border)) = (
             self.pick(ControlInput::Background, look.background, cx, host),
             self.pick(ControlInput::Opacity, look.opacity, cx, host),
+            self.pick(ControlInput::CornerRadius, look.corner_radius, cx, host),
+            self.pick(ControlInput::Border, look.border, cx, host),
         ) else {
             return;
         };
@@ -313,6 +318,8 @@ impl Shown {
                 control.tint,
                 background,
                 opacity,
+                corner_radius,
+                border,
                 semantics.label,
                 semantics.hint,
                 semantics.value,
@@ -353,6 +360,8 @@ impl Shown {
         let shown_background =
             (background.is_some() || styled(ControlInput::Background)).then_some(());
         let shown_opacity = (opacity.is_some() || styled(ControlInput::Opacity)).then_some(());
+        let shown_radius = corner_radius.is_some() || styled(ControlInput::CornerRadius);
+        let shown_border = border.is_some() || styled(ControlInput::Border);
         let [
             value,
             min,
@@ -361,6 +370,8 @@ impl Shown {
             tint,
             background,
             opacity,
+            corner_radius,
+            border,
             label,
             hint,
             spoken,
@@ -435,6 +446,12 @@ impl Shown {
         }
         if control.node.focusable.is_some() && changed(NODE + 1) {
             store.set_focusable(self.node, truth(focusable, false));
+        }
+        if shown_radius && changed(LOOK + 2) {
+            store.set_corner_radius(self.node, length(corner_radius).unwrap_or_default());
+        }
+        if shown_border && changed(LOOK + 3) {
+            store.set_border(self.node, stroke(border));
         }
         for (at, entry, value) in [
             (LOOK, shown_background, LookValue::Fill(color(background))),
@@ -689,6 +706,23 @@ fn asset_fit(value: &Value) -> AssetFit {
         Some(1) => AssetFit::Cover,
         Some(2) => AssetFit::Fill,
         _ => AssetFit::Contain,
+    }
+}
+
+/// A `Border` value as the stroke it draws, none for `None`.
+fn stroke(value: &Value) -> Border {
+    let Value::Agg(border) = value else {
+        return Border::NONE;
+    };
+    match &border.fields[..] {
+        [width, paint] => Border {
+            width: width
+                .as_float()
+                .or_else(|| length(width).map(|terms| f64::from(terms.dp)))
+                .map_or(0.0, |w| (w as f32).max(0.0)),
+            color: color(paint),
+        },
+        _ => Border::NONE,
     }
 }
 

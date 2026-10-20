@@ -499,6 +499,7 @@ pub(crate) fn node_lengths(lengths: &LengthsIr) -> Option<NodeLengths> {
             bottom: insets.bottom.map(terms_of),
             start: insets.start.map(terms_of),
         }),
+        corner_radius: None,
     })
 }
 

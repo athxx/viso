@@ -674,6 +674,8 @@ impl Jsx<'_> {
                             let value = match token {
                                 VarToken::Color => format!("show.color({v})"),
                                 VarToken::Opacity => format!("show.opacity({v})"),
+                                VarToken::Radius => format!("show.radius({v})"),
+                                VarToken::Border => format!("show.stroke({v})"),
                                 VarToken::Transition(property) => {
                                     format!("show.move({v}, \"{property}\")")
                                 }

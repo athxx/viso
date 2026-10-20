@@ -321,6 +321,8 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                             VarToken::Opacity => {
                                 format!("P.vopacity({el}, {value}, \"{name}\")")
                             }
+                            VarToken::Radius => format!("P.vradius({el}, {value}, \"{name}\")"),
+                            VarToken::Border => format!("P.vborder({el}, {value}, \"{name}\")"),
                             VarToken::Transition(property) => {
                                 format!("P.vmove({el}, {value}, \"{name}\", \"{property}\")")
                             }

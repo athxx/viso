@@ -58,10 +58,9 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // layout, paint or hit-test work (section 8.7, ADR 0043).
         "transform" | "translate" | "scale" | "rotate" | "offset" | "scroll" => D::TRANSFORM,
 
-        // Corner radius / border width affect painted shape (and border width
-        // nudges the content box, so it also lays out).
-        "radius" | "corner_radius" => D::PAINT,
-        "border_width" => D::LAYOUT | D::PAINT,
+        // Corner radius and border affect the painted shape only: a border
+        // strokes inside the box (§U3.3).
+        "radius" | "corner_radius" | "border" | "border_width" => D::PAINT,
 
         // Visibility toggles participation in layout and paint and what is
         // exposed to accessibility.

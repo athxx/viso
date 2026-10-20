@@ -79,7 +79,7 @@ struct SizeTerms {
 }
 
 /// A binding's terms that few bindings have: its box rules, a grid's row
-/// gap and an absolute child's insets.
+/// gap, an absolute child's insets and a corner radius.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct RareTerms {
     min_width: Option<LengthTerms>,
@@ -89,6 +89,7 @@ struct RareTerms {
     margin: Option<EdgeTerms>,
     row_gap: Option<LengthTerms>,
     insets: Option<InsetTerms>,
+    corner_radius: Option<LengthTerms>,
 }
 
 /// No slot of [`LengthBindings::rare_terms`].
@@ -161,6 +162,7 @@ impl LengthBindings {
             lengths.margin = rules.margin;
             lengths.row_gap = rules.row_gap;
             lengths.insets = rules.insets;
+            lengths.corner_radius = rules.corner_radius;
         }
         lengths
     }
@@ -187,6 +189,7 @@ impl LengthBindings {
             margin: lengths.margin,
             row_gap: lengths.row_gap,
             insets: lengths.insets,
+            corner_radius: lengths.corner_radius,
         };
         let has_rare = rare.min_width.is_some()
             || rare.max_width.is_some()
@@ -194,7 +197,8 @@ impl LengthBindings {
             || rare.max_height.is_some()
             || rare.margin.is_some()
             || rare.row_gap.is_some()
-            || rare.insets.is_some();
+            || rare.insets.is_some()
+            || rare.corner_radius.is_some();
         let old_rare = slot.map_or(NO_RARE_TERMS, |slot| self.terms[slot as usize].1);
         let rare_slot = match (has_rare, old_rare) {
             (false, NO_RARE_TERMS) => NO_RARE_TERMS,
@@ -565,6 +569,13 @@ impl NodeStore {
                 AbsoluteInsets::NONE
             });
             self.set_placement(id, Placement::Absolute(folded));
+        }
+        if let Some(radius) = lengths.corner_radius {
+            let dp = radius.fixed(&env, font).unwrap_or_else(|| {
+                self.lengths_mut().report(id, LengthIssue::NonFinite);
+                0.0
+            });
+            self.write_corner_radius(id, dp, radius.pct);
         }
         if class != DirtyClass::EMPTY {
             self.mark_dirty(id, class);

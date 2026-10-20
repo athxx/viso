@@ -137,6 +137,11 @@ pub(super) enum Prop {
 pub(super) enum VarToken {
     Color,
     Opacity,
+    /// A `MixedLength` corner radius, as `border-radius`.
+    Radius,
+    /// An `Option<Border>`, as an inset `box-shadow`: it strokes inside the
+    /// box without moving its content.
+    Border,
     /// A `Transition` for the CSS property named.
     Transition(&'static str),
 }
@@ -1055,6 +1060,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         let what = match token {
             VarToken::Color => "the background",
             VarToken::Opacity => "the opacity",
+            VarToken::Radius => "the corner radius",
+            VarToken::Border => "the border",
             VarToken::Transition(_) => "the transition",
         };
         match self.fixed(entry, what, at) {
@@ -1073,15 +1080,17 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     .as_int()
                     .map_or("transparent".to_owned(), |c| css::color(c as u32)),
                 VarToken::Opacity => css::number(v.as_float().unwrap_or(1.0).clamp(0.0, 1.0)),
+                VarToken::Radius => radius(&v),
+                VarToken::Border => stroke(&v),
                 VarToken::Transition(_) => String::new(),
             },
             Fixed::Theme(name) => format!("var({name})"),
         }
     }
 
-    /// The node's background and opacity, each its base value and the values
-    /// its styles' `when` blocks select, as rules of its own class; and how
-    /// they move.
+    /// The node's background, opacity, corner radius and border, each its
+    /// base value and the values its styles' `when` blocks select, as rules
+    /// of its own class; and how they move.
     #[allow(clippy::too_many_arguments)]
     fn look(
         &mut self,
@@ -1106,6 +1115,18 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 viso_schema::view::ControlInput::Opacity,
                 "opacity",
                 VarToken::Opacity,
+            ),
+            (
+                look.corner_radius,
+                viso_schema::view::ControlInput::CornerRadius,
+                "border-radius",
+                VarToken::Radius,
+            ),
+            (
+                look.border,
+                viso_schema::view::ControlInput::Border,
+                "box-shadow",
+                VarToken::Border,
             ),
         ] {
             if let Some(entry) = base {
@@ -1765,4 +1786,54 @@ pub(super) fn url_path(path: &str) -> String {
         }
     }
     out
+}
+
+/// A `MixedLength` corner radius as `border-radius`: a share of 50% or more
+/// of the shorter side rounds a pill; a smaller one reads the box's width
+/// and height apart, which rounds a non-square box elliptically.
+fn radius(value: &Value) -> String {
+    let Value::Agg(agg) = value else {
+        return "0".to_owned();
+    };
+    let term = |at: usize| agg.fields.get(at).and_then(Value::as_float).unwrap_or(0.0);
+    let mut parts: Vec<String> = [
+        (0, "1px"),
+        (1, "var(--viso-px)"),
+        (2, "0.0625rem"),
+        (3, "1em"),
+    ]
+    .into_iter()
+    .filter(|&(at, _)| term(at) != 0.0)
+    .map(|(at, unit)| format!("{} * {unit}", css::number(term(at))))
+    .collect();
+    match term(4) {
+        pct if pct >= 50.0 => parts.push("9999px".to_owned()),
+        pct if pct > 0.0 => parts.push(format!("{}%", css::number(pct))),
+        _ => {}
+    }
+    match parts.as_slice() {
+        [] => "0".to_owned(),
+        _ => format!("calc({})", parts.join(" + ")),
+    }
+}
+
+/// An `Option<Border>` as an inset `box-shadow`, `none` for no border.
+fn stroke(value: &Value) -> String {
+    let Value::Agg(agg) = value else {
+        return "none".to_owned();
+    };
+    let [width, paint] = &agg.fields[..] else {
+        return "none".to_owned();
+    };
+    let width = match width {
+        Value::Agg(terms) => terms.fields.first().and_then(Value::as_float),
+        width => width.as_float(),
+    };
+    let color = paint
+        .as_int()
+        .map_or("transparent".to_owned(), |c| css::color(c as u32));
+    format!(
+        "inset 0 0 0 {} {color}",
+        css::px(width.unwrap_or(0.0).max(0.0))
+    )
 }

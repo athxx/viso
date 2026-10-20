@@ -423,8 +423,13 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       down to it, an overflowing row's fit children shrinking alike.
   - [ ] Grid `auto` tracks shrinking toward their cells' min-content widths when
         the grid is narrower than their max-content sum.
-- [ ] `corner_radius`, `border`, `clip`, `autofocus`, and `enabled` disabling a
-      node beyond its styles' selectors (`E3711` today).
+- [x] `corner_radius` and `border` reach the node, constant or bound, and a style's
+      `when` switches them: a `%` radius is a share of the shorter side of the box
+      as it paints, a `px`/`sp`/`em` one follows the environment, none rounds past
+      a pill, and a border strokes inside the box; across the macros, hot reload,
+      the release package and the HTML/script/Solid exports.
+- [ ] `clip`, `autofocus`, and `enabled` disabling a node beyond its styles'
+      selectors (`E3711` today).
 - [x] `fill` on the cross axis fills the available extent under any `align` (U3.2);
       the runtime fills it only under `Align::Stretch`, and stretches a `fit` child
       too.
