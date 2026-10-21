@@ -252,6 +252,7 @@ async fn rendered_texture_is_sampled_upright_and_scissored() {
             uv_pos: [0.0, 0.0],
             uv_size: [1.0, 1.0],
             color: [1.0; 4],
+            ..ImageInstance::UNMASKED
         },
     );
 

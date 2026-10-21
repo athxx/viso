@@ -119,6 +119,7 @@ impl ControlKind {
             (_, "focusable") => ControlInput::Focusable,
             (_, "enabled") => ControlInput::Enabled,
             (_, "autofocus") => ControlInput::Autofocus,
+            (_, "clip") => ControlInput::Clip,
             (ControlKind::Label | ControlKind::TextInput, "color") => ControlInput::TextColor,
             (ControlKind::Label | ControlKind::TextInput, "soft_wrap") => ControlInput::SoftWrap,
             (ControlKind::Label | ControlKind::TextInput, "font_weight") => {
@@ -510,6 +511,9 @@ pub enum ControlInput {
     Enabled,
     /// The node's `autofocus`: whether it takes the focus as it mounts.
     Autofocus,
+    /// The node's `clip`: whether its children are seen and hit only inside
+    /// its box.
+    Clip,
     /// A text's `color`.
     TextColor,
     /// A text's `soft_wrap`.
@@ -591,6 +595,8 @@ pub struct NodeEntries {
     pub enabled: Option<u32>,
     /// The entry of its `autofocus`.
     pub autofocus: Option<u32>,
+    /// The entry of its `clip`.
+    pub clip: Option<u32>,
 }
 
 /// The handler-table entries of the style of a text a node shows: an absent
@@ -791,6 +797,7 @@ impl Control {
             ControlInput::Focusable => self.node.focusable,
             ControlInput::Enabled => self.node.enabled,
             ControlInput::Autofocus => self.node.autofocus,
+            ControlInput::Clip => self.node.clip,
             ControlInput::TextColor => self.text.color,
             ControlInput::SoftWrap => self.text.soft_wrap,
             ControlInput::FontWeight => self.text.font_weight,
@@ -839,6 +846,7 @@ impl Control {
             ControlInput::Focusable => &mut self.node.focusable,
             ControlInput::Enabled => &mut self.node.enabled,
             ControlInput::Autofocus => &mut self.node.autofocus,
+            ControlInput::Clip => &mut self.node.clip,
             ControlInput::TextColor => &mut self.text.color,
             ControlInput::SoftWrap => &mut self.text.soft_wrap,
             ControlInput::FontWeight => &mut self.text.font_weight,
@@ -888,6 +896,7 @@ impl Encode for Control {
             self.node.focusable,
             self.node.enabled,
             self.node.autofocus,
+            self.node.clip,
         ]
         .into_iter()
         .chain(self.text.all())
@@ -986,6 +995,7 @@ impl Decode for Control {
             focusable: entry()?,
             enabled: entry()?,
             autofocus: entry()?,
+            clip: entry()?,
         };
         control.text = TextEntries {
             color: entry()?,
@@ -1223,6 +1233,7 @@ mod tests {
                 focusable: None,
                 enabled: Some(19),
                 autofocus: Some(20),
+                clip: Some(21),
             },
             text: TextEntries {
                 color: None,

@@ -42,7 +42,8 @@ use crate::primitive::{
     AdvancedBlendInstance, AnalyticCapsuleInstance, AnalyticEllipseInstance, AnalyticLineInstance,
     AnalyticRRectInstance, BlurInstance, ColorTransformInstance, GlyphInstance, GradientInstance,
     ImageInstance, MaterialInstance, MaterialLane, MeshVertex, NativeMaterialRegion, PathCmd,
-    Primitive, ProgramSlot, ProgramTextures, QuadInstance, Rect, ShadowInstance, rgba_array,
+    Primitive, ProgramSlot, ProgramTextures, QuadInstance, Rect, RoundMask, ShadowInstance,
+    rgba_array,
 };
 use crate::program::{BrushProgram, ProgramError, ProgramTable};
 use crate::raster_mask::{path_bounds, rasterize_path_coverage};
@@ -440,8 +441,12 @@ struct OffscreenPass {
     /// draw has no color-matrix slot, a blended layer's whole color chain is
     /// realized as [`PassWork::ColorTransform`] rungs and `color` stays `None`.
     blend: Option<(Blend, usize)>,
+    /// The rounded rect the composite is masked to, in world space: the clip
+    /// of a layer whose [`Primitive::ClipCorners`] rounds it. `None` for a
+    /// layer its scissor clips.
+    mask: Option<RoundMask>,
     /// What decides its composite beyond its content: its region, opacity,
-    /// blur and color chain, as a damage key (§30.3).
+    /// blur, color chain and mask, as a damage key (§30.3).
     key: u64,
 }
 
@@ -526,7 +531,7 @@ fn scan_layer_subtree(primitives: &[Primitive], layer_index: usize) -> SubtreeFa
                 continue;
             }
             // Pure annotations on whichever layer owns them.
-            Primitive::ColorEffect(_) | Primitive::Blend(_) => continue,
+            Primitive::ColorEffect(_) | Primitive::Blend(_) | Primitive::ClipCorners(_) => continue,
             _ if depth > 0 => continue,
             Primitive::Quad(quad) => Some(quad.rect),
             Primitive::AnalyticRRect(rrect) => Some(rrect.rect),
@@ -2883,8 +2888,27 @@ impl Renderer {
                     // independently — a `Blend` between two `ColorEffect`s ends
                     // neither chain.
                     let markers = primitives[prim_index + 1..].iter().take_while(|p| {
-                        matches!(p, Primitive::ColorEffect(_) | Primitive::Blend(_))
+                        matches!(
+                            p,
+                            Primitive::ColorEffect(_)
+                                | Primitive::Blend(_)
+                                | Primitive::ClipCorners(_)
+                        )
                     });
+                    // The last corners marker rounds the clip; sharp corners
+                    // leave it to the scissor.
+                    let mask = markers
+                        .clone()
+                        .filter_map(|p| match p {
+                            Primitive::ClipCorners(corners) => Some(*corners),
+                            _ => None,
+                        })
+                        .last()
+                        .filter(|corners| !corners.is_sharp())
+                        .map(|radius| RoundMask {
+                            rect: layer.clip,
+                            radius,
+                        });
                     // The *last* blend marker in the run wins; a run with none
                     // composites `SrcOver`, the one mode the fixed-function
                     // stage expresses on the common pipeline.
@@ -2941,6 +2965,7 @@ impl Renderer {
                         fused_color_ops: color_len,
                         analytic_shadow: facts.analytic_shadow,
                         shared_backdrop,
+                        complex_mask: mask.is_some(),
                         ..LayerRequest::default()
                     };
                     let plan = plan_layer(&request);
@@ -3021,7 +3046,7 @@ impl Renderer {
                             isolate = Some((blend, capture));
                             self.blend_isolations += 1;
                         }
-                        let idx = self.open_offscreen(world_clip, layer.opacity, isolate);
+                        let idx = self.open_offscreen(world_clip, layer.opacity, isolate, mask);
                         self.layers[record as usize].drawn = LayerDrawn::Offscreen(idx);
                         self.layer_stack.push(LayerEntry {
                             clip: world_clip,
@@ -3047,7 +3072,7 @@ impl Renderer {
                 // over them again here is the no-op that keeps the chain a pure
                 // annotation on the layer — and makes a marker anywhere else in
                 // the stream harmless rather than an error (§17.3, §14.6).
-                Primitive::ColorEffect(_) | Primitive::Blend(_) => {}
+                Primitive::ColorEffect(_) | Primitive::Blend(_) | Primitive::ClipCorners(_) => {}
                 Primitive::Transform(slot) => {
                     self.transforms
                         .push(slot.0, !matches!(target, PassTarget::Main));
@@ -3618,6 +3643,8 @@ impl Renderer {
                 let bind_group = self.transient.bind_group(sample);
                 instance.rect_pos[0] -= origin[0];
                 instance.rect_pos[1] -= origin[1];
+                instance.mask_pos[0] -= origin[0];
+                instance.mask_pos[1] -= origin[1];
                 // An advanced blend cannot ride the fixed-function stage, so this
                 // layer's composite becomes one `AdvancedBlend` draw: it samples
                 // both the layer and the bounded destination snapshot its capture
@@ -3835,6 +3862,7 @@ impl Renderer {
                     ],
                     uv_size: [rect.w / bw * cover[0], rect.h / bh * cover[1]],
                     color: [1.0, 1.0, 1.0, opacity],
+                    ..ImageInstance::UNMASKED
                 };
                 let start = self.image_scratch.len() as u32;
                 self.image_scratch.push(instance);
@@ -4734,6 +4762,7 @@ impl Renderer {
         world_clip: Rect,
         opacity: f32,
         blend: Option<(Blend, usize)>,
+        mask: Option<RoundMask>,
     ) -> usize {
         let idx = self.offscreen_passes.len();
         self.offscreen_passes.push(OffscreenPass {
@@ -4745,6 +4774,7 @@ impl Renderer {
             opacity,
             color: None,
             blend,
+            mask,
             key: 0,
         });
         idx
@@ -4835,7 +4865,8 @@ impl Renderer {
     }
 
     /// The damage key of offscreen pass `idx`'s content beyond its entries:
-    /// its rect, opacity, blur, inherited fold, color ops `ops` and blend.
+    /// its rect, opacity, blur, inherited fold, color ops `ops`, blend and
+    /// mask.
     pub(crate) fn pass_key(
         &self,
         idx: usize,
@@ -4857,6 +4888,9 @@ impl Renderer {
         }
         if let Some((blend, capture)) = pass.blend {
             key = key.word(blend as u64).word(capture as u64);
+        }
+        if let Some(mask) = pass.mask {
+            key = key.rect(mask.rect).f32s(&mask.radius.to_array());
         }
         key.finish()
     }
@@ -5077,7 +5111,9 @@ impl Renderer {
                 used[1] as f32 / phys[1] as f32,
             ],
             color: [1.0, 1.0, 1.0, pass.opacity],
-        };
+            ..ImageInstance::UNMASKED
+        }
+        .masked(pass.mask);
         let bounds = crate::scene::bounds::Bounds::from_world(pass.rect, 0.0, 0.0);
         self.scene.ingest_composite(
             composite,

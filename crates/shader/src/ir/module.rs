@@ -279,12 +279,24 @@ pub fn image_ir() -> ShaderIr {
         IrField::new("uv_pos", IrType::F32X2),
         IrField::new("uv_size", IrType::F32X2),
         IrField::new("color", IrType::F32X4),
+        IrField::new("mask_pos", IrType::F32X2),
+        IrField::new("mask_size", IrType::F32X2),
+        IrField::new("mask_radius", IrType::F32X4),
     ];
     static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", ""),
         Varying::new("tint", IrType::F32X4, "", ""),
+        Varying::new("local", IrType::F32X2, "", "point-space sample position"),
+        Varying::new("mask_center", IrType::F32X2, "", ""),
+        Varying::new("mask_half", IrType::F32X2, "", ""),
+        Varying::new(
+            "mask_radius",
+            IrType::F32X4,
+            "",
+            "lt, rt, rb, lb; all 0 = unmasked",
+        ),
     ];
     ShaderIr {
         kind: PrimitiveKind::Image,
@@ -294,7 +306,7 @@ pub fn image_ir() -> ShaderIr {
         varyings: VARYINGS,
         texture_count: 1,
         vertex_body: IMAGE_VERTEX_BODY,
-        helpers: "",
+        helpers: IMAGE_HELPERS,
         fragment_body: IMAGE_FRAGMENT_BODY,
     }
 }
@@ -1577,7 +1589,31 @@ VOut out;
 out.position = float4(ndc, 0.0, 1.0);
 out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
 out.tint = float4(inst.color);
+out.local = pixel;
+out.mask_center = float2(inst.mask_pos) + float2(inst.mask_size) * 0.5;
+out.mask_half = float2(inst.mask_size) * 0.5;
+out.mask_radius = float4(inst.mask_radius);
 return out;";
+
+const IMAGE_HELPERS: &str = "\
+// Signed distance to a rounded box with an independent radius per corner
+// (`radii` ordered left-top, right-top, right-bottom, left-bottom), negative
+// inside; the radius convention is the Quad's.
+static inline float rrect_sdf(float2 p, float2 center, float2 half_ext, float4 radii) {
+    float2 d = p - center;
+    float r = d.x < 0.0 ? (d.y < 0.0 ? radii.x : radii.w)
+                        : (d.y < 0.0 ? radii.y : radii.z);
+    float k = min(2.0 * r, min(half_ext.x, half_ext.y));
+    float2 q = abs(d) - (half_ext - k);
+    float2 mx = max(q, float2(0.0));
+    return length(mx) + min(max(q.x, q.y), 0.0) - k;
+}
+
+// Device-pixel coverage factor: how many SDF units span one screen pixel at the
+// current sampling position, inverted.
+static inline float aa_factor(float2 p) {
+    return 1.0 / length(float2(length(dfdx(p)), length(dfdy(p))));
+}";
 
 const IMAGE_FRAGMENT_BODY: &str = "\
 // Texel is premultiplied linear (Viso texture convention). Scale it by the
@@ -1585,7 +1621,17 @@ const IMAGE_FRAGMENT_BODY: &str = "\
 // tint.a — keeping the result premultiplied.
 float4 texel = tex.sample(samp, in.uv);
 float4 t = float4(in.tint.rgb * in.tint.a, in.tint.a);
-return texel * t;";
+// A rounded mask (a clip's composite, a rounded box's image) covers what lies
+// inside it, antialiased over one device pixel; without one every sample is in.
+// The derivative is taken outside the branch, which is not uniform.
+float aa = aa_factor(in.local);
+float4 r = in.mask_radius;
+float cov = 1.0;
+if (max(max(r.x, r.y), max(r.z, r.w)) > 0.0) {
+    float d = rrect_sdf(in.local, in.mask_center, in.mask_half, r);
+    cov = clamp(-d * aa, 0.0, 1.0);
+}
+return texel * (t * cov);";
 
 const BLUR_VERTEX_BODY: &str = "\
 InstanceIn inst = instances[iid];

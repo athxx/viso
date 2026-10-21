@@ -435,8 +435,13 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       the first `autofocus` node takes the focus as it mounts when none is held;
       across the macros, hot reload, the release package and the HTML/Solid
       exports.
-- [ ] `clip` clipping a node's children's paint and hit test to its box, rounded
-      by its `corner_radius` (`E3711` today).
+- [x] `clip` clipping a node's children's paint and hit test to its box, rounded
+      by its `corner_radius`: a `ClipCorners` marker after the clip layer sends
+      the group offscreen and its composite is masked by a rounded box (Metal,
+      Vulkan, D3D12, WebGPU and the CPU raster), hit testing skips the children
+      past a rounded corner, paint splices keep the clip, and the HTML/Solid
+      exports clip with `overflow: hidden`; a reload that drops a node's
+      binding shows the property's default again.
 - [x] `fill` on the cross axis fills the available extent under any `align` (U3.2);
       the runtime fills it only under `Align::Stretch`, and stretches a `fit` child
       too.

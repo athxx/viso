@@ -326,12 +326,23 @@ impl Rt {
 
     /// The click alone.
     pub fn press(&mut self, n: usize) {
+        self.press_at(5.0, 5.0 + 20.0 * n as f32);
+    }
+
+    /// A primary click at `(x, y)`, then a frame.
+    pub fn click_at(&mut self, x: f32, y: f32) {
+        self.press_at(x, y);
+        self.frame();
+    }
+
+    /// A primary press and release at `(x, y)`.
+    fn press_at(&mut self, x: f32, y: f32) {
         let root = self.root.expect("mounted");
         let mut chain = Vec::new();
         for phase in [PointerPhase::Down, PointerPhase::Up] {
             let event = PointerEvent {
-                x: 5.0,
-                y: 5.0 + 20.0 * n as f32,
+                x,
+                y,
                 phase,
                 buttons: PointerButtons::PRIMARY,
                 modifiers: Default::default(),

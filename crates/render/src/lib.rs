@@ -96,11 +96,11 @@ pub use primitive::{
     GradientInstance, GradientKind, GradientStop, ImageDraw, ImageInstance, ImageRect, LayerClip,
     LineCap, LineJoin, MaterialLane, MaterialLaneNeeds, Mesh, MeshVertex, NativeMaterialRegion,
     NineSlice, Path, PathCmd, PathShadow, Point, Primitive, ProgramSlot, ProgramTextures, Quad,
-    QuadInstance, Rect, ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba, ShaderDraw,
-    ShadowInstance, ShadowShape, SpriteRegion, Stroke, StrokeAlign, TiledImage, TransformSlot,
-    analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema, analytic_rrect_schema,
-    analytic_shadow_schema, color_transform_schema, glyphrun_schema, gradient_schema, image_schema,
-    mesh_schema, quad_schema,
+    QuadInstance, Rect, ResourcePolicy, ResourceRoute, ResourceRouteError, Rgba, RoundMask,
+    ShaderDraw, ShadowInstance, ShadowShape, SpriteRegion, Stroke, StrokeAlign, TiledImage,
+    TransformSlot, analytic_capsule_schema, analytic_ellipse_schema, analytic_line_schema,
+    analytic_rrect_schema, analytic_shadow_schema, color_transform_schema, glyphrun_schema,
+    gradient_schema, image_schema, mesh_schema, quad_schema,
 };
 pub use program::{BrushProgram, IDLE_PIPELINES, ProgramError};
 // The brush profile a `ShaderDraw`'s parameters are encoded by, named in this
@@ -406,6 +406,7 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
             },
             texture,
             sampler: SamplerDesc::LINEAR_CLAMP,
+            mask: None,
         }),
         // A filled-and-stroked vector path in the lower-right: a closed
         // teardrop-ish outline that mixes a cubic and a quadratic Bézier (so the

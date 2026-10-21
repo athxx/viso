@@ -194,6 +194,7 @@ fn every_shape_has_its_own_primitive() {
             tint: Rgba::new(1.0, 1.0, 1.0, 1.0),
             texture: image,
             sampler: SamplerDesc::LINEAR_CLAMP,
+            mask: None,
         }),
         // Text.
         Primitive::GlyphRun(GlyphRunDraw {

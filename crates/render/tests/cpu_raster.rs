@@ -1,7 +1,8 @@
 //! The CPU raster as a production backend (§30.4): a layer composited from
 //! tiles draws the pixels a whole offscreen target would, in a fraction of
-//! the memory; a panel without alpha still composites groups; a 2D
-//! accelerator's fills land where the raster's would.
+//! the memory; a panel without alpha still composites groups; a rounded clip
+//! cuts its group's corners; a 2D accelerator's fills land where the
+//! raster's would.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -9,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use viso_gpu::cpu::{Blitter, Fill, FillPixels};
 use viso_gpu::{ColorSpace, CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureFormat};
 use viso_render::{
-    AnalyticEllipse, Border, ColorEffect, LayerClip, Primitive, Quad, Rect, Renderer, Rgba,
+    AnalyticEllipse, Border, ColorEffect, Corners, LayerClip, Primitive, Quad, Rect, Renderer, Rgba,
 };
 
 const W: u32 = 200;
@@ -138,6 +139,43 @@ fn deferred_layers_draw_the_pixels_whole_targets_do() {
             tiles.gpu.pixel_bytes(),
             whole.gpu.pixel_bytes()
         );
+    }
+}
+
+#[test]
+fn a_rounded_clip_cuts_its_groups_corners() {
+    let clip = rect(40.0, 30.0, 100.0, 80.0);
+    let scene = [
+        layer(clip, 1.0, 0.0),
+        Primitive::ClipCorners(Corners::uniform(10.0)),
+        quad(
+            rect(0.0, 0.0, W as f32, H as f32),
+            Rgba::new(1.0, 1.0, 1.0, 1.0),
+            0.0,
+        ),
+        Primitive::LayerEnd,
+    ];
+    for defer in [false, true] {
+        let mut kit = Kit::new(raster(0, defer), TextureFormat::Bgra8Unorm);
+        let pixels = kit.draw(&scene);
+        let at = |x: u32, y: u32| {
+            let i = ((y * W + x) * 4) as usize;
+            [pixels[i], pixels[i + 1], pixels[i + 2]]
+        };
+        let clear = at(0, 0);
+        assert_eq!(at(90, 70), [255; 3], "defer {defer}: inside");
+        assert_eq!(at(41, 70), [255; 3], "defer {defer}: along an edge");
+        assert_eq!(at(90, 31), [255; 3], "defer {defer}: along the top");
+        for (x, y) in [(41, 31), (138, 31), (138, 108), (41, 108), (30, 70)] {
+            assert_eq!(
+                at(x, y),
+                clear,
+                "defer {defer}: past a corner at ({x}, {y})"
+            );
+        }
+        // On the arc, coverage blends the group over what is under it.
+        let arc = at(46, 36);
+        assert!(arc[0] > clear[0] && arc[0] < 255, "defer {defer}: {arc:?}");
     }
 }
 

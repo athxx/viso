@@ -29,10 +29,12 @@ use crate::component::NodeStore;
 use crate::content::Content;
 use crate::layout::Vec2;
 use crate::node::NodeId;
+use crate::style::BoxStyle;
 use crate::transform::TransformTable;
 use viso_render::{
-    GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point,
-    Primitive, ProgramTextures, Quad, Rect, Rgba, SamplerDesc, ShaderDraw, TransformSlot,
+    Corners, GlyphInstanceData, GlyphLane, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd,
+    Point, Primitive, ProgramTextures, Quad, Rect, Rgba, RoundMask, SamplerDesc, ShaderDraw,
+    TransformSlot,
 };
 
 /// The opaque white tint that passes a premultiplied color-atlas texel through
@@ -150,11 +152,15 @@ pub(crate) struct Span {
 impl Span {
     /// It fades through a `Layer` just before its own drawables.
     pub(crate) const FADED: u8 = 1;
-    /// It is a scroll viewport: a clip `Layer` and its content's `Transform`
-    /// follow its own drawables.
+    /// It is a scroll viewport: its content's `Transform` follows its clip.
     pub(crate) const SCROLL: u8 = 2;
     /// It is a transform root: a `Transform` opens its span.
     pub(crate) const ROOT: u8 = 4;
+    /// It clips its children: a `Layer` over its box follows its own
+    /// drawables. Every scroll viewport does.
+    pub(crate) const CLIP: u8 = 8;
+    /// Its clip is rounded: a `ClipCorners` follows the clip's `Layer`.
+    pub(crate) const CORNERS: u8 = 16;
 }
 
 /// A walk that records nothing; the calls compile away.
@@ -332,19 +338,27 @@ fn paint_subtree<S: PaintSpans>(
     paint_own(store, root, world, out);
     let own_end = out.len();
 
-    // A scroll viewport clips its content to its own box — the viewport's
-    // background already painted above, so it is not clipped — and its content
-    // is a transform root moved by the scroll. An ordinary container pushes
-    // nothing.
+    // A clipping node — a scroll viewport, or one asked to `clip` — clips its
+    // children to its own box, rounded by its corners; its own drawables
+    // already painted above, so they are not clipped. A scroll viewport's
+    // content is a transform root moved by the scroll. An ordinary container
+    // pushes nothing.
     let scroll = store.is_scroll(root);
+    let clips = store.clips_children(root);
+    let corners = clip_corners(store, root, world);
     let mut inner = space;
-    if scroll {
+    if clips {
         out.push(Primitive::Layer(LayerClip {
             clip: world,
             opacity: 1.0,
             blur_sigma: 0.0,
             backdrop_sigma: 0.0,
         }));
+        if let Some(corners) = corners {
+            out.push(Primitive::ClipCorners(corners));
+        }
+    }
+    if scroll {
         let raw = space.raw + store.content_shift(root);
         let slot = table.push(root, space.slot, true, raw, store.snap_shift(raw));
         inner = space.moved(store, slot, raw);
@@ -369,6 +383,8 @@ fn paint_subtree<S: PaintSpans>(
 
     if scroll {
         out.push(Primitive::TransformEnd);
+    }
+    if clips {
         out.push(Primitive::LayerEnd);
     }
     if faded {
@@ -388,38 +404,70 @@ fn paint_subtree<S: PaintSpans>(
             slot: space.slot,
             parent: arena.parent_of(root.node_index()).get(),
             depth: space.depth,
-            flags: flag(faded, Span::FADED) | flag(scroll, Span::SCROLL) | flag(own, Span::ROOT),
+            flags: flag(faded, Span::FADED)
+                | flag(scroll, Span::SCROLL)
+                | flag(own, Span::ROOT)
+                | flag(clips, Span::CLIP)
+                | flag(clips && corners.is_some(), Span::CORNERS),
         },
     );
+}
+
+/// The corner radius `style` rounds a box of `rect` with: its fixed part and
+/// its share of the shorter side, no further than half that side (a pill).
+#[inline]
+fn corner_radius(style: &BoxStyle, rect: Rect) -> f32 {
+    let side = rect.w.min(rect.h);
+    (style.radius + style.radius_pct * side)
+        .min(side * 0.5)
+        .max(0.0)
+}
+
+/// The corners a clipping `node` at `world` rounds its clip with, `None`
+/// when they are sharp.
+#[inline]
+pub(crate) fn clip_corners(store: &NodeStore, node: NodeId, world: Rect) -> Option<Corners> {
+    let radius = corner_radius(&store.style(node), world);
+    (radius > 0.0).then_some(Corners::uniform(radius))
 }
 
 /// A node's own drawables at `world`: its box, then its content over it.
 #[inline(always)]
 fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primitive>) {
     let style = store.style(node);
+    let radius = corner_radius(&style, world);
     if style.is_visible() {
-        // A radius rounds no further than half the shorter side: a pill.
-        let side = world.w.min(world.h);
         out.push(Primitive::Quad(Quad {
             rect: world,
             color: style.fill,
-            radius: (style.radius + style.radius_pct * side).min(side * 0.5),
+            radius,
             border: style.border,
         }));
     }
     // Drawable content (text/image/path) paints over the node's background. Its
     // coordinates are node-local, so shift them by the node's world origin — a
     // scrolled or repositioned node then draws its content in the right place.
+    // An image is rounded by the box's corners.
     if let Some(content) = store.content_payload(node) {
-        paint_content(content, world, out);
+        let mask = (radius > 0.0).then_some(RoundMask {
+            rect: world,
+            radius: Corners::uniform(radius),
+        });
+        paint_content(content, world, mask, out);
     }
 }
 
 /// Lower one node's [`Content`] to a primitive, translating its node-local
 /// coordinates by the node's `world` origin. The image variant fills the node's
 /// whole `world` box (a content leaf sizes to the image's intrinsic size, so the
-/// box already matches unless a fixed size overrides it).
-pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primitive>) {
+/// box already matches unless a fixed size overrides it). `mask` rounds the
+/// images it draws.
+pub(crate) fn paint_content(
+    content: &Content,
+    world: Rect,
+    mask: Option<RoundMask>,
+    out: &mut Vec<Primitive>,
+) {
     let ox = world.x;
     let oy = world.y;
     match content {
@@ -467,6 +515,7 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
                         tint: WHITE,
                         texture: *color_atlas,
                         sampler: SamplerDesc::LINEAR_CLAMP,
+                        mask: None,
                     }));
                 }
             }
@@ -480,6 +529,7 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
                 tint: *tint,
                 texture: *texture,
                 sampler: SamplerDesc::LINEAR_CLAMP,
+                mask,
             }));
         }
         Content::Path {
@@ -518,7 +568,7 @@ pub(crate) fn paint_content(content: &Content, world: Rect, out: &mut Vec<Primit
             fit,
             tint,
             ..
-        } => paint_asset(draw, *natural, *fit, *tint, world, out),
+        } => paint_asset(draw, *natural, *fit, *tint, world, mask, out),
     }
 }
 
@@ -529,6 +579,7 @@ fn paint_asset(
     fit: AssetFit,
     tint: Option<Rgba>,
     world: Rect,
+    mask: Option<RoundMask>,
     out: &mut Vec<Primitive>,
 ) {
     if natural.x <= 0.0 || natural.y <= 0.0 || world.w <= 0.0 || world.h <= 0.0 {
@@ -579,6 +630,7 @@ fn paint_asset(
                 tint: tint.unwrap_or(WHITE),
                 texture: *texture,
                 sampler: SamplerDesc::LINEAR_CLAMP,
+                mask,
             }));
         }
         AssetDraw::Vector(scene) => {
@@ -760,6 +812,56 @@ mod tests {
         // Only the still-shown leaf paints; the hidden one contributes nothing.
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], Primitive::Quad(q) if q.color == RED));
+    }
+
+    #[test]
+    fn a_clipping_node_rounds_the_layer_its_children_paint_in() {
+        let mut store = NodeStore::new();
+        let mut child = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(100.0, 100.0),
+                    style: BoxStyle {
+                        radius: 8.0,
+                        ..BoxStyle::solid(RED)
+                    },
+                    ..Default::default()
+                },
+                |cx| {
+                    child = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fixed(100.0, 300.0),
+                            style: BoxStyle::solid(RED),
+                        })
+                        .id(),
+                    );
+                },
+            );
+            cx.root().unwrap()
+        };
+        store.set_clip(root, true);
+        store.layout(root, Rect::new(0.0, 0.0, 100.0, 100.0), &mut Vec::new());
+
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        // Its own box, then the clip rounded by its corners, then the child
+        // inside it.
+        assert_eq!(out.len(), 5);
+        assert!(matches!(out[0], Primitive::Quad(q) if q.radius == 8.0));
+        assert!(matches!(out[1], Primitive::Layer(l) if l.clip == store.world(root)));
+        assert!(matches!(out[2], Primitive::ClipCorners(c) if c == Corners::uniform(8.0)));
+        assert!(matches!(out[3], Primitive::Quad(q) if q.rect == store.world(child.unwrap())));
+        assert!(matches!(out[4], Primitive::LayerEnd));
+
+        store.write_corner_radius(root, 0.0, 0.0);
+        out.clear();
+        paint_tree(&store, root, &mut out);
+        assert_eq!(out.len(), 4, "a sharp clip needs no corners");
+        assert!(matches!(out[1], Primitive::Layer(_)));
+        assert!(matches!(out[2], Primitive::Quad(_)));
     }
 
     #[test]

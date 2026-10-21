@@ -677,7 +677,16 @@ mod tests {
         let ir_names: Vec<&str> = image_ir().attributes.iter().map(|f| f.name).collect();
         assert_eq!(
             ir_names,
-            ["rect_pos", "rect_size", "uv_pos", "uv_size", "color"]
+            [
+                "rect_pos",
+                "rect_size",
+                "uv_pos",
+                "uv_size",
+                "color",
+                "mask_pos",
+                "mask_size",
+                "mask_radius"
+            ]
         );
         assert_three_legs_agree(IMAGE_MSL(), &image_schema(), &ir_names);
     }

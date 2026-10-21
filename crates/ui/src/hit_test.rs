@@ -7,7 +7,7 @@
 //!
 //! What is hit is what is seen. The top layer paints over the scene, so the
 //! overlays the last paint drew are tried first, the last drawn first, each
-//! free of the scroll clips above it as its paint is. The scene is then
+//! free of the clips above it as its paint is. The scene is then
 //! descended in **reverse** sibling order — the mirror of `paint_tree`'s
 //! forward walk, where a later sibling paints on top — so the visually-topmost
 //! child is tested first and wins; a hidden node is folded out and neither it
@@ -22,10 +22,11 @@
 //! the displacement the scrolls and translates above apply — the pointer mapped
 //! through each transform root's inverse — so a scrolled child hit-tests where
 //! it visibly sits with nothing recomputed after the scroll. The descent also
-//! carries a `clip` rect — the intersection of every enclosing scroll
-//! viewport's box — so a point over content scrolled past a viewport's edge
-//! misses, matching what paint clips away. Entering a scroll viewport narrows
-//! the clip to its box before descending.
+//! carries a `clip` rect — the intersection of every enclosing clipping
+//! node's box, a scroll viewport or a node asked to `clip` — so a point over
+//! content past such a box's edge misses, matching what paint clips away.
+//! Entering a clipping node narrows the clip to its box before descending, and
+//! a point past one of its rounded corners reaches none of its children.
 
 use crate::component::NodeStore;
 use crate::layout::Vec2;
@@ -111,31 +112,41 @@ impl HitTestTree {
         {
             return None;
         }
-        let visible = store.bounds(root).translate(shift).intersect(clip);
+        let world = store.bounds(root).translate(shift);
+        let visible = world.intersect(clip);
 
-        // A scroll viewport clips its children to its own box: narrow the clip
-        // handed to the descent so content scrolled past the edge is unhittable.
-        let (child_clip, inner) = if store.is_scroll(root) {
-            (visible, own + store.content_shift(root))
+        // A clipping node — a scroll viewport, or one asked to `clip` —
+        // clips its children to its own box: narrow the clip handed to the
+        // descent so content past the edge (or scrolled past it) is
+        // unhittable, and past a rounded corner as paint rounds it.
+        let clips = store.clips_children(root);
+        let child_clip = if clips { visible } else { clip };
+        let inner = if store.is_scroll(root) {
+            own + store.content_shift(root)
         } else {
-            (clip, own)
+            own
         };
+        let past_corner = clips
+            && crate::paint::clip_corners(store, root, world)
+                .is_some_and(|corners| !rounded_contains(world, corners.left_top, px, py));
 
         // Test children topmost-first: the last-painted (last) child is tested
         // first, walking back toward the first-painted (bottom) one.
-        if store.is_layered(root) {
-            if let Some(hit) = Self::hit_layered(store, root, px, py, child_clip, inner) {
-                return Some(hit);
-            }
-        } else {
-            let mut child = arena.last_child(root);
-            while let Some(c) = child {
-                if !store.is_overlay(c)
-                    && let Some(hit) = Self::hit_clipped(store, c, px, py, child_clip, inner)
-                {
+        if !past_corner {
+            if store.is_layered(root) {
+                if let Some(hit) = Self::hit_layered(store, root, px, py, child_clip, inner) {
                     return Some(hit);
                 }
-                child = arena.prev_sibling(c);
+            } else {
+                let mut child = arena.last_child(root);
+                while let Some(c) = child {
+                    if !store.is_overlay(c)
+                        && let Some(hit) = Self::hit_clipped(store, c, px, py, child_clip, inner)
+                    {
+                        return Some(hit);
+                    }
+                    child = arena.prev_sibling(c);
+                }
             }
         }
 
@@ -180,6 +191,20 @@ impl HitTestTree {
         }
         None
     }
+}
+
+/// Whether `(px, py)` lies inside `rect` rounded by `radius` at every corner,
+/// in the shape the Quad paints: each corner a quarter circle of twice the
+/// radius, no larger than half the shorter side.
+fn rounded_contains(rect: Rect, radius: f32, px: f32, py: f32) -> bool {
+    if !rect.contains(px, py) {
+        return false;
+    }
+    let (hx, hy) = (rect.w * 0.5, rect.h * 0.5);
+    let k = (2.0 * radius).min(hx.min(hy));
+    let qx = (px - (rect.x + hx)).abs() - (hx - k);
+    let qy = (py - (rect.y + hy)).abs() - (hy - k);
+    qx <= 0.0 || qy <= 0.0 || qx * qx + qy * qy <= k * k
 }
 
 /// The topmost hittable node whose rect contains `(px, py)`, or `None`. A free
@@ -540,6 +565,41 @@ mod tests {
         // Where it was, nothing of it is left.
         assert_eq!(hit_test(&store, root, 50.0, 20.0), Some(card));
         assert_eq!(hit_test(&store, root, 50.0, 60.0), Some(below));
+    }
+
+    #[test]
+    fn a_clipping_node_cuts_its_children_to_its_rounded_box() {
+        let mut store = NodeStore::new();
+        let (root, card, top, below) = overflowing(&mut store);
+        store.set_clip(card, true);
+        assert_eq!(
+            store.reach(card),
+            store.bounds(card),
+            "nothing seen past its box"
+        );
+        assert_eq!(hit_test(&store, root, 50.0, 60.0), Some(root));
+        assert_eq!(
+            hit_test(&store, root, 1.0, 1.0),
+            Some(top),
+            "a sharp corner"
+        );
+
+        store.write_corner_radius(card, 10.0, 0.0);
+        assert_eq!(
+            hit_test(&store, root, 1.0, 1.0),
+            Some(card),
+            "past the corner"
+        );
+        assert_eq!(hit_test(&store, root, 50.0, 20.0), Some(top));
+        assert_eq!(
+            hit_test(&store, root, 20.0, 2.0),
+            Some(top),
+            "on the corner's arc"
+        );
+
+        store.set_clip(card, false);
+        assert_eq!(hit_test(&store, root, 50.0, 60.0), Some(below));
+        assert_eq!(hit_test(&store, root, 1.0, 1.0), Some(top));
     }
 
     #[test]

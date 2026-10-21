@@ -62,6 +62,10 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
         // strokes inside the box (§U3.3).
         "radius" | "corner_radius" | "border" | "border_width" => D::PAINT,
 
+        // Clipping cuts what the children paint and where they are hit to
+        // the node's box, rounded by its corner radius.
+        "clip" => D::PAINT | D::HIT_TEST,
+
         // Visibility toggles participation in layout and paint and what is
         // exposed to accessibility.
         "visible" | "hidden" | "visibility" => D::LAYOUT | D::PAINT | D::SEMANTICS,

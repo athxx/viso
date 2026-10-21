@@ -66,7 +66,17 @@ pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFor
             ("shape", U1),
             ("inner", U1),
         ],
-        BuiltinShader::Image | BuiltinShader::GlyphRun | BuiltinShader::Mtsdf => &[
+        BuiltinShader::Image => &[
+            RECT[0],
+            RECT[1],
+            ("uv_pos", F2),
+            ("uv_size", F2),
+            ("color", F4),
+            ("mask_pos", F2),
+            ("mask_size", F2),
+            ("mask_radius", F4),
+        ],
+        BuiltinShader::GlyphRun | BuiltinShader::Mtsdf => &[
             RECT[0],
             RECT[1],
             ("uv_pos", F2),
@@ -427,10 +437,24 @@ pub(super) fn draw(
                 tint[2] * tint[3],
                 tint[3],
             ];
+            let (mask_pos, mask_size, radius) = (i.f2(5), i.f2(6), i.f4(7));
+            let masked = radius.iter().any(|&r| r > 0.0);
+            let half = [mask_size[0] * 0.5, mask_size[1] * 0.5];
+            let center = [mask_pos[0] + half[0], mask_pos[1] + half[1]];
+            let ramp = cx.scale;
             shade(cx, out, clip, |p| {
+                // The mask's AA ramp is one pixel wide, as the shader's.
+                let cov = if masked {
+                    (-rrect_sdf(p, center, half, radius) * ramp).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                if cov <= 0.0 {
+                    return [0.0; 4];
+                }
                 let [u, v] = map.at(p);
                 let t = sample(&tex, &samp, u, v);
-                std::array::from_fn(|c| t[c] * tint[c])
+                std::array::from_fn(|c| t[c] * tint[c] * cov)
             });
         }
         BuiltinShader::GlyphRun => {

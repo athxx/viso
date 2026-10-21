@@ -253,6 +253,7 @@ macro_rules! node_columns {
         $store.measured.$op($($arg),*);
         $store.hittable.$op($($arg),*);
         $store.hidden.$op($($arg),*);
+        $store.clips.$op($($arg),*);
         $store.overlay.$op($($arg),*);
         $store.opacity.$op($($arg),*);
         $store.handlers.$op($($arg),*);
@@ -412,6 +413,9 @@ pub struct NodeStore {
     /// without a structural rebuild. Shared substrate for Tabs and the wider
     /// Tier 4 hide/show family (NavigationStack/Modal/Popup/Sheet).
     hidden: Vec<bool>,
+    /// Hot: whether a node clips its children to its box (its `clip`), which
+    /// paint, hit testing and the reach read.
+    clips: Vec<bool>,
     /// Hot: whether a node is an overlay — painted in a deferred top layer, after
     /// every non-overlay node, regardless of its position in the tree. Default
     /// `false` — a node opts *in* to the top layer (the Tier 4 overlay family:
@@ -820,7 +824,7 @@ impl NodeStore {
             let Some(parent) = self.arena.parent(at) else {
                 break;
             };
-            if clipped && self.is_scroll(parent) {
+            if clipped && self.clips_children(parent) {
                 seen = seen.intersect(self.world(parent));
             }
             at = parent;
@@ -845,7 +849,7 @@ impl NodeStore {
     fn joined_reach(&self, id: NodeId) -> Rect {
         let i = id.index() as usize;
         let own = self.bounds[i];
-        if self.hidden[i] || matches!(self.layout[i], LayoutInput::Scroll { .. }) {
+        if self.hidden[i] || self.clips[i] || matches!(self.layout[i], LayoutInput::Scroll { .. }) {
             return own;
         }
         let mut reach = own;
@@ -1314,6 +1318,42 @@ impl NodeStore {
     #[inline]
     pub fn is_scroll(&self, id: NodeId) -> bool {
         matches!(self.layout[id.index() as usize], LayoutInput::Scroll { .. })
+    }
+
+    /// Whether a node was asked to clip its children to its box (its
+    /// `clip`), default `false`.
+    #[inline]
+    pub fn clips(&self, id: NodeId) -> bool {
+        self.clips[id.index() as usize]
+    }
+
+    /// Whether a node's children are seen and hit only inside its box,
+    /// rounded by its corners: it clips, or it is a scroll viewport.
+    #[inline]
+    pub fn clips_children(&self, id: NodeId) -> bool {
+        self.clips(id) || self.is_scroll(id)
+    }
+
+    /// Clip a node's children to its box, rounded by its corners, or stop.
+    /// Its reach shrinks to its box, or grows back to what its children
+    /// reach, and the stream is painted whole once. Marks PAINT and HIT_TEST.
+    /// A live-guarded write.
+    pub fn set_clip(&mut self, id: NodeId, clip: bool) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let i = id.index() as usize;
+        if self.clips[i] == clip {
+            return;
+        }
+        self.clips[i] = clip;
+        let before = self.reach_in_parent(i);
+        let reach = self.joined_reach(id);
+        if self.set_reach(id, reach) {
+            self.lift_reach(id, before);
+        }
+        self.repaint_pending = true;
+        self.mark_dirty(id, DirtyClass::PAINT | DirtyClass::HIT_TEST);
     }
 
     /// Whether a node is a two-dimensional track grid — it sizes its children
@@ -3620,6 +3660,7 @@ impl NodeStore {
         self.measured[i] = Measured::default();
         self.hittable[i] = true;
         self.hidden[i] = false;
+        self.clips[i] = false;
         self.overlay[i] = false;
         self.opacity[i] = 1.0;
         self.handlers[i] = None;
@@ -3670,6 +3711,7 @@ impl NodeStore {
             self.measured.push(Measured::default());
             self.hittable.push(true);
             self.hidden.push(false);
+            self.clips.push(false);
             self.overlay.push(false);
             self.opacity.push(1.0);
             self.handlers.push(None);

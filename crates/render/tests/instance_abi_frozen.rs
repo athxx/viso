@@ -130,20 +130,23 @@ fn shadow_instance_layout_is_frozen() {
 
 #[test]
 fn image_instance_layout_is_frozen() {
-    assert_eq!(size_of::<ImageInstance>(), 48, "ImageInstance stride");
+    assert_eq!(size_of::<ImageInstance>(), 80, "ImageInstance stride");
     assert_eq!(align_of::<ImageInstance>(), 4, "ImageInstance align");
     assert_eq!(offset_of!(ImageInstance, rect_pos), 0);
     assert_eq!(offset_of!(ImageInstance, rect_size), 8);
     assert_eq!(offset_of!(ImageInstance, uv_pos), 16);
     assert_eq!(offset_of!(ImageInstance, uv_size), 24);
     assert_eq!(offset_of!(ImageInstance, color), 32);
+    assert_eq!(offset_of!(ImageInstance, mask_pos), 48);
+    assert_eq!(offset_of!(ImageInstance, mask_size), 56);
+    assert_eq!(offset_of!(ImageInstance, mask_radius), 64);
 }
 
 #[test]
 fn glyph_instance_layout_is_frozen() {
-    // Structurally identical to ImageInstance, but frozen independently: the two
-    // are separate types bound to separate shader families, and must be free to
-    // diverge only by a deliberate, re-frozen ABI change.
+    // The leading fields of ImageInstance, frozen independently: the two are
+    // separate types bound to separate shader families, and diverge only by a
+    // deliberate, re-frozen ABI change.
     assert_eq!(size_of::<GlyphInstance>(), 48, "GlyphInstance stride");
     assert_eq!(align_of::<GlyphInstance>(), 4, "GlyphInstance align");
     assert_eq!(offset_of!(GlyphInstance, rect_pos), 0);

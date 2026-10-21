@@ -636,6 +636,10 @@ impl Jsx<'_> {
                             refs.push(format!("st.effect(() => show.enabled(el, {v}));"));
                         }
                         Prop::Autofocus => refs.push(format!("show.autofocus(el, {v});")),
+                        Prop::Clip => style.push((
+                            "overflow".to_owned(),
+                            format!("show.truth({v}) ? \"hidden\" : undefined"),
+                        )),
                         Prop::Label { alt } => {
                             let name = if *alt { "alt" } else { "aria-label" };
                             attrs.push(format!("{name}={{show.opt({v})}}"));

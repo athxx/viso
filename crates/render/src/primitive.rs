@@ -157,6 +157,35 @@ impl Corners {
             left_bottom: r[3] * scale,
         }
     }
+
+    /// Whether every corner is sharp.
+    pub fn is_sharp(self) -> bool {
+        self.left_top <= 0.0
+            && self.right_top <= 0.0
+            && self.right_bottom <= 0.0
+            && self.left_bottom <= 0.0
+    }
+
+    /// The radii in shader order: left-top, right-top, right-bottom,
+    /// left-bottom.
+    pub fn to_array(self) -> [f32; 4] {
+        [
+            self.left_top,
+            self.right_top,
+            self.right_bottom,
+            self.left_bottom,
+        ]
+    }
+}
+
+/// A rounded rectangle a draw is masked to: what lies outside it is not
+/// drawn, its edge antialiased over a device pixel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RoundMask {
+    /// The mask's box, in points.
+    pub rect: Rect,
+    /// Its corner radii, normalized to `rect` as they lower.
+    pub radius: Corners,
 }
 
 /// An analytic rounded rectangle with an independent radius per corner.
@@ -835,6 +864,9 @@ pub struct ImageDraw {
     /// How the texture is sampled (filter + address). The renderer interns this
     /// to a shared sampler; it selects the bind group, not GPU instance data.
     pub sampler: SamplerDesc,
+    /// The rounded rectangle the image is masked to: a box's rounded corners
+    /// over the image it shows. `None` draws the whole `rect`.
+    pub mask: Option<RoundMask>,
 }
 
 impl ImageDraw {
@@ -857,6 +889,7 @@ impl ImageDraw {
             },
             texture,
             sampler: SamplerDesc::LINEAR_CLAMP,
+            mask: None,
         }
     }
 
@@ -868,7 +901,9 @@ impl ImageDraw {
             uv_pos: [self.uv.x, self.uv.y],
             uv_size: [self.uv.w, self.uv.h],
             color: [self.tint.r, self.tint.g, self.tint.b, self.tint.a],
+            ..ImageInstance::UNMASKED
         }
+        .masked(self.mask)
     }
 }
 
@@ -1081,6 +1116,7 @@ impl ImageRect {
             },
             texture: self.texture,
             sampler: self.sampler,
+            mask: None,
         }
     }
 }
@@ -1319,6 +1355,7 @@ impl TiledImage {
                 },
                 texture: self.texture,
                 sampler: self.sampler,
+                mask: None,
             }];
         }
 
@@ -1361,6 +1398,7 @@ impl TiledImage {
                     },
                     texture: self.texture,
                     sampler: self.sampler,
+                    mask: None,
                 });
             }
         }
@@ -1856,6 +1894,15 @@ pub enum Primitive {
     /// the dedicated advanced-blend pipeline against a bounded snapshot of what is
     /// behind it, so the common `SrcOver` pipeline stays untouched.
     Blend(Blend),
+    /// Round the clip of the layer just opened: its clip rect with these
+    /// corners (§14.1).
+    ///
+    /// Same placement rule as [`Primitive::ColorEffect`]: valid only in the
+    /// marker run immediately after [`Primitive::Layer`], ignored anywhere
+    /// else, the last one in the run winning. Sharp corners clip by scissor as
+    /// a plain layer does; any rounded corner renders the layer offscreen and
+    /// composites it through the rounded mask.
+    ClipCorners(Corners),
     /// Pop the most recent [`Primitive::Layer`] clip (and, for a translucent
     /// layer, close its offscreen pass and emit the composite).
     LayerEnd,
@@ -1922,6 +1969,7 @@ impl Primitive {
             Primitive::Layer(_) => "layer",
             Primitive::ColorEffect(_) => "color_effect",
             Primitive::Blend(_) => "blend",
+            Primitive::ClipCorners(_) => "clip_corners",
             Primitive::LayerEnd => "layer_end",
             Primitive::Transform(_) => "transform",
             Primitive::TransformEnd => "transform_end",
@@ -2161,6 +2209,46 @@ pub struct ImageInstance {
     pub uv_size: [f32; 2],
     /// Straight linear RGBA tint (a = opacity).
     pub color: [f32; 4],
+    /// Top-left of the rounded rect the draw is masked to, in points.
+    pub mask_pos: [f32; 2],
+    /// Width/height of the mask.
+    pub mask_size: [f32; 2],
+    /// The mask's corner radii (left-top, right-top, right-bottom,
+    /// left-bottom); all `0` draws unmasked.
+    pub mask_radius: [f32; 4],
+}
+
+impl ImageInstance {
+    /// An unmasked draw of nothing, the base the other fields fill in.
+    pub const UNMASKED: ImageInstance = ImageInstance {
+        rect_pos: [0.0; 2],
+        rect_size: [0.0; 2],
+        uv_pos: [0.0; 2],
+        uv_size: [0.0; 2],
+        color: [0.0; 4],
+        mask_pos: [0.0; 2],
+        mask_size: [0.0; 2],
+        mask_radius: [0.0; 4],
+    };
+
+    /// This draw masked to `mask`, or unmasked for `None` or sharp corners
+    /// — a sharp box masks nothing a clip does not already.
+    pub fn masked(mut self, mask: Option<RoundMask>) -> ImageInstance {
+        match mask {
+            Some(mask) if !mask.radius.is_sharp() => {
+                let rect = mask.rect;
+                self.mask_pos = [rect.x, rect.y];
+                self.mask_size = [rect.w, rect.h];
+                self.mask_radius = mask.radius.normalized(rect.w, rect.h).to_array();
+            }
+            _ => {
+                self.mask_pos = [0.0; 2];
+                self.mask_size = [0.0; 2];
+                self.mask_radius = [0.0; 4];
+            }
+        }
+        self
+    }
 }
 
 /// GPU instance for the Blur built-in shader.
@@ -3871,6 +3959,7 @@ mod tests {
             },
             texture: TextureId::new(0),
             sampler: SamplerDesc::LINEAR_CLAMP,
+            mask: None,
         };
         let inst = img.to_instance();
         assert_eq!(inst.rect_pos, [10.0, 20.0]);

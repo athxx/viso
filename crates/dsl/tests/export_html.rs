@@ -178,6 +178,27 @@ fn enabled_and_autofocus_export_as_a_guarded_subtree_and_the_autofocus_attribute
     assert!(script.contains("closest(\"[data-viso-off]\")"), "{script}");
 }
 
+const CLIPPED: &str = r#"
+export component Clipped {
+    state on = true;
+    view {
+        Column {
+            Column { width: 40dp; height: 20dp; corner_radius: 4dp; clip: true; }
+            Column { width: 40dp; height: 20dp; clip: on; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn clip_exports_as_hidden_overflow() {
+    let page = export(CLIPPED, false).unwrap();
+    let all = format!("{}{}", page.index, page.styles);
+    assert!(all.contains("overflow: hidden"), "{all}");
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.clip("), "{script}");
+}
+
 const LOGIN: &str = r#"
 export component Login {
     state hidden = true;

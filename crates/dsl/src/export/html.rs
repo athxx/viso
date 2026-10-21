@@ -101,6 +101,8 @@ pub(super) enum Prop {
     Enabled,
     /// Whether it takes the focus as it mounts.
     Autofocus,
+    /// Whether its children show only inside its box.
+    Clip,
     /// The accessible name: `alt` of an image, else `aria-label`.
     Label {
         alt: bool,
@@ -1031,6 +1033,16 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         ) && fixed.truth()
         {
             el.attr("autofocus", "");
+        }
+        if let Some(fixed) = self.bind(
+            wires,
+            control.node.clip,
+            Prop::Clip,
+            "whether it clips its children",
+            at,
+        ) && fixed.truth()
+        {
+            el.style("overflow: hidden");
         }
         let alt = el.tag == "img";
         if let Some(fixed) = self.bind(

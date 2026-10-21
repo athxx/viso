@@ -123,7 +123,8 @@ fragment float4 fragment_main(VOut in [[stage_in]]) {
 }
 "##;
 
-/// The original hand-written IMAGE MSL, frozen as a codegen oracle.
+/// The IMAGE MSL, frozen as a codegen oracle: the hand-written original with
+/// the rounded mask a clip's composite and a rounded box's image cover by.
 pub const IMAGE_MSL_ORIGINAL: &str = r##"
 #include <metal_stdlib>
 using namespace metal;
@@ -134,6 +135,9 @@ struct InstanceIn {
     packed_float2 uv_pos;
     packed_float2 uv_size;
     packed_float4 color;
+    packed_float2 mask_pos;
+    packed_float2 mask_size;
+    packed_float4 mask_radius;
 };
 
 struct Uniforms {
@@ -145,6 +149,10 @@ struct VOut {
     float4 position [[position]];
     float2 uv;
     float4 tint;
+    float2 local;          // point-space sample position
+    float2 mask_center;
+    float2 mask_half;
+    float4 mask_radius;    // lt, rt, rb, lb; all 0 = unmasked
 };
 
 vertex VOut vertex_main(uint vid [[vertex_id]],
@@ -176,7 +184,30 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
     out.position = float4(ndc, 0.0, 1.0);
     out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
     out.tint = float4(inst.color);
+    out.local = pixel;
+    out.mask_center = float2(inst.mask_pos) + float2(inst.mask_size) * 0.5;
+    out.mask_half = float2(inst.mask_size) * 0.5;
+    out.mask_radius = float4(inst.mask_radius);
     return out;
+}
+
+// Signed distance to a rounded box with an independent radius per corner
+// (`radii` ordered left-top, right-top, right-bottom, left-bottom), negative
+// inside; the radius convention is the Quad's.
+static inline float rrect_sdf(float2 p, float2 center, float2 half_ext, float4 radii) {
+    float2 d = p - center;
+    float r = d.x < 0.0 ? (d.y < 0.0 ? radii.x : radii.w)
+                        : (d.y < 0.0 ? radii.y : radii.z);
+    float k = min(2.0 * r, min(half_ext.x, half_ext.y));
+    float2 q = abs(d) - (half_ext - k);
+    float2 mx = max(q, float2(0.0));
+    return length(mx) + min(max(q.x, q.y), 0.0) - k;
+}
+
+// Device-pixel coverage factor: how many SDF units span one screen pixel at the
+// current sampling position, inverted.
+static inline float aa_factor(float2 p) {
+    return 1.0 / length(float2(length(dfdx(p)), length(dfdy(p))));
 }
 
 fragment float4 fragment_main(VOut in [[stage_in]],
@@ -187,7 +218,17 @@ fragment float4 fragment_main(VOut in [[stage_in]],
     // tint.a — keeping the result premultiplied.
     float4 texel = tex.sample(samp, in.uv);
     float4 t = float4(in.tint.rgb * in.tint.a, in.tint.a);
-    return texel * t;
+    // A rounded mask (a clip's composite, a rounded box's image) covers what lies
+    // inside it, antialiased over one device pixel; without one every sample is in.
+    // The derivative is taken outside the branch, which is not uniform.
+    float aa = aa_factor(in.local);
+    float4 r = in.mask_radius;
+    float cov = 1.0;
+    if (max(max(r.x, r.y), max(r.z, r.w)) > 0.0) {
+        float d = rrect_sdf(in.local, in.mask_center, in.mask_half, r);
+        cov = clamp(-d * aa, 0.0, 1.0);
+    }
+    return texel * (t * cov);
 }
 "##;
 

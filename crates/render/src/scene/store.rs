@@ -959,8 +959,9 @@ impl ImageStore {
     }
 
     /// Diff an image against the retained entry at the cursor and advance,
-    /// appending on cold growth. `rect_pos` → transform; `rect_size`/`uv_pos`/
-    /// `uv_size` → geometry; `color` (tint) → paint; `texture`/`sampler` →
+    /// appending on cold growth. `rect_pos`/`mask_pos` → transform;
+    /// `rect_size`/`uv_pos`/`uv_size`/`mask_size`/`mask_radius` → geometry;
+    /// `color` (tint) → paint; `texture`/`sampler` →
     /// resource (a sampler change rebinds the bind group, like a texture swap).
     pub fn ingest(
         &mut self,
@@ -995,10 +996,13 @@ impl ImageStore {
         let entry = &mut self.entries[id.index() as usize];
         let pi = &entry.instance;
         let dirty = DirtyPlanes {
-            transform: pi.rect_pos.moved(&instance.rect_pos),
+            transform: pi.rect_pos.moved(&instance.rect_pos)
+                || pi.mask_pos.moved(&instance.mask_pos),
             geometry: pi.rect_size.moved(&instance.rect_size)
                 || pi.uv_pos.moved(&instance.uv_pos)
-                || pi.uv_size.moved(&instance.uv_size),
+                || pi.uv_size.moved(&instance.uv_size)
+                || pi.mask_size.moved(&instance.mask_size)
+                || pi.mask_radius.moved(&instance.mask_radius),
             paint: pi.color.moved(&instance.color),
             resource: entry.texture != texture || entry.sampler != sampler,
             appended: false,

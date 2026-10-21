@@ -22,7 +22,7 @@
 
 use viso_render::{LayerClip, Primitive, Splice, TransformSlot};
 
-use super::{PaintSpans, Space, Span, paint_own, paint_subtree};
+use super::{PaintSpans, Space, Span, clip_corners, paint_own, paint_subtree};
 use crate::component::NodeStore;
 use crate::layout::Vec2;
 use crate::node::{Logged, NodeId, NodeIndex};
@@ -68,9 +68,10 @@ impl Record {
     /// The run its children painted into.
     #[inline]
     fn children(&self) -> (u32, u32) {
-        let scroll = 2 * u32::from(self.has(Span::SCROLL));
-        let close = scroll + u32::from(self.has(Span::FADED)) + u32::from(self.has(Span::ROOT));
-        (self.own + self.len() + scroll, self.end - close)
+        let flag = |flag: u8| u32::from(self.has(flag));
+        let open = flag(Span::CLIP) + flag(Span::CORNERS) + flag(Span::SCROLL);
+        let close = flag(Span::SCROLL) + flag(Span::CLIP) + flag(Span::FADED) + flag(Span::ROOT);
+        (self.own + self.len() + open, self.end - close)
     }
 
     #[inline]
@@ -328,14 +329,20 @@ fn child_parent(arena: &crate::node::NodeArena, child: NodeId) -> u32 {
     arena.parent_of(child.node_index()).get()
 }
 
-/// Whether `node` still opens its span as `record` says: it fades, scrolls
-/// and is a transform root as it did.
+/// Whether `node` still opens its span as `record` says: it fades, scrolls,
+/// clips, rounds its clip and is a transform root as it did.
 #[inline]
 fn holds(store: &NodeStore, node: NodeId, record: &Record) -> bool {
     let flag = |on: bool, flag: u8| on == record.has(flag);
+    let clips = store.clips_children(node);
     flag(store.opacity(node) < 1.0, Span::FADED)
         && flag(store.is_scroll(node), Span::SCROLL)
         && flag(store.is_transform_root(node), Span::ROOT)
+        && flag(clips, Span::CLIP)
+        && flag(
+            clips && clip_corners(store, node, store.bounds(node)).is_some(),
+            Span::CORNERS,
+        )
 }
 
 /// Whether `node` paints anything: it is neither hidden nor transparent.
@@ -863,8 +870,8 @@ impl Walk<'_> {
     }
 
     /// Re-emit `node`'s own drawables over the run `record` gives them, and
-    /// rewrite the layers it clips: its fade over its reach and its scroll
-    /// clip over its box. Returns where its drawables land, and how many.
+    /// rewrite the layers it clips: its fade over its reach and its clip over
+    /// its box, rounded by its corners. Returns where its drawables land, and how many.
     fn own(&mut self, node: NodeId, record: &Record) -> Option<(u32, u32)> {
         let store = self.store;
         let shift = self.painted(record.slot())?;
@@ -896,7 +903,7 @@ impl Walk<'_> {
         } else {
             self.edit(record.own, record.len(), from)?;
         }
-        if record.has(Span::SCROLL) {
+        if record.has(Span::CLIP) {
             let at = own + len;
             let Primitive::Layer(old) = self.out.get(at)? else {
                 return None;
@@ -907,6 +914,15 @@ impl Walk<'_> {
                     ..*old
                 };
                 self.replace(at as u32, Primitive::Layer(layer))?;
+            }
+            if record.has(Span::CORNERS) {
+                let Primitive::ClipCorners(old) = self.out.get(at + 1)? else {
+                    return None;
+                };
+                let corners = clip_corners(store, node, world)?;
+                if corners != *old {
+                    self.replace(at as u32 + 1, Primitive::ClipCorners(corners))?;
+                }
             }
         }
         Some((landed, emitted as u32))
@@ -1498,7 +1514,7 @@ mod tests {
             for _ in 0..1 + rng.below(3) {
                 let k = rng.below(cards.len() as u32) as usize;
                 let (card, label) = cards[k];
-                match rng.below(9) {
+                match rng.below(11) {
                     0 => store.set_fill(card, color(step)),
                     1 => store.set_fill(label, color(step)),
                     2 => store.set_hidden(card, !store.hidden(card)),
@@ -1529,6 +1545,12 @@ mod tests {
                     }
                     7 => store
                         .set_fixed_size(card, Size::fixed(200.0, 10.0 + rng.below(4) as f32 * 3.0)),
+                    8 if rng.below(4) == 0 => store.set_clip(card, !store.clips(card)),
+                    9 => {
+                        let (radius, pct) =
+                            [(0.0, 0.0), (4.0, 0.0), (0.0, 0.5)][rng.below(3) as usize];
+                        store.write_corner_radius(card, radius, pct);
+                    }
                     _ => store.set_content_payload(label, text(rng.below(6) as usize)),
                 }
             }

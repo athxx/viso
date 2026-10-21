@@ -68,6 +68,7 @@ const P = {
       if ((!at || at === document.body) && !off(el)) el.focus();
     });
   },
+  clip: (el, v) => { el.style.overflow = truth(v) ? "hidden" : ""; },
   label: (el, v, alt) => attr(el, alt ? "alt" : "aria-label", v),
   hint: (el, v) => attr(el, "aria-description", v),
   spoken: (el, v) => attr(el, "aria-valuetext", v),

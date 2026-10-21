@@ -167,10 +167,6 @@ fn a_binding_no_path_applies_is_reported() {
             "TextInput { invalid: n > 0; }",
             "`invalid` does not reach a `TextInput` yet",
         ),
-        (
-            "Text { text: \"a\"; clip: true; }",
-            "`clip` does not reach a `Text` yet",
-        ),
     ] {
         let found = errors(view);
         assert_eq!(found.len(), 1, "{view}: {found:#?}");
