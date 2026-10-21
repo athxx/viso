@@ -4,11 +4,11 @@
 //! field a view reads is an integer revision cell the [`StateStore`] raises
 //! only when the field's value changes, so the bindings and regions reading a
 //! field wake exactly when it does. The window-wide fields have one cell each,
-//! shared by every reader. The anchored fields, `constraints` and
-//! `size_class`, depend on where the reader sits: each reader's component root
-//! is an anchor whose values [`StateStore::settle_env`] resolves after layout
-//! from the constraints its parent gives it and the nearest adaptive scope
-//! above it.
+//! shared by every reader. The anchored fields, `constraints`, `size_class`
+//! and `layout_direction`, depend on where the reader sits: each reader's
+//! component root is an anchor whose values [`StateStore::settle_env`]
+//! resolves after layout from the constraints its parent gives it, the
+//! nearest adaptive scope above it and the nearest direction set above it.
 
 use std::any::Any;
 use std::fmt;
@@ -269,9 +269,10 @@ struct Anchor {
     live: bool,
     constraints: LocalConstraints,
     class: SizeClass,
-    /// The revision cells of `constraints` and `class`, allocated when first
-    /// asked for.
-    cells: [Option<StateId>; 2],
+    direction: LayoutDirection,
+    /// The revision cells of `constraints`, `class` and `direction`,
+    /// allocated when first asked for.
+    cells: [Option<StateId>; 3],
     /// A cell raised with either revision.
     wake: Option<StateId>,
 }
@@ -343,6 +344,12 @@ impl AdaptiveEnv {
     /// The size class `anchor` last resolved to, `None` for a released one.
     pub fn size_class(&self, anchor: AnchorId) -> Option<SizeClass> {
         self.anchor(anchor).map(|a| a.class)
+    }
+
+    /// The layout direction `anchor` last resolved to, `None` for a released
+    /// one.
+    pub fn layout_direction(&self, anchor: AnchorId) -> Option<LayoutDirection> {
+        self.anchor(anchor).map(|a| a.direction)
     }
 
     /// The number of live anchors.
@@ -513,6 +520,9 @@ impl StateStore {
         if self.env.env.keyboard_inset != before.keyboard_inset && !self.env.avoiding.is_empty() {
             self.env.unsettled = true;
         }
+        if self.env.env.layout_direction != before.layout_direction {
+            self.env.unsettled = true;
+        }
         changed
     }
 
@@ -558,6 +568,7 @@ impl StateStore {
     pub fn anchor_env(&mut self, node: NodeId, wake: Option<StateId>) -> AnchorId {
         let constraints = self.env.env.content_constraints();
         let class = self.env.window_class;
+        let direction = self.env.env.layout_direction;
         self.env.unsettled = true;
         let env = &mut self.env;
         if let Some(index) = env.free.pop() {
@@ -566,7 +577,8 @@ impl StateStore {
             anchor.live = true;
             anchor.constraints = constraints;
             anchor.class = class;
-            anchor.cells = [None; 2];
+            anchor.direction = direction;
+            anchor.cells = [None; 3];
             anchor.wake = wake;
             return AnchorId {
                 index,
@@ -580,7 +592,8 @@ impl StateStore {
             live: true,
             constraints,
             class,
-            cells: [None; 2],
+            direction,
+            cells: [None; 3],
             wake,
         });
         AnchorId {
@@ -595,6 +608,7 @@ impl StateStore {
         let at = match field {
             EnvField::Constraints => 0,
             EnvField::SizeClass => 1,
+            EnvField::LayoutDirection => 2,
             _ => return None,
         };
         self.env.anchor(anchor)?;
@@ -724,8 +738,11 @@ impl StateStore {
                 max_height: incoming(nodes, node, Axis::Column),
             };
             let class = self.env.class_at(nodes, node);
+            let direction = nodes
+                .scoped_direction(node)
+                .unwrap_or(self.env.env.layout_direction);
             let anchor = &mut self.env.anchors[index];
-            let mut raise = [None; 3];
+            let mut raise = [None; 4];
             let mut moved = false;
             if anchor.constraints != constraints {
                 anchor.constraints = constraints;
@@ -737,10 +754,15 @@ impl StateStore {
                 raise[1] = anchor.cells[1];
                 moved = true;
             }
+            if anchor.direction != direction {
+                anchor.direction = direction;
+                raise[2] = anchor.cells[2];
+                moved = true;
+            }
             if !moved {
                 continue;
             }
-            raise[2] = anchor.wake;
+            raise[3] = anchor.wake;
             changed = true;
             for cell in raise.into_iter().flatten() {
                 self.raise(cell);
@@ -1010,6 +1032,35 @@ mod tests {
             "its basis"
         );
         assert!(!states.settle_env(&tree.nodes), "nothing moved");
+    }
+
+    #[test]
+    fn an_anchor_reads_the_nearest_direction_set_above_it() {
+        let mut tree = tree();
+        let mut states = StateStore::new();
+        let scoped = states.anchor_env(tree.scoped, None);
+        let plain = states.anchor_env(tree.plain, None);
+        let cell = states
+            .anchor_cell(scoped, EnvField::LayoutDirection)
+            .unwrap();
+        assert_eq!(states.env_cell(EnvField::LayoutDirection), None, "anchored");
+        tree.nodes
+            .set_layout_direction(tree.scope, Some(LayoutDirection::Rtl));
+        let before = revision(&states, cell);
+        assert!(states.settle_env(&tree.nodes));
+        assert_eq!(revision(&states, cell), before + 1);
+        let direction = |states: &StateStore, anchor| states.env().layout_direction(anchor);
+        assert_eq!(direction(&states, scoped), Some(LayoutDirection::Rtl));
+        assert_eq!(direction(&states, plain), Some(LayoutDirection::Ltr));
+
+        // The window's direction reaches the readers under no scope.
+        states.update_env(|env| env.layout_direction = LayoutDirection::Rtl);
+        assert!(states.env().unsettled());
+        tree.nodes
+            .set_layout_direction(tree.scope, Some(LayoutDirection::Ltr));
+        states.settle_env(&tree.nodes);
+        assert_eq!(direction(&states, scoped), Some(LayoutDirection::Ltr));
+        assert_eq!(direction(&states, plain), Some(LayoutDirection::Rtl));
     }
 
     #[test]

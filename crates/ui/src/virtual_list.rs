@@ -820,7 +820,9 @@ fn reconcile_one(
         return 0;
     };
     let axis = state.axis;
-    let scroll_main = store.scroll(viewport).on(axis);
+    // How far the viewport is scrolled from its start: a row read right to
+    // left takes negative offsets.
+    let scroll_main = store.scroll(viewport).on(axis).abs();
     debug_assert!(
         store.is_scroll(viewport),
         "virtual list viewport must be a scroll node"

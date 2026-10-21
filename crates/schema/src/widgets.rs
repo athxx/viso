@@ -179,8 +179,12 @@ const SELECTED: &[WidgetProperty] = &[two_way("selected", "U32")];
 const CURRENT: &[WidgetProperty] = &[two_way("current", "U32")];
 
 /// The constant width an `AdaptiveScope` classifies instead of the width its
-/// parent gives it.
-const ADAPTIVE_SCOPE: &[WidgetProperty] = &[prop("basis", "Option<MixedLength>")];
+/// parent gives it, and the direction its subtree's lines run in instead of
+/// its parent's.
+const ADAPTIVE_SCOPE: &[WidgetProperty] = &[
+    prop("basis", "Option<MixedLength>"),
+    prop("layout_direction", "Option<LayoutDirection>"),
+];
 
 const FOCUS_SCOPE: &[WidgetProperty] = &[prop("trap", "Bool"), prop("restore_focus", "Bool")];
 

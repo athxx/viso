@@ -495,8 +495,13 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       `start`/`end` insets mirror under `env.layout_direction`, from the same
       `LengthEnv::direction` the padding reads; a new direction relays every
       tree out.
-  - [ ] An Adaptive Scope's local `layout_direction` (§U10.1) and a horizontal
-        `Scroll`'s origin at its right edge.
+  - [x] An Adaptive Scope's local `layout_direction` (§U10.1), constant or
+        bound (`LayoutSlot::LayoutDirection`), from the store's direction table
+        layout, padding/margin folding and check marks read; `env.layout_direction`
+        is anchored; a horizontal `Scroll`'s (and virtual list's) origin at its
+        right edge, offsets in `[-range, 0]`.
+  - [ ] A paragraph with no strong character takes its base direction from the
+        layout direction (§U10.2).
 
 ### D2.6 — Animation (§U6)
 

@@ -17,7 +17,7 @@ use viso_dsl::aot::build_view_package;
 use viso_dsl::frontend::Origin;
 use viso_dsl::hotreload::CandidatePlan;
 use viso_ui::Rect;
-use viso_ui::adaptive::Environment;
+use viso_ui::adaptive::{Environment, LayoutDirection};
 use viso_ui::layout::{Inset, LayoutInput, LayoutTree};
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
@@ -401,6 +401,96 @@ fn a_panel_under_an_adaptive_scope_reads_the_scope_class() {
             scoped[1..],
             "a kept class rebuilds nothing"
         );
+    }
+}
+
+const DIRECTED: &str = r#"
+component Mark {
+    view {
+        Row {
+            width: 100dp;
+            height: 20dp;
+            if env.layout_direction == LayoutDirection::rtl {
+                Text { width: 10dp; height: 10dp; }
+                Text { width: 10dp; height: 10dp; }
+            } else {
+                Text { width: 10dp; height: 10dp; }
+            }
+        }
+    }
+}
+
+export component Directed {
+    state turned = false;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Row {
+                width: 400dp;
+                height: 20dp;
+                Text { width: 20dp; height: 20dp; on click { turned = !turned; } }
+            }
+            AdaptiveScope {
+                layout_direction: LayoutDirection::rtl;
+                Row { width: 400dp; height: 20dp; Text { width: 10dp; height: 10dp; } }
+                Mark {}
+            }
+            AdaptiveScope {
+                layout_direction: if turned { Option::Some(LayoutDirection::rtl) } else { Option::None };
+                Row { width: 400dp; height: 20dp; Text { width: 10dp; height: 10dp; } }
+                Mark {}
+            }
+        }
+    }
+}
+"#;
+
+impl Rt {
+    /// Each scope's row child's x and how many marks its panel shows.
+    fn directed(&self) -> [(f32, usize); 2] {
+        let root = self.children(self.root.expect("mounted"));
+        [root[1], root[2]].map(|scope| {
+            let [row, mark] = self.children(scope)[..] else {
+                panic!("a row and a mark");
+            };
+            let text = self.children(row)[0];
+            let marks = self.children(mark).len();
+            (self.store.bounds(text).x, marks)
+        })
+    }
+}
+
+impl Rt {
+    /// The window's direction, as the facade hands it to the environment
+    /// and to layout.
+    fn turn(&mut self, direction: LayoutDirection) {
+        self.store.set_length_env(viso_ui::LengthEnv {
+            direction,
+            ..self.store.length_env()
+        });
+        self.update_env(|e| e.layout_direction = direction);
+    }
+}
+
+#[test]
+fn an_adaptive_scope_sets_the_direction_of_its_subtree() {
+    for mut rt in [Rt::reloaded(DIRECTED), Rt::packaged(DIRECTED)] {
+        rt.update_env(|_| {});
+        assert_eq!(rt.directed(), [(390.0, 2), (0.0, 1)]);
+        rt.click(5.0, 5.0);
+        rt.update_env(|_| {});
+        assert_eq!(rt.directed(), [(390.0, 2), (390.0, 2)], "a bound direction");
+        rt.turn(LayoutDirection::Rtl);
+        rt.click(395.0, 5.0);
+        rt.update_env(|_| {});
+        assert_eq!(
+            rt.directed(),
+            [(390.0, 2), (390.0, 2)],
+            "the window's, through `None`"
+        );
+        rt.turn(LayoutDirection::Ltr);
+        assert_eq!(rt.directed(), [(390.0, 2), (0.0, 1)]);
     }
 }
 

@@ -365,6 +365,13 @@ fn style(style: &StyleIr) -> Vec<(&'static str, String)> {
             .basis
             .map_or_else(|| "parent".to_owned(), |b| format!("{b}dp"));
         out.push(("scope", basis));
+        if let Some(direction) = scope.direction {
+            let direction = match direction {
+                viso_schema::LayoutDirection::Ltr => "ltr",
+                viso_schema::LayoutDirection::Rtl => "rtl",
+            };
+            out.push(("layout_direction", direction.to_owned()));
+        }
     }
     if let Some(avoid) = style.avoid {
         let avoid = match avoid {

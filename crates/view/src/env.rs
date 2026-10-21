@@ -75,10 +75,15 @@ pub fn env_value(field: EnvField, env: &AdaptiveEnv, anchor: Option<AnchorId>) -
             Orientation::Portrait => 0,
             Orientation::Landscape => 1,
         }),
-        EnvField::LayoutDirection => Value::Int(match e.layout_direction {
-            LayoutDirection::Ltr => 0,
-            LayoutDirection::Rtl => 1,
-        }),
+        EnvField::LayoutDirection => Value::Int(
+            match anchor
+                .and_then(|anchor| env.layout_direction(anchor))
+                .unwrap_or(e.layout_direction)
+            {
+                LayoutDirection::Ltr => 0,
+                LayoutDirection::Rtl => 1,
+            },
+        ),
         EnvField::Locale => record([Value::str(e.locale.as_str())]),
         EnvField::Theme => crate::theme::current_theme(env),
     }

@@ -454,7 +454,7 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
     // its caption is shaped.
     if let Some(content) = store.content_payload(node) {
         if let Some(mark) = store.check_mark(node) {
-            paint_check(store, mark, content, world, out);
+            paint_check(store, node, mark, content, world, out);
             return;
         }
         let mask = (radius > 0.0).then_some(RoundMask {
@@ -470,13 +470,14 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
 #[cold]
 fn paint_check(
     store: &NodeStore,
+    node: NodeId,
     mark: CheckMark,
     content: &Content,
     world: Rect,
     out: &mut Vec<Primitive>,
 ) {
     let (text, baseline) = crate::component::caption_of(Some(content));
-    let rtl = store.length_env().direction == crate::adaptive::LayoutDirection::Rtl;
+    let rtl = store.layout_direction(node) == crate::adaptive::LayoutDirection::Rtl;
     let place = mark.place(text, baseline, world.w, rtl);
     let ink = match content {
         Content::Text { color, .. } => *color,

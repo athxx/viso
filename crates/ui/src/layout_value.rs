@@ -8,6 +8,7 @@
 //! padding keeps the node's rules carried by its lengths, which then hold all
 //! of them; the compiler leaves a node's constant rules there for this.
 
+use crate::adaptive::LayoutDirection;
 use crate::component::NodeStore;
 use crate::grid::{AdaptiveColumns, GridPlacement, GridStyle, TrackSizing};
 use crate::layout::{
@@ -61,6 +62,8 @@ pub enum LayoutValue {
     RowGap(LengthTerms),
     /// A text node's `font_size`.
     FontSize(LengthTerms),
+    /// An adaptive scope's `layout_direction`, `None` for its parent's.
+    LayoutDirection(Option<LayoutDirection>),
     /// A flex container's `axis`.
     Axis(Axis),
     /// A flex container's `justify`.
@@ -130,6 +133,7 @@ impl NodeStore {
             LayoutValue::ColumnGap(terms) => self.edit_lengths(id, |l| l.gap = Some(terms)),
             LayoutValue::RowGap(terms) => self.edit_lengths(id, |l| l.row_gap = Some(terms)),
             LayoutValue::FontSize(terms) => self.edit_lengths(id, |l| l.font_size = Some(terms)),
+            LayoutValue::LayoutDirection(direction) => self.set_layout_direction(id, direction),
             LayoutValue::Axis(to) => self.edit_arrangement(id, |a| a.0 = to),
             LayoutValue::Justify(to) => self.edit_arrangement(id, |a| a.1 = to),
             LayoutValue::Align(to) => self.edit_arrangement(id, |a| a.2 = to),

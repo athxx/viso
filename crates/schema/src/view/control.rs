@@ -326,11 +326,13 @@ pub enum LayoutSlot {
     /// A text node's `font_size`: a `MixedLength`, its `em` and `%` of its
     /// parent's font size.
     FontSize = 30,
+    /// An adaptive scope's `layout_direction`: an `Option<LayoutDirection>`.
+    LayoutDirection = 31,
 }
 
 impl LayoutSlot {
     /// Every slot, by discriminant.
-    pub const ALL: [LayoutSlot; 31] = [
+    pub const ALL: [LayoutSlot; 32] = [
         LayoutSlot::Width,
         LayoutSlot::Height,
         LayoutSlot::MinWidth,
@@ -362,6 +364,7 @@ impl LayoutSlot {
         LayoutSlot::AbsoluteBottom,
         LayoutSlot::AbsoluteStart,
         LayoutSlot::FontSize,
+        LayoutSlot::LayoutDirection,
     ];
 
     /// The slot the layout property `property` fills; `None` for one that
@@ -401,6 +404,7 @@ impl LayoutSlot {
             "absolute.bottom" => LayoutSlot::AbsoluteBottom,
             "absolute.start" => LayoutSlot::AbsoluteStart,
             "font_size" => LayoutSlot::FontSize,
+            "layout_direction" => LayoutSlot::LayoutDirection,
             _ => return None,
         })
     }
@@ -444,6 +448,7 @@ impl LayoutSlot {
             LayoutSlot::AbsoluteBottom => "AbsoluteBottom",
             LayoutSlot::AbsoluteStart => "AbsoluteStart",
             LayoutSlot::FontSize => "FontSize",
+            LayoutSlot::LayoutDirection => "LayoutDirection",
         }
     }
 
@@ -1190,7 +1195,7 @@ mod tests {
         for slot in LayoutSlot::ALL {
             assert_eq!(LayoutSlot::from_u8(slot as u8), Some(slot));
         }
-        assert_eq!(LayoutSlot::from_u8(31), None);
+        assert_eq!(LayoutSlot::from_u8(32), None);
         assert_eq!(LayoutSlot::of("spacing"), Some(LayoutSlot::Gap));
         assert_eq!(
             LayoutSlot::of("grid.row_span"),

@@ -1243,6 +1243,7 @@ fn layout_slot(kind: NodeKind, name: &str) -> Option<LayoutSlot> {
         | LayoutSlot::AbsoluteBottom
         | LayoutSlot::AbsoluteStart
         | LayoutSlot::FontSize => kind != NodeKind::Component,
+        LayoutSlot::LayoutDirection => kind == NodeKind::Flex,
     };
     applies.then_some(slot)
 }
@@ -1515,10 +1516,17 @@ fn fold_static(
         }),
         "basis" if style.scope.is_some() => folded(match length::fold_gap(value, consts) {
             Some(Lowered::Layout(LengthIr::Fixed(n))) => {
-                style.scope = Some(ScopeIr { basis: Some(n) });
+                style.scope.get_or_insert_default().basis = Some(n);
                 true
             }
             _ => false,
+        }),
+        "layout_direction" if style.scope.is_some() => folded(match fold_direction(value) {
+            Some(direction) => {
+                style.scope.get_or_insert_default().direction = direction;
+                true
+            }
+            None => false,
         }),
         "axis" | "direction" => folded(match fold_axis(value) {
             Some(axis) => {
@@ -1631,6 +1639,20 @@ fn enum_constant(value: &Expr, owner: &str) -> Option<String> {
     let segments: Vec<String> = path.segments().map(|t| t.text()).collect();
     match segments.as_slice() {
         [head, variant] if head == owner => Some(variant.clone()),
+        _ => None,
+    }
+}
+
+/// Folds a constant `Option<LayoutDirection>`: `LayoutDirection::ltr` or
+/// `::rtl`, or `None` for the parent's.
+fn fold_direction(value: &Expr) -> Option<Option<viso_schema::LayoutDirection>> {
+    use viso_schema::LayoutDirection;
+    if path_ident(value).as_deref() == Some("None") {
+        return Some(None);
+    }
+    match enum_constant(value, "LayoutDirection")?.as_str() {
+        "ltr" => Some(Some(LayoutDirection::Ltr)),
+        "rtl" => Some(Some(LayoutDirection::Rtl)),
         _ => None,
     }
 }

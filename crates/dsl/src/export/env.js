@@ -110,6 +110,7 @@ const sizeClass = (el) => {
 const anchored = (tag, el) => {
   if (!el || !el.isConnected) return envField(tag);
   if (tag === 2) return sizeClass(el);
+  if (tag === 10) return getComputedStyle(el).direction === "rtl" ? 1n : 0n;
   const w = incoming(el, 0), h = incoming(el, 1);
   return rec([0, w, 0, h]);
 };

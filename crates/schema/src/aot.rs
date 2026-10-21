@@ -61,7 +61,7 @@ use viso_ende::{
     Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag, Section, SectionWriter, Sections,
 };
 
-use crate::env::Avoid;
+use crate::env::{Avoid, LayoutDirection};
 use crate::layout::{
     AbsoluteInsets, AdaptiveColumns, Align, AlignItems, Alignment2D, AutoRepeat, BoxRules,
     GridPlacement, Inset, Justify, Placement, Span, SpanInset, StackPlacement, TrackMax,
@@ -361,6 +361,8 @@ pub struct AotScope {
     /// The constant width in dp it classifies, else the width its parent
     /// gives it.
     pub basis: Option<f32>,
+    /// The direction its subtree's lines run in, else its parent's.
+    pub direction: Option<LayoutDirection>,
 }
 
 /// A folded layout axis, the compact twin of `viso_ui::layout::Axis`.
@@ -431,7 +433,7 @@ const STYLE_HAS_RULES: u16 = 1 << 11;
 const STYLE_HAS_PLACE: u16 = 1 << 12;
 const STYLE_HAS_GRID: u16 = 1 << 13;
 const STYLE_HAS_CONTENT_ALIGN: u16 = 1 << 14;
-const STYLE_BITS: u16 = (1 << 15) - 1;
+const STYLE_HAS_DIRECTION: u16 = 1 << 15;
 
 // A grid is a byte naming the parts it sets, then each: a template is a
 // varint count of tracks; a track is a byte naming its sizing, then its
@@ -1284,6 +1286,9 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
         if scope.basis.is_some() {
             mask |= STYLE_HAS_BASIS;
         }
+        if scope.direction.is_some() {
+            mask |= STYLE_HAS_DIRECTION;
+        }
     }
     if style.avoid.is_some() {
         mask |= STYLE_AVOIDS;
@@ -1333,6 +1338,12 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
     }
     if let Some(basis) = style.scope.and_then(|scope| scope.basis) {
         enc.write_f32(basis);
+    }
+    if let Some(direction) = style.scope.and_then(|scope| scope.direction) {
+        enc.write_u8(match direction {
+            LayoutDirection::Ltr => 0,
+            LayoutDirection::Rtl => 1,
+        });
     }
     if let Some(avoid) = style.avoid {
         enc.write_u8(match avoid {
@@ -1394,11 +1405,8 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
         ],
     )?;
     let offset = dec.position();
-    let mask = u16::try_from(dec.read_varint()?)
-        .ok()
-        .filter(|mask| mask & !STYLE_BITS == 0)
-        .ok_or(DecodeError::Malformed { offset })?;
-    if mask & STYLE_HAS_BASIS != 0 && mask & STYLE_IS_SCOPE == 0 {
+    let mask = u16::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
+    if mask & (STYLE_HAS_BASIS | STYLE_HAS_DIRECTION) != 0 && mask & STYLE_IS_SCOPE == 0 {
         return Err(DecodeError::Malformed { offset });
     }
     let has = |bit: u16| mask & bit != 0;
@@ -1440,7 +1448,15 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
         } else {
             None
         };
-        Some(AotScope { basis })
+        let direction = if has(STYLE_HAS_DIRECTION) {
+            Some(read_variant(
+                dec,
+                &[LayoutDirection::Ltr, LayoutDirection::Rtl],
+            )?)
+        } else {
+            None
+        };
+        Some(AotScope { basis, direction })
     } else {
         None
     };
@@ -1810,7 +1826,10 @@ mod tests {
                             top: 2.0,
                             ..Inset::default()
                         }),
-                        scope: Some(AotScope { basis: Some(600.0) }),
+                        scope: Some(AotScope {
+                            basis: Some(600.0),
+                            direction: Some(LayoutDirection::Rtl),
+                        }),
                         avoid: None,
                         content_align: Some(Alignment2D::BottomEnd),
                         place: None,

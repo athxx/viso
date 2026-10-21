@@ -1420,6 +1420,22 @@ impl NodeStore {
         }
     }
 
+    /// The least and greatest offset a scroll viewport takes on `axis`:
+    /// `[0, range]`, or `[−range, 0]` along a row read right to left, whose
+    /// content starts at its right edge and scrolls toward its left.
+    #[inline]
+    pub fn scroll_span(&self, id: NodeId, axis: Axis) -> (f32, f32) {
+        let range = self.scroll_range(id, axis);
+        if axis == Axis::Row
+            && self.scroll_axis(id) == Some(Axis::Row)
+            && self.direction_at(id.index()) == crate::adaptive::LayoutDirection::Rtl
+        {
+            (-range, 0.0)
+        } else {
+            (0.0, range)
+        }
+    }
+
     /// The scrollable range of a node on `axis`: `max(0, content − viewport)`.
     /// Zero when the content does not exceed the viewport (nothing to scroll).
     #[inline]
@@ -1987,8 +2003,8 @@ impl NodeStore {
         self.hovered = next;
     }
 
-    /// Add `delta` to a scroll viewport's offset, clamped per axis to
-    /// `[0, scroll_range]`, and mark the node `TRANSFORM` only: its content is a
+    /// Add `delta` to a scroll viewport's offset, clamped per axis to its
+    /// [`scroll_span`](Self::scroll_span), and mark the node `TRANSFORM` only: its content is a
     /// transform root, so the next frame moves the retained draws and hit
     /// testing reads the new offset directly — a scroll never dirties MEASURE,
     /// LAYOUT, PAINT or HIT_TEST and never bubbles to ancestors. A live-guarded
@@ -1999,12 +2015,14 @@ impl NodeStore {
             return;
         }
         let i = id.index() as usize;
-        let range_x = self.scroll_range(id, Axis::Row);
-        let range_y = self.scroll_range(id, Axis::Column);
+        let ((x0, x1), (y0, y1)) = (
+            self.scroll_span(id, Axis::Row),
+            self.scroll_span(id, Axis::Column),
+        );
         let prev = self.scroll[i];
         let next = Vec2 {
-            x: (prev.x + delta.x).clamp(0.0, range_x),
-            y: (prev.y + delta.y).clamp(0.0, range_y),
+            x: (prev.x + delta.x).clamp(x0, x1),
+            y: (prev.y + delta.y).clamp(y0, y1),
         };
         if next == prev {
             return;
@@ -2014,7 +2032,7 @@ impl NodeStore {
     }
 
     /// Set a scroll viewport's offset to an absolute `offset`, clamped per axis
-    /// to `[0, scroll_range]`, marking the node `TRANSFORM` exactly like
+    /// to its [`scroll_span`](Self::scroll_span), marking the node `TRANSFORM` exactly like
     /// [`scroll_by`](Self::scroll_by) — the absolute-value sibling of
     /// that delta setter, sharing its clamp, its dirty classes, and its no-bubble
     /// rule.
@@ -2029,11 +2047,13 @@ impl NodeStore {
             return;
         }
         let i = id.index() as usize;
-        let range_x = self.scroll_range(id, Axis::Row);
-        let range_y = self.scroll_range(id, Axis::Column);
+        let ((x0, x1), (y0, y1)) = (
+            self.scroll_span(id, Axis::Row),
+            self.scroll_span(id, Axis::Column),
+        );
         let next = Vec2 {
-            x: offset.x.clamp(0.0, range_x),
-            y: offset.y.clamp(0.0, range_y),
+            x: offset.x.clamp(x0, x1),
+            y: offset.y.clamp(y0, y1),
         };
         if next == self.scroll[i] {
             return;
@@ -4062,8 +4082,14 @@ impl NodeStore {
             let bounds = if redo == root {
                 layout::root_box(self, redo.index(), surface)
             } else if let Some((canvas, axis)) = self.row_canvas(redo) {
-                layout::row_box(self, redo.index(), self.bounds(canvas), axis)
-                    .unwrap_or_else(|| self.bounds(redo))
+                layout::row_box(
+                    self,
+                    canvas.index(),
+                    redo.index(),
+                    self.bounds(canvas),
+                    axis,
+                )
+                .unwrap_or_else(|| self.bounds(redo))
             } else if self.dirty[redo.index() as usize].intersects(DirtyClass::MEASURE)
                 && let Some(parent) = self.arena.parent(redo)
             {
@@ -4435,8 +4461,8 @@ impl FrameRecompute {
 /// algorithm decoupled from the concrete array layout.
 impl LayoutTree for NodeStore {
     #[inline]
-    fn rtl(&self) -> bool {
-        self.length_env().direction == crate::adaptive::LayoutDirection::Rtl
+    fn rtl(&self, index: u32) -> bool {
+        self.direction_at(index) == crate::adaptive::LayoutDirection::Rtl
     }
 
     #[inline]
@@ -4477,7 +4503,32 @@ impl LayoutTree for NodeStore {
 
     #[inline]
     fn set_content(&mut self, index: u32, content: Vec2) {
-        self.content[index as usize] = content;
+        let i = index as usize;
+        self.content[i] = content;
+        // The offset keeps within the new range; one taken the other way
+        // round (the direction turned) keeps its distance from the start.
+        let Some(id) = self.arena.live_id(index) else {
+            return;
+        };
+        let mut offset = self.scroll[i];
+        if offset == Vec2::ZERO {
+            return;
+        }
+        let ((x0, x1), (y0, y1)) = (
+            self.scroll_span(id, Axis::Row),
+            self.scroll_span(id, Axis::Column),
+        );
+        if (offset.x > 0.0 && x0 < 0.0) || (offset.x < 0.0 && x1 > 0.0) {
+            offset.x = -offset.x;
+        }
+        let next = Vec2 {
+            x: offset.x.clamp(x0, x1),
+            y: offset.y.clamp(y0, y1),
+        };
+        if next != self.scroll[i] {
+            self.scroll[i] = next;
+            self.mark_dirty(id, DirtyClass::TRANSFORM);
+        }
     }
 
     #[inline(always)]
@@ -4931,14 +4982,19 @@ impl<'a> BuildCx<'a> {
 
     /// Declare a flex container that is an adaptive scope: the readers under
     /// it get the size class of `basis` dp when given, else of the width its
-    /// parent gives it. A node-only cx builds the container alone.
+    /// parent gives it, and its subtree's lines run in `direction` when given,
+    /// else in its parent's. A node-only cx builds the container alone.
     pub fn adaptive_scope(
         &mut self,
         basis: Option<f32>,
+        direction: Option<crate::adaptive::LayoutDirection>,
         style: FlexStyle,
         children: impl FnOnce(&mut BuildCx<'_>),
     ) -> Handle {
         let handle = self.flex(style, children);
+        if direction.is_some() {
+            self.store.set_layout_direction(handle.id, direction);
+        }
         if let Some(states) = self.states.as_deref_mut() {
             states.mark_adaptive_scope(handle.id, basis);
         }
@@ -7731,6 +7787,54 @@ mod tests {
         let mut scratch = Vec::new();
         store.layout(root, surface(100.0, 100.0), &mut scratch);
         (store, root, content_id.unwrap())
+    }
+
+    #[test]
+    fn a_row_read_right_to_left_scrolls_from_its_right_edge() {
+        use crate::adaptive::LayoutDirection;
+        let mut store = NodeStore::new();
+        let mut content = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.scroll(
+                ScrollStyle {
+                    axis: Axis::Row,
+                    size: Size::fixed(100.0, 50.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    content = Some(
+                        cx.leaf(LeafStyle {
+                            size: Size::fixed(300.0, 50.0),
+                            ..Default::default()
+                        })
+                        .id(),
+                    );
+                },
+            );
+            cx.root().unwrap()
+        };
+        let content = content.unwrap();
+        let (mut scratch, mut redo) = (Vec::new(), Vec::new());
+        store.layout(root, surface(100.0, 50.0), &mut scratch);
+        store.scroll_by(root, Vec2 { x: 30.0, y: 0.0 });
+        assert_eq!(store.scroll_span(root, Axis::Row), (0.0, 200.0));
+
+        // Turned, the content's right edge meets the viewport's, and the
+        // offset keeps its distance from the start.
+        store.set_layout_direction(root, Some(LayoutDirection::Rtl));
+        store.relayout_dirty(root, surface(100.0, 50.0), &mut scratch, &mut redo);
+        assert_eq!(store.bounds(content).x, -200.0);
+        assert_eq!(store.scroll_span(root, Axis::Row), (-200.0, 0.0));
+        assert_eq!(store.scroll(root).x, -30.0);
+        assert_eq!(store.content_shift(root).x, 30.0, "the content moves right");
+
+        store.scroll_by(root, Vec2 { x: 50.0, y: 0.0 });
+        assert_eq!(store.scroll(root).x, 0.0, "nothing right of the start");
+        store.scroll_by(root, Vec2 { x: -500.0, y: 0.0 });
+        assert_eq!(store.scroll(root).x, -200.0, "the left end");
+        store.set_scroll(root, Vec2 { x: 40.0, y: 0.0 });
+        assert_eq!(store.scroll(root).x, 0.0);
     }
 
     #[test]

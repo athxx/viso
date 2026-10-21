@@ -456,7 +456,10 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
         height: style.height.map(aot_length),
         gap: style.gap,
         padding: style.padding.map(inset_of),
-        scope: style.scope.map(|scope| AotScope { basis: scope.basis }),
+        scope: style.scope.map(|scope| AotScope {
+            basis: scope.basis,
+            direction: scope.direction,
+        }),
         avoid: style.avoid,
         content_align: style.content_align,
         place: style.place,

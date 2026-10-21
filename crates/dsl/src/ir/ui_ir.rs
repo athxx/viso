@@ -20,13 +20,13 @@ use crate::ir::dirty_map::{DirtyClass, property_dirty_class};
 use crate::resolve::SymbolId;
 use crate::syntax::span::TextRange;
 use viso_behavior::native::MigratableState;
-pub use viso_schema::Avoid;
 use viso_schema::Interaction;
 pub use viso_schema::layout::{
     AbsoluteInsets, AdaptiveColumns, AlignItems, Alignment2D, AutoRepeat, BoxRules, GridPlacement,
     Inset, Placement, Span, SpanInset, StackPlacement, TrackMax, TrackSizing,
 };
 pub use viso_schema::{Align, Justify};
+pub use viso_schema::{Avoid, LayoutDirection};
 
 /// The retained-tree template a view fragment or component view lowers to.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -507,6 +507,8 @@ pub struct ScopeIr {
     /// The constant width in dp it classifies, else the width its parent
     /// gives it.
     pub basis: Option<f32>,
+    /// The constant direction its subtree's lines run in, else its parent's.
+    pub direction: Option<LayoutDirection>,
 }
 
 impl StyleIr {

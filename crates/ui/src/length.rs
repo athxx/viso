@@ -10,6 +10,7 @@
 //! moved. A tree of plain `dp` and `%` lengths never touches this table, nor
 //! does a padding of plain `dp` whose `start` and `end` agree.
 
+use crate::adaptive::LayoutDirection;
 use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
 use crate::grid::{GridTracks, TrackSizing};
@@ -151,6 +152,9 @@ pub(crate) struct LengthBindings {
     font_moved: bool,
     /// The grids whose tracks read the environment, by ascending index.
     grids: Vec<GridBinding>,
+    /// The nodes that set the direction their subtree's lines run in, by
+    /// ascending index.
+    directions: Vec<(NodeId, LayoutDirection)>,
     /// A font source or the environment moved since the text shaper last
     /// asked: a text's size or face may resolve anew.
     text_resized: bool,
@@ -170,6 +174,7 @@ impl LengthBindings {
     pub(crate) fn clear(&mut self) {
         self.bindings.clear();
         self.grids.clear();
+        self.directions.clear();
         self.terms.clear();
         self.free_terms.clear();
         self.rare_terms.clear();
@@ -452,10 +457,86 @@ impl NodeStore {
                 }
             }
         }
-        // Displacements snap to the device grid, so a new scale moves them.
-        if rescaled {
+        // Displacements snap to the device grid, so a new scale moves them;
+        // a check draws its mark at its start edge.
+        if rescaled || turned {
             self.request_repaint();
         }
+    }
+
+    /// Sets the direction lines run in from node `id` down, `None` for the
+    /// one its parent has (the environment's at the root). Its subtree lays
+    /// out anew, its paddings and margins re-fold, and it repaints. A no-op
+    /// for a stale handle or an unchanged direction.
+    pub fn set_layout_direction(&mut self, id: NodeId, direction: Option<LayoutDirection>) {
+        if !self.arena().is_live(id) {
+            return;
+        }
+        let mut directions = std::mem::take(&mut self.lengths_mut().directions);
+        directions.retain(|&(node, _)| self.arena().is_live(node));
+        let at = directions.binary_search_by_key(&id.index(), |(node, _)| node.index());
+        let changed = match (at, direction) {
+            (Ok(at), Some(direction)) => {
+                let changed = directions[at].1 != direction;
+                directions[at].1 = direction;
+                changed
+            }
+            (Ok(at), None) => {
+                directions.remove(at);
+                true
+            }
+            (Err(at), Some(direction)) => {
+                directions.insert(at, (id, direction));
+                true
+            }
+            (Err(_), None) => false,
+        };
+        let table = self.lengths_mut();
+        table.directions = directions;
+        if changed {
+            table.mark(LengthDeps::DIRECTION);
+            self.mark_dirty(id, DirtyClass::LAYOUT);
+            self.request_repaint();
+        }
+    }
+
+    /// The direction lines run in at node `id`: the nearest one set at or
+    /// above it, else the environment's.
+    pub fn layout_direction(&self, id: NodeId) -> LayoutDirection {
+        self.direction_at(id.index())
+    }
+
+    /// The nearest direction set at or above node `id`, `None` under none.
+    pub fn scoped_direction(&self, id: NodeId) -> Option<LayoutDirection> {
+        self.scoped_direction_at(self.arena().live_id(id.index()).filter(|&n| n == id))
+    }
+
+    /// [`layout_direction`](Self::layout_direction) by node index; the
+    /// environment's for a free slot.
+    #[inline]
+    pub(crate) fn direction_at(&self, index: u32) -> LayoutDirection {
+        let table = self.lengths();
+        if table.directions.is_empty() {
+            return table.env.direction;
+        }
+        self.scoped_direction_at(self.arena().live_id(index))
+            .unwrap_or(table.env.direction)
+    }
+
+    fn scoped_direction_at(&self, mut node: Option<NodeId>) -> Option<LayoutDirection> {
+        let directions = &self.lengths().directions;
+        if directions.is_empty() {
+            return None;
+        }
+        while let Some(at) = node {
+            if let Ok(i) = directions.binary_search_by_key(&at.index(), |(n, _)| n.index())
+                && directions[i].0 == at
+            {
+                return Some(directions[i].1);
+            }
+            node = self.parent(at);
+        }
+        None
     }
 
     /// The node's resolved font size in dp: its own `font_size` when it binds
@@ -614,7 +695,10 @@ impl NodeStore {
     }
 
     fn fold_binding(&mut self, id: NodeId, lengths: &NodeLengths) {
-        let env = self.lengths().env;
+        let env = LengthEnv {
+            direction: self.direction_at(id.index()),
+            ..self.lengths().env
+        };
         let font = self.font_of(id);
         if let Some(own) = lengths.font_size
             && own.fold_font(&env, self.parent_font(id, own)).is_none()

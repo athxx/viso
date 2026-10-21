@@ -526,6 +526,15 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     .basis
                     .map_or_else(String::new, |b| css::number(f64::from(b)));
                 el.attr("data-scope", &basis);
+                if let Some(direction) = scope.direction {
+                    el.attr(
+                        "dir",
+                        match direction {
+                            viso_schema::LayoutDirection::Ltr => "ltr",
+                            viso_schema::LayoutDirection::Rtl => "rtl",
+                        },
+                    );
+                }
             }
         }
         if let Some(class) = self.out.sheet.class(&decls) {

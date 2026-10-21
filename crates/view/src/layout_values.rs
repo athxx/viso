@@ -4,6 +4,7 @@
 //! enum's unit variant is its tag, a payload variant a record tagged by it.
 
 use viso_behavior::{Aggregate, Value};
+use viso_ui::adaptive::LayoutDirection;
 use viso_ui::grid::{AdaptiveColumns, AutoRepeat, TrackMax, TrackSizing};
 use viso_ui::{
     Align, AlignItems, Alignment2D, Axis, BoundSize, EdgeTerms, Justify, LayoutValue, LengthEnv,
@@ -47,6 +48,13 @@ pub(crate) fn layout_value(
         LayoutSlot::ColumnGap => LayoutValue::ColumnGap(terms(value)?),
         LayoutSlot::RowGap => LayoutValue::RowGap(terms(value)?),
         LayoutSlot::FontSize => LayoutValue::FontSize(terms(value)?),
+        LayoutSlot::LayoutDirection => LayoutValue::LayoutDirection(match value {
+            Value::Nil => None,
+            value => Some(match tag(value)? {
+                0 => LayoutDirection::Ltr,
+                _ => LayoutDirection::Rtl,
+            }),
+        }),
         LayoutSlot::Axis => LayoutValue::Axis(match tag(value)? {
             0 => Axis::Row,
             _ => Axis::Column,

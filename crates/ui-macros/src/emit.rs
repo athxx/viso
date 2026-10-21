@@ -32,8 +32,8 @@ use viso_dsl::ir::dirty_map::DirtyClass;
 use viso_dsl::ir::ui_ir::Span as LayoutSpan;
 use viso_dsl::ir::ui_ir::{
     AdaptiveColumns, Align, AlignItems, Alignment2D, AutoRepeat, Avoid, AxisIr, BoxRules,
-    EdgeTermsIr, Inset, InsetIr, InsetTermsIr, Justify, LengthIr, LengthsIr, NodeKind, Placement,
-    StyleIr, TermsIr, TrackMax, TrackSizing, UiItem, UiNode, UiTree,
+    EdgeTermsIr, Inset, InsetIr, InsetTermsIr, Justify, LayoutDirection, LengthIr, LengthsIr,
+    NodeKind, Placement, StyleIr, TermsIr, TrackMax, TrackSizing, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::view_behavior::{Control, ControlInput, ViewBehavior, When};
@@ -373,7 +373,21 @@ impl Emit<'_> {
                             Some(basis) => quote! { ::core::option::Option::Some(#basis) },
                             None => quote! { ::core::option::Option::None },
                         };
-                        quote! { cx.adaptive_scope(#basis, #style, |cx| { #child_block }) }
+                        let direction = match scope.direction {
+                            Some(direction) => {
+                                let direction = match direction {
+                                    LayoutDirection::Ltr => quote! { Ltr },
+                                    LayoutDirection::Rtl => quote! { Rtl },
+                                };
+                                quote! {
+                                    ::core::option::Option::Some(
+                                        ::viso::__private::viso_ui::adaptive::LayoutDirection::#direction,
+                                    )
+                                }
+                            }
+                            None => quote! { ::core::option::Option::None },
+                        };
+                        quote! { cx.adaptive_scope(#basis, #direction, #style, |cx| { #child_block }) }
                     }
                     None => match node.style.avoid {
                         Some(avoid) => {

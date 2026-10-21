@@ -560,10 +560,11 @@ fn can_scroll(store: &NodeStore, from: NodeId, axis: Axis, delta: f32) -> bool {
     while let Some(n) = node {
         if store.scroll_axis(n) == Some(axis) {
             let offset = store.scroll(n).on(axis);
+            let (least, most) = store.scroll_span(n, axis);
             let room = if delta > 0.0 {
-                store.scroll_range(n, axis) - offset
+                most - offset
             } else {
-                offset
+                offset - least
             };
             if room > 0.0 {
                 return true;
@@ -643,13 +644,14 @@ fn scroll_chain(store: &mut NodeStore, target: NodeId, delta: Vec2) -> bool {
             let component = remaining.on(axis);
             if component != 0.0 {
                 let offset = store.scroll(n).on(axis);
-                let range = store.scroll_range(n, axis);
-                // Range left to travel in this delta's direction: toward `range`
-                // for a positive delta, toward `0` for a negative one.
+                let (least, most) = store.scroll_span(n, axis);
+                // Range left to travel in this delta's direction: toward the
+                // greatest offset for a positive delta, the least for a
+                // negative one.
                 let room = if component > 0.0 {
-                    range - offset
+                    most - offset
                 } else {
-                    offset
+                    offset - least
                 };
                 if room > 0.0 {
                     let step = axis_vec(axis, component);

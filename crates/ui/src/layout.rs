@@ -361,11 +361,13 @@ pub trait LayoutTree {
         let _ = index;
         INDEFINITE
     }
-    /// Whether lines run right to left: a row places its children from the
-    /// right, `start` and `end` alignments and insets name the right and
-    /// left edges, and grid columns run from the right. Left to right by
+    /// Whether lines run right to left in container `index`: a row places
+    /// its children from the right, `start` and `end` alignments and insets
+    /// name the right and left edges, grid columns run from the right and a
+    /// row's scroll content starts at its right edge. Left to right by
     /// default.
-    fn rtl(&self) -> bool {
+    fn rtl(&self, index: u32) -> bool {
+        let _ = index;
         false
     }
     /// Whether a node (and its subtree) is folded out of layout. A hidden node
@@ -1091,7 +1093,7 @@ pub fn layout_on(
     let cross_extent = rect_len(bounds, cross) - padding.cross(axis);
     // Right to left, a row runs from its right edge and a column aligns its
     // children's `start` to its right.
-    let (reverse, mirrored) = match (tree.rtl(), axis) {
+    let (reverse, mirrored) = match (tree.rtl(root), axis) {
         (false, _) => (false, false),
         (true, Axis::Row) => (true, false),
         (true, Axis::Column) => (false, true),
@@ -1405,7 +1407,7 @@ fn flex_child_box(
     let padding = padded(padding, tree.rules(parent), within);
     let cross = cross_of(axis);
     let extent = rect_len(bounds, cross) - padding.cross(axis);
-    let mirrored = axis == Axis::Column && tree.rtl();
+    let mirrored = axis == Axis::Column && tree.rtl(parent);
     let (cross_size, cross_off) = match tree.rules(child).copied() {
         None => flex_cross(tree, child, axis, align, extent, basis.on(cross), mirrored),
         Some(rules) => {
@@ -1457,15 +1459,16 @@ fn layout_placed(
     tree.children(root, scratch);
     let content = inner_rect(bounds, padding);
     let inner = content_within(bounds, padding, basis);
+    let rtl = tree.rtl(root);
     // Recursion appends past this run and truncates back to it.
     for i in start..scratch.len() {
         let child = scratch[i];
         let (child_box, pinned) = match align {
             Some(align) => (
-                stack_box(tree, child, content, basis, inner, align),
+                stack_box(tree, child, content, rtl, basis, inner, align),
                 [false; 2],
             ),
-            None => absolute_box(tree, child, content, basis, inner),
+            None => absolute_box(tree, child, content, rtl, basis, inner),
         };
         let child_basis = basis.placed(tree.input(child).size(), pinned);
         layout_on(tree, child, child_box, child_basis, inner, scratch);
@@ -1492,6 +1495,7 @@ fn stack_box(
     tree: &mut impl LayoutTree,
     child: u32,
     content: Rect,
+    rtl: bool,
     basis: Basis,
     inner: Vec2,
     align: Alignment2D,
@@ -1502,7 +1506,7 @@ fn stack_box(
     };
     let (fx, fy) = align.fractions();
     // Right to left, `start` is the right edge.
-    let fx = if tree.rtl() { 1.0 - fx } else { fx };
+    let fx = if rtl { 1.0 - fx } else { fx };
     let rules = tree.rules(child).copied();
     let margin = rules
         .as_ref()
@@ -1546,6 +1550,7 @@ fn absolute_box(
     tree: &mut impl LayoutTree,
     child: u32,
     content: Rect,
+    rtl: bool,
     basis: Basis,
     inner: Vec2,
 ) -> (Rect, [bool; 2]) {
@@ -1560,7 +1565,6 @@ fn absolute_box(
     let size = tree.input(child).size();
     // Right to left, `start` is the right edge: the near (left) one is `end`,
     // and a child pinned to neither sits at the right.
-    let rtl = tree.rtl();
     let mut place = |axis: Axis, origin: f32, extent: f32, definite: bool| {
         let flip = rtl && axis == Axis::Row;
         let (near, far) = match insets.on(axis) {
@@ -1663,9 +1667,10 @@ pub(crate) fn placed_child_box(
     let padding = padded(padding, tree.rules(parent), within);
     let content = inner_rect(bounds, padding);
     let inner = content_within(bounds, padding, basis);
+    let rtl = tree.rtl(parent);
     Some(match align {
-        Some(align) => stack_box(tree, child, content, basis, inner, align),
-        None => absolute_box(tree, child, content, basis, inner).0,
+        Some(align) => stack_box(tree, child, content, rtl, basis, inner, align),
+        None => absolute_box(tree, child, content, rtl, basis, inner).0,
     })
 }
 
@@ -1730,9 +1735,16 @@ fn layout_scroll(
     };
     scratch.truncate(start);
 
+    // A row read right to left starts at its right edge: the content's right
+    // edge meets the viewport's, and it scrolls toward its left.
+    let main_start = if axis == Axis::Row && tree.rtl(root) {
+        bounds.x + bounds.w - margin.right - main_size
+    } else {
+        rect_start(bounds, axis) + margin.main_start(axis)
+    };
     let content_box = axis_rect(
         axis,
-        rect_start(bounds, axis) + margin.main_start(axis),
+        main_start,
         rect_start(bounds, cross) + margin.cross_start(axis),
         main_size,
         cross_size,
@@ -1785,7 +1797,7 @@ fn layout_absolute_rows(
     // pass allocation-free.
     for k in 0..child_count {
         let child = scratch[start + k];
-        let Some(child_box) = row_box(tree, child, bounds, axis) else {
+        let Some(child_box) = row_box(tree, root, child, bounds, axis) else {
             continue;
         };
         let child_basis = basis.child(tree.input(root), tree.input(child));
@@ -1799,13 +1811,15 @@ fn layout_absolute_rows(
     scratch.truncate(start);
 }
 
-/// The box an [`LayoutInput::AbsoluteRows`] canvas at `canvas` along `axis`
-/// gives its positioned child `child`: at its row offset, its measured main
-/// extent, the canvas's whole cross extent. `None` for a child that is not a
-/// positioned row. No sibling enters into it, so a row that re-measures is
-/// re-placed alone.
+/// The box an [`LayoutInput::AbsoluteRows`] canvas `index` at `canvas`
+/// along `axis` gives its positioned child `child`: at its row offset from
+/// the canvas's start (its right edge for a row read right to left), its
+/// measured main extent, the canvas's whole cross extent. `None` for a
+/// child that is not a positioned row. No sibling enters into it, so a row
+/// that re-measures is re-placed alone.
 pub(crate) fn row_box(
     tree: &impl LayoutTree,
+    index: u32,
     child: u32,
     canvas: Rect,
     axis: Axis,
@@ -1817,11 +1831,17 @@ pub(crate) fn row_box(
         Some(rules) => rules.clamp(cross, across, across, true),
         None => across,
     };
+    let main = tree.measured(child).on(axis);
+    let main_start = if axis == Axis::Row && tree.rtl(index) {
+        canvas.x + canvas.w - offset - main
+    } else {
+        rect_start(canvas, axis) + offset
+    };
     Some(axis_rect(
         axis,
-        rect_start(canvas, axis) + offset,
+        main_start,
         rect_start(canvas, cross),
-        tree.measured(child).on(axis),
+        main,
         cross_size,
     ))
 }
@@ -2213,7 +2233,7 @@ fn layout_grid(
         // offset(start) .. offset(start+span) minus the trailing gap. Right to
         // left, columns run from the content box's right edge and a child hugs
         // its cell's right edge.
-        let rtl = tree.rtl();
+        let rtl = tree.rtl(root);
         for i in 0..child_count {
             let child = scratch[start + i];
             let r = s.regions[i];
@@ -3968,6 +3988,87 @@ mod tests {
         store.set_length_env(env);
         store.relayout_dirty(root, surface, &mut scratch, &mut redo);
         assert_eq!(xs(&store), ltr);
+    }
+
+    #[test]
+    fn a_node_s_own_direction_mirrors_its_subtree_alone() {
+        use crate::adaptive::LayoutDirection;
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::length::{EdgeTerms, LengthTerms, NodeLengths};
+
+        let mut store = NodeStore::new();
+        let mut rows = Vec::new();
+        let mut leaves = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(200.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    for _ in 0..2 {
+                        let row = cx.flex(
+                            FlexStyle {
+                                axis: Axis::Row,
+                                size: Size::fixed(200.0, 20.0),
+                                ..Default::default()
+                            },
+                            |cx| {
+                                leaves.push(
+                                    cx.leaf(LeafStyle {
+                                        size: Size::fixed(30.0, 10.0),
+                                        ..Default::default()
+                                    })
+                                    .id(),
+                                );
+                            },
+                        );
+                        rows.push(row.id());
+                    }
+                },
+            );
+            cx.root().unwrap()
+        };
+        // The second row pads its start, which reads the direction.
+        store.bind_lengths(
+            rows[1],
+            NodeLengths {
+                padding: Some(EdgeTerms {
+                    start: LengthTerms::dp(5.0),
+                    ..EdgeTerms::default()
+                }),
+                ..NodeLengths::default()
+            },
+        );
+        let surface = surface_local(200.0, 100.0);
+        let (mut scratch, mut redo) = (Vec::new(), Vec::new());
+        store.layout(root, surface, &mut scratch);
+        let xs = |store: &NodeStore| [store.bounds(leaves[0]).x, store.bounds(leaves[1]).x];
+        assert_eq!(xs(&store), [0.0, 5.0]);
+
+        store.clear_dirty();
+        store.set_layout_direction(rows[1], Some(LayoutDirection::Rtl));
+        store.relayout_dirty(root, surface, &mut scratch, &mut redo);
+        assert_eq!(xs(&store), [0.0, 165.0], "its start is the right edge");
+        assert_eq!(store.layout_direction(leaves[1]), LayoutDirection::Rtl);
+        assert_eq!(store.layout_direction(leaves[0]), LayoutDirection::Ltr);
+        assert_eq!(store.scoped_direction(leaves[0]), None);
+
+        // A right-to-left window, and the row back to left to right.
+        let mut env = store.length_env();
+        env.direction = LayoutDirection::Rtl;
+        store.clear_dirty();
+        store.set_length_env(env);
+        store.set_layout_direction(rows[1], Some(LayoutDirection::Ltr));
+        store.relayout_dirty(root, surface, &mut scratch, &mut redo);
+        assert_eq!(xs(&store), [170.0, 5.0]);
+
+        store.clear_dirty();
+        store.set_layout_direction(rows[1], None);
+        store.relayout_dirty(root, surface, &mut scratch, &mut redo);
+        assert_eq!(xs(&store), [170.0, 165.0], "the window's again");
     }
 
     /// The boxes of leaves requesting `width`, each a text `min` to `max`

@@ -106,7 +106,10 @@ impl EnvField {
     /// Whether the field's value depends on where the reader sits in the
     /// tree rather than on the window alone.
     pub const fn anchored(self) -> bool {
-        matches!(self, EnvField::Constraints | EnvField::SizeClass)
+        matches!(
+            self,
+            EnvField::Constraints | EnvField::SizeClass | EnvField::LayoutDirection
+        )
     }
 }
 

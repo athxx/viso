@@ -4023,7 +4023,7 @@ env.locale            : Locale            // §U10.3
 
 `env` 整体类型为 Prelude 的 `Environment` 记录，字段顺序即上表顺序；`env.<field>` 的类型即该字段类型。`env` 只读：以 `env` 为根的赋值报 `E2110`。同名局部绑定（参数、`let`、Pattern）遮蔽 `env`。`display_features` 与 `env` 的其余部分一样只读，因而用普通 `List`。
 
-每个 Component 实例各自读取 `env`：`window`、`safe_area` 等窗口级字段对全部实例相同；`constraints` 与 `size_class` 锚定在读取它的 Component 实例的根节点——`constraints` 是该根节点收到的 incoming constraints，`size_class` 来自该根节点自身或其最近祖先中的 Adaptive Scope。
+每个 Component 实例各自读取 `env`：`window`、`safe_area` 等窗口级字段对全部实例相同；`constraints`、`size_class` 与 `layout_direction` 锚定在读取它的 Component 实例的根节点——`constraints` 是该根节点收到的 incoming constraints，`size_class` 来自该根节点自身或其最近祖先中的 Adaptive Scope，`layout_direction` 来自其最近的设定了方向的 Adaptive Scope，没有时为窗口的方向。
 
 典型类型：
 
@@ -4078,7 +4078,7 @@ record Locale { tag: String; }   // BCP 47
 
 根 Adaptive Scope 必须有有限的可用宽度。局部 `AdaptiveScope` 若收到 `max_width = None` 的无界约束，默认继承父 Scope 的 `SizeClass`；只有显式提供有限 `basis` 时才建立新的 SizeClass。实现不得偷偷用设备型号或全局 Window Width 代替无界局部约束。
 
-`AdaptiveScope` 是纵向排列子节点的 Flex 容器（属性同 `Column`），另有可选的 `basis: Option<MixedLength>`：给出时按该宽度分类，否则按父级传给它的 incoming 宽度分类。`basis` 必须是编译期常量的 `dp` 长度，否则报 `E3711`。宽度变化但 SizeClass 不变时，Scope 之下的结构不重建。
+`AdaptiveScope` 是纵向排列子节点的 Flex 容器（属性同 `Column`），另有可选的 `basis: Option<MixedLength>`：给出时按该宽度分类，否则按父级传给它的 incoming 宽度分类。`basis` 必须是编译期常量的 `dp` 长度，否则报 `E3711`。宽度变化但 SizeClass 不变时，Scope 之下的结构不重建。可选的 `layout_direction: Option<LayoutDirection>` 设定 Scope 及其子树的布局方向（U10.1），`None`（默认）沿用父级的；它可以读取值，变化时只重新布局该 Scope 的子树并重新折叠其中读方向的 `padding`/`margin`。
 
 推荐：
 
@@ -4610,7 +4610,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - 子节点不影响容器尺寸，所以 Inset 变化只标记 `LAYOUT`；频繁移动的元素应该用 `translate`（U4），不要逐帧改 Inset；
 - Absolute 的自然尺寸只含 `padding`（Sizing 默认 `fill`）；子节点的 Inset 从内容盒的对应边量起，子节点的测量不向容器冒泡，只重新布局该子节点。
 
-当前实现：`content_align`、`stack.align`、`stack.layer` 与 `absolute.*` 是常量时在编译期折叠（值可以是本文件或按名 import 的 `const`）；纯 `dp` 或含 `%` 的 Inset 折叠为节点值，`%` 在布局时读到容器内容盒，含 `px`/`sp`/`em` 的 Inset 随 §19.6 环境在布局时折叠。Paint 与 Hit Test 按层次序（全部子节点同层时不排序），层次序不改变语义与焦点顺序。读取值的上述 Property 随值布局（U3.4）。热重载就地改写保留子节点的对齐、层次与 Inset（只标脏变化的节点：对齐与 Inset 只重新布局父容器，层次只重绘），Release 包与宏路径相同。`start`/`end` 当前按 LTR 解析。
+当前实现：`content_align`、`stack.align`、`stack.layer` 与 `absolute.*` 是常量时在编译期折叠（值可以是本文件或按名 import 的 `const`）；纯 `dp` 或含 `%` 的 Inset 折叠为节点值，`%` 在布局时读到容器内容盒，含 `px`/`sp`/`em` 的 Inset 随 §19.6 环境在布局时折叠。Paint 与 Hit Test 按层次序（全部子节点同层时不排序），层次序不改变语义与焦点顺序。读取值的上述 Property 随值布局（U3.4）。热重载就地改写保留子节点的对齐、层次与 Inset（只标脏变化的节点：对齐与 Inset 只重新布局父容器，层次只重绘），Release 包与宏路径相同。`start`/`end` 按容器所在的布局方向解析（U10.1）。
 
 ### U3.7 Scroll
 
@@ -4618,6 +4618,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - 事件 `scroll_changed(ScrollChanged)`，字段为 `offset: Offset`、`viewport: SizeDp`、`content: SizeDp`（`SizeDp { width: Dp; height: Dp; }`）；
 - 子节点在滚动轴上的约束无界；滚动偏移变化只标记视口子树 `TRANSFORM|HIT_TEST|PAINT`，不触发布局（ADR 0007）；
 - 滚轮与触控板事件先送往最内层可在该轴滚动的视口，到达边界后沿祖先链传递；
+- 水平滚动的视口在 RTL 下以右边为起点：内容右边与视口右边对齐，偏移在 `[-range, 0]` 内取值（0 为起点，向左为负）；方向翻转时偏移保持到起点的距离；
 - 命令式滚动只经 NodeRef（U7.6）。
 
 ### U3.8 Property Group 与父节点提供的 Property
@@ -4973,7 +4974,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 - 变换（U4）、Canvas 坐标与指针坐标都是物理坐标，不翻转；
 - Adaptive Scope（§96）可以局部覆盖 `layout_direction` 与 `locale`，例如内嵌的外语段落。
 
-当前实现：RTL 下 `Row` 从右向左排列子节点（子节点的物理 `margin` 不随之互换，`margin.start`/`end` 已按方向解析），`Justify` 与 `Column` 的 `Align` 的 `start`/`end` 互换，`Stack` 的 `start`/`end` 对齐与 `Absolute` 的 `absolute.start`/`absolute.end` 以右边为起点（两者都未给出时贴右），`Grid` 列从内容盒右边起排、单元格内的子节点贴右；方向变化时整窗重新布局。Adaptive Scope 的局部方向与水平 `Scroll` 的右侧起点尚未实现。
+当前实现：RTL 下 `Row` 从右向左排列子节点（子节点的物理 `margin` 不随之互换，`margin.start`/`end` 已按方向解析），`Justify` 与 `Column` 的 `Align` 的 `start`/`end` 互换，`Stack` 的 `start`/`end` 对齐与 `Absolute` 的 `absolute.start`/`absolute.end` 以右边为起点（两者都未给出时贴右），`Grid` 列从内容盒右边起排、单元格内的子节点贴右；方向变化时整窗重新布局。`AdaptiveScope` 的 `layout_direction` 在其子树内覆盖窗口方向：布局、`padding`/`margin` 的 `start`/`end`、勾选标记的位置与子树内读取的 `env.layout_direction` 都按最近的设定解析；Web 导出给该元素写 `dir`。水平 `Scroll`（含水平虚拟列表）在 RTL 下从右边起排（U3.7）。段落的基础方向仍只由文字决定，尚不回退到布局方向（U10.2）。
 
 ### U10.2 Bidi
 

@@ -253,6 +253,7 @@ pub fn restyle_aot_node(
             states.unmark_adaptive_scope(live);
         }
     }
+    store.set_layout_direction(live, style.scope.and_then(|scope| scope.direction));
     match style.avoid {
         Some(avoid) => states.mark_avoiding(live, avoid, Inset::default()),
         None => {
@@ -308,7 +309,9 @@ pub fn build_aot_node(
     }
     let handle = match node.kind {
         AotNodeKind::Flex => match (style.scope, style.avoid) {
-            (Some(scope), _) => cx.adaptive_scope(scope.basis, flex_style(node), children),
+            (Some(scope), _) => {
+                cx.adaptive_scope(scope.basis, scope.direction, flex_style(node), children)
+            }
             (None, Some(avoid)) => cx.avoiding(avoid, flex_style(node), children),
             (None, None) => cx.flex(flex_style(node), children),
         },
