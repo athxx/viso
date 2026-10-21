@@ -96,7 +96,8 @@ fn glyph_a8_coverage_direct_sample_on_metal() {
                 vertex_entry: entry.vertex_entry,
                 fragment_entry: entry.fragment_entry,
                 color_format: TextureFormat::Bgra8Unorm,
-                depth_format: None,
+                depth: None,
+                cull: viso_gpu::CullMode::None,
                 blend: BlendMode::PremultipliedOver,
                 instance_schema: entry.schema,
             },
@@ -142,6 +143,7 @@ fn glyph_a8_coverage_direct_sample_on_metal() {
         // Clear to transparent black so the premultiplied output over it is the
         // glyph's own premultiplied color.
         load: LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
+        depth: None,
         first_command: 0,
         command_count: 1,
     }];

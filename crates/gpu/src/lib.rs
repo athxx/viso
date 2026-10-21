@@ -45,8 +45,8 @@ pub mod vulkan;
 pub mod webgpu;
 
 pub use backend::{
-    DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
-    ProgramOf, RenderPass, RenderTarget,
+    DepthAttachment, DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat,
+    InlineUniforms, LoadOp, ProgramOf, RenderPass, RenderTarget,
 };
 pub use cpu::{CpuCompiler, CpuRaster, CpuRasterProgram};
 #[cfg(target_os = "windows")]
@@ -214,14 +214,14 @@ pub fn create_device() -> Backend {
 }
 pub use viso_gpu_abi::{
     AddressMode, AttrFormat, BindGroupDesc, BindGroupId, Binding, BlendMode, BufferDesc, BufferId,
-    BufferUsage, BuiltinShader, Caps, ColorDomain, ColorSpace, CpuDraw, CpuProgram, CpuTarget,
-    CpuTexels, CpuTexture, FilterMode, FormatBlock, InstanceField, InstanceLayout, InstanceSchema,
-    LayoutError, PROGRAM_SAMPLERS, PROGRAM_TEXTURES, Packed16, PipelineDesc, PipelineId,
-    ProgramAbi, ProgramCode, ProgramCompiler, ProgramDesc, SampledFormats, SamplerDesc, SamplerId,
-    SchemaAttr, ShaderCode, ShaderLang, SurfaceId, TextureDesc, TextureFormat, TextureId,
-    f16_to_f32, f32_to_f16, rgb565_to_8,
+    BufferUsage, BuiltinShader, Caps, ColorDomain, ColorSpace, CompareFunction, CpuDraw,
+    CpuProgram, CpuTarget, CpuTexels, CpuTexture, CullMode, DepthState, FilterMode, FormatBlock,
+    InstanceField, InstanceLayout, InstanceSchema, LayoutError, PROGRAM_SAMPLERS, PROGRAM_TEXTURES,
+    Packed16, PipelineDesc, PipelineId, ProgramAbi, ProgramCode, ProgramCompiler, ProgramDesc,
+    SampledFormats, SamplerDesc, SamplerId, SchemaAttr, ShaderCode, ShaderLang, SurfaceId,
+    TextureDesc, TextureFormat, TextureId, f16_to_f32, f32_to_f16, rgb565_to_8,
 };
-pub use viso_gpu_abi::{instance, program, resource};
+pub use viso_gpu_abi::{instance, program, resource, scene};
 /// Re-exported so consumers of [`GpuBackend::create_surface`] can name the
 /// handle type without depending on `viso-handle` directly.
 pub use viso_handle::RawWindowHandle;

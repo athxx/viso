@@ -1795,7 +1795,8 @@ impl Renderer {
             vertex_entry: entry.vertex_entry,
             fragment_entry: entry.fragment_entry,
             color_format: surface_format,
-            depth_format: None,
+            depth: None,
+            cull: viso_gpu::CullMode::None,
             // The blend state belongs to the family, not to this call site: every
             // family composites premultiplied source-over except the isolated
             // advanced blend, whose fragment returns the finished composite.
@@ -5310,6 +5311,7 @@ impl Renderer {
                     PassLoad::ClearBackground if matches!(redraw, Region::Rects(_)) => LoadOp::Load,
                     PassLoad::ClearBackground => LoadOp::Clear(clear),
                 },
+                depth: None,
                 first_command,
                 command_count: commands.len() as u32 - first_command,
             });

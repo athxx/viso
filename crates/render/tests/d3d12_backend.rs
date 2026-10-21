@@ -76,7 +76,8 @@ fn pipeline(
             vertex_entry: entry.vertex_entry,
             fragment_entry: entry.fragment_entry,
             color_format: format,
-            depth_format: None,
+            depth: None,
+            cull: viso_gpu::CullMode::None,
             blend: BlendMode::PremultipliedOver,
             instance_schema: entry.schema,
         },
@@ -131,6 +132,7 @@ fn draw_one(
     let passes = [RenderPass {
         target: RenderTarget::Texture(target),
         load: LoadOp::Clear([0.0, 0.0, 0.0, 0.0]),
+        depth: None,
         first_command: 0,
         command_count: 1,
     }];

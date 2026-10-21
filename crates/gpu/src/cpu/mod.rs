@@ -41,6 +41,7 @@ mod pass;
 mod pixels;
 mod pool;
 mod sample;
+mod scene;
 mod span;
 
 use std::sync::{Arc, Mutex};
@@ -52,12 +53,15 @@ use self::fill::{Inst, MAX_FIELDS};
 use self::pass::{Layer, NO_LAYER, Scratch, Shared, Target, Window};
 use self::pixels::{Fmt, Pixels, Px};
 use self::pool::Pool;
-use crate::backend::{DrawCommand, DrawList, Frame, GpuBackend, LoadOp, RenderPass, RenderTarget};
+use crate::backend::{
+    DepthAttachment, DrawCommand, DrawList, Frame, GpuBackend, LoadOp, RenderPass, RenderTarget,
+};
 use crate::instance::InstanceLayout;
 use crate::program::{CpuProgram, ProgramAbi, ProgramCode, ProgramCompiler, ProgramDesc};
 use crate::resource::{
     AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, ColorSpace,
-    PipelineDesc, SampledFormats, SamplerDesc, TextureDesc, TextureFormat, f32_to_f16,
+    CullMode, DepthState, PipelineDesc, SampledFormats, SamplerDesc, TextureDesc, TextureFormat,
+    f32_to_f16,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
@@ -99,6 +103,8 @@ struct Pipeline {
     /// another format): drawing it is a bug in the built-in's registration.
     missing: Option<&'static str>,
     program: Option<CpuRasterProgram>,
+    depth: Option<DepthState>,
+    cull: CullMode,
 }
 
 impl Pipeline {
@@ -514,6 +520,11 @@ fn encode_pass(
             load = LoadOp::Load;
         }
     }
+    if let Some(depth) = pass.depth {
+        scene_pass(res, &mut px, width, height, fmt, depth, &list[range]);
+        *target_pixels(res, surfaces, pass.target).0 = px;
+        return;
+    }
     let shared = Shared {
         res,
         layers,
@@ -547,12 +558,58 @@ fn encode_pass(
         Pixels::Unorm8(p) => run!(p),
         Pixels::Rgb565(p) => run!(p),
         Pixels::Float(p) => run!(p),
-        Pixels::R8(_) | Pixels::Packed16(_) | Pixels::Static(_) => {
+        Pixels::R8(_) | Pixels::Packed16(_) | Pixels::Depth(_) | Pixels::Static(_) => {
             panic!("a {format:?} texture is not a render target")
         }
         Pixels::None => unreachable!("allocated above"),
     }
     *target_pixels(res, surfaces, pass.target).0 = px;
+}
+
+/// Draws the scene commands of a pass with depth attachment `depth` into
+/// `px`, cleared or loaded already.
+fn scene_pass(
+    res: &mut Resources,
+    px: &mut Pixels,
+    width: u32,
+    height: u32,
+    fmt: Fmt,
+    depth: DepthAttachment,
+    commands: &[DrawCommand],
+) {
+    let len = width as usize * height as usize;
+    let Some(texture) = res.textures.get_mut(depth.texture.into()) else {
+        return;
+    };
+    let mut values = match std::mem::take(&mut texture.pixels) {
+        Pixels::Depth(values) if values.len() == len => values,
+        _ => vec![0.0; len],
+    };
+    values.fill(depth.clear);
+    macro_rules! run {
+        ($p:expr) => {
+            scene::run(
+                res,
+                &mut scene::SceneTarget {
+                    px: $p,
+                    depth: &mut values,
+                    width,
+                    height,
+                    fmt,
+                },
+                commands,
+            )
+        };
+    }
+    match px {
+        Pixels::Unorm8(p) => run!(p),
+        Pixels::Rgb565(p) => run!(p),
+        Pixels::Float(p) => run!(p),
+        _ => {}
+    }
+    if let Some(texture) = res.textures.get_mut(depth.texture.into()) {
+        texture.pixels = Pixels::Depth(values);
+    }
 }
 
 /// The pixels `target` holds, with its size and format.
@@ -666,6 +723,8 @@ impl GpuBackend for CpuRaster {
                 offsets,
                 missing,
                 program: None,
+                depth: desc.depth,
+                cull: desc.cull,
             })
             .into())
     }
@@ -686,6 +745,8 @@ impl GpuBackend for CpuRaster {
                 offsets: [0; MAX_FIELDS],
                 missing: None,
                 program: Some(program),
+                depth: None,
+                cull: CullMode::None,
             })
             .into()
     }
@@ -969,6 +1030,10 @@ fn plan_layers(
         else {
             continue;
         };
+        // A scene pass draws whole, against its depth.
+        if pass.depth.is_some() {
+            continue;
+        }
         let Some(t) = res.textures.get(texture.into()) else {
             continue;
         };

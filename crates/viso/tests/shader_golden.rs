@@ -295,6 +295,7 @@ fn draw<B: GpuBackend>(gpu: &mut B, pipeline: PipelineId, e: &Encoded) -> Textur
     let passes = [RenderPass {
         target: RenderTarget::Texture(target),
         load: LoadOp::Clear(CLEAR),
+        depth: None,
         first_command: 0,
         command_count: 1,
     }];

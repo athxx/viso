@@ -41,6 +41,7 @@ fn clear_frame(gpu: &mut MetalBackend, surface: viso_gpu::SurfaceId) {
     let passes = [RenderPass {
         target: RenderTarget::Surface(frame),
         load: LoadOp::Clear([1.0, 0.0, 0.0, 1.0]),
+        depth: None,
         first_command: 0,
         command_count: 0,
     }];

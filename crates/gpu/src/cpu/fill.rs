@@ -142,7 +142,8 @@ pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFor
             ("color1", F4),
         ],
         BuiltinShader::Path | BuiltinShader::Mesh => &[("pos", F2), ("color", F4), ("edge", F1)],
-        BuiltinShader::Layer => &[],
+        // The scene pass reads its vertices and instances whole (`scene`).
+        BuiltinShader::Layer | BuiltinShader::Scene => &[],
     }
 }
 
@@ -439,7 +440,9 @@ pub(super) fn bounds(
             }
             centers(pos, size, place, scale)
         }
-        BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => return None,
+        BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer | BuiltinShader::Scene => {
+            return None;
+        }
     })
 }
 
@@ -650,7 +653,8 @@ pub(super) fn draw(
         BuiltinShader::Material => material(cx, i, out, clip),
         BuiltinShader::AdvancedBlend => advanced_blend(cx, i, out, clip),
         BuiltinShader::Gradient => gradient(cx, i, out, clip),
-        BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => {}
+        BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer | BuiltinShader::Scene => {
+        }
     }
 }
 

@@ -384,6 +384,8 @@ fn collect(res: &Resources, commands: &[DrawCommand], w: u32, h: u32, scratch: &
                     }
                 }
             }
+            // Drawn by the scene pass alone, against its depth.
+            Geometry::InstancedMesh { .. } => {}
         }
     }
 }

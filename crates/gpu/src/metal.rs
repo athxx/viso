@@ -33,12 +33,14 @@ use objc2_core_foundation::{CGRect, CGSize};
 use objc2_foundation::NSString;
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
-    MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions, MTLCreateSystemDefaultDevice, MTLDevice,
-    MTLIndexType, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat, MTLPrimitiveType,
-    MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
-    MTLRenderPipelineState, MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerDescriptor,
-    MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState, MTLScissorRect, MTLSize,
-    MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
+    MTLCommandEncoder, MTLCommandQueue, MTLCompareFunction, MTLCompileOptions,
+    MTLCreateSystemDefaultDevice, MTLCullMode, MTLDepthStencilDescriptor, MTLDepthStencilState,
+    MTLDevice, MTLGPUFamily, MTLIndexType, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat,
+    MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
+    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResourceOptions, MTLSamplerAddressMode,
+    MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState,
+    MTLScissorRect, MTLSize, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
+    MTLViewport, MTLWinding,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer, CATransaction};
 use viso_handle::RawWindowHandle;
@@ -50,8 +52,9 @@ use crate::backend::{
 use crate::instance::InstanceLayout;
 use crate::program::{ProgramCode, ProgramCompiler, ProgramDesc};
 use crate::resource::{
-    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
-    PipelineDesc, SampledFormats, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
+    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps,
+    CompareFunction, CullMode, FilterMode, PipelineDesc, SampledFormats, SamplerDesc, ShaderCode,
+    ShaderLang, TextureDesc, TextureFormat,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
 use crate::slots::SlotMap;
@@ -91,6 +94,9 @@ struct MetalPipeline {
     builtin: BuiltinShader,
     /// Whether the vertex stage samples the bind group's textures too.
     vertex_textures: bool,
+    /// Its depth test, for a pipeline drawn against a depth attachment.
+    depth: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
+    cull: CullMode,
 }
 
 /// A user program compiled off the render thread, ready to install.
@@ -129,9 +135,9 @@ impl ProgramCompiler for MetalCompiler {
         let state = build_state(
             &self.device,
             msl,
-            desc.vertex_entry,
-            desc.fragment_entry,
+            (desc.vertex_entry, desc.fragment_entry),
             desc.color_format,
+            None,
             desc.blend,
             &options,
         )?;
@@ -147,9 +153,9 @@ impl ProgramCompiler for MetalCompiler {
 fn build_state(
     device: &ProtocolObject<dyn MTLDevice>,
     msl: &str,
-    vertex_entry: &str,
-    fragment_entry: &str,
+    (vertex_entry, fragment_entry): (&str, &str),
     color_format: TextureFormat,
+    depth_format: Option<TextureFormat>,
     blend: BlendMode,
     options: &MTLCompileOptions,
 ) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>, String> {
@@ -167,6 +173,9 @@ fn build_state(
     let pd = MTLRenderPipelineDescriptor::new();
     pd.setVertexFunction(Some(&vertex_fn));
     pd.setFragmentFunction(Some(&fragment_fn));
+    if let Some(format) = depth_format {
+        pd.setDepthAttachmentPixelFormat(pixel_format(format));
+    }
 
     // colorAttachments[0]: the target format + the blend.
     let color = pd.colorAttachments();
@@ -510,6 +519,8 @@ impl GpuBackend for MetalBackend {
                 state: program.state,
                 builtin: BuiltinShader::Quad,
                 vertex_textures: program.vertex_textures,
+                depth: None,
+                cull: CullMode::None,
             })
             .into()
     }
@@ -530,8 +541,25 @@ impl GpuBackend for MetalBackend {
         let td = MTLTextureDescriptor::new();
         td.setTextureType(objc2_metal::MTLTextureType::Type2D);
         td.setPixelFormat(pixel_format(desc.format));
-        td.setStorageMode(objc2_metal::MTLStorageMode::Shared);
-        let mut usage = MTLTextureUsage::ShaderRead;
+        // A depth attachment lives in GPU memory alone: Metal stores no depth
+        // format where the CPU reads it, and nothing reads it back. A pass's
+        // depth is transient, so on a tile GPU it is memoryless: it exists in
+        // tile memory only, for the pass.
+        let depth = desc.format == TextureFormat::Depth32Float;
+        let memoryless =
+            depth && desc.render_target && self.device.supportsFamily(MTLGPUFamily::Apple1);
+        td.setStorageMode(if memoryless {
+            objc2_metal::MTLStorageMode::Memoryless
+        } else if depth {
+            objc2_metal::MTLStorageMode::Private
+        } else {
+            objc2_metal::MTLStorageMode::Shared
+        });
+        let mut usage = if memoryless {
+            MTLTextureUsage::empty()
+        } else {
+            MTLTextureUsage::ShaderRead
+        };
         if desc.render_target {
             usage |= MTLTextureUsage::RenderTarget;
         }
@@ -605,14 +633,22 @@ impl GpuBackend for MetalBackend {
         let state = build_state(
             &self.device,
             msl,
-            desc.vertex_entry,
-            desc.fragment_entry,
+            (desc.vertex_entry, desc.fragment_entry),
             desc.color_format,
+            desc.depth.map(|depth| depth.format),
             desc.blend,
             &options,
         )
         .unwrap_or_else(|e| panic!("the standard pipeline `{}` does not build: {e}", desc.label));
         self.library_compiles.fetch_add(1, Ordering::Relaxed);
+        let depth = desc.depth.map(|depth| {
+            let dd = MTLDepthStencilDescriptor::new();
+            dd.setDepthCompareFunction(compare_function(depth.compare));
+            dd.setDepthWriteEnabled(depth.write);
+            self.device
+                .newDepthStencilStateWithDescriptor(&dd)
+                .expect("failed to create a Metal depth-stencil state")
+        });
 
         Ok(self
             .pipelines
@@ -620,6 +656,8 @@ impl GpuBackend for MetalBackend {
                 state,
                 builtin: desc.builtin,
                 vertex_textures: false,
+                depth,
+                cull: desc.cull,
             })
             .into())
     }
@@ -1030,6 +1068,13 @@ impl MetalBackend {
             LoadOp::Load => attach.setLoadAction(MTLLoadAction::Load),
         }
         attach.setStoreAction(MTLStoreAction::Store);
+        if let Some(depth) = pass.depth {
+            let attach = rpd.depthAttachment();
+            attach.setTexture(Some(&self.texture(depth.texture).texture));
+            attach.setLoadAction(MTLLoadAction::Clear);
+            attach.setClearDepth(f64::from(depth.clear));
+            attach.setStoreAction(MTLStoreAction::DontCare);
+        }
 
         let cmd = self
             .queue
@@ -1114,6 +1159,20 @@ impl MetalBackend {
 
         let pipeline = self.pipeline(c.pipeline);
         encoder.setRenderPipelineState(&pipeline.state);
+        if let Some(depth) = &pipeline.depth {
+            encoder.setDepthStencilState(Some(depth));
+        }
+        encoder.setFrontFacingWinding(MTLWinding::CounterClockwise);
+        encoder.setCullMode(match pipeline.cull {
+            CullMode::None => MTLCullMode::None,
+            CullMode::Back => MTLCullMode::Back,
+        });
+        // An instanced mesh reads its vertices at 0 and its instances at 1,
+        // so its uniform block takes 2.
+        let uniform_index = match c.geometry {
+            Geometry::InstancedMesh { .. } => 2,
+            _ => 0,
+        };
 
         // Bind the bind group's textures in order at `texture(0)`, `texture(1)`,
         // its samplers at `sampler(0)`, `sampler(1)`, as the MSL declares them,
@@ -1149,12 +1208,20 @@ impl MetalBackend {
                     }
                     Binding::Uniform(bid) => {
                         let b = self.buffer(*bid);
-                        // SAFETY: `b.buffer` is a live buffer; index 0 is the
-                        // uniform block of a program drawn with no inline
-                        // uniforms (the built-ins bind none).
+                        // SAFETY: `b.buffer` is a live buffer; `uniform_index` is
+                        // the uniform block of a program drawn with no inline
+                        // uniforms, or of an instanced mesh.
                         unsafe {
-                            encoder.setVertexBuffer_offset_atIndex(Some(&b.buffer), 0, 0);
-                            encoder.setFragmentBuffer_offset_atIndex(Some(&b.buffer), 0, 0);
+                            encoder.setVertexBuffer_offset_atIndex(
+                                Some(&b.buffer),
+                                0,
+                                uniform_index,
+                            );
+                            encoder.setFragmentBuffer_offset_atIndex(
+                                Some(&b.buffer),
+                                0,
+                                uniform_index,
+                            );
                         }
                     }
                 }
@@ -1259,7 +1326,68 @@ impl MetalBackend {
                         );
                 }
             }
+            Geometry::InstancedMesh {
+                vertex_buffer,
+                index_buffer,
+                index_format,
+                index_offset,
+                index_count,
+                count,
+            } => {
+                let uniforms = c.uniforms.as_bytes();
+                if !uniforms.is_empty() {
+                    let ptr = NonNull::new(uniforms.as_ptr() as *mut c_void).unwrap();
+                    // SAFETY: `ptr` points at `uniforms.len()` valid bytes for
+                    // the duration of the call; Metal copies them immediately.
+                    unsafe {
+                        encoder.setVertexBytes_length_atIndex(ptr, uniforms.len(), 2);
+                        encoder.setFragmentBytes_length_atIndex(ptr, uniforms.len(), 2);
+                    }
+                }
+                let vtx = self.buffer(vertex_buffer);
+                let inst = self.buffer(c.instance_buffer);
+                // SAFETY: both buffers are live; indices 0 and 1 are the
+                // vertices and instances the scene MSL reads, and the instance
+                // offset is inside the buffer (the renderer sizes it).
+                unsafe {
+                    encoder.setVertexBuffer_offset_atIndex(Some(&vtx.buffer), 0, 0);
+                    encoder.setVertexBuffer_offset_atIndex(
+                        Some(&inst.buffer),
+                        c.instance_offset,
+                        1,
+                    );
+                }
+                let idx = self.buffer(index_buffer);
+                let index_type = match index_format {
+                    IndexFormat::U16 => MTLIndexType::UInt16,
+                    IndexFormat::U32 => MTLIndexType::UInt32,
+                };
+                let byte_offset = index_offset as usize * index_format.size();
+                // SAFETY: the index range is inside the index buffer and of its
+                // element width, and the instance count is positive.
+                unsafe {
+                    encoder.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset_instanceCount(
+                        MTLPrimitiveType::Triangle,
+                        index_count as usize,
+                        index_type,
+                        &idx.buffer,
+                        byte_offset,
+                        count as usize,
+                    );
+                }
+            }
         }
+    }
+}
+
+/// The Metal compare function of `compare`.
+fn compare_function(compare: CompareFunction) -> MTLCompareFunction {
+    match compare {
+        CompareFunction::Always => MTLCompareFunction::Always,
+        CompareFunction::Less => MTLCompareFunction::Less,
+        CompareFunction::LessEqual => MTLCompareFunction::LessEqual,
+        CompareFunction::Greater => MTLCompareFunction::Greater,
+        CompareFunction::GreaterEqual => MTLCompareFunction::GreaterEqual,
     }
 }
 
@@ -1296,17 +1424,16 @@ fn pixel_format(f: TextureFormat) -> MTLPixelFormat {
 /// where the device reports it (every Mac, iPads with an M-series GPU).
 fn sampled_formats(device: &ProtocolObject<dyn MTLDevice>) -> SampledFormats {
     let mut sampled = SampledFormats::empty();
-    if device.supportsFamily(objc2_metal::MTLGPUFamily::Apple1) {
+    if device.supportsFamily(MTLGPUFamily::Apple1) {
         sampled |= SampledFormats::RGB565 | SampledFormats::RGBA4444 | SampledFormats::RGBA5551;
     }
-    if device.supportsFamily(objc2_metal::MTLGPUFamily::Apple2) {
+    if device.supportsFamily(MTLGPUFamily::Apple2) {
         sampled |= SampledFormats::ETC2 | SampledFormats::ASTC;
     }
     #[cfg(target_os = "macos")]
     let bc = device.supportsBCTextureCompression();
     #[cfg(not(target_os = "macos"))]
-    let bc = device.supportsFamily(objc2_metal::MTLGPUFamily::Apple7)
-        && device.supportsBCTextureCompression();
+    let bc = device.supportsFamily(MTLGPUFamily::Apple7) && device.supportsBCTextureCompression();
     if bc {
         sampled |= SampledFormats::BC;
     }

@@ -110,7 +110,8 @@ fn draw_indexed(format: IndexFormat, index_bytes: &[u8]) -> ([f32; 4], [f32; 4])
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
                 color_format: TextureFormat::Bgra8Unorm,
-                depth_format: None,
+                depth: None,
+                cull: viso_gpu::CullMode::None,
                 blend: BlendMode::PremultipliedOver,
                 instance_schema: mesh_schema(),
             },
@@ -141,6 +142,7 @@ fn draw_indexed(format: IndexFormat, index_bytes: &[u8]) -> ([f32; 4], [f32; 4])
         passes: &[RenderPass {
             target: RenderTarget::Surface(frame),
             load: LoadOp::Clear([0.0, 0.0, 1.0, 1.0]),
+            depth: None,
             first_command: 0,
             command_count: 1,
         }],

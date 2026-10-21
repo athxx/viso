@@ -38,6 +38,8 @@ pub(super) enum Pixels {
     /// 16-bit texels of a sampled-only format, little-endian.
     Packed16(Vec<[u8; 2]>),
     Float(Vec<[f32; 4]>),
+    /// A depth attachment's values.
+    Depth(Vec<f32>),
     /// Texels in the texture's format, borrowed in place.
     Static(&'static [u8]),
 }
@@ -60,9 +62,8 @@ impl Pixels {
             TextureFormat::Rgba4444Unorm | TextureFormat::Rgba5551Unorm => {
                 Pixels::Packed16(vec![[0; 2]; len])
             }
-            TextureFormat::Rgba16Float | TextureFormat::Depth32Float => {
-                Pixels::Float(vec![[0.0; 4]; len])
-            }
+            TextureFormat::Rgba16Float => Pixels::Float(vec![[0.0; 4]; len]),
+            TextureFormat::Depth32Float => Pixels::Depth(vec![0.0; len]),
             compressed => panic!("{COMPRESSED}, not {compressed:?}"),
         }
     }
@@ -76,9 +77,8 @@ impl Pixels {
             }
             TextureFormat::R8Unorm => Pixels::R8(vec![span::pack1(color[3]); len]),
             TextureFormat::Rgb565Unorm => Pixels::Rgb565(vec![<u16 as Px>::store(color, fmt); len]),
-            TextureFormat::Rgba16Float | TextureFormat::Depth32Float => {
-                Pixels::Float(vec![color; len])
-            }
+            TextureFormat::Rgba16Float => Pixels::Float(vec![color; len]),
+            TextureFormat::Depth32Float => Pixels::Depth(vec![color[0]; len]),
             other => panic!("a {other:?} texture is not a render target"),
         }
     }
@@ -92,6 +92,7 @@ impl Pixels {
             Pixels::Rgb565(p) => p.len() * 2,
             Pixels::Packed16(p) => p.len() * 2,
             Pixels::Float(p) => p.len() * 16,
+            Pixels::Depth(p) => p.len() * 4,
             // Borrowed: the raster holds none of it.
             Pixels::Static(_) => 0,
         }
@@ -112,6 +113,8 @@ impl Pixels {
                 layout: Packed16::of(format).expect("a 16-bit format"),
             },
             Pixels::Float(texels) => CpuTexels::Float(texels),
+            // Depth is drawn against, never sampled.
+            Pixels::Depth(_) => CpuTexels::None,
             Pixels::Static(bytes) => Self::borrowed(format, bytes),
         }
     }
@@ -190,6 +193,12 @@ impl Pixels {
                         } else {
                             [0.0; 4]
                         };
+                    }
+                }
+                Pixels::Depth(p) => {
+                    let (texels, _) = src.as_chunks::<4>();
+                    for (d, s) in p[at..at + w as usize].iter_mut().zip(texels) {
+                        *d = f32::from_le_bytes(*s);
                     }
                 }
                 Pixels::Static(_) => panic!("a texture over static bytes is never written"),

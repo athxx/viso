@@ -60,15 +60,17 @@ use crate::backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
     RenderPass, RenderTarget,
 };
-use crate::instance::{AttrFormat, InstanceLayout};
+use crate::instance::{AttrFormat, InstanceLayout, InstanceSchema};
 use crate::program::{
     PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi, ProgramCode, ProgramCompiler, ProgramDesc,
 };
 use crate::resource::{
-    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
-    PipelineDesc, SampledFormats, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
+    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps,
+    CompareFunction, CullMode, DepthState, FilterMode, PipelineDesc, SampledFormats, SamplerDesc,
+    ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
+use crate::scene::{self, SceneInstance, SceneUniforms};
 use crate::slots::SlotMap;
 use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
@@ -440,6 +442,8 @@ struct WebGpuPipeline {
     pipeline: GpuRenderPipeline,
     /// Whether the pipeline declares a vertex buffer at slot 0.
     has_vertex_buffer: bool,
+    /// The scene built-in: group 0 is the bind group's uniform buffer.
+    scene: bool,
     /// A user program's group-0 layout; `None` for a built-in.
     program: Option<ProgramLayout>,
 }
@@ -464,6 +468,8 @@ struct WebGpuBindGroup {
     /// The program texture layout's view, built on first use.
     program: Option<GpuBindGroup>,
     uniform: Option<BufferId>,
+    /// The scene's group 0 over `uniform`, built on first use.
+    scene: Option<GpuBindGroup>,
 }
 
 /// A user program's group 0 for one instance range and uniform source.
@@ -557,6 +563,10 @@ struct PassDescriptor {
     pass: Object,
     attachment: Object,
     clear: Object,
+    /// The depth attachment, set on the pass while one is named.
+    depth: Object,
+    key_depth: JsValue,
+    key_depth_clear: JsValue,
     key_view: JsValue,
     key_load_op: JsValue,
     load: JsValue,
@@ -578,15 +588,43 @@ impl PassDescriptor {
             ("clearValue", clear.clone().into()),
         ]);
         let pass = obj(&[("colorAttachments", arr(&[attachment.clone().into()]).into())]);
+        // Transient: cleared on load, discarded on store.
+        let depth = obj(&[
+            ("depthLoadOp", "clear".into()),
+            ("depthStoreOp", "discard".into()),
+            ("depthClearValue", 0.0.into()),
+        ]);
         Self {
             pass,
             attachment,
             clear,
+            depth,
+            key_depth: "depthStencilAttachment".into(),
+            key_depth_clear: "depthClearValue".into(),
             key_view: "view".into(),
             key_load_op: "loadOp".into(),
             load: "load".into(),
             clear_op: "clear".into(),
             channel_keys: ["r".into(), "g".into(), "b".into(), "a".into()],
+        }
+    }
+
+    /// Name `depth`'s view, cleared to its value, as the depth attachment,
+    /// or none.
+    fn depth(&self, depth: Option<(&GpuTextureView, f32)>) {
+        match depth {
+            Some((view, clear)) => {
+                let _ = Reflect::set(&self.depth, &self.key_view, view);
+                let _ = Reflect::set(
+                    &self.depth,
+                    &self.key_depth_clear,
+                    &JsValue::from_f64(f64::from(clear)),
+                );
+                let _ = Reflect::set(&self.pass, &self.key_depth, &self.depth);
+            }
+            None => {
+                let _ = Reflect::delete_property(&self.pass, &self.key_depth);
+            }
         }
     }
 
@@ -745,6 +783,9 @@ pub struct WebGpuBackend {
     preferred: TextureFormat,
     float32_filterable: bool,
     uniform_layout: GpuBindGroupLayout,
+    /// Group 0 of the scene built-in: a whole uniform buffer.
+    scene_uniform_layout: GpuBindGroupLayout,
+    scene_pipeline_layout: GpuPipelineLayout,
     texture_layout: GpuBindGroupLayout,
     /// Group 1 of every user program.
     program_texture_layout: GpuBindGroupLayout,
@@ -915,6 +956,27 @@ impl WebGpuBackend {
             "bindGroupLayouts",
             arr(&[uniform_layout.clone(), texture_layout.clone()]).into(),
         )]));
+        let scene_uniform_layout = device.create_bind_group_layout(&obj(&[(
+            "entries",
+            arr(&[obj(&[
+                ("binding", 0.into()),
+                ("visibility", visibility.into()),
+                (
+                    "buffer",
+                    obj(&[
+                        ("type", "uniform".into()),
+                        ("minBindingSize", (SceneUniforms::SIZE as u32).into()),
+                    ])
+                    .into(),
+                ),
+            ])
+            .into()])
+            .into(),
+        )]));
+        let scene_pipeline_layout = device.create_pipeline_layout(&obj(&[(
+            "bindGroupLayouts",
+            arr(&[scene_uniform_layout.clone(), texture_layout.clone()]).into(),
+        )]));
 
         let default_texture = device.create_texture(&obj(&[
             (
@@ -963,6 +1025,8 @@ impl WebGpuBackend {
             preferred,
             float32_filterable,
             uniform_layout,
+            scene_uniform_layout,
+            scene_pipeline_layout,
             texture_layout,
             program_texture_layout,
             pipeline_layout,
@@ -1220,20 +1284,23 @@ impl WebGpuBackend {
         self.program_groups.len() - 1
     }
 
-    /// A render pipeline under `layout` drawing into one `color_format`
-    /// target, reading `buffers` as its vertex buffers.
-    #[allow(clippy::too_many_arguments)]
+    /// A render pipeline under `layout` drawing as `fixed` says, reading
+    /// `buffers` as its vertex buffers.
     fn render_pipeline(
         &self,
         label: &str,
         layout: &GpuPipelineLayout,
         module: &GpuShaderModule,
-        vertex_entry: &str,
-        fragment_entry: &str,
+        (vertex_entry, fragment_entry): (&str, &str),
         buffers: Array,
-        color_format: TextureFormat,
-        blend: BlendMode,
+        fixed: Fixed,
     ) -> GpuRenderPipeline {
+        let Fixed {
+            color_format,
+            blend,
+            depth,
+            cull,
+        } = fixed;
         let target = obj(&[("format", gpu_format(color_format).into())]);
         if blend == BlendMode::PremultipliedOver {
             let over = || {
@@ -1249,7 +1316,7 @@ impl WebGpuBackend {
                 obj(&[("color", over().into()), ("alpha", over().into())]),
             );
         }
-        self.device.create_render_pipeline(&obj(&[
+        let desc = obj(&[
             ("label", label.into()),
             ("layout", layout.into()),
             (
@@ -1274,11 +1341,31 @@ impl WebGpuBackend {
                 "primitive",
                 obj(&[
                     ("topology", "triangle-list".into()),
-                    ("cullMode", "none".into()),
+                    ("frontFace", "ccw".into()),
+                    (
+                        "cullMode",
+                        match cull {
+                            CullMode::None => "none",
+                            CullMode::Back => "back",
+                        }
+                        .into(),
+                    ),
                 ])
                 .into(),
             ),
-        ]))
+        ]);
+        if let Some(d) = depth {
+            set(
+                &desc,
+                "depthStencil",
+                obj(&[
+                    ("format", "depth32float".into()),
+                    ("depthWriteEnabled", d.write.into()),
+                    ("depthCompare", compare_name(d.compare).into()),
+                ]),
+            );
+        }
+        self.device.create_render_pipeline(&desc)
     }
 
     /// Grow the uniform ring to hold at least `slots` slots. Called between
@@ -1343,6 +1430,39 @@ impl WebGpuBackend {
         self.submit_list.set(0, JsValue::UNDEFINED);
     }
 
+    /// The scene group 0 of bind group `bg`: its uniform buffer, whole.
+    fn scene_group(&mut self, bg: BindGroupId) -> GpuBindGroup {
+        let g = self
+            .bind_groups
+            .get(bg.into())
+            .expect("bind group handle does not resolve");
+        if let Some(group) = &g.scene {
+            return JsValue::clone(group).unchecked_into();
+        }
+        let buffer = g
+            .uniform
+            .expect("a scene draw's bind group holds a uniform buffer");
+        let group = self.device.create_bind_group(&obj(&[
+            ("layout", self.scene_uniform_layout.clone()),
+            (
+                "entries",
+                arr(&[obj(&[
+                    ("binding", 0.into()),
+                    (
+                        "resource",
+                        obj(&[("buffer", self.buffer(buffer).buffer.clone())]).into(),
+                    ),
+                ])
+                .into()])
+                .into(),
+            ),
+        ]));
+        if let Some(g) = self.bind_groups.get_mut(bg.into()) {
+            g.scene = Some(JsValue::clone(&group).unchecked_into());
+        }
+        group
+    }
+
     fn record_pass(
         &mut self,
         encoder: &GpuCommandEncoder,
@@ -1372,6 +1492,8 @@ impl WebGpuBackend {
                 (t.width, t.height)
             }
         };
+        self.pass_desc
+            .depth(pass.depth.map(|d| (&self.texture(d.texture).view, d.clear)));
         if let Some(clock) = &mut self.clock {
             clock.stamp(&self.pass_desc.pass, self.acquired.is_some());
         }
@@ -1383,6 +1505,8 @@ impl WebGpuBackend {
         let mut bound_group: Option<(Option<BindGroupId>, bool)> = Some((None, false));
         // Group 0: the program group bound (`None`: the ring's) and its offset.
         let mut bound_zero: Option<(Option<usize>, u32)> = None;
+        // Group 0 of a scene draw: the bind group whose uniform buffer it is.
+        let mut bound_scene: Option<BindGroupId> = None;
         for c in commands {
             let (sx, sy, sw, sh) = match c.scissor {
                 Some((x, y, w, h)) => {
@@ -1393,7 +1517,7 @@ impl WebGpuBackend {
                 None => (0, 0, width, height),
             };
             rp.set_scissor_rect(sx, sy, sw, sh);
-            let (has_vertex_buffer, program) = {
+            let (has_vertex_buffer, scene, program) = {
                 let p = self
                     .pipelines
                     .get(c.pipeline.into())
@@ -1404,6 +1528,7 @@ impl WebGpuBackend {
                 }
                 (
                     p.has_vertex_buffer,
+                    p.scene,
                     p.program.as_ref().map(|g| (g.uniforms, g.uniform_buffer)),
                 )
             };
@@ -1445,8 +1570,18 @@ impl WebGpuBackend {
                 }
             }
             let uniforms = c.uniforms.as_bytes();
+            if scene {
+                let bg = c.bind_group.expect("a scene draw binds its uniform buffer");
+                if bound_scene != Some(bg) {
+                    rp.set_bind_group(0, &self.scene_group(bg));
+                    bound_scene = Some(bg);
+                    bound_zero = None;
+                }
+            }
             match program {
+                None if scene => {}
                 None => {
+                    bound_scene = None;
                     let offset = match bound_zero {
                         Some((None, o)) if uniforms.is_empty() => o,
                         _ => self.uniform_offset(uniforms),
@@ -1457,6 +1592,7 @@ impl WebGpuBackend {
                     }
                 }
                 Some((declares, large)) => {
+                    bound_scene = None;
                     let ring = declares && !large;
                     let offset = if ring {
                         self.uniform_offset(uniforms)
@@ -1508,6 +1644,31 @@ impl WebGpuBackend {
                         (index_offset as usize * index_format.size()) as f64,
                     );
                     rp.draw_indexed(index_count, 1, 0, 0, 0);
+                }
+                Geometry::InstancedMesh {
+                    vertex_buffer,
+                    index_buffer,
+                    index_format,
+                    index_offset,
+                    index_count,
+                    count,
+                } => {
+                    rp.set_vertex_buffer(0, &self.buffer(vertex_buffer).buffer, 0.0);
+                    rp.set_vertex_buffer(
+                        1,
+                        &self.buffer(c.instance_buffer).buffer,
+                        c.instance_offset as f64,
+                    );
+                    let format = match index_format {
+                        IndexFormat::U16 => "uint16",
+                        IndexFormat::U32 => "uint32",
+                    };
+                    rp.set_index_buffer(
+                        &self.buffer(index_buffer).buffer,
+                        format,
+                        (index_offset as usize * index_format.size()) as f64,
+                    );
+                    rp.draw_indexed(index_count, count, 0, 0, 0);
                 }
             }
         }
@@ -1659,7 +1820,8 @@ fn gpu_format(format: TextureFormat) -> &'static str {
         }
         TextureFormat::Rgba16Float => "rgba16float",
         // A depth texture cannot be sampled through a float layout; the plane is
-        // stored as a colour float instead, same bytes per texel.
+        // stored as a colour float instead, same bytes per texel. A depth
+        // render target is `depth32float`.
         TextureFormat::Depth32Float => "r32float",
         TextureFormat::Bc1RgbaUnorm => "bc1-rgba-unorm",
         TextureFormat::Bc3RgbaUnorm => "bc3-rgba-unorm",
@@ -1670,6 +1832,24 @@ fn gpu_format(format: TextureFormat) -> &'static str {
         TextureFormat::Astc4x4Unorm => "astc-4x4-unorm",
         TextureFormat::Astc6x6Unorm => "astc-6x6-unorm",
         TextureFormat::Astc8x8Unorm => "astc-8x8-unorm",
+    }
+}
+
+/// The fixed-function state of a pipeline.
+struct Fixed {
+    color_format: TextureFormat,
+    blend: BlendMode,
+    depth: Option<DepthState>,
+    cull: CullMode,
+}
+
+fn compare_name(f: CompareFunction) -> &'static str {
+    match f {
+        CompareFunction::Always => "always",
+        CompareFunction::Less => "less",
+        CompareFunction::LessEqual => "less-equal",
+        CompareFunction::Greater => "greater",
+        CompareFunction::GreaterEqual => "greater-equal",
     }
 }
 
@@ -1705,7 +1885,14 @@ impl GpuBackend for WebGpuBackend {
 
     fn create_texture(&mut self, desc: &TextureDesc) -> TextureId {
         let (width, height) = (desc.width.max(1), desc.height.max(1));
-        let mut usage = TEXTURE_BINDING | TEXTURE_COPY_DST | TEXTURE_COPY_SRC;
+        // A depth render target is a `depth32float` attachment and nothing
+        // else; any other depth texture is stored as a float color plane.
+        let depth = desc.render_target && desc.format == TextureFormat::Depth32Float;
+        let mut usage = if depth {
+            0
+        } else {
+            TEXTURE_BINDING | TEXTURE_COPY_DST | TEXTURE_COPY_SRC
+        };
         if desc.render_target {
             usage |= TEXTURE_RENDER_ATTACHMENT;
         }
@@ -1713,7 +1900,15 @@ impl GpuBackend for WebGpuBackend {
         // transparent black.
         let texture = self.device.create_texture(&obj(&[
             ("size", extent(width, height).into()),
-            ("format", gpu_format(desc.format).into()),
+            (
+                "format",
+                if depth {
+                    "depth32float"
+                } else {
+                    gpu_format(desc.format)
+                }
+                .into(),
+            ),
             ("usage", usage.into()),
             ("label", desc.label.into()),
         ]));
@@ -1757,46 +1952,72 @@ impl GpuBackend for WebGpuBackend {
             .clone()
             .unchecked_into();
 
-        let step_mode = match desc.builtin {
-            BuiltinShader::Path | BuiltinShader::Mesh => "vertex",
-            _ => "instance",
+        let scene = desc.builtin == BuiltinShader::Scene;
+        let stride = layout.stride as u32;
+        // A scene draw adds its instances as buffer 1, at the locations after
+        // the vertex attributes.
+        let streams: &[(InstanceSchema, u32, &str)] = match desc.builtin {
+            BuiltinShader::Scene => &[
+                (desc.instance_schema, stride, "vertex"),
+                (
+                    scene::INSTANCE_SCHEMA,
+                    SceneInstance::SIZE as u32,
+                    "instance",
+                ),
+            ],
+            BuiltinShader::Path | BuiltinShader::Mesh => {
+                &[(desc.instance_schema, stride, "vertex")]
+            }
+            _ => &[(desc.instance_schema, stride, "instance")],
         };
-        let attributes = Array::new();
-        let mut offset = 0u32;
-        for (location, a) in desc.instance_schema.attributes.iter().enumerate() {
-            attributes.push(&obj(&[
-                ("format", attr_format(a.format).into()),
-                ("offset", offset.into()),
-                ("shaderLocation", (location as u32).into()),
-            ]));
-            offset += a.format.size() as u32;
-        }
-        let has_vertex_buffer = attributes.length() > 0;
-        let buffers = if has_vertex_buffer {
-            arr(&[obj(&[
-                ("arrayStride", (layout.stride as u32).into()),
-                ("stepMode", step_mode.into()),
+        let buffers = Array::new();
+        let mut location = 0u32;
+        for (schema, stride, step_mode) in streams {
+            if schema.attributes.is_empty() {
+                continue;
+            }
+            let attributes = Array::new();
+            let mut offset = 0u32;
+            for a in schema.attributes {
+                attributes.push(&obj(&[
+                    ("format", attr_format(a.format).into()),
+                    ("offset", offset.into()),
+                    ("shaderLocation", location.into()),
+                ]));
+                offset += a.format.size() as u32;
+                location += 1;
+            }
+            buffers.push(&obj(&[
+                ("arrayStride", (*stride).into()),
+                ("stepMode", (*step_mode).into()),
                 ("attributes", attributes.into()),
-            ])
-            .into()])
+            ]));
+        }
+        let has_vertex_buffer = buffers.length() > 0;
+        let layout = if scene {
+            &self.scene_pipeline_layout
         } else {
-            Array::new()
+            &self.pipeline_layout
         };
         let pipeline = self.render_pipeline(
             desc.label,
-            &self.pipeline_layout,
+            layout,
             &module,
-            desc.vertex_entry,
-            desc.fragment_entry,
+            (desc.vertex_entry, desc.fragment_entry),
             buffers,
-            desc.color_format,
-            desc.blend,
+            Fixed {
+                color_format: desc.color_format,
+                blend: desc.blend,
+                depth: desc.depth,
+                cull: desc.cull,
+            },
         );
         Ok(self
             .pipelines
             .insert(WebGpuPipeline {
                 pipeline,
                 has_vertex_buffer,
+                scene,
                 program: None,
             })
             .into())
@@ -1845,6 +2066,7 @@ impl GpuBackend for WebGpuBackend {
                 samplers,
                 program: None,
                 uniform,
+                scene: None,
             })
             .into()
     }
@@ -1904,16 +2126,20 @@ impl GpuBackend for WebGpuBackend {
             &program.label,
             &pipeline_layout,
             &module,
-            &program.vertex_entry,
-            &program.fragment_entry,
+            (&program.vertex_entry, &program.fragment_entry),
             Array::new(),
-            program.color_format,
-            program.blend,
+            Fixed {
+                color_format: program.color_format,
+                blend: program.blend,
+                depth: None,
+                cull: CullMode::None,
+            },
         );
         self.pipelines
             .insert(WebGpuPipeline {
                 pipeline,
                 has_vertex_buffer: false,
+                scene: false,
                 program: Some(ProgramLayout {
                     layout,
                     uniforms,

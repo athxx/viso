@@ -72,15 +72,17 @@ use crate::backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
     RenderPass, RenderTarget,
 };
-use crate::instance::{AttrFormat, InstanceLayout};
+use crate::instance::{AttrFormat, InstanceLayout, InstanceSchema};
 use crate::program::{
     PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramCode, ProgramCompiler, ProgramDesc,
 };
 use crate::resource::{
-    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
-    PipelineDesc, SampledFormats, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
+    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps,
+    CompareFunction, CullMode, DepthState, FilterMode, PipelineDesc, SampledFormats, SamplerDesc,
+    ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
+use crate::scene::{self, SceneInstance};
 use crate::slots::SlotMap;
 use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
@@ -134,19 +136,23 @@ struct D3D12Buffer {
     gpu_va: u64,
 }
 
-/// A texture: a default-heap resource and, for render targets, its view.
+/// A texture: a default-heap resource and, for render targets, its view: a
+/// render-target view, or for a depth target a depth-stencil view.
 struct D3D12Texture {
     resource: ID3D12Resource,
     format: TextureFormat,
     width: u32,
     height: u32,
     rtv: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
+    dsv: Option<D3D12_CPU_DESCRIPTOR_HANDLE>,
 }
 
 /// A registered pipeline and the vertex stride its input layout reads.
 struct D3D12Pipeline {
     pso: ID3D12PipelineState,
     stride: u32,
+    /// The scene built-in, drawn under the scene root signature.
+    scene: bool,
     /// A user program's own root signature; `None` for a built-in, drawn under
     /// the shared one.
     program: Option<ProgramRoot>,
@@ -291,12 +297,23 @@ impl Clock {
     }
 }
 
+/// Which root signature a pipeline draws under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Root {
+    /// The built-ins' shared one, uniforms as root constants.
+    #[default]
+    Shared,
+    /// The scene built-in's, uniforms as a root constant-buffer view.
+    Scene,
+    /// A user program's own.
+    Program(PipelineId),
+}
+
 /// What a pass's recording has bound so far.
 #[derive(Default)]
 struct Bound {
     pipeline: Option<PipelineId>,
-    /// The user program whose root signature is bound; `None` for the shared one.
-    root: Option<PipelineId>,
+    root: Root,
     /// The bind group and whether its sampler pair is bound.
     group: Option<(BindGroupId, bool)>,
 }
@@ -349,6 +366,9 @@ pub struct D3D12Backend {
     /// Errors the debug layer has reported, accumulated as they are drained.
     validation_errors: Cell<u32>,
     root_signature: ID3D12RootSignature,
+    /// The scene built-in's root signature: the shared one with its uniforms
+    /// a constant-buffer view on the bind group's uniform buffer.
+    scene_root_signature: ID3D12RootSignature,
     srv_heap: GpuHeap,
     sampler_heap: GpuHeap,
     /// Both shader-visible heaps, as `SetDescriptorHeaps` takes them.
@@ -360,6 +380,9 @@ pub struct D3D12Backend {
     rtv_heaps: Vec<ID3D12DescriptorHeap>,
     rtv_free: Vec<D3D12_CPU_DESCRIPTOR_HANDLE>,
     rtv_increment: u32,
+    dsv_heaps: Vec<ID3D12DescriptorHeap>,
+    dsv_free: Vec<D3D12_CPU_DESCRIPTOR_HANDLE>,
+    dsv_increment: u32,
     /// Buffers live in the GPU-upload heap (resizable BAR) rather than the
     /// upload heap.
     gpu_upload_heap: bool,
@@ -464,6 +487,10 @@ impl D3D12Backend {
             (queue, fence, event)
         };
         let root_signature = create_root_signature(&device);
+        let scene_root_signature =
+            serialize_root_signature(&device, None, true).unwrap_or_else(|e| {
+                panic!("failed to create the Direct3D 12 scene root signature: {e}")
+            });
         let srv_heap = create_gpu_heap(
             &device,
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
@@ -488,8 +515,12 @@ impl D3D12Backend {
         }
         let gpu_upload_heap = supports_gpu_upload_heap(&device);
         // SAFETY: querying a descriptor size has no preconditions.
-        let rtv_increment =
-            unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) };
+        let (rtv_increment, dsv_increment) = unsafe {
+            (
+                device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV),
+                device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV),
+            )
+        };
         let slots = std::array::from_fn(|_| create_frame_slot(&device));
         let sampled = sampled_formats(&device);
 
@@ -500,6 +531,7 @@ impl D3D12Backend {
             info_queue,
             validation_errors: Cell::new(0),
             root_signature,
+            scene_root_signature,
             srv_heap,
             sampler_heap,
             heaps,
@@ -510,6 +542,9 @@ impl D3D12Backend {
             rtv_heaps: Vec::new(),
             rtv_free: Vec::new(),
             rtv_increment,
+            dsv_heaps: Vec::new(),
+            dsv_free: Vec::new(),
+            dsv_increment,
             gpu_upload_heap,
             shader_cache: Vec::new(),
             fence,
@@ -941,10 +976,9 @@ impl D3D12Backend {
                     self.buffers.remove(entry.id);
                 }
                 ResourceKind::Texture => {
-                    if let Some(t) = self.textures.remove(entry.id)
-                        && let Some(rtv) = t.rtv
-                    {
-                        self.rtv_free.push(rtv);
+                    if let Some(t) = self.textures.remove(entry.id) {
+                        self.rtv_free.extend(t.rtv);
+                        self.dsv_free.extend(t.dsv);
                     }
                 }
                 ResourceKind::Sampler => {
@@ -1015,29 +1049,24 @@ impl D3D12Backend {
 
     /// A free render-target view handle, opening a new RTV heap when none is.
     fn allocate_rtv(&mut self) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-        if let Some(h) = self.rtv_free.pop() {
-            return h;
-        }
-        // SAFETY: a CPU-only RTV heap description with no other preconditions.
-        let heap: ID3D12DescriptorHeap = unsafe {
-            self.device
-                .CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
-                    Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                    NumDescriptors: RTV_BLOCK,
-                    ..Default::default()
-                })
-        }
-        .expect("failed to create a Direct3D 12 RTV heap");
-        // SAFETY: `heap` is live.
-        let start = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
-        self.rtv_free
-            .extend((0..RTV_BLOCK).rev().map(|i| D3D12_CPU_DESCRIPTOR_HANDLE {
-                ptr: start.ptr + i as usize * self.rtv_increment as usize,
-            }));
-        self.rtv_heaps.push(heap);
-        self.rtv_free
-            .pop()
-            .expect("a fresh RTV heap has free handles")
+        allocate_view(
+            &self.device,
+            D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+            self.rtv_increment,
+            &mut self.rtv_heaps,
+            &mut self.rtv_free,
+        )
+    }
+
+    /// A free depth-stencil view handle, opening a new DSV heap when none is.
+    fn allocate_dsv(&mut self) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+        allocate_view(
+            &self.device,
+            D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+            self.dsv_increment,
+            &mut self.dsv_heaps,
+            &mut self.dsv_free,
+        )
     }
 
     fn allocate_srv_unit(&mut self) -> u32 {
@@ -1238,18 +1267,38 @@ impl D3D12Backend {
             MinDepth: 0.0,
             MaxDepth: 1.0,
         };
+        let depth = pass.depth.map(|d| {
+            let t = self.texture(d.texture);
+            let dsv = t
+                .dsv
+                .expect("a depth attachment is a Depth32Float render target");
+            (dsv, d.clear, t.resource.clone())
+        });
         // SAFETY: `cmd` is recording and the target is in RENDER_TARGET; `rtv`
-        // is its live view.
+        // is its live view. A depth target rests in DEPTH_WRITE and `dsv` is
+        // its live view.
         unsafe {
-            cmd.OMSetRenderTargets(1, Some(&rtv), false, None);
+            cmd.OMSetRenderTargets(
+                1,
+                Some(&rtv),
+                false,
+                depth.as_ref().map(|d| &d.0 as *const _),
+            );
             if let LoadOp::Clear(color) = pass.load {
                 cmd.ClearRenderTargetView(rtv, &color, None);
+            }
+            if let Some((dsv, clear, _)) = &depth {
+                cmd.ClearDepthStencilView(*dsv, D3D12_CLEAR_FLAG_DEPTH, *clear, 0, None);
             }
             cmd.RSSetViewports(&[viewport]);
         }
         let mut bound = Bound::default();
         for c in commands {
             self.record_command(&cmd, c, extent, &mut bound);
+        }
+        if let Some((_, _, resource)) = &depth {
+            // SAFETY: the depth is transient: nothing reads it past the pass.
+            unsafe { cmd.DiscardResource(resource, None) };
         }
         if texture {
             // SAFETY: the texture returns to its resting state.
@@ -1290,18 +1339,23 @@ impl D3D12Backend {
             .get(c.pipeline.into())
             .expect("pipeline handle does not resolve");
         if bound.pipeline != Some(c.pipeline) {
-            let root = p.program.as_ref().map(|_| c.pipeline);
+            let root = match (&p.program, p.scene) {
+                (Some(_), _) => Root::Program(c.pipeline),
+                (None, true) => Root::Scene,
+                (None, false) => Root::Shared,
+            };
             if bound.root != root {
-                let signature = p
-                    .program
-                    .as_ref()
-                    .map_or(&self.root_signature, |r| &r.signature);
+                let signature = match (&p.program, root) {
+                    (Some(r), _) => &r.signature,
+                    (None, Root::Scene) => &self.scene_root_signature,
+                    _ => &self.root_signature,
+                };
                 // SAFETY: `cmd` is recording; switching the root signature
                 // drops every root binding, so the default tables are rebound
                 // and the bind group with them.
                 unsafe {
                     cmd.SetGraphicsRootSignature(signature);
-                    if root.is_none() {
+                    if root == Root::Shared {
                         let zeros = [0u32; InlineUniforms::MAX / 4];
                         cmd.SetGraphicsRoot32BitConstants(
                             ROOT_UNIFORMS,
@@ -1351,10 +1405,10 @@ impl D3D12Backend {
                 bound.group = Some((bg, pair));
             }
             let uniforms = c.uniforms.as_bytes();
-            if p.program.as_ref().is_some_and(|r| r.uniform_buffer) {
+            if p.scene || p.program.as_ref().is_some_and(|r| r.uniform_buffer) {
                 let buffer = group
                     .and_then(|g| g.uniform)
-                    .expect("a program with a large uniform block draws with a uniform buffer");
+                    .expect("a uniform-buffer pipeline draws with a group binding one");
                 cmd.SetGraphicsRootConstantBufferView(ROOT_UNIFORMS, self.buffer(buffer).gpu_va);
             } else if !uniforms.is_empty() {
                 let mut words = [0u32; InlineUniforms::MAX / 4];
@@ -1410,6 +1464,35 @@ impl D3D12Backend {
                     }));
                     cmd.DrawIndexedInstanced(index_count, 1, 0, 0, 0);
                 }
+                Geometry::InstancedMesh {
+                    vertex_buffer,
+                    index_buffer,
+                    index_format,
+                    index_offset,
+                    index_count,
+                    count,
+                } => {
+                    let vtx = self.buffer(vertex_buffer);
+                    let inst = self.buffer(c.instance_buffer);
+                    let idx = self.buffer(index_buffer);
+                    let start = index_offset as usize * index_format.size();
+                    cmd.IASetVertexBuffers(
+                        0,
+                        Some(&[
+                            vertex_view(vtx, 0, stride),
+                            vertex_view(inst, c.instance_offset, SceneInstance::SIZE as u32),
+                        ]),
+                    );
+                    cmd.IASetIndexBuffer(Some(&D3D12_INDEX_BUFFER_VIEW {
+                        BufferLocation: idx.gpu_va + start as u64,
+                        SizeInBytes: (idx.len - start) as u32,
+                        Format: match index_format {
+                            IndexFormat::U16 => DXGI_FORMAT_R16_UINT,
+                            IndexFormat::U32 => DXGI_FORMAT_R32_UINT,
+                        },
+                    }));
+                    cmd.DrawIndexedInstanced(index_count, count, 0, 0, 0);
+                }
             }
         }
     }
@@ -1450,8 +1533,12 @@ impl ProgramCompiler for D3D12Compiler {
             &vs,
             &ps,
             &[],
-            desc.color_format,
-            desc.blend,
+            Fixed {
+                color_format: desc.color_format,
+                blend: desc.blend,
+                depth: None,
+                cull: CullMode::None,
+            },
         )?;
         Ok(D3D12Program {
             pso,
@@ -1489,7 +1576,14 @@ impl GpuBackend for D3D12Backend {
 
     fn create_texture(&mut self, desc: &TextureDesc) -> TextureId {
         let (width, height) = (desc.width.max(1), desc.height.max(1));
-        let format = dxgi_format(desc.format);
+        // A depth render target is a depth-stencil resource; any other depth
+        // texture is a single-channel float one, sampled or copied.
+        let depth = desc.render_target && desc.format == TextureFormat::Depth32Float;
+        let format = if depth {
+            DXGI_FORMAT_D32_FLOAT
+        } else {
+            dxgi_format(desc.format)
+        };
         let props = D3D12_HEAP_PROPERTIES {
             Type: D3D12_HEAP_TYPE_DEFAULT,
             ..Default::default()
@@ -1506,7 +1600,9 @@ impl GpuBackend for D3D12Backend {
                 Quality: 0,
             },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            Flags: if desc.render_target {
+            Flags: if depth {
+                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE
+            } else if desc.render_target {
                 D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
             } else {
                 D3D12_RESOURCE_FLAG_NONE
@@ -1515,9 +1611,21 @@ impl GpuBackend for D3D12Backend {
         };
         let clear = D3D12_CLEAR_VALUE {
             Format: format,
-            Anonymous: D3D12_CLEAR_VALUE_0 { Color: [0.0; 4] },
+            Anonymous: if depth {
+                D3D12_CLEAR_VALUE_0 {
+                    DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
+                        Depth: 0.0,
+                        Stencil: 0,
+                    },
+                }
+            } else {
+                D3D12_CLEAR_VALUE_0 { Color: [0.0; 4] }
+            },
         };
-        let state = if desc.render_target {
+        // A depth target rests as one: it only ever serves a pass.
+        let state = if depth {
+            D3D12_RESOURCE_STATE_DEPTH_WRITE
+        } else if desc.render_target {
             D3D12_RESOURCE_STATE_RENDER_TARGET
         } else {
             TEXTURE_REST
@@ -1538,7 +1646,14 @@ impl GpuBackend for D3D12Backend {
                 .expect("failed to create a Direct3D 12 texture");
         }
         let resource = resource.expect("CreateCommittedResource returned no resource");
-        let rtv = desc.render_target.then(|| {
+        let dsv = depth.then(|| {
+            let dsv = self.allocate_dsv();
+            // SAFETY: `resource` allows depth-stencil views; `dsv` is a free
+            // handle.
+            unsafe { self.device.CreateDepthStencilView(&resource, None, dsv) };
+            dsv
+        });
+        let rtv = (desc.render_target && !depth).then(|| {
             let rtv = self.allocate_rtv();
             // SAFETY: `resource` allows render targets; `rtv` is a free handle.
             unsafe { self.device.CreateRenderTargetView(&resource, None, rtv) };
@@ -1564,6 +1679,7 @@ impl GpuBackend for D3D12Backend {
                 width,
                 height,
                 rtv,
+                dsv,
             })
             .into()
     }
@@ -1594,42 +1710,49 @@ impl GpuBackend for D3D12Backend {
         let vs = self.compile(source, desc.vertex_entry, false);
         let ps = self.compile(source, desc.fragment_entry, true);
 
-        let (class, step) = match desc.builtin {
-            BuiltinShader::Path | BuiltinShader::Mesh => {
-                (D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0)
-            }
-            _ => (D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1),
+        let scene = desc.builtin == BuiltinShader::Scene;
+        let per_vertex = (D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0);
+        let per_instance = (D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1);
+        // A scene draw adds its instances as slot 1, at the semantic indices
+        // after the vertex attributes.
+        let streams: &[(InstanceSchema, _)] = match desc.builtin {
+            BuiltinShader::Scene => &[
+                (desc.instance_schema, per_vertex),
+                (scene::INSTANCE_SCHEMA, per_instance),
+            ],
+            BuiltinShader::Path | BuiltinShader::Mesh => &[(desc.instance_schema, per_vertex)],
+            _ => &[(desc.instance_schema, per_instance)],
         };
-        let mut elements = Vec::with_capacity(desc.instance_schema.attributes.len());
-        let mut offset = 0u32;
-        for (i, a) in desc.instance_schema.attributes.iter().enumerate() {
-            elements.push(D3D12_INPUT_ELEMENT_DESC {
-                SemanticName: PCSTR(ATTR_SEMANTIC.as_ptr().cast()),
-                SemanticIndex: i as u32,
-                Format: attr_format(a.format),
-                InputSlot: 0,
-                AlignedByteOffset: offset,
-                InputSlotClass: class,
-                InstanceDataStepRate: step,
-            });
-            offset += a.format.size() as u32;
+        let mut elements = Vec::new();
+        for (slot, (schema, (class, step))) in streams.iter().enumerate() {
+            let mut offset = 0u32;
+            for a in schema.attributes {
+                elements.push(D3D12_INPUT_ELEMENT_DESC {
+                    SemanticName: PCSTR(ATTR_SEMANTIC.as_ptr().cast()),
+                    SemanticIndex: elements.len() as u32,
+                    Format: attr_format(a.format),
+                    InputSlot: slot as u32,
+                    AlignedByteOffset: offset,
+                    InputSlotClass: *class,
+                    InstanceDataStepRate: *step,
+                });
+                offset += a.format.size() as u32;
+            }
         }
 
-        let pso = create_pso(
-            &self.device,
-            &self.root_signature,
-            &vs,
-            &ps,
-            &elements,
-            desc.color_format,
-            desc.blend,
-        )
-        .unwrap_or_else(|e| panic!("failed to create a Direct3D 12 pipeline: {e}"));
+        let root = if scene {
+            &self.scene_root_signature
+        } else {
+            &self.root_signature
+        };
+        let pso = create_pso(&self.device, root, &vs, &ps, &elements, desc)
+            .unwrap_or_else(|e| panic!("failed to create a Direct3D 12 pipeline: {e}"));
         Ok(self
             .pipelines
             .insert(D3D12Pipeline {
                 pso,
                 stride: layout.stride as u32,
+                scene,
                 program: None,
             })
             .into())
@@ -1721,6 +1844,7 @@ impl GpuBackend for D3D12Backend {
             .insert(D3D12Pipeline {
                 pso: program.pso,
                 stride: 0,
+                scene: false,
                 program: Some(program.root),
             })
             .into()
@@ -2352,15 +2476,40 @@ fn blend_desc(blend: BlendMode) -> D3D12_RENDER_TARGET_BLEND_DESC {
 
 /// A triangle-list pipeline state drawing into one `color_format` target
 /// under `root`, reading `elements` as its input layout.
+/// The fixed-function state of a pipeline: what `desc` says of blending,
+/// depth and culling.
+struct Fixed {
+    color_format: TextureFormat,
+    blend: BlendMode,
+    depth: Option<DepthState>,
+    cull: CullMode,
+}
+
+impl From<&PipelineDesc> for Fixed {
+    fn from(desc: &PipelineDesc) -> Self {
+        Fixed {
+            color_format: desc.color_format,
+            blend: desc.blend,
+            depth: desc.depth,
+            cull: desc.cull,
+        }
+    }
+}
+
 fn create_pso(
     device: &ID3D12Device,
     root: &ID3D12RootSignature,
     vs: &ID3DBlob,
     ps: &ID3DBlob,
     elements: &[D3D12_INPUT_ELEMENT_DESC],
-    color_format: TextureFormat,
-    blend: BlendMode,
+    fixed: impl Into<Fixed>,
 ) -> Result<ID3D12PipelineState, String> {
+    let Fixed {
+        color_format,
+        blend,
+        depth,
+        cull,
+    } = fixed.into();
     let mut blend_state = D3D12_BLEND_DESC::default();
     blend_state.RenderTarget[0] = blend_desc(blend);
     let stencil_op = D3D12_DEPTH_STENCILOP_DESC {
@@ -2382,14 +2531,24 @@ fn create_pso(
         SampleMask: u32::MAX,
         RasterizerState: D3D12_RASTERIZER_DESC {
             FillMode: D3D12_FILL_MODE_SOLID,
-            CullMode: D3D12_CULL_MODE_NONE,
+            CullMode: match cull {
+                CullMode::None => D3D12_CULL_MODE_NONE,
+                CullMode::Back => D3D12_CULL_MODE_BACK,
+            },
+            // A face counter-clockwise in clip space is counter-clockwise on
+            // the target, whose y the viewport flips.
+            FrontCounterClockwise: true.into(),
             DepthClipEnable: true.into(),
             ..Default::default()
         },
         DepthStencilState: D3D12_DEPTH_STENCIL_DESC {
-            DepthEnable: false.into(),
-            DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
-            DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+            DepthEnable: depth.is_some().into(),
+            DepthWriteMask: if depth.is_some_and(|d| d.write) {
+                D3D12_DEPTH_WRITE_MASK_ALL
+            } else {
+                D3D12_DEPTH_WRITE_MASK_ZERO
+            },
+            DepthFunc: depth.map_or(D3D12_COMPARISON_FUNC_ALWAYS, |d| comparison(d.compare)),
             StencilEnable: false.into(),
             StencilReadMask: 0xff,
             StencilWriteMask: 0xff,
@@ -2407,6 +2566,11 @@ fn create_pso(
         PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
         NumRenderTargets: 1,
         RTVFormats: rtv_formats,
+        DSVFormat: if depth.is_some() {
+            DXGI_FORMAT_D32_FLOAT
+        } else {
+            DXGI_FORMAT_UNKNOWN
+        },
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: 1,
             Quality: 0,
@@ -2416,6 +2580,36 @@ fn create_pso(
     // SAFETY: every pointer in the description borrows a live local or blob for
     // the call; the bytecode reads what the root signature declares.
     unsafe { device.CreateGraphicsPipelineState(&desc) }.map_err(|e| e.to_string())
+}
+
+/// A free handle of a CPU-only view heap of type `ty`, opening a new heap of
+/// [`RTV_BLOCK`] views when `free` is empty.
+fn allocate_view(
+    device: &ID3D12Device,
+    ty: D3D12_DESCRIPTOR_HEAP_TYPE,
+    increment: u32,
+    heaps: &mut Vec<ID3D12DescriptorHeap>,
+    free: &mut Vec<D3D12_CPU_DESCRIPTOR_HANDLE>,
+) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+    if let Some(h) = free.pop() {
+        return h;
+    }
+    // SAFETY: a CPU-only view heap description with no other preconditions.
+    let heap: ID3D12DescriptorHeap = unsafe {
+        device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+            Type: ty,
+            NumDescriptors: RTV_BLOCK,
+            ..Default::default()
+        })
+    }
+    .expect("failed to create a Direct3D 12 view heap");
+    // SAFETY: `heap` is live.
+    let start = unsafe { heap.GetCPUDescriptorHandleForHeapStart() };
+    free.extend((0..RTV_BLOCK).rev().map(|i| D3D12_CPU_DESCRIPTOR_HANDLE {
+        ptr: start.ptr + i as usize * increment as usize,
+    }));
+    heaps.push(heap);
+    free.pop().expect("a fresh view heap has free handles")
 }
 
 fn create_gpu_heap(device: &ID3D12Device, ty: D3D12_DESCRIPTOR_HEAP_TYPE, count: u32) -> GpuHeap {
@@ -2595,6 +2789,16 @@ fn sampler_desc(desc: &SamplerDesc) -> D3D12_SAMPLER_DESC {
 }
 
 /// Map a Viso [`TextureFormat`] to its DXGI format.
+fn comparison(f: CompareFunction) -> D3D12_COMPARISON_FUNC {
+    match f {
+        CompareFunction::Always => D3D12_COMPARISON_FUNC_ALWAYS,
+        CompareFunction::Less => D3D12_COMPARISON_FUNC_LESS,
+        CompareFunction::LessEqual => D3D12_COMPARISON_FUNC_LESS_EQUAL,
+        CompareFunction::Greater => D3D12_COMPARISON_FUNC_GREATER,
+        CompareFunction::GreaterEqual => D3D12_COMPARISON_FUNC_GREATER_EQUAL,
+    }
+}
+
 fn dxgi_format(format: TextureFormat) -> DXGI_FORMAT {
     match format {
         TextureFormat::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -2606,8 +2810,7 @@ fn dxgi_format(format: TextureFormat) -> DXGI_FORMAT {
         // Viso stores it.
         TextureFormat::Rgb565Unorm => DXGI_FORMAT_B5G6R5_UNORM,
         TextureFormat::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
-        // Depth is only ever sampled or copied here, never a depth attachment,
-        // so it is stored as a single-channel float color texture.
+        // As a color texture; a depth render target is `D32_FLOAT`.
         TextureFormat::Depth32Float => DXGI_FORMAT_R32_FLOAT,
         TextureFormat::Bc1RgbaUnorm => DXGI_FORMAT_BC1_UNORM,
         TextureFormat::Bc3RgbaUnorm => DXGI_FORMAT_BC3_UNORM,

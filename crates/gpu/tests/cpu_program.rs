@@ -107,6 +107,7 @@ fn a_program_draws_its_instances_from_the_offset_inside_the_scissor() {
         passes: &[RenderPass {
             target: RenderTarget::Surface(frame),
             load: LoadOp::Clear([0.0, 0.0, 1.0, 1.0]),
+            depth: None,
             first_command: 0,
             command_count: 1,
         }],

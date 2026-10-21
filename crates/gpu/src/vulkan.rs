@@ -56,13 +56,15 @@ use crate::backend::{
     DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat, InlineUniforms, LoadOp,
     RenderPass, RenderTarget,
 };
-use crate::instance::{AttrFormat, InstanceLayout};
+use crate::instance::{AttrFormat, InstanceLayout, InstanceSchema};
 use crate::program::{PROGRAM_TEXTURES, ProgramCode, ProgramCompiler, ProgramDesc};
 use crate::resource::{
-    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
-    PipelineDesc, SampledFormats, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
+    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps,
+    CompareFunction, CullMode, DepthState, FilterMode, PipelineDesc, SampledFormats, SamplerDesc,
+    ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
 use crate::retire::{Epoch, Fence, ResourceKind, RetireQueue, Retired};
+use crate::scene::{self, SceneInstance};
 use crate::slots::SlotMap;
 use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
@@ -79,6 +81,8 @@ const SETS_PER_POOL: u32 = 256;
 const BINDING_TEX: u32 = 0;
 const BINDING_DST_TEX: u32 = 1;
 const BINDING_SAMPLER: u32 = 2;
+/// A scene draw's uniform block.
+const BINDING_UNIFORM: u32 = 3;
 /// Where a Vulkan loader lives on macOS when it is not on the default search
 /// path; empty elsewhere.
 const MACOS_LOADERS: &[&str] = if cfg!(target_os = "macos") {
@@ -112,6 +116,9 @@ struct VulkanTexture {
     height: u32,
     render_target: bool,
     framebuffer: vk::Framebuffer,
+    /// The framebuffer of passes with a depth attachment, and the depth
+    /// texture it was built with.
+    depth_framebuffer: Option<(TextureId, vk::Framebuffer)>,
 }
 
 /// A registered pipeline.
@@ -254,6 +261,7 @@ struct Acquired {
 struct RenderPassEntry {
     format: vk::Format,
     clear: bool,
+    depth: Option<vk::Format>,
     pass: vk::RenderPass,
 }
 
@@ -278,6 +286,9 @@ pub struct VulkanBackend {
     pipeline_layout: vk::PipelineLayout,
     pipeline_cache: vk::PipelineCache,
     render_passes: Vec<RenderPassEntry>,
+    /// Framebuffers replaced while a submitted frame may still use them, with
+    /// the epoch they were replaced in.
+    dead_framebuffers: Vec<(Epoch, vk::Framebuffer)>,
     descriptor_pools: Vec<vk::DescriptorPool>,
     slots: [FrameSlot; FRAMES_IN_FLIGHT],
     /// The slot being recorded or next to record.
@@ -596,6 +607,7 @@ impl VulkanBackend {
             pipeline_layout,
             pipeline_cache,
             render_passes: Vec::new(),
+            dead_framebuffers: Vec::new(),
             descriptor_pools: Vec::new(),
             slots,
             slot: 0,
@@ -821,22 +833,29 @@ impl VulkanBackend {
         }
     }
 
-    /// The render pass for `format` with a clearing or loading color attachment.
-    /// Passes differing only in load op are compatible, so pipelines and
-    /// framebuffers are built against the clearing one.
-    fn render_pass(&mut self, format: vk::Format, clear: bool) -> vk::RenderPass {
+    /// The render pass for `format` with a clearing or loading color
+    /// attachment, and a transient `depth` attachment if one is named. Passes
+    /// differing only in load op are compatible, so pipelines and framebuffers
+    /// are built against the clearing one.
+    fn render_pass(
+        &mut self,
+        format: vk::Format,
+        clear: bool,
+        depth: Option<vk::Format>,
+    ) -> vk::RenderPass {
         if let Some(e) = self
             .render_passes
             .iter()
-            .find(|e| e.format == format && e.clear == clear)
+            .find(|e| e.format == format && e.clear == clear && e.depth == depth)
         {
             return e.pass;
         }
         // SAFETY: the device is live.
-        let pass = unsafe { create_render_pass(&self.device, format, clear) };
+        let pass = unsafe { create_render_pass(&self.device, format, clear, depth) };
         self.render_passes.push(RenderPassEntry {
             format,
             clear,
+            depth,
             pass,
         });
         pass
@@ -975,7 +994,18 @@ impl VulkanBackend {
 
     /// Destroy every retired resource the GPU can no longer reference.
     fn reclaim_completed(&mut self) {
-        let fence = Fence::at(self.completed_epoch());
+        let completed = self.completed_epoch();
+        let fence = Fence::at(completed);
+        let device = &self.device;
+        self.dead_framebuffers.retain(|&(epoch, fb)| {
+            let done = epoch <= completed;
+            if done {
+                // SAFETY: every frame up to the one it was replaced in has
+                // finished, so no command references the framebuffer.
+                unsafe { device.destroy_framebuffer(fb, None) };
+            }
+            !done
+        });
         self.reclaim_scratch.clear();
         self.retire_queue
             .drain_completed(fence, &mut self.reclaim_scratch);
@@ -1085,6 +1115,10 @@ impl VulkanBackend {
                 ty: vk::DescriptorType::SAMPLER,
                 descriptor_count: SETS_PER_POOL,
             },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: SETS_PER_POOL,
+            },
         ];
         let info = vk::DescriptorPoolCreateInfo::default()
             .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
@@ -1099,24 +1133,24 @@ impl VulkanBackend {
     }
 
     /// A triangle-list graphics pipeline over `module`'s two entries, drawing
-    /// into `color_format` with `blend` through `layout`.
+    /// as `desc` says through `layout`.
     ///
     /// # Safety
     ///
     /// `module` and `layout` are live objects of this device, and the entries
     /// read only what `layout` and `vertex_input` declare.
-    #[allow(clippy::too_many_arguments)]
     unsafe fn graphics_pipeline(
         &mut self,
         module: vk::ShaderModule,
-        vertex_entry: &str,
-        fragment_entry: &str,
+        desc: &PipelineDesc,
         vertex_input: &vk::PipelineVertexInputStateCreateInfo<'_>,
-        color_format: TextureFormat,
-        blend: BlendMode,
         layout: vk::PipelineLayout,
     ) -> Result<vk::Pipeline, vk::Result> {
-        let render_pass = self.render_pass(vk_format(color_format), true);
+        let render_pass = self.render_pass(
+            vk_format(desc.color_format),
+            true,
+            desc.depth.map(|d| vk_format(d.format)),
+        );
         // SAFETY: forwarded from the caller; the render pass is live.
         unsafe {
             graphics_pipeline(
@@ -1124,10 +1158,14 @@ impl VulkanBackend {
                 self.pipeline_cache,
                 render_pass,
                 module,
-                vertex_entry,
-                fragment_entry,
-                vertex_input,
-                blend,
+                Stages {
+                    vertex_entry: desc.vertex_entry,
+                    fragment_entry: desc.fragment_entry,
+                    vertex_input,
+                    blend: desc.blend,
+                    depth: desc.depth,
+                    cull: desc.cull,
+                },
                 layout,
             )
         }
@@ -1407,11 +1445,11 @@ impl VulkanBackend {
                 .get_swapchain_images(swapchain)
                 .expect("query swapchain images")
         };
-        let pass = self.render_pass(vk_format, true);
+        let pass = self.render_pass(vk_format, true, None);
         let mut built = Vec::with_capacity(images.len());
         for image in images {
             let view = self.create_view(image, vk_format, vk::ImageAspectFlags::COLOR);
-            let framebuffer = self.create_framebuffer(pass, view, extent.width, extent.height);
+            let framebuffer = self.create_framebuffer(pass, &[view], extent.width, extent.height);
             built.push(SwapImage {
                 image,
                 view,
@@ -1454,19 +1492,18 @@ impl VulkanBackend {
     fn create_framebuffer(
         &self,
         pass: vk::RenderPass,
-        view: vk::ImageView,
+        attachments: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> vk::Framebuffer {
-        let attachments = [view];
         let info = vk::FramebufferCreateInfo::default()
             .render_pass(pass)
-            .attachments(&attachments)
+            .attachments(attachments)
             .width(width)
             .height(height)
             .layers(1);
-        // SAFETY: `view` is a color-attachment view of a `width`×`height` image
-        // whose format matches `pass`'s attachment.
+        // SAFETY: `attachments` are views of `width`×`height` images whose
+        // formats match `pass`'s attachments, in order.
         unsafe { self.device.create_framebuffer(&info, None) }
             .expect("failed to create a Vulkan framebuffer")
     }
@@ -1475,7 +1512,14 @@ impl VulkanBackend {
     fn record_pass(&mut self, pass: &RenderPass, commands: &[DrawCommand]) {
         let cmd = self.slots[self.slot].draw;
         let clear = matches!(pass.load, LoadOp::Clear(_));
+        let depth = pass.depth.map(|d| {
+            let t = self.texture(d.texture);
+            (d, t.image, t.view, vk_format(t.format))
+        });
         let (image, aspect, framebuffer, extent, format, texture) = match pass.target {
+            RenderTarget::Surface(_) if depth.is_some() => {
+                panic!("a pass with a depth attachment draws into a texture")
+            }
             RenderTarget::Surface(frame) => {
                 let Some(acq) = self.acquired.filter(|a| a.surface == frame.surface) else {
                     return;
@@ -1525,16 +1569,32 @@ impl VulkanBackend {
                     t.view,
                     t.framebuffer,
                 );
-                let fb = if fb == vk::Framebuffer::null() {
-                    let rp = self.render_pass(fmt, true);
-                    let fb = self.create_framebuffer(rp, view, w, h);
-                    self.textures
-                        .get_mut(id.into())
-                        .expect("texture handle")
-                        .framebuffer = fb;
-                    fb
-                } else {
-                    fb
+                let fb = match depth {
+                    None if fb == vk::Framebuffer::null() => {
+                        let rp = self.render_pass(fmt, true, None);
+                        let fb = self.create_framebuffer(rp, &[view], w, h);
+                        self.textures
+                            .get_mut(id.into())
+                            .expect("texture handle")
+                            .framebuffer = fb;
+                        fb
+                    }
+                    None => fb,
+                    Some((d, _, depth_view, depth_fmt)) => match t.depth_framebuffer {
+                        Some((with, fb)) if with == d.texture => fb,
+                        old => {
+                            if let Some((_, fb)) = old {
+                                self.dead_framebuffers.push((self.current_epoch, fb));
+                            }
+                            let rp = self.render_pass(fmt, true, Some(depth_fmt));
+                            let fb = self.create_framebuffer(rp, &[view, depth_view], w, h);
+                            self.textures
+                                .get_mut(id.into())
+                                .expect("texture handle")
+                                .depth_framebuffer = Some((d.texture, fb));
+                            fb
+                        }
+                    },
                 };
                 let t = self.texture(id);
                 let old = if clear {
@@ -1567,15 +1627,40 @@ impl VulkanBackend {
                 )
             }
         };
-        let render_pass = self.render_pass(format, clear);
-        let clear_values = [vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: match pass.load {
-                    LoadOp::Clear(c) => c,
-                    LoadOp::Load => [0.0; 4],
+        if let Some((_, depth_image, _, _)) = depth {
+            // SAFETY: `cmd` is recording outside a render pass; a depth
+            // render target rests in DEPTH_STENCIL_ATTACHMENT_OPTIMAL. The
+            // barrier orders the previous pass's depth writes before this
+            // pass's clear.
+            unsafe {
+                transition(
+                    &self.device,
+                    cmd,
+                    depth_image,
+                    vk::ImageAspectFlags::DEPTH,
+                    vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                );
+            }
+        }
+        let render_pass = self.render_pass(format, clear, depth.map(|d| d.3));
+        let clear_values = [
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: match pass.load {
+                        LoadOp::Clear(c) => c,
+                        LoadOp::Load => [0.0; 4],
+                    },
                 },
             },
-        }];
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: pass.depth.map_or(0.0, |d| d.clear),
+                    stencil: 0,
+                },
+            },
+        ];
+        let clear_values = &clear_values[..1 + usize::from(depth.is_some())];
         let area = vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
             extent,
@@ -1584,7 +1669,7 @@ impl VulkanBackend {
             .render_pass(render_pass)
             .framebuffer(framebuffer)
             .render_area(area)
-            .clear_values(&clear_values);
+            .clear_values(clear_values);
         let viewport = vk::Viewport {
             x: 0.0,
             y: 0.0,
@@ -1746,6 +1831,36 @@ impl VulkanBackend {
                     );
                     self.device.cmd_draw_indexed(cmd, index_count, 1, 0, 0, 0);
                 }
+                Geometry::InstancedMesh {
+                    vertex_buffer,
+                    index_buffer,
+                    index_format,
+                    index_offset,
+                    index_count,
+                    count,
+                } => {
+                    let vtx = self.buffer(vertex_buffer);
+                    let inst = self.buffer(c.instance_buffer);
+                    let idx = self.buffer(index_buffer);
+                    let index_type = match index_format {
+                        IndexFormat::U16 => vk::IndexType::UINT16,
+                        IndexFormat::U32 => vk::IndexType::UINT32,
+                    };
+                    self.device.cmd_bind_vertex_buffers(
+                        cmd,
+                        0,
+                        &[vtx.buffer, inst.buffer],
+                        &[0, c.instance_offset as u64],
+                    );
+                    self.device.cmd_bind_index_buffer(
+                        cmd,
+                        idx.buffer,
+                        (index_offset as usize * index_format.size()) as u64,
+                        index_type,
+                    );
+                    self.device
+                        .cmd_draw_indexed(cmd, index_count, count, 0, 0, 0);
+                }
             }
         }
     }
@@ -1851,6 +1966,12 @@ impl GpuBackend for VulkanBackend {
             (image, memory)
         };
         let view = self.create_view(image, format, aspect);
+        // A depth render target only ever serves as a pass's attachment.
+        let rest = if depth && desc.render_target {
+            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        } else {
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        };
 
         // Zero the image and bring it to its resting layout, so a texture that is
         // sampled before it is written reads transparent black, not garbage.
@@ -1891,7 +2012,7 @@ impl GpuBackend for VulkanBackend {
                 image,
                 aspect,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                rest,
             );
         }
         self.textures
@@ -1904,6 +2025,7 @@ impl GpuBackend for VulkanBackend {
                 height: desc.height.max(1),
                 render_target: desc.render_target,
                 framebuffer: vk::Framebuffer::null(),
+                depth_framebuffer: None,
             })
             .into()
     }
@@ -1952,25 +2074,45 @@ impl GpuBackend for VulkanBackend {
         let module = unsafe { self.device.create_shader_module(&module_info, None) }
             .expect("failed to create a Vulkan shader module");
         let input_rate = match desc.builtin {
-            BuiltinShader::Path | BuiltinShader::Mesh => vk::VertexInputRate::VERTEX,
+            BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Scene => {
+                vk::VertexInputRate::VERTEX
+            }
             _ => vk::VertexInputRate::INSTANCE,
         };
-        let mut attributes = Vec::with_capacity(desc.instance_schema.attributes.len());
-        let mut offset = 0u32;
-        for (location, a) in desc.instance_schema.attributes.iter().enumerate() {
-            attributes.push(vk::VertexInputAttributeDescription {
-                location: location as u32,
-                binding: 0,
-                format: attr_format(a.format),
-                offset,
+        // A scene draw adds its instances as a second, instance-rate stream at
+        // the locations after the vertex attributes.
+        let streams: &[(InstanceSchema, u32, vk::VertexInputRate)] =
+            if desc.builtin == BuiltinShader::Scene {
+                &[
+                    (desc.instance_schema, layout.stride as u32, input_rate),
+                    (
+                        scene::INSTANCE_SCHEMA,
+                        SceneInstance::SIZE as u32,
+                        vk::VertexInputRate::INSTANCE,
+                    ),
+                ]
+            } else {
+                &[(desc.instance_schema, layout.stride as u32, input_rate)]
+            };
+        let mut attributes = Vec::new();
+        let mut bindings = Vec::with_capacity(streams.len());
+        for (binding, (schema, stride, input_rate)) in streams.iter().enumerate() {
+            let mut offset = 0u32;
+            for a in schema.attributes {
+                attributes.push(vk::VertexInputAttributeDescription {
+                    location: attributes.len() as u32,
+                    binding: binding as u32,
+                    format: attr_format(a.format),
+                    offset,
+                });
+                offset += a.format.size() as u32;
+            }
+            bindings.push(vk::VertexInputBindingDescription {
+                binding: binding as u32,
+                stride: *stride,
+                input_rate: *input_rate,
             });
-            offset += a.format.size() as u32;
         }
-        let bindings = [vk::VertexInputBindingDescription {
-            binding: 0,
-            stride: layout.stride as u32,
-            input_rate,
-        }];
         let vertex_input = if attributes.is_empty() {
             vk::PipelineVertexInputStateCreateInfo::default()
         } else {
@@ -1982,15 +2124,7 @@ impl GpuBackend for VulkanBackend {
         // SAFETY: the module's entry points read the attributes, push constants
         // and set-0 bindings the shared layout declares.
         let pipeline = unsafe {
-            let result = self.graphics_pipeline(
-                module,
-                desc.vertex_entry,
-                desc.fragment_entry,
-                &vertex_input,
-                desc.color_format,
-                desc.blend,
-                pipeline_layout,
-            );
+            let result = self.graphics_pipeline(module, desc, &vertex_input, pipeline_layout);
             self.device.destroy_shader_module(module, None);
             result.expect("failed to create a Vulkan pipeline")
         };
@@ -2008,6 +2142,7 @@ impl GpuBackend for VulkanBackend {
         let mut views = [vk::ImageView::null(); 2];
         let mut texture_count = 0;
         let mut sampler = None;
+        let mut uniform = None;
         for binding in &desc.bindings {
             match *binding {
                 Binding::Texture(id) => {
@@ -2024,8 +2159,7 @@ impl GpuBackend for VulkanBackend {
                             .expect("sampler handle does not resolve"),
                     );
                 }
-                // The built-ins' uniforms are push constants.
-                Binding::Uniform(_) => {}
+                Binding::Uniform(id) => uniform = Some(self.buffer(id).buffer),
             }
         }
         // A single-texture program leaves `dst_tex` unread; fill it anyway so the
@@ -2046,7 +2180,13 @@ impl GpuBackend for VulkanBackend {
                 .collect()
         };
         let sampler_info = sampler.map(|s| [vk::DescriptorImageInfo::default().sampler(s)]);
-        let mut writes = Vec::with_capacity(3);
+        let uniform_info = uniform.map(|b| {
+            [vk::DescriptorBufferInfo::default()
+                .buffer(b)
+                .offset(0)
+                .range(vk::WHOLE_SIZE)]
+        });
+        let mut writes = Vec::with_capacity(4);
         for (i, info) in image_infos.iter().enumerate() {
             writes.push(
                 vk::WriteDescriptorSet::default()
@@ -2063,6 +2203,15 @@ impl GpuBackend for VulkanBackend {
                     .dst_binding(BINDING_SAMPLER)
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .image_info(info),
+            );
+        }
+        if let Some(info) = &uniform_info {
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(BINDING_UNIFORM)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(info),
             );
         }
         // SAFETY: `set` was just allocated with the shared layout; every write
@@ -2709,6 +2858,11 @@ fn create_layouts(
             .descriptor_type(vk::DescriptorType::SAMPLER)
             .descriptor_count(1)
             .stage_flags(stages),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(BINDING_UNIFORM)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(stages),
     ];
     let push = [vk::PushConstantRange {
         stage_flags: stages,
@@ -2787,55 +2941,91 @@ unsafe fn create_render_pass(
     device: &ash::Device,
     format: vk::Format,
     clear: bool,
+    depth: Option<vk::Format>,
 ) -> vk::RenderPass {
-    let attachment = [vk::AttachmentDescription::default()
-        .format(format)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .load_op(if clear {
-            vk::AttachmentLoadOp::CLEAR
-        } else {
-            vk::AttachmentLoadOp::LOAD
-        })
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+    let attachments = [
+        vk::AttachmentDescription::default()
+            .format(format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(if clear {
+                vk::AttachmentLoadOp::CLEAR
+            } else {
+                vk::AttachmentLoadOp::LOAD
+            })
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+        // Transient: cleared on load, discarded on store.
+        vk::AttachmentDescription::default()
+            .format(depth.unwrap_or(vk::Format::D32_SFLOAT))
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+    ];
     let color_ref = [vk::AttachmentReference::default()
         .attachment(0)
         .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
-    let subpass = [vk::SubpassDescription::default()
+    let depth_ref = vk::AttachmentReference::default()
+        .attachment(1)
+        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    let mut subpass = vk::SubpassDescription::default()
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(&color_ref)];
+        .color_attachments(&color_ref);
+    if depth.is_some() {
+        subpass = subpass.depth_stencil_attachment(&depth_ref);
+    }
+    let subpasses = [subpass];
     let info = vk::RenderPassCreateInfo::default()
-        .attachments(&attachment)
-        .subpasses(&subpass);
-    // SAFETY: `info` describes one color attachment used by one subpass; the
-    // layouts around it are established by explicit barriers.
+        .attachments(&attachments[..1 + usize::from(depth.is_some())])
+        .subpasses(&subpasses);
+    // SAFETY: `info` describes a color attachment, and a depth one if named,
+    // used by one subpass; the layouts around them are established by explicit
+    // barriers.
     unsafe { device.create_render_pass(&info, None) }
         .expect("failed to create a Vulkan render pass")
 }
 
-/// A triangle-list graphics pipeline over `module`'s two entries, drawing with
-/// `blend` through `layout`, built against `render_pass` (and usable with any
-/// pass compatible with it).
+/// The programmable and fixed-function state of a graphics pipeline.
+struct Stages<'a> {
+    vertex_entry: &'a str,
+    fragment_entry: &'a str,
+    vertex_input: &'a vk::PipelineVertexInputStateCreateInfo<'a>,
+    blend: BlendMode,
+    depth: Option<DepthState>,
+    cull: CullMode,
+}
+
+/// A triangle-list graphics pipeline over `module`'s two entries, drawing as
+/// `stages` says through `layout`, built against `render_pass` (and usable
+/// with any pass compatible with it).
 ///
 /// # Safety
 ///
-/// Every handle is a live object of `device`, and the entries read only what
-/// `layout` and `vertex_input` declare.
-#[allow(clippy::too_many_arguments)]
+/// Every handle is a live object of `device`, the render pass has a depth
+/// attachment exactly when `stages.depth` is set, and the entries read only
+/// what `layout` and `stages.vertex_input` declare.
 unsafe fn graphics_pipeline(
     device: &ash::Device,
     cache: vk::PipelineCache,
     render_pass: vk::RenderPass,
     module: vk::ShaderModule,
-    vertex_entry: &str,
-    fragment_entry: &str,
-    vertex_input: &vk::PipelineVertexInputStateCreateInfo<'_>,
-    blend: BlendMode,
+    stages: Stages<'_>,
     layout: vk::PipelineLayout,
 ) -> Result<vk::Pipeline, vk::Result> {
+    let Stages {
+        vertex_entry,
+        fragment_entry,
+        vertex_input,
+        blend,
+        depth,
+        cull,
+    } = stages;
     let vertex_entry = CString::new(vertex_entry).expect("entry name");
     let fragment_entry = CString::new(fragment_entry).expect("entry name");
     let stages = [
@@ -2855,9 +3045,20 @@ unsafe fn graphics_pipeline(
         .scissor_count(1);
     let raster = vk::PipelineRasterizationStateCreateInfo::default()
         .polygon_mode(vk::PolygonMode::FILL)
-        .cull_mode(vk::CullModeFlags::NONE)
+        .cull_mode(match cull {
+            CullMode::None => vk::CullModeFlags::NONE,
+            CullMode::Back => vk::CullModeFlags::BACK,
+        })
+        // The vertex stage flips y for Vulkan's downward framebuffer, so a
+        // face counter-clockwise in clip space is counter-clockwise on screen.
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .line_width(1.0);
+    let depth_stencil = depth.map(|d| {
+        vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(d.write)
+            .depth_compare_op(compare_op(d.compare))
+    });
     let multisample = vk::PipelineMultisampleStateCreateInfo::default()
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
     let blend_attachment = [match blend {
@@ -2888,6 +3089,10 @@ unsafe fn graphics_pipeline(
         .layout(layout)
         .render_pass(render_pass)
         .subpass(0);
+    let info = match &depth_stencil {
+        Some(d) => info.depth_stencil_state(d),
+        None => info,
+    };
     // SAFETY: every state block borrows live locals; the caller vouches for
     // the handles.
     unsafe {
@@ -2995,16 +3200,20 @@ impl ProgramCompiler for VulkanCompiler {
                     None,
                 )
                 .expect("failed to create a program pipeline layout");
-            let pass = create_render_pass(device, vk_format(desc.color_format), true);
+            let pass = create_render_pass(device, vk_format(desc.color_format), true, None);
             let result = graphics_pipeline(
                 device,
                 self.cache,
                 pass,
                 module,
-                desc.vertex_entry,
-                desc.fragment_entry,
-                &vk::PipelineVertexInputStateCreateInfo::default(),
-                desc.blend,
+                Stages {
+                    vertex_entry: desc.vertex_entry,
+                    fragment_entry: desc.fragment_entry,
+                    vertex_input: &vk::PipelineVertexInputStateCreateInfo::default(),
+                    blend: desc.blend,
+                    depth: None,
+                    cull: CullMode::None,
+                },
                 layout,
             );
             device.destroy_render_pass(pass, None);
@@ -3078,6 +3287,9 @@ unsafe fn destroy_texture(device: &ash::Device, t: VulkanTexture) {
         if t.framebuffer != vk::Framebuffer::null() {
             device.destroy_framebuffer(t.framebuffer, None);
         }
+        if let Some((_, fb)) = t.depth_framebuffer {
+            device.destroy_framebuffer(fb, None);
+        }
         device.destroy_image_view(t.view, None);
         device.destroy_image(t.image, None);
         device.free_memory(t.memory, None);
@@ -3108,6 +3320,12 @@ fn layout_scope(layout: vk::ImageLayout, src: bool) -> (vk::AccessFlags, vk::Pip
         vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => (
             vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        ),
+        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => (
+            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
         ),
         vk::ImageLayout::TRANSFER_DST_OPTIMAL => (
             vk::AccessFlags::TRANSFER_WRITE,
@@ -3253,6 +3471,16 @@ fn sampled_formats(
 }
 
 /// Map an attribute format to its Vulkan vertex format.
+fn compare_op(f: CompareFunction) -> vk::CompareOp {
+    match f {
+        CompareFunction::Always => vk::CompareOp::ALWAYS,
+        CompareFunction::Less => vk::CompareOp::LESS,
+        CompareFunction::LessEqual => vk::CompareOp::LESS_OR_EQUAL,
+        CompareFunction::Greater => vk::CompareOp::GREATER,
+        CompareFunction::GreaterEqual => vk::CompareOp::GREATER_OR_EQUAL,
+    }
+}
+
 fn attr_format(format: AttrFormat) -> vk::Format {
     match format {
         AttrFormat::Float1 => vk::Format::R32_SFLOAT,

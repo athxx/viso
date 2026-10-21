@@ -101,7 +101,8 @@ fn draws_a_solid_rect_over_a_cleared_background() {
                 vertex_entry: "vertex_main",
                 fragment_entry: "fragment_main",
                 color_format: TextureFormat::Bgra8Unorm,
-                depth_format: None,
+                depth: None,
+                cull: viso_gpu::CullMode::None,
                 blend: BlendMode::PremultipliedOver,
                 instance_schema: quad_schema(),
             },
@@ -127,6 +128,7 @@ fn draws_a_solid_rect_over_a_cleared_background() {
             target: RenderTarget::Surface(frame),
             // Clear to opaque blue.
             load: LoadOp::Clear([0.0, 0.0, 1.0, 1.0]),
+            depth: None,
             first_command: 0,
             command_count: 1,
         }],

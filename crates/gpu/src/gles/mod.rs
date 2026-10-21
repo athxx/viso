@@ -55,9 +55,11 @@ use crate::backend::{
 use crate::instance::{AttrFormat, InstanceLayout, LayoutError};
 use crate::program::{ProgramAbi, ProgramCode, ProgramCompiler, ProgramDesc};
 use crate::resource::{
-    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps, FilterMode,
-    PipelineDesc, SampledFormats, SamplerDesc, ShaderCode, ShaderLang, TextureDesc, TextureFormat,
+    AddressMode, BindGroupDesc, Binding, BlendMode, BufferDesc, BuiltinShader, Caps,
+    CompareFunction, CullMode, DepthState, FilterMode, PipelineDesc, SampledFormats, SamplerDesc,
+    ShaderCode, ShaderLang, TextureDesc, TextureFormat,
 };
+use crate::scene::{self, SceneInstance, SceneUniforms};
 use crate::slots::SlotMap;
 use crate::{BindGroupId, BufferId, PipelineId, SamplerId, SurfaceId, TextureId};
 
@@ -86,6 +88,9 @@ struct GlTexture {
     format: TextureFormat,
     /// The framebuffer drawing into it, made by its first pass.
     fbo: Option<GLuint>,
+    /// The framebuffer of passes with a depth attachment, and the depth
+    /// texture it was made with.
+    depth_fbo: Option<(TextureId, GLuint)>,
 }
 
 /// One vertex attribute of a built-in pipeline.
@@ -99,8 +104,13 @@ struct Attr {
 }
 
 enum Kind {
-    /// A built-in: its attributes over one instance (or vertex) of `stride`.
-    Builtin { attrs: Vec<Attr>, stride: usize },
+    /// A built-in: its attributes over one instance (or vertex) of `stride`,
+    /// and for the scene the instance attributes after them.
+    Builtin {
+        attrs: Vec<Attr>,
+        stride: usize,
+        instance: Vec<Attr>,
+    },
     /// A user program.
     Program {
         abi: ProgramAbi,
@@ -112,6 +122,8 @@ struct GlPipeline {
     program: GLuint,
     vao: GLuint,
     blend: BlendMode,
+    depth: Option<DepthState>,
+    cull: CullMode,
     /// `viso_target`'s location.
     target: GLint,
     kind: Kind,
@@ -394,17 +406,24 @@ impl Gles3Backend {
         upload_ring(gl, &mut self.uniform_ring, &self.uniform_bytes);
     }
 
-    /// The texture's framebuffer, made on first use.
-    fn texture_fbo(&mut self, id: TextureId) -> (GLuint, u32, u32) {
+    /// The texture's framebuffer, with `depth` as its depth attachment if
+    /// named, made on first use.
+    fn texture_fbo(&mut self, id: TextureId, depth: Option<TextureId>) -> (GLuint, u32, u32) {
         let gl = &self.libs.gl;
+        let depth_name = depth.map(|d| {
+            self.textures
+                .get(d.into())
+                .expect("texture handle does not resolve")
+                .name
+        });
         let t = self
             .textures
             .get_mut(id.into())
             .expect("texture handle does not resolve");
-        let fbo = *t.fbo.get_or_insert_with(|| {
+        let make = |depth: Option<GLuint>| {
             let mut fbo = 0;
             // SAFETY: the context is current; `t.name` is a live texture of
-            // a color-renderable format.
+            // a color-renderable format, `depth` one of a depth format.
             unsafe {
                 (gl.glGenFramebuffers)(1, &mut fbo);
                 (gl.glBindFramebuffer)(GL_FRAMEBUFFER, fbo);
@@ -415,6 +434,15 @@ impl Gles3Backend {
                     t.name,
                     0,
                 );
+                if let Some(depth) = depth {
+                    (gl.glFramebufferTexture2D)(
+                        GL_FRAMEBUFFER,
+                        GL_DEPTH_ATTACHMENT,
+                        GL_TEXTURE_2D,
+                        depth,
+                        0,
+                    );
+                }
                 let status = (gl.glCheckFramebufferStatus)(GL_FRAMEBUFFER);
                 assert_eq!(
                     status, GL_FRAMEBUFFER_COMPLETE,
@@ -423,7 +451,23 @@ impl Gles3Backend {
                 );
             }
             fbo
-        });
+        };
+        let fbo = match (depth, depth_name) {
+            (Some(d), Some(name)) => match t.depth_fbo {
+                Some((with, fbo)) if with == d => fbo,
+                old => {
+                    if let Some((_, fbo)) = old {
+                        // SAFETY: GL orders the deletion after the commands
+                        // already issued against it.
+                        unsafe { (gl.glDeleteFramebuffers)(1, &fbo) };
+                    }
+                    let fbo = make(Some(name));
+                    t.depth_fbo = Some((d, fbo));
+                    fbo
+                }
+            },
+            _ => *t.fbo.get_or_insert_with(|| make(None)),
+        };
         (fbo, t.width, t.height)
     }
 
@@ -481,6 +525,9 @@ impl Gles3Backend {
         slot: &mut usize,
     ) {
         let (fbo, width, height, flip, turns) = match pass.target {
+            RenderTarget::Surface(_) if pass.depth.is_some() => {
+                panic!("a pass with a depth attachment draws into a texture")
+            }
             RenderTarget::Surface(frame) => {
                 let s = self
                     .surfaces
@@ -492,7 +539,7 @@ impl Gles3Backend {
                 (0, w, h, 1.0, turns)
             }
             RenderTarget::Texture(id) => {
-                let (fbo, w, h) = self.texture_fbo(id);
+                let (fbo, w, h) = self.texture_fbo(id, pass.depth.map(|d| d.texture));
                 (fbo, w, h, -1.0, 0)
             }
         };
@@ -508,20 +555,37 @@ impl Gles3Backend {
                 (gl.glClearColor)(c[0], c[1], c[2], c[3]);
                 (gl.glClear)(GL_COLOR_BUFFER_BIT);
             }
+            if let Some(d) = pass.depth {
+                // The clear honours the depth mask.
+                (gl.glDepthMask)(GL_TRUE);
+                (gl.glClearDepthf)(d.clear);
+                (gl.glClear)(GL_DEPTH_BUFFER_BIT);
+            }
             (gl.glEnable)(GL_SCISSOR_TEST);
         }
         let mut bound: Option<PipelineId> = None;
         for (k, c) in commands.iter().enumerate() {
             self.draw(c, first + k, [width, height], flip, turns, &mut bound, slot);
         }
-        if fbo != 0 {
-            // SAFETY: unbinding the framebuffer leaves no dangling state.
-            unsafe { (gl.glBindFramebuffer)(GL_FRAMEBUFFER, 0) };
+        // SAFETY: the context is current and `fbo` bound; the depth is
+        // transient, so its contents are invalidated rather than stored, and
+        // the 2D passes after it run with no depth test or culling.
+        unsafe {
+            if pass.depth.is_some() {
+                let attachment = [GL_DEPTH_ATTACHMENT];
+                (gl.glInvalidateFramebuffer)(GL_FRAMEBUFFER, 1, attachment.as_ptr());
+                (gl.glDisable)(GL_DEPTH_TEST);
+                (gl.glDisable)(GL_CULL_FACE);
+            }
+            if fbo != 0 {
+                (gl.glBindFramebuffer)(GL_FRAMEBUFFER, 0);
+            }
         }
     }
 
     /// Draws `c`, the list's command `index`; a program's instance chunks
     /// take the ring's slots from `slot` on.
+    #[allow(clippy::too_many_arguments)]
     fn draw(
         &self,
         c: &DrawCommand,
@@ -567,6 +631,24 @@ impl Gles3Backend {
                 if p.target >= 0 {
                     (gl.glUniform4f)(p.target, flip, fh as f32, f32::from(turns), fw as f32);
                 }
+                match p.depth {
+                    Some(d) => {
+                        (gl.glEnable)(GL_DEPTH_TEST);
+                        (gl.glDepthFunc)(depth_func(d.compare));
+                        (gl.glDepthMask)(if d.write { GL_TRUE } else { GL_FALSE });
+                    }
+                    None => (gl.glDisable)(GL_DEPTH_TEST),
+                }
+                match p.cull {
+                    CullMode::None => (gl.glDisable)(GL_CULL_FACE),
+                    CullMode::Back => {
+                        (gl.glEnable)(GL_CULL_FACE);
+                        (gl.glCullFace)(GL_BACK);
+                        // A texture target is drawn flipped, which turns
+                        // clip space's counter-clockwise front faces around.
+                        (gl.glFrontFace)(if flip > 0.0 { GL_CCW } else { GL_CW });
+                    }
+                }
                 *bound = Some(c.pipeline);
             }
             // Textures to units in order; the group's last sampler on each.
@@ -602,34 +684,40 @@ impl Gles3Backend {
                 (gl.glBindBufferRange)(GL_UNIFORM_BUFFER, 0, self.uniform_ring.name, at, size);
             }
             match &p.kind {
-                Kind::Builtin { attrs, stride } => {
+                Kind::Builtin {
+                    attrs,
+                    stride,
+                    instance,
+                } => {
                     let (buffer, base) = match c.geometry {
                         Geometry::Generated { .. } => {
                             (self.buffer(c.instance_buffer).name, c.instance_offset)
                         }
-                        Geometry::IndexedMesh { vertex_buffer, .. } => {
+                        Geometry::IndexedMesh { vertex_buffer, .. }
+                        | Geometry::InstancedMesh { vertex_buffer, .. } => {
                             (self.buffer(vertex_buffer).name, 0)
                         }
                     };
-                    (gl.glBindBuffer)(GL_ARRAY_BUFFER, buffer);
-                    for a in attrs {
-                        let at = (base + a.offset) as *const c_void;
-                        if a.integer {
-                            (gl.glVertexAttribIPointer)(
-                                a.location,
-                                a.lanes,
-                                a.ty,
-                                *stride as GLsizei,
-                                at,
-                            );
-                        } else {
-                            (gl.glVertexAttribPointer)(
-                                a.location,
-                                a.lanes,
-                                a.ty,
-                                GL_FALSE,
-                                *stride as GLsizei,
-                                at,
+                    point_attrs(gl, buffer, base, attrs, *stride);
+                    if !instance.is_empty() {
+                        point_attrs(
+                            gl,
+                            self.buffer(c.instance_buffer).name,
+                            c.instance_offset,
+                            instance,
+                            SceneInstance::SIZE,
+                        );
+                        if let Some(Binding::Uniform(u)) =
+                            bindings.iter().find(|b| matches!(b, Binding::Uniform(_)))
+                        {
+                            let u = self.buffer(*u);
+                            let size = SceneUniforms::SIZE.min(u.size);
+                            (gl.glBindBufferRange)(
+                                GL_UNIFORM_BUFFER,
+                                0,
+                                u.name,
+                                0,
+                                size as GLsizeiptr,
                             );
                         }
                     }
@@ -654,6 +742,31 @@ impl Gles3Backend {
                             );
                             let at = (index_offset as usize * index_format.size()) as *const c_void;
                             (gl.glDrawElements)(GL_TRIANGLES, index_count as GLsizei, ty, at);
+                        }
+                        Geometry::InstancedMesh {
+                            index_buffer,
+                            index_format,
+                            index_offset,
+                            index_count,
+                            count,
+                            ..
+                        } => {
+                            let ty = match index_format {
+                                IndexFormat::U16 => GL_UNSIGNED_SHORT,
+                                IndexFormat::U32 => GL_UNSIGNED_INT,
+                            };
+                            (gl.glBindBuffer)(
+                                GL_ELEMENT_ARRAY_BUFFER,
+                                self.buffer(index_buffer).name,
+                            );
+                            let at = (index_offset as usize * index_format.size()) as *const c_void;
+                            (gl.glDrawElementsInstanced)(
+                                GL_TRIANGLES,
+                                index_count as GLsizei,
+                                ty,
+                                at,
+                                count as GLsizei,
+                            );
                         }
                     }
                 }
@@ -1105,7 +1218,48 @@ fn attr_format(format: AttrFormat) -> (GLint, GLenum, bool) {
 
 /// Whether `builtin` reads a vertex buffer rather than instances.
 fn per_vertex(builtin: BuiltinShader) -> bool {
-    matches!(builtin, BuiltinShader::Path | BuiltinShader::Mesh)
+    matches!(
+        builtin,
+        BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Scene
+    )
+}
+
+fn depth_func(f: CompareFunction) -> GLenum {
+    match f {
+        CompareFunction::Always => GL_ALWAYS,
+        CompareFunction::Less => GL_LESS,
+        CompareFunction::LessEqual => GL_LEQUAL,
+        CompareFunction::Greater => GL_GREATER,
+        CompareFunction::GreaterEqual => GL_GEQUAL,
+    }
+}
+
+/// Points `attrs` at `buffer` from byte `base` on, `stride` apart.
+///
+/// # Safety
+///
+/// The context is current, `buffer` is a live buffer and the pipeline's
+/// vertex array is bound.
+unsafe fn point_attrs(gl: &Gl, buffer: GLuint, base: usize, attrs: &[Attr], stride: usize) {
+    // SAFETY: as the caller vouches; the pointers are offsets into `buffer`.
+    unsafe {
+        (gl.glBindBuffer)(GL_ARRAY_BUFFER, buffer);
+        for a in attrs {
+            let at = (base + a.offset) as *const c_void;
+            if a.integer {
+                (gl.glVertexAttribIPointer)(a.location, a.lanes, a.ty, stride as GLsizei, at);
+            } else {
+                (gl.glVertexAttribPointer)(
+                    a.location,
+                    a.lanes,
+                    a.ty,
+                    GL_FALSE,
+                    stride as GLsizei,
+                    at,
+                );
+            }
+        }
+    }
 }
 
 impl GpuBackend for Gles3Backend {
@@ -1144,6 +1298,7 @@ impl GpuBackend for Gles3Backend {
                 height: desc.height,
                 format: desc.format,
                 fbo: None,
+                depth_fbo: None,
             })
             .into()
     }
@@ -1212,6 +1367,23 @@ impl GpuBackend for Gles3Backend {
                 }
             })
             .collect();
+        // A scene draw reads its instances at the locations after the vertex
+        // attributes, one per instance.
+        let mut instance = Vec::new();
+        if desc.builtin == BuiltinShader::Scene {
+            let mut offset = 0;
+            for a in scene::INSTANCE_SCHEMA.attributes {
+                let (lanes, ty, integer) = attr_format(a.format);
+                instance.push(Attr {
+                    location: (attrs.len() + instance.len()) as GLuint,
+                    lanes,
+                    ty,
+                    integer,
+                    offset,
+                });
+                offset += a.format.size();
+            }
+        }
         let mut vao = 0;
         // SAFETY: the context is current; the vertex array records which
         // attributes are enabled and their step, the pointers come per draw.
@@ -1222,6 +1394,10 @@ impl GpuBackend for Gles3Backend {
                 (gl.glEnableVertexAttribArray)(a.location);
                 (gl.glVertexAttribDivisor)(a.location, divisor);
             }
+            for a in &instance {
+                (gl.glEnableVertexAttribArray)(a.location);
+                (gl.glVertexAttribDivisor)(a.location, 1);
+            }
             (gl.glBindVertexArray)(0);
         }
         let target = uniform_location(gl, program, "viso_target");
@@ -1231,10 +1407,13 @@ impl GpuBackend for Gles3Backend {
                 program,
                 vao,
                 blend: desc.blend,
+                depth: desc.depth,
+                cull: desc.cull,
                 target,
                 kind: Kind::Builtin {
                     attrs,
                     stride: layout.stride,
+                    instance,
                 },
             })
             .into())
@@ -1263,6 +1442,8 @@ impl GpuBackend for Gles3Backend {
                 program: program.take(),
                 vao,
                 blend,
+                depth: None,
+                cull: CullMode::None,
                 target,
                 kind: Kind::Program { abi, base_instance },
             })
@@ -1286,7 +1467,7 @@ impl GpuBackend for Gles3Backend {
             // SAFETY: as for buffers; the framebuffer is deleted with it.
             unsafe {
                 (self.libs.gl.glDeleteTextures)(1, &t.name);
-                if let Some(fbo) = t.fbo {
+                for fbo in t.fbo.into_iter().chain(t.depth_fbo.map(|(_, fbo)| fbo)) {
                     (self.libs.gl.glDeleteFramebuffers)(1, &fbo);
                 }
             }
@@ -1343,8 +1524,13 @@ impl GpuBackend for Gles3Backend {
         let (name, format) = (t.name, t.format);
         let data = if format == TextureFormat::Bgra8Unorm {
             self.swizzle.clear();
-            self.swizzle
-                .extend(bytes.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]));
+            self.swizzle.extend(
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|p| [p[2], p[1], p[0], p[3]]),
+            );
             &self.swizzle[..]
         } else {
             bytes

@@ -49,6 +49,25 @@ pub enum RenderTarget {
     Texture(TextureId),
 }
 
+/// A render pass's depth attachment: a [`TextureFormat::Depth32Float`]
+/// render-target texture the size of the pass's color target.
+///
+/// The depth is transient: cleared to `clear` when the pass begins and
+/// discarded when it ends, so a scene's depth serves its own draws and costs
+/// no store (on a tiler it never leaves tile memory).
+///
+/// A pass with a depth attachment draws into a [`RenderTarget::Texture`], and
+/// every pipeline it draws with declares a [`DepthState`].
+///
+/// [`DepthState`]: crate::DepthState
+///
+/// [`TextureFormat::Depth32Float`]: crate::TextureFormat::Depth32Float
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DepthAttachment {
+    pub texture: TextureId,
+    pub clear: f32,
+}
+
 /// A render pass: one target, one load action, and a contiguous range of draw
 /// commands inside the frame's flat [`DrawList::commands`] buffer.
 ///
@@ -61,6 +80,9 @@ pub struct RenderPass {
     pub target: RenderTarget,
     /// What to do with the target's prior contents.
     pub load: LoadOp,
+    /// The depth attachment its depth-tested pipelines draw against; `None`
+    /// for a pass of 2D work.
+    pub depth: Option<DepthAttachment>,
     /// Index of this pass's first command in [`DrawList::commands`].
     pub first_command: u32,
     /// Number of commands this pass draws, starting at `first_command`.
@@ -167,6 +189,20 @@ pub enum Geometry {
         index_offset: u32,
         /// Number of indices to draw (3 per triangle).
         index_count: u32,
+    },
+    /// An indexed triangle list drawn once per instance: the vertex buffer
+    /// at index 0 and the instance buffer ([`DrawCommand::instance_buffer`]
+    /// from [`DrawCommand::instance_offset`]) at index 1, both read by
+    /// index in the vertex stage, as a 3D scene draws each mesh.
+    InstancedMesh {
+        vertex_buffer: BufferId,
+        index_buffer: BufferId,
+        index_format: IndexFormat,
+        /// The draw's first index, in elements of `index_format`.
+        index_offset: u32,
+        index_count: u32,
+        /// Instances to draw.
+        count: u32,
     },
 }
 

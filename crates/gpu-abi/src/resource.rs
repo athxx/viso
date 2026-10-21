@@ -536,6 +536,9 @@ pub enum BuiltinShader {
     /// been accounted for in the fragment, so the fixed-function stage must not mix
     /// it in a second time.
     AdvancedBlend,
+    /// A lit, depth-tested 3D mesh drawn once per instance ([`crate::scene`]):
+    /// the scene lane's one program.
+    Scene,
 }
 
 /// Descriptor for a render pipeline (`GpuBackend::create_pipeline`).
@@ -566,12 +569,78 @@ pub struct PipelineDesc {
     pub fragment_entry: &'static str,
     /// Color attachment format.
     pub color_format: TextureFormat,
-    /// Optional depth attachment format.
-    pub depth_format: Option<TextureFormat>,
+    /// How the pipeline tests and writes the pass's depth attachment; `None`
+    /// for a pipeline drawn in passes without one.
+    pub depth: Option<DepthState>,
+    /// Which triangles it discards by their winding.
+    pub cull: CullMode,
     /// Color blend mode.
     pub blend: BlendMode,
     /// The instance layout the shader expects (validated at registration).
     pub instance_schema: crate::instance::InstanceSchema,
+}
+
+/// How a pipeline tests a fragment's depth against the depth attachment's,
+/// and whether a fragment that passes writes its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DepthState {
+    /// The depth attachment's format, [`TextureFormat::Depth32Float`].
+    pub format: TextureFormat,
+    pub compare: CompareFunction,
+    pub write: bool,
+}
+
+impl DepthState {
+    /// Reversed-Z opaque geometry: the attachment cleared to `0.0`, a nearer
+    /// fragment has the greater depth, and each that passes writes it.
+    pub const REVERSED: Self = Self {
+        format: TextureFormat::Depth32Float,
+        compare: CompareFunction::Greater,
+        write: true,
+    };
+
+    /// Reversed-Z translucent geometry: tested against the opaque depth, never
+    /// written, so blended layers do not hide one another.
+    pub const REVERSED_TEST_ONLY: Self = Self {
+        format: TextureFormat::Depth32Float,
+        compare: CompareFunction::GreaterEqual,
+        write: false,
+    };
+}
+
+/// Which triangles a pipeline discards: a front face winds counter-clockwise
+/// in clip space, `y` up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CullMode {
+    /// Draw both faces.
+    None,
+    /// Discard the triangles facing away: a closed mesh's far side.
+    Back,
+}
+
+/// When a fragment passes the depth test: its depth compared with the one
+/// stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompareFunction {
+    Always,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+
+impl CompareFunction {
+    /// Whether a fragment at `depth` passes against `stored`.
+    #[inline]
+    pub fn passes(self, depth: f32, stored: f32) -> bool {
+        match self {
+            CompareFunction::Always => true,
+            CompareFunction::Less => depth < stored,
+            CompareFunction::LessEqual => depth <= stored,
+            CompareFunction::Greater => depth > stored,
+            CompareFunction::GreaterEqual => depth >= stored,
+        }
+    }
 }
 
 /// The shading language a backend consumes its programs in.
