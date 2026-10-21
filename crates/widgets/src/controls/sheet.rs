@@ -150,20 +150,15 @@ impl SheetEdge {
 
     /// The off-screen translate that hides the content fully past its anchored
     /// edge, given its fixed `extent`. The slide runs `from` this offset `to`
-    /// `Vec2::ZERO` on open (and the reverse on close). World is `bounds − translate`,
-    /// so to push the content *past* its edge by one extent the translate points
-    /// *into* the surface: a bottom drawer (resting at the bottom edge) hides by
-    /// moving world *down* off-screen, which is a translate of `-extent` in y.
+    /// `Vec2::ZERO` on open (and the reverse on close). World is `bounds + translate`,
+    /// so a bottom drawer (resting at the bottom edge) hides by moving *down*
+    /// off-screen: a translate of `+extent` in y.
     fn offscreen(self, extent: f32) -> Vec2 {
         match self {
-            // Rest at the bottom; hide below → world moves +y → translate −y.
-            SheetEdge::Bottom => Vec2 { x: 0.0, y: -extent },
-            // Rest at the top; hide above → world moves −y → translate +y.
-            SheetEdge::Top => Vec2 { x: 0.0, y: extent },
-            // Rest at the left; hide off the left → world moves −x → translate +x.
-            SheetEdge::Leading => Vec2 { x: extent, y: 0.0 },
-            // Rest at the right; hide off the right → world moves +x → translate −x.
-            SheetEdge::Trailing => Vec2 { x: -extent, y: 0.0 },
+            SheetEdge::Bottom => Vec2 { x: 0.0, y: extent },
+            SheetEdge::Top => Vec2 { x: 0.0, y: -extent },
+            SheetEdge::Leading => Vec2 { x: -extent, y: 0.0 },
+            SheetEdge::Trailing => Vec2 { x: extent, y: 0.0 },
         }
     }
 }
@@ -852,29 +847,29 @@ mod tests {
     }
 
     /// The off-screen `from` vector for each edge pushes the content fully past its
-    /// anchored edge by one extent, in the right direction (world = bounds − translate).
+    /// anchored edge by one extent, in the right direction (world = bounds + translate).
     #[test]
     fn each_edge_slides_from_off_its_anchored_edge() {
         let e = 200.0;
         assert_eq!(
             SheetEdge::Bottom.offscreen(e),
-            Vec2 { x: 0.0, y: -e },
-            "bottom hides below (world +y → translate −y)"
+            Vec2 { x: 0.0, y: e },
+            "bottom hides below"
         );
         assert_eq!(
             SheetEdge::Top.offscreen(e),
-            Vec2 { x: 0.0, y: e },
-            "top hides above (world −y → translate +y)"
+            Vec2 { x: 0.0, y: -e },
+            "top hides above"
         );
         assert_eq!(
             SheetEdge::Leading.offscreen(e),
-            Vec2 { x: e, y: 0.0 },
-            "leading hides off the left (world −x → translate +x)"
+            Vec2 { x: -e, y: 0.0 },
+            "leading hides off the left"
         );
         assert_eq!(
             SheetEdge::Trailing.offscreen(e),
-            Vec2 { x: -e, y: 0.0 },
-            "trailing hides off the right (world +x → translate −x)"
+            Vec2 { x: e, y: 0.0 },
+            "trailing hides off the right"
         );
     }
 

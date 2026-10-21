@@ -556,7 +556,7 @@ mod tests {
 
         let mut store = NodeStore::new();
         let (root, card, top, below) = overflowing(&mut store);
-        store.set_translate(top, Vec2 { x: 0.0, y: -100.0 });
+        store.set_translate(top, Vec2 { x: 0.0, y: 100.0 });
         let world = store.world(top);
         assert!(world.y >= 80.0, "slid past the card: {world:?}");
         let (x, y) = (world.x + world.w / 2.0, world.y + world.h / 2.0);

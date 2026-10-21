@@ -1,8 +1,8 @@
 //! Transform roots: what moves without a relayout (§21, ADR 0043).
 //!
 //! A node's on-screen box is its layout `bounds` plus a *displacement*: the
-//! negated translate of the node itself and of every ancestor, plus the negated
-//! scroll of every scrolling ancestor. Nothing stores the displaced box; it is
+//! translate of the node itself and of every ancestor, less the scroll of
+//! every scrolling ancestor. Nothing stores the displaced box; it is
 //! derived on demand ([`NodeStore::world`]), carried down by the walks that need
 //! it (paint, hit testing), and snapped to device pixels so a moved run of text
 //! lands on the same pixel grid it was rasterized on.

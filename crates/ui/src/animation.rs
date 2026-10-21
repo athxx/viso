@@ -438,11 +438,10 @@ mod tests {
         assert!(!reg.is_empty(), "a started animation is live");
 
         // Half the duration under a linear curve → exactly half the translate.
-        // world = bounds − translate, so a translate of −50 shifts world by +50.
         reg.tick(&mut store, Duration::from_millis(50));
         assert_eq!(
             store.world(node).y,
-            base.y + 50.0,
+            base.y - 50.0,
             "half the linear duration applies half the translate"
         );
         assert!(
@@ -466,8 +465,7 @@ mod tests {
         ));
         // A single tick that meets the duration finishes the run.
         reg.tick(&mut store, Duration::from_millis(100));
-        // to.y = −100 → world shifts by −translate = +100.
-        assert_eq!(store.world(node).y, base.y + 100.0, "lands on the target");
+        assert_eq!(store.world(node).y, base.y - 100.0, "lands on the target");
         assert!(reg.is_empty(), "a finished animation removes itself");
     }
 
@@ -488,7 +486,7 @@ mod tests {
         reg.tick(&mut store, Duration::from_secs(10));
         assert_eq!(
             store.world(node).x,
-            base.x - 40.0,
+            base.x + 40.0,
             "a huge delta clamps to the final offset, never past it"
         );
         assert!(reg.is_empty());

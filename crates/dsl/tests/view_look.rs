@@ -344,6 +344,11 @@ fn a_translate_radius_size_and_text_color_move_in_over_their_transitions() {
         rt.store.tick_transitions(ms(50));
         rt.layout();
         assert_eq!(rt.store.translate(text).x, 40.0);
+        assert_eq!(
+            rt.store.world(text).x,
+            rt.store.bounds(text).x + 40.0,
+            "a positive translate moves right, as on the web"
+        );
         assert_eq!(rt.store.style(text).radius, 10.0);
         assert_eq!(width(&rt), Length::Fixed(60.0));
         assert!(!rt.store.is_transitioning());

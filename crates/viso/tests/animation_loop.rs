@@ -8,7 +8,7 @@
 //! - **a translate animation reaches its target through the loop** — a scripted
 //!   pointer press asks a handler to start a slide; after the pump drains, the
 //!   node's world rect has moved by the full translate (sign rule
-//!   `world = bounds − translate`), proving the animation ticked to completion;
+//!   `world = bounds + translate`), proving the animation ticked to completion;
 //! - **the loop halts when the slide settles** — `wants_animation` is false once
 //!   the registry empties, so the driver stops self-rescheduling beats (the
 //!   zero-CPU-when-idle contract; a stuck-open animation would burn 100% CPU);
@@ -141,15 +141,14 @@ fn slide_reaches_target_through_the_facade_loop() {
         bounds.y
     );
 
-    // The slide translated the node up by SLIDE. World = bounds − translate, so
-    // an upward translate (`to.y = -SLIDE`) moves world *down* by SLIDE relative
-    // to bounds: world.y = bounds.y − (−SLIDE) = bounds.y + SLIDE. Reaching it
-    // proves the animation ticked to t=1 through the loop.
+    // The slide translated the node up by SLIDE (`to.y = -SLIDE`): world.y =
+    // bounds.y − SLIDE. Reaching it proves the animation ticked to t=1 through
+    // the loop.
     let world = store.world(root);
     assert!(
-        (world.y - (bounds.y + SLIDE)).abs() < 0.5,
+        (world.y - (bounds.y - SLIDE)).abs() < 0.5,
         "the settled world moved by the full slide: expected world.y ~= {}, got {}",
-        bounds.y + SLIDE,
+        bounds.y - SLIDE,
         world.y
     );
 

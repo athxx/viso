@@ -519,8 +519,8 @@ fn opening_slides_the_content_in_through_the_facade_loop_and_settles() {
         .expect("the host flex mounts the sheet as its child");
     let content = content_of(store, sheet_root);
 
-    // The content rests pinned to the bottom edge once the slide-in settles: world =
-    // bounds − translate, and the settled translate is ZERO, so world == bounds.
+    // The content rests pinned to the bottom edge once the slide-in settles: the
+    // settled translate is ZERO, so world == bounds.
     let bounds = store.bounds(content);
     let world = store.world(content);
     assert!(

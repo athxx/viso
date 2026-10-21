@@ -862,7 +862,7 @@ impl NodeStore {
             return reach;
         }
         reach
-            .translate(-translate)
+            .translate(translate)
             .inflate(1.0 / self.device_scale())
     }
 
@@ -966,22 +966,22 @@ impl NodeStore {
     }
 
     /// The unsnapped displacement `id`'s ancestors apply to it: the sum of their
-    /// negated translates and scrolls.
+    /// translates and negated scrolls.
     pub fn shift_above(&self, id: NodeId) -> Vec2 {
         let mut shift = Vec2::ZERO;
         let mut at = self.arena.parent_of(id.node_index());
         while let Some(i) = at.get_some() {
-            shift = shift - self.translate[i.slot()] - self.scroll[i.slot()];
+            shift = shift + self.translate[i.slot()] - self.scroll[i.slot()];
             at = self.arena.parent_of(at);
         }
         shift
     }
 
-    /// The displacement a node applies to itself and its subtree: its negated
+    /// The displacement a node applies to itself and its subtree: its
     /// translate.
     #[inline]
     pub fn self_shift(&self, id: NodeId) -> Vec2 {
-        -self.translate[id.index() as usize]
+        self.translate[id.index() as usize]
     }
 
     /// The displacement a scroll viewport adds for its content: its negated
@@ -8126,25 +8126,25 @@ mod tests {
 
         store.set_translate(viewport, Vec2 { x: 12.0, y: -34.0 });
 
-        // Both the node itself and its subtree shift by −translate (the node
+        // Both the node itself and its subtree move by the translate (the node
         // moves, carrying its content along).
         let vb = store.bounds(viewport);
         assert_eq!(
             store.world(viewport),
             Rect {
-                x: vb.x - 12.0,
-                y: vb.y + 34.0,
+                x: vb.x + 12.0,
+                y: vb.y - 34.0,
                 w: vb.w,
                 h: vb.h,
             },
-            "the translated node's own world rect moves by −translate"
+            "the translated node's own world rect moves by the translate"
         );
         let cb = store.bounds(content);
         assert_eq!(
             store.world(content),
             Rect {
-                x: cb.x - 12.0,
-                y: cb.y + 34.0,
+                x: cb.x + 12.0,
+                y: cb.y - 34.0,
                 w: cb.w,
                 h: cb.h,
             },
