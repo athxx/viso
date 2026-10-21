@@ -38,7 +38,7 @@ use std::time::Duration;
 use super::android_translate as translate;
 use super::utf16::byte_offset;
 use crate::accessibility::AccessRequest;
-use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
+use crate::control::{ControlFlow, LogicalRect, PlatformError, TextEntry, WindowConfig, WindowId};
 use crate::event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
     DisplayFeature, DisplayFeatureKind, LogicalInsets, PointerButtons, PointerKind, RawEvent,
@@ -958,12 +958,16 @@ impl PlatformApp for AndroidApp {
         }
     }
 
-    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+    fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         if window != WINDOW {
             return;
         }
         let d = LOOP.with(|l| l.density.get());
-        jni::set_text_input(caret.map(|r| [r.x, r.y, r.width, r.height].map(|v| (v * d) as f32)));
+        let caret = entry.map(|e| e.caret);
+        jni::set_text_input(
+            caret.map(|r| [r.x, r.y, r.width, r.height].map(|v| (v * d) as f32)),
+            entry.is_some_and(|e| e.secure),
+        );
     }
 
     fn show_soft_keyboard(&mut self, window: WindowId, show: bool) {

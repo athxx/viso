@@ -24,6 +24,8 @@ final class VisoView extends SurfaceView {
     private final float scrollFactorY;
     private VisoInputConnection connection;
     private boolean textInput;
+    /** The focused field takes a secret. */
+    private boolean secure;
     private float caretX, caretY, caretWidth, caretHeight;
     private boolean cursorUpdates;
     private int deadKey;
@@ -171,22 +173,30 @@ final class VisoView extends SurfaceView {
         if (!textInput) {
             return null;
         }
-        info.inputType = EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE;
+        // A secure field's keyboard composes, suggests and learns nothing.
+        info.inputType = secure
+                ? EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
+                : EditorInfo.TYPE_CLASS_TEXT | EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE;
         info.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_EXTRACT_UI
                 | EditorInfo.IME_ACTION_NONE;
+        if (secure) {
+            info.imeOptions |= EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
+        }
         info.initialSelStart = 0;
         info.initialSelEnd = 0;
         connection = new VisoInputConnection(this);
         return connection;
     }
 
-    void setTextInput(boolean enabled, float x, float y, float width, float height) {
+    void setTextInput(boolean enabled, boolean secret, float x, float y, float width,
+            float height) {
         caretX = x;
         caretY = y;
         caretWidth = width;
         caretHeight = height;
-        if (enabled != textInput) {
+        if (enabled != textInput || secret != secure) {
             textInput = enabled;
+            secure = secret;
             if (!enabled && connection != null) {
                 connection.cancelComposition();
             }

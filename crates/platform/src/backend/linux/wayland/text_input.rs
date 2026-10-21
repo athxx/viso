@@ -18,6 +18,8 @@ pub(super) struct TextInput {
     /// The window the compositor routes this input to.
     focus: Option<WindowId>,
     enabled: bool,
+    /// The content type last sent: whether the field takes a secret.
+    secure: bool,
     pending: Pending,
     /// A non-empty preedit is on screen, so an empty one must clear it.
     preedit_shown: bool,
@@ -36,6 +38,7 @@ impl TextInput {
             input,
             focus: None,
             enabled: false,
+            secure: false,
             pending: Pending::default(),
             preedit_shown: false,
         }
@@ -54,22 +57,35 @@ impl TextInput {
         }
     }
 
-    /// Follow `window`'s caret: enable composition while it has one,
-    /// disable it otherwise.
+    /// Follow `window`'s text entry: enable composition while it has one,
+    /// a secure one as a password the input method neither shows,
+    /// suggests nor learns from; disable it otherwise.
     pub(super) fn update(&mut self, state: &State, window: WindowId) {
         if self.focus != Some(window) {
             return;
         }
         let Some(i) = state.index(window) else { return };
-        match state.windows[i].ime_area {
-            Some(caret) => {
+        match state.windows[i].text_entry {
+            Some(entry) => {
+                let caret = entry.caret;
                 // `enable` resets the input method's state, so it is only
                 // sent on the transition; caret moves just update the rect.
                 if !self.enabled {
                     self.input.enable();
-                    self.input
-                        .set_content_type(ContentHint::None, ContentPurpose::Normal);
                     self.enabled = true;
+                    self.secure = !entry.secure;
+                }
+                if self.secure != entry.secure {
+                    self.secure = entry.secure;
+                    let (hint, purpose) = if entry.secure {
+                        (
+                            ContentHint::HiddenText | ContentHint::SensitiveData,
+                            ContentPurpose::Password,
+                        )
+                    } else {
+                        (ContentHint::None, ContentPurpose::Normal)
+                    };
+                    self.input.set_content_type(hint, purpose);
                 }
                 self.input.set_cursor_rectangle(
                     caret.x.round() as i32,

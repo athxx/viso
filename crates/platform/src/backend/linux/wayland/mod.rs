@@ -52,7 +52,7 @@ use crate::control::{PlatformError, WindowChrome, WindowConfig, WindowId};
 use crate::event::{AcceptCell, Appearance, CursorIcon, PointerButtons, RawEvent};
 use crate::handler::AppHandler;
 use crate::menu::Menu;
-use crate::{Instant, LogicalRect, PlatformApp, RawWindowHandle, Window};
+use crate::{Instant, LogicalRect, PlatformApp, RawWindowHandle, TextEntry, Window};
 
 /// `wp_fractional_scale_v1` reports scales in 120ths.
 const FRACTIONAL_DENOMINATOR: f64 = 120.0;
@@ -190,10 +190,10 @@ impl PlatformApp for WaylandApp {
         });
     }
 
-    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+    fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         self.with_state(|state| {
             if let Some(i) = state.index(window) {
-                state.windows[i].ime_area = caret;
+                state.windows[i].text_entry = entry;
                 state.update_text_input(window);
             }
         });
@@ -319,7 +319,7 @@ pub(crate) struct Win {
     edge: Option<translate::Edge>,
     buttons: PointerButtons,
     last_caption_press: Option<(u32, f64, f64)>,
-    ime_area: Option<LogicalRect>,
+    text_entry: Option<TextEntry>,
 }
 
 #[derive(Default)]
@@ -516,7 +516,7 @@ impl State {
             edge: None,
             buttons: PointerButtons::NONE,
             last_caption_press: None,
-            ime_area: None,
+            text_entry: None,
         });
         let i = self.windows.len() - 1;
         self.apply_scale(i, f64::from(scale), false);

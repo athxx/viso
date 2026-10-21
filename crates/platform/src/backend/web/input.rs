@@ -21,7 +21,7 @@ use crate::backend::web_translate::{
     buttons, key_code, modifiers, page_claims, pointer_id, pointer_kind, pointer_phase,
     track_buttons, wheel_delta,
 };
-use crate::control::LogicalRect;
+use crate::control::TextEntry;
 use crate::event::{
     ClipboardReply, ClipboardShortcut, KeyCode, Modifiers, PointerButtons, PointerKind,
     PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
@@ -355,9 +355,24 @@ fn on_paste(_page: &Page, e: &Event) {
 }
 
 /// Place the input element over the caret, so the IME's candidate window
-/// opens beside it; `None` ends text input, cancelling any composition.
-pub(super) fn set_ime_area(page: &Page, caret: Option<LogicalRect>) {
-    match caret {
+/// opens beside it, a password input for a secure field, which the browser
+/// and its keyboards neither compose, suggest nor learn from; `None` ends text
+/// input, cancelling any composition.
+pub(super) fn set_text_entry(page: &Page, entry: Option<TextEntry>) {
+    let kind = if entry.is_some_and(|e| e.secure) {
+        "password"
+    } else {
+        "text"
+    };
+    if page.input.type_() != kind {
+        page.input.set_type(kind);
+        // Refocusing makes the browser and its keyboard take the new type.
+        if entry.is_some() {
+            let _ = page.input.blur();
+            page.focus_input();
+        }
+    }
+    match entry.map(|e| e.caret) {
         Some(r) => {
             let (left, top) = page.origin();
             let style = page.input.style();

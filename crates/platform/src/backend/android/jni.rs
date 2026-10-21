@@ -260,12 +260,13 @@ pub(super) fn set_soft_keyboard(show: bool) {
     call_void(|m| m.set_soft_keyboard, &[jvalue { z: show }]);
 }
 
-pub(super) fn set_text_input(caret: Option<[f32; 4]>) {
+pub(super) fn set_text_input(caret: Option<[f32; 4]>, secure: bool) {
     let [x, y, w, h] = caret.unwrap_or_default();
     call_void(
         |m| m.set_text_input,
         &[
             jvalue { z: caret.is_some() },
+            jvalue { z: secure },
             jvalue { f: x },
             jvalue { f: y },
             jvalue { f: w },
@@ -466,7 +467,7 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
         };
         let methods = Methods {
             set_soft_keyboard: method(c"setSoftKeyboard", c"(Z)V"),
-            set_text_input: method(c"setTextInput", c"(ZFFFF)V"),
+            set_text_input: method(c"setTextInput", c"(ZZFFFF)V"),
             set_pointer_icon: method(c"setPointerIcon", c"(I)V"),
             set_clipboard: method(c"setClipboard", c"(Ljava/lang/String;)V"),
             get_clipboard: method(c"getClipboard", c"()Ljava/lang/String;"),

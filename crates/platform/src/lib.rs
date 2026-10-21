@@ -54,8 +54,8 @@ pub use accessibility::{
     SemanticsLive, SemanticsRect, SemanticsRole, SemanticsState,
 };
 pub use control::{
-    ControlFlow, DEFAULT_FRAME_BUDGET, LogicalRect, PlatformCaps, PlatformError, WindowChrome,
-    WindowConfig, WindowId,
+    ControlFlow, DEFAULT_FRAME_BUDGET, LogicalRect, PlatformCaps, PlatformError, TextEntry,
+    WindowChrome, WindowConfig, WindowId,
 };
 pub use event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
@@ -173,10 +173,10 @@ pub trait PlatformApp {
     /// Show `icon` while the mouse is over `window`'s content.
     fn set_cursor(&mut self, window: WindowId, icon: CursorIcon);
 
-    /// Tell the input method where the text caret is, so candidate windows and
-    /// the soft keyboard's accessory views sit next to it. `None` means no text
-    /// field has focus: the IME is disabled for the window.
-    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>);
+    /// Tell the input method about the focused text field: where its caret
+    /// is and whether it takes a secret. `None` means no text field has
+    /// focus: the IME is disabled for the window.
+    fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>);
 
     /// Show or hide the on-screen keyboard. A no-op where there is none.
     fn show_soft_keyboard(&mut self, window: WindowId, show: bool);

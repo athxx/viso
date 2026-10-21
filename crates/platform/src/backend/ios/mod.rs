@@ -55,7 +55,7 @@ use objc2_ui_kit::{
 
 use self::view::VisoView;
 use super::drive::Drive;
-use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
+use crate::control::{ControlFlow, PlatformError, TextEntry, WindowConfig, WindowId};
 use crate::event::{Appearance, ColorScheme, CursorIcon, RawEvent};
 use crate::handler::AppHandler;
 use crate::locale;
@@ -500,9 +500,9 @@ impl PlatformApp for IosApp {
 
     fn set_cursor(&mut self, _window: WindowId, _icon: CursorIcon) {}
 
-    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+    fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) {
-            w.view.set_ime_area(caret);
+            w.view.set_text_entry(entry);
         }
     }
 

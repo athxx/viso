@@ -46,7 +46,7 @@ use crate::control::{ControlFlow, PlatformError, WindowConfig, WindowId};
 use crate::event::{Appearance, CursorIcon, PointerButtons, PointerKind, RawEvent};
 use crate::handler::AppHandler;
 use crate::menu::Menu;
-use crate::{Instant, LogicalRect, LoopWaker, PlatformApp, RawWindowHandle, Window};
+use crate::{Instant, LogicalRect, LoopWaker, PlatformApp, RawWindowHandle, TextEntry, Window};
 
 const CLASS_NAME: PCWSTR = w!("VisoWindowClass");
 
@@ -564,7 +564,7 @@ impl PlatformApp for WinApp {
         let access = access::attach(hwnd);
         // No text field has focus yet: keys reach the window unconverted
         // until one asks for the IME.
-        proc::set_ime_area(&state, None);
+        proc::set_text_entry(&state, None);
         self.shared.borrow_mut().windows.push(state.clone());
         // SAFETY: showing the live window.
         unsafe {
@@ -715,9 +715,9 @@ impl PlatformApp for WinApp {
         }
     }
 
-    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+    fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         if let Some(state) = self.state(window) {
-            proc::set_ime_area(state, caret);
+            proc::set_text_entry(state, entry);
         }
     }
 

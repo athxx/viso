@@ -41,7 +41,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use viso_gpu::{Backend, GpuBackend, SurfaceId};
-use viso_platform::{LogicalInsets, LogicalRect, RawWindowHandle, WindowId};
+use viso_platform::{LogicalInsets, LogicalRect, RawWindowHandle, TextEntry, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{FramePhase, RuntimeCx, Scheduler};
 use viso_ui::context::UpdateCx;
@@ -429,10 +429,10 @@ pub mod __test_support {
             ws.text_edits.get(node).map(|b| b.text.as_str())
         }
 
-        /// The text-entry area last pushed to the platform for the launch
-        /// window: `None` before any push, `Some(None)` once pushed clear.
-        pub fn ime_area(&self) -> Option<Option<viso_platform::LogicalRect>> {
-            self.driver.windows[0].ime_area
+        /// The text entry last pushed to the platform for the launch window:
+        /// `None` before any push, `Some(None)` once pushed clear.
+        pub fn text_entry(&self) -> Option<Option<viso_platform::TextEntry>> {
+            self.driver.windows[0].text_entry
         }
 
         /// How much each layer recomputed on the first window's most recent
@@ -774,7 +774,7 @@ struct WindowState {
     /// pushed clear, `None` before the first push. The Layout phase compares
     /// against it so a steady frame pushes nothing and the soft keyboard is
     /// shown or hidden only when focus moves into or out of text entry.
-    ime_area: Option<Option<LogicalRect>>,
+    text_entry: Option<Option<TextEntry>>,
     /// Reusable ancestry buffer the pointer router fills each event, owned here
     /// so routing a pointer allocates nothing on the steady path.
     route_chain: Vec<NodeId>,
@@ -991,7 +991,7 @@ impl WindowState {
             timer_requests: Vec::new(),
             changed: Vec::new(),
             root: None,
-            ime_area: None,
+            text_entry: None,
             route_chain: Vec::new(),
             #[cfg(any(feature = "hot-reload", feature = "headless"))]
             journal: None,
@@ -1684,8 +1684,8 @@ impl WindowState {
     /// in the focused control, one logical pixel wide so a candidate window
     /// anchors beside the insertion point; a control whose run is not shaped
     /// yet reports its whole box.
-    fn ime_area_changed(&mut self) -> bool {
-        let area = self.focused_text_node().map(|id| {
+    fn text_entry_changed(&mut self) -> bool {
+        let entry = self.focused_text_node().map(|id| {
             let r = self.store.world(id);
             let caret = match (
                 self.text.as_ref(),
@@ -1704,12 +1704,15 @@ impl WindowState {
                 }
                 _ => None,
             };
-            caret_area(r, caret)
+            TextEntry {
+                caret: caret_area(r, caret),
+                secure: self.text_edits.get(id).is_some_and(|b| b.look.secure),
+            }
         });
-        if self.ime_area == Some(area) {
+        if self.text_entry == Some(entry) {
             return false;
         }
-        self.ime_area = Some(area);
+        self.text_entry = Some(entry);
         true
     }
 
@@ -2935,12 +2938,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // window and the soft keyboard track the focused control. The
                     // keyboard is toggled only when focus crosses into or out of
                     // text entry, not when the control merely moves.
-                    let was_editing = matches!(ws.ime_area, Some(Some(_)));
-                    if ws.ime_area_changed() {
-                        let area = ws.ime_area.flatten();
-                        cx.set_ime_area(ws.window, area);
-                        if was_editing != area.is_some() {
-                            cx.show_soft_keyboard(ws.window, area.is_some());
+                    let was_editing = matches!(ws.text_entry, Some(Some(_)));
+                    if ws.text_entry_changed() {
+                        let entry = ws.text_entry.flatten();
+                        cx.set_text_entry(ws.window, entry);
+                        if was_editing != entry.is_some() {
+                            cx.show_soft_keyboard(ws.window, entry.is_some());
                         }
                     }
                 }

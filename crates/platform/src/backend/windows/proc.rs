@@ -41,7 +41,7 @@ use crate::event::{
     clipboard_shortcut,
 };
 use crate::menu::SystemAction;
-use crate::{Instant, LogicalRect};
+use crate::{Instant, TextEntry};
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const SIZE_MINIMIZED: usize = 1;
@@ -772,9 +772,11 @@ fn place_ime(state: &WindowState) {
     }
 }
 
-/// `None` detaches the input context so keys reach the window unconverted;
-/// `Some` reattaches it and places its windows at the caret.
-pub(super) fn set_ime_area(state: &WindowState, caret: Option<LogicalRect>) {
+/// `None` detaches the input context so keys reach the window unconverted,
+/// as does a secure field, which composes nothing and offers no candidates;
+/// any other field reattaches it and places its windows at the caret.
+pub(super) fn set_text_entry(state: &WindowState, entry: Option<TextEntry>) {
+    let caret = entry.filter(|e| !e.secure).map(|e| e.caret);
     let hwnd = state.hwnd.get();
     state.ime_caret.set(caret);
     match caret {

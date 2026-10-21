@@ -39,6 +39,19 @@ pub struct LogicalRect {
     pub height: f64,
 }
 
+/// The focused text field the platform's input method serves: where its
+/// caret is, so candidate windows and the soft keyboard's accessory views sit
+/// next to it, and whether it takes a secret.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextEntry {
+    /// The caret, logical points (top-left origin).
+    pub caret: LogicalRect,
+    /// A password field's: the input method composes nothing and offers no
+    /// candidates, nothing is learned or suggested from what it types, and
+    /// where the platform can, other processes cannot read its keys.
+    pub secure: bool,
+}
+
 impl LogicalRect {
     /// A rectangle from its top-left corner and size, in logical points.
     pub const fn new(x: f64, y: f64, width: f64, height: f64) -> Self {

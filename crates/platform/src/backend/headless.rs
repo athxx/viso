@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::RawWindowHandle;
-use crate::control::{LogicalRect, PlatformError, WindowConfig, WindowId};
+use crate::control::{PlatformError, TextEntry, WindowConfig, WindowId};
 use crate::event::{Appearance, CursorIcon, DisplayFeature, RawEvent};
 use crate::handler::AppHandler;
 use crate::{ControlFlow, LoopWaker, PlatformApp, Window};
@@ -164,12 +164,12 @@ impl HeadlessApp {
             .map(|w| w.fullscreen)
     }
 
-    /// The caret rect last handed to the IME for `window`.
-    pub fn ime_area(&self, window: WindowId) -> Option<LogicalRect> {
+    /// The text field last handed to the IME for `window`.
+    pub fn text_entry(&self, window: WindowId) -> Option<TextEntry> {
         self.windows
             .iter()
             .find(|w| w.id == window)
-            .and_then(|w| w.ime_area)
+            .and_then(|w| w.text_entry)
     }
 
     /// Whether the soft keyboard is currently requested for `window`.
@@ -230,7 +230,7 @@ impl PlatformApp for HeadlessApp {
             scale,
             physical_size: ((w * scale).round() as u32, (h * scale).round() as u32),
             cursor: CursorIcon::Default,
-            ime_area: None,
+            text_entry: None,
             soft_keyboard: false,
             fullscreen: false,
         });
@@ -324,9 +324,9 @@ impl PlatformApp for HeadlessApp {
         }
     }
 
-    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+    fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         if let Some(w) = self.window_mut(window) {
-            w.ime_area = caret;
+            w.text_entry = entry;
         }
     }
 
@@ -369,7 +369,7 @@ pub struct HeadlessWindow {
     scale: f64,
     physical_size: (u32, u32),
     cursor: CursorIcon,
-    ime_area: Option<LogicalRect>,
+    text_entry: Option<TextEntry>,
     soft_keyboard: bool,
     fullscreen: bool,
 }
@@ -406,6 +406,7 @@ impl Window for HeadlessWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::LogicalRect;
     use crate::handler::AppHandler;
 
     struct Recorder(Vec<RawEvent>);
@@ -525,19 +526,20 @@ mod tests {
         let a = app.create_window(WindowConfig::default()).unwrap();
         let b = app.create_window(WindowConfig::default()).unwrap();
         app.set_cursor(a, CursorIcon::Text);
-        app.set_ime_area(a, Some(LogicalRect::new(10.0, 20.0, 1.0, 16.0)));
+        let entry = TextEntry {
+            caret: LogicalRect::new(10.0, 20.0, 1.0, 16.0),
+            secure: true,
+        };
+        app.set_text_entry(a, Some(entry));
         app.show_soft_keyboard(a, true);
         assert_eq!(app.cursor(a), Some(CursorIcon::Text));
         assert_eq!(app.cursor(b), Some(CursorIcon::Default));
-        assert_eq!(
-            app.ime_area(a),
-            Some(LogicalRect::new(10.0, 20.0, 1.0, 16.0))
-        );
-        assert_eq!(app.ime_area(b), None);
+        assert_eq!(app.text_entry(a), Some(entry));
+        assert_eq!(app.text_entry(b), None);
         assert!(app.soft_keyboard_shown(a));
         assert!(!app.soft_keyboard_shown(b));
-        app.set_ime_area(a, None);
-        assert_eq!(app.ime_area(a), None);
+        app.set_text_entry(a, None);
+        assert_eq!(app.text_entry(a), None);
         // Unknown windows are ignored.
         app.set_cursor(WindowId(99), CursorIcon::Wait);
         assert_eq!(app.cursor(WindowId(99)), None);

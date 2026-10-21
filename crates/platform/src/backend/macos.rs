@@ -41,11 +41,12 @@ use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, ProtocolObject, Sel};
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy,
-    NSApplicationDelegate, NSApplicationTerminateReply, NSBackingStoreType, NSCursor, NSEvent,
-    NSEventMask, NSEventModifierFlags, NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeString,
-    NSScreen, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
+    NSAllRomanInputSourcesLocaleIdentifier, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSBackingStoreType, NSCursor, NSEvent, NSEventMask,
+    NSEventModifierFlags, NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSScreen,
+    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
@@ -57,7 +58,7 @@ use objc2_foundation::{
 
 use crate::RawWindowHandle;
 use crate::control::{
-    ControlFlow, LogicalRect, PlatformError, WindowChrome, WindowConfig, WindowId,
+    ControlFlow, LogicalRect, PlatformError, TextEntry, WindowChrome, WindowConfig, WindowId,
 };
 use crate::event::{
     AcceptCell, Appearance, ClipboardReply, ClipboardShortcut, ColorScheme, CursorIcon,
@@ -565,6 +566,7 @@ impl PlatformApp for MacApp {
                     && let Some(win) = self.windows.iter_mut().find(|w| w.id == window)
                 {
                     win.access.set_focused(focused);
+                    win.content_view.set_key(focused);
                 }
                 drew = matches!(event, RawEvent::RedrawRequested { .. });
                 flow = deliver(self, handler, event);
@@ -776,9 +778,9 @@ impl PlatformApp for MacApp {
         }
     }
 
-    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+    fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         if let Some(win) = self.windows.iter().find(|w| w.id == window) {
-            win.content_view.set_ime_area(caret);
+            win.content_view.set_text_entry(entry);
         }
     }
 
@@ -1691,6 +1693,13 @@ struct ViewIvars {
     ime_enabled: Cell<bool>,
     /// The focused field's caret, logical points in this view.
     ime_caret: Cell<Option<LogicalRect>>,
+    /// The focused field takes a secret.
+    secure_field: Cell<bool>,
+    /// The window is key, so its focused field takes the keyboard.
+    key: Cell<bool>,
+    /// Holds secure event input while a secure field of the key window has
+    /// focus.
+    secure_input: SecureInput,
     /// The app's logical points in one of this view's points: one, or the
     /// emulated panel's pixels over its scale.
     logical: Cell<f64>,
@@ -2124,6 +2133,9 @@ impl VisoContentView {
             cursor_hidden: Cell::new(false),
             ime_enabled: Cell::new(true),
             ime_caret: Cell::new(None),
+            secure_field: Cell::new(false),
+            key: Cell::new(false),
+            secure_input: SecureInput(Cell::new(false)),
             logical: Cell::new(1.0),
             pixels: RefCell::new(None),
         });
@@ -2249,10 +2261,13 @@ impl VisoContentView {
             && p.y < b.origin.y + b.size.height
     }
 
-    fn set_ime_area(&self, caret: Option<LogicalRect>) {
+    fn set_text_entry(&self, entry: Option<TextEntry>) {
         let ivars = self.ivars();
+        let caret = entry.map(|e| e.caret);
         ivars.ime_enabled.set(caret.is_some());
         ivars.ime_caret.set(caret);
+        ivars.secure_field.set(entry.is_some_and(|e| e.secure));
+        self.sync_secure_input();
         let Some(ctx) = self.inputContext() else {
             return;
         };
@@ -2270,9 +2285,72 @@ impl VisoContentView {
         }
     }
 
+    /// Records whether the window is key, holding secure input only while
+    /// it is.
+    fn set_key(&self, key: bool) {
+        self.ivars().key.set(key);
+        self.sync_secure_input();
+    }
+
+    /// Holds secure event input, and keeps the input method to Roman
+    /// keyboards (no composition, no candidates) as `NSSecureTextField`
+    /// does, while a secure field of the key window has focus.
+    fn sync_secure_input(&self) {
+        let ivars = self.ivars();
+        let want = ivars.secure_field.get() && ivars.key.get();
+        if !ivars.secure_input.set(want) {
+            return;
+        }
+        if let Some(ctx) = self.inputContext() {
+            let roman = want.then(|| {
+                // SAFETY: an AppKit constant string, initialized before any
+                // code of the app runs and never mutated.
+                NSArray::from_slice(&[unsafe { NSAllRomanInputSourcesLocaleIdentifier }])
+            });
+            ctx.setAllowedInputSourceLocales(roman.as_deref());
+        }
+    }
+
     /// Push one raw event onto the shared queue.
     fn push(&self, event: RawEvent) {
         self.ivars().shared.borrow_mut().events.push_back(event);
+    }
+}
+
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
+    fn EnableSecureEventInput() -> i32;
+    fn DisableSecureEventInput() -> i32;
+}
+
+/// Whether a view holds the process's secure event input, which keeps other
+/// processes from reading the keyboard; it lets go when the view goes.
+struct SecureInput(Cell<bool>);
+
+impl SecureInput {
+    /// Holds or lets go of secure input, reporting whether that changed.
+    /// The system counts holds per process, so each view balances its own.
+    fn set(&self, hold: bool) -> bool {
+        if self.0.get() == hold {
+            return false;
+        }
+        self.0.set(hold);
+        // SAFETY: Carbon calls taking nothing, on the main thread the view
+        // lives on; every enable is matched by one disable (here or on drop).
+        unsafe {
+            if hold {
+                EnableSecureEventInput();
+            } else {
+                DisableSecureEventInput();
+            }
+        }
+        true
+    }
+}
+
+impl Drop for SecureInput {
+    fn drop(&mut self) {
+        self.set(false);
     }
 }
 

@@ -58,7 +58,7 @@ use crate::event::{
 use crate::handler::AppHandler;
 use crate::menu::Menu;
 use crate::panel::setting;
-use crate::{Instant, LogicalRect, PlatformApp, RawWindowHandle, Window};
+use crate::{Instant, LogicalRect, PlatformApp, RawWindowHandle, TextEntry, Window};
 
 /// The display's one window.
 const WINDOW: WindowId = WindowId(1);
@@ -1067,7 +1067,7 @@ impl PlatformApp for KmsApp {
         }
     }
 
-    fn set_ime_area(&mut self, _window: WindowId, _caret: Option<LogicalRect>) {}
+    fn set_text_entry(&mut self, _window: WindowId, _entry: Option<TextEntry>) {}
 
     fn show_soft_keyboard(&mut self, _window: WindowId, _show: bool) {}
 

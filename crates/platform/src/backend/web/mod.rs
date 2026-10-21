@@ -14,8 +14,9 @@
 //! element marked `data-viso-root` (the body without one). The GPU backend
 //! finds the canvas by that attribute and owns its backing size; this backend
 //! reports the size it should have, in device pixels. Keyboard focus sits on
-//! a hidden `<textarea>` ([`input`]), which receives keys, text, composition
-//! and clipboard events and opens the soft keyboard on touch devices.
+//! a hidden `<input>` ([`input`]), which receives keys, text, composition
+//! and clipboard events and opens the soft keyboard on touch devices; it is a
+//! password input while a secure field has focus.
 
 mod access;
 mod input;
@@ -29,14 +30,14 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::{Closure, JsValue};
 use web_sys::{
     AddEventListenerOptions, Document, Event, EventTarget, FocusOptions, HtmlCanvasElement,
-    HtmlElement, HtmlTextAreaElement, MediaQueryList, ResizeObserver, ResizeObserverBoxOptions,
+    HtmlElement, HtmlInputElement, MediaQueryList, ResizeObserver, ResizeObserverBoxOptions,
     ResizeObserverEntry, ResizeObserverOptions, ResizeObserverSize,
 };
 
 use super::drive::Drive;
 use super::web_translate::{css_cursor, css_px, is_apple, keyboard_inset, pixels};
 use crate::accessibility::SemanticsDelta;
-use crate::control::{ControlFlow, LogicalRect, PlatformError, WindowConfig, WindowId};
+use crate::control::{ControlFlow, LogicalRect, PlatformError, TextEntry, WindowConfig, WindowId};
 use crate::event::{
     Appearance, ColorScheme, CursorIcon, DisplayFeature, DisplayFeatureKind, LogicalInsets,
     PointerButtons, RawEvent,
@@ -314,7 +315,7 @@ type Observer = (ResizeObserver, Closure<dyn FnMut(Array)>);
 /// The window's DOM and the state its callbacks share.
 struct Page {
     canvas: HtmlCanvasElement,
-    input: HtmlTextAreaElement,
+    input: HtmlInputElement,
     /// Present when the canvas fills the page, so the safe area applies.
     probe: Option<HtmlElement>,
     /// The resize observer reports device-pixel content boxes.
@@ -818,11 +819,12 @@ impl PlatformApp for WebApp {
             .map_err(failed)?;
         root.append_child(&canvas).map_err(failed)?;
 
-        let input: HtmlTextAreaElement = document
-            .create_element("textarea")
+        let input: HtmlInputElement = document
+            .create_element("input")
             .map_err(failed)?
             .unchecked_into();
         for (name, value) in [
+            ("type", "text"),
             ("style", INPUT_STYLE),
             ("inputmode", "none"),
             ("autocapitalize", "off"),
@@ -1007,9 +1009,9 @@ impl PlatformApp for WebApp {
         }
     }
 
-    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+    fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         if let Some(w) = self.window.as_ref().filter(|_| window == WINDOW) {
-            input::set_ime_area(&w.page, caret);
+            input::set_text_entry(&w.page, entry);
         }
     }
 

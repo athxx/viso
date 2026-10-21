@@ -12,7 +12,7 @@ use viso_platform::{Instant, LoopWaker};
 
 use viso_platform::{
     Appearance, CursorIcon, LogicalRect, PlatformApp, PlatformCaps, PlatformError, RawEvent,
-    RawWindowHandle, SemanticsDelta, WindowConfig, WindowId,
+    RawWindowHandle, SemanticsDelta, TextEntry, WindowConfig, WindowId,
 };
 
 /// Capabilities available to a frame driver for the duration of one callback.
@@ -237,10 +237,10 @@ impl<'a> RuntimeCx<'a> {
         self.app.set_cursor(window, icon);
     }
 
-    /// Anchor the input method's candidate window at `caret` (logical points,
-    /// top-left origin); `None` disables the IME for `window`.
-    pub fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
-        self.app.set_ime_area(window, caret);
+    /// Tell the input method about `window`'s focused text field (its caret,
+    /// whether it takes a secret); `None` disables the IME for `window`.
+    pub fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
+        self.app.set_text_entry(window, entry);
     }
 
     /// Show or hide the on-screen keyboard for `window`.

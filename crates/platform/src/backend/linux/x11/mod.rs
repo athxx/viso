@@ -43,7 +43,7 @@ use crate::event::{
 };
 use crate::handler::AppHandler;
 use crate::menu::Menu;
-use crate::{Instant, LogicalRect, PlatformApp, RawWindowHandle, Window};
+use crate::{Instant, LogicalRect, PlatformApp, RawWindowHandle, TextEntry, Window};
 
 /// The `_NET_WM_MOVERESIZE` direction that moves the window.
 const MOVE: u32 = 8;
@@ -176,7 +176,10 @@ impl PlatformApp for X11App {
         });
     }
 
-    fn set_ime_area(&mut self, window: WindowId, caret: Option<LogicalRect>) {
+    fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
+        // A secure field's keys bypass the input method: it composes
+        // nothing and offers no candidates.
+        let caret = entry.filter(|e| !e.secure).map(|e| e.caret);
         self.with_window(window, |x11, i| {
             let win = &mut x11.windows[i];
             win.ime_enabled = caret.is_some();

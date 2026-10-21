@@ -395,8 +395,15 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       look too. Through the macros, hot reload (the carried buffer takes the new
       look), the release package and the HTML/script/Solid exports; the Rust
       `text_input` takes `.placeholder()` and `.secure()`.
-  - [ ] A secure field turns the platform's secure input on (no IME candidates,
-        no key loggers: `EnableSecureEventInput`, `secureTextEntry`).
+  - [x] A secure field turns the platform's secure input on (no IME candidates,
+        no key loggers): `PlatformApp::set_text_entry` carries `TextEntry::secure`;
+        macOS holds `EnableSecureEventInput` while the window is key and keeps the
+        input context to Roman sources, iOS `isSecureTextEntry`, Android a
+        password `inputType` without personalized learning, the web a
+        `type=password` input, Windows and X11 bypass the IME, Wayland sets the
+        `password` content purpose.
+    - [ ] Verified on devices (each backend type-checks; the headless and
+          facade tests cover the flag reaching the platform).
   - [x] A check draws its own box and mark beside the caption rather than only
         what its styles paint: `viso_ui::CheckMark` on the node (`CheckBox` a box
         ticked while checked, `Toggle` a track and knob), sized from the

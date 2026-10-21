@@ -42,7 +42,7 @@ use crate::backend::ios_translate::{
     REPEAT_DELAY_SECS, REPEAT_INTERVAL_SECS, TouchIds, is_command_key, key_code, keyboard_overlap,
     modifiers, pressure, repeats,
 };
-use crate::control::{LogicalRect, WindowId};
+use crate::control::{LogicalRect, TextEntry, WindowId};
 use crate::event::{
     ClipboardReply, ClipboardShortcut, KeyCode, LogicalInsets, Modifiers, PointerButtons,
     PointerId, PointerKind, PointerPhase, RawEvent, RawImePreedit, RawKey, RawPointer, RawScroll,
@@ -66,6 +66,8 @@ pub(super) struct ViewIvars {
     composition: RefCell<Composition>,
     /// The focused field's caret, logical points in this view.
     ime_caret: Cell<Option<LogicalRect>>,
+    /// The focused field takes a secret.
+    secure: Cell<bool>,
     soft_keyboard: Cell<bool>,
     /// The empty input view that stands in for the soft keyboard while it
     /// is hidden.
@@ -309,6 +311,13 @@ define_class!(
         #[unsafe(method(autocapitalizationType))]
         fn autocapitalization_type(&self) -> UITextAutocapitalizationType {
             UITextAutocapitalizationType::None
+        }
+
+        // A secure field's keyboard composes, suggests and records nothing,
+        // and the system keeps its keys from screen capture.
+        #[unsafe(method(isSecureTextEntry))]
+        fn is_secure_text_entry(&self) -> bool {
+            self.ivars().secure.get()
         }
     }
 
@@ -627,6 +636,7 @@ impl VisoView {
             mouse_buttons: Cell::new(0),
             composition: RefCell::new(Composition::default()),
             ime_caret: Cell::new(None),
+            secure: Cell::new(false),
             soft_keyboard: Cell::new(false),
             no_keyboard: RefCell::new(None),
             input_delegate: RefCell::new(Weak::default()),
@@ -684,8 +694,14 @@ impl VisoView {
     }
 
     /// Record the focused field's caret (`None`: no field has focus, so any
-    /// composition is dropped).
-    pub(super) fn set_ime_area(&self, caret: Option<LogicalRect>) {
+    /// composition is dropped) and whether it takes a secret, reloading the
+    /// keyboard when that changes.
+    pub(super) fn set_text_entry(&self, entry: Option<TextEntry>) {
+        let caret = entry.map(|e| e.caret);
+        let secure = entry.is_some_and(|e| e.secure);
+        if self.ivars().secure.replace(secure) != secure && self.isFirstResponder() {
+            self.reloadInputViews();
+        }
         let old = self.ivars().ime_caret.replace(caret);
         if caret.is_none() {
             let delegate = self.ivars().input_delegate.borrow().load();

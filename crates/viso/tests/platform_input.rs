@@ -213,6 +213,8 @@ fn a_secure_field_gives_nothing_to_copy_or_cut() {
     SECURE.with(|s| s.set(false));
     assert_eq!(reply.take(), None, "the clipboard never sees its text");
     assert_eq!(app.focused_text(), Some("hello"), "and it cuts nothing");
+    let entry = app.text_entry().flatten().expect("it has focus");
+    assert!(entry.secure, "the platform's input takes it as a secret");
 }
 
 #[test]
@@ -236,7 +238,7 @@ fn paste_replaces_the_selection_on_one_line() {
 fn focusing_a_field_pushes_its_box_as_the_text_entry_area() {
     let app = drive_scripted::<FieldApp>(vec![redraw()], STEP);
     assert_eq!(
-        app.ime_area(),
+        app.text_entry(),
         Some(None),
         "with nothing focused the area is pushed clear once"
     );
@@ -244,11 +246,12 @@ fn focusing_a_field_pushes_its_box_as_the_text_entry_area() {
     // A headless window shapes no text, so the area falls back to the box; the
     // caret column is covered where a shaper exists.
     let app = drive_scripted::<FieldApp>(focused(), STEP);
-    let area = app
-        .ime_area()
+    let entry = app
+        .text_entry()
         .flatten()
         .expect("a focused field has an area");
-    assert_eq!((area.width, area.height), (160.0, 30.0));
+    assert_eq!((entry.caret.width, entry.caret.height), (160.0, 30.0));
+    assert!(!entry.secure, "a plain field takes no secret");
 }
 
 #[test]

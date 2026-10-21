@@ -50,7 +50,7 @@ WebGPU through gstack `/browse`. Windows/D3D12 is `cargo check`/`clippy` only.
       `WindowFocus`, `AppearanceChanged`, `SafeAreaChanged`, `KeyboardInsetChanged`,
       `Suspended`/`Resumed`/`LowMemory` lifecycle events; `CopyRequested`/`Paste`.
 - [x] `PlatformApp` hooks: `clipboard_text`/`set_clipboard_text`, `set_cursor`,
-      `set_ime_area` (caret rect for candidate windows), `show_soft_keyboard`,
+      `set_text_entry` (caret rect for candidate windows, whether the field is secure), `show_soft_keyboard`,
       `appearance()`; headless implements all of them deterministically.
 - [x] macOS implements every new hook (NSPasteboard, NSCursor, `firstRectForCharacterRange`,
       `effectiveAppearance` + KVO, window key/resign).
@@ -134,7 +134,7 @@ Follow-ups carried forward:
 - [x] Per-monitor-v2 DPI, `WM_DPICHANGED`, scale factor.
 - [x] Mouse (+ capture, leave tracking), wheel/hwheel, pointer/touch/pen (`WM_POINTER*`).
 - [x] Keys (`WM_KEYDOWN`/`WM_SYSKEYDOWN` → `KeyCode`), `WM_CHAR` text with surrogate pairs.
-- [x] IME (`WM_IME_*`, IMM32 composition string + caret, candidate window at `set_ime_area`).
+- [x] IME (`WM_IME_*`, IMM32 composition string + caret, candidate window at `set_text_entry`).
 - [x] Clipboard (`CF_UNICODETEXT`), cursors, dark mode (`AppsUseLightTheme` + immersive dark
       title bar), focus, fullscreen, title, menus (`HMENU` + accelerators), timers/wakeup.
 
