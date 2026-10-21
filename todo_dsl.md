@@ -1218,7 +1218,8 @@ timers (§104–§111).
   - [x] `TypographyScale.family`; setting a theme applies its typography to the
         node store (root font size, default family) and the exported page's
         `body` reads `--typography-base-size` and `--typography-family`.
-  - [ ] `theme` read in theme expressions (the base's value).
+  - [x] `theme` read in theme expressions: the base's value; `E2111` in a theme
+        without a base.
 - [ ] Runtime capability denial `E6103` (§95).
   - [x] The package grant (`[package] capabilities`) travels in the compiled
         module, through the release package and hot reload; view hosts link

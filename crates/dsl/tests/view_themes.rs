@@ -4,7 +4,8 @@
 //! the hot-reloaded and the packaged view. And the checks: items name `Theme`
 //! fields once (`E2001`, `E2103`), of their type (`E2103`), with no field left
 //! without a value (`E2103`); a `Theme` base (`E2001`, `E2103`) on no cycle
-//! (`E2003`); pure values (`E2501`); `theme` read only in a view (`E2111`).
+//! (`E2003`); pure values (`E2501`); `theme` read only in a view, or in a
+//! theme as its base's value (`E2111`).
 
 mod support;
 
@@ -103,9 +104,40 @@ fn theme_values_are_pure_and_theme_is_read_in_a_view() {
     );
     assert_eq!(codes("const C: ColorPalette = theme.colors;"), ["E2111"]);
     assert_eq!(
-        codes("theme A: Light { spacing = theme.spacing; }"),
-        ["E2111"]
+        codes(&format!(
+            "theme A {{ colors = theme.colors; elevation = ElevationScale {{ {SHADOWS} }}; }}"
+        )),
+        ["E2111"],
+        "a theme without a base has no `theme` to read"
     );
+}
+
+#[test]
+fn theme_in_a_theme_reads_its_base() {
+    assert_eq!(codes("theme A: Light { spacing = theme.spacing; }"), CLEAN);
+    assert_eq!(
+        codes("theme A: Light { spacing = theme.colors; }"),
+        ["E2103"],
+        "`theme` is the base, typed `Theme`"
+    );
+    assert_eq!(
+        codes(
+            "theme A: Light { colors = ColorPalette { primary: theme.colors.accent, ..theme.colors }; }\ntheme B: A { spacing = A.spacing; }"
+        ),
+        CLEAN
+    );
+    let source = probe(&themes(
+        "theme Swap: Tight {\n    \
+         colors = ColorPalette { primary: theme.colors.accent, ..theme.colors };\n}",
+    ));
+    for mut rt in [Rt::mount(&source), Rt::packaged(&source)] {
+        let swap = theme(&rt, "Swap");
+        set_theme(&mut rt.states, &mut rt.store, swap);
+        rt.frame();
+        assert_eq!(first_fill(&rt), rgba(0x8a4f_ffff), "`Tight`'s accent");
+        rt.click(0);
+        assert_eq!(rt.int("taps"), Some(0), "`Tight`'s spacing");
+    }
 }
 
 /// A view whose first box is filled with the theme's primary color and counts

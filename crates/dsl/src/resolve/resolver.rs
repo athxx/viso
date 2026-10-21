@@ -228,6 +228,7 @@ pub fn resolve(
             // user type is a real error here.
             defer_unresolved_types: false,
             in_view: false,
+            theme_base: None,
             owner_slots: Vec::new(),
             owner_nodes: Vec::new(),
             node_refs: false,
@@ -284,6 +285,7 @@ pub(super) fn resolve_standalone(
         scopes: ScopeStack::new(),
         defer_unresolved_types: false,
         in_view: false,
+        theme_base: None,
         owner_slots: Vec::new(),
         owner_nodes: Vec::new(),
         node_refs: false,
@@ -1225,6 +1227,9 @@ struct ModulePass<'a> {
     defer_unresolved_types: bool,
     /// Whether the walk is inside a view, the execution domain `env` is bound in.
     in_view: bool,
+    /// Inside a theme's items, what `theme` reads there: its base's value,
+    /// `None` for a theme without one.
+    theme_base: Option<Option<Resolution>>,
     /// The slots of the enclosing component or template, which a view's
     /// `SlotOutlet` names by value though no symbol declares them.
     owner_slots: Vec<String>,
@@ -1270,14 +1275,24 @@ impl<'a> ModulePass<'a> {
                     self.resolve_body(decl.syntax());
                 }
                 Item::Theme(t) => {
+                    let mut base_value = None;
                     if let Some(base) = t.base() {
                         self.resolve_named_value(&base);
+                        let head = base.segments().next().map(|t| t.text_range());
+                        base_value = self
+                            .refs
+                            .iter()
+                            .rev()
+                            .find(|r| Some(r.range) == head)
+                            .map(|r| r.to);
                     }
+                    let outer = self.theme_base.replace(base_value);
                     for item in t.items() {
                         if let Some(value) = item.value() {
                             self.resolve_expr(&value);
                         }
                     }
+                    self.theme_base = outer;
                 }
                 Item::Style(s) => self.resolve_style(&s),
                 Item::Native(n) => self.resolve_callable(n.params(), n.return_type(), None),
@@ -2495,6 +2510,22 @@ impl<'a> ModulePass<'a> {
                 ));
             }
             Resolution::Env
+        } else if head.text() == THEME
+            && let Some(base) = self.theme_base
+        {
+            match base {
+                Some(base) => base,
+                None => {
+                    self.errors.push(Diagnostic::error(
+                        ENV_OUTSIDE_VIEW,
+                        head.text_range(),
+                        "`theme` in a theme reads its base's value, and this theme has no \
+                         base: write `theme Name: Base { .. }`"
+                            .to_string(),
+                    ));
+                    Resolution::Theme
+                }
+            }
         } else if head.text() == THEME {
             if !self.in_view {
                 self.errors.push(Diagnostic::error(
