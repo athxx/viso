@@ -423,6 +423,21 @@ Goal: the DoD's last functional item — `Inspector 能解释每一个 fallback 
       `text_content::tests::a_packaged_ui_family_becomes_the_primary_on_first_use`. Adding or
       removing a file needs a rebuild of the invoking crate — stable proc macros cannot track
       a directory.)
+- [x] Weights, widths and slants reach every font source, and variable fonts draw at their
+      instance (§12.12.1): a face resolved at a style that is not its default instance is a
+      face of its own (`viso_text::Variations` — `wght` / `wdth` / `ital` / `slnt` clamped
+      to the face's axes, or the instance the platform picked), applied by shaping (`HVAR`
+      advances), outlines, metrics and the A8 / MTSDF rasters; a build bakes the default
+      instance alone. CoreText resolves the interface, serif (Times New Roman) and mono faces
+      at the requested weight, width and slant and reports its instance
+      (`CTFontCopyVariation`); a variable `glyf` face keeps its variation tables.
+      `FontFamily::named` reaches the platform's families by name after the app's: CoreText
+      descriptors checked against the family they return, DirectWrite `FindFamilyName`,
+      fontconfig with a family check, Android `AFontMatcher` for a family `fonts.xml`
+      declares, else that family alone. (`crates/text/src/variation.rs`,
+      `resolver.rs` `instance`, `crates/viso/src/system_fonts/`; tests in `variation.rs`,
+      `resolver.rs`, `coretext.rs` on the live system, `android_config.rs`; the RobotoVF
+      fixture.)
 
 ---
 

@@ -49,11 +49,20 @@ impl DirectWrite {
         }
     }
 
-    /// The font DirectWrite draws `query`'s sample with.
+    /// The font DirectWrite draws `query`'s sample with: of its family by
+    /// name, which nothing substitutes for, or of its role's families, then
+    /// the system fallback.
     fn match_font(&self, query: &SystemFontQuery) -> Option<IDWriteFont> {
         let role = sample::effective_role(query);
         let region = sample::cjk_region(&query.lang, &query.sample);
-        let families = role_families(role, region);
+        let named;
+        let families: &[&str] = match &query.family {
+            Some(name) => {
+                named = [name.as_str()];
+                &named
+            }
+            None => role_families(role, region),
+        };
         let first = query.sample.chars().next();
         let weight = DWRITE_FONT_WEIGHT(i32::from(query.weight.0.clamp(1, 999)));
         let stretch = DWRITE_FONT_STRETCH(i32::from(query.width.0.clamp(1, 9)));
@@ -83,6 +92,9 @@ impl DirectWrite {
             if first.is_none_or(|ch| has_character(&font, ch)) {
                 return Some(font);
             }
+        }
+        if query.family.is_some() {
+            return None;
         }
         let fallback = self.fallback.as_ref()?;
         let text: Vec<u16> = sample::distinct_scalars(&query.sample)
@@ -278,6 +290,7 @@ fn face_of(font: &IDWriteFont) -> Option<SystemFontResult> {
             bytes,
             index: face.GetIndex(),
             postscript_name: postscript_name(font),
+            variations: None,
         })
     }
 }

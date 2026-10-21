@@ -35,6 +35,7 @@ use crate::FontFaceId;
 use crate::glyph_cache::{Admission, GlyphKey, GlyphResidency, PoolBudget, Reclaimed};
 use crate::glyph_representation::GlyphImageKind;
 use crate::progressive::FontRevision;
+use crate::variation::Variations;
 
 /// Chord tolerance of the flattening, in em. A quarter-pixel error holds up to
 /// 2048 px-per-em; past that the error stays this fraction of an em, far below
@@ -56,6 +57,8 @@ pub struct OutlineRequest<'a> {
     pub sfnt: &'a [u8],
     /// Face index within the font file.
     pub index: u32,
+    /// The instance of a variable face the outline is read at.
+    pub variations: Variations,
     /// The face's runtime identity.
     pub face: FontFaceId,
     /// Glyph index within the face.
@@ -248,10 +251,11 @@ fn build(req: &OutlineRequest<'_>) -> Option<OutlineGlyph> {
 
 /// Flatten a glyph's outline with a chord error under `tolerance` em.
 fn flatten(req: &OutlineRequest<'_>, tolerance: f32) -> Option<OutlineGlyph> {
-    let face = Face::parse(req.sfnt, req.index).ok()?;
+    let mut face = Face::parse(req.sfnt, req.index).ok()?;
     if face.tables().cff2.is_some() {
         return None;
     }
+    req.variations.apply(&mut face);
     let upem = f32::from(face.units_per_em());
     let mut sink = Flatten {
         tolerance: tolerance * upem,
@@ -406,6 +410,7 @@ mod tests {
         OutlineRequest {
             sfnt: DEJAVU,
             index: 0,
+            variations: crate::Variations::DEFAULT,
             face: FACE,
             glyph,
             revision: REVISION,

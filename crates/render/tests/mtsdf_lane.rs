@@ -55,7 +55,14 @@ const GLYPH: &str = "V";
 fn glyph_id() -> u16 {
     let mut shaper = Shaper::new();
     let run = shaper
-        .shape_run(FontFaceId(0), FONT, 0, GLYPH, Direction::LeftToRight)
+        .shape_run(
+            FontFaceId(0),
+            FONT,
+            0,
+            &viso_text::Variations::DEFAULT,
+            GLYPH,
+            Direction::LeftToRight,
+        )
         .expect("the subset face shapes its own demo string");
     run.glyphs[0].glyph_id
 }
@@ -70,6 +77,7 @@ fn mtsdf_run(gpu: &mut CpuRaster, at_px_per_em: f32, origin: [f32; 2]) -> GlyphR
             MtsdfRequest {
                 sfnt: FONT,
                 index: 0,
+                variations: viso_text::Variations::DEFAULT,
                 face: FontFaceId(0),
                 glyph: glyph_id(),
                 revision: FontRevision(0),

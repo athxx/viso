@@ -73,7 +73,14 @@ const TIERS: [Tier; 4] = [
 /// tests drive). This is the caller-supplied shaper the paragraph memoizes.
 fn shape_run(sub: &str, dir: Direction) -> ShapedRun {
     Shaper::new()
-        .shape_run(FontFaceId(0), DEJAVU, 0, sub, dir)
+        .shape_run(
+            FontFaceId(0),
+            DEJAVU,
+            0,
+            &viso_text::Variations::DEFAULT,
+            sub,
+            dir,
+        )
         .expect("fixture parses")
 }
 

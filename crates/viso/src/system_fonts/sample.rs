@@ -95,6 +95,7 @@ mod tests {
 
     fn query(role: FontRole, lang: &str, sample: &str) -> SystemFontQuery {
         SystemFontQuery {
+            family: None,
             role,
             weight: FontWeight::REGULAR,
             width: FontWidth::NORMAL,

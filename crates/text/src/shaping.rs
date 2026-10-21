@@ -43,6 +43,7 @@
 
 use crate::FontFaceId;
 use crate::ligature_caret;
+use crate::variation::Variations;
 
 /// One positioned glyph produced by shaping.
 ///
@@ -207,7 +208,8 @@ impl Shaper {
     /// Shape one single-face, single-direction run into positioned glyphs.
     ///
     /// `face` is the resolved identity carried onto the run; `sfnt` and `index`
-    /// are the owned face bytes and face index handed in by the Face Cache;
+    /// are the owned face bytes and face index handed in by the Face Cache,
+    /// `variations` the instance of a variable face it shapes at;
     /// `text` is the run's source substring; `dir` is its resolved direction.
     /// Returns `None` when the bytes do not parse as a usable face.
     ///
@@ -218,10 +220,12 @@ impl Shaper {
         face: FontFaceId,
         sfnt: &[u8],
         index: u32,
+        variations: &Variations,
         text: &str,
         dir: Direction,
     ) -> Option<ShapedRun> {
-        let rb_face = rustybuzz::Face::from_slice(sfnt, index)?;
+        let mut rb_face = rustybuzz::Face::from_slice(sfnt, index)?;
+        variations.apply_shaping(&mut rb_face);
         let units_per_em = rb_face.units_per_em() as f32;
 
         let mut buffer = self.reusable_buffer.take().unwrap_or_default();
@@ -296,7 +300,14 @@ mod tests {
     fn shape(text: &str) -> ShapedRun {
         let mut shaper = Shaper::new();
         shaper
-            .shape_run(FontFaceId(0), DEJAVU, 0, text, Direction::LeftToRight)
+            .shape_run(
+                FontFaceId(0),
+                DEJAVU,
+                0,
+                &Variations::DEFAULT,
+                text,
+                Direction::LeftToRight,
+            )
             .expect("fixture parses")
     }
 
@@ -373,11 +384,25 @@ mod tests {
         // rather than leaving it taken; a second run still shapes correctly.
         let mut shaper = Shaper::new();
         let first = shaper
-            .shape_run(FontFaceId(0), DEJAVU, 0, "AV", Direction::LeftToRight)
+            .shape_run(
+                FontFaceId(0),
+                DEJAVU,
+                0,
+                &Variations::DEFAULT,
+                "AV",
+                Direction::LeftToRight,
+            )
             .expect("fixture parses");
         assert!(shaper.reusable_buffer.is_some());
         let second = shaper
-            .shape_run(FontFaceId(0), DEJAVU, 0, "AV", Direction::LeftToRight)
+            .shape_run(
+                FontFaceId(0),
+                DEJAVU,
+                0,
+                &Variations::DEFAULT,
+                "AV",
+                Direction::LeftToRight,
+            )
             .expect("fixture parses");
         assert_eq!(first, second);
     }
@@ -387,7 +412,14 @@ mod tests {
         let mut shaper = Shaper::new();
         assert!(
             shaper
-                .shape_run(FontFaceId(0), b"not a font", 0, "A", Direction::LeftToRight)
+                .shape_run(
+                    FontFaceId(0),
+                    b"not a font",
+                    0,
+                    &Variations::DEFAULT,
+                    "A",
+                    Direction::LeftToRight
+                )
                 .is_none()
         );
     }

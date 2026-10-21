@@ -1274,7 +1274,8 @@ cluster map
 - **对齐**：主线程放置行时按对齐把每行在盒宽（无盒宽时为最宽行）内偏移：`start`/`end` 随该行段落方向，`center` 居中；宽于盒的行按段落 start 对齐。Caret、Hit Test 与 IME 几何读取同一组行偏移。
 - **Max-content**：段落报告每个硬换行段内各行宽度之和的最大值，作为 `Fit` 宽度的固有宽度；换行或截断只改变绘制的行，不改变 `Fit` 盒的测量宽度，盒被上下界或父容器收窄时才按盒宽重排，宽度不再回授。
 - **字号随环境**：文本请求的字号可为固定值或节点解析出的字号（`FontSize::Inherited`），行高为长度项，均在塑形时解析（`NodeStore::text_sizing`）；文字缩放、缩放因子、根字号或字号来源变化后，Facade 对解析结果变化的段落只重新放置已有的 em 行（不重新断行或整形），对齐或省略号段落沿用其盒宽。
-- **字体选择**：`font_family`（`system_ui`/`serif`/`monospace` 角色或按名称的 App 字体族）与 `font_weight` 经 Font Resolver 解析为主字体，每个 (族, 字重) 只解析一次；无字体提供时使用主 UI 字体。Fallback 计划按所请求的字重选择回退字体。
+- **字体选择**：`font_family`（`system_ui`/`serif`/`monospace` 角色，或按名称的字体族：先查 App 字体，再按名称查平台字体，平台没有该族时不以他族冒充）与 `font_weight` 经 Font Resolver 解析为主字体，每个 (族, 字重) 只解析一次；无字体提供时使用主 UI 字体。Fallback 计划按所请求的字重选择回退字体。
+- **可变字体实例**：解析到的字体是可变字体且所请求的字重、宽度、倾斜不是其默认实例时，该实例是独立的 Face（独立 `FontFaceId`，与基础 Face 共享字节）：`wght`/`wdth`/`ital`/`slnt` 按请求取值并钳制到字体声明的轴范围，平台自行选定实例时（CoreText 的 `CTFontCopyVariation`）以平台坐标为准。整形（`HVAR` 步进）、轮廓、度量（`MVAR`）、A8 与 MTSDF 光栅都在该坐标下读取字体；构建期烘焙页只服务默认实例。
 
 ## 12.13 双向 Caret：同一 logical offset 允许两个视觉位置
 

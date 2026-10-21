@@ -12,4 +12,5 @@
 
 pub use viso_glyph_a8::{
     BakedFace, BakedGlyph, BakedStrike, CoverageBitmap, Lookup, rasterize_coverage,
+    rasterize_coverage_at,
 };

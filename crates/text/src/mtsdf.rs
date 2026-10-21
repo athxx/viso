@@ -33,6 +33,7 @@ use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
 use crate::FontFaceId;
 use crate::progressive::FontRevision;
+use crate::variation::Variations;
 
 /// Width of the encoded signed-distance span, in field texels: a stored `0`
 /// means `-DISTANCE_RANGE / 2` texels (outside), `255` means `+DISTANCE_RANGE /
@@ -124,6 +125,8 @@ pub struct MtsdfRequest<'a> {
     pub sfnt: &'a [u8],
     /// Face index within the font file.
     pub index: u32,
+    /// The instance of a variable face the field is generated at.
+    pub variations: Variations,
     /// The face's runtime identity, recorded on the field (§13.5).
     pub face: FontFaceId,
     /// Glyph index within the face.
@@ -285,10 +288,11 @@ impl MtsdfGenerator {
     /// with no ink yields an empty field, which is `Some`.
     pub fn generate(&mut self, req: MtsdfRequest<'_>, out: &mut Vec<u8>) -> Option<MtsdfGlyph> {
         out.clear();
-        let face = Face::parse(req.sfnt, req.index).ok()?;
+        let mut face = Face::parse(req.sfnt, req.index).ok()?;
         if face.tables().cff2.is_some() {
             return None;
         }
+        req.variations.apply(&mut face);
         let scale = req.px_per_em / face.units_per_em() as f32;
         let (min_px_per_em, max_px_per_em) = window(req.px_per_em);
         let meta = |width: u32, height: u32, left: f32, top: f32| MtsdfGlyph {
@@ -972,6 +976,7 @@ mod tests {
         MtsdfRequest {
             sfnt: DEJAVU,
             index: 0,
+            variations: crate::Variations::DEFAULT,
             face: FontFaceId(7),
             glyph,
             revision: FontRevision(3),

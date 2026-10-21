@@ -173,7 +173,14 @@ mod tests {
             .map(|run| {
                 let sub = &text[run.start.0..run.end.0];
                 shaper
-                    .shape_run(FontFaceId(0), DEJAVU, 0, sub, run.direction)
+                    .shape_run(
+                        FontFaceId(0),
+                        DEJAVU,
+                        0,
+                        &crate::Variations::DEFAULT,
+                        sub,
+                        run.direction,
+                    )
                     .expect("fixture parses")
             })
             .collect();

@@ -70,13 +70,24 @@ impl Matcher {
     }
 
     /// The face the platform draws `query`'s sample with: `(path, index)`.
+    /// The matcher substitutes the default family for a name it lacks, so a
+    /// family by name is asked for only when `fonts.xml` declares it.
     fn match_face(&self, query: &SystemFontQuery) -> Option<(PathBuf, u32)> {
         let role = sample::effective_role(query);
-        let family = match role {
+        let named = match &query.family {
+            Some(name) => {
+                if fonts_xml().is_some_and(|config| !config.declares(name)) {
+                    return None;
+                }
+                Some(CString::new(name.as_str()).ok()?)
+            }
+            None => None,
+        };
+        let family = named.as_deref().unwrap_or(match role {
             FontRole::Serif => c"serif",
             FontRole::Mono => c"monospace",
             FontRole::Ui | FontRole::Cjk | FontRole::Emoji => c"sans-serif",
-        };
+        });
         let text: Vec<u16> = match (role, query.sample.is_empty()) {
             // An empty sample still needs a character to match on.
             (FontRole::Emoji, true) => "\u{1F600}".encode_utf16().collect(),
@@ -187,16 +198,27 @@ fn maps_scalar(path: &Path, index: u32, ch: char) -> bool {
     }
 }
 
+/// The system's `fonts.xml`, read once; `None` where it is missing or
+/// declares no family.
+fn fonts_xml() -> Option<&'static FontConfig> {
+    static CONFIG: OnceLock<Option<FontConfig>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let xml = std::fs::read_to_string(FONTS_XML).ok()?;
+            let config = FontConfig::parse(&xml);
+            (!config.families.is_empty()).then_some(config)
+        })
+        .as_ref()
+}
+
 /// The fonts.xml resolver, for releases without `AFontMatcher`.
 struct Configured {
-    config: FontConfig,
+    config: &'static FontConfig,
 }
 
 impl Configured {
     fn load() -> Option<Self> {
-        let xml = std::fs::read_to_string(FONTS_XML).ok()?;
-        let config = FontConfig::parse(&xml);
-        (!config.families.is_empty()).then_some(Self { config })
+        fonts_xml().map(|config| Self { config })
     }
 
     fn match_face(
@@ -206,6 +228,7 @@ impl Configured {
     ) -> Option<(PathBuf, u32, Option<String>)> {
         let role = sample::effective_role(query);
         let want = Want {
+            family: query.family.as_deref(),
             // A serif or monospace query keeps its family ahead of the CJK
             // chain, so the chain's serif fallbacks are chosen for it.
             role: match (role, query.role) {
@@ -270,6 +293,7 @@ impl SystemFontProvider for AndroidFontProvider {
             bytes,
             index,
             postscript_name,
+            variations: None,
         })
     }
 }

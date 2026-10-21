@@ -11,6 +11,7 @@
 
 use crate::FontFaceId;
 use crate::font_request::{FontRole, FontSlant, FontWeight, FontWidth};
+use crate::variation::Variations;
 
 /// A query for a system face: what the resolver needs the platform to supply.
 ///
@@ -19,6 +20,9 @@ use crate::font_request::{FontRole, FontSlant, FontWeight, FontWidth};
 /// cache key so an unsatisfiable request is not repeated.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SystemFontQuery {
+    /// The family to resolve by name; `None` for the role's. A platform that
+    /// has no family of this name declines rather than substituting another.
+    pub family: Option<String>,
     /// The role to resolve (UI / serif / mono / CJK / emoji).
     pub role: FontRole,
     /// Requested weight.
@@ -51,6 +55,10 @@ pub struct SystemFontResult {
     /// cannot decode, so the resolver must not fall back to parsing it out of
     /// `bytes`. `None` when the platform does not report one.
     pub postscript_name: Option<String>,
+    /// The instance of a variable face the platform resolved, when it picks
+    /// one itself (and rasterizes through it); `None` to derive it from the
+    /// query's style.
+    pub variations: Option<Variations>,
 }
 
 /// A rasterized color glyph handed back by the platform: premultiplied RGBA
@@ -131,6 +139,7 @@ mod tests {
         assert!(
             provider
                 .resolve_system_face(&SystemFontQuery {
+                    family: None,
                     role: FontRole::Ui,
                     weight: FontWeight::REGULAR,
                     width: FontWidth::NORMAL,

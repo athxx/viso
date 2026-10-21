@@ -2,10 +2,13 @@
 //! [`viso_text::ColorGlyphRasterizer`].
 //!
 //! viso-text stays a pure algorithm layer, so the actual OS query lives here in
-//! the facade. Given a role and a sample string, we ask CoreText for the base UI
-//! font, coax it to cascade to a face covering the sample (CJK / emoji), reject
-//! the LastResort tofu font, and reassemble the face's sfnt tables into a byte
-//! blob that ttf-parser / rustybuzz can parse.
+//! the facade. Given a family or role, a style and a sample string, we ask
+//! CoreText for the base font at that weight, width and slant, coax it to
+//! cascade to a face covering the sample (CJK / emoji), reject the LastResort
+//! tofu font, and reassemble the face's sfnt tables into a byte blob that
+//! ttf-parser / rustybuzz can parse. A variable face reports the instance
+//! CoreText picked (`CTFontCopyVariation`), so shaping reads the same advances
+//! the live font draws.
 
 //!
 //! ## sfnt reassembly (the interesting part)
@@ -23,8 +26,9 @@
 //!     the stripped glyph back to CoreText, keyed on the face's PostScript name.
 //!     So copying the strike would be pure waste.
 //!   - **Drop variable-font tables** (`gvar`, `fvar`, ...) when a `glyf` table is
-//!     present. ttf-parser cannot resolve Apple's `gvar` deltas, so leaving them
-//!     in yields blank glyphs; we consume only the default instance.
+//!     present and the face draws at its default instance, which needs none
+//!     of them; a face of another style keeps them, and its outlines and
+//!     advances are read at that instance's coordinates.
 //!
 //! Per-table checksums and `head.checkSumAdjustment` are left zero: ttf-parser
 //! does not verify them, and computing them over Apple's giant CJK super-fonts
@@ -512,10 +516,19 @@ mod color {
 }
 
 mod imp {
-    use objc2_core_foundation::{CFIndex, CFRange, CFRetained, CFString};
-    use objc2_core_text::{CTFont, CTFontTableOptions, CTFontTableTag, CTFontUIFontType};
+    use objc2_core_foundation::{
+        CFDictionary, CFIndex, CFNumber, CFRange, CFRetained, CFString, CFType,
+    };
+    use objc2_core_text::{
+        CTFont, CTFontDescriptor, CTFontSymbolicTraits, CTFontTableOptions, CTFontTableTag,
+        CTFontUIFontType, kCTFontFamilyNameAttribute, kCTFontTraitsAttribute, kCTFontWeightTrait,
+        kCTFontWidthTrait,
+    };
 
-    use viso_text::{FontRole, SystemFontProvider, SystemFontQuery, SystemFontResult};
+    use viso_text::{
+        FontRole, FontSlant, FontWeight, FontWidth, SystemFontProvider, SystemFontQuery,
+        SystemFontResult, Variations,
+    };
 
     /// Resolve system fonts through CoreText. The negative cache lives in
     /// `viso_text::SystemFallback`; this performs the OS query and stashes the
@@ -536,7 +549,12 @@ mod imp {
 
     impl SystemFontProvider for CoreTextProvider {
         fn resolve_system_face(&self, query: &SystemFontQuery) -> Option<SystemFontResult> {
-            let (bytes, postscript_name, covering) = load_system_font(query)?;
+            let Loaded {
+                bytes,
+                postscript_name,
+                font: covering,
+                variations,
+            } = load_system_font(query)?;
             // Stash the exact handle CoreText resolved, keyed by the authoritative
             // PostScript name the raster binds against. The first covering face for
             // a name wins; identical later resolutions no-op.
@@ -547,6 +565,10 @@ mod imp {
                 bytes,
                 index: 0,
                 postscript_name,
+                // CoreText does not move every variable family along its
+                // axes; where it reports the default instance, the instance
+                // is derived from the query's style.
+                variations: (!variations.is_default()).then_some(variations),
             })
         }
     }
@@ -561,45 +583,34 @@ mod imp {
         glyph_count <= LAST_RESORT_MAX_GLYPHS
     }
 
-    /// Query CoreText for a face covering `query`'s sample string, reject the
-    /// LastResort fallback, and reassemble its sfnt bytes for ttf-parser. Also
-    /// returns the face's CoreText PostScript name: the synthesized sfnt may carry
-    /// only Macintosh-platform `name` records that a generic reader cannot decode,
-    /// so the color/proprietary-outline raster re-opens the face under *this* name
-    /// rather than one parsed back out of the bytes.
-    fn load_system_font(
-        query: &SystemFontQuery,
-    ) -> Option<(Vec<u8>, Option<String>, CFRetained<CTFont>)> {
-        let ui_type = match query.role {
-            FontRole::Ui | FontRole::Cjk => CTFontUIFontType::System,
-            FontRole::Serif => CTFontUIFontType::System,
-            FontRole::Mono => CTFontUIFontType::UserFixedPitch,
-            // Emoji has no dedicated UI type; start from the system font and let
-            // `for_string` cascade to the color-emoji face via the sample.
-            FontRole::Emoji => CTFontUIFontType::System,
+    /// Query CoreText for a face of `query`'s family or role at its style
+    /// covering its sample string, reject the LastResort fallback, and
+    /// reassemble its sfnt bytes for ttf-parser. Also returns the face's
+    /// CoreText PostScript name — the synthesized sfnt may carry only
+    /// Macintosh-platform `name` records that a generic reader cannot decode, so
+    /// the color/proprietary-outline raster re-opens the face under *this* name
+    /// rather than one parsed back out of the bytes — and the instance of a
+    /// variable face CoreText picked.
+    fn load_system_font(query: &SystemFontQuery) -> Option<Loaded> {
+        let base = match &query.family {
+            Some(name) => named_font(name, query)?,
+            None => role_font(query)?,
         };
 
-        let language = if query.lang.is_empty() {
-            None
-        } else {
-            Some(CFString::from_str(&query.lang))
-        };
-
-        // SAFETY: CoreText FFI. `new_ui_font_for_language` allocates a font and
-        // returns it retained (CFRetained drops it); the language string, when
-        // present, outlives the call.
-        let base = unsafe { CTFont::new_ui_font_for_language(ui_type, 0.0, language.as_deref()) }?;
-
-        // The base UI font already covers Latin; for CJK/emoji we ask CoreText
+        // The base font covers its own script; for CJK/emoji we ask CoreText
         // which face renders the sample and let it cascade there.
-        let sample = CFString::from_str(&query.sample);
-        let range = CFRange {
-            location: 0,
-            length: query.sample.encode_utf16().count() as CFIndex,
+        let covering = if query.sample.is_empty() {
+            base
+        } else {
+            let sample = CFString::from_str(&query.sample);
+            let range = CFRange {
+                location: 0,
+                length: query.sample.encode_utf16().count() as CFIndex,
+            };
+            // SAFETY: CoreText FFI. `for_string` returns a retained font covering
+            // the range; `sample` outlives the call.
+            unsafe { base.for_string(&sample, range) }
         };
-        // SAFETY: CoreText FFI. `for_string` returns a retained font covering the
-        // range; `sample` outlives the call.
-        let covering = unsafe { base.for_string(&sample, range) };
 
         // SAFETY: CoreText FFI, reads the glyph count of a live font.
         let glyph_count = unsafe { covering.glyph_count() };
@@ -607,9 +618,180 @@ mod imp {
             return None;
         }
 
-        let bytes = sfnt_bytes_from_ctfont(&covering)?;
-        let ps_name = postscript_name(&covering);
-        Some((bytes, ps_name, covering))
+        let variations = font_variations(&covering);
+        let bytes =
+            sfnt_bytes_from_ctfont(&covering, !variations.is_default() || !is_plain(query))?;
+        Some(Loaded {
+            bytes,
+            postscript_name: postscript_name(&covering),
+            font: covering,
+            variations,
+        })
+    }
+
+    /// A face CoreText resolved: its reassembled bytes, PostScript name, live
+    /// handle and instance.
+    struct Loaded {
+        bytes: Vec<u8>,
+        postscript_name: Option<String>,
+        font: CFRetained<CTFont>,
+        variations: Variations,
+    }
+
+    /// The face of `query`'s role at its style: the interface face (in the
+    /// query's language), a serif family, or the user's fixed-pitch face.
+    fn role_font(query: &SystemFontQuery) -> Option<CFRetained<CTFont>> {
+        let ui_type = match query.role {
+            FontRole::Serif => {
+                if let Some(font) = SERIF_FAMILIES
+                    .iter()
+                    .find_map(|name| named_font(name, query))
+                {
+                    return Some(font);
+                }
+                CTFontUIFontType::System
+            }
+            FontRole::Mono => CTFontUIFontType::UserFixedPitch,
+            // Emoji has no dedicated UI type; start from the system font and let
+            // `for_string` cascade to the color-emoji face via the sample.
+            FontRole::Ui | FontRole::Cjk | FontRole::Emoji => CTFontUIFontType::System,
+        };
+        let language = if query.lang.is_empty() {
+            None
+        } else {
+            Some(CFString::from_str(&query.lang))
+        };
+        // SAFETY: CoreText FFI. `new_ui_font_for_language` allocates a font and
+        // returns it retained (CFRetained drops it); the language string, when
+        // present, outlives the call.
+        let base = unsafe { CTFont::new_ui_font_for_language(ui_type, 0.0, language.as_deref()) }?;
+        if is_plain(query) {
+            return Some(base);
+        }
+        let traits = style_traits(query.weight, query.width);
+        let attributes = dictionary(&[(unsafe { kCTFontTraitsAttribute }, &*traits)]);
+        // SAFETY: CoreText FFI. The descriptor is built from a dictionary of
+        // CoreText attribute keys; both outlive the calls, which return retained
+        // objects.
+        let styled = unsafe {
+            let descriptor = CTFontDescriptor::with_attributes(&attributes);
+            base.copy_with_attributes(0.0, std::ptr::null(), Some(&descriptor))
+        };
+        Some(slanted(styled, query.slant))
+    }
+
+    /// The face of family `name` at `query`'s style; `None` when CoreText has
+    /// no family of that name (it substitutes another rather than failing).
+    fn named_font(name: &str, query: &SystemFontQuery) -> Option<CFRetained<CTFont>> {
+        let family = CFString::from_str(name);
+        let traits = style_traits(query.weight, query.width);
+        // SAFETY: the attribute keys are CoreText's immutable globals.
+        let attributes = dictionary(&[
+            (unsafe { kCTFontFamilyNameAttribute }, &*family as &CFType),
+            (unsafe { kCTFontTraitsAttribute }, &*traits),
+        ]);
+        // SAFETY: CoreText FFI. The descriptor is built from a dictionary of
+        // CoreText attribute keys; the returned descriptor and font are
+        // retained.
+        let font = unsafe {
+            let descriptor = CTFontDescriptor::with_attributes(&attributes);
+            CTFont::with_font_descriptor(&descriptor, 0.0, std::ptr::null())
+        };
+        // SAFETY: CoreText FFI, copies the live font's family name.
+        let found = unsafe { font.family_name() }.to_string();
+        if !found.eq_ignore_ascii_case(name) {
+            return None;
+        }
+        Some(slanted(font, query.slant))
+    }
+
+    /// The serif families tried, in order, for the serif role.
+    const SERIF_FAMILIES: [&str; 2] = ["Times New Roman", "Times"];
+
+    /// Whether `query` asks for the default style, which the base font is.
+    fn is_plain(query: &SystemFontQuery) -> bool {
+        query.weight == FontWeight::REGULAR
+            && query.width == FontWidth::NORMAL
+            && query.slant == FontSlant::Normal
+    }
+
+    /// `font` italic when `slant` asks for a slanted face and the family has
+    /// one; as it is otherwise.
+    fn slanted(font: CFRetained<CTFont>, slant: FontSlant) -> CFRetained<CTFont> {
+        if slant == FontSlant::Normal {
+            return font;
+        }
+        let italic = CTFontSymbolicTraits::TraitItalic;
+        // SAFETY: CoreText FFI. Returns a retained copy, or null when the family
+        // has no face with the trait.
+        unsafe { font.copy_with_symbolic_traits(0.0, std::ptr::null(), italic, italic) }
+            .unwrap_or(font)
+    }
+
+    /// The CoreText traits dictionary of a weight and width: each on
+    /// CoreText's −1…1 scale.
+    fn style_traits(weight: FontWeight, width: FontWidth) -> CFRetained<CFDictionary> {
+        let weight = CFNumber::new_f64(weight_trait(weight));
+        let width = CFNumber::new_f64((f64::from(width.0) - 5.0) / 4.0);
+        // SAFETY: the trait keys are CoreText's immutable globals.
+        dictionary(&[
+            (unsafe { kCTFontWeightTrait }, &*weight as &CFType),
+            (unsafe { kCTFontWidthTrait }, &*width),
+        ])
+    }
+
+    /// The CSS weights and the CoreText weight traits they map to (AppKit's
+    /// `NSFontWeight` constants), interpolated between.
+    const WEIGHT_TRAITS: [(f64, f64); 9] = [
+        (100.0, -0.8),
+        (200.0, -0.6),
+        (300.0, -0.4),
+        (400.0, 0.0),
+        (500.0, 0.23),
+        (600.0, 0.3),
+        (700.0, 0.4),
+        (800.0, 0.56),
+        (900.0, 0.62),
+    ];
+
+    fn weight_trait(weight: FontWeight) -> f64 {
+        let w = f64::from(weight.0).clamp(100.0, 900.0);
+        WEIGHT_TRAITS
+            .windows(2)
+            .find(|pair| w <= pair[1].0)
+            .map_or(0.62, |pair| {
+                let ((w0, t0), (w1, t1)) = (pair[0], pair[1]);
+                t0 + (t1 - t0) * (w - w0) / (w1 - w0)
+            })
+    }
+
+    /// A CoreFoundation dictionary of `entries`.
+    fn dictionary(entries: &[(&CFString, &CFType)]) -> CFRetained<CFDictionary> {
+        let keys: Vec<&CFString> = entries.iter().map(|(key, _)| *key).collect();
+        let values: Vec<&CFType> = entries.iter().map(|(_, value)| *value).collect();
+        let typed = CFDictionary::<CFString, CFType>::from_slices(&keys, &values);
+        // SAFETY: a typed dictionary is the untyped one with its key and value
+        // types recorded; erasing them changes nothing about the object.
+        unsafe { CFRetained::cast_unchecked(typed) }
+    }
+
+    /// The instance a variable font is at: each non-default axis CoreText
+    /// reports, keyed by its four-character tag.
+    fn font_variations(font: &CTFont) -> Variations {
+        // SAFETY: CoreText FFI. Returns a retained dictionary of CFNumber axis
+        // identifiers to CFNumber values, or null for a font that is not
+        // variable or is at its default instance.
+        let Some(variation) = (unsafe { font.variation() }) else {
+            return Variations::DEFAULT;
+        };
+        // SAFETY: CoreText documents both the keys and the values as CFNumbers.
+        let typed: CFRetained<CFDictionary<CFNumber, CFNumber>> =
+            unsafe { CFRetained::cast_unchecked(variation) };
+        let (keys, values) = typed.to_vecs();
+        Variations::from_axes(keys.iter().zip(&values).filter_map(|(key, value)| {
+            let tag = u32::try_from(key.as_i64()?).ok()?;
+            Some((tag.to_be_bytes(), value.as_f64()? as f32))
+        }))
     }
 
     /// Copy a CoreText font's PostScript name to an owned `String`. This is the
@@ -640,9 +822,8 @@ mod imp {
         tag(b"CPAL"),
     ];
 
-    /// Variable-font tables dropped when a `glyf` table is present: ttf-parser
-    /// cannot resolve Apple `gvar` deltas, so they would yield blank glyphs. We
-    /// only ever consume the default instance.
+    /// Variable-font tables dropped from a `glyf` face at its default instance,
+    /// which draws without them.
     const VAR_TAGS: &[u32] = &[
         tag(b"gvar"),
         tag(b"fvar"),
@@ -660,8 +841,10 @@ mod imp {
     }
 
     /// Walk a CoreText font's table directory, copy the tables worth keeping, and
-    /// reassemble them into an sfnt byte blob ttf-parser can parse.
-    fn sfnt_bytes_from_ctfont(font: &CTFont) -> Option<Vec<u8>> {
+    /// reassemble them into an sfnt byte blob ttf-parser can parse; `variable`
+    /// when the face may draw at an instance other than its default, which
+    /// needs its variation tables.
+    fn sfnt_bytes_from_ctfont(font: &CTFont, variable: bool) -> Option<Vec<u8>> {
         // SAFETY: CoreText FFI. Returns a retained array of table tags.
         let tables = unsafe { font.available_tables(CTFontTableOptions::empty()) }?;
 
@@ -684,7 +867,7 @@ mod imp {
             if SKIP_TAGS.contains(&t) {
                 continue;
             }
-            if has_glyf && VAR_TAGS.contains(&t) {
+            if has_glyf && !variable && VAR_TAGS.contains(&t) {
                 continue;
             }
             // SAFETY: CoreText FFI. Copies the table's bytes into a retained
@@ -794,6 +977,83 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        fn query(family: Option<&str>, role: FontRole, weight: u16) -> SystemFontQuery {
+            SystemFontQuery {
+                family: family.map(str::to_owned),
+                role,
+                weight: FontWeight(weight),
+                width: FontWidth::NORMAL,
+                slant: FontSlant::Normal,
+                lang: String::new(),
+                sample: String::new(),
+            }
+        }
+
+        #[test]
+        fn the_interface_face_resolves_at_the_requested_weight() {
+            let regular = load_system_font(&query(None, FontRole::Ui, 400)).expect("SF");
+            let bold = load_system_font(&query(None, FontRole::Ui, 700)).expect("SF bold");
+            assert_ne!(regular.postscript_name, bold.postscript_name);
+            assert!(
+                bold.variations
+                    .as_slice()
+                    .iter()
+                    .any(|&(tag, value)| tag == *b"wght" && value > 400.0),
+                "the instance CoreText picked: {:?}",
+                bold.variations
+            );
+        }
+
+        #[test]
+        fn a_family_by_name_resolves_only_to_itself() {
+            let bold = load_system_font(&query(Some("Helvetica Neue"), FontRole::Ui, 700))
+                .expect("Helvetica Neue ships with the system");
+            assert_eq!(bold.postscript_name.as_deref(), Some("HelveticaNeue-Bold"));
+            assert!(load_system_font(&query(Some("No Such Family"), FontRole::Ui, 400)).is_none());
+            let serif = load_system_font(&query(None, FontRole::Serif, 400)).expect("a serif");
+            // SAFETY: CoreText FFI, copies the live font's family name.
+            let family = unsafe { serif.font.family_name() }.to_string();
+            assert!(SERIF_FAMILIES.contains(&family.as_str()), "{family}");
+        }
+
+        #[test]
+        fn a_variable_outline_face_draws_at_its_instance() {
+            // Skia: Apple's `glyf` + `gvar` variable family.
+            // CoreText leaves it at its default instance, so the instance
+            // comes from the style, as the resolver derives it.
+            let bold_query = query(Some("Skia"), FontRole::Ui, 800);
+            let bold = load_system_font(&bold_query).expect("Skia ships with the system");
+            let regular = load_system_font(&query(Some("Skia"), FontRole::Ui, 400)).unwrap();
+            let ink = |loaded: &Loaded, variations: Variations| {
+                let face = ttf_parser::Face::parse(&loaded.bytes, 0).unwrap();
+                let glyph = face.glyph_index('o').unwrap().0;
+                let bitmap = viso_text::rasterize_coverage_at(
+                    &loaded.bytes,
+                    0,
+                    variations.as_slice(),
+                    glyph,
+                    48.0,
+                )
+                .expect("outlined");
+                bitmap.coverage.iter().map(|&a| u64::from(a)).sum::<u64>()
+            };
+            let instance = Variations::for_style(
+                &bold.bytes,
+                0,
+                bold_query.weight,
+                bold_query.width,
+                bold_query.slant,
+            );
+            assert!(!instance.is_default(), "Skia keeps its axes");
+            let (bold_ink, regular_ink) =
+                (ink(&bold, instance), ink(&regular, Variations::DEFAULT));
+            assert!(regular_ink > 0, "the default instance draws");
+            assert!(
+                bold_ink > regular_ink,
+                "the bold instance draws heavier: {bold_ink} vs {regular_ink}"
+            );
+        }
 
         #[test]
         fn detects_last_resort_by_glyph_count() {

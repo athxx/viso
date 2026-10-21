@@ -5,14 +5,16 @@
 //! library and its configuration load once, on the first query, off whichever
 //! thread asks first; every later query only builds a pattern and matches it.
 //!
-//! A query becomes one pattern: the role's generic family alias
-//! (`sans-serif` / `serif` / `monospace` / `emoji`), weight, slant and width,
+//! A query becomes one pattern: its family by name or the role's generic
+//! family alias (`sans-serif` / `serif` / `monospace` / `emoji`), weight,
+//! slant and width,
 //! the CJK region as a language, and the sample's scalars as a required
 //! charset. fontconfig ranks charset coverage above family, so the match is the
 //! configured face for the role when it covers the sample and the best
 //! covering face otherwise. The match is kept only if it really covers the
-//! sample's first scalar, and its file is returned as-is with its collection
-//! index.
+//! sample's first scalar — and, for a family by name, only if it is of that
+//! family, as fontconfig substitutes the closest family for one it lacks —
+//! and its file is returned as-is with its collection index.
 
 use std::ffi::{CStr, CString, OsStr, c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt;
@@ -119,6 +121,10 @@ impl Fontconfig {
     fn match_face(&self, query: &SystemFontQuery) -> Option<(CString, u32, Option<String>)> {
         let role = sample::effective_role(query);
         let scalars = sample::distinct_scalars(&query.sample);
+        let named = match &query.family {
+            Some(name) => Some(CString::new(name.as_str()).ok()?),
+            None => None,
+        };
         // SAFETY: every object created here is owned by this call and
         // destroyed before it returns; `FcPatternAdd*` copy their arguments, so
         // destroying the charset and langset after adding them is sound. The
@@ -128,8 +134,9 @@ impl Fontconfig {
             if pattern.is_null() {
                 return None;
             }
-            (self.pattern_add_string)(pattern, c"family".as_ptr(), family(role).as_ptr().cast());
-            if role == FontRole::Mono {
+            let family = named.as_deref().unwrap_or(family(role));
+            (self.pattern_add_string)(pattern, c"family".as_ptr(), family.as_ptr().cast());
+            if named.is_none() && role == FontRole::Mono {
                 (self.pattern_add_integer)(pattern, c"spacing".as_ptr(), FC_MONO);
             }
             (self.pattern_add_integer)(pattern, c"weight".as_ptr(), weight(query.weight.0));
@@ -162,9 +169,41 @@ impl Fontconfig {
             if matched.is_null() {
                 return None;
             }
-            let face = self.read_match(matched, scalars.first().copied());
+            let face = (named.is_none() || self.has_family(matched, family))
+                .then(|| self.read_match(matched, scalars.first().copied()))
+                .flatten();
             (self.pattern_destroy)(matched);
             face
+        }
+    }
+
+    /// Whether a matched pattern is of `family`, by any of the names it goes
+    /// by.
+    ///
+    /// # Safety
+    /// `matched` must be a live pattern returned by `FcFontMatch`.
+    unsafe fn has_family(&self, matched: *mut FcPattern, family: &CStr) -> bool {
+        let wanted = family.to_string_lossy();
+        // SAFETY: the caller keeps `matched` alive; each string fontconfig
+        // hands out points into it and is read before the next call.
+        unsafe {
+            let mut at = 0;
+            loop {
+                let mut name = std::ptr::null_mut();
+                if (self.pattern_get_string)(matched, c"family".as_ptr(), at, &mut name)
+                    != FC_RESULT_MATCH
+                    || name.is_null()
+                {
+                    return false;
+                }
+                if CStr::from_ptr(name.cast())
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&wanted)
+                {
+                    return true;
+                }
+                at += 1;
+            }
         }
     }
 
@@ -305,6 +344,7 @@ impl SystemFontProvider for FontconfigProvider {
             bytes,
             index,
             postscript_name,
+            variations: None,
         })
     }
 }

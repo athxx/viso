@@ -30,4 +30,4 @@ pub use baked::{BakeError, bake_face};
 pub use baked::{BakedFace, BakedGlyph, BakedStrike, EncodeError, Lookup};
 pub use bitmap::CoverageBitmap;
 #[cfg(feature = "raster")]
-pub use raster::rasterize_coverage;
+pub use raster::{rasterize_coverage, rasterize_coverage_at};

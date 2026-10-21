@@ -233,6 +233,7 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
             viso_text::FontFaceId(0),
             TEST_FONT,
             0,
+            &viso_text::Variations::DEFAULT,
             line,
             Direction::LeftToRight,
         ) else {

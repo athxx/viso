@@ -1169,7 +1169,14 @@ mod tests {
     /// Shape one logical direction run's substring with the fixture face.
     fn shape_run(sub: &str, dir: Direction) -> ShapedRun {
         Shaper::new()
-            .shape_run(FontFaceId(0), DEJAVU, 0, sub, dir)
+            .shape_run(
+                FontFaceId(0),
+                DEJAVU,
+                0,
+                &crate::Variations::DEFAULT,
+                sub,
+                dir,
+            )
             .expect("fixture parses")
     }
 

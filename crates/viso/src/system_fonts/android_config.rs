@@ -11,7 +11,8 @@
 //! the fallback chain in document order, each tagged with the languages and
 //! scripts it serves (`und-Arab`, `zh-Hans`, `und-Zsye` for emoji). A query
 //! tries its role's family, then the chain families whose language matches
-//! the query's region or the sample's script, then the rest of the chain.
+//! the query's region or the sample's script, then the rest of the chain. A
+//! query for a family by name tries that family alone.
 
 use viso_text::FontRole;
 use viso_text::fallback::FontFallback;
@@ -60,6 +61,8 @@ pub struct FontConfig {
 /// The query as the configuration sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct Want<'a> {
+    /// The family asked for by name, in place of the role's.
+    pub family: Option<&'a str>,
     pub role: FontRole,
     pub region: Option<CjkRegion>,
     pub weight: u16,
@@ -159,9 +162,18 @@ impl FontConfig {
         }
     }
 
+    /// Whether the configuration declares a family of `name`, or an alias of
+    /// it.
+    pub fn declares(&self, name: &str) -> bool {
+        let (resolved, _) = self.resolve_alias(name);
+        self.families
+            .iter()
+            .any(|f| f.name.as_deref() == Some(resolved))
+    }
+
     /// The faces to try for `want`, best first, without duplicates.
     pub fn candidates(&self, want: &Want) -> Vec<&FontFile> {
-        let named = role_family(want.role);
+        let named = want.family.unwrap_or(role_family(want.role));
         let (named, alias_weight) = self.resolve_alias(named);
         let weight = alias_weight.unwrap_or(want.weight);
         let script = FontFallback::run_script(want.sample).short_name();
@@ -179,6 +191,12 @@ impl FontConfig {
         };
         let is_named = |family: &Family| family.name.as_deref() == Some(named);
         let families = || self.families.iter().enumerate();
+        if want.family.is_some() {
+            families()
+                .filter(|(_, f)| is_named(f))
+                .for_each(|(at, _)| push(at));
+            return self.best_faces(ordered, named, weight, want.italic);
+        }
         // The role's own family, unless the query needs an emoji or CJK face.
         if want.role != FontRole::Emoji && want.role != FontRole::Cjk {
             families()
@@ -214,6 +232,18 @@ impl FontConfig {
             .filter(|(_, f)| f.name.is_none())
             .for_each(|(at, _)| push(at));
 
+        self.best_faces(ordered, named, weight, want.italic)
+    }
+
+    /// The best face of each family of `ordered` for `weight` and `italic`, a
+    /// query of the `named` family.
+    fn best_faces(
+        &self,
+        ordered: Vec<usize>,
+        named: &str,
+        weight: u16,
+        italic: bool,
+    ) -> Vec<&FontFile> {
         let mut faces = Vec::new();
         for at in ordered.into_iter().take(MAX_CANDIDATES) {
             // A font marked as the fallback for the named family takes its
@@ -229,7 +259,7 @@ impl FontConfig {
                 .min_by_key(|font| {
                     (
                         font.fallback_for.is_none(),
-                        style_distance(font, weight, want.italic),
+                        style_distance(font, weight, italic),
                     )
                 });
             faces.extend(best);
@@ -464,6 +494,7 @@ mod tests {
 
     fn want(role: FontRole, region: Option<CjkRegion>, sample: &str) -> Want<'_> {
         Want {
+            family: None,
             role,
             region,
             weight: 400,
@@ -507,6 +538,23 @@ mod tests {
         italic.italic = true;
         italic.weight = 700;
         assert_eq!(files(&config, &italic)[0].0, "Roboto-Italic.ttf");
+    }
+
+    #[test]
+    fn a_family_by_name_tries_that_family_alone() {
+        let config = FontConfig::parse(FONTS_XML);
+        assert!(config.declares("serif") && config.declares("monospace"));
+        assert!(!config.declares("Helvetica"));
+        let mut named = want(FontRole::Ui, None, "a");
+        named.family = Some("sans-serif-medium");
+        named.weight = 700;
+        assert_eq!(
+            files(&config, &named),
+            [("Roboto-Regular.ttf".to_owned(), 0)],
+            "the alias's weight, and no fallback chain"
+        );
+        named.family = Some("Helvetica");
+        assert!(files(&config, &named).is_empty());
     }
 
     #[test]

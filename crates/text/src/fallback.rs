@@ -58,7 +58,9 @@ use crate::font_request::{FontRole, FontSlant, FontWeight, FontWidth};
 use crate::inspect::{
     self, FaceDecline, FaceOutcome, FallbackSource, FallbackTrace, MissLedger, TraceLog,
 };
+use crate::resolver::FaceData;
 use crate::system_fonts::{SystemFontProvider, SystemFontQuery};
+use crate::variation::Variations;
 
 /// The style attributes that, together with the base face and locale, identify a
 /// fallback plan. Two runs that differ in any of these may resolve to different
@@ -134,6 +136,8 @@ struct Candidate {
     /// `hvgl`); a synthesized sfnt may carry only platform-specific name records
     /// that a generic `name`-table reader cannot decode.
     postscript_name: Option<String>,
+    /// The instance of a variable face it draws at.
+    variations: Variations,
 }
 
 /// The run/cluster fallback planner with its per-shape candidate cache.
@@ -151,9 +155,9 @@ pub struct FontFallback {
     faces: HashMap<FontFaceId, Candidate>,
     /// The id the next interned face receives, counted from `id_base`.
     next_index: u32,
-    /// System faces already interned, keyed by their bytes' identity, so the
-    /// same resolved face dedups to one id across runs.
-    interned: HashMap<(u64, u32), FontFaceId>,
+    /// System faces already interned, keyed by their bytes' identity and
+    /// instance, so the same resolved face dedups to one id across runs.
+    interned: HashMap<(u64, u32, Variations), FontFaceId>,
     /// Base id space offset: fallback face ids start above the resolver's app /
     /// system faces so the two id spaces never collide.
     id_base: u32,
@@ -243,6 +247,7 @@ impl FontFallback {
         // No remembered candidate covered the run: ask the platform once.
         self.fallback_plan_miss += 1;
         let query = SystemFontQuery {
+            family: None,
             role: QUERY_ROLE,
             weight: key.style.weight,
             width: key.style.width,
@@ -263,7 +268,21 @@ impl FontFallback {
             return FallbackPlan::Unresolved;
         };
 
-        let face = self.intern(result.bytes, result.index, result.postscript_name);
+        let variations = result.variations.unwrap_or_else(|| {
+            Variations::for_style(
+                &result.bytes,
+                result.index,
+                key.style.weight,
+                key.style.width,
+                key.style.slant,
+            )
+        });
+        let face = self.intern(
+            result.bytes,
+            result.index,
+            result.postscript_name,
+            variations,
+        );
         let mapped = self.mapped_len(face, run);
         if let Some(trace) = &mut trace {
             trace.step(FallbackSource::Platform, Some(face), outcome(mapped));
@@ -324,8 +343,17 @@ impl FontFallback {
 
     /// A shared handle to a resolved fallback face's bytes and index, for
     /// handing the face to another thread without copying it.
-    pub fn face_data(&self, face: FontFaceId) -> Option<(Arc<[u8]>, u32)> {
-        self.faces.get(&face).map(|c| (c.bytes.clone(), c.index))
+    pub fn face_data(&self, face: FontFaceId) -> Option<FaceData> {
+        self.faces.get(&face).map(|c| FaceData {
+            bytes: c.bytes.clone(),
+            index: c.index,
+            variations: c.variations,
+        })
+    }
+
+    /// The instance a resolved fallback face draws at.
+    pub fn face_variations(&self, face: FontFaceId) -> Option<Variations> {
+        self.faces.get(&face).map(|c| c.variations)
     }
 
     /// The platform-reported PostScript name of a resolved fallback face, if the
@@ -358,8 +386,9 @@ impl FontFallback {
         bytes: Vec<u8>,
         index: u32,
         postscript_name: Option<String>,
+        variations: Variations,
     ) -> FontFaceId {
-        let ident = (fnv1a(&bytes), index);
+        let ident = (fnv1a(&bytes), index, variations);
         if let Some(&id) = self.interned.get(&ident) {
             return id;
         }
@@ -371,6 +400,7 @@ impl FontFallback {
                 bytes: bytes.into(),
                 index,
                 postscript_name,
+                variations,
             },
         );
         self.interned.insert(ident, id);
@@ -410,7 +440,7 @@ impl FontFallback {
         let hash = fnv1a(bytes);
         self.interned
             .iter()
-            .filter(|((h, _), _)| *h == hash)
+            .filter(|((h, ..), _)| *h == hash)
             .map(|(_, &face)| face)
             .collect()
     }
@@ -509,6 +539,7 @@ mod tests {
                 bytes: DEJAVU.to_vec(),
                 index: 0,
                 postscript_name: None,
+                variations: None,
             })
         }
     }
@@ -559,6 +590,7 @@ mod tests {
                 bytes,
                 index: 0,
                 postscript_name: None,
+                variations: None,
             })
         }
     }
@@ -964,7 +996,7 @@ mod tests {
         let provider = CountingProvider::new(true);
         let mut fb = FontFallback::new(1000);
         let k = key(7, Script::Latin, "en");
-        let stale = fb.intern(b"not a face".to_vec(), 0, None);
+        let stale = fb.intern(b"not a face".to_vec(), 0, None, Variations::DEFAULT);
         fb.plans.insert(k.clone(), stale);
 
         let FallbackPlan::Mapped { face, mapped_len } = fb.plan_run(&k, "AV", &provider) else {
@@ -1071,7 +1103,7 @@ mod tests {
     #[test]
     fn a_retired_face_is_handed_out_no_more_until_it_is_forgotten() {
         let mut fallback = FontFallback::new(1 << 30);
-        let face = fallback.intern(vec![9, 8, 7], 0, None);
+        let face = fallback.intern(vec![9, 8, 7], 0, None, Variations::DEFAULT);
         assert_eq!(fallback.faces_of(&[9, 8, 7]), [face]);
         fallback.retire(face);
         assert!(fallback.faces_of(&[9, 8, 7]).is_empty());
@@ -1079,7 +1111,7 @@ mod tests {
             fallback.face_bytes(face).is_some(),
             "drawn layouts still read it"
         );
-        let again = fallback.intern(vec![9, 8, 7], 0, None);
+        let again = fallback.intern(vec![9, 8, 7], 0, None, Variations::DEFAULT);
         assert_ne!(again, face, "the same bytes resolve afresh");
         fallback.forget(face);
         assert!(fallback.face_bytes(face).is_none());

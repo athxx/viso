@@ -1430,7 +1430,12 @@ impl TextShaper {
         let Some(data) = data else {
             return false;
         };
-        let baked = self.packaged.baked_face(&data.0, data.1);
+        // A build bakes a face's default instance alone.
+        let baked = data
+            .variations
+            .is_default()
+            .then(|| self.packaged.baked_face(&data.bytes, data.index))
+            .flatten();
         self.worker_faces.insert(face);
         self.outbox.push(ToWorker::Face { face, data, baked });
         true
@@ -1756,6 +1761,7 @@ impl TextShaper {
                     .resolve(&request, &self.manifest, &self.provider, "")
                 && self.face_loaded(face, &request)
             {
+                let face = self.instance(face, &request);
                 self.primary = Some(face);
                 self.register_color_face(face);
                 let cost = self
@@ -1796,6 +1802,7 @@ impl TextShaper {
             .resolve(&request, &self.manifest, &self.provider, "")
         {
             Resolved::Face(face) if self.face_loaded(face, &request) => {
+                let face = self.instance(face, &request);
                 self.register_color_face(face);
                 let cost = self
                     .resolver
@@ -1808,6 +1815,12 @@ impl TextShaper {
         };
         self.styled.insert(key, face);
         Some(face)
+    }
+
+    /// The instance of `face`, resolved for `request`, its style draws with.
+    fn instance(&mut self, face: FontFaceId, request: &FontRequest) -> FontFaceId {
+        self.resolver
+            .instance(face, request.weight, request.width, request.slant)
     }
 
     /// Whether `face` has its bytes, reading a packaged face's asset on its
@@ -2368,6 +2381,7 @@ mod tests {
                 bytes,
                 index: 0,
                 postscript_name: None,
+                variations: None,
             })
         }
     }
@@ -2565,7 +2579,11 @@ mod tests {
         let mut worker = WorkerState::new(4 * 1024);
         let app = FontFaceId(1);
         let other = FontFaceId(2);
-        let data: FaceData = (Arc::from(TEST_FONT), 0);
+        let data = FaceData {
+            bytes: Arc::from(TEST_FONT),
+            index: 0,
+            variations: viso_text::Variations::DEFAULT,
+        };
         worker.add_face(app, data.clone());
         worker.add_face(other, data);
         worker.shape_text(app, PAIR);
@@ -2608,7 +2626,11 @@ mod tests {
         let mut worker = WorkerState::new(4 * 1024);
         let app = FontFaceId(1);
         let other = FontFaceId(2);
-        let data: FaceData = (Arc::from(TEST_FONT), 0);
+        let data = FaceData {
+            bytes: Arc::from(TEST_FONT),
+            index: 0,
+            variations: viso_text::Variations::DEFAULT,
+        };
         worker.add_face(app, data.clone());
         worker.add_face(other, data);
         worker.shape_text(app, PAIR);
@@ -2636,7 +2658,14 @@ mod tests {
 
         worker.shape_text(other, "keep");
         worker.drop_face(other);
-        worker.add_face(other, (Arc::from(TEST_FONT), 0));
+        worker.add_face(
+            other,
+            FaceData {
+                bytes: Arc::from(TEST_FONT),
+                index: 0,
+                variations: viso_text::Variations::DEFAULT,
+            },
+        );
         worker.shape_text(other, "keep");
         let miss = worker.span_ledger().misses().last().expect("a miss");
         assert_eq!(
@@ -2934,7 +2963,15 @@ mod tests {
         let baked = BakedFace::parse(baked_test_font(30, b)).unwrap();
         let mut worker = WorkerState::new(4 * 1024);
         let face = FontFaceId(1);
-        worker.add_baked_face(face, (Arc::from(TEST_FONT), 0), baked);
+        worker.add_baked_face(
+            face,
+            FaceData {
+                bytes: Arc::from(TEST_FONT),
+                index: 0,
+                variations: viso_text::Variations::DEFAULT,
+            },
+            baked,
+        );
         let key = |bucket| GlyphKey {
             face,
             glyph: b,

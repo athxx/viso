@@ -28,6 +28,7 @@ use crate::FontFaceId;
 use crate::font_manifest::{AssetRef, FontManifest};
 use crate::font_request::{FontRequest, FontRole, FontSlant, FontTarget, FontWeight, FontWidth};
 use crate::system_fonts::{SystemFontProvider, SystemFontQuery};
+use crate::variation::Variations;
 
 /// The interning key that gives a face its stable identity.
 ///
@@ -39,8 +40,10 @@ use crate::system_fonts::{SystemFontProvider, SystemFontQuery};
 enum FaceKey {
     /// An application-shipped face, identified by its packaged asset and index.
     App { asset: AssetRef, face_index: u32 },
-    /// A platform system face resolved for a role at given attributes.
+    /// A platform system face resolved for a role, or a family by name, at
+    /// given attributes.
     System {
+        family: Option<String>,
         role: FontRole,
         weight: FontWeight,
         width: FontWidth,
@@ -62,6 +65,19 @@ struct FaceEntry {
     bytes: Option<Arc<[u8]>>,
     /// Face index within `bytes` for a collection; 0 for a single face.
     index: u32,
+    /// The instance of a variable face it draws at.
+    variations: Variations,
+    /// An application face, whose instances [`FontResolver::instance`] makes.
+    app: bool,
+}
+
+/// A registered face's bytes, collection index and instance: everything a
+/// reader on another thread needs to shape and draw it.
+#[derive(Debug, Clone)]
+pub struct FaceData {
+    pub bytes: Arc<[u8]>,
+    pub index: u32,
+    pub variations: Variations,
 }
 
 /// The key a resolution outcome is cached under.
@@ -112,7 +128,13 @@ pub struct FaceMetrics {
 /// Consumers use this on font admission and fallback resolution, never on the
 /// steady frame path.
 pub fn inspect_face(sfnt: &[u8], index: u32) -> Option<FaceMetrics> {
-    let face = ttf_parser::Face::parse(sfnt, index).ok()?;
+    inspect_instance(sfnt, index, &Variations::DEFAULT)
+}
+
+/// [`inspect_face`] of a variable face's instance.
+pub fn inspect_instance(sfnt: &[u8], index: u32, variations: &Variations) -> Option<FaceMetrics> {
+    let mut face = ttf_parser::Face::parse(sfnt, index).ok()?;
+    variations.apply(&mut face);
     let upem = face.units_per_em() as f32;
     let ascender = face.ascender() as f32;
     let descender = face.descender() as f32;
@@ -154,6 +176,9 @@ pub struct FontResolver {
     /// Monotonic system-font revision; bumping it invalidates cached system
     /// resolutions (for example after a system font set change).
     system_revision: u32,
+    /// The instance of an application face each style resolved to: the face
+    /// itself where the style is its default instance.
+    instances: HashMap<(FontFaceId, FontWeight, FontWidth, FontSlant), FontFaceId>,
 }
 
 impl FontResolver {
@@ -168,7 +193,13 @@ impl FontResolver {
     /// The slot starts with `bytes` (owned bytes for a system face, `None` for
     /// an app face whose bytes load lazily). A repeated key returns the
     /// existing id and does not disturb its slot.
-    fn intern(&mut self, key: FaceKey, bytes: Option<Arc<[u8]>>, index: u32) -> FontFaceId {
+    fn intern(
+        &mut self,
+        key: FaceKey,
+        bytes: Option<Arc<[u8]>>,
+        index: u32,
+        variations: Variations,
+    ) -> FontFaceId {
         if let Some(&id) = self.interned.get(&key) {
             // Fill lazily-loaded bytes into an existing empty slot.
             if let Some(bytes) = bytes {
@@ -180,7 +211,12 @@ impl FontResolver {
             return id;
         }
         let id = FontFaceId(self.faces.len() as u32);
-        self.faces.push(FaceEntry { bytes, index });
+        self.faces.push(FaceEntry {
+            bytes,
+            index,
+            variations,
+            app: matches!(key, FaceKey::App { .. }),
+        });
         self.interned.insert(key, id);
         id
     }
@@ -196,7 +232,52 @@ impl FontResolver {
         face_index: u32,
         sfnt: Arc<[u8]>,
     ) -> FontFaceId {
-        self.intern(FaceKey::App { asset, face_index }, Some(sfnt), face_index)
+        self.intern(
+            FaceKey::App { asset, face_index },
+            Some(sfnt),
+            face_index,
+            Variations::DEFAULT,
+        )
+    }
+
+    /// The instance of application face `face` a request of `weight`, `width`
+    /// and `slant` draws with: `face` itself unless it is variable and the
+    /// style is not its default instance, else a face of its own sharing
+    /// `face`'s bytes. Resolved once per face and style; `face` as it is
+    /// before its bytes are loaded, or when it is not an application face.
+    pub fn instance(
+        &mut self,
+        face: FontFaceId,
+        weight: FontWeight,
+        width: FontWidth,
+        slant: FontSlant,
+    ) -> FontFaceId {
+        let key = (face, weight, width, slant);
+        if let Some(&instance) = self.instances.get(&key) {
+            return instance;
+        }
+        let Some(entry) = self.faces.get(face.0 as usize).filter(|f| f.app) else {
+            return face;
+        };
+        let Some(bytes) = entry.bytes.clone() else {
+            return face;
+        };
+        let index = entry.index;
+        let variations = Variations::for_style(&bytes, index, weight, width, slant);
+        let instance = if variations.is_default() {
+            face
+        } else {
+            let id = FontFaceId(self.faces.len() as u32);
+            self.faces.push(FaceEntry {
+                bytes: Some(bytes),
+                index,
+                variations,
+                app: false,
+            });
+            id
+        };
+        self.instances.insert(key, instance);
+        instance
     }
 
     /// The owned sfnt bytes and face index for a registered id, if its bytes
@@ -213,10 +294,22 @@ impl FontResolver {
 
     /// A shared handle to a registered face's bytes and index, for handing the
     /// face to another thread without copying it.
-    pub fn face_data(&self, id: FontFaceId) -> Option<(Arc<[u8]>, u32)> {
+    pub fn face_data(&self, id: FontFaceId) -> Option<FaceData> {
+        self.faces.get(id.0 as usize).and_then(|f| {
+            Some(FaceData {
+                bytes: f.bytes.clone()?,
+                index: f.index,
+                variations: f.variations,
+            })
+        })
+    }
+
+    /// The instance a registered face draws at; the default for an unknown
+    /// id.
+    pub fn face_variations(&self, id: FontFaceId) -> Variations {
         self.faces
             .get(id.0 as usize)
-            .and_then(|f| f.bytes.clone().map(|b| (b, f.index)))
+            .map_or(Variations::DEFAULT, |f| f.variations)
     }
 
     /// Parse and return the placement/identity metrics for a registered face.
@@ -227,7 +320,7 @@ impl FontResolver {
     /// asset is not yet loaded, or bytes that do not parse.
     pub fn face_metrics(&self, id: FontFaceId) -> Option<FaceMetrics> {
         let (bytes, index) = self.face_bytes(id)?;
-        inspect_face(bytes, index)
+        inspect_instance(bytes, index, &self.face_variations(id))
     }
 
     /// Rebind the faces of the application asset `asset`, whose bytes were
@@ -243,6 +336,15 @@ impl FontResolver {
                 false
             }
             _ => true,
+        });
+        self.instances.retain(|(base, ..), instance| {
+            if !retired.contains(base) {
+                return true;
+            }
+            if instance != base {
+                retired.push(*instance);
+            }
+            false
         });
         self.resolve_cache
             .retain(|_, outcome| !matches!(outcome, Resolved::Face(id) if retired.contains(id)));
@@ -317,32 +419,55 @@ impl FontResolver {
                 },
                 None,
                 entry.face_index,
+                Variations::DEFAULT,
             );
             return Resolved::Face(id);
         }
 
-        // System-second: ask the platform for a face for the role.
-        let query = SystemFontQuery {
-            role,
-            weight: request.weight,
-            width: request.width,
-            slant: request.slant,
-            lang: lang.to_owned(),
-            sample: String::new(),
+        // System-second: a named family the platform has, then the role.
+        let named = match &request.target {
+            FontTarget::Family(name) => Some(name.clone()),
+            FontTarget::Role(_) => None,
         };
-        if let Some(result) = provider.resolve_system_face(&query) {
-            let id = self.intern(
-                FaceKey::System {
-                    role,
-                    weight: request.weight,
-                    width: request.width,
-                    slant: request.slant,
-                    lang: lang.to_owned(),
-                },
-                Some(result.bytes.into()),
-                result.index,
-            );
-            return Resolved::Face(id);
+        for family in [named, None] {
+            let named = family.is_some();
+            let query = SystemFontQuery {
+                family,
+                role,
+                weight: request.weight,
+                width: request.width,
+                slant: request.slant,
+                lang: lang.to_owned(),
+                sample: String::new(),
+            };
+            if let Some(result) = provider.resolve_system_face(&query) {
+                let variations = result.variations.unwrap_or_else(|| {
+                    Variations::for_style(
+                        &result.bytes,
+                        result.index,
+                        request.weight,
+                        request.width,
+                        request.slant,
+                    )
+                });
+                let id = self.intern(
+                    FaceKey::System {
+                        family: query.family,
+                        role,
+                        weight: request.weight,
+                        width: request.width,
+                        slant: request.slant,
+                        lang: lang.to_owned(),
+                    },
+                    Some(result.bytes.into()),
+                    result.index,
+                    variations,
+                );
+                return Resolved::Face(id);
+            }
+            if !named {
+                break;
+            }
         }
 
         Resolved::Missing
@@ -380,6 +505,7 @@ mod tests {
                 bytes: vec![0u8; 4],
                 index: 0,
                 postscript_name: None,
+                variations: None,
             })
         }
     }
@@ -457,8 +583,85 @@ mod tests {
             Resolved::Missing
         );
 
-        // The unsatisfiable family was queried against the OS exactly once.
-        assert_eq!(provider.calls.get(), 1);
+        // The unsatisfiable family was asked of the OS once by name and once
+        // for the role it falls back to, and never again.
+        assert_eq!(provider.calls.get(), 2);
+    }
+
+    /// A provider that has one family by name, recording what it was asked.
+    struct NamedProvider {
+        asked: std::cell::RefCell<Vec<Option<String>>>,
+    }
+
+    impl SystemFontProvider for NamedProvider {
+        fn resolve_system_face(&self, query: &SystemFontQuery) -> Option<SystemFontResult> {
+            self.asked.borrow_mut().push(query.family.clone());
+            (query.family.as_deref() == Some("Helvetica")).then(|| SystemFontResult {
+                bytes: vec![1u8; 4],
+                index: 0,
+                postscript_name: None,
+                variations: Some(Variations::from_axes([(*b"wght", 700.0)])),
+            })
+        }
+    }
+
+    #[test]
+    fn a_named_family_the_app_does_not_ship_is_asked_of_the_platform_by_name() {
+        let provider = NamedProvider {
+            asked: Default::default(),
+        };
+        let mut resolver = FontResolver::new();
+        let manifest = FontManifest::default();
+        let Resolved::Face(face) =
+            resolver.resolve(&FontRequest::family("Helvetica"), &manifest, &provider, "")
+        else {
+            panic!("the platform has it");
+        };
+        assert_eq!(*provider.asked.borrow(), [Some("Helvetica".to_owned())]);
+        assert_eq!(
+            resolver.face_variations(face),
+            Variations::from_axes([(*b"wght", 700.0)]),
+            "the instance the platform picked"
+        );
+        assert_eq!(
+            resolver.resolve(&FontRequest::family("Nope"), &manifest, &provider, ""),
+            Resolved::Missing
+        );
+        assert_eq!(
+            provider.asked.borrow()[1..],
+            [Some("Nope".to_owned()), None],
+            "an unknown name falls back to the role"
+        );
+    }
+
+    #[test]
+    fn a_variable_app_face_draws_each_style_with_an_instance_of_its_own() {
+        const ROBOTO_VF: &[u8] = include_bytes!("../tests/fixtures/RobotoVF-subset.ttf");
+        let mut resolver = FontResolver::new();
+        let face = resolver.register_app_face(AssetRef(3), 0, Arc::from(ROBOTO_VF));
+        let regular = resolver.instance(
+            face,
+            FontWeight::REGULAR,
+            FontWidth::NORMAL,
+            FontSlant::Normal,
+        );
+        assert_eq!(regular, face, "the default instance is the face");
+        let bold = resolver.instance(face, FontWeight::BOLD, FontWidth::NORMAL, FontSlant::Normal);
+        assert_ne!(bold, face);
+        assert_eq!(
+            resolver.instance(face, FontWeight::BOLD, FontWidth::NORMAL, FontSlant::Normal),
+            bold,
+            "resolved once"
+        );
+        let data = resolver.face_data(bold).expect("shares the bytes");
+        assert_eq!(data.variations.as_slice(), [(*b"wght", 700.0)]);
+        assert!(Arc::ptr_eq(
+            &data.bytes,
+            &resolver.face_data(face).unwrap().bytes
+        ));
+
+        let retired = resolver.rebind_asset(AssetRef(3));
+        assert!(retired.contains(&face) && retired.contains(&bold));
     }
 
     #[test]

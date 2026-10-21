@@ -44,7 +44,14 @@ const DEJAVU: &[u8] = include_bytes!("../tests/fixtures/DejaVuSans-subset.ttf");
 /// tests and `high_refresh.rs` drive).
 fn shape_run(sub: &str, dir: Direction) -> ShapedRun {
     Shaper::new()
-        .shape_run(FontFaceId(0), DEJAVU, 0, sub, dir)
+        .shape_run(
+            FontFaceId(0),
+            DEJAVU,
+            0,
+            &viso_text::Variations::DEFAULT,
+            sub,
+            dir,
+        )
         .expect("fixture parses")
 }
 

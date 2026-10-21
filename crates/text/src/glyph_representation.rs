@@ -621,6 +621,7 @@ mod tests {
                     let request = MtsdfRequest {
                         sfnt: DEJAVU,
                         index: 0,
+                        variations: crate::Variations::DEFAULT,
                         face: FACE,
                         glyph: self.glyph,
                         revision: REVISION,

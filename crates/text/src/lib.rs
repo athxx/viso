@@ -55,6 +55,7 @@ pub mod progressive;
 pub mod resolver;
 pub mod system_catalog;
 pub mod system_fonts;
+pub mod variation;
 
 // Shaping and world-ready paragraph correctness.
 pub mod bidi;
@@ -107,8 +108,8 @@ pub use mtsdf::{
 pub use outline_cache::{OUTLINE_POOL, OutlineCache, OutlineGlyph, OutlineRequest};
 pub use packaged::{PackagedFace, PackagedFirst, PackagedFonts, PackagedSource, ReplacedFiles};
 pub use progressive::{FontRevision, ParagraphId, Progressive, ReflowScope, RevisionEffect, RunId};
-pub use raster_a8::{BakedFace, CoverageBitmap, rasterize_coverage};
-pub use resolver::{FaceMetrics, FontResolver, Resolved, inspect_face};
+pub use raster_a8::{BakedFace, CoverageBitmap, rasterize_coverage, rasterize_coverage_at};
+pub use resolver::{FaceData, FaceMetrics, FontResolver, Resolved, inspect_face, inspect_instance};
 pub use segment::{GraphemeCheckpoint, Segmenter};
 pub use shaping::{Direction, LigatureCarets, ShapedGlyph, ShapedRun, Shaper};
 pub use system_catalog::{CatalogFace, SystemFontCatalog};
@@ -117,6 +118,7 @@ pub use system_fonts::{
     SystemFontResult,
 };
 pub use text_position::{CaretAffinity, TextOffset, TextPosition, Utf16Bridge};
+pub use variation::Variations;
 
 /// Stable identity for a resolved font face.
 ///

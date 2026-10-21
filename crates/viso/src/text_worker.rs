@@ -27,7 +27,7 @@ use viso_text::fallback::{FallbackPlanKey, FallbackStyle, FontFallback};
 use viso_text::inspect::{self, BudgetState, CacheKey, MissLedger};
 use viso_text::paragraph::{LineLayout, Paragraph, ShapedSegment, ShapedSpan};
 #[cfg(feature = "rasterizer")]
-use viso_text::rasterize_coverage;
+use viso_text::rasterize_coverage_at;
 use viso_text::text_work::{JobKind, Priority, TextJob, TextWork};
 use viso_text::{
     BakedFace, BaseDirection, Coverage, CoverageBitmap, Direction, FontFaceId, GlyphImageKind,
@@ -40,8 +40,9 @@ use viso_text::{
 /// keep them.
 const SPAN_CACHE_TEXT: usize = 64;
 
-/// A face's bytes and collection index, shared with the main thread's owner.
-pub(crate) type FaceData = (Arc<[u8]>, u32);
+/// A face's bytes, collection index and instance, shared with the main
+/// thread's owner.
+pub(crate) use viso_text::FaceData;
 
 /// One grapheme under one base face and locale: the unit a fallback choice is
 /// remembered for.
@@ -673,8 +674,14 @@ impl WorkerState {
 
     #[cfg(feature = "rasterizer")]
     fn unbaked(&mut self, key: GlyphKey) -> Option<CoverageBitmap> {
-        let (bytes, index) = self.faces.get(&key.face)?;
-        rasterize_coverage(bytes, *index, key.glyph, f32::from(key.bucket))
+        let face = self.faces.get(&key.face)?;
+        rasterize_coverage_at(
+            &face.bytes,
+            face.index,
+            face.variations.as_slice(),
+            key.glyph,
+            f32::from(key.bucket),
+        )
     }
 
     /// With no rasterizer linked, a size the face did not bake draws scaled
@@ -831,10 +838,11 @@ impl WorkerState {
     }
 
     fn face_covers(&mut self, face: FontFaceId, text: &str) -> bool {
-        let Some((bytes, index)) = self.faces.get(&face) else {
+        let Some(data) = self.faces.get(&face) else {
             return false;
         };
-        self.coverage.face_covers(face, bytes, *index, text)
+        self.coverage
+            .face_covers(face, &data.bytes, data.index, text)
     }
 
     fn shape_face(
@@ -843,8 +851,15 @@ impl WorkerState {
         text: &str,
         direction: Direction,
     ) -> Option<ShapedRun> {
-        let (bytes, index) = self.faces.get(&face)?;
-        self.shaper.shape_run(face, bytes, *index, text, direction)
+        let data = self.faces.get(&face)?;
+        self.shaper.shape_run(
+            face,
+            &data.bytes,
+            data.index,
+            &data.variations,
+            text,
+            direction,
+        )
     }
 
     #[cfg(test)]

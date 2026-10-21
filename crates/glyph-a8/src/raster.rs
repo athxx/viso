@@ -90,7 +90,23 @@ pub fn rasterize_coverage(
     glyph: u16,
     px_per_em: f32,
 ) -> Option<CoverageBitmap> {
-    let face = Face::parse(sfnt, index).ok()?;
+    rasterize_coverage_at(sfnt, index, &[], glyph, px_per_em)
+}
+
+/// [`rasterize_coverage`] of a variable face's instance: each `(axis tag,
+/// value)` of `variations` set before the outline is read, the default
+/// instance when it is empty.
+pub fn rasterize_coverage_at(
+    sfnt: &[u8],
+    index: u32,
+    variations: &[([u8; 4], f32)],
+    glyph: u16,
+    px_per_em: f32,
+) -> Option<CoverageBitmap> {
+    let mut face = Face::parse(sfnt, index).ok()?;
+    for &(tag, value) in variations {
+        face.set_variation(ttf_parser::Tag::from_bytes(&tag), value);
+    }
 
     // CFF2 is a *variable* outline format: its charstrings carry only the default
     // master, and the true glyph shape is that master plus per-axis `blend`

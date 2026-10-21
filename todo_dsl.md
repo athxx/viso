@@ -385,8 +385,8 @@ Goal: every Core view construct reaches a live tree through all three lowering t
   - [x] `font_family` defaults to `theme.typography.family`: an unset family
         draws with the store's theme family, and a theme switch reshapes only the
         text that names none; the root font size is `typography.base_size`.
-  - [ ] `FontFamily::named` reaches only the app's fonts, not the platform's by
-        name.
+  - [x] `FontFamily::named` reaches the app's fonts, then the platform's by name
+        (`todo_text.md`).
 - [x] `TextInput` `placeholder` and `secure`, `CheckBox`/`Toggle` `label`: a field
       holding no text draws its placeholder at half its text color's opacity (its
       hint where it has none); a secure one draws a bullet per grapheme, maps the

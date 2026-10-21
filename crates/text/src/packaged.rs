@@ -294,6 +294,7 @@ impl SystemFontProvider for PackagedFirst<'_> {
                 bytes: self.replaced.bytes_of(face).to_vec(),
                 index: face.face_index,
                 postscript_name: None,
+                variations: None,
             }),
             None => self.system.resolve_system_face(query),
         }
@@ -344,6 +345,7 @@ mod tests {
 
     fn query(sample: &str, weight: u16) -> SystemFontQuery {
         SystemFontQuery {
+            family: None,
             role: FontRole::Ui,
             weight: FontWeight(weight),
             width: FontWidth::NORMAL,
@@ -413,6 +415,7 @@ mod tests {
                     bytes: vec![7],
                     index: 0,
                     postscript_name: None,
+                    variations: None,
                 })
             }
         }
