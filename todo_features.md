@@ -21,19 +21,20 @@ Rules:
 
 ## W1 — 3D scene lane and `GameViewport` (ADR 0047)
 
-- [ ] S1 RHI:
+- [x] S1 RHI:
   - [x] `DepthState` / `CompareFunction` / `CullMode` on `PipelineDesc`;
   - [x] `DepthAttachment` (transient) on `RenderPass`;
   - [x] `Geometry::InstancedMesh`, the uniforms a bind-group uniform buffer;
   - [x] on Metal, Vulkan, D3D12, WebGPU, GLES 3 and CpuRaster (a per-target f32 depth
     buffer and a perspective-correct triangle rasterizer);
-  - [ ] test: overlapping triangles resolve by depth on every backend that runs here.
-- [ ] S2 Scene shader built-in (`BuiltinShader::Scene`, `VertexSource::PerVertexInstanced`):
-  - [ ] vertices `pos/normal/uv` and instances `model[3]/color` read by index;
-  - [ ] a camera/light uniform block;
-  - [ ] Lambert + Blinn-Phong + hemispheric ambient, linear color;
-  - [ ] MSL/WGSL/HLSL/GLSL codegen, frozen SPIR-V;
-  - [ ] the CPU fill.
+  - [x] test: overlapping instances resolve by depth (CpuRaster), and one scene draws the
+    same on CpuRaster, Metal MSL and Metal through the naga-translated web WGSL.
+- [x] S2 Scene shader built-in (`BuiltinShader::Scene`, `VertexSource::PerVertexInstanced`):
+  - [x] vertices `pos/normal/uv` and instances `model[3]/color` read by index;
+  - [x] a camera/light uniform block (a uniform buffer, read by both stages);
+  - [x] Lambert + Blinn-Phong + hemispheric ambient + fog, linear color;
+  - [x] MSL/WGSL/HLSL/GLSL codegen, frozen SPIR-V, `cross` in the body subset;
+  - [x] the CPU fill.
 - [ ] S3 Render:
   - [ ] `Scene` resource (camera, light, clear, instance batches), `SceneMeshStore`
     with procedural primitives (cube, sphere, capsule, cylinder, cone, wedge, plane)

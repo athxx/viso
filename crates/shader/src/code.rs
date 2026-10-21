@@ -21,7 +21,7 @@ use crate::ir::codegen_wgsl::{WgslTarget, emit_wgsl};
 use crate::ir::module::{
     ShaderIr, advanced_blend_ir, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir,
     analytic_rrect_ir, analytic_shadow_ir, blur_ir, color_transform_ir, glyphrun_ir, gradient_ir,
-    image_ir, material_ir, mesh_ir, mtsdf_ir, quad_ir,
+    image_ir, material_ir, mesh_ir, mtsdf_ir, quad_ir, scene_ir,
 };
 use crate::msl::{PrimitiveKind, shader_source};
 
@@ -63,6 +63,7 @@ programs! {
     "analytic_capsule" => analytic_capsule_ir,
     "analytic_line" => analytic_line_ir,
     "gradient" => gradient_ir,
+    "scene" => scene_ir,
 }
 
 /// The index into [`PROGRAMS`] of `kind`'s program, if it is shaded.
@@ -84,15 +85,16 @@ fn program_index(kind: PrimitiveKind) -> Option<usize> {
         PrimitiveKind::AnalyticCapsule => 12,
         PrimitiveKind::AnalyticLine => 13,
         PrimitiveKind::Gradient => 14,
+        PrimitiveKind::Scene => 15,
         PrimitiveKind::Layer => return None,
     })
 }
 
 /// `kind`'s program in `lang`, or `None` if `kind` has no shader.
 pub fn shader_code(kind: PrimitiveKind, lang: ShaderLang) -> Option<ShaderCode> {
-    static WGSL: [OnceLock<String>; 15] = [const { OnceLock::new() }; 15];
-    static HLSL: [OnceLock<String>; 15] = [const { OnceLock::new() }; 15];
-    static GLSL: [OnceLock<String>; 15] = [const { OnceLock::new() }; 15];
+    static WGSL: [OnceLock<String>; 16] = [const { OnceLock::new() }; 16];
+    static HLSL: [OnceLock<String>; 16] = [const { OnceLock::new() }; 16];
+    static GLSL: [OnceLock<String>; 16] = [const { OnceLock::new() }; 16];
 
     let i = program_index(kind)?;
     let program = &PROGRAMS[i];

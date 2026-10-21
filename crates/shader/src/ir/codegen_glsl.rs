@@ -27,9 +27,9 @@
 
 use std::fmt::Write as _;
 
-use crate::ir::body::print::{ATTRS_PARAM, Lang, Printer};
+use crate::ir::body::print::{ATTRS_PARAM, INSTANCE_PARAM, Lang, Printer};
 use crate::ir::body::{BodyError, parse_ir};
-use crate::ir::module::ShaderIr;
+use crate::ir::module::{ShaderIr, VertexSource};
 use crate::ir::types::{IrType, ScalarType};
 
 /// The macro the vertex stage's prelude defines.
@@ -92,6 +92,14 @@ pub fn emit_glsl(ir: &ShaderIr) -> Result<String, BodyError> {
         let _ = writeln!(out, "    {} {};", glsl_type(f.ty), names.ident(f.name));
     }
     out.push_str("};\n\n");
+    let instanced = ir.vertex_source == VertexSource::PerVertexInstanced;
+    if instanced {
+        out.push_str("struct InstanceIn {\n");
+        for f in ir.instance_attributes {
+            let _ = writeln!(out, "    {} {};", glsl_type(f.ty), names.ident(f.name));
+        }
+        out.push_str("};\n\n");
+    }
 
     out.push_str("struct Uniforms {\n");
     for f in ir.uniforms {
@@ -139,7 +147,16 @@ pub fn emit_glsl(ir: &ShaderIr) -> Result<String, BodyError> {
     };
 
     let _ = writeln!(out, "#ifdef {VERTEX_DEFINE}\n");
-    for (i, f) in ir.attributes.iter().enumerate() {
+    let inputs: Vec<_> = ir
+        .attributes
+        .iter()
+        .chain(if instanced {
+            ir.instance_attributes
+        } else {
+            &[]
+        })
+        .collect();
+    for (i, f) in inputs.iter().enumerate() {
         let _ = writeln!(
             out,
             "layout(location = {i}) in {} viso_a{i};",
@@ -149,11 +166,18 @@ pub fn emit_glsl(ir: &ShaderIr) -> Result<String, BodyError> {
     for (name, v) in &varyings {
         let _ = writeln!(out, "{}out {} {name};", qualifier(v), glsl_type(v.ty));
     }
+    let instance = if instanced {
+        format!(", InstanceIn {INSTANCE_PARAM}")
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         out,
-        "\nVOut vertex_main(uint vid, uint iid, {attrs} {ATTRS_PARAM}) {{"
+        "\nVOut vertex_main(uint vid, uint iid, {attrs} {ATTRS_PARAM}{instance}) {{"
     );
-    let mut p = Printer::new(Lang::Glsl).with_depth(1);
+    let mut p = Printer::new(Lang::Glsl)
+        .with_source(ir.vertex_source)
+        .with_depth(1);
     p.entry_body(&parsed.vertex);
     out.push_str(&p.finish());
     out.push_str("}\n\nvoid main() {\n");
@@ -161,7 +185,20 @@ pub fn emit_glsl(ir: &ShaderIr) -> Result<String, BodyError> {
     for (i, f) in ir.attributes.iter().enumerate() {
         let _ = writeln!(out, "    a.{} = viso_a{i};", names.ident(f.name));
     }
-    out.push_str("    VOut o = vertex_main(uint(gl_VertexID), uint(gl_InstanceID), a);\n");
+    if instanced {
+        out.push_str("    InstanceIn b;\n");
+        for (i, f) in ir.instance_attributes.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "    b.{} = viso_a{};",
+                names.ident(f.name),
+                ir.attributes.len() + i
+            );
+        }
+        out.push_str("    VOut o = vertex_main(uint(gl_VertexID), uint(gl_InstanceID), a, b);\n");
+    } else {
+        out.push_str("    VOut o = vertex_main(uint(gl_VertexID), uint(gl_InstanceID), a);\n");
+    }
     if let Some(position) = &position {
         let _ = writeln!(out, "    gl_Position = viso_place(o.{position});");
     }

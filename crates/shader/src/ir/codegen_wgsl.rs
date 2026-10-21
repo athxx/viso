@@ -25,9 +25,9 @@
 
 use std::fmt::Write as _;
 
-use crate::ir::body::print::{ATTRS_PARAM, Lang, Printer};
+use crate::ir::body::print::{ATTRS_PARAM, INSTANCE_PARAM, Lang, Printer};
 use crate::ir::body::{BodyError, parse_ir};
-use crate::ir::module::{IrField, ShaderIr, Varying};
+use crate::ir::module::{IrField, ShaderIr, Varying, VertexSource};
 use crate::ir::types::{IrType, ScalarType};
 
 /// Which WGSL consumer the module is for.
@@ -56,6 +56,20 @@ pub fn emit_wgsl(ir: &ShaderIr, target: WgslTarget) -> Result<String, BodyError>
         );
     }
     out.push_str("}\n\n");
+    let instanced = ir.vertex_source == VertexSource::PerVertexInstanced;
+    if instanced {
+        out.push_str("struct InstanceIn {\n");
+        for (i, f) in ir.instance_attributes.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "    @location({}) {}: {},",
+                ir.attributes.len() + i,
+                names.ident(f.name),
+                wgsl_type(f.ty)
+            );
+        }
+        out.push_str("}\n\n");
+    }
 
     out.push_str("struct Uniforms {\n");
     for f in ir.uniforms {
@@ -70,11 +84,16 @@ pub fn emit_wgsl(ir: &ShaderIr, target: WgslTarget) -> Result<String, BodyError>
     }
     out.push_str("}\n\n");
 
-    match target {
-        WgslTarget::Web => {
+    match (target, ir.vertex_source.uniform_buffer()) {
+        (WgslTarget::Web, _) => {
             out.push_str("@group(0) @binding(0) var<uniform> uniforms: Uniforms;\n");
         }
-        WgslTarget::Native => out.push_str("var<immediate> uniforms: Uniforms;\n"),
+        // A uniform buffer takes the binding after the textures and sampler
+        // in the only set.
+        (WgslTarget::Native, true) => {
+            out.push_str("@group(0) @binding(3) var<uniform> uniforms: Uniforms;\n");
+        }
+        (WgslTarget::Native, false) => out.push_str("var<immediate> uniforms: Uniforms;\n"),
     }
     // With the uniforms in push constants, the textures take the only set.
     let group = match target {
@@ -93,13 +112,20 @@ pub fn emit_wgsl(ir: &ShaderIr, target: WgslTarget) -> Result<String, BodyError>
     }
     out.push('\n');
 
+    let instance = if instanced {
+        format!(", {INSTANCE_PARAM}: InstanceIn")
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         out,
         "@vertex\nfn vertex_main(@builtin(vertex_index) vid: u32, \
-         @builtin(instance_index) iid: u32, {ATTRS_PARAM}: {}) -> VOut {{",
+         @builtin(instance_index) iid: u32, {ATTRS_PARAM}: {}{instance}) -> VOut {{",
         ir.vertex_source.attr_struct_name()
     );
-    let mut p = Printer::new(Lang::Wgsl).with_depth(1);
+    let mut p = Printer::new(Lang::Wgsl)
+        .with_source(ir.vertex_source)
+        .with_depth(1);
     p.entry_body(&parsed.vertex);
     out.push_str(&p.finish());
     out.push_str("}\n");

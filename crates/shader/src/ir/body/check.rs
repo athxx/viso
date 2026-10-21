@@ -95,6 +95,7 @@ pub enum Builtin {
     Smoothstep,
     Pow,
     Atan2,
+    Cross,
 }
 
 impl Builtin {
@@ -126,6 +127,7 @@ impl Builtin {
             "smoothstep" => Builtin::Smoothstep,
             "pow" => Builtin::Pow,
             "atan2" => Builtin::Atan2,
+            "cross" => Builtin::Cross,
             _ => return None,
         })
     }
@@ -346,7 +348,7 @@ fn check_function(
         locals: std::mem::take(&mut func.locals),
         scopes: vec![Vec::new()],
         ret: func.ret.ty(),
-        fetch: None,
+        fetches: Vec::new(),
     };
     let result = cx.function(func);
     func.locals = cx.locals;
@@ -360,8 +362,21 @@ struct Cx<'a> {
     locals: Vec<Local>,
     scopes: Vec<Vec<u32>>,
     ret: Ty,
-    /// The attribute-fetch declaration's local, once seen.
-    fetch: Option<u32>,
+    /// The attribute-fetch declarations' locals, as they are seen.
+    fetches: Vec<u32>,
+}
+
+/// The attribute fetches a vertex body opens with, in order: the struct, the
+/// buffer and the index each reads.
+fn fetches(source: VertexSource) -> &'static [(StructName, &'static str, &'static str)] {
+    match source {
+        VertexSource::PerInstance => &[(StructName::InstanceIn, "instances", "iid")],
+        VertexSource::PerVertex => &[(StructName::VertexIn, "verts", "vid")],
+        VertexSource::PerVertexInstanced => &[
+            (StructName::VertexIn, "verts", "vid"),
+            (StructName::InstanceIn, "instances", "iid"),
+        ],
+    }
 }
 
 fn err(code: &'static str, span: Span, msg: impl Into<String>) -> BodyError {
@@ -391,8 +406,10 @@ impl Cx<'_> {
                 format!("`{}` does not return on every path", func.name),
             ));
         }
-        if let Some(l) = self.fetch
-            && self.locals[l as usize].mutated
+        if let Some(&l) = self
+            .fetches
+            .iter()
+            .find(|&&l| self.locals[l as usize].mutated)
         {
             return Err(err(
                 "S0312",
@@ -406,39 +423,38 @@ impl Cx<'_> {
         Ok(())
     }
 
-    /// The vertex stage opens with exactly one attribute fetch:
-    /// `InstanceIn x = instances[iid];` or `VertexIn x = verts[vid];`.
+    /// The vertex stage opens with its attribute fetches, in order:
+    /// `InstanceIn x = instances[iid];`, `VertexIn x = verts[vid];`, or for an
+    /// instanced mesh the vertex's then the instance's.
     fn check_fetch_shape(&self, body: &[Stmt], span: Span) -> Result<(), BodyError> {
-        let (sname, buf, index) = match self.ir.vertex_source {
-            VertexSource::PerInstance => (StructName::InstanceIn, "instances", "iid"),
-            VertexSource::PerVertex => (StructName::VertexIn, "verts", "vid"),
-        };
-        let first = body
+        let mut stmts = body
             .iter()
-            .find(|s| !matches!(s.kind, StmtKind::Comment(_)));
-        let ok = first.is_some_and(|s| match &s.kind {
-            StmtKind::Decl {
-                ty: TypeName::Struct(t),
-                init: Some(init),
-                ..
-            } if *t == sname => match &init.kind {
-                ExprKind::Index { base, index: i } => {
-                    matches!(&base.kind, ExprKind::Var { name, .. } if name == buf)
-                        && matches!(&i.kind, ExprKind::Var { name, .. } if name == index)
-                }
+            .filter(|s| !matches!(s.kind, StmtKind::Comment(_)));
+        for &(sname, buf, index) in fetches(self.ir.vertex_source) {
+            let stmt = stmts.next();
+            let ok = stmt.is_some_and(|s| match &s.kind {
+                StmtKind::Decl {
+                    ty: TypeName::Struct(t),
+                    init: Some(init),
+                    ..
+                } if *t == sname => match &init.kind {
+                    ExprKind::Index { base, index: i } => {
+                        matches!(&base.kind, ExprKind::Var { name, .. } if name == buf)
+                            && matches!(&i.kind, ExprKind::Var { name, .. } if name == index)
+                    }
+                    _ => false,
+                },
                 _ => false,
-            },
-            _ => false,
-        });
-        if ok {
-            Ok(())
-        } else {
-            Err(err(
-                "S0310",
-                first.map_or(span, |s| s.span),
-                format!("the vertex body must begin with `{sname:?} <name> = {buf}[{index}];`"),
-            ))
+            });
+            if !ok {
+                return Err(err(
+                    "S0310",
+                    stmt.map_or(span, |s| s.span),
+                    format!("the vertex body must begin with `{sname:?} <name> = {buf}[{index}];`"),
+                ));
+            }
         }
+        Ok(())
     }
 
     fn visible(&self, name: &str) -> Option<u32> {
@@ -455,15 +471,18 @@ impl Cx<'_> {
             return Some((Global::Pi, Ty::Scalar(Scalar::F32)));
         }
         let tc = self.ir.texture_count;
-        let per_instance = self.ir.vertex_source == VertexSource::PerInstance;
+        let source = self.ir.vertex_source;
+        let instances = source != VertexSource::PerVertex;
+        let verts = source != VertexSource::PerInstance;
         match (self.stage?, name) {
             (Stage::Vertex, "vid") => Some((Global::Vid, Ty::Scalar(Scalar::U32))),
-            (Stage::Vertex, "iid") if per_instance => Some((Global::Iid, Ty::Scalar(Scalar::U32))),
+            (Stage::Vertex, "iid") if instances => Some((Global::Iid, Ty::Scalar(Scalar::U32))),
             (Stage::Vertex, "u") => Some((Global::Uniforms, Ty::Struct(StructName::Uniforms))),
-            (Stage::Vertex, "instances") if per_instance => {
-                Some((Global::Instances, Ty::AttrBuffer))
+            (Stage::Fragment, "u") if source.uniform_buffer() => {
+                Some((Global::Uniforms, Ty::Struct(StructName::Uniforms)))
             }
-            (Stage::Vertex, "verts") if !per_instance => Some((Global::Verts, Ty::AttrBuffer)),
+            (Stage::Vertex, "instances") if instances => Some((Global::Instances, Ty::AttrBuffer)),
+            (Stage::Vertex, "verts") if verts => Some((Global::Verts, Ty::AttrBuffer)),
             (Stage::Fragment, "in") => Some((Global::In, Ty::Struct(StructName::VOut))),
             (Stage::Fragment, "tex") if tc >= 1 => Some((Global::Tex, Ty::Texture)),
             (Stage::Fragment, "dst_tex") if tc >= 2 => Some((Global::DstTex, Ty::Texture)),
@@ -551,12 +570,9 @@ impl Cx<'_> {
             StmtKind::Decl {
                 ty, local, init, ..
             } => {
+                let next = fetches(self.ir.vertex_source).get(self.fetches.len());
                 let is_fetch = self.stage == Some(Stage::Vertex)
-                    && self.fetch.is_none()
-                    && matches!(
-                        ty,
-                        TypeName::Struct(StructName::InstanceIn | StructName::VertexIn)
-                    );
+                    && next.is_some_and(|f| *ty == TypeName::Struct(f.0));
                 match ty {
                     TypeName::Struct(StructName::InstanceIn | StructName::VertexIn)
                         if !is_fetch =>
@@ -592,7 +608,7 @@ impl Cx<'_> {
                 let local = *local;
                 self.declare(local, span)?;
                 if is_fetch {
-                    self.fetch = Some(local);
+                    self.fetches.push(local);
                 }
                 Ok(())
             }
@@ -743,10 +759,7 @@ impl Cx<'_> {
         };
         self.expr(base)?;
         self.expr(index)?;
-        e.ty = Ty::Struct(match self.ir.vertex_source {
-            VertexSource::PerInstance => StructName::InstanceIn,
-            VertexSource::PerVertex => StructName::VertexIn,
-        });
+        e.ty = Ty::Struct(fetches(self.ir.vertex_source)[self.fetches.len()].0);
         Ok(e.ty)
     }
 
@@ -802,6 +815,15 @@ impl Cx<'_> {
                     .iter()
                     .find(|v| v.name == name)
                     .map(|v| ir_ty(v.ty)),
+                StructName::InstanceIn
+                    if self.ir.vertex_source == VertexSource::PerVertexInstanced =>
+                {
+                    self.ir
+                        .instance_attributes
+                        .iter()
+                        .find(|f| f.name == name)
+                        .map(|f| ir_ty(f.ty))
+                }
                 StructName::InstanceIn | StructName::VertexIn => self
                     .ir
                     .attributes
@@ -1116,6 +1138,7 @@ impl Cx<'_> {
             (Builtin::Dot, [a @ Ty::Vector(Scalar::F32, _), b]) if a == b => {
                 Some(Ty::Scalar(Scalar::F32))
             }
+            (Builtin::Cross, [a @ Ty::Vector(Scalar::F32, 3), b]) if a == b => Some(*a),
             (Builtin::Pow | Builtin::Atan2, [a, b]) => {
                 let a = float(*a)?;
                 (float(*b)? == a).then_some(a)

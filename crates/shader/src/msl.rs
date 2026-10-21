@@ -37,7 +37,7 @@ use crate::ir::codegen_msl::{emit_msl, emit_schema_attrs, schema_from_attrs};
 use crate::ir::module::{
     ShaderIr, advanced_blend_ir, analytic_capsule_ir, analytic_ellipse_ir, analytic_line_ir,
     analytic_rrect_ir, analytic_shadow_ir, blur_ir, color_transform_ir, glyphrun_ir, gradient_ir,
-    image_ir, material_ir, mesh_ir, mtsdf_ir, quad_ir,
+    image_ir, material_ir, mesh_ir, mtsdf_ir, quad_ir, scene_ir,
 };
 
 /// The built-in primitive shaders (architecture section 15.3). One entry per
@@ -95,6 +95,8 @@ pub enum PrimitiveKind {
     /// stage cannot express: source and a bounded destination snapshot in, the
     /// finished blend out.
     AdvancedBlend,
+    /// The 3D scene lane's lit, instanced mesh (`BuiltinShader::Scene`).
+    Scene,
 }
 
 /// The MSL source for `kind`, or `None` if that primitive has no shader.
@@ -116,6 +118,7 @@ pub fn shader_source(kind: PrimitiveKind) -> Option<&'static str> {
         PrimitiveKind::AdvancedBlend => Some(ADVANCED_BLEND_MSL()),
         // Path and Mesh share the general per-vertex mesh pipeline.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(MESH_MSL()),
+        PrimitiveKind::Scene => Some(SCENE_MSL()),
         _ => None,
     }
 }
@@ -141,6 +144,7 @@ pub fn instance_schema(kind: PrimitiveKind) -> Option<InstanceSchema> {
         PrimitiveKind::AdvancedBlend => Some(advanced_blend_schema()),
         // Path and Mesh validate their per-vertex layout against `mesh_schema`.
         PrimitiveKind::Path | PrimitiveKind::Mesh => Some(mesh_schema()),
+        PrimitiveKind::Scene => Some(scene_schema()),
         _ => None,
     }
 }
@@ -325,6 +329,14 @@ pub fn analytic_shadow_schema() -> InstanceSchema {
     cached_schema(&CELL, &analytic_shadow_ir())
 }
 
+/// The per-vertex schema the scene shader declares, projected from
+/// [`scene_ir`]: `viso_gpu_abi::scene::VERTEX_SCHEMA`'s attributes. Its
+/// instances are the fixed `scene::INSTANCE_SCHEMA` stream.
+pub fn scene_schema() -> InstanceSchema {
+    static CELL: OnceLock<Vec<SchemaAttr>> = OnceLock::new();
+    cached_schema(&CELL, &scene_ir())
+}
+
 /// Cache a primitive's IR-derived MSL to `'static` and return it. Materialized
 /// once on the cold registration path; every later call returns the same string.
 fn cached_msl(cell: &'static OnceLock<String>, ir: impl FnOnce() -> String) -> &'static str {
@@ -345,6 +357,19 @@ fn cached_msl(cell: &'static OnceLock<String>, ir: impl FnOnce() -> String) -> &
 /// **straight** and the fragment premultiplies (blend `src One`, `dst
 /// OneMinusSourceAlpha`); a rounded-rect SDF with linear-coverage AA and
 /// border-over-fill reproduces the headless math.
+/// Inline MSL for the scene built-in (Metal backend), derived from
+/// [`scene_ir`].
+///
+/// Contract (guaranteed by the shared IR): an indexed mesh's vertices at
+/// buffer index 0, its instances at 1 and the `SceneUniforms` buffer at 2,
+/// read by both stages; the fragment returns premultiplied color in the
+/// target's encoding.
+#[allow(non_snake_case)]
+pub fn SCENE_MSL() -> &'static str {
+    static CELL: OnceLock<String> = OnceLock::new();
+    cached_msl(&CELL, || emit_msl(&scene_ir()))
+}
+
 #[allow(non_snake_case)]
 pub fn QUAD_MSL() -> &'static str {
     static CELL: OnceLock<String> = OnceLock::new();

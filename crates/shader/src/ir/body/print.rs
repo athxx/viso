@@ -15,6 +15,7 @@
 //! | `tex.sample(s, uv)`  | `textureSampleLevel(tex, s, uv, 0.0)`  | `tex.SampleLevel(s, uv, 0.0)` |
 //! | `tex.get_width()`    | `textureDimensions(tex).x`             | `viso_width(tex)`             |
 //! | attribute fetch      | the entry's `viso_attrs` parameter     | the entry's `viso_attrs`      |
+//! | instance fetch       | `viso_instance` beside `viso_attrs`    | as WGSL                       |
 //!
 //! GLSL ES 3.00 converts nothing implicitly, so an integer literal is spelled
 //! in the type its context gives it (`1` → `1.0` beside a `float`, `1u` beside
@@ -38,6 +39,7 @@ use crate::ir::body::ast::{
     StmtKind, StructName, Ty, TypeName, UnOp,
 };
 use crate::ir::body::check::{Builtin, swizzle_lanes};
+use crate::ir::module::VertexSource;
 
 /// A target shading language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,8 +54,14 @@ pub enum Lang {
     Glsl,
 }
 
-/// The name of the vertex entry's attribute-struct parameter in WGSL and HLSL.
+/// The name of the vertex entry's attribute-struct parameter in WGSL, HLSL
+/// and GLSL: the fetch of `verts[vid]`, or of `instances[iid]` when that is
+/// the only one.
 pub const ATTRS_PARAM: &str = "viso_attrs";
+
+/// The name of the instance-struct parameter of a vertex entry that fetches
+/// both a vertex and an instance (`instances[iid]` beside `verts[vid]`).
+pub const INSTANCE_PARAM: &str = "viso_instance";
 
 /// `M_PI_F` for targets without the constant.
 const PI: &str = "3.14159265358979";
@@ -529,6 +537,9 @@ pub struct Printer {
     signatures: Vec<(String, Vec<Ty>)>,
     /// The return type of the function being printed.
     ret: Option<Ty>,
+    /// The vertex entry fetches an instance beside its vertex, so the
+    /// instance is [`INSTANCE_PARAM`].
+    instanced: bool,
 }
 
 impl Printer {
@@ -540,7 +551,15 @@ impl Printer {
             depth: 0,
             signatures: Vec::new(),
             ret: None,
+            instanced: false,
         }
+    }
+
+    /// Print a vertex body of `source`, whose fetches name its entry's
+    /// parameters.
+    pub fn with_source(mut self, source: VertexSource) -> Printer {
+        self.instanced = source == VertexSource::PerVertexInstanced;
+        self
     }
 
     /// Know the parameter types of `helpers`, which the bodies printed next
@@ -1097,8 +1116,15 @@ impl Printer {
                     (_, m) => unreachable!("the checker admits no method `{m}`"),
                 }
             }
-            ExprKind::Index { base, index } => match self.lang {
-                Lang::Msl => format!("{}[{}]", self.expr(base, l), self.expr(index, l)),
+            ExprKind::Index { base, index } => match (self.lang, &base.kind) {
+                (Lang::Msl, _) => format!("{}[{}]", self.expr(base, l), self.expr(index, l)),
+                (
+                    _,
+                    ExprKind::Var {
+                        res: Res::Global(Global::Instances),
+                        ..
+                    },
+                ) if self.instanced => INSTANCE_PARAM.to_string(),
                 _ => ATTRS_PARAM.to_string(),
             },
             ExprKind::Construct { ty, args } => {

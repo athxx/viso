@@ -18,9 +18,9 @@
 
 use std::fmt::Write as _;
 
-use crate::ir::body::print::{ATTRS_PARAM, Lang, Printer};
+use crate::ir::body::print::{ATTRS_PARAM, INSTANCE_PARAM, Lang, Printer};
 use crate::ir::body::{BodyError, parse_ir};
-use crate::ir::module::ShaderIr;
+use crate::ir::module::{ShaderIr, VertexSource};
 use crate::ir::types::{IrType, ScalarType};
 
 /// The vertex-stage profile the D3D12 backend compiles [`emit_hlsl`] output with.
@@ -46,6 +46,20 @@ pub fn emit_hlsl(ir: &ShaderIr) -> Result<String, BodyError> {
         );
     }
     out.push_str("};\n\n");
+    let instanced = ir.vertex_source == VertexSource::PerVertexInstanced;
+    if instanced {
+        out.push_str("struct InstanceIn {\n");
+        for (i, f) in ir.instance_attributes.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "    {} {} : {ATTR_SEMANTIC}{};",
+                hlsl_type(f.ty),
+                names.ident(f.name),
+                ir.attributes.len() + i
+            );
+        }
+        out.push_str("};\n\n");
+    }
 
     out.push_str("struct Uniforms {\n");
     for f in ir.uniforms {
@@ -87,13 +101,20 @@ pub fn emit_hlsl(ir: &ShaderIr) -> Result<String, BodyError> {
     }
     out.push('\n');
 
+    let instance = if instanced {
+        format!(", InstanceIn {INSTANCE_PARAM}")
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         out,
-        "VOut vertex_main({} {ATTRS_PARAM}, uint vid : SV_VertexID, \
+        "VOut vertex_main({} {ATTRS_PARAM}{instance}, uint vid : SV_VertexID, \
          uint iid : SV_InstanceID) {{",
         ir.vertex_source.attr_struct_name()
     );
-    let mut p = Printer::new(Lang::Hlsl).with_depth(1);
+    let mut p = Printer::new(Lang::Hlsl)
+        .with_source(ir.vertex_source)
+        .with_depth(1);
     p.entry_body(&parsed.vertex);
     out.push_str(&p.finish());
     out.push_str("}\n");

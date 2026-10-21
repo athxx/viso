@@ -66,6 +66,12 @@ pub enum VertexSource {
     /// (Path/Mesh); there is no instance buffer, so the vertex buffer takes index
     /// 0 and the uniforms move to index 1.
     PerVertex,
+    /// The vertex shader reads both: a per-vertex buffer of an indexed mesh and
+    /// a per-instance buffer of its placements (the scene lane). The vertices
+    /// sit at Metal buffer index 0 and the instances at 1. The uniform block is
+    /// too large to be inline: it is a uniform buffer at index 2, read by both
+    /// stages.
+    PerVertexInstanced,
 }
 
 impl VertexSource {
@@ -75,25 +81,32 @@ impl VertexSource {
     pub const fn attr_buffer_index(self) -> u32 {
         match self {
             VertexSource::PerInstance => 1,
-            VertexSource::PerVertex => 0,
+            VertexSource::PerVertex | VertexSource::PerVertexInstanced => 0,
         }
     }
 
-    /// The Metal buffer index the inline `Uniforms` bind to — the complement of
-    /// [`attr_buffer_index`](Self::attr_buffer_index).
+    /// The Metal buffer index the `Uniforms` bind to.
     pub const fn uniform_buffer_index(self) -> u32 {
         match self {
             VertexSource::PerInstance => 0,
             VertexSource::PerVertex => 1,
+            VertexSource::PerVertexInstanced => 2,
         }
     }
 
-    /// The MSL name of the attribute `struct` this source declares.
+    /// The MSL name of the attribute `struct` this source declares
+    /// [`ShaderIr::attributes`] as.
     pub const fn attr_struct_name(self) -> &'static str {
         match self {
             VertexSource::PerInstance => "InstanceIn",
-            VertexSource::PerVertex => "VertexIn",
+            VertexSource::PerVertex | VertexSource::PerVertexInstanced => "VertexIn",
         }
+    }
+
+    /// Whether the uniforms are a bound uniform buffer, read by both stages,
+    /// rather than the vertex stage's inline bytes.
+    pub const fn uniform_buffer(self) -> bool {
+        matches!(self, VertexSource::PerVertexInstanced)
     }
 }
 
@@ -114,6 +127,10 @@ pub struct ShaderIr {
     /// The per-instance (or per-vertex) attribute fields — the single source of
     /// truth for the MSL attribute `struct` *and* the [`InstanceSchema`](viso_gpu_abi::InstanceSchema).
     pub attributes: &'static [IrField],
+    /// The per-instance fields of a [`VertexSource::PerVertexInstanced`]
+    /// source, its `InstanceIn` struct, at the locations after
+    /// [`attributes`](Self::attributes); empty for the others.
+    pub instance_attributes: &'static [IrField],
     /// The inline `Uniforms` members (viewport, etc.).
     pub uniforms: &'static [IrField],
     /// The `VOut` varying members carried vertex → fragment. Each carries a
@@ -265,6 +282,7 @@ pub fn quad_ir() -> ShaderIr {
         kind: PrimitiveKind::Quad,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
@@ -305,6 +323,7 @@ pub fn image_ir() -> ShaderIr {
         kind: PrimitiveKind::Image,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
@@ -348,6 +367,7 @@ pub fn blur_ir() -> ShaderIr {
         kind: PrimitiveKind::Blur,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
@@ -395,6 +415,7 @@ pub fn color_transform_ir() -> ShaderIr {
         kind: PrimitiveKind::ColorTransform,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
@@ -442,6 +463,7 @@ pub fn advanced_blend_ir() -> ShaderIr {
         kind: PrimitiveKind::AdvancedBlend,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 2,
@@ -509,6 +531,7 @@ pub fn material_ir() -> ShaderIr {
         kind: PrimitiveKind::Material,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
@@ -539,6 +562,7 @@ pub fn glyphrun_ir() -> ShaderIr {
         kind: PrimitiveKind::GlyphRun,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
@@ -580,6 +604,7 @@ pub fn mtsdf_ir() -> ShaderIr {
         kind: PrimitiveKind::Mtsdf,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
@@ -607,6 +632,7 @@ pub fn mesh_ir() -> ShaderIr {
         kind: PrimitiveKind::Mesh,
         vertex_source: VertexSource::PerVertex,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
@@ -662,6 +688,7 @@ pub fn analytic_rrect_ir() -> ShaderIr {
         kind: PrimitiveKind::AnalyticRRect,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
@@ -743,6 +770,7 @@ pub fn analytic_shadow_ir() -> ShaderIr {
         kind: PrimitiveKind::AnalyticShadow,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
@@ -788,6 +816,7 @@ pub fn analytic_ellipse_ir() -> ShaderIr {
         kind: PrimitiveKind::AnalyticEllipse,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
@@ -835,6 +864,7 @@ pub fn analytic_capsule_ir() -> ShaderIr {
         kind: PrimitiveKind::AnalyticCapsule,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
@@ -886,6 +916,7 @@ pub fn analytic_line_ir() -> ShaderIr {
         kind: PrimitiveKind::AnalyticLine,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 0,
@@ -951,6 +982,7 @@ pub fn gradient_ir() -> ShaderIr {
         kind: PrimitiveKind::Gradient,
         vertex_source: VertexSource::PerInstance,
         attributes: ATTRS,
+        instance_attributes: &[],
         uniforms: UNIFORMS,
         varyings: VARYINGS,
         texture_count: 1,
@@ -960,9 +992,59 @@ pub fn gradient_ir() -> ShaderIr {
     }
 }
 
+/// The 3D scene built-in: an indexed mesh drawn once per instance, lit in
+/// linear light by one directional light, a hemispheric ambient and
+/// exponential fog (`viso_gpu_abi::scene`). The vertex and instance layouts
+/// are `SceneVertex` and `SceneInstance`; the uniforms `SceneUniforms`, its
+/// column-major view-projection as four columns. The fragment computes
+/// `SceneUniforms::shade`, the expression the CPU raster runs.
+pub fn scene_ir() -> ShaderIr {
+    static ATTRS: &[IrField] = &[
+        IrField::new("position", IrType::F32X3),
+        IrField::new("normal", IrType::F32X3),
+        IrField::new("uv", IrType::F32X2),
+    ];
+    static INSTANCE: &[IrField] = &[
+        IrField::new("row0", IrType::F32X4),
+        IrField::new("row1", IrType::F32X4),
+        IrField::new("row2", IrType::F32X4),
+        IrField::new("color", IrType::F32X4),
+    ];
+    static UNIFORMS: &[IrField] = &[
+        IrField::new("view_proj0", IrType::F32X4),
+        IrField::new("view_proj1", IrType::F32X4),
+        IrField::new("view_proj2", IrType::F32X4),
+        IrField::new("view_proj3", IrType::F32X4),
+        IrField::new("camera", IrType::F32X4),
+        IrField::new("light_dir", IrType::F32X4),
+        IrField::new("light_color", IrType::F32X4),
+        IrField::new("sky", IrType::F32X4),
+        IrField::new("ground", IrType::F32X4),
+        IrField::new("fog", IrType::F32X4),
+    ];
+    static VARYINGS: &[Varying] = &[
+        Varying::new("position", IrType::F32X4, " [[position]]", ""),
+        Varying::new("world", IrType::F32X3, "", ""),
+        Varying::new("normal", IrType::F32X3, "", ""),
+        Varying::new("color", IrType::F32X4, " [[flat]]", ""),
+    ];
+    ShaderIr {
+        kind: PrimitiveKind::Scene,
+        vertex_source: VertexSource::PerVertexInstanced,
+        attributes: ATTRS,
+        instance_attributes: INSTANCE,
+        uniforms: UNIFORMS,
+        varyings: VARYINGS,
+        texture_count: 0,
+        vertex_body: SCENE_VERTEX_BODY,
+        helpers: "",
+        fragment_body: SCENE_FRAGMENT_BODY,
+    }
+}
+
 /// Every built-in's IR, in [`PrimitiveKind`] declaration order — the set the
 /// portable codegens and their oracles cover.
-pub fn builtin_irs() -> [ShaderIr; 15] {
+pub fn builtin_irs() -> [ShaderIr; 16] {
     [
         quad_ir(),
         image_ir(),
@@ -979,6 +1061,7 @@ pub fn builtin_irs() -> [ShaderIr; 15] {
         analytic_capsule_ir(),
         analytic_line_ir(),
         gradient_ir(),
+        scene_ir(),
     ]
 }
 
@@ -2140,6 +2223,70 @@ const MESH_FRAGMENT_BODY: &str = "\
 float cov = clamp(in.edge, 0.0, 1.0);
 float a = in.color.a * cov;
 return float4(in.color.rgb * a, a);";
+
+const SCENE_VERTEX_BODY: &str = "\
+VertexIn v = verts[vid];
+InstanceIn inst = instances[iid];
+
+// The vertex in the world: the instance's affine, as three rows.
+float4 r0 = float4(inst.row0);
+float4 r1 = float4(inst.row1);
+float4 r2 = float4(inst.row2);
+float3 p = float3(v.position);
+float3 world = float3(dot(r0.xyz, p) + r0.w, dot(r1.xyz, p) + r1.w, dot(r2.xyz, p) + r2.w);
+
+// The normal through the cofactor of the linear part, so a non-uniform scale
+// keeps it perpendicular to the surface.
+float3 c0 = float3(r0.x, r1.x, r2.x);
+float3 c1 = float3(r0.y, r1.y, r2.y);
+float3 c2 = float3(r0.z, r1.z, r2.z);
+float3 n = float3(v.normal);
+
+VOut out;
+out.position = float4(u.view_proj0) * world.x + float4(u.view_proj1) * world.y
+    + float4(u.view_proj2) * world.z + float4(u.view_proj3);
+out.world = world;
+out.normal = cross(c1, c2) * n.x + cross(c2, c0) * n.y + cross(c0, c1) * n.z;
+out.color = float4(inst.color);
+return out;";
+
+const SCENE_FRAGMENT_BODY: &str = "\
+float a = in.color.a;
+if (a <= 0.0) {
+    return float4(0.0, 0.0, 0.0, 0.0);
+}
+float4 light_dir = float4(u.light_dir);
+float4 fog_color = float4(u.fog);
+float3 sky = float4(u.sky).rgb;
+float3 ground = float4(u.ground).rgb;
+float3 light = float4(u.light_color).rgb;
+
+float3 n = normalize(in.normal);
+float3 l = light_dir.xyz;
+float3 to_eye = float4(u.camera).xyz - in.world;
+float distance = length(to_eye);
+float3 v = to_eye / max(distance, 0.000001);
+
+// The base color in linear light.
+float3 base = pow(max(in.color.rgb / a, float3(0.0, 0.0, 0.0)), float3(2.2, 2.2, 2.2));
+float up = n.y * 0.5 + 0.5;
+float diffuse = max(dot(n, l), 0.0) * light_dir.w;
+float specular = 0.0;
+if (diffuse > 0.0) {
+    float3 half_way = l + v;
+    float hl = length(half_way);
+    if (hl > 0.0) {
+        specular = pow(max(dot(n, half_way / hl), 0.0), 32.0) * 0.25 * light_dir.w;
+    }
+}
+float fog = 1.0 - exp(-fog_color.w * distance);
+float3 ambient = ground + (sky - ground) * up;
+float3 c = base * (ambient + diffuse * light) + specular * light;
+c = c + (fog_color.rgb - c) * fog;
+
+// Encoded for the target, premultiplied.
+float3 encoded = pow(clamp(c, 0.0, 1.0), float3(1.0 / 2.2, 1.0 / 2.2, 1.0 / 2.2));
+return float4(encoded * a, a);";
 
 const GRADIENT_VERTEX_BODY: &str = "\
 InstanceIn inst = instances[iid];

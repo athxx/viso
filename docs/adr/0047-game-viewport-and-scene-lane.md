@@ -126,10 +126,27 @@
   - The 2D pipelines declare no depth and cull nothing, so their code paths
     and costs are unchanged.
 - **The shader gets a scene profile.**
-  - Shader IR gains vertex attribute inputs, instance inputs and a
-    uniform-buffer pass block (view-projection, camera position, light).
-  - The built-in scene shaders are written in Viso shader source and
-    compiled through the normal pipeline to every backend language.
+  - Shader IR gains `VertexSource::PerVertexInstanced`: the vertex body
+    opens with two fetches, `VertexIn v = verts[vid];` then
+    `InstanceIn inst = instances[iid];`. `ShaderIr::instance_attributes`
+    declares the instance struct, at the locations after the vertex
+    attributes. The uniform block is a uniform buffer read by both stages,
+    so the fragment may read `u`.
+  - The body subset gains `cross`.
+  - The scene built-in (`scene_ir`, `PrimitiveKind::Scene`) is written in
+    the body subset once and printed to every backend language:
+    - MSL: buffers 0, 1 and 2 (vertices, instances, uniforms);
+    - WGSL: two vertex structs, `var<uniform>` at `@group(0) @binding(0)`
+      on the web and `@binding(3)` beside the textures natively; frozen
+      SPIR-V is made from the native form;
+    - HLSL: `ATTR0..` across both structs, the uniforms a `ConstantBuffer`
+      at `b0`;
+    - GLSL ES 3.00: both structs gathered from `layout(location)` inputs,
+      the `std140` block at binding 0.
+  - The fragment computes `SceneUniforms::shade` exactly, so the CPU
+    raster is the reference image. A test draws one scene through the CPU
+    raster, the native MSL, and the web WGSL translated to MSL, on the
+    Metal device, and requires the three to agree.
   - Custom scene materials are a later decision. The profile is shaped so
     one adds a material block without changing the vertex interface.
 - **`GameViewport` is a node whose content is a scene.**

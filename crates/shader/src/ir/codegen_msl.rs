@@ -19,6 +19,8 @@
 //! asserts `emit_msl(&quad_ir())` equals the frozen pre-migration text in
 //! [`testdata`](crate::ir::testdata) (and the three others).
 
+use std::fmt::Write as _;
+
 use viso_gpu_abi::InstanceSchema;
 
 use crate::ir::module::{IrField, ShaderIr, Varying, VertexSource};
@@ -83,6 +85,13 @@ fn emit_attr_struct(out: &mut String, ir: &ShaderIr) {
         push_field(out, f);
     }
     out.push_str("};\n");
+    if ir.vertex_source == VertexSource::PerVertexInstanced {
+        out.push_str("\nstruct InstanceIn {\n");
+        for f in ir.instance_attributes {
+            push_field(out, f);
+        }
+        out.push_str("};\n");
+    }
 }
 
 /// `struct Uniforms { ... };` — the inline uniform block (viewport, etc.).
@@ -174,6 +183,15 @@ fn emit_vertex_entry(out: &mut String, ir: &ShaderIr) {
             out.push_str("                        const device VertexIn* verts [[buffer(0)]],\n");
             out.push_str("                        constant Uniforms& u [[buffer(1)]]) {\n");
         }
+        VertexSource::PerVertexInstanced => {
+            out.push_str("vertex VOut vertex_main(uint vid [[vertex_id]],\n");
+            out.push_str("                        uint iid [[instance_id]],\n");
+            out.push_str("                        const device VertexIn* verts [[buffer(0)]],\n");
+            out.push_str(
+                "                        const device InstanceIn* instances [[buffer(1)]],\n",
+            );
+            out.push_str("                        constant Uniforms& u [[buffer(2)]]) {\n");
+        }
     }
     push_body(out, ir.vertex_body);
     out.push_str("}\n");
@@ -197,6 +215,13 @@ fn emit_fragment_entry(out: &mut String, ir: &ShaderIr) {
             );
         }
         out.push_str("                              sampler samp [[sampler(0)]]) {\n");
+    } else if ir.vertex_source.uniform_buffer() {
+        out.push_str("fragment float4 fragment_main(VOut in [[stage_in]],\n");
+        let _ = writeln!(
+            out,
+            "                              constant Uniforms& u [[buffer({})]]) {{",
+            ir.vertex_source.uniform_buffer_index()
+        );
     } else {
         out.push_str("fragment float4 fragment_main(VOut in [[stage_in]]) {\n");
     }
