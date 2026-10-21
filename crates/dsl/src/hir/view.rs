@@ -44,7 +44,7 @@ use super::infer::{InferCx, MatchCheck, TypeEnv};
 use super::lower::{PartInfo, TargetProfile};
 use super::nodes::HirSlot;
 use super::percent::{Carry, PercentFacts, PercentSources};
-use super::style::{self, Own, PartValue, StyleBook, StyleUse};
+use super::style::{self, Own, PartValue, StyleBooks, StyleUse};
 use super::ty::Ty;
 use super::widget::{self, ChildProps, PropLookup, WidgetSchema, value_ty};
 use crate::ast::{
@@ -125,8 +125,9 @@ pub(crate) trait ViewEnv: TypeEnv {
     /// The native registry the view's widgets are declared in.
     fn widgets(&self) -> &Natives;
 
-    /// The styles the view's module declares.
-    fn styles(&self) -> Option<&StyleBook>;
+    /// The styles of the package, and the index of the view's module among
+    /// its modules.
+    fn styles(&self) -> Option<(&StyleBooks, usize)>;
 
     /// What the package is built for, which sets how strict the
     /// accessibility and localization checks are.
@@ -137,6 +138,10 @@ pub(crate) trait ViewEnv: TypeEnv {
     fn paints_with(&self, component: Option<SymbolId>, shader: SymbolId, at: TextRange);
 }
 
+/// A module of the package as a view types a value of it: the references its
+/// names resolve through and its env.
+pub(crate) type ModuleView<'a> = (&'a [ResolvedRef], &'a dyn ViewEnv);
+
 /// Where a view's event handlers lower to: the component layout registered last
 /// in `builder`, for the component `component` of module `module`.
 pub(crate) struct HandlerSink<'a> {
@@ -146,6 +151,9 @@ pub(crate) struct HandlerSink<'a> {
     pub module: usize,
     /// The component's name.
     pub component: &'a str,
+    /// Each module of the package, by index, whose styles' values lower in
+    /// the module that declares them.
+    pub modules: &'a [Option<ModuleView<'a>>],
 }
 
 /// Types the view block of the component `component`, appending what it finds to
@@ -662,7 +670,7 @@ impl<'a> ViewWalk<'a> {
     /// The style declaration reports what is wrong with a value; typing it
     /// here again only decides whether it lowers.
     fn styled(&mut self, owner: &Owner<'a>, body: &NodeBody) {
-        let Some(book) = self.env.styles() else {
+        let Some((books, module)) = self.env.styles() else {
             return;
         };
         let members: Vec<ViewItem> = body.members().collect();
@@ -674,24 +682,32 @@ impl<'a> ViewWalk<'a> {
         }) else {
             return;
         };
-        let Ok(uses) = style::uses(book, &value) else {
+        let Ok(uses) = style::uses(books, module, &value) else {
             return;
         };
-        let list = style::applying(&uses, &owner.name);
+        let list = style::applying(uses, &owner.name);
         if list.is_empty() {
             return;
         }
-        let plan = style::plan(book, &list, &style::own_bindings(&members), &owner.name);
+        let plan = style::plan(books, &list, &style::own_bindings(&members), &owner.name);
         let at = value.syntax().text_range();
         for part in &plan.parts {
             let site = Site::styled(at, part.part);
             match &part.value {
-                PartValue::Look { property, value } => {
+                PartValue::Look {
+                    property,
+                    value,
+                    module: home,
+                } => {
                     let segments: Vec<&str> = property.split('.').collect();
                     let want = match owner.schema.lookup(&segments) {
                         PropLookup::Known(spec) => self.schema_value_ty(spec.ty),
                         PropLookup::Unknown => None,
                     };
+                    if *home != module {
+                        self.imported_entry(*home, want.as_ref(), site, value);
+                        continue;
+                    }
                     let mark = self.cx.diagnostics().len();
                     let _ = match &want {
                         Some(want) => self.cx.infer_promoted(value, want),
@@ -716,10 +732,10 @@ impl<'a> ViewWalk<'a> {
     /// Checks a node's `styles` value: a list of the styles of the module,
     /// each for the node's type `owner`.
     fn check_styles(&mut self, value: &Expr, owner: &Owner<'a>) {
-        let Some(book) = self.env.styles() else {
+        let Some((books, module)) = self.env.styles() else {
             return;
         };
-        let uses = match style::uses(book, value) {
+        let uses = match style::uses(books, module, value) {
             Ok(uses) => uses,
             Err(at) => {
                 self.diagnostics.push(Diagnostic::error(
@@ -732,10 +748,10 @@ impl<'a> ViewWalk<'a> {
         };
         for item in uses {
             match item {
-                StyleUse::Local(_, decl, at) => {
-                    let target = style::target_name(&decl);
+                StyleUse::Style(style, at) => {
+                    let target = style::target_name(&style.decl);
                     if target.as_deref() != Some(owner.name.as_str()) {
-                        let name = decl.name().map(|t| t.text()).unwrap_or_default();
+                        let name = style.decl.name().map(|t| t.text()).unwrap_or_default();
                         self.diagnostics.push(Diagnostic::error(
                             "E2103",
                             at,
@@ -752,17 +768,13 @@ impl<'a> ViewWalk<'a> {
                         // The resolver reports a name that resolves to nothing.
                         continue;
                     };
-                    let diagnostic = if self.env.resolution_ty(&Resolution::Symbol(*id)).is_some() {
-                        Diagnostic::error("E2103", at, "`styles` names styles, and this is a value")
+                    let message = if self.env.resolution_ty(&Resolution::Symbol(*id)).is_some() {
+                        "`styles` names styles, and this is a value"
                     } else {
-                        Diagnostic::error(
-                            "E3711",
-                            at,
-                            "a node applies the styles its own file declares; this one is \
-                             declared in another file",
-                        )
+                        "`styles` names styles, and this is none"
                     };
-                    self.diagnostics.push(diagnostic);
+                    self.diagnostics
+                        .push(Diagnostic::error("E2103", at, message));
                 }
                 StyleUse::NotAName(at) => self.diagnostics.push(Diagnostic::error(
                     "E2103",
@@ -2190,6 +2202,41 @@ impl<'a> ViewWalk<'a> {
     fn region_entry(&mut self, errors: usize, what: &str, at: TextRange, entry: &RegionEntry<'_>) {
         let failed = self.error_count() > errors;
         self.entry_at(failed, what, Site::own(at), entry, at);
+    }
+
+    /// Lowers `value`, of a style the module `home` declares, at `site`:
+    /// typed, wanting `want`, and lowered with the names of its own module.
+    /// The style's declaration reports what is wrong with it.
+    fn imported_entry(&mut self, home: usize, want: Option<&Ty>, site: Site, value: &Expr) {
+        let Some(sink) = &self.sink else {
+            return;
+        };
+        let Some(Some((refs, env))) = sink.modules.get(home) else {
+            return;
+        };
+        let mut cx = InferCx::new(refs, *env);
+        let _ = match want {
+            Some(want) => cx.infer_promoted(value, want),
+            None => cx.infer_expr(value, None),
+        };
+        let failed = cx.rewind_diagnostics(0);
+        let def = Def {
+            name: format!("{}.style", sink.component),
+            kind: FunctionKind::RegionEntry,
+            symbol: None,
+            module: home,
+            into: None,
+        };
+        let at = value.syntax().text_range();
+        let entry = RegionEntry::Value(value);
+        let mut b = sink.builder.borrow_mut();
+        let func = if failed {
+            let params = self.regions.len() as u32 + u32::from(entry.takes_subject());
+            unsupported_with(&mut b, def, params, "has type errors", at)
+        } else {
+            lower_region_entry(&mut b, &cx, def, &self.regions, &entry, at)
+        };
+        b.handler_at(site, func);
     }
 
     /// Lowers `entry`, whose source is at `at`, at `site`; one that `failed`

@@ -268,12 +268,22 @@ fn node(cx: &FileCx<'_>, tree: &UiTree, node: &UiNode, key: &mut u32) -> Node {
         bound: node
             .pending
             .iter()
-            .map(|p| Bound {
-                name: p.name.clone(),
-                value: text_in(cx, tree, p.instance, p.value).to_owned(),
-                dirty: classes(p.dirty),
-                instance: p.instance,
-                at: At::new(cx, tree.own_span(p.instance, p.value)),
+            .map(|p| match p.unit {
+                // A value of a style of another file: the node applying it.
+                Some(_) => Bound {
+                    name: p.name.clone(),
+                    value: String::new(),
+                    dirty: classes(p.dirty),
+                    instance: p.instance,
+                    at: At::new(cx, tree.own_span(p.instance, node.origin)),
+                },
+                None => Bound {
+                    name: p.name.clone(),
+                    value: text_in(cx, tree, p.instance, p.value).to_owned(),
+                    dirty: classes(p.dirty),
+                    instance: p.instance,
+                    at: At::new(cx, tree.own_span(p.instance, p.value)),
+                },
             })
             .collect(),
         handlers: node

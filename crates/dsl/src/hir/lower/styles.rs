@@ -1,6 +1,6 @@
 //! `style` declarations (§59, U2.3, U12.1): a style is for a node type its
 //! file names — a native widget or a user component (`E2001` otherwise); its
-//! bases are styles of the same file (`E2001` for a name that resolves to
+//! bases are styles of the file or imported ones (`E2001` for a name that resolves to
 //! nothing, `E2103` for one that is no style or is for another type) on no
 //! cycle (`E2003`). It binds only properties the target's schema marks
 //! styleable — a widget's look and layout properties, a component's
@@ -20,7 +20,7 @@ use crate::diag::{Diagnostic, Related};
 use crate::hir::effect::BodyContext;
 use crate::hir::infer::{InferCx, TypeEnv};
 use crate::hir::style::{
-    INTERACTION_SELECTORS, RESERVED_SELECTORS, Selector, StyleBook, StyleItem,
+    INTERACTION_SELECTORS, RESERVED_SELECTORS, Selector, StyleBooks, StyleItem,
     UNSUPPORTED_SELECTORS, path_name, style_items, target_name, widget_selectors,
 };
 use crate::hir::ty::Ty;
@@ -134,15 +134,15 @@ enum Target<'e> {
     },
 }
 
-/// The styles of `book` on a base cycle.
-pub(super) fn cyclic(book: &StyleBook) -> HashSet<SymbolId> {
-    let edges: HashMap<SymbolId, Vec<SymbolId>> = book
+/// The styles of `books` on a base cycle.
+pub(crate) fn cyclic(books: &StyleBooks) -> HashSet<SymbolId> {
+    let edges: HashMap<SymbolId, Vec<SymbolId>> = books
         .iter()
-        .map(|(id, style)| {
+        .map(|(module, id, style)| {
             let bases = style
                 .bases()
                 .iter()
-                .filter_map(|b| book.base(b).map(|(id, _)| id))
+                .filter_map(|b| books.book(module).base(b))
                 .collect();
             (id, bases)
         })
@@ -164,11 +164,11 @@ pub(super) fn cyclic(book: &StyleBook) -> HashSet<SymbolId> {
     cyclic
 }
 
-/// Checks the style `decl` of the module whose styles are `book`; `cyclic`
-/// holds those on a base cycle.
+/// Checks the style `decl` of the module `env` is of; `cyclic` holds the
+/// styles on a base cycle.
 pub(super) fn check(
     decl: &StyleDecl,
-    book: &StyleBook,
+    books: &StyleBooks,
     cyclic: &HashSet<SymbolId>,
     refs: &[ResolvedRef],
     env: &ModuleEnv<'_>,
@@ -209,14 +209,14 @@ pub(super) fn check(
     for base in decl.bases() {
         let range = base.syntax().text_range();
         let text = base.syntax().text().to_string();
-        match book.base(&base) {
-            Some((_, style)) if target_name(style) == target_text => {}
-            Some((_, style)) => diagnostics.push(Diagnostic::error(
+        match books.base(env.module, &base) {
+            Some(style) if target_name(&style.decl) == target_text => {}
+            Some(style) => diagnostics.push(Diagnostic::error(
                 "E2103",
                 range,
                 format!(
                     "the base `{text}` styles `{}`, and `{name}` styles `{}`",
-                    target_name(style).unwrap_or_default(),
+                    target_name(&style.decl).unwrap_or_default(),
                     target_text.clone().unwrap_or_default(),
                 ),
             )),
@@ -228,10 +228,7 @@ pub(super) fn check(
                 let (code, message) = if resolved {
                     (
                         "E2103",
-                        format!(
-                            "`{text}` names no style of this file; a style's bases are styles \
-                             its own file declares"
-                        ),
+                        format!("`{text}` names no style; a style's bases are styles"),
                     )
                 } else {
                     ("E2001", format!("no style `{text}` to base `{name}` on"))

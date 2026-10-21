@@ -299,6 +299,12 @@ impl<'a> LowerCtx<'a> {
     /// The sources the expression at `at`, in the view of `instance`, reads.
     fn reads_at(&self, at: TextRange, instance: u32) -> Vec<SymbolId> {
         let unit = self.unit_of.get(instance as usize).copied().unwrap_or(0);
+        self.reads_in(unit, at, instance)
+    }
+
+    /// The reactive sources the value at `at` of unit `unit` reads, as the
+    /// instance `instance` sees them.
+    fn reads_in(&self, unit: u32, at: TextRange, instance: u32) -> Vec<SymbolId> {
         let Some(expr) = self.units.expr(unit, at) else {
             return Vec::new();
         };
@@ -396,7 +402,13 @@ impl<'a> LowerCtx<'a> {
     /// constant the UI IR should have folded, or a name the frontend diagnosed):
     /// a typed binding never silently becomes a dynamic subscription.
     fn lower_pending(&mut self, node: NodeKey, pending: &PendingProperty) {
-        for source in self.reads_at(pending.value, pending.instance) {
+        let unit = pending.unit.unwrap_or_else(|| {
+            self.unit_of
+                .get(pending.instance as usize)
+                .copied()
+                .unwrap_or(0)
+        });
+        for source in self.reads_in(unit, pending.value, pending.instance) {
             self.ir.edges.push(BindingEdge {
                 source,
                 node,

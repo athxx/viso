@@ -484,8 +484,15 @@ fn styled_look(
             .behavior
             .function(layout.handlers[index as usize].1);
         if let Err(unsupported) = &function.body {
+            // A value of a style of another file is reported at the node's
+            // `styles`.
+            let at = if function.module as u32 == compiled.tree.unit_of(instance) {
+                unsupported.at
+            } else {
+                styled.at
+            };
             errors.push(MountError::new(
-                Some(compiled.tree.own_span(instance, unsupported.at)),
+                Some(compiled.tree.own_span(instance, at)),
                 format!("the style's value {}", unsupported.reason),
             ));
             return None;

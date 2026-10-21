@@ -49,7 +49,7 @@ use crate::ast::{
     ViewBlock, ViewFor, ViewIf, ViewItem, ViewMatch,
 };
 use crate::hir::ComponentSchema;
-use crate::hir::style::{self, StyleBook};
+use crate::hir::style::{self, StyleBooks};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::span::TextRange;
 pub use length::Consts;
@@ -92,9 +92,11 @@ pub struct Unmounted {
 /// the mounted component, with the node types that name them.
 #[derive(Debug, Default)]
 pub struct ComponentLibrary<'a> {
-    /// Each source unit's names and styles, by the unit's index.
+    /// Each source unit's names, by the unit's index.
     units: Vec<LibraryUnit>,
     components: Vec<LibraryComponent<'a>>,
+    /// The styles of the units, by the unit's index.
+    styles: StyleBooks,
     /// The constants of the units, which fold into their nodes' style.
     consts: Rc<Consts>,
     /// What a unit the library lacks resolves through: nothing.
@@ -108,14 +110,11 @@ pub struct LibraryUnit {
     /// The declaration each resolved name names, by the name's range: the
     /// component of a node-type head.
     heads: HashMap<TextRange, SymbolId>,
-    /// The styles of the unit, which its nodes apply.
-    styles: StyleBook,
 }
 
 impl LibraryUnit {
-    /// The unit whose names resolve through `refs` and that declares
-    /// `styles`.
-    pub(crate) fn new(refs: &[ResolvedRef], styles: StyleBook) -> Self {
+    /// The unit whose names resolve through `refs`.
+    pub(crate) fn new(refs: &[ResolvedRef]) -> Self {
         let heads = refs
             .iter()
             .filter_map(|r| match r.to {
@@ -126,7 +125,7 @@ impl LibraryUnit {
                 | Resolution::Theme => None,
             })
             .collect();
-        LibraryUnit { heads, styles }
+        LibraryUnit { heads }
     }
 }
 
@@ -147,11 +146,17 @@ pub struct LibraryComponent<'a> {
 }
 
 impl<'a> ComponentLibrary<'a> {
-    /// The library of `components`, declared across `units`.
-    pub fn new(units: Vec<LibraryUnit>, components: Vec<LibraryComponent<'a>>) -> Self {
+    /// The library of `components`, declared across `units`, whose nodes
+    /// apply `styles`.
+    pub(crate) fn new(
+        units: Vec<LibraryUnit>,
+        components: Vec<LibraryComponent<'a>>,
+        styles: StyleBooks,
+    ) -> Self {
         ComponentLibrary {
             units,
             components,
+            styles,
             consts: Rc::new(Consts::default()),
             none: LibraryUnit::default(),
         }
@@ -583,7 +588,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let mut padding_at = None;
         let mut role = None;
         let mut live = None;
-        // Each binding left to a runtime value, by property and value span.
+        // Each binding left to a runtime value, by property and value span,
+        // and where this file reports it.
         let mut bound = Vec::new();
         // The layout properties the node sets from values as they change.
         let mut laid: Vec<String> = Vec::new();
@@ -656,7 +662,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             laid.push(name.clone());
                             control_reads.push((name, at, instance));
                         }
-                        Fold::Pending => bound.push((name, at)),
+                        Fold::Pending => bound.push((name, at, at)),
                         Fold::Unsupported(reason) => self.unmount((at, reason)),
                         Fold::Invalid(reason) => self.misplace((at, reason)),
                     }
@@ -726,9 +732,9 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 self.unmount((at, reason));
             }
         }
-        for (name, at) in bound {
+        for (name, value, at) in bound {
             // A binding a check above took out was reported there.
-            if !pending.iter().any(|p| p.value == at) {
+            if !pending.iter().any(|p| p.value == value) {
                 continue;
             }
             if let Some(reason) = unapplied(&name, &type_name, control, styled.as_ref()) {
@@ -769,61 +775,70 @@ impl<'a, 'l> Lowering<'a, 'l> {
         kind: NodeKind,
         members: &[ViewItem],
         instance: u32,
-        (style, pending, bound): (
-            &mut StyleIr,
-            &mut Vec<PendingProperty>,
-            &mut Vec<(String, TextRange)>,
-        ),
+        (style, pending, bound): (&mut StyleIr, &mut Vec<PendingProperty>, &mut Vec<Bound>),
     ) -> Option<UiStyled> {
         let value = styles_value(members)?;
-        let uses = style::uses(&self.names().styles, &value).ok()?;
-        let list = style::applying(&uses, type_name);
+        let unit = self.frames[self.current].unit;
+        let books = &self.library.styles;
+        let uses = style::uses(books, unit as usize, &value).ok()?;
+        let list = style::applying(uses, type_name);
         if list.is_empty() {
             return None;
         }
-        let plan = style::plan(
-            &self.names().styles,
-            &list,
-            &style::own_bindings(members),
-            type_name,
-        );
-        for binding in &plan.constants {
-            let (Some(name), Some(value)) = (dotted(binding.path()), binding.value()) else {
-                continue;
-            };
-            let at = value.syntax().text_range();
-            match fold_property(
-                binding,
-                (kind, &self.library.consts),
+        let plan = style::plan(books, &list, &style::own_bindings(members), type_name);
+        let styles_at = value.syntax().text_range();
+        // A span of a style of another unit is reported at the node's
+        // `styles`, as this unit places it.
+        let place = |module: usize, at: TextRange| {
+            if module == unit as usize {
+                at
+            } else {
+                styles_at
+            }
+        };
+        let mut fold = |this: &mut Self, styled: &style::Styled| -> Fold {
+            let pendings = pending.len();
+            let fold = fold_property(
+                &styled.binding,
+                (kind, &this.library.consts),
                 instance,
                 style,
                 pending,
-            ) {
+            );
+            if styled.module != unit as usize {
+                for p in &mut pending[pendings..] {
+                    p.unit = Some(styled.module as u32);
+                }
+            }
+            fold
+        };
+        for styled in &plan.constants {
+            let binding = &styled.binding;
+            let (Some(name), Some(value)) = (dotted(binding.path()), binding.value()) else {
+                continue;
+            };
+            let value = value.syntax().text_range();
+            let at = place(styled.module, value);
+            match fold(self, styled) {
                 Fold::Folded => {}
-                Fold::Pending => bound.push((name, at)),
+                Fold::Pending => bound.push((name, value, at)),
                 Fold::Unsupported(reason) => self.unmount((at, reason)),
                 Fold::Invalid(reason) => self.misplace((at, reason)),
             }
         }
-        for unmounted in plan.unmounted {
-            self.unmount(unmounted);
+        for (module, at, reason) in plan.unmounted {
+            self.unmount((place(module, at), reason));
         }
         // A delivered property's base folds like the node's own too, so the
         // node is built with it; one that folds and that no arm switches
         // needs no delivery.
         let mut looks = Vec::with_capacity(plan.looks.len());
         for (look, base) in plan.looks {
-            if let Some(binding) = &base
-                && let Some(value) = binding.value()
+            if let Some(styled) = &base
+                && let Some(value) = styled.binding.value()
             {
-                let at = value.syntax().text_range();
-                match fold_property(
-                    binding,
-                    (kind, &self.library.consts),
-                    instance,
-                    style,
-                    pending,
-                ) {
+                let at = place(styled.module, value.syntax().text_range());
+                match fold(self, styled) {
                     Fold::Folded if look.arms.is_empty() => continue,
                     Fold::Folded | Fold::Pending => {}
                     Fold::Unsupported(reason) => self.unmount((at, reason)),
@@ -832,8 +847,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
             }
             looks.push(look);
         }
-        (!looks.is_empty()).then(|| UiStyled {
-            at: value.syntax().text_range(),
+        (!looks.is_empty()).then_some(UiStyled {
+            at: styles_at,
             looks,
         })
     }
@@ -841,14 +856,15 @@ impl<'a, 'l> Lowering<'a, 'l> {
     /// The names of the styles among `members`' `styles` that apply to a
     /// node of type `type_name`, in list order.
     fn style_names(&self, type_name: &str, members: &[ViewItem]) -> Vec<String> {
+        let unit = self.frames[self.current].unit as usize;
         let Some(uses) =
-            styles_value(members).and_then(|v| style::uses(&self.names().styles, &v).ok())
+            styles_value(members).and_then(|v| style::uses(&self.library.styles, unit, &v).ok())
         else {
             return Vec::new();
         };
-        style::applying(&uses, type_name)
+        style::applying(uses, type_name)
             .iter()
-            .filter_map(|(_, decl)| decl.name())
+            .filter_map(|style| style.decl.name())
             .map(|name| name.text().trim_start_matches("r#").to_owned())
             .collect()
     }
@@ -1430,6 +1446,10 @@ fn fold_property(
     }
     fold
 }
+
+/// A binding left to a runtime value: the property, the value's span, and
+/// where the mounted file reports it.
+type Bound = (String, TextRange, TextRange);
 
 /// What lowering a property binding made of it.
 #[derive(Debug)]

@@ -809,6 +809,9 @@ pub struct PendingProperty {
     /// The component instance whose view the value belongs to: `0` for the
     /// view's own component, else an index into [`UiTree::instances`] plus one.
     pub instance: u32,
+    /// The source unit the value is written in when it is not the
+    /// instance's: a value of a style another unit declares.
+    pub unit: Option<u32>,
 }
 
 impl PendingProperty {
@@ -822,6 +825,7 @@ impl PendingProperty {
             value,
             dirty,
             instance,
+            unit: None,
         }
     }
 }

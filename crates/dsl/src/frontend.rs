@@ -26,7 +26,7 @@ use crate::ast::{
 };
 use crate::behavior::{Program, hidden_state, inline_instances};
 use crate::diag::{Diagnostic, Severity};
-use crate::hir::style::StyleBook;
+use crate::hir::style::{StyleBook, StyleBooks};
 use crate::hir::{
     CheckedShader, ConstValue, DerivedReads, HirComponent, Migrator, ShaderPaint, SourceSet,
     TargetProfile, Ty, TypeSchemas, persists, write_backs,
@@ -917,30 +917,33 @@ pub(crate) fn graph_library<'a>(
         })
     });
     let library: Vec<LibraryComponent<'a>> = library.collect();
+    let styles = StyleBooks::new(
+        units
+            .iter()
+            .map(|unit| {
+                let Some(GraphUnit { cu, module }) = unit else {
+                    return (StyleBook::default(), &[][..]);
+                };
+                let symbol = |name: TextRange| {
+                    module
+                        .decls
+                        .iter()
+                        .find(|d| d.name_range == name)
+                        .map(|d| d.id)
+                };
+                let book = StyleBook::new(cu.items(), |style| symbol(style.name()?.text_range()));
+                (book, &module.refs[..])
+            })
+            .collect(),
+    );
     let units = units
         .iter()
-        .map(|unit| {
-            let Some(GraphUnit { cu, module }) = unit else {
-                return LibraryUnit::default();
-            };
-            let symbol = |name: TextRange| {
-                module
-                    .decls
-                    .iter()
-                    .find(|d| d.name_range == name)
-                    .map(|d| d.id)
-            };
-            LibraryUnit::new(
-                &module.refs,
-                StyleBook::new(
-                    cu.items(),
-                    |style| symbol(style.name()?.text_range()),
-                    &module.refs,
-                ),
-            )
+        .map(|unit| match unit {
+            Some(GraphUnit { module, .. }) => LibraryUnit::new(&module.refs),
+            None => LibraryUnit::default(),
         })
         .collect();
-    ComponentLibrary::new(units, library).with_consts(consts)
+    ComponentLibrary::new(units, library, styles).with_consts(consts)
 }
 
 /// The expressions and references of each of `units`, as a view lowered

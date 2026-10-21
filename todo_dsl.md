@@ -1185,8 +1185,11 @@ timers (§104–§111).
         re-evaluating only the styled nodes; constant selectors fold; other
         properties fold like the node's own; hot reload, release package and
         macros alike.
+  - [x] Styles imported from another file, in `styles` and as bases: one
+        package style table, each value typed and lowered in its own module,
+        what does not mount reported at the node's `styles`.
   - [ ] Styles on user-component nodes (`@styleable` inputs, `@selector`
-        members) and styles imported from another file (`E3711` today).
+        members) (`E3711` today).
   - [x] `when` on properties besides `background`/`opacity`, and runtime
         delivery of non-constant layout/text style values: a style's property
         takes the node's own delivery path (a constant folds, a read value is

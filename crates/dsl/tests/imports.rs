@@ -403,3 +403,123 @@ export component Deck {
         assert_eq!(rt.store.bounds(cards[1]).w, 30.0);
     }
 }
+
+const LOOKS: &str = r#"
+import units::{BASE};
+export style Faded for Text { opacity: 0.25f32; }
+export style Wide for Text: Faded {
+    width: BASE;
+    when hover { opacity: 1.0f32; }
+}
+"#;
+
+const GALLERY: &str = r#"
+import looks::{Wide, Faded};
+style Mine for Text: Faded { height: 20dp; }
+export component Gallery {
+    view {
+        Column {
+            Text { styles: [Wide]; height: 20dp; }
+            Text { styles: [Mine]; width: 20dp; }
+        }
+    }
+}
+"#;
+
+fn looks() -> Siblings {
+    Siblings::Memory(Arc::from(vec![
+        (vec!["looks".to_owned()], LOOKS.to_owned()),
+        (
+            vec!["units".to_owned()],
+            "export const BASE: MixedLength = 60dp;\n".to_owned(),
+        ),
+    ]))
+}
+
+/// A primary pointer move to `(x, y)`, then a frame.
+fn hover(rt: &mut Rt, x: f32, y: f32) {
+    let root = rt.root.expect("mounted");
+    let event = viso_ui::PointerEvent {
+        x,
+        y,
+        phase: viso_ui::PointerPhase::Move,
+        buttons: viso_ui::PointerButtons::default(),
+        modifiers: Default::default(),
+    };
+    viso_ui::PointerRouter::route(
+        &mut rt.store,
+        &mut rt.states,
+        &rt.bindings,
+        root,
+        event,
+        &mut Vec::new(),
+    );
+    rt.frame();
+}
+
+#[test]
+fn a_style_of_another_file_applies_with_its_bases_constants_and_selectors() {
+    for mut rt in [
+        Rt::mount_in(GALLERY, looks()),
+        Rt::packaged_in(GALLERY, looks()),
+    ] {
+        let root = rt.root.expect("mounted");
+        let texts = rt.children(root);
+        assert_eq!(rt.store.bounds(texts[0]).w, 60.0, "`BASE` read in `looks`");
+        assert_eq!(rt.store.opacity(texts[0]), 0.25, "`Faded`, its base");
+        assert_eq!(rt.store.opacity(texts[1]), 0.25, "a base of another file");
+        assert_eq!(rt.store.bounds(texts[1]).h, 20.0);
+        hover(&mut rt, 5.0, 5.0);
+        assert_eq!(rt.store.opacity(texts[0]), 1.0, "its `when hover`");
+        assert_eq!(rt.store.opacity(texts[1]), 0.25);
+        assert_eq!(rt.fault(), None);
+    }
+}
+
+#[test]
+fn a_style_of_another_file_exports_to_the_web() {
+    let origin = Origin {
+        siblings: looks(),
+        ..origin()
+    };
+    let compiled = compile_file(GALLERY, &origin);
+    let errors: Vec<_> = compiled.errors().collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let page = viso_dsl::export::html(
+        &compiled,
+        &viso_dsl::export::HtmlOptions {
+            static_only: false,
+            title: "Gallery".into(),
+            lang: "en".into(),
+        },
+    )
+    .expect("exports");
+    assert!(page.styles.contains("opacity: 0.25"), "{}", page.styles);
+    assert!(page.styles.contains(":hover"), "{}", page.styles);
+}
+
+#[test]
+fn what_a_style_of_another_file_cannot_switch_is_reported_at_the_styles() {
+    let looks = Siblings::Memory(Arc::from(vec![(
+        vec!["looks".to_owned()],
+        "export style Grow for Text { when hover { width: 40dp; } }\n".to_owned(),
+    )]));
+    let page = r#"
+import looks::{Grow};
+export component Page {
+    view { Column { Text { styles: [Grow]; height: 20dp; } } }
+}
+"#;
+    let origin = Origin {
+        siblings: looks,
+        ..origin()
+    };
+    let errors: Vec<_> = compile_file(page, &origin)
+        .errors()
+        .map(|d| {
+            let at = d.primary.start().to_u32() as usize..d.primary.end().to_u32() as usize;
+            (d.code, page[at].to_owned())
+        })
+        .collect();
+    assert_eq!(errors, [("E3711", "[Grow]".to_owned())], "{errors:?}");
+}

@@ -83,8 +83,8 @@ pub(crate) fn widget_selectors(widget: &NativeWidget) -> Vec<&'static str> {
     names
 }
 
-/// The styles one module declares, by symbol, and the symbol each name that
-/// resolves to one of them names.
+/// The styles one module declares, by symbol, and the style each name of the
+/// module that resolves to one names, its own or an imported one.
 #[derive(Debug, Default)]
 pub(crate) struct StyleBook {
     styles: HashMap<SymbolId, StyleDecl>,
@@ -92,14 +92,12 @@ pub(crate) struct StyleBook {
 }
 
 impl StyleBook {
-    /// The styles among `items`, each the symbol `symbol_of` gives it, whose
-    /// uses resolve through `refs`.
+    /// The styles among `items`, each the symbol `symbol_of` gives it.
     pub(crate) fn new(
         items: impl Iterator<Item = Item>,
         symbol_of: impl Fn(&StyleDecl) -> Option<SymbolId>,
-        refs: &[ResolvedRef],
     ) -> StyleBook {
-        let styles: HashMap<SymbolId, StyleDecl> = items
+        let styles = items
             .filter_map(|item| match item {
                 Item::Export(e) => e.declaration(),
                 other => Some(other),
@@ -109,37 +107,113 @@ impl StyleBook {
                 _ => None,
             })
             .collect();
-        let heads = if styles.is_empty() {
-            HashMap::new()
-        } else {
-            refs.iter()
-                .filter_map(|r| match r.to {
-                    Resolution::Symbol(id) if styles.contains_key(&id) => Some((r.range, id)),
-                    _ => None,
-                })
-                .collect()
-        };
-        StyleBook { styles, heads }
+        StyleBook {
+            styles,
+            heads: HashMap::new(),
+        }
     }
 
     /// The style the name at `at` names.
-    pub(crate) fn named(&self, at: TextRange) -> Option<(SymbolId, &StyleDecl)> {
-        let id = *self.heads.get(&at)?;
-        Some((id, self.styles.get(&id)?))
+    pub(crate) fn named(&self, at: TextRange) -> Option<SymbolId> {
+        self.heads.get(&at).copied()
     }
 
-    /// Every style, in no order.
+    /// The style `id`, if the module declares it.
+    pub(crate) fn get(&self, id: SymbolId) -> Option<&StyleDecl> {
+        self.styles.get(&id)
+    }
+
+    /// Every style the module declares, in no order.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (SymbolId, &StyleDecl)> {
         self.styles.iter().map(|(id, s)| (*id, s))
     }
 
     /// The style a base path names, if it names one.
-    pub(crate) fn base(&self, base: &TypePath) -> Option<(SymbolId, &StyleDecl)> {
+    pub(crate) fn base(&self, base: &TypePath) -> Option<SymbolId> {
         let segments: Vec<_> = base.segments().collect();
         match segments.as_slice() {
             [head] => self.named(head.text_range()),
             _ => None,
         }
+    }
+}
+
+/// The styles of each module of a package, by the module's index: what a
+/// node's `styles` or a style's base names, of its own module or an imported
+/// one.
+#[derive(Debug, Default)]
+pub(crate) struct StyleBooks {
+    books: Vec<StyleBook>,
+    /// The module declaring each style.
+    homes: HashMap<SymbolId, usize>,
+    /// What a module the package lacks declares: nothing.
+    none: StyleBook,
+}
+
+impl StyleBooks {
+    /// The books of the modules, by index, each with the references its
+    /// module's names resolve through.
+    pub(crate) fn new(modules: Vec<(StyleBook, &[ResolvedRef])>) -> StyleBooks {
+        let homes: HashMap<SymbolId, usize> = modules
+            .iter()
+            .enumerate()
+            .flat_map(|(module, (book, _))| book.styles.keys().map(move |&id| (id, module)))
+            .collect();
+        let books = modules
+            .into_iter()
+            .map(|(mut book, refs)| {
+                if !homes.is_empty() {
+                    book.heads = refs
+                        .iter()
+                        .filter_map(|r| match r.to {
+                            Resolution::Symbol(id) if homes.contains_key(&id) => {
+                                Some((r.range, id))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                }
+                book
+            })
+            .collect();
+        StyleBooks {
+            books,
+            homes,
+            none: StyleBook::default(),
+        }
+    }
+
+    /// The styles module `module` declares and names.
+    pub(crate) fn book(&self, module: usize) -> &StyleBook {
+        self.books.get(module).unwrap_or(&self.none)
+    }
+
+    /// The style `id`.
+    pub(crate) fn style(&self, id: SymbolId) -> Option<Applying> {
+        let module = *self.homes.get(&id)?;
+        Some(Applying {
+            module,
+            id,
+            decl: self.book(module).get(id)?.clone(),
+        })
+    }
+
+    /// The style the name at `at` of module `module` names.
+    pub(crate) fn named(&self, module: usize, at: TextRange) -> Option<Applying> {
+        self.style(self.book(module).named(at)?)
+    }
+
+    /// The style the base `base` of a style of module `module` names.
+    pub(crate) fn base(&self, module: usize, base: &TypePath) -> Option<Applying> {
+        self.style(self.book(module).base(base)?)
+    }
+
+    /// Every style, in no order.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, SymbolId, &StyleDecl)> {
+        self.books
+            .iter()
+            .enumerate()
+            .flat_map(|(module, book)| book.iter().map(move |(id, decl)| (module, id, decl)))
     }
 }
 
@@ -250,20 +324,32 @@ impl Selector {
     }
 }
 
+/// A style a node applies: the module that declares it, its symbol and its
+/// declaration.
+#[derive(Debug, Clone)]
+pub(crate) struct Applying {
+    pub(crate) module: usize,
+    pub(crate) id: SymbolId,
+    pub(crate) decl: StyleDecl,
+}
+
 /// What one element of a node's `styles` list names.
 pub(crate) enum StyleUse {
-    /// A style of the node's own module, at the element's range.
-    Local(SymbolId, StyleDecl, TextRange),
-    /// A name that resolves to no style of the module: a style another
-    /// module declares, or something else.
+    /// A style of the package, at the element's range.
+    Style(Applying, TextRange),
+    /// A name that resolves to no style.
     Other(TextRange),
     /// No name at all.
     NotAName(TextRange),
 }
 
-/// What each element of the `styles` value `value` names; the value's range
-/// when it is no list.
-pub(crate) fn uses(book: &StyleBook, value: &Expr) -> Result<Vec<StyleUse>, TextRange> {
+/// What each element of the `styles` value `value` of module `module` names;
+/// the value's range when it is no list.
+pub(crate) fn uses(
+    books: &StyleBooks,
+    module: usize,
+    value: &Expr,
+) -> Result<Vec<StyleUse>, TextRange> {
     if value.syntax().kind() != SyntaxKind::ListExpr {
         return Err(value.syntax().text_range());
     }
@@ -283,8 +369,8 @@ pub(crate) fn uses(book: &StyleBook, value: &Expr) -> Result<Vec<StyleUse>, Text
             });
             match head {
                 None => StyleUse::NotAName(at),
-                Some(head) => match book.named(head) {
-                    Some((id, decl)) => StyleUse::Local(id, decl.clone(), at),
+                Some(head) => match books.named(module, head) {
+                    Some(style) => StyleUse::Style(style, at),
                     None => StyleUse::Other(at),
                 },
             }
@@ -293,11 +379,11 @@ pub(crate) fn uses(book: &StyleBook, value: &Expr) -> Result<Vec<StyleUse>, Text
 }
 
 /// The styles of `uses` that are for `node_type`, in order.
-pub(crate) fn applying(uses: &[StyleUse], node_type: &str) -> Vec<(SymbolId, StyleDecl)> {
-    uses.iter()
+pub(crate) fn applying(uses: Vec<StyleUse>, node_type: &str) -> Vec<Applying> {
+    uses.into_iter()
         .filter_map(|u| match u {
-            StyleUse::Local(id, decl, _) if target_name(decl).as_deref() == Some(node_type) => {
-                Some((*id, decl.clone()))
+            StyleUse::Style(style, _) if target_name(&style.decl).as_deref() == Some(node_type) => {
+                Some(style)
             }
             _ => None,
         })
@@ -307,6 +393,8 @@ pub(crate) fn applying(uses: &[StyleUse], node_type: &str) -> Vec<(SymbolId, Sty
 /// A binding a node's styles give it, in the order they apply.
 #[derive(Debug, Clone)]
 struct Applied {
+    /// The module of the style it is in.
+    module: usize,
     name: String,
     binding: PropertyBinding,
     /// The selector it applies under, `None` for always.
@@ -315,34 +403,33 @@ struct Applied {
 
 /// The bindings the styles `list` give a node, in the order they apply. A
 /// base on a cycle applies once per path into it; the cycle adds nothing.
-fn applied(book: &StyleBook, list: &[(SymbolId, StyleDecl)]) -> Vec<Applied> {
+fn applied(books: &StyleBooks, list: &[Applying]) -> Vec<Applied> {
     fn walk(
-        book: &StyleBook,
-        id: SymbolId,
-        style: &StyleDecl,
+        books: &StyleBooks,
+        style: &Applying,
         path: &mut Vec<SymbolId>,
         out: &mut Vec<Applied>,
     ) {
-        if path.contains(&id) {
+        if path.contains(&style.id) {
             return;
         }
-        path.push(id);
-        for base in style.bases() {
-            if let Some((base, decl)) = book.base(&base) {
-                let decl = decl.clone();
-                walk(book, base, &decl, path, out);
+        path.push(style.id);
+        for base in style.decl.bases() {
+            if let Some(base) = books.base(style.module, &base) {
+                walk(books, &base, path, out);
             }
         }
         let mut push = |binding: PropertyBinding, when: Option<Expr>| {
             if let (Some(path), Some(_)) = (binding.path(), binding.value()) {
                 out.push(Applied {
+                    module: style.module,
                     name: path_name(&path),
                     binding,
                     when,
                 });
             }
         };
-        for item in style_items(style) {
+        for item in style_items(&style.decl) {
             match item {
                 StyleItem::Binding(binding) => push(binding, None),
                 StyleItem::When(when) => {
@@ -358,8 +445,8 @@ fn applied(book: &StyleBook, list: &[(SymbolId, StyleDecl)]) -> Vec<Applied> {
         path.pop();
     }
     let mut out = Vec::new();
-    for (id, style) in list {
-        walk(book, *id, style, &mut Vec::new(), &mut out);
+    for style in list {
+        walk(books, style, &mut Vec::new(), &mut out);
     }
     out
 }
@@ -368,8 +455,15 @@ fn applied(book: &StyleBook, list: &[(SymbolId, StyleDecl)]) -> Vec<Applied> {
 /// the `when` bindings after it, the latest first.
 struct StyledProperty {
     name: String,
-    base: Option<PropertyBinding>,
-    arms: Vec<(Expr, PropertyBinding)>,
+    base: Option<Styled>,
+    arms: Vec<(Expr, Styled)>,
+}
+
+/// A binding a style gives a node, and the module of the style.
+#[derive(Debug, Clone)]
+pub(crate) struct Styled {
+    pub(crate) module: usize,
+    pub(crate) binding: PropertyBinding,
 }
 
 /// What `applied` gives each property the node does not bind itself, in the
@@ -392,12 +486,16 @@ fn styled(applied: Vec<Applied>, explicit: &[String]) -> Vec<StyledProperty> {
             }
         };
         let property = &mut out[at];
+        let styled = Styled {
+            module: item.module,
+            binding: item.binding,
+        };
         match item.when {
             None => {
-                property.base = Some(item.binding);
+                property.base = Some(styled);
                 property.arms.clear();
             }
-            Some(when) => property.arms.insert(0, (when, item.binding)),
+            Some(when) => property.arms.insert(0, (when, styled)),
         }
     }
     out
@@ -422,8 +520,13 @@ pub(crate) struct Part {
 /// What a part evaluates.
 #[derive(Debug, Clone)]
 pub(crate) enum PartValue {
-    /// A style's value of the look property `property`.
-    Look { property: String, value: Expr },
+    /// A style's value of the look property `property`, of a style of
+    /// module `module`.
+    Look {
+        property: String,
+        value: Expr,
+        module: usize,
+    },
     /// The node's own `Bool` property a selector reads.
     Own(Own),
 }
@@ -434,14 +537,14 @@ pub(crate) struct NodePlan {
     /// The properties the runtime delivers, each with the unconditional
     /// binding its base value comes from, which also folds like the node's
     /// own.
-    pub(crate) looks: Vec<(UiLook, Option<PropertyBinding>)>,
+    pub(crate) looks: Vec<(UiLook, Option<Styled>)>,
     /// The value of each part the looks name.
     pub(crate) parts: Vec<Part>,
     /// The unconditional bindings of the properties the runtime does not
     /// deliver, folded like the node's own.
-    pub(crate) constants: Vec<PropertyBinding>,
-    /// What does not mount, and why.
-    pub(crate) unmounted: Vec<(TextRange, String)>,
+    pub(crate) constants: Vec<Styled>,
+    /// What does not mount, and why, with the module of the style it is in.
+    pub(crate) unmounted: Vec<(usize, TextRange, String)>,
 }
 
 /// The node's own bindings: each property it binds by `:` or `bind`, and the
@@ -461,8 +564,8 @@ pub(crate) fn own_bindings(members: &[ViewItem]) -> Vec<(String, Own)> {
 /// bindings are `own`. A selector that folds to `false` drops its arm; one
 /// that folds to `true` makes its value the base.
 pub(crate) fn plan(
-    book: &StyleBook,
-    list: &[(SymbolId, StyleDecl)],
+    books: &StyleBooks,
+    list: &[Applying],
     own: &[(String, Own)],
     target: &str,
 ) -> NodePlan {
@@ -478,11 +581,12 @@ pub(crate) fn plan(
         part += 1;
         part
     };
-    for property in styled(applied(book, list), &explicit) {
+    for property in styled(applied(books, list), &explicit) {
         let name = property.name;
         if !delivers(target, &name) {
-            for (when, _) in &property.arms {
+            for (when, styled) in &property.arms {
                 plan.unmounted.push((
+                    styled.module,
                     when.syntax().text_range(),
                     format!("a style's `when` does not switch `{name}` of a `{target}`"),
                 ));
@@ -507,11 +611,12 @@ pub(crate) fn plan(
         }
         // A layout value has no default to fall back to while no arm holds.
         if base.is_none()
-            && let Some(&(_, _, at)) = arms.first()
+            && let Some((_, styled, at)) = arms.first()
             && LayoutSlot::of(&name).is_some()
         {
             plan.unmounted.push((
-                at,
+                styled.module,
+                *at,
                 format!(
                     "a `when` that switches `{name}` needs the style to set `{name}` outside any `when` too"
                 ),
@@ -523,18 +628,22 @@ pub(crate) fn plan(
             base: None,
             arms: Vec::new(),
         };
-        if let Some(binding) = &base {
+        if let Some(styled) = &base {
             let part = next();
             look.base = Some(part);
             plan.parts.push(Part {
                 part,
                 value: PartValue::Look {
                     property: name.clone(),
-                    value: binding.value().expect("an applied binding has a value"),
+                    value: styled
+                        .binding
+                        .value()
+                        .expect("an applied binding has a value"),
+                    module: styled.module,
                 },
             });
         }
-        for (steps, binding, _) in arms {
+        for (steps, styled, _) in arms {
             let mut when = Vec::with_capacity(steps.len());
             for step in steps {
                 when.push(match step {
@@ -557,7 +666,11 @@ pub(crate) fn plan(
                 part,
                 value: PartValue::Look {
                     property: name.clone(),
-                    value: binding.value().expect("an applied binding has a value"),
+                    value: styled
+                        .binding
+                        .value()
+                        .expect("an applied binding has a value"),
+                    module: styled.module,
                 },
             });
             look.arms.push(UiLookArm { when, part });

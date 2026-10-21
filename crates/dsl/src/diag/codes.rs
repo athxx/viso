@@ -2589,8 +2589,8 @@ input selected: Bool = false;
             without a content box; a grid's `areas` or a child's `grid.area` that reads a value; \
             a layout property a style binds to a value; a `bind` to a component input with `using`; properties forwarded \
             to a component whose view does not mount exactly one node; and styles applied to a \
-            user component node, declared in another file, or switching properties other than \
-            `background` or `opacity` under `when`. The message names the specific reason.",
+            user component node, or switching under `when` a property the runtime does not \
+            deliver or a layout property they give no base. The message names the specific reason.",
         example: Example::Source(
             r#"component A {
     view {

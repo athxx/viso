@@ -19,7 +19,7 @@
 //! pass is Viso-owned; it consumes the resolver's durable [`SymbolId`] identities and
 //! slot-based locals unchanged.
 
-use std::cell::{Cell, OnceCell, RefCell};
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use viso_behavior::native::{NativeId, NativeKind, Natives, ThreadDomain};
@@ -49,10 +49,10 @@ use super::nodes::{CallableKind, ComponentSchema, HirCallable, HirComponent, Hir
 use super::ownership::check_stored;
 use super::percent::PercentSources;
 use super::reads::ReadEnv;
-use super::style::StyleBook;
+use super::style::{StyleBook, StyleBooks};
 use super::ty::{PackageTypes, Ty};
 use super::view::{
-    HandlerSink, InputFlows, InputProp, PercentFlow, ViewEnv, check_input_bases,
+    HandlerSink, InputFlows, InputProp, ModuleView, PercentFlow, ViewEnv, check_input_bases,
     check_percent_flow, check_view,
 };
 pub(crate) use templates::PartInfo;
@@ -219,12 +219,36 @@ pub fn lower(
     let mut migrators = Vec::new();
     let mut systems = Vec::new();
     let mut shaders = Vec::new();
+    let books = StyleBooks::new(
+        modules
+            .iter()
+            .enumerate()
+            .map(|(i, module)| match (module, resolved.get(i)) {
+                (Some((cu, scope)), Some(resolved)) => (
+                    StyleBook::new(cu.items(), |s| {
+                        scope.declared.get(&s.syntax().text_range()).copied()
+                    }),
+                    &resolved.refs[..],
+                ),
+                _ => (StyleBook::default(), &[][..]),
+            })
+            .collect(),
+    );
     let envs: Vec<Option<ModuleEnv<'_>>> = modules
         .iter()
         .enumerate()
         .map(|(i, module)| {
             let (_, scope) = module.as_ref()?;
-            Some(ModuleEnv::new(&decls, scope, i, &behavior, graph.natives()))
+            let env = ModuleEnv::new(&decls, scope, i, &behavior, graph.natives());
+            Some(env.with_styles(&books))
+        })
+        .collect();
+    let views: Vec<Option<ModuleView<'_>>> = envs
+        .iter()
+        .enumerate()
+        .map(|(i, env)| {
+            let env: &dyn ViewEnv = env.as_ref()?;
+            Some((&resolved.get(i)?.refs[..], env))
         })
         .collect();
     for (i, module) in modules.iter().enumerate() {
@@ -238,6 +262,7 @@ pub fn lower(
                 cu,
                 &resolved_module.refs,
                 env,
+                &views,
                 &mut components,
                 &mut callables,
                 &mut module_diagnostics,
@@ -251,6 +276,7 @@ pub fn lower(
         per_module.push(module_diagnostics);
         input_flows.push(flows);
     }
+    drop(views);
     traits::lower_instances(&decls, &envs, resolved, &behavior, &mut per_module);
     let brushes: Vec<(usize, ShaderPaint)> = envs
         .iter()
@@ -467,6 +493,7 @@ fn lower_module(
     cu: &CompilationUnit,
     refs: &[ResolvedRef],
     env: &ModuleEnv<'_>,
+    views: &[Option<ModuleView<'_>>],
     components: &mut Vec<HirComponent>,
     callables: &mut Vec<HirCallable>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -481,14 +508,8 @@ fn lower_module(
     let mut system_hooks = Vec::new();
     let cyclic = themes::cyclic(&themes::themes_of(cu.items()), refs, env);
     const_cycles(cu.items(), refs, env, diagnostics);
-    let book = StyleBook::new(
-        cu.items(),
-        |s| env.scope.declared.get(&s.syntax().text_range()).copied(),
-        refs,
-    );
-    let styles_cyclic = styles::cyclic(&book);
-    let _ = env.styles.set(book);
-    let book = env.styles.get().expect("set above");
+    let books = env.styles.expect("a package module's env has its styles");
+    let styles_cyclic = styles::cyclic(books);
     templates::check_recursion(
         cu,
         refs,
@@ -521,8 +542,14 @@ fn lower_module(
         match decl {
             Item::Component(c) => {
                 env.focus_component(&c);
-                let component =
-                    lower_component_item(&c, refs, env, diagnostics, cap, &mut flows, &mut percent);
+                let component = lower_component_item(
+                    &c,
+                    (refs, env, views),
+                    diagnostics,
+                    cap,
+                    &mut flows,
+                    &mut percent,
+                );
                 styles::check_members(&c, env, diagnostics);
                 components.push(component);
             }
@@ -530,16 +557,28 @@ fn lower_module(
                 let c = t.as_component();
                 env.focus_component(&c);
                 templates::check_members(&t, diagnostics);
-                let component =
-                    lower_component_item(&c, refs, env, diagnostics, cap, &mut flows, &mut percent);
+                let component = lower_component_item(
+                    &c,
+                    (refs, env, views),
+                    diagnostics,
+                    cap,
+                    &mut flows,
+                    &mut percent,
+                );
                 components.push(component);
             }
             Item::System(s) => {
                 let c = s.as_component();
                 env.focus_component(&c);
                 system::check_members(&s, diagnostics);
-                let component =
-                    lower_component_item(&c, refs, env, diagnostics, cap, &mut flows, &mut percent);
+                let component = lower_component_item(
+                    &c,
+                    (refs, env, views),
+                    diagnostics,
+                    cap,
+                    &mut flows,
+                    &mut percent,
+                );
                 let hooks = system::hooks(&s, env, diagnostics);
                 let symbol = component.schema.symbol;
                 env.behavior.borrow_mut().system(symbol, &hooks);
@@ -548,7 +587,7 @@ fn lower_module(
                 components.push(component);
             }
             Item::Theme(t) => themes::lower(&t, refs, env, &cyclic, diagnostics),
-            Item::Style(st) => styles::check(&st, book, &styles_cyclic, refs, env, diagnostics),
+            Item::Style(st) => styles::check(&st, books, &styles_cyclic, refs, env, diagnostics),
             Item::Const(c) => {
                 check_const(&c, refs, env, diagnostics, &mut percent);
                 input::lower_map(&c, refs, env, diagnostics);
@@ -645,8 +684,7 @@ fn lower_module(
 /// bases into `flows`.
 fn lower_component_item(
     decl: &ComponentDecl,
-    refs: &[ResolvedRef],
-    env: &ModuleEnv<'_>,
+    (refs, env, views): (&[ResolvedRef], &ModuleEnv<'_>, &[Option<ModuleView<'_>>]),
     diagnostics: &mut Vec<Diagnostic>,
     cap: &mut CapabilityGraphBuilder,
     flows: &mut Vec<PercentFlow>,
@@ -670,6 +708,7 @@ fn lower_component_item(
             builder: env.behavior,
             module: env.module,
             component: &schema.name,
+            modules: views,
         };
         flows.push(check_view(
             refs,
@@ -1620,8 +1659,9 @@ struct ModuleEnv<'p> {
     /// Call expression range → the native function it calls, recorded as each body is
     /// typed so its effect walk sees the native's effect and thread domain.
     native_calls: RefCell<HashMap<TextRange, NativeId>>,
-    /// The styles the module declares, set before its views are walked.
-    styles: OnceCell<StyleBook>,
+    /// The styles of the package, which a node of the module applies; none
+    /// for the prelude.
+    styles: Option<&'p StyleBooks>,
     /// Each call (or trait-object conversion) typing bound to a user callable
     /// through a method, an associated path or an instantiation, by the
     /// call's span.
@@ -1791,8 +1831,8 @@ impl ViewEnv for ModuleEnv<'_> {
         self.natives
     }
 
-    fn styles(&self) -> Option<&StyleBook> {
-        self.styles.get()
+    fn styles(&self) -> Option<(&StyleBooks, usize)> {
+        Some((self.styles?, self.module))
     }
 
     fn profile(&self) -> &TargetProfile {
@@ -1893,11 +1933,19 @@ impl<'p> ModuleEnv<'p> {
             behavior,
             natives,
             native_calls: RefCell::default(),
-            styles: OnceCell::new(),
+            styles: None,
             user_calls: RefCell::default(),
             brushes: RefCell::default(),
             assets: RefCell::default(),
             list_writes: RefCell::default(),
+        }
+    }
+
+    /// The env applying the styles of `books`.
+    fn with_styles(self, books: &'p StyleBooks) -> Self {
+        ModuleEnv {
+            styles: Some(books),
+            ..self
         }
     }
 
