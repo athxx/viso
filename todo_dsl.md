@@ -1006,8 +1006,9 @@ timers (§104–§111).
   - [ ] Headless frame sheet (`--sheet`; needs a game renderer).
 - [x] A mounted view runs its module's game (`viso_view::GameSession`, a frame client of
       the window's store owned by the view's root; `todo_hotreload.md` H3.2).
-- [ ] `GameViewport` and the World's drawing: the Rendering spec's Mesh/3D lane (design
-      and ADR first), the Kit's models, terrain, camera rigs, particles and debug shapes
+- [ ] `GameViewport` and the World's drawing: the Rendering spec's Mesh/3D lane (designed
+      in ADR 0047: RHI depth + vertex layouts, scene shader profile, `PassWork::Scene`,
+      `Content::Scene`, the session's per-frame fill), the Kit's models, terrain, camera rigs, particles and debug shapes
       drawn from the session's World and Stage; the viewport takes input focus (§106.2).
 - [x] HUD reads of game state through Reactive Queries (§109, ADR 0045): a system's
       `@query fn` read as `game.<name>()`, `game.is_paused()`/`tick()`, the actions
