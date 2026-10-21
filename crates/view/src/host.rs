@@ -16,6 +16,7 @@ use viso_behavior::{
     Start, Text, Value, Vm,
 };
 use viso_ende::DecodeError;
+use viso_schema::view::GameQuery;
 use viso_ui::adaptive::{AdaptiveEnv, AnchorId, EnvField};
 use viso_ui::context::UpdateCx;
 use viso_ui::resource::ResourceId;
@@ -26,6 +27,7 @@ use viso_ui::{
 };
 
 use crate::env::env_value;
+use crate::game::GameSession;
 use crate::regions::{LocalTemplate, Mounted, RegionNode};
 use crate::scope::{Locals, Scope};
 use crate::tasks::Tasks;
@@ -171,6 +173,21 @@ enum Link {
     /// The cell holds the revision of the `env` field the slot reads; see
     /// [`EnvLink`].
     Env(StateId),
+    /// The cell holds the revision of the game query the slot reads; see
+    /// [`GameLink`].
+    Game(StateId),
+}
+
+/// A state slot holding a query of the game the view's root runs, filled
+/// from the value the session keeps whenever the query's revision cell has
+/// moved since the last fill.
+#[derive(Debug, Clone)]
+struct GameLink {
+    slot: u32,
+    query: GameQuery,
+    cell: StateId,
+    /// The revision the slot was last filled at.
+    seen: Option<StateValue>,
 }
 
 /// A state slot holding an `env` field, filled from the environment before a
@@ -203,7 +220,8 @@ struct EnvLink {
 /// stores back after a committed write.
 ///
 /// A slot holding an `env` field is filled from the environment, its VM value
-/// rebuilt only when the field's revision cell moves.
+/// rebuilt only when the field's revision cell moves; one holding a game query
+/// from the value the game's session keeps, when the query's cell moves.
 ///
 /// A handler fault rolls its transaction back, is kept as
 /// [`last_fault`](Self::last_fault), and never unwinds into the event router.
@@ -241,6 +259,13 @@ pub struct ViewHost {
     /// The environment anchor of each static component root that reads an
     /// anchored field.
     anchors: Vec<(NodeId, AnchorId)>,
+    /// The slots holding game queries.
+    game: Vec<GameLink>,
+    /// The links a reload replaced, whose cells the new build's reads of the
+    /// same queries take over.
+    replaced_game: Vec<GameLink>,
+    /// The game the view's root runs, once the view observes it.
+    session: Weak<RefCell<GameSession>>,
     /// The nodes the view's effects are mounted on.
     effect_owners: Vec<NodeId>,
     /// The reload generation.
@@ -384,6 +409,9 @@ impl ViewHost {
             shown: Vec::new(),
             env: Vec::new(),
             anchors: Vec::new(),
+            game: Vec::new(),
+            replaced_game: Vec::new(),
+            session: Weak::new(),
             effect_owners: Vec::new(),
             epoch: 0,
             this: Weak::new(),
@@ -497,6 +525,12 @@ impl ViewHost {
             Some(Link::Env(_)) => {
                 let link = self.env.iter().find(|link| link.slot as usize == slot)?;
                 Some(env_value(link.field, cells.env(), link.anchor))
+            }
+            Some(Link::Game(_)) => {
+                let link = self.game.iter().find(|link| link.slot as usize == slot)?;
+                let session = self.session.upgrade()?;
+                let session = session.try_borrow().ok()?;
+                session.query_value(&link.query).cloned()
             }
             _ => self.instance.states().get(slot).cloned(),
         }
@@ -626,12 +660,84 @@ impl ViewHost {
         });
     }
 
-    /// The revision cell of each linked `env` slot, by ascending slot.
+    /// The revision cell of each linked `env` and game slot, by ascending
+    /// slot.
     pub(crate) fn env_cells(&self) -> Vec<(u32, StateId)> {
-        let mut cells: Vec<(u32, StateId)> =
-            self.env.iter().map(|link| (link.slot, link.cell)).collect();
+        let mut cells: Vec<(u32, StateId)> = self
+            .env
+            .iter()
+            .map(|link| (link.slot, link.cell))
+            .chain(self.game.iter().map(|link| (link.slot, link.cell)))
+            .collect();
         cells.sort_unstable_by_key(|&(slot, _)| slot);
         cells
+    }
+
+    /// Fills state slot `slot` with the game query `query`, refilled each
+    /// time the session reports a new value. Returns `false`, linking
+    /// nothing, for a slot out of range.
+    pub fn link_game(&mut self, slot: usize, query: GameQuery, states: &mut StateStore) -> bool {
+        if slot >= self.mirror.len() {
+            return false;
+        }
+        if let Some(at) = self.game.iter().position(|l| l.slot as usize == slot) {
+            let link = self.game.remove(at);
+            self.replaced_game.push(link);
+        }
+        let cell = match self.replaced_game.iter().position(|l| l.query == query) {
+            Some(at) => self.replaced_game.swap_remove(at).cell,
+            None => states.alloc(StateValue::Int(0)),
+        };
+        if let Some(session) = self.session.upgrade()
+            && let Ok(mut session) = session.try_borrow_mut()
+        {
+            session.observe(&query, cell);
+        }
+        self.game.push(GameLink {
+            slot: slot as u32,
+            query,
+            cell,
+            seen: None,
+        });
+        self.link(slot, Link::Game(cell))
+    }
+
+    /// Frees the cell of each game read a reload dropped.
+    pub fn prune_game(&mut self, states: &mut StateStore) {
+        for link in self.replaced_game.drain(..) {
+            states.free(link.cell);
+        }
+    }
+
+    /// Unlinks every game slot and frees its cell, as unmounting the view
+    /// does.
+    pub fn release_game(&mut self, states: &mut StateStore) {
+        self.prune_game(states);
+        for link in self.game.drain(..) {
+            if let Some(Some(Link::Game(_))) = self.mirror.get(link.slot as usize) {
+                self.mirror[link.slot as usize] = None;
+            }
+            states.free(link.cell);
+        }
+    }
+
+    /// Lets the view read and pause `session`, the game its root runs: every
+    /// game slot observes its query, and the view's actions reach the
+    /// session's control.
+    pub fn attach_game(&mut self, session: &Rc<RefCell<GameSession>>) {
+        let Ok(mut running) = session.try_borrow_mut() else {
+            return;
+        };
+        for link in &self.game {
+            running.observe(&link.query, link.cell);
+        }
+        self.vm.services_mut().insert(running.control());
+        self.session = Rc::downgrade(session);
+    }
+
+    /// Whether the view reads the game its root runs.
+    pub fn reads_game(&self) -> bool {
+        !self.game.is_empty()
     }
 
     /// Unlinks every `env` slot and releases the view's environment anchors,
@@ -685,6 +791,23 @@ impl ViewHost {
                 self.instance.set_state(link.slot as usize, value);
             }
         }
+        if !self.game.is_empty() {
+            let session = self.session.upgrade();
+            let session = session.as_ref().and_then(|s| s.try_borrow().ok());
+            for link in &mut self.game {
+                let revision = cells.get(link.cell);
+                if revision.is_some() && revision == link.seen {
+                    continue;
+                }
+                let Some(value) = session.as_ref().and_then(|s| s.query_value(&link.query)) else {
+                    continue;
+                };
+                link.seen = revision;
+                if (link.slot as usize) < self.instance.states().len() {
+                    self.instance.set_state(link.slot as usize, value.clone());
+                }
+            }
+        }
         for locals in &scope.locals {
             locals.refresh(cells);
             let values = locals.values.borrow();
@@ -728,7 +851,9 @@ impl ViewHost {
         };
         let reads = self.vm.reads(chunk);
         let linked = |slot: usize| match self.mirror.get(slot) {
-            Some(Some(Link::Mirror(id) | Link::Track(id) | Link::Env(id))) => Some(*id),
+            Some(Some(Link::Mirror(id) | Link::Track(id) | Link::Env(id) | Link::Game(id))) => {
+                Some(*id)
+            }
             _ => None,
         };
         if reads.opaque {
@@ -1004,7 +1129,7 @@ impl ViewHost {
                 }
                 true
             }
-            Some(Link::Env(_)) => true,
+            Some(Link::Env(_) | Link::Game(_)) => true,
             None => {
                 let value = &self.instance.states()[slot];
                 for locals in scope.locals.iter().rev() {
@@ -1304,6 +1429,9 @@ impl ViewHost {
         next.values = self.values.take();
         next.shown = std::mem::take(&mut self.shown);
         next.anchors = std::mem::take(&mut self.anchors);
+        next.replaced_game = std::mem::take(&mut self.replaced_game);
+        next.replaced_game.append(&mut self.game);
+        next.session = Weak::clone(&self.session);
         next.nodes = std::mem::take(&mut self.nodes);
         next.epoch = self.epoch + 1;
         next.this = Weak::clone(&self.this);

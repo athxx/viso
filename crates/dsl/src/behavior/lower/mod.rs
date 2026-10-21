@@ -22,8 +22,8 @@ use viso_behavior::{Migrator, PersistSlot, TaskPolicy};
 use viso_schema::EnvField;
 
 use super::ir::{
-    Body, ComponentLayout, Const, EffectEntry, EnvSlot, FuncId, Function, FunctionKind, Inst,
-    NativeImport, Num, Program, Reg, Site, SystemLayout, Unsupported,
+    Body, ComponentLayout, Const, EffectEntry, EnvSlot, FuncId, Function, FunctionKind, GameSlot,
+    Inst, NativeImport, Num, Program, Reg, Site, SystemLayout, Unsupported,
 };
 use super::probe::{ProbeShape, SystemState};
 use crate::ast::{AssignablePath, AstNode, Block, Expr};
@@ -31,6 +31,7 @@ use crate::hir::infer::InferCx;
 use crate::hir::{CallableKind, ComponentSchema, Ty, TypeEnv};
 use crate::resolve::{LocalSlot, Resolution, SymbolId};
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
+use viso_schema::view::GameQuery;
 
 /// The result of lowering one construct.
 type Lower<T> = Result<T, Unsupported>;
@@ -102,6 +103,32 @@ pub(crate) struct Def {
 /// name contains the `.`.
 pub(crate) fn env_state(field: EnvField) -> String {
     format!("env.{}", field.name())
+}
+
+/// The state slot of `layout` holding the game query `query`, allocated
+/// when it has none.
+pub(crate) fn add_game_slot(layout: &mut ComponentLayout, query: &GameQuery) -> u32 {
+    if let Some(slot) = layout.game_slot(query) {
+        return slot;
+    }
+    let slot = layout.states.len() as u32;
+    layout.states.push(game_state(query));
+    layout.state_inits.push(None);
+    layout.game.push(GameSlot {
+        slot,
+        query: query.clone(),
+    });
+    slot
+}
+
+/// The name of the state slot holding the game query `query`; no source
+/// name contains the `.`.
+pub(crate) fn game_state(query: &GameQuery) -> String {
+    match query {
+        GameQuery::Paused => "game.is_paused".into(),
+        GameQuery::Tick => "game.tick".into(),
+        GameQuery::System { system, function } => format!("game.{system}.{function}"),
+    }
 }
 
 /// The reason a function that was referenced but never defined has.
@@ -338,6 +365,7 @@ impl ProgramBuilder {
             handlers: Vec::new(),
             regional: Vec::new(),
             env: Vec::new(),
+            game: Vec::new(),
             effects: Vec::new(),
             starters: Vec::new(),
             persist: Vec::new(),
@@ -541,6 +569,13 @@ impl ProgramBuilder {
             instance: 0,
         });
         Some(slot)
+    }
+
+    /// The state slot of the component registered last that holds the game
+    /// query `query` its view reads, allocated on first read.
+    pub(crate) fn game_slot(&mut self, query: &GameQuery) -> Option<u32> {
+        let layout = self.program.components.last_mut()?;
+        Some(add_game_slot(layout, query))
     }
 
     /// Records `func` as the handler of the `on` item at `at` in the view of

@@ -662,7 +662,7 @@ impl Builder<'_> {
         let local: HashSet<u32> = self.regional.values().copied().collect();
         let mut deps: Vec<CellRef> = Vec::with_capacity(slots.len());
         for slot in slots {
-            if local.contains(&slot) || self.layout.env.iter().any(|env| env.slot == slot) {
+            if local.contains(&slot) || self.layout.host_filled(slot) {
                 deps.push(CellRef::Local(slot));
             } else if let Some(symbol) = self.slots.get(slot as usize).copied().flatten() {
                 deps.push(CellRef::Shared(self.cell(symbol)));

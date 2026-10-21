@@ -14,6 +14,7 @@ use std::rc::Rc;
 use crate::component::NodeStore;
 use crate::input::Key;
 use crate::node::NodeId;
+use crate::state::StateStore;
 
 /// A client advanced by the window's frame loop.
 pub trait FrameClient: Any {
@@ -30,6 +31,12 @@ pub trait FrameClient: Any {
 
     /// Whether it needs the next frame, as a running clock does.
     fn wants_frame(&self) -> bool;
+
+    /// Writes what its frame changed that the UI reads into `states`, as the
+    /// frame's transaction begins to settle.
+    fn settle(&mut self, states: &mut StateStore) {
+        let _ = states;
+    }
 
     /// The client, to reach its concrete type.
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -109,6 +116,15 @@ impl NodeStore {
         for (_, client) in &self.frame_clients().clients {
             if let Ok(mut client) = client.try_borrow_mut() {
                 client.frame(dt);
+            }
+        }
+    }
+
+    /// Lets every client write what its frame changed into `states`.
+    pub fn settle_frame_clients(&mut self, states: &mut StateStore) {
+        for (_, client) in &self.frame_clients().clients {
+            if let Ok(mut client) = client.try_borrow_mut() {
+                client.settle(states);
             }
         }
     }

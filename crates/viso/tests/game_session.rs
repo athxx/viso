@@ -78,6 +78,49 @@ fn a_mounted_game_runs_on_the_frame_loop_until_its_root_goes() {
     );
 }
 
+#[test]
+fn a_view_macro_hud_reads_its_game() {
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
+    let root = {
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        );
+        viso::view!("fixtures/hud.vs")(&mut cx).id()
+    };
+    let label = |store: &NodeStore| {
+        let node = store.arena().children(root).next().expect("the label");
+        store.text_request(node).map(|r| r.text.clone())
+    };
+    assert_eq!(label(&store).as_deref(), Some("Score: 0"));
+    let mut computeds = viso::ui::ComputedStore::new();
+    let mut effects = EffectStore::new();
+    for _ in 0..3 {
+        store.run_frame_clients(TICK);
+        viso::ui::settle_states(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut computeds,
+            &mut projectors,
+            &mut effects,
+            &mut lists,
+            &mut Vec::new(),
+        )
+        .expect("settles");
+    }
+    assert_eq!(label(&store).as_deref(), Some("Score: 3"));
+}
+
 mod facade_loop {
     use std::cell::Cell;
     use std::time::Duration;

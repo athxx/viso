@@ -28,6 +28,7 @@ use viso_behavior::game::InputSchema;
 use viso_behavior::native::NativeId;
 use viso_behavior::{NodeAction, PersistSlot, TaskPolicy};
 use viso_schema::EnvField;
+use viso_schema::view::GameQuery;
 
 use super::probe::SystemState;
 use crate::resolve::SymbolId;
@@ -467,6 +468,10 @@ pub struct ComponentLayout {
     /// Each `env` field the view reads, held in a state slot the runtime
     /// fills rather than an initializer.
     pub env: Vec<EnvSlot>,
+    /// Each game query the view reads, held in a state slot of the view's
+    /// own component the runtime fills: one per query, whichever instance
+    /// reads it.
+    pub game: Vec<GameSlot>,
     /// The component's effects, then those of each inlined instance, in
     /// source order.
     pub effects: Vec<EffectEntry>,
@@ -504,6 +509,15 @@ pub struct EnvSlot {
     /// The component instance that reads it (`0` for the view's own
     /// component).
     pub instance: u32,
+}
+
+/// A game query a view reads and the state slot that holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameSlot {
+    /// The state slot.
+    pub slot: u32,
+    /// The query.
+    pub query: GameQuery,
 }
 
 /// The states of an inlined instance a control-flow region mounts: each mount
@@ -567,6 +581,17 @@ impl ComponentLayout {
             .iter()
             .find(|e| e.instance == instance && e.field == field)
             .map(|e| e.slot)
+    }
+
+    /// The state slot holding the game query `query`.
+    pub fn game_slot(&self, query: &GameQuery) -> Option<u32> {
+        self.game.iter().find(|g| g.query == *query).map(|g| g.slot)
+    }
+
+    /// Whether state slot `slot` is one the runtime fills: an `env` field's
+    /// or a game query's.
+    pub fn host_filled(&self, slot: u32) -> bool {
+        self.env.iter().any(|e| e.slot == slot) || self.game.iter().any(|g| g.slot == slot)
     }
 
     /// The index of the function registered at `site`.

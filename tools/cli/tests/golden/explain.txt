@@ -223,6 +223,7 @@ E9108                         Audio Realtime Rule Violated
 E9109                         UI Member in a System
 E9110                         Misplaced Probe
 E9111                         Persisted State Failed to Load or Store
+E9112                         Invalid Game Query
 C0001                         no Viso.toml found
 C0002                         Viso.toml could not be read
 C0003                         Viso.toml is not valid TOML

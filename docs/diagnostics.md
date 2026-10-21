@@ -132,6 +132,7 @@ Generated from the compiler's diagnostics registry (`crates/dsl/src/diag/codes.r
 | [E9109](#e9109) | UI Member in a System | error | game |
 | [E9110](#e9110) | Misplaced Probe | error | game |
 | [E9111](#e9111) | Persisted State Failed to Load or Store | error | runtime |
+| [E9112](#e9112) | Invalid Game Query | error | game |
 
 ## E1001
 
@@ -3191,3 +3192,27 @@ starts as `"none"`, and the runtime reports E9111.
 ```
 
 Fix: When changing a persisted state's type, add a `@migrate` function from the old type, or change the key so the new state starts fresh. Check the host's storage when writes fail.
+
+## E9112
+
+**Invalid Game Query** — error, game
+
+A view reads the game its root runs through the `@query` functions of the game's systems, as `game.name()`; the session runs each query a view reads once a frame and the bindings reading it update when its value changes. A query therefore is a `fn` of a `system`, takes no parameters, returns a value type the view can hold (no closure or native handle), and its name is unique among the package's queries.
+
+```vs
+system Score implements FixedUpdate {
+    state points = 0;
+    @query fn points_after(bonus: I64) -> I64 { points + bonus }
+    action fixed_update(frame: FixedFrame) { points += 1; }
+}
+```
+
+Fix: Keep what the view needs in a state the system's hooks update, and return it from a query with no parameters.
+
+```vs
+system Score implements FixedUpdate {
+    state points = 0;
+    @query fn points() -> I64 { points }
+    action fixed_update(frame: FixedFrame) { points += 1; }
+}
+```

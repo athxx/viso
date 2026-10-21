@@ -229,10 +229,16 @@ fn mount<'a>(
             let anchor = node_ids.get(read.anchor as usize).copied().flatten();
             host.link_env(read.slot as usize, read.field, anchor, states);
         }
+        for read in view.game() {
+            host.link_game(read.slot as usize, read.query, states);
+        }
     }
     let Some(host) = host.map(ViewHost::shared) else {
         return Ok(LoadedView { root, host: None });
     };
+    if let Some(root) = root {
+        crate::game::mount_view_game(store, &host, root);
+    }
     crate::__mount_persisted(&host, store, states);
     let mut routes: Vec<Route> = Vec::new();
     let mut shown: Vec<(NodeId, Control)> = Vec::with_capacity(view.control_count());

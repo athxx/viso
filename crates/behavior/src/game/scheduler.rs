@@ -984,6 +984,25 @@ impl Scheduler {
         &self.instances[system]
     }
 
+    /// Calls the `fn` chunk `chunk` of system `system` for a reader outside
+    /// the game, a HUD's query: against the committed World and the system's
+    /// committed state, with no World open, under one frame's budget.
+    /// Whatever it defers is dropped; the game itself does not change.
+    ///
+    /// # Errors
+    ///
+    /// The fault the call raised.
+    ///
+    /// # Panics
+    ///
+    /// If `system` is out of range.
+    pub fn query(&mut self, system: usize, chunk: u32) -> Result<Value, Fault> {
+        self.vm.set_budget(self.budget);
+        let result = self.vm.call(&mut self.instances[system], chunk, &[]);
+        self.vm.deferred_mut().clear();
+        result.map(|outcome| outcome.value)
+    }
+
     /// The faults recorded since the last [`take_faults`](Self::take_faults).
     pub fn faults(&self) -> &[SystemFault] {
         &self.faults

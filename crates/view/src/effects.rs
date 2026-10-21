@@ -36,6 +36,9 @@ pub fn mount_effects(store: &mut NodeStore, host: &Rc<RefCell<ViewHost>>, owner:
         Ok(mut view) => {
             view.set_root(owner);
             crate::game::mount_game_queued(store, view.module(), view.native(), owner);
+            if let Some(session) = crate::game::game_session(store, owner) {
+                view.attach_game(&session);
+            }
             if view.effects().is_empty() {
                 return;
             }

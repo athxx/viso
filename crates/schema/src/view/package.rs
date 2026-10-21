@@ -5,7 +5,7 @@
 //! # Wire form
 //!
 //! The blob is read in place (architecture §50A.6): a [`ProtocolTag`], the
-//! magic `VPK1`, then a section table ([`viso_ende::Sections`]) of eleven
+//! magic `VPK1`, then a section table ([`viso_ende::Sections`]) of twelve
 //! sections, each starting on an eight-byte boundary of the blob:
 //!
 //! | section   | items | content |
@@ -21,6 +21,7 @@
 //! | assets    | assets | per asset a `u64` id, a `u32` length, four zero bytes, the bytes, padding to eight |
 //! | shaders   | shaders | per shader a `u32` length, four zero bytes, the packed brush, padding to eight |
 //! | named     | nodes | 8-byte records: `NodeRef` key, node |
+//! | game      | reads | a `u32` slot, then the encoded [`GameQuery`] |
 //!
 //! Fixed-width records are read in place; the bytes of an asset and of a
 //! shader start aligned, so a decoder reads them from mapped flash where they
@@ -28,6 +29,7 @@
 //! borrowed; [`ViewPackage`] is the owned form the emitter builds and the
 //! development commit and dev link carry, decoded through the same view.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -69,6 +71,8 @@ pub struct ViewPackage {
     /// The static nodes the view's actions and handlers reach as a
     /// `NodeRef`, ascending by key.
     pub named: Vec<ViewNamed>,
+    /// The game queries the view reads (ADR 0045).
+    pub game: Vec<ViewGame>,
     /// The assets the view can show, ascending by resource.
     pub assets: Vec<ViewAsset>,
     /// The view's shader table: each shader its shader views paint with, in
@@ -112,6 +116,71 @@ pub struct ViewEnv {
     /// The pre-order index in [`ViewPackage::ui`] of the root node of the
     /// component instance that reads it, where its anchored fields resolve.
     pub anchor: u32,
+}
+
+/// A query of the game a view's root runs (ADR 0045): what a HUD reads of
+/// the game's state.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GameQuery {
+    /// Whether the game's clock is paused.
+    Paused,
+    /// The game's fixed tick.
+    Tick,
+    /// A system's `@query` function, by the system's and the function's
+    /// names.
+    System {
+        system: Box<str>,
+        function: Box<str>,
+    },
+}
+
+/// The longest system or function name a [`GameQuery`] carries.
+pub const MAX_QUERY_NAME: usize = 256;
+
+impl Encode for GameQuery {
+    fn encode(&self, enc: &mut Encoder) {
+        match self {
+            GameQuery::Paused => enc.write_u8(0),
+            GameQuery::Tick => enc.write_u8(1),
+            GameQuery::System { system, function } => {
+                enc.write_u8(2);
+                enc.write_str(system);
+                enc.write_str(function);
+            }
+        }
+    }
+}
+
+impl Decode for GameQuery {
+    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let offset = dec.position();
+        Ok(match dec.read_u8()? {
+            0 => GameQuery::Paused,
+            1 => GameQuery::Tick,
+            2 => {
+                let mut name = || {
+                    let offset = dec.position();
+                    let name = dec.read_str()?;
+                    if name.is_empty() || name.len() > MAX_QUERY_NAME {
+                        return Err(DecodeError::Malformed { offset });
+                    }
+                    Ok(Box::from(name))
+                };
+                let system = name()?;
+                let function = name()?;
+                GameQuery::System { system, function }
+            }
+            _ => return Err(DecodeError::Malformed { offset }),
+        })
+    }
+}
+
+/// A game query a view reads, and the component's state slot holding its
+/// value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewGame {
+    pub slot: u32,
+    pub query: GameQuery,
 }
 
 /// A static node of [`ViewPackage::ui`] its component reaches as a `NodeRef`.
@@ -173,7 +242,8 @@ const ENV: u32 = 7;
 const ASSETS: u32 = 8;
 const SHADERS: u32 = 9;
 const NAMED: u32 = 10;
-const SECTIONS: u32 = 11;
+const GAME: u32 = 11;
+const SECTIONS: u32 = 12;
 
 /// The bytes of a state, handler and env record.
 const STATE_RECORD: usize = 40;
@@ -341,6 +411,7 @@ pub struct ViewPackageView<'a> {
     assets: Section<'a>,
     shaders: Section<'a>,
     named: Section<'a>,
+    game: Section<'a>,
 }
 
 impl<'a> ViewPackageView<'a> {
@@ -395,6 +466,7 @@ impl<'a> ViewPackageView<'a> {
             assets: section(ASSETS),
             shaders: section(SHADERS),
             named: section(NAMED),
+            game: section(GAME),
         };
         let nodes = view.ui.node_count();
         let node = |index: u32| (index as usize) < nodes;
@@ -447,6 +519,12 @@ impl<'a> ViewPackageView<'a> {
             read_aligned(&mut dec)?;
         }
         dec.finish()?;
+        let mut dec = view.game.decoder();
+        for _ in 0..view.game.items {
+            dec.read_u32()?;
+            GameQuery::decode(&mut dec)?;
+        }
+        dec.finish()?;
         Ok((view, sections.end()))
     }
 
@@ -474,6 +552,20 @@ impl<'a> ViewPackageView<'a> {
     pub fn named(&self) -> impl ExactSizeIterator<Item = ViewNamed> + 'a {
         let records = self.named.bytes.as_chunks::<NAMED_RECORD>().0.iter();
         records.map(|r| named_of(r))
+    }
+
+    /// The game queries the view reads, each decoded as it is reached.
+    pub fn game(&self) -> impl ExactSizeIterator<Item = ViewGame> + 'a {
+        let mut dec = self.game.decoder();
+        (0..self.game.items).map(move |_| {
+            let mut read = || {
+                Ok::<_, DecodeError>(ViewGame {
+                    slot: dec.read_u32()?,
+                    query: GameQuery::decode(&mut dec)?,
+                })
+            };
+            read().expect("the view validated every game read")
+        })
     }
 
     /// The number of native control nodes.
@@ -531,6 +623,7 @@ impl<'a> ViewPackageView<'a> {
             regions: self.regions(),
             env: self.env().collect(),
             named: self.named().collect(),
+            game: self.game().collect(),
             assets: self
                 .assets()
                 .map(|(id, bytes)| ViewAsset {
@@ -545,7 +638,7 @@ impl<'a> ViewPackageView<'a> {
 
 impl ViewPackage {
     /// Writes the package's blob: the header, the section table and the
-    /// eleven sections.
+    /// twelve sections.
     fn write(&self, enc: &mut Encoder) {
         let count = |n: usize| u32::try_from(n).expect("a package table fits u32 counts");
         ProtocolTag::current().encode(enc);
@@ -614,6 +707,13 @@ impl ViewPackage {
                 enc.write_u32(named.node);
             }
             count(self.named.len())
+        });
+        sections.section(enc, |enc| {
+            for read in &self.game {
+                enc.write_u32(read.slot);
+                read.query.encode(enc);
+            }
+            count(self.game.len())
         });
         sections.finish();
     }
@@ -713,6 +813,19 @@ mod tests {
                 ViewNamed {
                     key: 1 << 16,
                     node: 0,
+                },
+            ],
+            game: vec![
+                ViewGame {
+                    slot: 2,
+                    query: GameQuery::System {
+                        system: "Rules".into(),
+                        function: "score".into(),
+                    },
+                },
+                ViewGame {
+                    slot: 3,
+                    query: GameQuery::Paused,
                 },
             ],
             assets: vec![

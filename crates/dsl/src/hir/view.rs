@@ -179,9 +179,11 @@ pub(crate) fn check_view<'a>(
         .iter()
         .filter_map(|r| match r.to {
             Resolution::Symbol(id) => Some((r.range, id)),
-            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env | Resolution::Theme => {
-                None
-            }
+            Resolution::Local(_)
+            | Resolution::Native(_)
+            | Resolution::Env
+            | Resolution::Theme
+            | Resolution::Game => None,
         })
         .collect();
     let mut walk = ViewWalk {
@@ -252,7 +254,8 @@ pub(crate) fn check_percent_flow(
                 Resolution::Local(_)
                 | Resolution::Native(_)
                 | Resolution::Env
-                | Resolution::Theme => None,
+                | Resolution::Theme
+                | Resolution::Game => None,
             })
             .collect()
     };

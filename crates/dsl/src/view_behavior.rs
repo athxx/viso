@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Vm};
-pub use viso_schema::view::{Control, ControlInput, LookArm, Switched, When};
+pub use viso_schema::view::{Control, ControlInput, GameQuery, LookArm, Switched, When};
 use viso_schema::view::{ControlKind, EventRoute, LayoutSlot, Route, ViewRegions};
 use viso_schema::{EnvField, StateValue};
 use viso_shader::program::BrushLayout;
@@ -75,6 +75,8 @@ pub struct ViewBehavior {
     controls: Vec<(NodeKey, Control)>,
     /// Each `env` field the view reads.
     pub env: Vec<EnvRead>,
+    /// Each game query the view reads.
+    pub game: Vec<GameRead>,
     /// Each node its component's actions and handlers reach as a `NodeRef`,
     /// by ascending key: the static ones the view mounts with it, the ones
     /// regions mount carrying theirs in their templates.
@@ -101,6 +103,15 @@ pub struct EnvRead {
     /// The root node of the component instance that reads it, where its
     /// anchored fields resolve.
     pub anchor: NodeKey,
+}
+
+/// A game query a view reads (ADR 0045).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameRead {
+    /// The component's state slot holding it.
+    pub slot: u32,
+    /// The query.
+    pub query: GameQuery,
 }
 
 impl ViewBehavior {
@@ -409,6 +420,14 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
             })
         })
         .collect();
+    let game = layout
+        .game
+        .iter()
+        .map(|read| GameRead {
+            slot: read.slot,
+            query: read.query.clone(),
+        })
+        .collect();
     let bytes = module.encode();
     Ok(Some(ViewBehavior {
         module,
@@ -419,6 +438,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         routes,
         controls,
         env,
+        game,
         named,
         shaders: shaders.into_iter().map(|(_, brush)| brush).collect(),
     }))

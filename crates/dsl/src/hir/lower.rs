@@ -1527,6 +1527,9 @@ impl CapabilityGraphBuilder {
     }
 }
 
+/// The attribute marking a system `fn` a query a view reads (ADR 0045).
+pub(super) const QUERY_ATTRIBUTE: &str = "query";
+
 // --- The concrete module environment ----------------------------------------------------
 
 /// The facts the environment answers about one symbol, cached from the pre-pass so the
@@ -1566,6 +1569,9 @@ struct Declarations {
     selectors: HashMap<SymbolId, Vec<String>>,
     /// Every system, which `@after`/`@before` may name.
     systems: HashSet<SymbolId>,
+    /// Every system's `@query` function, in package order, which a view
+    /// reads as `game.<name>()`.
+    queries: Vec<super::infer::game::GameQueryDecl>,
     /// Every template, placed by `use` rather than as a node.
     templates: HashSet<SymbolId>,
     /// The parts each component and template exposes, by name, with the
@@ -1698,7 +1704,7 @@ impl TypeEnv for ModuleEnv<'_> {
                 .or_else(|| self.inferred.borrow().get(id).cloned()),
             Resolution::Env => Some(Ty::named(environment())),
             Resolution::Theme => Some(Ty::named(theme_record())),
-            Resolution::Local(_) | Resolution::Native(_) => None,
+            Resolution::Local(_) | Resolution::Native(_) | Resolution::Game => None,
         }
     }
 
@@ -1721,6 +1727,14 @@ impl TypeEnv for ModuleEnv<'_> {
 
     fn messages(&self) -> Option<&crate::i18n::Messages> {
         self.decls.profile.messages.as_deref()
+    }
+
+    fn runs_game(&self) -> bool {
+        !self.decls.systems.is_empty()
+    }
+
+    fn game_queries(&self) -> &[super::infer::game::GameQueryDecl] {
+        &self.decls.queries
     }
 
     fn assets(&self) -> Option<&crate::assets::AssetCatalog> {
@@ -1765,9 +1779,11 @@ impl TypeEnv for ModuleEnv<'_> {
     fn callee_signature(&self, to: &Resolution) -> Option<(Vec<Ty>, Ty)> {
         match to {
             Resolution::Symbol(id) => self.decls.signatures.get(id).cloned(),
-            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env | Resolution::Theme => {
-                None
-            }
+            Resolution::Local(_)
+            | Resolution::Native(_)
+            | Resolution::Env
+            | Resolution::Theme
+            | Resolution::Game => None,
         }
     }
 
@@ -1872,9 +1888,11 @@ impl ReadEnv for ModuleEnv<'_> {
                     None
                 }
             }),
-            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env | Resolution::Theme => {
-                None
-            }
+            Resolution::Local(_)
+            | Resolution::Native(_)
+            | Resolution::Env
+            | Resolution::Theme
+            | Resolution::Game => None,
         }
     }
 }
@@ -1887,9 +1905,11 @@ impl EffectEnv for ModuleEnv<'_> {
     fn callee_effect(&self, to: &Resolution) -> Option<EffectClass> {
         match to {
             Resolution::Symbol(id) => self.decls.facts.get(id).and_then(|f| f.effect),
-            Resolution::Local(_) | Resolution::Native(_) | Resolution::Env | Resolution::Theme => {
-                None
-            }
+            Resolution::Local(_)
+            | Resolution::Native(_)
+            | Resolution::Env
+            | Resolution::Theme
+            | Resolution::Game => None,
         }
     }
 
@@ -2129,6 +2149,34 @@ impl ModuleScope {
                     }
                     for member in c.members() {
                         scope.record_member(decls, sym, &member, members, interner);
+                    }
+                    if let Item::System(_) = &decl {
+                        for member in c.members() {
+                            let Member::Fn(f) = &member else {
+                                continue;
+                            };
+                            let query = crate::ast::decl_attributes(member.syntax())
+                                .iter()
+                                .any(|(name, _, _)| name == QUERY_ATTRIBUTE);
+                            let (true, Some(name)) = (query, f.name()) else {
+                                continue;
+                            };
+                            let Some(function) =
+                                decl_symbol(members, interner, f.name(), Namespace::Value)
+                            else {
+                                continue;
+                            };
+                            let ret = decls
+                                .signatures
+                                .get(&function)
+                                .map_or(Ty::Unknown, |(_, ret)| ret.clone());
+                            decls.queries.push(super::infer::game::GameQueryDecl {
+                                name: name_of(Some(name.clone())),
+                                system: name_of(c.name()),
+                                ret,
+                                at: name.text_range(),
+                            });
+                        }
                     }
                 }
                 Item::Record(r) => {

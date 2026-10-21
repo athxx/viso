@@ -64,6 +64,9 @@ impl InferCx<'_> {
             },
             Some(Resolution::Env) => "the adaptive environment is read-only; a view only reads it",
             Some(Resolution::Theme) => "the theme is read-only; the host replaces it whole",
+            Some(Resolution::Game) => {
+                "the game is read through its queries; pause it with `game.pause()`"
+            }
             _ => return,
         };
         let message = format!("cannot assign to `{}`: {reason}", name.text());
@@ -97,6 +100,7 @@ impl InferCx<'_> {
             Some(Resolution::Native(_)) => Some("a native"),
             Some(Resolution::Env) => Some("the adaptive environment, which a view only reads"),
             Some(Resolution::Theme) => Some("the theme, which a view only reads"),
+            Some(Resolution::Game) => Some("the game, which a view reads through its queries"),
             None => None,
         };
         if let Some(reason) = reason {

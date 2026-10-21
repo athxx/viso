@@ -12,8 +12,8 @@ pub use control::{
     widget_role,
 };
 pub use package::{
-    ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewNamed, ViewPackage, ViewPackageView,
-    ViewShader, ViewState,
+    GameQuery, MAX_QUERY_NAME, ViewAsset, ViewControl, ViewEnv, ViewGame, ViewHandler, ViewNamed,
+    ViewPackage, ViewPackageView, ViewShader, ViewState,
 };
 pub use regions::{
     ArmTemplate, CLOSED, CellRef, EffectTemplate, EnvTemplate, GroupTemplate, HALF_OPEN,

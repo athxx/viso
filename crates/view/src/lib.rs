@@ -55,9 +55,9 @@ pub use control::{
 pub use effects::{__mount_effects, mount_effects, release_effects};
 pub use env::{__link_env, env_value};
 pub use game::{
-    GameAudioDevice, GameAudioStart, GameReloadError, GameSession, GameSwap, StartedAudio,
-    describe_fault, game_session, install_game_audio, keep_game_history, mount_game,
-    take_game_faults,
+    __link_game, GameAudioDevice, GameAudioStart, GameReloadError, GameSession, GameSwap,
+    StartedAudio, describe_fault, game_session, install_game_audio, keep_game_history, mount_game,
+    mount_view_game, take_game_faults,
 };
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
 #[cfg(feature = "inspect")]

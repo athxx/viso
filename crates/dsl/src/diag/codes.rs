@@ -3963,4 +3963,36 @@ starts as `"none"`, and the runtime reports E9111.
         commands: &[],
         reserved: false,
     },
+    CodeInfo {
+        code: "E9112",
+        severity: Severity::Error,
+        stage: Stage::Game,
+        title: "Invalid Game Query",
+        explanation: "A view reads the game its root runs through the `@query` functions of the \
+            game's systems, as `game.name()`; the session runs each query a view reads once a \
+            frame and the bindings reading it update when its value changes. A query therefore \
+            is a `fn` of a `system`, takes no parameters, returns a value type the view can \
+            hold (no closure or native handle), and its name is unique among the package's \
+            queries.",
+        example: Example::Source(
+            r#"system Score implements FixedUpdate {
+    state points = 0;
+    @query fn points_after(bonus: I64) -> I64 { points + bonus }
+    action fixed_update(frame: FixedFrame) { points += 1; }
+}
+"#,
+        ),
+        fix: "Keep what the view needs in a state the system's hooks update, and return it from \
+            a query with no parameters.",
+        fixed: Some(
+            r#"system Score implements FixedUpdate {
+    state points = 0;
+    @query fn points() -> I64 { points }
+    action fixed_update(frame: FixedFrame) { points += 1; }
+}
+"#,
+        ),
+        commands: &[],
+        reserved: false,
+    },
 ];

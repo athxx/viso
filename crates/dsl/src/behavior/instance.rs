@@ -32,7 +32,7 @@ use super::ir::{
     BinaryOp, Body, ComponentLayout, Const, EffectEntry, EnvSlot, FuncId, Function, FunctionKind,
     Inst, Num, PathStep, Program, Reg, RegionalStates, Site, UnaryOp, Unsupported,
 };
-use super::lower::block_unsupported;
+use super::lower::{add_game_slot, block_unsupported};
 use crate::ir::{UiInstance, UiMemberWhen, UiStyledInput, UiTree};
 use crate::resolve::SymbolId;
 use crate::syntax::{TextRange, TextSize};
@@ -74,6 +74,7 @@ pub(crate) fn inline_instances(program: &mut Program, root: SymbolId, tree: &UiT
             clones: HashMap::new(),
             styled: HashMap::new(),
             base: 0,
+            game: Vec::new(),
         }
         .run();
     }
@@ -148,9 +149,21 @@ struct Inliner<'p> {
     styled: HashMap<u32, FuncId>,
     /// The mounted slot of the instance's first state.
     base: u32,
+    /// Each game slot of the instance's component and the mounted
+    /// component's slot for the same query.
+    game: Vec<(u32, u32)>,
 }
 
 impl Inliner<'_> {
+    /// The mounted slot of the instance's state slot `slot`: the view's own
+    /// for a game query, else the instance's hidden state.
+    fn state_slot(&self, slot: u32) -> u32 {
+        match self.game.iter().find(|&&(own, _)| own == slot) {
+            Some(&(_, mounted)) => mounted,
+            None => self.base + slot,
+        }
+    }
+
     fn run(mut self) {
         let depth = self.instance.depth;
         // The members a style's selector reads run as the instance's too.
@@ -201,6 +214,14 @@ impl Inliner<'_> {
         }
 
         let layout = &mut self.program.components[self.root];
+        // The game queries the instance reads are the view's: one slot of the
+        // mounted component each, whichever instance reads it.
+        self.game = self
+            .child
+            .game
+            .iter()
+            .map(|g| (g.slot, add_game_slot(layout, &g.query)))
+            .collect();
         self.base = layout.states.len() as u32;
         layout.states.extend(
             self.child
@@ -428,7 +449,7 @@ impl Inliner<'_> {
             Inst::LoadState { dst, slot } => out.push(
                 Inst::LoadState {
                     dst,
-                    slot: self.base + slot,
+                    slot: self.state_slot(slot),
                 },
                 span,
             ),

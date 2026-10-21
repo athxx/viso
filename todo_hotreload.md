@@ -506,8 +506,9 @@ session comes first, then every reload item builds on it.
       §44 (the lock's endpoint line), DSL §110 (the two-phase swap, `GameSession`,
       the audio swap, tape patches, `SystemLayout::states`).
 - [ ] Not in this phase: `GameViewport` and the 3D lane that draws the World (the
-      Rendering spec's Mesh/3D lane needs its design and ADR first), HUD reads of game
-      state (§109 Reactive Query) — tracked in `todo_dsl.md` D5.
+      Rendering spec's Mesh/3D lane needs its design and ADR first) — tracked in
+      `todo_dsl.md` D5. HUD game queries re-link across a reload by query, keeping
+      their cells (ADR 0045).
 
 ### Done
 

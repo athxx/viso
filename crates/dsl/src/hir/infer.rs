@@ -29,6 +29,7 @@ pub(crate) mod asset;
 pub(crate) mod body;
 mod carry;
 pub(crate) mod format;
+pub(crate) mod game;
 mod generic;
 mod lens;
 pub(crate) mod list;
@@ -190,6 +191,18 @@ pub trait TypeEnv {
         None
     }
 
+    /// Whether the package declares a system: a view's `game` reads the
+    /// game its root runs.
+    fn runs_game(&self) -> bool {
+        false
+    }
+
+    /// The package's `@query` functions, which a view reads as
+    /// `game.<name>()`.
+    fn game_queries(&self) -> &[game::GameQueryDecl] {
+        &[]
+    }
+
     /// The package's assets, when the compile has them.
     fn assets(&self) -> Option<&crate::assets::AssetCatalog> {
         None
@@ -306,6 +319,8 @@ pub struct InferCx<'a> {
     types: HashMap<(TextRange, SyntaxKind), Ty>,
     /// Every call bound to a native function, keyed by the call's span.
     native_calls: HashMap<TextRange, NativeCall>,
+    /// Every call reading a game query, keyed by the call's span.
+    game_calls: HashMap<TextRange, viso_schema::view::GameQuery>,
     /// The whole ticks each tick duration argument of a native call converts
     /// to, keyed by the argument's span.
     ticks: HashMap<TextRange, i64>,
@@ -343,6 +358,7 @@ impl<'a> InferCx<'a> {
             mutable: HashSet::new(),
             types: HashMap::new(),
             native_calls: HashMap::new(),
+            game_calls: HashMap::new(),
             ticks: HashMap::new(),
             tr_calls: HashMap::new(),
             targets: HashMap::new(),
@@ -607,6 +623,7 @@ impl<'a> InferCx<'a> {
                 Some(variant) => self.check_against(Ty::Native(variant.ty), expected, node),
                 None => self.native_value(id, node.text_range()),
             },
+            Some(Resolution::Game) => self.bare_game(node.text_range()),
             Some(to) if segments.len() == 1 => self.resolution_ty(&to),
             Some(_) => Ty::Unknown,
             None => match builtin_variant(&segments) {
@@ -623,7 +640,7 @@ impl<'a> InferCx<'a> {
     pub(crate) fn resolution_ty(&self, to: &Resolution) -> Ty {
         match to {
             Resolution::Local(slot) => self.locals.get(slot).cloned().unwrap_or(Ty::Unknown),
-            Resolution::Symbol(_) | Resolution::Env | Resolution::Theme => {
+            Resolution::Symbol(_) | Resolution::Env | Resolution::Theme | Resolution::Game => {
                 self.env.resolution_ty(to).unwrap_or(Ty::Unknown)
             }
             Resolution::Native(_) => Ty::Unknown,
@@ -778,6 +795,9 @@ impl<'a> InferCx<'a> {
                     match callee.syntax().kind() {
                         SyntaxKind::PathExpr => {}
                         SyntaxKind::FieldExpr => {
+                            if let Some(name) = self.game_receiver(callee.syntax()) {
+                                return self.game_method_call(&name, &args, expected, node);
+                            }
                             if let Some(recv) = first_child_expr(callee.syntax()) {
                                 return match self.infer_expr(&recv, None) {
                                     Ty::Native(ty) => self.native_method_call(
@@ -2052,7 +2072,8 @@ mod tests {
                 Resolution::Local(_)
                 | Resolution::Native(_)
                 | Resolution::Env
-                | Resolution::Theme => None,
+                | Resolution::Theme
+                | Resolution::Game => None,
             }
         }
 
@@ -2062,7 +2083,8 @@ mod tests {
                 Resolution::Local(_)
                 | Resolution::Native(_)
                 | Resolution::Env
-                | Resolution::Theme => None,
+                | Resolution::Theme
+                | Resolution::Game => None,
             }
         }
     }

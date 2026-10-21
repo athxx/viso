@@ -61,9 +61,13 @@
 //! bounded lock-free queues: [`Scheduler::attach_audio`] lets `send_audio`
 //! reach the `AudioCommands` hooks and delivers the audio thread's events to
 //! the `AudioListener` hooks each frame.
+//!
+//! A view reads the game its root runs through the `@query` functions of its
+//! systems and pauses it through a [`GameControl`] (ADR 0045).
 
 mod audio;
 mod clock;
+mod control;
 mod grid;
 mod history;
 pub mod input;
@@ -101,6 +105,8 @@ pub use audio::{
     EVENT_CAPACITY,
 };
 pub use clock::{Clock, TickOverrun};
+pub(crate) use control::SESSION;
+pub use control::{GameControl, PAUSE_PATH, RESUME_PATH};
 pub use history::{DEFAULT_HISTORY_SECONDS, ReplayError, Replayed};
 pub use input::{
     Action, INPUT_ACTION_DERIVE, InputAction, InputAxis, InputBindings, InputMap, InputSchema,

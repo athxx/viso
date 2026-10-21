@@ -619,7 +619,8 @@ mod tests {
                 Resolution::Local(_)
                 | Resolution::Native(_)
                 | Resolution::Env
-                | Resolution::Theme => None,
+                | Resolution::Theme
+                | Resolution::Game => None,
             }
         }
 

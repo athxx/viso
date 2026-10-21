@@ -122,7 +122,8 @@ impl LibraryUnit {
                 Resolution::Local(_)
                 | Resolution::Native(_)
                 | Resolution::Env
-                | Resolution::Theme => None,
+                | Resolution::Theme
+                | Resolution::Game => None,
             })
             .collect();
         LibraryUnit { heads }

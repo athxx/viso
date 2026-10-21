@@ -1009,8 +1009,12 @@ timers (§104–§111).
 - [ ] `GameViewport` and the World's drawing: the Rendering spec's Mesh/3D lane (design
       and ADR first), the Kit's models, terrain, camera rigs, particles and debug shapes
       drawn from the session's World and Stage; the viewport takes input focus (§106.2).
-- [ ] HUD reads of game state through a Schema Reactive Query (§109): `session.score()`,
-      `is_paused()`, `resume()` over a `Handle<GameSession>`.
+- [x] HUD reads of game state through Reactive Queries (§109, ADR 0045): a system's
+      `@query fn` read as `game.<name>()`, `game.is_paused()`/`tick()`, the actions
+      `game.pause()`/`resume()`; one host-filled slot per query, the session runs each
+      observed query once a frame and raises its revision cell only on change; `E9112`
+      for a misused `@query` (`tests/game_hud.rs`, the `view!` path in
+      `viso/tests/game_session.rs`).
 
 ### D5.8 — Kit
 

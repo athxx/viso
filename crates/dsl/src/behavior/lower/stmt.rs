@@ -650,6 +650,7 @@ impl Lowerer<'_, '_> {
                     Some(Resolution::Native(_)) => self.bail("a native cannot be assigned"),
                     Some(Resolution::Env) => self.bail("`env` is read-only"),
                     Some(Resolution::Theme) => self.bail("`theme` is read-only"),
+                    Some(Resolution::Game) => self.bail("`game` is read-only"),
                     None => self.bail("an assignment to an unresolved name"),
                 }
             }

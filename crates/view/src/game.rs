@@ -12,6 +12,12 @@
 //! audio device swaps its audio systems with it. A game whose module has
 //! audio systems starts them on the device the app installed
 //! ([`install_game_audio`]), also when a reload adds them.
+//!
+//! The views of the root read the game through queries (ADR 0045): the
+//! session runs each query a view observes once a frame, after the frame's
+//! ticks and hooks, keeps its value, and raises the query's revision cells as
+//! the frame settles only when the value changed. A view pauses the game
+//! through the [`GameControl`] it is lent, taken at the next frame.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -19,13 +25,14 @@ use std::rc::Rc;
 
 use viso_behavior::aot::NativeCode;
 use viso_behavior::game::{
-    AudioLink, Committed, GameError, InputTape, Key as GameKey, Persist, PreparedSwap, Rebuild,
-    Scheduler, SystemFault,
+    AudioLink, Committed, GameControl, GameError, InputTape, Key as GameKey, Persist, PreparedSwap,
+    Rebuild, Scheduler, SystemFault,
 };
 use viso_behavior::native::Natives;
 use viso_behavior::{Budget, Module, Value, Vm};
+use viso_schema::view::GameQuery;
 use viso_ui::input::Key;
-use viso_ui::{FrameClient, NodeId, NodeStore};
+use viso_ui::{FrameClient, NodeId, NodeStore, StateId, StateStore, StateValue};
 
 /// The device a session's audio systems render on, provided by the host.
 pub trait GameAudioDevice {
@@ -134,6 +141,28 @@ pub struct GameSession {
     reported: Option<(usize, &'static str)>,
     /// The audio faults the link counted when last reported.
     audio_faults: u64,
+    /// The queries the views of the root observe.
+    observed: Vec<Observed>,
+    /// The pause the views ask for.
+    control: GameControl,
+}
+
+/// A query the views of a session observe, and what it last returned.
+struct Observed {
+    query: GameQuery,
+    /// The system and the chunk a system's query runs, `None` for a standard
+    /// query or one the running build does not declare.
+    target: Option<(usize, u32)>,
+    value: Value,
+    /// Raised each time the value changes.
+    revision: i32,
+    /// Whether the value changed since the cells were last raised.
+    moved: bool,
+    /// Whether its last run faulted, so a query faulting every frame is
+    /// reported once.
+    faulted: bool,
+    /// The revision cell of each view read of it.
+    cells: Vec<StateId>,
 }
 
 impl std::fmt::Debug for GameSession {
@@ -186,6 +215,8 @@ impl GameSession {
             audio: None,
             reported: None,
             audio_faults: 0,
+            observed: Vec::new(),
+            control: GameControl::new(),
         };
         if let Some(seconds) = HISTORY.with(std::cell::Cell::get) {
             session.scheduler.keep_history(seconds);
@@ -219,6 +250,137 @@ impl GameSession {
         })?;
         let slot = layout.state(state)?;
         self.scheduler.instance(index).states().get(slot).cloned()
+    }
+
+    /// The control a view pauses the game through.
+    pub fn control(&self) -> GameControl {
+        self.control.clone()
+    }
+
+    /// Observes `query` for a view read whose revision cell is `cell`: the
+    /// session runs it from now on once a frame, and raises `cell` each time
+    /// its value changes. The query runs at once the first time.
+    pub fn observe(&mut self, query: &GameQuery, cell: StateId) {
+        let at = match self.observed.iter().position(|o| o.query == *query) {
+            Some(at) => at,
+            None => {
+                let target = self.target(query);
+                if target.is_none() && matches!(query, GameQuery::System { .. }) {
+                    queue_fault(format!("the game has no query {}", query_name(query)));
+                }
+                self.observed.push(Observed {
+                    query: query.clone(),
+                    target,
+                    value: Value::Nil,
+                    revision: 0,
+                    moved: false,
+                    faulted: false,
+                    cells: Vec::new(),
+                });
+                let at = self.observed.len() - 1;
+                self.run_query(at);
+                self.observed[at].moved = false;
+                at
+            }
+        };
+        let cells = &mut self.observed[at].cells;
+        if !cells.contains(&cell) {
+            cells.push(cell);
+        }
+    }
+
+    /// What `query` last returned, `None` when no view observes it.
+    pub fn query_value(&self, query: &GameQuery) -> Option<&Value> {
+        self.observed
+            .iter()
+            .find(|o| o.query == *query)
+            .map(|o| &o.value)
+    }
+
+    /// The system and chunk of `query` in the running build.
+    fn target(&self, query: &GameQuery) -> Option<(usize, u32)> {
+        let GameQuery::System { system, function } = query else {
+            return None;
+        };
+        let module = self.scheduler.vm().module();
+        module.systems().iter().enumerate().find_map(|(at, s)| {
+            let layout = module.layout(s.component);
+            (*layout.name == **system)
+                .then(|| layout.member(function))
+                .flatten()
+                .map(|chunk| (at, chunk))
+        })
+    }
+
+    /// Runs observed query `at`, keeping its value and noting a change; a
+    /// fault keeps the last value.
+    fn run_query(&mut self, at: usize) {
+        let observed = &self.observed[at];
+        let clock = self.scheduler.clock();
+        let value = match (&observed.query, observed.target) {
+            (GameQuery::Paused, _) => Ok(Value::bool(clock.paused())),
+            (GameQuery::Tick, _) => Ok(Value::Int(clock.tick() as i64)),
+            (GameQuery::System { .. }, Some((system, chunk))) => {
+                self.scheduler.query(system, chunk)
+            }
+            (GameQuery::System { .. }, None) => return,
+        };
+        let observed = &mut self.observed[at];
+        match value {
+            Ok(value) => {
+                observed.faulted = false;
+                if value != observed.value {
+                    observed.value = value;
+                    observed.revision = observed.revision.wrapping_add(1);
+                    observed.moved = true;
+                }
+            }
+            Err(fault) => {
+                if !std::mem::replace(&mut observed.faulted, true) {
+                    queue_fault(format!(
+                        "the query {} faulted: {fault}",
+                        query_name(&observed.query)
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Runs every observed query, after a frame.
+    fn refresh(&mut self) {
+        for at in 0..self.observed.len() {
+            self.run_query(at);
+        }
+    }
+
+    /// Raises the cells of each query whose value changed, dropping the cells
+    /// of reads gone.
+    fn raise(&mut self, states: &mut StateStore) {
+        for observed in &mut self.observed {
+            if !std::mem::take(&mut observed.moved) {
+                continue;
+            }
+            let revision = StateValue::Int(observed.revision);
+            observed.cells.retain(|&cell| states.set(cell, revision));
+        }
+        self.observed.retain(|o| !o.cells.is_empty());
+    }
+
+    /// Points each observed query at the running build's code, as a swap
+    /// that changed it needs: a query the build no longer declares keeps its
+    /// last value and is reported once.
+    fn retarget(&mut self) {
+        for at in 0..self.observed.len() {
+            let target = self.target(&self.observed[at].query);
+            let observed = &mut self.observed[at];
+            if target.is_none() && observed.target.is_some() {
+                queue_fault(format!(
+                    "the game no longer has the query {}",
+                    query_name(&observed.query)
+                ));
+            }
+            observed.target = target;
+        }
     }
 
     /// Restarts the World — fresh instances, the start run again on the
@@ -382,6 +544,7 @@ impl GameSession {
         self.module = module;
         self.native = None;
         self.reported = None;
+        self.retarget();
         match &mut self.audio {
             // The new systems run; audio that does not build keeps the old
             // sound rather than failing the swap.
@@ -409,8 +572,16 @@ struct GameClient(Rc<RefCell<GameSession>>);
 impl FrameClient for GameClient {
     fn frame(&mut self, dt: f64) {
         let mut session = self.0.borrow_mut();
+        if let Some(paused) = session.control.take() {
+            session.scheduler.clock_mut().set_paused(paused);
+        }
         session.scheduler.frame(dt);
         session.report_faults();
+        session.refresh();
+    }
+
+    fn settle(&mut self, states: &mut StateStore) {
+        self.0.borrow_mut().raise(states);
     }
 
     fn key(&mut self, key: Key, pressed: bool) -> bool {
@@ -493,6 +664,15 @@ fn game_key(key: Key) -> Option<GameKey> {
     })
 }
 
+/// How `query` is spelled in a view.
+fn query_name(query: &GameQuery) -> String {
+    match query {
+        GameQuery::Paused => "`game.is_paused()`".into(),
+        GameQuery::Tick => "`game.tick()`".into(),
+        GameQuery::System { system, function } => format!("`{system}.{function}`"),
+    }
+}
+
 /// The session `owner` runs, if it runs one.
 pub fn game_session(store: &NodeStore, owner: NodeId) -> Option<Rc<RefCell<GameSession>>> {
     let mut client = store.frame_client(owner)?.try_borrow_mut().ok()?;
@@ -555,6 +735,52 @@ pub(crate) fn mount_game_queued(
         };
         queue_fault(format!("the game did not start: {why}"));
     }
+}
+
+/// Starts the game `host`'s module makes on `root` unless `root` runs one
+/// already, and lets the view read it: what a view reading the game does
+/// once its slots are linked, before its regions and values first evaluate,
+/// so they read the game's values from the first frame.
+pub fn mount_view_game(store: &mut NodeStore, host: &Rc<RefCell<crate::ViewHost>>, root: NodeId) {
+    let Ok(mut view) = host.try_borrow_mut() else {
+        return;
+    };
+    if !view.reads_game() {
+        return;
+    }
+    mount_game_queued(store, view.module(), view.native(), root);
+    if let Some(session) = game_session(store, root) {
+        view.attach_game(&session);
+    }
+}
+
+/// Links the game slots of an embedded view's host once its tree is built,
+/// then starts the game on `root` and lets the view read it: each read is a
+/// slot and its query, a tag (`0` paused, `1` tick, `2` a system's) with the
+/// system's and function's names.
+#[doc(hidden)]
+pub fn __link_game(
+    cx: &mut viso_ui::BuildCx<'_>,
+    host: &Rc<RefCell<crate::ViewHost>>,
+    root: NodeId,
+    reads: &[(usize, u8, &str, &str)],
+) {
+    cx.structure(|cx| {
+        if let Ok(mut view) = host.try_borrow_mut() {
+            for &(slot, tag, system, function) in reads {
+                let query = match tag {
+                    0 => GameQuery::Paused,
+                    1 => GameQuery::Tick,
+                    _ => GameQuery::System {
+                        system: system.into(),
+                        function: function.into(),
+                    },
+                };
+                view.link_game(slot, query, cx.states);
+            }
+        }
+        mount_view_game(cx.store, host, root);
+    });
 }
 
 /// Starts the game `module`'s systems make on `owner`, running `native` when

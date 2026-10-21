@@ -598,6 +598,9 @@ impl Lowerer<'_, '_> {
                     }
                     Some(Resolution::Env) => self.env_value()?,
                     Some(Resolution::Theme) => self.env_field(EnvField::Theme)?,
+                    Some(Resolution::Game) => {
+                        return self.bail("`game` is read only through its calls");
+                    }
                     None => return self.bail(format!("the shorthand `{name}` names nothing")),
                 },
             };
@@ -661,6 +664,14 @@ impl Lowerer<'_, '_> {
         };
         if let Some(native) = self.cx.native_call(node.text_range()) {
             return self.native(&call, native);
+        }
+        if let Some(query) = self.cx.game_call(node.text_range()) {
+            let Some(slot) = self.b.game_slot(query) else {
+                return self.bail("`game` is read only in a component's view");
+            };
+            let dst = self.reg();
+            self.emit(Inst::LoadState { dst, slot });
+            return Ok(dst);
         }
         if let Some(tr) = self.cx.tr_call(node.text_range()) {
             return self.translate(node, &tr.clone());

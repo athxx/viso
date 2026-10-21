@@ -213,7 +213,7 @@ impl InferCx<'_> {
         Ty::Unknown
     }
 
-    fn record_native(&mut self, call: TextRange, id: NativeId, receiver: bool) {
+    pub(super) fn record_native(&mut self, call: TextRange, id: NativeId, receiver: bool) {
         self.native_calls.insert(call, NativeCall { id, receiver });
         self.env.record_native(call, id);
     }

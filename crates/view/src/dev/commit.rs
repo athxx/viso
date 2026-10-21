@@ -1208,6 +1208,7 @@ fn mount_behavior(
         host.release_regions(rt.store, rt.states);
         host.release_values(rt.store);
         host.release_env(rt.states);
+        host.release_game(rt.states);
     }
     let host = next.and_then(|next| {
         let mounted = match (rt.view.take(), next) {
@@ -1221,6 +1222,7 @@ fn mount_behavior(
                 host.release_regions(rt.store, rt.states);
                 host.release_values(rt.store);
                 host.release_env(rt.states);
+                host.release_game(rt.states);
                 None
             }
             (None, Err(_)) => None,
@@ -1249,6 +1251,13 @@ fn mount_behavior(
                 mirrored.link_env(read.slot as usize, read.field, anchor, rt.states);
             }
             mirrored.prune_env(rt.states);
+            for read in &package.game {
+                mirrored.link_game(read.slot as usize, read.query.clone(), rt.states);
+            }
+            mirrored.prune_game(rt.states);
+        }
+        if let Some(root) = rt.root {
+            crate::game::mount_view_game(rt.store, &host, root);
         }
         crate::__mount_persisted(&host, rt.store, rt.states);
         Some(host)

@@ -24,6 +24,7 @@ pub static STANDARD: &[&NativeLibrary] = &[
     &CLIPBOARD,
     &crate::i18n::I18N,
     &crate::game::GAME,
+    &crate::game::SESSION,
     &crate::game::quick::QUICK,
     &crate::game::kit::KIT,
     &super::widgets::WIDGETS,

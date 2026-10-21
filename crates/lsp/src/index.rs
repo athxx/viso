@@ -98,7 +98,7 @@ impl ReferenceIndex {
         match res {
             Resolution::Symbol(id) => self.decl_span_of(id),
             Resolution::Local(_) => self.uses_of(res).first().copied(),
-            Resolution::Native(_) | Resolution::Env | Resolution::Theme => None,
+            Resolution::Native(_) | Resolution::Env | Resolution::Theme | Resolution::Game => None,
         }
     }
 }

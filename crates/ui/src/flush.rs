@@ -83,6 +83,7 @@ impl std::fmt::Display for ReactiveCycle {
 /// until they settle and returns how many rounds ran: `0` for a frame with
 /// nothing pending, which touches nothing.
 /// `changed` is reused scratch for each round's drained set, left empty.
+/// The frame clients write what their frame changed first.
 ///
 /// Each round runs, over the cells written since the last:
 ///
@@ -113,6 +114,7 @@ pub fn settle_states(
 ) -> Result<u32, ReactiveCycle> {
     let mut rounds = 0;
     store.sync_interactions(states);
+    store.settle_frame_clients(states);
     while states.has_pending() || store.has_pending_effects() {
         changed.clear();
         states.take_pending(changed);

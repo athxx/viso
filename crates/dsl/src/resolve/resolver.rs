@@ -60,6 +60,10 @@ pub enum Resolution {
     Env,
     /// The `theme` a view reads, typed `Theme`: the other context binding.
     Theme,
+    /// The game a view's root runs (ADR 0045), read only through the calls
+    /// `game.<query>()`, `game.is_paused()`, `game.tick()`, `game.pause()` and
+    /// `game.resume()`.
+    Game,
 }
 
 impl Resolution {
@@ -69,7 +73,7 @@ impl Resolution {
         match self {
             Resolution::Symbol(id) => Some(Ty::named(id)),
             Resolution::Native(id) => Some(Ty::Native(id)),
-            Resolution::Local(_) | Resolution::Env | Resolution::Theme => None,
+            Resolution::Local(_) | Resolution::Env | Resolution::Theme | Resolution::Game => None,
         }
     }
 }
@@ -1184,6 +1188,9 @@ const ENV: &str = "env";
 
 /// The name of the theme a view reads.
 const THEME: &str = "theme";
+
+/// The name of the game a view's root runs.
+const GAME: &str = "game";
 
 /// The code of a read of `env` or `theme` outside the View execution domain.
 const ENV_OUTSIDE_VIEW: &str = "E2111";
@@ -2537,6 +2544,17 @@ impl<'a> ModulePass<'a> {
                 ));
             }
             Resolution::Theme
+        } else if head.text() == GAME && self.native_base(name).is_none() {
+            if !self.in_view {
+                self.errors.push(Diagnostic::error(
+                    ENV_OUTSIDE_VIEW,
+                    head.text_range(),
+                    "`game` is read only in a view: its items, property bindings, \
+                     conditions and handlers"
+                        .to_string(),
+                ));
+            }
+            Resolution::Game
         } else {
             // Possibly a native/schema name; not diagnosed at this layer.
             return false;

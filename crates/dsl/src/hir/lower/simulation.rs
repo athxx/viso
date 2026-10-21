@@ -191,7 +191,7 @@ impl Domains {
             for &(at, to) in inside {
                 match to {
                     Resolution::Symbol(s) => mentions.push((s, at)),
-                    Resolution::Env | Resolution::Theme => uses_env.push(at),
+                    Resolution::Env | Resolution::Theme | Resolution::Game => uses_env.push(at),
                     Resolution::Local(_) | Resolution::Native(_) => {}
                 }
             }
@@ -273,6 +273,12 @@ impl Domains {
                             _ => (String::new(), false),
                         };
                         let symbol = env.member_symbol(&name);
+                        if let Some(attr) = has_attribute(&node, super::QUERY_ATTRIBUTE) {
+                            match &member {
+                                Member::Fn(f) => check_query(f, symbol, env, diagnostics),
+                                _ => misplaced_query(&attr, diagnostics),
+                            }
+                        }
                         if let Member::State(_) = member {
                             let state = states
                                 .iter()
@@ -385,6 +391,9 @@ impl Domains {
                     for member in component.members() {
                         if let Some(attr) = has_attribute(member.syntax(), "local") {
                             misplaced_local(&attr, diagnostics);
+                        }
+                        if let Some(attr) = has_attribute(member.syntax(), super::QUERY_ATTRIBUTE) {
+                            misplaced_query(&attr, diagnostics);
                         }
                         if let Some(attr) = has_attribute(member.syntax(), "probe") {
                             misplaced_probe(&attr, diagnostics);
@@ -938,6 +947,110 @@ fn misplaced_probe(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
         attr.text_range(),
         "`@probe` marks a Simulation `state` of a `system`, which a game test traces every tick",
     ));
+}
+
+fn misplaced_query(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.push(Diagnostic::error(
+        "E9112",
+        attr.text_range(),
+        "`@query` marks a `fn` of a `system`, which a view reads as `game.name()`",
+    ));
+}
+
+/// Checks the `@query` function `f`: it takes no parameters, returns a
+/// value type, and no other query of the package has its name (`E9112`).
+fn check_query(
+    f: &crate::ast::FnDecl,
+    symbol: Option<SymbolId>,
+    env: &ModuleEnv<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(name) = f.name() else {
+        return;
+    };
+    let at = name.text_range();
+    let text = name_of(Some(name));
+    if !f.params().is_empty() {
+        diagnostics.push(Diagnostic::error(
+            "E9112",
+            at,
+            format!(
+                "the query `{text}` takes parameters, but a view reads a query as a value \
+                 the game keeps, `game.{text}()`"
+            ),
+        ));
+    }
+    let ret = symbol
+        .and_then(|s| env.decls.signatures.get(&s))
+        .map(|(_, ret)| ret.clone());
+    if let Some(ret) = ret {
+        let why = match &ret {
+            Ty::Unit => Some("it returns nothing".to_owned()),
+            ty => not_value(ty, env, &mut HashSet::new()),
+        };
+        if let Some(why) = why {
+            diagnostics.push(Diagnostic::error(
+                "E9112",
+                at,
+                format!("the query `{text}` returns no value a view can hold: {why}"),
+            ));
+        }
+    }
+    let queries = &env.decls.queries;
+    let first = queries.iter().find(|q| q.name == text);
+    if let Some(first) = first
+        && first.at != at
+        && queries.iter().any(|q| q.at == at)
+    {
+        let mut diagnostic = Diagnostic::error(
+            "E9112",
+            at,
+            format!(
+                "`{}` declares the query `{text}` too; a view reads a query by its name alone",
+                first.system
+            ),
+        );
+        diagnostic
+            .related
+            .push(Related::new(first.at, "the first query of this name"));
+        diagnostics.push(diagnostic);
+    }
+}
+
+/// Why `ty` is no value a view can hold: a closure or a native handle, at
+/// any depth.
+fn not_value(ty: &Ty, env: &ModuleEnv<'_>, seen: &mut HashSet<SymbolId>) -> Option<String> {
+    match ty {
+        Ty::Fn(..) => Some("a closure".to_owned()),
+        Ty::Native(id) => {
+            let name = env.natives.ty_by_id(*id).map_or("a native type", |entry| {
+                entry.path.rsplit("::").next().unwrap_or(&entry.path)
+            });
+            Some(format!("the native handle `{name}`"))
+        }
+        Ty::Tuple(items) => items.iter().find_map(|t| not_value(t, env, seen)),
+        Ty::List(t) | Ty::Option(t) | Ty::Range(t) | Ty::RangeInclusive(t) => {
+            not_value(t, env, seen)
+        }
+        Ty::Result(a, b) => not_value(a, env, seen).or_else(|| not_value(b, env, seen)),
+        Ty::Named(id, ..) => {
+            if !seen.insert(*id) {
+                return None;
+            }
+            if let Some(fields) = env.record_fields(*id) {
+                return fields.iter().find_map(|f| not_value(&f.ty, env, seen));
+            }
+            let variants = env.enum_variants(*id)?;
+            variants.iter().find_map(|v| match &v.payload {
+                VariantPayload::Unit => None,
+                VariantPayload::Tuple(items) => items.iter().find_map(|t| not_value(t, env, seen)),
+                VariantPayload::Record(fields) => {
+                    fields.iter().find_map(|f| not_value(&f.ty, env, seen))
+                }
+            })
+        }
+        _ => None,
+    }
 }
 
 fn misplaced_persist(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {

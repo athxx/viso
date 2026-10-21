@@ -36,7 +36,7 @@ use viso_dsl::ir::ui_ir::{
     NodeKind, Placement, StyleIr, TermsIr, TrackMax, TrackSizing, UiItem, UiNode, UiTree,
 };
 use viso_dsl::resolve::SymbolId;
-use viso_dsl::view_behavior::{Control, Switched, ViewBehavior, When};
+use viso_dsl::view_behavior::{Control, GameQuery, Switched, ViewBehavior, When};
 
 /// Lowers a view's [`UiTree`] + [`BindingIr`] to the builder expression.
 ///
@@ -91,7 +91,8 @@ pub fn emit_view(
         next_key: 0,
         next_static: 0,
         record_ids: regions.is_some()
-            || behavior.is_some_and(|b| !b.env.is_empty() || !b.named.is_empty()),
+            || behavior
+                .is_some_and(|b| !b.env.is_empty() || !b.named.is_empty() || !b.game.is_empty()),
         static_keys: Vec::new(),
         shown: Vec::new(),
         missing_source: None,
@@ -116,6 +117,20 @@ pub fn emit_view(
         } else {
             quote! { ::viso::__private::viso_view::__link_env(cx, &__viso_host, &__viso_ids, &[#(#reads),*]); }
         };
+        let game = (!behavior.game.is_empty()).then(|| {
+            let reads = behavior.game.iter().map(|read| {
+                let slot = read.slot as usize;
+                let (tag, system, function) = match &read.query {
+                    GameQuery::Paused => (0u8, "", ""),
+                    GameQuery::Tick => (1u8, "", ""),
+                    GameQuery::System { system, function } => (2u8, &**system, &**function),
+                };
+                quote! { (#slot, #tag, #system, #function) }
+            });
+            quote! {
+                ::viso::__private::viso_view::__link_game(cx, &__viso_host, __viso_root.id(), &[#(#reads),*]);
+            }
+        });
         let mount = regions.map(|behavior| {
             let bytes = aligned_bytes(&behavior.region_bytes());
             let mut cells: Vec<(&SymbolId, &Ident)> = sources.iter().collect();
@@ -158,6 +173,7 @@ pub fn emit_view(
                     [::core::option::Option::None; #count];
                 let __viso_root = #root;
                 #link
+                #game
                 #mount
                 #nodes
                 #mounted
