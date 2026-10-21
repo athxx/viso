@@ -122,6 +122,9 @@ pub(crate) trait ViewEnv: TypeEnv {
     /// Whether `component` is a template, placed by `use`.
     fn is_template(&self, component: SymbolId) -> bool;
 
+    /// The root node of the view of `component`.
+    fn component_root(&self, component: SymbolId) -> Option<&access::ViewRoot>;
+
     /// The native registry the view's widgets are declared in.
     fn widgets(&self) -> &Natives;
 
@@ -646,6 +649,11 @@ impl<'a> ViewWalk<'a> {
             inner,
         };
         self.items(body.members(), scope);
+        if let (Some(owner), Some(at)) = (&owner, at)
+            && let Some(component) = owner.component
+        {
+            self.forwarded_access(component, at, &body);
+        }
         if let Some(owner) = &owner
             && owner.component.is_none()
         {
@@ -663,6 +671,56 @@ impl<'a> ViewWalk<'a> {
                 );
             }
         }
+    }
+
+    /// Checks the node of the component `component`, its type at `at`, whose
+    /// body `body` forwards gesture handlers onto the component's view root,
+    /// as that root (U8.2).
+    fn forwarded_access(&mut self, component: SymbolId, at: TextRange, body: &NodeBody) {
+        let events = self.env.component_events(component).unwrap_or_default();
+        let inputs = self.env.component_inputs(component).unwrap_or_default();
+        let forwarded: Vec<ViewItem> = body
+            .members()
+            .filter(|member| match member {
+                ViewItem::Handler(h) => h.event().is_some_and(|event| {
+                    let text = event.text();
+                    let name = text.trim_start_matches("r#");
+                    !events.iter().any(|e| e.name == name)
+                }),
+                ViewItem::Property(p) => p.path().is_some_and(|path| {
+                    let name = style::path_name(&path);
+                    !inputs.iter().any(|i| i.name == name)
+                }),
+                _ => false,
+            })
+            .collect();
+        let gestures = forwarded.iter().any(|member| match member {
+            ViewItem::Handler(h) => h
+                .event()
+                .is_some_and(|e| access::is_gesture(e.text().trim_start_matches("r#"))),
+            _ => false,
+        });
+        if !gestures {
+            return;
+        }
+        let Some(root) = self.env.component_root(component) else {
+            return;
+        };
+        let Some(widget) = self.env.widgets().widget(&root.ty) else {
+            return;
+        };
+        if widget.interactive {
+            return;
+        }
+        let strict = self.env.profile().a11y_strict;
+        access::check_forwarded(
+            widget,
+            at,
+            root,
+            (body, forwarded),
+            strict,
+            &mut self.diagnostics,
+        );
     }
 
     /// Lowers each value the styles of a native node of `owner` (whose body is

@@ -39,6 +39,7 @@ use crate::resolve::{
 };
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
+use super::access::{ViewRoot, root_of};
 use super::capability::{CapabilityNode, CapabilitySet, propagate};
 use super::component::{MemberEnv, lower_component};
 use super::effect::{BodyContext, EffectClass, EffectCx, EffectEnv};
@@ -1570,6 +1571,8 @@ struct Declarations {
     /// The parts each component and template exposes, by name, with the
     /// node each one is.
     parts: HashMap<SymbolId, Vec<PartInfo>>,
+    /// The root node of each component's view.
+    roots: HashMap<SymbolId, ViewRoot>,
     /// Every enum deriving `InputAction`.
     input_derives: HashSet<SymbolId>,
     /// Every `InputMap` constant, in module order; the first is the package's.
@@ -1825,6 +1828,10 @@ impl ViewEnv for ModuleEnv<'_> {
 
     fn is_template(&self, component: SymbolId) -> bool {
         self.decls.templates.contains(&component)
+    }
+
+    fn component_root(&self, component: SymbolId) -> Option<&ViewRoot> {
+        self.decls.roots.get(&component)
     }
 
     fn widgets(&self) -> &Natives {
@@ -2095,6 +2102,9 @@ impl ModuleScope {
                         _ => {}
                     }
                     decls.parts.insert(sym, parts_of(c));
+                    if let Some(root) = root_of(c) {
+                        decls.roots.insert(sym, root);
+                    }
                     scope.place(decls, sym);
                     decls.types.names.insert(sym, name_of(c.name()));
                     let Some(members) = table.members(sym) else {

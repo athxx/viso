@@ -222,8 +222,8 @@ fn a_handler_that_does_not_mount_keeps_the_last_good_one() {
     live.reload(&clicker("on click { count += 1; }"))
         .expect("mounts");
     let errors = live
-        .reload(&clicker("on long_press { count += 5; }"))
-        .expect_err("the runtime does not deliver long presses");
+        .reload(&clicker("on pointer_cancel { count += 5; }"))
+        .expect_err("the runtime does not deliver pointer cancels");
     assert!(
         errors.iter().all(|e| e.code == UNMOUNTED_HANDLER),
         "{errors:?}"

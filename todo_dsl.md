@@ -1324,11 +1324,12 @@ timers (§104–§111).
   - [x] An interactive non-widget node or component root without a role or name
         (`E3704`) or a keyboard path (`E3708`); warnings, errors under the
         profile's `a11y_strict`.
-  - [ ] The same for handlers a caller forwards onto a component node.
+  - [x] The same for handlers a caller forwards onto a component node: checked as
+        its view's root with the caller's properties added.
   - [x] Text concatenation or literal `format` on a Localizable property
         (`E3705`, schema `localizable` flag), literals too under the profile's
         `i18n_strict`.
-  - [ ] `--a11y strict` / `--i18n strict` on `viso check` (with the CLI).
+  - [x] `--a11y strict` / `--i18n strict` on `viso check` (with the CLI).
   - [x] `tr`, `MessageKey` and the project message catalog, its keys and
         arguments checked (`E3706`):
     - [x] Catalog format: `i18n/<locale>.toml` beside `Viso.toml`, nested

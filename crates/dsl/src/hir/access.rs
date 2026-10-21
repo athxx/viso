@@ -5,18 +5,22 @@
 //! (`E3708`); text a Localizable property shows is no concatenation and no
 //! `format` with literal text (`E3705`), and under a strict profile no
 //! literal either. Each is a warning, an error under the profile's strict
-//! accessibility or localization checks.
+//! accessibility or localization checks. A component node whose caller
+//! forwards gesture handlers onto its view's root is checked as that root
+//! with the caller's properties and handlers added.
 
 use viso_behavior::native::NativeWidget;
 
-use crate::ast::{AstNode, CallExpr, Expr, NodeBody, PathExpr, PropertyBinding, ViewItem};
+use crate::ast::{
+    AstNode, CallExpr, ComponentDecl, Expr, NodeBody, PathExpr, PropertyBinding, ViewItem,
+};
 use crate::diag::Diagnostic;
 use crate::hir::style::path_name;
 use crate::hir::ty::Ty;
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
 /// The events whose handler makes a node interactive.
-fn is_gesture(event: &str) -> bool {
+pub(crate) fn is_gesture(event: &str) -> bool {
     matches!(event, "click" | "tap" | "long_press" | "key_down") || event.starts_with("drag_")
 }
 
@@ -28,6 +32,33 @@ fn report(strict: bool, code: &'static str, at: TextRange, message: String) -> D
     }
 }
 
+/// The root node of a component's view: its type's name and its body.
+#[derive(Debug, Clone)]
+pub(crate) struct ViewRoot {
+    pub(crate) ty: String,
+    pub(crate) body: Option<NodeBody>,
+}
+
+/// The root node of the view of `decl`: the view's first item, when it is a
+/// node.
+pub(crate) fn root_of(decl: &ComponentDecl) -> Option<ViewRoot> {
+    let item = decl.view()?.block()?.items().next()?;
+    let (ty, body) = match item {
+        ViewItem::Named(node) => (node.ty()?, node.body()),
+        ViewItem::Anonymous(node) => (node.ty()?, node.body()),
+        ViewItem::Part(part) => (part.ty()?, part.body()),
+        _ => return None,
+    };
+    let segments: Vec<_> = ty.segments().collect();
+    let [head] = segments.as_slice() else {
+        return None;
+    };
+    Some(ViewRoot {
+        ty: head.text().trim_start_matches("r#").to_string(),
+        body,
+    })
+}
+
 /// Checks a node of the widget `native` (no standard interactive one), its
 /// type at `at`, whose body is `body`.
 pub(crate) fn check_node(
@@ -37,8 +68,37 @@ pub(crate) fn check_node(
     strict: bool,
     out: &mut Vec<Diagnostic>,
 ) {
-    let widget = native.name;
     let members: Vec<ViewItem> = body.members().collect();
+    check_members(native, at, &members, named(body.syntax()), strict, out);
+}
+
+/// Checks a component node at `at` whose caller's body is `body`: the
+/// component's view root `root`, of the widget `native` (no standard
+/// interactive one), with the properties and the gesture handlers `forwarded`
+/// of the caller that land on it.
+pub(crate) fn check_forwarded(
+    native: &NativeWidget,
+    at: TextRange,
+    root: &ViewRoot,
+    (body, forwarded): (&NodeBody, Vec<ViewItem>),
+    strict: bool,
+    out: &mut Vec<Diagnostic>,
+) {
+    let mut members: Vec<ViewItem> = root.body.iter().flat_map(|b| b.members()).collect();
+    members.extend(forwarded);
+    let named = named(body.syntax()) || root.body.as_ref().is_some_and(|b| named(b.syntax()));
+    check_members(native, at, &members, named, strict, out);
+}
+
+fn check_members(
+    native: &NativeWidget,
+    at: TextRange,
+    members: &[ViewItem],
+    named: bool,
+    strict: bool,
+    out: &mut Vec<Diagnostic>,
+) {
+    let widget = native.name;
     // An event the widget does not take is reported where its handler is
     // checked.
     let events: Vec<String> = members
@@ -52,8 +112,9 @@ pub(crate) fn check_node(
     if !events.iter().any(|e| is_gesture(e)) {
         return;
     }
+    // The last binding of a property wins: the caller's, after the root's.
     let own = |name: &str| {
-        members.iter().find_map(|m| match m {
+        members.iter().rev().find_map(|m| match m {
             ViewItem::Property(p) if p.path().is_some_and(|path| path_name(&path) == name) => {
                 p.value()
             }
@@ -72,7 +133,7 @@ pub(crate) fn check_node(
             ),
         ));
     }
-    if !named(body.syntax()) {
+    if !named {
         out.push(report(
             strict,
             "E3704",

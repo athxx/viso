@@ -136,3 +136,55 @@ fn a_strict_profile_makes_the_findings_errors() {
     );
     assert_eq!(findings("Text { text: name; }", strict), []);
 }
+
+/// Each finding compiling a view placing `Card` as `node`, `Card`'s view
+/// being `root`.
+fn forwarded(root: &str, node: &str) -> Vec<&'static str> {
+    let source = format!(
+        "component Card {{\n    input title: String = \"\";\n    event picked();\n    view {{ {root} }}\n}}\n\
+         export component C {{\n    state n = 0;\n    view {{ Column {{ {node} }} }}\n}}\n"
+    );
+    let compiled = compile_file_for(
+        &source,
+        &origin(),
+        Natives::standard(),
+        TargetProfile::default(),
+    );
+    compiled.diagnostics.iter().map(|d| d.code).collect()
+}
+
+#[test]
+fn handlers_a_caller_forwards_onto_a_component_check_its_root() {
+    let card = "Row { Text { text: title; } }";
+    assert_eq!(
+        forwarded(card, "Card { title: \"Go\"; on picked { n += 1; } }"),
+        CLEAN,
+        "the component's own event forwards nothing"
+    );
+    assert_eq!(
+        forwarded(card, "Card { on click { n += 1; } }"),
+        ["E3704", "E3708"],
+        "the root has no role and no keyboard path"
+    );
+    assert_eq!(
+        forwarded(
+            card,
+            "Card { semantics.role: Role::button; focusable: true; on click { n += 1; } }"
+        ),
+        CLEAN,
+        "the caller gives the root what it needs, the name inside it"
+    );
+    assert_eq!(
+        forwarded(
+            "Row { semantics.role: Role::button; focusable: true; }",
+            "Card { on click { n += 1; } }"
+        ),
+        ["E3704"],
+        "nothing names it"
+    );
+    assert_eq!(
+        forwarded("Button { text: title; }", "Card { on click { n += 1; } }"),
+        CLEAN,
+        "a standard interactive root"
+    );
+}
