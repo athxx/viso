@@ -19,6 +19,7 @@ pub mod component;
 pub mod content;
 pub mod context;
 pub mod dirty;
+pub mod drag;
 pub mod flush;
 pub mod frame_client;
 pub mod grid;
@@ -66,6 +67,7 @@ pub use component::{
 pub use content::{BrushImage, Content, TextRequest};
 pub use context::EventCx;
 pub use dirty::{DirtyCause, DirtyClass, DirtyLists, DirtyMark};
+pub use drag::{DragPhase, DragSample, MOUSE_SLOP};
 pub use flush::{
     ADAPTIVE_ROUNDS, AdaptiveCycle, EffectsRan, ReactiveCycle, SETTLE_ROUNDS, Unsettled,
     run_effects, settle_adaptive, settle_states,

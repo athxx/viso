@@ -2,17 +2,19 @@
 //! pointer is over it or a descendant), pressed (the primary button went down
 //! on it or a descendant, is not up yet, the pointer is still inside its box
 //! and no pan took the contact), focused (it holds focus), focus-visible (it
-//! holds focus that the keyboard or an assistive technology moved to it) and
-//! selected (its tab strip or radio group selects it).
+//! holds focus that the keyboard or an assistive technology moved to it),
+//! selected (its tab strip or radio group selects it) and dragging (it won a
+//! drag that runs).
 //!
 //! The states derive from what the router records — the hovered node, the
 //! pressed one and which of its ancestors the pointer left, the focus and how
-//! it got there — and from the node's semantic state, so a node keeps none of
-//! its own. One revision cell, allocated when first asked for, stands for all of
-//! them: the frame's settle raises it once after any of that moved, and a
-//! reader woken by it asks [`NodeStore::in_state`] for the nodes it styles. A
-//! pointer move that changes no hover target raises nothing, and a store
-//! nobody asked for the cell raises nothing at all.
+//! it got there, the drags under way — and from the node's semantic state, so
+//! a node keeps none of its own. One revision cell, allocated when first
+//! asked for, stands for all of them: the frame's settle raises it once after
+//! any of that moved, and a reader woken by it asks [`NodeStore::in_state`]
+//! for the nodes it styles. A pointer move that changes no hover target
+//! raises nothing, and a store nobody asked for the cell raises nothing at
+//! all.
 
 use crate::component::NodeStore;
 use crate::input::PointerId;
@@ -100,6 +102,7 @@ impl NodeStore {
             Interaction::Selected => {
                 self.semantic_state(node).and_then(|s| s.selected) == Some(true)
             }
+            Interaction::Dragging => self.dragging(node),
         }
     }
 

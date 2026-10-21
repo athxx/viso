@@ -322,6 +322,37 @@ fn a_selected_style_follows_the_strip_s_selection_attributes() {
     );
 }
 
+const DRAGGED: &str = r#"
+style Grab for Text {
+    when dragging { opacity: 0.5f32; }
+}
+export component Dragged {
+    state shift = Offset { x: 0dp, y: 0dp };
+    view {
+        Text {
+            width: 40dp;
+            height: 20dp;
+            styles: [Grab];
+            translate: shift;
+            on drag_move(event) { shift = event.total; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_drag_exports_as_a_captured_pointer_and_its_winner_as_dragging() {
+    let page = export(DRAGGED, false).unwrap();
+    assert!(
+        page.styles.contains("[data-viso-dragging]"),
+        "{}",
+        page.styles
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains(", 16, false, "), "{script}");
+    assert!(script.contains("setPointerCapture"), "{script}");
+}
+
 const CLIPPED: &str = r#"
 export component Clipped {
     state on = true;

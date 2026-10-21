@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use viso_behavior::{Aggregate, Value};
 use viso_ui::{
-    EventCx, Interaction, Key, KeyEvent, LookValue, Modifiers, NodeId, NodeStore, Notice,
-    PointerButtons, PointerId, PointerPhase, Vec2,
+    DragPhase, EventCx, Interaction, Key, KeyEvent, LookValue, Modifiers, NodeId, NodeStore,
+    Notice, PointerButtons, PointerId, PointerPhase, Vec2,
 };
 
 use crate::layout_values::length;
@@ -27,6 +27,9 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     if route.is_key() {
         let key = cx.key()?;
         return (key.pressed == (route == EventRoute::KeyDown)).then(|| key_event(key));
+    }
+    if route.is_drag() {
+        return drag_event(route, cx);
     }
     let pointer = cx.pointer()?;
     let phase = match route {
@@ -61,6 +64,28 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
             modifiers(pointer.modifiers),
         ]),
     })
+}
+
+/// The `DragEvent` of `route` when the sample under dispatch is that sample of
+/// a drag. Its position is local to the dispatching node, its travel in window
+/// axes.
+fn drag_event(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
+    let drag = cx.drag()?;
+    let phase = match route {
+        EventRoute::DragStart => DragPhase::Start,
+        EventRoute::DragMove => DragPhase::Move,
+        _ => DragPhase::End,
+    };
+    if drag.phase != phase {
+        return None;
+    }
+    let at = cx.local(drag.at.x, drag.at.y);
+    let offset = |v: Vec2| record([mixed(v.x), mixed(v.y)]);
+    Some(record([
+        point(at.x, at.y),
+        offset(drag.delta),
+        offset(drag.total),
+    ]))
 }
 
 /// The route a notice runs, and its payload.
@@ -342,7 +367,7 @@ mod tests {
             assert_eq!(EventRoute::of(route.event()), named);
             assert_eq!(EventRoute::from_u8(route as u8), Some(route));
         }
-        assert_eq!(EventRoute::of("drag_start"), None);
+        assert_eq!(EventRoute::of("long_press"), None);
         assert_eq!(EventRoute::of("changed"), None);
         assert_eq!(EventRoute::from_u8(EventRoute::ALL.len() as u8), None);
     }

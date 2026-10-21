@@ -766,6 +766,12 @@ impl<'a> EventCx<'a> {
             .is_some_and(|place| place.store.in_state(place.node, state))
     }
 
+    /// The drag sample the pointer sample under dispatch carries, `None` for
+    /// a sample no drag of this pointer sees.
+    pub fn drag(&self) -> Option<crate::drag::DragSample> {
+        self.place?.store.drag_sample(self.pointer_id)
+    }
+
     /// The dispatching node's laid-out size, along its own axes.
     pub fn size(&self) -> Option<Vec2> {
         self.place.map(|place| {

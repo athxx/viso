@@ -40,11 +40,18 @@ pub enum EventRoute {
     /// Any node's `animation_end` (`AnimationEnd`): an animation it ran by
     /// `NodeRef::animate` ended.
     AnimationEnd = 14,
+    /// `drag_start` (`DragEvent`): a press on the node or under it travelled
+    /// past the slop and the node won the drag.
+    DragStart = 15,
+    /// `drag_move` (`DragEvent`): the drag's pointer moved.
+    DragMove = 16,
+    /// `drag_end` (`DragEvent`): the drag's pointer lifted or was cancelled.
+    DragEnd = 17,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 15] = [
+    pub const ALL: [EventRoute; 18] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -60,6 +67,9 @@ impl EventRoute {
         EventRoute::ScrollChanged,
         EventRoute::VisibleRangeChanged,
         EventRoute::AnimationEnd,
+        EventRoute::DragStart,
+        EventRoute::DragMove,
+        EventRoute::DragEnd,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -89,6 +99,9 @@ impl EventRoute {
             EventRoute::ScrollChanged => "scroll_changed",
             EventRoute::VisibleRangeChanged => "visible_range_changed",
             EventRoute::AnimationEnd => "animation_end",
+            EventRoute::DragStart => "drag_start",
+            EventRoute::DragMove => "drag_move",
+            EventRoute::DragEnd => "drag_end",
         }
     }
 
@@ -110,6 +123,9 @@ impl EventRoute {
             EventRoute::ScrollChanged => "ScrollChanged",
             EventRoute::VisibleRangeChanged => "VisibleRangeChanged",
             EventRoute::AnimationEnd => "AnimationEnd",
+            EventRoute::DragStart => "DragStart",
+            EventRoute::DragMove => "DragMove",
+            EventRoute::DragEnd => "DragEnd",
         }
     }
 
@@ -121,6 +137,14 @@ impl EventRoute {
     /// Whether a key sample delivers it; otherwise a pointer sample does.
     pub fn is_key(self) -> bool {
         matches!(self, EventRoute::KeyDown | EventRoute::KeyUp)
+    }
+
+    /// Whether a drag the node wins delivers it.
+    pub fn is_drag(self) -> bool {
+        matches!(
+            self,
+            EventRoute::DragStart | EventRoute::DragMove | EventRoute::DragEnd
+        )
     }
 
     /// Whether the node reports it after a frame's layout rather than an
@@ -154,6 +178,7 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
         &["position", "button", "buttons", "pointer_kind", "modifiers"],
     ),
     ("KeyEvent", &["key", "repeat", "modifiers"]),
+    ("DragEvent", &["position", "delta", "total"]),
     ("Offset", &["x", "y"]),
     ("SizeDp", &["width", "height"]),
     ("ScrollChanged", &["offset", "viewport", "content"]),

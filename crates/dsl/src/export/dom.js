@@ -279,6 +279,66 @@ const pointer = (route, e, el) => {
     default: return rec([point(e, el), button(e), buttons(e), kind(e), mods(e)]);
   }
 };
+const mixed = (v) => rec([v, 0, 0, 0, 0]);
+
+// The lift that ends a drag clicks nothing; a key's click is no lift.
+let dragged = false;
+addEventListener("pointerdown", () => { dragged = false; }, true);
+addEventListener("click", (e) => {
+  if (!dragged || e.detail === 0) return;
+  dragged = false;
+  e.stopPropagation();
+  e.preventDefault();
+}, true);
+
+// Makes `el` take drags: a primary press at or under it that no nearer
+// element took arms one, and travel past the slop starts it — `el` captures
+// the pointer and is dragging until the lift. Each sample bubbles from `el`
+// as a `viso-drag` event: its phase (0 start, 1 move, 2 end), the pointer
+// event, and the travel since the last sample and since the press.
+const draggable = (el) => {
+  if (el.$drag) return;
+  el.$drag = true;
+  el.style.touchAction = "none";
+  let press = null;
+  const send = (phase, e) => {
+    const x = e.clientX, y = e.clientY;
+    const tx = x - press.x, ty = y - press.y;
+    const detail = phase === 0
+      ? { phase, e, dx: tx, dy: ty, tx, ty }
+      : { phase, e, dx: x - press.lx, dy: y - press.ly, tx, ty };
+    press.lx = x;
+    press.ly = y;
+    el.dispatchEvent(new CustomEvent("viso-drag", { bubbles: true, detail }));
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.$drag || off(e.target)) return;
+    e.$drag = el;
+    press = { id: e.pointerId, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, on: false };
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!press || e.pointerId !== press.id) return;
+    if (press.on) return send(1, e);
+    const slop = e.pointerType === "mouse" ? 4 : 8;
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < slop) return;
+    press.on = true;
+    el.setPointerCapture(e.pointerId);
+    el.dataset.visoDragging = "";
+    send(0, e);
+  });
+  const end = (e) => {
+    if (!press || e.pointerId !== press.id) return;
+    if (press.on) {
+      send(2, e);
+      delete el.dataset.visoDragging;
+      dragged = true;
+    }
+    press = null;
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+};
+
 const DOM = ["click", "click", "pointerdown", "pointermove", "pointerup", "pointerenter", "pointerleave", "keydown", "keyup"];
 
 // Calls `fire` with the payload of each `route` event of `el`, a control
@@ -299,9 +359,8 @@ const listen = (el, route, capture, control, fire) => {
       if (e.key === "Enter" && !e.repeat && !e.isComposing) fire(null);
     }), capture);
   } else if (route === 12) {
-    const len = (v) => rec([v, 0, 0, 0, 0]);
     el.addEventListener("scroll", () => fire(rec([
-      rec([len(el.scrollLeft), len(el.scrollTop)]),
+      rec([mixed(el.scrollLeft), mixed(el.scrollTop)]),
       rec([el.clientWidth, el.clientHeight]),
       rec([el.scrollWidth, el.scrollHeight]),
     ])), { passive: true, capture });
@@ -335,6 +394,12 @@ const listen = (el, route, capture, control, fire) => {
     new MutationObserver(report).observe(el, { childList: true });
   } else if (route === 14) {
     el.addEventListener("viso-animationend", (e) => fire(rec([e.detail.target, bool(e.detail.finished)])), capture);
+  } else if (route >= 15) {
+    draggable(el);
+    el.addEventListener("viso-drag", live((e) => {
+      const d = e.detail;
+      if (d.phase === route - 15) fire(rec([point(d.e, el), rec([mixed(d.dx), mixed(d.dy)]), rec([mixed(d.tx), mixed(d.ty)])]));
+    }), capture);
   } else {
     const current = () => items(el).findIndex((c) => c.getAttribute(el.$radio ? "aria-checked" : "aria-selected") === "true");
     const choose = (i) => {

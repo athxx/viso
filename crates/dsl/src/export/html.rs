@@ -1397,6 +1397,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                         viso_schema::Interaction::Selected => {
                             r#":is([aria-selected="true"],[role="radio"][aria-checked="true"])"#
                         }
+                        viso_schema::Interaction::Dragging => "[data-viso-dragging]",
                     }
                     .to_owned(),
                 ),

@@ -4835,6 +4835,8 @@ Payload 基线字段：
 - `hover_*` 不是语义事件：触摸设备上不触发，指针 Capture 期间被抑制；任何功能不得只依赖 hover（U8.2）；
 - Handler 在 Action Transaction 中运行，可以 `start` Task；Task 随节点子树 Dispose 取消（ADR 0032）。
 
+当前实现：`drag_*` 由运行时投递，`long_press` 尚未投递（`E3711`）。主按钮按下时，按下节点及其祖先中最近的声明了 `drag_*` 的节点武装一次拖动；指针离按下点超过阈值（鼠标 4dp，触摸 8dp）时拖动开始：该节点获得指针 Capture，按下被取消（抬起不产生 `click`/`tap`），先收到 `drag_start`，此后每次移动收到 `drag_move`，抬起或取消时收到 `drag_end`，期间处于 `dragging`。触摸落点与拖动节点之间有滚动视口时，视口先仲裁：可平移则平移胜出、拖动作废，无可平移余量时拖动胜出；拖动节点在视口内（或就是视口）时拖动胜出。`position` 为分派节点的局部坐标，`delta` 是相对上一个拖动样本的位移（`drag_start` 为相对按下点），`total` 是相对按下点的位移，均沿窗口坐标轴。Web 导出以 Pointer Events 实现，开始时 `setPointerCapture`，节点带 `data-viso-dragging`，拖动结束后的那次点击被吞掉。
+
 ### U7.2 `focusable` 与焦点顺序
 
 | Property    | 类型   | 默认                           | 失效                         |
@@ -5074,7 +5076,7 @@ Widget Schema 从下表中声明它支持的选择器；Style 使用 Widget 不�
 - 同一 Style 内 `when` 块按源码顺序应用，后者覆盖前者；标准 Style 按"静止 → `hover` → `pressed` → `focus_visible` → `disabled`"书写，得到 `pressed > hover > 静止` 的优先级；
 - 节点显式 Property 优先于所有 Style（§59），因此依赖选择器的外观应写在 Style 中。
 
-当前实现：带标准输入事件的原生 Widget 支持 `hover`、`pressed`、`focused`、`focus_visible`、`selected`；有 `Bool` 属性 `enabled`、`checked`、`invalid` 的 Widget 分别支持 `disabled`、`checked`、`invalid`。`expanded`、`dragging` 尚无 Widget 支持（`E2001`）。交互状态由节点存储从路由器记录的事实导出：`hover` 是悬停目标或其祖先，`pressed` 是主按钮按下的命中节点或其祖先、直到该指针抬起，指针移出某个节点的盒子时该节点不再 `pressed`、移回再恢复，触摸平移胜出时整个按下取消；`click`、`tap` 只在按下所在、指针仍在其内的节点上抬起时派发，因此在别处抬起或被平移取消的按下不产生点击。`focused` 是焦点节点，`focus_visible` 是键盘或辅助技术移入的焦点，`selected` 是 `Tabs`、`RadioGroup` 选中的直接子节点（Web 导出为 `aria-selected`，单选项为 `aria-checked`）。存储维护一个修订单元，在 Flush 开始时、上述事实自上一轮变化后提升一次；读取交互选择器的节点依赖它并只重新求值自身的外观入口。
+当前实现：带标准输入事件的原生 Widget 支持 `hover`、`pressed`、`focused`、`focus_visible`、`selected`、`dragging`；有 `Bool` 属性 `enabled`、`checked`、`invalid` 的 Widget 分别支持 `disabled`、`checked`、`invalid`。`expanded` 尚无 Widget 支持（`E2001`）。交互状态由节点存储从路由器记录的事实导出：`hover` 是悬停目标或其祖先，`pressed` 是主按钮按下的命中节点或其祖先、直到该指针抬起，指针移出某个节点的盒子时该节点不再 `pressed`、移回再恢复，触摸平移胜出时整个按下取消；`click`、`tap` 只在按下所在、指针仍在其内的节点上抬起时派发，因此在别处抬起或被平移取消的按下不产生点击。`focused` 是焦点节点，`focus_visible` 是键盘或辅助技术移入的焦点，`selected` 是 `Tabs`、`RadioGroup` 选中的直接子节点（Web 导出为 `aria-selected`，单选项为 `aria-checked`）。存储维护一个修订单元，在 Flush 开始时、上述事实自上一轮变化后提升一次；读取交互选择器的节点依赖它并只重新求值自身的外观入口。
 
 ### U12.2 标准 Theme Schema
 

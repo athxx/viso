@@ -34,6 +34,9 @@ pub fn attach(
         cx.on_key(node, handler(host, keys, control, scope));
         cx.focusable(node, true);
     }
+    if drags(routes) {
+        cx.draggable(node, true);
+    }
     if let Some((kinds, watcher)) = notices(host, routes, scope) {
         cx.watch(node, kinds, watcher);
     }
@@ -69,6 +72,12 @@ pub fn attach_node(
         store.set_key_handler(id, Box::new(handler(host, keys, control, scope)));
         store.set_focusable(id, true);
     }
+    store.set_draggable(id, drags(routes));
+}
+
+/// Whether `routes` take drags.
+fn drags(routes: &[Route]) -> bool {
+    routes.iter().any(|route| route.event.is_drag())
 }
 
 /// The routes a key handler runs and the routes a pointer handler runs, `None`

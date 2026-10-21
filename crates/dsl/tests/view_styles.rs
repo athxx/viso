@@ -13,7 +13,9 @@ mod support;
 
 use support::{Rt, origin};
 use viso_dsl::frontend::compile_file;
-use viso_ui::{NodeId, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rgba, Srgb};
+use viso_ui::{
+    NodeId, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rgba, Srgb, Vec2,
+};
 
 /// No diagnostic.
 const CLEAN: [&str; 0] = [];
@@ -115,7 +117,8 @@ fn a_selector_is_one_the_target_supports() {
         ),
         CLEAN
     );
-    assert_eq!(codes(&style("dragging"), "Text {}"), ["E2001"]);
+    assert_eq!(codes(&style("dragging"), "Text {}"), CLEAN);
+    assert_eq!(codes(&style("expanded"), "Text {}"), ["E2001"]);
     assert_eq!(codes(&style("hovering"), "Text {}"), ["E2001"]);
     assert_eq!(codes(&style("on == true"), "Text {}"), ["E2103"]);
 }
@@ -238,10 +241,15 @@ fn look(rt: &Rt, n: usize) -> (Rgba, f32) {
 
 /// A pointer sample at the middle of the `n`th box, then a frame.
 fn pointer(rt: &mut Rt, n: usize, phase: PointerPhase) {
+    sample(rt, 5.0, 5.0 + 20.0 * n as f32, phase);
+}
+
+/// A primary pointer sample at `(x, y)`, then a frame.
+fn sample(rt: &mut Rt, x: f32, y: f32, phase: PointerPhase) {
     let root = rt.root.expect("mounted");
     let event = PointerEvent {
-        x: 5.0,
-        y: 5.0 + 20.0 * n as f32,
+        x,
+        y,
         phase,
         buttons: PointerButtons::PRIMARY,
         modifiers: Default::default(),
@@ -397,6 +405,65 @@ fn a_style_on_a_component_node_does_not_mount_yet() {
     let compiled = compile_file(source, &origin());
     let codes: Vec<_> = compiled.errors().map(|d| d.code).collect();
     assert_eq!(codes, ["E3711"]);
+}
+
+#[test]
+fn a_drag_past_the_slop_runs_its_handlers_shows_dragging_and_clicks_nothing() {
+    let source = r#"
+style Grab for Text {
+    opacity: 0.5f32;
+    when dragging { opacity: 1.0f32; }
+}
+export component Probe {
+    state shift = Offset { x: 0dp, y: 0dp };
+    state starts = 0;
+    state moves = 0;
+    state ends = 0;
+    state clicks = 0;
+    view {
+        Column {
+            width: 400dp;
+            height: 100dp;
+            Text {
+                width: 40dp;
+                height: 20dp;
+                styles: [Grab];
+                translate: shift;
+                on drag_start(event) { starts += 1; }
+                on drag_move(event) { moves += 1; shift = event.total; }
+                on drag_end(event) { ends += 1; }
+                on click { clicks += 1; }
+            }
+        }
+    }
+}
+"#;
+    let mut rt = Rt::mount(source);
+    let node = children(&rt)[0];
+    let counts = |rt: &Rt| {
+        rt.ints(["starts", "moves", "ends", "clicks"])
+            .map(Option::unwrap)
+    };
+    sample(&mut rt, 5.0, 5.0, PointerPhase::Down);
+    sample(&mut rt, 7.0, 5.0, PointerPhase::Move);
+    assert_eq!(counts(&rt), [0, 0, 0, 0], "inside the slop");
+    assert_eq!(look(&rt, 0).1, 0.5);
+    sample(&mut rt, 15.0, 5.0, PointerPhase::Move);
+    assert_eq!(counts(&rt), [1, 0, 0, 0]);
+    assert_eq!(look(&rt, 0).1, 1.0, "dragging");
+    sample(&mut rt, 25.0, 8.0, PointerPhase::Move);
+    assert_eq!(counts(&rt), [1, 1, 0, 0]);
+    assert_eq!(rt.store.translate(node), Vec2 { x: 20.0, y: 3.0 });
+    sample(&mut rt, 25.0, 8.0, PointerPhase::Up);
+    assert_eq!(
+        counts(&rt),
+        [1, 1, 1, 0],
+        "the lift ends the drag, not a click"
+    );
+    assert_eq!(look(&rt, 0).1, 0.5);
+    rt.click_at(30.0, 10.0);
+    assert_eq!(counts(&rt), [1, 1, 1, 1], "a press that stays put clicks");
+    assert_eq!(rt.fault(), None);
 }
 
 #[test]

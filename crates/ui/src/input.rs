@@ -259,6 +259,7 @@ use crate::binding::BindingTable;
 use crate::component::NodeStore;
 use crate::context::EventCx;
 use crate::dirty::DirtyClass;
+use crate::drag::MOUSE_SLOP;
 use crate::hit_test::HitTestTree;
 use crate::layout::OnAxis;
 use crate::layout::{Axis, Vec2};
@@ -376,8 +377,11 @@ pub fn route_contact(
     if contact.direct {
         match ev.phase {
             PointerPhase::Down => store.contacts_mut().begin(pointer, [ev.x, ev.y]),
-            PointerPhase::Move => {
+            // A drag armed above no scroll viewport, or one that started,
+            // keeps the contact from a pan.
+            PointerPhase::Move if !store.drag_leads(pointer) => {
                 if let Some(ran) = pan_step(store, states, bindings, pointer, &ev) {
+                    store.drop_drag(pointer);
                     chain.clear();
                     return ran;
                 }
@@ -395,10 +399,36 @@ pub fn route_contact(
                     return true;
                 }
             }
-            PointerPhase::Enter => {}
+            _ => {}
         }
     }
+    let at = [ev.x, ev.y];
+    match ev.phase {
+        PointerPhase::Move => {
+            let slop = if contact.direct {
+                TOUCH_SLOP
+            } else {
+                MOUSE_SLOP
+            };
+            // The node the drag took the contact from loses it, as to a pan.
+            if let Some(lost) = store.step_drag(pointer, at, slop) {
+                hover_dispatch(
+                    store,
+                    states,
+                    bindings,
+                    lost,
+                    PointerPhase::Leave,
+                    pointer,
+                    &ev,
+                );
+            }
+        }
+        PointerPhase::Up => store.end_drag(pointer, at),
+        PointerPhase::Leave if contact.direct => store.end_drag(pointer, at),
+        _ => {}
+    }
     let ran = route_sample(store, states, bindings, root, contact, &ev, chain);
+    store.settle_drag(pointer);
     // The release reaches the chain while the press still stands, so a node
     // tells a click it was pressed from one that only lies under the lift.
     let lifted = ev.phase == PointerPhase::Up;
@@ -476,6 +506,7 @@ fn route_sample(
     match ev.phase {
         PointerPhase::Down if ev.buttons.contains(PointerButtons::PRIMARY) && !inert => {
             store.press(target, pointer);
+            store.arm_drag(pointer, target, [ev.x, ev.y], contact.direct);
         }
         PointerPhase::Move | PointerPhase::Up => store.follow_press(pointer, ev.x, ev.y),
         _ => {}
@@ -3451,6 +3482,32 @@ mod contact_tests {
             "the second press took it"
         );
         s.touch(1, 30.0, 20.0, PointerPhase::Up);
+    }
+
+    #[test]
+    fn a_node_that_takes_drags_wins_the_contact_from_the_viewport_above_it() {
+        let mut s = scene(false);
+        s.store.set_draggable(s.a, true);
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 10.0, 10.0, PointerPhase::Move);
+        assert_eq!(s.store.scroll(s.root).y, 0.0, "no pan");
+        assert!(s.store.dragging(s.a) && s.store.in_state(s.a, Interaction::Dragging));
+        assert!(
+            !s.store.in_state(s.a, Interaction::Pressed),
+            "the drag took the press"
+        );
+        assert_eq!(s.store.capture_of(PointerId(1)), Some(s.a));
+        s.touch(1, 10.0, 5.0, PointerPhase::Up);
+        assert!(!s.store.dragging(s.a));
+        assert_eq!(s.store.capture(), None);
+        assert_eq!(
+            s.log(),
+            vec![
+                (0, PointerPhase::Down),
+                (0, PointerPhase::Move),
+                (0, PointerPhase::Up)
+            ]
+        );
     }
 
     #[test]

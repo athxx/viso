@@ -656,6 +656,8 @@ pub struct NodeStore {
     structure_hooks: crate::structure::StructureHooks,
     /// Cold: the nodes reporting their scroll or visible rows after layout.
     notices: crate::notice::Notices,
+    /// The nodes that take drags and the drags under way.
+    pub(crate) drags: crate::drag::Drags,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
     /// re-folded into `layout` when it changes. Empty in a tree of plain `dp`
     /// and `%` lengths.
@@ -772,6 +774,7 @@ impl NodeStore {
         self.contacts.clear();
         self.hovered = None;
         self.interaction_states.clear();
+        self.drags.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -5913,6 +5916,12 @@ impl<'a> BuildCx<'a> {
         handler: impl FnMut(&mut EventCx<'_>) + 'static,
     ) -> Handle {
         self.store.set_key_handler(handle.id, Box::new(handler));
+        handle
+    }
+
+    /// Make an already-declared node take drags (default: it takes none).
+    pub fn draggable(&mut self, handle: Handle, takes: bool) -> Handle {
+        self.store.set_draggable(handle.id, takes);
         handle
     }
 

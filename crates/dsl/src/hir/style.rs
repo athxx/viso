@@ -30,12 +30,13 @@ use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::{SyntaxKind, TextRange};
 
 /// The interaction selectors and the state each reads.
-pub(crate) const INTERACTION_SELECTORS: [(&str, Interaction); 5] = [
+pub(crate) const INTERACTION_SELECTORS: [(&str, Interaction); 6] = [
     ("hover", Interaction::Hovered),
     ("pressed", Interaction::Pressed),
     ("focused", Interaction::Focused),
     ("focus_visible", Interaction::FocusVisible),
     ("selected", Interaction::Selected),
+    ("dragging", Interaction::Dragging),
 ];
 
 /// The standard selectors a node's own property decides: the selector, the
@@ -47,7 +48,7 @@ pub(crate) const PROPERTY_SELECTORS: [(&str, &str, bool); 3] = [
 ];
 
 /// The standard selectors no widget supports yet.
-pub(crate) const UNSUPPORTED_SELECTORS: [&str; 2] = ["expanded", "dragging"];
+pub(crate) const UNSUPPORTED_SELECTORS: [&str; 1] = ["expanded"];
 
 /// The standard selectors a user component's own `@selector` may not
 /// redefine: those the runtime decides.

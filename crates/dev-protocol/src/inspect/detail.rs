@@ -377,6 +377,7 @@ pub fn state_names(bits: u8) -> impl Iterator<Item = &'static str> {
             Interaction::Focused => "focused",
             Interaction::FocusVisible => "focus_visible",
             Interaction::Selected => "selected",
+            Interaction::Dragging => "dragging",
         })
 }
 

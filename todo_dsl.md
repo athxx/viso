@@ -1195,8 +1195,11 @@ timers (§104–§111).
         cancelled by a pan winning the contact and lifted off by the pointer
         leaving the node; `click`/`tap` only on a release where the press
         began.
-  - [ ] `dragging` with `drag_start`/`drag_move`/`drag_end`; `expanded` once
-        an expandable widget exists.
+  - [x] `dragging` with `drag_start`/`drag_move`/`drag_end`: the nearest
+        node taking drags wins a press past the slop (over a pan from a
+        viewport above it), captures the pointer and swallows the click; the
+        web export alike.
+  - [ ] `expanded` once an expandable widget exists; `long_press`.
   - [x] Theme: the standard `Theme` schema (U12.2); `theme X { }` builds a typed
         immutable value from its items, its base and the record defaults
         (`E2001`/`E2103`, base cycles `E2003`, one name per package `E2002`);
