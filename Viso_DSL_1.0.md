@@ -4874,7 +4874,7 @@ KeyShortcut {
 | `TextInput`  | `value: String = ""`（two_way；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；`placeholder: String = ""`（Localizable；同上）；`secure: Bool = false`（同上）；`invalid: Bool = false`（`STYLE\|SEMANTICS`） | `changed(value: String)`、`submitted` |
 | `Tabs`、`RadioGroup` | `selected: U32 = 0`（two_way；`STYLE\|PAINT\|SEMANTICS`）                             | `selected_changed(value: U32)` |
 
-`TextInput` 无文本时以其文本颜色一半的不透明度绘制 `placeholder`，`placeholder` 同时是没有 `semantics.hint` 时的提示；`secure` 的输入框为每个字素绘制一个 `•`，光标、点击与 IME 位置经绘制文本与原文之间的映射落在原文上，不提供复制或剪切的文本，语义角色为 `Role::secure_field`，不向辅助技术报告其文本。没有 `value` 的输入框照常取得文本样式、`placeholder` 与 `secure`，其文本是用户输入的内容。`Toggle`/`CheckBox` 的 `label` 是其绘制的文字，也是没有 `semantics.label` 时的可访问名称。
+`TextInput` 无文本时以其文本颜色一半的不透明度绘制 `placeholder`，`placeholder` 同时是没有 `semantics.hint` 时的提示；`secure` 的输入框为每个字素绘制一个 `•`，光标、点击与 IME 位置经绘制文本与原文之间的映射落在原文上，不提供复制或剪切的文本，语义角色为 `Role::secure_field`，不向辅助技术报告其文本。没有 `value` 的输入框照常取得文本样式、`placeholder` 与 `secure`，其文本是用户输入的内容。`Toggle`/`CheckBox` 的 `label` 是其绘制的文字，也是没有 `semantics.label` 时的可访问名称；文字前（从右到左时为其后）绘制控件自身的标记，按文字首行定尺寸、居中于首行，以文字颜色着色：`CheckBox` 为一个方框，选中时填充并画勾，`Toggle` 为一条轨道，滑块选中时在末端。
 
 Widget 事件的 Payload 是 Prelude Record：`Toggle`/`CheckBox` 的 `changed` 为 `ToggleChanged`，`Slider` 为 `SliderChanged`，`TextInput` 为 `TextChanged`，`selected_changed` 为 `SelectionChanged`，字段均为 `value`；`submitted` 与 `triggered` 无 Payload。
 

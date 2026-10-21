@@ -397,8 +397,11 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       `text_input` takes `.placeholder()` and `.secure()`.
   - [ ] A secure field turns the platform's secure input on (no IME candidates,
         no key loggers: `EnableSecureEventInput`, `secureTextEntry`).
-  - [ ] A check draws its own box and mark beside the caption rather than only
-        what its styles paint.
+  - [x] A check draws its own box and mark beside the caption rather than only
+        what its styles paint: `viso_ui::CheckMark` on the node (`CheckBox` a box
+        ticked while checked, `Toggle` a track and knob), sized from the
+        caption's first line, inked with its color, mirrored right to left; a
+        check with no caption draws its mark alone.
 - [x] `Grid` tracks and alignment (`columns`, `rows`, `auto_rows`, `column_gap`,
       `row_gap`, `align_items`, `areas`, `adaptive_columns`) and the `grid.*` cells
       lay out across the macros, hot reload (in place, `set_grid_template` /

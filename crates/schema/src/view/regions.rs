@@ -645,7 +645,7 @@ mod tests {
                             node: Box::new(node(AotNodeKind::Leaf, 0)),
                             edges: vec![],
                             routes: vec![],
-                            control: Some(Box::new(Control::new(crate::view::ControlKind::Toggle))),
+                            control: Some(Box::new(Control::new(crate::view::ControlKind::Check))),
                         }],
                     }],
                 },

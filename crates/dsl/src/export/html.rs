@@ -865,7 +865,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     el.attr("type", "password");
                 }
             }
-            ControlKind::Toggle => {
+            ControlKind::Check | ControlKind::Switch => {
                 if let Some(fixed) = self.bind(
                     wires,
                     control.value,

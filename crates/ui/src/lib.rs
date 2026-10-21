@@ -14,6 +14,7 @@ pub mod animation;
 pub mod aot;
 pub mod asset;
 pub mod binding;
+pub mod check_mark;
 pub mod component;
 pub mod content;
 pub mod context;
@@ -53,6 +54,7 @@ pub use animation::{AnimationRegistry, Easing, LookTransition, LookValue, Timing
 pub use binding::{
     Binding, BindingFootprint, BindingTable, InstanceBase, StateRef, Template, TemplateBinding,
 };
+pub use check_mark::{CheckMark, CheckShape};
 pub use component::{
     AbsoluteStyle, BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore,
     Painted, PointerHandler, ScrollStyle, StackStyle, VirtualListStyle,

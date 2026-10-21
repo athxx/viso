@@ -58,7 +58,7 @@ impl Drive for Control {
             return None;
         }
         match self.kind {
-            ControlKind::Toggle => toggle(self, host, scope, cx),
+            ControlKind::Check | ControlKind::Switch => toggle(self, host, scope, cx),
             ControlKind::Slider => slider(self, host, scope, cx),
             ControlKind::Select => select(self, host, scope, cx),
             ControlKind::TextInput => text_input(cx),

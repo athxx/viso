@@ -17,9 +17,9 @@ use viso_dsl::hotreload::CandidatePlan;
 use viso_ui::text_edit::reconcile;
 use viso_ui::virtual_list::VirtualLists;
 use viso_ui::{
-    BindingTable, EffectStore, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore,
-    PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rect, SemanticProjector, StateStore,
-    TextEdits, run_structure_hooks,
+    BindingTable, CheckMark, CheckShape, EffectStore, ImeEvent, Key, KeyEvent, KeyRouter,
+    Modifiers, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rect,
+    SemanticProjector, StateStore, TextEdits, run_structure_hooks,
 };
 use viso_view::{Value, ViewHost, load_view};
 
@@ -288,10 +288,23 @@ fn targets() -> [Rt; 2] {
 
 #[test]
 fn a_toggle_flips_its_bound_state_on_a_click_and_space() {
+    let switch = |checked| {
+        Some(CheckMark {
+            shape: CheckShape::Switch,
+            checked,
+        })
+    };
     for mut rt in targets() {
+        let toggle = rt.children_of_root()[0];
+        assert_eq!(
+            rt.store.check_mark(toggle),
+            switch(false),
+            "a track, knob at the start"
+        );
         rt.click(10.0, 10.0);
         assert_eq!(rt.int("on"), 1);
         assert_eq!(rt.int("changes"), 1);
+        assert_eq!(rt.store.check_mark(toggle), switch(true));
         rt.click(10.0, 10.0);
         assert_eq!(rt.int("on"), 0);
         assert_eq!(rt.int("changes"), 1);

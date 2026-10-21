@@ -25,6 +25,7 @@
 use std::sync::Arc;
 
 use crate::asset::{AssetDraw, AssetFit};
+use crate::check_mark::CheckMark;
 use crate::component::NodeStore;
 use crate::content::Content;
 use crate::layout::Vec2;
@@ -449,13 +450,51 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
     // coordinates are node-local, so shift them by the node's world origin — a
     // scrolled or repositioned node then draws its content in the right place.
     // An image is rounded by the box's corners.
+    // A check's caption is its content: one with none draws nothing until
+    // its caption is shaped.
     if let Some(content) = store.content_payload(node) {
+        if let Some(mark) = store.check_mark(node) {
+            paint_check(store, mark, content, world, out);
+            return;
+        }
         let mask = (radius > 0.0).then_some(RoundMask {
             rect: world,
             radius: Corners::uniform(radius),
         });
         paint_content(content, world, mask, out);
     }
+}
+
+/// A check at `world`: its mark, then its caption `content` beside it, the
+/// mark inked with the caption's color.
+#[cold]
+fn paint_check(
+    store: &NodeStore,
+    mark: CheckMark,
+    content: &Content,
+    world: Rect,
+    out: &mut Vec<Primitive>,
+) {
+    let (text, baseline) = crate::component::caption_of(Some(content));
+    let rtl = store.length_env().direction == crate::adaptive::LayoutDirection::Rtl;
+    let place = mark.place(text, baseline, world.w, rtl);
+    let ink = match content {
+        Content::Text { color, .. } => *color,
+        _ => WHITE,
+    };
+    let mark_rect = Rect {
+        x: world.x + place.mark.x,
+        y: world.y + place.mark.y,
+        ..place.mark
+    };
+    mark.paint(mark_rect, ink, out);
+    let caption = Rect {
+        x: world.x + place.text.x,
+        y: world.y + place.text.y,
+        w: text.x,
+        h: text.y,
+    };
+    paint_content(content, caption, None, out);
 }
 
 /// Lower one node's [`Content`] to a primitive, translating its node-local
@@ -926,6 +965,93 @@ mod tests {
         assert_eq!(cw.y, store.bounds(content.unwrap()).y - 40.0);
         assert!(matches!(out[4], Primitive::TransformEnd));
         assert!(matches!(out[5], Primitive::LayerEnd));
+    }
+
+    #[test]
+    fn a_check_draws_its_mark_then_its_caption_after_it() {
+        use crate::check_mark::{CheckMark, CheckShape};
+        use crate::content::Content;
+        use crate::layout::{Length, Vec2};
+        use viso_render::{GlyphInstanceData, TextureId};
+
+        let mut store = NodeStore::new();
+        let mut check = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                let size = Size {
+                    width: Length::Fit,
+                    height: Length::Fit,
+                };
+                let style = BoxStyle::NONE;
+                check = Some(cx.leaf(LeafStyle { size, style }).id());
+            });
+            cx.root().unwrap()
+        };
+        let check = check.unwrap();
+        store.set_content_payload(
+            check,
+            Content::Text {
+                glyphs: vec![GlyphInstanceData {
+                    rect: Rect {
+                        x: 2.0,
+                        y: 3.0,
+                        w: 8.0,
+                        h: 10.0,
+                    },
+                    uv: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 1.0,
+                        h: 1.0,
+                    },
+                }],
+                atlas: TextureId::new(7),
+                color_glyphs: Vec::new(),
+                color_atlas: None,
+                color: RED,
+                natural: Vec2 { x: 30.0, y: 20.0 },
+                baseline: 16.0,
+                shaped_at_width: None,
+                width_use: crate::WidthUse::Ignored,
+                min_content: 30.0,
+                max_content: 30.0,
+            },
+        );
+        let mark = |checked| {
+            Some(CheckMark {
+                shape: CheckShape::Box,
+                checked,
+            })
+        };
+        store.set_check_mark(check, mark(true));
+        store.layout(root, Rect::new(0.0, 0.0, 200.0, 100.0), &mut Vec::new());
+        // A 20 box, a 10 gap, then the caption.
+        assert_eq!((store.bounds(check).w, store.bounds(check).h), (60.0, 20.0));
+
+        let mut out = Vec::new();
+        paint_tree(&store, root, &mut out);
+        let world = store.world(check);
+        let Primitive::Quad(mark_box) = out[0] else {
+            panic!("the box first: {out:?}");
+        };
+        assert_eq!(mark_box.rect, Rect::new(world.x, world.y, 20.0, 20.0));
+        assert_eq!(
+            mark_box.color, RED,
+            "a checked box filled with the caption's ink"
+        );
+        assert!(matches!(out[1], Primitive::Path(_)), "its tick");
+        let Primitive::GlyphRun(run) = &out[2] else {
+            panic!("the caption after: {out:?}");
+        };
+        assert_eq!(run.glyphs[0].rect.x, world.x + 30.0 + 2.0);
+
+        // Unchecked, the box is an outline with no tick.
+        store.set_check_mark(check, mark(false));
+        out.clear();
+        paint_tree(&store, root, &mut out);
+        assert!(matches!(out[0], Primitive::Quad(q) if q.color.a == 0.0 && q.border.width > 0.0));
+        assert!(matches!(out[1], Primitive::GlyphRun(_)));
     }
 
     #[test]

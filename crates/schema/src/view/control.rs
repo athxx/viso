@@ -15,8 +15,9 @@ use super::route::EventRoute;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ControlKind {
-    /// `Toggle` and `CheckBox`: a release or Space/Enter flips `checked`.
-    Toggle = 0,
+    /// `CheckBox`: a release or Space/Enter flips `checked`; it draws a box,
+    /// ticked while checked, beside its caption.
+    Check = 0,
     /// `Slider`: a press or a drag sets `value` from the pointer's position
     /// across the node; arrows, Page Up/Down and Home/End step it.
     Slider = 1,
@@ -39,12 +40,15 @@ pub enum ControlKind {
     /// names, the value's fields as the brush's parameters; it has no
     /// built-in response.
     Shader = 7,
+    /// `Toggle`: flips `checked` as a [`Check`](Self::Check) does, drawing a
+    /// track with its knob at the end while checked.
+    Switch = 8,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 8] = [
-        ControlKind::Toggle,
+    pub const ALL: [ControlKind; 9] = [
+        ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
         ControlKind::TextInput,
@@ -52,12 +56,14 @@ impl ControlKind {
         ControlKind::Plain,
         ControlKind::Asset,
         ControlKind::Shader,
+        ControlKind::Switch,
     ];
 
     /// The kind native widget `widget` is.
     pub fn of(widget: &str) -> ControlKind {
         match widget {
-            "Toggle" | "CheckBox" => ControlKind::Toggle,
+            "CheckBox" => ControlKind::Check,
+            "Toggle" => ControlKind::Switch,
             "Slider" => ControlKind::Slider,
             "Tabs" | "RadioGroup" => ControlKind::Select,
             "TextInput" => ControlKind::TextInput,
@@ -93,7 +99,10 @@ impl ControlKind {
         matches!(
             (self, route),
             (
-                ControlKind::Toggle | ControlKind::Slider | ControlKind::TextInput,
+                ControlKind::Check
+                    | ControlKind::Switch
+                    | ControlKind::Slider
+                    | ControlKind::TextInput,
                 EventRoute::Changed
             ) | (ControlKind::TextInput, EventRoute::Submitted)
                 | (ControlKind::Select, EventRoute::SelectedChanged)
@@ -134,7 +143,7 @@ impl ControlKind {
             (ControlKind::Label | ControlKind::TextInput, "align") => ControlInput::TextAlign,
             (ControlKind::Label, "max_lines") => ControlInput::MaxLines,
             (ControlKind::Label, "overflow") => ControlInput::Overflow,
-            (ControlKind::Toggle, "checked")
+            (ControlKind::Check | ControlKind::Switch, "checked")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
             | (ControlKind::TextInput, "value")
@@ -143,7 +152,7 @@ impl ControlKind {
             | (ControlKind::Shader, "shader") => ControlInput::Value,
             (ControlKind::TextInput, "placeholder") => ControlInput::Placeholder,
             (ControlKind::TextInput, "secure") => ControlInput::Secure,
-            (ControlKind::Toggle, "label") => ControlInput::Caption,
+            (ControlKind::Check | ControlKind::Switch, "label") => ControlInput::Caption,
             (ControlKind::Slider, "min") => ControlInput::Min,
             (ControlKind::Slider, "max") => ControlInput::Max,
             (ControlKind::Slider, "step") => ControlInput::Step,
@@ -156,7 +165,8 @@ impl ControlKind {
     /// The Rust variant name, for code that names a kind in tokens.
     pub fn variant(self) -> &'static str {
         match self {
-            ControlKind::Toggle => "Toggle",
+            ControlKind::Check => "Check",
+            ControlKind::Switch => "Switch",
             ControlKind::Slider => "Slider",
             ControlKind::Select => "Select",
             ControlKind::TextInput => "TextInput",
@@ -1091,7 +1101,7 @@ mod tests {
         for kind in ControlKind::ALL {
             assert_eq!(ControlKind::from_u8(kind as u8), Some(kind));
         }
-        assert_eq!(ControlKind::from_u8(8), None);
+        assert_eq!(ControlKind::from_u8(9), None);
         assert_eq!(ControlKind::of("Svg"), ControlKind::Asset);
         assert_eq!(ControlKind::of("ShaderView"), ControlKind::Shader);
         assert_eq!(
@@ -1102,7 +1112,9 @@ mod tests {
         assert_eq!(ControlKind::Asset.input("fit"), Some(ControlInput::Fit));
         assert_eq!(ControlKind::Plain.input("fit"), None);
         assert!(!ControlKind::Asset.responds());
-        assert_eq!(ControlKind::of("CheckBox"), ControlKind::Toggle);
+        assert_eq!(ControlKind::of("CheckBox"), ControlKind::Check);
+        assert_eq!(ControlKind::of("Toggle"), ControlKind::Switch);
+        assert!(ControlKind::Switch.responds());
         assert_eq!(ControlKind::of("Button"), ControlKind::Label);
         assert_eq!(ControlKind::of("Column"), ControlKind::Plain);
         assert!(!ControlKind::Label.responds());
@@ -1144,7 +1156,7 @@ mod tests {
             Some(ControlInput::Secure)
         );
         assert_eq!(
-            ControlKind::Toggle.input("label"),
+            ControlKind::Check.input("label"),
             Some(ControlInput::Caption)
         );
         assert_eq!(ControlKind::Label.input("placeholder"), None);

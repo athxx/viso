@@ -18,6 +18,7 @@ use std::sync::Arc;
 use crate::animation::{LookTransition, LookValue, Timing, TranslateAnim};
 use crate::asset::{Asset, AssetDraw, AssetFit, AssetPayload, AssetTable};
 use crate::binding::{BindingTable, Template};
+use crate::check_mark::CheckMark;
 use crate::content::{BrushImage, Content, TextRequest};
 use crate::context::EventCx;
 use crate::dirty::{DirtyCause, DirtyClass, DirtyMark};
@@ -265,6 +266,7 @@ macro_rules! node_columns {
         $store.semantics.$op($($arg),*);
         $store.semantic_state.$op($($arg),*);
         $store.content_payload.$op($($arg),*);
+        $store.check_marks.$op($($arg),*);
         $store.text_request.$op($($arg),*);
         $store.owner.$op($($arg),*);
     };
@@ -519,6 +521,9 @@ pub struct NodeStore {
     /// glyph-run/image/path primitive. Named `content_payload` to avoid the
     /// scroll `content` extent column above.
     content_payload: Vec<Option<Box<Content>>>,
+    /// Cold: what each check draws beside its caption (its text content),
+    /// index-aligned and `None` for every node but a check.
+    check_marks: Vec<Option<CheckMark>>,
     /// The brush programs `Content::Shader` nodes paint with, by slot.
     shaders: ShaderSlots,
     /// The assets `Content::Asset` nodes show, by resource.
@@ -2185,6 +2190,34 @@ impl NodeStore {
         self.mark_dirty(id, DirtyClass::SEMANTICS);
     }
 
+    /// What a check draws beside its caption, `None` for a node that is no
+    /// check.
+    #[inline]
+    pub fn check_mark(&self, id: NodeId) -> Option<CheckMark> {
+        self.check_marks[id.index() as usize]
+    }
+
+    /// Makes a node a check drawing `mark` beside its caption, or no check.
+    /// A new state repaints it; a new shape, or becoming or ceasing to be a
+    /// check, re-measures it as well. A live-guarded write — a stale handle
+    /// is a no-op.
+    pub fn set_check_mark(&mut self, id: NodeId, mark: Option<CheckMark>) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let slot = &mut self.check_marks[id.index() as usize];
+        if *slot == mark {
+            return;
+        }
+        let reshaped = slot.map(|m| m.shape) != mark.map(|m| m.shape);
+        *slot = mark;
+        let mut classes = DirtyClass::PAINT;
+        if reshaped {
+            classes |= DirtyClass::MEASURE | DirtyClass::LAYOUT;
+        }
+        self.mark_dirty(id, classes);
+    }
+
     /// A node's drawable content (text/image/path), if any. `None` = a node that
     /// draws only its background quad (the common case).
     #[inline]
@@ -3674,6 +3707,7 @@ impl NodeStore {
         self.semantics[i] = None;
         self.semantic_state[i] = None;
         self.content_payload[i] = None;
+        self.check_marks[i] = None;
         self.text_request[i] = None;
         self.owner[i] = owner;
         id
@@ -3723,6 +3757,7 @@ impl NodeStore {
             self.semantics.push(None);
             self.semantic_state.push(None);
             self.content_payload.push(None);
+            self.check_marks.push(None);
             self.text_request.push(None);
             self.owner.push(NO_OWNER);
         }
@@ -4475,23 +4510,41 @@ impl LayoutTree for NodeStore {
 
     #[inline]
     fn content_natural(&self, index: u32) -> Option<Vec2> {
-        self.content_payload[index as usize]
-            .as_ref()
-            .map(|c| c.natural())
+        let content = self.content_payload[index as usize].as_deref();
+        match self.check_marks[index as usize] {
+            Some(mark) => {
+                let (text, baseline) = caption_of(content);
+                Some(mark.natural(text, baseline))
+            }
+            None => content.map(|c| c.natural()),
+        }
     }
 
     #[inline]
     fn content_min_width(&self, index: u32) -> f32 {
-        self.content_payload[index as usize]
-            .as_ref()
-            .map_or(0.0, |c| c.min_width())
+        let content = self.content_payload[index as usize].as_deref();
+        let min = content.map_or(0.0, |c| c.min_width());
+        match self.check_marks[index as usize] {
+            Some(mark) => {
+                let (text, baseline) = caption_of(content);
+                let lead = mark.natural(text, baseline).x - text.x;
+                lead + min
+            }
+            None => min,
+        }
     }
 
     #[inline]
     fn content_baseline(&self, index: u32) -> Option<f32> {
-        self.content_payload[index as usize]
-            .as_ref()
-            .and_then(|c| c.baseline())
+        let content = self.content_payload[index as usize].as_deref();
+        let baseline = content.and_then(|c| c.baseline());
+        match self.check_marks[index as usize] {
+            Some(mark) => {
+                let (text, line) = caption_of(content);
+                baseline.map(|b| b + mark.place(text, line, 0.0, false).text.y)
+            }
+            None => baseline,
+        }
     }
 
     #[inline]
@@ -4541,6 +4594,13 @@ impl LayoutTree for NodeStore {
         // a continuous drag-resize assigns a slightly different sub-pixel width
         // every frame, and reshaping on every one would defeat the text cache
         // (AGENTS section 20 / ADR 0025 "unchanged width must not reshape").
+        let width = match self.check_marks[index as usize] {
+            Some(mark) => {
+                let (text, baseline) = caption_of(self.content_payload[index as usize].as_deref());
+                mark.caption_width(width, text, baseline)
+            }
+            None => width,
+        };
         let qwidth = width.round();
         const EPS: f32 = 0.5;
         let changed = match (shaped_at_width, width_use) {
@@ -4560,6 +4620,14 @@ impl LayoutTree for NodeStore {
             self.text_reflows.push((id, qwidth));
         }
     }
+}
+
+/// The natural size and first-line baseline of a check's caption `content`:
+/// nothing for no caption.
+pub(crate) fn caption_of(content: Option<&Content>) -> (Vec2, f32) {
+    content.map_or((Vec2::ZERO, 0.0), |c| {
+        (c.natural(), c.baseline().unwrap_or(0.0))
+    })
 }
 
 /// Whether a node's natural size does not follow its children's: it is fixed

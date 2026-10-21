@@ -32,9 +32,9 @@ use viso_behavior::{Fault, FaultKind, Value};
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
 use viso_ui::{
-    AssetFit, Border, BuildCx, Easing, FieldLook, FieldSeed, FontSize, LiveRegion, LookValue,
-    NodeId, NodeStore, Rgba, Role, SemanticState, Semantics, Srgb, StateId, StructureCx,
-    TextRequest, Timing, focus_node,
+    AssetFit, Border, BuildCx, CheckMark, CheckShape, Easing, FieldLook, FieldSeed, FontSize,
+    LiveRegion, LookValue, NodeId, NodeStore, Rgba, Role, SemanticState, Semantics, Srgb, StateId,
+    StructureCx, TextRequest, Timing, focus_node,
 };
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, When};
@@ -433,7 +433,7 @@ impl Shown {
             let name = match (label.as_str(), control.kind) {
                 (Some(label), _) => Some(label),
                 (None, ControlKind::Label) => value.as_str(),
-                (None, ControlKind::Toggle) => caption.as_str(),
+                (None, ControlKind::Check | ControlKind::Switch) => caption.as_str(),
                 (None, _) => None,
             };
             let role = match semantics.role.unwrap_or_default() {
@@ -570,10 +570,17 @@ impl Shown {
                 };
                 store.seed_text(self.node, seed);
             }
-            ControlKind::Toggle => {
+            ControlKind::Check | ControlKind::Switch => {
                 let checked = value.as_int().is_some_and(|v| v != 0);
                 store.set_semantic_state(self.node, SemanticState::checked(checked));
-                if control.caption.is_some() && (first || changed(FIELD + 2)) {
+                let shape = match control.kind {
+                    ControlKind::Switch => CheckShape::Switch,
+                    _ => CheckShape::Box,
+                };
+                store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
+                // A check with no caption still shapes an empty one, which
+                // sizes and inks its mark.
+                if first || (control.caption.is_some() && changed(FIELD + 2)) {
                     store.set_text_request(self.node, text(caption));
                 }
             }
