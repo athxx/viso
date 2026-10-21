@@ -11,6 +11,10 @@
 //! snapshots are read back from the raster, the report is a file the launch
 //! names, and the run ends once it is played.
 //!
+//! A run handed a tape ([`TAPE_ENV`]) replays it against its first window
+//! ([`crate::tape`]) on the surface it was recorded on, its frame clock held
+//! to the recorded times, and reports the revisions it crossed.
+//!
 //! A run handed a view package ([`VIEW_ENV`]) mounts it alone in its first
 //! window, with no caption and none of the app's own view, so a tool
 //! captures one component as the app's fonts and assets draw it.
@@ -29,14 +33,39 @@ use viso_view::headless::{
 };
 use viso_view::inspect::{self, CensusView, WindowCensus, static_nodes};
 use viso_view::profile::{PROFILE_ENV, Trace};
+use viso_view::tape::{TAPE_ENV, UiTape};
 use viso_view::{MountRecord, ViewHost, load_view, take_mounts};
 
 use crate::scenario::{Input, Outputs, ScriptRunner};
+use crate::tape::{HeadlessClock, STEP, TapeClock, TapePlayer};
 use crate::{AppDriver, Application, WindowState, services};
 
 pub(crate) fn run<A: Application>() {
+    let tape = viso_platform::launch_var(TAPE_ENV).map(|path| {
+        if viso_platform::launch_var(SCRIPT_ENV).is_some() {
+            eprintln!("viso: a run replays a tape or plays a scenario, not both");
+            std::process::exit(2);
+        }
+        let bytes = std::fs::read(&path).unwrap_or_else(|error| {
+            eprintln!("viso: cannot read the tape `{path}`: {error}");
+            std::process::exit(2);
+        });
+        UiTape::from_bytes(&bytes).unwrap_or_else(|error| {
+            eprintln!("viso: the tape `{path}` does not decode: {error}");
+            std::process::exit(2);
+        })
+    });
+    // A tape replays on the surface it was recorded on unless the launch
+    // names another.
     let surface = viso_platform::launch_var(SURFACE_ENV)
         .and_then(|value| HeadlessSurface::from_env(&value))
+        .or_else(|| {
+            tape.as_ref().map(|tape| HeadlessSurface {
+                width: tape.surface.width.round() as u32,
+                height: tape.surface.height.round() as u32,
+                scale: f64::from(tape.surface.scale),
+            })
+        })
         .unwrap_or_default();
     let mut app = Box::new(HeadlessApp::new());
     app.fixed_surface(surface.width, surface.height, surface.scale);
@@ -74,10 +103,16 @@ pub(crate) fn run<A: Application>() {
             }
         }
     }
-    let clock = FixedStepClock::new(
-        viso_platform::Instant::now(),
-        std::time::Duration::from_nanos(1_000_000_000 / 60),
-    );
+    let base = viso_platform::Instant::now();
+    let clock = match tape {
+        Some(tape) => {
+            let clock = TapeClock::new(base);
+            let report = viso_platform::launch_var(REPORT_ENV).map(PathBuf::from);
+            driver.player = Some(TapePlayer::new(tape, clock.clone(), app.feed(), report));
+            HeadlessClock::Tape(clock)
+        }
+        None => HeadlessClock::Fixed(FixedStepClock::new(base, STEP)),
+    };
     let profile = viso_platform::launch_var(PROFILE_ENV);
     if profile.is_some() {
         let baseline = driver.profile_baseline();

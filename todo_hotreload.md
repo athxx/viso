@@ -1196,5 +1196,9 @@ Goal: one source graph serves several running runtimes with per-runtime revision
       check-frame-tax` alternates the bench with and without `hot-reload` (5 rounds
       each), compares the best rounds, allows 10% plus 250 ns; CI job `frame-tax`.
       Locally: 3799 ns as is, 4332 ns with hot-reload at best, within.
-- [ ] UI input tapes record the code revisions they ran across (game tapes do). Waits
-      for UI input tapes: nothing records or replays one yet (tests script raw events).
+- [x] UI input tapes record the code revisions they ran across (game tapes do):
+      `viso_dev_protocol::tape::UiTape` keeps the build id and dev revision a run
+      starts at and each live patch's frame and revision; the runtime records the
+      first window under `VISO_RECORD_TAPE`, a headless run replays one under
+      `VISO_HEADLESS_TAPE` with its frame clock held to the recorded times
+      (`tests/ui_tape.rs`).

@@ -853,6 +853,8 @@ StateReset events
 
 不能 silently 改变 replay 语义。
 
+UI Input Tape（`Viso_CLI.md` §22.2）同样记下所跨的 code revision：开始时的 build id 与 dev revision，以及每次 live patch 落在的帧（该帧的输入跑在 patch 之前的代码上）与它移到的 revision；它不携带代码，回放运行所给的 build 并报告这些 revision。
+
 当前实现两者兼有：录制中的 Tape 把每次 live reload 记为一个 `TapePatch { tick, revision, build, module, resets }`（应用前的 Tick、dev revision、System code revision 即 Build Hash、该 Build 的 module 与被重置的状态数），并记下 run 开始时的 module；只有二进制形式携带它们（文本形式以注释列出）。回放时先核对开始 Build，经游戏的 `Linker` 预先链接每个 patch，在同一 Tick 之前换入；倒回时其后的 patch 折叠为倒回 Tick 处的一个。正在回放 Tape 的游戏拒绝 live patch（`NACK_REPLAYING`，stage `runtime-stage`，并有一条 warn log），使 Tape 重现它录下的 run。`viso game record`（`Viso_CLI.md` §22.3）先以 `Rebuild::Fresh` 重启 World，因此录下的 Tape 从 Tick 0 起可重放。
 
 ---

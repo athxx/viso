@@ -1838,6 +1838,8 @@ snapshot
 - Snapshot：`expect snapshot "<name>"`（名字为字母、数字、`_`、`-`，至多 100 字符，同一 Scenario 内不重复）在安定后从 software raster 读回该窗口最后一帧，写 `<name>.png` 与 `<name>.tree`（tree、layout、paint、batches 与计数的稳定文本），报告一行 `snapshot`；没有 snapshot 步骤的 Scenario 若有以其名命名的 golden，则在末尾取一张同名 snapshot。每张 snapshot 按 `viso snapshot compare`（§23）与 golden 比较：缺 golden `TEST_SNAPSHOT_MISSING`、不一致 `TEST_SNAPSHOT_MISMATCH`、golden 不可读 `TEST_SNAPSHOT_INVALID`，均指向该步骤行并使用例失败（exit 1）；`--update-snapshots` 时，走完全部步骤的用例把缺失或不一致的 golden 写回（每个文件一条 `artifact`），用例通过；读帧或写文件失败 `RUN_SNAPSHOT_FAILED`（exit 5）；
 - 结果：报告以全部通过结束且每张 snapshot 与 golden 一致为 pass；有失败步骤为 fail，`TEST_EXPECTATION` 指向该行（message 列出窗口当前显示的 label）；进程在报告结束前退出为 runner 崩溃（`RUN_TEST_CRASHED`，exit 5）。失败用例的输出（stdout/stderr）随后显示，`--nocapture` 时通过的也显示；通过用例的目录随即删除。
 
+UI Input Tape（`viso_dev_protocol::tape::UiTape`，版本化 Ende 文件）记录第一个窗口的原始输入：启动环境以 `VISO_RECORD_TAPE` 给出路径时，dev 与 headless 构建的 runtime 记录该窗口运行的每一帧——帧时钟前进的时间（µs）与该帧之前到达窗口的输入（指针、滚轮、按键、提交的文本、IME 组字、粘贴、复制/剪切、窗口焦点、尺寸与缩放变化，坐标为逻辑点），以及开始时的 build id 与 dev revision、每次 live patch 落在的帧与它移到的 revision；窗口关闭或会话结束时写出。headless 构建以 `VISO_HEADLESS_TAPE` 给出 Tape 时回放它（与 `VISO_HEADLESS_SCRIPT` 互斥，exit 2）：未给 `VISO_HEADLESS_SURFACE` 时用录制时的 surface，每帧的输入在该帧之前经 backend 队列送入，帧时钟固定为录制的时间，Tape 结束后每帧前进 1/60 s 直到安定；`VISO_HEADLESS_REPORT` 给出时写一行 `{"kind":"tape","frames","build","revisions"}`。Tape 不携带代码：回放运行所给的 build，报告录制跨过的 revision。
+
 ### 22.3 Game deterministic test
 
 ```bash

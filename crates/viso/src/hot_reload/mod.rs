@@ -541,6 +541,19 @@ impl HotReloadSession {
         }
     }
 
+    /// The dev revision the app runs, once a session accepted it.
+    pub(crate) fn revision(&self) -> Option<u64> {
+        self.identity.as_ref().map(|id| id.current_revision.0)
+    }
+
+    /// The build and the dev revision the app runs, once a session accepted
+    /// it.
+    pub(crate) fn code(&self) -> Option<(viso_view::tape::BuildId, u64)> {
+        self.identity
+            .as_ref()
+            .map(|id| (id.build_id, id.current_revision.0))
+    }
+
     /// Whether the host asked for a snapshot, which the next frame boundary
     /// takes with each window's position.
     pub(crate) fn snapshot_asked(&self) -> bool {

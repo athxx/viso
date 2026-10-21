@@ -82,6 +82,8 @@ use text_content::{ParagraphSlot, TextShaper};
 
 #[cfg(feature = "hot-reload")]
 mod hot_reload;
+#[cfg(any(feature = "hot-reload", feature = "headless"))]
+mod tape;
 mod window;
 pub use footprint::{BudgetExceeded, BudgetKind, Footprint, MemoryBudget};
 pub use window::{WindowBuilder, WindowHandle, window};
@@ -349,6 +351,9 @@ pub fn run<A: Application>() {
 /// tree — world rects, per-frame recompute counts, and whether the loop halted.
 #[doc(hidden)]
 pub mod __test_support {
+    #[cfg(any(feature = "hot-reload", feature = "headless"))]
+    pub use viso_view::tape::UiTape;
+
     use super::AppDriver;
     use crate::Application;
     use std::time::Duration;
@@ -542,6 +547,54 @@ pub mod __test_support {
         drive_host::<A>(script, step, false, None, None)
     }
 
+    /// [`drive_scripted`] recording the first window's input: the settled
+    /// app and its tape.
+    #[cfg(any(feature = "hot-reload", feature = "headless"))]
+    pub fn drive_recording<A: Application>(
+        script: Vec<viso_platform::RawEvent>,
+        step: Duration,
+    ) -> (DrivenApp<A>, viso_view::tape::UiTape) {
+        let mut app = Box::new(viso_platform::backend::headless::HeadlessApp::scripted(
+            script,
+        ));
+        app.set_framed_windows(true);
+        let mut driver = AppDriver::<A>::new(Some(crate::services::Services::unsupported()));
+        driver.recorder = Some(crate::tape::TapeRecorder::new(None));
+        let clock = FixedStepClock::new(Instant::now(), step);
+        let driver = Scheduler::with_clock(app, driver, clock).run_returning();
+        let tape = driver
+            .recorder
+            .as_ref()
+            .map(|r| r.tape().clone())
+            .unwrap_or_default();
+        (DrivenApp { driver }, tape)
+    }
+
+    /// A fresh `A` replaying `tape` as a headless run does: on its surface,
+    /// each frame's input ahead of that frame, the frame clock held to the
+    /// recorded times.
+    #[cfg(any(feature = "hot-reload", feature = "headless"))]
+    pub fn drive_tape<A: Application>(tape: viso_view::tape::UiTape) -> DrivenApp<A> {
+        let mut app = Box::new(viso_platform::backend::headless::HeadlessApp::new());
+        app.set_framed_windows(true);
+        let surface = tape.surface;
+        app.fixed_surface(
+            surface.width.round() as u32,
+            surface.height.round() as u32,
+            f64::from(surface.scale),
+        );
+        let mut driver = AppDriver::<A>::new(Some(crate::services::Services::unsupported()));
+        let clock = crate::tape::TapeClock::new(Instant::now());
+        driver.player = Some(crate::tape::TapePlayer::new(
+            tape,
+            clock.clone(),
+            app.feed(),
+            None,
+        ));
+        let driver = Scheduler::with_clock(app, driver, clock).run_returning();
+        DrivenApp { driver }
+    }
+
     fn drive_host<A: Application>(
         script: Vec<viso_platform::RawEvent>,
         step: Duration,
@@ -632,6 +685,12 @@ struct AppDriver<A: Application> {
     /// The capture of the app's frames a tool asked for, if any.
     #[cfg(any(feature = "hot-reload", feature = "headless"))]
     profiler: profile::Profiler,
+    /// The first window's input, recorded while the launch names a tape.
+    #[cfg(any(feature = "hot-reload", feature = "headless"))]
+    recorder: Option<tape::TapeRecorder>,
+    /// The tape a headless run replays.
+    #[cfg(any(feature = "hot-reload", feature = "headless"))]
+    player: Option<tape::TapePlayer>,
 }
 
 /// The fonts an app registered at init, installed into every window's shaper.
@@ -919,6 +978,28 @@ impl<A: Application> AppDriver<A> {
             harness: headless::Harness::default(),
             #[cfg(any(feature = "hot-reload", feature = "headless"))]
             profiler: profile::Profiler::default(),
+            #[cfg(any(feature = "hot-reload", feature = "headless"))]
+            recorder: viso_platform::launch_var(viso_view::tape::RECORD_ENV)
+                .map(|path| tape::TapeRecorder::new(Some(path.into()))),
+            #[cfg(any(feature = "hot-reload", feature = "headless"))]
+            player: None,
+        }
+    }
+
+    /// Hands the first window to the tape being recorded or replayed.
+    #[allow(unused_variables)]
+    fn adopt_tape(&mut self, ws: &WindowState) {
+        #[cfg(any(feature = "hot-reload", feature = "headless"))]
+        if let Some(recorder) = &mut self.recorder {
+            #[cfg(feature = "hot-reload")]
+            let code = self.hot_reload.code();
+            #[cfg(not(feature = "hot-reload"))]
+            let code = None;
+            recorder.adopt(ws.window, ws.dpi, ws.surface_size, code);
+        }
+        #[cfg(any(feature = "hot-reload", feature = "headless"))]
+        if let Some(player) = &mut self.player {
+            player.adopt(ws.window);
         }
     }
 
@@ -2045,6 +2126,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 |_| None,
             );
             self.harness.mount(&mut ws);
+            self.adopt_tape(&ws);
             self.windows.push(ws);
             return;
         }
@@ -2077,6 +2159,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         self.hot_reload.adopt(|| cx.loop_waker(), &mut ws);
         #[cfg(feature = "headless")]
         self.harness.adopt(&mut ws);
+        self.adopt_tape(&ws);
         self.windows.push(ws);
     }
 
@@ -2088,6 +2171,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // layout resolves against it, so a headless window still re-places the
         // tree on resize. An event for an unknown window (already closed) is a
         // no-op.
+        #[cfg(any(feature = "hot-reload", feature = "headless"))]
+        if let Some(recorder) = &mut self.recorder {
+            recorder.resize(window, scale as f32, (width, height));
+        }
         let Some(ws) = self.window_mut(window) else {
             return;
         };
@@ -2130,6 +2217,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // frame input-dirty). A sample naming an unknown window (already closed)
         // is dropped.
         let _input = profile::time(Span::Input);
+        #[cfg(any(feature = "hot-reload", feature = "headless"))]
+        if let Some(recorder) = &mut self.recorder {
+            recorder.input(&sample);
+        }
         let target = sample.window();
         let Some(ws) = self.window_mut(target) else {
             return;
@@ -2442,6 +2533,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     }
 
     fn on_window_focus(&mut self, window: WindowId, focused: bool) {
+        #[cfg(any(feature = "hot-reload", feature = "headless"))]
+        if let Some(recorder) = &mut self.recorder {
+            recorder.focus(window, focused);
+        }
         // A window losing focus stops delivering key-ups: release every key
         // its games hold so none stays down.
         if !focused && let Some(ws) = self.windows.iter_mut().find(|w| w.window == window) {
@@ -2566,6 +2661,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         #[cfg(any(feature = "hot-reload", feature = "headless"))]
         if phase == FramePhase::CollectInput {
             self.begin_profiled_frame();
+            if let Some(recorder) = &mut self.recorder {
+                recorder.frame(cx.frame_delta());
+            }
             for ws in &mut self.windows {
                 if let Some(journal) = &mut ws.journal
                     && journal.begin_frame()
@@ -2654,7 +2752,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     for ws in &mut self.windows {
                         ws.store.set_dirty_cause(DirtyCause::Reload);
                     }
+                    let before = self.hot_reload.revision();
                     self.hot_reload.reload(&mut self.windows, &mut self.assets);
+                    if let (Some(recorder), Some(revision)) =
+                        (&mut self.recorder, self.hot_reload.revision())
+                        && before != Some(revision)
+                    {
+                        recorder.patch(revision);
+                    }
                     for ws in &mut self.windows {
                         ws.store.set_dirty_cause(DirtyCause::Other);
                     }
@@ -3197,6 +3302,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         cx,
                     );
                 }
+                #[cfg(any(feature = "hot-reload", feature = "headless"))]
+                if let Some(player) = &mut self.player {
+                    player.after_frame(cx);
+                }
                 #[cfg(feature = "hot-reload")]
                 self.hot_reload.play(&self.windows, cx);
                 #[cfg(any(feature = "hot-reload", feature = "headless"))]
@@ -3223,6 +3332,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         }
         #[cfg(feature = "hot-reload")]
         self.hot_reload.close(window);
+        #[cfg(any(feature = "hot-reload", feature = "headless"))]
+        if let Some(recorder) = &mut self.recorder {
+            recorder.closed(window);
+        }
         self.windows.retain(|w| w.window != window);
     }
 

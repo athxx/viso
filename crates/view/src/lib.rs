@@ -78,7 +78,7 @@ pub use regions::{
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use scope::Scope;
 pub use shaders::{__embedded_shader, load_shader, load_shaders};
-pub use viso_dev_protocol::{headless, profile};
+pub use viso_dev_protocol::{headless, profile, tape};
 // The expression `view!` picks the target backend's code of a shader with.
 pub use tasks::release_tasks;
 pub use theme::{default_theme, set_theme};
