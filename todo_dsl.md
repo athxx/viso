@@ -80,8 +80,10 @@ the three source entries share one frontend.
       memory), into one module graph; an imported module's errors fail it at the
       import; `Compiled::imported` lists what it read, which `view!`/`component!`
       track as compile dependencies.
-  - [ ] Reading a declaration through its module (`import model;` then
-        `model::twice(x)`): `E2001` with the by-name import as the hint today.
+  - [x] Reading a declaration through its module (`import model;` then
+        `model::twice(x)`, `model::Size { .. }`, `model::Turn::left`, type
+        `model::Size`): resolution re-tags the qualifiers `ModuleQualifier`,
+        so every later pass reads the declaration's name.
 - [x] `E2001` carries the nearest candidates in `related` and a `fixes` entry, ranked by
       edit distance and filtered by namespace (§105.2, §138; `resolve/suggest.rs`, types
       and module paths).

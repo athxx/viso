@@ -16,6 +16,7 @@ mod module;
 mod name;
 mod native_decl;
 pub(crate) mod prelude;
+mod qualify;
 mod resolver;
 mod scope;
 pub(crate) mod suggest;

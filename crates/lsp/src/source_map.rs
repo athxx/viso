@@ -66,9 +66,9 @@ impl OpenDoc {
         let parse_result = parse(&tokenize(&source), &source);
         let mut interner = NameInterner::new();
         let path = ModulePath::intern(&mut interner, module_path);
-        let units = vec![SourceUnit::new(path, parse_result.clone())];
+        let mut units = vec![SourceUnit::new(path, parse_result.clone())];
         let graph = ModuleGraph::build(&units, &interner);
-        let mut resolved = resolve(&graph, &units, &mut interner, "");
+        let mut resolved = resolve(&graph, &mut units, &mut interner, "");
         // A single-unit graph resolves to exactly one module.
         let resolved = resolved.pop().unwrap_or_else(|| ResolvedModule {
             table: Default::default(),

@@ -35,6 +35,7 @@ use crate::syntax::span::{TextRange, TextSize};
 use super::module::{ModuleGraph, NativeBinding, ResolveErrorKind, SourceUnit};
 use super::name::{NameId, NameInterner};
 use super::prelude::Prelude;
+use super::qualify::{QualifiedHead, qualify};
 use super::scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
 use super::suggest;
 use super::symbol::{SymbolId, SymbolIdentity, SymbolKind, fingerprint};
@@ -130,9 +131,10 @@ struct ImportEnv {
     /// `(owner, local name)` → the full path of the native a component's or
     /// system's member declaration declares.
     member_natives: std::collections::HashMap<(NameId, NameId), String>,
-    /// Local name → the path of the package module a whole-module import
-    /// names.
-    modules: std::collections::HashMap<NameId, String>,
+    /// The name each module-qualified path reads (`model::twice`'s `twice`),
+    /// by its span: the symbol, or `None` for one its module does not
+    /// declare, already reported.
+    qualified: std::collections::HashMap<TextRange, Option<SymbolId>>,
 }
 
 /// One import binding: a local name mapped to the exported symbol it names.
@@ -148,13 +150,21 @@ struct ImportBinding {
 ///
 /// `package` is the package identity mixed into every [`SymbolId`]; `units` supplies
 /// the parse trees (matched to graph modules by module-path text). A module with no
-/// matching unit resolves to an empty result.
+/// matching unit resolves to an empty result. Each unit's module qualifiers
+/// are re-tagged first (`model::twice`'s `model`, see [`super::qualify`]), so
+/// every later pass over `units` reads a qualified path by its declaration's
+/// name.
 pub fn resolve(
     graph: &ModuleGraph,
-    units: &[SourceUnit],
+    units: &mut [SourceUnit],
     interner: &mut NameInterner,
     package: &str,
 ) -> Vec<ResolvedModule> {
+    let mut qualified: Vec<Vec<QualifiedHead>> = units
+        .iter_mut()
+        .map(|unit| qualify(unit, graph, interner))
+        .collect();
+    let units = &*units;
     let prelude = Prelude::load(interner);
     // First pass: every module's public symbol table, so cross-module imports can be
     // resolved before any module body is walked.
@@ -180,12 +190,21 @@ pub fn resolve(
         let module_text = gm.path.display(interner);
         let cu = unit_for(units, &module_text, interner);
         let mut errors = std::mem::take(&mut early_errors[i]);
+        let heads = units
+            .iter()
+            .position(|u| u.path.display(interner) == module_text)
+            .map(|at| std::mem::take(&mut qualified[at]))
+            .unwrap_or_default();
+        let package = Package {
+            graph,
+            tables: &tables,
+            decls: &all_decls,
+        };
         let imports = build_import_env(
             cu.as_ref(),
             &gm.natives,
-            graph,
-            &tables,
-            &all_decls,
+            &heads,
+            &package,
             interner,
             &mut errors,
         );
@@ -887,15 +906,29 @@ const BUILTIN_VALUES: &[&str] = &[
 /// the declaration and offering to export it; it still binds, so its uses type as
 /// the declaration. An item naming nothing is `E2001` with the nearest exported
 /// names, and binds nothing.
+/// The modules of a package graph with what each declares, as imports read
+/// them.
+struct Package<'a> {
+    graph: &'a ModuleGraph,
+    /// Each module's symbol table, by graph index.
+    tables: &'a [SymbolTable],
+    /// Each module's declaration sites, by graph index.
+    decls: &'a [Vec<SymbolDecl>],
+}
+
 fn build_import_env(
     cu: Option<&CompilationUnit>,
     natives: &[NativeBinding],
-    graph: &ModuleGraph,
-    tables: &[SymbolTable],
-    decls: &[Vec<SymbolDecl>],
+    qualified: &[QualifiedHead],
+    package: &Package<'_>,
     interner: &mut NameInterner,
     errors: &mut Vec<Diagnostic>,
 ) -> ImportEnv {
+    let Package {
+        graph,
+        tables,
+        decls,
+    } = *package;
     let mut env = ImportEnv::default();
     for binding in natives {
         let local = interner.intern(&binding.local);
@@ -909,6 +942,23 @@ fn build_import_env(
                 env.natives.insert(local, binding.path.clone());
             }
         }
+    }
+    // `model::twice` reads `twice` as `import model::{twice};` would.
+    for head in qualified {
+        let Some(idx) = graph.index_of(&head.module, interner) else {
+            continue;
+        };
+        let symbol = import_symbol(
+            &tables[idx.as_usize()],
+            &decls[idx.as_usize()],
+            &head.module,
+            &head.name,
+            head.at,
+            interner,
+            errors,
+        );
+        env.qualified
+            .insert(head.at, symbol.map(|(symbol, _)| symbol.id));
     }
     let Some(cu) = cu else {
         return env;
@@ -924,15 +974,6 @@ fn build_import_env(
         let target_table = &tables[idx.as_usize()];
         let target_decls = &decls[idx.as_usize()];
         let target_path = graph.modules()[idx.as_usize()].path.display(interner);
-        if import.items().next().is_none() {
-            let local = import
-                .rename()
-                .and_then(|r| r.name())
-                .map(|t| t.text().to_string())
-                .unwrap_or_else(|| target_path.rsplit("::").next().unwrap_or("").to_owned());
-            env.modules
-                .insert(interner.intern(&local), target_path.clone());
-        }
         // `import a::{ x, y as z };` — selective items into the local environment.
         for item in import.items() {
             let Some(name_tok) = item.name() else {
@@ -946,40 +987,18 @@ fn build_import_env(
                 .unwrap_or_else(|| orig.clone());
             let local = interner.intern(&local_text);
             let at = name_tok.text_range();
-            let subject = format!("{target_path}::{orig}");
-            let Some((symbol, namespace)) = lookup_import(target_table, interner, &orig) else {
-                let mut diagnostic =
-                    ResolveErrorKind::UnresolvedImport.to_diagnostic(Some(at), &subject);
-                let suggestions =
-                    nearest_exports(&orig, target_table, target_decls, &target_path, interner);
-                suggest::attach(&mut diagnostic, at, &suggestions);
-                errors.push(diagnostic);
+            let Some((symbol, namespace)) = import_symbol(
+                target_table,
+                target_decls,
+                &target_path,
+                &orig,
+                at,
+                interner,
+                errors,
+            ) else {
                 env.unresolved.insert(local);
                 continue;
             };
-            if !symbol.exported {
-                let mut diagnostic =
-                    ResolveErrorKind::PrivateImport.to_diagnostic(Some(at), &subject);
-                if let Some(decl) = target_decls.iter().find(|d| d.id == symbol.id) {
-                    diagnostic.related.push(Related::in_module(
-                        target_path.as_str(),
-                        decl.name_range,
-                        "declared here without `export`",
-                    ));
-                    if let Some(export_at) = decl.export_at {
-                        diagnostic.fixes.push(Fix {
-                            title: format!("export `{orig}` from `{target_path}`"),
-                            applicability: Applicability::MaybeIncorrect,
-                            edits: vec![TextEdit::in_module(
-                                target_path.as_str(),
-                                TextRange::empty(export_at),
-                                "export ",
-                            )],
-                        });
-                    }
-                }
-                errors.push(diagnostic);
-            }
             env.bindings.insert(
                 local,
                 ImportBinding {
@@ -990,6 +1009,52 @@ fn build_import_env(
         }
     }
     env
+}
+
+/// The declaration `name`, read at `at`, names in the module `path` (whose
+/// table and declarations are `table` and `decls`): `E2001` with its nearest
+/// exports when it names none, and `E2001` with an `export` fix, still
+/// binding it, when it is not exported.
+fn import_symbol(
+    table: &SymbolTable,
+    decls: &[SymbolDecl],
+    path: &str,
+    name: &str,
+    at: TextRange,
+    interner: &mut NameInterner,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<(ModuleSymbol, Namespace)> {
+    let subject = format!("{path}::{name}");
+    let Some((symbol, namespace)) = lookup_import(table, interner, name) else {
+        let mut diagnostic = ResolveErrorKind::UnresolvedImport.to_diagnostic(Some(at), &subject);
+        let suggestions = nearest_exports(name, table, decls, path, interner);
+        suggest::attach(&mut diagnostic, at, &suggestions);
+        errors.push(diagnostic);
+        return None;
+    };
+    if !symbol.exported {
+        let mut diagnostic = ResolveErrorKind::PrivateImport.to_diagnostic(Some(at), &subject);
+        if let Some(decl) = decls.iter().find(|d| d.id == symbol.id) {
+            diagnostic.related.push(Related::in_module(
+                path,
+                decl.name_range,
+                "declared here without `export`",
+            ));
+            if let Some(export_at) = decl.export_at {
+                diagnostic.fixes.push(Fix {
+                    title: format!("export `{name}` from `{path}`"),
+                    applicability: Applicability::MaybeIncorrect,
+                    edits: vec![TextEdit::in_module(
+                        path,
+                        TextRange::empty(export_at),
+                        "export ",
+                    )],
+                });
+            }
+        }
+        errors.push(diagnostic);
+    }
+    Some((symbol, namespace))
 }
 
 /// Looks a name up in a module's table across every namespace, preferring an
@@ -1040,7 +1105,7 @@ fn nearest_exports<'a>(
 
 /// The `::`-joined identifier text of a path-like syntax node (module path, type
 /// path, or path expression), skipping `::` separators and generic arguments.
-fn type_or_module_path_text(node: &SyntaxNode) -> String {
+pub(super) fn type_or_module_path_text(node: &SyntaxNode) -> String {
     use crate::syntax::SyntaxKind;
     let mut out = String::new();
     let mut first = true;
@@ -1854,8 +1919,30 @@ impl<'a> ModulePass<'a> {
         }
     }
 
+    /// Resolves `head` when it follows module qualifiers (`model::twice`'s
+    /// `twice`) to the declaration of the module they name, reporting whether
+    /// it does; one the module does not declare is already reported.
+    fn resolve_qualified(&mut self, head: &crate::syntax::SyntaxToken) -> bool {
+        if self.imports.qualified.is_empty() {
+            return false;
+        }
+        let Some(symbol) = self.imports.qualified.get(&head.text_range()) else {
+            return false;
+        };
+        if let Some(symbol) = *symbol {
+            self.refs.push(ResolvedRef {
+                range: head.text_range(),
+                to: Resolution::Symbol(symbol),
+            });
+        }
+        true
+    }
+
     /// Resolves `head` in the type namespace, reporting whether it named a type.
     fn resolve_type_token(&mut self, head: &crate::syntax::SyntaxToken) -> bool {
+        if self.resolve_qualified(head) {
+            return true;
+        }
         let name = self.interner.intern(&head.text());
         let symbol = self.type_symbol(name);
         if let Some(symbol) = symbol {
@@ -2163,23 +2250,6 @@ impl<'a> ModulePass<'a> {
             self.resolve_native(&head, base, &rest, false);
             return;
         }
-        // `units::ONE` reads a declaration of a package module through its
-        // whole-module import, which only names are imported by yet.
-        if let (Some(module), Some(item)) =
-            (self.imports.modules.get(&name), path.segments().nth(1))
-        {
-            let item = item.text();
-            let at = path.syntax().text_range();
-            self.errors.push(Diagnostic::error(
-                "E2001",
-                at,
-                format!(
-                    "`{module}::{item}` reads a declaration through its module, which is not \
-                     resolved yet; import it by name: `import {module}::{{{item}}};`"
-                ),
-            ));
-            return;
-        }
         // `S::idle` names a variant of the type `S`: a qualified head that is no
         // value resolves in the type namespace, and one that names no type
         // either is an unresolved type, as it is where a type is written.
@@ -2317,6 +2387,9 @@ impl<'a> ModulePass<'a> {
     /// component's members, the module value namespace, imports, and the prelude.
     /// Returns whether it resolved.
     fn resolve_value_token(&mut self, head: &crate::syntax::SyntaxToken) -> bool {
+        if self.resolve_qualified(head) {
+            return true;
+        }
         let name = self.interner.intern(&head.text());
         let const_param = || {
             self.type_scopes.iter().rev().find_map(|scope| {
@@ -2426,6 +2499,9 @@ impl<'a> ModulePass<'a> {
         let Some(head) = ty.segments().next() else {
             return;
         };
+        if self.resolve_qualified(&head) {
+            return;
+        }
         let text = head.text();
         let name = self.interner.intern(&text);
         if let Some(symbol) = self.type_symbol(name) {
@@ -2586,9 +2662,9 @@ mod tests {
         SourceUnit::new(ModulePath::intern(interner, path), parse_unit(src))
     }
 
-    fn resolve_all(units: Vec<SourceUnit>, interner: &mut NameInterner) -> Vec<ResolvedModule> {
+    fn resolve_all(mut units: Vec<SourceUnit>, interner: &mut NameInterner) -> Vec<ResolvedModule> {
         let graph = ModuleGraph::build(&units, interner);
-        resolve(&graph, &units, interner, "app")
+        resolve(&graph, &mut units, interner, "app")
     }
 
     #[test]

@@ -194,7 +194,7 @@ pub fn load_package_in(
         .collect();
     let graph_diagnostics: Vec<Diagnostic> = graph.graph_errors().cloned().collect();
 
-    let resolved = resolve(&graph, &units, &mut interner, manifest.name);
+    let resolved = resolve(&graph, &mut units, &mut interner, manifest.name);
     let hir = lower(
         &graph,
         &units,

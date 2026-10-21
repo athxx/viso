@@ -98,24 +98,85 @@ fn a_module_that_does_not_compile_fails_its_importer_at_the_import() {
     assert_eq!(error.related[0].module.as_deref(), Some("model"));
 }
 
+const SHAPES: &str = r#"
+import units::{BASE};
+export const SIDE: MixedLength = BASE;
+export record Size { w: I64; h: I64; }
+export enum Turn { left; right; }
+export fn area(s: Size) -> I64 { s.w * s.h }
+fn hidden() -> I64 { 0 }
+"#;
+
+const QUALIFIED: &str = r#"
+import shapes;
+export component Page {
+    state n = 0;
+    state turn: shapes::Turn = shapes::Turn::left;
+    view {
+        Column {
+            Row {
+                width: shapes::SIDE;
+                height: 20dp;
+                on click {
+                    let s: shapes::Size = shapes::Size { w: 2, h: 3 };
+                    n += match turn {
+                        shapes::Turn::left => shapes::area(s),
+                        shapes::Turn::right => 0,
+                    };
+                    turn = shapes::Turn::right;
+                }
+            }
+        }
+    }
+}
+"#;
+
+fn shapes(source: &str) -> Siblings {
+    Siblings::Memory(Arc::from(vec![
+        (vec!["shapes".to_owned()], source.to_owned()),
+        (
+            vec!["units".to_owned()],
+            "export const BASE: MixedLength = 120dp;\n".to_owned(),
+        ),
+    ]))
+}
+
 #[test]
-fn a_declaration_read_through_its_module_is_e2001() {
-    let page = PAGE
-        .replace("import model::{twice, START};", "import model;")
-        .replace("twice(n + START)", "model::twice(n + model::START)");
+fn a_declaration_reads_through_its_module_in_every_target() {
+    for mut rt in [
+        Rt::mount_in(QUALIFIED, shapes(SHAPES)),
+        Rt::packaged_in(QUALIFIED, shapes(SHAPES)),
+    ] {
+        let row = rt.children(rt.root.expect("mounted"))[0];
+        assert_eq!(rt.store.bounds(row).w, 120.0, "`shapes::SIDE`");
+        rt.click(0);
+        assert_eq!(rt.int("n"), Some(6), "`shapes::area` of a `shapes::Size`");
+        rt.click(0);
+        assert_eq!(rt.int("n"), Some(6), "matched `shapes::Turn::right`");
+    }
+}
+
+#[test]
+fn a_name_its_module_does_not_export_is_e2001_at_the_name() {
+    let page = QUALIFIED.replace("shapes::area(s)", "shapes::hidden() + shapes::areas(s)");
     let origin = Origin {
-        siblings: siblings(MODEL),
+        siblings: shapes(SHAPES),
         ..origin()
     };
     let errors: Vec<_> = compile_file(&page, &origin)
         .errors()
-        .map(|d| (d.code, d.message.clone()))
+        .map(|d| {
+            let at = d.primary.start().to_u32() as usize..d.primary.end().to_u32() as usize;
+            (d.code, page[at].to_owned(), d.fixes.len())
+        })
         .collect();
-    assert_eq!(errors.len(), 2, "{errors:#?}");
-    assert!(errors.iter().all(|(code, _)| *code == "E2001"));
-    assert!(
-        errors[1].1.contains("import model::{START};"),
-        "{errors:#?}"
+    assert_eq!(
+        errors,
+        [
+            ("E2001", "hidden".to_owned(), 1),
+            ("E2001", "areas".to_owned(), 1)
+        ],
+        "unexported (fix: export it), unknown (fix: the nearest export)"
     );
 }
 

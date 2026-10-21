@@ -2889,9 +2889,9 @@ mod tests {
         let parse = crate::syntax::grammar::parse(&tokens, src);
         let path = crate::resolve::ModulePath::intern(&mut interner, &["app"]);
         let unit = SourceUnit::new(path, parse);
-        let units = vec![unit];
+        let mut units = vec![unit];
         let graph = ModuleGraph::build(&units, &interner);
-        let resolved = resolve(&graph, &units, &mut interner, "app");
+        let resolved = resolve(&graph, &mut units, &mut interner, "app");
         lower(
             &graph,
             &units,
@@ -2962,9 +2962,9 @@ mod tests {
                 parse,
             )
         };
-        let units = vec![unit("lib", lib), unit("app", app)];
+        let mut units = vec![unit("lib", lib), unit("app", app)];
         let graph = ModuleGraph::build(&units, &interner);
-        let resolved = resolve(&graph, &units, &mut interner, "app");
+        let resolved = resolve(&graph, &mut units, &mut interner, "app");
         for module in &resolved {
             assert!(module.errors.is_empty(), "{:?}", module.errors);
         }

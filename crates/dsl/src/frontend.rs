@@ -517,7 +517,12 @@ fn compile_unit(
     };
     diagnostics.extend(graph.module_errors(index).cloned());
     diagnostics.extend(graph.graph_errors().cloned());
-    let mut resolved = resolve(&graph, &units, &mut interner, &origin.package);
+    let mut resolved = resolve(&graph, &mut units, &mut interner, &origin.package);
+    // Resolution re-tags the unit's module qualifiers; every later pass reads
+    // its tree.
+    let root = SyntaxNode::new_root(units[0].parse.root.clone());
+    let cu =
+        CompilationUnit::cast(root.clone()).expect("every module entry roots a CompilationUnit");
     let rust_scope = profile.rust_scope;
     let lowered = crate::hir::lower(
         &graph,

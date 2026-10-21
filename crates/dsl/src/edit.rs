@@ -367,9 +367,9 @@ impl Document {
         let mut interner = NameInterner::new();
         let segments: Vec<&str> = origin.module.iter().map(String::as_str).collect();
         let path = ModulePath::intern(&mut interner, &segments);
-        let units = vec![SourceUnit::new(path, parse)];
+        let mut units = vec![SourceUnit::new(path, parse)];
         let graph = ModuleGraph::build(&units, &interner);
-        let decls = resolve(&graph, &units, &mut interner, &origin.package)
+        let decls = resolve(&graph, &mut units, &mut interner, &origin.package)
             .pop()
             .map(|m| m.decls)
             .unwrap_or_default();

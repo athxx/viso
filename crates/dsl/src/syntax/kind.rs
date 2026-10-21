@@ -54,6 +54,11 @@ pub enum SyntaxKind {
     Ident,
     /// `r#name` raw identifier (spec section 11); decodes to an ordinary symbol name.
     RawIdent,
+    /// An identifier naming a package module ahead of `::` in a path
+    /// (`model::twice`'s `model`). The lexer never produces one: resolution
+    /// re-tags an [`Self::Ident`] it binds to a whole-module import, so a
+    /// path's segments are the declaration's name and what follows it.
+    ModuleQualifier,
 
     // --- Declaration keywords (spec section 12.1) ---
     ImportKw,
@@ -655,6 +660,7 @@ impl SyntaxKind {
             Self::ColorLiteral => "ColorLiteral",
             Self::Ident => "Ident",
             Self::RawIdent => "RawIdent",
+            Self::ModuleQualifier => "ModuleQualifier",
             Self::ImportKw => "ImportKw",
             Self::ExportKw => "ExportKw",
             Self::AsKw => "AsKw",

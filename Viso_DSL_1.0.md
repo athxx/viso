@@ -780,7 +780,7 @@ module_path      = identifier, { "::", label } ;
 - 编译器、Formatter、LSP 和 Hot Reload 都必须从同一 Source Context 获得 package/module identity；
 - 独立 conformance fixture 若需要显式 module identity，应由测试 harness 提供，不扩展普通 source grammar。
 
-当前实现：一个文件单独编译时（`view!`、`component!`、热重载、`viso dump`/`export`/`snapshot`），编译器读它直接或间接 import 的包内 Module（`a::b` 对应 `src/a/b.vs` 或 `src/a/b/mod.vs`），与它组成同一个 Module Graph 一起解析、检查与降级，不读包的其余文件；被 import 的 Module 有错误时，每个错误报在读它的那条 `import` 上（`in `model`: …`，related 指向它在该 Module 中的位置）。`view!`/`component!` 把被读的文件列为编译依赖，开发会话在其中任一文件变化时重新编译 import 它的文件。按名 import（`import model::{twice};`）的 `fn`、`const`、Record 与 Enum 可用；经整模块 import 以路径读取声明（`import model;` 后写 `model::twice`）报 `E2001` 并提示按名 import；View 只内联本文件声明的组件与 Style（另一文件的报 `E3711`）。同名 import 两次报 `E2002`；`const` 的值直接或经其调用的 `fn` 读到自身报 `E2003`。
+当前实现：一个文件单独编译时（`view!`、`component!`、热重载、`viso dump`/`export`/`snapshot`），编译器读它直接或间接 import 的包内 Module（`a::b` 对应 `src/a/b.vs` 或 `src/a/b/mod.vs`），与它组成同一个 Module Graph 一起解析、检查与降级，不读包的其余文件；被 import 的 Module 有错误时，每个错误报在读它的那条 `import` 上（`in `model`: …`，related 指向它在该 Module 中的位置）。`view!`/`component!` 把被读的文件列为编译依赖，开发会话在其中任一文件变化时重新编译 import 它的文件。按名 import（`import model::{twice};`）的 `fn`、`const`、Record 与 Enum 可用，经整模块 import 以路径读取（`import model;` 后写 `model::twice(x)`、`model::Size { .. }`、`model::Turn::left`、类型 `model::Size`）与按名 import 相同：名字须是该 Module `export` 的声明，未导出或不存在时在该名字处报 `E2001`（附 `export` Fix 或最近的导出名）；View 只内联本文件声明的组件与 Style（另一文件的报 `E3711`）。同名 import 两次报 `E2002`；`const` 的值直接或经其调用的 `fn` 读到自身报 `E2003`。
 
 ### 22.1 Rust 侧源码入口
 

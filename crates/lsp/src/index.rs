@@ -116,9 +116,9 @@ mod tests {
         let parse_result = parse(&tokenize(src), src);
         let mut interner = NameInterner::new();
         let path = ModulePath::intern(&mut interner, &["test"]);
-        let units = vec![SourceUnit::new(path, parse_result)];
+        let mut units = vec![SourceUnit::new(path, parse_result)];
         let graph = ModuleGraph::build(&units, &interner);
-        let mut resolved = resolve(&graph, &units, &mut interner, "test");
+        let mut resolved = resolve(&graph, &mut units, &mut interner, "test");
         let module = resolved.pop().expect("one module");
         let index = ReferenceIndex::build(&module);
         (module, index)
