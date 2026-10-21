@@ -18,13 +18,14 @@
 //! This is a cold-path structure (built once during resolution), so `HashMap`/`Vec`/
 //! owned paths are appropriate (AGENTS section 7.2).
 
-use std::collections::BTreeMap;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use viso_behavior::native::Natives;
 
 use crate::ast::{AstNode, CompilationUnit};
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Related};
 use crate::syntax::SyntaxNode;
 use crate::syntax::grammar::Parse;
 use crate::syntax::span::TextRange;
@@ -316,6 +317,8 @@ impl ModuleGraph {
                         }
                     }
                 }
+                duplicate_imports(&cu, &mut errors);
+                owners.resize(errors.len(), Some(ModuleIndex(index as u32)));
             }
             // Edge order deterministic and duplicate-free for stable cycle output.
             imports.sort();
@@ -526,6 +529,49 @@ fn native_import(
     item && items.is_empty()
 }
 
+/// [`E2002`](ResolveErrorKind::DuplicateName) on each `import` of `cu` that
+/// binds a local name an earlier one already binds.
+fn duplicate_imports(cu: &CompilationUnit, errors: &mut Vec<Diagnostic>) {
+    let mut bound: HashMap<String, TextRange> = HashMap::new();
+    let mut bind = |name: String, at: TextRange, errors: &mut Vec<Diagnostic>| match bound
+        .entry(name)
+    {
+        Entry::Vacant(slot) => {
+            slot.insert(at);
+        }
+        Entry::Occupied(first) => {
+            let mut error = ResolveErrorKind::DuplicateName.to_diagnostic(Some(at), first.key());
+            error.related.push(Related::new(
+                *first.get(),
+                format!("`{}` is imported here", first.key()),
+            ));
+            errors.push(error);
+        }
+    };
+    for import in cu.imports() {
+        let Some(path) = import.path() else {
+            continue;
+        };
+        let items: Vec<_> = import.items().collect();
+        if items.is_empty() {
+            let named = import.rename().and_then(|r| r.name());
+            let last = path.segments().last();
+            let (name, at) = match (named, last) {
+                (Some(t), _) => (t.text().to_string(), t.text_range()),
+                (None, Some(t)) => (t.text().to_string(), t.text_range()),
+                (None, None) => continue,
+            };
+            bind(name, at, errors);
+        }
+        for item in items {
+            let Some(token) = item.rename().and_then(|r| r.name()).or_else(|| item.name()) else {
+                continue;
+            };
+            bind(token.text().to_string(), token.text_range(), errors);
+        }
+    }
+}
+
 /// The `::`-joined text of a syntax `ModulePath` node (from an `import` decl).
 fn module_path_text(path: &crate::ast::ModulePath) -> String {
     let mut out = String::new();
@@ -633,6 +679,31 @@ mod tests {
                 .any(|d| d.code == "E2002" && d.message.contains("`dup`")),
             "a repeated module path is E2002"
         );
+    }
+
+    #[test]
+    fn a_name_imported_twice_is_e2002() {
+        let mut interner = NameInterner::new();
+        let src = "import viso::math::{clamp};\nimport viso::math::{clamp};\n\
+                   import m::{twice, twice as double};\nimport m::{double};\ncomponent A { }";
+        let units = vec![
+            unit(
+                &mut interner,
+                &["m"],
+                "export fn twice(x: I64) -> I64 { x * 2 }",
+            ),
+            unit(&mut interner, &["a"], src),
+        ];
+        let graph = ModuleGraph::build(&units, &interner);
+        let dups: Vec<_> = graph
+            .errors()
+            .iter()
+            .filter(|d| d.code == "E2002")
+            .collect();
+        assert_eq!(dups.len(), 2, "{dups:?}");
+        assert!(dups[0].message.contains("`clamp`") && dups[1].message.contains("`double`"));
+        let first = dups[0].related[0].range;
+        assert_eq!(first.start().to_u32(), "import viso::math::{".len() as u32);
     }
 
     #[test]

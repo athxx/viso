@@ -480,6 +480,7 @@ fn lower_module(
     let first_component = components.len();
     let mut system_hooks = Vec::new();
     let cyclic = themes::cyclic(&themes::themes_of(cu.items()), refs, env);
+    const_cycles(cu.items(), refs, env, diagnostics);
     let book = StyleBook::new(
         cu.items(),
         |s| env.scope.declared.get(&s.syntax().text_range()).copied(),
@@ -983,6 +984,73 @@ fn check_signature(
     }
     percent.extend(cx.take_percent_defs());
     diagnostics.extend(cx.into_diagnostics());
+}
+
+/// `E2003` on each module `const` whose value reads itself, directly or
+/// through other `const`s and the `fn`s it calls.
+fn const_cycles(
+    items: impl Iterator<Item = Item>,
+    refs: &[ResolvedRef],
+    env: &ModuleEnv<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut nodes: HashMap<SymbolId, (TextRange, Option<ConstDecl>)> = HashMap::new();
+    for item in items {
+        let item = match item {
+            Item::Export(e) => e.declaration(),
+            other => Some(other),
+        };
+        let (at, decl) = match item {
+            Some(Item::Const(c)) => (c.syntax().text_range(), Some(c)),
+            Some(Item::Fn(f)) => (f.syntax().text_range(), None),
+            _ => continue,
+        };
+        if let Some(&symbol) = env.scope.declared.get(&at) {
+            nodes.insert(symbol, (at, decl));
+        }
+    }
+    if !nodes.values().any(|(_, decl)| decl.is_some()) {
+        return;
+    }
+    let edges: HashMap<SymbolId, Vec<SymbolId>> = nodes
+        .iter()
+        .map(|(&symbol, &(at, _))| {
+            let reads = refs
+                .iter()
+                .filter(|r| at.contains_range(r.range))
+                .filter_map(|r| match r.to {
+                    Resolution::Symbol(id) if nodes.contains_key(&id) => Some(id),
+                    _ => None,
+                })
+                .collect();
+            (symbol, reads)
+        })
+        .collect();
+    let mut cyclic: Vec<(TextRange, ConstDecl)> = Vec::new();
+    for (&start, (at, decl)) in &nodes {
+        let Some(decl) = decl else { continue };
+        let mut seen = HashSet::new();
+        let mut stack = edges[&start].clone();
+        while let Some(next) = stack.pop() {
+            if next == start {
+                cyclic.push((*at, decl.clone()));
+                break;
+            }
+            if seen.insert(next) {
+                stack.extend(edges.get(&next).into_iter().flatten());
+            }
+        }
+    }
+    cyclic.sort_by_key(|(at, _)| at.start());
+    for (at, decl) in cyclic {
+        let name = name_of(decl.name());
+        let at = decl.name().map_or(at, |t| t.text_range());
+        diagnostics.push(Diagnostic::error(
+            "E2003",
+            at,
+            format!("the value of `const {name}` reads itself"),
+        ));
+    }
 }
 
 /// Types a `const` value against its annotation.
@@ -3105,6 +3173,23 @@ mod tests {
 
     fn codes(src: &str) -> Vec<&'static str> {
         lower_src(src).diagnostics.iter().map(|d| d.code).collect()
+    }
+
+    #[test]
+    fn a_const_reading_itself_is_e2003() {
+        assert_eq!(
+            codes("const A: I64 = B + 1;\nconst B: I64 = A + 1;"),
+            ["E2003", "E2003"]
+        );
+        assert_eq!(codes("const A: I64 = A;"), ["E2003"]);
+        assert_eq!(
+            codes("fn f() -> I64 { C }\nconst C: I64 = f() + 1;\nconst D: I64 = C;"),
+            ["E2003"],
+            "through a fn; D reads the cycle without being on it"
+        );
+        assert_clean(
+            "fn f(n: I64) -> I64 { if n > 0 { f(n - 1) } else { K } }\nconst K: I64 = 1;\nconst L: I64 = f(K);",
+        );
     }
 
     fn assert_clean(src: &str) {
