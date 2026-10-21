@@ -374,6 +374,33 @@ fn regions_mount_from_templates() {
 }
 
 #[test]
+fn a_virtual_list_is_a_list_of_its_rows() {
+    let page = export(
+        "export component Feed {
+            state items = [1, 2, 3];
+            view {
+                VirtualList {
+                    width: 200dp;
+                    height: 100dp;
+                    for i in items key i {
+                        Column { width: 200dp; height: 20dp; Button { text: \"go\"; } }
+                    }
+                }
+            }
+        }",
+        false,
+    )
+    .unwrap();
+    assert!(page.index.contains("role=\"list\""), "{}", page.index);
+    assert!(
+        page.index.contains("role=\"listitem\"><button"),
+        "{}",
+        page.index
+    );
+    assert!(!page.index.contains("<button role="), "{}", page.index);
+}
+
+#[test]
 fn a_shader_has_no_html_form() {
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/10-custom-shader");
     let source = std::fs::read_to_string(example.join("src/ripples.vs")).unwrap();

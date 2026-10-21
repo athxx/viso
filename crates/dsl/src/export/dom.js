@@ -216,6 +216,41 @@ const listen = (el, route, capture, control, fire) => {
     el.addEventListener("keydown", live((e) => {
       if (e.key === "Enter" && !e.repeat && !e.isComposing) fire(null);
     }), capture);
+  } else if (route === 12) {
+    const len = (v) => rec([v, 0, 0, 0, 0]);
+    el.addEventListener("scroll", () => fire(rec([
+      rec([len(el.scrollLeft), len(el.scrollTop)]),
+      rec([el.clientWidth, el.clientHeight]),
+      rec([el.scrollWidth, el.scrollHeight]),
+    ])), { passive: true, capture });
+  } else if (route === 13) {
+    let seen = "";
+    const report = () => {
+      const all = rows(el);
+      if (!all.length || !el.clientHeight) return;
+      const across = el.classList.contains("vx-across");
+      const box = el.getBoundingClientRect();
+      const start = across ? box.left : box.top;
+      const end = start + (across ? el.clientWidth : el.clientHeight);
+      const lo = (r) => { const b = r.getBoundingClientRect(); return across ? b.left : b.top; };
+      const hi = (r) => { const b = r.getBoundingClientRect(); return across ? b.right : b.bottom; };
+      // The first row ending past the start edge, the last starting before
+      // the far one: rows run in order, so a search finds each.
+      const find = (test) => {
+        let a = 0, b = all.length;
+        while (a < b) { const m = (a + b) >> 1; if (test(all[m])) b = m; else a = m + 1; }
+        return a;
+      };
+      const first = Math.min(find((r) => hi(r) > start), all.length - 1);
+      const last = Math.max(find((r) => lo(r) >= end) - 1, first);
+      const now = first + ":" + last + ":" + all.length;
+      if (now === seen) return;
+      seen = now;
+      fire(rec([BigInt(first), BigInt(last), BigInt(all.length)]));
+    };
+    el.addEventListener("scroll", report, { passive: true, capture });
+    new ResizeObserver(report).observe(el);
+    new MutationObserver(report).observe(el, { childList: true });
   } else {
     const current = () => items(el).findIndex((c) => c.getAttribute(el.$radio ? "aria-checked" : "aria-selected") === "true");
     const choose = (i) => {

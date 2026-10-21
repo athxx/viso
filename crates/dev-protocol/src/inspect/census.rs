@@ -230,6 +230,14 @@ impl Encode for WindowCensus {
                         }
                         None => enc.write_u8(0),
                     }
+                    match state.position {
+                        Some((index, count)) => {
+                            enc.write_u8(1);
+                            enc.write_varint(u64::from(index));
+                            enc.write_varint(u64::from(count));
+                        }
+                        None => enc.write_u8(0),
+                    }
                 }
             }
             match node.origin {
@@ -313,6 +321,11 @@ impl Decode for WindowCensus {
                         1 => Some((dec.read_f32()?, dec.read_f32()?)),
                         _ => return Err(malformed(dec)),
                     };
+                    let position = match dec.read_u8()? {
+                        0 => None,
+                        1 => Some((u32_of(dec)?, u32_of(dec)?)),
+                        _ => return Err(malformed(dec)),
+                    };
                     Some(NodeSemantics {
                         role,
                         label,
@@ -325,6 +338,7 @@ impl Decode for WindowCensus {
                             range,
                             expanded,
                             selected,
+                            position,
                         },
                     })
                 }

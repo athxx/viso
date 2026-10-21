@@ -8,7 +8,9 @@
 use std::rc::Rc;
 
 use viso_behavior::{Aggregate, Value};
-use viso_ui::{EventCx, Key, KeyEvent, Modifiers, PointerButtons, PointerId, PointerPhase};
+use viso_ui::{
+    EventCx, Key, KeyEvent, Modifiers, Notice, PointerButtons, PointerId, PointerPhase, Vec2,
+};
 
 pub use viso_schema::view::route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 
@@ -51,6 +53,38 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
             modifiers(pointer.modifiers),
         ]),
     })
+}
+
+/// The route a notice runs, and its payload.
+pub fn notice_payload(notice: &Notice) -> (EventRoute, Value) {
+    match *notice {
+        Notice::Scroll {
+            offset,
+            viewport,
+            content,
+        } => (
+            EventRoute::ScrollChanged,
+            record([
+                record([mixed(offset.x), mixed(offset.y)]),
+                size(viewport),
+                size(content),
+            ]),
+        ),
+        Notice::VisibleRange { first, last, count } => (
+            EventRoute::VisibleRangeChanged,
+            record([first, last, count].map(|n| Value::Int(n as i64))),
+        ),
+    }
+}
+
+/// A `MixedLength` of `dp` alone: its `dp`, `px`, `sp`, `em` and `pct` terms.
+fn mixed(dp: f32) -> Value {
+    record([f64::from(dp), 0.0, 0.0, 0.0, 0.0].map(Value::Float))
+}
+
+/// A `SizeDp`.
+fn size(v: Vec2) -> Value {
+    record([Value::Float(f64::from(v.x)), Value::Float(f64::from(v.y))])
 }
 
 /// A record aggregate of `fields`.

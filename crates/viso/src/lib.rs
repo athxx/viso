@@ -2964,6 +2964,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // frame presented; what they write is the next frame's
                     // transaction, so that frame is scheduled.
                     ws.store.set_dirty_cause(DirtyCause::Task);
+                    // What the frame's layout moved reaches the nodes that
+                    // report it — a viewport's scroll, a list's visible rows;
+                    // their handlers' writes are the next frame's, as the
+                    // effects' are.
+                    viso_ui::deliver_notices(&mut ws.store, &ws.virtual_lists, &mut ws.states);
                     let done = viso_ui::run_effects(&mut ws.store, &mut ws.states, &mut ws.effects);
                     if let Some(cycle) = done.cycle {
                         eprintln!("[viso] {cycle}");

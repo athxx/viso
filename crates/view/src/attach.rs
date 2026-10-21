@@ -3,12 +3,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use viso_ui::{BuildCx, DispatchPhase, EventCx, Handle, NodeId, NodeStore};
+use viso_ui::{
+    BuildCx, DispatchPhase, EventCx, Handle, NodeId, NodeStore, Notice, NoticeHandler, NoticeKinds,
+    StateStore,
+};
 
 use crate::control::{Control, Drive};
 use crate::host::ViewHost;
 use crate::scope::Scope;
 
+use viso_schema::view::route::EventRoute;
 pub use viso_schema::view::route::Route;
 
 /// Installs `routes` and the built-in response of `control` on the node `node`
@@ -30,6 +34,9 @@ pub fn attach(
         cx.on_key(node, handler(host, keys, control, scope));
         cx.focusable(node, true);
     }
+    if let Some((kinds, watcher)) = notices(host, routes, scope) {
+        cx.watch(node, kinds, watcher);
+    }
     node
 }
 
@@ -47,6 +54,10 @@ pub fn attach_node(
     scope: &Scope,
 ) {
     store.clear_event_handlers(id);
+    match notices(host, routes, scope) {
+        Some((kinds, watcher)) => store.watch(id, kinds, watcher),
+        None => store.unwatch(id),
+    }
     let (keys, pointers) = split(routes, control.as_ref());
     if let Some(pointers) = pointers {
         store.set_pointer_handler(
@@ -69,7 +80,10 @@ fn split(routes: &[Route], control: Option<&Control>) -> (Option<Vec<Route>>, Op
         let picked: Vec<Route> = routes
             .iter()
             .copied()
-            .filter(|route| route.event.is_control() || route.event.is_key() == key)
+            .filter(|route| {
+                !route.event.is_notice()
+                    && (route.event.is_control() || route.event.is_key() == key)
+            })
             .collect();
         (control.is_some() || !picked.is_empty()).then_some(picked)
     };
@@ -114,6 +128,41 @@ fn handler(
             host.dispatch(route.handler, payload, &scope, cx);
         }
     }
+}
+
+/// The notices `routes` run on and the handler that runs them, dispatching
+/// into `host` in `scope`; `None` when none runs on a notice.
+fn notices(
+    host: &Rc<RefCell<ViewHost>>,
+    routes: &[Route],
+    scope: &Scope,
+) -> Option<(NoticeKinds, NoticeHandler)> {
+    let routes: Vec<Route> = routes
+        .iter()
+        .copied()
+        .filter(|route| route.event.is_notice())
+        .collect();
+    let kinds = routes
+        .iter()
+        .fold(NoticeKinds::default(), |kinds, route| match route.event {
+            EventRoute::ScrollChanged => kinds | NoticeKinds::SCROLL,
+            _ => kinds | NoticeKinds::VISIBLE_RANGE,
+        });
+    if kinds.is_empty() {
+        return None;
+    }
+    let host = Rc::clone(host);
+    let scope = scope.clone();
+    let watcher = move |notice: &Notice, states: &mut StateStore| {
+        let Ok(mut host) = host.try_borrow_mut() else {
+            return;
+        };
+        let (event, payload) = crate::route::notice_payload(notice);
+        for route in routes.iter().filter(|route| route.event == event) {
+            host.dispatch(route.handler, payload.clone(), &scope, states);
+        }
+    };
+    Some((kinds, Box::new(watcher)))
 }
 
 /// Whether `route` runs in dispatch phase `phase`: a capture handler on the

@@ -88,6 +88,10 @@ fn node_of(node: AccessNode) -> Node {
     if let Some(selected) = state.selected {
         out.set_selected(selected);
     }
+    if let Some((index, count)) = state.position {
+        out.set_position_in_set(index as usize);
+        out.set_size_of_set(count as usize);
+    }
     if state.disabled {
         out.set_disabled();
     }

@@ -61,6 +61,7 @@ export record ScrollEvent { delta: Offset; modifiers: Modifiers; }
 export record KeyEvent { key: Key; repeat: Bool; modifiers: Modifiers; }
 export record FocusEvent { focus_visible: Bool; }
 export record ScrollChanged { offset: Offset; viewport: SizeDp; content: SizeDp; }
+export record VisibleRange { first: U64; last: U64; count: U64; }
 
 export enum Easing { linear; ease_in; ease_out; ease_in_out; }
 export enum ReducedMotion { instant; keep; }

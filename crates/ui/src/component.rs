@@ -638,6 +638,8 @@ pub struct NodeStore {
     /// Cold: the structure hooks of the mounted views: one per view with
     /// control-flow regions, and one per view whose nodes show reactive values.
     structure_hooks: crate::structure::StructureHooks,
+    /// Cold: the nodes reporting their scroll or visible rows after layout.
+    notices: crate::notice::Notices,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
     /// re-folded into `layout` when it changes. Empty in a tree of plain `dp`
     /// and `%` lengths.
@@ -756,6 +758,7 @@ impl NodeStore {
         self.draggable_regions.clear();
         self.tasks.clear();
         self.structure_hooks.clear();
+        self.notices.clear();
         self.lengths.clear();
         self.pending_effects.clear();
         self.suspend_hooks.clear();
@@ -1553,6 +1556,14 @@ impl NodeStore {
         &mut self.structure_hooks
     }
 
+    pub(crate) fn notices(&self) -> &crate::notice::Notices {
+        &self.notices
+    }
+
+    pub(crate) fn notices_mut(&mut self) -> &mut crate::notice::Notices {
+        &mut self.notices
+    }
+
     pub(crate) fn lengths(&self) -> &crate::length::LengthBindings {
         &self.lengths
     }
@@ -1612,6 +1623,7 @@ impl NodeStore {
             BoxStyle::default(),
         );
         self.arena.append_child(canvas, host);
+        self.set_semantics(host, Semantics::role(Role::ListItem));
         host
     }
 
@@ -5769,6 +5781,17 @@ impl<'a> BuildCx<'a> {
             },
         };
         f(&mut cx)
+    }
+
+    /// Watches the node `handle` names for the notices `kinds` names (see
+    /// [`NodeStore::watch`]).
+    pub fn watch(
+        &mut self,
+        handle: Handle,
+        kinds: crate::notice::NoticeKinds,
+        handler: crate::notice::NoticeHandler,
+    ) {
+        self.store.watch(handle.id, kinds, handler);
     }
 
     /// The node the next declared child attaches under, `None` before the

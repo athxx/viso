@@ -30,6 +30,7 @@ pub mod layout;
 pub mod layout_value;
 pub mod length;
 pub mod node;
+pub mod notice;
 pub mod paint;
 pub mod reactive;
 pub mod semantics;
@@ -92,6 +93,7 @@ pub use length::{
     LengthWarning, NodeLengths,
 };
 pub use node::{ArenaFull, ChildIds, Children, NodeArena, NodeId, NodeIndex, NodeLinks, TreeLinks};
+pub use notice::{Notice, NoticeHandler, NoticeKinds, deliver_notices};
 pub use paint::{paint_tree, paint_with_transforms};
 pub use text_style::{
     FontFamily, FontSize, FontWeight, TextAlign, TextOverflow, TextSizing, TextStyle, WidthUse,

@@ -477,8 +477,15 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       with `content-visibility: auto` at the estimated extent.
 - [x] `NodeRef::scroll_to_key` / `scroll_to_index` on a `VirtualList` (U9.3):
       the row goes to the start edge and its window mounts in the same frame.
-- [ ] `VirtualList`: `on visible_range_changed`, rows' `list_item` semantics
-      with the collection size and position, and a list among another's rows.
+- [x] `on scroll_changed` (U3.7) and `VirtualList`'s `on visible_range_changed`
+      (U9.2), delivered after layout: a scroll on each frame that moves it, not
+      at mount; the visible rows from the first layout on; the HTML/Solid
+      exports report both from the page's scroll and resize.
+- [x] `VirtualList` semantics (U9.3): the list is `list`, each row
+      `list_item` with its 1-based position and the collection size (AccessKit
+      `position_in_set`/`size_of_set`, the web's `aria-posinset`/`aria-setsize`);
+      an exported row with no role of its own is `listitem`.
+- [ ] A `VirtualList` among another's rows (`E3711` today).
 - [x] `clip` clipping a node's children's paint and hit test to its box, rounded
       by its `corner_radius`: a `ClipCorners` marker after the clip layer sends
       the group offscreen and its composite is masked by a rounded box (Metal,

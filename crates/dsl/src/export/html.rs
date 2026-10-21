@@ -395,10 +395,12 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
 
         let mut el = Element::default();
-        let role = node
-            .role
-            .or(item.map(|(role, _)| role))
-            .or_else(|| viso_schema::view::widget_role(&node.type_name));
+        let widget = viso_schema::view::widget_role(&node.type_name);
+        let role = match item {
+            // A list's row is an item unless it says what else it is.
+            Some((Role::ListItem, _)) => node.role.or(widget).or(Some(Role::ListItem)),
+            item => node.role.or(item.map(|(role, _)| role)).or(widget),
+        };
         let masked = control.as_ref().is_some_and(|c| c.tint.is_some());
         el.tag = match (node.type_name.as_str(), role) {
             ("Button", _) => "button",
@@ -578,6 +580,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         let item_role = match node.type_name.as_str() {
             "Tabs" => Some(Role::Tab),
             "RadioGroup" => Some(Role::Radio),
+            "VirtualList" => Some(Role::ListItem),
             _ => None,
         };
         let stretch = std::mem::replace(

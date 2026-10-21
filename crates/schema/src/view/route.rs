@@ -31,11 +31,17 @@ pub enum EventRoute {
     Submitted = 10,
     /// A tab strip's or radio group's `selected_changed`.
     SelectedChanged = 11,
+    /// A `Scroll`'s `scroll_changed` (`ScrollChanged`): its offset, viewport or
+    /// content moved in a frame.
+    ScrollChanged = 12,
+    /// A `VirtualList`'s `visible_range_changed` (`VisibleRange`): the rows it
+    /// shows changed.
+    VisibleRangeChanged = 13,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 12] = [
+    pub const ALL: [EventRoute; 14] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -48,6 +54,8 @@ impl EventRoute {
         EventRoute::Changed,
         EventRoute::Submitted,
         EventRoute::SelectedChanged,
+        EventRoute::ScrollChanged,
+        EventRoute::VisibleRangeChanged,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -74,6 +82,8 @@ impl EventRoute {
             EventRoute::Changed => "changed",
             EventRoute::Submitted => "submitted",
             EventRoute::SelectedChanged => "selected_changed",
+            EventRoute::ScrollChanged => "scroll_changed",
+            EventRoute::VisibleRangeChanged => "visible_range_changed",
         }
     }
 
@@ -92,6 +102,8 @@ impl EventRoute {
             EventRoute::Changed => "Changed",
             EventRoute::Submitted => "Submitted",
             EventRoute::SelectedChanged => "SelectedChanged",
+            EventRoute::ScrollChanged => "ScrollChanged",
+            EventRoute::VisibleRangeChanged => "VisibleRangeChanged",
         }
     }
 
@@ -103,6 +115,15 @@ impl EventRoute {
     /// Whether a key sample delivers it; otherwise a pointer sample does.
     pub fn is_key(self) -> bool {
         matches!(self, EventRoute::KeyDown | EventRoute::KeyUp)
+    }
+
+    /// Whether the node reports it after a frame's layout rather than an
+    /// input sample delivering it.
+    pub fn is_notice(self) -> bool {
+        matches!(
+            self,
+            EventRoute::ScrollChanged | EventRoute::VisibleRangeChanged
+        )
     }
 
     /// Whether a control reports it, from whichever sample drives the control.
@@ -127,6 +148,10 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
         &["position", "button", "buttons", "pointer_kind", "modifiers"],
     ),
     ("KeyEvent", &["key", "repeat", "modifiers"]),
+    ("Offset", &["x", "y"]),
+    ("SizeDp", &["width", "height"]),
+    ("ScrollChanged", &["offset", "viewport", "content"]),
+    ("VisibleRange", &["first", "last", "count"]),
 ];
 
 /// The prelude enums a payload names a variant of, with their variants in order.

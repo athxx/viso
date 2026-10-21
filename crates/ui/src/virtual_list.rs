@@ -292,6 +292,7 @@ use crate::layout::OnAxis;
 use crate::layout::{Axis, LayoutInput, Length, Size};
 use crate::node::NodeId;
 use crate::reactive::EffectStore;
+use crate::semantics::{Role, Semantics};
 use crate::state::StateStore;
 use crate::style::BoxStyle;
 
@@ -326,11 +327,8 @@ pub type KeyOf = Box<dyn Fn(usize) -> ItemKey>;
 /// holds its widgets, and the main-axis offset the host sits at inside the canvas.
 #[derive(Debug, Clone, Copy)]
 struct MountedItem {
-    /// The logical index this host is currently bound to. Retained as the row's
-    /// observable position for tests and debug introspection; the reconcile itself
-    /// now matches survivors by `key`, so production reads it only through those
-    /// seams.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The logical index this host is currently bound to: the place its row
+    /// announces. The reconcile matches survivors by `key`.
     logical_index: usize,
     /// The stable identity of the item this host currently shows. Equal to
     /// `ItemKey(logical_index)` for an index-identity (keyless) list; the row's
@@ -704,6 +702,19 @@ impl VirtualListState {
         }
     }
 
+    /// Gives each mounted row's host its 1-based place among the list's items,
+    /// writing only the hosts whose place moved.
+    fn announce_positions(&self, store: &mut NodeStore) {
+        let count = u32::try_from(self.item_count).unwrap_or(u32::MAX);
+        for row in &self.mounted {
+            let index = u32::try_from(row.logical_index + 1).unwrap_or(u32::MAX);
+            let state = store.semantic_state(row.host).unwrap_or_default();
+            if state.position != Some((index, count)) {
+                store.set_semantic_state(row.host, state.with_position(index, count));
+            }
+        }
+    }
+
     /// Mark the height model / item count dirty so the next reconcile re-anchors
     /// even when the scroll offset has not moved.
     #[inline]
@@ -715,6 +726,21 @@ impl VirtualListState {
     #[inline]
     pub fn item_count(&self) -> usize {
         self.item_count
+    }
+
+    /// The rows a viewport `extent` long scrolled `scroll` from its start
+    /// shows, first and last inclusive, with the item count; `(0, 0, 0)` for
+    /// an empty list.
+    pub fn visible(&self, scroll: f32, extent: f32) -> (usize, usize, usize) {
+        if self.item_count == 0 {
+            return (0, 0, 0);
+        }
+        let last_row = self.item_count - 1;
+        let first = self.heights.find_position(scroll).0.min(last_row);
+        // The row under the viewport's far edge, not the one starting there.
+        let end = (scroll + extent - 0.5).max(scroll);
+        let last = self.heights.find_position(end).0.clamp(first, last_row);
+        (first, last, self.item_count)
     }
 
     /// Scroll row `index` (clamped to the last row) to the viewport's start
@@ -942,7 +968,11 @@ fn reconcile_one(
         state.committed_extent = total_after;
     }
 
-    // 4. Commit the window.
+    // 4. Tell each mounted row its place in the collection: an entering row
+    //    has none yet, and a survivor moves with a reorder or a count change.
+    state.announce_positions(store);
+
+    // 5. Commit the window.
     state.range_start = new_start;
     state.range_end = new_end;
     state.last_reconciled_scroll = scroll_main;
@@ -1049,6 +1079,9 @@ pub fn attach_list(
             height: Length::Fixed(0.0),
         },
     };
+    if store.semantics(viewport).is_none() {
+        store.set_semantics(viewport, Semantics::role(Role::List));
+    }
     let canvas = store.alloc(
         LayoutInput::AbsoluteRows {
             axis: shape.axis,
@@ -1577,6 +1610,35 @@ mod tests {
             "logical 0 now shows key 2's host after the swap"
         );
         assert_eq!(h.host_of(2), Some(host_key0));
+    }
+
+    #[test]
+    fn each_row_announces_its_place_in_the_collection() {
+        let mut h = KeyedHarness::new(1000, 30.0, 2, 300.0);
+        h.frame();
+        let viewport = h.inner.viewport;
+        let place = |h: &KeyedHarness, key: u64| {
+            let host = h.host_for_key(ItemKey(key)).expect("mounted");
+            let store = &h.inner.store;
+            assert_eq!(store.semantics(host).map(|s| s.role), Some(Role::ListItem));
+            store.semantic_state(host).and_then(|s| s.position)
+        };
+        assert_eq!(
+            h.inner.store.semantics(viewport).map(|s| s.role),
+            Some(Role::List)
+        );
+        assert_eq!(place(&h, 0), Some((1, 1000)));
+        assert_eq!(place(&h, 2), Some((3, 1000)));
+        let mut keys: Vec<u64> = (0..1000).collect();
+        keys.swap(0, 2);
+        h.reorder(keys);
+        h.frame();
+        assert_eq!(
+            place(&h, 0),
+            Some((3, 1000)),
+            "a moved row tells its new place"
+        );
+        assert_eq!(place(&h, 2), Some((1, 1000)));
     }
 
     #[test]

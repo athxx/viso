@@ -10,7 +10,7 @@ use viso_dsl::frontend::Origin;
 use viso_ui::virtual_list::{VirtualLists, absorb_measurements, reconcile};
 use viso_ui::{
     BindingTable, EffectStore, NodeId, NodeStore, PointerButtons, PointerEvent, PointerPhase,
-    PointerRouter, Rect, StateStore, run_structure_hooks,
+    PointerRouter, Rect, StateStore, Vec2, deliver_notices, run_structure_hooks,
 };
 use viso_view::load_view;
 
@@ -96,6 +96,8 @@ impl Page {
         };
         self.store.layout(self.root, surface, &mut Vec::new());
         absorb_measurements(&self.store, &mut self.lists);
+        deliver_notices(&mut self.store, &self.lists, &mut self.states);
+        self.settle();
         let mut requests = Vec::new();
         self.store.take_text_requests(&mut requests);
         for (id, request) in requests {
@@ -125,6 +127,12 @@ impl Page {
                 &mut chain,
             );
         }
+        self.settle();
+        self.frame();
+    }
+
+    /// The flush with its structure hooks.
+    fn settle(&mut self) {
         let mut changed = Vec::new();
         self.states.take_pending(&mut changed);
         self.store
@@ -137,7 +145,6 @@ impl Page {
             &mut self.lists,
             &changed,
         );
-        self.frame();
     }
 
     fn child(&self, parent: NodeId, at: usize) -> NodeId {
@@ -272,4 +279,58 @@ fn a_row_shows_its_item_and_its_handlers_see_it_as_the_items_move() {
         .expect("a row");
     page.click(page.child(first, 0));
     assert_eq!(page.texts.get(&picked).map(String::as_str), Some("c"));
+}
+
+#[test]
+fn a_list_reports_the_rows_it_shows_and_a_scroll_its_offset() {
+    let mut page = Page::load(
+        "component Feed {
+            state shown = \"\";
+            state top = 0dp;
+            view {
+                Column {
+                    width: 200dp;
+                    height: 300dp;
+                    Text { width: 200dp; height: 20dp; text: shown; }
+                    Text { width: 200dp; height: 20dp; text: format(\"{}\", top); }
+                    VirtualList {
+                        width: 200dp;
+                        height: 100dp;
+                        estimated_extent: 20dp;
+                        on visible_range_changed(range) {
+                            shown = format(\"{}..{} of {}\", range.first, range.last, range.count);
+                        }
+                        for i in 0..50 key i { Text { width: 200dp; height: 20dp; text: \"row\"; } }
+                    }
+                    Scroll {
+                        width: 200dp;
+                        height: 50dp;
+                        on scroll_changed(event) { top = event.content.height; }
+                        Text { width: 200dp; height: 400dp; text: \"tall\"; }
+                    }
+                }
+            }
+        }",
+    );
+    page.frame();
+    let shown = page.child(page.root, 0);
+    let top = page.child(page.root, 1);
+    let list = page.child(page.root, 2);
+    let scroll = page.child(page.root, 3);
+    assert_eq!(
+        page.texts.get(&shown).map(String::as_str),
+        Some("0..4 of 50")
+    );
+    page.store.scroll_by(list, Vec2 { x: 0.0, y: 210.0 });
+    page.frame();
+    page.frame();
+    assert_eq!(
+        page.texts.get(&shown).map(String::as_str),
+        Some("10..15 of 50")
+    );
+    assert_eq!(page.texts.get(&top).map(String::as_str), Some("0dp"));
+    page.store.scroll_by(scroll, Vec2 { x: 0.0, y: 5.0 });
+    page.frame();
+    page.frame();
+    assert_eq!(page.texts.get(&top).map(String::as_str), Some("400dp"));
 }

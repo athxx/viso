@@ -261,6 +261,8 @@ const TEXT_INPUT_EVENTS: &[WidgetEvent] = &[
 const SELECTED_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("selected_changed", "SelectionChanged")];
 const CURRENT_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("current_changed", "SelectionChanged")];
 const SCROLL_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("scroll_changed", "ScrollChanged")];
+const VIRTUAL_LIST_EVENTS: &[WidgetEvent] =
+    &[WidgetEvent::new("visible_range_changed", "VisibleRange")];
 const KEY_SHORTCUT_EVENTS: &[WidgetEvent] = &[WidgetEvent::signal("triggered")];
 
 /// Any number of children, in the default slot `children`.
@@ -442,5 +444,6 @@ pub const STANDARD: &[NativeWidget] = &[
         WidgetNode::VirtualList,
         &[VIRTUAL_LIST, LAYOUT, TRANSFORM, FOCUS],
     )
+    .events(&[VIRTUAL_LIST_EVENTS, STANDARD_EVENTS])
     .slots(CHILDREN),
 ];

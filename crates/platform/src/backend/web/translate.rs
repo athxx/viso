@@ -409,6 +409,9 @@ pub(crate) fn aria_attributes(node: &AccessNode, mut set: impl FnMut(&'static st
     );
     set("aria-expanded", state.expanded.map(aria_flag));
     set("aria-selected", state.selected.map(aria_flag));
+    let (index, count) = state.position.unzip();
+    set("aria-posinset", index.map(|i| i.to_string()).as_deref());
+    set("aria-setsize", count.map(|c| c.to_string()).as_deref());
     set("aria-disabled", state.disabled.then_some("true"));
     set("aria-description", node.description.as_deref());
     let secure = role == SemanticsRole::SecureField;

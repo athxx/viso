@@ -227,6 +227,7 @@ fn semantics_state(state: Option<SemanticState>, disabled: bool) -> SemanticsSta
         numeric_range: state.range,
         expanded: state.expanded,
         selected: state.selected,
+        position: state.position,
         disabled,
     }
 }

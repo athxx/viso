@@ -240,6 +240,11 @@ pub struct SemanticState {
     /// whether it is part of the current *selection*. `None` for a node whose role
     /// carries no selection.
     pub selected: Option<bool>,
+    /// An item's 1-based place in its collection and the collection's size — a
+    /// [`ListItem`](Role::ListItem) row of a virtual list, which an assistive
+    /// technology cannot count from the rows it is shown (WAI-ARIA
+    /// `aria-posinset` / `aria-setsize`).
+    pub position: Option<(u32, u32)>,
 }
 
 impl SemanticState {
@@ -269,6 +274,12 @@ impl SemanticState {
     /// This with a `selected` flag (a tree row's `aria-selected`).
     pub fn with_selected(mut self, selected: bool) -> Self {
         self.selected = Some(selected);
+        self
+    }
+
+    /// This at 1-based place `index` of a collection of `count`.
+    pub fn with_position(mut self, index: u32, count: u32) -> Self {
+        self.position = Some((index, count));
         self
     }
 }

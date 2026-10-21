@@ -102,6 +102,8 @@ pub struct SemanticsState {
     pub expanded: Option<bool>,
     /// Whether a selectable item is part of the selection.
     pub selected: Option<bool>,
+    /// Its 1-based place in its collection and the collection's size.
+    pub position: Option<(u32, u32)>,
     /// Whether it is disabled: shown, but taking no input.
     pub disabled: bool,
 }
