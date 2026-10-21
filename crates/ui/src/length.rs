@@ -12,6 +12,7 @@
 
 use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
+use crate::grid::{GridTracks, TrackSizing};
 use crate::layout::{AbsoluteInsets, BoxRules, Inset, LayoutInput, Length, Placement};
 
 use crate::node::NodeId;
@@ -92,6 +93,42 @@ struct RareTerms {
     corner_radius: Option<LengthTerms>,
 }
 
+/// A grid whose tracks read the environment: what they read, and whether
+/// they re-fold at the next layout.
+#[derive(Debug, Clone, Copy)]
+struct GridBinding {
+    node: NodeId,
+    deps: LengthDeps,
+    pending: bool,
+}
+
+/// The track a [`TrackSizing::Length`] folds to against `env` at `font` dp
+/// per em: `Fixed` without a percent term, `Percent` with nothing else, else
+/// `Relative`; any other track as it is. `None` when a term folds to a
+/// non-finite value.
+pub(crate) fn fold_track(track: TrackSizing, env: &LengthEnv, font: f32) -> Option<TrackSizing> {
+    let TrackSizing::Length(terms) = track else {
+        return Some(track);
+    };
+    Some(match terms.fold(env, font)? {
+        Length::Relative { fixed: 0.0, pct } => TrackSizing::Percent(pct.max(0.0)),
+        Length::Relative { fixed, pct } => TrackSizing::Relative { fixed, pct },
+        Length::Fixed(v) => TrackSizing::Fixed(v),
+        _ => TrackSizing::Fixed(0.0),
+    })
+}
+
+/// What the [`TrackSizing::Length`] tracks of `templates` read.
+pub(crate) fn tracks_deps(templates: &[Vec<TrackSizing>]) -> LengthDeps {
+    let mut deps = LengthDeps::EMPTY;
+    for track in templates.iter().flatten() {
+        if let TrackSizing::Length(terms) = track {
+            deps |= terms.deps();
+        }
+    }
+    deps
+}
+
 /// No slot of [`LengthBindings::rare_terms`].
 const NO_RARE_TERMS: u32 = u32::MAX;
 
@@ -112,6 +149,8 @@ pub(crate) struct LengthBindings {
     /// A font source was bound or dropped: the next layout re-folds every
     /// binding that reads the font size.
     font_moved: bool,
+    /// The grids whose tracks read the environment, by ascending index.
+    grids: Vec<GridBinding>,
     /// A font source or the environment moved since the text shaper last
     /// asked: a text's size or face may resolve anew.
     text_resized: bool,
@@ -130,6 +169,7 @@ impl LengthBindings {
     /// Drops every binding and report; the environment and counters stay.
     pub(crate) fn clear(&mut self) {
         self.bindings.clear();
+        self.grids.clear();
         self.terms.clear();
         self.free_terms.clear();
         self.rare_terms.clear();
@@ -325,6 +365,40 @@ impl NodeStore {
         table.text_resized |= font_moved;
     }
 
+    /// Keeps grid `id`'s tracks re-folding as the environment they read in
+    /// `deps` moves, from the next layout on; nothing for empty `deps`.
+    pub(crate) fn bind_grid_tracks(&mut self, id: NodeId, deps: LengthDeps) {
+        let table = self.lengths_mut();
+        let at = table
+            .grids
+            .binary_search_by_key(&id.index(), |g| g.node.index());
+        match (at, deps.is_empty()) {
+            (Ok(at), true) => {
+                table.grids.remove(at);
+            }
+            (Err(_), true) => {}
+            (Ok(at), false) => {
+                table.grids[at] = GridBinding {
+                    node: id,
+                    deps,
+                    pending: true,
+                };
+                table.pending = true;
+            }
+            (Err(at), false) => {
+                table.grids.insert(
+                    at,
+                    GridBinding {
+                        node: id,
+                        deps,
+                        pending: true,
+                    },
+                );
+                table.pending = true;
+            }
+        }
+    }
+
     /// Drops node `id`'s bound lengths; its folded lengths stay as they are.
     pub fn unbind_lengths(&mut self, id: NodeId) {
         let table = self.lengths_mut();
@@ -483,7 +557,60 @@ impl NodeStore {
             let lengths = self.lengths().lengths(binding.slot);
             self.fold_binding(binding.node, &lengths);
         }
+        let mut at = 0;
+        while at < self.lengths().grids.len() {
+            let grid = self.lengths().grids[at];
+            if !self.arena().is_live(grid.node) {
+                self.lengths_mut().grids.remove(at);
+                continue;
+            }
+            at += 1;
+            if grid.pending {
+                self.lengths_mut().grids[at - 1].pending = false;
+                self.fold_grid_tracks(grid.node);
+            }
+        }
         self.lengths_mut().pending = false;
+    }
+
+    /// Folds grid `id`'s authored tracks against the environment at its font
+    /// size, dirtying it when a track moved.
+    fn fold_grid_tracks(&mut self, id: NodeId) {
+        let env = self.lengths().env;
+        let font = self.font_of(id);
+        let Some(tracks) = self.grid_tracks_mut(id) else {
+            return;
+        };
+        let Some(authored) = tracks.authored.take() else {
+            return;
+        };
+        let mut moved = false;
+        let mut nonfinite = false;
+        for (folded, authored) in [&mut tracks.columns, &mut tracks.rows]
+            .into_iter()
+            .zip(authored.iter())
+        {
+            for (slot, &track) in folded.iter_mut().zip(authored) {
+                let track = fold_track(track, &env, font).unwrap_or_else(|| {
+                    nonfinite = true;
+                    TrackSizing::Fixed(0.0)
+                });
+                if *slot != track {
+                    *slot = track;
+                    moved = true;
+                }
+            }
+        }
+        tracks.authored = Some(authored);
+        if nonfinite {
+            self.lengths_mut().report(id, LengthIssue::NonFinite);
+        }
+        if moved {
+            self.mark_dirty(
+                id,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+        }
     }
 
     fn fold_binding(&mut self, id: NodeId, lengths: &NodeLengths) {
@@ -523,7 +650,16 @@ impl NodeStore {
             let Some(terms) = terms else {
                 continue;
             };
-            if terms.pct != 0.0 {
+            // A grid's gap reads its content box; a flex row's has none.
+            if matches!(self.layout_input_mut(id), LayoutInput::Grid { .. }) {
+                let pct = terms.pct.max(0.0);
+                let tracks = self.grid_tracks_or_default(id);
+                let slot = &mut tracks.gap_pct[usize::from(rows)];
+                if *slot != pct {
+                    *slot = pct;
+                    class = class | DirtyClass::LAYOUT | DirtyClass::PAINT;
+                }
+            } else if terms.pct != 0.0 {
                 self.lengths_mut().report(id, LengthIssue::IndefiniteBasis);
             }
             let folded = match terms.fixed(&env, font) {
@@ -600,6 +736,20 @@ impl LengthBindings {
                 self.pending = true;
             }
         }
+        for grid in &mut self.grids {
+            if grid.deps.intersects(deps) {
+                grid.pending = true;
+                self.pending = true;
+            }
+        }
+    }
+}
+
+impl NodeStore {
+    /// Grid `id`'s track payload, made empty when it has none.
+    fn grid_tracks_or_default(&mut self, id: NodeId) -> &mut GridTracks {
+        self.grid_tracks_slot(id)
+            .get_or_insert_with(Default::default)
     }
 }
 

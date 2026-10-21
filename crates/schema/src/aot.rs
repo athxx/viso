@@ -451,6 +451,8 @@ const TRACK_PERCENT: u8 = 3;
 const TRACK_MINMAX: u8 = 4;
 const TRACK_FIT_CONTENT: u8 = 5;
 const TRACK_FLEX_MIN: u8 = 6;
+const TRACK_RELATIVE: u8 = 7;
+const TRACK_LENGTH: u8 = 8;
 
 // A placement is a byte naming the parent it is for, then a byte naming its
 // set parts, then each. A grid cell's are varints, a span left out being
@@ -919,6 +921,16 @@ fn encode_track(track: TrackSizing, enc: &mut Encoder) {
         TrackSizing::Minmax(min, max) => return encode_pair(TRACK_MINMAX, *min, *max, enc),
         TrackSizing::FitContent(v) => (TRACK_FIT_CONTENT, core::slice::from_ref(v)),
         TrackSizing::FlexMin(min, fr) => return encode_pair(TRACK_FLEX_MIN, *min, *fr, enc),
+        TrackSizing::Relative { fixed, pct } => {
+            return encode_pair(TRACK_RELATIVE, *fixed, *pct, enc);
+        }
+        TrackSizing::Length(terms) => {
+            enc.write_u8(TRACK_LENGTH);
+            for term in [terms.dp, terms.px, terms.sp, terms.em, terms.pct] {
+                enc.write_f32(term);
+            }
+            return;
+        }
     };
     enc.write_u8(tag);
     for value in values {
@@ -942,6 +954,17 @@ fn decode_track(dec: &mut Decoder) -> Result<TrackSizing, DecodeError> {
         TRACK_MINMAX => TrackSizing::Minmax(dec.read_f32()?, dec.read_f32()?),
         TRACK_FIT_CONTENT => TrackSizing::FitContent(dec.read_f32()?),
         TRACK_FLEX_MIN => TrackSizing::FlexMin(dec.read_f32()?, dec.read_f32()?),
+        TRACK_RELATIVE => TrackSizing::Relative {
+            fixed: dec.read_f32()?,
+            pct: dec.read_f32()?,
+        },
+        TRACK_LENGTH => TrackSizing::Length(crate::length::LengthTerms {
+            dp: dec.read_f32()?,
+            px: dec.read_f32()?,
+            sp: dec.read_f32()?,
+            em: dec.read_f32()?,
+            pct: dec.read_f32()?,
+        }),
         _ => return Err(DecodeError::Malformed { offset }),
     })
 }
@@ -1819,6 +1842,16 @@ mod tests {
                             TrackSizing::Minmax(10.0, 90.0),
                             TrackSizing::FitContent(120.0),
                             TrackSizing::FlexMin(40.0, 1.5),
+                            TrackSizing::Relative {
+                                fixed: 12.0,
+                                pct: 0.25,
+                            },
+                            TrackSizing::Length(crate::length::LengthTerms {
+                                sp: 4.0,
+                                em: 2.0,
+                                pct: 0.1,
+                                ..crate::length::LengthTerms::ZERO
+                            }),
                         ],
                         rows: vec![TrackSizing::Fixed(24.0)],
                         auto_rows: TrackSizing::Fr(1.0),

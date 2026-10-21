@@ -837,6 +837,19 @@ fn track_tokens(track: TrackSizing) -> TokenStream {
         TrackSizing::Minmax(min, max) => quote! { #sizing::Minmax(#min, #max) },
         TrackSizing::FitContent(v) => quote! { #sizing::FitContent(#v) },
         TrackSizing::FlexMin(min, fr) => quote! { #sizing::FlexMin(#min, #fr) },
+        TrackSizing::Relative { fixed, pct } => {
+            quote! { #sizing::Relative { fixed: #fixed, pct: #pct } }
+        }
+        TrackSizing::Length(t) => {
+            let terms = one_terms_tokens(TermsIr {
+                dp: t.dp,
+                px: t.px,
+                sp: t.sp,
+                em: t.em,
+                pct: t.pct,
+            });
+            quote! { #sizing::Length(#terms) }
+        }
     }
 }
 

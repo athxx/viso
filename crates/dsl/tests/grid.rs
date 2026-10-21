@@ -123,6 +123,49 @@ fn a_reload_rewrites_the_template_and_the_cells_in_place() {
     );
 }
 
+/// A grid of a `dp + %` column, an `em` column and a share, apart by a `%`
+/// gap, its rows a `sp` one and a `%` one apart by a `%` gap.
+const LENGTHS: &str = r#"
+export component Lengths {
+    state taps = 0;
+    view {
+        Column {
+            Grid {
+                width: 400dp;
+                height: 200dp;
+                columns: [Track::fixed(10dp + 25%), Track::fixed(2em), Track::fr(1.0)];
+                rows: [Track::fixed(20sp), Track::fixed(10% + 5dp)];
+                column_gap: 5%;
+                row_gap: 10%;
+                Text { width: 1dp; height: 1dp; on click { taps += 1; } }
+                Text { width: 1dp; height: 1dp; }
+                Text { width: 1dp; height: 1dp; }
+                Text { width: 1dp; height: 1dp; }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn tracks_and_gaps_of_any_length_fold_and_follow_the_environment() {
+    for mut rt in [Rt::mount(LENGTHS), Rt::packaged(LENGTHS)] {
+        // Columns 110 (10 + 25% of 400) and 28 (2em of 14) apart by 20 (5%);
+        // rows 20 and 25 (10% of 200, plus 5) apart by 20 (10% of 200).
+        assert_eq!(
+            cells(&rt)[0],
+            [(0.0, 0.0), (130.0, 0.0), (178.0, 0.0), (0.0, 40.0)]
+        );
+        rt.update_env(|env| env.text_scale = 2.0);
+        rt.relayout();
+        // The em column and the sp row double.
+        assert_eq!(
+            cells(&rt)[0],
+            [(0.0, 0.0), (130.0, 0.0), (206.0, 0.0), (0.0, 60.0)]
+        );
+    }
+}
+
 /// Grid 0's child `child`'s `(x, y)`.
 fn cells_of(rt: &Rt, child: usize) -> (f32, f32) {
     cells(rt)[0][child]
@@ -140,21 +183,6 @@ fn errors(view: &str) -> Vec<(&'static str, String)> {
 #[test]
 fn a_template_or_cell_layout_does_not_take_is_reported() {
     for (view, code, says) in [
-        (
-            "Grid { columns: [Track::fixed(1em)]; }",
-            "E3711",
-            "a track that reads the environment",
-        ),
-        (
-            "Grid { columns: [Track::fixed(10dp + 5%)]; }",
-            "E3711",
-            "a track that adds `dp` to `%`",
-        ),
-        (
-            "Grid { column_gap: 5%; }",
-            "E3711",
-            "a grid gap with a `%` term",
-        ),
         (
             "Grid { areas: if n > 0 { [\"a\"] } else { [\"b\"] }; }",
             "E3711",

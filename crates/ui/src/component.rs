@@ -1058,10 +1058,63 @@ impl NodeStore {
         self.row_offset[id.index() as usize] = f32::NAN;
     }
 
-    /// Store a grid node's resolved track templates (its warm side payload).
-    /// Crate-internal because [`GridTracks`] is an internal warm payload type.
-    pub(crate) fn set_grid_tracks(&mut self, id: NodeId, tracks: GridTracks) {
-        self.grid_tracks[id.index() as usize] = Some(Box::new(tracks));
+    /// Grid `id`'s track payload, if it has one.
+    pub(crate) fn grid_tracks_mut(&mut self, id: NodeId) -> Option<&mut GridTracks> {
+        self.grid_tracks[id.index() as usize].as_deref_mut()
+    }
+
+    /// Grid `id`'s track payload slot.
+    pub(crate) fn grid_tracks_slot(&mut self, id: NodeId) -> &mut Option<Box<GridTracks>> {
+        &mut self.grid_tracks[id.index() as usize]
+    }
+
+    /// Store a grid node's track templates (its warm side payload): a
+    /// [`TrackSizing::Length`] track folds against the environment now, and
+    /// again at the next layout once the node's font size is known, and
+    /// whenever what it reads moves.
+    pub(crate) fn set_grid_tracks(
+        &mut self,
+        id: NodeId,
+        columns: Vec<TrackSizing>,
+        rows: Vec<TrackSizing>,
+    ) {
+        let i = id.index() as usize;
+        let gap_pct = self.grid_tracks[i].as_ref().map_or([0.0; 2], |t| t.gap_pct);
+        let authored = columns
+            .iter()
+            .chain(&rows)
+            .any(|t| matches!(t, TrackSizing::Length(_)));
+        let tracks = if authored {
+            let env = self.length_env();
+            let font = env.root_font_size();
+            let fold = |tracks: &[TrackSizing]| -> Vec<TrackSizing> {
+                tracks
+                    .iter()
+                    .map(|&t| crate::length::fold_track(t, &env, font).unwrap_or(t))
+                    .collect()
+            };
+            GridTracks {
+                columns: fold(&columns),
+                rows: fold(&rows),
+                authored: Some(Box::new([columns, rows])),
+                gap_pct,
+            }
+        } else {
+            GridTracks {
+                columns,
+                rows,
+                authored: None,
+                gap_pct,
+            }
+        };
+        let deps = tracks
+            .authored
+            .as_ref()
+            .map_or(crate::length::LengthDeps::EMPTY, |a| {
+                crate::length::tracks_deps(&a[..])
+            });
+        self.grid_tracks[i] = Some(Box::new(tracks));
+        self.bind_grid_tracks(id, deps);
     }
 
     /// Rewrite a grid child's placement and span in place, marking its
@@ -1201,10 +1254,9 @@ impl NodeStore {
         else {
             return;
         };
-        let tracks = self.grid_tracks[i].as_deref_mut();
-        let same_tracks = tracks
-            .as_ref()
-            .is_some_and(|t| t.columns == style.columns && t.rows == style.rows);
+        let same_tracks = self.grid_tracks[i].as_deref().is_some_and(|t| {
+            t.authored_columns() == style.columns && t.authored_rows() == style.rows
+        });
         let measures = !same_tracks
             || (*column_gap, *row_gap, *auto_rows)
                 != (style.column_gap, style.row_gap, style.auto_rows)
@@ -1221,18 +1273,7 @@ impl NodeStore {
         *adaptive_columns = style.adaptive_columns;
         *align_items = style.align_items;
         if !same_tracks {
-            match tracks {
-                Some(tracks) => {
-                    tracks.columns = style.columns;
-                    tracks.rows = style.rows;
-                }
-                None => {
-                    self.grid_tracks[i] = Some(Box::new(GridTracks {
-                        columns: style.columns,
-                        rows: style.rows,
-                    }));
-                }
-            }
+            self.set_grid_tracks(id, style.columns, style.rows);
         }
         let class = if measures {
             DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT
@@ -1265,8 +1306,12 @@ impl NodeStore {
         };
         let tracks = self.grid_tracks[i].as_deref();
         Some(GridStyle {
-            columns: tracks.map(|t| t.columns.clone()).unwrap_or_default(),
-            rows: tracks.map(|t| t.rows.clone()).unwrap_or_default(),
+            columns: tracks
+                .map(|t| t.authored_columns().to_vec())
+                .unwrap_or_default(),
+            rows: tracks
+                .map(|t| t.authored_rows().to_vec())
+                .unwrap_or_default(),
             auto_rows,
             column_gap,
             row_gap,
@@ -1297,13 +1342,7 @@ impl NodeStore {
             size: style.size,
         };
         let id = self.alloc(input, style.style);
-        self.set_grid_tracks(
-            id,
-            GridTracks {
-                columns: style.columns,
-                rows: style.rows,
-            },
-        );
+        self.set_grid_tracks(id, style.columns, style.rows);
         id
     }
 
@@ -4501,6 +4540,13 @@ impl LayoutTree for NodeStore {
     }
 
     #[inline]
+    fn grid_gap_pct(&self, index: u32) -> [f32; 2] {
+        self.grid_tracks[index as usize]
+            .as_ref()
+            .map_or([0.0; 2], |t| t.gap_pct)
+    }
+
+    #[inline]
     fn placement(&self, index: u32) -> Option<&Placement> {
         match self.placed_at[index as usize] {
             NO_PLACEMENT => None,
@@ -4938,13 +4984,7 @@ impl<'a> BuildCx<'a> {
             size: style.size,
         };
         let id = self.push_node(input, style.style);
-        self.store.set_grid_tracks(
-            id,
-            GridTracks {
-                columns: style.columns,
-                rows: style.rows,
-            },
-        );
+        self.store.set_grid_tracks(id, style.columns, style.rows);
         // Stash this grid's creation-time name tables so `place_named`/`place_area`
         // resolve against them, saving the enclosing grid's tables so a nested grid
         // resolves against its own names and the outer grid is restored on exit.

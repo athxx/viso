@@ -2,8 +2,10 @@
 //!
 //! A track list folds to the runtime's flat [`TrackSizing`] template, a
 //! `tracks(n, t)` expanded in place; `Track::fixed` of a plain `dp` length is
-//! a fixed track and of a plain `%` one a percentage of the grid's content
-//! box. The gaps, the cell alignment and the adaptive columns fold alike.
+//! a fixed track, of a plain `%` one a percentage of the grid's content box,
+//! and of any other its terms, which the node store folds against the
+//! environment. The gaps, the cell alignment and the adaptive columns fold
+//! alike.
 //! `areas` folds to the cells each named area covers, which the grid's
 //! children name by `grid.area` and lowering resolves to explicit cells, so
 //! no name reaches the runtime.
@@ -149,20 +151,23 @@ pub(super) fn fold_track(value: &Expr, consts: &Consts) -> Option<Result<TrackSi
 }
 
 /// A `Track::fixed` of `terms`: plain `dp` is a fixed track, plain `%` a
-/// percentage of the grid's content box.
+/// percentage of the grid's content box, and any other length its terms.
 fn fixed_track(terms: TermsIr) -> Result<TrackSizing, String> {
-    if terms.needs_env() {
-        Err("a track that reads the environment (`px`, `sp`, `em`) does not lay out yet; a `dp` or `%` one does".to_string())
-    } else if terms.pct == 0.0 {
-        Ok(TrackSizing::Fixed(terms.dp.max(0.0)))
-    } else if terms.dp == 0.0 {
-        Ok(TrackSizing::Percent(terms.pct.max(0.0)))
-    } else {
-        Err(
-            "a track that adds `dp` to `%` does not lay out yet; a `dp` or a `%` one does"
-                .to_string(),
-        )
-    }
+    Ok(
+        if terms.needs_env() || (terms.pct != 0.0 && terms.dp != 0.0) {
+            TrackSizing::Length(viso_schema::length::LengthTerms {
+                dp: terms.dp,
+                px: terms.px,
+                sp: terms.sp,
+                em: terms.em,
+                pct: terms.pct,
+            })
+        } else if terms.pct == 0.0 {
+            TrackSizing::Fixed(terms.dp.max(0.0))
+        } else {
+            TrackSizing::Percent(terms.pct.max(0.0))
+        },
+    )
 }
 
 /// Folds a `TrackMax`.
@@ -184,15 +189,11 @@ fn fold_track_max(value: &Expr, consts: &Consts) -> Option<Result<TrackMax, Stri
 }
 
 /// Folds a grid gap (`column_gap`, `row_gap`): plain `dp` to its extent,
-/// clamped non-negative, one reading the environment to its terms.
+/// clamped non-negative, one reading the environment or the grid's content
+/// box (`%`) to its terms.
 pub(super) fn fold_gap(value: &Expr, consts: &Consts) -> Option<Result<Lowered, String>> {
     let terms = length::fold_terms(value, consts)?;
-    Some(if terms.pct != 0.0 {
-        Err(
-            "a grid gap with a `%` term does not lay out yet; a `dp`, `px`, `sp` or `em` one does"
-                .to_string(),
-        )
-    } else if terms.needs_env() {
+    Some(if terms.pct != 0.0 || terms.needs_env() {
         Ok(Lowered::Env(terms))
     } else {
         Ok(Lowered::Layout(LengthIr::Fixed(terms.dp.max(0.0))))

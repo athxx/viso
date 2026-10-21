@@ -304,6 +304,11 @@ pub trait LayoutTree {
     fn grid_column_tracks(&self, index: u32) -> Option<&[TrackSizing]>;
     /// The resolved row track template for a grid node, or `None` when not a grid.
     fn grid_row_tracks(&self, index: u32) -> Option<&[TrackSizing]>;
+    /// The column and row gaps' percentages (fractions) of a grid's content
+    /// box.
+    fn grid_gap_pct(&self, _index: u32) -> [f32; 2] {
+        [0.0; 2]
+    }
     /// Where a child sits in its parent beyond its size, or `None` for a
     /// child that says nothing of it.
     fn placement(&self, index: u32) -> Option<&Placement>;
@@ -2032,6 +2037,23 @@ fn layout_grid(
     // width; both depend only on `bounds`/`padding`, so this has no side effects.
     let content_w = (rect_len(bounds, Axis::Row) - padding.main(Axis::Row)).max(0.0);
     let content_h = (rect_len(bounds, Axis::Column) - padding.main(Axis::Column)).max(0.0);
+
+    // A gap's percentage reads the content box: the width always, the height
+    // where the grid's own is definite (a content-sized height counts it as
+    // nothing, as measuring did).
+    let [col_pct, row_pct] = tree.grid_gap_pct(root);
+    let column_gap = match inherited_cols {
+        None => column_gap + col_pct * content_w,
+        Some(_) => column_gap,
+    };
+    let definite_height = !matches!(
+        tree.input(root).size().height,
+        Length::Fit | Length::MinContent | Length::MaxContent
+    );
+    let row_gap = match inherited_rows {
+        None if definite_height => row_gap + row_pct * content_h,
+        _ => row_gap,
+    };
 
     // On a column-subgrid axis the inherited slice length is the authoritative
     // column count (the node's own column template is ignored), so placement and

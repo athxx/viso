@@ -198,23 +198,23 @@ fn tracks(value: &Value, env: &LengthEnv, font: f32) -> Result<Vec<TrackSizing>,
     list.iter().map(|t| track(t, env, font)).collect()
 }
 
-/// A `Track`: a fixed length of plain `%` is a percentage of the grid's
-/// content box; otherwise its terms fold to dp against `env`.
+/// A `Track`: a fixed length of plain `dp` is a fixed track, of plain `%` a
+/// percentage of the grid's content box, and of any other its terms, which
+/// the node store folds against the environment as it moves.
 fn track(value: &Value, env: &LengthEnv, font: f32) -> Result<TrackSizing, String> {
     let (tag, payload) = variant(value).ok_or_else(|| malformed("Track"))?;
     Ok(match (tag, payload) {
         (0, [len]) => {
             let terms = length(len).ok_or_else(|| malformed("Track"))?;
-            let pct_only = LengthTerms { pct: 0.0, ..terms } == LengthTerms::ZERO;
-            if terms.pct != 0.0 && pct_only {
-                TrackSizing::Percent(terms.pct.max(0.0))
-            } else if terms.pct != 0.0 {
-                return Err(
-                    "a track that adds `dp` to `%` does not lay out yet; a `dp` or a `%` one does"
-                        .to_string(),
-                );
-            } else {
-                TrackSizing::Fixed(dp(len, env, font)?)
+            let plain = LengthTerms {
+                dp: 0.0,
+                pct: 0.0,
+                ..terms
+            } == LengthTerms::ZERO;
+            match (plain, terms.dp != 0.0, terms.pct != 0.0) {
+                (true, _, false) => TrackSizing::Fixed(terms.dp.max(0.0)),
+                (true, false, true) => TrackSizing::Percent(terms.pct.max(0.0)),
+                _ => TrackSizing::Length(terms),
             }
         }
         (1, [fr]) => TrackSizing::Fr(share(fr)?),

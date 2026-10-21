@@ -215,11 +215,30 @@ impl GridAreas {
 /// The warm, boxed per-grid-node payload: the two variable-length track
 /// templates. Kept off the hot node arrays because only grid nodes carry it; an
 /// ordinary node's column entry is `None`.
+#[derive(Default)]
 pub(crate) struct GridTracks {
-    /// Explicit column template.
+    /// Explicit column template, folded: no [`TrackSizing::Length`] in it.
     pub columns: Vec<TrackSizing>,
-    /// Explicit row template.
+    /// Explicit row template, folded.
     pub rows: Vec<TrackSizing>,
+    /// The columns and rows as authored, when a track of them is a
+    /// [`TrackSizing::Length`] the store folds into `columns` and `rows`.
+    pub authored: Option<Box<[Vec<TrackSizing>; 2]>>,
+    /// The column and row gaps' percentages (fractions) of the content box,
+    /// added to the gaps' fixed extents where the box is known.
+    pub gap_pct: [f32; 2],
+}
+
+impl GridTracks {
+    /// The columns as authored.
+    pub fn authored_columns(&self) -> &[TrackSizing] {
+        self.authored.as_ref().map_or(&self.columns, |a| &a[0])
+    }
+
+    /// The rows as authored.
+    pub fn authored_rows(&self) -> &[TrackSizing] {
+        self.authored.as_ref().map_or(&self.rows, |a| &a[1])
+    }
 }
 
 /// A child's resolved cell block: its start column/row and its span.
@@ -467,6 +486,16 @@ pub(crate) fn solve_tracks(
                 out[i] = v;
                 consumed += v;
             }
+            TrackSizing::Relative { fixed, pct } => {
+                let v = (fixed + content_extent * pct).max(0.0);
+                out[i] = v;
+                consumed += v;
+            }
+            TrackSizing::Length(terms) => {
+                let v = (terms.dp + content_extent * terms.pct).max(0.0);
+                out[i] = v;
+                consumed += v;
+            }
             TrackSizing::Auto => {
                 let v = auto_maxes.get(i).copied().unwrap_or(0.0);
                 out[i] = v;
@@ -550,6 +579,8 @@ pub(crate) fn content_track(track: TrackSizing, content: f32) -> f32 {
     match track {
         TrackSizing::Fixed(v) => v,
         TrackSizing::Percent(_) => 0.0,
+        TrackSizing::Relative { fixed, .. } => fixed.max(0.0),
+        TrackSizing::Length(terms) => terms.dp.max(0.0),
         TrackSizing::Auto | TrackSizing::Fr(_) => content,
         TrackSizing::Minmax(lo, hi) => content.max(lo).min(hi.max(lo)),
         TrackSizing::FitContent(limit) => content.min(limit.max(0.0)).max(0.0),
@@ -564,6 +595,8 @@ pub(crate) fn min_content_track(track: TrackSizing, content: f32) -> f32 {
     match track {
         TrackSizing::Fixed(v) => v,
         TrackSizing::Percent(_) => 0.0,
+        TrackSizing::Relative { fixed, .. } => fixed.max(0.0),
+        TrackSizing::Length(terms) => terms.dp.max(0.0),
         TrackSizing::Minmax(lo, _) | TrackSizing::FlexMin(lo, _) => lo.max(0.0),
         TrackSizing::FitContent(limit) => content.min(limit.max(0.0)).max(0.0),
         TrackSizing::Auto | TrackSizing::Fr(_) => content,
@@ -655,6 +688,8 @@ fn track_prebase(track: TrackSizing, content_extent: f32, auto: f32) -> f32 {
     match track {
         TrackSizing::Fixed(v) => v,
         TrackSizing::Percent(frac) => content_extent * frac,
+        TrackSizing::Relative { fixed, pct } => (fixed + content_extent * pct).max(0.0),
+        TrackSizing::Length(terms) => (terms.dp + content_extent * terms.pct).max(0.0),
         TrackSizing::Auto | TrackSizing::Minmax(..) | TrackSizing::FitContent(..) => auto,
         TrackSizing::Fr(_) => 0.0,
         TrackSizing::FlexMin(min, _) => min.max(0.0),

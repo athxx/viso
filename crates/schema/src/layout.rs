@@ -404,6 +404,15 @@ pub enum TrackSizing {
     /// `repeat(auto-fill/auto-fit, minmax(min, 1fr))` grid. It participates in the
     /// `Fr` sweep; a track that gets no leftover share still holds at `min`.
     FlexMin(f32, f32),
+    /// `fixed` dp plus `pct` (a fraction) of the grid content extent along the
+    /// track axis: a fixed-size track, `fixed` alone where no extent is known.
+    Relative { fixed: f32, pct: f32 },
+    /// A fixed-size track's length as authored, its `px`, `sp` and `em` terms
+    /// reading the environment and the grid's font size. The node store folds
+    /// it to a `Fixed`, `Percent` or `Relative` track before layout reads it,
+    /// and again as what it reads moves; layout reads an unfolded one by its
+    /// `dp` and `pct` terms.
+    Length(crate::length::LengthTerms),
 }
 
 /// The trailing-empty-track rule for a responsive `repeat(auto-*, …)` column

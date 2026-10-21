@@ -420,8 +420,11 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       row, a zero span); a gap in `px`/`sp`/`em` folds at layout (`row_gap` rides
       `NodeLengths`); a child pinned on one axis auto-places as CSS's sparse
       algorithm does.
-  - [ ] A track that reads the environment or adds `dp` to `%`, and a `%` gap
-        (`E3711` today).
+  - [x] A track that reads the environment or adds `dp` to `%`
+        (`TrackSizing::Length`, folded by the store to `Fixed`/`Percent`/`Relative`
+        at the grid's font size and again as the environment moves), and a `%`
+        gap (the column gap of the content width, the row gap of a definite
+        height).
 - [x] `stack.*`, `absolute.*` child placement; `Stack`'s `content_align`: a stack
       fits its largest child and places each at its `stack.align` (else the
       stack's `content_align`), paints and hits by `stack.layer` (source order
