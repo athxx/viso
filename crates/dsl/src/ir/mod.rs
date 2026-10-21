@@ -34,8 +34,8 @@ pub use dirty_map::{DirtyClass, property_dirty_class};
 pub use keys::{KEYLESS_STATEFUL_FOR, KeyIr, KeyedFor, analyze_keys};
 pub use ui_ir::{
     Align, Avoid, AxisIr, Justify, LengthIr, LengthsIr, ListIr, NodeKind, PendingProperty, ScopeIr,
-    StyleIr, TermsIr, UiFor, UiHandler, UiIf, UiIfArm, UiInstance, UiItem, UiLook, UiLookArm,
-    UiMatch, UiMatchArm, UiNode, UiStyled, UiTree, UiWhen,
+    StyleIr, TermsIr, UiFor, UiHandler, UiIf, UiIfArm, UiInputArm, UiInstance, UiItem, UiLook,
+    UiLookArm, UiMatch, UiMatchArm, UiMemberWhen, UiNode, UiStyled, UiStyledInput, UiTree, UiWhen,
 };
 
 use std::collections::HashMap;
@@ -143,6 +143,8 @@ pub struct LibraryComponent<'a> {
     pub write_backs: Vec<(usize, String)>,
     /// Whether a state of it is `@persist`.
     pub persists: bool,
+    /// Its `@selector` members, which a style's `when` on its nodes reads.
+    pub selectors: Vec<String>,
 }
 
 impl<'a> ComponentLibrary<'a> {
@@ -853,6 +855,99 @@ impl<'a, 'l> Lowering<'a, 'l> {
         })
     }
 
+    /// What the styles `value` of a node of the library component `component`,
+    /// whose type is `type_name` and whose own bindings are `own`, give its
+    /// inputs.
+    fn styled_inputs(
+        &mut self,
+        component: &LibraryComponent<'_>,
+        type_name: &str,
+        value: &Expr,
+        own: &[(String, style::Own)],
+    ) -> Vec<UiStyledInput> {
+        let unit = self.frames[self.current].unit;
+        let books = &self.library.styles;
+        let Ok(uses) = style::uses(books, unit as usize, value) else {
+            return Vec::new();
+        };
+        let list = style::applying(uses, type_name);
+        if list.is_empty() {
+            return Vec::new();
+        }
+        let plan = style::component_plan(books, &list, own, &component.selectors);
+        let at = value.syntax().text_range();
+        for (module, span, reason) in plan.unmounted {
+            let span = if module == unit as usize { span } else { at };
+            self.unmount((span, reason));
+        }
+        let value_of = |part: u32| {
+            plan.parts
+                .iter()
+                .find(|p| p.part == part)
+                .and_then(|p| match &p.value {
+                    style::PartValue::Look { value, module, .. } => {
+                        Some((*module as u32, value.syntax().text_range()))
+                    }
+                    style::PartValue::Own(_) => None,
+                })
+        };
+        let schema = component.schema;
+        let member = |name: &str| {
+            let input = schema
+                .inputs
+                .iter()
+                .find(|i| i.name == name)
+                .map(|i| &i.meta);
+            let state = || {
+                schema
+                    .states
+                    .iter()
+                    .find(|s| s.name == name)
+                    .map(|s| &s.meta)
+            };
+            let computed = || {
+                schema
+                    .computeds
+                    .iter()
+                    .find(|c| c.name == name)
+                    .map(|c| &c.meta)
+            };
+            input.or_else(state).or_else(computed)?.resolved_symbol
+        };
+        let inputs = &schema.inputs;
+        plan.inputs
+            .iter()
+            .filter_map(|input| {
+                let slot = inputs.iter().position(|i| i.name == input.input)? as u32;
+                let selects = input
+                    .arms
+                    .iter()
+                    .flat_map(|(when, _)| when)
+                    .filter_map(|step| match step {
+                        UiMemberWhen::Member(name) => member(name),
+                        _ => None,
+                    })
+                    .collect();
+                let parts = input.base.into_iter().chain(input.arms.iter().map(|a| a.1));
+                Some(UiStyledInput {
+                    slot,
+                    at,
+                    base: input.base,
+                    arms: input
+                        .arms
+                        .iter()
+                        .map(|(when, part)| UiInputArm {
+                            when: when.clone(),
+                            part: *part,
+                        })
+                        .collect(),
+                    values: parts.filter_map(value_of).collect(),
+                    selects,
+                })
+            })
+            .collect()
+    }
+
     /// The names of the styles among `members`' `styles` that apply to a
     /// node of type `type_name`, in list order.
     fn style_names(&self, type_name: &str, members: &[ViewItem]) -> Vec<String> {
@@ -1075,6 +1170,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
             .find(|s| s.default)
             .map(|s| s.name.clone());
         let input_slot = |name: &str| schema.inputs.iter().position(|i| i.name == name);
+        let styles = styles_value(&members);
+        let own = style::own_bindings(&members);
         for member in members {
             match member {
                 ViewItem::Override(o) => {
@@ -1097,12 +1194,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
                         .map(|p| p.segments().map(|t| t.text()).collect())
                         .unwrap_or_default();
                     if segments == ["styles"] {
-                        self.unmount((
-                            prop.syntax().text_range(),
-                            "a style does not apply to a component node yet; style the \
-                             widgets of its view"
-                                .to_string(),
-                        ));
                         continue;
                     }
                     let slot = match segments.as_slice() {
@@ -1185,6 +1276,10 @@ impl<'a, 'l> Lowering<'a, 'l> {
             Some(parent) => format!("{}/{segment}", parent.identity),
             None => segment,
         };
+        let styled = match &styles {
+            Some(value) => self.styled_inputs(component, &type_name, value, &own),
+            None => Vec::new(),
+        };
         self.instances.push(UiInstance {
             component: id,
             name: type_name.clone(),
@@ -1196,6 +1291,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             regional: self.guarded,
             args,
             handlers,
+            styled,
         });
         let instance = self.instances.len() as u32;
         let mut chain = self.frames[self.current].chain.clone();

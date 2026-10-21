@@ -2588,9 +2588,9 @@ input selected: Bool = false;
             property or handler the runtime has no path for on that widget; `padding` on a node \
             without a content box; a grid's `areas` or a child's `grid.area` that reads a value; \
             a layout property a style binds to a value; a `bind` to a component input with `using`; properties forwarded \
-            to a component whose view does not mount exactly one node; and styles applied to a \
-            user component node, or switching under `when` a property the runtime does not \
-            deliver or a layout property they give no base. The message names the specific reason.",
+            to a component whose view does not mount exactly one node; and styles switching a \
+            user component's input by an interaction selector, or switching under `when` a \
+            property the runtime does not deliver or a layout property they give no base. The message names the specific reason.",
         example: Example::Source(
             r#"component A {
     view {

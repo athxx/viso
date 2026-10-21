@@ -106,6 +106,46 @@ pub struct UiInstance {
     /// The caller's handler of each of the component's events it handles, by
     /// event name: the range the parent registers it at.
     pub handlers: Vec<(String, TextRange)>,
+    /// Each input the caller's styles give, in place of its default.
+    pub styled: Vec<UiStyledInput>,
+}
+
+/// An input of an inlined instance its caller's styles give: the value of the
+/// first arm whose selector holds, else the base, else the input's default.
+/// Each value is an entry the parent registers at a part of its node's
+/// `styles`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiStyledInput {
+    /// The input's slot.
+    pub slot: u32,
+    /// The range of the caller's `styles` value, the site of the parts.
+    pub at: TextRange,
+    /// The base value's part.
+    pub base: Option<u32>,
+    /// The arms, the first that holds winning.
+    pub arms: Vec<UiInputArm>,
+    /// The source unit and span of each value, whose reads the input reads.
+    pub values: Vec<(u32, TextRange)>,
+    /// The members the selectors read, which the input reads too.
+    pub selects: Vec<SymbolId>,
+}
+
+/// One arm of a [`UiStyledInput`]: its selector over the component's
+/// `@selector` members and the part of its value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiInputArm {
+    pub when: Vec<UiMemberWhen>,
+    pub part: u32,
+}
+
+/// A step of a component style's selector, in postfix order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiMemberWhen {
+    /// The `@selector` member of the component named so.
+    Member(String),
+    Not,
+    And,
+    Or,
 }
 
 /// One item in a view block: a mounted node or a control-flow region.

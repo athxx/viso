@@ -125,6 +125,9 @@ pub(crate) trait ViewEnv: TypeEnv {
     /// The root node of the view of `component`.
     fn component_root(&self, component: SymbolId) -> Option<&access::ViewRoot>;
 
+    /// The `@selector` members of `component`, by name.
+    fn component_selectors(&self, component: SymbolId) -> &[String];
+
     /// The native registry the view's widgets are declared in.
     fn widgets(&self) -> &Natives;
 
@@ -652,6 +655,7 @@ impl<'a> ViewWalk<'a> {
         if let (Some(owner), Some(at)) = (&owner, at)
             && let Some(component) = owner.component
         {
+            self.styled(owner, &body);
             self.forwarded_access(component, at, &body);
         }
         if let Some(owner) = &owner
@@ -732,12 +736,7 @@ impl<'a> ViewWalk<'a> {
             return;
         };
         let members: Vec<ViewItem> = body.members().collect();
-        let Some(value) = members.iter().find_map(|m| match m {
-            ViewItem::Property(p) if p.path().is_some_and(|path| path_text(&path) == "styles") => {
-                p.value()
-            }
-            _ => None,
-        }) else {
+        let Some(value) = styles_of(&members) else {
             return;
         };
         let Ok(uses) = style::uses(books, module, &value) else {
@@ -747,9 +746,16 @@ impl<'a> ViewWalk<'a> {
         if list.is_empty() {
             return;
         }
-        let plan = style::plan(books, &list, &style::own_bindings(&members), &owner.name);
+        let own = style::own_bindings(&members);
+        let parts = match owner.component {
+            Some(component) => {
+                let selectors = self.env.component_selectors(component);
+                style::component_plan(books, &list, &own, selectors).parts
+            }
+            None => style::plan(books, &list, &own, &owner.name).parts,
+        };
         let at = value.syntax().text_range();
-        for part in &plan.parts {
+        for part in &parts {
             let site = Site::styled(at, part.part);
             match &part.value {
                 PartValue::Look {
@@ -757,10 +763,19 @@ impl<'a> ViewWalk<'a> {
                     value,
                     module: home,
                 } => {
-                    let segments: Vec<&str> = property.split('.').collect();
-                    let want = match owner.schema.lookup(&segments) {
-                        PropLookup::Known(spec) => self.schema_value_ty(spec.ty),
-                        PropLookup::Unknown => None,
+                    let want = match owner.component {
+                        Some(_) => owner
+                            .inputs
+                            .iter()
+                            .find(|i| i.name == *property)
+                            .map(|i| i.ty.clone()),
+                        None => {
+                            let segments: Vec<&str> = property.split('.').collect();
+                            match owner.schema.lookup(&segments) {
+                                PropLookup::Known(spec) => self.schema_value_ty(spec.ty),
+                                PropLookup::Unknown => None,
+                            }
+                        }
                     };
                     if *home != module {
                         self.imported_entry(*home, want.as_ref(), site, value);
@@ -2326,6 +2341,16 @@ impl<'a> ViewWalk<'a> {
         };
         b.handler_at(site, func);
     }
+}
+
+/// The value of the `styles` binding among `members`.
+fn styles_of(members: &[ViewItem]) -> Option<Expr> {
+    members.iter().find_map(|m| match m {
+        ViewItem::Property(p) if p.path().is_some_and(|path| path_text(&path) == "styles") => {
+            p.value()
+        }
+        _ => None,
+    })
 }
 
 /// Whether `item` is a structure item, one that fills a slot even when it

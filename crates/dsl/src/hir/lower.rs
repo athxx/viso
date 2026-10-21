@@ -1834,6 +1834,13 @@ impl ViewEnv for ModuleEnv<'_> {
         self.decls.roots.get(&component)
     }
 
+    fn component_selectors(&self, component: SymbolId) -> &[String] {
+        self.decls
+            .selectors
+            .get(&component)
+            .map_or(&[], Vec::as_slice)
+    }
+
     fn widgets(&self) -> &Natives {
         self.natives
     }
@@ -2764,6 +2771,8 @@ pub(crate) fn write_backs(decl: &ComponentDecl) -> Vec<(usize, String)> {
 }
 
 /// Whether a state of `decl` is marked `@persist`.
+pub(crate) use styles::selectors_of;
+
 pub(crate) fn persists(decl: &ComponentDecl) -> bool {
     let mut marked = false;
     for child in decl.syntax().children() {

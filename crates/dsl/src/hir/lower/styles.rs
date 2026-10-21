@@ -32,7 +32,7 @@ use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 use super::{ModuleEnv, attribute_is, check_body};
 
 /// The names of the members of `decl` marked `@selector`, in order.
-pub(super) fn selectors_of(decl: &ComponentDecl) -> Vec<String> {
+pub(crate) fn selectors_of(decl: &ComponentDecl) -> Vec<String> {
     marked(decl, "selector")
         .into_iter()
         .filter_map(|(_, member)| member_name(&member))

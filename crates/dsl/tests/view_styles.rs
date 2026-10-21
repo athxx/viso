@@ -398,15 +398,88 @@ fn a_switched_layout_value_needs_a_base() {
     assert_eq!(codes, ["E3711"]);
 }
 
+/// A chip whose tint a style gives, open once clicked and wide past two
+/// clicks.
+const CHIP: &str = r#"
+component Chip {
+    @styleable
+    input tint: Color = #000000;
+    @selector
+    state open = false;
+    state clicks = 0;
+    @selector
+    computed wide: Bool = clicks > 1;
+    view {
+        Text {
+            width: 20dp;
+            height: 20dp;
+            background: tint;
+            on click { open = !open; clicks += 1; }
+        }
+    }
+}
+style Base for Chip { tint: #102030; }
+style Lit for Chip: Base {
+    when open { tint: #ff0000; }
+    when open && wide { tint: #00ff00; }
+}
+export component C {
+    state rows: List<I64> = [1];
+    view {
+        Column {
+            Chip { styles: [Lit]; }
+            Chip { styles: [Lit]; tint: #0000ff; }
+            for row in rows key row { Chip { styles: [Lit]; } }
+        }
+    }
+}
+"#;
+
 #[test]
-fn a_style_on_a_component_node_does_not_mount_yet() {
-    let source = "component K {\n@styleable\ninput tint: Color = #000000;\n\
-                  view { Text { background: tint; } }\n}\n\
-                  style S for K { tint: #ff0000; }\n\
-                  export component C { view { K { styles: [S]; } } }\n";
-    let compiled = compile_file(source, &origin());
-    let codes: Vec<_> = compiled.errors().map(|d| d.code).collect();
-    assert_eq!(codes, ["E3711"]);
+fn a_style_on_a_component_node_gives_its_styleable_inputs_by_its_selectors() {
+    for mut rt in [Rt::mount(CHIP), Rt::packaged(CHIP)] {
+        assert_eq!(look(&rt, 0).0, rgba(REST), "the base");
+        assert_eq!(look(&rt, 1).0, rgba(OWN), "the node's own binding wins");
+        assert_eq!(look(&rt, 2).0, rgba(REST), "in a region too");
+        rt.click(0);
+        assert_eq!(look(&rt, 0).0, rgba(HOVER), "`when open`");
+        rt.click(0);
+        assert_eq!(look(&rt, 0).0, rgba(REST), "closed again");
+        rt.click(0);
+        assert_eq!(
+            look(&rt, 0).0,
+            rgba(PRESSED),
+            "`when open && wide`, the later arm"
+        );
+        rt.click(2);
+        assert_eq!(look(&rt, 2).0, rgba(HOVER), "the region's own instance");
+        assert_eq!(look(&rt, 1).0, rgba(OWN));
+        assert_eq!(rt.fault(), None);
+    }
+}
+
+#[test]
+fn a_component_style_does_not_switch_an_input_by_an_interaction_selector_yet() {
+    let source = CHIP.replace("when open { tint", "when hover { tint");
+    let compiled = compile_file(&source, &origin());
+    let errors: Vec<_> = compiled
+        .errors()
+        .map(|d| {
+            let at = d.primary.start().to_u32() as usize..d.primary.end().to_u32() as usize;
+            (d.code, source[at].to_owned())
+        })
+        .collect();
+    assert_eq!(
+        errors.len(),
+        2,
+        "the chips that take `tint` from it: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|(code, at)| *code == "E3711" && at == "hover"),
+        "{errors:?}"
+    );
 }
 
 #[test]

@@ -1172,7 +1172,7 @@ timers (§104–§111).
   - [x] Grammar: `style NAME for Component : Base + Base { prop: v; when sel { } }`
         and `theme NAME : Base { name = expr; }`; both resolve (`theme` reads in
         style values); a `when` selector never reads its `{` as a record.
-  - [x] Checks: target (`E2001`); bases of the file for the same target
+  - [x] Checks: target (`E2001`); bases of the file or imported, for the same target
         (`E2001`/`E2103`), acyclic (`E2003`); only Styleable properties
         (widget schema flag, `@styleable` inputs) `E3101`, once per block
         `E3102`, typed `E2103`, pure `E2502`; selectors the target supports
@@ -1188,8 +1188,11 @@ timers (§104–§111).
   - [x] Styles imported from another file, in `styles` and as bases: one
         package style table, each value typed and lowered in its own module,
         what does not mount reported at the node's `styles`.
-  - [ ] Styles on user-component nodes (`@styleable` inputs, `@selector`
-        members) (`E3711` today).
+  - [x] Styles on user-component nodes: each `@styleable` input the node does not
+        bind takes the first holding arm over the instance's `@selector` members
+        (one function per instance and input), else the base, else its default;
+        binding IR follows the members and the values; interaction selectors on
+        a component's inputs are `E3711`; web export alike.
   - [x] `when` on properties besides `background`/`opacity`, and runtime
         delivery of non-constant layout/text style values: a style's property
         takes the node's own delivery path (a constant folds, a read value is

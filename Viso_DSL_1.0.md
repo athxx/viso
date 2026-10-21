@@ -2442,7 +2442,7 @@ Button {
 
 `styles` 的精确类型由 Component Schema 定义，通常是 `List<StyleRef<Button>>`。Style 名在 Expression 中求值为编译期常量 `StyleRef<T>`，`T` 是其 `for` 目标 Component。编译器必须检查 Style 目标类型兼容性；Style 顺序按列表从左到右应用，后者覆盖前者，节点显式 Property 最后覆盖全部 Style。不存在通过字符串名称动态查找 Style 的语义。
 
-当前实现：Style 的目标是本文件可见的原生 Widget 或用户 Component（否则 `E2001`）；Base 是本文件或经 import 可见的同目标 Style（名字无法解析报 `E2001`，解析为非 Style 或目标不同报 `E2103`），Base 图有环的 Style 报 `E2003`。Style 只绑定 Widget Schema 标为 Styleable 的 Property（各节点的布局、外观、变换、`transition.*`、容器的间距与对齐、文本样式；`styles`、内容、焦点与语义属性不是）或用户 Component 的 `@styleable` Input，否则 `E3101`；同一块（顶层或同一 `when`）内重复绑定报 `E3102`；值按 Property 类型检查（`E2103`），按 View 上下文检查副作用（`E2502`），可读 `theme`。`when` 的选择器只由选择器名、`!`、`&&`、`||` 与括号组成（否则 `E2103`），名字须是目标支持的选择器（U12.1，否则 `E2001`）。节点的 `styles` 是本文件或经 import 可见的 Style 名的列表（不是列表、元素不是名字或不是 Style 报 `E2103`，Style 目标不是节点类型报 `E2103`）。应用：每个 Style 先按顺序深度优先应用其 Base，再按源码顺序应用自身各项；对同一 Property，无条件绑定取代此前的全部值，`when` 绑定作为分支叠加，后写的优先；节点自身绑定（`:` 或 `bind`）的 Property 不取 Style 的值。`background` 与 `opacity` 编译为节点的基值入口加按优先级排列的分支（选择器的后缀式与值入口，入口注册在节点 `styles` 值的 Site 上，按确定顺序编号），运行时取第一个成立的分支，否则取基值，都没有时取属性默认值；`transition.background`/`transition.opacity` 取无条件值；其他 Property 的无条件值与节点自身的值同样折叠或成为 Binding，其上的 `when` 报 `E3711`。选择器中的 `disabled`、`checked`、`invalid` 读取节点自身的 `enabled`、`checked`、`invalid`（未绑定时取默认值并在编译期折叠：恒假的分支删除，恒真的分支成为基值）。用户 Component 节点上的 `styles` 目前报 `E3711`。热重载、Release 包与宏路径相同。
+当前实现：Style 的目标是本文件可见的原生 Widget 或用户 Component（否则 `E2001`）；Base 是本文件或经 import 可见的同目标 Style（名字无法解析报 `E2001`，解析为非 Style 或目标不同报 `E2103`），Base 图有环的 Style 报 `E2003`。Style 只绑定 Widget Schema 标为 Styleable 的 Property（各节点的布局、外观、变换、`transition.*`、容器的间距与对齐、文本样式；`styles`、内容、焦点与语义属性不是）或用户 Component 的 `@styleable` Input，否则 `E3101`；同一块（顶层或同一 `when`）内重复绑定报 `E3102`；值按 Property 类型检查（`E2103`），按 View 上下文检查副作用（`E2502`），可读 `theme`。`when` 的选择器只由选择器名、`!`、`&&`、`||` 与括号组成（否则 `E2103`），名字须是目标支持的选择器（U12.1，否则 `E2001`）。节点的 `styles` 是本文件或经 import 可见的 Style 名的列表（不是列表、元素不是名字或不是 Style 报 `E2103`，Style 目标不是节点类型报 `E2103`）。应用：每个 Style 先按顺序深度优先应用其 Base，再按源码顺序应用自身各项；对同一 Property，无条件绑定取代此前的全部值，`when` 绑定作为分支叠加，后写的优先；节点自身绑定（`:` 或 `bind`）的 Property 不取 Style 的值。`background` 与 `opacity` 编译为节点的基值入口加按优先级排列的分支（选择器的后缀式与值入口，入口注册在节点 `styles` 值的 Site 上，按确定顺序编号），运行时取第一个成立的分支，否则取基值，都没有时取属性默认值；`transition.background`/`transition.opacity` 取无条件值；其他 Property 的无条件值与节点自身的值同样折叠或成为 Binding，其上的 `when` 报 `E3711`。选择器中的 `disabled`、`checked`、`invalid` 读取节点自身的 `enabled`、`checked`、`invalid`（未绑定时取默认值并在编译期折叠：恒假的分支删除，恒真的分支成为基值）。用户 Component 节点上的 `styles` 给出其 `@styleable` Input（U2.3）。热重载、Release 包与宏路径相同。
 
 ---
 
@@ -4448,7 +4448,7 @@ export style SelectedChip for Chip {
 - `@selector` 公开的选择器名等于成员名；成员非 `Bool`，或与 U12.1 标准选择器同名但语义不同，是 `E3710`；
 - 内部 `state` 可经 `@selector` 公开为只读选择器，外部仍不能读写该 State。
 
-当前实现：`@styleable` 只标在 `input` 上，`@selector` 只标在 `Bool` 类型的 `input`、`state` 或 `computed` 上，且名字不得是运行时判定的标准选择器（`hover`、`pressed`、`focused`、`focus_visible`、`disabled`、`dragging`）；违反者报 `E3710`。以用户 Component 为目标的 Style 可绑定其 `@styleable` Input，`when` 可用其 `@selector` 成员与交互选择器；该 Style 应用到 Component 节点尚未实现（`E3711`）。
+当前实现：`@styleable` 只标在 `input` 上，`@selector` 只标在 `Bool` 类型的 `input`、`state` 或 `computed` 上，且名字不得是运行时判定的标准选择器（`hover`、`pressed`、`focused`、`focus_visible`、`disabled`、`dragging`）；违反者报 `E3710`。以用户 Component 为目标的 Style 可绑定其 `@styleable` Input，`when` 可用其 `@selector` 成员与交互选择器。应用到 Component 节点时，Style 给出的每个 Input（节点自身未绑定的）取第一个成立的 `when` 分支的值，否则取无条件值，都没有时取 Input 默认值；选择器读取该实例自身的 `@selector` 成员（Input、State 或 Computed），成员变化时只重新求值读取该 Input 的绑定。`when` 中的交互选择器（`hover` 等）尚不切换 Component 的 Input（`E3711`，报在该选择器上）。热重载、Release 包、宏与 Web 导出相同。
 
 ### U2.4 用户 Component 的失效推导
 
@@ -8823,7 +8823,7 @@ RecordPatternField
 | E3708  | 交互节点缺少等价键盘路径（警告，§U8.2）                 |
 | E3709  | 标注 [Runtime 待实现] 的 Property 使用了非默认值（§U1.1） |
 | E3710  | `@selector` 或 `@styleable` 误用（§U2.3）               |
-| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根，或 `VirtualList` 位于另一 `VirtualList` 的行内，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 写在非容器节点上，或 `Grid` 的 `areas`/`grid.area` 不是常量，或 Style 应用于用户 Component 节点、以 `when` 切换无运行时路径的 Property 或无基值的布局 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
+| E3711  | Handler、控制流区域或 Component 实例未能挂载：Runtime 未投递该 Event、Behavior 未能 Lower，区域位于 View 根，或 `VirtualList` 位于另一 `VirtualList` 的行内，或实例无法内联，或 `ui!` Fragment 中的 Rust Component 带 Property、Handler 或子项，或以 Component Input 为目标的 `bind` 带 `using`，或 `AdaptiveScope` 的 `basis` 不是常量、`SafeArea`/`KeyboardAvoiding` 带 `padding`，或 `padding` 写在非容器节点上，或 `Grid` 的 `areas`/`grid.area` 不是常量，或 Style 以交互选择器切换用户 Component 的 Input、以 `when` 切换无运行时路径的 Property 或无基值的布局 Property（§40.1、§59、§52、§56.1、§96.3、§96.6、§123） |
 | E3712  | `@migrate` 误用：不标记 `fn`、`from` 缺失或不是类型拼写字符串、参数不是恰好一个 `from` 类型参数、未声明返回类型，或同一 `from` 与返回类型重复（§94.1） |
 | E3713  | 资源误用：`asset` 的参数不是恰好一个字符串字面量、路径越出 `assets/`、文件不存在或不是 PNG/JPEG/SVG、编译没有资源目录，或写出 `ImageAsset`/`SvgAsset` 的 Record 表达式（§U5.1） |
 | E4101  | 非 Task 主体（Action、Event、Effect 等）中使用 Await    |

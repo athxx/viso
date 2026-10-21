@@ -913,6 +913,7 @@ pub(crate) fn graph_library<'a>(
             unit: unit as u32,
             write_backs: write_backs(&decl),
             persists: persists(&decl),
+            selectors: crate::hir::selectors_of(&decl),
             decl,
         })
     });

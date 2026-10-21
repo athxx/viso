@@ -13,7 +13,9 @@
 //!   instance a control-flow region mounts starts them from entries the
 //!   region content runs when it mounts the instance ([`RegionalStates`]);
 //! - an input read calls the caller's argument entry for that input (else the
-//!   component's default, else `None`);
+//!   component's default, else `None`); one the caller's styles give calls the
+//!   instance's function choosing among the styles' values by the component's
+//!   `@selector` members;
 //! - an `emit` calls each handler the caller wires to the event, with the
 //!   event's arguments as its payload;
 //! - every copy takes the scope values of the regions enclosing the instance's
@@ -27,11 +29,11 @@
 use std::collections::HashMap;
 
 use super::ir::{
-    Body, ComponentLayout, Const, EffectEntry, EnvSlot, FuncId, Function, FunctionKind, Inst,
-    PathStep, Program, Reg, RegionalStates, Site, Unsupported,
+    BinaryOp, Body, ComponentLayout, Const, EffectEntry, EnvSlot, FuncId, Function, FunctionKind,
+    Inst, Num, PathStep, Program, Reg, RegionalStates, Site, UnaryOp, Unsupported,
 };
 use super::lower::block_unsupported;
-use crate::ir::{UiInstance, UiTree};
+use crate::ir::{UiInstance, UiMemberWhen, UiStyledInput, UiTree};
 use crate::resolve::SymbolId;
 use crate::syntax::{TextRange, TextSize};
 
@@ -70,6 +72,7 @@ pub(crate) fn inline_instances(program: &mut Program, root: SymbolId, tree: &UiT
             instance,
             id: index as u32 + 1,
             clones: HashMap::new(),
+            styled: HashMap::new(),
             base: 0,
         }
         .run();
@@ -141,6 +144,8 @@ struct Inliner<'p> {
     id: u32,
     /// The copy of each function the instance runs its own copy of.
     clones: HashMap<FuncId, FuncId>,
+    /// The function giving each input the caller's styles give, by slot.
+    styled: HashMap<u32, FuncId>,
     /// The mounted slot of the instance's first state.
     base: u32,
 }
@@ -148,6 +153,18 @@ struct Inliner<'p> {
 impl Inliner<'_> {
     fn run(mut self) {
         let depth = self.instance.depth;
+        // The members a style's selector reads run as the instance's too.
+        let selected: Vec<FuncId> = self
+            .instance
+            .styled
+            .iter()
+            .flat_map(|s| &s.arms)
+            .flat_map(|a| &a.when)
+            .filter_map(|step| match step {
+                UiMemberWhen::Member(name) => self.child.member(name),
+                _ => None,
+            })
+            .collect();
         let roots: Vec<FuncId> = self
             .child
             .handlers
@@ -155,6 +172,7 @@ impl Inliner<'_> {
             .map(|(_, f)| *f)
             .chain(self.child.state_inits.iter().flatten().copied())
             .chain(self.child.input_defaults.iter().flatten().copied())
+            .chain(selected)
             .collect();
         // Every function reachable from the instance's entry points that
         // touches per-instance data, and every entry point that takes the
@@ -191,13 +209,28 @@ impl Inliner<'_> {
                 .map(|s| hidden_state(&self.instance.identity, s)),
         );
 
+        let first = next + order.len() as u32;
+        self.styled = self
+            .instance
+            .styled
+            .iter()
+            .enumerate()
+            .map(|(k, s)| (s.slot, FuncId(first + k as u32)))
+            .collect();
         let copies: Vec<Function> = order.iter().map(|&f| self.copy(f)).collect();
+        let styled: Vec<Function> = self
+            .instance
+            .styled
+            .iter()
+            .map(|s| self.styled_input(s))
+            .collect();
         let starts = copies.iter().any(|f| {
             f.body
                 .as_ref()
                 .is_ok_and(|b| b.insts.iter().any(|i| matches!(i, Inst::Start { .. })))
         });
         self.program.functions.extend(copies);
+        self.program.functions.extend(styled);
         if starts {
             self.program.components[self.root].starters.push(self.id);
         }
@@ -275,10 +308,16 @@ impl Inliner<'_> {
     /// The function the caller registered at `at` in the view of the
     /// instance's parent.
     fn caller(&self, at: TextRange) -> Option<FuncId> {
+        self.caller_part(at, 0)
+    }
+
+    /// The function the caller registered at part `part` of `at` in the view
+    /// of the instance's parent.
+    fn caller_part(&self, at: TextRange, part: u32) -> Option<FuncId> {
         let site = Site {
             instance: self.instance.parent,
             at,
-            part: 0,
+            part,
         };
         let layout = &self.program.components[self.root];
         layout
@@ -412,39 +451,17 @@ impl Inliner<'_> {
                 },
                 span,
             ),
-            Inst::LoadInput { dst, slot } => {
-                let arg = self.instance.args.iter().find(|(s, _)| *s == slot);
-                if let Some(&(_, at)) = arg {
-                    let func = self.caller(at).ok_or_else(|| {
-                        format!(
-                            "the argument of input `{}` has no entry",
-                            self.input_name(slot)
-                        )
-                    })?;
-                    out.push(
-                        Inst::Call {
-                            dst,
-                            func,
-                            args: scope.to_vec(),
-                        },
-                        span,
-                    );
-                } else if let Some(default) = self.child.input_defaults[slot as usize] {
-                    let (func, args) = match self.clones.get(&default) {
-                        Some(&copy) => (copy, scope.to_vec()),
-                        None => (default, Vec::new()),
-                    };
-                    out.push(Inst::Call { dst, func, args }, span);
-                } else {
-                    out.push(
-                        Inst::Const {
-                            dst,
-                            value: Const::Nil,
-                        },
-                        span,
-                    );
-                }
-            }
+            Inst::LoadInput { dst, slot } => match self.styled.get(&slot) {
+                Some(&func) => out.push(
+                    Inst::Call {
+                        dst,
+                        func,
+                        args: scope.to_vec(),
+                    },
+                    span,
+                ),
+                None => self.load_input(dst, slot, scope, span, out)?,
+            },
             Inst::Emit { event, args } => {
                 let name = &self.child.events[event as usize];
                 let wired: Vec<FuncId> = self
@@ -542,6 +559,221 @@ impl Inliner<'_> {
             }
             inst => out.push(inst, span),
         }
+        Ok(())
+    }
+
+    /// Emits, into `dst`, the value of input `slot` as the caller binds it:
+    /// its argument entry, else the component's default, else `None`.
+    fn load_input(
+        &self,
+        dst: Reg,
+        slot: u32,
+        scope: &[Reg],
+        span: TextRange,
+        out: &mut Rewrite,
+    ) -> Result<(), String> {
+        let arg = self.instance.args.iter().find(|(s, _)| *s == slot);
+        if let Some(&(_, at)) = arg {
+            let func = self.caller(at).ok_or_else(|| {
+                format!(
+                    "the argument of input `{}` has no entry",
+                    self.input_name(slot)
+                )
+            })?;
+            out.push(
+                Inst::Call {
+                    dst,
+                    func,
+                    args: scope.to_vec(),
+                },
+                span,
+            );
+        } else if let Some(default) = self.child.input_defaults[slot as usize] {
+            let (func, args) = match self.clones.get(&default) {
+                Some(&copy) => (copy, scope.to_vec()),
+                None => (default, Vec::new()),
+            };
+            out.push(Inst::Call { dst, func, args }, span);
+        } else {
+            out.push(
+                Inst::Const {
+                    dst,
+                    value: Const::Nil,
+                },
+                span,
+            );
+        }
+        Ok(())
+    }
+
+    /// The instance's function giving input `styled.slot` the value of the
+    /// first of its caller's style arms whose selector holds, else the base's,
+    /// else the value the caller binds.
+    fn styled_input(&self, styled: &UiStyledInput) -> Function {
+        let depth = self.instance.depth;
+        let scope: Vec<Reg> = (0..depth).map(Reg).collect();
+        let mut out = Rewrite {
+            body: Body {
+                regs: depth,
+                insts: Vec::new(),
+                spans: Vec::new(),
+            },
+            starts: Vec::new(),
+        };
+        let mut function = Function {
+            name: format!(
+                "{}.{} [{}]",
+                self.child.name,
+                self.input_name(styled.slot),
+                self.instance.identity
+            ),
+            kind: FunctionKind::RegionEntry,
+            symbol: None,
+            module: self.instance.unit as usize,
+            params: depth,
+            captures: Vec::new(),
+            body: Err(Unsupported {
+                reason: String::new(),
+                at: styled.at,
+            }),
+        };
+        match self.styled_body(styled, &scope, &mut out) {
+            Ok(()) => function.body = Ok(out.body),
+            Err(reason) => {
+                function.body = Err(Unsupported {
+                    reason,
+                    at: styled.at,
+                })
+            }
+        }
+        function
+    }
+
+    fn styled_body(
+        &self,
+        styled: &UiStyledInput,
+        scope: &[Reg],
+        out: &mut Rewrite,
+    ) -> Result<(), String> {
+        let span = styled.at;
+        let part = |part: u32| {
+            self.caller_part(styled.at, part)
+                .ok_or_else(|| "the style's value has no entry".to_string())
+        };
+        for arm in &styled.arms {
+            let cond = self.selector(&arm.when, scope, span, out)?;
+            let skip = out.body.insts.len();
+            out.push(
+                Inst::JumpIf {
+                    cond,
+                    when: false,
+                    target: 0,
+                },
+                span,
+            );
+            let dst = out.reg();
+            out.push(
+                Inst::Call {
+                    dst,
+                    func: part(arm.part)?,
+                    args: scope.to_vec(),
+                },
+                span,
+            );
+            out.push(Inst::Return { src: dst }, span);
+            let end = out.body.insts.len() as u32;
+            if let Inst::JumpIf { target, .. } = &mut out.body.insts[skip] {
+                *target = end;
+            }
+        }
+        let dst = out.reg();
+        match styled.base {
+            Some(base) => out.push(
+                Inst::Call {
+                    dst,
+                    func: part(base)?,
+                    args: scope.to_vec(),
+                },
+                span,
+            ),
+            None => self.load_input(dst, styled.slot, scope, span, out)?,
+        }
+        out.push(Inst::Return { src: dst }, span);
+        Ok(())
+    }
+
+    /// Emits the selector `when` over the component's `@selector` members,
+    /// returning the register holding whether it holds.
+    fn selector(
+        &self,
+        when: &[UiMemberWhen],
+        scope: &[Reg],
+        span: TextRange,
+        out: &mut Rewrite,
+    ) -> Result<Reg, String> {
+        let mut stack: Vec<Reg> = Vec::new();
+        for step in when {
+            let dst = out.reg();
+            match step {
+                UiMemberWhen::Member(name) => self.member(name, dst, scope, span, out)?,
+                UiMemberWhen::Not => {
+                    let src = stack.pop().ok_or("a selector lacks an operand")?;
+                    out.push(
+                        Inst::Unary {
+                            dst,
+                            op: UnaryOp::Not,
+                            src,
+                        },
+                        span,
+                    );
+                }
+                UiMemberWhen::And | UiMemberWhen::Or => {
+                    let rhs = stack.pop().ok_or("a selector lacks an operand")?;
+                    let lhs = stack.pop().ok_or("a selector lacks an operand")?;
+                    let op = match step {
+                        UiMemberWhen::And => BinaryOp::BitAnd(Num::U64),
+                        _ => BinaryOp::BitOr(Num::U64),
+                    };
+                    out.push(Inst::Binary { dst, op, lhs, rhs }, span);
+                }
+            }
+            stack.push(dst);
+        }
+        stack.pop().ok_or_else(|| "an empty selector".to_string())
+    }
+
+    /// Emits, into `dst`, the value of the instance's member `name`: a state,
+    /// an input as the caller binds it, or a `computed`.
+    fn member(
+        &self,
+        name: &str,
+        dst: Reg,
+        scope: &[Reg],
+        span: TextRange,
+        out: &mut Rewrite,
+    ) -> Result<(), String> {
+        if let Some(slot) = self.child.states.iter().position(|s| s == name) {
+            out.push(
+                Inst::LoadState {
+                    dst,
+                    slot: self.base + slot as u32,
+                },
+                span,
+            );
+            return Ok(());
+        }
+        if let Some(slot) = self.child.inputs.iter().position(|s| s == name) {
+            return self.load_input(dst, slot as u32, scope, span, out);
+        }
+        let func = self
+            .child
+            .member(name)
+            .ok_or_else(|| format!("the selector `{name}` is no member"))?;
+        let (func, args) = match self.clones.get(&func) {
+            Some(&copy) => (copy, scope.to_vec()),
+            None => (func, Vec::new()),
+        };
+        out.push(Inst::Call { dst, func, args }, span);
         Ok(())
     }
 

@@ -781,3 +781,32 @@ fn run_in_chrome(
         .unwrap();
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
+
+#[test]
+fn a_style_on_a_component_node_exports_its_inputs_choice() {
+    let source = r#"
+component Chip {
+    @styleable
+    input tint: Color = #000000;
+    @selector
+    state open = false;
+    view {
+        Text { width: 20dp; height: 20dp; background: tint; on click { open = !open; } }
+    }
+}
+style Lit for Chip { tint: #102030; when open { tint: #ff0000; } }
+export component C { view { Column { Chip { styles: [Lit]; } } } }
+"#;
+    let page = export(source, false).expect("exports");
+    let script = page.script.expect("a script");
+    assert!(
+        page.styles
+            .contains("background-color: var(--v1-background-color)"),
+        "{}",
+        page.styles
+    );
+    assert!(
+        script.contains("u.push([[0], () => P.vcolor(e[0]"),
+        "the tint follows `open`: {script}"
+    );
+}

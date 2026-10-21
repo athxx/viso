@@ -25,7 +25,7 @@ use crate::ast::{
     AssignablePath, AstNode, BinaryExpr, Expr, Item, ParenExpr, PathExpr, PropertyBinding,
     PropertyPath, StyleDecl, StyleWhen, TypePath, UnaryExpr, ViewItem,
 };
-use crate::ir::ui_ir::{UiLook, UiLookArm, UiWhen};
+use crate::ir::ui_ir::{UiLook, UiLookArm, UiMemberWhen, UiWhen};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::{SyntaxKind, TextRange};
 
@@ -678,6 +678,115 @@ pub(crate) fn plan(
         plan.looks.push((look, base));
     }
     plan
+}
+
+/// What a node of a user component's styles give one of its inputs: the part
+/// of the base value and of each arm's, the latest first, with its selector
+/// over the component's `@selector` members.
+#[derive(Debug, Clone)]
+pub(crate) struct InputPlan {
+    pub(crate) input: String,
+    pub(crate) base: Option<u32>,
+    pub(crate) arms: Vec<(Vec<UiMemberWhen>, u32)>,
+}
+
+/// What the styles of a user-component node give it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ComponentPlan {
+    pub(crate) inputs: Vec<InputPlan>,
+    /// The value of each part the inputs name.
+    pub(crate) parts: Vec<Part>,
+    /// What does not mount, and why, with the module of the style it is in.
+    pub(crate) unmounted: Vec<(usize, TextRange, String)>,
+}
+
+/// What the styles `list` give a node of a user component whose `@selector`
+/// members are `selectors` and whose own bindings are `own`: each input they
+/// bind and the node does not. A `when` naming an interaction selector does
+/// not switch an input; one naming nothing the component selects by was
+/// reported at the style and drops its arm.
+pub(crate) fn component_plan(
+    books: &StyleBooks,
+    list: &[Applying],
+    own: &[(String, Own)],
+    selectors: &[String],
+) -> ComponentPlan {
+    let explicit: Vec<String> = own.iter().map(|(name, _)| name.clone()).collect();
+    let mut plan = ComponentPlan::default();
+    let mut part = 0;
+    let mut look = |plan: &mut ComponentPlan, name: &str, styled: &Styled| {
+        part += 1;
+        plan.parts.push(Part {
+            part,
+            value: PartValue::Look {
+                property: name.to_string(),
+                value: styled
+                    .binding
+                    .value()
+                    .expect("an applied binding has a value"),
+                module: styled.module,
+            },
+        });
+        part
+    };
+    for property in styled(applied(books, list), &explicit) {
+        let name = property.name;
+        let base = property
+            .base
+            .as_ref()
+            .map(|styled| look(&mut plan, &name, styled));
+        let mut arms = Vec::new();
+        for (when, styled) in &property.arms {
+            let Ok(selector) = Selector::of(when) else {
+                continue;
+            };
+            let mut names = Vec::new();
+            selector.names(&mut names);
+            if let Some((other, _)) = names.iter().find(|(n, _)| !selectors.contains(n)) {
+                if INTERACTION_SELECTORS.iter().any(|(n, _)| n == other) {
+                    plan.unmounted.push((
+                        styled.module,
+                        when.syntax().text_range(),
+                        format!(
+                            "a style's `when` switches a component's inputs by its \
+                             `@selector` members; `{other}` does not switch one yet"
+                        ),
+                    ));
+                }
+                continue;
+            }
+            let mut steps = Vec::new();
+            member_steps(&selector, &mut steps);
+            arms.push((steps, look(&mut plan, &name, styled)));
+        }
+        if base.is_some() || !arms.is_empty() {
+            plan.inputs.push(InputPlan {
+                input: name,
+                base,
+                arms,
+            });
+        }
+    }
+    plan
+}
+
+/// `selector`, every name of it a member, as postfix steps.
+fn member_steps(selector: &Selector, out: &mut Vec<UiMemberWhen>) {
+    match selector {
+        Selector::Name(name, _) => out.push(UiMemberWhen::Member(name.clone())),
+        Selector::Not(inner) => {
+            member_steps(inner, out);
+            out.push(UiMemberWhen::Not);
+        }
+        Selector::And(a, b) | Selector::Or(a, b) => {
+            member_steps(a, out);
+            member_steps(b, out);
+            out.push(match selector {
+                Selector::And(..) => UiMemberWhen::And,
+                _ => UiMemberWhen::Or,
+            });
+        }
+    }
 }
 
 /// A step of a folded selector, in postfix order.

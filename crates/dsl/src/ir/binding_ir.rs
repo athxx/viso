@@ -282,6 +282,28 @@ impl<'a> LowerCtx<'a> {
                 let reads = substitute(&substitutions, instance.parent, reads);
                 map.insert(*input, reads);
             }
+            // A styled input reads its styles' values, of the caller's view,
+            // and the members its selectors read, of the instance.
+            for styled in &instance.styled {
+                let Some(Some(input)) = sources.inputs.get(styled.slot as usize) else {
+                    continue;
+                };
+                let mut reads: Vec<SymbolId> = Vec::new();
+                for &(unit, at) in &styled.values {
+                    let Some(expr) = units.expr(unit, at) else {
+                        continue;
+                    };
+                    let read = derived.flatten(collect_reads(units.refs(unit), env, expr));
+                    reads.extend(substitute(&substitutions, instance.parent, read));
+                }
+                let own = derived.flatten(styled.selects.iter().copied());
+                for read in own {
+                    reads.extend(map.get(&read).into_iter().flatten().copied());
+                }
+                reads.sort_unstable();
+                reads.dedup();
+                map.insert(*input, reads);
+            }
             substitutions.push(map);
         }
         Self {
