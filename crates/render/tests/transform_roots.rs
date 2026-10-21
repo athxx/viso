@@ -7,7 +7,8 @@
 
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_render::{
-    Border, LayerClip, Primitive, Quad, Rect, Renderer, Rgba, TransformSlot, TransformUpdate,
+    Affine2, Border, LayerClip, Primitive, Quad, Rect, Renderer, Rgba, TransformSlot,
+    TransformUpdate,
 };
 
 const W: u32 = 64;
@@ -85,10 +86,14 @@ fn scrolled(dy: f32, root: bool) -> Vec<Primitive> {
 #[test]
 fn a_moved_root_draws_what_painting_it_there_draws_and_uploads_nothing() {
     let (mut gpu, surface, mut moved) = renderer();
-    moved.upload_with_transforms(&mut gpu, &scrolled(0.0, true), &[[0.0, 0.0]]);
+    moved.upload_with_transforms(
+        &mut gpu,
+        &scrolled(0.0, true),
+        &[Affine2::translate(0.0, 0.0)],
+    );
     let still = draw(&mut gpu, surface, &mut moved);
     assert_eq!(
-        moved.set_transforms(&[[0.0, -20.0]]),
+        moved.set_transforms(&[Affine2::translate(0.0, -20.0)]),
         TransformUpdate::Moved
     );
     let shifted = draw(&mut gpu, surface, &mut moved);
@@ -105,7 +110,7 @@ fn a_moved_root_draws_what_painting_it_there_draws_and_uploads_nothing() {
 
     // Moving back restores the painted frame.
     assert_eq!(
-        moved.set_transforms(&[[0.0, 0.0]]),
+        moved.set_transforms(&[Affine2::translate(0.0, 0.0)]),
         TransformUpdate::Unchanged
     );
     assert_eq!(draw(&mut gpu, surface, &mut moved), still);
@@ -126,7 +131,7 @@ fn rows_in_one_root_still_batch_and_a_static_neighbour_does_not_join_them() {
         rect(0.0, 0.0, 8.0, 8.0),
         Rgba::new(1.0, 1.0, 1.0, 1.0),
     ));
-    r.upload_with_transforms(&mut gpu, &stream, &[[0.0, 0.0]]);
+    r.upload_with_transforms(&mut gpu, &stream, &[Affine2::translate(0.0, 0.0)]);
     assert_eq!(r.frame_stats().draw_calls, 2);
 }
 
@@ -149,13 +154,17 @@ fn a_root_holding_a_translucent_layer_asks_for_an_upload() {
         quad(rect(32.0, 32.0, 16.0, 16.0), Rgba::new(0.0, 0.0, 1.0, 1.0)),
         Primitive::TransformEnd,
     ];
-    r.upload_with_transforms(&mut gpu, &stream, &[[0.0, 0.0], [0.0, 0.0]]);
+    r.upload_with_transforms(
+        &mut gpu,
+        &stream,
+        &[Affine2::translate(0.0, 0.0), Affine2::translate(0.0, 0.0)],
+    );
     assert_eq!(
-        r.set_transforms(&[[0.0, 0.0], [5.0, 0.0]]),
+        r.set_transforms(&[Affine2::translate(0.0, 0.0), Affine2::translate(5.0, 0.0)]),
         TransformUpdate::Moved
     );
     assert_eq!(
-        r.set_transforms(&[[5.0, 0.0], [5.0, 0.0]]),
+        r.set_transforms(&[Affine2::translate(5.0, 0.0), Affine2::translate(5.0, 0.0)]),
         TransformUpdate::NeedsUpload
     );
 }
@@ -166,8 +175,67 @@ fn a_plain_upload_never_moves() {
     r.upload(&mut gpu, &scrolled(0.0, true));
     let before = draw(&mut gpu, surface, &mut r);
     assert_eq!(
-        r.set_transforms(&[[0.0, -20.0]]),
+        r.set_transforms(&[Affine2::translate(0.0, -20.0)]),
         TransformUpdate::Unchanged
     );
     assert_eq!(draw(&mut gpu, surface, &mut r), before);
+}
+
+/// Whether pixel `(x, y)` of a BGRA frame is mostly red.
+fn red(frame: &[u8], x: u32, y: u32) -> bool {
+    let at = ((y * W + x) * 4) as usize;
+    frame[at + 2] > 200 && frame[at + 1] < 60 && frame[at] < 60
+}
+
+/// A quarter turn clockwise about `(32, 32)`.
+fn quarter_turn() -> Affine2 {
+    Affine2::translate(-32.0, -32.0)
+        .then(&Affine2::from_rotation(std::f32::consts::FRAC_PI_2))
+        .then(&Affine2::translate(32.0, 32.0))
+}
+
+#[test]
+fn a_turned_root_draws_its_content_turned_and_uploads_nothing() {
+    let (mut gpu, surface, mut r) = renderer();
+    // A tall bar, 20 wide and 40 high, centered on (32, 32).
+    let stream = vec![
+        Primitive::Transform(TransformSlot(0)),
+        quad(rect(22.0, 12.0, 20.0, 40.0), Rgba::new(1.0, 0.0, 0.0, 1.0)),
+        Primitive::TransformEnd,
+    ];
+    r.upload_with_transforms(&mut gpu, &stream, &[Affine2::IDENTITY]);
+    let upright = draw(&mut gpu, surface, &mut r);
+    assert!(red(&upright, 32, 14) && !red(&upright, 14, 32));
+    assert_eq!(r.set_transforms(&[quarter_turn()]), TransformUpdate::Moved);
+    let turned = draw(&mut gpu, surface, &mut r);
+    assert!(red(&turned, 14, 32), "the bar lies across");
+    assert!(red(&turned, 50, 32));
+    assert!(!red(&turned, 32, 14), "and no longer stands");
+    assert!(!red(&turned, 32, 50));
+}
+
+#[test]
+fn a_clip_inside_a_turned_root_turns_with_it() {
+    let (mut gpu, surface, mut r) = renderer();
+    // The bar clipped to its top half, then the whole root turned: the half
+    // that stays lies on the right.
+    let stream = vec![
+        Primitive::Transform(TransformSlot(0)),
+        clip(rect(0.0, 0.0, 64.0, 32.0)),
+        quad(rect(22.0, 12.0, 20.0, 40.0), Rgba::new(1.0, 0.0, 0.0, 1.0)),
+        Primitive::LayerEnd,
+        Primitive::TransformEnd,
+    ];
+    r.upload_with_transforms(&mut gpu, &stream, &[quarter_turn()]);
+    let frame = draw(&mut gpu, surface, &mut r);
+    assert!(red(&frame, 48, 32), "the kept half turned onto the right");
+    assert!(!red(&frame, 16, 32), "the clipped half stays away");
+
+    // A scissored clip in a root that turns later cannot follow it.
+    let (mut gpu, _surface, mut r) = renderer();
+    r.upload_with_transforms(&mut gpu, &stream, &[Affine2::IDENTITY]);
+    assert_eq!(
+        r.set_transforms(&[quarter_turn()]),
+        TransformUpdate::NeedsUpload
+    );
 }

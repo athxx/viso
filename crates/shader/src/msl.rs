@@ -819,7 +819,7 @@ mod tests {
         // `in.local` is the pixel position and the instance fields are the only
         // other inputs: the IR declares no clock/frame uniform to read.
         let uniforms: Vec<&str> = material_ir().uniforms.iter().map(|f| f.name).collect();
-        assert_eq!(uniforms, ["viewport", "shift"]);
+        assert_eq!(uniforms, ["viewport", "shift", "axis_x", "axis_y"]);
         // An integer-lattice hash, not `fract(sin(...))`: exactly reproducible on
         // the CPU rasterizer and across devices.
         assert!(msl.contains("uint x = uint(int(floor(p.x)));"));

@@ -23,6 +23,7 @@
 
 use viso_gpu::backend::{DrawCommand, Geometry};
 use viso_gpu::{BufferDesc, BufferId, BufferUsage, GpuBackend};
+use viso_math::Affine2;
 
 use super::{
     BackdropCapture, MaterialRecord, OffscreenPass, QUAD_STRIDE, Renderer, clip_to_scissor,
@@ -281,19 +282,18 @@ const STAGED: usize = 256;
 /// Where surface draw `d` draws now, within `surface`, or `None` where it
 /// draws nothing.
 fn place(transforms: &Transforms, d: &SurfaceDraw, surface: Rect) -> Option<Drawn> {
-    let shift = transforms.shift(d.space.slot);
-    let mut rect = Rect::new(
-        d.paint.x + shift[0],
-        d.paint.y + shift[1],
-        d.paint.w,
-        d.paint.h,
-    );
+    let place = transforms.place(d.space.slot);
+    let mut rect = if place.is_identity() {
+        d.paint
+    } else {
+        d.paint.transform_bounds(&place)
+    };
     if let Some(clip) = transforms.clip(d.space, d.clip) {
         rect = rect.intersect(clip);
     }
     let rect = rect.intersect(surface);
     rect.has_area().then(|| Drawn {
-        key: placed_key(d.key, shift),
+        key: placed_key(d.key, place),
         rect,
     })
 }
@@ -304,12 +304,14 @@ fn pass_term(key: u64, place: u32) -> u64 {
     Key::new(key).word(u64::from(place)).finish()
 }
 
-/// The key of a surface draw keyed `key` whose root moved by `shift`.
-fn placed_key(key: u64, shift: [f32; 2]) -> u64 {
-    if shift == [0.0, 0.0] {
+/// The key of a surface draw keyed `key` whose root went to `place`.
+fn placed_key(key: u64, place: Affine2) -> u64 {
+    if place.is_identity() {
         key
     } else {
-        Key::new(key).f32s(&shift).finish()
+        Key::new(key)
+            .f32s(&[place.a, place.b, place.c, place.d, place.e, place.f])
+            .finish()
     }
 }
 
@@ -450,8 +452,8 @@ impl Renderer {
                 match p.drawn_of[d] {
                     NONE => {}
                     at => {
-                        let shift = keying.transforms.shift(p.draws[d].space.slot);
-                        p.restaged.push((at, placed_key(new, shift)));
+                        let place = keying.transforms.place(p.draws[d].space.slot);
+                        p.restaged.push((at, placed_key(new, place)));
                     }
                 }
             }
@@ -801,7 +803,7 @@ impl Renderer {
                 geometry: Geometry::Generated { count: 1 },
                 instance_buffer: buffer,
                 instance_offset: i * QUAD_STRIDE,
-                uniforms: view_uniforms(viewport, [0.0, 0.0]),
+                uniforms: view_uniforms(viewport, Affine2::IDENTITY),
                 scissor: Some(cut),
             });
             for c in surface {

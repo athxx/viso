@@ -336,7 +336,7 @@ fn frame(h: &mut Harness) -> u32 {
     }
     let painted = h.store.repaint_dirty(h.root, &mut h.primitives);
     upload(h, painted);
-    h.renderer.set_transforms(h.store.transforms().current());
+    h.renderer.set_transforms(h.store.transforms().places());
     h.store.clear_dirty();
     painted.count()
 }
@@ -355,11 +355,8 @@ fn upload(h: &mut Harness, painted: Painted) {
             .splice(&mut h.gpu, &h.primitives, h.store.splices()),
     };
     if whole {
-        h.renderer.upload_with_transforms(
-            &mut h.gpu,
-            &h.primitives,
-            h.store.transforms().painted(),
-        );
+        h.renderer
+            .upload_with_transforms(&mut h.gpu, &h.primitives, h.store.transforms().places());
     }
 }
 

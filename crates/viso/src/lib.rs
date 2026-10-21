@@ -1632,12 +1632,12 @@ impl WindowState {
             gpu.renderer.upload_with_transforms(
                 &mut gpu.backend,
                 &self.primitives,
-                self.store.transforms().painted(),
+                self.store.transforms().places(),
             );
         }
         let update = gpu
             .renderer
-            .set_transforms(self.store.transforms().current());
+            .set_transforms(self.store.transforms().places());
         if update == viso_render::TransformUpdate::NeedsUpload {
             self.paint(true);
             self.painted = viso_ui::Painted::Nothing;
@@ -1645,7 +1645,7 @@ impl WindowState {
                 gpu.renderer.upload_with_transforms(
                     &mut gpu.backend,
                     &self.primitives,
-                    self.store.transforms().painted(),
+                    self.store.transforms().places(),
                 );
             }
         }

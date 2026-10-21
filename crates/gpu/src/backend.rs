@@ -89,7 +89,7 @@ pub struct InlineUniforms {
 
 impl InlineUniforms {
     /// Maximum inline uniform payload in bytes.
-    pub const MAX: usize = 16;
+    pub const MAX: usize = 32;
 
     /// Empty uniforms (no inline bytes bound).
     pub const EMPTY: Self = Self {

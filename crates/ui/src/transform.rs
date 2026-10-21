@@ -23,6 +23,7 @@
 use crate::component::NodeStore;
 use crate::layout::Vec2;
 use crate::node::NodeId;
+use viso_render::Affine2;
 
 /// One transform root of a painted frame.
 #[derive(Debug, Clone, Copy)]
@@ -35,15 +36,16 @@ struct Root {
     content: bool,
 }
 
-/// The transform roots of the last paint, and each one's displacement: as
-/// painted, and now.
+/// The transform roots of the last paint, each one's displacement as
+/// painted, and its place now: the affine from where it was painted to where
+/// it draws.
 #[derive(Debug, Default)]
 pub struct TransformTable {
     roots: Vec<Root>,
     /// Unsnapped displacement of each root, scratch for [`update`](Self::update).
     raw: Vec<Vec2>,
     painted: Vec<[f32; 2]>,
-    current: Vec<[f32; 2]>,
+    places: Vec<Affine2>,
     /// The overlay roots a paint meets, each with the space it was met in:
     /// scratch for the paint walk, kept so a frame that paints an overlay
     /// allocates nothing.
@@ -60,7 +62,7 @@ impl TransformTable {
         self.roots.clear();
         self.raw.clear();
         self.painted.clear();
-        self.current.clear();
+        self.places.clear();
     }
 
     /// Record a root at `node`, inside `parent`, displaced by `raw` (unsnapped)
@@ -81,7 +83,7 @@ impl TransformTable {
         });
         self.raw.push(raw);
         self.painted.push([snapped.x, snapped.y]);
-        self.current.push([snapped.x, snapped.y]);
+        self.places.push(Affine2::IDENTITY);
         slot
     }
 
@@ -100,9 +102,10 @@ impl TransformTable {
         &self.painted
     }
 
-    /// Each root's displacement now, by slot.
-    pub fn current(&self) -> &[[f32; 2]] {
-        &self.current
+    /// Each root's place now, by slot: the identity for a root where it was
+    /// painted.
+    pub fn places(&self) -> &[Affine2] {
+        &self.places
     }
 
     /// Recompute every root's displacement from the scrolls and translates as
@@ -127,9 +130,10 @@ impl TransformTable {
             };
             self.raw[slot] = raw;
             let snapped = store.snap_shift(raw);
-            let now = [snapped.x, snapped.y];
-            if self.current[slot] != now {
-                self.current[slot] = now;
+            let [x, y] = self.painted[slot];
+            let now = Affine2::translate(snapped.x - x, snapped.y - y);
+            if self.places[slot] != now {
+                self.places[slot] = now;
                 moved = true;
             }
         }

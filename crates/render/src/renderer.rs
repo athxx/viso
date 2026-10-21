@@ -24,6 +24,7 @@ use viso_gpu::{
 };
 use viso_gpu::{BindGroupId, ProgramOf, SamplerId};
 
+use viso_math::Affine2;
 use viso_shader::program::BrushLayout;
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
@@ -448,6 +449,9 @@ struct OffscreenPass {
     /// What decides its composite beyond its content: its region, opacity,
     /// blur, color chain and mask, as a damage key (§30.3).
     key: u64,
+    /// The transform root it was opened in: its content is drawn where that
+    /// root painted it, and its composite goes to the root's place.
+    slot: u32,
 }
 
 /// How much empty area a backdrop group may absorb before a joining layer opens
@@ -2592,18 +2596,20 @@ impl Renderer {
         self.upload_with_transforms(backend, primitives, &[]);
     }
 
-    /// [`upload`](Self::upload) a stream whose transform roots were painted at
-    /// `painted` — each root's displacement, indexed by its
-    /// [`TransformSlot`](crate::TransformSlot). A later
-    /// [`set_transforms`](Self::set_transforms) moves each root's draws by how
-    /// far it moved since. A root past the end of `painted` never moves.
+    /// [`upload`](Self::upload) a stream whose transform roots draw at
+    /// `places` — each root's affine from where its content was painted to
+    /// where it draws, indexed by its [`TransformSlot`](crate::TransformSlot):
+    /// the identity for a root drawn where it was painted, a scale or rotation
+    /// for a turned one. A later [`set_transforms`](Self::set_transforms) moves
+    /// each root's draws to its new place. A root past the end of `places`
+    /// never moves.
     pub fn upload_with_transforms<B: GpuBackend>(
         &mut self,
         backend: &mut B,
         primitives: &[Primitive],
-        painted: &[[f32; 2]],
+        places: &[Affine2],
     ) {
-        self.transforms.begin_frame(painted);
+        self.transforms.begin_frame(places);
         self.stream_len = primitives.len();
         self.surface_moved = false;
         self.layer_stack.clear();
@@ -2965,7 +2971,8 @@ impl Renderer {
                         fused_color_ops: color_len,
                         analytic_shadow: facts.analytic_shadow,
                         shared_backdrop,
-                        complex_mask: mask.is_some(),
+                        // A clip in a turned root is no scissor.
+                        complex_mask: mask.is_some() || self.transforms.turned(),
                         ..LayerRequest::default()
                     };
                     let plan = plan_layer(&request);
@@ -2999,6 +3006,7 @@ impl Renderer {
                         // children, so the offscreen texture would be rendered only
                         // to be composited back unchanged. A plain in-pass scissor
                         // clip instead, inheriting the parent's target and origin.
+                        self.transforms.scissor();
                         self.layer_stack.push(LayerEntry {
                             clip: world_clip,
                             target,
@@ -3261,19 +3269,19 @@ impl Renderer {
             + program_bytes;
     }
 
-    /// Take each transform root's displacement now, indexed by its
+    /// Take each transform root's place now, indexed by its
     /// [`TransformSlot`](crate::TransformSlot), for the next encode.
     ///
-    /// The uploaded draws of a root that moved since it was painted are shifted
-    /// by the difference and their moving clips follow: no instance changes and
-    /// nothing is uploaded, so a scroll or slide costs per draw, not per
-    /// primitive. When a moved root holds content a shift cannot move (an
-    /// offscreen layer, a backdrop or material, a user program) or the frame
-    /// captures a backdrop, nothing moves and the answer is
-    /// [`TransformUpdate::NeedsUpload`]: repaint at these displacements and
-    /// upload them with
+    /// The uploaded draws of a root that moved since it was painted are mapped
+    /// to its new place and their moving clips follow: no instance changes and
+    /// nothing is uploaded, so a scroll, slide, zoom or spin costs per draw, not
+    /// per primitive. When a moved root holds content its place cannot move (an
+    /// offscreen layer, a backdrop or material, a user program, a scissored
+    /// clip that would turn) or the frame captures a backdrop, nothing moves
+    /// and the answer is [`TransformUpdate::NeedsUpload`]: repaint at these
+    /// places and upload them with
     /// [`upload_with_transforms`](Self::upload_with_transforms).
-    pub fn set_transforms(&mut self, current: &[[f32; 2]]) -> TransformUpdate {
+    pub fn set_transforms(&mut self, current: &[Affine2]) -> TransformUpdate {
         self.transforms.set(current)
     }
 
@@ -4776,6 +4784,7 @@ impl Renderer {
             blend,
             mask,
             key: 0,
+            slot: self.transforms.slot(),
         });
         idx
     }
@@ -4802,7 +4811,14 @@ impl Renderer {
     /// ROI top-left means rewriting that one origin — and the clip, recomputed
     /// from the world clip against the new origin — on every recorded child.
     fn finalize_offscreen(&mut self, idx: usize, entry: &LayerEntry, surface: Rect) {
-        let roi = self.snap(entry.content_union.intersect(entry.clip).intersect(surface));
+        // What of the content its root's place puts on the surface.
+        let place = self.transforms.place(self.offscreen_passes[idx].slot);
+        let seen = if place.is_identity() {
+            surface
+        } else {
+            surface.transform_bounds(&place.inverse())
+        };
+        let roi = self.snap(entry.content_union.intersect(entry.clip).intersect(seen));
         let [width, height] = self.texels(roi);
 
         let slot = self.graph.next_slot();
@@ -5195,7 +5211,7 @@ impl Renderer {
                 PassWork::BackdropCapture(i) => self.backdrop_captures[i as usize].viewport,
                 PassWork::Surface => viewport,
             };
-            let uniforms = view_uniforms(vp, [0.0, 0.0]);
+            let uniforms = view_uniforms(vp, Affine2::IDENTITY);
             let first_command = commands.len() as u32;
             for work in works {
                 match *work {
@@ -5310,14 +5326,39 @@ impl Renderer {
     }
 
     /// Map one [`Segment`] to its [`DrawCommand`] in a pass of `viewport`: the
-    /// draw is shifted by how far its transform root moved since it was
-    /// painted, and its scissor is the clip as that move leaves it.
+    /// draw goes to its transform root's place, and its scissor is the clip as
+    /// that place leaves it. A draw in an offscreen pass goes where its root is
+    /// from the pass's root, in the pass's space, and keeps its clip.
     fn command_for(&self, seg: &Segment, viewport: [f32; 2]) -> DrawCommand {
-        let uniforms = view_uniforms(viewport, self.transforms.shift(seg.space.slot));
-        let scissor = self
-            .transforms
-            .clip(seg.space, seg.clip)
-            .map(|c| clip_to_scissor(c, viewport, self.scale));
+        let place = self.transforms.place(seg.space.slot);
+        let (place, clip) = match seg.target {
+            PassTarget::Offscreen(i) => {
+                let pass = &self.offscreen_passes[i];
+                let base = self.transforms.place(pass.slot);
+                let place = if place == base {
+                    Affine2::IDENTITY
+                } else {
+                    let (x, y) = (pass.rect.x, pass.rect.y);
+                    Affine2::translate(x, y)
+                        .then(&place)
+                        .then(&base.inverse())
+                        .then(&Affine2::translate(-x, -y))
+                };
+                (place, seg.clip)
+            }
+            // What lies behind a backdrop, drawn again in its capture's space.
+            PassTarget::Capture(i) if !place.is_identity() => {
+                let roi = self.backdrop_captures[i].roi;
+                let place = Affine2::translate(roi.x, roi.y)
+                    .then(&place)
+                    .then(&Affine2::translate(-roi.x, -roi.y));
+                (place, seg.clip)
+            }
+            PassTarget::Capture(_) => (place, seg.clip),
+            PassTarget::Main => (place, self.transforms.clip(seg.space, seg.clip)),
+        };
+        let uniforms = view_uniforms(viewport, place);
+        let scissor = clip.map(|c| clip_to_scissor(c, viewport, self.scale));
         match seg.kind {
             SegmentKind::Quad => DrawCommand {
                 pipeline: self.quad_pipeline,
@@ -5558,13 +5599,21 @@ fn snap(rect: Rect, scale: f32) -> Rect {
 }
 
 /// The inline uniform block every built-in reads: the target `viewport`
-/// `[width, height]`, then the `shift` its draw is moved by.
-fn view_uniforms(viewport: [f32; 2], shift: [f32; 2]) -> InlineUniforms {
-    let mut bytes = [0u8; 16];
-    for (i, v) in [viewport[0], viewport[1], shift[0], shift[1]]
-        .into_iter()
-        .enumerate()
-    {
+/// `[width, height]`, then the `place` its draw goes to — its translation
+/// (`shift`), then the images of the x and y axes (`axis_x`, `axis_y`).
+fn view_uniforms(viewport: [f32; 2], place: Affine2) -> InlineUniforms {
+    let words = [
+        viewport[0],
+        viewport[1],
+        place.e,
+        place.f,
+        place.a,
+        place.b,
+        place.c,
+        place.d,
+    ];
+    let mut bytes = [0u8; 32];
+    for (i, v) in words.into_iter().enumerate() {
         bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
     }
     InlineUniforms::new(&bytes)

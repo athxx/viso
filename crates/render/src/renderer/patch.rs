@@ -572,6 +572,7 @@ mod tests {
     use super::super::testing::*;
     use crate::primitive::{AnalyticRRect, Border, Corners, LayerClip, Primitive, TransformSlot};
     use crate::transform::TransformUpdate;
+    use viso_math::Affine2;
 
     /// Uploads `before`, then brings one renderer to `after` by patching
     /// `changed` and another by uploading `after` whole; both must agree.
@@ -750,14 +751,19 @@ mod tests {
         let mut patched = Gpu::new();
         let mut whole = Gpu::new();
         for g in [&mut patched, &mut whole] {
-            g.r.upload_with_transforms(&mut g.gpu, &scene(0.2), &[[0.0, 0.0]]);
-            assert_eq!(g.r.set_transforms(&[[0.0, 12.0]]), TransformUpdate::Moved);
+            g.r.upload_with_transforms(&mut g.gpu, &scene(0.2), &[Affine2::translate(0.0, 0.0)]);
+            assert_eq!(
+                g.r.set_transforms(&[Affine2::translate(0.0, 12.0)]),
+                TransformUpdate::Moved
+            );
         }
         assert!(patched.patch(&scene(0.8), &[2]));
-        whole
-            .r
-            .upload_with_transforms(&mut whole.gpu, &scene(0.8), &[[0.0, 0.0]]);
-        whole.r.set_transforms(&[[0.0, 12.0]]);
+        whole.r.upload_with_transforms(
+            &mut whole.gpu,
+            &scene(0.8),
+            &[Affine2::translate(0.0, 0.0)],
+        );
+        whole.r.set_transforms(&[Affine2::translate(0.0, 12.0)]);
         same_state(&patched.r, &whole.r);
         assert_eq!(patched.present(), whole.present());
     }

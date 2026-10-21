@@ -8202,7 +8202,10 @@ mod tests {
             "nothing repaints"
         );
         assert!(store.update_transforms());
-        assert_eq!(store.transforms().current(), &[[0.0, -40.0]]);
+        assert_eq!(
+            store.transforms().places(),
+            &[viso_render::Affine2::translate(0.0, -40.0)]
+        );
         assert_eq!(store.transforms().painted(), &[[0.0, 0.0]]);
         assert!(!store.update_transforms(), "a second update moves nothing");
         assert_eq!(store.world(content).y, store.bounds(content).y - 40.0);

@@ -9,7 +9,8 @@
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_render::damage::Region;
 use viso_render::{
-    Border, LayerClip, Primitive, Quad, Rect, Renderer, Rgba, TransformSlot, TransformUpdate,
+    Affine2, Border, LayerClip, Primitive, Quad, Rect, Renderer, Rgba, TransformSlot,
+    TransformUpdate,
 };
 
 const W: u32 = 96;
@@ -202,9 +203,16 @@ fn a_moved_root_damages_where_it_was_and_where_it_is() {
         out
     };
     let mut k = Kept::new();
-    k.r.upload_with_transforms(&mut k.gpu, &scene(0.0, true), &[[0.0, 0.0]]);
+    k.r.upload_with_transforms(
+        &mut k.gpu,
+        &scene(0.0, true),
+        &[Affine2::translate(0.0, 0.0)],
+    );
     k.present();
-    assert_eq!(k.r.set_transforms(&[[0.0, -6.0]]), TransformUpdate::Moved);
+    assert_eq!(
+        k.r.set_transforms(&[Affine2::translate(0.0, -6.0)]),
+        TransformUpdate::Moved
+    );
     let moved = k.present();
     assert!(
         redrew(&k.r) <= 50.0 * 50.0,

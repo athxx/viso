@@ -3,10 +3,10 @@
 //!
 //! A built-in's fragment math is restated here operation for operation from
 //! its shader IR (SDFs, AA ramps, sampling conventions), so the raster matches
-//! a device to within rounding. A draw's `shift` moves where it lands, not
-//! what it computes: every pixel is shaded at its center minus the shift, as
-//! the vertex stage moves the quad and the fragment sees unshifted
-//! coordinates.
+//! a device to within rounding. A draw's place moves where it lands, not
+//! what it computes: every pixel is shaded at its center mapped back through
+//! the place, as the vertex stage places the quad and the fragment sees
+//! unplaced coordinates.
 
 use super::TILE;
 use super::sample::{View, sample, texture_bindings};
@@ -193,13 +193,105 @@ pub(super) trait Rows {
     fn load(&self, y: u32, x0: u32, out: &mut [[f32; 4]]);
 }
 
+/// Where a draw goes: the affine its view uniforms carry, `x' = a·x + c·y + e`,
+/// `y' = b·x + d·y + f`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Place {
+    pub a: f32,
+    pub b: f32,
+    pub c: f32,
+    pub d: f32,
+    pub e: f32,
+    pub f: f32,
+}
+
+impl Place {
+    pub(super) const IDENTITY: Place = Place {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
+
+    /// A translation by `[x, y]`.
+    pub(super) fn shift([x, y]: [f32; 2]) -> Place {
+        Place {
+            e: x,
+            f: y,
+            ..Place::IDENTITY
+        }
+    }
+
+    #[inline]
+    pub(super) fn apply(&self, [x, y]: [f32; 2]) -> [f32; 2] {
+        [
+            self.a * x + self.c * y + self.e,
+            self.b * x + self.d * y + self.f,
+        ]
+    }
+
+    /// Whether it only translates.
+    #[inline]
+    pub(super) fn is_shift(&self) -> bool {
+        self.a == 1.0 && self.b == 0.0 && self.c == 0.0 && self.d == 1.0
+    }
+
+    /// The inverse, the identity for a singular place.
+    pub(super) fn inverse(&self) -> Place {
+        let det = self.a * self.d - self.b * self.c;
+        if !det.is_finite() || det.abs() < 1e-12 {
+            return Place::IDENTITY;
+        }
+        let k = 1.0 / det;
+        Place {
+            a: self.d * k,
+            b: -self.b * k,
+            c: -self.c * k,
+            d: self.a * k,
+            e: (self.c * self.f - self.d * self.e) * k,
+            f: (self.b * self.e - self.a * self.f) * k,
+        }
+    }
+
+    /// How much it stretches a length: the geometric mean of its axes.
+    #[inline]
+    fn stretch(&self) -> f32 {
+        (self.a * self.d - self.b * self.c).abs().sqrt()
+    }
+
+    /// The box `[x0, y0, x1, y1]` it maps `[min, max]` into.
+    fn bounds(&self, min: [f32; 2], max: [f32; 2]) -> [f32; 4] {
+        let corners = [min, [max[0], min[1]], [min[0], max[1]], max].map(|p| self.apply(p));
+        corners.iter().fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |r, p| {
+                [
+                    r[0].min(p[0]),
+                    r[1].min(p[1]),
+                    r[2].max(p[0]),
+                    r[3].max(p[1]),
+                ]
+            },
+        )
+    }
+}
+
 /// What a draw reads besides its instance: the resources its bind group
-/// names, how far its root moved, and the window of the deferred layer it
+/// names, where its root put it, and the window of the deferred layer it
 /// composites, if any, standing in for that layer's texture.
 pub(super) struct Cx<'a> {
     pub res: &'a super::Resources,
     pub cmd: &'a DrawCommand,
-    pub shift: [f32; 2],
+    pub place: Place,
+    /// `place` undone: target units back to the draw's coordinates.
+    pub unplace: Place,
     /// Target pixels per unit of the draw's coordinates.
     pub scale: f32,
     pub layer: Option<(TextureId, View<'a>)>,
@@ -209,17 +301,33 @@ impl Cx<'_> {
     /// The draw's coordinates at the center of pixel `(x, y)`.
     #[inline]
     fn at(&self, x: u32, y: u32) -> [f32; 2] {
-        [
-            (x as f32 + 0.5) / self.scale - self.shift[0],
-            (y as f32 + 0.5) / self.scale - self.shift[1],
-        ]
+        self.unplace
+            .apply([(x as f32 + 0.5) / self.scale, (y as f32 + 0.5) / self.scale])
+    }
+
+    /// Target pixels per unit of the draw's coordinates, as placed.
+    #[inline]
+    fn pixels(&self) -> f32 {
+        self.scale * self.place.stretch()
     }
 
     /// The analytic AA factor: units of the sample position per pixel step,
     /// inverted, as a fragment's `aa_factor` evaluates it.
     #[inline]
     fn aa(&self) -> f32 {
-        AA * self.scale
+        AA * self.pixels()
+    }
+
+    /// Whether the textured quad `[pos, pos + size)` covers sample `p`: always
+    /// where only a shift placed it (its pixels are exactly the ones whose
+    /// centers it holds), by the same rule where it is turned.
+    #[inline]
+    fn covers(&self, p: [f32; 2], pos: [f32; 2], size: [f32; 2]) -> bool {
+        self.place.is_shift()
+            || (p[0] >= pos[0]
+                && p[1] >= pos[1]
+                && p[0] < pos[0] + size[0]
+                && p[1] < pos[1] + size[1])
     }
 }
 
@@ -229,20 +337,34 @@ pub(super) type PxRect = [u32; 4];
 
 /// The pixels a shape covers, padded by `pad` units and one pixel on every
 /// side, `scale` pixels to a unit.
-fn padded(min: [f32; 2], max: [f32; 2], pad: [f32; 2], shift: [f32; 2], scale: f32) -> [f32; 4] {
+fn padded(min: [f32; 2], max: [f32; 2], pad: [f32; 2], place: Place, scale: f32) -> [f32; 4] {
+    let r = place.bounds(
+        [min[0] - pad[0], min[1] - pad[1]],
+        [max[0] + pad[0], max[1] + pad[1]],
+    );
     [
-        ((min[0] - pad[0] + shift[0]) * scale).floor() - 1.0,
-        ((min[1] - pad[1] + shift[1]) * scale).floor() - 1.0,
-        ((max[0] + pad[0] + shift[0]) * scale).ceil() + 1.0,
-        ((max[1] + pad[1] + shift[1]) * scale).ceil() + 1.0,
+        (r[0] * scale).floor() - 1.0,
+        (r[1] * scale).floor() - 1.0,
+        (r[2] * scale).ceil() + 1.0,
+        (r[3] * scale).ceil() + 1.0,
     ]
 }
 
 /// The pixels whose centers fall inside `[pos, pos + size)` (the top-left
-/// rule a device applies to an axis-aligned quad), `scale` pixels to a unit.
-fn centers(pos: [f32; 2], size: [f32; 2], shift: [f32; 2], scale: f32) -> [f32; 4] {
-    let x = (pos[0] + shift[0]) * scale;
-    let y = (pos[1] + shift[1]) * scale;
+/// rule a device applies to an axis-aligned quad), `scale` pixels to a unit;
+/// where the quad is turned, every pixel its box touches.
+fn centers(pos: [f32; 2], size: [f32; 2], place: Place, scale: f32) -> [f32; 4] {
+    if !place.is_shift() {
+        return padded(
+            pos,
+            [pos[0] + size[0], pos[1] + size[1]],
+            [0.0; 2],
+            place,
+            scale,
+        );
+    }
+    let x = (pos[0] + place.e) * scale;
+    let y = (pos[1] + place.f) * scale;
     [
         (x - 0.5).ceil(),
         (y - 0.5).ceil(),
@@ -265,7 +387,7 @@ pub(super) fn to_pixels(r: [f32; 4], w: u32, h: u32) -> Option<PxRect> {
 pub(super) fn bounds(
     builtin: BuiltinShader,
     i: &Inst<'_>,
-    shift: [f32; 2],
+    place: Place,
     scale: f32,
 ) -> Option<[f32; 4]> {
     let rect = |i: &Inst<'_>| {
@@ -280,7 +402,7 @@ pub(super) fn bounds(
         | BuiltinShader::Gradient
         | BuiltinShader::Material => {
             let (min, max, _) = rect(i);
-            padded(min, max, [0.0, 0.0], shift, scale)
+            padded(min, max, [0.0, 0.0], place, scale)
         }
         BuiltinShader::AnalyticLine => {
             let (p0, p1, hw, cap) = (i.f2(0), i.f2(1), i.f1(2) * 0.5, i.u1(4));
@@ -289,7 +411,7 @@ pub(super) fn bounds(
                 [p0[0].min(p1[0]), p0[1].min(p1[1])],
                 [p0[0].max(p1[0]), p0[1].max(p1[1])],
                 [margin, margin],
-                shift,
+                place,
                 scale,
             )
         }
@@ -301,7 +423,7 @@ pub(super) fn bounds(
                 min,
                 max,
                 [reach + offset[0].abs(), reach + offset[1].abs()],
-                shift,
+                place,
                 scale,
             )
         }
@@ -315,7 +437,7 @@ pub(super) fn bounds(
             if size[0] <= 0.0 || size[1] <= 0.0 {
                 return None;
             }
-            centers(pos, size, shift, scale)
+            centers(pos, size, place, scale)
         }
         BuiltinShader::Path | BuiltinShader::Mesh | BuiltinShader::Layer => return None,
     })
@@ -337,7 +459,7 @@ pub(super) fn composites_by_region(builtin: BuiltinShader) -> bool {
 pub(super) fn source_region(
     builtin: BuiltinShader,
     i: &Inst<'_>,
-    shift: [f32; 2],
+    place: Place,
     scale: f32,
     clip: PxRect,
     [width, height]: [u32; 2],
@@ -346,14 +468,18 @@ pub(super) fn source_region(
         return None;
     }
     let map = UvMap::of(i, 2, 3);
-    let lo = map.at([
-        (clip[0] as f32 + 0.5) / scale - shift[0],
-        (clip[1] as f32 + 0.5) / scale - shift[1],
-    ]);
-    let hi = map.at([
-        (clip[2] as f32 - 0.5) / scale - shift[0],
-        (clip[3] as f32 - 0.5) / scale - shift[1],
-    ]);
+    let r = place.inverse().bounds(
+        [
+            (clip[0] as f32 + 0.5) / scale,
+            (clip[1] as f32 + 0.5) / scale,
+        ],
+        [
+            (clip[2] as f32 - 0.5) / scale,
+            (clip[3] as f32 - 0.5) / scale,
+        ],
+    );
+    let lo = map.at([r[0], r[1]]);
+    let hi = map.at([r[2], r[3]]);
     // A bilinear fetch reads `floor(t)` and the texel after it, a nearest one
     // `round(t)`, at `t = u·n − ½`; one more texel each way absorbs rounding.
     let span = |a: f32, b: f32, n: u32| {
@@ -441,8 +567,12 @@ pub(super) fn draw(
             let masked = radius.iter().any(|&r| r > 0.0);
             let half = [mask_size[0] * 0.5, mask_size[1] * 0.5];
             let center = [mask_pos[0] + half[0], mask_pos[1] + half[1]];
-            let ramp = cx.scale;
+            let ramp = cx.pixels();
+            let (pos, size) = (i.f2(0), i.f2(1));
             shade(cx, out, clip, |p| {
+                if !cx.covers(p, pos, size) {
+                    return [0.0; 4];
+                }
                 // The mask's AA ramp is one pixel wide, as the shader's.
                 let cov = if masked {
                     (-rrect_sdf(p, center, half, radius) * ramp).clamp(0.0, 1.0)
@@ -463,8 +593,12 @@ pub(super) fn draw(
             };
             let map = UvMap::of(i, 2, 3);
             let color = i.f4(4);
+            let (pos, size) = (i.f2(0), i.f2(1));
             // R8 coverage is replicated into every channel, so any is it.
             shade(cx, out, clip, |p| {
+                if !cx.covers(p, pos, size) {
+                    return [0.0; 4];
+                }
                 let [u, v] = map.at(p);
                 let a = color[3] * sample(&tex, &samp, u, v)[0];
                 [color[0] * a, color[1] * a, color[2] * a, a]
@@ -478,9 +612,13 @@ pub(super) fn draw(
             let color = i.f4(4);
             // Screen-space width of the stored distance range: the quad's device
             // pixels per uv unit, over the atlas texels per uv unit.
-            let span = i.f2(1)[0] * cx.scale / i.f2(3)[0].max(1e-6);
+            let span = i.f2(1)[0] * cx.pixels() / i.f2(3)[0].max(1e-6);
             let px_range = MTSDF_DISTANCE_RANGE * span / (tex.width as f32).max(1.0);
+            let (pos, size) = (i.f2(0), i.f2(1));
             shade(cx, out, clip, |p| {
+                if !cx.covers(p, pos, size) {
+                    return [0.0; 4];
+                }
                 let [u, v] = map.at(p);
                 let s = sample(&tex, &samp, u, v);
                 let md = s[0].min(s[1]).max(s[2].min(s[0].max(s[1])));
@@ -496,7 +634,11 @@ pub(super) fn draw(
             };
             let map = UvMap::of(i, 2, 3);
             let matrix = Matrix::of(i, 4, 8, 9);
+            let (pos, size) = (i.f2(0), i.f2(1));
             shade(cx, out, clip, |p| {
+                if !cx.covers(p, pos, size) {
+                    return [0.0; 4];
+                }
                 let [u, v] = map.at(p);
                 let dst = matrix.apply(sample(&tex, &samp, u, v));
                 if dst[3] <= 0.0 {
@@ -522,7 +664,8 @@ const MTSDF_DISTANCE_RANGE: f32 = 4.0;
 /// `1 / length((1, 0), (0, 1))`.
 const AA: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
-/// Runs `f` at the center of every pixel of `clip` (minus the shift) and
+/// Runs `f` at the center of every pixel of `clip` (mapped back through the
+/// place) and
 /// composites the rows.
 #[inline]
 fn shade(cx: &Cx<'_>, out: &mut dyn Rows, clip: PxRect, mut f: impl FnMut([f32; 2]) -> [f32; 4]) {
@@ -753,9 +896,9 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     ];
     let half = [map.size[0] * 0.5, map.size[1] * 0.5];
     let (lo, hi) = inset_window(map.uv_pos, map.uv_size, &tex);
-    let ramp = cx.scale;
+    let ramp = cx.pixels();
     shade(cx, out, clip, |p| {
-        // The AA ramp is one pixel wide: `scale` units of the sample position
+        // The AA ramp is one pixel wide: `pixels` units of the sample position
         // to one of coverage.
         let cov = (-rrect_sdf(p, center, half, radius) * ramp).clamp(0.0, 1.0);
         if cov <= 0.0 {
@@ -793,11 +936,20 @@ fn advanced_blend(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     let layer = UvMap::of(i, 2, 3);
     let snapshot = UvMap::of(i, 4, 5);
     let (mode, opacity) = (i.u1(6), i.f1(7));
+    let (pos, size) = (i.f2(0), i.f2(1));
+    let turned = !cx.place.is_shift();
     let mut row = [[0.0f32; 4]; TILE as usize];
     let n = (clip[2] - clip[0]) as usize;
     for y in clip[1]..clip[3] {
+        if turned {
+            // A turned quad replaces only the pixels it covers.
+            out.load(y, clip[0], &mut row[..n]);
+        }
         for (k, px) in row[..n].iter_mut().enumerate() {
             let p = cx.at(clip[0] + k as u32, y);
+            if !cx.covers(p, pos, size) {
+                continue;
+            }
             let [u, v] = layer.at(p);
             let s = sample(&src, &samp, u, v).map(|c| c * opacity);
             let [u, v] = snapshot.at(p);
@@ -856,7 +1008,7 @@ fn gradient(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     }
 }
 
-/// One triangle of an indexed mesh: its corners' positions (shifted),
+/// One triangle of an indexed mesh: its corners' positions (placed),
 /// straight colors and AA edge weights.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Triangle {
@@ -1276,7 +1428,7 @@ mod tests {
     #[test]
     fn only_pixels_whose_centers_are_inside_the_quad_are_covered() {
         let span = |lo: f32, extent: f32| {
-            let r = centers([lo, 0.0], [extent, 1.0], [0.0, 0.0], 1.0);
+            let r = centers([lo, 0.0], [extent, 1.0], Place::IDENTITY, 1.0);
             to_pixels(r, 100, 100).map_or((0, 0), |p| (p[0], p[2]))
         };
         assert_eq!(span(4.6, 6.0), (5, 11));

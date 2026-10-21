@@ -133,13 +133,10 @@ fn frame(h: &mut Harness) -> (u32, bool) {
     let moved = h.store.any_dirty_class(DirtyClass::TRANSFORM) && h.store.update_transforms();
     let painted = h.store.repaint_dirty(h.viewport, &mut h.primitives).count();
     if painted > 0 {
-        h.renderer.upload_with_transforms(
-            &mut h.gpu,
-            &h.primitives,
-            h.store.transforms().painted(),
-        );
+        h.renderer
+            .upload_with_transforms(&mut h.gpu, &h.primitives, h.store.transforms().places());
     }
-    let update = h.renderer.set_transforms(h.store.transforms().current());
+    let update = h.renderer.set_transforms(h.store.transforms().places());
     assert_ne!(update, TransformUpdate::NeedsUpload);
     h.store.clear_dirty();
     (painted, moved)

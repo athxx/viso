@@ -209,13 +209,16 @@ impl ShaderIr {
 }
 
 /// The inline uniform block every built-in reads: the target's `viewport`
-/// size, and the `shift` its draw is moved by — the displacement of the
-/// transform root the draw belongs to since its instances were written, so a
-/// scroll or slide moves retained instances without rewriting them. Zero for
-/// a draw outside any moved root.
+/// size, and the place its draw goes to — the affine of the transform root the
+/// draw belongs to from where its instances were written, so a scroll, slide,
+/// zoom or spin moves retained instances without rewriting them: its
+/// translation `shift` and the images `axis_x` and `axis_y` of the unit axes.
+/// The identity (`shift` zero, unit axes) for a draw outside any moved root.
 pub const VIEW_UNIFORMS: &[IrField] = &[
     IrField::new("viewport", IrType::F32X2),
     IrField::new("shift", IrType::F32X2),
+    IrField::new("axis_x", IrType::F32X2),
+    IrField::new("axis_y", IrType::F32X2),
 ];
 
 // The four built-in field contracts. These constructors are the *only* place a
@@ -1009,7 +1012,7 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -1087,7 +1090,7 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -1174,7 +1177,7 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -1310,7 +1313,7 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -1385,7 +1388,7 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -1478,7 +1481,7 @@ float2 pixel = endpoint + dir * along + nrm * (ts.y * (hw + pad));
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -1581,7 +1584,7 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -1651,7 +1654,7 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -1709,7 +1712,7 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -1767,7 +1770,7 @@ float2 pad = float2(1.0, 1.0);
 float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -1882,7 +1885,7 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -2053,7 +2056,7 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -2088,7 +2091,7 @@ float2 size = float2(inst.rect_size);
 float2 pixel = pos + corner * size;
 
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -2123,7 +2126,7 @@ VertexIn v = verts[vid];
 
 float2 pixel = float2(v.pos);
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
@@ -2160,7 +2163,7 @@ float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
 // Pixel-space (top-left origin) → NDC. Y is flipped for Metal.
 float2 vp = float2(u.viewport);
-float2 at = pixel + float2(u.shift);
+float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.shift);
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 

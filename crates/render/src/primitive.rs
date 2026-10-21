@@ -1908,11 +1908,10 @@ pub enum Primitive {
     LayerEnd,
     /// Open transform root `slot`: what follows, up to the matching
     /// [`Primitive::TransformEnd`], moves with that root (§21). Geometry is
-    /// still written in world space as of the frame it was painted; when only
-    /// the roots' displacements change, [`Renderer::set_transforms`] moves the
-    /// draws of each root by the difference, so a scroll or a slide re-encodes
-    /// draws and rewrites no instance. Roots nest; a clip opened inside a root
-    /// moves with it.
+    /// written as of the frame it was painted; when only the roots' places
+    /// change, [`Renderer::set_transforms`] maps the draws of each root to its
+    /// place, so a scroll, slide, zoom or spin re-encodes draws and rewrites no
+    /// instance. Roots nest; a clip opened inside a root moves with it.
     ///
     /// [`Renderer::set_transforms`]: crate::Renderer::set_transforms
     Transform(TransformSlot),
@@ -1920,7 +1919,7 @@ pub enum Primitive {
     TransformEnd,
 }
 
-/// A transform root's index in the displacement table handed to
+/// A transform root's index in the place table handed to
 /// [`Renderer::set_transforms`](crate::Renderer::set_transforms).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TransformSlot(pub u32);

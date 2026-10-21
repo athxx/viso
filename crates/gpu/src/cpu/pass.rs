@@ -21,7 +21,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::fill::{self, Cx, PxRect, Rows, Triangle, to_pixels};
+use super::fill::{self, Cx, Place, PxRect, Rows, Triangle, to_pixels};
 use super::pixels::{Fmt, Px};
 use super::pool::Pool;
 use super::sample::View;
@@ -273,15 +273,24 @@ fn uniform_scale(cmd: &DrawCommand, width: u32) -> f32 {
     }
 }
 
-/// The `shift` a built-in's inline uniforms move its draw by: the pair after
-/// the viewport, zero when the draw carries none.
-fn uniform_shift(cmd: &DrawCommand) -> [f32; 2] {
+/// The place a built-in's inline uniforms put its draw at: the `shift` after
+/// the viewport, then the images of the axes; the identity when the draw
+/// carries none.
+fn uniform_place(cmd: &DrawCommand) -> Place {
     let bytes = cmd.uniforms.as_bytes();
-    if bytes.len() < 16 {
-        return [0.0, 0.0];
-    }
     let at = |i: usize| f32::from_ne_bytes(bytes[i..i + 4].try_into().expect("four bytes"));
-    [at(8), at(12)]
+    match bytes.len() {
+        32.. => Place {
+            a: at(16),
+            b: at(20),
+            c: at(24),
+            d: at(28),
+            e: at(8),
+            f: at(12),
+        },
+        16.. => Place::shift([at(8), at(12)]),
+        _ => Place::IDENTITY,
+    }
 }
 
 /// The pipeline `cmd` draws with.
@@ -318,7 +327,7 @@ fn collect(res: &Resources, commands: &[DrawCommand], w: u32, h: u32, scratch: &
             }
             continue;
         }
-        let shift = uniform_shift(cmd);
+        let place = uniform_place(cmd);
         let scale = uniform_scale(cmd, w);
         match cmd.geometry {
             Geometry::Generated { count } => {
@@ -327,7 +336,7 @@ fn collect(res: &Resources, commands: &[DrawCommand], w: u32, h: u32, scratch: &
                     let Some(inst) = pipe.instance(bytes, cmd.instance_offset, n) else {
                         break;
                     };
-                    let rect = fill::bounds(pipe.builtin, &inst, shift, scale)
+                    let rect = fill::bounds(pipe.builtin, &inst, place, scale)
                         .and_then(|r| to_pixels(r, w, h))
                         .and_then(|r| intersect(r, clip));
                     if let Some(rect) = rect {
@@ -352,12 +361,8 @@ fn collect(res: &Resources, commands: &[DrawCommand], w: u32, h: u32, scratch: &
                     let v = pipe
                         .instance(vertices, 0, i)
                         .expect("a mesh index past its vertices");
-                    let p = v.f2(0);
-                    (
-                        [(p[0] + shift[0]) * scale, (p[1] + shift[1]) * scale],
-                        v.f4(1),
-                        v.f1(2),
-                    )
+                    let p = place.apply(v.f2(0));
+                    ([p[0] * scale, p[1] * scale], v.f4(1), v.f1(2))
                 };
                 for t in 0..index_count / 3 {
                     let at = index_offset + t * 3;
@@ -531,7 +536,8 @@ fn draw<P: Px>(
             let inst = pipe
                 .instance(bytes, cmd.instance_offset, n)
                 .expect("an instance collected in range");
-            let shift = uniform_shift(cmd);
+            let place = uniform_place(cmd);
+            let unplace = place.inverse();
             let scale = uniform_scale(cmd, pass.size[0]);
             // A replacing pipeline writes its fragments as they are.
             let mut replacing = Replacing(&mut *rows);
@@ -546,7 +552,8 @@ fn draw<P: Px>(
                     let cx = Cx {
                         res,
                         cmd,
-                        shift,
+                        place,
+                        unplace,
                         scale,
                         layer: None,
                     };
@@ -555,7 +562,7 @@ fn draw<P: Px>(
             };
             let layer = &shared.layers[l];
             let size = [layer.width, layer.height];
-            let Some(region) = fill::source_region(pipe.builtin, &inst, shift, scale, clip, size)
+            let Some(region) = fill::source_region(pipe.builtin, &inst, place, scale, clip, size)
             else {
                 return;
             };
@@ -563,7 +570,8 @@ fn draw<P: Px>(
             let cx = Cx {
                 res,
                 cmd,
-                shift,
+                place,
+                unplace,
                 scale,
                 layer: Some((layer.texture, view)),
             };
