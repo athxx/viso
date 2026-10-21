@@ -197,3 +197,36 @@ fn code_lowered_from_another_build_is_refused() {
         .expect_err("another build");
     assert_ne!(error.expected, error.found);
 }
+
+/// What a release view starts: its module without bytecode and the module
+/// compiled to Rust, which the game session installs in its own VM; without
+/// that code the shipped systems have nothing to run.
+#[test]
+fn a_release_game_session_runs_the_shipped_module_on_its_native_code() {
+    use viso_view::GameSession;
+
+    let module = compiled(CROWD);
+    let shipped: &'static [u8] = Vec::leak(module.compiled().encode());
+    let shipped = Rc::new(Module::decode_static(shipped).expect("the compiled module loads"));
+    let mut bytecode = GameSession::start(module, None).expect("starts");
+    let mut native = GameSession::start(shipped.clone(), Some(&crowd::NATIVE)).expect("starts");
+    for tick in 0..60 {
+        bytecode.scheduler_mut().step(1);
+        native.scheduler_mut().step(1);
+        assert_eq!(
+            bytecode.scheduler().snapshot().hash(),
+            native.scheduler().snapshot().hash(),
+            "tick {tick}"
+        );
+    }
+    assert!(native.take_faults().is_empty());
+
+    let ran = GameSession::start(shipped, None).map(|mut game| {
+        game.scheduler_mut().step(1);
+        game.take_faults()
+    });
+    assert!(
+        !matches!(ran, Ok(faults) if faults.is_empty()),
+        "no code to run"
+    );
+}

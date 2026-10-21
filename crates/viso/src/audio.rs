@@ -10,6 +10,7 @@ pub use viso_behavior::game::{AudioFault, AudioLink, AudioStatus};
 pub use viso_platform::audio::{AudioError, AudioFormat, AudioOutput};
 
 use viso_behavior::Module;
+use viso_behavior::aot::NativeCode;
 use viso_behavior::game::{AUDIO_COMMAND, AUDIO_PROCESS, AudioHost, AudioSwap};
 use viso_behavior::native::Natives;
 use viso_view::GameAudioDevice;
@@ -23,8 +24,8 @@ pub struct GameAudio {
 }
 
 impl GameAudio {
-    /// Starts the audio systems of `module`, linked against `natives`, on
-    /// the default output device, with the link the rest of the game talks
+    /// Starts the audio systems of `module`, linked against `natives` and
+    /// running `native` when given, on the default output device, with the link the rest of the game talks
     /// to them through; `None` when the module has none, the device left
     /// closed.
     ///
@@ -35,6 +36,7 @@ impl GameAudio {
     pub fn start(
         module: &Module,
         natives: &Natives,
+        native: Option<&'static NativeCode>,
     ) -> Result<Option<(GameAudio, AudioLink)>, AudioError> {
         let audio = |s: &viso_behavior::System| {
             s.hook(AUDIO_PROCESS).is_some() || s.hook(AUDIO_COMMAND).is_some()
@@ -47,6 +49,7 @@ impl GameAudio {
         let built = AudioHost::new(
             &module.encode(),
             natives,
+            native,
             format.channels,
             format.max_frames,
             format.sample_rate,
@@ -90,8 +93,8 @@ impl GameAudioDevice for GameAudio {
 /// Starts the audio of the games this thread's views run on the default
 /// output device; a target without one plays them silent.
 pub(crate) fn install() {
-    viso_view::install_game_audio(Some(|module, natives| {
-        match GameAudio::start(module, natives) {
+    viso_view::install_game_audio(Some(|module, natives, native| {
+        match GameAudio::start(module, natives, native) {
             Ok(started) => Ok(
                 started.map(|(audio, link)| (Box::new(audio) as Box<dyn GameAudioDevice>, link))
             ),

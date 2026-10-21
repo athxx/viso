@@ -1307,8 +1307,9 @@ timers (§104–§111).
     - [ ] Verified on a device: Windows WASAPI, Linux ALSA, Android AAudio,
           iOS RemoteIO.
     - [ ] Web audio output (an AudioWorklet over a shared-memory wasm build).
-    - [ ] A logic reload swaps the audio host on the running device without
-          a gap (hand-off through a lock-free slot).
+    - [x] A logic reload swaps the audio host on the running device without
+          a gap (hand-off through a lock-free slot: `AudioSwap`, two atomic
+          pointers).
   - [x] The VM's call path is shown allocation-free once warm (allocation
         count test on the audio hook): 1000 warm 256-frame stereo blocks with
         commands, both hooks and events make no heap allocation or free
@@ -1431,7 +1432,10 @@ timers (§104–§111).
         under bytecode and native code.
   - [x] Release benchmark of both (this Mac: bytecode-bound 1.7×, world-bound
         1.1×).
-  - [ ] `viso build` lowering a release package's systems (CLI).
+  - [x] `viso build` lowering a release package's systems: a release `view!`
+        lowers every chunk, systems included, and the game session and its
+        audio host install that code in their own VMs (`GameSession::start(module,
+        native)`; the shipped module carries no bytecode).
 - [x] Replication and rollback netcode on the Simulation tier.
   - [x] Per-player input in a tick; input of a past tick replaced and the
         game re-simulated from the last confirmed snapshot.

@@ -150,10 +150,16 @@ fn play(level: f64) -> Value {
 
 #[test]
 fn a_warm_block_allocates_nothing() {
-    let (mut host, link) =
-        AudioHost::new(&module().encode(), &Natives::standard(), 2, 256, 48_000.0)
-            .expect("builds")
-            .expect("has audio systems");
+    let (mut host, link) = AudioHost::new(
+        &module().encode(),
+        &Natives::standard(),
+        None,
+        2,
+        256,
+        48_000.0,
+    )
+    .expect("builds")
+    .expect("has audio systems");
     let commands = [play(0.25), play(0.5), Value::Int(0)];
     let mut block = vec![0.0f32; 2 * 256];
     // Warm: the VM's registers and frames grow to what the hooks need, and
@@ -187,9 +193,16 @@ fn a_warm_block_allocates_nothing() {
 
 #[test]
 fn a_swapped_in_program_renders_its_first_block_without_allocating() {
-    let (host, link) = AudioHost::new(&module().encode(), &Natives::standard(), 2, 256, 48_000.0)
-        .expect("builds")
-        .expect("has audio systems");
+    let (host, link) = AudioHost::new(
+        &module().encode(),
+        &Natives::standard(),
+        None,
+        2,
+        256,
+        48_000.0,
+    )
+    .expect("builds")
+    .expect("has audio systems");
     let swap = host.swapper();
     let audio = std::thread::spawn(move || {
         let mut host = host;

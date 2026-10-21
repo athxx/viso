@@ -17,6 +17,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use viso_behavior::aot::NativeCode;
 use viso_behavior::game::{
     AudioLink, Committed, GameError, InputTape, Key as GameKey, Persist, PreparedSwap, Rebuild,
     Scheduler, SystemFault,
@@ -43,10 +44,12 @@ pub trait GameAudioDevice {
     fn collect(&mut self);
 }
 
-/// Starts the audio systems of a game's `module`, linked against `natives`,
-/// on the app's device: the device and the link the game reaches them
-/// through, `None` when the module has none or the target no device.
-pub type GameAudioStart = fn(&Module, &Natives) -> Result<Option<StartedAudio>, String>;
+/// Starts the audio systems of a game's `module`, linked against `natives`
+/// and running `native` when given, on the app's device: the device and the
+/// link the game reaches them through, `None` when the module has none or the
+/// target no device.
+pub type GameAudioStart =
+    fn(&Module, &Natives, Option<&'static NativeCode>) -> Result<Option<StartedAudio>, String>;
 
 /// A game's audio started on a device: the device, and the link the game
 /// reaches its audio systems through.
@@ -121,6 +124,9 @@ pub struct GameSession {
     scheduler: Scheduler,
     /// The module the running build was made from.
     module: Rc<Module>,
+    /// The module compiled to Rust the running build runs: a release build's;
+    /// a reloaded build is interpreted.
+    native: Option<&'static NativeCode>,
     audio: Option<Box<dyn GameAudioDevice>>,
     /// The system and code of the fault last reported, so a system faulting
     /// every tick is reported once until it faults otherwise or the build
@@ -140,12 +146,16 @@ impl std::fmt::Debug for GameSession {
 }
 
 /// A VM over `module` linked against the standard natives with the
-/// package's capabilities, persisting through the installed store.
-fn link(module: &Rc<Module>) -> Result<Vm, String> {
+/// package's capabilities and running `native` when given, persisting through
+/// the installed store.
+fn link(module: &Rc<Module>, native: Option<&'static NativeCode>) -> Result<Vm, String> {
     let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
     let mut vm = Vm::new(Rc::clone(module), Budget::default());
     vm.link(&Natives::standard(), &grant)
         .map_err(|e| e.to_string())?;
+    if let Some(native) = native {
+        vm.install_native(native).map_err(|e| e.to_string())?;
+    }
     if let Some(shared) = crate::persistence::installed() {
         vm.services_mut().insert(Persist::new(shared));
     }
@@ -153,21 +163,26 @@ fn link(module: &Rc<Module>) -> Result<Vm, String> {
 }
 
 impl GameSession {
-    /// Starts the game `module`'s systems make.
+    /// Starts the game `module`'s systems make, running `native`, the module
+    /// compiled to Rust, when given.
     ///
     /// # Errors
     ///
-    /// When the module does not link, or a system faults creating its
-    /// instance or in the start.
-    pub fn start(module: Rc<Module>) -> Result<GameSession, GameReloadError> {
-        let vm = link(&module).map_err(GameReloadError::Link)?;
+    /// When the module does not link or `native` was lowered from another
+    /// build, or a system faults creating its instance or in the start.
+    pub fn start(
+        module: Rc<Module>,
+        native: Option<&'static NativeCode>,
+    ) -> Result<GameSession, GameReloadError> {
+        let vm = link(&module, native).map_err(GameReloadError::Link)?;
         let mut scheduler =
             Scheduler::new(vm).map_err(|fault| GameReloadError::Game(GameError::Fault(fault)))?;
         // A replayed tape's patches link as the game's own build did.
-        scheduler.set_linker(Rc::new(|module: Rc<Module>| link(&module)));
+        scheduler.set_linker(Rc::new(|module: Rc<Module>| link(&module, None)));
         let mut session = GameSession {
             scheduler,
             module,
+            native,
             audio: None,
             reported: None,
             audio_faults: 0,
@@ -234,7 +249,7 @@ impl GameSession {
         let Some(start) = AUDIO.with(std::cell::Cell::get) else {
             return;
         };
-        match start(&self.module, &Natives::standard()) {
+        match start(&self.module, &Natives::standard(), self.native) {
             Ok(Some((device, link))) => self.attach_audio(link, device),
             Ok(None) => {}
             Err(why) => queue_fault(format!("the game's audio did not start: {why}")),
@@ -300,7 +315,7 @@ impl GameSession {
     ///
     /// When the module does not link.
     pub fn stage(module: &Rc<Module>) -> Result<Vm, String> {
-        link(module)
+        link(module, None)
     }
 
     /// Swaps in `vm`, staged from `module`, at the tick boundary the session
@@ -365,6 +380,7 @@ impl GameSession {
             },
         };
         self.module = module;
+        self.native = None;
         self.reported = None;
         match &mut self.audio {
             // The new systems run; audio that does not build keeps the old
@@ -526,8 +542,13 @@ pub fn take_game_faults() -> Vec<String> {
 
 /// [`mount_game`] for a mount that has no caller to answer: a start that
 /// faults is queued for [`take_game_faults`].
-pub(crate) fn mount_game_queued(store: &mut NodeStore, module: &Rc<Module>, owner: NodeId) {
-    if let Err(error) = mount_game(store, module, owner) {
+pub(crate) fn mount_game_queued(
+    store: &mut NodeStore,
+    module: &Rc<Module>,
+    native: Option<&'static NativeCode>,
+    owner: NodeId,
+) {
+    if let Err(error) = mount_game(store, module, native, owner) {
         let why = match &error {
             GameReloadError::Game(GameError::Fault(fault)) => describe_fault(module, fault),
             error => error.to_string(),
@@ -536,12 +557,14 @@ pub(crate) fn mount_game_queued(store: &mut NodeStore, module: &Rc<Module>, owne
     }
 }
 
-/// Starts the game `module`'s systems make on `owner` unless `owner` runs
-/// one already, or stops the one it runs when `module` declares no system.
-/// A start that faults leaves `owner` without a game and returns why.
+/// Starts the game `module`'s systems make on `owner`, running `native` when
+/// given, unless `owner` runs one already, or stops the one it runs when
+/// `module` declares no system. A start that faults leaves `owner` without a
+/// game and returns why.
 pub fn mount_game(
     store: &mut NodeStore,
     module: &Rc<Module>,
+    native: Option<&'static NativeCode>,
     owner: NodeId,
 ) -> Result<(), GameReloadError> {
     if module.systems().is_empty() {
@@ -553,7 +576,7 @@ pub fn mount_game(
     if store.frame_client(owner).is_some() {
         return Ok(());
     }
-    let session = Rc::new(RefCell::new(GameSession::start(Rc::clone(module))?));
+    let session = Rc::new(RefCell::new(GameSession::start(Rc::clone(module), native)?));
     store.add_frame_client(owner, Rc::new(RefCell::new(GameClient(session))));
     Ok(())
 }

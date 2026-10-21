@@ -48,7 +48,7 @@ fn the_audio_systems_render_on_the_device() {
     );
     assert!(!compiled.has_errors(), "{:#?}", compiled.diagnostics);
     let module = Rc::new(compiled.behavior.bytecode().expect("bytecode"));
-    let (audio, link) = match GameAudio::start(&module, &Natives::standard()) {
+    let (audio, link) = match GameAudio::start(&module, &Natives::standard(), None) {
         Ok(started) => started.expect("an audio system"),
         Err(AudioError::Unsupported) => return,
         // A machine without an output device has nothing to render to.

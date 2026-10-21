@@ -150,6 +150,7 @@ mod audio {
         BindingTable, BuildCx, NodeStore, SemanticProjector, StateStore, TextEdits, VirtualLists,
     };
     use viso_behavior::Module;
+    use viso_behavior::aot::NativeCode;
     use viso_behavior::game::AudioHost;
     use viso_behavior::native::Natives;
     use viso_dsl::frontend::{Origin, compile_file_for};
@@ -173,9 +174,13 @@ mod audio {
         fn collect(&mut self) {}
     }
 
-    fn start(module: &Module, natives: &Natives) -> Result<Option<StartedAudio>, String> {
+    fn start(
+        module: &Module,
+        natives: &Natives,
+        native: Option<&'static NativeCode>,
+    ) -> Result<Option<StartedAudio>, String> {
         STARTS.with(|n| n.set(n.get() + 1));
-        let built = AudioHost::new(&module.encode(), natives, 2, 64, 48_000.0)?;
+        let built = AudioHost::new(&module.encode(), natives, native, 2, 64, 48_000.0)?;
         Ok(built.map(|(host, link)| (Box::new(Quiet(host)) as Box<dyn GameAudioDevice>, link)))
     }
 

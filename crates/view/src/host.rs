@@ -209,6 +209,8 @@ struct EnvLink {
 /// [`last_fault`](Self::last_fault), and never unwinds into the event router.
 pub struct ViewHost {
     pub(crate) vm: Vm,
+    /// The module compiled to Rust the VM runs, when it runs one.
+    native: Option<&'static NativeCode>,
     pub(crate) instance: Instance,
     /// The instance's creation fault, if any; every dispatch then reports it
     /// instead of running against a partial instance.
@@ -367,6 +369,7 @@ impl ViewHost {
         };
         Ok(ViewHost {
             vm,
+            native,
             instance,
             broken,
             handlers,
@@ -449,6 +452,12 @@ impl ViewHost {
     /// The module the host runs.
     pub fn module(&self) -> &Rc<Module> {
         self.vm.module()
+    }
+
+    /// The module compiled to Rust the host runs, when it runs one; the game
+    /// the view starts runs it too.
+    pub fn native(&self) -> Option<&'static NativeCode> {
+        self.native
     }
 
     /// Whether the host runs every chunk of its module that has a body as

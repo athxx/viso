@@ -34,6 +34,7 @@ use super::message::{AudioMessage, MessageSlot};
 use super::queue::{RealtimeReceiver, RealtimeSender, realtime_queue};
 use super::{AUDIO_COMMAND, AUDIO_PROCESS, AudioBlock};
 use crate::Module;
+use crate::aot::NativeCode;
 use crate::native::{NativeValue, Natives, Obj};
 use crate::value::Value;
 use crate::vm::{Budget, Fault, Instance, Vm};
@@ -149,17 +150,19 @@ unsafe impl Send for AudioProgram {}
 
 impl AudioProgram {
     /// The audio systems of the module encoded in `module`, linked against
-    /// `natives`, filling blocks of `channels` channels of up to `max_frames`
-    /// frames at `sample_rate`; none when the module has no audio-thread
-    /// hook.
+    /// `natives` and running `native` when given (a release build's module
+    /// compiled to Rust), filling blocks of `channels` channels of up to
+    /// `max_frames` frames at `sample_rate`; none when the module has no
+    /// audio-thread hook.
     ///
     /// # Errors
     ///
-    /// When the module does not decode or link, or an audio system's
-    /// instance cannot be created.
+    /// When the module does not decode or link, `native` was lowered from
+    /// another build, or an audio system's instance cannot be created.
     pub fn new(
         module: &[u8],
         natives: &Natives,
+        native: Option<&'static NativeCode>,
         channels: usize,
         max_frames: usize,
         sample_rate: f64,
@@ -171,6 +174,9 @@ impl AudioProgram {
             block_budget(channels, max_frames),
         );
         vm.link(natives, &[]).map_err(|e| e.to_string())?;
+        if let Some(native) = native {
+            vm.install_native(native).map_err(|e| e.to_string())?;
+        }
         let module = vm.module().clone();
         for (index, system) in module.systems().iter().enumerate() {
             let (process, command) = (system.hook(AUDIO_PROCESS), system.hook(AUDIO_COMMAND));
@@ -264,8 +270,8 @@ pub struct AudioSwap {
 }
 
 impl AudioSwap {
-    /// Builds the audio systems of the module encoded in `module`, linked
-    /// against `natives`, here, and hands them to the host, which installs
+    /// Builds the audio systems of the module encoded in `module` — a
+    /// reload's, interpreted — linked against `natives`, here, and hands them to the host, which installs
     /// them before its next block; a module without audio systems silences
     /// it. Drops the program the host gave back from the last swap, and one
     /// published but not installed yet.
@@ -278,6 +284,7 @@ impl AudioSwap {
         let program = AudioProgram::new(
             module,
             natives,
+            None,
             self.channels,
             self.max_frames,
             self.sample_rate,
@@ -326,22 +333,24 @@ unsafe impl Send for AudioHost {}
 
 impl AudioHost {
     /// A host running the audio systems of the module encoded in `module`,
-    /// linked against `natives`, filling blocks of `channels` channels of up
-    /// to `max_frames` frames at `sample_rate`; `None` when the module has
-    /// no system with an audio-thread hook.
+    /// linked against `natives` and running `native` when given, filling
+    /// blocks of `channels` channels of up to `max_frames` frames at
+    /// `sample_rate`; `None` when the module has no system with an
+    /// audio-thread hook.
     ///
     /// # Errors
     ///
-    /// When the module does not decode or link, or an audio system's
-    /// instance cannot be created.
+    /// As [`AudioProgram::new`].
     pub fn new(
         module: &[u8],
         natives: &Natives,
+        native: Option<&'static NativeCode>,
         channels: usize,
         max_frames: usize,
         sample_rate: f64,
     ) -> Result<Option<(AudioHost, AudioLink)>, String> {
-        let program = AudioProgram::new(module, natives, channels, max_frames, sample_rate)?;
+        let program =
+            AudioProgram::new(module, natives, native, channels, max_frames, sample_rate)?;
         if program.systems.is_empty() {
             return Ok(None);
         }

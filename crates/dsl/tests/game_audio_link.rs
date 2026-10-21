@@ -117,9 +117,16 @@ fn state(game: &Scheduler, system: &str, name: &str) -> Value {
 #[test]
 fn commands_reach_the_audio_thread_and_events_come_back() {
     let module = module(BAND);
-    let (mut host, link) = AudioHost::new(&module.encode(), &Natives::standard(), 2, 16, 48_000.0)
-        .expect("builds")
-        .expect("has audio systems");
+    let (mut host, link) = AudioHost::new(
+        &module.encode(),
+        &Natives::standard(),
+        None,
+        2,
+        16,
+        48_000.0,
+    )
+    .expect("builds")
+    .expect("has audio systems");
     let mut vm = Vm::new(Rc::clone(&module), Budget::default());
     vm.link(&Natives::standard(), &[]).expect("links");
     let mut game = Scheduler::new(vm).expect("starts");
@@ -159,8 +166,15 @@ fn a_module_without_audio_systems_has_no_host() {
     let module = module(
         "export system Hud implements FrameUpdate {\n    action frame_update(frame: RenderFrame) {}\n}",
     );
-    let host =
-        AudioHost::new(&module.encode(), &Natives::standard(), 2, 16, 48_000.0).expect("builds");
+    let host = AudioHost::new(
+        &module.encode(),
+        &Natives::standard(),
+        None,
+        2,
+        16,
+        48_000.0,
+    )
+    .expect("builds");
     assert!(host.is_none());
 }
 
@@ -173,9 +187,10 @@ fn a_faulting_hook_is_silenced_and_its_fault_kept() {
     }
 }",
     );
-    let (mut host, link) = AudioHost::new(&module.encode(), &Natives::standard(), 2, 4, 48_000.0)
-        .expect("builds")
-        .expect("has audio systems");
+    let (mut host, link) =
+        AudioHost::new(&module.encode(), &Natives::standard(), None, 2, 4, 48_000.0)
+            .expect("builds")
+            .expect("has audio systems");
     let mut block = vec![0.0f32; 8];
     host.render(&mut block);
     host.render(&mut block);
@@ -239,7 +254,7 @@ fn the_message_types_are_the_packages_derived_enums() {
 #[test]
 fn a_swap_installs_new_systems_at_the_next_block_with_the_link_kept() {
     let band = module(BAND);
-    let (host, link) = AudioHost::new(&band.encode(), &Natives::standard(), 2, 16, 48_000.0)
+    let (host, link) = AudioHost::new(&band.encode(), &Natives::standard(), None, 2, 16, 48_000.0)
         .expect("builds")
         .expect("has audio systems");
     let swap = host.swapper();
