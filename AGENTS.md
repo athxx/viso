@@ -493,7 +493,7 @@ Public `Handle<T>` MUST NOT expose long-lived `&T`/`&mut T` access to component 
 
 ## 8.7 Transform invalidation is separate from layout invalidation
 
-Scroll/translate/transform-only animation MUST mark only `TRANSFORM`: no `MEASURE`, `LAYOUT`, `PAINT` or `HIT_TEST` (ADR 0043; a node's first translate also paints once, to record it as a root). Transform roots (a scroll container's content, a translated node) own transform-table entries, recorded by paint. Primitives are written in world space as painted; a frame that only moves roots hands the table to `Renderer::set_transforms`, which shifts each root's retained draws through the draw's `shift` uniform — no instance is rewritten or uploaded. On-screen rects are derived (`NodeStore::world`), and hit testing carries the displacement down its walk. Layout and transform share `NodeId` but use separate hot stores and propagation rules.
+Scroll/translate/transform-only animation MUST mark only `TRANSFORM`: no `MEASURE`, `LAYOUT`, `PAINT` or `HIT_TEST` (ADR 0043; a node's first translate also paints once, to record it as a root). Transform roots (a scroll container's content, a translated node) own transform-table entries, recorded by paint. Primitives are written in world space as painted; a frame that only moves roots hands the table to `Renderer::set_transforms`, which places each root's retained draws through the draw's affine place uniform (a shift, or a scale/rotation about the node's `transform_origin`) — no instance is rewritten or uploaded. On-screen rects are derived (`NodeStore::world`), and hit testing maps the pointer into each node's local space down its walk. Layout and transform share `NodeId` but use separate hot stores and propagation rules.
 
 ---
 

@@ -120,6 +120,10 @@ export declare const show: {
   opacity(v: Value): string;
   radius(v: Value): string;
   stroke(v: Value): string;
+  offset(v: Value): string;
+  scale(v: Value): string;
+  rotate(v: Value): string;
+  origin(v: Value, rtl: boolean): string;
   focusable(el: HTMLElement, v: Value): void;
   enabled(el: HTMLElement, v: Value): void;
   autofocus(el: HTMLElement, v: Value): void;

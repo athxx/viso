@@ -4651,6 +4651,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - `opacity` 截断到 `[0, 1]`；`opacity: 0.0` 的节点仍参与 Hit Test 与语义；
 - `visible: false` 保留布局空间，但不绘制、不参与命中测试，并从语义树移除；需要同时移除布局空间时使用 `if`；
 - `clip: true` 按自身 Border Box 与 `corner_radius` 裁剪子节点的绘制与命中测试；滚动视口总是裁剪。
+- `transform_origin` 的 `start`/`end` 随布局方向翻转；`scale`、`rotation` 绕它先缩放后旋转（顺时针），再平移 `translate`。
 
 ---
 
@@ -4754,7 +4755,7 @@ Row {
 
 对 `width`/`height` 设置 transition 合法但每帧重新布局；`viso check` 对 `VirtualList` Item Template 中的这类 transition 报告性能提示。其他 Property 不可动画。
 
-当前实现：`translate`、`opacity`、`background`、`color`、`corner_radius`、`width`、`height` 的 transition 在 `component!`、`view!`、Hot Reload 与 Release 包中播放（Web 导出为 CSS `transition`）：长度在开始时按节点的环境与字号折叠，移动途中环境变化时转向新的折叠值而不中断；文本重新排版送达的新颜色不打断颜色的移动。`scale` 与 `rotation` 尚无变换通道，其 transition 报 `E3711`。
+当前实现：`translate`、`scale`、`rotation`、`opacity`、`background`、`color`、`corner_radius`、`width`、`height` 的 transition 在 `component!`、`view!`、Hot Reload 与 Release 包中播放（Web 导出为 CSS `transition`）：长度在开始时按节点的环境与字号折叠，移动途中环境变化时转向新的折叠值而不中断；文本重新排版送达的新颜色不打断颜色的移动。`scale`/`rotation` 绕 `transform_origin` 作用于节点及其子树：渲染器按每个变换根的仿射 Place 绘制、命中测试把指针映射回节点局部坐标；Web 导出为 CSS `scale`/`rotate`/`transform-origin`，`start`/`end` 原点在 `:dir(rtl)` 下取另一侧。
 
 ### U6.3 `Animation` 句柄
 

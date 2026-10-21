@@ -329,6 +329,11 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                             VarToken::Translate => {
                                 format!("P.vtranslate({el}, {value}, \"{name}\")")
                             }
+                            VarToken::Scale => format!("P.vscale({el}, {value}, \"{name}\")"),
+                            VarToken::Rotation => {
+                                format!("P.vrotate({el}, {value}, \"{name}\")")
+                            }
+                            VarToken::Origin => format!("P.vorigin({el}, {value}, \"{name}\")"),
                             VarToken::Transition(property) => {
                                 format!("P.vmove({el}, {value}, \"{name}\", \"{property}\")")
                             }

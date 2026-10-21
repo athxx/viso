@@ -188,6 +188,50 @@ fn a_translate_and_its_transition_export_as_css_translate() {
     assert!(script.contains("P.vtranslate("), "{script}");
 }
 
+const TURNED: &str = r#"
+export component Turned {
+    state on = false;
+    view {
+        Column {
+            Text {
+                width: 40dp;
+                height: 20dp;
+                scale: 1.5f32;
+                rotation: 90deg;
+                transform_origin: Alignment2D::top_start;
+                transition.rotation: Transition { duration: 100ms };
+            }
+            Text {
+                width: 40dp;
+                height: 20dp;
+                scale: if on { 2.0f32 } else { 1.0f32 };
+                transform_origin: if on { Alignment2D::end } else { Alignment2D::center };
+                on click { on = !on; }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_scale_rotation_and_origin_export_as_css_and_the_origin_follows_the_direction() {
+    let page = export(TURNED, false).unwrap();
+    let css = &page.styles;
+    for want in [
+        "scale: 1.5;",
+        "rotate: 90deg;",
+        "transform-origin: left top;",
+        ":dir(rtl) { transform-origin: right top; }",
+        "rotate 0.1s",
+        "transform-origin: var(--v",
+    ] {
+        assert!(css.contains(want), "{want}: {css}");
+    }
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.vscale("), "{script}");
+    assert!(script.contains("P.vorigin("), "{script}");
+}
+
 const GUARDED: &str = r#"
 export component Guarded {
     state on = true;

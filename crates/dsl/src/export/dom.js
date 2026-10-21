@@ -78,6 +78,15 @@ const reach = (requests, from) => {
 };
 // An `Offset` as a CSS `translate`.
 const offset = (v) => (v === null ? "none" : length(v.f[0]) + " " + length(v.f[1]));
+// An `F32` as a CSS `scale`, an `Angle` as a `rotate`.
+const scaling = (v) => String(v ?? 1);
+const turning = (v) => (v ?? 0) + "deg";
+// An `Alignment2D` as a CSS `transform-origin`, laid out right to left when `rtl`.
+const pivot = (v, rtl) => {
+  const t = Math.min(Math.max(Number(v ?? 4n), 0), 8);
+  const across = t % 3 === 1 ? "center" : (t % 3 === 0) !== rtl ? "left" : "right";
+  return across + " " + ["top", "center", "bottom"][Math.floor(t / 3)];
+};
 const stroke = (v) => {
   if (v === null) return "none";
   const w = typeof v.f[0] === "object" ? Number(v.f[0].f[0]) : Number(v.f[0]);
@@ -161,6 +170,12 @@ const P = {
   vradius: (el, v, name) => el.style.setProperty(name, radius(v)),
   vborder: (el, v, name) => el.style.setProperty(name, stroke(v)),
   vtranslate: (el, v, name) => el.style.setProperty(name, offset(v)),
+  vscale: (el, v, name) => el.style.setProperty(name, scaling(v)),
+  vrotate: (el, v, name) => el.style.setProperty(name, turning(v)),
+  vorigin(el, v, name) {
+    el.style.setProperty(name, pivot(v, false));
+    el.style.setProperty(name + "-rtl", pivot(v, true));
+  },
   vmove(el, v, name, property) {
     const f = v === null ? [] : v.f;
     const instant = reduced.matches && f[3] === 0n;

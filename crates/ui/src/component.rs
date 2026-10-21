@@ -1092,27 +1092,22 @@ impl NodeStore {
 
     /// Turns a node: scales and rotates it and its subtree about its origin
     /// after layout, marking it `TRANSFORM` — plus `PAINT` the first time,
-    /// when it becomes a transform root. Never MEASURE or LAYOUT. A
-    /// live-guarded write; an unchanged turn schedules nothing.
+    /// when it becomes a transform root. Never MEASURE or LAYOUT. Ends a
+    /// scale or rotation in flight. A live-guarded write; an unchanged turn
+    /// schedules nothing.
     pub fn set_turn(&mut self, id: NodeId, turn: crate::transform::Turn) {
-        if !self.arena.is_live(id) {
-            return;
+        if self.arena.is_live(id) {
+            self.settle(id, &LookValue::Scale(turn.scale));
+            self.settle(id, &LookValue::Rotation(turn.rotation));
+            self.write_turn(id, |_| turn);
         }
-        let i = id.index() as usize;
-        if self.turn[i] == turn {
-            return;
-        }
-        let was = self.reach_in_parent(i);
-        self.turn[i] = turn;
-        self.lift_reach(id, was);
-        self.mark_moved(id);
     }
 
     /// Scales a node about its origin (see [`set_turn`](Self::set_turn)).
     pub fn set_scale(&mut self, id: NodeId, scale: f32) {
         if self.arena.is_live(id) {
-            let turn = self.turn[id.index() as usize];
-            self.set_turn(id, crate::transform::Turn { scale, ..turn });
+            self.settle(id, &LookValue::Scale(scale));
+            self.write_turn(id, |turn| crate::transform::Turn { scale, ..turn });
         }
     }
 
@@ -1120,14 +1115,11 @@ impl NodeStore {
     /// [`set_turn`](Self::set_turn)).
     pub fn set_rotation(&mut self, id: NodeId, radians: f32) {
         if self.arena.is_live(id) {
-            let turn = self.turn[id.index() as usize];
-            self.set_turn(
-                id,
-                crate::transform::Turn {
-                    rotation: radians,
-                    ..turn
-                },
-            );
+            self.settle(id, &LookValue::Rotation(radians));
+            self.write_turn(id, |turn| crate::transform::Turn {
+                rotation: radians,
+                ..turn
+            });
         }
     }
 
@@ -1135,9 +1127,26 @@ impl NodeStore {
     /// [`set_turn`](Self::set_turn)).
     pub fn set_transform_origin(&mut self, id: NodeId, origin: crate::layout::Alignment2D) {
         if self.arena.is_live(id) {
-            let turn = self.turn[id.index() as usize];
-            self.set_turn(id, crate::transform::Turn { origin, ..turn });
+            self.write_turn(id, |turn| crate::transform::Turn { origin, ..turn });
         }
+    }
+
+    /// Writes the turn `edit` makes of node `id`'s, leaving any move in
+    /// flight. `id` is live.
+    fn write_turn(
+        &mut self,
+        id: NodeId,
+        edit: impl FnOnce(crate::transform::Turn) -> crate::transform::Turn,
+    ) {
+        let i = id.index() as usize;
+        let turn = edit(self.turn[i]);
+        if self.turn[i] == turn {
+            return;
+        }
+        let was = self.reach_in_parent(i);
+        self.turn[i] = turn;
+        self.lift_reach(id, was);
+        self.mark_moved(id);
     }
 
     /// Whether the transform roots need recomputing: a scroll, translate or
@@ -3318,6 +3327,8 @@ impl NodeStore {
                 Length::Fixed(v) => LookValue::Height(v),
                 _ => *of,
             },
+            LookValue::Scale(_) => LookValue::Scale(self.turn[i].scale),
+            LookValue::Rotation(_) => LookValue::Rotation(self.turn[i].rotation),
         }
     }
 
@@ -3336,6 +3347,12 @@ impl NodeStore {
                 }
             }
             LookValue::Translate(offset) => self.set_translate(id, offset),
+            LookValue::Scale(scale) => {
+                self.write_turn(id, |turn| crate::transform::Turn { scale, ..turn })
+            }
+            LookValue::Rotation(rotation) => {
+                self.write_turn(id, |turn| crate::transform::Turn { rotation, ..turn })
+            }
             LookValue::Width(v) | LookValue::Height(v) => {
                 let width = matches!(value, LookValue::Width(_));
                 let size = self.layout_input_mut(id).size_mut();

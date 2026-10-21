@@ -56,7 +56,8 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
 
         // Transform-only changes move the node's transform root: no measure,
         // layout, paint or hit-test work (section 8.7, ADR 0043).
-        "transform" | "translate" | "scale" | "rotate" | "offset" | "scroll" => D::TRANSFORM,
+        "transform" | "translate" | "scale" | "rotation" | "transform_origin" | "offset"
+        | "scroll" => D::TRANSFORM,
 
         // Corner radius and border affect the painted shape only: a border
         // strokes inside the box (§U3.3).

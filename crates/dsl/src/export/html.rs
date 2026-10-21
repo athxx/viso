@@ -147,6 +147,13 @@ pub(super) enum VarToken {
     Border,
     /// An `Offset`, as `translate`.
     Translate,
+    /// An `F32`, as `scale`.
+    Scale,
+    /// An `Angle` in degrees, as `rotate`.
+    Rotation,
+    /// An `Alignment2D`, as `transform-origin`: the variable named and its
+    /// `-rtl` twin, which the right-to-left rule reads.
+    Origin,
     /// A `Transition` for the CSS property named.
     Transition(&'static str),
 }
@@ -1138,6 +1145,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             VarToken::Radius => "the corner radius",
             VarToken::Border => "the border",
             VarToken::Translate => "the translate",
+            VarToken::Scale => "the scale",
+            VarToken::Rotation => "the rotation",
+            VarToken::Origin => "the transform origin",
             VarToken::Transition(_) => "the transition",
         };
         match self.fixed(entry, what, at) {
@@ -1159,6 +1169,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 VarToken::Radius => radius(&v),
                 VarToken::Border => stroke(&v),
                 VarToken::Translate => offset(&v),
+                VarToken::Scale => css::number(v.as_float().unwrap_or(1.0)),
+                VarToken::Rotation => format!("{}deg", css::number(v.as_float().unwrap_or(0.0))),
+                VarToken::Origin => origin(&v, false),
                 VarToken::Transition(_) => String::new(),
             },
             Fixed::Theme(name) => format!("var({name})"),
@@ -1211,6 +1224,18 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 "translate",
                 VarToken::Translate,
             ),
+            (
+                look.scale,
+                viso_schema::view::ControlInput::Scale,
+                "scale",
+                VarToken::Scale,
+            ),
+            (
+                look.rotation,
+                viso_schema::view::ControlInput::Rotation,
+                "rotate",
+                VarToken::Rotation,
+            ),
         ] {
             if let Some(entry) = base {
                 let var = format!("--v{key}-{property}");
@@ -1232,12 +1257,41 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 el.own_class = true;
             }
         }
+        // A start or end origin is the other side of the box right to left.
+        if let Some(entry) = look.transform_origin {
+            let var = format!("--v{key}-origin");
+            let (ltr, rtl) = match self.fixed(entry, "the transform origin", at) {
+                Fixed::Changes => {
+                    wires.push(Wire::Prop {
+                        entry,
+                        prop: Prop::Var {
+                            name: var.clone(),
+                            token: VarToken::Origin,
+                        },
+                    });
+                    (format!("var({var})"), format!("var({var}-rtl)"))
+                }
+                Fixed::Value(v) => (origin(&v, false), origin(&v, true)),
+                Fixed::Theme(name) => (format!("var({name})"), format!("var({name})")),
+            };
+            if rtl != ltr {
+                el.own_class = true;
+                self.out.sheet.rule(
+                    None,
+                    format!(".{own}:dir(rtl)"),
+                    &[("transform-origin", rtl)],
+                );
+            }
+            decls.push(("transform-origin", ltr));
+        }
         let mut moves = Vec::new();
         let mut reduce = false;
         for (entry, property) in [
             (look.background_transition, "background-color"),
             (look.opacity_transition, "opacity"),
             (look.translate_transition, "translate"),
+            (look.scale_transition, "scale"),
+            (look.rotation_transition, "rotate"),
             (look.corner_radius_transition, "border-radius"),
             (look.color_transition, "color"),
             (look.width_transition, "width"),
@@ -1933,6 +1987,19 @@ fn css_length(value: Option<&Value>) -> String {
 }
 
 /// An `Offset` as a CSS `translate`.
+/// An `Alignment2D` as a `transform-origin`, laid out right to left when
+/// `rtl`.
+fn origin(value: &Value, rtl: bool) -> String {
+    let tag = value.as_int().unwrap_or(4).clamp(0, 8);
+    let across = match (tag % 3, rtl) {
+        (1, _) => "center",
+        (0, false) | (2, true) => "left",
+        _ => "right",
+    };
+    let down = ["top", "center", "bottom"][(tag / 3) as usize];
+    format!("{across} {down}")
+}
+
 fn offset(value: &Value) -> String {
     let Value::Agg(agg) = value else {
         return "none".to_owned();

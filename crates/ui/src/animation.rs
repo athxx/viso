@@ -261,6 +261,11 @@ pub enum LookValue {
     Width(f32),
     /// Its fixed height, in dp.
     Height(f32),
+    /// How much it and its subtree scale about its origin.
+    Scale(f32),
+    /// How far it and its subtree turn clockwise about its origin, in
+    /// radians.
+    Rotation(f32),
 }
 
 impl LookValue {
@@ -301,6 +306,8 @@ impl LookValue {
             }),
             (LookValue::Width(a), LookValue::Width(b)) => LookValue::Width(mix(a, b)),
             (LookValue::Height(a), LookValue::Height(b)) => LookValue::Height(mix(a, b)),
+            (LookValue::Scale(a), LookValue::Scale(b)) => LookValue::Scale(mix(a, b)),
+            (LookValue::Rotation(a), LookValue::Rotation(b)) => LookValue::Rotation(mix(a, b)),
             _ => to,
         }
     }

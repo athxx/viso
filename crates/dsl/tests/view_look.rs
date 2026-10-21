@@ -377,11 +377,79 @@ fn a_transition_names_an_animatable_property_and_takes_a_transition() {
     assert_eq!(codes("transition.text", spec), ["E3703"]);
     assert_eq!(codes("transition.translate", spec), Vec::<String>::new());
     assert_eq!(codes("transition.color", spec), Vec::<String>::new());
+    assert_eq!(codes("transition.scale", spec), Vec::<String>::new());
+    assert_eq!(codes("transition.rotation", spec), Vec::<String>::new());
+    assert_eq!(codes("scale", "2.0f32"), Vec::<String>::new());
+    assert_eq!(codes("rotation", "90deg"), Vec::<String>::new());
     assert_eq!(
-        codes("transition.scale", spec),
-        ["E3711"],
-        "a transition the runtime does not play yet is no silent no-op"
+        codes("transform_origin", "Alignment2D::top_start"),
+        Vec::<String>::new()
     );
+}
+
+const TURN: &str = r#"
+component Turn {
+    state lit = false;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Text {
+                text: "a";
+                width: 40dp;
+                height: 20dp;
+                scale: if lit { 2.0f32 } else { 1.0f32 };
+                rotation: if lit { 0.5turn } else { 0deg };
+                transform_origin: Alignment2D::top_start;
+                transition.scale: Transition { duration: 100ms, easing: Easing::linear };
+                on click { lit = !lit; }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_scale_moves_in_over_its_transition_and_a_rotation_turns_at_once_about_the_origin() {
+    use viso_ui::{Alignment2D, Turn};
+    let ms = Duration::from_millis;
+    for mut rt in [Rt::reload(TURN), Rt::package(TURN)] {
+        let root = rt.root.expect("mounted");
+        let [text] = rt.children(root)[..] else {
+            panic!("the text");
+        };
+        assert_eq!(
+            rt.store.turn(text),
+            Turn {
+                origin: Alignment2D::TopStart,
+                ..Turn::NONE
+            }
+        );
+
+        rt.click(5.0, 5.0);
+        rt.layout();
+        let turn = rt.store.turn(text);
+        assert_eq!(turn.scale, 1.0, "a changed scale moves in");
+        assert!(
+            (turn.rotation - std::f32::consts::PI).abs() < 1e-6,
+            "half a turn, in radians, at once: {}",
+            turn.rotation
+        );
+        rt.store.tick_transitions(ms(50));
+        assert_eq!(rt.store.turn(text).scale, 1.5);
+        rt.store.tick_transitions(ms(50));
+        rt.layout();
+        assert_eq!(rt.store.turn(text).scale, 2.0);
+        assert!(!rt.store.is_transitioning());
+        let bounds = rt.store.bounds(text);
+        let world = rt.store.world(text);
+        let landed = [world.x, world.y, world.w, world.h];
+        let want = [bounds.x - 80.0, bounds.y - 40.0, 80.0, 40.0];
+        assert!(
+            landed.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-3),
+            "turned half about its top start, twice as large: {landed:?}"
+        );
+    }
 }
 
 /// A view whose text, and a text its region mounts, fade with `lit`; `{lead}`

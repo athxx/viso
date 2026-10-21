@@ -31,16 +31,16 @@ use std::sync::Arc;
 use viso_behavior::{Fault, FaultKind, Value};
 use viso_ui::resource::{ResourceId, ResourceRevision};
 use viso_ui::shader::BrushProgram;
+use viso_ui::{Alignment2D, BoundSize, LayoutValue, LengthTerms};
 use viso_ui::{
     AssetFit, Border, BuildCx, CheckMark, CheckShape, Easing, FieldLook, FieldSeed, FontSize,
     LiveRegion, LookValue, NodeId, NodeStore, Rgba, Role, SemanticState, Semantics, Srgb, StateId,
     StructureCx, TextRequest, Timing, focus_node,
 };
-use viso_ui::{BoundSize, LayoutValue, LengthTerms};
 
 use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, When};
 use crate::host::ViewHost;
-use crate::layout_values::{layout_value, length};
+use crate::layout_values::{alignment, layout_value, length};
 use crate::scope::Scope;
 use crate::shaders::encode_shader;
 use crate::text_style::text_style;
@@ -201,6 +201,9 @@ pub(crate) fn control_cells(
         control.secure,
         control.caption,
         look.translate,
+        look.scale,
+        look.rotation,
+        look.transform_origin,
     ])
     .flatten()
     .chain(arms)
@@ -217,11 +220,15 @@ pub(crate) fn control_cells(
 /// `enabled`, `autofocus` and `clip`, and its text's `color`, `soft_wrap`,
 /// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow` and
 /// `align`, a field's `placeholder` and `secure` and a check's caption, and
-/// its `translate`.
-const SHOWN: usize = 31;
+/// its `translate`, `scale`, `rotation` and `transform_origin`.
+const SHOWN: usize = 34;
 
 /// Where its `translate` sits among the values a node shows.
 const TRANSLATE: usize = 30;
+
+/// Where its `scale`, `rotation` and `transform_origin` sit among the values
+/// a node shows.
+const TURN: usize = 31;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -340,7 +347,7 @@ impl Shown {
             return;
         };
         let semantics = control.semantics;
-        let mut shows: [Value; SHOWN] = Default::default();
+        let mut shows: [Value; SHOWN] = std::array::from_fn(|_| Value::default());
         for (value, entry) in shows.iter_mut().zip(
             [
                 control.value,
@@ -369,7 +376,10 @@ impl Shown {
                 control.placeholder,
                 control.secure,
                 control.caption,
-                control.look.translate,
+                look.translate,
+                look.scale,
+                look.rotation,
+                look.transform_origin,
             ]),
         ) {
             let Some(entry) = entry else { continue };
@@ -438,12 +448,15 @@ impl Shown {
             secure,
             caption,
             translate,
+            scale,
+            rotation,
+            origin,
         ] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
         let secure = truth(secure, false);
         if semantics.says_anything()
             && ((SEMANTICS..NODE).any(changed)
-                || (FIELD..SHOWN).any(changed)
+                || (FIELD..TRANSLATE).any(changed)
                 || (control.kind == ControlKind::Label && changed(0)))
         {
             let name = match (label.as_str(), control.kind) {
@@ -488,6 +501,10 @@ impl Shown {
         ];
         let radius_move = move_of(LOOK + 2, look.corner_radius_transition);
         let translate_move = move_of(TRANSLATE, look.translate_transition);
+        let turn_moves = [
+            move_of(TURN, look.scale_transition),
+            move_of(TURN + 1, look.rotation_transition),
+        ];
         let color_move = match control.kind {
             ControlKind::Label | ControlKind::TextInput => move_of(
                 TEXT,
@@ -524,6 +541,27 @@ impl Shown {
         if (held || look.translate.is_some()) && changed(TRANSLATE) {
             let [x, y] = offset(translate);
             store.set_translate_terms(self.node, x, y, translate_move);
+        }
+        if (held || look.transform_origin.is_some()) && changed(TURN + 2) {
+            let origin = alignment(origin).unwrap_or(Alignment2D::Center);
+            store.set_transform_origin(self.node, origin);
+        }
+        for (at, entry, value) in [
+            (TURN, look.scale, LookValue::Scale(float(scale, 1.0))),
+            (
+                TURN + 1,
+                look.rotation,
+                LookValue::Rotation(float(rotation, 0.0).to_radians()),
+            ),
+        ] {
+            if !(held || entry.is_some()) || !changed(at) {
+                continue;
+            }
+            match turn_moves[at - TURN] {
+                Some(timing) => store.transition(self.node, value, timing),
+                None if first => store.present(self.node, value),
+                None => store.transition(self.node, value, Timing::default()),
+            }
         }
         if let Some(timing) = color_move {
             store.transition(self.node, LookValue::TextColor(color(text_color)), timing);

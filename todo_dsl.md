@@ -540,8 +540,11 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       text `color` and fixed `width`/`height` play in every target and the web
       export: `LookValue` moves, a fold or reshaped run arriving mid-move turns it
       instead of cutting it.
-- [ ] `scale` and `rotation` (and `transform_origin`), and their transitions:
-      a transform channel beyond the renderer's translation shift.
+- [x] `scale` and `rotation` (and `transform_origin`), and their transitions:
+      each transform root carries an affine place through the view uniforms,
+      the renderer and the CPU raster; hit testing maps the pointer into each
+      node's local space; the web export writes CSS `scale`, `rotate` and a
+      direction-aware `transform-origin`.
 - [ ] `NodeRef::animate` returning an `Animation` handle, with `animation_end`
       (§U6.3).
 

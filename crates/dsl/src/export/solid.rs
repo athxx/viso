@@ -678,6 +678,13 @@ impl Jsx<'_> {
                             style.push(("mask-size".to_owned(), size.clone()));
                             style.push(("-webkit-mask-size".to_owned(), size));
                         }
+                        Prop::Var {
+                            name,
+                            token: VarToken::Origin,
+                        } => {
+                            style.push((name.clone(), format!("show.origin({v}, false)")));
+                            style.push((format!("{name}-rtl"), format!("show.origin({v}, true)")));
+                        }
                         Prop::Var { name, token } => {
                             let value = match token {
                                 VarToken::Color => format!("show.color({v})"),
@@ -685,6 +692,9 @@ impl Jsx<'_> {
                                 VarToken::Radius => format!("show.radius({v})"),
                                 VarToken::Border => format!("show.stroke({v})"),
                                 VarToken::Translate => format!("show.offset({v})"),
+                                VarToken::Scale => format!("show.scale({v})"),
+                                VarToken::Rotation => format!("show.rotate({v})"),
+                                VarToken::Origin => unreachable!("an origin sets two variables"),
                                 VarToken::Transition(property) => {
                                     format!("show.move({v}, \"{property}\")")
                                 }

@@ -98,7 +98,7 @@ pub use paint::{paint_tree, paint_with_transforms};
 pub use text_style::{
     FontFamily, FontSize, FontWeight, TextAlign, TextOverflow, TextSizing, TextStyle, WidthUse,
 };
-pub use transform::TransformTable;
+pub use transform::{TransformTable, Turn};
 pub use viso_runtime::Instant;
 // Render primitive data types that already appear in this crate's public API —
 // `Content`'s payload fields (content.rs), `TextRequest::color`, and

@@ -121,6 +121,11 @@ impl ControlKind {
             (_, "transition.opacity") => ControlInput::OpacityTransition,
             (_, "translate") => ControlInput::Translate,
             (_, "transition.translate") => ControlInput::TranslateTransition,
+            (_, "scale") => ControlInput::Scale,
+            (_, "transition.scale") => ControlInput::ScaleTransition,
+            (_, "rotation") => ControlInput::Rotation,
+            (_, "transition.rotation") => ControlInput::RotationTransition,
+            (_, "transform_origin") => ControlInput::TransformOrigin,
             (_, "transition.corner_radius") => ControlInput::CornerRadiusTransition,
             (_, "transition.width") => ControlInput::WidthTransition,
             (_, "transition.height") => ControlInput::HeightTransition,
@@ -518,6 +523,17 @@ pub enum ControlInput {
     Translate,
     /// The node's `transition.translate`.
     TranslateTransition,
+    /// The node's `scale` about its `transform_origin`.
+    Scale,
+    /// The node's `transition.scale`.
+    ScaleTransition,
+    /// The node's clockwise `rotation` about its `transform_origin`.
+    Rotation,
+    /// The node's `transition.rotation`.
+    RotationTransition,
+    /// The node's `transform_origin`: where in its box it scales and rotates
+    /// about.
+    TransformOrigin,
     /// The node's `transition.corner_radius`.
     CornerRadiusTransition,
     /// A text's `transition.color`.
@@ -789,6 +805,16 @@ pub struct Look {
     pub width_transition: Option<u32>,
     /// Its `transition.height`.
     pub height_transition: Option<u32>,
+    /// Its `scale`: an `F32`.
+    pub scale: Option<u32>,
+    /// Its `transition.scale`.
+    pub scale_transition: Option<u32>,
+    /// Its `rotation`: an `Angle`.
+    pub rotation: Option<u32>,
+    /// Its `transition.rotation`.
+    pub rotation_transition: Option<u32>,
+    /// Its `transform_origin`: an `Alignment2D`.
+    pub transform_origin: Option<u32>,
 }
 
 impl Control {
@@ -837,6 +863,11 @@ impl Control {
             ControlInput::OpacityTransition => self.look.opacity_transition,
             ControlInput::Translate => self.look.translate,
             ControlInput::TranslateTransition => self.look.translate_transition,
+            ControlInput::Scale => self.look.scale,
+            ControlInput::ScaleTransition => self.look.scale_transition,
+            ControlInput::Rotation => self.look.rotation,
+            ControlInput::RotationTransition => self.look.rotation_transition,
+            ControlInput::TransformOrigin => self.look.transform_origin,
             ControlInput::CornerRadiusTransition => self.look.corner_radius_transition,
             ControlInput::ColorTransition => self.look.color_transition,
             ControlInput::WidthTransition => self.look.width_transition,
@@ -892,6 +923,11 @@ impl Control {
             ControlInput::OpacityTransition => &mut self.look.opacity_transition,
             ControlInput::Translate => &mut self.look.translate,
             ControlInput::TranslateTransition => &mut self.look.translate_transition,
+            ControlInput::Scale => &mut self.look.scale,
+            ControlInput::ScaleTransition => &mut self.look.scale_transition,
+            ControlInput::Rotation => &mut self.look.rotation,
+            ControlInput::RotationTransition => &mut self.look.rotation_transition,
+            ControlInput::TransformOrigin => &mut self.look.transform_origin,
             ControlInput::CornerRadiusTransition => &mut self.look.corner_radius_transition,
             ControlInput::ColorTransition => &mut self.look.color_transition,
             ControlInput::WidthTransition => &mut self.look.width_transition,
@@ -952,6 +988,11 @@ impl Encode for Control {
             look.color_transition,
             look.width_transition,
             look.height_transition,
+            look.scale,
+            look.scale_transition,
+            look.rotation,
+            look.rotation_transition,
+            look.transform_origin,
             semantics.label,
             semantics.hint,
             semantics.value,
@@ -1046,6 +1087,11 @@ impl Decode for Control {
                 color_transition: entry()?,
                 width_transition: entry()?,
                 height_transition: entry()?,
+                scale: entry()?,
+                scale_transition: entry()?,
+                rotation: entry()?,
+                rotation_transition: entry()?,
+                transform_origin: entry()?,
             },
             arms: Box::new([]),
             semantics: SemanticEntries {
@@ -1189,7 +1235,11 @@ mod tests {
             ControlKind::Label.input("transition.opacity"),
             Some(ControlInput::OpacityTransition)
         );
-        assert_eq!(ControlKind::Label.input("transition.scale"), None);
+        assert_eq!(
+            ControlKind::Label.input("transition.scale"),
+            Some(ControlInput::ScaleTransition)
+        );
+        assert_eq!(ControlKind::Plain.input("transition.color"), None);
         assert_eq!(
             ControlKind::TextInput.input("value"),
             Some(ControlInput::Value)
@@ -1287,6 +1337,11 @@ mod tests {
                 color_transition: None,
                 width_transition: Some(22),
                 height_transition: None,
+                scale: Some(23),
+                scale_transition: Some(24),
+                rotation: None,
+                rotation_transition: None,
+                transform_origin: Some(25),
             },
             arms: Box::new([LookArm {
                 input: ControlInput::Border,

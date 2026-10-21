@@ -178,7 +178,7 @@ fn size(value: &Value) -> Result<BoundSize, String> {
 }
 
 /// An `Alignment2D`.
-fn alignment(value: &Value) -> Option<Alignment2D> {
+pub(crate) fn alignment(value: &Value) -> Option<Alignment2D> {
     let tag = usize::try_from(value.as_int()?).ok()?;
     Alignment2D::ALL.get(tag).copied()
 }
