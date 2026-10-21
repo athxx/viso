@@ -16,10 +16,12 @@
 //! zero-CPU-when-idle contract — a driver's `wants_animation` reads
 //! [`is_empty`](AnimationRegistry::is_empty)).
 //!
-//! A look transition moves a node's fill or opacity to a new value over a
-//! [`Timing`]: the store keeps the moving ones in a flat list beside its
-//! columns and the driver ticks it each frame, a PAINT-only write
-//! ([`NodeStore::transition`]).
+//! A look transition moves a node's fill, opacity, corner radius, text color,
+//! translate or fixed size to a new value over a [`Timing`]: the store keeps
+//! the moving ones in a flat list beside its columns and the driver ticks it
+//! each frame, writing each value with the invalidation its property takes
+//! ([`NodeStore::transition`]): PAINT for a look, TRANSFORM for a translate,
+//! MEASURE and LAYOUT for a size.
 
 use core::time::Duration;
 
@@ -249,6 +251,16 @@ pub enum LookValue {
     Fill(Rgba),
     /// The opacity it and its subtree paint at.
     Opacity(f32),
+    /// Its corner radius: `dp`, and `pct` of the shorter side of its box.
+    Radius { dp: f32, pct: f32 },
+    /// The color its text draws with.
+    TextColor(Rgba),
+    /// How far it and its subtree are moved, in dp.
+    Translate(Vec2),
+    /// Its fixed width, in dp.
+    Width(f32),
+    /// Its fixed height, in dp.
+    Height(f32),
 }
 
 impl LookValue {
@@ -262,17 +274,33 @@ impl LookValue {
     /// fill moves in premultiplied linear light, so a fade from transparent
     /// keeps its hue instead of passing through black.
     fn lerp(self, to: LookValue, t: f32) -> LookValue {
+        let mix = |x: f32, y: f32| x + (y - x) * t;
+        let mix_color = |a: Rgba, b: Rgba| {
+            let (mut mixed, b) = (a.premultiply(), b.premultiply());
+            mixed.r = mix(mixed.r, b.r);
+            mixed.g = mix(mixed.g, b.g);
+            mixed.b = mix(mixed.b, b.b);
+            mixed.a = mix(mixed.a, b.a);
+            mixed.unpremultiply()
+        };
         match (self, to) {
-            (LookValue::Opacity(a), LookValue::Opacity(b)) => LookValue::Opacity(a + (b - a) * t),
-            (LookValue::Fill(a), LookValue::Fill(b)) => {
-                let (mut mixed, b) = (a.premultiply(), b.premultiply());
-                let mix = |x: f32, y: f32| x + (y - x) * t;
-                mixed.r = mix(mixed.r, b.r);
-                mixed.g = mix(mixed.g, b.g);
-                mixed.b = mix(mixed.b, b.b);
-                mixed.a = mix(mixed.a, b.a);
-                LookValue::Fill(mixed.unpremultiply())
+            (LookValue::Opacity(a), LookValue::Opacity(b)) => LookValue::Opacity(mix(a, b)),
+            (LookValue::Fill(a), LookValue::Fill(b)) => LookValue::Fill(mix_color(a, b)),
+            (LookValue::TextColor(a), LookValue::TextColor(b)) => {
+                LookValue::TextColor(mix_color(a, b))
             }
+            (LookValue::Radius { dp: a, pct: p }, LookValue::Radius { dp: b, pct: q }) => {
+                LookValue::Radius {
+                    dp: mix(a, b),
+                    pct: mix(p, q),
+                }
+            }
+            (LookValue::Translate(a), LookValue::Translate(b)) => LookValue::Translate(Vec2 {
+                x: mix(a.x, b.x),
+                y: mix(a.y, b.y),
+            }),
+            (LookValue::Width(a), LookValue::Width(b)) => LookValue::Width(mix(a, b)),
+            (LookValue::Height(a), LookValue::Height(b)) => LookValue::Height(mix(a, b)),
             _ => to,
         }
     }
@@ -580,6 +608,96 @@ mod tests {
             !store.is_transitioning(),
             "an arrived transition is dropped"
         );
+    }
+
+    fn ink(store: &NodeStore, node: NodeId) -> Rgba {
+        match store.content_payload(node) {
+            Some(crate::content::Content::Text { color, .. }) => *color,
+            _ => panic!("a text"),
+        }
+    }
+
+    fn text(color: Rgba) -> crate::content::Content {
+        crate::content::Content::Text {
+            glyphs: Vec::new(),
+            atlas: viso_render::TextureId::new(1),
+            color_glyphs: Vec::new(),
+            color_atlas: None,
+            color,
+            natural: Vec2::ZERO,
+            baseline: 0.0,
+            shaped_at_width: None,
+            width_use: crate::WidthUse::Ignored,
+            min_content: 0.0,
+            max_content: 0.0,
+        }
+    }
+
+    #[test]
+    fn a_radius_translate_size_and_text_color_move_and_follow_what_arrives() {
+        use crate::length::{LengthEnv, LengthTerms};
+        let ms = Duration::from_millis;
+        let (mut store, node) = one_leaf();
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+        };
+        let relayout = |store: &mut NodeStore| {
+            let (mut scratch, mut redo) = (Vec::new(), Vec::new());
+            store.relayout_dirty(node, surface, &mut scratch, &mut redo);
+        };
+
+        // A radius moves from the one shown; one set at once ends the move.
+        store.transition_corner_radius(node, LengthTerms::dp(10.0), linear(100));
+        store.tick_transitions(ms(50));
+        assert_eq!(store.style(node).radius, 5.0);
+        store.set_corner_radius(node, LengthTerms::dp(2.0));
+        assert_eq!(store.style(node).radius, 2.0);
+        assert!(!store.is_transitioning());
+
+        // A translate in `sp` moves, then follows the text scale it reads.
+        let none = LengthTerms::dp(0.0);
+        store.set_translate_terms(node, LengthTerms::sp(20.0), none, Some(linear(100)));
+        store.tick_transitions(ms(50));
+        assert_eq!(store.translate(node).x, 10.0);
+        store.set_length_env(LengthEnv {
+            text_scale: 2.0,
+            ..store.length_env()
+        });
+        relayout(&mut store);
+        store.tick_transitions(ms(50));
+        assert_eq!(store.translate(node).x, 25.0, "from 10 halfway to 40");
+        store.tick_transitions(ms(50));
+        assert_eq!(store.translate(node).x, 40.0);
+
+        // A fixed width moves between fixed extents, laying out each step.
+        store.transition_size(node, true, LengthTerms::dp(200.0), linear(100));
+        relayout(&mut store);
+        let width = |store: &NodeStore| store.size_request(node).unwrap().width;
+        assert_eq!(
+            width(&store),
+            crate::layout::Length::Fixed(100.0),
+            "the fold turns the move, not ends it"
+        );
+        store.tick_transitions(ms(50));
+        relayout(&mut store);
+        assert_eq!(width(&store), crate::layout::Length::Fixed(150.0));
+        store.tick_transitions(ms(50));
+        relayout(&mut store);
+        assert_eq!(width(&store), crate::layout::Length::Fixed(200.0));
+
+        // A text color moves; a reshaped run arriving keeps the shown color.
+        store.set_content_payload(node, text(Rgba::TRANSPARENT));
+        store.transition(node, LookValue::TextColor(RED), linear(100));
+        store.tick_transitions(ms(50));
+        assert_eq!(ink(&store, node).a, 0.5);
+        store.set_reflowed_content(node, text(RED));
+        assert_eq!(ink(&store, node).a, 0.5, "the move carries on");
+        store.tick_transitions(ms(50));
+        assert_eq!(ink(&store, node), RED);
+        assert!(!store.is_transitioning());
     }
 
     #[test]

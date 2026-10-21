@@ -36,8 +36,9 @@ use viso_ui::{
     LiveRegion, LookValue, NodeId, NodeStore, Rgba, Role, SemanticState, Semantics, Srgb, StateId,
     StructureCx, TextRequest, Timing, focus_node,
 };
+use viso_ui::{BoundSize, LayoutValue, LengthTerms};
 
-use crate::control::{Control, ControlInput, ControlKind, Holds, When};
+use crate::control::{Control, ControlInput, ControlKind, Holds, LayoutSlot, When};
 use crate::host::ViewHost;
 use crate::layout_values::{layout_value, length};
 use crate::scope::Scope;
@@ -195,7 +196,12 @@ pub(crate) fn control_cells(
     ]
     .into_iter()
     .chain(control.text.all())
-    .chain([control.placeholder, control.secure, control.caption])
+    .chain([
+        control.placeholder,
+        control.secure,
+        control.caption,
+        look.translate,
+    ])
     .flatten()
     .chain(arms)
     .chain(control.layout.iter().map(|&(_, entry)| entry))
@@ -210,8 +216,12 @@ pub(crate) fn control_cells(
 /// `value`, `hidden` and `heading_level`, its `visible`, `focusable`,
 /// `enabled`, `autofocus` and `clip`, and its text's `color`, `soft_wrap`,
 /// `font_weight`, `font_family`, `line_height`, `max_lines`, `overflow` and
-/// `align`, and a field's `placeholder` and `secure` and a check's caption.
-const SHOWN: usize = 30;
+/// `align`, a field's `placeholder` and `secure` and a check's caption, and
+/// its `translate`.
+const SHOWN: usize = 31;
+
+/// Where its `translate` sits among the values a node shows.
+const TRANSLATE: usize = 30;
 
 /// Where its background, opacity, corner radius and border sit among the
 /// values a node shows.
@@ -355,7 +365,12 @@ impl Shown {
             ]
             .into_iter()
             .chain(control.text.all())
-            .chain([control.placeholder, control.secure, control.caption]),
+            .chain([
+                control.placeholder,
+                control.secure,
+                control.caption,
+                control.look.translate,
+            ]),
         ) {
             let Some(entry) = entry else { continue };
             match host.evaluate(entry, &self.scope, None, &*cx.states) {
@@ -422,6 +437,7 @@ impl Shown {
             placeholder,
             secure,
             caption,
+            translate,
         ] = &shows;
         let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
         let secure = truth(secure, false);
@@ -453,25 +469,33 @@ impl Shown {
             };
             describe_node(cx.store, self.node, &said);
         }
-        let mut moves: [Option<Timing>; 2] = [None; 2];
-        for (at, (shown, transition)) in [
-            (LOOK, (shown_background, look.background_transition)),
-            (LOOK + 1, (shown_opacity, look.opacity_transition)),
-        ] {
-            let (Some(_), Some(transition), false) = (shown, transition, first) else {
-                continue;
-            };
-            if !changed(at) {
-                continue;
-            }
+        // How a changed value moves in: over its transition after the first
+        // delivery, else at once.
+        let reduced = cx.states.env().environment().reduced_motion;
+        let mut move_of = |at: usize, transition: Option<u32>| {
+            let transition = transition.filter(|_| !first && changed(at))?;
             match host.evaluate(transition, &self.scope, None, &*cx.states) {
-                Ok(spec) => {
-                    let reduced = cx.states.env().environment().reduced_motion;
-                    moves[at - LOOK] = Some(timing(&spec, reduced));
+                Ok(spec) => Some(timing(&spec, reduced)),
+                Err(fault) => {
+                    host.record_fault(fault);
+                    None
                 }
-                Err(fault) => host.record_fault(fault),
             }
-        }
+        };
+        let moves = [
+            shown_background.and_then(|_| move_of(LOOK, look.background_transition)),
+            shown_opacity.and_then(|_| move_of(LOOK + 1, look.opacity_transition)),
+        ];
+        let radius_move = move_of(LOOK + 2, look.corner_radius_transition);
+        let translate_move = move_of(TRANSLATE, look.translate_transition);
+        let color_move = match control.kind {
+            ControlKind::Label | ControlKind::TextInput => move_of(
+                TEXT,
+                look.color_transition
+                    .filter(|_| control.text.color.is_some()),
+            ),
+            _ => None,
+        };
         let store = &mut *cx.store;
         if (held || control.node.visible.is_some()) && changed(NODE) {
             store.set_hidden(self.node, !truth(visible, true));
@@ -491,7 +515,18 @@ impl Shown {
             focus_node(store, self.node);
         }
         if shown_radius && changed(LOOK + 2) {
-            store.set_corner_radius(self.node, length(corner_radius).unwrap_or_default());
+            let radius = length(corner_radius).unwrap_or_default();
+            match radius_move {
+                Some(timing) => store.transition_corner_radius(self.node, radius, timing),
+                None => store.set_corner_radius(self.node, radius),
+            }
+        }
+        if (held || look.translate.is_some()) && changed(TRANSLATE) {
+            let [x, y] = offset(translate);
+            store.set_translate_terms(self.node, x, y, translate_move);
+        }
+        if let Some(timing) = color_move {
+            store.transition(self.node, LookValue::TextColor(color(text_color)), timing);
         }
         if shown_border && changed(LOOK + 3) {
             store.set_border(self.node, stroke(border));
@@ -512,6 +547,7 @@ impl Shown {
                 (None, value) if first => store.present(self.node, value),
                 (None, LookValue::Fill(fill)) => store.set_fill(self.node, fill),
                 (None, LookValue::Opacity(opacity)) => store.set_opacity(self.node, opacity),
+                (None, value) => store.present(self.node, value),
             }
         }
         let text = |shown: &Value| TextRequest {
@@ -532,7 +568,7 @@ impl Shown {
                 align,
             ]),
         };
-        if prior.is_some() && (0..LOOK).chain(TEXT..SHOWN).all(|at| !changed(at)) && !repaint {
+        if prior.is_some() && (0..LOOK).chain(TEXT..TRANSLATE).all(|at| !changed(at)) && !repaint {
             self.shows = Some(shows);
             return;
         }
@@ -620,6 +656,8 @@ impl Shown {
         }
         let env = cx.store.length_env();
         let font = cx.store.resolved_font_size(self.node).unwrap_or(FONT_SIZE);
+        let reduced = cx.states.env().environment().reduced_motion;
+        let look = self.control.look;
         for (at, &(slot, _)) in self.control.layout.iter().enumerate() {
             if self
                 .laid
@@ -628,9 +666,32 @@ impl Shown {
             {
                 continue;
             }
-            match layout_value(slot, &laid[at], &env, font) {
-                Ok(value) => cx.store.set_layout_value(self.node, value),
-                Err(message) => host.record_fault(Fault {
+            // A fixed size moves in over its transition after the first
+            // delivery.
+            let transition = match slot {
+                LayoutSlot::Width => look.width_transition,
+                LayoutSlot::Height => look.height_transition,
+                _ => None,
+            }
+            .filter(|_| self.laid.is_some());
+            let timing = match transition.map(|t| host.evaluate(t, &self.scope, None, &*cx.states))
+            {
+                Some(Ok(spec)) => Some(timing(&spec, reduced)),
+                Some(Err(fault)) => {
+                    host.record_fault(fault);
+                    None
+                }
+                None => None,
+            };
+            match (layout_value(slot, &laid[at], &env, font), timing) {
+                (Ok(LayoutValue::Width(BoundSize::Fixed(terms))), Some(timing)) => {
+                    cx.store.transition_size(self.node, true, terms, timing)
+                }
+                (Ok(LayoutValue::Height(BoundSize::Fixed(terms))), Some(timing)) => {
+                    cx.store.transition_size(self.node, false, terms, timing)
+                }
+                (Ok(value), _) => cx.store.set_layout_value(self.node, value),
+                (Err(message), _) => host.record_fault(Fault {
                     kind: FaultKind::Unsupported,
                     at: None,
                     message,
@@ -817,6 +878,15 @@ fn timing(spec: &Value, reduced_motion: bool) -> Timing {
 /// A `Bool` value, `default` when it is none.
 fn truth(value: &Value, default: bool) -> bool {
     value.as_int().map_or(default, |v| v != 0)
+}
+
+/// An `Offset`'s `x` and `y` terms; zero for a value that is none.
+fn offset(value: &Value) -> [LengthTerms; 2] {
+    let Value::Agg(agg) = value else {
+        return [LengthTerms::default(); 2];
+    };
+    let term = |at: usize| agg.fields.get(at).and_then(length).unwrap_or_default();
+    [term(0), term(1)]
 }
 
 fn float(value: &Value, default: f32) -> f32 {

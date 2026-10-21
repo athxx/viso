@@ -12,6 +12,15 @@ const radius = (v) => {
   else if (t(4) > 0) parts.push(t(4) + "%");
   return parts.length ? "calc(" + parts.join(" + ") + ")" : "0";
 };
+// A `MixedLength` as a CSS length.
+const length = (v) => {
+  const f = v === null ? [] : v.f;
+  const parts = [[f[0], "1px"], [f[1], "var(--viso-px)"], [f[2], "0.0625rem"], [f[3], "1em"]]
+    .map(([n, u]) => [Number(n ?? 0), u]).filter(([n]) => n !== 0).map(([n, u]) => n + " * " + u);
+  return parts.length ? "calc(" + parts.join(" + ") + ")" : "0px";
+};
+// An `Offset` as a CSS `translate`.
+const offset = (v) => (v === null ? "none" : length(v.f[0]) + " " + length(v.f[1]));
 const stroke = (v) => {
   if (v === null) return "none";
   const w = typeof v.f[0] === "object" ? Number(v.f[0].f[0]) : Number(v.f[0]);
@@ -94,6 +103,7 @@ const P = {
   vopacity: (el, v, name) => el.style.setProperty(name, String(Math.min(Math.max(v ?? 1, 0), 1))),
   vradius: (el, v, name) => el.style.setProperty(name, radius(v)),
   vborder: (el, v, name) => el.style.setProperty(name, stroke(v)),
+  vtranslate: (el, v, name) => el.style.setProperty(name, offset(v)),
   vmove(el, v, name, property) {
     const f = v === null ? [] : v.f;
     const instant = reduced.matches && f[3] === 0n;

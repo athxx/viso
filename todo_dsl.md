@@ -508,10 +508,13 @@ Goal: every Core view construct reaches a live tree through all three lowering t
 
 - [x] `transition.background` / `transition.opacity` play (see D3's animation
       fields).
-- [ ] The other animatable properties' transitions; each is E3711 until its
-      property reaches its node: `translate` and `corner_radius` (the VM has no
-      `MixedLength`), `scale` and `rotation` (no transform channel), text `color`
-      (baked into shaping), and `width`/`height`.
+- [x] `translate` reaches its node (`set_translate_terms`, re-folding as the
+      environment moves) and the transitions of `translate`, `corner_radius`,
+      text `color` and fixed `width`/`height` play in every target and the web
+      export: `LookValue` moves, a fold or reshaped run arriving mid-move turns it
+      instead of cutting it.
+- [ ] `scale` and `rotation` (and `transform_origin`), and their transitions:
+      a transform channel beyond the renderer's translation shift.
 - [ ] `NodeRef::animate` returning an `Animation` handle, with `animation_end`
       (§U6.3).
 

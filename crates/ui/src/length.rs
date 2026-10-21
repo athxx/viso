@@ -11,10 +11,11 @@
 //! does a padding of plain `dp` whose `start` and `end` agree.
 
 use crate::adaptive::LayoutDirection;
+use crate::animation::{LookValue, Timing};
 use crate::component::NodeStore;
 use crate::dirty::DirtyClass;
 use crate::grid::{GridTracks, TrackSizing};
-use crate::layout::{AbsoluteInsets, BoxRules, Inset, LayoutInput, Length, Placement};
+use crate::layout::{AbsoluteInsets, BoxRules, Inset, LayoutInput, Length, Placement, Vec2};
 
 use crate::node::NodeId;
 pub use viso_schema::length::{
@@ -103,6 +104,16 @@ struct GridBinding {
     pending: bool,
 }
 
+/// A translate whose terms read the environment: what they read, and
+/// whether they re-fold at the next layout.
+#[derive(Debug, Clone, Copy)]
+struct TranslateBinding {
+    node: NodeId,
+    terms: [LengthTerms; 2],
+    deps: LengthDeps,
+    pending: bool,
+}
+
 /// The track a [`TrackSizing::Length`] folds to against `env` at `font` dp
 /// per em: `Fixed` without a percent term, `Percent` with nothing else, else
 /// `Relative`; any other track as it is. `None` when a term folds to a
@@ -152,6 +163,8 @@ pub(crate) struct LengthBindings {
     font_moved: bool,
     /// The grids whose tracks read the environment, by ascending index.
     grids: Vec<GridBinding>,
+    /// The translates that read the environment, by ascending index.
+    translates: Vec<TranslateBinding>,
     /// The nodes that set the direction their subtree's lines run in, by
     /// ascending index.
     directions: Vec<(NodeId, LayoutDirection)>,
@@ -174,6 +187,7 @@ impl LengthBindings {
     pub(crate) fn clear(&mut self) {
         self.bindings.clear();
         self.grids.clear();
+        self.translates.clear();
         self.directions.clear();
         self.terms.clear();
         self.free_terms.clear();
@@ -654,6 +668,20 @@ impl NodeStore {
                 self.fold_grid_tracks(grid.node);
             }
         }
+        let mut at = 0;
+        while at < self.lengths().translates.len() {
+            let translate = self.lengths().translates[at];
+            if !self.arena().is_live(translate.node) {
+                self.lengths_mut().translates.remove(at);
+                continue;
+            }
+            at += 1;
+            if translate.pending {
+                self.lengths_mut().translates[at - 1].pending = false;
+                let offset = self.fold_offset(translate.node, translate.terms);
+                self.present(translate.node, LookValue::Translate(offset));
+            }
+        }
         self.lengths_mut().pending = false;
     }
 
@@ -697,6 +725,109 @@ impl NodeStore {
         }
     }
 
+    /// The offset `terms` fold to at node `id`, in dp; a term that does not
+    /// fold is zero.
+    fn fold_offset(&self, id: NodeId, [x, y]: [LengthTerms; 2]) -> Vec2 {
+        let env = self.lengths().env;
+        let font = self.font_of(id);
+        Vec2 {
+            x: x.fixed(&env, font).unwrap_or(0.0),
+            y: y.fixed(&env, font).unwrap_or(0.0),
+        }
+    }
+
+    /// Moves node `id` and its subtree by `x` and `y`, a `px`, `sp` or `em`
+    /// term following the environment: over `timing` when given, from where
+    /// it shows now, else at once, ending a move. TRANSFORM only, as any
+    /// translate. A no-op for a stale handle.
+    pub fn set_translate_terms(
+        &mut self,
+        id: NodeId,
+        x: LengthTerms,
+        y: LengthTerms,
+        timing: Option<Timing>,
+    ) {
+        if !self.arena().is_live(id) {
+            return;
+        }
+        let terms = [x, y];
+        let deps = x.deps() | y.deps();
+        let table = self.lengths_mut();
+        let at = table
+            .translates
+            .binary_search_by_key(&id.index(), |t| t.node.index());
+        let binding = TranslateBinding {
+            node: id,
+            terms,
+            deps,
+            pending: false,
+        };
+        match (at, deps.is_empty()) {
+            (Ok(at), true) => {
+                table.translates.remove(at);
+            }
+            (Err(_), true) => {}
+            (Ok(at), false) => table.translates[at] = binding,
+            (Err(at), false) => table.translates.insert(at, binding),
+        }
+        let target = LookValue::Translate(self.fold_offset(id, terms));
+        match timing {
+            Some(timing) => self.transition(id, target, timing),
+            None => {
+                self.settle(id, &target);
+                self.present(id, target);
+            }
+        }
+    }
+
+    /// Rounds node `id`'s corners by `radius` as
+    /// [`set_corner_radius`](Self::set_corner_radius) does, moving there over
+    /// `timing` from the radius it shows now.
+    pub fn transition_corner_radius(&mut self, id: NodeId, radius: LengthTerms, timing: Timing) {
+        if !self.arena().is_live(id) {
+            return;
+        }
+        let env = self.lengths().env;
+        let dp = radius.fixed(&env, self.font_of(id)).unwrap_or(0.0);
+        self.transition(
+            id,
+            LookValue::Radius {
+                dp,
+                pct: radius.pct,
+            },
+            timing,
+        );
+        let env_free = radius.px == 0.0 && radius.sp == 0.0 && radius.em == 0.0;
+        self.edit_corner_radius(id, (!env_free).then_some(radius));
+    }
+
+    /// Sizes node `id` on one axis (`width`, else its height) to `terms`,
+    /// moving there over `timing` from the extent it shows now when both are
+    /// fixed; between any others it takes the new size at once.
+    pub fn transition_size(&mut self, id: NodeId, width: bool, terms: LengthTerms, timing: Timing) {
+        if !self.arena().is_live(id) {
+            return;
+        }
+        let env = self.lengths().env;
+        if let Some(Length::Fixed(v)) = terms.fold(&env, self.font_of(id)) {
+            let to = if width {
+                LookValue::Width(v)
+            } else {
+                LookValue::Height(v)
+            };
+            self.transition(id, to, timing);
+        }
+        let size = crate::layout_value::BoundSize::Fixed(terms);
+        self.set_layout_value(
+            id,
+            if width {
+                crate::layout_value::LayoutValue::Width(size)
+            } else {
+                crate::layout_value::LayoutValue::Height(size)
+            },
+        );
+    }
+
     fn fold_binding(&mut self, id: NodeId, lengths: &NodeLengths) {
         let env = LengthEnv {
             direction: self.direction_at(id.index()),
@@ -718,6 +849,20 @@ impl NodeStore {
                 self.lengths_mut().report(id, LengthIssue::NonFinite);
                 Length::Fit
             });
+            // A size moving between fixed extents turns toward the new one.
+            let moving = match (folded, width) {
+                (Length::Fixed(v), true) => LookValue::Width(v),
+                (Length::Fixed(v), false) => LookValue::Height(v),
+                (_, true) => LookValue::Width(0.0),
+                (_, false) => LookValue::Height(0.0),
+            };
+            if self.is_moving(id, &moving) {
+                if matches!(folded, Length::Fixed(_)) {
+                    self.present(id, moving);
+                    continue;
+                }
+                self.settle(id, &moving);
+            }
             let size = self.layout_input_mut(id).size_mut();
             let slot = if width {
                 &mut size.width
@@ -806,7 +951,13 @@ impl NodeStore {
                 self.lengths_mut().report(id, LengthIssue::NonFinite);
                 0.0
             });
-            self.write_corner_radius(id, dp, radius.pct);
+            self.present(
+                id,
+                LookValue::Radius {
+                    dp,
+                    pct: radius.pct,
+                },
+            );
         }
         if class != DirtyClass::EMPTY {
             self.mark_dirty(id, class);
@@ -826,6 +977,12 @@ impl LengthBindings {
         for grid in &mut self.grids {
             if grid.deps.intersects(deps) {
                 grid.pending = true;
+                self.pending = true;
+            }
+        }
+        for translate in &mut self.translates {
+            if translate.deps.intersects(deps) {
+                translate.pending = true;
                 self.pending = true;
             }
         }

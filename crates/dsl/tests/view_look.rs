@@ -288,6 +288,67 @@ fn a_changed_look_moves_in_over_its_transition() {
     }
 }
 
+const MOVE: &str = r#"
+component Move {
+    state lit = false;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Text {
+                text: "a";
+                width: if lit { 60dp } else { 20dp };
+                height: 20dp;
+                translate: Offset { x: if lit { 40dp } else { 0dp }, y: 0dp };
+                corner_radius: if lit { 10dp } else { 0dp };
+                color: if lit { #ff0000 } else { #ff000000 };
+                transition.width: Transition { duration: 100ms, easing: Easing::linear };
+                transition.translate: Transition { duration: 100ms, easing: Easing::linear };
+                transition.corner_radius: Transition { duration: 100ms, easing: Easing::linear };
+                transition.color: Transition { duration: 100ms, easing: Easing::linear };
+                on click { lit = !lit; }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_translate_radius_size_and_text_color_move_in_over_their_transitions() {
+    use viso_ui::Length;
+    let ms = Duration::from_millis;
+    for mut rt in [Rt::reload(MOVE), Rt::package(MOVE)] {
+        let root = rt.root.expect("mounted");
+        let [text] = rt.children(root)[..] else {
+            panic!("the text");
+        };
+        let width = |rt: &Rt| rt.store.size_request(text).unwrap().width;
+        assert_eq!(rt.store.translate(text).x, 0.0);
+        assert_eq!(width(&rt), Length::Fixed(20.0));
+
+        rt.click(5.0, 5.0);
+        rt.layout();
+        assert_eq!(rt.store.translate(text).x, 0.0, "a changed value moves in");
+        rt.store.tick_transitions(ms(50));
+        rt.layout();
+        assert_eq!(rt.store.translate(text).x, 20.0);
+        assert_eq!(rt.store.style(text).radius, 5.0);
+        assert_eq!(width(&rt), Length::Fixed(40.0));
+        let ink = rt.store.text_request(text).map(|r| r.color);
+        assert_eq!(
+            ink.map(|c| c.r),
+            Some(1.0),
+            "the request carries the target"
+        );
+        rt.store.tick_transitions(ms(50));
+        rt.layout();
+        assert_eq!(rt.store.translate(text).x, 40.0);
+        assert_eq!(rt.store.style(text).radius, 10.0);
+        assert_eq!(width(&rt), Length::Fixed(60.0));
+        assert!(!rt.store.is_transitioning());
+    }
+}
+
 /// The error codes a view whose text node binds `property: value;` compiles with.
 fn codes(property: &str, value: &str) -> Vec<String> {
     let source =
@@ -308,8 +369,10 @@ fn a_transition_names_an_animatable_property_and_takes_a_transition() {
     );
     assert_eq!(codes("transition.opacity", "100ms"), ["E3703"]);
     assert_eq!(codes("transition.text", spec), ["E3703"]);
+    assert_eq!(codes("transition.translate", spec), Vec::<String>::new());
+    assert_eq!(codes("transition.color", spec), Vec::<String>::new());
     assert_eq!(
-        codes("transition.translate", spec),
+        codes("transition.scale", spec),
         ["E3711"],
         "a transition the runtime does not play yet is no silent no-op"
     );

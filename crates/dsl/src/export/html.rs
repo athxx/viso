@@ -145,6 +145,8 @@ pub(super) enum VarToken {
     /// An `Option<Border>`, as an inset `box-shadow`: it strokes inside the
     /// box without moving its content.
     Border,
+    /// An `Offset`, as `translate`.
+    Translate,
     /// A `Transition` for the CSS property named.
     Transition(&'static str),
 }
@@ -1111,6 +1113,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             VarToken::Opacity => "the opacity",
             VarToken::Radius => "the corner radius",
             VarToken::Border => "the border",
+            VarToken::Translate => "the translate",
             VarToken::Transition(_) => "the transition",
         };
         match self.fixed(entry, what, at) {
@@ -1131,6 +1134,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 VarToken::Opacity => css::number(v.as_float().unwrap_or(1.0).clamp(0.0, 1.0)),
                 VarToken::Radius => radius(&v),
                 VarToken::Border => stroke(&v),
+                VarToken::Translate => offset(&v),
                 VarToken::Transition(_) => String::new(),
             },
             Fixed::Theme(name) => format!("var({name})"),
@@ -1177,6 +1181,12 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 "box-shadow",
                 VarToken::Border,
             ),
+            (
+                look.translate,
+                viso_schema::view::ControlInput::Translate,
+                "translate",
+                VarToken::Translate,
+            ),
         ] {
             if let Some(entry) = base {
                 let var = format!("--v{key}-{property}");
@@ -1203,6 +1213,11 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         for (entry, property) in [
             (look.background_transition, "background-color"),
             (look.opacity_transition, "opacity"),
+            (look.translate_transition, "translate"),
+            (look.corner_radius_transition, "border-radius"),
+            (look.color_transition, "color"),
+            (look.width_transition, "width"),
+            (look.height_transition, "height"),
         ] {
             let Some(entry) = entry else { continue };
             match self.fixed(entry, "the transition", at) {
@@ -1869,6 +1884,40 @@ fn radius(value: &Value) -> String {
         [] => "0".to_owned(),
         _ => format!("calc({})", parts.join(" + ")),
     }
+}
+
+/// A `MixedLength` as a CSS length.
+fn css_length(value: Option<&Value>) -> String {
+    let Some(Value::Agg(agg)) = value else {
+        return "0px".to_owned();
+    };
+    let term = |at: usize| agg.fields.get(at).and_then(Value::as_float).unwrap_or(0.0);
+    let parts: Vec<String> = [
+        (0, "1px"),
+        (1, "var(--viso-px)"),
+        (2, "0.0625rem"),
+        (3, "1em"),
+    ]
+    .into_iter()
+    .filter(|&(at, _)| term(at) != 0.0)
+    .map(|(at, unit)| format!("{} * {unit}", css::number(term(at))))
+    .collect();
+    match parts.as_slice() {
+        [] => "0px".to_owned(),
+        _ => format!("calc({})", parts.join(" + ")),
+    }
+}
+
+/// An `Offset` as a CSS `translate`.
+fn offset(value: &Value) -> String {
+    let Value::Agg(agg) = value else {
+        return "none".to_owned();
+    };
+    format!(
+        "{} {}",
+        css_length(agg.fields.first()),
+        css_length(agg.fields.get(1))
+    )
 }
 
 /// An `Option<Border>` as an inset `box-shadow`, `none` for no border.

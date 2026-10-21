@@ -2304,6 +2304,8 @@ impl NodeStore {
         if matches!(content, Content::Text { .. }) {
             classes |= DirtyClass::SEMANTICS;
         }
+        let mut content = content;
+        self.arriving(id, &mut content);
         self.leave_shader(id.index() as usize);
         self.content_payload[id.index() as usize] = Some(Box::new(content));
         self.mark_dirty(id, classes);
@@ -2577,10 +2579,11 @@ impl NodeStore {
     /// spurious (AGENTS section 11/15 invalidation contract). The text-*content*
     /// change path ([`Self::set_content_payload`]) still marks SEMANTICS; this is
     /// the reflow-only sibling. A live-guarded write — a stale handle is a no-op.
-    pub fn set_reflowed_content(&mut self, id: NodeId, content: Content) {
+    pub fn set_reflowed_content(&mut self, id: NodeId, mut content: Content) {
         if !self.arena.is_live(id) {
             return;
         }
+        self.arriving(id, &mut content);
         self.leave_shader(id.index() as usize);
         self.content_payload[id.index() as usize] = Some(Box::new(content));
         self.mark_dirty(
@@ -3021,12 +3024,31 @@ impl NodeStore {
         }
     }
 
-    /// The value of the look property `of` names that a node shows now.
+    /// The value of the look property `of` names that a node shows now; `of`
+    /// itself for one it shows none of (a text color with no text, a size
+    /// that is not fixed), which then shows at once.
     fn shown(&self, id: NodeId, of: &LookValue) -> LookValue {
         let i = id.index() as usize;
-        match of {
+        match *of {
             LookValue::Fill(_) => LookValue::Fill(self.style[i].fill),
             LookValue::Opacity(_) => LookValue::Opacity(self.opacity[i]),
+            LookValue::Radius { .. } => LookValue::Radius {
+                dp: self.style[i].radius,
+                pct: self.style[i].radius_pct,
+            },
+            LookValue::TextColor(_) => match self.content_payload[i].as_deref() {
+                Some(Content::Text { color, .. }) => LookValue::TextColor(*color),
+                _ => *of,
+            },
+            LookValue::Translate(_) => LookValue::Translate(self.translate[i]),
+            LookValue::Width(_) => match self.layout[i].size().width {
+                Length::Fixed(v) => LookValue::Width(v),
+                _ => *of,
+            },
+            LookValue::Height(_) => match self.layout[i].size().height {
+                Length::Fixed(v) => LookValue::Height(v),
+                _ => *of,
+            },
         }
     }
 
@@ -3034,11 +3056,59 @@ impl NodeStore {
         match value {
             LookValue::Fill(fill) => self.write_fill(id, fill),
             LookValue::Opacity(opacity) => self.write_opacity(id, opacity),
+            LookValue::Radius { dp, pct } => self.write_corner_radius(id, dp, pct),
+            LookValue::TextColor(ink) => {
+                if let Some(Content::Text { color, .. }) =
+                    self.content_payload[id.index() as usize].as_deref_mut()
+                    && *color != ink
+                {
+                    *color = ink;
+                    self.mark_dirty(id, DirtyClass::PAINT);
+                }
+            }
+            LookValue::Translate(offset) => self.set_translate(id, offset),
+            LookValue::Width(v) | LookValue::Height(v) => {
+                let width = matches!(value, LookValue::Width(_));
+                let size = self.layout_input_mut(id).size_mut();
+                let slot = if width {
+                    &mut size.width
+                } else {
+                    &mut size.height
+                };
+                if *slot != Length::Fixed(v) {
+                    *slot = Length::Fixed(v);
+                    self.request_moved(id);
+                    self.mark_dirty(
+                        id,
+                        DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether the property `of` names is moving on `id`.
+    #[inline]
+    pub(crate) fn is_moving(&self, id: NodeId, of: &LookValue) -> bool {
+        !self.transitions.is_empty() && self.transitions.iter().any(|t| t.moves(id, of))
+    }
+
+    /// A text content arriving while its color moves keeps the color shown
+    /// and turns the move toward the color it brings.
+    fn arriving(&mut self, id: NodeId, content: &mut Content) {
+        if let Content::Text { color, .. } = content
+            && self.is_moving(id, &LookValue::TextColor(*color))
+        {
+            let target = LookValue::TextColor(*color);
+            if let LookValue::TextColor(shown) = self.shown(id, &target) {
+                self.present(id, target);
+                *color = shown;
+            }
         }
     }
 
     /// Drops the transition moving the property `of` names on `id`, if any.
-    fn settle(&mut self, id: NodeId, of: &LookValue) {
+    pub(crate) fn settle(&mut self, id: NodeId, of: &LookValue) {
         if let Some(at) = self.transitions.iter().position(|t| t.moves(id, of)) {
             self.transitions.swap_remove(at);
         }

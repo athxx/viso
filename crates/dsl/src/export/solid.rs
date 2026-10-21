@@ -684,6 +684,7 @@ impl Jsx<'_> {
                                 VarToken::Opacity => format!("show.opacity({v})"),
                                 VarToken::Radius => format!("show.radius({v})"),
                                 VarToken::Border => format!("show.stroke({v})"),
+                                VarToken::Translate => format!("show.offset({v})"),
                                 VarToken::Transition(property) => {
                                     format!("show.move({v}, \"{property}\")")
                                 }

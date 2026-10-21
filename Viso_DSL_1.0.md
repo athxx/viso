@@ -2137,7 +2137,7 @@ Canvas {
 - Handler 在 `component!`、`view!`、Hot Reload 与 Release Package 中以同一张 Handler 表挂载：每个 Handler 是所在 Component 的一个 Behavior Chunk，节点只登记 `(Event 路由, Handler 下标, 是否 capture)`，State 写入在 Transaction 结束时回写 UI State Cell；
 - 一次输入样本对每个节点只运行一次 Handler：未写 `capture` 的 Handler 在 Target 与 Bubble 段运行，祖先节点上的 Handler 不因 Capture 段再运行一次；写 `capture` 的 Handler 在 Capture 段（自根向 Target，先于 Target 上的 Handler）与 Target 段运行，不在 Bubble 段运行；控件的内建响应仍只在其自身节点投递；
 - 内置控件（`Toggle`/`CheckBox`、`Slider`、`Tabs`/`RadioGroup`、`TextInput`）的内建响应随同一张 Handler 表挂载：控件从 Handler 表中的纯表达式条目读取当前值与范围（`checked`、`value`、`min`、`max`、`step`、`selected`），据样本算出新值后投递 Schema 声明的 `changed`、`selected_changed` 或 `submitted`；
-- 节点显示的反应式属性值同样是 Handler 表中的纯表达式条目：`Text`/`Button` 的 `text`、`TextInput` 的 `value`、控件的 `checked`、`value`、`selected`、`min`、`max`，以及任一原生节点外观的 `background`（填充色，`None` 为无填充）与 `opacity`（节点及其子树作为一层合成，按节点自身盒合成，`0` 不绘制；只标记 `PAINT`），及二者的 `transition.background`、`transition.opacity`（只在所移动的值变化时求值，不是依赖，见 §U6.1）。节点挂载时求值一次；之后只有其条目（沿调用传递）所读 State 在该帧变化时才重新求值，与节点当前显示值相等的结果不投递；`Text`/`Button` 的值成为节点文本，`TextInput` 的值播种其编辑缓冲（缓冲已持有相同文本时不重置光标，播种不算编辑、不投递 `changed`）；控件的值与范围成为节点的语义状态：`Toggle`/`CheckBox` 的 `checked`，`Slider` 的 `value` 与 `min`..`max` 范围，`Tabs`/`RadioGroup` 第 `selected` 个子节点为选中、其余未选中；未声明 `value` 的 `TextInput` 不被播种，重新挂载不覆盖用户已输入的文本；`for` 与条件区域内的节点在其片段挂载时求值，之后按同一规则随其所读 State 与所绑定条目重新求值；`component!`、`view!`、Hot Reload 提交与 Release Package 以同一规则投递，保持树结构的 Hot Reload 替换视图原有的求值挂钩而不累加；条目求值 Fault 保留节点原值并记录在宿主上；
+- 节点显示的反应式属性值同样是 Handler 表中的纯表达式条目：`Text`/`Button` 的 `text`、`TextInput` 的 `value`、控件的 `checked`、`value`、`selected`、`min`、`max`，以及任一原生节点外观的 `background`（填充色，`None` 为无填充）与 `opacity`（节点及其子树作为一层合成，按节点自身盒合成，`0` 不绘制；只标记 `PAINT`），`translate`（`Offset` 的 `px`/`sp`/`em` 项随环境重新折叠，只标记 `TRANSFORM`），及 `transition.background`、`transition.opacity`、`transition.translate`、`transition.corner_radius`、`transition.width`/`height`（只在两端都是 `fixed` 时插值）与文本的 `transition.color`（只在所移动的值变化时求值，不是依赖，见 §U6.1）。节点挂载时求值一次；之后只有其条目（沿调用传递）所读 State 在该帧变化时才重新求值，与节点当前显示值相等的结果不投递；`Text`/`Button` 的值成为节点文本，`TextInput` 的值播种其编辑缓冲（缓冲已持有相同文本时不重置光标，播种不算编辑、不投递 `changed`）；控件的值与范围成为节点的语义状态：`Toggle`/`CheckBox` 的 `checked`，`Slider` 的 `value` 与 `min`..`max` 范围，`Tabs`/`RadioGroup` 第 `selected` 个子节点为选中、其余未选中；未声明 `value` 的 `TextInput` 不被播种，重新挂载不覆盖用户已输入的文本；`for` 与条件区域内的节点在其片段挂载时求值，之后按同一规则随其所读 State 与所绑定条目重新求值；`component!`、`view!`、Hot Reload 提交与 Release Package 以同一规则投递，保持树结构的 Hot Reload 替换视图原有的求值挂钩而不累加；条目求值 Fault 保留节点原值并记录在宿主上；
 - Runtime 尚未投递的标准事件（如 `long_press`、`scroll`、`focus`）或 Behavior 无法 Lower 的 Handler 体报 `E3711`；Hot Reload 中出现 `E3711` 时保留 Last-good Handler；
 - Handler 运行期 Fault 只中止该次调用、不回写任何 State，Fault 记录在宿主上。
 
@@ -4750,6 +4750,8 @@ Row {
 | `width`、`height`（仅 `fixed` 值之间）            | `MEASURE\|LAYOUT`            |
 
 对 `width`/`height` 设置 transition 合法但每帧重新布局；`viso check` 对 `VirtualList` Item Template 中的这类 transition 报告性能提示。其他 Property 不可动画。
+
+当前实现：`translate`、`opacity`、`background`、`color`、`corner_radius`、`width`、`height` 的 transition 在 `component!`、`view!`、Hot Reload 与 Release 包中播放（Web 导出为 CSS `transition`）：长度在开始时按节点的环境与字号折叠，移动途中环境变化时转向新的折叠值而不中断；文本重新排版送达的新颜色不打断颜色的移动。`scale` 与 `rotation` 尚无变换通道，其 transition 报 `E3711`。
 
 ### U6.3 `Animation` 句柄
 

@@ -151,6 +151,43 @@ fn a_box_s_corner_radius_and_border_export_as_rounded_corners_and_an_inner_strok
     assert!(script.contains("P.vradius("), "{script}");
 }
 
+const MOVED: &str = r#"
+export component Moved {
+    state on = false;
+    view {
+        Column {
+            Text {
+                width: 40dp;
+                height: 20dp;
+                translate: Offset { x: 4dp, y: 1sp };
+                transition.translate: Transition { duration: 100ms };
+                transition.corner_radius: Transition { duration: 200ms };
+            }
+            Text {
+                width: 40dp;
+                height: 20dp;
+                translate: Offset { x: if on { 8dp } else { 0dp }, y: 0dp };
+                on click { on = !on; }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_translate_and_its_transition_export_as_css_translate() {
+    let page = export(MOVED, false).unwrap();
+    let css = &page.styles;
+    assert!(
+        css.contains("translate: calc(4 * 1px) calc(1 * 0.0625rem);"),
+        "{css}"
+    );
+    assert!(css.contains("translate 0.1s"), "{css}");
+    assert!(css.contains("border-radius 0.2s"), "{css}");
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.vtranslate("), "{script}");
+}
+
 const GUARDED: &str = r#"
 export component Guarded {
     state on = true;

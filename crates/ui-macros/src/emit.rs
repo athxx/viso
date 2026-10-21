@@ -648,6 +648,14 @@ fn control_tokens(control: Control) -> TokenStream {
         entry(look.background_transition),
         entry(look.opacity_transition),
     );
+    let (translate, translate_transition) =
+        (entry(look.translate), entry(look.translate_transition));
+    let (corner_radius_transition, color_transition) = (
+        entry(look.corner_radius_transition),
+        entry(look.color_transition),
+    );
+    let (width_transition, height_transition) =
+        (entry(look.width_transition), entry(look.height_transition));
     let layout = control.layout.iter().map(|&(slot, entry)| {
         let slot = Ident::new(slot.variant(), Span::call_site());
         quote! { (::viso::__private::viso_view::LayoutSlot::#slot, #entry) }
@@ -698,6 +706,12 @@ fn control_tokens(control: Control) -> TokenStream {
                 border: #border,
                 background_transition: #background_transition,
                 opacity_transition: #opacity_transition,
+                translate: #translate,
+                translate_transition: #translate_transition,
+                corner_radius_transition: #corner_radius_transition,
+                color_transition: #color_transition,
+                width_transition: #width_transition,
+                height_transition: #height_transition,
             },
             arms: ::std::boxed::Box::new([#(#arms),*]),
             node: ::viso::__private::viso_view::NodeEntries {

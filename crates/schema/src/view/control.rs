@@ -119,6 +119,14 @@ impl ControlKind {
             (_, "border") => ControlInput::Border,
             (_, "transition.background") => ControlInput::BackgroundTransition,
             (_, "transition.opacity") => ControlInput::OpacityTransition,
+            (_, "translate") => ControlInput::Translate,
+            (_, "transition.translate") => ControlInput::TranslateTransition,
+            (_, "transition.corner_radius") => ControlInput::CornerRadiusTransition,
+            (_, "transition.width") => ControlInput::WidthTransition,
+            (_, "transition.height") => ControlInput::HeightTransition,
+            (ControlKind::Label | ControlKind::TextInput, "transition.color") => {
+                ControlInput::ColorTransition
+            }
             (_, "semantics.label") => ControlInput::Label,
             (_, "semantics.hint") => ControlInput::Hint,
             (_, "semantics.value") => ControlInput::SpokenValue,
@@ -506,6 +514,18 @@ pub enum ControlInput {
     BackgroundTransition,
     /// The node's `transition.opacity`.
     OpacityTransition,
+    /// The node's `translate`: an `Offset` it and its subtree move by.
+    Translate,
+    /// The node's `transition.translate`.
+    TranslateTransition,
+    /// The node's `transition.corner_radius`.
+    CornerRadiusTransition,
+    /// A text's `transition.color`.
+    ColorTransition,
+    /// The node's `transition.width`.
+    WidthTransition,
+    /// The node's `transition.height`.
+    HeightTransition,
     /// The node's `semantics.label`: its accessible name.
     Label,
     /// The node's `semantics.hint`.
@@ -757,6 +777,18 @@ pub struct Look {
     pub background_transition: Option<u32>,
     /// Its `transition.opacity`: how a new opacity moves in.
     pub opacity_transition: Option<u32>,
+    /// Its `translate`: an `Offset`.
+    pub translate: Option<u32>,
+    /// Its `transition.translate`.
+    pub translate_transition: Option<u32>,
+    /// Its `transition.corner_radius`.
+    pub corner_radius_transition: Option<u32>,
+    /// Its text's `transition.color`.
+    pub color_transition: Option<u32>,
+    /// Its `transition.width`: how a new fixed width moves in.
+    pub width_transition: Option<u32>,
+    /// Its `transition.height`.
+    pub height_transition: Option<u32>,
 }
 
 impl Control {
@@ -803,6 +835,12 @@ impl Control {
             ControlInput::Border => self.look.border,
             ControlInput::BackgroundTransition => self.look.background_transition,
             ControlInput::OpacityTransition => self.look.opacity_transition,
+            ControlInput::Translate => self.look.translate,
+            ControlInput::TranslateTransition => self.look.translate_transition,
+            ControlInput::CornerRadiusTransition => self.look.corner_radius_transition,
+            ControlInput::ColorTransition => self.look.color_transition,
+            ControlInput::WidthTransition => self.look.width_transition,
+            ControlInput::HeightTransition => self.look.height_transition,
             ControlInput::Label => self.semantics.label,
             ControlInput::Hint => self.semantics.hint,
             ControlInput::SpokenValue => self.semantics.value,
@@ -852,6 +890,12 @@ impl Control {
             ControlInput::Border => &mut self.look.border,
             ControlInput::BackgroundTransition => &mut self.look.background_transition,
             ControlInput::OpacityTransition => &mut self.look.opacity_transition,
+            ControlInput::Translate => &mut self.look.translate,
+            ControlInput::TranslateTransition => &mut self.look.translate_transition,
+            ControlInput::CornerRadiusTransition => &mut self.look.corner_radius_transition,
+            ControlInput::ColorTransition => &mut self.look.color_transition,
+            ControlInput::WidthTransition => &mut self.look.width_transition,
+            ControlInput::HeightTransition => &mut self.look.height_transition,
             ControlInput::Label => &mut self.semantics.label,
             ControlInput::Hint => &mut self.semantics.hint,
             ControlInput::SpokenValue => &mut self.semantics.value,
@@ -902,6 +946,12 @@ impl Encode for Control {
             look.border,
             look.background_transition,
             look.opacity_transition,
+            look.translate,
+            look.translate_transition,
+            look.corner_radius_transition,
+            look.color_transition,
+            look.width_transition,
+            look.height_transition,
             semantics.label,
             semantics.hint,
             semantics.value,
@@ -990,6 +1040,12 @@ impl Decode for Control {
                 border: entry()?,
                 background_transition: entry()?,
                 opacity_transition: entry()?,
+                translate: entry()?,
+                translate_transition: entry()?,
+                corner_radius_transition: entry()?,
+                color_transition: entry()?,
+                width_transition: entry()?,
+                height_transition: entry()?,
             },
             arms: Box::new([]),
             semantics: SemanticEntries {
@@ -1225,6 +1281,12 @@ mod tests {
                 border: None,
                 background_transition: None,
                 opacity_transition: Some(4),
+                translate: Some(20),
+                translate_transition: None,
+                corner_radius_transition: Some(21),
+                color_transition: None,
+                width_transition: Some(22),
+                height_transition: None,
             },
             arms: Box::new([LookArm {
                 input: ControlInput::Border,

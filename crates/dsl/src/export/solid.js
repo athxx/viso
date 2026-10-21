@@ -274,6 +274,7 @@ export const show = {
   opacity: (v) => String(Math.min(Math.max(v ?? 1, 0), 1)),
   radius,
   stroke,
+  offset,
   focusable: P.focusable,
   enabled: P.enabled,
   autofocus: P.autofocus,

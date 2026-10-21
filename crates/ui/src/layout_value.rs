@@ -196,10 +196,20 @@ impl NodeStore {
     /// it paints moves.
     pub fn set_corner_radius(&mut self, id: NodeId, radius: LengthTerms) {
         let env_free = radius.px == 0.0 && radius.sp == 0.0 && radius.em == 0.0;
-        self.edit_lengths(id, |l| l.corner_radius = (!env_free).then_some(radius));
+        // A radius set at once ends a move.
+        self.settle(
+            id,
+            &crate::animation::LookValue::Radius { dp: 0.0, pct: 0.0 },
+        );
+        self.edit_corner_radius(id, (!env_free).then_some(radius));
         if env_free {
             self.write_corner_radius(id, radius.dp, radius.pct);
         }
+    }
+
+    /// Binds `radius` as the node's corner radius terms, `None` for none.
+    pub(crate) fn edit_corner_radius(&mut self, id: NodeId, radius: Option<LengthTerms>) {
+        self.edit_lengths(id, |l| l.corner_radius = radius);
     }
 
     fn edit_lengths(&mut self, id: NodeId, edit: impl FnOnce(&mut NodeLengths)) {

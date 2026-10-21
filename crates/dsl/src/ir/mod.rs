@@ -571,7 +571,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     {
                         self.unmount((
                             at,
-                            format!("`{name}` does not play yet; `transition.background` and `transition.opacity` do"),
+                            format!("`{name}` does not play yet; the transitions of `translate`, `opacity`, `background`, `color`, `corner_radius`, `width` and `height` do"),
                         ));
                     }
                     match fold_property(
