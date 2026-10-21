@@ -1033,6 +1033,11 @@ impl Scheduler {
         self.history = Some(History::new(u64::from(seconds) * rate, rate / 4, input));
     }
 
+    /// Whether the scheduler keeps a history.
+    pub fn keeps_history(&self) -> bool {
+        self.history.is_some()
+    }
+
     /// Stops keeping a history and frees it.
     pub fn drop_history(&mut self) {
         self.history = None;

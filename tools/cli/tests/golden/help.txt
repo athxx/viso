@@ -1603,10 +1603,12 @@ Usage: viso game [OPTIONS] <COMMAND>
 Examples:
   viso game peek movement Player.score               # read a state of the running game
   viso game record movement --output runs/jump.tape  # record ten seconds of play
+  viso game replay movement                          # replay the last seconds on the reloaded code
 
 Commands:
   peek    Print a state of the running game as JSON
   record  Restart the running game's World and record the next stretch of play as an input tape
+  replay  Run the last seconds of play again on the code running now, as a logic reload left it
 
 Options:
   -h, --help  Print help
@@ -1672,6 +1674,34 @@ Options:
       --seconds <S>    How many seconds of play to record [default: 10]
       --ticks <N>      How many fixed ticks to record, instead of `--seconds`
   -h, --help           Print help
+
+Global options:
+      --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward
+      --json               Write JSON events to stdout, one per line, instead of text
+  -q, --quiet              Print only errors, requested paths and the summary
+  -v, --verbose            Also print the resolved configuration, the tools run and stage times
+      --color <WHEN>       When to color human output; `auto` is a terminal without `NO_COLOR` [default: auto] [possible values: auto, always, never]
+      --offline            Use no network: Cargo and downloads work from what is on disk
+      --locked             Require `Cargo.lock` to be up to date
+      --jobs <N>           Run at most N jobs at once
+      --profile <NAME>     The build profile [possible values: dev, release, shipping]
+      --target-dir <PATH>  Put build output under PATH instead of `target/`
+
+$ viso game replay --help
+Run the last seconds of play again on the code running now, as a logic reload left it
+
+Usage: viso game replay [OPTIONS] <GAME>
+
+Examples:
+  viso game replay movement              # all the play the game kept
+  viso game replay movement --seconds 3  # the last three seconds
+
+Arguments:
+  <GAME>  The game, by its `.vs` file: a path from the project root, with or without the extension, or the file's stem
+
+Options:
+      --seconds <S>  How many seconds of play to run again; all the game kept by default
+  -h, --help         Print help
 
 Global options:
       --project <PATH>     Use the project at PATH, a directory or its `Viso.toml`, not the one found upward

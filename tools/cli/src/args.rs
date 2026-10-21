@@ -939,6 +939,9 @@ pub enum GameCommand {
     /// Restart the running game's World and record the next stretch of
     /// play as an input tape.
     Record(RecordArgs),
+    /// Run the last seconds of play again on the code running now, as a
+    /// logic reload left it.
+    Replay(ReplayArgs),
 }
 
 /// What `viso game peek` reads.
@@ -973,6 +976,17 @@ pub struct RecordArgs {
     /// How many fixed ticks to record, instead of `--seconds`.
     #[arg(long, value_name = "N")]
     pub ticks: Option<u64>,
+}
+
+/// What `viso game replay` replays.
+#[derive(Debug, Args)]
+pub struct ReplayArgs {
+    /// The game, by its `.vs` file: a path from the project root, with or
+    /// without the extension, or the file's stem.
+    pub game: String,
+    /// How many seconds of play to run again; all the game kept by default.
+    #[arg(long, value_name = "S")]
+    pub seconds: Option<f64>,
 }
 
 /// The test domains `viso test` runs.
@@ -1379,6 +1393,7 @@ impl Command {
             Command::Config(ConfigCommand::Validate) => "config validate",
             Command::Game(GameCommand::Peek(_)) => "game peek",
             Command::Game(GameCommand::Record(_)) => "game record",
+            Command::Game(GameCommand::Replay(_)) => "game replay",
             Command::Inspect(InspectArgs { command, .. }) => match command {
                 None => "inspect",
                 Some(InspectCommand::Tree(_)) => "inspect tree",
@@ -1890,5 +1905,12 @@ mod tests {
             Cli::try_parse_from(["viso", "game", "record", "m"]).is_err(),
             "--output is needed"
         );
+
+        let cli = Cli::try_parse_from(["viso", "game", "replay", "m", "--seconds", "3"]).unwrap();
+        let Command::Game(GameCommand::Replay(args)) = &cli.command else {
+            panic!("a replay");
+        };
+        assert_eq!((&*args.game, args.seconds), ("m", Some(3.0)));
+        assert_eq!(cli.command.name(), "game replay");
     }
 }

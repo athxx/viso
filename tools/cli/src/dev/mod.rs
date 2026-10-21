@@ -1502,6 +1502,19 @@ impl DevSession {
             (Ok(GameReply::Tape { tape }), GameAsk::Record { .. }) => {
                 ControlReply::Tape { file, tape }
             }
+            (
+                Ok(GameReply::Replayed {
+                    from,
+                    ticks,
+                    sessions,
+                }),
+                GameAsk::Replay { .. },
+            ) => ControlReply::Replayed {
+                file,
+                from,
+                ticks,
+                sessions,
+            },
             (Ok(_), _) => ControlReply::refused(
                 control::GAME_ANSWER_INVALID,
                 "the app answered another question",
@@ -1928,6 +1941,7 @@ fn refusal_reply(
         GameRefusal::Ended => control::GAME_ENDED,
         GameRefusal::Fault(_) => control::GAME_FAULT,
         GameRefusal::TooLarge => control::GAME_ANSWER_INVALID,
+        GameRefusal::NoHistory => control::GAME_NO_HISTORY,
     };
     let mut notes = Vec::new();
     let message = match (refusal, ask) {

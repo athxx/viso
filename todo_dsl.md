@@ -964,7 +964,7 @@ timers (§104–§111).
         removed, retyped or re-initialized → State Migration; `@local` states →
         Presentation (the IR records their identities).
   - [x] `E5103` note: the deciding change as primary span, the rest related.
-- [ ] Logic-only reload at a tick boundary; Presentation-only at a frame boundary;
+- [x] Logic-only reload at a tick boundary; Presentation-only at a frame boundary;
       World Rebuild with stable entity keys.
   - [x] Scheduler primitives: `reload(vm)` swaps the build at a tick boundary,
         keeping world, random state, tick, clock and held input (remapped without an
@@ -983,8 +983,8 @@ timers (§104–§111).
   - [x] `hotreload::game::swap`: classify a candidate and apply its tier to the
         running scheduler (nothing / `reload` / shadow `rebuild`), the last good
         game kept on any failure.
-  - [ ] The game host's hot-reload wiring: watching `.vs` edits, recompiling,
-        calling `swap` and reporting over the dev channel (no game host yet).
+  - [x] The game host's hot-reload wiring: watching `.vs` edits, recompiling,
+        calling `swap` and reporting over the dev channel.
 - [ ] `@probe` trace, input tape (binary and text forms), snapshot hash, headless sheet;
       `viso test game`, `viso game record`, `viso game peek` (§110.5, CLI §22.3).
   - [x] `InputTape`: header (seed, build, determinism, tick rate, ticks) and per-tick
@@ -1001,7 +1001,7 @@ timers (§104–§111).
         `trace` events, `TEST_EXPECTATION` diagnostics at the scenario line, a
         `test` event with the snapshot hash and entity snapshot
         (`viso_dsl::scenario` runs it).
-  - [ ] `viso game record`, `viso game peek` (with the running session, `todo_hotreload.md`
+  - [x] `viso game record`, `viso game peek` (with the running session, `todo_hotreload.md`
         H3.2).
   - [ ] Headless frame sheet (`--sheet`; needs a game renderer).
 - [x] A mounted view runs its module's game (`viso_view::GameSession`, a frame client of
@@ -1313,7 +1313,7 @@ timers (§104–§111).
         count test on the audio hook): 1000 warm 256-frame stereo blocks with
         commands, both hooks and events make no heap allocation or free
         (`game_audio_alloc.rs`, a counting global allocator).
-- [ ] Dev snapshot ring and rewind-and-replay after a logic reload (§110.4).
+- [x] Dev snapshot ring and rewind-and-replay after a logic reload (§110.4).
   - [x] The dev scheduler keeps a ring of snapshots (default the last 10 s) and
         records the input tape continuously (`keep_history`, a snapshot every
         quarter second, input before the window folded into held state).
@@ -1321,8 +1321,10 @@ timers (§104–§111).
         the recorded input on the new code, continue from the current tick
         (`replay_from`, `Replayed` / `ReplayError`; same code reaches the same
         snapshot hash, new code matches a game reloaded at T−k).
-  - [ ] The dev host turns the history on and offers the replay after a
-        logic reload (with the CLI / game host).
+  - [x] The dev host turns the history on and offers the replay after a
+        logic reload: every game of a dev session keeps one from its start
+        (`keep_game_history`); `viso game replay` (`GameAsk::Replay`) replays
+        every session of the file, and a logic-tier commit line names it.
 - [ ] Accessibility and localization checks `E3704`–`E3706`, `E3708` (U8.2, U10.3).
   - [x] An interactive non-widget node or component root without a role or name
         (`E3704`) or a keyboard path (`E3708`); warnings, errors under the

@@ -175,7 +175,7 @@ E3703                         Invalid Transition
 E3704                         Interactive Node Without Role Or Name
 E3705                         Concatenated Localizable Text
 E3706                         Message Catalog Mismatch
-E3707                         Invalid VirtualList Item Template  (reserved)
+E3707                         Invalid VirtualList Item Template
 E3708                         Interactive Node Without Keyboard Path
 E3709                         Property Not Yet Supported By Runtime  (reserved)
 E3710                         Invalid Styleable Or Selector Member
@@ -320,6 +320,7 @@ GAME_NOT_RUNNING              No mounted view of the named file runs a game.
 GAME_AMBIGUOUS                The game's name matches more than one mounted view.
 GAME_UNKNOWN_STATE            The game has no such system or state.
 GAME_BUSY                     The game replays a tape, or is being recorded already.
+GAME_NO_HISTORY               The game keeps no history to replay yet.
 GAME_ENDED                    The game ended before the recording did.
 GAME_FAULT                    The World did not restart for the recording.
 GAME_ANSWER_INVALID           The running session's answer did not decode or outgrew a dev frame.

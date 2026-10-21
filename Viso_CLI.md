@@ -1858,6 +1858,7 @@ replay
 viso test game movement --tape runs/jump.tape        # 回放 Tape，对 @probe 断言
 viso game record movement --output runs/jump.tape    # 运行中录制 Input Tape
 viso game peek movement Player.score                 # 读取运行中 System State
+viso game replay movement --seconds 3                # 在 reload 后的代码上重跑最近 3 秒
 ```
 
 输出包含每 Tick `@probe` Trace、最终 Snapshot Hash、Entity Snapshot，以及可选的 Headless 帧截图 Sheet（`--sheet <png>`）。同一 Build + Tape 在所选 determinism 档位下 Snapshot Hash 逐字节一致（DSL §110.5）。
@@ -1871,7 +1872,8 @@ viso game peek movement Player.score                 # 读取运行中 System St
 - `viso game peek <game> <System.state>` 与 `viso game record <game> --output <path> [--seconds S | --ticks N]`（缺省 10 秒）询问本 project 正在运行的 `viso run` session 的 app：`viso run` 另开一个 loopback control endpoint，把 `<地址> <token>` 写入 dev session lock（§44，第 4 行）；`viso game` 读 lock、连上 endpoint、带 token 发出请求，token 不符的连接不回应。`<game>` 按 app 挂载的 `.vs` 文件选取：相对 project root 的路径（可省 `.vs`）或文件名 stem，多个匹配时 `GAME_AMBIGUOUS`（exit 2）。`viso run` 经 dev channel 转给 runtime（`HostMessage::Game` / `RuntimeMessage::Game`，`Viso_Hot_Reload.md` §34），由运行该文件的第一个 Game Session 在帧边界回答；
 - `peek` 可读 System 的任意 State（不限 `@probe`），host 按该文件 last-good 的类型写成 JSON（无 last-good 时按结构）；人类输出 `<System>.<state> = <JSON> (<file> at tick <n>)`，`--json` 为一条 `result`（`game, system, state, value, tick, sessions`）；
 - `record` 先以 `Rebuild::Fresh` 重启该游戏的 World（时钟回到 tick 0、以其 seed 重跑 start），再录制所要求的 Tick 数（`--seconds` 按游戏 Tick Rate 向上取整），录满后 runtime 回传 Tape：未经 live patch 的写成文本形式（可直接作 `viso test game --tape` 输入或补上期望行成为 Scenario），带 live patch 的写成二进制形式（只有二进制携带 patch）；人类输出 `recorded <n> ticks of <file> to <path> (text|binary[, n live patches])`，`--json` 为一条 `result`（`game, path, form, ticks, seed, patches`）。游戏暂停时录制随之暂停；
-- 失败码：没有 session 或连不上 `ENV_NO_DEV_SESSION`（exit 3）；文件未挂载、app 未连上或不运行游戏 `GAME_NOT_RUNNING`（3）；没有该 System/State `GAME_UNKNOWN_STATE`（1，note 列出已有 State）；正在回放 Tape 或已在录制 `GAME_BUSY`（3）；World 重启时故障 `GAME_FAULT`、录制完成前游戏结束 `GAME_ENDED`（5）；Tape 超过 dev frame 上限或回答不可解码 `GAME_ANSWER_INVALID`（7，协议违约）；写 Tape 失败 `ENV_TAPE_WRITE`（3）；
+- `viso game replay <game> [--seconds S]`：dev session 中的每个 Game Session 自启动起保留最近 `DEFAULT_HISTORY_SECONDS`（10 秒）的历史（DSL §110.4）；replay 让运行该文件的每个 Session 各自回到不晚于「当前 Tick − S 秒」的最近 Snapshot，用记录的输入在当前代码上重跑到原 Tick，省略 `--seconds` 或超出历史时从最旧 Snapshot 起；任一 Session 尚无历史时都不回放。Logic / Logic+State Migration 层的 game patch 提交行末尾提示 `(replay: viso game replay <file>)`。人类输出 `replayed <n> ticks of <file> from tick <t>`，`--json` 为一条 `result`（`game, from, ticks, sessions`）；
+- 失败码：没有 session 或连不上 `ENV_NO_DEV_SESSION`（exit 3）；文件未挂载、app 未连上或不运行游戏 `GAME_NOT_RUNNING`（3）；没有该 System/State `GAME_UNKNOWN_STATE`（1，note 列出已有 State）；正在回放 Tape 或已在录制 `GAME_BUSY`（3）；尚无可回放的历史 `GAME_NO_HISTORY`（3）；World 重启时故障 `GAME_FAULT`、录制完成前游戏结束 `GAME_ENDED`（5）；Tape 超过 dev frame 上限或回答不可解码 `GAME_ANSWER_INVALID`（7，协议违约）；写 Tape 失败 `ENV_TAPE_WRITE`（3）；
 - `--sheet` 需要 Headless 游戏渲染，尚未实现。
 
 ### 22.4 Test filters
@@ -2790,6 +2792,7 @@ GAME_NOT_RUNNING        §22.3                                     exit 3
 GAME_AMBIGUOUS          §22.3                                     exit 2
 GAME_UNKNOWN_STATE      §22.3                                     exit 1
 GAME_BUSY               §22.3                                     exit 3
+GAME_NO_HISTORY         §22.3                                     exit 3
 GAME_ENDED / GAME_FAULT §22.3                                     exit 5
 GAME_ANSWER_INVALID     session 的回答不可解码或超出 dev frame     exit 7
 ```

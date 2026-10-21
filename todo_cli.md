@@ -202,6 +202,8 @@ gap, and CI can run all of it headless.
       `--no-hot-reload`, `--` app args, Ctrl-C two-stage cleanup (exit 130).
 - [x] `viso test game [<scenario>]`: deterministic tapes under `tests/game/`.
 - [x] `viso game peek|record` against a running session.
+- [x] `viso game replay [--seconds S]`: the last seconds of play again on the
+      reloaded code (`GAME_NO_HISTORY`).
 
 ### C1.2 — `viso new` (§8)
 

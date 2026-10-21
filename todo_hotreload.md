@@ -497,6 +497,9 @@ session comes first, then every reload item builds on it.
       answers with the tape once the game ran the ticks asked for, written as text, or
       binary when it took live patches; an answer the app never sends is refused when
       it exits.
+- [x] `viso game replay` over the dev channel (`GameAsk::Replay`, dev protocol 21):
+      a dev session's games keep a history from their start; the replay runs every
+      session of the file from its own history, none unless all keep one.
 - [x] Docs: Hot Reload §16–§18 and §34–§37 (the session's tick-boundary commit, the
       `system` section, the game query messages, the NACKs and ACK fields, the replay
       timeline, protocol 9), CLI §22.3, §36.4 (the `dev` event's `game` object) and

@@ -54,12 +54,20 @@ pub type StartedAudio = (Box<dyn GameAudioDevice>, AudioLink);
 
 thread_local! {
     static AUDIO: std::cell::Cell<Option<GameAudioStart>> = const { std::cell::Cell::new(None) };
+    static HISTORY: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
 /// Installs `start` as how the games of this thread's views start their
 /// audio; `None` leaves them silent.
 pub fn install_game_audio(start: Option<GameAudioStart>) {
     AUDIO.with(|installed| installed.set(start));
+}
+
+/// Makes the games this thread's views start from now on keep the last
+/// `seconds` of play to replay ([`Scheduler::replay_from`]); `None` keeps
+/// none, as off a dev session.
+pub fn keep_game_history(seconds: Option<u32>) {
+    HISTORY.with(|kept| kept.set(seconds));
 }
 
 /// Why a session's build was not swapped.
@@ -164,6 +172,9 @@ impl GameSession {
             reported: None,
             audio_faults: 0,
         };
+        if let Some(seconds) = HISTORY.with(std::cell::Cell::get) {
+            session.scheduler.keep_history(seconds);
+        }
         session.start_audio();
         Ok(session)
     }

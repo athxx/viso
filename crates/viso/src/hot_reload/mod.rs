@@ -65,7 +65,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
-use viso_behavior::game::{GameSnapshot, PreparedSwap};
+use viso_behavior::game::{DEFAULT_HISTORY_SECONDS, GameSnapshot, PreparedSwap};
 use viso_behavior::{Module, Vm};
 use viso_gpu::GpuBackend;
 use viso_platform::{Instant, LoopWaker, WindowId};
@@ -99,7 +99,8 @@ use viso_view::inspect::{
 };
 use viso_view::profile::FrameSample;
 use viso_view::{
-    GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session, take_mounts,
+    GameReloadError, GameSession, MountRecord, ViewHost, describe_fault, game_session,
+    keep_game_history, take_mounts,
 };
 
 use crate::WindowState;
@@ -367,6 +368,11 @@ impl HotReloadSession {
             self.link = DevLink::from_launch(waker, SCHEMA, APPLIES);
             self.awaiting_restore =
                 self.link.is_some() && viso_platform::launch_var(DEV_RESTORE_ENV).is_some();
+            // A dev session's games keep the last seconds of play, for the
+            // replay a logic reload offers.
+            if self.link.is_some() {
+                keep_game_history(Some(DEFAULT_HISTORY_SECONDS));
+            }
         }
         let Some(link) = &mut self.link else {
             self.records.clear();
@@ -421,6 +427,15 @@ impl HotReloadSession {
                     None,
                     &mut self.scratch,
                 );
+            }
+            // A game the build started before the session kept histories.
+            if let Some(session) = game_session(&ws.store, view.root) {
+                let mut session = session.borrow_mut();
+                if !session.scheduler().keeps_history() {
+                    session
+                        .scheduler_mut()
+                        .keep_history(DEFAULT_HISTORY_SECONDS);
+                }
             }
             self.views.push(view);
         }
@@ -1366,6 +1381,7 @@ impl HotReloadSession {
                 });
                 None
             }
+            GameAsk::Replay { millis } => answer(replay(&sessions, millis)),
         }
     }
 
@@ -1864,6 +1880,43 @@ fn shader_work(
         }
     }
     Ok(work)
+}
+
+/// Runs the last `millis` of play, or all the history keeps, again on every
+/// one of `sessions`, each from its own clock back as far as its history
+/// reaches; none replays unless every one keeps a history. Answers with what
+/// the first replayed.
+fn replay(
+    sessions: &[Rc<RefCell<GameSession>>],
+    millis: Option<u64>,
+) -> Result<GameReply, GameRefusal> {
+    let mut starts = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        let game = session.borrow();
+        let scheduler = game.scheduler();
+        let (oldest, _) = scheduler.history().ok_or(GameRefusal::NoHistory)?;
+        let now = scheduler.clock().tick();
+        let back = millis.map_or(u64::MAX, |ms| {
+            let rate = u64::from(game.module().tick_rate());
+            ms.saturating_mul(rate).div_ceil(1000)
+        });
+        starts.push(now.saturating_sub(back).max(oldest).min(now));
+    }
+    let mut first = None;
+    for (session, tick) in sessions.iter().zip(starts) {
+        let replayed = session
+            .borrow_mut()
+            .scheduler_mut()
+            .replay_from(tick)
+            .map_err(|_| GameRefusal::NoHistory)?;
+        first.get_or_insert(replayed);
+    }
+    let first = first.ok_or(GameRefusal::NotRunning)?;
+    Ok(GameReply::Replayed {
+        from: first.from,
+        ticks: first.ticks,
+        sessions: sessions.len() as u32,
+    })
 }
 
 /// The inventory entry of file `index`, as the build recorded it.
@@ -4739,6 +4792,62 @@ mod tests {
             };
             ask(&mut session, &mut host, &mut ws, elsewhere);
             assert_eq!(answered(&mut host).reply, Err(GameRefusal::NotRunning));
+        }
+
+        /// After a logic reload, a replay runs the play the game kept again
+        /// on the new code, each tick as it ran before.
+        #[test]
+        fn a_replay_runs_the_kept_play_again_on_the_reloaded_logic() {
+            let mut ws = mounted(mount_game);
+            let (mut session, mut host, mut edits) = session(&mut ws, GAME);
+            let game = game_session(&ws.store, ws.root.expect("built")).expect("a game");
+            assert!(
+                game.borrow().scheduler().keeps_history(),
+                "a dev game keeps one"
+            );
+            for _ in 0..20 {
+                ws.store.run_frame_clients(TICK);
+            }
+            let faster = GAME.replace("steps += 1;", "steps += 10;");
+            host.send(&game_patch_to(&mut edits, &host, (1, 2), &faster));
+            assert!(answer_or_staged(&mut session, &mut host).is_none());
+            session.reload(std::slice::from_mut(&mut ws), &mut Assets::default());
+            assert!(matches!(host.read(), Some(RuntimeMessage::Ack(_))));
+            assert_eq!(state(&ws, "steps"), Value::Int(20), "the old code ran");
+
+            let replay = |id, millis| GameQuery {
+                id,
+                file: edits.file,
+                ask: GameAsk::Replay { millis },
+            };
+            ask(&mut session, &mut host, &mut ws, replay(1, None));
+            let Ok(GameReply::Replayed {
+                from,
+                ticks,
+                sessions,
+            }) = answered(&mut host).reply
+            else {
+                panic!("not replayed");
+            };
+            assert_eq!((from + ticks, sessions), (20, 1));
+            assert!(ticks > 0);
+            assert_eq!(
+                state(&ws, "steps"),
+                Value::Int((from + 10 * ticks) as i64),
+                "the kept ticks ran again on the new code"
+            );
+            assert_eq!(game.borrow().scheduler().clock().tick(), 20);
+
+            // Asking for more than the history keeps replays all of it.
+            ask(&mut session, &mut host, &mut ws, replay(2, Some(60_000)));
+            assert!(matches!(
+                answered(&mut host).reply,
+                Ok(GameReply::Replayed { from: f, .. }) if f == from
+            ));
+
+            game.borrow_mut().scheduler_mut().drop_history();
+            ask(&mut session, &mut host, &mut ws, replay(3, Some(1000)));
+            assert_eq!(answered(&mut host).reply, Err(GameRefusal::NoHistory));
         }
 
         #[test]

@@ -589,6 +589,12 @@ codes! {
         fix: "Wait for the replay or recording to end, then rerun.",
         commands: [],
     }
+    GAME_NO_HISTORY = ENVIRONMENT {
+        summary: "The game keeps no history to replay yet.",
+        explanation: "A game a dev session runs keeps the last seconds of play from its first ticks; this one has kept none yet.",
+        fix: "Let the game run a moment, then replay again.",
+        commands: [],
+    }
     GAME_ENDED = RUNTIME {
         summary: "The game ended before the recording did.",
         explanation: "The game's view unmounted, or the app exited, while the recording was still running; the tape is incomplete and was not written.",

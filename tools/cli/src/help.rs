@@ -378,6 +378,10 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
                 "viso game record movement --output runs/jump.tape",
                 "record ten seconds of play",
             ),
+            (
+                "viso game replay movement",
+                "replay the last seconds on the reloaded code",
+            ),
         ],
     ),
     (
@@ -407,6 +411,16 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             (
                 "viso game record movement --output runs/short.tape --ticks 600",
                 "600 fixed ticks",
+            ),
+        ],
+    ),
+    (
+        "game replay",
+        &[
+            ("viso game replay movement", "all the play the game kept"),
+            (
+                "viso game replay movement --seconds 3",
+                "the last three seconds",
             ),
         ],
     ),

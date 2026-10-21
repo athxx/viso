@@ -22,6 +22,8 @@ use std::fmt::{self, Write as _};
 use std::io::Write as _;
 use std::ops::Range;
 
+use viso_dev_protocol::wire::GameTier;
+
 use crate::dev::report::{Outcome, RebuildEvent, ReloadEvent};
 
 use super::{Location, Report, Source};
@@ -71,6 +73,10 @@ pub(super) fn dev(file: &str, event: &ReloadEvent) -> String {
                 if game.characters > 0 {
                     let n = game.characters;
                     line.push_str(&format!(", {n} character{} kept", plural(n)));
+                }
+                // The new logic can run the last seconds of play again.
+                if matches!(game.tier, GameTier::Logic | GameTier::LogicMigration) {
+                    line.push_str(&format!("   (replay: viso game replay {file})"));
                 }
             }
             if outcome == Outcome::ScopedReset {
@@ -540,7 +546,7 @@ mod tests {
         });
         assert_eq!(
             dev("game.vs", &event),
-            "✓ game.vs patch r41 -> r42   37 ms   game logic+state-migration from tick 312, 1 state reset"
+            "✓ game.vs patch r41 -> r42   37 ms   game logic+state-migration from tick 312, 1 state reset   (replay: viso game replay game.vs)"
         );
         event.game = Some(GameCommit {
             tier: GameTier::WorldRebuild {

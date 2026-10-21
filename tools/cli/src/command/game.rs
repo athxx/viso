@@ -8,7 +8,9 @@
 //! seed, and writes the tape of the next stretch of play: its text form,
 //! which `viso test game --tape` replays and a scenario can extend with
 //! expectations, or its binary form when the run took live patches, which
-//! only the binary form carries.
+//! only the binary form carries. `replay` runs the last seconds of play
+//! again, each tick reading the input it read before, on the code running
+//! now: what a logic reload makes of them.
 
 use std::time::Duration;
 
@@ -16,7 +18,7 @@ use viso_dev_protocol::wire::{GameAsk, MAX_RECORD_TICKS, RecordSpan};
 use viso_dsl::scenario::read_tape;
 use viso_project::{LockGuard, LockKind, Target};
 
-use crate::args::{GameCommand, PeekArgs, RecordArgs};
+use crate::args::{GameCommand, PeekArgs, RecordArgs, ReplayArgs};
 use crate::context::Context;
 use crate::dev::control;
 use crate::dev::{ControlAsk, ControlReply};
@@ -32,6 +34,7 @@ pub fn run(ctx: &Context<'_>, command: &GameCommand, out: &mut Output) -> u8 {
     match command {
         GameCommand::Peek(args) => peek(ctx, args, out),
         GameCommand::Record(args) => record(ctx, args, out),
+        GameCommand::Replay(args) => replay(ctx, args, out),
     }
 }
 
@@ -226,6 +229,62 @@ fn record(ctx: &Context<'_>, args: &RecordArgs, out: &mut Output) -> u8 {
         },
     );
     SUCCESS
+}
+
+fn replay(ctx: &Context<'_>, args: &ReplayArgs, out: &mut Output) -> u8 {
+    let millis = match args.seconds {
+        None => None,
+        Some(s) if s.is_finite() && s >= 0.0 => Some((s * 1000.0).ceil() as u64),
+        Some(_) => {
+            return out.failure(
+                CLI_USAGE,
+                "a replay runs back a span of play",
+                &["`--seconds` is 0 or more".to_owned()],
+            );
+        }
+    };
+    let endpoint = match endpoint(ctx, out) {
+        Ok(endpoint) => endpoint,
+        Err(code) => return code,
+    };
+    let ask = ControlAsk::Game {
+        game: args.game.clone(),
+        ask: GameAsk::Replay { millis },
+    };
+    match control::call(&endpoint, ask, Some(PEEK_WAIT)) {
+        Ok(ControlReply::Replayed {
+            file,
+            from,
+            ticks,
+            sessions,
+        }) => {
+            out.result(
+                |w| {
+                    w.begin_object();
+                    w.name("game");
+                    w.string(&file);
+                    w.name("from");
+                    w.uint(from);
+                    w.name("ticks");
+                    w.uint(ticks);
+                    w.name("sessions");
+                    w.uint(u64::from(sessions));
+                    w.end_object();
+                },
+                || {
+                    let of = if sessions > 1 {
+                        format!(", in each of {sessions} sessions")
+                    } else {
+                        String::new()
+                    };
+                    format!("replayed {ticks} ticks of {file} from tick {from}{of}\n")
+                },
+            );
+            SUCCESS
+        }
+        Ok(reply) => refused(reply, out),
+        Err(message) => out.failure(ENV_NO_DEV_SESSION, &message, &[]),
+    }
 }
 
 /// Reports a refusal and returns its exit code.

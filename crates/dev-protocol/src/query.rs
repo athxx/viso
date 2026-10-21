@@ -7,7 +7,9 @@
 //! the next frame boundary with the state's value in its wire form, which the
 //! host writes as JSON by the state's type. A recording restarts the World, so
 //! the tape replays from tick 0 on a game started with its seed, and is
-//! answered with the tape once the game ran the ticks asked for.
+//! answered with the tape once the game ran the ticks asked for. A replay
+//! runs the last stretch of play again on the code running now, from the
+//! history the dev runtime keeps of every game.
 
 use viso_ende::{Decoder, Encoder};
 
@@ -34,6 +36,10 @@ pub enum GameAsk {
     Peek { system: String, state: String },
     /// A tape of the next `span` of play, from a restarted World.
     Record { span: RecordSpan },
+    /// The last `millis` of play, or all the history keeps, run again on the
+    /// current code by every session running the file; a span past what the
+    /// history keeps replays from its oldest snapshot.
+    Replay { millis: Option<u64> },
 }
 
 /// How long a recording runs.
@@ -65,6 +71,13 @@ pub enum GameReply {
     },
     /// The tape, in its binary form.
     Tape { tape: Vec<u8> },
+    /// The tick the first session went back to, the ticks it ran again, and
+    /// how many sessions replayed.
+    Replayed {
+        from: u64,
+        ticks: u64,
+        sessions: u32,
+    },
 }
 
 /// Why a query has no answer.
@@ -84,6 +97,8 @@ pub enum GameRefusal {
     Fault(String),
     /// The tape outgrew a dev frame.
     TooLarge,
+    /// A session keeps no history to replay, or none yet.
+    NoHistory,
 }
 
 impl std::fmt::Display for GameRefusal {
@@ -96,6 +111,7 @@ impl std::fmt::Display for GameRefusal {
             GameRefusal::Ended => f.write_str("the game ended before the recording did"),
             GameRefusal::Fault(line) => write!(f, "the World did not restart: {line}"),
             GameRefusal::TooLarge => f.write_str("the tape outgrew a dev frame"),
+            GameRefusal::NoHistory => f.write_str("the game keeps no history to replay yet"),
         }
     }
 }
@@ -116,6 +132,16 @@ pub(super) fn write_query(enc: &mut Encoder, query: &GameQuery) {
             };
             enc.write_u8(tag);
             enc.write_varint(n);
+        }
+        GameAsk::Replay { millis } => {
+            enc.write_u8(3);
+            match millis {
+                Some(ms) => {
+                    enc.write_u8(1);
+                    enc.write_varint(*ms);
+                }
+                None => enc.write_u8(0),
+            }
         }
     }
 }
@@ -142,6 +168,13 @@ pub(super) fn read_query(dec: &mut Decoder<'_>) -> Result<GameQuery, WireError> 
             };
             GameAsk::Record { span }
         }
+        3 => GameAsk::Replay {
+            millis: match dec.read_u8()? {
+                0 => None,
+                1 => Some(dec.read_varint()?),
+                _ => return Err(malformed(dec)),
+            },
+        },
         _ => return Err(malformed(dec)),
     };
     Ok(GameQuery { id, file, ask })
@@ -164,6 +197,16 @@ pub(super) fn write_answer(enc: &mut Encoder, answer: &GameAnswer) {
             enc.write_u8(1);
             enc.write_bytes(tape);
         }
+        Ok(GameReply::Replayed {
+            from,
+            ticks,
+            sessions,
+        }) => {
+            enc.write_u8(3);
+            enc.write_varint(*from);
+            enc.write_varint(*ticks);
+            enc.write_varint(u64::from(*sessions));
+        }
         Err(refusal) => {
             enc.write_u8(2);
             match refusal {
@@ -177,6 +220,7 @@ pub(super) fn write_answer(enc: &mut Encoder, answer: &GameAnswer) {
                     write_string(enc, line);
                 }
                 GameRefusal::TooLarge => enc.write_u8(6),
+                GameRefusal::NoHistory => enc.write_u8(7),
             }
         }
     }
@@ -193,6 +237,11 @@ pub(super) fn read_answer(dec: &mut Decoder<'_>) -> Result<GameAnswer, WireError
             sessions: read_u32(dec)?,
         }),
         1 => Ok(GameReply::Tape { tape: bytes(dec)? }),
+        3 => Ok(GameReply::Replayed {
+            from: dec.read_varint()?,
+            ticks: dec.read_varint()?,
+            sessions: read_u32(dec)?,
+        }),
         2 => Err(match dec.read_u8()? {
             0 => GameRefusal::NotRunning,
             1 => GameRefusal::UnknownState,
@@ -201,6 +250,7 @@ pub(super) fn read_answer(dec: &mut Decoder<'_>) -> Result<GameAnswer, WireError
             4 => GameRefusal::Ended,
             5 => GameRefusal::Fault(read_string(dec, MAX_LOG, "fault line")?),
             6 => GameRefusal::TooLarge,
+            7 => GameRefusal::NoHistory,
             _ => return Err(malformed(dec)),
         }),
         _ => return Err(malformed(dec)),

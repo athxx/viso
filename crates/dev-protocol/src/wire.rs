@@ -48,7 +48,7 @@ use crate::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_schema::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 20;
+pub const DEV_PROTOCOL_VERSION: u16 = 21;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -2209,6 +2209,18 @@ mod tests {
                     span: RecordSpan::Millis(10_000),
                 },
             }),
+            HostMessage::Game(GameQuery {
+                id: 5,
+                file: FileId(3),
+                ask: GameAsk::Replay {
+                    millis: Some(4_000),
+                },
+            }),
+            HostMessage::Game(GameQuery {
+                id: 6,
+                file: FileId(3),
+                ask: GameAsk::Replay { millis: None },
+            }),
         ]
     }
 
@@ -2503,6 +2515,14 @@ mod tests {
                     tape: vec![0xAB; 300],
                 }),
             }),
+            RuntimeMessage::Game(GameAnswer {
+                id: 5,
+                reply: Ok(GameReply::Replayed {
+                    from: 360,
+                    ticks: 240,
+                    sessions: 1,
+                }),
+            }),
             RuntimeMessage::Blob(BlobChunk {
                 hash: content_hash(b"snap"),
                 total: 4,
@@ -2593,6 +2613,7 @@ mod tests {
                 GameRefusal::Ended,
                 GameRefusal::Fault("`Player` faulted at tick 0: overflow".into()),
                 GameRefusal::TooLarge,
+                GameRefusal::NoHistory,
             ]
             .map(|refusal| {
                 RuntimeMessage::Game(GameAnswer {
@@ -3299,7 +3320,7 @@ mod tests {
             id: 0,
             reply: Err(GameRefusal::TooLarge),
         });
-        let body = body_with(&refused, |body| *body.last_mut().unwrap() = 7);
+        let body = body_with(&refused, |body| *body.last_mut().unwrap() = 8);
         assert!(matches!(
             RuntimeMessage::from_frame(&body),
             Err(WireError::Malformed(_))

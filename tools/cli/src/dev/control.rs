@@ -49,6 +49,7 @@ pub const GAME_AMBIGUOUS: &str = error::GAME_AMBIGUOUS.name;
 pub const GAME_UNKNOWN_STATE: &str = error::GAME_UNKNOWN_STATE.name;
 pub const GAME_BUSY: &str = error::GAME_BUSY.name;
 pub const GAME_ENDED: &str = error::GAME_ENDED.name;
+pub const GAME_NO_HISTORY: &str = error::GAME_NO_HISTORY.name;
 pub const GAME_FAULT: &str = error::GAME_FAULT.name;
 pub const GAME_ANSWER_INVALID: &str = error::GAME_ANSWER_INVALID.name;
 pub const INSPECT_ANSWER_INVALID: &str = error::INSPECT_ANSWER_INVALID.name;
@@ -90,6 +91,14 @@ pub enum ControlReply {
     },
     /// The recorded tape, binary.
     Tape { file: String, tape: Vec<u8> },
+    /// The tick the replay went back to, the ticks it ran again and the
+    /// sessions that replayed.
+    Replayed {
+        file: String,
+        from: u64,
+        ticks: u64,
+        sessions: u32,
+    },
     /// The inspector's answer, the table of the views the app mounts, each
     /// in its wire form, and what the inspector answers.
     Inspected {
@@ -307,6 +316,16 @@ impl Message for ControlRequest {
                 enc.write_u8(2);
                 enc.write_varint(*n);
             }
+            GameAsk::Replay { millis } => {
+                enc.write_u8(6);
+                match millis {
+                    Some(ms) => {
+                        enc.write_u8(1);
+                        enc.write_varint(*ms);
+                    }
+                    None => enc.write_u8(0),
+                }
+            }
         }
         write_string(enc, game);
     }
@@ -363,6 +382,13 @@ impl Message for ControlRequest {
                     },
                 });
             }
+            6 => GameAsk::Replay {
+                millis: match dec.read_u8()? {
+                    0 => None,
+                    1 => Some(dec.read_varint()?),
+                    _ => return Err(malformed(dec)),
+                },
+            },
             _ => return Err(malformed(dec)),
         };
         let game = read_string(dec, "game name")?;
@@ -392,6 +418,18 @@ impl Message for ControlReply {
                 enc.write_u8(1);
                 write_string(enc, file);
                 enc.write_bytes(tape);
+            }
+            ControlReply::Replayed {
+                file,
+                from,
+                ticks,
+                sessions,
+            } => {
+                enc.write_u8(6);
+                write_string(enc, file);
+                enc.write_varint(*from);
+                enc.write_varint(*ticks);
+                enc.write_varint(u64::from(*sessions));
             }
             ControlReply::Inspected {
                 answer,
@@ -479,6 +517,12 @@ impl Message for ControlReply {
             }
             5 => ControlReply::Profiled {
                 trace: dec.read_bytes()?.to_vec(),
+            },
+            6 => ControlReply::Replayed {
+                file: read_string(dec, "file")?,
+                from: dec.read_varint()?,
+                ticks: dec.read_varint()?,
+                sessions: u32::try_from(dec.read_varint()?).map_err(|_| malformed(dec))?,
             },
             _ => return Err(malformed(dec)),
         })
@@ -680,6 +724,20 @@ mod tests {
                     millis: 0,
                 },
             },
+            ControlRequest {
+                token: "t".into(),
+                ask: ControlAsk::Game {
+                    game: "a".into(),
+                    ask: GameAsk::Replay { millis: Some(3000) },
+                },
+            },
+            ControlRequest {
+                token: "t".into(),
+                ask: ControlAsk::Game {
+                    game: "a".into(),
+                    ask: GameAsk::Replay { millis: None },
+                },
+            },
         ] {
             let body = viso_dev_protocol::wire::encode(&request);
             assert_eq!(ControlRequest::from_frame(&body), Ok(request));
@@ -701,6 +759,12 @@ mod tests {
                 ],
             },
             ControlReply::Profiled { trace: vec![4, 5] },
+            ControlReply::Replayed {
+                file: "a.vs".into(),
+                from: 120,
+                ticks: 180,
+                sessions: 2,
+            },
             ControlReply::Refused {
                 code: GAME_BUSY.into(),
                 message: "busy".into(),
