@@ -1394,6 +1394,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                         viso_schema::Interaction::Pressed => ":active",
                         viso_schema::Interaction::Focused => ":focus",
                         viso_schema::Interaction::FocusVisible => ":focus-visible",
+                        viso_schema::Interaction::Selected => {
+                            r#":is([aria-selected="true"],[role="radio"][aria-checked="true"])"#
+                        }
                     }
                     .to_owned(),
                 ),

@@ -295,6 +295,33 @@ fn enabled_and_autofocus_export_as_a_guarded_subtree_and_the_autofocus_attribute
     assert!(script.contains("closest(\"[data-viso-off]\")"), "{script}");
 }
 
+const PICKED: &str = r#"
+style Tab for Text {
+    opacity: 0.5f32;
+    when selected { opacity: 1.0f32; }
+}
+export component Picked {
+    state tab: U32 = 0;
+    view {
+        Tabs {
+            bind selected <=> tab;
+            Text { width: 40dp; height: 20dp; styles: [Tab]; }
+            Text { width: 40dp; height: 20dp; styles: [Tab]; }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_selected_style_follows_the_strip_s_selection_attributes() {
+    let page = export(PICKED, false).unwrap();
+    let css = &page.styles;
+    assert!(
+        css.contains(r#":is([aria-selected="true"],[role="radio"][aria-checked="true"])"#),
+        "{css}"
+    );
+}
+
 const CLIPPED: &str = r#"
 export component Clipped {
     state on = true;

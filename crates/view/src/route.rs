@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use viso_behavior::{Aggregate, Value};
 use viso_ui::{
-    EventCx, Key, KeyEvent, LookValue, Modifiers, NodeId, NodeStore, Notice, PointerButtons,
-    PointerId, PointerPhase, Vec2,
+    EventCx, Interaction, Key, KeyEvent, LookValue, Modifiers, NodeId, NodeStore, Notice,
+    PointerButtons, PointerId, PointerPhase, Vec2,
 };
 
 use crate::layout_values::length;
@@ -38,6 +38,11 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
         _ => return None,
     };
     if pointer.phase != phase {
+        return None;
+    }
+    // An activation is a release on the node the press began in, with the
+    // pointer still inside it and no gesture having taken the contact.
+    if matches!(route, EventRoute::Click | EventRoute::Tap) && !cx.in_state(Interaction::Pressed) {
         return None;
     }
     let at = cx.local(pointer.x, pointer.y);

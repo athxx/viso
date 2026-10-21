@@ -1191,8 +1191,12 @@ timers (§104–§111).
         an entry), any delivered value or layout slot switches (`Switched`),
         a switched layout value needs a base; the web export switches the
         looks, transforms and a text's color.
-  - [ ] `selected`, `expanded`, `dragging`; `pressed` cancelled by the gesture
-        arena or by the pointer leaving the node.
+  - [x] `selected` (a tab strip's or radio group's selected child); `pressed`
+        cancelled by a pan winning the contact and lifted off by the pointer
+        leaving the node; `click`/`tap` only on a release where the press
+        began.
+  - [ ] `dragging` with `drag_start`/`drag_move`/`drag_end`; `expanded` once
+        an expandable widget exists.
   - [x] Theme: the standard `Theme` schema (U12.2); `theme X { }` builds a typed
         immutable value from its items, its base and the record defaults
         (`E2001`/`E2103`, base cycles `E2003`, one name per package `E2002`);

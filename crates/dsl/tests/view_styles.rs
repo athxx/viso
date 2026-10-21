@@ -1,7 +1,7 @@
 //! Styles: a node's `styles` apply each style after its bases, a later binding
 //! over an earlier one and the node's own properties over them all; a `when`
 //! switches a look, a transform, a text's color or a layout value while its
-//! selector holds — hover, pressed, focus, or the node's own `enabled` — on
+//! selector holds — hover, pressed, focus, selection or the node's own `enabled` — on
 //! the hot-reloaded and the packaged view and inside a region. And the
 //! checks: a target the file names (`E2001`), bases of the file for the same
 //! target (`E2001`, `E2103`) on no cycle (`E2003`), styleable properties
@@ -276,6 +276,15 @@ fn walk(rt: &mut Rt) {
 
     pointer(rt, 1, PointerPhase::Move);
     assert_eq!(look(rt, 1).0, rgba(OWN), "its own background wins on hover");
+    pointer(rt, 0, PointerPhase::Down);
+    pointer(rt, 1, PointerPhase::Move);
+    assert_eq!(look(rt, 0).0, rgba(REST), "the pointer left the press");
+    pointer(rt, 1, PointerPhase::Up);
+    assert_eq!(
+        look(rt, 0).1,
+        0.5,
+        "a release on a node the press did not begin on clicks nothing"
+    );
     rt.click(1);
     assert_eq!(look(rt, 0), (rgba(REST), 0.25), "disabled");
     assert_eq!(children(rt).len(), 2);
@@ -388,6 +397,45 @@ fn a_style_on_a_component_node_does_not_mount_yet() {
     let compiled = compile_file(source, &origin());
     let codes: Vec<_> = compiled.errors().map(|d| d.code).collect();
     assert_eq!(codes, ["E3711"]);
+}
+
+#[test]
+fn a_tab_strip_selects_its_child() {
+    let source = r#"
+style Tab for Text {
+    opacity: 0.5f32;
+    when selected { opacity: 1.0f32; }
+}
+export component Probe {
+    state tab: U32 = 1;
+    view {
+        Column {
+            width: 400dp;
+            height: 100dp;
+            Tabs {
+                width: 300dp;
+                height: 20dp;
+                bind selected <=> tab;
+                Text { width: 100dp; height: 20dp; styles: [Tab]; }
+                Text { width: 100dp; height: 20dp; styles: [Tab]; }
+                Text { width: 100dp; height: 20dp; styles: [Tab]; }
+            }
+        }
+    }
+}
+"#;
+    let mut rt = Rt::mount(source);
+    let tabs = children(&rt)[0];
+    let opacities = |rt: &Rt| {
+        rt.children(tabs)
+            .into_iter()
+            .map(|tab| rt.store.opacity(tab))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(opacities(&rt), [0.5, 1.0, 0.5]);
+    rt.click_at(250.0, 10.0);
+    assert_eq!(opacities(&rt), [0.5, 0.5, 1.0]);
+    assert_eq!(rt.fault(), None);
 }
 
 #[test]

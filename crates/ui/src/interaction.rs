@@ -1,18 +1,21 @@
 //! The interaction states of a node that a style's `when` reads: hovered (the
 //! pointer is over it or a descendant), pressed (the primary button went down
-//! on it or a descendant and is not up yet), focused (it holds focus) and
-//! focus-visible (it holds focus that the keyboard or an assistive technology
-//! moved to it).
+//! on it or a descendant, is not up yet, the pointer is still inside its box
+//! and no pan took the contact), focused (it holds focus), focus-visible (it
+//! holds focus that the keyboard or an assistive technology moved to it) and
+//! selected (its tab strip or radio group selects it).
 //!
 //! The states derive from what the router records — the hovered node, the
-//! pressed one, the focus and how it got there — so a node keeps none of its
-//! own. One revision cell, allocated when first asked for, stands for all of
+//! pressed one and which of its ancestors the pointer left, the focus and how
+//! it got there — and from the node's semantic state, so a node keeps none of
+//! its own. One revision cell, allocated when first asked for, stands for all of
 //! them: the frame's settle raises it once after any of that moved, and a
 //! reader woken by it asks [`NodeStore::in_state`] for the nodes it styles. A
 //! pointer move that changes no hover target raises nothing, and a store
 //! nobody asked for the cell raises nothing at all.
 
 use crate::component::NodeStore;
+use crate::input::PointerId;
 use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
 
@@ -24,6 +27,11 @@ pub use viso_schema::interaction::Interaction;
 pub(crate) struct InteractionStates {
     /// The node the primary button went down on, until it comes up.
     pressed: Option<NodeId>,
+    /// The pointer that pressed it.
+    presser: PointerId,
+    /// The nodes from the pressed one up whose box the pointer is outside of,
+    /// innermost first.
+    left: Vec<NodeId>,
     /// Whether the focus came from the keyboard or an assistive technology.
     focus_visible: bool,
     /// Whether something the states derive from moved since the last settle.
@@ -44,6 +52,7 @@ impl InteractionStates {
     pub(crate) fn set_pressed(&mut self, node: Option<NodeId>) {
         if self.pressed != node {
             self.pressed = node;
+            self.left.clear();
             self.moved = true;
         }
     }
@@ -81,20 +90,75 @@ impl NodeStore {
                 self.hovered().is_some_and(|h| self.within(h, node)) && !self.inert(node)
             }
             Interaction::Pressed => {
-                self.interaction_states
-                    .pressed
-                    .is_some_and(|p| self.within(p, node))
+                let press = &self.interaction_states;
+                press.pressed.is_some_and(|p| self.within(p, node))
+                    && !press.left.contains(&node)
                     && !self.inert(node)
             }
             Interaction::Focused => focused,
             Interaction::FocusVisible => focused && self.interaction_states.focus_visible,
+            Interaction::Selected => {
+                self.semantic_state(node).and_then(|s| s.selected) == Some(true)
+            }
         }
     }
 
     /// Records the node the primary button went down on, `None` once it came
-    /// up.
+    /// up or the press was taken from it.
     pub fn set_pressed(&mut self, node: Option<NodeId>) {
         self.interaction_states.set_pressed(node);
+    }
+
+    /// Records that pointer `pointer` pressed `node`.
+    pub(crate) fn press(&mut self, node: NodeId, pointer: PointerId) {
+        self.set_pressed(Some(node));
+        self.interaction_states.presser = pointer;
+    }
+
+    /// Ends the press pointer `pointer` made, if it made the one standing.
+    pub(crate) fn release_press(&mut self, pointer: PointerId) {
+        if self.interaction_states.presser == pointer {
+            self.set_pressed(None);
+        }
+    }
+
+    /// Follows the pointer that pressed to `(x, y)`: the pressed node and its
+    /// ancestors whose box it is outside of are not pressed until it is back.
+    pub(crate) fn follow_press(&mut self, pointer: PointerId, x: f32, y: f32) {
+        let press = &self.interaction_states;
+        let Some(pressed) = press.pressed else {
+            return;
+        };
+        if press.presser != pointer {
+            return;
+        }
+        let mut seen = 0;
+        let mut same = true;
+        let mut at = Some(pressed);
+        while let Some(n) = at {
+            if self.outside(n, x, y) {
+                if press.left.get(seen) != Some(&n) {
+                    same = false;
+                    break;
+                }
+                seen += 1;
+            }
+            at = self.parent(n);
+        }
+        if same && seen == press.left.len() {
+            return;
+        }
+        let mut left = std::mem::take(&mut self.interaction_states.left);
+        left.clear();
+        let mut at = Some(pressed);
+        while let Some(n) = at {
+            if self.outside(n, x, y) {
+                left.push(n);
+            }
+            at = self.parent(n);
+        }
+        self.interaction_states.left = left;
+        self.interaction_states.moved();
     }
 
     /// Records whether the focus came from the keyboard or an assistive
@@ -117,6 +181,13 @@ impl NodeStore {
             };
             states.set(cell, StateValue::Int(revision));
         }
+    }
+
+    /// Whether the screen point `(x, y)` is outside `node`'s box.
+    fn outside(&self, node: NodeId, x: f32, y: f32) -> bool {
+        let at = self.to_local(node, x, y);
+        let b = self.bounds(node);
+        !(0.0..=b.w).contains(&at.x) || !(0.0..=b.h).contains(&at.y)
     }
 
     /// Whether `node` is `ancestor` or lies under it.

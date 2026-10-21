@@ -2555,7 +2555,11 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.semantic_state[id.index() as usize] = Some(state);
+        let slot = &mut self.semantic_state[id.index() as usize];
+        if slot.and_then(|s| s.selected) != state.selected {
+            self.interaction_states.moved();
+        }
+        *slot = Some(state);
         self.mark_dirty(id, DirtyClass::SEMANTICS);
     }
 

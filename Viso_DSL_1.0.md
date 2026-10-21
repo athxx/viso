@@ -5074,7 +5074,7 @@ Widget Schema 从下表中声明它支持的选择器；Style 使用 Widget 不�
 - 同一 Style 内 `when` 块按源码顺序应用，后者覆盖前者；标准 Style 按"静止 → `hover` → `pressed` → `focus_visible` → `disabled`"书写，得到 `pressed > hover > 静止` 的优先级；
 - 节点显式 Property 优先于所有 Style（§59），因此依赖选择器的外观应写在 Style 中。
 
-当前实现：带标准输入事件的原生 Widget 支持 `hover`、`pressed`、`focused`、`focus_visible`；有 `Bool` 属性 `enabled`、`checked`、`invalid` 的 Widget 分别支持 `disabled`、`checked`、`invalid`。`selected`、`expanded`、`dragging` 尚无 Widget 支持（`E2001`）。交互状态由节点存储从路由器记录的事实导出：`hover` 是悬停目标或其祖先，`pressed` 是主按钮按下的命中节点或其祖先、直到抬起（尚不考虑手势竞技场判负与指针移出），`focused` 是焦点节点，`focus_visible` 是键盘或辅助技术移入的焦点。存储维护一个修订单元，在 Flush 开始时、上述事实自上一轮变化后提升一次；读取交互选择器的节点依赖它并只重新求值自身的外观入口。
+当前实现：带标准输入事件的原生 Widget 支持 `hover`、`pressed`、`focused`、`focus_visible`、`selected`；有 `Bool` 属性 `enabled`、`checked`、`invalid` 的 Widget 分别支持 `disabled`、`checked`、`invalid`。`expanded`、`dragging` 尚无 Widget 支持（`E2001`）。交互状态由节点存储从路由器记录的事实导出：`hover` 是悬停目标或其祖先，`pressed` 是主按钮按下的命中节点或其祖先、直到该指针抬起，指针移出某个节点的盒子时该节点不再 `pressed`、移回再恢复，触摸平移胜出时整个按下取消；`click`、`tap` 只在按下所在、指针仍在其内的节点上抬起时派发，因此在别处抬起或被平移取消的按下不产生点击。`focused` 是焦点节点，`focus_visible` 是键盘或辅助技术移入的焦点，`selected` 是 `Tabs`、`RadioGroup` 选中的直接子节点（Web 导出为 `aria-selected`，单选项为 `aria-checked`）。存储维护一个修订单元，在 Flush 开始时、上述事实自上一轮变化后提升一次；读取交互选择器的节点依赖它并只重新求值自身的外观入口。
 
 ### U12.2 标准 Theme Schema
 

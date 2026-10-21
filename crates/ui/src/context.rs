@@ -759,6 +759,13 @@ impl<'a> EventCx<'a> {
         }
     }
 
+    /// Whether the dispatching node is in interaction state `state`; `false`
+    /// on the state-only paths.
+    pub fn in_state(&self, state: crate::interaction::Interaction) -> bool {
+        self.place
+            .is_some_and(|place| place.store.in_state(place.node, state))
+    }
+
     /// The dispatching node's laid-out size, along its own axes.
     pub fn size(&self) -> Option<Vec2> {
         self.place.map(|place| {

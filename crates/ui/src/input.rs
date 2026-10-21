@@ -399,7 +399,14 @@ pub fn route_contact(
         }
     }
     let ran = route_sample(store, states, bindings, root, contact, &ev, chain);
-    if contact.direct && matches!(ev.phase, PointerPhase::Up | PointerPhase::Leave) {
+    // The release reaches the chain while the press still stands, so a node
+    // tells a click it was pressed from one that only lies under the lift.
+    let lifted = ev.phase == PointerPhase::Up;
+    let ended = contact.direct && matches!(ev.phase, PointerPhase::Up | PointerPhase::Leave);
+    if lifted || ended {
+        store.release_press(pointer);
+    }
+    if ended {
         store.contacts_mut().end(pointer);
     }
     ran
@@ -468,9 +475,9 @@ fn route_sample(
     let inert = store.inert(target);
     match ev.phase {
         PointerPhase::Down if ev.buttons.contains(PointerButtons::PRIMARY) && !inert => {
-            store.set_pressed(Some(target));
+            store.press(target, pointer);
         }
-        PointerPhase::Up => store.set_pressed(None),
+        PointerPhase::Move | PointerPhase::Up => store.follow_press(pointer, ev.x, ev.y),
         _ => {}
     }
     if inert {
@@ -538,6 +545,7 @@ fn pan_step(
             if let Some(s) = store.contacts_mut().slot_mut(pointer) {
                 s.gesture = Gesture::Pan;
             }
+            store.set_pressed(None);
             hover_dispatch(
                 store,
                 states,
@@ -3220,7 +3228,9 @@ mod tests {
 mod contact_tests {
     use super::*;
     use crate::component::{BuildCx, FlexStyle, LeafStyle, ScrollStyle};
+    use crate::interaction::Interaction;
     use crate::layout::Size;
+    use crate::state::StateValue;
     use std::cell::RefCell;
     use std::rc::Rc;
     use viso_render::Rect;
@@ -3390,8 +3400,13 @@ mod contact_tests {
         let mut s = scene(false);
         let viewport = s.root;
         s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        assert!(s.store.in_state(s.a, Interaction::Pressed));
         s.touch(1, 10.0, 10.0, PointerPhase::Move);
         assert_eq!(s.store.scroll(viewport).y, 20.0);
+        assert!(
+            !s.store.in_state(s.a, Interaction::Pressed),
+            "the pan took the press"
+        );
         s.touch(1, 10.0, 5.0, PointerPhase::Move);
         assert_eq!(s.store.scroll(viewport).y, 25.0);
         s.touch(1, 10.0, 5.0, PointerPhase::Up);
@@ -3401,6 +3416,41 @@ mod contact_tests {
             vec![(0, PointerPhase::Down), (0, PointerPhase::Leave)]
         );
         assert_eq!(s.store.capture(), None);
+    }
+
+    #[test]
+    fn a_press_holds_only_while_the_pointer_is_inside_the_node() {
+        let mut s = scene(false);
+        s.touch(1, 10.0, 10.0, PointerPhase::Down);
+        let row = s.store.parent(s.a).expect("a row");
+        assert!(s.store.in_state(s.a, Interaction::Pressed));
+        // Off `a` onto `b`, both in the row: the row stays pressed.
+        s.touch(1, 50.0, 30.0, PointerPhase::Move);
+        assert!(!s.store.in_state(s.a, Interaction::Pressed));
+        assert!(s.store.in_state(row, Interaction::Pressed));
+        assert!(
+            !s.store.in_state(s.b, Interaction::Pressed),
+            "b was never pressed"
+        );
+        let mut states = StateStore::new();
+        let cell = s.store.interaction_cell(&mut states);
+        s.store.sync_interactions(&mut states);
+        s.touch(1, 52.0, 31.0, PointerPhase::Move);
+        s.store.sync_interactions(&mut states);
+        assert_eq!(
+            states.get(cell),
+            Some(StateValue::Int(1)),
+            "a move that leaves nothing new raises nothing"
+        );
+        s.touch(1, 30.0, 20.0, PointerPhase::Move);
+        assert!(s.store.in_state(s.a, Interaction::Pressed), "back inside");
+        s.touch(2, 50.0, 10.0, PointerPhase::Down);
+        s.touch(2, 50.0, 10.0, PointerPhase::Up);
+        assert!(
+            !s.store.in_state(s.a, Interaction::Pressed),
+            "the second press took it"
+        );
+        s.touch(1, 30.0, 20.0, PointerPhase::Up);
     }
 
     #[test]
