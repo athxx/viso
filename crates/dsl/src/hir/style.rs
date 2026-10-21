@@ -41,14 +41,12 @@ pub(crate) const INTERACTION_SELECTORS: [(&str, Interaction); 6] = [
 
 /// The standard selectors a node's own property decides: the selector, the
 /// property, and whether the selector is its negation.
-pub(crate) const PROPERTY_SELECTORS: [(&str, &str, bool); 3] = [
+pub(crate) const PROPERTY_SELECTORS: [(&str, &str, bool); 4] = [
     ("disabled", "enabled", true),
     ("checked", "checked", false),
     ("invalid", "invalid", false),
+    ("expanded", "expanded", false),
 ];
-
-/// The standard selectors no widget supports yet.
-pub(crate) const UNSUPPORTED_SELECTORS: [&str; 1] = ["expanded"];
 
 /// The standard selectors a user component's own `@selector` may not
 /// redefine: those the runtime decides.

@@ -121,6 +121,13 @@ fn a_selector_is_one_the_target_supports() {
     );
     assert_eq!(codes(&style("dragging"), "Text {}"), CLEAN);
     assert_eq!(codes(&style("expanded"), "Text {}"), ["E2001"]);
+    assert_eq!(
+        codes(
+            "style S for Disclosure { when expanded { opacity: 0.5f32; } }",
+            "Text {}"
+        ),
+        CLEAN
+    );
     assert_eq!(codes(&style("hovering"), "Text {}"), ["E2001"]);
     assert_eq!(codes(&style("on == true"), "Text {}"), ["E2103"]);
 }

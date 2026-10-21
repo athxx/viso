@@ -176,6 +176,9 @@ const SVG: &[WidgetProperty] = &[
 
 const SELECTED: &[WidgetProperty] = &[two_way("selected", "U32")];
 
+/// Whether a `Disclosure` shows its body.
+const DISCLOSURE: &[WidgetProperty] = &[two_way("expanded", "Bool")];
+
 const CURRENT: &[WidgetProperty] = &[two_way("current", "U32")];
 
 /// The constant width an `AdaptiveScope` classifies instead of the width its
@@ -421,6 +424,14 @@ pub const STANDARD: &[NativeWidget] = &[
             .with(MigratableState::ANIMATION)
             .with(MigratableState::ACTIVE_CHILD),
     )
+    .interactive(),
+    layout(
+        "Disclosure",
+        COLUMN,
+        &[DISCLOSURE, FLEX, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .events(&[TOGGLE_EVENTS, STANDARD_EVENTS])
+    .slots(CHILDREN)
     .interactive(),
     layout("RadioGroup", COLUMN, &[SELECTED, LAYOUT, TRANSFORM, FOCUS])
         .events(&[SELECTED_EVENTS, STANDARD_EVENTS])

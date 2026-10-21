@@ -217,6 +217,7 @@ const P = {
   hidden: (el, v) => attr(el, "aria-hidden", truth(v) ? "true" : null),
   level: (el, v) => attr(el, "aria-level", v),
   checked: (el, v) => { el.checked = truth(v); },
+  open: (el, v) => { el.open = truth(v); },
   range: (el, v, name) => { el[name] = v === null ? "" : String(v); },
   input: (el, v) => { const s = text(v); if (el.value !== s) el.value = s; },
   placeholder: (el, v) => attr(el, "placeholder", v),
@@ -382,7 +383,8 @@ const listen = (el, route, capture, control, fire) => {
   } else if (route <= 8) {
     el.addEventListener(DOM[route], live((e) => fire(rec([key(e), bool(e.repeat), mods(e)]))), capture);
   } else if (route === 9) {
-    if (control === 0) el.addEventListener("change", () => fire(rec([bool(el.checked)])), capture);
+    if (control === 0 || control === 8) el.addEventListener("change", () => fire(rec([bool(el.checked)])), capture);
+    else if (control === 9) el.addEventListener("toggle", () => fire(rec([bool(el.open)])), capture);
     else if (control === 1) el.addEventListener("input", () => fire(rec([Number(el.value)])), capture);
     else el.addEventListener("input", () => fire(rec([el.value])), capture);
   } else if (route === 10) {
@@ -459,7 +461,8 @@ const listen = (el, route, capture, control, fire) => {
 
 const sync = (el, control, value) => {
   const v = value ? value() : null;
-  if (control === 0) el.checked = truth(v);
+  if (control === 0 || control === 8) el.checked = truth(v);
+  else if (control === 9) el.open = truth(v);
   else if (control === 1) el.value = v === null ? el.min : String(v);
   else if (control === 2) select(el, v === null ? 0n : v, el.$radio);
   else if (v !== null) P.input(el, v);

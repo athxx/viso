@@ -4884,10 +4884,13 @@ KeyShortcut {
 | `Slider`     | `value: F32 = 0.0`（two_way；`PAINT\|SEMANTICS`）；`min: F32 = 0.0`、`max: F32 = 1.0`、`step: Option<F32> = Option::None`（`PAINT\|SEMANTICS`） | `changed(value: F32)` |
 | `TextInput`  | `value: String = ""`（two_way；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；`placeholder: String = ""`（Localizable；同上）；`secure: Bool = false`（同上）；`invalid: Bool = false`（`STYLE\|SEMANTICS`） | `changed(value: String)`、`submitted` |
 | `Tabs`、`RadioGroup` | `selected: U32 = 0`（two_way；`STYLE\|PAINT\|SEMANTICS`）                             | `selected_changed(value: U32)` |
+| `Disclosure` | `expanded: Bool = false`（two_way；`MEASURE\|LAYOUT\|PAINT\|SEMANTICS`）；Column 的 Flex 属性        | `changed(value: Bool)` |
+
+`Disclosure` 是可展开的分组：第一个子节点是标题，其余子节点是正文。在标题上抬起、或焦点在 `Disclosure` 或其标题上时按 Space/Enter，翻转 `expanded`；未展开时正文退出布局、绘制、命中与语义树（`NodeStore::set_folded`，不重建子节点，之后挂入的子节点同样折叠，子节点自身的 `visible` 不受影响）。标题的默认角色为 `button` 并带 `expanded` 语义状态，`Disclosure` 本身是分组；`when expanded` 选中展开态。Web 导出为 `<details>`，标题为其 `<summary>`，`toggle` 事件投递 `changed`。
 
 `TextInput` 无文本时以其文本颜色一半的不透明度绘制 `placeholder`，`placeholder` 同时是没有 `semantics.hint` 时的提示；`secure` 的输入框为每个字素绘制一个 `•`，光标、点击与 IME 位置经绘制文本与原文之间的映射落在原文上，不提供复制或剪切的文本，语义角色为 `Role::secure_field`，不向辅助技术报告其文本；获得焦点时平台输入法按密码处理，不组字、不给候选、不学习或提示其输入：macOS 持有 Secure Event Input 并只允许罗马字输入源，iOS `secureTextEntry`，Android `TYPE_TEXT_VARIATION_PASSWORD`，Web 为 `type=password` 的输入元素，Windows 与 X11 让按键绕过输入法，Wayland `text-input-v3` 的内容用途为 `password`。没有 `value` 的输入框照常取得文本样式、`placeholder` 与 `secure`，其文本是用户输入的内容。`Toggle`/`CheckBox` 的 `label` 是其绘制的文字，也是没有 `semantics.label` 时的可访问名称；文字前（从右到左时为其后）绘制控件自身的标记，按文字首行定尺寸、居中于首行，以文字颜色着色：`CheckBox` 为一个方框，选中时填充并画勾，`Toggle` 为一条轨道，滑块选中时在末端。
 
-Widget 事件的 Payload 是 Prelude Record：`Toggle`/`CheckBox` 的 `changed` 为 `ToggleChanged`，`Slider` 为 `SliderChanged`，`TextInput` 为 `TextChanged`，`selected_changed` 为 `SelectionChanged`，字段均为 `value`；`submitted` 与 `triggered` 无 Payload。
+Widget 事件的 Payload 是 Prelude Record：`Toggle`/`CheckBox`/`Disclosure` 的 `changed` 为 `ToggleChanged`，`Slider` 为 `SliderChanged`，`TextInput` 为 `TextChanged`，`selected_changed` 为 `SelectionChanged`，字段均为 `value`；`submitted` 与 `triggered` 无 Payload。
 
 `Toggle` 使用 `checked` 而不是 `on`：`on` 是 View Item 起始位置的 Contextual Keyword，同时 `checked` 与语义状态同名（ADR 0021）。
 
@@ -4940,7 +4943,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 
 当前实现：View 的原生节点投影 `semantics.role` 与 `semantics.label`。`semantics.role` 是常量 `Role::<variant>`，其他值或未知 Variant 使视图无法挂载（消息列出全部 Variant）；未写时取上表的 Widget 默认角色（`Image`、`Svg` 无名称时为装饰）。可访问名称取 `semantics.label`，否则 `Text`、`Button` 取其 `text`；两者随所读 State 变化重新投影，只标记 `SEMANTICS`。`semantics.hint`、`semantics.value`、`semantics.hidden`、`semantics.heading_level` 同样随所读 State 重新投影；`semantics.live` 是常量 `LiveRegion::<variant>`（其他值使视图无法挂载）。`semantics.hidden` 为真的节点连同子树留在界面上，但不进入语义树。`Tabs` 的直接子节点（含控制流区域中的）默认角色为 `tab`，`RadioGroup` 的为 `radio`，`NavigationStack` 为 `navigation`；作者写的 `semantics.role` 优先。AccessKit 与 Web 后端分别以 description/`aria-description`、value/`aria-valuetext`、live/`aria-live`、level/`aria-level` 发布。`Modal`、`Sheet`、`Toast` 尚不是 `.vs` Widget，其默认角色随 Widget 落地。
 
-标准交互 Widget 是 `Button`、`Toggle`、`CheckBox`、`Slider`、`TextInput`、`Tabs`、`RadioGroup`（Widget Schema 的 `interactive` 标记）。其他原生 Widget 的节点（包括用户 Component 视图的根节点）处理 `click`、`tap`、`long_press`、`drag_*` 或 `key_down` 时：未绑定 `semantics.role`、或绑定为 `Role::group`，报 `E3704`；节点及其子树中没有 `semantics.label` 或 `text` 绑定，报 `E3704`；没有 `focusable`（或其值为字面量 `false`）、或不处理 `click`，报 `E3708`。均为警告，构建配置的 `a11y_strict`（`--a11y strict`）使之成为错误。调用方在用户 Component 节点上转发到其视图根节点的手势 Handler（不是该 Component 声明的 Event）按根节点检查：根节点与调用方的 Property 合并（调用方的后写优先），名称取两者任一处的 `semantics.label` 或 `text`；根节点是标准交互 Widget 时不报。
+标准交互 Widget 是 `Button`、`Toggle`、`CheckBox`、`Slider`、`TextInput`、`Tabs`、`RadioGroup`、`Disclosure`（Widget Schema 的 `interactive` 标记）。其他原生 Widget 的节点（包括用户 Component 视图的根节点）处理 `click`、`tap`、`long_press`、`drag_*` 或 `key_down` 时：未绑定 `semantics.role`、或绑定为 `Role::group`，报 `E3704`；节点及其子树中没有 `semantics.label` 或 `text` 绑定，报 `E3704`；没有 `focusable`（或其值为字面量 `false`）、或不处理 `click`，报 `E3708`。均为警告，构建配置的 `a11y_strict`（`--a11y strict`）使之成为错误。调用方在用户 Component 节点上转发到其视图根节点的手势 Handler（不是该 Component 声明的 Event）按根节点检查：根节点与调用方的 Property 合并（调用方的后写优先），名称取两者任一处的 `semantics.label` 或 `text`；根节点是标准交互 Widget 时不报。
 
 ---
 
@@ -5076,7 +5079,7 @@ Widget Schema 从下表中声明它支持的选择器；Style 使用 Widget 不�
 - 同一 Style 内 `when` 块按源码顺序应用，后者覆盖前者；标准 Style 按"静止 → `hover` → `pressed` → `focus_visible` → `disabled`"书写，得到 `pressed > hover > 静止` 的优先级；
 - 节点显式 Property 优先于所有 Style（§59），因此依赖选择器的外观应写在 Style 中。
 
-当前实现：带标准输入事件的原生 Widget 支持 `hover`、`pressed`、`focused`、`focus_visible`、`selected`、`dragging`；有 `Bool` 属性 `enabled`、`checked`、`invalid` 的 Widget 分别支持 `disabled`、`checked`、`invalid`。`expanded` 尚无 Widget 支持（`E2001`）。交互状态由节点存储从路由器记录的事实导出：`hover` 是悬停目标或其祖先，`pressed` 是主按钮按下的命中节点或其祖先、直到该指针抬起，指针移出某个节点的盒子时该节点不再 `pressed`、移回再恢复，触摸平移胜出时整个按下取消；`click`、`tap` 只在按下所在、指针仍在其内的节点上抬起时派发，因此在别处抬起或被平移取消的按下不产生点击。`focused` 是焦点节点，`focus_visible` 是键盘或辅助技术移入的焦点，`selected` 是 `Tabs`、`RadioGroup` 选中的直接子节点（Web 导出为 `aria-selected`，单选项为 `aria-checked`）。存储维护一个修订单元，在 Flush 开始时、上述事实自上一轮变化后提升一次；读取交互选择器的节点依赖它并只重新求值自身的外观入口。
+当前实现：带标准输入事件的原生 Widget 支持 `hover`、`pressed`、`focused`、`focus_visible`、`selected`、`dragging`；有 `Bool` 属性 `enabled`、`checked`、`invalid`、`expanded` 的 Widget 分别支持 `disabled`、`checked`、`invalid`、`expanded`（`expanded` 目前即 `Disclosure`）。交互状态由节点存储从路由器记录的事实导出：`hover` 是悬停目标或其祖先，`pressed` 是主按钮按下的命中节点或其祖先、直到该指针抬起，指针移出某个节点的盒子时该节点不再 `pressed`、移回再恢复，触摸平移胜出时整个按下取消；`click`、`tap` 只在按下所在、指针仍在其内的节点上抬起时派发，因此在别处抬起或被平移取消的按下不产生点击。`focused` 是焦点节点，`focus_visible` 是键盘或辅助技术移入的焦点，`selected` 是 `Tabs`、`RadioGroup` 选中的直接子节点（Web 导出为 `aria-selected`，单选项为 `aria-checked`）。存储维护一个修订单元，在 Flush 开始时、上述事实自上一轮变化后提升一次；读取交互选择器的节点依赖它并只重新求值自身的外观入口。
 
 ### U12.2 标准 Theme Schema
 

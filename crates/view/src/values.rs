@@ -676,6 +676,17 @@ impl Shown {
                 store.set_semantic_state(self.node, state);
             }
             ControlKind::Select => select(store, self.node, value.as_int().unwrap_or(0)),
+            ControlKind::Disclosure => {
+                let expanded = value.as_int().is_some_and(|v| v != 0);
+                store.set_folded(self.node, !expanded);
+                if let Some(header) = store.arena().first_child(self.node) {
+                    let state = SemanticState {
+                        expanded: Some(expanded),
+                        ..SemanticState::default()
+                    };
+                    store.set_semantic_state(header, state);
+                }
+            }
         }
         self.shows = Some(shows);
         self.program = program;

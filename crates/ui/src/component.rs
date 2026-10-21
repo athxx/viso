@@ -660,6 +660,8 @@ pub struct NodeStore {
     pub(crate) drags: crate::drag::Drags,
     /// The nodes that take long presses and the holds under way.
     pub(crate) holds: crate::long_press::Holds,
+    /// Cold: the nodes folded to their first child.
+    pub(crate) folds: crate::fold::Folds,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
     /// re-folded into `layout` when it changes. Empty in a tree of plain `dp`
     /// and `%` lengths.
@@ -778,6 +780,7 @@ impl NodeStore {
         self.interaction_states.clear();
         self.drags.clear();
         self.holds.clear();
+        self.folds.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -889,7 +892,7 @@ impl NodeStore {
         let mut at = id;
         loop {
             let i = at.index() as usize;
-            if self.hidden[i] {
+            if self.concealed(i) {
                 return Rect::ZERO;
             }
             clipped &= !self.overlay[i];
@@ -932,14 +935,17 @@ impl NodeStore {
     fn joined_reach(&self, id: NodeId) -> Rect {
         let i = id.index() as usize;
         let own = self.bounds[i];
-        if self.hidden[i] || self.clips[i] || matches!(self.layout[i], LayoutInput::Scroll { .. }) {
+        if self.concealed(i)
+            || self.clips[i]
+            || matches!(self.layout[i], LayoutInput::Scroll { .. })
+        {
             return own;
         }
         let mut reach = own;
         let mut child = self.arena.first_child(id);
         while let Some(c) = child {
             let ci = c.index() as usize;
-            if !self.hidden[ci] && !self.overlay[ci] {
+            if !self.concealed(ci) && !self.overlay[ci] {
                 reach = reach.accumulate(self.reach_in_parent(ci));
             }
             child = self.arena.next_sibling(c);
@@ -973,7 +979,7 @@ impl NodeStore {
 
     /// Re-join the reach of every node in `id`'s subtree, children first.
     fn rejoin_subtree(&mut self, id: NodeId) {
-        if !self.hidden[id.index() as usize] {
+        if !self.concealed(id.index() as usize) {
             let mut child = self.arena.first_child(id);
             while let Some(c) = child {
                 self.rejoin_subtree(c);
@@ -3218,10 +3224,17 @@ impl NodeStore {
         self.hittable[id.index() as usize] = hit;
     }
 
-    /// Whether a node is folded out of layout and paint (default `false`).
+    /// Whether a node is folded out of layout and paint (default `false`):
+    /// hidden itself, or a child past the first of a folded node.
     #[inline]
     pub fn hidden(&self, id: NodeId) -> bool {
-        self.hidden[id.index() as usize]
+        self.concealed(id.index() as usize)
+    }
+
+    /// Whether the slot `i` is out of layout and paint.
+    #[inline]
+    fn concealed(&self, i: usize) -> bool {
+        self.hidden[i] || self.folded_away(crate::node::NodeIndex::new(i as u32))
     }
 
     /// Set whether a node (and its subtree) is folded out of layout, paint and
@@ -3240,6 +3253,12 @@ impl NodeStore {
             return;
         }
         self.hidden[id.index() as usize] = hidden;
+        self.shown_changed(id);
+    }
+
+    /// Node `id` entered or left layout, paint and the semantics tree: its
+    /// parent re-places its children and repaints.
+    pub(crate) fn shown_changed(&mut self, id: NodeId) {
         self.relinked(id);
         self.mark_dirty(
             id,
@@ -4320,6 +4339,7 @@ impl NodeStore {
         self.measured[i] = Measured::default();
         self.hittable[i] = true;
         self.hidden[i] = false;
+        self.folds.forget(i as u32);
         self.clips[i] = false;
         self.overlay[i] = false;
         self.opacity[i] = 1.0;
@@ -4709,7 +4729,7 @@ impl NodeStore {
         let Some(parent) = self.arena.parent(id) else {
             return false;
         };
-        if id == root || self.hidden[id.index() as usize] {
+        if id == root || self.concealed(id.index() as usize) {
             return false;
         }
         let p = parent.index() as usize;
@@ -4949,7 +4969,7 @@ impl NodeStore {
         for c in self.arena.children(id) {
             // A subtree authored hidden is shown but not read; one folded out
             // of layout is neither.
-            if !self.hidden[c.index() as usize] && !self.semantics(c).is_some_and(|s| s.hidden) {
+            if !self.concealed(c.index() as usize) && !self.semantics(c).is_some_and(|s| s.hidden) {
                 let ci = self.derive_into(c, disabled, tree);
                 tree.nodes[my_index].children.push(ci);
             }
@@ -5228,7 +5248,7 @@ impl LayoutTree for NodeStore {
 
     #[inline]
     fn hidden(&self, index: u32) -> bool {
-        self.hidden[index as usize]
+        self.concealed(index as usize)
     }
 
     fn report_length(&mut self, index: u32, issue: crate::length::LengthIssue) {

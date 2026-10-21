@@ -20,8 +20,8 @@ use crate::diag::{Diagnostic, Related};
 use crate::hir::effect::BodyContext;
 use crate::hir::infer::{InferCx, TypeEnv};
 use crate::hir::style::{
-    INTERACTION_SELECTORS, RESERVED_SELECTORS, Selector, StyleBooks, StyleItem,
-    UNSUPPORTED_SELECTORS, path_name, style_items, target_name, widget_selectors,
+    INTERACTION_SELECTORS, RESERVED_SELECTORS, Selector, StyleBooks, StyleItem, path_name,
+    style_items, target_name, widget_selectors,
 };
 use crate::hir::ty::Ty;
 use crate::hir::view::InputProp;
@@ -419,22 +419,18 @@ fn selector_check(
         if supported.contains(&name) {
             continue;
         }
-        let message = if UNSUPPORTED_SELECTORS.contains(&name.as_str()) {
-            format!("no widget supports the selector `{name}` yet")
-        } else {
-            format!(
-                "`{of}` has no selector `{name}`; it supports {}",
-                if supported.is_empty() {
-                    "none".to_string()
-                } else {
-                    supported
-                        .iter()
-                        .map(|n| format!("`{n}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                }
-            )
-        };
+        let message = format!(
+            "`{of}` has no selector `{name}`; it supports {}",
+            if supported.is_empty() {
+                "none".to_string()
+            } else {
+                supported
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
         diagnostics.push(Diagnostic::error("E2001", at, message));
     }
 }

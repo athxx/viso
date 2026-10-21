@@ -60,6 +60,7 @@ impl Drive for Control {
         }
         match self.kind {
             ControlKind::Check | ControlKind::Switch => toggle(self, host, scope, cx),
+            ControlKind::Disclosure => disclose(self, host, scope, cx),
             ControlKind::Slider => slider(self, host, scope, cx),
             ControlKind::Select => select(self, host, scope, cx),
             ControlKind::TextInput => text_input(cx),
@@ -154,6 +155,27 @@ fn toggle(
     }
     let checked = read(host, control.value, scope, cx).as_int().unwrap_or(0) != 0;
     Some((EventRoute::Changed, field(Value::bool(!checked))))
+}
+
+/// A disclosure's response: a release on its header, its first child, or a
+/// fresh Space/Enter on it or its header flips `expanded`.
+fn disclose(
+    control: &Control,
+    host: &mut ViewHost,
+    scope: &Scope,
+    cx: &mut EventCx<'_>,
+) -> Option<(EventRoute, Value)> {
+    let on_header = cx.phase() == DispatchPhase::Bubble && cx.child_index() == Some(0);
+    let flips = match (cx.pointer(), cx.key()) {
+        (Some(p), _) => p.phase == PointerPhase::Up && on_header,
+        (_, Some(k)) => activates(k) && (on_header || cx.phase() == DispatchPhase::Target),
+        _ => false,
+    };
+    if !flips {
+        return None;
+    }
+    let expanded = read(host, control.value, scope, cx).as_int().unwrap_or(0) != 0;
+    Some((EventRoute::Changed, field(Value::bool(!expanded))))
 }
 
 fn slider(

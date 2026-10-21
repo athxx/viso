@@ -626,6 +626,15 @@ impl<'a> Walk<'a> {
                 },
             ));
         }
+        if node.type_name == "Disclosure" {
+            // The header, its first child, is the button that discloses it.
+            for (at, each) in node.children.iter().enumerate() {
+                self.item = (at == 0).then_some(viso_schema::Role::Button);
+                self.item(each);
+            }
+            self.item = None;
+            return;
+        }
         let items = match node.type_name.as_str() {
             "Tabs" => Some(viso_schema::Role::Tab),
             "RadioGroup" => Some(viso_schema::Role::Radio),

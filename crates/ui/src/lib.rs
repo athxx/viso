@@ -21,6 +21,7 @@ pub mod context;
 pub mod dirty;
 pub mod drag;
 pub mod flush;
+pub mod fold;
 pub mod frame_client;
 pub mod grid;
 pub mod hit_test;

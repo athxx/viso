@@ -1168,7 +1168,7 @@ timers (§104–§111).
         it alike; capability checked when the loader first calls a native,
         before any work is spawned.
   - [ ] `ResourceScope` beyond `component` (shared caches across instances).
-- [ ] `style` / `theme` grammar and lowering; `@styleable`, `@selector` `E3710` (§59, §60, U2.3, U12).
+- [x] `style` / `theme` grammar and lowering; `@styleable`, `@selector` `E3710` (§59, §60, U2.3, U12).
   - [x] Grammar: `style NAME for Component : Base + Base { prop: v; when sel { } }`
         and `theme NAME : Base { name = expr; }`; both resolve (`theme` reads in
         style values); a `when` selector never reads its `{` as a record.
@@ -1210,7 +1210,12 @@ timers (§104–§111).
   - [x] `long_press`: a press held still for the delay on the nearest node
         taking it, over the click, an armed drag and a later pan; the web
         export alike.
-  - [ ] `expanded` once an expandable widget exists.
+  - [x] `expanded`: the `Disclosure` widget (first child the header, the rest
+        the body; `expanded` two-way, `changed`), folded by the store
+        (`NodeStore::set_folded`: the body leaves layout, paint, hit testing
+        and semantics, children linked later too); the header a `button` with
+        the `expanded` state; release package alike; the web export a
+        `<details>` with the header its `<summary>`.
   - [x] Theme: the standard `Theme` schema (U12.2); `theme X { }` builds a typed
         immutable value from its items, its base and the record defaults
         (`E2001`/`E2103`, base cycles `E2003`, one name per package `E2002`);

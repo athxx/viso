@@ -109,6 +109,8 @@ pub(super) enum Prop {
     Hidden,
     HeadingLevel,
     Checked,
+    /// A disclosure's `expanded`, its `<details>`' `open`.
+    Open,
     /// A slider's `value`, `min`, `max` or `step`.
     Range(&'static str),
     InputValue,
@@ -223,6 +225,9 @@ pub(super) struct Lower<'v, 'e, 'a> {
     anchors: bool,
     /// Whether the flex container being lowered stretches its children.
     stretch: bool,
+    /// Whether the node being lowered is a disclosure's header, its first
+    /// child: the `<summary>` of its `<details>`.
+    summary: bool,
     /// The tree being lowered, whose spans of other files' components it
     /// reports where the page's source places them.
     tree: Option<&'v UiTree>,
@@ -247,6 +252,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             rooted: BTreeSet::new(),
             anchors: false,
             stretch: false,
+            summary: false,
             tree: None,
         }
     }
@@ -421,7 +427,10 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             item => node.role.or(item.map(|(role, _)| role)).or(widget),
         };
         let masked = control.as_ref().is_some_and(|c| c.tint.is_some());
+        let summary = std::mem::take(&mut self.summary);
         el.tag = match (node.type_name.as_str(), role) {
+            _ if summary => "summary",
+            ("Disclosure", _) => "details",
             ("Button", _) => "button",
             ("TextInput" | "Toggle" | "CheckBox" | "Slider", _) => "input",
             ("Image" | "Svg", _) if !masked => "img",
@@ -615,6 +624,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     let item_of = item_role.map(|role| (role, selected.map(|s| s == index)));
                     match item {
                         UiItem::Node(n) => {
+                            self.summary = index == 0 && node.type_name == "Disclosure";
                             self.node(n, child, item_of, depth, templated, out);
                             index += 1;
                         }
@@ -940,6 +950,18 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     )
                 {
                     el.attr("aria-label", &fixed.text());
+                }
+            }
+            ControlKind::Disclosure => {
+                if let Some(fixed) = self.bind(
+                    wires,
+                    control.value,
+                    Prop::Open,
+                    "whether it is expanded",
+                    at,
+                ) && fixed.truth()
+                {
+                    el.attr("open", "");
                 }
             }
             ControlKind::Slider => {

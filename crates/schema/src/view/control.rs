@@ -43,11 +43,14 @@ pub enum ControlKind {
     /// `Toggle`: flips `checked` as a [`Check`](Self::Check) does, drawing a
     /// track with its knob at the end while checked.
     Switch = 8,
+    /// `Disclosure`: a release on its first child, the header, or Space/Enter
+    /// flips `expanded`; while it is not expanded only the header shows.
+    Disclosure = 9,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 9] = [
+    pub const ALL: [ControlKind; 10] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -57,6 +60,7 @@ impl ControlKind {
         ControlKind::Asset,
         ControlKind::Shader,
         ControlKind::Switch,
+        ControlKind::Disclosure,
     ];
 
     /// The kind native widget `widget` is.
@@ -64,6 +68,7 @@ impl ControlKind {
         match widget {
             "CheckBox" => ControlKind::Check,
             "Toggle" => ControlKind::Switch,
+            "Disclosure" => ControlKind::Disclosure,
             "Slider" => ControlKind::Slider,
             "Tabs" | "RadioGroup" => ControlKind::Select,
             "TextInput" => ControlKind::TextInput,
@@ -101,6 +106,7 @@ impl ControlKind {
             (
                 ControlKind::Check
                     | ControlKind::Switch
+                    | ControlKind::Disclosure
                     | ControlKind::Slider
                     | ControlKind::TextInput,
                 EventRoute::Changed
@@ -157,6 +163,7 @@ impl ControlKind {
             (ControlKind::Label, "max_lines") => ControlInput::MaxLines,
             (ControlKind::Label, "overflow") => ControlInput::Overflow,
             (ControlKind::Check | ControlKind::Switch, "checked")
+            | (ControlKind::Disclosure, "expanded")
             | (ControlKind::Slider, "value")
             | (ControlKind::Select, "selected")
             | (ControlKind::TextInput, "value")
@@ -180,6 +187,7 @@ impl ControlKind {
         match self {
             ControlKind::Check => "Check",
             ControlKind::Switch => "Switch",
+            ControlKind::Disclosure => "Disclosure",
             ControlKind::Slider => "Slider",
             ControlKind::Select => "Select",
             ControlKind::TextInput => "TextInput",
@@ -1282,7 +1290,7 @@ mod tests {
         for kind in ControlKind::ALL {
             assert_eq!(ControlKind::from_u8(kind as u8), Some(kind));
         }
-        assert_eq!(ControlKind::from_u8(9), None);
+        assert_eq!(ControlKind::from_u8(10), None);
         assert_eq!(ControlKind::of("Svg"), ControlKind::Asset);
         assert_eq!(ControlKind::of("ShaderView"), ControlKind::Shader);
         assert_eq!(
@@ -1464,7 +1472,7 @@ mod tests {
             "layout slots ascend"
         );
         let mut bad = bytes.clone();
-        bad[0] = 9;
+        bad[0] = 10;
         assert!(Control::decode_from_slice(&bad).is_err());
         let mut bad = bytes.clone();
         bad[1] = 99;

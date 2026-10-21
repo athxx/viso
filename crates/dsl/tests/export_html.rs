@@ -810,3 +810,32 @@ export component C { view { Column { Chip { styles: [Lit]; } } } }
         "the tint follows `open`: {script}"
     );
 }
+
+#[test]
+fn a_disclosure_exports_as_details_with_its_header_as_summary() {
+    const PANEL: &str = r#"
+export component Panel {
+    state open = true;
+    view {
+        Disclosure {
+            bind expanded <=> open;
+            Text { text: "More"; }
+            Text { text: "Body"; }
+        }
+    }
+}
+"#;
+    let page = export(PANEL, false).unwrap();
+    let index = &page.index;
+    assert!(index.contains("<details"), "{index}");
+    assert!(
+        index.contains("<summary class=\"vx-text s1\">More</summary>"),
+        "the header is the summary, which browsers expose as its button: {index}"
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(script.contains("P.open(e["), "{script}");
+    assert!(
+        script.contains(", 9, (p) =>"),
+        "the toggle reports `changed`: {script}"
+    );
+}

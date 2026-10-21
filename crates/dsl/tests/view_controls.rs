@@ -561,3 +561,55 @@ export component Mixer {
         assert!(!rt.faulted());
     }
 }
+
+#[test]
+fn a_disclosure_shows_its_body_while_expanded_and_its_header_flips_it() {
+    const DISCLOSURE: &str = r#"
+export component Panel {
+    state open = false;
+    state flips = 0;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Disclosure {
+                width: 400dp;
+                bind expanded <=> open;
+                on changed(event) { flips += 1; }
+                Row {
+                    width: 400dp;
+                    height: 20dp;
+                    Text { text: "More"; width: 100dp; height: 20dp; }
+                }
+                Column { width: 400dp; height: 100dp; }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(DISCLOSURE), Rt::packaged(DISCLOSURE)] {
+        let disclosure = rt.children_of_root()[0];
+        let [header, body] = rt.children(disclosure)[..] else {
+            panic!("a header and a body");
+        };
+        let expanded = |rt: &Rt| rt.store.semantic_state(header).and_then(|s| s.expanded);
+        assert!(rt.store.folded(disclosure) && rt.store.hidden(body));
+        assert_eq!(rt.store.bounds(body).h, 0.0);
+        assert_eq!(expanded(&rt), Some(false));
+
+        rt.click(10.0, 10.0);
+        assert_eq!((rt.int("open"), rt.int("flips")), (1, 1));
+        assert!(!rt.store.hidden(body));
+        assert_eq!(rt.store.bounds(body).h, 100.0);
+        assert_eq!(expanded(&rt), Some(true));
+
+        rt.click(10.0, 60.0);
+        assert_eq!(rt.int("flips"), 1, "the body flips nothing");
+
+        rt.store.set_focused(disclosure.into());
+        rt.key(Key::Space);
+        assert_eq!(rt.int("open"), 0);
+        assert!(rt.store.hidden(body));
+        assert!(!rt.faulted());
+    }
+}

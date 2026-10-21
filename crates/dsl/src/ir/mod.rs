@@ -1409,7 +1409,7 @@ fn unapplied(
     }
     match name {
         "semantics.role" | "semantics.live" => None,
-        "checked" | "invalid" if selected() => None,
+        "checked" | "invalid" | "expanded" if selected() => None,
         "areas" | "grid.area" => Some(format!(
             "a `{name}` that reads a value does not lay out yet; a constant one does"
         )),
