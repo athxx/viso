@@ -155,3 +155,40 @@ fn a_package_directory_holds_the_imports_and_its_root_is_found() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+const SIZES: &str = r#"
+import units::{BASE};
+export const WIDE: MixedLength = BASE;
+"#;
+
+const SIZED: &str = r#"
+import sizes::{WIDE};
+export component Sized {
+    state taps = 0;
+    view {
+        Column {
+            Row { width: WIDE; height: 20dp; on click { taps += 1; } }
+        }
+    }
+}
+"#;
+
+#[test]
+fn an_imported_const_folds_into_style_as_one_of_the_file() {
+    let siblings = || {
+        Siblings::Memory(Arc::from(vec![
+            (vec!["sizes".to_owned()], SIZES.to_owned()),
+            (
+                vec!["units".to_owned()],
+                "export const BASE: MixedLength = 120dp;\n".to_owned(),
+            ),
+        ]))
+    };
+    for rt in [
+        Rt::mount_in(SIZED, siblings()),
+        Rt::packaged_in(SIZED, siblings()),
+    ] {
+        let row = rt.children(rt.root.expect("mounted"))[0];
+        assert_eq!(rt.store.bounds(row).w, 120.0, "`WIDE` through `BASE`");
+    }
+}

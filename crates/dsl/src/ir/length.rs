@@ -23,31 +23,48 @@ use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::span::TextRange;
 use crate::syntax::{SyntaxKind, SyntaxNode};
 
-/// The constants of the file a view lowers in, each reference to one by the
-/// span of its name, standing for the value it declares.
+/// The constants a view folds: those of its file and of the modules it
+/// imports, each reference to one — in whichever file it is written — by
+/// the tree it is in and the span of its name, standing for the value it
+/// declares.
 #[derive(Debug, Default)]
 pub struct Consts {
-    values: HashMap<TextRange, Expr>,
+    refs: HashMap<(usize, TextRange), SymbolId>,
+    values: HashMap<SymbolId, Expr>,
     /// How deep the constants being folded nest, so a cycle (an error the
     /// checker reports) ends.
     depth: Cell<u32>,
+}
+
+/// The tree `node` is in, by the identity of its root's green node: a
+/// unit's spans are its own, and another file's may coincide with them.
+fn tree_of(node: &SyntaxNode) -> usize {
+    node.ancestors()
+        .last()
+        .map_or(0, |root| std::rc::Rc::as_ptr(root.green()) as usize)
 }
 
 /// How deep constants fold through one another.
 const CONST_DEPTH: u32 = 32;
 
 impl Consts {
-    /// The constants each reference of `refs` names, from `values`, the
-    /// value of each by its symbol.
-    pub(crate) fn new(refs: &[ResolvedRef], values: &HashMap<SymbolId, Expr>) -> Self {
-        let values = refs
-            .iter()
-            .filter_map(|r| match r.to {
-                Resolution::Symbol(id) => Some((r.range, values.get(&id)?.clone())),
+    /// The constants each reference of each of `units` names — a unit's
+    /// root and its references — from `values`, the value of each by its
+    /// symbol.
+    pub(crate) fn new<'r>(
+        units: impl IntoIterator<Item = (&'r SyntaxNode, &'r [ResolvedRef])>,
+        values: HashMap<SymbolId, Expr>,
+    ) -> Self {
+        let mut refs = HashMap::new();
+        for (root, unit_refs) in units {
+            let tree = tree_of(root);
+            refs.extend(unit_refs.iter().filter_map(|r| match r.to {
+                Resolution::Symbol(id) if values.contains_key(&id) => Some(((tree, r.range), id)),
                 _ => None,
-            })
-            .collect();
+            }));
+        }
         Consts {
+            refs,
             values,
             depth: Cell::new(0),
         }
@@ -86,7 +103,10 @@ impl Consts {
         if segments.next().is_some() {
             return None;
         }
-        self.values.get(&name.text_range()).cloned()
+        let symbol = self
+            .refs
+            .get(&(tree_of(path.syntax()), name.text_range()))?;
+        self.values.get(symbol).cloned()
     }
 }
 

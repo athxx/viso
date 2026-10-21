@@ -39,6 +39,7 @@ pub use ui_ir::{
 };
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use viso_behavior::native::{FlexAxis, MigratableState, Natives, WidgetNode};
 use viso_schema::view::{ControlKind, LayoutSlot};
@@ -98,7 +99,7 @@ pub struct ComponentLibrary<'a> {
     /// The styles of the unit, which its nodes apply.
     styles: StyleBook,
     /// The constants of the unit, which fold into its nodes' style.
-    consts: Consts,
+    consts: Rc<Consts>,
 }
 
 /// One component of a [`ComponentLibrary`].
@@ -133,7 +134,7 @@ impl<'a> ComponentLibrary<'a> {
             heads,
             components,
             styles: StyleBook::default(),
-            consts: Consts::default(),
+            consts: Rc::new(Consts::default()),
         }
     }
 
@@ -143,8 +144,8 @@ impl<'a> ComponentLibrary<'a> {
         self
     }
 
-    /// The library with the unit's constants `consts`.
-    pub(crate) fn with_consts(mut self, consts: Consts) -> Self {
+    /// The library with the constants `consts` its views fold.
+    pub(crate) fn with_consts(mut self, consts: Rc<Consts>) -> Self {
         self.consts = consts;
         self
     }

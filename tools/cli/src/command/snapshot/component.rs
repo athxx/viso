@@ -201,7 +201,13 @@ mod tests {
             required: vec!["label".into()],
             ..found
         };
-        match package(&needy, "app", None, Siblings::None, TargetProfile::default()) {
+        match package(
+            &needy,
+            "app",
+            None,
+            Siblings::None,
+            TargetProfile::default(),
+        ) {
             Err(Unbuilt::Alone(why)) => {
                 assert!(why.iter().any(|m| m.contains("label")), "{why:?}");
             }

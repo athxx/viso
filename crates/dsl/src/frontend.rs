@@ -567,6 +567,7 @@ fn compile_unit(
             diagnostics.push(imported_error(error, &text, sibling.via));
         }
     }
+    let consts = graph_consts(&graph, &units, &resolved, &interner);
     let module = resolved.swap_remove(index.as_usize());
     diagnostics.extend(module.errors.iter().cloned());
     if let Some(range) = lowered.module_diagnostics.get(index.as_usize()) {
@@ -599,7 +600,13 @@ fn compile_unit(
             .find(|d| d.syntax().text_range() == c.source_origin)
             .cloned()
     };
-    let library = unit_library(&cu, &module, &decls, components.iter().filter(|c| own(c)));
+    let library = unit_library(
+        &cu,
+        &module,
+        &decls,
+        components.iter().filter(|c| own(c)),
+        consts,
+    );
     let root_symbol = components[mounted].schema.symbol;
     let lowered_view = decl.view().and_then(|view| view.block()).map(|block| {
         lower_component_view(&block, graph.natives(), &library, root_symbol, rust_scope)
@@ -795,14 +802,61 @@ fn ordered_invalidations(
     out
 }
 
+/// The constants a view of any module of `graph` folds: every module's —
+/// the units `units` resolved as `resolved` — each read by the references
+/// of the file it is read in.
+pub(crate) fn graph_consts(
+    graph: &ModuleGraph,
+    units: &[SourceUnit],
+    resolved: &[ResolvedModule],
+    interner: &NameInterner,
+) -> Rc<Consts> {
+    let mut roots = Vec::new();
+    let mut values = HashMap::new();
+    for (gm, module) in graph.modules().iter().zip(resolved) {
+        let text = gm.path.display(interner);
+        let Some(unit) = units.iter().find(|u| u.path.display(interner) == text) else {
+            continue;
+        };
+        let root = SyntaxNode::new_root(unit.parse.root.clone());
+        let Some(cu) = CompilationUnit::cast(root.clone()) else {
+            continue;
+        };
+        let symbol = |name: TextRange| {
+            module
+                .decls
+                .iter()
+                .find(|d| d.name_range == name)
+                .map(|d| d.id)
+        };
+        values.extend(
+            cu.items()
+                .filter_map(|item| match item {
+                    Item::Export(export) => export.declaration(),
+                    other => Some(other),
+                })
+                .filter_map(|item| match item {
+                    Item::Const(decl) => Some((symbol(decl.name()?.text_range())?, decl.value()?)),
+                    _ => None,
+                }),
+        );
+        roots.push((root, &module.refs[..]));
+    }
+    Rc::new(Consts::new(
+        roots.iter().map(|(root, refs)| (root, *refs)),
+        values,
+    ))
+}
+
 /// The library a view of the unit `cu`, resolved as `module`, inlines: the
 /// components among `components` it declares as `decls`, its styles and
-/// its constants.
+/// `consts`, the constants of the graph it is in.
 pub(crate) fn unit_library<'a>(
     cu: &CompilationUnit,
     module: &ResolvedModule,
     decls: &[ComponentDecl],
     components: impl Iterator<Item = &'a HirComponent>,
+    consts: Rc<Consts>,
 ) -> ComponentLibrary<'a> {
     let library = components.filter_map(|c| {
         let decl = decls
@@ -823,24 +877,13 @@ pub(crate) fn unit_library<'a>(
             .find(|d| d.name_range == name)
             .map(|d| d.id)
     };
-    let values: HashMap<SymbolId, Expr> = cu
-        .items()
-        .filter_map(|item| match item {
-            Item::Export(export) => export.declaration(),
-            other => Some(other),
-        })
-        .filter_map(|item| match item {
-            Item::Const(decl) => Some((symbol(decl.name()?.text_range())?, decl.value()?)),
-            _ => None,
-        })
-        .collect();
     ComponentLibrary::new(&module.refs, library.collect())
         .with_styles(StyleBook::new(
             cu.items(),
             |style| symbol(style.name()?.text_range()),
             &module.refs,
         ))
-        .with_consts(Consts::new(&module.refs, &values))
+        .with_consts(consts)
 }
 
 /// What lowering a view raises: what it cannot mount (`E3711`), each grid
@@ -896,6 +939,7 @@ fn unmounted_diagnostic(unmounted: &crate::ir::Unmounted) -> Diagnostic {
 pub(crate) fn input_invalidations(
     cu: &CompilationUnit,
     module: &ResolvedModule,
+    consts: &Rc<Consts>,
     components: &[&HirComponent],
     natives: &Natives,
     component: &HirComponent,
@@ -909,7 +953,13 @@ pub(crate) fn input_invalidations(
     let Some(block) = block else {
         return vec![DirtyClass::EMPTY; inputs.len()];
     };
-    let library = unit_library(cu, module, &decls, components.iter().copied());
+    let library = unit_library(
+        cu,
+        module,
+        &decls,
+        components.iter().copied(),
+        consts.clone(),
+    );
     let tree = lower_component_view(&block, natives, &library, component.schema.symbol, false).tree;
     drop(library);
     let child = |symbol: SymbolId| components.iter().find(|c| c.schema.symbol == symbol);
