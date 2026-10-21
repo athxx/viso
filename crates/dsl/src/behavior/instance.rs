@@ -88,6 +88,7 @@ fn dependent_functions(program: &Program) -> Vec<bool> {
                 | Inst::LoadInput { .. }
                 | Inst::Emit { .. }
                 | Inst::Start { .. }
+                | Inst::NodeRef { .. }
         )
     };
     let mut dependent: Vec<bool> = program
@@ -392,6 +393,18 @@ impl Inliner<'_> {
                 },
                 span,
             ),
+            Inst::NodeRef { dst, node } => {
+                if self.id >= 1 << 15 || node >= 1 << 16 {
+                    return Err("too many named nodes or instances to reach as a `NodeRef`".into());
+                }
+                out.push(
+                    Inst::NodeRef {
+                        dst,
+                        node: self.id << 16 | node,
+                    },
+                    span,
+                );
+            }
             Inst::StoreState { slot, src } => out.push(
                 Inst::StoreState {
                     slot: self.base + slot,
@@ -652,6 +665,14 @@ fn regs(inst: &mut Inst, f: &impl Fn(Reg) -> Reg) {
         Inst::JumpIf { cond, .. } => *cond = f(*cond),
         Inst::Switch { src, .. } => *src = f(*src),
         Inst::Emit { args, .. } => all(args),
+        Inst::NodeRef { dst, .. } => *dst = f(*dst),
+        Inst::Node {
+            dst, node, args, ..
+        } => {
+            *dst = f(*dst);
+            *node = f(*node);
+            all(args);
+        }
         Inst::Start {
             args,
             done,

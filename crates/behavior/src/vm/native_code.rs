@@ -17,10 +17,10 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::mem;
 
-use super::{Event, Instance, Memo, Step, Vm};
+use super::{Event, Instance, Memo, NodeRequest, Step, Vm};
 use crate::arith;
 use crate::module::{Module, TaskPolicy};
-use crate::op::{ArithOp, DisplayKind, Num};
+use crate::op::{ArithOp, DisplayKind, NodeAction, Num};
 use crate::value::{Aggregate, Closure, Value};
 use crate::vm::{FaultKind, Start};
 
@@ -638,6 +638,19 @@ pub fn emit(vm: &mut Vm, index: u32, args: Box<[Value]>) -> Step<()> {
     vm.charge(16 + 16 * args.len() as u64)?;
     vm.events.push(Event { index, args });
     Ok(())
+}
+
+/// Queues `action` on the node whose key `node` holds, with `args`; the
+/// value is `()`.
+pub fn node(vm: &mut Vm, action: u32, node: &Value, args: Box<[Value]>) -> Step<Value> {
+    vm.charge(16 + 16 * args.len() as u64)?;
+    let action = NodeAction::from_u32(action).ok_or(FaultKind::Internal)?;
+    let node = node
+        .as_int()
+        .and_then(|key| u32::try_from(key).ok())
+        .ok_or(FaultKind::Internal)?;
+    vm.nodes.push(NodeRequest { node, action, args });
+    Ok(Value::Int(0))
 }
 
 /// Queues the start of task `task`, as [`Op::Start`](crate::Op::Start)

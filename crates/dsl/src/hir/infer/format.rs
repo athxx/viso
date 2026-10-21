@@ -313,6 +313,7 @@ pub(crate) fn displayable(env: &dyn TypeEnv, ty: &Ty) -> bool {
         | Ty::RangeInclusive(_)
         | Ty::Resource(..)
         | Ty::ResourceState(..)
+        | Ty::NodeRef(_)
         | Ty::Native(_) => false,
     }
 }

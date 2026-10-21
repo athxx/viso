@@ -105,6 +105,9 @@ pub enum Ty {
     Resource(Box<Ty>, Box<Ty>),
     /// Where a resource's load is: `ResourceState<T, E>`, its `.state`.
     ResourceState(Box<Ty>, Box<Ty>),
+    /// `NodeRef<T>`: a named node of a component's view, by the widget or
+    /// component type it names.
+    NodeRef(Box<str>),
 
     // --- inference placeholders ---------------------------------------------
     /// An undetermined integer literal (host default `I64` if no context pins it).

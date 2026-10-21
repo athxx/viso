@@ -39,7 +39,7 @@ use viso_schema::{EdgeTerms, InsetTerms, LengthTerms, NodeLengths, StateValue};
 use viso_shader::program::PackedBrush;
 // The languages a package's shaders are built for.
 use viso_schema::view::{
-    ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewShader, ViewState,
+    ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewNamed, ViewPackage, ViewShader, ViewState,
 };
 pub use viso_shader::program::ShaderLang;
 
@@ -306,6 +306,16 @@ pub fn emit_view_package(plan: &CandidatePlan) -> ViewPackage {
             })
         })
         .collect();
+    let named = view
+        .named
+        .iter()
+        .filter_map(|&(key, node)| {
+            Some(ViewNamed {
+                key,
+                node: statics.ordinal(node)?,
+            })
+        })
+        .collect();
     ViewPackage {
         ui,
         behavior: view.bytes.clone(),
@@ -315,6 +325,7 @@ pub fn emit_view_package(plan: &CandidatePlan) -> ViewPackage {
         controls,
         regions: view.regions.clone(),
         env,
+        named,
         assets: Vec::new(),
         shaders: Vec::new(),
     }

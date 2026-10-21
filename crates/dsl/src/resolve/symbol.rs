@@ -112,6 +112,9 @@ pub enum SymbolKind {
     /// A trait's or an impl's associated type.
     AssocType = 20,
     Template = 21,
+    /// A named node of a component's view, which its actions and handlers
+    /// reach as a `NodeRef`.
+    Node = 22,
 }
 
 /// An in-progress FNV-1a-128 fold across two `u64` lanes.

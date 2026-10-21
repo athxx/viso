@@ -101,6 +101,11 @@ pub struct UiNode {
     /// The optional local name from `node name: Type { ... }`, used as the seed
     /// for a stable identity where one is needed.
     pub local_name: Option<String>,
+    /// The key a component's actions and handlers reach the node by as a
+    /// `NodeRef` (the instance whose view names it in the high 16 bits, its
+    /// place among that component's named nodes in the low 16); the root of
+    /// a named component node takes its name's.
+    pub node_ref: Option<u32>,
     /// Which builder call this node maps to.
     pub kind: NodeKind,
     /// The style folded from the node's compile-time-constant properties.

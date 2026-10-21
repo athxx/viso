@@ -11,8 +11,8 @@ pub use control::{
     SemanticEntries, TextEntries, When, source_live, source_name, source_role, widget_role,
 };
 pub use package::{
-    ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewPackage, ViewPackageView, ViewShader,
-    ViewState,
+    ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewNamed, ViewPackage, ViewPackageView,
+    ViewShader, ViewState,
 };
 pub use regions::{
     ArmTemplate, CLOSED, CellRef, EffectTemplate, EnvTemplate, GroupTemplate, HALF_OPEN,

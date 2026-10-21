@@ -817,6 +817,7 @@ mod opcode {
     pub const INSERT: u8 = 50;
     pub const REMOVE: u8 = 51;
     pub const TRUNCATE: u8 = 52;
+    pub const NODE: u8 = 53;
 }
 
 fn write_op(enc: &mut Encoder, op: &Op) {
@@ -950,6 +951,10 @@ fn write_op(enc: &mut Encoder, op: &Op) {
         }
         Op::Start { ext } => {
             enc.write_u8(START);
+            enc.write_u32(ext);
+        }
+        Op::Node { dst, ext } => {
+            regs(enc, NODE, &[dst]);
             enc.write_u32(ext);
         }
         Op::Display { kind, dst, src } => {
@@ -1134,6 +1139,10 @@ fn read_op(dec: &mut Decoder<'_>) -> Result<Op, DecodeError> {
         RETURN => Op::Return { src: r(dec)? },
         EMIT => Op::Emit { ext: w(dec)? },
         START => Op::Start { ext: w(dec)? },
+        NODE => Op::Node {
+            dst: r(dec)?,
+            ext: w(dec)?,
+        },
         DISPLAY => {
             let (dst, src) = (r(dec)?, r(dec)?);
             let kind = dec.read_u8()?;

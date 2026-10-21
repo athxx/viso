@@ -200,6 +200,20 @@ fn write_inst(out: &mut String, inst: &Inst) -> fmt::Result {
         }
         Inst::Return { src } => write!(out, "return {}", reg(*src)),
         Inst::Emit { event, args } => write!(out, "emit event#{event} ({})", regs(args)),
+        Inst::NodeRef { dst, node } => write!(out, "r{} = node#{node:#x}", dst.0),
+        Inst::Node {
+            dst,
+            action,
+            node,
+            args,
+        } => write!(
+            out,
+            "r{} = node r{}.{}({})",
+            dst.0,
+            node.0,
+            action.method(),
+            regs(args)
+        ),
         Inst::Start {
             task,
             args,

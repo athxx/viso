@@ -318,6 +318,18 @@ struct NodeScope {
 /// each column O(log n) times, together.
 const GROW_MIN: usize = 64;
 
+/// A scroll a [`NodeStore::request_scroll`] waits for the next layout to
+/// apply.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScrollRequest {
+    /// Set the viewport's offset.
+    To(Vec2),
+    /// Move the viewport's offset.
+    By(Vec2),
+    /// Scroll the viewports enclosing the node the least that shows it.
+    Reveal,
+}
+
 /// The retained node store: the arena plus parallel side-storage arrays, all
 /// indexed by [`NodeId::index`]. Allocation pushes to every array in lockstep
 /// so the index stays aligned; freeing leaves stale values in place and relies
@@ -600,10 +612,11 @@ pub struct NodeStore {
     /// [`reconcile`](crate::text_edit::reconcile), which seeds each node's
     /// buffer. Empty in a frame whose shown states did not change.
     text_seeds: Vec<(NodeId, crate::text_edit::FieldSeed)>,
-    /// Cold, transient (not index-aligned): the scroll offsets a hot reload
-    /// carries onto freshly built viewports, applied by the next layout once
-    /// their scroll range is known. Empty outside the frame after a reload.
-    scroll_restores: Vec<(NodeId, Vec2)>,
+    /// Cold, transient (not index-aligned): the scrolls waiting for the next
+    /// layout to know the ranges they clamp to and the rects they reveal — the
+    /// offsets a hot reload carries onto freshly built viewports and the
+    /// scrolls a view's actions ask for — in the order they were asked.
+    scroll_requests: Vec<(NodeId, ScrollRequest)>,
     /// Cold retained slot (not index-aligned): the nodes a caption widget
     /// declared as draggable self-drawn-caption regions, in declaration order. A
     /// self-drawn-chrome window's caption registers its blank band here at build
@@ -731,7 +744,7 @@ impl NodeStore {
         self.text_reflows.clear();
         self.edit_requests.clear();
         self.text_seeds.clear();
-        self.scroll_restores.clear();
+        self.scroll_requests.clear();
         let painting = self.painting.get_mut();
         painting.transforms.clear();
         painting.index.clear();
@@ -2068,16 +2081,69 @@ impl NodeStore {
     /// clamped to the range that layout found. A hot reload carries a kept
     /// viewport's offset onto the node that rebuilt it this way. Cold path.
     pub fn restore_scroll(&mut self, id: NodeId, offset: Vec2) {
+        self.request_scroll(id, ScrollRequest::To(offset));
+    }
+
+    /// Scrolls once the next layout has placed the tree: a viewport to an
+    /// offset or by a delta, clamped to the range layout finds, or the
+    /// enclosing viewports the least that shows a node. A view's
+    /// `scroll_to`, `scroll_by` and `scroll_into_view` reach a node the same
+    /// action mounts this way. A stale handle is a no-op. Cold path.
+    pub fn request_scroll(&mut self, id: NodeId, request: ScrollRequest) {
         if self.arena.is_live(id) {
-            self.scroll_restores.push((id, offset));
+            self.scroll_requests.push((id, request));
         }
     }
 
-    /// Apply every waiting [`restore_scroll`](Self::restore_scroll), after a
-    /// layout pass and before the world rects are resolved.
-    fn settle_scroll_restores(&mut self) {
-        while let Some((id, offset)) = self.scroll_restores.pop() {
-            self.set_scroll(id, offset);
+    /// Apply every waiting [`request_scroll`](Self::request_scroll), in the
+    /// order asked, after a layout pass.
+    fn settle_scroll_requests(&mut self) {
+        if self.scroll_requests.is_empty() {
+            return;
+        }
+        for (id, request) in std::mem::take(&mut self.scroll_requests) {
+            match request {
+                ScrollRequest::To(offset) => self.set_scroll(id, offset),
+                ScrollRequest::By(delta) => self.scroll_by(id, delta),
+                ScrollRequest::Reveal => self.reveal(id),
+            }
+        }
+    }
+
+    /// Scrolls each viewport enclosing `id`, innermost first, the least that
+    /// brings `id`'s on-screen rect inside it: a rect larger than the
+    /// viewport shows its leading edge.
+    fn reveal(&mut self, id: NodeId) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let mut at = self.arena.parent(id);
+        while let Some(viewport) = at {
+            at = self.arena.parent(viewport);
+            let Some(axis) = self.scroll_axis(viewport) else {
+                continue;
+            };
+            let (rect, seen) = (self.world(id), self.world(viewport));
+            let fit = |start: f32, len: f32, view: f32, view_len: f32| {
+                if start < view {
+                    start - view
+                } else if start + len > view + view_len {
+                    (start + len - (view + view_len)).min(start - view)
+                } else {
+                    0.0
+                }
+            };
+            let delta = match axis {
+                Axis::Row => Vec2 {
+                    x: fit(rect.x, rect.w, seen.x, seen.w),
+                    y: 0.0,
+                },
+                Axis::Column => Vec2 {
+                    x: 0.0,
+                    y: fit(rect.y, rect.h, seen.y, seen.h),
+                },
+            };
+            self.scroll_by(viewport, delta);
         }
     }
 
@@ -3987,7 +4053,7 @@ impl NodeStore {
         let was = self.reach_in_parent(root.index() as usize);
         self.rejoin_subtree(root);
         self.lift_reach(root, was);
-        self.settle_scroll_restores();
+        self.settle_scroll_requests();
     }
 
     /// Re-resolve the warm `style` of every STYLE-dirty node that carries a
@@ -4195,8 +4261,8 @@ impl NodeStore {
             self.lift_reach(redo, was);
             laid_out += self.subtree_len(redo);
         }
-        // A waiting scroll restore applies once layout knows the range.
-        self.settle_scroll_restores();
+        // A waiting scroll applies once layout knows the range.
+        self.settle_scroll_requests();
         (measured, laid_out)
     }
 

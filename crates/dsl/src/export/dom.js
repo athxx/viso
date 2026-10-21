@@ -19,6 +19,43 @@ const length = (v) => {
     .map(([n, u]) => [Number(n ?? 0), u]).filter(([n]) => n !== 0).map(([n, u]) => n + " * " + u);
   return parts.length ? "calc(" + parts.join(" + ") + ")" : "0px";
 };
+// The CSS pixels a `MixedLength` folds to at `el`; a `%` term folds to none.
+const fold = (el, v) => {
+  const f = v === null ? [] : v.f;
+  const n = (i) => Number(f[i] ?? 0);
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  const em = parseFloat(getComputedStyle(el).fontSize) || rem;
+  return n(0) + n(1) / (window.devicePixelRatio || 1) + (n(2) * rem) / 16 + n(3) * em;
+};
+// The element of named node `key` a call from `from` reaches: the nearest
+// around `from`, so a list item's instance reaches its own, else the page's
+// first.
+const named = (key, from) => {
+  const sel = '[data-node="' + key + '"]';
+  for (let a = from; a; a = a.parentElement) {
+    if (a.matches(sel)) return a;
+    const hit = a.querySelector(sel);
+    if (hit) return hit;
+  }
+  return document.querySelector(sel);
+};
+// Applies the requests a transaction made of named nodes, each
+// `[action, key, args]`: focus, blur, scroll into view, scroll to, scroll by.
+const reach = (requests, from) => {
+  if (!requests) return;
+  for (const [action, key, args] of requests) {
+    const el = named(key, from);
+    if (!el) continue;
+    const at = (v) => [fold(el, v.f[0]), fold(el, v.f[1])];
+    switch (action) {
+      case 0: el.focus({ focusVisible: false }); break;
+      case 1: if (el.contains(document.activeElement)) document.activeElement.blur(); break;
+      case 2: el.scrollIntoView({ block: "nearest", inline: "nearest" }); break;
+      case 3: { const [x, y] = at(args[0]); el.scrollTo(x, y); break; }
+      case 4: { const [x, y] = at(args[0]); el.scrollBy(x, y); break; }
+    }
+  }
+};
 // An `Offset` as a CSS `translate`.
 const offset = (v) => (v === null ? "none" : length(v.f[0]) + " " + length(v.f[1]));
 const stroke = (v) => {

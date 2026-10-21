@@ -33,6 +33,7 @@ pub mod inspect;
 mod layout_values;
 #[cfg(feature = "inspect")]
 mod mounts;
+mod nodes;
 mod package;
 mod persistence;
 mod regions;
@@ -59,6 +60,7 @@ pub use game::{
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
 #[cfg(feature = "inspect")]
 pub use mounts::{__mounted_view, MountRecord, take_mounts};
+pub use nodes::{__mount_nodes, mount_nodes};
 pub use package::{
     LoadedView, ViewAsset, ViewControl, ViewEnv, ViewHandler, ViewLoad, ViewLoadError, ViewPackage,
     ViewPackageView, ViewShader, ViewState, load_static_view, load_view, load_view_with,

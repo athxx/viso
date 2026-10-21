@@ -2,7 +2,11 @@ let root = null;
 let top = null;
 let pending = [];
 let starts = [];
+let nodes = [];
+// The element whose handler runs, which its node requests start from.
+let origin = null;
 $.emit = (event, args) => pending.push([event, args]);
+$.node = (action, key, args) => nodes.push([action, key, args]);
 $.start = (task, args, done, cancelled, instance, slot, policy) =>
   starts.push({ task, args, done, cancelled, instance, slot, policy });
 $.tr = (m, a) => translate(T, m, a);
@@ -71,6 +75,7 @@ const work = new Work({
     W = S.slice();
     pending = [];
     starts = [];
+    nodes = [];
     let value;
     try {
       value = f();
@@ -78,6 +83,7 @@ const work = new Work({
       W = S;
       pending = [];
       starts = [];
+      nodes = [];
       console.error(e);
       return null;
     }
@@ -85,14 +91,16 @@ const work = new Work({
     if (m.f) keep(m);
     const changed = new Set();
     for (let i = 0; i < S.length; i++) if (!Object.is(S[i], before[i])) changed.add(i);
-    const t = { value, changed, events: pending, starts };
+    const t = { value, changed, events: pending, starts, nodes, from: origin };
     pending = [];
     starts = [];
+    nodes = [];
     return t;
   },
   land(t) {
     if (t.changed.size) refresh(top, t.changed);
     deliver(t.events);
+    reach(t.nodes, t.from);
   },
   read(f, m) {
     if (m.f) focus(m);
@@ -107,6 +115,7 @@ const work = new Work({
     const events = pending;
     pending = [];
     starts = [];
+    nodes = [];
     deliver(events);
   },
 }, null);
@@ -125,7 +134,9 @@ const dispose = (m) => {
 
 const on = (el, route, capture, control, handler, m) =>
   listen(el, route, capture, control, (payload) => {
+    origin = el;
     work.run(() => handler(payload), m);
+    origin = null;
     if (el.$sync) {
       if (m.f) focus(m);
       el.$sync();

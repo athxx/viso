@@ -254,6 +254,9 @@ impl InferCx<'_> {
                 };
                 self.list_method(&name, &receiver, elem, args, expected, node)
             }
+            Lookup::None if let Ty::NodeRef(target) = &recv => {
+                self.node_method(&name, target, args, expected, node)
+            }
             Lookup::None => {
                 // A field holding a function is called as one.
                 if let Some(Ty::Fn(params, ret)) = self.member_ty(&recv, &name, None) {

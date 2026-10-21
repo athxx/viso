@@ -367,6 +367,7 @@ impl ViewHost {
             Ok(outcome) => {
                 self.events.extend(outcome.events);
                 self.write_back(scope, cells);
+                self.queue_nodes(outcome.nodes, scope, cells);
                 self.launch(outcome.starts, scope, cells);
             }
             Err(fault) => {

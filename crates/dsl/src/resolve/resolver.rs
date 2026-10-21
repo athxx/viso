@@ -229,6 +229,8 @@ pub fn resolve(
             defer_unresolved_types: false,
             in_view: false,
             owner_slots: Vec::new(),
+            owner_nodes: Vec::new(),
+            node_refs: false,
         };
         pass.decl_at = all_decls[i].iter().map(|d| (d.name_range, d.id)).collect();
         if let Some(cu) = &cu {
@@ -283,6 +285,8 @@ pub(super) fn resolve_standalone(
         defer_unresolved_types: false,
         in_view: false,
         owner_slots: Vec::new(),
+        owner_nodes: Vec::new(),
+        node_refs: false,
     };
     pass.decl_at = decls.iter().map(|d| (d.name_range, d.id)).collect();
     pass.resolve_unit(cu);
@@ -799,6 +803,30 @@ fn define_members(
         };
         out.define(Some(owner_id), name, Namespace::Value, symbol, &name_tok);
     }
+    // The view's named nodes outside `for` bodies are `NodeRef`s.
+    let nodes = members
+        .iter()
+        .filter_map(|m| match m {
+            crate::ast::Member::View(view) => view.block(),
+            _ => None,
+        })
+        .flat_map(|block| block.referable_nodes());
+    for name_tok in nodes.filter_map(|node| node.name()) {
+        let name = interner.intern(&name_tok.text());
+        let member_text = interner.text(name).unwrap_or_default();
+        let decl_path = format!("{owner}::{member_text}");
+        let id = fingerprint(SymbolIdentity {
+            package,
+            module_path: module_text,
+            kind: SymbolKind::Node,
+            decl_path: &decl_path,
+        });
+        let symbol = ModuleSymbol {
+            id,
+            exported: false,
+        };
+        out.define(Some(owner_id), name, Namespace::Value, symbol, &name_tok);
+    }
     for member in members {
         let Some((name_tok, kind, ns)) = member_identity(&member) else {
             continue;
@@ -1158,6 +1186,9 @@ const THEME: &str = "theme";
 /// The code of a read of `env` or `theme` outside the View execution domain.
 const ENV_OUTSIDE_VIEW: &str = "E2111";
 
+/// A named node read where it is no `NodeRef`.
+const NODE_REF_OUTSIDE_ACTIONS: &str = "E2001";
+
 /// The per-module resolution walk state.
 struct ModulePass<'a> {
     table: &'a SymbolTable,
@@ -1197,6 +1228,12 @@ struct ModulePass<'a> {
     /// The slots of the enclosing component or template, which a view's
     /// `SlotOutlet` names by value though no symbol declares them.
     owner_slots: Vec<String>,
+    /// The named nodes of the enclosing component's view that its actions
+    /// and handlers reach as a `NodeRef`.
+    owner_nodes: Vec<NameId>,
+    /// Whether the walk is inside an action, a task, an effect or an event
+    /// handler, where a named node is a `NodeRef`.
+    node_refs: bool,
 }
 
 impl<'a> ModulePass<'a> {
@@ -1534,9 +1571,20 @@ impl<'a> ModulePass<'a> {
                 _ => None,
             })
             .collect();
+        let nodes = members
+            .iter()
+            .filter_map(|m| match m {
+                Member::View(view) => view.block(),
+                _ => None,
+            })
+            .flat_map(|block| block.referable_nodes())
+            .filter_map(|node| node.name())
+            .map(|name| self.interner.intern(&name.text()))
+            .collect();
         let outer = std::mem::replace(&mut self.owner, owner);
         let outer_name = std::mem::replace(&mut self.owner_name, owner_name);
         let outer_slots = std::mem::replace(&mut self.owner_slots, slots);
+        let outer_nodes = std::mem::replace(&mut self.owner_nodes, nodes);
         self.scopes.push();
         for member in members {
             self.resolve_member(member);
@@ -1545,6 +1593,7 @@ impl<'a> ModulePass<'a> {
         self.owner = outer;
         self.owner_name = outer_name;
         self.owner_slots = outer_slots;
+        self.owner_nodes = outer_nodes;
     }
 
     /// The native path `name` binds to: a native the enclosing component or
@@ -1632,14 +1681,18 @@ impl<'a> ModulePass<'a> {
             Member::Native(n) => self.resolve_callable(n.params(), n.return_type(), None),
             Member::Action(a) => {
                 let scoped = self.push_generics(a.syntax(), None);
+                self.node_refs = true;
                 self.resolve_callable(a.params(), a.return_type(), a.body());
+                self.node_refs = false;
                 if scoped {
                     self.type_scopes.pop();
                 }
             }
             Member::Task(t) => {
                 let scoped = self.push_generics(t.syntax(), None);
+                self.node_refs = true;
                 self.resolve_callable(t.params(), t.return_type(), t.body());
+                self.node_refs = false;
                 if scoped {
                     self.type_scopes.pop();
                 }
@@ -1653,7 +1706,9 @@ impl<'a> ModulePass<'a> {
                 // The run policy is a path into `EffectRun`, checked by name.
                 if let Some(body) = e.body() {
                     self.scopes.push();
+                    self.node_refs = true;
                     self.resolve_body(body.syntax());
+                    self.node_refs = false;
                     self.scopes.pop();
                 }
             }
@@ -2076,13 +2131,17 @@ impl<'a> ModulePass<'a> {
     }
 
     fn resolve_named_node(&mut self, node: &NamedNode) {
-        // The node's local name binds a slot usable by later siblings.
+        // A node its component reaches as a `NodeRef` declares that member; one
+        // in a `for` body binds a slot usable by later siblings.
         if let Some(tok) = node.name() {
             let name = self.interner.intern(&tok.text());
-            let slot = self.scopes.bind(name);
+            let to = match self.member(self.owner, name, Namespace::Value) {
+                Some(symbol) if self.owner_nodes.contains(&name) => Resolution::Symbol(symbol),
+                _ => Resolution::Local(self.scopes.bind(name)),
+            };
             self.refs.push(ResolvedRef {
                 range: tok.text_range(),
-                to: Resolution::Local(slot),
+                to,
             });
         }
         if let Some(ty) = node.ty() {
@@ -2130,7 +2189,9 @@ impl<'a> ModulePass<'a> {
             self.bind_pattern(payload.syntax());
         }
         if let Some(body) = handler.body() {
+            let outer = std::mem::replace(&mut self.node_refs, true);
             self.resolve_block(&body);
+            self.node_refs = outer;
         }
         self.scopes.pop();
     }
@@ -2404,6 +2465,18 @@ impl<'a> ModulePass<'a> {
         } else if let Some(symbol) = const_param() {
             Resolution::Symbol(symbol)
         } else if let Some(symbol) = self.member(self.owner, name, Namespace::Value) {
+            if !self.node_refs && self.owner_nodes.contains(&name) {
+                self.errors.push(Diagnostic::error(
+                    NODE_REF_OUTSIDE_ACTIONS,
+                    head.text_range(),
+                    format!(
+                        "no value named `{}` is in scope here: a named node is a `NodeRef` \
+                         only in its component's actions, tasks, effects and event handlers",
+                        head.text()
+                    ),
+                ));
+                return true;
+            }
             Resolution::Symbol(symbol)
         } else if let Some(sym) = self.table.get(name, Namespace::Value) {
             Resolution::Symbol(sym.id)

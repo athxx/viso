@@ -461,6 +461,15 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       the first `autofocus` node takes the focus as it mounts when none is held;
       across the macros, hot reload, the release package and the HTML/Solid
       exports.
+- [x] `NodeRef` actions (§49.1, U7.6): a named node is `NodeRef<T>` in its
+      component's actions, tasks, effects and handlers (`E2001` elsewhere);
+      `focus`, `blur`, `scroll_into_view`, and `scroll_to`/`scroll_by` on a
+      `Scroll` queue on the VM and apply once the transaction's structure has
+      settled, so a node the same action mounts is reached and one no longer
+      mounted is skipped; each component instance of a `for` item reaches its
+      own nodes; across the macros, hot reload, the release package (AOT
+      included) and the HTML/Solid exports.
+- [ ] `NodeRef::scroll_to_key` / `scroll_to_index` on a `VirtualList` (U9.3).
 - [x] `clip` clipping a node's children's paint and hit test to its box, rounded
       by its `corner_radius`: a `ClipCorners` marker after the clip layer sends
       the group offscreen and its composite is masked by a rounded box (Metal,

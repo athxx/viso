@@ -59,7 +59,7 @@ use crate::native::{
     Services, ThreadDomain,
 };
 #[cfg(feature = "interpreter")]
-use crate::op::{DisplayKind, Op};
+use crate::op::{DisplayKind, NodeAction, Op};
 use crate::value::Value;
 #[cfg(feature = "interpreter")]
 use crate::value::{Aggregate, Closure};
@@ -248,6 +248,19 @@ pub struct Start {
     pub policy: TaskPolicy,
 }
 
+/// A request to a named node of the view, queued by a node method.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeRequest {
+    /// The node's key: the inlined instance whose view names it in the high
+    /// 16 bits, `0` for the mounted component's own, and the node's place
+    /// among that component's named nodes in the low 16.
+    pub node: u32,
+    /// What it asks.
+    pub action: NodeAction,
+    /// The action's arguments.
+    pub args: Box<[Value]>,
+}
+
 /// A committed invocation.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Outcome {
@@ -257,6 +270,8 @@ pub struct Outcome {
     pub events: Vec<Event>,
     /// The task starts it queued, in order.
     pub starts: Vec<Start>,
+    /// The node requests it queued, in order.
+    pub nodes: Vec<NodeRequest>,
 }
 
 /// A task suspended at a task native it awaits: its registers, frames and
@@ -500,6 +515,7 @@ pub struct Vm {
     undo: Vec<(u32, Value)>,
     marks: Vec<u64>,
     events: Vec<Event>,
+    nodes: Vec<NodeRequest>,
     detail: String,
     graph: Rc<ReadGraph>,
     /// Whether the running invocation's instance caches against `graph`.
@@ -550,6 +566,7 @@ impl Vm {
             undo: Vec::new(),
             marks: Vec::new(),
             events: Vec::new(),
+            nodes: Vec::new(),
             detail: String::new(),
             deferring: false,
             deferred: Vec::new(),
@@ -1169,6 +1186,7 @@ impl Vm {
             value,
             events: mem::take(&mut self.events),
             starts: mem::take(&mut self.starts),
+            nodes: mem::take(&mut self.nodes),
         }
     }
 
@@ -1193,6 +1211,7 @@ impl Vm {
         }
         self.events.clear();
         self.starts.clear();
+        self.nodes.clear();
         self.awaiting = None;
         self.stack.clear();
         self.frames.clear();
@@ -1593,6 +1612,23 @@ impl Vm {
                         args,
                     });
                     continue;
+                }
+                Op::Node { dst, ext } => {
+                    let at = ext as usize;
+                    let n = code.ext[at + 2] as usize;
+                    self.charge(16 + 16 * n as u64)?;
+                    let Some(action) = NodeAction::from_u32(code.ext[at]) else {
+                        return self.trap(FaultKind::Internal, "an unknown node action".into());
+                    };
+                    let Some(node) = self.stack[base + code.ext[at + 1] as usize]
+                        .as_int()
+                        .and_then(|key| u32::try_from(key).ok())
+                    else {
+                        return self.trap(FaultKind::Internal, "a node key that is no key".into());
+                    };
+                    let args = self.gather(base, &code.ext[at + 3..at + 3 + n]);
+                    self.nodes.push(NodeRequest { node, action, args });
+                    (dst, Value::Int(0))
                 }
                 Op::Native { dst, ext } => {
                     let value = self.call_native(code, base, ext as usize)?;

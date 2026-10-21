@@ -168,6 +168,9 @@ pub enum ItemTemplate {
         routes: Vec<Route>,
         /// Its built-in response, for a native control node.
         control: Option<Box<Control>>,
+        /// The key its component's actions and handlers reach it by as a
+        /// `NodeRef`, `None` when they reach it by none.
+        node_ref: Option<u32>,
     },
     /// A nested region, by index into [`ViewRegions::regions`]; it counts as one
     /// child of the node it sits in.
@@ -285,6 +288,7 @@ impl Encode for ViewRegions {
                             edges,
                             routes,
                             control,
+                            node_ref,
                         } => {
                             enc.write_u8(0);
                             node.encode(enc);
@@ -301,6 +305,7 @@ impl Encode for ViewRegions {
                             if let Some(control) = control {
                                 control.encode(enc);
                             }
+                            enc.write_varint(node_ref.map_or(0, |key| u64::from(key) + 1));
                         }
                         ItemTemplate::Region(region) => {
                             enc.write_u8(1);
@@ -425,11 +430,19 @@ impl Decode for ViewRegions {
                             } else {
                                 None
                             };
+                            let node_ref = match dec.read_varint()? {
+                                0 => None,
+                                key => Some(
+                                    u32::try_from(key - 1)
+                                        .map_err(|_| DecodeError::Malformed { offset })?,
+                                ),
+                            };
                             ItemTemplate::Node {
                                 node,
                                 edges,
                                 routes,
                                 control,
+                                node_ref,
                             }
                         }
                         1 => ItemTemplate::Region(read_u32(dec)?),
@@ -624,6 +637,7 @@ mod tests {
                                     capture: true,
                                 }],
                                 control: None,
+                                node_ref: Some(1 << 16 | 2),
                             },
                             ItemTemplate::Region(1),
                         ],
@@ -646,6 +660,7 @@ mod tests {
                             edges: vec![],
                             routes: vec![],
                             control: Some(Box::new(Control::new(crate::view::ControlKind::Check))),
+                            node_ref: None,
                         }],
                     }],
                 },

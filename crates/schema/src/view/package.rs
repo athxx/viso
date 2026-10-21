@@ -5,7 +5,7 @@
 //! # Wire form
 //!
 //! The blob is read in place (architecture §50A.6): a [`ProtocolTag`], the
-//! magic `VPK1`, then a section table ([`viso_ende::Sections`]) of ten
+//! magic `VPK1`, then a section table ([`viso_ende::Sections`]) of eleven
 //! sections, each starting on an eight-byte boundary of the blob:
 //!
 //! | section   | items | content |
@@ -20,6 +20,7 @@
 //! | env       | reads | 12-byte records: slot, anchor, field |
 //! | assets    | assets | per asset a `u64` id, a `u32` length, four zero bytes, the bytes, padding to eight |
 //! | shaders   | shaders | per shader a `u32` length, four zero bytes, the packed brush, padding to eight |
+//! | named     | nodes | 8-byte records: `NodeRef` key, node |
 //!
 //! Fixed-width records are read in place; the bytes of an asset and of a
 //! shader start aligned, so a decoder reads them from mapped flash where they
@@ -65,6 +66,9 @@ pub struct ViewPackage {
     pub regions: ViewRegions,
     /// The `env` fields the view's static instances read.
     pub env: Vec<ViewEnv>,
+    /// The static nodes the view's actions and handlers reach as a
+    /// `NodeRef`, ascending by key.
+    pub named: Vec<ViewNamed>,
     /// The assets the view can show, ascending by resource.
     pub assets: Vec<ViewAsset>,
     /// The view's shader table: each shader its shader views paint with, in
@@ -108,6 +112,17 @@ pub struct ViewEnv {
     /// The pre-order index in [`ViewPackage::ui`] of the root node of the
     /// component instance that reads it, where its anchored fields resolve.
     pub anchor: u32,
+}
+
+/// A static node of [`ViewPackage::ui`] its component reaches as a `NodeRef`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewNamed {
+    /// The key its `NodeRef` holds: the inlined instance whose view names it
+    /// in the high 16 bits, its place among that component's named nodes in
+    /// the low 16.
+    pub key: u32,
+    /// Its pre-order index in [`ViewPackage::ui`].
+    pub node: u32,
 }
 
 /// A native control node of [`ViewPackage::ui`].
@@ -157,12 +172,14 @@ const REGIONS: u32 = 6;
 const ENV: u32 = 7;
 const ASSETS: u32 = 8;
 const SHADERS: u32 = 9;
-const SECTIONS: u32 = 10;
+const NAMED: u32 = 10;
+const SECTIONS: u32 = 11;
 
 /// The bytes of a state, handler and env record.
 const STATE_RECORD: usize = 40;
 const HANDLER_RECORD: usize = 12;
 const ENV_RECORD: usize = 12;
+const NAMED_RECORD: usize = 8;
 
 /// The slot of a state record whose cell mirrors no slot.
 const NO_SLOT: u32 = u32::MAX;
@@ -232,6 +249,14 @@ fn handler_of(bytes: &[u8]) -> Option<ViewHandler> {
         node: le32(bytes, 0),
         route: Route::from_tag(bytes[8], le32(bytes, 4))?,
     })
+}
+
+/// The named-node record `bytes`: key, node.
+fn named_of(bytes: &[u8]) -> ViewNamed {
+    ViewNamed {
+        key: le32(bytes, 0),
+        node: le32(bytes, 4),
+    }
 }
 
 /// The env record `bytes`: slot, anchor, field tag, three zero bytes.
@@ -315,6 +340,7 @@ pub struct ViewPackageView<'a> {
     env: Section<'a>,
     assets: Section<'a>,
     shaders: Section<'a>,
+    named: Section<'a>,
 }
 
 impl<'a> ViewPackageView<'a> {
@@ -368,6 +394,7 @@ impl<'a> ViewPackageView<'a> {
             env: section(ENV),
             assets: section(ASSETS),
             shaders: section(SHADERS),
+            named: section(NAMED),
         };
         let nodes = view.ui.node_count();
         let node = |index: u32| (index as usize) < nodes;
@@ -382,6 +409,13 @@ impl<'a> ViewPackageView<'a> {
         })?;
         check_records(&view.env, ENV_RECORD, |r| {
             env_of(r).is_some_and(|env| node(env.anchor))
+        })?;
+        let mut last = None;
+        check_records(&view.named, NAMED_RECORD, |r| {
+            let named = named_of(r);
+            let ascending = last.is_none_or(|last| last < named.key);
+            last = Some(named.key);
+            ascending && node(named.node)
         })?;
         let mut dec = view.controls.decoder();
         let mut last = None;
@@ -433,6 +467,13 @@ impl<'a> ViewPackageView<'a> {
     pub fn env(&self) -> impl ExactSizeIterator<Item = ViewEnv> + 'a {
         let records = self.env.bytes.as_chunks::<ENV_RECORD>().0.iter();
         records.map(|r| env_of(r).expect("the view validated every env record"))
+    }
+
+    /// The static nodes the view's actions and handlers reach as a
+    /// `NodeRef`, ascending by key.
+    pub fn named(&self) -> impl ExactSizeIterator<Item = ViewNamed> + 'a {
+        let records = self.named.bytes.as_chunks::<NAMED_RECORD>().0.iter();
+        records.map(|r| named_of(r))
     }
 
     /// The number of native control nodes.
@@ -489,6 +530,7 @@ impl<'a> ViewPackageView<'a> {
             controls: self.controls().collect(),
             regions: self.regions(),
             env: self.env().collect(),
+            named: self.named().collect(),
             assets: self
                 .assets()
                 .map(|(id, bytes)| ViewAsset {
@@ -502,8 +544,8 @@ impl<'a> ViewPackageView<'a> {
 }
 
 impl ViewPackage {
-    /// Writes the package's blob: the header, the section table and the ten
-    /// sections.
+    /// Writes the package's blob: the header, the section table and the
+    /// eleven sections.
     fn write(&self, enc: &mut Encoder) {
         let count = |n: usize| u32::try_from(n).expect("a package table fits u32 counts");
         ProtocolTag::current().encode(enc);
@@ -565,6 +607,13 @@ impl ViewPackage {
                 write_aligned(enc, |_| {}, shader.bytes());
             }
             count(self.shaders.len())
+        });
+        sections.section(enc, |enc| {
+            for named in &self.named {
+                enc.write_u32(named.key);
+                enc.write_u32(named.node);
+            }
+            count(self.named.len())
         });
         sections.finish();
     }
@@ -659,6 +708,13 @@ mod tests {
                 field: EnvField::SizeClass,
                 anchor: 0,
             }],
+            named: vec![
+                ViewNamed { key: 0, node: 1 },
+                ViewNamed {
+                    key: 1 << 16,
+                    node: 0,
+                },
+            ],
             assets: vec![
                 ViewAsset {
                     id: ResourceId(3),

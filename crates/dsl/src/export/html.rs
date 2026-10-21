@@ -506,6 +506,11 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             }
         }
         let root_of = self.rooted.insert(node.instance);
+        if let Some(named) = node.node_ref
+            && !self.static_only
+        {
+            el.attr("data-node", &named.to_string());
+        }
         if self.anchors {
             let reads = self.eval.as_deref().is_some_and(|eval| {
                 eval.layout

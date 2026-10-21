@@ -33,6 +33,7 @@ mod generic;
 mod lens;
 pub(crate) mod list;
 mod native;
+mod node;
 pub(crate) mod pattern;
 pub(crate) mod promote;
 mod record;
@@ -117,6 +118,20 @@ pub struct TypeSchemas {
 /// component-lowering layer implements it over the real symbol/HIR tables, and tests
 /// implement it over a stub.
 pub trait TypeEnv {
+    /// The prelude type named `name`, `None` where the prelude is not in
+    /// scope.
+    fn standard_type(&self, name: &str) -> Option<SymbolId> {
+        let _ = name;
+        None
+    }
+
+    /// The place of the named node `node` among those its component reaches
+    /// as a `NodeRef`.
+    fn node_ordinal(&self, node: SymbolId) -> Option<u32> {
+        let _ = node;
+        None
+    }
+
     /// The type of a resolved name use (a `let`/param local, or a symbol — a `state`,
     /// `input`, `computed`, `const`, or record/enum type). `None` when the environment
     /// has no type for it (inference records `Ty::Unknown` and moves on; the missing
@@ -1475,6 +1490,7 @@ fn spell(
         Ty::RangeInclusive(t) => format!("RangeInclusive<{}>", one(t)),
         Ty::Resource(t, e) => format!("Resource<{}, {}>", one(t), one(e)),
         Ty::ResourceState(t, e) => format!("ResourceState<{}, {}>", one(t), one(e)),
+        Ty::NodeRef(node) => format!("NodeRef<{node}>"),
         _ => ty_name(ty).to_string(),
     }
 }
@@ -1891,6 +1907,7 @@ pub(crate) fn ty_name(ty: &Ty) -> &'static str {
         Ty::Result(_, _) => "<result>",
         Ty::Resource(_, _) => "<resource>",
         Ty::ResourceState(_, _) => "<resource-state>",
+        Ty::NodeRef(_) => "<node-ref>",
         Ty::Range(_) => "<range>",
         Ty::RangeInclusive(_) => "<range-inclusive>",
         Ty::InferInt => "<int>",

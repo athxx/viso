@@ -122,9 +122,6 @@ pub(crate) trait ViewEnv: TypeEnv {
     /// Whether `component` is a template, placed by `use`.
     fn is_template(&self, component: SymbolId) -> bool;
 
-    /// The prelude type named `name`.
-    fn standard_type(&self, name: &str) -> Option<SymbolId>;
-
     /// The native registry the view's widgets are declared in.
     fn widgets(&self) -> &Natives;
 

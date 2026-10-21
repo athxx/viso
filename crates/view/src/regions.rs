@@ -52,6 +52,7 @@ use crate::attach::attach_node;
 use crate::control::Control;
 use crate::effects::mount_effect;
 use crate::host::ViewHost;
+use crate::nodes::NamedNodes;
 use crate::scope::{LocalEnv, Locals, Scope};
 use crate::values::{Shown, control_cells};
 
@@ -167,6 +168,9 @@ pub fn mount_regions(
         .iter()
         .map(|region| vec![Template::new(); region.arms.len()])
         .collect();
+    let names = (0..regions.regions.len() as u32)
+        .map(|region| names_nodes(&regions, region, 0))
+        .collect();
     let mounted = Mounted {
         templates,
         regions,
@@ -177,6 +181,7 @@ pub fn mount_regions(
         host: Rc::clone(host),
         groups,
         scratch: Vec::new(),
+        names,
     };
     let mounted = Rc::new(RefCell::new(mounted));
     mounted.borrow_mut().patch(cx, &[]);
@@ -345,7 +350,7 @@ enum Content {
     Arms {
         subject: Value,
         active: Option<usize>,
-        live: Option<Frag>,
+        live: Option<Box<Frag>>,
         kept: Vec<Option<Kept>>,
     },
     /// A `for`: its items in order.
@@ -355,7 +360,7 @@ enum Content {
 /// A `preserve` arm switched away: its detached nodes, the focus they took
 /// with them, and when it was left, for the view's preserve budget.
 struct Kept {
-    frag: Frag,
+    frag: Box<Frag>,
     focus: ParkedFocus,
     stamp: u64,
 }
@@ -380,6 +385,8 @@ struct Frag {
     scope: Scope,
     /// The instance states this mount keeps.
     own: Option<Rc<Locals>>,
+    /// The nodes this `for` item names, when its content names any.
+    named: Option<Rc<NamedNodes>>,
     /// Each node with handlers, and its item index in the arm template.
     routed: Vec<(NodeId, u32)>,
     /// Each node showing a value of the view.
@@ -443,6 +450,10 @@ pub(crate) struct Mounted {
     host: Rc<RefCell<ViewHost>>,
     groups: Vec<Group>,
     scratch: Vec<NodeId>,
+    /// Whether each region's content, nested regions included, holds a node
+    /// its component reaches as a `NodeRef`: each item of a `for` that does
+    /// keeps a table of the nodes it names.
+    names: Box<[bool]>,
 }
 
 impl Mounted {
@@ -479,6 +490,7 @@ impl Mounted {
             host,
             groups,
             scratch,
+            names,
         } = self;
         let mut patch = Patch {
             cx,
@@ -490,6 +502,7 @@ impl Mounted {
             host,
             changed,
             scratch,
+            names,
             freed: false,
         };
         for group in groups.iter_mut() {
@@ -519,6 +532,7 @@ struct Patch<'p, 'c> {
     host: &'p Rc<RefCell<ViewHost>>,
     changed: &'p [StateId],
     scratch: &'p mut Vec<NodeId>,
+    names: &'p [bool],
     freed: bool,
 }
 
@@ -697,7 +711,7 @@ impl Patch<'_, '_> {
                         stamp,
                     });
                 } else {
-                    self.free(old);
+                    self.free(*old);
                 }
             }
             *active = next;
@@ -707,7 +721,7 @@ impl Patch<'_, '_> {
                         parked = focus;
                         frag
                     }
-                    None => self.build(region, arm as u32, scope, subject, parent),
+                    None => Box::new(self.build(region, arm as u32, scope, subject, parent)),
                 };
                 *live = Some(frag);
                 force = true;
@@ -741,7 +755,7 @@ impl Patch<'_, '_> {
                 .zip(&scope.locals)
                 .all(|(a, b)| Rc::ptr_eq(a, b));
         if !current {
-            frag.scope = frag_scope(scope, extra, frag.own.as_ref());
+            frag.scope = frag_scope(scope, extra, frag.own.as_ref(), frag.named.as_ref());
             let items = &self.regions.regions[frag.region as usize].arms[frag.arm as usize].items;
             for &(id, index) in &frag.routed {
                 if let ItemTemplate::Node {
@@ -957,7 +971,12 @@ impl Patch<'_, '_> {
         }
         self.cx.store.mark_dirty(parent, relayout());
         let own = self.keep(template, scope, extra, &built);
-        let frag_scope = frag_scope(scope, extra, own.as_ref());
+        let region_names = matches!(
+            regions.regions[region as usize].kind,
+            RegionKind::For { .. }
+        ) && self.names[region as usize];
+        let named = region_names.then(|| Rc::new(NamedNodes::default()));
+        let frag_scope = frag_scope(scope, extra, own.as_ref(), named.as_ref());
         for effect in &template.effects {
             let anchor = effect.anchor as usize;
             if let Some(&(id, _)) = built.iter().find(|&&(_, index)| index == anchor) {
@@ -977,11 +996,15 @@ impl Patch<'_, '_> {
                 edges,
                 routes,
                 control,
+                node_ref,
                 ..
             } = &items[index]
             else {
                 continue;
             };
+            if let Some(key) = *node_ref {
+                self.host.borrow().name_node(key, id, &frag_scope);
+            }
             for &(cell, class) in edges {
                 if let Some(state) = self.cell(cell, &frag_scope) {
                     self.cx
@@ -1021,6 +1044,7 @@ impl Patch<'_, '_> {
             groups,
             scope: frag_scope,
             own,
+            named,
             routed,
             shown,
         }
@@ -1043,7 +1067,7 @@ impl Patch<'_, '_> {
         let Ok(mut host) = self.host.try_borrow_mut() else {
             return None;
         };
-        let init = frag_scope(scope, extra, None);
+        let init = frag_scope(scope, extra, None, None);
         let initial = host.initialize(&arm.locals, &init, &*self.cx.states);
         let count = arm.locals.len() + arm.env.len();
         let mut slots = Vec::with_capacity(count);
@@ -1187,7 +1211,7 @@ impl Patch<'_, '_> {
                     }
                     for entry in kept.iter_mut() {
                         match entry.take() {
-                            Some(old) if old.stamp < survives => self.free(old.frag),
+                            Some(old) if old.stamp < survives => self.free(*old.frag),
                             Some(mut young) => {
                                 self.evict_frag(&mut young.frag, survives);
                                 *entry = Some(young);
@@ -1240,7 +1264,7 @@ impl Patch<'_, '_> {
                 Content::Arms { live, kept, .. } => {
                     let kept = kept.into_iter().flatten().map(|kept| kept.frag);
                     for frag in live.into_iter().chain(kept) {
-                        self.free(frag);
+                        self.free(*frag);
                     }
                 }
                 Content::List(items) => {
@@ -1258,7 +1282,7 @@ struct Arms<'m> {
     region: u32,
     template: &'m RegionTemplate,
     active: &'m mut Option<usize>,
-    live: &'m mut Option<Frag>,
+    live: &'m mut Option<Box<Frag>>,
     kept: &'m mut Vec<Option<Kept>>,
 }
 
@@ -1301,15 +1325,46 @@ fn env_cell(env: &[(u32, StateId)], slot: u32) -> Option<StateId> {
         .map(|index| env[index].1)
 }
 
-/// The scope of a mount in `scope` with the binding `extra`, keeping `own`.
-fn frag_scope(scope: &Scope, extra: Option<&Value>, own: Option<&Rc<Locals>>) -> Scope {
+/// The scope of a mount in `scope` with the binding `extra`, keeping `own`
+/// and, for a `for` item naming nodes, `named`.
+fn frag_scope(
+    scope: &Scope,
+    extra: Option<&Value>,
+    own: Option<&Rc<Locals>>,
+    named: Option<&Rc<NamedNodes>>,
+) -> Scope {
     let mut values = Vec::with_capacity(scope.values.len() + 1);
     values.extend_from_slice(&scope.values);
     values.extend(extra.cloned());
     let mut locals = Vec::with_capacity(scope.locals.len() + usize::from(own.is_some()));
     locals.extend(scope.locals.iter().cloned());
     locals.extend(own.cloned());
-    Scope { values, locals }
+    let mut nodes = Vec::with_capacity(scope.named.len() + usize::from(named.is_some()));
+    nodes.extend(scope.named.iter().cloned());
+    nodes.extend(named.cloned());
+    Scope {
+        values,
+        locals,
+        named: nodes,
+    }
+}
+
+/// Whether region `region`'s content, nested regions included, holds a node
+/// its component reaches as a `NodeRef`.
+fn names_nodes(regions: &ViewRegions, region: u32, depth: u32) -> bool {
+    // A nested region has a higher index than its parent, so a malformed
+    // cycle ends here.
+    if depth as usize > regions.regions.len() {
+        return false;
+    }
+    regions.regions[region as usize]
+        .arms
+        .iter()
+        .flat_map(|arm| &arm.items)
+        .any(|item| match item {
+            ItemTemplate::Node { node_ref, .. } => node_ref.is_some(),
+            ItemTemplate::Region(nested) => names_nodes(regions, *nested, depth + 1),
+        })
 }
 
 /// The arm an arm choice names: `None` for `-1` or a value out of range.

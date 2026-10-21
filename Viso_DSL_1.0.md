@@ -2006,7 +2006,8 @@ node root: Window {
 - Named Node 不是公开字段；
 - `node name: T { ... }` 在当前 Component 的 Action、Task、Effect 与 Event Handler 作用域中引入不可变绑定 `name: NodeRef<T>`；View、Computed、Style 与 Input 默认值中不可见，出现时报 `E2001`；
 - 读取 NodeRef 不建立 Reactive 依赖；
-- 目标节点未挂载（分支未激活或已销毁）时，Node Action 返回 `Result` 错误而不是 Panic；
+- Node Action 返回 `()`，在本次事务的写入使视图结构落定之后生效，因此同一 Action 刚挂载的节点可被触达；目标节点未挂载（分支未激活、`preserve` 分支切走或已销毁）时为 No-op，而不是 Panic；
+- `for` 项中的组件实例各自触达自身的 Named Node；
 - `view_for` Body 内的 Named Node 不引入 NodeRef 绑定，其名称只作为 Keyed 身份种子；
 - View 纯度规则禁止在 View 外直接修改节点属性作为状态源；
 - 命令式焦点、滚动、测量等操作通过受控 Node Action 完成。
@@ -4895,7 +4896,9 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 | `n.scroll_to_key(key)` / `n.scroll_to_index(i)` | `VirtualList` | 见 U9.3                                           |
 | `n.animate(target, spec)`                       | 任意          | 见 U6.3                                           |
 
-在 View、Computed 与 `fn` 中调用这些方法是 §83 纯度错误；对已 Dispose 节点调用是 No-op，Debug Runtime 报告警告。
+在 View、Computed 与 `fn` 中调用这些方法是 §83 纯度错误；方法返回 `()`，在视图结构落定后生效；对未挂载或已 Dispose 节点调用是 No-op。
+
+当前实现：`focus`、`blur`、`scroll_into_view`、`scroll_to`、`scroll_by` 在宏、热重载、Release Package（含 AOT）与 HTML/Solid 导出中生效（导出以 `data-node` 标记节点，从发起事件的元素就近查找）；`scroll_to_key`/`scroll_to_index` 与 `animate` 尚未实现，调用报 `E2001`。
 
 ---
 

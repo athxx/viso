@@ -1554,6 +1554,9 @@ struct Declarations {
     audio_event: Option<Ty>,
     /// What the package's targets are and how it is built.
     profile: TargetProfile,
+    /// The place of each named node a component reaches as a `NodeRef` among
+    /// its view's, by the node's symbol.
+    nodes: HashMap<SymbolId, u32>,
     /// The prelude's types by name.
     standard: HashMap<String, SymbolId>,
     /// The index of the module declaring each record, enum, event, component and
@@ -1633,6 +1636,14 @@ struct ModuleEnv<'p> {
 }
 
 impl TypeEnv for ModuleEnv<'_> {
+    fn standard_type(&self, name: &str) -> Option<SymbolId> {
+        self.decls.standard.get(name).copied()
+    }
+
+    fn node_ordinal(&self, node: SymbolId) -> Option<u32> {
+        self.decls.nodes.get(&node).copied()
+    }
+
     fn resolution_ty(&self, to: &Resolution) -> Option<Ty> {
         match to {
             Resolution::Symbol(id) => self
@@ -1774,10 +1785,6 @@ impl ViewEnv for ModuleEnv<'_> {
 
     fn is_template(&self, component: SymbolId) -> bool {
         self.decls.templates.contains(&component)
-    }
-
-    fn standard_type(&self, name: &str) -> Option<SymbolId> {
-        self.decls.standard.get(name).copied()
     }
 
     fn widgets(&self) -> &Natives {
@@ -2257,7 +2264,35 @@ impl ModuleScope {
                 }
                 return;
             }
-            Member::Slot(_) | Member::View(_) | Member::Effect(_) | Member::Native(_) => return,
+            Member::View(view) => {
+                let nodes = view
+                    .block()
+                    .map(|b| b.referable_nodes())
+                    .unwrap_or_default();
+                for (ordinal, node) in nodes.into_iter().enumerate() {
+                    let target = node
+                        .ty()
+                        .and_then(|ty| ty.segments().last())
+                        .map(|segment| segment.text());
+                    let Some(sym) = decl_symbol(table, interner, node.name(), Namespace::Value)
+                    else {
+                        continue;
+                    };
+                    self.own(owner, name_of(node.name()), sym);
+                    decls.nodes.insert(sym, ordinal as u32);
+                    decls.facts.insert(
+                        sym,
+                        MemberFacts {
+                            ty: target.map_or(Ty::Unknown, |t| Ty::NodeRef(t.into())),
+                            effect: None,
+                            is_reactive_source: false,
+                            kind: SymbolKind::Node,
+                        },
+                    );
+                }
+                return;
+            }
+            Member::Slot(_) | Member::Effect(_) | Member::Native(_) => return,
         };
 
         let Some(tok) = name_tok else {

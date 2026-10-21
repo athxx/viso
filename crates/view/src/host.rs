@@ -258,6 +258,9 @@ pub struct ViewHost {
     /// The view's shader table: the program of each shader its shader views
     /// paint with, by index.
     shaders: Vec<Arc<BrushProgram>>,
+    /// The nodes its actions and handlers reach as a `NodeRef`, and what they
+    /// ask of them.
+    pub(crate) nodes: crate::nodes::NodeRefs,
 }
 
 /// Where a view's `@persist` states load from and are stored, decided at the
@@ -387,6 +390,7 @@ impl ViewHost {
             persist_reports: Vec::new(),
             assets: Vec::new(),
             shaders: Vec::new(),
+            nodes: crate::nodes::NodeRefs::default(),
         })
     }
 
@@ -844,13 +848,15 @@ impl ViewHost {
         self.regions.mounted
     }
 
-    /// Drops the structure hook re-delivering the static nodes' values, as
-    /// unmounting the view without clearing its tree does.
+    /// Drops the structure hooks re-delivering the static nodes' values and
+    /// applying the requests its calls make of its named nodes, as unmounting
+    /// the view without clearing its tree does.
     pub fn release_values(&mut self, store: &mut NodeStore) {
         if let Some(hook) = self.values.take() {
             store.remove_structure_hook(hook);
         }
         self.shown.clear();
+        self.release_nodes(store);
     }
 
     /// Swaps in `hook` as the one re-delivering the static nodes' values and
@@ -932,6 +938,7 @@ impl ViewHost {
             Ok(outcome) => {
                 self.events.extend(outcome.events);
                 self.write_back(scope, cells);
+                self.queue_nodes(outcome.nodes, scope, cells);
                 self.launch(outcome.starts, scope, cells);
                 true
             }
@@ -1184,6 +1191,7 @@ impl ViewHost {
             Ok(outcome) => {
                 self.events.extend(outcome.events);
                 self.write_back(scope, cells);
+                self.queue_nodes(outcome.nodes, scope, cells);
                 self.launch(outcome.starts, scope, cells);
                 Some(outcome.value)
             }
@@ -1287,6 +1295,7 @@ impl ViewHost {
         next.values = self.values.take();
         next.shown = std::mem::take(&mut self.shown);
         next.anchors = std::mem::take(&mut self.anchors);
+        next.nodes = std::mem::take(&mut self.nodes);
         next.epoch = self.epoch + 1;
         next.this = Weak::clone(&self.this);
         next.root = self.root;

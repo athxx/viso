@@ -1225,6 +1225,22 @@ impl Verifier<'_> {
                 let head = self.list(ext, 1)?;
                 self.slot(head[0], self.limits.events, "event")
             }
+            Op::Node { dst, ext } => {
+                self.reg(dst)?;
+                let head = self.list(ext, 2)?;
+                let Some(action) = crate::op::NodeAction::from_u32(head[0]) else {
+                    return Err(format!("unknown node action {}", head[0]));
+                };
+                let n = self.code.ext[ext as usize + 2] as usize;
+                if n != action.arity() {
+                    return Err(format!(
+                        "node action `{}` takes {} arguments, not {n}",
+                        action.method(),
+                        action.arity()
+                    ));
+                }
+                self.reg16(head[1])
+            }
             Op::Start { ext } => {
                 let head = self.list(ext, 1)?;
                 let func = head[0];

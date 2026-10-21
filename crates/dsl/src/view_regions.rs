@@ -571,6 +571,7 @@ impl Builder<'_> {
             edges,
             routes,
             control,
+            node_ref: node.node_ref,
         });
         if !authors_children(node) {
             self.skip(&node.children);

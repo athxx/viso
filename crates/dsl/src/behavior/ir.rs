@@ -26,7 +26,7 @@ pub use viso_behavior::NativeImport;
 
 use viso_behavior::game::InputSchema;
 use viso_behavior::native::NativeId;
-use viso_behavior::{PersistSlot, TaskPolicy};
+use viso_behavior::{NodeAction, PersistSlot, TaskPolicy};
 use viso_schema::EnvField;
 
 use super::probe::SystemState;
@@ -300,6 +300,19 @@ pub enum Inst {
     /// Queue component event `event` with `args` in parameter order, delivered
     /// when the outermost action commits.
     Emit { event: u32, args: Vec<Reg> },
+    /// `dst` = the key of the named node `node` the function's component
+    /// reaches as a `NodeRef`: its place among that component's, and once an
+    /// instance inlines the function, the instance in the high 16 bits.
+    NodeRef { dst: Reg, node: u32 },
+    /// Queue `action` on the named node whose key `node` holds, with `args`,
+    /// applied once the view settles after the outermost action commits;
+    /// `dst = ()`.
+    Node {
+        dst: Reg,
+        action: NodeAction,
+        node: Reg,
+        args: Vec<Reg>,
+    },
     /// Start task `task` with `args` when the outermost action commits, in
     /// the task slot `slot` of the instance `instance` under `policy`; `done`
     /// is the closure its value runs (the `success` and `error` handlers),

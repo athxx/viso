@@ -90,7 +90,8 @@ pub fn emit_view(
         behavior,
         next_key: 0,
         next_static: 0,
-        record_ids: regions.is_some() || behavior.is_some_and(|b| !b.env.is_empty()),
+        record_ids: regions.is_some()
+            || behavior.is_some_and(|b| !b.env.is_empty() || !b.named.is_empty()),
         static_keys: Vec::new(),
         shown: Vec::new(),
         missing_source: None,
@@ -133,6 +134,15 @@ pub fn emit_view(
                 );
             }
         });
+        let nodes = (!behavior.named.is_empty()).then(|| {
+            let named = behavior.named.iter().filter_map(|&(key, node)| {
+                let ordinal = ctx.static_keys.iter().position(|&k| k == node.0)?;
+                Some(quote! { (#key, #ordinal) })
+            });
+            quote! {
+                ::viso::__private::viso_view::__mount_nodes(cx, &__viso_host, &__viso_ids, &[#(#named),*]);
+            }
+        });
         let mounted = record.take().map(|record| {
             quote! {
                 ::viso::__private::viso_view::__record_mount! {
@@ -149,6 +159,7 @@ pub fn emit_view(
                 let __viso_root = #root;
                 #link
                 #mount
+                #nodes
                 #mounted
                 __viso_root
             }

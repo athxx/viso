@@ -1306,6 +1306,14 @@ fn mount_behavior(
             })
             .collect();
         mount_values(&mut cx, host, &shown);
+        if crate::nodes::reaches_nodes(package.named.len(), &package.regions) {
+            let named: Vec<(u32, NodeId)> = package
+                .named
+                .iter()
+                .filter_map(|n| Some((n.key, nodes.get(n.node as usize).copied().flatten()?)))
+                .collect();
+            crate::nodes::mount_nodes(&mut cx, host, &named);
+        }
         if let Some(root) = rt.root {
             mount_effects(rt.store, host, root);
         }

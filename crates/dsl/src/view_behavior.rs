@@ -75,6 +75,10 @@ pub struct ViewBehavior {
     controls: Vec<(NodeKey, Control)>,
     /// Each `env` field the view reads.
     pub env: Vec<EnvRead>,
+    /// Each node its component's actions and handlers reach as a `NodeRef`,
+    /// by ascending key: the static ones the view mounts with it, the ones
+    /// regions mount carrying theirs in their templates.
+    pub named: Vec<(u32, NodeKey)>,
     /// The view's shader table: each shader its shader views paint with, in
     /// the order their controls index it.
     pub shaders: Vec<ViewBrush>,
@@ -201,8 +205,10 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         sites,
         nodes,
         roots,
+        mut named,
         ..
     } = walk;
+    named.sort_unstable();
     let regions = has_regions(&compiled.tree);
     let effects = compiled.component.as_ref().is_some_and(|c| {
         compiled
@@ -213,6 +219,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
     // A module declaring systems runs a game on the view's root.
     let game = compiled.component.is_some() && !compiled.behavior.systems.is_empty();
     if sites.is_empty()
+        && named.is_empty()
         && !regions
         && !effects
         && !game
@@ -412,6 +419,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         routes,
         controls,
         env,
+        named,
         shaders: shaders.into_iter().map(|(_, brush)| brush).collect(),
     }))
 }
@@ -532,6 +540,8 @@ struct Walk<'a> {
     nodes: Vec<(NodeKey, ControlKind, &'a UiNode, Option<viso_schema::Role>)>,
     /// Each component instance's root node, the first of its view's nodes.
     roots: Vec<(u32, NodeKey)>,
+    /// Each node its component reaches as a `NodeRef`, by its key.
+    named: Vec<(u32, NodeKey)>,
     /// The role the next node takes as an item: a tab of a `Tabs`, a radio
     /// button of a `RadioGroup`, whose direct children (in or out of a
     /// control-flow region) are its items.
@@ -575,6 +585,9 @@ impl<'a> Walk<'a> {
         self.key += 1;
         if !self.roots.iter().any(|(i, _)| *i == node.instance) {
             self.roots.push((node.instance, own));
+        }
+        if let Some(key) = node.node_ref {
+            self.named.push((key, own));
         }
         let kind = ControlKind::of(&node.type_name);
         let item = self.item.take();

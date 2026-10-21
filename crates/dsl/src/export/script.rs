@@ -1120,6 +1120,20 @@ fn inst_js(
         Inst::Return { src } => format!("return {};", r(*src)),
         Inst::Emit { event, args } if solid => format!("st.emit({event}, [{}]);", regs(args)),
         Inst::Emit { event, args } => format!("$.emit({event}, [{}]);", regs(args)),
+        Inst::NodeRef { dst, node } => format!("{} = {node}n;", r(*dst)),
+        Inst::Node {
+            dst,
+            action,
+            node,
+            args,
+        } => format!(
+            "{} = 0n; {}.node({}, {}, [{}]);",
+            r(*dst),
+            if solid { "st" } else { "$" },
+            *action as u32,
+            r(*node),
+            regs(args)
+        ),
         Inst::Start {
             task,
             args,

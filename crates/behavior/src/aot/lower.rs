@@ -867,6 +867,20 @@ impl Lower<'_> {
                     ))
                 ));
             }
+            Op::Node { dst, ext: at } => {
+                let e = ext(at);
+                let n = e[2] as usize;
+                line(format!(
+                    "{} = {};",
+                    r(dst.into()),
+                    t(&format!(
+                        "rt::node(vm, {}, &{}, Box::from([{}]))",
+                        e[0],
+                        r(e[1]),
+                        self.clones(&e[3..3 + n])
+                    ))
+                ));
+            }
             Op::Start { ext: at } => {
                 let e = ext(at);
                 let argc = e[1] as usize;

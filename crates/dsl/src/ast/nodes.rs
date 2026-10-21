@@ -1651,6 +1651,74 @@ impl ViewBlock {
     pub fn items(&self) -> impl Iterator<Item = ViewItem> {
         support::children(&self.syntax)
     }
+
+    /// The named nodes of this block its component's actions and handlers
+    /// reach as a `NodeRef`, in source order: every one outside a `for` body,
+    /// whose name only seeds its items' identities.
+    pub fn referable_nodes(&self) -> Vec<NamedNode> {
+        fn walk(items: impl Iterator<Item = ViewItem>, out: &mut Vec<NamedNode>) {
+            for item in items {
+                match item {
+                    ViewItem::Named(node) => {
+                        let body = node.body();
+                        out.push(node);
+                        if let Some(body) = body {
+                            walk(body.members(), out);
+                        }
+                    }
+                    ViewItem::Anonymous(node) => {
+                        if let Some(body) = node.body() {
+                            walk(body.members(), out);
+                        }
+                    }
+                    ViewItem::Part(part) => {
+                        if let Some(body) = part.body() {
+                            walk(body.members(), out);
+                        }
+                    }
+                    ViewItem::Use(used) => {
+                        if let Some(body) = used.body() {
+                            walk(body.members(), out);
+                        }
+                    }
+                    ViewItem::Fill(fill) => {
+                        if let Some(block) = fill.body() {
+                            walk(block.items(), out);
+                        }
+                    }
+                    ViewItem::If(view_if) => {
+                        let mut next = Some(view_if);
+                        while let Some(arm) = next.take() {
+                            if let Some(block) = arm.then_block() {
+                                walk(block.items(), out);
+                            }
+                            match arm.else_branch() {
+                                Some(ElseBranch::If(nested)) => next = Some(nested),
+                                Some(ElseBranch::Block(block)) => walk(block.items(), out),
+                                None => {}
+                            }
+                        }
+                    }
+                    ViewItem::Match(view_match) => {
+                        for arm in view_match.arms() {
+                            if let Some(block) = arm.body() {
+                                walk(block.items(), out);
+                            }
+                        }
+                    }
+                    ViewItem::For(_)
+                    | ViewItem::Property(_)
+                    | ViewItem::Handler(_)
+                    | ViewItem::TwoWayBinding(_)
+                    | ViewItem::Override(_)
+                    | ViewItem::Replace(_) => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(self.items(), &mut out);
+        out
+    }
 }
 
 impl NamedNode {

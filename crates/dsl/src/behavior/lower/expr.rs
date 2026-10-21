@@ -386,6 +386,14 @@ impl Lowerer<'_, '_> {
                 });
                 Ok(dst)
             }
+            Some(SymbolKind::Node) => {
+                let Some(node) = self.env.node_ordinal(id) else {
+                    return self.bail(format!("`{name}` names no node of this component"));
+                };
+                let dst = self.reg();
+                self.emit(Inst::NodeRef { dst, node });
+                Ok(dst)
+            }
             _ => self.bail(format!("`{name}` has no runtime value yet")),
         }
     }
@@ -663,6 +671,9 @@ impl Lowerer<'_, '_> {
         if let Some(value) = self.list_call(&call)? {
             return Ok(value);
         }
+        if let Some(value) = self.node_call(&call)? {
+            return Ok(value);
+        }
         let Some(callee) = call.callee() else {
             return self.bail("a call without a callee");
         };
@@ -801,6 +812,37 @@ impl Lowerer<'_, '_> {
                 Ok(dst)
             }
         }
+    }
+
+    /// `recv.name(args)` on a `NodeRef`, `None` when `recv` is none: the
+    /// receiver, then the arguments, evaluate in source order.
+    fn node_call(&mut self, call: &CallExpr) -> Lower<Option<Reg>> {
+        let Some(field) = call
+            .callee()
+            .and_then(|c| FieldExpr::cast(c.syntax().clone()))
+        else {
+            return Ok(None);
+        };
+        let (Some(recv), Some(name)) = (field.receiver(), field.field()) else {
+            return Ok(None);
+        };
+        if !matches!(self.cx.type_of(&recv), Some(Ty::NodeRef(_))) {
+            return Ok(None);
+        }
+        let Some(action) = viso_behavior::NodeAction::named(&name.text()) else {
+            return self.bail(format!("`NodeRef` has no method `{}`", name.text()));
+        };
+        let mut all = vec![recv];
+        all.extend(emit_args(call.syntax()).into_iter().map(|(_, e)| e));
+        let regs = self.operands(&all)?;
+        let dst = self.reg();
+        self.emit(Inst::Node {
+            dst,
+            action,
+            node: regs[0],
+            args: regs[1..].to_vec(),
+        });
+        Ok(Some(dst))
     }
 
     /// A call bound to a native function: the receiver of a method call, then

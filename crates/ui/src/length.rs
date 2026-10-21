@@ -727,7 +727,7 @@ impl NodeStore {
 
     /// The offset `terms` fold to at node `id`, in dp; a term that does not
     /// fold is zero.
-    fn fold_offset(&self, id: NodeId, [x, y]: [LengthTerms; 2]) -> Vec2 {
+    pub fn fold_offset(&self, id: NodeId, [x, y]: [LengthTerms; 2]) -> Vec2 {
         let env = self.lengths().env;
         let font = self.font_of(id);
         Vec2 {

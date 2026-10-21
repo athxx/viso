@@ -1119,6 +1119,35 @@ pub fn focus_node(store: &mut NodeStore, node: NodeId) -> bool {
     true
 }
 
+/// Focus `node` as a program asks, without the focus ring a keyboard step
+/// shows. Returns `false`, changing nothing, when `node` is freed, not
+/// focusable or inert.
+pub fn focus_quietly(store: &mut NodeStore, node: NodeId) -> bool {
+    if !store.arena().is_live(node) || !store.focusable(node) || store.inert(node) {
+        return false;
+    }
+    let old = store.focused();
+    apply_focus(store, old, Some(node), false);
+    true
+}
+
+/// Takes focus from `node` when it, or a node in its subtree, holds it.
+/// Returns whether it did.
+pub fn blur_node(store: &mut NodeStore, node: NodeId) -> bool {
+    let Some(focused) = store.focused() else {
+        return false;
+    };
+    let mut at = Some(focused);
+    while let Some(id) = at.filter(|&id| id != node) {
+        at = store.parent(id);
+    }
+    if at.is_none() {
+        return false;
+    }
+    apply_focus(store, Some(focused), None, false);
+    true
+}
+
 /// The focus a subtree took with it when it was unlinked to be kept: the
 /// focused node and the focus scope, each only if it lay in that subtree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

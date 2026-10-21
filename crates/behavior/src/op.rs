@@ -203,6 +203,76 @@ pub enum DisplayKind {
     Str,
 }
 
+/// What a node method asks of a named node of the view ([`Op::Node`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum NodeAction {
+    /// `focus()`: move focus to the node, without a focus ring.
+    Focus = 0,
+    /// `blur()`: take focus from the node when it holds it.
+    Blur = 1,
+    /// `scroll_into_view()`: scroll the nearest enclosing viewports the least
+    /// that shows the node.
+    ScrollIntoView = 2,
+    /// `scroll_to(offset: Offset)`: set a `Scroll`'s offset.
+    ScrollTo = 3,
+    /// `scroll_by(delta: Offset)`: move a `Scroll`'s offset.
+    ScrollBy = 4,
+}
+
+impl NodeAction {
+    /// Every action, by discriminant.
+    pub const ALL: [NodeAction; 5] = [
+        NodeAction::Focus,
+        NodeAction::Blur,
+        NodeAction::ScrollIntoView,
+        NodeAction::ScrollTo,
+        NodeAction::ScrollBy,
+    ];
+
+    /// The action with discriminant `raw`.
+    pub fn from_u32(raw: u32) -> Option<NodeAction> {
+        NodeAction::ALL.get(raw as usize).copied()
+    }
+
+    /// The action method `name` names.
+    pub fn named(name: &str) -> Option<NodeAction> {
+        NodeAction::ALL
+            .into_iter()
+            .find(|action| action.method() == name)
+    }
+
+    /// The method name.
+    pub fn method(self) -> &'static str {
+        match self {
+            NodeAction::Focus => "focus",
+            NodeAction::Blur => "blur",
+            NodeAction::ScrollIntoView => "scroll_into_view",
+            NodeAction::ScrollTo => "scroll_to",
+            NodeAction::ScrollBy => "scroll_by",
+        }
+    }
+
+    /// How many arguments it takes.
+    pub fn arity(self) -> usize {
+        match self {
+            NodeAction::Focus | NodeAction::Blur | NodeAction::ScrollIntoView => 0,
+            NodeAction::ScrollTo | NodeAction::ScrollBy => 1,
+        }
+    }
+
+    /// The Rust variant name, for code that names an action in tokens.
+    pub fn variant(self) -> &'static str {
+        match self {
+            NodeAction::Focus => "Focus",
+            NodeAction::Blur => "Blur",
+            NodeAction::ScrollIntoView => "ScrollIntoView",
+            NodeAction::ScrollTo => "ScrollTo",
+            NodeAction::ScrollBy => "ScrollBy",
+        }
+    }
+}
+
 /// One instruction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Op {
@@ -324,6 +394,11 @@ pub enum Op {
     Return { src: u16 },
     /// Queue a component event. Operands: `event, n, args..`.
     Emit { ext: u32 },
+    /// Queue a request to a named node of the view, applied once the
+    /// transaction commits and the view settles; `dst` is `()`. Operands:
+    /// `action, node, n, args..`: the [`NodeAction`], the register holding
+    /// the node's key, then the action's arguments.
+    Node { dst: u16, ext: u32 },
     /// Queue a task start, run once the transaction commits. Operands:
     /// `func, argc, args.., done, cancelled, instance, slot, policy`: each
     /// handler is the register of its closure and the slot the instance's

@@ -57,7 +57,7 @@ pub use binding::{
 pub use check_mark::{CheckMark, CheckShape};
 pub use component::{
     AbsoluteStyle, BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle, NodeStore,
-    Painted, PointerHandler, ScrollStyle, StackStyle, VirtualListStyle,
+    Painted, PointerHandler, ScrollRequest, ScrollStyle, StackStyle, VirtualListStyle,
 };
 pub use content::{BrushImage, Content, TextRequest};
 pub use context::EventCx;
@@ -75,7 +75,7 @@ pub use hit_test::{HitTestTree, hit_test};
 pub use input::{
     DispatchPhase, ImeEvent, Key, KeyEvent, KeyRouter, Modifiers, PointerButtons, PointerContact,
     PointerEvent, PointerId, PointerPhase, PointerRouter, ScrollEvent, ScrollRouter, TOUCH_SLOP,
-    focus_next, focus_node, route_contact, route_pointer, route_scroll,
+    blur_node, focus_next, focus_node, focus_quietly, route_contact, route_pointer, route_scroll,
 };
 pub use inspect::{
     InspectFlags, InspectNode, InspectSnapshot, InspectTree, PaintRange, PaintRanges, paint_ranges,

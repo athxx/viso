@@ -10,6 +10,7 @@ use viso_ui::{NodeId, StateId, StateStore, StateValue};
 
 use crate::env::env_value;
 use crate::host::StateCells;
+use crate::nodes::NamedNodes;
 
 /// The bindings and instance states a handler, a control or a region entry
 /// inside region content runs with. Static content runs with the empty scope.
@@ -20,6 +21,9 @@ pub struct Scope {
     /// The states of every enclosing mount of region content that mounts a
     /// component instance, outermost first.
     pub(crate) locals: Vec<Rc<Locals>>,
+    /// The named nodes of every enclosing `for` item that names any,
+    /// outermost first.
+    pub(crate) named: Vec<Rc<NamedNodes>>,
 }
 
 impl Scope {
@@ -27,6 +31,7 @@ impl Scope {
     pub const EMPTY: Scope = Scope {
         values: Vec::new(),
         locals: Vec::new(),
+        named: Vec::new(),
     };
 
     /// The local cell of state slot `slot`, `None` for a slot no enclosing

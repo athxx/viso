@@ -15,6 +15,7 @@ class Store {
     this.work = null;
     this.pending = [];
     this.starts = [];
+    this.nodes = [];
     // The mount whose states a read sees, beside the component's.
     this.cur = null;
     this.top = { p: null, o: null, l: null, fx: [], live: true };
@@ -63,6 +64,9 @@ class Store {
   emit(event, args) {
     this.pending.push([event, args]);
   }
+  node(action, key, args) {
+    this.nodes.push([action, key, args]);
+  }
   start(task, args, done, cancelled, instance, slot, policy) {
     this.starts.push({ task, args, done, cancelled, instance, slot, policy });
   }
@@ -97,6 +101,7 @@ class Store {
     this.work = before.slice();
     this.pending = [];
     this.starts = [];
+    this.nodes = [];
     const prev = this.cur;
     this.cur = m;
     let value;
@@ -106,6 +111,7 @@ class Store {
       this.work = null;
       this.pending = [];
       this.starts = [];
+      this.nodes = [];
       console.error(e);
       return null;
     } finally {
@@ -115,9 +121,19 @@ class Store {
     this.work = null;
     const changed = new Set();
     for (let i = 0; i < after.length; i++) if (!Object.is(after[i], before[i])) changed.add(i);
-    const t = { value, changed, events: this.pending, starts: this.starts, cells, after };
+    const t = {
+      value,
+      changed,
+      events: this.pending,
+      starts: this.starts,
+      nodes: this.nodes,
+      from: this.origin,
+      cells,
+      after,
+    };
     this.pending = [];
     this.starts = [];
+    this.nodes = [];
     return t;
   }
   land(t) {
@@ -127,6 +143,7 @@ class Store {
       });
     }
     this.deliver(t.events);
+    reach(t.nodes, t.from);
   }
   deliver(events) {
     for (const [event, args] of events) {
@@ -183,7 +200,9 @@ class Store {
   }
   on(el, route, capture, control, handler, m) {
     listen(el, route, capture, control, (payload) => {
+      this.origin = el;
       this.run(() => handler(payload), m);
+      this.origin = null;
       if (el.$sync) el.$sync();
     });
   }

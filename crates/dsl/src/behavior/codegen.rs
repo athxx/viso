@@ -449,6 +449,16 @@ impl Emitter {
             Inst::Emit { event, args } => Op::Emit {
                 ext: self.operands(&[*event], args),
             },
+            Inst::NodeRef { dst, node } => self.int(reg(*dst), i64::from(*node)),
+            Inst::Node {
+                dst,
+                action,
+                node,
+                args,
+            } => Op::Node {
+                dst: reg(*dst),
+                ext: self.operands(&[*action as u32, node.0], args),
+            },
             Inst::Start {
                 task,
                 args,

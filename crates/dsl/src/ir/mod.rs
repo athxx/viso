@@ -210,6 +210,9 @@ struct Lowering<'a, 'l> {
     /// The caller's `override part` bindings for the next node to lower, a
     /// part, and the instance they belong to.
     overriding: Option<(Vec<ViewItem>, u32)>,
+    /// The `NodeRef` key of the named node being lowered, which the first
+    /// retained node it lowers to takes.
+    naming: Option<u32>,
 }
 
 /// One component view being lowered.
@@ -256,6 +259,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             ordinals: HashMap::new(),
             rust_scope: false,
             overriding: None,
+            naming: None,
         }
     }
 
@@ -370,6 +374,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         match item {
             ViewItem::Named(node) => {
                 let local_name = node.name().map(|t| t.text());
+                self.naming = node.name().and_then(|name| self.node_ref(&name));
                 self.node(
                     node.ty(),
                     local_name,
@@ -377,6 +382,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     node.syntax().text_range(),
                     out,
                 );
+                self.naming = None;
             }
             ViewItem::Anonymous(node) => {
                 self.node(
@@ -399,6 +405,23 @@ impl<'a, 'l> Lowering<'a, 'l> {
             | ViewItem::Override(_)
             | ViewItem::Replace(_) => {}
         }
+    }
+
+    /// The `NodeRef` key of the named node `name` names, `None` for one in a
+    /// `for` body, which its component reaches by no `NodeRef`.
+    fn node_ref(&self, name: &crate::syntax::SyntaxToken) -> Option<u32> {
+        self.library.heads.get(&name.text_range())?;
+        let frame = &self.frames[self.current];
+        let component = self.library.get(*frame.chain.last()?)?;
+        let ordinal = component
+            .decl
+            .view()?
+            .block()?
+            .referable_nodes()
+            .iter()
+            .position(|node| node.name().is_some_and(|n| n.text() == name.text()))?;
+        let ordinal = u32::try_from(ordinal).ok().filter(|&o| o < 1 << 16)?;
+        (frame.instance < 1 << 15).then_some(frame.instance << 16 | ordinal)
     }
 
     /// Lowers one member of a widget's body onto its children: a `fill`'s items
@@ -500,6 +523,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             }
         };
 
+        let node_ref = self.naming.take();
         let instance = self.instance();
         let control = ControlKind::of(&type_name);
         let mut pending = Vec::new();
@@ -672,6 +696,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         out.push(UiItem::Node(Box::new(UiNode {
             type_name,
             local_name,
+            node_ref,
             kind,
             style,
             pending,
@@ -773,6 +798,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         out.push(UiItem::Node(Box::new(UiNode {
             type_name: path.join("::"),
             local_name,
+            node_ref: self.naming.take(),
             kind: NodeKind::Component,
             style: StyleIr::default(),
             pending: Vec::new(),

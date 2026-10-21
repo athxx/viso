@@ -266,10 +266,18 @@ fn mount<'a>(
         effects: &mut effects,
     };
     let regions = view.regions();
+    let reaches = crate::nodes::reaches_nodes(view.named().len(), &regions);
     if !regions.is_empty() {
         mount_regions(&mut cx, Rc::new(regions), &host, &node_ids, &cells);
     }
     mount_values(&mut cx, &host, &shown);
+    if reaches {
+        let named: Vec<(u32, NodeId)> = view
+            .named()
+            .filter_map(|n| Some((n.key, node_ids.get(n.node as usize).copied().flatten()?)))
+            .collect();
+        crate::nodes::mount_nodes(&mut cx, &host, &named);
+    }
     if let Some(root) = root {
         mount_effects(cx.store, &host, root);
     }
