@@ -432,12 +432,16 @@ pub(crate) fn place_children(
 /// each Fr track, resolved in order, takes `remaining_free * its_fr /
 /// remaining_fr_total`, so the split stays exact as it proceeds. `auto_maxes[i]`
 /// supplies the content size for an `Auto`/`Minmax`/`FitContent` track (0.0
-/// elsewhere). Writes `tracks.len()` extents into `out` (cleared first).
+/// elsewhere). With `auto_mins`, each track's min-content size, `Auto` and
+/// `FitContent` tracks whose content overflows the extent shrink toward it
+/// (see [`shrink_to_fit`]). Writes `tracks.len()` extents into `out`
+/// (cleared first).
 pub(crate) fn solve_tracks(
     tracks: &[TrackSizing],
     gap: f32,
     content_extent: f32,
     auto_maxes: &[f32],
+    auto_mins: Option<&[f32]>,
     out: &mut Vec<f32>,
 ) {
     out.clear();
@@ -497,6 +501,19 @@ pub(crate) fn solve_tracks(
         }
     }
 
+    if let Some(mins) = auto_mins
+        && consumed + gaps_total > content_extent
+    {
+        consumed = shrink_to_fit(
+            tracks,
+            auto_maxes,
+            mins,
+            content_extent - gaps_total,
+            consumed,
+            out,
+        );
+    }
+
     // Pass 2: distribute the remaining free space across the flexible tracks
     // (`Fr` and the `fr` part of `FlexMin`) with a re-normalizing sweep. A
     // `FlexMin` track keeps its `min` base already in `out` and only adds its
@@ -524,6 +541,95 @@ pub(crate) fn solve_tracks(
             remaining_fr -= w;
         }
     }
+}
+
+/// The extent a track of `track` takes at its cells' max-content extent
+/// `content` where no box is known: a fixed track its value, a percentage
+/// nothing, a flexible one its content (at least its floor).
+pub(crate) fn content_track(track: TrackSizing, content: f32) -> f32 {
+    match track {
+        TrackSizing::Fixed(v) => v,
+        TrackSizing::Percent(_) => 0.0,
+        TrackSizing::Auto | TrackSizing::Fr(_) => content,
+        TrackSizing::Minmax(lo, hi) => content.max(lo).min(hi.max(lo)),
+        TrackSizing::FitContent(limit) => content.min(limit.max(0.0)).max(0.0),
+        TrackSizing::FlexMin(min, _) => content.max(min),
+    }
+}
+
+/// The narrowest a track of `track` takes over cells whose min-content width
+/// is `content`: a fixed track its value, a band its lower bound, a flexible
+/// one its floor, a content-sized one its cells' min-content.
+pub(crate) fn min_content_track(track: TrackSizing, content: f32) -> f32 {
+    match track {
+        TrackSizing::Fixed(v) => v,
+        TrackSizing::Percent(_) => 0.0,
+        TrackSizing::Minmax(lo, _) | TrackSizing::FlexMin(lo, _) => lo.max(0.0),
+        TrackSizing::FitContent(limit) => content.min(limit.max(0.0)).max(0.0),
+        TrackSizing::Auto | TrackSizing::Fr(_) => content,
+    }
+}
+
+/// Whether a track's content sizes it from its cells' min-content up to their
+/// max-content: `Auto`, and `FitContent` below its limit.
+fn shrinks_to_content(track: TrackSizing) -> bool {
+    matches!(track, TrackSizing::Auto | TrackSizing::FitContent(..))
+}
+
+/// Shrinks the content-sized tracks of `tracks`, resolved in `out` to their
+/// content `maxes` and to `consumed` in all, so they fit `room`, as CSS's
+/// track sizing does: each starts at its min-content size `mins[i]` (never
+/// above its resolved size), and what the room leaves past the other tracks
+/// and those minimums is shared equally among them, none growing past its
+/// resolved size. Returns what the tracks consume after.
+fn shrink_to_fit(
+    tracks: &[TrackSizing],
+    maxes: &[f32],
+    mins: &[f32],
+    room: f32,
+    consumed: f32,
+    out: &mut [f32],
+) -> f32 {
+    let cap = |i: usize| match tracks[i] {
+        TrackSizing::Auto => maxes.get(i).copied().unwrap_or(0.0),
+        TrackSizing::FitContent(limit) => maxes
+            .get(i)
+            .copied()
+            .unwrap_or(0.0)
+            .min(limit.max(0.0))
+            .max(0.0),
+        _ => 0.0,
+    };
+    let base = |i: usize| mins.get(i).copied().unwrap_or(0.0).min(cap(i));
+    let shrinking = || (0..tracks.len()).filter(|&i| shrinks_to_content(tracks[i]));
+    let caps: f32 = shrinking().map(cap).sum();
+    let bases: f32 = shrinking().map(base).sum();
+    let others = consumed - caps;
+    let mut free = room - others - bases;
+    if free >= caps - bases {
+        return consumed;
+    }
+    for i in shrinking() {
+        out[i] = base(i);
+    }
+    // Share the free room equally, freezing each track at its cap: every
+    // round spends it all or freezes one more track.
+    let open = |i: usize, out: &[f32]| cap(i) - out[i] > f32::EPSILON;
+    while free > f32::EPSILON {
+        let count = shrinking().filter(|&i| open(i, out)).count();
+        if count == 0 {
+            break;
+        }
+        let share = free / count as f32;
+        for i in shrinking() {
+            if open(i, out) {
+                let add = share.min(cap(i) - out[i]);
+                out[i] += add;
+                free -= add;
+            }
+        }
+    }
+    others + shrinking().map(|i| out[i]).sum::<f32>()
 }
 
 /// Whether a track grows to fit item content — the intrinsically-sized tracks
@@ -764,6 +870,57 @@ mod tests {
     }
 
     #[test]
+    fn auto_tracks_too_wide_for_the_extent_shrink_toward_their_min_content() {
+        let tracks = [
+            TrackSizing::Auto,
+            TrackSizing::Auto,
+            TrackSizing::Fixed(20.0),
+        ];
+        let mut out = Vec::new();
+        // 300 + 100 of content in 200 less the fixed 20 and two 10 gaps: each
+        // starts at its min (50, 40) and the 70 left is shared equally.
+        solve_tracks(
+            &tracks,
+            10.0,
+            200.0,
+            &[300.0, 100.0, 0.0],
+            Some(&[50.0, 40.0, 0.0]),
+            &mut out,
+        );
+        assert_eq!(out, vec![85.0, 75.0, 20.0]);
+        // A track reaching its max content stops; the rest goes to the other.
+        solve_tracks(
+            &tracks,
+            10.0,
+            200.0,
+            &[300.0, 60.0, 0.0],
+            Some(&[50.0, 40.0, 0.0]),
+            &mut out,
+        );
+        assert_eq!(out, vec![100.0, 60.0, 20.0]);
+        // Too narrow for even the mins: each holds its min and overflows.
+        solve_tracks(
+            &tracks,
+            10.0,
+            60.0,
+            &[300.0, 100.0, 0.0],
+            Some(&[50.0, 40.0, 0.0]),
+            &mut out,
+        );
+        assert_eq!(out, vec![50.0, 40.0, 20.0]);
+        // Room for all: max content, as without mins.
+        solve_tracks(
+            &tracks,
+            10.0,
+            600.0,
+            &[300.0, 100.0, 0.0],
+            Some(&[50.0, 40.0, 0.0]),
+            &mut out,
+        );
+        assert_eq!(out, vec![300.0, 100.0, 20.0]);
+    }
+
+    #[test]
     fn fixed_tracks_take_their_value() {
         let mut out = Vec::new();
         solve_tracks(
@@ -771,6 +928,7 @@ mod tests {
             0.0,
             1000.0,
             &[0.0, 0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![50.0, 80.0]);
@@ -784,6 +942,7 @@ mod tests {
             0.0,
             400.0,
             &[0.0, 0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![100.0, 200.0]);
@@ -797,6 +956,7 @@ mod tests {
             0.0,
             1000.0,
             &[30.0, 70.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![30.0, 70.0]);
@@ -811,6 +971,7 @@ mod tests {
             0.0,
             300.0,
             &[0.0, 0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![100.0, 200.0]);
@@ -830,6 +991,7 @@ mod tests {
             0.0,
             500.0,
             &[0.0, 0.0, 0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![200.0, 100.0, 200.0]);
@@ -844,6 +1006,7 @@ mod tests {
             10.0,
             210.0,
             &[0.0, 0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![100.0, 100.0]);
@@ -858,6 +1021,7 @@ mod tests {
             0.0,
             1000.0,
             &[20.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![50.0]);
@@ -872,6 +1036,7 @@ mod tests {
             0.0,
             1000.0,
             &[120.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![120.0]);
@@ -886,6 +1051,7 @@ mod tests {
             0.0,
             1000.0,
             &[350.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![200.0]);
@@ -900,6 +1066,7 @@ mod tests {
             0.0,
             1000.0,
             &[500.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![120.0]);
@@ -917,6 +1084,7 @@ mod tests {
             0.0,
             1000.0,
             &[90.0, 300.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![90.0, 150.0]);
@@ -932,6 +1100,7 @@ mod tests {
             0.0,
             500.0,
             &[300.0, 0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![200.0, 300.0]);
@@ -1174,6 +1343,7 @@ mod tests {
             0.0,
             500.0,
             &[0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![500.0]);
@@ -1193,6 +1363,7 @@ mod tests {
             0.0,
             600.0,
             &[0.0, 0.0, 0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![200.0, 200.0, 200.0]);
@@ -1212,6 +1383,7 @@ mod tests {
             0.0,
             300.0,
             &[0.0, 0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![200.0, 200.0]);
@@ -1228,6 +1400,7 @@ mod tests {
             0.0,
             500.0,
             &[0.0, 0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![300.0, 200.0]);
@@ -1246,6 +1419,7 @@ mod tests {
             20.0,
             500.0,
             &[0.0, 0.0],
+            None,
             &mut out,
         );
         assert_eq!(out, vec![240.0, 240.0]);

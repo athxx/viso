@@ -4584,6 +4584,7 @@ export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedL
 - `adaptive_columns` 存在时覆盖 `columns`，列数由可用宽度决定（ADR 0009）；
 - `areas` 每个字符串是一行，名字以空白分隔，`.` 为空单元；各行单元数不同或某个名字不构成矩形是 `E3108`；
 - `grid.area` 把子节点放进其 Grid 的 `areas` 中该名字覆盖的单元，名字在编译期解析为行列号与跨度，不进入 Runtime；引用未知名字、所在 Grid 没有 `areas`、或同时写 `grid.column`/`grid.row`/跨度是 `E3108`；`grid.column_span`/`grid.row_span` 为 `0` 也是 `E3108`；
+- 内容决定的列（`Track::auto` 与 `fit_content`）取其单元的 max-content 宽度；各列合计超出 Grid 内容盒时，这些列先取各自单元的 min-content 宽度，剩余空间在它们之间均分，每列不超过其 max-content 宽度（CSS 轨道尺寸算法）；尺寸由内容决定的 Grid 自身的自然宽度为各列 max-content 宽度之和，min-content 宽度为各列最窄宽度之和（含间距与内边距）；
 - 只固定列或只固定行的子节点按 CSS 稀疏自动放置：只固定行的在该行内依次取第一个空位，其余（只固定列的与未固定的）共用一个行优先游标，只固定列的取该列在游标行及其后的第一个空位。
 
 当前实现：`columns`、`rows`、`auto_rows`、`column_gap`、`row_gap`、`align_items`、`areas`、`adaptive_columns` 与子节点的 `grid.*` 是常量时在编译期折叠（值可以是本文件或按名 import 的 `const`）：轨道列表可为列表字面量或 `tracks(n, t)`，`Track::fixed` 取纯 `dp`（固定轨道）或纯 `%`（自身内容盒的比例）长度，`minmax` 的下界、`fit_content` 的上限、`TrackMax::length` 与 `AdaptiveColumns` 的 `min` 取 `dp` 长度；纯 `dp` 间距折叠为节点值，含 `px`/`sp`/`em` 的间距随 §19.6 环境在布局时折叠。常量中读取环境或兼含 `dp` 与 `%` 的轨道、含 `%` 的间距，以及读取值的 `areas`/`grid.area` 报 `E3711`；读取值的其余 Property 随值布局（U3.4），其轨道长度在送达时按当前环境折叠。热重载就地改写保留 Grid 的模板与子节点的单元（只标脏变化的节点），Release 包与宏路径相同。

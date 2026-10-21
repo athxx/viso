@@ -430,8 +430,10 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       its widest stretch no line breaks inside, a node measures its min-content
       width with its natural size, and `fit` takes its content within the room
       down to it, an overflowing row's fit children shrinking alike.
-  - [ ] Grid `auto` tracks shrinking toward their cells' min-content widths when
-        the grid is narrower than their max-content sum.
+  - [x] Grid `auto` tracks shrinking toward their cells' min-content widths when
+        the grid is narrower than their max-content sum (`fit_content` too); a
+        content-sized grid measures its tracks' max-content and min-content
+        widths and heights.
 - [x] `corner_radius` and `border` reach the node, constant or bound, and a style's
       `when` switches them: a `%` radius is a share of the shorter side of the box
       as it paints, a `px`/`sp`/`em` one follows the environment, none rounds past

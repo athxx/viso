@@ -647,35 +647,78 @@ pub fn measure(tree: &mut impl LayoutTree, root: u32, scratch: &mut Vec<u32>) {
             Measured::sized(size, Vec2::ZERO, 0.0)
         }
         LayoutInput::Grid {
+            column_count,
             column_gap,
             row_gap,
             padding,
             size,
+            auto_rows,
+            adaptive_columns,
             ..
         } => {
-            // A grid measures to its own request. A Fixed axis is its pixel value.
-            // A content-sized axis hugs the summed explicit tracks (Fixed/Percent-of-0
-            // contribute their base; gaps included). Auto/Fr tracks contribute
-            // their children's naturals via the full solver at layout time; the
-            // measure-time natural of a flexible grid is a lower bound here.
-            let sum_axis = |tracks: Option<&[TrackSizing]>, gap: f32| -> f32 {
-                let Some(tracks) = tracks else { return 0.0 };
-                let mut s = 0.0f32;
-                for t in tracks {
-                    if let TrackSizing::Fixed(v) = *t {
-                        s += v;
-                    }
+            // A content-sized axis hugs the tracks at their content: each
+            // track its cells' max-content extent (a fixed one its value, a
+            // percentage nothing, no box being known), the min-content width
+            // its cells' min-content widths. An adaptive template's column
+            // count follows the width it is given, so its columns hug only
+            // their minimums.
+            let children = &scratch[start..start + child_count];
+            let (content, min_w) = with_grid_scratch(tree, |tree, s| {
+                let cols = match adaptive_columns {
+                    Some(_) => 1,
+                    None => column_count.max(1),
+                };
+                s.placements
+                    .extend(children.iter().map(|&child| tree.grid_placement(child)));
+                let row_used = crate::grid::place_children(
+                    cols,
+                    &s.placements,
+                    &mut s.occupied,
+                    &mut s.regions,
+                );
+                match (adaptive_columns, tree.grid_column_tracks(root)) {
+                    (Some(a), _) => s.col_tracks.push(TrackSizing::Fixed(a.min)),
+                    (None, Some(t)) if !t.is_empty() => s.col_tracks.extend_from_slice(t),
+                    (None, _) => s
+                        .col_tracks
+                        .extend(std::iter::repeat_n(TrackSizing::Auto, cols as usize)),
                 }
-                if tracks.len() > 1 {
-                    s += gap * (tracks.len() as f32 - 1.0);
+                if let Some(t) = tree.grid_row_tracks(root) {
+                    s.row_tracks.extend_from_slice(t);
                 }
-                s
-            };
-            let content = Vec2 {
-                x: sum_axis(tree.grid_column_tracks(root), column_gap) + padding.main(Axis::Row),
-                y: sum_axis(tree.grid_row_tracks(root), row_gap) + padding.main(Axis::Column),
-            };
-            Measured::sized(size, content, content.x)
+                // An empty grid makes no implicit rows.
+                let row_used = if children.is_empty() { 0 } else { row_used };
+                while (s.row_tracks.len() as u16) < row_used {
+                    s.row_tracks.push(auto_rows);
+                }
+                content_contributions(&*tree, children, s, column_gap, row_gap, [0.0, 0.0]);
+                let gaps = |n: usize, gap: f32| gap * n.saturating_sub(1) as f32;
+                let w: f32 = s
+                    .col_tracks
+                    .iter()
+                    .zip(&s.col_auto)
+                    .map(|(&t, &c)| crate::grid::content_track(t, c))
+                    .sum();
+                let min_w: f32 = s
+                    .col_tracks
+                    .iter()
+                    .zip(&s.col_min)
+                    .map(|(&t, &c)| crate::grid::min_content_track(t, c))
+                    .sum();
+                let h: f32 = s
+                    .row_tracks
+                    .iter()
+                    .zip(&s.row_auto)
+                    .map(|(&t, &c)| crate::grid::content_track(t, c))
+                    .sum();
+                let col_gaps = gaps(s.col_tracks.len(), column_gap);
+                let content = Vec2 {
+                    x: w + col_gaps + padding.main(Axis::Row),
+                    y: h + gaps(s.row_tracks.len(), row_gap) + padding.main(Axis::Column),
+                };
+                (content, min_w + col_gaps + padding.main(Axis::Row))
+            });
+            Measured::sized(size, content, min_w.min(content.x))
         }
     };
 
@@ -1801,6 +1844,8 @@ pub struct GridScratch {
     col_tracks: Vec<TrackSizing>,
     row_tracks: Vec<TrackSizing>,
     col_auto: Vec<f32>,
+    /// Each column's min-content width: the narrowest its cells lay out in.
+    col_min: Vec<f32>,
     row_auto: Vec<f32>,
     col_sizes: Vec<f32>,
     row_sizes: Vec<f32>,
@@ -1819,12 +1864,82 @@ impl GridScratch {
         self.col_tracks.clear();
         self.row_tracks.clear();
         self.col_auto.clear();
+        self.col_min.clear();
         self.row_auto.clear();
         self.col_sizes.clear();
         self.row_sizes.clear();
         self.col_offsets.clear();
         self.row_offsets.clear();
         self.row_baselines.clear();
+    }
+}
+
+/// Gathers what the cells `children` (placed in `s.regions`, over the
+/// templates `s.col_tracks` and `s.row_tracks`) need of each track into
+/// `s.col_auto`, `s.col_min` and `s.row_auto`: the widest max-content width,
+/// the widest min-content width and the tallest height of the cells on each
+/// track alone, then what a spanning cell still needs beyond the tracks it
+/// covers, spread across their content-sized ones (see
+/// `distribute_spanning_auto`). `extent` is the content box the percentages
+/// of the tracks read (zero while measuring). An axis with no template — a
+/// subgrid's inherited one — gathers nothing.
+fn content_contributions(
+    tree: &impl LayoutTree,
+    children: &[u32],
+    s: &mut GridScratch,
+    column_gap: f32,
+    row_gap: f32,
+    extent: [f32; 2],
+) {
+    s.col_auto.resize(s.col_tracks.len(), 0.0);
+    s.col_min.resize(s.col_tracks.len(), 0.0);
+    s.row_auto.resize(s.row_tracks.len(), 0.0);
+    for (&child, r) in children.iter().zip(&s.regions) {
+        let cm = tree.measured(child);
+        if r.col_span == 1 {
+            let c = r.col as usize;
+            if c < s.col_auto.len() {
+                s.col_auto[c] = s.col_auto[c].max(cm.w);
+                s.col_min[c] = s.col_min[c].max(cm.min_w);
+            }
+        }
+        if r.row_span == 1 {
+            let rr = r.row as usize;
+            if rr < s.row_auto.len() {
+                s.row_auto[rr] = s.row_auto[rr].max(cm.h);
+            }
+        }
+    }
+    let spans = |pick: fn(&crate::grid::CellRegion, Measured) -> (u16, u16, f32)| {
+        children
+            .iter()
+            .zip(&s.regions)
+            .map(move |(&child, r)| pick(r, tree.measured(child)))
+    };
+    if !s.col_tracks.is_empty() {
+        crate::grid::distribute_spanning_auto(
+            &s.col_tracks,
+            column_gap,
+            extent[0],
+            spans(|r, m| (r.col, r.col_span, m.w)),
+            &mut s.col_auto,
+        );
+        crate::grid::distribute_spanning_auto(
+            &s.col_tracks,
+            column_gap,
+            extent[0],
+            spans(|r, m| (r.col, r.col_span, m.min_w)),
+            &mut s.col_min,
+        );
+    }
+    if !s.row_tracks.is_empty() {
+        crate::grid::distribute_spanning_auto(
+            &s.row_tracks,
+            row_gap,
+            extent[1],
+            spans(|r, m| (r.row, r.row_span, m.h)),
+            &mut s.row_auto,
+        );
     }
 }
 
@@ -2006,57 +2121,15 @@ fn layout_grid(
         // (see `distribute_spanning_auto`), so a wide 2-column item is not left to
         // collapse the intrinsic tracks under it. Skipped on a subgrid axis, whose
         // sizes come from the parent, not from its own content.
-        s.col_auto.resize(s.col_tracks.len(), 0.0);
-        s.row_auto.resize(s.row_tracks.len(), 0.0);
-        for i in 0..child_count {
-            let child = scratch[start + i];
-            let r = s.regions[i];
-            let cm = tree.measured(child);
-            if r.col_span == 1 {
-                let c = r.col as usize;
-                if c < s.col_auto.len() {
-                    s.col_auto[c] = s.col_auto[c].max(cm.on(Axis::Row));
-                }
-            }
-            if r.row_span == 1 {
-                let rr = r.row as usize;
-                if rr < s.row_auto.len() {
-                    s.row_auto[rr] = s.row_auto[rr].max(cm.on(Axis::Column));
-                }
-            }
-        }
-        if inherited_cols.is_none() {
-            crate::grid::distribute_spanning_auto(
-                &s.col_tracks,
-                column_gap,
-                content_w,
-                (0..child_count).map(|i| {
-                    let r = s.regions[i];
-                    (
-                        r.col,
-                        r.col_span,
-                        tree.measured(scratch[start + i]).on(Axis::Row),
-                    )
-                }),
-                &mut s.col_auto,
-            );
-        }
-        if inherited_rows.is_none() {
-            crate::grid::distribute_spanning_auto(
-                &s.row_tracks,
-                row_gap,
-                content_h,
-                (0..child_count).map(|i| {
-                    let r = s.regions[i];
-                    (
-                        r.row,
-                        r.row_span,
-                        tree.measured(scratch[start + i]).on(Axis::Column),
-                    )
-                }),
-                &mut s.row_auto,
-            );
-        }
+        let children = &scratch[start..start + child_count];
+        content_contributions(
+            tree,
+            children,
+            s,
+            column_gap,
+            row_gap,
+            [content_w, content_h],
+        );
 
         // Solve each self-solved axis; a subgrid axis instead adopts the parent's
         // resolved track sizes over its cell span verbatim, so its cell boundaries
@@ -2068,6 +2141,7 @@ fn layout_grid(
                 column_gap,
                 content_w,
                 &s.col_auto,
+                Some(&s.col_min),
                 &mut s.col_sizes,
             ),
         }
@@ -2078,6 +2152,7 @@ fn layout_grid(
                 row_gap,
                 content_h,
                 &s.row_auto,
+                None,
                 &mut s.row_sizes,
             ),
         }
@@ -3986,6 +4061,88 @@ mod tests {
         // A row with room for them leaves them be.
         let (boxes, _) = texts(Axis::Row, &[(Length::Fit, 10.0, 30.0)]);
         assert_eq!(boxes[0].w, 30.0);
+    }
+
+    #[test]
+    fn auto_columns_too_wide_for_their_grid_shrink_toward_their_min_content() {
+        use crate::component::{BuildCx, FlexStyle, LeafStyle, NodeStore};
+        use crate::content::Content;
+        use crate::grid::GridStyle;
+        use crate::style::BoxStyle;
+        use viso_render::{Rgba, TextureId};
+
+        // Texts 30 to 80 and 20 to 60 wide in a 100-wide grid of two `auto`
+        // columns: each column starts at its min and the 50 left is shared.
+        let mut store = NodeStore::new();
+        let mut ids = Vec::new();
+        let mut grid = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Size::fixed(100.0, 100.0),
+                    ..Default::default()
+                },
+                |cx| {
+                    let style = GridStyle {
+                        columns: vec![TrackSizing::Auto, TrackSizing::Auto],
+                        size: Size {
+                            width: Length::Fill { weight: 1.0 },
+                            height: Length::Fit,
+                        },
+                        ..Default::default()
+                    };
+                    grid = Some(cx.grid(style, |cx| {
+                        for _ in 0..2 {
+                            let size = Size {
+                                width: Length::Fit,
+                                height: Length::Fit,
+                            };
+                            let style = BoxStyle::NONE;
+                            ids.push(cx.leaf(LeafStyle { size, style }).id());
+                        }
+                    }));
+                },
+            );
+            cx.root().unwrap()
+        };
+        for (&id, (min, max)) in ids.iter().zip([(30.0, 80.0), (20.0, 60.0)]) {
+            store.set_content_payload(
+                id,
+                Content::Text {
+                    glyphs: Vec::new(),
+                    atlas: TextureId::new(0),
+                    color_glyphs: Vec::new(),
+                    color_atlas: None,
+                    color: Rgba {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    },
+                    natural: Vec2 { x: max, y: 10.0 },
+                    baseline: 8.0,
+                    shaped_at_width: None,
+                    width_use: crate::WidthUse::Ignored,
+                    min_content: min,
+                    max_content: max,
+                },
+            );
+        }
+        store.layout(root, surface_local(100.0, 100.0), &mut Vec::new());
+        let boxes: Vec<(f32, f32)> = ids
+            .iter()
+            .map(|&id| (store.bounds(id).x, store.bounds(id).w))
+            .collect();
+        assert_eq!(boxes, [(0.0, 55.0), (55.0, 45.0)]);
+        // The grid's own content runs from its columns' minimums to their
+        // max-content widths.
+        let measured = store.measured(grid.unwrap().id().index());
+        assert_eq!(
+            (measured.w, measured.min_w, measured.h),
+            (140.0, 50.0, 10.0)
+        );
     }
 
     #[test]
