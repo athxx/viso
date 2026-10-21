@@ -18,20 +18,20 @@
 //! does not clip is hit where it is drawn, and a subtree whose reach misses the
 //! point is skipped: a targeted route, not a full-tree scan.
 //!
-//! Hit testing tests a node's on-screen rect (not `bounds`): the descent carries
-//! the displacement the scrolls and translates above apply — the pointer mapped
-//! through each transform root's inverse — so a scrolled child hit-tests where
-//! it visibly sits with nothing recomputed after the scroll. The descent also
-//! carries a `clip` rect — the intersection of every enclosing clipping
-//! node's box, a scroll viewport or a node asked to `clip` — so a point over
-//! content past such a box's edge misses, matching what paint clips away.
-//! Entering a clipping node narrows the clip to its box before descending, and
-//! a point past one of its rounded corners reaches none of its children.
+//! Hit testing tests where a node is on screen (not `bounds`): the descent
+//! carries the affine the scrolls, translates and turns above apply, and maps
+//! the pointer through it into each node's own layout space — so a scrolled,
+//! slid, scaled or rotated child hit-tests where it visibly sits with nothing
+//! recomputed after it moved. A clipping node — a scroll viewport, or one asked
+//! to `clip` — passes the point to its children only while its box holds it,
+//! so a point over content past such a box's edge misses, matching what paint
+//! clips away, and a point past one of its rounded corners reaches none of its
+//! children.
 
 use crate::component::NodeStore;
 use crate::layout::Vec2;
 use crate::node::NodeId;
-use viso_render::Rect;
+use viso_render::{Affine2, Rect};
 
 /// A stateless hit-test query over a [`NodeStore`].
 ///
@@ -53,21 +53,13 @@ impl HitTestTree {
         for overlay in store.top_layer().rev() {
             if overlay != root
                 && Self::holds(store, root, overlay)
-                && let Some(hit) = Self::hit_clipped(
-                    store,
-                    overlay,
-                    px,
-                    py,
-                    Rect::INFINITE,
-                    store.shift_above(overlay),
-                )
+                && let Some(hit) =
+                    Self::hit_under(store, overlay, px, py, store.transform_above(overlay))
             {
                 return Some(hit);
             }
         }
-        // The initial clip is unbounded: nothing above the root clips it.
-        let above = store.shift_above(root);
-        Self::hit_clipped(store, root, px, py, Rect::INFINITE, above)
+        Self::hit_under(store, root, px, py, store.transform_above(root))
     }
 
     /// Whether live `node` sits in `root`'s subtree.
@@ -83,65 +75,68 @@ impl HitTestTree {
         false
     }
 
-    /// Descend `root` for the topmost hit, with the point required to fall inside
-    /// `clip` (the running intersection of enclosing scroll viewports), the
-    /// scrolls and translates above `root` displacing it by `above`. An overlay
-    /// below `root` is the top layer's, tried before the scene, and is skipped.
-    fn hit_clipped(
+    /// Descend `root` for the topmost hit, the scrolls, translates and turns
+    /// above `root` mapping its parent's layout space to the screen by `above`.
+    /// The point has passed every clipping ancestor. An overlay below `root` is
+    /// the top layer's, tried before the scene, and is skipped.
+    fn hit_under(
         store: &NodeStore,
         root: NodeId,
         px: f32,
         py: f32,
-        clip: Rect,
-        above: Vec2,
+        above: Affine2,
     ) -> Option<NodeId> {
         let arena = store.arena();
         if !arena.is_live(root) || store.hidden(root) {
             return None;
         }
-        let own = above + store.self_shift(root);
-        let shift = store.snap_shift(own);
-        // Nothing of the subtree is seen outside its reach, so a point there —
-        // or outside an enclosing viewport — misses the whole subtree. Prune
-        // without recursing.
-        if !store
-            .reach(root)
-            .translate(shift)
-            .intersect(clip)
-            .contains(px, py)
-        {
+        let own = store.self_transform(root).then(&above);
+        // The point in `root`'s layout space: moved back by the snapped
+        // displacement while nothing turns, as paint snaps it.
+        let p = if own.is_translation() {
+            let t = store.snap_shift(own.translation());
+            Vec2 {
+                x: px - t.x,
+                y: py - t.y,
+            }
+        } else {
+            own.inverse().transform_point(Vec2 { x: px, y: py })
+        };
+        // Nothing of the subtree is seen outside its reach, so a point there
+        // misses the whole subtree. Prune without recursing.
+        if !store.reach(root).contains(p.x, p.y) {
             return None;
         }
-        let world = store.bounds(root).translate(shift);
-        let visible = world.intersect(clip);
+        let bounds = store.bounds(root);
+        let inside = bounds.contains(p.x, p.y);
 
-        // A clipping node — a scroll viewport, or one asked to `clip` —
-        // clips its children to its own box: narrow the clip handed to the
-        // descent so content past the edge (or scrolled past it) is
-        // unhittable, and past a rounded corner as paint rounds it.
+        // A clipping node — a scroll viewport, or one asked to `clip` — passes
+        // the point to its children only inside its own box, and inside it as
+        // paint rounds it.
         let clips = store.clips_children(root);
-        let child_clip = if clips { visible } else { clip };
+        let passes = !clips
+            || (inside
+                && crate::paint::clip_corners(store, root, bounds)
+                    .is_none_or(|corners| rounded_contains(bounds, corners.left_top, p.x, p.y)));
         let inner = if store.is_scroll(root) {
-            own + store.content_shift(root)
+            let s = store.content_shift(root);
+            Affine2::translate(s.x, s.y).then(&own)
         } else {
             own
         };
-        let past_corner = clips
-            && crate::paint::clip_corners(store, root, world)
-                .is_some_and(|corners| !rounded_contains(world, corners.left_top, px, py));
 
         // Test children topmost-first: the last-painted (last) child is tested
         // first, walking back toward the first-painted (bottom) one.
-        if !past_corner {
+        if passes {
             if store.is_layered(root) {
-                if let Some(hit) = Self::hit_layered(store, root, px, py, child_clip, inner) {
+                if let Some(hit) = Self::hit_layered(store, root, px, py, inner) {
                     return Some(hit);
                 }
             } else {
                 let mut child = arena.last_child(root);
                 while let Some(c) = child {
                     if !store.is_overlay(c)
-                        && let Some(hit) = Self::hit_clipped(store, c, px, py, child_clip, inner)
+                        && let Some(hit) = Self::hit_under(store, c, px, py, inner)
                     {
                         return Some(hit);
                     }
@@ -154,7 +149,7 @@ impl HitTestTree {
         // hittable and its own box holds the point. A pass-through container
         // with no hittable child under the point returns `None`, letting a
         // lower sibling be tried by the caller.
-        (store.hittable(root) && visible.contains(px, py)).then_some(root)
+        (store.hittable(root) && inside).then_some(root)
     }
 
     /// The children of the layered stack `root` tested topmost-first: by
@@ -166,8 +161,7 @@ impl HitTestTree {
         root: NodeId,
         px: f32,
         py: f32,
-        clip: Rect,
-        above: Vec2,
+        above: Affine2,
     ) -> Option<NodeId> {
         let arena = store.arena();
         let mut below = i64::MAX;
@@ -181,7 +175,7 @@ impl HitTestTree {
             while let Some(c) = child {
                 if i64::from(store.stack_layer(c)) == layer
                     && !store.is_overlay(c)
-                    && let Some(hit) = Self::hit_clipped(store, c, px, py, clip, above)
+                    && let Some(hit) = Self::hit_under(store, c, px, py, above)
                 {
                     return Some(hit);
                 }

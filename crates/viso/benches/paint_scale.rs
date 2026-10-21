@@ -331,7 +331,7 @@ fn frame(h: &mut Harness) -> u32 {
     h.store
         .relayout_dirty(h.root, h.surface, &mut h.scratch, &mut h.redo);
     virtual_list::absorb_measurements(&h.store, &mut h.lists);
-    if h.store.any_dirty_class(DirtyClass::TRANSFORM) {
+    if h.store.transforms_pending() {
         h.store.update_transforms();
     }
     let painted = h.store.repaint_dirty(h.root, &mut h.primitives);

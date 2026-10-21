@@ -800,13 +800,7 @@ fn pointer_dispatch(
         ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
         ev.__set_services(store.__services());
-        ev.__set_place(
-            store.arena(),
-            node,
-            store.world(node),
-            hop.phase,
-            hop.through,
-        );
+        ev.__set_place(store, node, hop.phase, hop.through);
         handler(&mut ev);
         (
             ev.__take_capture_request(),
@@ -885,13 +879,7 @@ fn hover_dispatch(
         ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
         ev.__set_services(store.__services());
-        ev.__set_place(
-            store.arena(),
-            node,
-            store.world(node),
-            DispatchPhase::Target,
-            None,
-        );
+        ev.__set_place(store, node, DispatchPhase::Target, None);
         handler(&mut ev);
         (
             ev.__take_capture_request(),
@@ -1323,13 +1311,7 @@ fn key_dispatch(
         let mut cx = EventCx::__new_key(states, bindings, ev);
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());
-        cx.__set_place(
-            store.arena(),
-            node,
-            store.world(node),
-            DispatchPhase::Target,
-            None,
-        );
+        cx.__set_place(store, node, DispatchPhase::Target, None);
         handler(&mut cx);
         (
             cx.__take_focus_request(),
@@ -1415,13 +1397,7 @@ fn key_handler_dispatch(
         };
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());
-        cx.__set_place(
-            store.arena(),
-            node,
-            store.world(node),
-            DispatchPhase::Target,
-            None,
-        );
+        cx.__set_place(store, node, DispatchPhase::Target, None);
         handler(&mut cx);
         (
             cx.__take_focus_request(),

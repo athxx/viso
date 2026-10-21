@@ -37,8 +37,8 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     if pointer.phase != phase {
         return None;
     }
-    let (x, y) = cx.rect().map_or((0.0, 0.0), |r| (r.x, r.y));
-    let position = point(pointer.x - x, pointer.y - y);
+    let at = cx.local(pointer.x, pointer.y);
+    let position = point(at.x, at.y);
     let kind = pointer_kind(cx.pointer_id());
     Some(match route {
         EventRoute::Click => record([position, modifiers(pointer.modifiers)]),
@@ -300,7 +300,7 @@ mod tests {
         }
         assert_eq!(EventRoute::of("drag_start"), None);
         assert_eq!(EventRoute::of("changed"), None);
-        assert_eq!(EventRoute::from_u8(12), None);
+        assert_eq!(EventRoute::from_u8(EventRoute::ALL.len() as u8), None);
     }
 
     #[test]

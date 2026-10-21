@@ -17,7 +17,8 @@ use crate::animation::TranslateAnim;
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
 use crate::input::{DispatchPhase, ImeEvent, KeyEvent, PointerEvent, PointerId};
-use crate::node::{NodeArena, NodeId};
+use crate::layout::Vec2;
+use crate::node::NodeId;
 use crate::state::{StateId, StateStore, StateValue};
 use crate::task::{self, TaskFuture, TaskId, TaskOps};
 use crate::text_edit::EditIntent;
@@ -409,7 +410,7 @@ pub struct EventCx<'a> {
 /// through.
 #[derive(Clone, Copy)]
 struct Place<'a> {
-    arena: &'a NodeArena,
+    store: &'a NodeStore,
     node: NodeId,
     rect: Rect,
     phase: DispatchPhase,
@@ -733,7 +734,8 @@ impl<'a> EventCx<'a> {
         let place = self.place?;
         let through = place.through?;
         place
-            .arena
+            .store
+            .arena()
             .children(place.node)
             .position(|c| c == through)
             .map(|i| i as u32)
@@ -744,25 +746,42 @@ impl<'a> EventCx<'a> {
         let Some(place) = self.place else {
             return 0;
         };
-        place.arena.children(place.node).count() as u32
+        place.store.arena().children(place.node).count() as u32
     }
 
-    /// Lend the dispatching node's place in the tree: its arena, id, world rect,
-    /// the leg of the walk and the child on the path to the target.
+    /// Where the screen point `(x, y)` falls in the dispatching node's box:
+    /// from its top-left corner, along its own axes before any scale or
+    /// rotation. The point itself on the state-only paths.
+    pub fn local(&self, x: f32, y: f32) -> Vec2 {
+        match self.place {
+            Some(place) => place.store.to_local(place.node, x, y),
+            None => Vec2 { x, y },
+        }
+    }
+
+    /// The dispatching node's laid-out size, along its own axes.
+    pub fn size(&self) -> Option<Vec2> {
+        self.place.map(|place| {
+            let b = place.store.bounds(place.node);
+            Vec2 { x: b.w, y: b.h }
+        })
+    }
+
+    /// Lend the dispatching node's place in the tree: its store, id, the leg
+    /// of the walk and the child on the path to the target.
     #[doc(hidden)]
     #[inline]
     pub fn __set_place(
         &mut self,
-        arena: &'a NodeArena,
+        store: &'a NodeStore,
         node: NodeId,
-        rect: Rect,
         phase: DispatchPhase,
         through: Option<NodeId>,
     ) {
         self.place = Some(Place {
-            arena,
+            store,
             node,
-            rect,
+            rect: store.world(node),
             phase,
             through,
         });

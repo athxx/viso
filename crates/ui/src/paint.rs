@@ -318,7 +318,7 @@ fn paint_subtree<S: PaintSpans>(
     let own = store.is_transform_root(root);
     if own {
         let raw = space.raw + store.self_shift(root);
-        let slot = table.push(root, space.slot, false, raw, store.snap_shift(raw));
+        let slot = table.push(store, root, space.slot, false, store.snap_shift(raw));
         space = space.moved(store, slot, raw);
         out.push(Primitive::Transform(TransformSlot(slot)));
     }
@@ -362,7 +362,7 @@ fn paint_subtree<S: PaintSpans>(
     }
     if scroll {
         let raw = space.raw + store.content_shift(root);
-        let slot = table.push(root, space.slot, true, raw, store.snap_shift(raw));
+        let slot = table.push(store, root, space.slot, true, store.snap_shift(raw));
         inner = space.moved(store, slot, raw);
         out.push(Primitive::Transform(TransformSlot(slot)));
     }

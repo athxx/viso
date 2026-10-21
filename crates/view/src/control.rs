@@ -165,8 +165,8 @@ fn slider(
         return None;
     }
     let node = cx.node()?;
-    let pointer = cx.pointer().map(|p| (p.phase, p.x));
-    if let Some((phase, _)) = pointer {
+    let pointer = cx.pointer().map(|p| (p.phase, p.x, p.y));
+    if let Some((phase, ..)) = pointer {
         let held = cx
             .pointer()
             .is_some_and(|p| p.buttons.contains(PointerButtons::PRIMARY));
@@ -194,10 +194,10 @@ fn slider(
             .filter(|&s| s > 0.0),
     };
     let current = float(read(host, control.value, scope, cx), range.min);
-    let next = if let Some((_, x)) = pointer {
-        let rect = cx.rect()?;
-        let t = if rect.w > 0.0 {
-            ((x - rect.x) / rect.w).clamp(0.0, 1.0)
+    let next = if let Some((_, x, y)) = pointer {
+        let (size, at) = (cx.size()?, cx.local(x, y));
+        let t = if size.x > 0.0 {
+            (at.x / size.x).clamp(0.0, 1.0)
         } else {
             0.0
         };

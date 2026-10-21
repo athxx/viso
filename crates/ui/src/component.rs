@@ -40,7 +40,7 @@ use crate::timer::TimerRequest;
 use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
 use viso_render::asset::{ResourceId, ResourceRevision};
-use viso_render::{Border, BrushProgram, PathCmd, Rect, Rgba, Stroke, TextureId};
+use viso_render::{Affine2, Border, BrushProgram, PathCmd, Rect, Rgba, Stroke, TextureId};
 use viso_runtime::{LoopWaker, TaskSet};
 
 /// The application entry into the tree: a component declares its children into
@@ -376,6 +376,13 @@ pub struct NodeStore {
     /// node never re-measures or re-lays it out. Set through
     /// [`set_translate`](Self::set_translate) / [`translate_by`](Self::translate_by).
     translate: Vec<Vec2>,
+    /// Hot: how each node scales and rotates about its transform origin after
+    /// layout, [`Turn::NONE`](crate::transform::Turn::NONE) on almost every
+    /// node. TRANSFORM-class like `translate`.
+    turn: Vec<crate::transform::Turn>,
+    /// A turned node's box moved in a layout: its pivot did, so the transform
+    /// roots need recomputing.
+    turn_moved: bool,
     /// Warm: a scroll viewport's content extent (the laid-out size of its content
     /// along each axis), written by the scroll layout arm. `(0,0)` for non-scroll
     /// nodes. Read by the scroll clamp (range = content − viewport, per axis).
@@ -807,12 +814,39 @@ impl NodeStore {
 
     /// A node's on-screen rect: its [`bounds`](Self::bounds) displaced by its
     /// own translate and its ancestors' translates and scrolls, the displacement
-    /// snapped to device pixels (see [`transform`](crate::transform)). Equals
-    /// `bounds` for a node nothing moves. Derived on demand by walking the
-    /// ancestors — paint and hit testing carry it down their walks instead.
+    /// snapped to device pixels (see [`transform`](crate::transform)); the box
+    /// around where it lands when it or an ancestor is turned. Equals `bounds`
+    /// for a node nothing moves. Derived on demand by walking the ancestors —
+    /// paint and hit testing carry it down their walks instead.
     pub fn world(&self, id: NodeId) -> Rect {
-        let shift = self.snap_shift(self.shift_above(id) + self.self_shift(id));
-        self.bounds[id.index() as usize].translate(shift)
+        let bounds = self.bounds[id.index() as usize];
+        let at = self.world_transform(id);
+        if at.is_translation() {
+            let t = at.translation();
+            bounds.translate(self.snap_shift(Vec2 { x: t.x, y: t.y }))
+        } else {
+            bounds.transform_bounds(&at)
+        }
+    }
+
+    /// Where a point of the screen falls in `id`'s box: from its top-left
+    /// corner, along its own axes as layout laid them, before any turn.
+    pub fn to_local(&self, id: NodeId, x: f32, y: f32) -> Vec2 {
+        let bounds = self.bounds[id.index() as usize];
+        let at = self.world_transform(id);
+        let p = if at.is_translation() {
+            let t = self.snap_shift(at.translation());
+            Vec2 {
+                x: x - t.x,
+                y: y - t.y,
+            }
+        } else {
+            at.inverse().transform_point(Vec2 { x, y })
+        };
+        Vec2 {
+            x: p.x - bounds.x,
+            y: p.y - bounds.y,
+        }
     }
 
     /// Where `id`'s subtree is seen and hit, before `id`'s own translate: its
@@ -854,11 +888,22 @@ impl NodeStore {
     }
 
     /// What slot `i` adds to its parent's reach: its reach where its translate
-    /// places it, a device pixel wider for the snapping of a moved subtree.
+    /// and turn place it, a device pixel wider for the snapping of a moved
+    /// subtree.
     fn reach_in_parent(&self, i: usize) -> Rect {
         let reach = self.reach[i];
         let translate = self.translate[i];
-        if translate == Vec2::ZERO || reach.is_empty() {
+        if reach.is_empty() {
+            return reach;
+        }
+        if self.turn[i].turns()
+            && let Some(id) = self.arena.live_id(i as u32)
+        {
+            return reach
+                .transform_bounds(&self.self_transform(id))
+                .inflate(1.0 / self.device_scale());
+        }
+        if translate == Vec2::ZERO {
             return reach;
         }
         reach
@@ -971,7 +1016,9 @@ impl NodeStore {
         let mut shift = Vec2::ZERO;
         let mut at = self.arena.parent_of(id.node_index());
         while let Some(i) = at.get_some() {
-            shift = shift + self.translate[i.slot()] - self.scroll[i.slot()];
+            // Grouped as `transform_above` composes, so the two agree to the bit
+            // while nothing is turned.
+            shift += self.translate[i.slot()] - self.scroll[i.slot()];
             at = self.arena.parent_of(at);
         }
         shift
@@ -982,6 +1029,121 @@ impl NodeStore {
     #[inline]
     pub fn self_shift(&self, id: NodeId) -> Vec2 {
         self.translate[id.index() as usize]
+    }
+
+    /// The affine a node applies to itself and its subtree, from its layout
+    /// space: its turn about its origin, then its translate.
+    pub fn self_transform(&self, id: NodeId) -> Affine2 {
+        let i = id.index() as usize;
+        let t = self.translate[i];
+        let turn = self.turn[i];
+        if !turn.turns() {
+            return Affine2::translate(t.x, t.y);
+        }
+        let b = self.bounds[i];
+        let (fx, fy) = turn.origin.fractions();
+        let fx = if self.direction_at(id.index()) == crate::adaptive::LayoutDirection::Rtl {
+            1.0 - fx
+        } else {
+            fx
+        };
+        let (ox, oy) = (b.x + fx * b.w, b.y + fy * b.h);
+        Affine2::translate(-ox, -oy)
+            .then(&Affine2::scale(turn.scale, turn.scale))
+            .then(&Affine2::from_rotation(turn.rotation))
+            .then(&Affine2::translate(ox + t.x, oy + t.y))
+    }
+
+    /// What a node applies to its children: its own transform, then, for a
+    /// scroll viewport, its scroll.
+    fn child_transform(&self, id: NodeId) -> Affine2 {
+        let own = self.self_transform(id);
+        if self.is_scroll(id) {
+            let s = self.content_shift(id);
+            Affine2::translate(s.x, s.y).then(&own)
+        } else {
+            own
+        }
+    }
+
+    /// The affine `id`'s ancestors apply to it, unsnapped: from its layout
+    /// space to the screen.
+    pub fn transform_above(&self, id: NodeId) -> Affine2 {
+        let mut above = Affine2::IDENTITY;
+        let mut at = self.arena.parent(id);
+        while let Some(parent) = at {
+            above = above.then(&self.child_transform(parent));
+            at = self.arena.parent(parent);
+        }
+        above
+    }
+
+    /// The affine from `id`'s layout space to the screen, its own transform
+    /// included, unsnapped.
+    pub fn world_transform(&self, id: NodeId) -> Affine2 {
+        self.self_transform(id).then(&self.transform_above(id))
+    }
+
+    /// A node's turn: its scale and rotation about its transform origin.
+    #[inline]
+    pub fn turn(&self, id: NodeId) -> crate::transform::Turn {
+        self.turn[id.index() as usize]
+    }
+
+    /// Turns a node: scales and rotates it and its subtree about its origin
+    /// after layout, marking it `TRANSFORM` — plus `PAINT` the first time,
+    /// when it becomes a transform root. Never MEASURE or LAYOUT. A
+    /// live-guarded write; an unchanged turn schedules nothing.
+    pub fn set_turn(&mut self, id: NodeId, turn: crate::transform::Turn) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let i = id.index() as usize;
+        if self.turn[i] == turn {
+            return;
+        }
+        let was = self.reach_in_parent(i);
+        self.turn[i] = turn;
+        self.lift_reach(id, was);
+        self.mark_moved(id);
+    }
+
+    /// Scales a node about its origin (see [`set_turn`](Self::set_turn)).
+    pub fn set_scale(&mut self, id: NodeId, scale: f32) {
+        if self.arena.is_live(id) {
+            let turn = self.turn[id.index() as usize];
+            self.set_turn(id, crate::transform::Turn { scale, ..turn });
+        }
+    }
+
+    /// Rotates a node clockwise by `radians` about its origin (see
+    /// [`set_turn`](Self::set_turn)).
+    pub fn set_rotation(&mut self, id: NodeId, radians: f32) {
+        if self.arena.is_live(id) {
+            let turn = self.turn[id.index() as usize];
+            self.set_turn(
+                id,
+                crate::transform::Turn {
+                    rotation: radians,
+                    ..turn
+                },
+            );
+        }
+    }
+
+    /// Where in its box a node scales and rotates about (see
+    /// [`set_turn`](Self::set_turn)).
+    pub fn set_transform_origin(&mut self, id: NodeId, origin: crate::layout::Alignment2D) {
+        if self.arena.is_live(id) {
+            let turn = self.turn[id.index() as usize];
+            self.set_turn(id, crate::transform::Turn { origin, ..turn });
+        }
+    }
+
+    /// Whether the transform roots need recomputing: a scroll, translate or
+    /// turn is pending, or a turned node's box moved.
+    pub fn transforms_pending(&self) -> bool {
+        self.turn_moved || self.any_dirty_class(DirtyClass::TRANSFORM)
     }
 
     /// The displacement a scroll viewport adds for its content: its negated
@@ -1015,7 +1177,7 @@ impl NodeStore {
     }
 
     /// Whether a node moves its own box without a relayout (it has been
-    /// translated). Scroll viewports move their content instead: see
+    /// translated or turned). Scroll viewports move their content instead: see
     /// [`is_scroll`](Self::is_scroll).
     #[inline]
     pub fn is_transform_root(&self, id: NodeId) -> bool {
@@ -1028,10 +1190,11 @@ impl NodeStore {
         &self.painting.get().transforms
     }
 
-    /// Recompute the transform roots' displacements after scrolls and
-    /// translates, and report whether any moved. One add per root: no node is
+    /// Recompute the transform roots' places after scrolls, translates and
+    /// turns, and report whether any moved. One compose per root: no node is
     /// visited.
     pub fn update_transforms(&mut self) -> bool {
+        self.turn_moved = false;
         let mut painting = self.painting.lend();
         let moved = painting.transforms.update(self);
         self.painting.give_back(painting);
@@ -3918,6 +4081,7 @@ impl NodeStore {
         self.transform_root[i] = false;
         self.scroll[i] = Vec2::ZERO;
         self.translate[i] = Vec2::ZERO;
+        self.turn[i] = crate::transform::Turn::NONE;
         self.content[i] = Vec2::ZERO;
         self.row_offset[i] = f32::NAN;
         self.grid_tracks[i] = None;
@@ -3965,6 +4129,7 @@ impl NodeStore {
             self.transform_root.push(false);
             self.scroll.push(Vec2::ZERO);
             self.translate.push(Vec2::ZERO);
+            self.turn.push(crate::transform::Turn::NONE);
             self.content.push(Vec2::ZERO);
             self.row_offset.push(f32::NAN);
             self.grid_tracks.push(None);
@@ -4674,6 +4839,7 @@ impl LayoutTree for NodeStore {
             return;
         }
         *slot = r;
+        self.turn_moved |= self.turn[index as usize].turns();
         self.note_moved(index);
     }
 

@@ -1542,12 +1542,12 @@ impl WindowState {
         self.laid.1 += laid_out;
     }
 
-    /// The `UpdateTransforms` phase: recompute the transform roots'
-    /// displacements when a scroll or translate is pending — one add per root,
-    /// no node visited. The TRANSFORM worklist is empty on a frame that moved
-    /// nothing, which skips it.
+    /// The `UpdateTransforms` phase: recompute the transform roots' places
+    /// when a scroll, translate or turn is pending, or a turned node's box
+    /// moved — one compose per root, no node visited. A frame that moved
+    /// nothing skips it.
     fn update_transforms(&mut self) {
-        if self.root.is_some() && self.store.any_dirty_class(DirtyClass::TRANSFORM) {
+        if self.root.is_some() && self.store.transforms_pending() {
             let _layout = profile::time(Span::Layout);
             self.store.update_transforms();
         }
