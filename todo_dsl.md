@@ -68,10 +68,11 @@ the three source entries share one frontend.
 - [x] Name interner, durable 128-bit `SymbolId`, three namespaces, deterministic module
       graph (`resolve/`).
 - [x] `E2001`–`E2003`.
-- [ ] `E2003` for a `const` initialization cycle (`const A: I64 = B + 1; const B: I64
-      = A + 1;` raises nothing), not only theme and style base cycles.
-- [ ] `E2002` for the same name imported twice (`import viso::math::{clamp};` written
-      twice raises nothing).
+- [x] `E2003` for a `const` initialization cycle (`const A: I64 = B + 1; const B: I64
+      = A + 1;`), directly or through the `fn`s its value calls, not only theme and
+      style base cycles.
+- [x] `E2002` for the same name imported twice (`import viso::math::{clamp};` written
+      twice, or a rename binding a name another import binds), related to the first.
 - [ ] One file's compile (`compile_file_for`: what `view!`, hot reload and `viso dump`
       compile) resolves imports of the package's other modules: `import model::{twice};`
       of a sibling module passes `viso check` but raises `E2001` there.
