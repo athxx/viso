@@ -2,7 +2,8 @@
 //! over an earlier one and the node's own properties over them all; a `when`
 //! switches a look, a transform, a text's color or a layout value while its
 //! selector holds — hover, pressed, focus, selection or the node's own `enabled` — on
-//! the hot-reloaded and the packaged view and inside a region. And the
+//! the hot-reloaded and the packaged view and inside a region; the drag and
+//! long-press gestures that win a press from its click. And the
 //! checks: a target the file names (`E2001`), bases of the file for the same
 //! target (`E2001`, `E2103`) on no cycle (`E2003`), styleable properties
 //! (`E3101`) bound once per block (`E3102`) to pure values (`E2502`) of their
@@ -15,6 +16,7 @@ use support::{Rt, origin};
 use viso_dsl::frontend::compile_file;
 use viso_ui::{
     NodeId, PointerButtons, PointerEvent, PointerPhase, PointerRouter, Rgba, Srgb, Vec2,
+    deliver_long_presses,
 };
 
 /// No diagnostic.
@@ -463,6 +465,48 @@ export component Probe {
     assert_eq!(look(&rt, 0).1, 0.5);
     rt.click_at(30.0, 10.0);
     assert_eq!(counts(&rt), [1, 1, 1, 1], "a press that stays put clicks");
+    assert_eq!(rt.fault(), None);
+}
+
+#[test]
+fn a_press_held_still_runs_its_long_press_and_clicks_nothing() {
+    let source = r#"
+export component Probe {
+    state held = 0;
+    state at = 0;
+    state clicks = 0;
+    view {
+        Column {
+            width: 400dp;
+            height: 100dp;
+            Text {
+                width: 40dp;
+                height: 20dp;
+                on long_press(event) { held += 1; if event.position.x > 5dp { at = 1; } }
+                on click { clicks += 1; }
+            }
+        }
+    }
+}
+"#;
+    let mut rt = Rt::mount(source);
+    sample(&mut rt, 8.0, 5.0, PointerPhase::Down);
+    let mut timers = Vec::new();
+    rt.store.take_timer_requests(&mut timers);
+    assert_eq!(timers.len(), 1, "the press asked for its delay");
+    for timer in timers {
+        (timer.on_fire)(&mut rt.store);
+    }
+    deliver_long_presses(&mut rt.store, &mut rt.states, &rt.bindings);
+    rt.frame();
+    assert_eq!(
+        rt.ints(["held", "at", "clicks"]),
+        [Some(1), Some(1), Some(0)]
+    );
+    sample(&mut rt, 8.0, 5.0, PointerPhase::Up);
+    assert_eq!(rt.int("clicks"), Some(0), "the lift after a long press");
+    rt.click_at(8.0, 5.0);
+    assert_eq!(rt.int("clicks"), Some(1));
     assert_eq!(rt.fault(), None);
 }
 

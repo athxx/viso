@@ -1199,7 +1199,10 @@ timers (§104–§111).
         node taking drags wins a press past the slop (over a pan from a
         viewport above it), captures the pointer and swallows the click; the
         web export alike.
-  - [ ] `expanded` once an expandable widget exists; `long_press`.
+  - [x] `long_press`: a press held still for the delay on the nearest node
+        taking it, over the click, an armed drag and a later pan; the web
+        export alike.
+  - [ ] `expanded` once an expandable widget exists.
   - [x] Theme: the standard `Theme` schema (U12.2); `theme X { }` builds a typed
         immutable value from its items, its base and the record defaults
         (`E2001`/`E2103`, base cycles `E2003`, one name per package `E2002`);

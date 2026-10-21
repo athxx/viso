@@ -31,6 +31,11 @@ pub fn payload(route: EventRoute, cx: &EventCx<'_>) -> Option<Value> {
     if route.is_drag() {
         return drag_event(route, cx);
     }
+    if route == EventRoute::LongPress {
+        let held = cx.long_press()?;
+        let at = cx.local(held.at.x, held.at.y);
+        return Some(record([point(at.x, at.y), pointer_kind(cx.pointer_id())]));
+    }
     let pointer = cx.pointer()?;
     let phase = match route {
         EventRoute::Click | EventRoute::Tap | EventRoute::PointerUp => PointerPhase::Up,
@@ -367,7 +372,7 @@ mod tests {
             assert_eq!(EventRoute::of(route.event()), named);
             assert_eq!(EventRoute::from_u8(route as u8), Some(route));
         }
-        assert_eq!(EventRoute::of("long_press"), None);
+        assert_eq!(EventRoute::of("double_click"), None);
         assert_eq!(EventRoute::of("changed"), None);
         assert_eq!(EventRoute::from_u8(EventRoute::ALL.len() as u8), None);
     }

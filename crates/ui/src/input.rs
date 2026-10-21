@@ -374,6 +374,18 @@ pub fn route_contact(
     chain: &mut Vec<NodeId>,
 ) -> bool {
     let pointer = contact.id;
+    let slop = if contact.direct {
+        TOUCH_SLOP
+    } else {
+        MOUSE_SLOP
+    };
+    // A press that travels past the slop or lifts is no long press.
+    match ev.phase {
+        PointerPhase::Move => store.follow_hold(pointer, [ev.x, ev.y], slop),
+        PointerPhase::Up => store.release_hold(pointer),
+        PointerPhase::Leave if contact.direct => store.release_hold(pointer),
+        _ => {}
+    }
     if contact.direct {
         match ev.phase {
             PointerPhase::Down => store.contacts_mut().begin(pointer, [ev.x, ev.y]),
@@ -405,11 +417,6 @@ pub fn route_contact(
     let at = [ev.x, ev.y];
     match ev.phase {
         PointerPhase::Move => {
-            let slop = if contact.direct {
-                TOUCH_SLOP
-            } else {
-                MOUSE_SLOP
-            };
             // The node the drag took the contact from loses it, as to a pan.
             if let Some(lost) = store.step_drag(pointer, at, slop) {
                 hover_dispatch(
@@ -507,6 +514,7 @@ fn route_sample(
         PointerPhase::Down if ev.buttons.contains(PointerButtons::PRIMARY) && !inert => {
             store.press(target, pointer);
             store.arm_drag(pointer, target, [ev.x, ev.y], contact.direct);
+            store.arm_hold(pointer, target, [ev.x, ev.y], contact.direct);
         }
         PointerPhase::Move | PointerPhase::Up => store.follow_press(pointer, ev.x, ev.y),
         _ => {}
@@ -516,7 +524,23 @@ fn route_sample(
         return false;
     }
     dispatch_chain(store, root, target, chain, |s, n, hop| {
-        pointer_dispatch(s, states, bindings, n, hop, pointer, ev)
+        pointer_dispatch(s, states, bindings, n, hop, pointer, Some(ev))
+    })
+}
+
+/// Dispatches a gesture of pointer `pointer` that rides on no pointer sample
+/// along `target`'s chain; a handler reads it from the store. Returns whether
+/// any handler ran.
+pub(crate) fn pointer_dispatch_chain(
+    store: &mut NodeStore,
+    states: &mut StateStore,
+    bindings: &BindingTable,
+    target: NodeId,
+    pointer: PointerId,
+    chain: &mut Vec<NodeId>,
+) -> bool {
+    dispatch_chain(store, target, target, chain, |s, n, hop| {
+        pointer_dispatch(s, states, bindings, n, hop, pointer, None)
     })
 }
 
@@ -829,13 +853,16 @@ fn pointer_dispatch(
     node: NodeId,
     hop: Hop,
     pointer: PointerId,
-    event: &PointerEvent,
+    event: Option<&PointerEvent>,
 ) -> Dispatched {
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
     let (capture, focus, scope, hidden, anims, timers, opens, closes, edits, stop, tasks) = {
-        let mut ev = EventCx::__new_pointer(states, bindings, event);
+        let mut ev = match event {
+            Some(event) => EventCx::__new_pointer(states, bindings, event),
+            None => EventCx::__new(states, bindings),
+        };
         ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
         ev.__set_services(store.__services());
@@ -869,7 +896,7 @@ fn pointer_dispatch(
     // drag its descendant was tracking): the previous captor loses the contact,
     // and the claimed sample goes no further down the chain toward it.
     let stop = stop || loser.is_some();
-    if let Some(lost) = loser {
+    if let (Some(lost), Some(event)) = (loser, event) {
         hover_dispatch(
             store,
             states,
@@ -3508,6 +3535,46 @@ mod contact_tests {
                 (0, PointerPhase::Up)
             ]
         );
+    }
+
+    impl Scene {
+        /// Fires every timer the store asked for, then the long presses due.
+        fn wait(&mut self) -> bool {
+            let mut timers = Vec::new();
+            self.store.take_timer_requests(&mut timers);
+            for timer in timers {
+                (timer.on_fire)(&mut self.store);
+            }
+            crate::long_press::deliver_long_presses(
+                &mut self.store,
+                &mut self.states,
+                &self.bindings,
+            )
+        }
+    }
+
+    #[test]
+    fn a_press_held_still_is_a_long_press_that_keeps_the_contact() {
+        let mut s = scene(false);
+        s.store.set_long_pressable(s.a, true);
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 12.0, 30.0, PointerPhase::Move);
+        assert!(s.wait(), "a's handler saw it");
+        assert!(
+            !s.store.in_state(s.a, Interaction::Pressed),
+            "the long press took the press"
+        );
+        s.touch(1, 10.0, 5.0, PointerPhase::Move);
+        assert_eq!(s.store.scroll(s.root).y, 0.0, "no pan takes it after");
+        s.touch(1, 10.0, 5.0, PointerPhase::Up);
+
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 10.0, 20.0, PointerPhase::Move);
+        assert!(!s.wait(), "a press that travelled is no long press");
+        s.touch(1, 10.0, 20.0, PointerPhase::Up);
+        s.touch(1, 10.0, 30.0, PointerPhase::Down);
+        s.touch(1, 10.0, 30.0, PointerPhase::Up);
+        assert!(!s.wait(), "nor one that lifted");
     }
 
     #[test]

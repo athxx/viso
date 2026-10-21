@@ -2139,7 +2139,7 @@ Canvas {
 - 一次输入样本对每个节点只运行一次 Handler：未写 `capture` 的 Handler 在 Target 与 Bubble 段运行，祖先节点上的 Handler 不因 Capture 段再运行一次；写 `capture` 的 Handler 在 Capture 段（自根向 Target，先于 Target 上的 Handler）与 Target 段运行，不在 Bubble 段运行；控件的内建响应仍只在其自身节点投递；
 - 内置控件（`Toggle`/`CheckBox`、`Slider`、`Tabs`/`RadioGroup`、`TextInput`）的内建响应随同一张 Handler 表挂载：控件从 Handler 表中的纯表达式条目读取当前值与范围（`checked`、`value`、`min`、`max`、`step`、`selected`），据样本算出新值后投递 Schema 声明的 `changed`、`selected_changed` 或 `submitted`；
 - 节点显示的反应式属性值同样是 Handler 表中的纯表达式条目：`Text`/`Button` 的 `text`、`TextInput` 的 `value`、控件的 `checked`、`value`、`selected`、`min`、`max`，以及任一原生节点外观的 `background`（填充色，`None` 为无填充）与 `opacity`（节点及其子树作为一层合成，按节点自身盒合成，`0` 不绘制；只标记 `PAINT`），`translate`（`Offset` 的 `px`/`sp`/`em` 项随环境重新折叠，只标记 `TRANSFORM`），及 `transition.background`、`transition.opacity`、`transition.translate`、`transition.corner_radius`、`transition.width`/`height`（只在两端都是 `fixed` 时插值）与文本的 `transition.color`（只在所移动的值变化时求值，不是依赖，见 §U6.1）。节点挂载时求值一次；之后只有其条目（沿调用传递）所读 State 在该帧变化时才重新求值，与节点当前显示值相等的结果不投递；`Text`/`Button` 的值成为节点文本，`TextInput` 的值播种其编辑缓冲（缓冲已持有相同文本时不重置光标，播种不算编辑、不投递 `changed`）；控件的值与范围成为节点的语义状态：`Toggle`/`CheckBox` 的 `checked`，`Slider` 的 `value` 与 `min`..`max` 范围，`Tabs`/`RadioGroup` 第 `selected` 个子节点为选中、其余未选中；未声明 `value` 的 `TextInput` 不被播种，重新挂载不覆盖用户已输入的文本；`for` 与条件区域内的节点在其片段挂载时求值，之后按同一规则随其所读 State 与所绑定条目重新求值；`component!`、`view!`、Hot Reload 提交与 Release Package 以同一规则投递，保持树结构的 Hot Reload 替换视图原有的求值挂钩而不累加；条目求值 Fault 保留节点原值并记录在宿主上；
-- Runtime 尚未投递的标准事件（如 `long_press`、`scroll`、`focus`）或 Behavior 无法 Lower 的 Handler 体报 `E3711`；Hot Reload 中出现 `E3711` 时保留 Last-good Handler；
+- Runtime 尚未投递的标准事件（如 `scroll`、`focus`）或 Behavior 无法 Lower 的 Handler 体报 `E3711`；Hot Reload 中出现 `E3711` 时保留 Last-good Handler；
 - Handler 运行期 Fault 只中止该次调用、不回写任何 State，Fault 记录在宿主上。
 
 `=>` 仅保留给 `match` Arm，因此 Parser 和 Formatter 不会把事件写法分叉成两套。
@@ -4835,7 +4835,7 @@ Payload 基线字段：
 - `hover_*` 不是语义事件：触摸设备上不触发，指针 Capture 期间被抑制；任何功能不得只依赖 hover（U8.2）；
 - Handler 在 Action Transaction 中运行，可以 `start` Task；Task 随节点子树 Dispose 取消（ADR 0032）。
 
-当前实现：`drag_*` 由运行时投递，`long_press` 尚未投递（`E3711`）。主按钮按下时，按下节点及其祖先中最近的声明了 `drag_*` 的节点武装一次拖动；指针离按下点超过阈值（鼠标 4dp，触摸 8dp）时拖动开始：该节点获得指针 Capture，按下被取消（抬起不产生 `click`/`tap`），先收到 `drag_start`，此后每次移动收到 `drag_move`，抬起或取消时收到 `drag_end`，期间处于 `dragging`。触摸落点与拖动节点之间有滚动视口时，视口先仲裁：可平移则平移胜出、拖动作废，无可平移余量时拖动胜出；拖动节点在视口内（或就是视口）时拖动胜出。`position` 为分派节点的局部坐标，`delta` 是相对上一个拖动样本的位移（`drag_start` 为相对按下点），`total` 是相对按下点的位移，均沿窗口坐标轴。Web 导出以 Pointer Events 实现，开始时 `setPointerCapture`，节点带 `data-viso-dragging`，拖动结束后的那次点击被吞掉。
+当前实现：`drag_*` 与 `long_press` 由运行时投递。主按钮按下时，按下节点及其祖先中最近的声明了 `drag_*` 的节点武装一次拖动；指针离按下点超过阈值（鼠标 4dp，触摸 8dp）时拖动开始：该节点获得指针 Capture，按下被取消（抬起不产生 `click`/`tap`），先收到 `drag_start`，此后每次移动收到 `drag_move`，抬起或取消时收到 `drag_end`，期间处于 `dragging`。触摸落点与拖动节点之间有滚动视口时，视口先仲裁：可平移则平移胜出、拖动作废，无可平移余量时拖动胜出；拖动节点在视口内（或就是视口）时拖动胜出。`position` 为分派节点的局部坐标，`delta` 是相对上一个拖动样本的位移（`drag_start` 为相对按下点），`total` 是相对按下点的位移，均沿窗口坐标轴。主按钮按下还为最近的声明了 `long_press` 的节点武装一次长按：按下保持 500ms、期间未移出阈值也未抬起时，该节点收到 `long_press`（`position` 为按下点），按下被取消（抬起不产生点击），已武装的拖动作废，触摸指针 Capture 到该节点（此后不再平移）。Web 导出以 Pointer Events 实现两者：拖动开始时 `setPointerCapture`，节点带 `data-viso-dragging`；拖动或长按之后的那次指针点击被吞掉。
 
 ### U7.2 `focusable` 与焦点顺序
 

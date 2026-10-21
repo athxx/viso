@@ -37,6 +37,9 @@ pub fn attach(
     if drags(routes) {
         cx.draggable(node, true);
     }
+    if holds(routes) {
+        cx.long_pressable(node, true);
+    }
     if let Some((kinds, watcher)) = notices(host, routes, scope) {
         cx.watch(node, kinds, watcher);
     }
@@ -73,11 +76,19 @@ pub fn attach_node(
         store.set_focusable(id, true);
     }
     store.set_draggable(id, drags(routes));
+    store.set_long_pressable(id, holds(routes));
 }
 
 /// Whether `routes` take drags.
 fn drags(routes: &[Route]) -> bool {
     routes.iter().any(|route| route.event.is_drag())
+}
+
+/// Whether `routes` take long presses.
+fn holds(routes: &[Route]) -> bool {
+    routes
+        .iter()
+        .any(|route| route.event == EventRoute::LongPress)
 }
 
 /// The routes a key handler runs and the routes a pointer handler runs, `None`

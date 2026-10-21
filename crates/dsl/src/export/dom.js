@@ -281,12 +281,16 @@ const pointer = (route, e, el) => {
 };
 const mixed = (v) => rec([v, 0, 0, 0, 0]);
 
-// The lift that ends a drag clicks nothing; a key's click is no lift.
-let dragged = false;
-addEventListener("pointerdown", () => { dragged = false; }, true);
+// How far a press travels before it is no tap or long press.
+const slop = (e) => (e.pointerType === "mouse" ? 4 : 8);
+
+// The lift that ends a drag or a long press clicks nothing; a key's click
+// is no lift.
+let claimed = false;
+addEventListener("pointerdown", () => { claimed = false; }, true);
 addEventListener("click", (e) => {
-  if (!dragged || e.detail === 0) return;
-  dragged = false;
+  if (!claimed || e.detail === 0) return;
+  claimed = false;
   e.stopPropagation();
   e.preventDefault();
 }, true);
@@ -319,8 +323,7 @@ const draggable = (el) => {
   el.addEventListener("pointermove", (e) => {
     if (!press || e.pointerId !== press.id) return;
     if (press.on) return send(1, e);
-    const slop = e.pointerType === "mouse" ? 4 : 8;
-    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < slop) return;
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < slop(e)) return;
     press.on = true;
     el.setPointerCapture(e.pointerId);
     el.dataset.visoDragging = "";
@@ -331,12 +334,40 @@ const draggable = (el) => {
     if (press.on) {
       send(2, e);
       delete el.dataset.visoDragging;
-      dragged = true;
+      claimed = true;
     }
     press = null;
   };
   el.addEventListener("pointerup", end);
   el.addEventListener("pointercancel", end);
+};
+
+// Calls `fire` with the payload of a primary press at or under `el` that no
+// nearer element took, once it held still for the long-press delay.
+const holdable = (el, fire) => {
+  let hold = null;
+  const drop = () => {
+    if (hold) clearTimeout(hold.t);
+    hold = null;
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.$hold || off(e.target)) return;
+    e.$hold = el;
+    drop();
+    hold = {
+      id: e.pointerId, x: e.clientX, y: e.clientY,
+      t: setTimeout(() => {
+        hold = null;
+        claimed = true;
+        fire(rec([point(e, el), kind(e)]));
+      }, 500),
+    };
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (hold && e.pointerId === hold.id && Math.hypot(e.clientX - hold.x, e.clientY - hold.y) >= slop(e)) drop();
+  });
+  el.addEventListener("pointerup", drop);
+  el.addEventListener("pointercancel", drop);
 };
 
 const DOM = ["click", "click", "pointerdown", "pointermove", "pointerup", "pointerenter", "pointerleave", "keydown", "keyup"];
@@ -394,6 +425,8 @@ const listen = (el, route, capture, control, fire) => {
     new MutationObserver(report).observe(el, { childList: true });
   } else if (route === 14) {
     el.addEventListener("viso-animationend", (e) => fire(rec([e.detail.target, bool(e.detail.finished)])), capture);
+  } else if (route === 18) {
+    holdable(el, fire);
   } else if (route >= 15) {
     draggable(el);
     el.addEventListener("viso-drag", live((e) => {

@@ -2610,6 +2610,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     }
                     if !ws.timers.is_empty() {
                         ws.timers.fire_due(&mut ws.store, cx.frame_now());
+                        // A press held still that long is a long press now.
+                        if ws.store.long_press_due() {
+                            viso_ui::deliver_long_presses(
+                                &mut ws.store,
+                                &mut ws.states,
+                                &ws.bindings,
+                            );
+                        }
                     }
                     // Poll the tasks spawned or woken since the last frame and
                     // run each finished one's continuation; what it writes joins

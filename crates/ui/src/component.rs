@@ -658,6 +658,8 @@ pub struct NodeStore {
     notices: crate::notice::Notices,
     /// The nodes that take drags and the drags under way.
     pub(crate) drags: crate::drag::Drags,
+    /// The nodes that take long presses and the holds under way.
+    pub(crate) holds: crate::long_press::Holds,
     /// Cold: the nodes whose lengths read the environment (`px`, `sp`, `em`),
     /// re-folded into `layout` when it changes. Empty in a tree of plain `dp`
     /// and `%` lengths.
@@ -775,6 +777,7 @@ impl NodeStore {
         self.hovered = None;
         self.interaction_states.clear();
         self.drags.clear();
+        self.holds.clear();
         self.focus_scope = None;
         self.draggable_regions.clear();
         self.tasks.clear();
@@ -5916,6 +5919,13 @@ impl<'a> BuildCx<'a> {
         handler: impl FnMut(&mut EventCx<'_>) + 'static,
     ) -> Handle {
         self.store.set_key_handler(handle.id, Box::new(handler));
+        handle
+    }
+
+    /// Make an already-declared node take long presses (default: it takes
+    /// none).
+    pub fn long_pressable(&mut self, handle: Handle, takes: bool) -> Handle {
+        self.store.set_long_pressable(handle.id, takes);
         handle
     }
 

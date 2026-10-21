@@ -335,13 +335,14 @@ export component Dragged {
             styles: [Grab];
             translate: shift;
             on drag_move(event) { shift = event.total; }
+            on long_press(event) { shift = Offset { x: 0dp, y: 0dp }; }
         }
     }
 }
 "#;
 
 #[test]
-fn a_drag_exports_as_a_captured_pointer_and_its_winner_as_dragging() {
+fn a_drag_and_a_long_press_export_as_pointer_gestures_and_the_winner_as_dragging() {
     let page = export(DRAGGED, false).unwrap();
     assert!(
         page.styles.contains("[data-viso-dragging]"),
@@ -351,6 +352,7 @@ fn a_drag_exports_as_a_captured_pointer_and_its_winner_as_dragging() {
     let script = page.script.as_deref().unwrap();
     assert!(script.contains(", 16, false, "), "{script}");
     assert!(script.contains("setPointerCapture"), "{script}");
+    assert!(script.contains(", 18, false, "), "{script}");
 }
 
 const CLIPPED: &str = r#"

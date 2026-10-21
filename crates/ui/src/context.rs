@@ -772,6 +772,11 @@ impl<'a> EventCx<'a> {
         self.place?.store.drag_sample(self.pointer_id)
     }
 
+    /// The long press under dispatch, `None` for any other dispatch.
+    pub fn long_press(&self) -> Option<crate::long_press::LongPressSample> {
+        self.place?.store.long_press_sample(self.pointer_id)
+    }
+
     /// The dispatching node's laid-out size, along its own axes.
     pub fn size(&self) -> Option<Vec2> {
         self.place.map(|place| {

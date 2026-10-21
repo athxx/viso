@@ -47,11 +47,14 @@ pub enum EventRoute {
     DragMove = 16,
     /// `drag_end` (`DragEvent`): the drag's pointer lifted or was cancelled.
     DragEnd = 17,
+    /// `long_press` (`LongPressEvent`): a press on the node or under it held
+    /// still past the long-press delay and the node won it.
+    LongPress = 18,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 18] = [
+    pub const ALL: [EventRoute; 19] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -70,6 +73,7 @@ impl EventRoute {
         EventRoute::DragStart,
         EventRoute::DragMove,
         EventRoute::DragEnd,
+        EventRoute::LongPress,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -102,6 +106,7 @@ impl EventRoute {
             EventRoute::DragStart => "drag_start",
             EventRoute::DragMove => "drag_move",
             EventRoute::DragEnd => "drag_end",
+            EventRoute::LongPress => "long_press",
         }
     }
 
@@ -126,6 +131,7 @@ impl EventRoute {
             EventRoute::DragStart => "DragStart",
             EventRoute::DragMove => "DragMove",
             EventRoute::DragEnd => "DragEnd",
+            EventRoute::LongPress => "LongPress",
         }
     }
 
@@ -172,6 +178,7 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
     ("PointerButtons", &["primary", "secondary", "middle"]),
     ("ClickEvent", &["position", "modifiers"]),
     ("TapEvent", &["position", "pointer_kind"]),
+    ("LongPressEvent", &["position", "pointer_kind"]),
     ("HoverEvent", &["position", "pointer_kind"]),
     (
         "PointerEvent",

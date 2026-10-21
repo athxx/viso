@@ -30,6 +30,7 @@ pub mod interaction;
 pub mod layout;
 pub mod layout_value;
 pub mod length;
+pub mod long_press;
 pub mod node;
 pub mod notice;
 pub mod paint;
@@ -97,6 +98,7 @@ pub use length::{
     EdgeTerms, InsetTerms, LengthDeps, LengthEnv, LengthIssue, LengthStats, LengthTerms,
     LengthWarning, NodeLengths,
 };
+pub use long_press::{LONG_PRESS, LongPressSample, deliver_long_presses};
 pub use node::{ArenaFull, ChildIds, Children, NodeArena, NodeId, NodeIndex, NodeLinks, TreeLinks};
 pub use notice::{Notice, NoticeHandler, NoticeKinds, deliver_notices};
 pub use paint::{paint_tree, paint_with_transforms};
