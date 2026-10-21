@@ -4968,7 +4968,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 - **命令式滚动**：`n.scroll_to_key(key)` 与 `n.scroll_to_index(i)` 可滚动到尚未挂载的行；未知 `key` 是 No-op；
 - **语义**：列表 Role 为 `list`，每行为 `list_item`，语义树报告集合总数与行位置。
 
-当前实现：`VirtualList` 的 Item Template 在宏、热重载与 Release Package（含 AOT）中挂载：列表节点是其 `axis` 上的 Scroll 视口，`for` 的 Items 与 Key 按普通 `for` 的规则求值（Key 经稳定哈希成为行身份），视口只挂载窗口与 Overscan 内的行；Items 变化时存活行按 Key 保留宿主、局部状态与焦点并以新 Item 重新投递，离开的行回收复用；`estimated_extent` 与 `overscan` 取常量（`em` 在挂载时按列表节点的字号折算）。HTML/Solid 导出挂载全部行，行带 `content-visibility: auto` 与按 `estimated_extent` 的固有尺寸，浏览器跳过屏幕外行的布局与绘制。`on visible_range_changed` 在布局之后投递：首次布局即报告，之后窗口变化才报告，`last` 为视口内最后一行（含）；导出页面由滚动与尺寸变化计算同一范围。列表 Role 为 `list`，每个行宿主为 `list_item` 并带 1 起的位置与集合总数（AccessKit `position_in_set`/`size_of_set`，Web `aria-posinset`/`aria-setsize`），导出页面中无自身 Role 的行根元素为 `listitem`。另一 `VirtualList` 行内的 `VirtualList` 报 `E3711`。
+当前实现：`VirtualList` 的 Item Template 在宏、热重载与 Release Package（含 AOT）中挂载：列表节点是其 `axis` 上的 Scroll 视口，`for` 的 Items 与 Key 按普通 `for` 的规则求值（Key 经稳定哈希成为行身份），视口只挂载窗口与 Overscan 内的行；Items 变化时存活行按 Key 保留宿主、局部状态与焦点并以新 Item 重新投递，离开的行回收复用；`estimated_extent` 与 `overscan` 取常量（`em` 在挂载时按列表节点的字号折算）。HTML/Solid 导出挂载全部行，行带 `content-visibility: auto` 与按 `estimated_extent` 的固有尺寸，浏览器跳过屏幕外行的布局与绘制。`on visible_range_changed` 在布局之后投递：首次布局即报告，之后窗口变化才报告，`last` 为视口内最后一行（含）；导出页面由滚动与尺寸变化计算同一范围。列表 Role 为 `list`，每个行宿主为 `list_item` 并带 1 起的位置与集合总数（AccessKit `position_in_set`/`size_of_set`，Web `aria-posinset`/`aria-setsize`），导出页面中无自身 Role 的行根元素为 `listitem`。行内可以再有 `VirtualList`：它随所在行在同一帧挂载，所在行被回收时一并释放。
 
 ---
 

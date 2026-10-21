@@ -334,3 +334,72 @@ fn a_list_reports_the_rows_it_shows_and_a_scroll_its_offset() {
     page.frame();
     assert_eq!(page.texts.get(&top).map(String::as_str), Some("400dp"));
 }
+
+#[test]
+fn a_row_can_hold_a_list_of_its_own() {
+    let mut page = Page::load(
+        "component Shelves {
+            view {
+                Column {
+                    width: 200dp;
+                    height: 300dp;
+                    node shelves: VirtualList {
+                        width: 200dp;
+                        height: 100dp;
+                        estimated_extent: 40dp;
+                        for s in 0..100 key s {
+                            VirtualList {
+                                width: 200dp;
+                                height: 40dp;
+                                axis: Axis::row;
+                                estimated_extent: 50dp;
+                                for b in 0..1000 key b {
+                                    Text { width: 50dp; height: 40dp; text: format(\"{}/{}\", s, b); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }",
+    );
+    let shelves = page.child(page.root, 0);
+    let shelf = |page: &Page, at: usize| {
+        let canvas = page.child(shelves, 0);
+        let mut hosts: Vec<NodeId> = page.store.arena().children(canvas).collect();
+        hosts.sort_by(|a, b| page.store.world(*a).y.total_cmp(&page.store.world(*b).y));
+        page.child(hosts[at], 0)
+    };
+    let books = |page: &Page, list: NodeId| {
+        let canvas = page.child(list, 0);
+        let mut rows: Vec<(f32, String)> = page
+            .store
+            .arena()
+            .children(canvas)
+            .filter_map(|host| {
+                let text = page.store.arena().children(host).next()?;
+                Some((page.store.world(host).x, page.texts.get(&text)?.clone()))
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        rows.into_iter().map(|(_, text)| text).collect::<Vec<_>>()
+    };
+    let first = shelf(&page, 0);
+    assert_eq!(page.lists.get(first).expect("a list").item_count(), 1000);
+    let shown = books(&page, first);
+    assert_eq!(shown[..2], ["0/0", "0/1"], "the row's list mounts with it");
+    assert!(shown.len() <= 12, "{shown:?}");
+
+    page.store.scroll_by(shelves, Vec2 { x: 0.0, y: 2000.0 });
+    page.frame();
+    page.frame();
+    let at = shelf(&page, 0);
+    let top = books(&page, at);
+    assert!(
+        top.first()
+            .is_some_and(|t| t.starts_with("4") && t.ends_with("/0")),
+        "a recycled row shows its new shelf: {top:?}"
+    );
+    let lists = page.lists.len();
+    assert!(lists <= 16, "the lists of rows gone are dropped: {lists}");
+}

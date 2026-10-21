@@ -5064,6 +5064,14 @@ impl<'a> BuildCx<'a> {
         }
     }
 
+    /// Lends the cx the virtual-list registry, so a list it declares — one in a
+    /// list's row, say — is registered and reconciled like any other.
+    #[inline]
+    pub fn with_lists(mut self, lists: &'a mut crate::virtual_list::VirtualLists) -> Self {
+        self.lists = Some(lists);
+        self
+    }
+
     /// Seed the per-window chrome facts a caption widget reads at build time,
     /// returning the cx so the facade can chain it after
     /// [`with_reactive`](Self::with_reactive). Only the facade calls this — it

@@ -485,7 +485,9 @@ Goal: every Core view construct reaches a live tree through all three lowering t
       `list_item` with its 1-based position and the collection size (AccessKit
       `position_in_set`/`size_of_set`, the web's `aria-posinset`/`aria-setsize`);
       an exported row with no role of its own is `listitem`.
-- [ ] A `VirtualList` among another's rows (`E3711` today).
+- [x] A `VirtualList` among another's rows: a row's list registers while its
+      list builds it and mounts in the same frame; a recycled row's list goes
+      with it.
 - [x] `clip` clipping a node's children's paint and hit test to its box, rounded
       by its `corner_radius`: a `ClipCorners` marker after the clip layer sends
       the group offscreen and its composite is masked by a rounded box (Metal,

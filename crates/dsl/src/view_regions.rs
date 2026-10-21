@@ -210,39 +210,28 @@ pub fn has_regions(tree: &UiTree) -> bool {
 }
 
 /// The structural errors of `tree` no target mounts: a region at the root,
-/// a `VirtualList` whose body is not its one keyed `for`, and a `VirtualList`
-/// among another's rows, which a row cannot register while its list builds
-/// it.
+/// and a `VirtualList` whose body is not its one keyed `for`.
 pub fn structure_errors(tree: &UiTree) -> Vec<MountError> {
-    fn walk(item: &UiItem, rows: bool, errors: &mut Vec<MountError>) {
+    fn walk(item: &UiItem, errors: &mut Vec<MountError>) {
         match item {
             UiItem::Node(node) => {
-                let list = node.kind == NodeKind::VirtualList;
-                if list {
-                    if rows {
-                        errors.push(MountError::new(
-                            Some(node.origin),
-                            "a `VirtualList` among another `VirtualList`'s rows does not \
-                             mount yet",
-                        ));
-                        return;
-                    }
-                    if !matches!(node.children.as_slice(), [UiItem::For(f)] if f.key.is_some()) {
-                        errors.push(MountError::new(
-                            Some(node.origin),
-                            "a `VirtualList`'s body is exactly one keyed `for`, its item template",
-                        ));
-                        return;
-                    }
+                if node.kind == NodeKind::VirtualList
+                    && !matches!(node.children.as_slice(), [UiItem::For(f)] if f.key.is_some())
+                {
+                    errors.push(MountError::new(
+                        Some(node.origin),
+                        "a `VirtualList`'s body is exactly one keyed `for`, its item template",
+                    ));
+                    return;
                 }
                 for child in &node.children {
-                    walk(child, rows || list, errors);
+                    walk(child, errors);
                 }
             }
             _ => {
                 for items in arms(item) {
                     for item in items {
-                        walk(item, rows, errors);
+                        walk(item, errors);
                     }
                 }
             }
@@ -256,7 +245,7 @@ pub fn structure_errors(tree: &UiTree) -> Vec<MountError> {
                 "a view's root must be a node, not a control-flow region",
             ));
         }
-        walk(item, false, &mut errors);
+        walk(item, &mut errors);
     }
     errors
 }

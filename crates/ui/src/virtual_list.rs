@@ -294,6 +294,7 @@ use crate::node::NodeId;
 use crate::reactive::EffectStore;
 use crate::semantics::{Role, Semantics};
 use crate::state::StateStore;
+use crate::structure::StructureCx;
 use crate::style::BoxStyle;
 
 /// Builds the body of one list item under a host node. Called only when a row is
@@ -510,15 +511,7 @@ impl VirtualListState {
     /// Rebuild the mounted set for `[new_start, new_end)` by key: survivors keep
     /// their host and move if their offset did, the rest enter. Returns the rows
     /// bound.
-    fn rebind(
-        &mut self,
-        new_start: usize,
-        new_end: usize,
-        store: &mut NodeStore,
-        states: &mut StateStore,
-        bindings: &mut BindingTable,
-        effects: &mut EffectStore,
-    ) -> u32 {
+    fn rebind(&mut self, new_start: usize, new_end: usize, cx: &mut StructureCx<'_>) -> u32 {
         let mut bound = 0;
 
         // Diff the window. Any currently-mounted row whose identity is no longer in
@@ -573,7 +566,7 @@ impl VirtualListState {
         for m in &old_mounted {
             let still_present = sorted_new.binary_search(&m.key.0).is_ok();
             if !still_present {
-                park(store, &mut self.pool, m.host);
+                park(cx.store, &mut self.pool, m.host);
             }
         }
 
@@ -592,8 +585,9 @@ impl VirtualListState {
                 // no rebuild, so its body / per-row state / focus are preserved.
                 let host = existing.host;
                 if existing.item_top != item_top {
-                    store.set_row_offset(host, item_top);
-                    store.mark_dirty(host, DirtyClass::LAYOUT | DirtyClass::PAINT);
+                    cx.store.set_row_offset(host, item_top);
+                    cx.store
+                        .mark_dirty(host, DirtyClass::LAYOUT | DirtyClass::PAINT);
                 }
                 self.mounted.push_back(MountedItem {
                     logical_index: logical,
@@ -602,7 +596,7 @@ impl VirtualListState {
                     item_top,
                 });
             } else {
-                let row = self.mount(logical, key, store, states, bindings, effects);
+                let row = self.mount(logical, key, cx);
                 self.mounted.push_back(row);
                 bound += 1;
             }
@@ -623,30 +617,22 @@ impl VirtualListState {
     /// current one and whose rows kept their keys and offsets: the rows past
     /// either end leave, the rows uncovered at either end enter. Returns the
     /// rows bound.
-    fn slide(
-        &mut self,
-        new_start: usize,
-        new_end: usize,
-        store: &mut NodeStore,
-        states: &mut StateStore,
-        bindings: &mut BindingTable,
-        effects: &mut EffectStore,
-    ) -> u32 {
+    fn slide(&mut self, new_start: usize, new_end: usize, cx: &mut StructureCx<'_>) -> u32 {
         self.scratch_mounted.clear();
         let (start, end) = (self.range_start, self.range_end);
         let front = new_start.saturating_sub(start);
         let back = end.saturating_sub(new_end);
         for m in self.mounted.drain(..front) {
-            park(store, &mut self.pool, m.host);
+            park(cx.store, &mut self.pool, m.host);
         }
         let kept = self.mounted.len() - back;
         for m in self.mounted.drain(kept..) {
-            park(store, &mut self.pool, m.host);
+            park(cx.store, &mut self.pool, m.host);
         }
         let mut entering = std::mem::take(&mut self.scratch_old_mounted);
         for logical in new_start..start {
             let key = self.key_at(logical);
-            entering.push_back(self.mount(logical, key, store, states, bindings, effects));
+            entering.push_back(self.mount(logical, key, cx));
         }
         while let Some(row) = entering.pop_back() {
             self.mounted.push_front(row);
@@ -654,7 +640,7 @@ impl VirtualListState {
         self.scratch_old_mounted = entering;
         for logical in end..new_end {
             let key = self.key_at(logical);
-            let row = self.mount(logical, key, store, states, bindings, effects);
+            let row = self.mount(logical, key, cx);
             self.mounted.push_back(row);
         }
         self.scratch_mounted.len() as u32
@@ -662,34 +648,28 @@ impl VirtualListState {
 
     /// Mount logical row `logical` at its offset: pop a parked host (or
     /// allocate one under the canvas), empty its old body and build the row's.
-    fn mount(
-        &mut self,
-        logical: usize,
-        key: ItemKey,
-        store: &mut NodeStore,
-        states: &mut StateStore,
-        bindings: &mut BindingTable,
-        effects: &mut EffectStore,
-    ) -> MountedItem {
+    fn mount(&mut self, logical: usize, key: ItemKey, cx: &mut StructureCx<'_>) -> MountedItem {
         let item_top = self.heights.prefix_sum(logical);
         let host = match self.pool.pop() {
             Some(parked) => {
-                store.arena_append_child(self.canvas, parked);
+                cx.store.arena_append_child(self.canvas, parked);
                 // Drop the row instance the parked host held, so the new row
                 // takes over its blocks.
-                store.free_subtree(parked, effects, &mut self.scratch_free);
-                bindings.collect(store, states);
+                cx.store
+                    .free_subtree(parked, cx.effects, &mut self.scratch_free);
+                cx.bindings.collect(cx.store, cx.states);
                 parked
             }
-            None => store.alloc_row_host(self.canvas, self.axis),
+            None => cx.store.alloc_row_host(self.canvas, self.axis),
         };
-        store.set_row_offset(host, item_top);
+        cx.store.set_row_offset(host, item_top);
         {
-            let mut cx = BuildCx::with_parent(store, states, bindings, host);
+            let mut build =
+                BuildCx::with_parent(cx.store, cx.states, cx.bindings, host).with_lists(cx.lists);
             let builder = &mut self.builder;
-            cx.instance(&mut self.template, |cx| builder(logical, cx));
+            build.instance(&mut self.template, |build| builder(logical, build));
         }
-        store.mark_dirty(
+        cx.store.mark_dirty(
             host,
             DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
         );
@@ -779,6 +759,12 @@ pub struct VirtualLists {
     /// the viewport's generation-checked id, or `None` for a non-list node (the
     /// common case).
     lists: Vec<Option<(NodeId, Box<VirtualListState>)>>,
+    /// The lists of freed viewports whose slot a new list took before a
+    /// reconcile dropped them; the next reconcile frees their parked hosts.
+    orphans: Vec<VirtualListState>,
+    /// How many lists were ever registered, so a reconcile sees a pass that
+    /// registered some.
+    registered: u64,
 }
 
 impl VirtualLists {
@@ -791,10 +777,12 @@ impl VirtualLists {
     /// `NodeStore::clear` when the tree is rebuilt wholesale.
     pub fn clear(&mut self) {
         self.lists.clear();
+        self.orphans.clear();
     }
 
     /// Register `state` for the list viewport `viewport`, growing the dense index
-    /// as needed. Returns the registration it replaces at that slot.
+    /// as needed. Returns the list `viewport` was before; the list of a freed
+    /// node whose slot `viewport` reuses is the next reconcile's to free.
     pub fn register(
         &mut self,
         viewport: NodeId,
@@ -804,9 +792,20 @@ impl VirtualLists {
         if i >= self.lists.len() {
             self.lists.resize_with(i + 1, || None);
         }
-        self.lists[i]
-            .replace((viewport, state))
-            .map(|(_, prior)| prior)
+        self.registered += 1;
+        let (id, prior) = self.lists[i].replace((viewport, state))?;
+        if id == viewport {
+            return Some(prior);
+        }
+        self.orphans.push(*prior);
+        None
+    }
+
+    /// Frees the parked hosts of the lists whose slot a new list took.
+    fn free_orphans(&mut self, store: &mut NodeStore, effects: &mut EffectStore) {
+        for mut state in self.orphans.drain(..) {
+            state.free_pool(store, effects);
+        }
     }
 
     /// Drop the list of `viewport`, freeing the hosts it keeps parked outside
@@ -841,6 +840,11 @@ impl VirtualLists {
         }
     }
 
+    /// How many lists are registered.
+    pub fn len(&self) -> usize {
+        self.lists.iter().filter(|s| s.is_some()).count()
+    }
+
     /// Whether any list is registered (lets a frame skip the reconcile entirely).
     #[inline]
     pub fn is_empty(&self) -> bool {
@@ -871,50 +875,65 @@ pub fn reconcile(
     effects: &mut EffectStore,
 ) -> u32 {
     let mut bound = 0;
-    // Walk the dense index; each occupied slot keeps its viewport's
-    // generation-checked id.
-    for i in 0..lists.lists.len() {
-        let Some((viewport, _)) = lists.lists[i] else {
-            continue;
-        };
-        if !store.arena().is_live(viewport) {
-            // The viewport was freed with its tree: drop the list and the
-            // hosts it parked outside the tree.
-            if let Some((_, mut state)) = lists.lists[i].take() {
+    // A row can declare a list of its own, registered while its list builds
+    // it. A pass reaches a list registered past its cursor; one registered
+    // behind it gets another pass, so a row's list mounts in the frame its row
+    // does, as deep as lists nest.
+    for _ in 0..MAX_NESTING {
+        let registered = lists.registered;
+        // Walk the dense index; each occupied slot keeps its viewport's
+        // generation-checked id.
+        let mut i = 0;
+        while i < lists.lists.len() {
+            let Some((viewport, mut state)) = lists.lists[i].take() else {
+                i += 1;
+                continue;
+            };
+            if !store.arena().is_live(viewport) {
+                // The viewport was freed with its tree: drop the list and the
+                // hosts it parked outside the tree.
                 state.free_pool(store, effects);
+                i += 1;
+                continue;
             }
-            continue;
+            let mut cx = StructureCx {
+                store: &mut *store,
+                states: &mut *states,
+                bindings: &mut *bindings,
+                effects: &mut *effects,
+                lists: &mut *lists,
+            };
+            bound += reconcile_one(viewport, &mut state, &mut cx);
+            lists.lists[i] = Some((viewport, state));
+            i += 1;
         }
-        bound += reconcile_one(viewport, store, lists, states, bindings, effects);
+        lists.free_orphans(store, effects);
+        if lists.registered == registered {
+            break;
+        }
     }
     bound
 }
 
-/// Reconcile a single list. Split out so the borrow of `lists` is a short scoped
-/// `get_mut` and the per-list scratch lives on the state.
-fn reconcile_one(
-    viewport: NodeId,
-    store: &mut NodeStore,
-    lists: &mut VirtualLists,
-    states: &mut StateStore,
-    bindings: &mut BindingTable,
-    effects: &mut EffectStore,
-) -> u32 {
-    let Some(state) = lists.get_mut(viewport) else {
-        return 0;
-    };
+/// The passes one reconcile makes at most: lists nest no deeper in a frame.
+const MAX_NESTING: usize = 8;
+
+/// Reconcile a single list, taken out of the registry so the rows it builds
+/// can register lists of their own.
+fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut StructureCx<'_>) -> u32 {
     let axis = state.axis;
     // A seek scrolls its row to the start edge, as near as the end of the list
     // allows, on the extent the height model holds now.
     if let Some(index) = state.reveal.take() {
-        let room = (state.heights.total() - store.bounds_main(viewport, axis)).max(0.0);
-        store.seek_scroll(viewport, axis, state.heights.prefix_sum(index).min(room));
+        let room = (state.heights.total() - cx.store.bounds_main(viewport, axis)).max(0.0);
+        cx.store
+            .seek_scroll(viewport, axis, state.heights.prefix_sum(index).min(room));
     }
     // How far the viewport is scrolled from its start: a row read right to
     // left takes negative offsets.
-    let scroll_main = store.scroll(viewport).on(axis).abs();
+    let scroll_main = cx.store.scroll(viewport).on(axis).abs();
     debug_assert!(
-        store.is_scroll(viewport),
+        cx.store.is_scroll(viewport),
         "virtual list viewport must be a scroll node"
     );
 
@@ -926,7 +945,7 @@ fn reconcile_one(
 
     // The visible window: the row at the viewport top, through the row at its
     // bottom, widened by overscan on each side and clamped to the item range.
-    let viewport_main = store.bounds_main(viewport, axis);
+    let viewport_main = cx.store.bounds_main(viewport, axis);
     let first = state.heights.find_position(scroll_main).0;
     let last = state.heights.find_position(scroll_main + viewport_main).0;
     let new_start = first.saturating_sub(state.overscan);
@@ -951,9 +970,9 @@ fn reconcile_one(
         && new_start < state.range_end
         && state.range_start < new_end
     {
-        state.slide(new_start, new_end, store, states, bindings, effects)
+        state.slide(new_start, new_end, cx)
     } else {
-        state.rebind(new_start, new_end, store, states, bindings, effects)
+        state.rebind(new_start, new_end, cx)
     };
 
     // 3. If the total logical extent changed, rewrite the canvas's fixed extent so
@@ -963,14 +982,16 @@ fn reconcile_one(
     //    here). MEASURE too, so the canvas re-measures its own new fixed size.
     let total_after = state.heights.total();
     if total_after != state.committed_extent {
-        store.set_absolute_rows_extent(state.canvas, axis, total_after);
-        store.mark_dirty(state.canvas, DirtyClass::MEASURE | DirtyClass::LAYOUT);
+        cx.store
+            .set_absolute_rows_extent(state.canvas, axis, total_after);
+        cx.store
+            .mark_dirty(state.canvas, DirtyClass::MEASURE | DirtyClass::LAYOUT);
         state.committed_extent = total_after;
     }
 
     // 4. Tell each mounted row its place in the collection: an entering row
     //    has none yet, and a survivor moves with a reorder or a count change.
-    state.announce_positions(store);
+    state.announce_positions(cx.store);
 
     // 5. Commit the window.
     state.range_start = new_start;
